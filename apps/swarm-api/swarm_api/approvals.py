@@ -70,10 +70,12 @@ from .issueruns import (
     APPROVERS_SECOND_MEMBER,
     AUTO_APPROVER,
     HOLD_NEEDS_OWNER,
+    OWNER_SIGNATURE,
     RUNS_COLLECTION,
     HoldApproverRequired,
     IssueRun,
     IssueRuns,
+    Resign,
     RunState,
     hold_always_enforced,
     hold_confirmation,
@@ -766,7 +768,7 @@ def firing_move(db: Any, now: datetime, *, approve: bool, by: str) -> Move:
     return move
 
 
-def merge_move(db: Any, now: datetime, *, by: str) -> Move:
+def merge_move(db: Any, now: datetime, *, by: str, resign: Resign) -> Move:
     """An approved `merge`: the run records `merge_approved` at the head shown.
 
     Inside the decision's transaction, the run must still be CHECKING at that
@@ -774,6 +776,13 @@ def merge_move(db: Any, now: datetime, *, by: str) -> Move:
     (else 409 `already_decided`). Its next CI read is made due at once, so the
     next visit submits the merge-only continuation through `issueci._merge`,
     the one place a merge is submitted, with every check it makes.
+
+    `merge_approved` is a signed field (RUN-SIG-2, #1569): `resign`
+    (`routes.runs.owner_resigner`) verifies the run as this transaction read
+    it -- so a run whose hold a worker dropped is 403 `run_owner_unverified`
+    here and nothing is decided -- and signs it with the approval, in the
+    same write. A worker that writes `merge_approved` itself writes no
+    signature over it, and the merge refuses the run (`issueci.merge_gate`).
     """
 
     def move(txn: Any, doc: Mapping[str, Any]) -> dict[str, Any]:
@@ -790,10 +799,13 @@ def merge_move(db: Any, now: datetime, *, by: str) -> Move:
         if (data.get("merge_approved") or {}).get("head_sha") == head:
             raise ScheduleConflict("already_decided", f"the merge of run {run_id} at {str(head)[:12]} is approved")
         pull["checked_at"] = None
-        txn.update(ref, {
+        changes = {
             "merge_approved": {"head_sha": head, "by": by, "at": now, "approval_id": doc["approval_id"]},
             "pull_request": pull,
-        })
+        }
+        changes[OWNER_SIGNATURE] = resign(IssueRun.from_firestore(data),
+                                          IssueRun.from_firestore({**data, **changes}))
+        txn.update(ref, changes)
         return {"run_id": run_id, "head_sha": head}
 
     return move

@@ -6,6 +6,8 @@
     POST /v1/runs/{run_id}/plan:approve   {"plan_digest"}  -> a new workflow
     POST /v1/runs/{run_id}/plan:edit      {"plan_digest", "plan"}
     POST /v1/runs/{run_id}/plan:reject    {"plan_digest"?, "reason"?}
+    POST /v1/runs/owner-signatures        ?dry_run=&listing_digest=  platform admins:
+                                          sign runs made before the signature, once
 
 EVERY MOVE IS WRITTEN BACK to the issue (`issuesync.sync_issue`): the plan
 comment once there is a plan, edited when it changes, and the one status
@@ -41,19 +43,25 @@ run is created in the caller's tenant (through `submit_tasks`, which runs
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field, replace
 
 from fastapi import APIRouter, Depends, Query, Response, status
+from google.cloud import firestore
 
+from swarm_common import specsign
+from swarm_common.admission import _snapshot
 from swarm_common.identity import Principal
 from swarm_common.models import Tenant, new_id
 from swarm_common.states import TaskState
 
 from ..auth import AuthContext
+from .. import issueruns as issueruns_module
 from .. import refusals, roles
-from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
+from ..admins import AUDIT_COLLECTION
+from ..deps import AppContext, admin_auth, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import (
     ApiError,
     Conflict,
@@ -108,6 +116,7 @@ from ..repositories import (
 )
 from ..plancontext import read_plan_context
 from ..reviewcontext import read_review_context
+from ..specsigning import SpecSigningUnavailable
 from ..schemas import PlanApprove, PlanEdit, PlanReject, RunCreate
 from ..validation import parse_issue_ref
 from .tasks import require_member
@@ -277,7 +286,10 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
                 str((advisory or {}).get("duplicate", {}).get("ref") or "")[:120],
             )
             patch["plan_approval"] = "required"
-        return runs.transition(tenant_id, run.id, RunState.PLANNED, by=SYSTEM, patch=patch)
+        # The plan, its digest, the hold and any narrowing are re-signed with
+        # the run, after the run as read verifies (RUN-SIG-2).
+        return runs.transition(tenant_id, run.id, RunState.PLANNED, by=SYSTEM, patch=patch,
+                               sign=owner_resigner(ctx))
     if task.state in (TaskState.FAILED, TaskState.DEAD_LETTERED):
         why = f"the planner task {task.id} ended {task.state.value}"
         if task.last_error:
@@ -465,6 +477,23 @@ def verify_run_owner(ctx: AppContext, run: IssueRun) -> None:
         f"it was created ({failed}), so nothing is submitted for it; create the run again",
         detail={"run_id": run.id, "field": failed},
     )
+
+
+def owner_resigner(ctx: AppContext):
+    """`IssueRuns.transition`/`patch`'s `sign=` (lane RUN-SIG-2): verify the
+    run as the write's transaction read it, then sign it as it will be stored.
+
+    Verify FIRST: a re-sign over a run a worker had already rewritten would
+    sign the rewrite, so a run that does not verify is `RunOwnerUnverified`
+    and nothing is written. The signer is the one `start_run` signs with, so
+    with no signer (local development and tests) nothing is verified and the
+    run is stored unsigned, exactly as at creation.
+    """
+    def resign(current: IssueRun, updated: IssueRun) -> dict | None:
+        verify_run_owner(ctx, current)
+        return sign_owner(ctx.submissions.signer, updated)
+
+    return resign
 
 
 #: `platform_admin_acted`'s `route` for an auto step submitted as a creator who
@@ -739,6 +768,14 @@ def _advance_state(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
     except Conflict:
         # Another request moved it first; what it moved it to is the answer.
         return _runs(ctx).get(tenant_id, run.id)
+    except RunOwnerUnverified as refused:
+        # A re-sign refused (`owner_resigner`): the planner's plan, a CI read's
+        # hold or another signed write found the run rewritten. Nothing was
+        # written or submitted; the run ends here, as at an approval.
+        return _runs(ctx).transition(
+            tenant_id, run.id, RunState.FAILED, by=SYSTEM,
+            patch={"error": failure_text(refused.message)},
+        )
     return run
 
 
@@ -1151,6 +1188,10 @@ def edit_plan(
             "plan_edited_by": auth.email,
             "approval_hold": widen_hold(latest.approval_hold, found),
         },
+        # Re-signed over the edited plan, its new revision and the widened
+        # hold, after the run as the claim read it verifies (RUN-SIG-2): a
+        # signature from before this edit no longer verifies on the run.
+        sign=owner_resigner(ctx),
     )
     return {"run": sync_issue(ctx, run).to_api()}
 
@@ -1170,3 +1211,165 @@ def reject_plan(
         patch={"rejected_by": auth.email, "rejection_reason": body.reason},
     )
     return {"run": sync_issue(ctx, run).to_api()}
+
+
+# --------------------------------------------------------------------------
+# the one-time signing of runs created before the signature (RUN-SIG-2)
+# --------------------------------------------------------------------------
+#
+# Owner decision 2026-10-23 (~19:23Z, q2 "Admin signs old runs once"), with
+# PR 2135's warning kept: signing a run AS IT STANDS also signs anything a
+# worker already rewrote in it. So the route runs in two modes. The dry run
+# (the default) writes nothing and lists every run whose signature is not a
+# verifying v2 one, with who it submits as and whether that person is still
+# a member, and a digest of exactly what it listed. The apply signs only
+# what that listing showed: it is refused without the listing's digest, or
+# when the runs no longer hash to it, so a field rewritten after the list
+# was read is never signed. CLD runs the dry run after release, posts the
+# list on #1569 for a person to read, then applies.
+
+#: The `admin_audit` action of one run signed by the route.
+OWNER_SIGNED_ACTION = "issue_run_owner_signed"
+
+
+def _owner_row(ctx: AppContext, run: IssueRun, state: str) -> dict:
+    """One listed run: who it submits as, whether they may, and what would be signed."""
+    owner = run.on_behalf_of or run.created_by
+    tenant = ctx.store.get_tenant(run.tenant_id)
+    member = bool(owner) and tenant is not None and bool(
+        ctx.authenticator.is_tenant_member(owner, tenant, fresh=True))
+    if state == issueruns_module.SIGNATURE_INVALID:
+        refusal = "signature_does_not_verify"
+    elif not member:
+        refusal = "owner_not_member"
+    else:
+        refusal = None
+    return {
+        "run_id": run.id,
+        "tenant_id": run.tenant_id,
+        "created_by": run.created_by,
+        "on_behalf_of": run.on_behalf_of,
+        "plan_approval": run.plan_approval,
+        "state": run.state.value,
+        "owner_is_member": member,
+        "signature": state,
+        "signable": refusal is None,
+        "refusal": refusal,
+        "fields_digest": issueruns_module.owner_fields_digest(run),
+    }
+
+
+def _owner_listing(ctx: AppContext) -> tuple[list[dict], str]:
+    """Every run, in every tenant, whose owner signature is not a verifying v2
+    one, oldest first, and the digest of that listing. Reads only."""
+    rows = []
+    for snap in ctx.db.collection(issueruns_module.RUNS_COLLECTION).stream():
+        run = IssueRun.from_firestore(snap.to_dict())
+        state = issueruns_module.owner_signature_state(run, ctx.settings)
+        if state != issueruns_module.SIGNATURE_SIGNED:
+            rows.append((run.created_at, run.id, _owner_row(ctx, run, state)))
+    rows.sort(key=lambda r: (r[0], r[1]))
+    listed = [row for _, _, row in rows]
+    digest = "sha256:" + hashlib.sha256(specsign.jcs([
+        {key: row[key] for key in ("run_id", "fields_digest", "signable")} for row in listed
+    ])).hexdigest()
+    return listed, digest
+
+
+@router.post("/owner-signatures")
+def sign_old_runs(
+    dry_run: bool = Query(default=True),
+    listing_digest: str | None = Query(default=None, max_length=100),
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """List (`dry_run=true`, the default) or sign (`dry_run=false`) every run
+    whose owner signature is not a verifying v2 one. Platform admins only.
+
+    The apply signs each listed, signable run's fields EXACTLY AS STORED,
+    each in its own transaction that re-reads the run and refuses it if it
+    no longer hashes to what was listed, and writes one `admin_audit` row
+    per run signed in that transaction. A run whose owner is not a member of
+    its tenant, or whose signature exists and does not verify (a rewrite the
+    signature caught), is refused, never signed. Idempotent: a signed run
+    verifies, so it is not listed again. Nothing returned or logged carries
+    a signature or a token: the signed values' digest only.
+    """
+    if not auth.is_admin:
+        # `admin_auth` lets a pool admin, the tick and the sweeper through on
+        # their own routes only; this one is not among them, so this is the
+        # same refusal said once more for anyone reading the route alone.
+        raise Forbidden("signing issue runs' owner fields is for a platform admin")
+    listed, digest = _owner_listing(ctx)
+    if dry_run:
+        log.info("issue run owner signing: dry run by %s listed %d run(s)", auth.email, len(listed))
+        return {"dry_run": True, "runs": listed, "listing_digest": digest}
+    if not listing_digest or listing_digest != digest:
+        # A plain 409: an admin's one-time route, not a refusal any caller
+        # meets, so no new code (and no switch) of its own.
+        raise Conflict(
+            "sign only what a dry run listed: pass its listing_digest, from a dry run read "
+            "since the runs last changed",
+            detail={"listing_digest": digest},
+        )
+    signer = ctx.submissions.signer
+    if signer is None:
+        raise SpecSigningUnavailable(
+            "this API has no SPEC_SIGNING_KEY_VERSION, so no issue run can be signed")
+    signed: list[str] = []
+    refused: list[dict] = []
+    for row in listed:
+        if not row["signable"]:
+            refused.append({"run_id": row["run_id"], "reason": row["refusal"]})
+            continue
+        outcome = _sign_one(ctx, auth, row, signer)
+        if outcome is None:
+            signed.append(row["run_id"])
+        else:
+            refused.append({"run_id": row["run_id"], "reason": outcome})
+    log.info("issue run owner signing: %s signed %d run(s), refused %d",
+             auth.email, len(signed), len(refused))
+    return {"dry_run": False, "runs": listed, "listing_digest": digest,
+            "signed": signed, "refused": refused}
+
+
+def _sign_one(ctx: AppContext, auth: AuthContext, row: dict, signer) -> str | None:
+    """Sign one listed run as stored, with its audit row, in one transaction.
+    None when signed; else why not."""
+    ref = ctx.db.collection(issueruns_module.RUNS_COLLECTION).document(row["run_id"])
+
+    @firestore.transactional
+    def _apply(txn) -> str | None:
+        snap = _snapshot(txn.get(ref))
+        data = snap.to_dict() if snap.exists else None
+        if data is None or data.get("tenant_id") != row["tenant_id"]:
+            return "gone"
+        run = IssueRun.from_firestore(data)
+        state = issueruns_module.owner_signature_state(run, ctx.settings)
+        if state == issueruns_module.SIGNATURE_SIGNED:
+            return "already_signed"
+        if state != row["signature"] or (
+                issueruns_module.owner_fields_digest(run) != row["fields_digest"]):
+            return "changed_since_listed"
+        signature = sign_owner(signer, run)
+        txn.update(ref, {issueruns_module.OWNER_SIGNATURE: signature})
+        txn.set(ctx.db.collection(AUDIT_COLLECTION).document(), {
+            "action": OWNER_SIGNED_ACTION,
+            "target_kind": "issue_run",
+            "target_id": run.id,
+            "by": auth.email,
+            "at": ctx.now(),
+            "detail": {
+                "tenant_id": run.tenant_id,
+                "created_by": run.created_by,
+                "on_behalf_of": run.on_behalf_of,
+                "plan_approval": run.plan_approval,
+                "state": run.state.value,
+                "prior": row["signature"],
+                "fields_digest": row["fields_digest"],
+                "key_version": (signature or {}).get("key_version"),
+            },
+        })
+        return None
+
+    return _apply(ctx.db.transaction())

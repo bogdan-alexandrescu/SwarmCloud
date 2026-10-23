@@ -334,7 +334,9 @@ def _sign(client, user="root", **params):
 
 
 def _audits(db) -> list[dict]:
-    return [v for k, v in db.docs.items() if k.startswith("admin_audit/")]
+    """The route's `admin_audit` rows (the admin roles' migration marker lives there too)."""
+    return [v for k, v in db.docs.items()
+            if k.startswith("admin_audit/") and v.get("target_kind") == "issue_run"]
 
 
 def test_the_dry_run_lists_every_unsigned_run_and_changes_nothing(client, db, objects):
@@ -430,3 +432,45 @@ def test_a_non_admin_is_refused_in_both_modes(client, db, objects, user):
     assert dry.status_code == 403, dry.text
     assert apply.status_code == 403, apply.text
     assert db.docs == before
+
+
+def _v1_signed(client, db, objects, signer) -> str:
+    """A run as PR 2135 signed it: v1 purpose, v1 fields only."""
+    import base64
+
+    from swarm_common import specsign
+
+    run_id = _legacy(client, db, objects)
+    run = IssueRun.from_firestore(_stored(db, run_id))
+    fields = {k: issueruns.owner_fields(run)[k] for k in issueruns.OWNER_FIELDS_V1}
+    made = signer.sign(specsign.spec_digest(issueruns.canonical_owner(
+        fields, purpose=issueruns.OWNER_PURPOSE_V1, keys=issueruns.OWNER_FIELDS_V1)))
+    _stored(db, run_id)[issueruns.OWNER_SIGNATURE] = {
+        "fields": fields, "key_version": made.key_version,
+        "signature": base64.b64encode(made.signature).decode("ascii")}
+    return run_id
+
+
+def test_a_v1_run_is_refused_until_signed_once_and_a_caught_rewrite_never_is(
+        client, db, objects, signer, api_context):
+    v1_run = _v1_signed(client, db, objects, signer)
+    tampered = _planned(client, db, objects)["id"]
+    _stored(db, tampered)["created_by"] = OTHER_MEMBER
+    # PR 2135's signature covers no hold, plan or merge approval: refused on every path.
+    planned = _run(client, v1_run).json()["run"]
+    # MUTATION: accept a v1 signature on the submission paths and this approval submits.
+    assert _approve(client, v1_run, planned["plan_digest"]).status_code == 403
+
+    listing = _sign(client).json()
+    rows = {row["run_id"]: row for row in listing["runs"]}
+    assert rows[v1_run]["signature"] == "v1" and rows[v1_run]["signable"] is True
+    # MUTATION: treat a signature that does not verify as "unsigned" and the rewrite is signable.
+    assert rows[tampered]["signature"] == "invalid" and rows[tampered]["signable"] is False
+    applied = _sign(client, dry_run="false", listing_digest=listing["listing_digest"]).json()
+
+    assert applied["signed"] == [v1_run]
+    assert {r["run_id"]: r["reason"] for r in applied["refused"]}[tampered] == \
+        "signature_does_not_verify"
+    assert _verifies(api_context, db, v1_run) is None
+    assert _verifies(api_context, db, tampered) == "created_by"
+    assert _approve(client, v1_run, planned["plan_digest"]).status_code == 200

@@ -1645,8 +1645,24 @@ def merge_gate(
     then one `merge` record waits in the inbox, and a push supersedes it.
     The SD3 switch cannot open a hold: it only decides `merge_approval`.
     """
+    from .routes.runs import RunOwnerUnverified, owner_resigner, verify_run_owner
+
     runs = _runs(ctx)
     now = ctx.now()
+    # RUN-SIG-2 (#1569): the hold and the merge approval read below decide
+    # whether a person must approve this merge, and a worker can write both.
+    # They are believed only when the run verifies; one that does not merges
+    # nothing and ends FAILED, before any file is read or any record made.
+    try:
+        verify_run_owner(ctx, run)
+    except RunOwnerUnverified as refused:
+        return runs.transition(
+            tenant_id, run.id, RunState.FAILED, by=ACTOR, from_states={RunState.CHECKING},
+            patch={"pull_request": record, "error": failure_text(
+                f"auto_merge did not merge pull request #{record.get('number')}: {refused.message}"
+            )},
+        )
+    resign = owner_resigner(ctx)
     hold = run.approval_hold
     if record.get("files_checked_head") != head:
         files = _changed_files(ctx, run, int(record["number"]), token)
@@ -1691,7 +1707,10 @@ def merge_gate(
     approved_here = (run.merge_approved or {}).get("head_sha") == head
     if not (blocks or run.merge_approval == "required") or approved_here:
         if changes:
-            runs.patch(tenant_id, run.id, changes)
+            # The widened hold is re-signed with the run; the caller goes on
+            # with `run`, so it carries the new signature to `_merge`'s check.
+            run.owner_signature = runs.patch(
+                tenant_id, run.id, changes, sign=resign).owner_signature
         return None
     verdict, _why = _review_verdict(ctx, tenant_id, run)
     record_doc = approvals.request_merge(ctx.db, now, run, head_sha=head, verdict=verdict)
@@ -1701,7 +1720,7 @@ def merge_gate(
 
     announce_merge(ctx, run, record_doc, token)
     log.info("issue run %s tenant=%s: merge of %s waits for approval", run.id, tenant_id, head[:12])
-    return runs.patch(tenant_id, run.id, {**changes, "pull_request": record})
+    return runs.patch(tenant_id, run.id, {**changes, "pull_request": record}, sign=resign)
 
 
 def _review_verdict(ctx: Any, tenant_id: str, run: IssueRun) -> tuple[str | None, str]:
