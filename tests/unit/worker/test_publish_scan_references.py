@@ -358,3 +358,166 @@ def test_an_escaped_single_or_backtick_quote_does_not_close_the_value(name, quot
 def test_a_single_quoted_whole_reference_publishes():
     assert _rule("src/app.py", f"{_SEC.lower()} = 'anthropic'\n") is None
     assert _rule("src/app.py", f"{_SEC.lower()} = 'anthropic';\n") is None
+
+
+# ---------------------------------------------------------------------------
+# #2030 (SCAN-FP; BGD's decision, 2026-10-23): fix the false positives and the
+# advice, add no setting. Product Oracle's task was refused three attempts in a
+# row over two lines of `web/lib/api/mock/interviews.ts` that hold nothing.
+# REPRODUCED on main before the fix (90ee564), through `_credential_in`:
+# * line 70 is the fixture's DOC COMMENT, ``/** The fixture's link token:
+#   `i-mock-token` works on a freshly seeded mock. */`` (the read-time
+#   redaction masked it in the issue; line 111 shows the backtick form). The
+#   key/value rule takes `token: `i-mock-token`` from the prose; the value IS a
+#   reference (`_is_a_reference` True), but prose follows it, so
+#   `_ends_the_value` is False and tier 2 refuses.
+# * line 71, `MOCK_INTERVIEW_TOKEN = "i-mock-token"`, already published.
+# * line 387 is a template literal: the value class stops at `(`, so the value
+#   read is `` `i-${mockUuid().replace(/-/g `` -- no reference, refused.
+# ---------------------------------------------------------------------------
+
+_ORACLE = "web/lib/api/mock/interviews.ts"
+#: The fixture's value: a reference by `_REFERENCE_SHAPE` (`...-token`), not a
+#: credential, so it is written as it was committed.
+_MOCK_LINK = "i-mock-token"
+#: The lines as Product Oracle committed them (lines 70, 71 and 387).
+_ORACLE_LINES = (
+    f"/** The fixture's link token: `{_MOCK_LINK}` works on a freshly seeded mock. */\n",
+    f'export const MOCK_INTERVIEW_TOKEN = "{_MOCK_LINK}";\n',
+    '    r.token = `i-${mockUuid().replace(/-/g, "")}`;\n',
+)
+
+
+def _random40() -> str:
+    """40 random letters and digits, made at run time: never a literal here."""
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(40))
+
+
+@pytest.mark.parametrize("line", _ORACLE_LINES, ids=["doc-comment", "fixture", "template"])
+def test_the_product_oracle_lines_publish(line):
+    # MUTATION: drop the comment-line or the runtime-template exemption from
+    # `_match_counts` and the doc-comment or template case turns red.
+    assert _rule(_ORACLE, line) is None
+    assert _rule(_ORACLE, "".join(_ORACLE_LINES)) is None
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'r.token = `${a}-${b}`;\n',
+        'const token = `${prefix}${mockUuid().replace(/-/g, "")}`;\n',
+        'x = {token: `i-${f("}")}`, a: 1}\n',
+        'token = `${n}`\n',
+    ],
+    ids=["two-slots", "call-in-a-slot", "brace-in-a-string-in-a-slot", "one-slot"],
+)
+def test_a_template_literal_of_runtime_slots_publishes(line):
+    # MUTATION: make `_runtime_template` return False and these turn red.
+    assert _rule("src/app.ts", line) is None
+
+
+def test_a_bare_call_or_identifier_publishes():
+    """The control the issue names: no literal, nothing to refuse."""
+    # MUTATION: count every bare value in `_assigns_a_literal` and this turns red.
+    assert _rule("src/app.ts", "r.token = mockUuid();\n") is None
+    assert _rule("src/app.ts", "token = MOCK_INTERVIEW_TOKEN;\n") is None
+
+
+@pytest.mark.parametrize(
+    "opener",
+    ["# ", "// ", "-- ", "/* ", " * ", "<!-- "],
+    ids=["hash", "slashes", "sql", "block", "block-continuation", "html"],
+)
+def test_a_generic_match_on_a_comment_line_publishes(opener):
+    value = _random40()
+    closer = {"/* ": " */", "<!-- ": " -->"}.get(opener, "")
+    code = f'api_{_KEY.lower()} = "{value}"'
+    # MUTATION: drop `_on_a_comment_line` from `_match_counts` and this turns red.
+    assert _rule("src/settings.py", f"{opener}{code}{closer}\n") is None
+    # MUTATION: skip the generic rules on every line and this turns red.
+    assert _rule("src/settings.py", f"{code}\n") == "key_value_assignment"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "/* note */ {code}\n",
+        "<!-- note --> {code}\n",
+        "--{code}\n",
+        "#{code}\n",
+    ],
+    ids=["code-after-a-closed-block", "code-after-a-closed-html-comment", "cli-flag", "js-private-field"],
+)
+def test_code_that_only_opens_like_a_comment_is_still_scanned(line):
+    """A block comment closed on the line leaves code after it; `--token=` is a
+    flag, not SQL; `#token = ...` is a JavaScript private field."""
+    code = f'{_SEC.lower()}_{_KEY.lower()} = "{_random40()}"'
+    # MUTATION: read every line opening with a comment marker as a comment and this turns red.
+    assert _rule("src/app.ts", line.format(code=code)) == "key_value_assignment"
+
+
+def test_a_vendor_key_on_a_comment_line_is_still_refused():
+    key = "AK" + "IA" + _alnum(16, string.ascii_uppercase.replace("E", "") + string.digits)
+    # MUTATION: skip comment lines for every rule, not only the generic ones, and this turns red.
+    assert _rule("src/settings.py", f"# aws_access_key_id = {key}\n") == "aws_access_key_id"
+    assert _rule("src/app.ts", f"// {key}\n") == "aws_access_key_id"
+    assert _rule("src/app.ts", "".join("// " + row + "\n" for row in _pem().splitlines())) == (
+        "private_key_block"
+    )
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "token = `sk-${{x}}{value}`\n",
+        "token = `{value}${{x}}`;\n",
+        'token = `${{"{value}"}}`;\n',
+        "token = `${{x}}` + \"{value}\";\n",
+        "token = `${{x}}{half}${{y}}{half}`;\n",
+    ],
+    ids=["after-a-slot", "before-a-slot", "a-literal-in-a-slot", "joined-after", "split-by-slots"],
+)
+def test_a_slot_does_not_hide_the_literal_beside_it(line):
+    value = _random40()
+    text = line.format(value=value, half=value[:12])
+    # MUTATION: let `_runtime_template` pass any template with a slot and this turns red.
+    assert _rule("src/app.ts", text) == "key_value_assignment"
+
+
+_ADVICE = "remove the value, or read it at runtime from configuration"
+_FORBIDDEN_ADVICE = ("split", "concatenat", "pieces", "encode")
+
+
+def test_the_refusal_names_the_rule_the_line_and_why():
+    hit = lifecycle.ScanHit("src/app.py", "key_value_assignment", 2)
+    reason = lifecycle.credential_refusal(hit)
+    # MUTATION: change the prefix and swarm-api's outcome classifier stops reading it as a refusal.
+    assert reason.startswith("the final tree adds a credential in src/app.py "), reason
+    # MUTATION: drop the rule, the line or the reason from `credential_refusal` and this turns red.
+    assert "rule key_value_assignment" in reason and "line 2" in reason, reason
+    assert "not a reference" in reason, reason
+    assert _ADVICE in reason, reason
+    # MUTATION: advise splitting the literal again and this turns red.
+    assert not any(word in reason.lower() for word in _FORBIDDEN_ADVICE), reason
+
+    vendor = lifecycle.credential_refusal(lifecycle.ScanHit("src/app.py", "aws_access_key_id", 1))
+    # MUTATION: give a vendor rule the generic reason and this turns red.
+    assert "vendor format" in vendor, vendor
+    in_tests = lifecycle.credential_refusal(
+        lifecycle.ScanHit("tests/test_app.py", "key_value_assignment", 1)
+    )
+    # MUTATION: give the test tier the outside-tests reason and this turns red.
+    assert "entropy" in in_tests and str(lifecycle.CREDENTIAL_MIN_CHARS) in in_tests, in_tests
+
+
+def test_the_repair_prompt_names_why_and_never_advises_splitting(tmp_path):
+    from agent_worker.runners import cliagent
+
+    prompt = cliagent.repair_prompt([], ["src/app.py:2 key_value_assignment"], tmp_path)
+    # MUTATION: drop the reason from the repair prompt's lines and this turns red.
+    assert "src/app.py:2 key_value_assignment: " in prompt, prompt
+    assert "not a reference" in prompt, prompt
+    assert _ADVICE in prompt, prompt
+    # MUTATION: restore "built at runtime from pieces" and this turns red.
+    assert not any(word in prompt.lower() for word in _FORBIDDEN_ADVICE), prompt

@@ -682,7 +682,8 @@ def test_a_key_past_the_32_mib_mark_of_a_40_mb_diff_is_caught(
     branch = f"{config.git_branch_prefix}{config.task_id}"
     assert out["published"] is False, out
     assert out.get("final_tree_leak") == (
-        "the final tree adds a credential in big.py (rule aws_access_key_id, line 11500001); remove it"
+        "the final tree adds a credential in big.py (rule aws_access_key_id, line 11500001)"
+        ": it matches the aws_access_key_id vendor format; remove the value, or read it at runtime from configuration"
     ), out
     assert not _branch_exists(origin, branch), "a branch was pushed"
 
@@ -835,7 +836,8 @@ def test_an_env_committed_with_a_registered_key_and_never_deleted_publishes_noth
     branch = f"{config.git_branch_prefix}{config.task_id}"
     assert out["published"] is False, out
     assert out.get("final_tree_leak") == (
-        "the final tree adds a credential in .env (rule registered_secret, line 1); remove it"
+        "the final tree adds a credential in .env (rule registered_secret, line 1)"
+        ": it is the value of a secret registered for this task; remove the value, or read it at runtime from configuration"
     ), out
     assert ".env" in out["publish_reason"], out["publish_reason"]
     assert KEY not in str(out), "the value reached the publish result"
@@ -862,7 +864,8 @@ def test_an_uncommitted_credential_in_the_final_tree_publishes_nothing(
     branch = f"{config.git_branch_prefix}{config.task_id}"
     assert out["published"] is False, out
     assert out.get("final_tree_leak") == (
-        "the final tree adds a credential in .env (rule aws_access_key_id, line 1); remove it"
+        "the final tree adds a credential in .env (rule aws_access_key_id, line 1)"
+        ": it matches the aws_access_key_id vendor format; remove the value, or read it at runtime from configuration"
     ), out
     assert UNREGISTERED_AWS_KEY not in str(out), "the value reached the publish result"
     assert not _branch_exists(origin, branch), "a branch was pushed"

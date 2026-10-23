@@ -15049,6 +15049,10 @@ def _scan_diff_stream(
 # refused, and so is every bare word after an `Authorization:` header's
 # scheme, whatever its case. A `${name}` slot holds no value, so it adds no
 # risk. CI's trivy secret scan still runs after the push.
+#
+# Since 2026-10-23 (#2030, BGD), NEITHER tier reads a comment line or a
+# template literal of runtime slots with the generic rules
+# (`_on_a_comment_line`, `_runtime_template`); the vendor and key rules do.
 
 #: The `swarm_redaction` rules that match a NAME followed by a value rather
 #: than a provider's own token format. Tiers 2 and 3 apply to these. Any rule
@@ -15465,14 +15469,142 @@ def _value_continues(after: str, closed: str | None, escapes: int) -> bool:
     return not following[end + 1:].lstrip(" \t").startswith(":")
 
 
+# -- what the GENERIC rules do not read (SCAN-FP, #2030) ----------------------
+#
+# BGD's decision, 2026-10-23: fix the false positives and the advice, add no
+# setting. Product Oracle's task was refused three attempts in a row over a
+# doc comment that quoted its fixture's name in prose (the reference was
+# followed by more words, so `_ends_the_value` read it as the first word of a
+# passphrase) and over a template literal whose one slot calls `mockUuid()`, a
+# value built at runtime (the value class stops at `(`, so no reference shape
+# could ever match it). Two things are therefore not read by the GENERIC rules
+# -- `key_value_assignment` and the `Authorization` rules -- in either tier.
+# The vendor rules, the JWT rule and the private-key rules read everything,
+# comments included: a vendor key is one by its own format, wherever it sits.
+#
+# RESIDUAL RISK, accepted with the decision: a generic-shaped credential
+# written into a comment (an assignment behind a `#`, a commented-out line of
+# an `.env`) publishes; CI's trivy secret scan still reads it. And on a
+# single line longer than a scan window the window may start mid-line
+# (`_DiffLeakScanner`), where text that opens like a comment is read as one.
+
+#: A line that opens a comment: its first non-space characters are `//`, `#`,
+#: `--` then a space or the line's end, or a block opener (`/*`, a block's
+#: continuation `*`, `<!--`). NOT `#name =`: that is a JavaScript private
+#: field, code. NOT `--name=`: a command-line flag on a continuation line.
+_COMMENT_LINE = re.compile(
+    r"[ \t]*(?:(?P<line>//|#(?![A-Za-z_$][\w$]*[ \t]*=(?!=))|--(?=[ \t\r]|$))"
+    r"|(?P<block>/\*|<!--|\*))"
+)
+
+
+def _on_a_comment_line(text: str, at: int) -> bool:
+    """True when the line of `text` holding offset `at` is a comment line
+    (`_COMMENT_LINE`). A block comment closed on the line with code after the
+    close (a `/* note */` and then an assignment) is not one: the code is read."""
+    start = text.rfind("\n", 0, at) + 1
+    end = text.find("\n", at)
+    line = text[start : len(text) if end < 0 else end]
+    opened = _COMMENT_LINE.match(line)
+    if opened is None:
+        return False
+    if opened.group("line"):
+        return True
+    block = opened.group("block")
+    close, search_from = (
+        ("-->", opened.end()) if block == "<!--"
+        else ("*/", opened.start("block") if block == "*" else opened.end())
+    )
+    closed_at = line.find(close, search_from)
+    return closed_at < 0 or not line[closed_at + len(close) :].strip()
+
+
+def _quoted_end(text: str, at: int) -> int | None:
+    """Where the string opening with the quote at `text[at]` closes on its
+    line (backslash escapes honoured), or None when it does not."""
+    quote, i = text[at], at + 1
+    while i < len(text) and text[i] != "\n":
+        if text[i] == "\\":
+            i += 2
+            continue
+        if text[i] == quote:
+            return i
+        i += 1
+    return None
+
+
+def _slot_end(text: str, at: int) -> tuple[int, int] | None:
+    """For a `${` slot whose body starts at `at`: where its closing `}` is and
+    how many characters of string literal its body holds, or None when it does
+    not close on its line. Braces inside a string in the body do not count."""
+    depth, literal, i = 1, 0, at
+    while i < len(text) and text[i] != "\n":
+        char = text[i]
+        if char in "\"'`":
+            close = _quoted_end(text, i)
+            if close is None:
+                return None
+            literal, i = literal + close - i - 1, close + 1
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return i, literal
+        i += 1
+    return None
+
+
+def _runtime_template(text: str, at: int) -> bool:
+    """True when the backtick at `text[at]` opens a template literal that is a
+    RUNTIME EXPRESSION, not a credential (#2030): it closes on its line, holds
+    at least one `${...}` slot, every slot holds an expression (any, not only
+    a name, as `_INTERPOLATION_SLOT` reads a whole value), and its LITERAL text
+    -- what stands outside the slots, plus any string literal inside one --
+    totals fewer than `CREDENTIAL_MIN_CHARS`. A slot does not hide what stands
+    beside it (`_is_explicit_placeholder` reasons the same way): `sk-${x}`
+    followed by 40 random characters, `${"<40 random>"}`, or 24 characters cut
+    in two by slots are all still read by the rule. Nor may more value be
+    joined after the close (`_value_continues`): `` `${x}` + "<literal>" ``.
+    """
+    literal, slots, i = 0, 0, at + 1
+    while i < len(text):
+        char = text[i]
+        if char == "\n":
+            return False
+        if char == "`":
+            break
+        if char == "\\":
+            literal, i = literal + 2, i + 2
+            continue
+        if text.startswith("${", i):
+            found = _slot_end(text, i + 2)
+            if found is None or not text[i + 2 : found[0]].strip():
+                return False
+            slots, literal, i = slots + 1, literal + found[1], found[0] + 1
+            continue
+        literal, i = literal + 1, i + 1
+    else:
+        return False
+    if slots == 0 or literal >= CREDENTIAL_MIN_CHARS:
+        return False
+    return not _value_continues(text[i + 1 :].split("\n", 1)[0], "`", 0)
+
+
 def _match_counts(rule: Any, match: re.Match[str], in_tests: bool) -> bool:
     """Whether one token-starting match of `rule` is a credential, by tier."""
     if rule.name == "jwt":
         return _decodes_as_a_jwt(match.group(0))
     if rule.name in GENERIC_CREDENTIAL_RULES:
+        if _on_a_comment_line(match.string, match.start()):
+            return False
         if rule is CREDENTIAL_KEY_VALUE and not _assigns_a_literal(match):
             return False
         value = match.group(0)[len(match.group(1)):]
+        value_at = match.start() + len(match.group(1))
+        if value.startswith("`") and _runtime_template(match.string, value_at):
+            return False
         if not in_tests:  # tier 2
             return not (_is_a_reference(value, rule, match) and _ends_the_value(match))
         return _looks_like_a_credential(value.strip("\"'`;,)]}\\ \t"))
@@ -15892,14 +16024,68 @@ def final_tree_leak(
     if code != 0:
         raise GitError("could not diff the branch against the clone base")
     if hit is not None:
-        # The rule and the line tell the retry what to remove (#373); the
-        # value is never in it, and the caller scrubs the reason anyway. The
-        # PATH is the agent's choice, so it is shown masked and cut
-        # (`_reason_path`, #361 box 71). The literal stays whole on one line:
-        # swarm-api's outcome classifier and its test read it.
-        hit = hit._replace(path=_reason_path(hit.path))
-        return f"the final tree adds a credential in {hit.path} (rule {hit.rule}, line {hit.line}); remove it"
+        # What the refusal says, and why: `credential_refusal`.
+        return credential_refusal(hit)
     return None
+
+
+#: What a refusal and the repair turn tell the agent to do (SCAN-FP, #2030;
+#: BGD's decision, 2026-10-23). NEVER to split, join or encode the literal:
+#: that defeats the scan rather than removing the value, and some
+#: repositories forbid it, which left Product Oracle's agent no way through.
+CREDENTIAL_ADVICE = "remove the value, or read it at runtime from configuration"
+
+
+def credential_reason(rule: str, path: str) -> str:
+    """Why a line `rule` matched in the file at `path` looked like a
+    credential, as the refusal and the repair turn say it (#2030). Fixed text
+    by the rule and the path's tier: never any part of the value."""
+    in_tests = is_test_path(path)
+    if rule == REGISTERED_SECRET_RULE:
+        return "it is the value of a secret registered for this task"
+    if rule == "private_key_block":
+        return "it is a private key block"
+    if rule == HEADERLESS_KEY_RULE:
+        return "it is private key material with no BEGIN or END marker"
+    if rule == "jwt":
+        return "it is a JSON Web Token: its header decodes and names an algorithm"
+    if rule in GENERIC_CREDENTIAL_RULES:
+        if in_tests:
+            return (
+                "it is a literal given to a credential's name, at least "
+                f"{CREDENTIAL_MIN_CHARS} characters of letters and digits with at least "
+                f"{CREDENTIAL_MIN_ENTROPY_BITS} bits of entropy per character"
+            )
+        return (
+            "it is a literal given to a credential's name, and not a reference: not a "
+            "${name} slot, one lowercase word, or a lowercase hyphen-joined name ending "
+            "-token, -api-key, -secret or -git"
+        )
+    if in_tests:
+        return (
+            f"it matches the {rule} vendor format, with no placeholder word "
+            "(example, test, fake, dummy) or run of x in it"
+        )
+    return f"it matches the {rule} vendor format"
+
+
+def credential_refusal(hit: ScanHit) -> str:
+    """The final-tree scan's refusal for `hit`: the file, the rule, the line,
+    why it looked like a credential, and `CREDENTIAL_ADVICE`.
+
+    The rule and the line tell the retry what to remove (#373); the value is
+    never in it, and the caller scrubs the reason anyway. The PATH is the
+    agent's choice, so it is shown masked and cut (`_reason_path`, #361 box
+    71); the reason is judged on the real path. The opening words stay whole:
+    swarm-api's outcome classifier (`outcomes._PUBLISH_REFUSED_RE`) reads them.
+    """
+    reason = credential_reason(hit.rule, hit.path)
+    hit = hit._replace(path=_reason_path(hit.path))
+    # One literal, whole: test_outcomes_refusal_and_intended_class.py pins it.
+    return (
+        f"the final tree adds a credential in {hit.path} (rule "
+        f"{hit.rule}, line {hit.line}): {reason}; {CREDENTIAL_ADVICE}"
+    )
 
 
 #: The longest a refusal shows a file's path, in characters (#361 box 71).

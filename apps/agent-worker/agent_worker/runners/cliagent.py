@@ -1065,6 +1065,19 @@ PUBLISH_PARAGRAPH = (
 )
 
 
+def _with_reason(entry: str) -> str:
+    """A `credential_lines` entry (`path:line rule`) with why the rule's match
+    looked like a credential (`lifecycle.credential_reason`, #2030); the entry
+    as it is when it is not of that shape."""
+    from ..lifecycle import credential_reason
+
+    where, _, rule = entry.rpartition(" ")
+    path, _, line = where.rpartition(":")
+    if not path or not line.isdigit() or not rule:
+        return entry
+    return f"{entry}: {credential_reason(rule, path)}"
+
+
 def repair_prompt(
     missing: Sequence[str], flagged: Sequence[str], artifacts_dir: Path | str,
     index_problems: Sequence[str] = (),
@@ -1084,12 +1097,18 @@ def repair_prompt(
         if len(missing) > REPAIR_LIST_CAP:
             lines.append(f"- and {len(missing) - REPAIR_LIST_CAP} more")
     if flagged:
+        # Lazy: the runner never imports the worker at module level.
+        from ..lifecycle import CREDENTIAL_ADVICE
+
+        # Never advice to split, join or encode the literal (#2030, BGD's
+        # decision 2026-10-23): that defeats the scan, and some repositories
+        # forbid it, which left Product Oracle's agent no way through.
         lines.append(
             "These added lines look like a credential, and the publish step refuses "
-            "a diff that adds one (path:line rule). Remove the value from each line; "
-            "a test value is built at runtime from pieces, never written as one literal:"
+            "a diff that adds one (path:line rule: why it looked like one). For each "
+            f"line, {CREDENTIAL_ADVICE}:"
         )
-        lines += [f"- {entry}" for entry in flagged[:REPAIR_LIST_CAP]]
+        lines += [f"- {_with_reason(entry)}" for entry in flagged[:REPAIR_LIST_CAP]]
         if len(flagged) > REPAIR_LIST_CAP:
             lines.append(f"- and {len(flagged) - REPAIR_LIST_CAP} more")
     if index_problems:
