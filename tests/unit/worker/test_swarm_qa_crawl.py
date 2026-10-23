@@ -210,10 +210,13 @@ def test_a_crawl_captures_eight_owned_new_routes_by_default(qa, crawl):
     crawl.page.links = {"/": [APP + p for p in owned]}
     code, found, bundle = _run(qa, crawl, step="1", steps="1",
                                stored={"format": 1, "groups": {"g1": [{"id": "home", "path": "/", "ready": "body"}]}})
+    # MUTATION: exit non-zero on a crawl with images and the step fails its attempt.
     assert code == 0
     # MUTATION: default to 4 and only four new routes are captured.
     assert len(found["captured_new"]) == 8, found["captured_new"]
+    # MUTATION: drop owned routes past the cap and the next run never has them stored.
     assert [r["path"] for r in found["over_cap"]] == owned[8:]
+    # MUTATION: capture an over-cap route and the manifest holds more than the cap.
     assert _captured_paths(bundle) == sorted(["/", *owned[:8]])
 
 
@@ -224,6 +227,7 @@ def test_capture_crawl_harvests_links_from_the_pages_it_captured(qa, crawl):
     crawl.page.dark_links = {"/a": [APP + "/hidden"]}
     code, found, _bundle = _run(qa, crawl, step="1", steps="1", themes="dark,light",
                                 stored={"format": 1, "groups": {"g1": [{"id": "a", "path": "/a", "ready": "body"}]}})
+    # MUTATION: let the harvest raise and the capture exits non-zero.
     assert code == 0
     new = [r["path"] for r in found["captured_new"] + found["over_cap"] + found["not_owned"]]
     # MUTATION: read links only on the crawl's own loads and /hidden is never found.
@@ -250,16 +254,22 @@ def test_two_steps_over_one_graph_capture_disjoint_shares_and_list_the_rest_as_n
     new2 = {r["path"] for r in found2["captured_new"]}
     # MUTATION: capture every new route found and both steps capture all six.
     assert new1 == set(one) | ({"/"} if _owner("/", 2) == 1 else set()), found1
+    # MUTATION: capture every new route found and step 2 captures step 1's share too.
     assert new2 == set(two) | ({"/"} if _owner("/", 2) == 2 else set()), found2
+    # MUTATION: a step-dependent owner rule and both steps capture one route.
     assert not new1 & new2
     # MUTATION: drop not_owned and the report cannot say what a step saw and left.
     assert {r["path"] for r in found1["not_owned"]} == new2
+    # MUTATION: list only one side's not-owned routes and the report misses the other's.
     assert {r["path"] for r in found2["not_owned"]} == new1
+    # MUTATION: drop the owner and the report cannot say who should have captured it.
     assert all(r["owner"] == 2 for r in found1["not_owned"])
     # MUTATION: capture a not-owned route and it is in this step's manifest.
     assert not set(two) & set(_captured_paths(bundle1))
+    # MUTATION: capture a not-owned route and it is in step 2's manifest.
     assert not set(one) & set(_captured_paths(bundle2))
     # Each step still captures its own stored routes, and only its own.
+    # MUTATION: capture every stored route of the run and step 1 shoots /b, step 2's.
     assert "/a" in _captured_paths(bundle1) and "/b" not in _captured_paths(bundle1)
 
 
@@ -273,6 +283,7 @@ def test_a_step_never_captures_past_its_cap_and_lists_the_rest_over_cap(qa, craw
     assert owned_new == owned[:2], found
     # MUTATION: drop routes past the cap and the next run never has them stored.
     assert [r["path"] for r in found["over_cap"]] == owned[2:]
+    # MUTATION: capture an over-cap route and it is in the manifest.
     assert _captured_paths(bundle) == sorted(["/", *owned[:2]])
 
 
@@ -286,6 +297,7 @@ def test_stored_plus_new_never_passes_sixty_a_leg(qa, crawl):
     # 57 stored leave 3 screens for 2 steps: one new route each.
     # MUTATION: cap at found_per_step alone and step 1 takes all three.
     assert [r["path"] for r in found["captured_new"]] == owned[:1], found["captured_new"]
+    # MUTATION: drop the routes past the 60-screen cut and they are never stored.
     assert [r["path"] for r in found["over_cap"]] == owned[1:3]
 
 
@@ -294,19 +306,27 @@ def test_found_json_is_the_designs_shape(qa, crawl):
     _code, found, bundle = _run(qa, crawl)
     # MUTATION: any other key set and the report and QAENV-SETTLE read nothing.
     assert set(found) == {"format", "stored", "captured_new", "not_owned", "over_cap", "skipped", "crawl"}
+    # MUTATION: another format number and QAENV-SETTLE refuses the file.
     assert found["format"] == 1
+    # MUTATION: list only this step's stored routes and the owner rule's graph is not the run's.
     assert found["stored"] == ["/a", "/b"]
+    # MUTATION: rename a skip reason and the coverage section reads none of it.
     assert set(found["skipped"]) == {"off_origin", "outside_base", "excluded", "robots", "http_error",
                                      "failed", "write_attempting"}
+    # MUTATION: stop counting off-origin links and the coverage section says none were seen.
     assert found["skipped"]["off_origin"] == 1
+    # MUTATION: another crawl record and the report cannot say why the crawl stopped.
     assert set(found["crawl"]) == {"pages", "depth", "seconds", "stopped_by"}
+    # MUTATION: a stop reason outside §3.5's four and the settle cannot read it.
     assert found["crawl"]["stopped_by"] in ("done", "pages", "depth", "time")
     for entry in found["captured_new"] + found["over_cap"] + found["not_owned"]:
+        # MUTATION: drop a route's id, path or depth and QAENV-SETTLE cannot store it.
         assert {"id", "path", "depth"} <= set(entry)
     # MUTATION: write it outside the capture directory and the tarball the
     # report reads does not carry it.
     import tarfile
     with tarfile.open(bundle) as tar:
+        # MUTATION: write found.json outside the capture directory and the tarball lacks it.
         assert "found.json" in tar.getnames()
 
 
@@ -314,12 +334,16 @@ def test_new_route_ids_are_stable_with_a_sha256_collision_suffix(qa):
     # MUTATION: route_id's counter and /a-b's id depends on what was found first.
     ids = qa.found_ids(["/a/b", "/a-b", "/c"], taken={"c"})
     suffix = hashlib.sha256(b"/a/b").hexdigest()[:6]
+    # MUTATION: suffix with route_id's counter and the id depends on discovery order.
     assert ids["/a/b"] == f"a-b-{suffix}"
+    # MUTATION: suffix only the second of two colliding paths and the first's id changes with order.
     assert ids["/a-b"] == "a-b-" + hashlib.sha256(b"/a-b").hexdigest()[:6]
     # A stored id is taken: the new route gets the suffix.
+    # MUTATION: ignore the stored ids and a new route shares a stored route's id.
     assert ids["/c"] == "c-" + hashlib.sha256(b"/c").hexdigest()[:6]
     # MUTATION: make the id depend on order and a second step names it otherwise.
     assert qa.found_ids(["/c", "/a-b", "/a/b"], taken={"c"}) == ids
+    # MUTATION: suffix every id and a path's id is not route_id's slug.
     assert qa.found_ids(["/x/y"], taken=set()) == {"/x/y": "x-y"}
 
 
@@ -336,24 +360,33 @@ def test_a_crawl_keeps_hash_routes_and_drops_anchors(qa, crawl):
 def test_a_click_refusal_names_every_never_click_rule(qa):
     words = list(qa.DEFAULT_EXCLUDED_CONTROLS)
     origin = qa._origin(APP)
+    # MUTATION: refuse every control and the crawl clicks nothing.
     assert qa.click_refusal(_control("Menu"), words, origin) is None
     # MUTATION: drop any one rule below and that control is clicked.
     assert qa.click_refusal(_control("Menu", in_form=True), words, origin)
+    # MUTATION: drop the submit rule and a submit outside a form is clicked.
     assert qa.click_refusal(_control("Menu", type="submit"), words, origin)
+    # MUTATION: drop the reset rule and a reset is clicked.
     assert qa.click_refusal(_control("Menu", type="reset"), words, origin)
+    # MUTATION: drop the input rule and an input is clicked.
     assert qa.click_refusal(_control("Menu", tag="input"), words, origin)
+    # MUTATION: drop the off-origin rule and a link to another site is clicked.
     assert qa.click_refusal(_control("More", tag="a", href="https://other.example.test/x",
                                      haspopup="menu"), words, origin)
+    # MUTATION: drop the exclusion-selector rule and a control the target excluded is clicked.
     assert qa.click_refusal(_control("Menu", excluded=True), words, origin)
     for text in ("Delete project", "REMOVE", "Pay now", "Buy", "Purchase", "Send", "Invite people",
                  "Unsubscribe", "Cancel subscription", "Logout"):
+        # MUTATION: match words exactly, or case-sensitively, and a destructive control is clicked.
         assert qa.click_refusal(_control(text), words, origin), text
     # The label counts as the control's text too.
+    # MUTATION: read only the drawn text and an icon button labelled Delete is clicked.
     assert qa.click_refusal(_control("", label="Delete"), words, origin)
     # MUTATION: click any button and a plain action button is clicked.
     assert qa.click_refusal(_control("Save", expanded=None), words, origin)
     for facts in ({"role": "tab", "expanded": None}, {"haspopup": "menu", "expanded": None},
                   {"tag": "summary", "expanded": None}):
+        # MUTATION: refuse a disclosure kind and its section is never reached.
         assert qa.click_refusal(_control("Open", **facts), words, origin) is None, facts
 
 
@@ -367,6 +400,7 @@ def test_a_crawl_never_clicks_a_form_control_an_excluded_word_or_a_submit(qa, cr
     # MUTATION: skip click_refusal and Filters, Delete all and Go are clicked.
     assert _clicks(crawl.page) == [("/", "Docs")], _clicks(crawl.page)
     # A disclosure click's revealed links are harvested.
+    # MUTATION: read links only once a page loads and a menu's links stay unseen.
     assert "/docs/intro" in {r["path"] for r in found["captured_new"] + found["over_cap"]}
 
 
@@ -398,6 +432,7 @@ def test_a_tab_that_changes_its_section_is_recorded_as_a_reveal_state(qa, crawl)
     # MUTATION: never record a tab's section and the Billing tab is in no screen.
     assert states and states[0]["path"] == "/" and states[0]["reveal"][0]["text"] == "Billing", found
     # A state's reveal is start-click form: plain CSS, exact text.
+    # MUTATION: record a Playwright selector or an extra field and load_routes refuses the state.
     assert set(states[0]["reveal"][0]) <= {"text", "css"}
 
 
@@ -417,9 +452,11 @@ def test_the_crawl_stops_at_its_time_bound_and_says_so(qa, crawl):
     _code, found, _bundle = _run(qa, crawl, "--crawl-seconds", "100", step="1", steps="1")
     # MUTATION: no time bound and the crawl walks all twenty pages.
     assert found["crawl"]["stopped_by"] == "time", found["crawl"]
+    # MUTATION: walk on past the bound and all twenty pages load.
     assert found["crawl"]["pages"] < 20
     # MUTATION: accept a bound past 900 s and a step's crawl outlives its timeout.
     code, _found, _bundle = _run(qa, crawl, "--crawl-seconds", "901", step="1", steps="1")
+    # MUTATION: accept a bound past 900 s and a step's crawl outlives its timeout.
     assert code == qa.EXIT_USAGE
 
 
@@ -434,6 +471,7 @@ def test_crawl_navigations_are_spaced_by_the_legs_spacing_and_never_under_a_seco
     assert len(gaps) == 4 and all(g >= 3.0 for g in gaps), (times, crawl.clock.slept)
     # MUTATION: drop the floor and a leg may ask the crawl to run faster than 1 s.
     code, _found, _bundle = _run(qa, crawl, "--navigation-ms", "999", step="1", steps="1")
+    # MUTATION: drop the floor and a leg may ask the crawl to run faster than 1 s.
     assert code == qa.EXIT_USAGE
 
 
@@ -444,8 +482,10 @@ def test_a_crawl_honours_robots_txt_and_the_exclusions(qa, crawl):
     paths = {r["path"] for r in found["captured_new"] + found["over_cap"]}
     # MUTATION: skip robots in the crawl and /private/x is captured.
     assert paths == {"/", "/ok"}, paths
+    # MUTATION: count robots or exclusion skips wrongly and the coverage section misreports them.
     assert found["skipped"]["robots"] == 1 and found["skipped"]["excluded"] == 2
     gotos = [e[1] for e in crawl.page.log if e[0] == "goto"]
+    # MUTATION: load a disallowed or excluded path before refusing to list it.
     assert not any("/private" in g or "/logout" in g or "/admin" in g for g in gotos)
 
 
@@ -456,9 +496,11 @@ def test_load_routes_holds_reveal_to_the_start_click_rules(qa, tmp_path):
             {"id": "x", "path": "/x", "ready": "body", "reveal": reveal}]}}), encoding="utf-8")
         return path
 
+    # MUTATION: refuse plain CSS and exact text and no tab state can be replayed.
     assert qa.load_routes(routes([{"text": "Billing", "css": "[role=\"tab\"]"}]))
     # MUTATION: accept Playwright syntax and the replay asks the page for a selector it cannot take.
     for css in ("button:has-text('Billing')", "text=Billing", "div >> button", "button:visible"):
+        # MUTATION: accept Playwright syntax and the replay asks the page for a selector it cannot take.
         with pytest.raises(qa.UsageError):
             qa.load_routes(routes([{"text": "Billing", "css": css}]))
     # MUTATION: accept an exclusion word and a capture clicks Delete before it shoots.
@@ -467,8 +509,10 @@ def test_load_routes_holds_reveal_to_the_start_click_rules(qa, tmp_path):
     # MUTATION: no count bound and a route list may chain any number of clicks.
     with pytest.raises(qa.UsageError):
         qa.load_routes(routes([{"text": "a"}, {"text": "b"}, {"text": "c"}, {"text": "d"}]))
+    # MUTATION: accept an empty reveal and a state is the same as its route.
     with pytest.raises(qa.UsageError):
         qa.load_routes(routes([]))
+    # MUTATION: accept another key and a reveal smuggles fields the replay never checked.
     with pytest.raises(qa.UsageError):
         qa.load_routes(routes([{"text": "Billing", "selector": "x"}]))
 
@@ -482,6 +526,7 @@ def test_capture_replays_a_routes_reveal_before_it_shoots(qa, crawl):
     shot = next(i for i, e in enumerate(log) if e[0] == "shot" and e[1].endswith("/settings"))
     # MUTATION: never replay reveal and the tab's section is in no image.
     assert click < shot, log
+    # MUTATION: replay reveal under another id and the review names another screen.
     assert _manifest(bundle)["routes"][0]["id"] == "billing"
 
 
@@ -490,6 +535,7 @@ def test_the_standalone_discover_reads_the_new_sources_through_clicks(qa, crawl)
     crawl.page.effects = {("/", "Docs"): {"links": [APP + "/docs/intro"]}}
     out = crawl.tmp / "screens.json"
     code = qa.main(["discover", "--base", APP, "--out", str(out)])
+    # MUTATION: exit non-zero on a discovery that listed routes.
     assert code == 0
     document = qa.load_routes(out)
     paths = {r["path"] for routes in document["groups"].values() for r in routes}
@@ -504,7 +550,9 @@ def test_a_crawl_step_needs_a_step_and_steps(qa, crawl):
             "--out", str(crawl.tmp / "o"), "--bundle", str(crawl.tmp / "o.tar"), "--crawl"]
     # MUTATION: default the step and two steps both own every path.
     assert qa.main(base) == qa.EXIT_USAGE
+    # MUTATION: accept a step past --steps and it owns nothing any step captures.
     assert qa.main([*base, "--step", "3", "--steps", "2"]) == qa.EXIT_USAGE
+    # MUTATION: accept more steps than a leg has and a share is nobody's.
     assert qa.main([*base, "--step", "1", "--steps", "9"]) == qa.EXIT_USAGE
 
 
@@ -513,7 +561,9 @@ def test_a_crawl_step_with_no_stored_routes_crawls_from_the_base(qa, crawl):
     code, found, bundle = _run(qa, crawl, step="1", steps="1", stored={"format": 1, "groups": {}})
     # MUTATION: refuse an empty stored list and a target with only `discover` never runs.
     assert code == 0
+    # MUTATION: list routes a run with no stored screen does not have.
     assert found["stored"] == []
+    # MUTATION: capture nothing without stored routes and a target with only `discover` captures nothing.
     assert _captured_paths(bundle) == ["/", "/x"]
 
 
@@ -594,6 +644,7 @@ def _js(expression: str, nodes: list[dict], arg=None) -> dict:
     dom = {"base": APP + "/app/", "nodes": [{"tag": "html"}, {"tag": "body", "parent": 0}, *nodes]}
     done = subprocess.run([_node(), "-e", _JS_DOM, json.dumps(dom), expression, json.dumps(arg)],
                           capture_output=True, text=True, timeout=30, check=False)
+    # MUTATION: (harness) a DOM program that crashes passes as an empty answer.
     assert done.returncode == 0, done.stderr
     return json.loads(done.stdout)
 
@@ -630,13 +681,19 @@ def test_controls_js_reports_the_facts_each_never_click_rule_reads(qa):
     by_text = {f["text"]: f for f in facts}
     # MUTATION: report a control outside the disclosure kinds and `plain` is a candidate.
     assert set(by_text) == {"Filters", "Menu", "Billing", "More"}, facts
+    # MUTATION: read in_form from anything but the form ancestor and a control in a form is clicked.
     assert by_text["Filters"]["in_form"] is True and by_text["Menu"]["in_form"] is False
+    # MUTATION: misreport aria-haspopup or aria-expanded and a disclosure control is refused or an action clicked.
     assert by_text["Menu"]["haspopup"] == "menu" and by_text["Filters"]["expanded"] == "false"
+    # MUTATION: skip the exclusion selector and a control the target excluded is clicked.
     assert by_text["Billing"]["role"] == "tab" and by_text["Billing"]["excluded"] is True
+    # MUTATION: report hidden controls as drawn and the crawl clicks what has no box.
     assert by_text["More"]["visible"] is False and by_text["More"]["tag"] == "summary"
     # The css each answers with finds that control again.
     clicked = _js(qa.CLICK_JS, nodes, {"css": by_text["Menu"]["css"], "text": "Menu"})
+    # MUTATION: a CSS path that does not find its control again and nothing is clicked.
     assert clicked["result"] is True
+    # MUTATION: click() alone and a menu that opens on pointerdown never opens.
     assert [e[1] for e in clicked["log"] if e[0] == 5] == ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]
 
 
@@ -649,8 +706,47 @@ def test_click_js_refuses_a_control_in_a_form_and_one_whose_text_differs(qa):
     ]
     # MUTATION: drop the in-page form rule and a control in a form is clicked.
     assert _js(qa.CLICK_JS, nodes, {"css": "form > button", "text": "Filters"})["log"] == []
+    # MUTATION: drop the in-page submit rule and a submit is clicked.
     assert _js(qa.CLICK_JS, nodes, {"css": "button", "text": "Go"})["log"] == []
     # MUTATION: click by css alone and a control that changed under the crawl is clicked.
     assert _js(qa.CLICK_JS, nodes, {"css": "[role=tab]", "text": "Billings"})["log"] == []
     # No css: the exact visible text names it (start-click form).
+    # MUTATION: require css and a stored start-click-form state with text only is never replayed.
     assert _js(qa.CLICK_JS, nodes, {"text": "Billing"})["result"] is True
+
+
+# --------------------------------------------------------------------------
+# What the image restates from swarm-api, held equal
+# --------------------------------------------------------------------------
+
+
+def _qaspec_constant(name: str):
+    """A constant of apps/swarm-api/swarm_api/qaspec.py, read without
+    importing swarm-api (the image cannot either)."""
+    import ast
+    import re
+
+    tree = ast.parse((Path(__file__).resolve().parents[3] / "apps" / "swarm-api" / "swarm_api" / "qaspec.py")
+                     .read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == name for t in node.targets):
+            if isinstance(node.value, ast.Call):
+                # re.compile(<pattern>): the pattern.
+                return re.compile(ast.literal_eval(node.value.args[0]))
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"qaspec has no {name}")
+
+
+def test_the_reveal_rules_are_qaspecs_start_click_rules(qa):
+    # MUTATION: let the image's Playwright pattern drift and a reveal swarm-api refuses is replayed.
+    assert qa.PLAYWRIGHT_SELECTOR.pattern == _qaspec_constant("_PLAYWRIGHT_SELECTOR").pattern
+    # MUTATION: drop a default excluded control from the image and the crawl clicks it.
+    assert set(_qaspec_constant("DEFAULT_EXCLUDED_CONTROLS")) <= set(qa.DEFAULT_EXCLUDED_CONTROLS)
+    # MUTATION: drop an exit from the crawl's words and it clicks Sign out.
+    assert set(_qaspec_constant("START_CLICK_REFUSED")) <= set(qa.DEFAULT_EXCLUDED_CONTROLS)
+    # MUTATION: another bound than the start clicks' and a state's replay differs from a sign-in's.
+    assert (qa.MAX_REVEAL_CLICKS, qa.REVEAL_TEXT_MAX, qa.REVEAL_CSS_MAX) == (
+        _qaspec_constant("MAX_START_CLICKS"), _qaspec_constant("START_CLICK_TEXT_MAX"),
+        _qaspec_constant("START_CLICK_CSS_MAX"))
+    # MUTATION: a screen cap above swarm-api's and a step captures past what a leg stores.
+    assert qa.MAX_SCREENS == _qaspec_constant("MAX_SCREENS") and qa.MAX_STEPS == _qaspec_constant("MAX_GROUPS")
