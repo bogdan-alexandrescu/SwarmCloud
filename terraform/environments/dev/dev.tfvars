@@ -970,3 +970,12 @@ graph_service = {
   serve   = true
   enabled = true
 }
+
+# SwarmCloud's worker logs for swarm-api (agent-autonomy.md §3.5, IAM row
+# L-1; BGD's decision 2026-10-22, #1960): the swarm-worker-logs bucket (30
+# days, us-central1), a sink routing only swarm-tenant-* containers on the
+# swarm cluster and swarm-job-* Cloud Run jobs into it, the sink writer's
+# bucketWriter on that bucket, and the swarm-workers view on it with
+# swarm-api's viewAccessor. Two IAM rows: the release holds at dev-iam. Prod
+# stays off. Kill switch: false and release.
+swarm_workers_log_view_enabled = true
