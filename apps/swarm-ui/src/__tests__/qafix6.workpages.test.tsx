@@ -5,6 +5,10 @@
 //        served, so run_4c1e09d2 (Planned, no workflow) and run_19ab77e0
 //        (Running, workflow wf_8b21d0e4) both read "required". It says
 //        whether the approval is still pending or was given.
+//        QAFIX6-WORKPAGES-2: in words that fit the 86px column at the body
+//        size on one line -- 'awaiting' / 'approved', and a dash titled as
+//        automatic where none is needed ('not required' and 'none needed'
+//        are both wider than the column's 74px of content at 13px).
 //   b (6:work-a-009, box 6343779974)  At 1440 the third Repositories card's
 //        long name pushed its 'current' badge onto a line of its own, and the
 //        cards placed Schedule differently. The badge has one slot, the row
@@ -25,6 +29,7 @@ import { HOUR, ago, coverageOf, repo, serve, sha, visible } from './repofixture'
 import { issueRun } from './runfixture'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
+import { lengthPx, nowrap, paddingX, textPx } from './tablefit'
 
 const WAIT = { timeout: 4000 }
 const WIDE: CascadeEnv = { width: 1440 }
@@ -48,7 +53,7 @@ describe('a: Runs says whether a plan approval is pending or given (6:work-a-010
     issueRun({ id: 'run_auto0001', plan_approval: 'auto' }),
   ]
 
-  it("the Planned run with no workflow reads 'awaiting approval', the Running one 'approved', an automatic one 'not required'", async () => {
+  it("the Planned run with no workflow reads 'awaiting', the Running one 'approved', an automatic one a dash titled as automatic", async () => {
     serve((m, url) => (m === 'GET' && url.startsWith('/v1/runs')
       ? { status: 200, body: { runs: RUNS, next_page_token: null, tenant_id: 'eng' } }
       : null))
@@ -61,11 +66,16 @@ describe('a: Runs says whether a plan approval is pending or given (6:work-a-010
       expect(c).toHaveLength(3)
       return c
     }, WAIT)
-    // MUTATION: print `{r.plan_approval}` in the cell again (both required runs read "required").
-    expect(cells.map(visible)).toEqual(['awaiting approval', 'approved', 'not required'])
+    // MUTATION: print `{r.plan_approval}` in the cell again (both required runs
+    // read "required"), or put back 'awaiting approval' / 'not required'
+    // (QAFIX6-WORKPAGES-2: neither fits the column at the body size).
+    expect(cells.map(visible)).toEqual(['awaiting', 'approved', '\u2014'])
+    // MUTATION: drop the cell's `title` and the dash says nothing about why.
+    expect(cells[2]!.getAttribute('title')).toBe("This run's plan is approved automatically.")
+    expect(cells[0]!.getAttribute('title')).toBe("This run's plan needs a person's approval.")
   })
 
-  it("the fixture build's own two runs read 'awaiting approval' and 'approved'", async () => {
+  it("the fixture build's own two runs read 'awaiting' and 'approved'", async () => {
     vi.stubEnv('VITE_LIVE', '')
     vi.resetModules()
     const { RunsScreen } = await import('../Runs')
@@ -75,19 +85,47 @@ describe('a: Runs says whether a plan approval is pending or given (6:work-a-010
       expect(c).toHaveLength(2)
       return c
     }, WAIT)
-    // MUTATION: print `{r.plan_approval}` in the cell again (both fixture runs read "required").
-    expect(cells.map(visible)).toEqual(['awaiting approval', 'approved'])
+    // MUTATION: print `{r.plan_approval}` in the cell again (both fixture runs
+    // read "required"), or put back 'awaiting approval'.
+    expect(cells.map(visible)).toEqual(['awaiting', 'approved'])
   })
 
   it("a run that ended before its plan was approved reads 'not given'", async () => {
     const { planApprovalWord } = await import('../Runs')
-    // MUTATION: return 'awaiting approval' for every unapproved run that is not Planning.
+    // MUTATION: return 'awaiting' for every unapproved run that is not Planning.
     for (const state of ['FAILED', 'CANCELLED', 'NOT_READY']) {
       expect(planApprovalWord(issueRun({ state, terminal: state !== 'NOT_READY' }) as never), state).toBe('not given')
     }
   })
 
-  it('at 1440 the word is drawn at the micro size and wraps inside its 86px column', async () => {
+  it("at 1440 the fixture's two words sit on one line at the body size and fit the column", async () => {
+    vi.stubEnv('VITE_LIVE', '')
+    vi.resetModules()
+    const { RunsScreen } = await import('../Runs')
+    const { container } = render(<RunsScreen view={null} go={vi.fn()} />)
+    const cells = await waitFor(() => {
+      const c = [...container.querySelectorAll<HTMLElement>('.rn-row > td[data-label="Plan approval"]')]
+      expect(c).toHaveLength(2)
+      return c
+    }, WAIT)
+    const th = container.querySelector<HTMLElement>('.rn-table th[data-col="approval"]')!
+    const column = lengthPx(painted(th, 'width', WIDE), 0)
+    expect(column, 'the Plan approval column has no width').not.toBeNull()
+    for (const cell of cells) {
+      const word = visible(cell)
+      // MUTATION: put back `.rn-row > td[data-label='Plan approval'] { white-space: normal;
+      // font-size: var(--t-micro) }` in repositories.css and the word wraps at the micro size.
+      expect(nowrap(cell, WIDE), `${word} wraps`).toBe(true)
+      expect(painted(cell, 'font-size', WIDE), word).toMatch(/--t-meta|^13px$/)
+      const [pl, pr] = paddingX(cell, WIDE)
+      // MUTATION: put back 'awaiting approval' (17 characters, about 124px
+      // conservatively at 13px) and it runs over the Workflow cell.
+      expect(column! - pl - pr, `${word} is wider than its column`).toBeGreaterThanOrEqual(textPx(word, cell, WIDE))
+    }
+  })
+
+  it('at 1440 every word the cell can say fits the column at the body size', async () => {
+    const { planApprovalWord } = await import('../Runs')
     serve((m, url) => (m === 'GET' && url.startsWith('/v1/runs')
       ? { status: 200, body: { runs: RUNS.slice(0, 1), next_page_token: null, tenant_id: 'eng' } }
       : null))
@@ -100,11 +138,24 @@ describe('a: Runs says whether a plan approval is pending or given (6:work-a-010
       expect(c).not.toBeNull()
       return c!
     }, WAIT)
-    // 'awaiting approval' is about 107px at --t-meta, nowrap, in about 74px of
-    // content: it ran over the Workflow cell.
-    // MUTATION: drop `.rn-row > td[data-label='Plan approval']` from repositories.css.
-    expect(painted(cell, 'white-space', WIDE)).toBe('normal')
-    expect(painted(cell, 'font-size', WIDE)).toMatch(/--t-micro|^12px$/)
+    const th = container.querySelector<HTMLElement>('.rn-table th[data-col="approval"]')!
+    const [pl, pr] = paddingX(cell, WIDE)
+    const room = lengthPx(painted(th, 'width', WIDE), 0)! - pl - pr
+    const words = [
+      issueRun({ plan_approval: 'auto' }),
+      issueRun({ state: 'REJECTED', terminal: true }),
+      RUNS[1]!,
+      issueRun(),
+      issueRun({ state: 'PLANNING', plan: null }),
+      issueRun({ state: 'FAILED', terminal: true }),
+    ].map((r) => planApprovalWord(r as never))
+    expect(new Set(words).size, words.join(', ')).toBe(6)
+    for (const word of words) {
+      // MUTATION: say 'not required' (or 'none needed') for an automatic
+      // approval, or 'awaiting a plan' for a Planning run, and that word is
+      // wider than the column's 74px.
+      expect(room, `'${word}' is wider than its column`).toBeGreaterThanOrEqual(textPx(word, cell, WIDE))
+    }
   })
 })
 
