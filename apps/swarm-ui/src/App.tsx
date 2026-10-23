@@ -30,7 +30,7 @@ import {
 } from './fetch'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP as HELP_TOPICS, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, type TopicId } from './help'
-import { GITHUB_CALLBACK_ADDRESS, KEY_LINK_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, keyLinkScope, keyLinkToken, pathToAddress } from './paths'
+import { GITHUB_CALLBACK_ADDRESS, KEY_LINK_ADDRESS, QA_LINK_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, keyLinkScope, keyLinkToken, pathToAddress } from './paths'
 import { GitHubCallbackScreen } from './GitHubConnect'
 import { ProviderKeysScreen } from './ProviderKeys'
 import { WorkspaceSettingsScreen } from './CodeIntelligence'
@@ -66,6 +66,7 @@ import { RunsScreen } from './Runs'
 import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard } from './Schedules'
 import { ApprovalsScreen } from './Approvals'
 import { RepositoriesScreen } from './Repositories'
+import { qaCredentialLinkFrom, type QaLink } from './qaTargetsApi'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { WorkflowsScreen } from './Workflows'
 
@@ -1224,6 +1225,18 @@ export function App() {
   // later than this render, behind a takeover, and would find it gone. Held
   // here and handed to that page, never written into a route.
   const keyLink = useRef(typeof window === 'undefined' ? null : keyLinkToken(window.location.pathname, window.location.search))
+  // THE QA CREDENTIAL LINK'S TARGET AND TOKEN (lane VQ6-ROUTE; paths.ts
+  // `QA_LINK_ADDRESS`), read here for the key link's reason, before the
+  // normalise effect rewrites the bar to `/repositories?page=qa-targets`.
+  // Handed to the QA targets page as `qaLink` and dropped once that page has
+  // mounted with it (the effect below), so a later visit is never handed a
+  // used token. Held in this ref alone: never logged, never written into a
+  // route, a URL or storage.
+  const qaLink = useRef<QaLink | null>(typeof window === 'undefined' ? null : qaCredentialLinkFrom(window.location.pathname, window.location.search))
+  const onQaPage = at.missing == null && at.taskId === null && canonical(at) === QA_LINK_ADDRESS
+  useEffect(() => {
+    if (onQaPage) qaLink.current = null
+  }, [onQaPage])
   const lastList = useRef<AgentList | null>(at.list ?? null)
   if (at.taskId === null) lastList.current = at.list ?? null
 
@@ -1528,6 +1541,7 @@ export function App() {
                     onView={onView}
                     go={go}
                     apiFailuresOnly={apiFailuresOnly}
+                    qaLink={onQaPage ? qaLink.current : null}
                   />}
                   </FrameAge.Provider>
                 </RoutedPage.Provider>
@@ -2031,6 +2045,7 @@ function SectionBody({
   onView,
   go,
   apiFailuresOnly = false,
+  qaLink = null,
 }: {
   sectionId: string
   tab: string
@@ -2049,6 +2064,8 @@ function SectionBody({
   go: (to: string) => void
   /** API reads' filter, set by the panel's "Failures only" row. */
   apiFailuresOnly?: boolean
+  /** The QA credential link App read off the bar, for the QA targets page, or null. */
+  qaLink?: QaLink | null
 }) {
   const openAgent = (id: string) => go(`${WORK}/task/${encodeURIComponent(id)}`)
   /*
@@ -2115,7 +2132,7 @@ function SectionBody({
     case 'work/runs':
       return <RunsScreen view={view} go={go} />
     case 'work/repositories':
-      return <RepositoriesScreen view={view} go={go} />
+      return <RepositoriesScreen view={view} go={go} qaLink={qaLink} />
     case 'work/setup':
       return <OnboardingScreen />
     case 'work/access':
