@@ -9,7 +9,8 @@ ticket instead. This module is the worker's half.
 
 THE SWITCH. `SWARM_TYPESAFE_INJECT=on` in the worker's environment, OFF by
 default. The scheduler sets it on the pods it labels `swarm-typesafe: inject`
-(lane TS-MIGRATE-POD), so the variable and the label always arrive together.
+(lane TS-INJECT, PR 1456; TS-MIGRATE-POD, PR 1409, added only the label), so
+the variable and the label always arrive together.
 It is honoured only on GKE (`GKE_AUTOPILOT`): the forwarder is a cluster
 Service, and a Cloud Run worker could never reach it. A Cloud Run worker with
 the variable set keeps today's key file. Switched off, nothing here runs and
