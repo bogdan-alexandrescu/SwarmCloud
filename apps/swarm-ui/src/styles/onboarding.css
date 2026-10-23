@@ -20,7 +20,14 @@
 .ob-bar > i.is-in_progress { background: color-mix(in srgb, var(--s-live) 45%, var(--line)); }
 .ob-bar > i.is-failed { background: var(--s-bad); }
 .ob-bar > i.is-stale { background: var(--s-warn); }
-.ob-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+/* THE STEPS ARE HELD APART (SETUP-ACCESS-STYLES, part of #1680). Each step
+   after the first draws a rule and the next one a filled ground, so the
+   spacing sweep reads them as stacked surfaces, and with no gap they touched:
+   "6 stacked surfaces with a 0px gutter". `--ctl-s1` is the sweep's floor
+   (`FLOORS.boxGutter`, 4px) and the smallest step of the sheet's rhythm, so
+   the list stays as dense as it was drawn; the highlighted next step no longer
+   meets the rules above and below it. */
+.ob-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--ctl-s1); }
 .ob-step { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 4px 10px; align-items: start; padding: 8px 0; border-top: 1px solid var(--line); }
 .ob-step:first-child { border-top: 0; }
 .ob-step.is-next { background: var(--sk-acs); border-radius: var(--r-ctl); padding: 8px; margin: 0 -8px; }
@@ -101,6 +108,10 @@
 .ac-repos-h { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
 .ac-search { display: flex; gap: 6px; align-items: center; flex: 1 1 240px; min-width: 0; }
 .ac-rows, .ac-grid { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+/* The grants and members grids' rows are stacked surfaces too, each after the
+   first drawing its rule, and touched the same way ("2 stacked surfaces with
+   a 0px gutter", SETUP-ACCESS-STYLES): the same 4px floor, `--ctl-s1`. */
+.ac-grid { gap: var(--ctl-s1); }
 .ac-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
 .ac-row:first-child { border-top: 0; }
 .ac-row-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
