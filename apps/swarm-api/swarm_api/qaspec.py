@@ -770,6 +770,53 @@ def render_discovery(target: Mapping[str, Any]) -> dict[str, Any]:
     return _workflow(target, f"Visual QA discovery: {name}", [step])
 
 
+def discovered_screens(target: Mapping[str, Any], document: Any) -> list[dict[str, str]]:
+    """The discovery step's `screens.json` (`swarm_qa discover`'s route list,
+    format 1) as the `discovered` list swarm-api stores on the target: each
+    route's `{id, path}`, in the document's order (lane QA-DISCOVER).
+
+    Held as strictly as `screens` at registration, because the QA run starts
+    from it and an agent wrote it. A route off the target's origin (another
+    host, scheme or port, or `//host`) is dropped, and a same-origin absolute
+    URL is kept as its path; a route on an excluded path is dropped; past
+    `MAX_SCREENS` the rest is cut. An ill-formed id or path, or two routes
+    sharing an id, refuses the whole document: the tool never writes one, so
+    it is not the tool's. Nothing left is refused too: a run needs a screen.
+    Raises `QaSpecError`, whose message never quotes the document."""
+    if not isinstance(document, Mapping) or document.get("format") != 1 \
+            or not isinstance(document.get("groups"), Mapping):
+        raise _invalid("screens.json is not a route list (format 1, groups of routes)")
+    origin = _origin(base_url(target))
+    excluded, _ = _exclusions(target)
+    kept: list[dict[str, str]] = []
+    for routes in document["groups"].values():
+        if not isinstance(routes, list):
+            raise _invalid("screens.json is not a route list (format 1, groups of routes)")
+        for raw in routes:
+            if not isinstance(raw, Mapping):
+                raise _invalid("a discovered route must be {id, path}")
+            path = raw.get("path")
+            if isinstance(path, str) and (path.startswith("//") or "://" in path.split("?", 1)[0]):
+                if path.startswith("//") or _origin(path).lower() != origin:
+                    continue
+                parts = urlsplit(path)
+                path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+            try:
+                screen = _screen({"id": raw.get("id"), "path": path}, excluded)
+            except QaSpecError as exc:
+                if exc.code == "qa_screen_excluded":
+                    continue
+                raise
+            kept.append({"id": screen["id"], "path": screen["path"]})
+    ids = [s["id"] for s in kept]
+    if len(set(ids)) != len(ids):
+        raise _invalid("two discovered screens share an id")
+    if not kept:
+        raise QaSpecError("qa_target_no_screens",
+                          "the discovery found no screen on the target's origin outside its exclusions")
+    return kept[:MAX_SCREENS]
+
+
 def _target_id(target: Mapping[str, Any]) -> str:
     tid = target.get("id")
     if not isinstance(tid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", tid):

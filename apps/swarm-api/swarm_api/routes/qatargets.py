@@ -8,6 +8,7 @@ lane VQ-2 TARGETS, part of #1933).
     DELETE /v1/qa-targets/{id}                     delete, with its credential (a workspace admin)
     POST   /v1/qa-targets/{id}:approve-host        a PLATFORM admin approves the host (VQ-Q1)
     POST   /v1/qa-targets/{id}:run                 a member starts a run: {screens?, file?}
+    POST   /v1/qa-targets/{id}:discover            a member starts its discovery (§4.1)
     POST   /v1/qa-targets/{id}/credential-links    a one-time link to the console's form (an admin)
     PUT    /v1/qa-targets/{id}/credential          the form's write, with the link's token
     POST   /v1/attempts/{attempt_id}/qa-target     WORKER ONLY: its attempt's target
@@ -51,6 +52,7 @@ from ..qatargets import (
     QaTargetIssuer,
     QaTargets,
     SecretManagerQaCredentials,
+    render_discovery_run,
     render_run,
     resolve_host,
     to_api,
@@ -170,7 +172,10 @@ def list_targets(
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    return {"qa_targets": [to_api(d) for d in _targets(request, ctx).list(tenant_id)]}
+    # A discovery whose task ended with no wake is settled as it is read.
+    targets = _targets(request, ctx)
+    docs = targets.settle_running(tenant_id, targets.list(tenant_id), ctx.inspection)
+    return {"qa_targets": [to_api(d) for d in docs]}
 
 
 @router.get("/qa-targets/{target_id}")
@@ -180,7 +185,9 @@ def get_target(
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    return {"qa_target": to_api(_targets(request, ctx).get(tenant_id, target_id))}
+    targets = _targets(request, ctx)
+    [doc] = targets.settle_running(tenant_id, [targets.get(tenant_id, target_id)], ctx.inspection)
+    return {"qa_target": to_api(doc)}
 
 
 @router.patch("/qa-targets/{target_id}")
@@ -250,6 +257,38 @@ def run_target(
                        task_ids=task_ids, file=body.file, by=_email(auth))
     return {"workflow_id": workflow_id, "qa_target": mark, "file": body.file,
             "browser_steps": browser}
+
+
+@router.post("/qa-targets/{target_id}:discover", status_code=status.HTTP_201_CREATED)
+def discover_target(
+    target_id: str,
+    request: Request,
+    auth: AuthContext = Depends(current_auth),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The target's discovery (§4.1), as this member's submission, marked as
+    `:run`'s browser steps are. One at a time per target: a second call while
+    one runs is 409 `qa_discovery_running`, naming it. The result is stored
+    on the target when the step ends (`QaTargets.settle_discovery`)."""
+    require_member(ctx, auth)
+    targets = _targets(request, ctx)
+    target = targets.discoverable(tenant_id, target_id, inspection=ctx.inspection)
+    workflow, mark, browser = render_discovery_run(target)
+    by = _email(auth)
+    claim = targets.claim_discovery(tenant_id, target, by=by)
+    try:
+        with qa_target_mark_allowed(mark):
+            submission = ctx.submissions.submit_workflow(auth, WorkflowCreate.model_validate(workflow))
+    except BaseException:
+        targets.release_discovery(target_id, claim)
+        raise
+    workflow_id = submission.workflow.workflow_id
+    task_ids = [t.id for t in submission.tasks if t.step_id in set(browser)]
+    targets.record_run(tenant_id=tenant_id, target=target, workflow_id=workflow_id,
+                       task_ids=task_ids, file="none", by=by, kind="discovery")
+    targets.record_discovery(target_id, claim, workflow_id=workflow_id, task_id=task_ids[0])
+    return {"workflow_id": workflow_id, "qa_target": mark}
 
 
 @router.post("/qa-targets/{target_id}/credential-links", status_code=status.HTTP_201_CREATED)

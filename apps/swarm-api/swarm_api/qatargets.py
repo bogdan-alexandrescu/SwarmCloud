@@ -68,6 +68,27 @@ answers 204, the common case. Every answer with a target appends a
 `live_audit` row (`qa_target_issued`: the target, the attempt, the
 generation, never a value). The route is in `main.UNCAPTURED_ROUTES`.
 
+DISCOVERY (§4.1; lane QA-DISCOVER, BGD 2026-10-23: "build discovery, so a
+crawl target is started entirely from the console"). A target that asks to
+`discover` and lists no `screens` runs from what its discovery found. A member
+starts one (`POST /v1/qa-targets/{id}:discover`): `qaspec.render_discovery`'s
+one browser step, submitted and marked exactly as `:run`'s are, and recorded
+in `qa_target_runs` so the gate signs it in (start clicks included). One at a
+time per target: the target's `discovering` holds the running one, claimed in
+a transaction before the submission, so a second call is 409
+`qa_discovery_running` naming the workflow. When the step ends, the
+`task_finished` push (`routes/admin.py` `task_finished_push`, the hook
+`verdictpublish` already answers) calls `QaTargets.settle_discovery`: a
+SUCCEEDED step's `screens.json` is read through the API's own tenant-checked,
+redacted artifact read, held to `qaspec.discovered_screens`, and stored as
+`discovered` with `discovered_at`, `_by` and `_workflow`. Anything else (a
+failed step, no artifact, a refused one, nothing left) stores only
+`discovery_error`, and an earlier `discovered` list stays. A wake can be lost
+and a task the scheduler or reconciler ends rings none, so every read of the
+target settles a discovery whose task has ended too (`settle_running`).
+Storing the list never bumps `revision`: the mark a run already carries
+stays the target's, and nothing a caller sends ever writes `discovered`.
+
 EVERY REFUSAL is a fixed code and a fixed sentence: nothing from the request,
 and nothing from the target's own text, is interpolated into a message.
 """
@@ -91,7 +112,7 @@ from pydantic import Field
 
 from swarm_common.admission import _snapshot
 from swarm_common.models import new_id, utcnow
-from swarm_common.states import TaskState
+from swarm_common.states import TERMINAL_STATES, TaskState
 
 from . import qaspec
 from .admins import AUDIT_COLLECTION
@@ -170,6 +191,16 @@ SELECTOR_MAX = 200
 NAME_MAX = 100
 AUTHORIZED_BY_MAX = 200
 #: The credential's own bounds, checked in the route's body model.
+#: The discovery step's artifact: what `qaspec.render_discovery`'s prompt has
+#: `swarm_qa discover` write (`--out $SWARM_ARTIFACTS_DIR/screens.json`).
+DISCOVERY_ARTIFACT = "screens.json"
+#: The most of it read. 60 listed routes of 512-character paths, with the
+#: tool's `discovered` summary, is well under this; past it is refused.
+DISCOVERY_ARTIFACT_BYTES = 512 * 1024
+#: A claim whose submission never recorded its workflow (the process died
+#: between the two) frees the target after this.
+DISCOVERY_CLAIM_TTL = timedelta(minutes=5)
+
 USERNAME_MAX = 256
 PASSWORD_MAX = 1024
 
@@ -207,6 +238,10 @@ class QaCredentialLinkInvalid(Forbidden):
     code = "qa_credential_link_invalid"
 
 
+class QaDiscoveryRunning(Conflict):
+    code = "qa_discovery_running"
+
+
 class QaCredentialUnavailable(ApiError):
     """503: the tenant's QA secret cannot be read or written by swarm-api --
     until lane VQ-3 declares it and binds IAM V-1 and V-2, every time."""
@@ -237,6 +272,11 @@ UNAVAILABLE_MESSAGE = (
     "it is declared, with swarm-api's adder and accessor bindings, by lane VQ-3"
 )
 NOT_FOUND_MESSAGE = "no such QA target"
+NO_SCREENS_MESSAGE = (
+    "the target lists no screens and none were discovered; press Run discovery on the QA "
+    "targets page (or call POST /v1/qa-targets/{id}:discover), then run it"
+)
+NOT_DISCOVERING_MESSAGE = "this QA target lists its screens and does not ask to discover them"
 
 
 def _invalid(message: str, *, field: str | None = None) -> ValidationFailed:
@@ -589,7 +629,26 @@ def to_api(doc: Mapping[str, Any]) -> dict[str, Any]:
     for key in SPEC_FIELDS:
         if key in doc:
             body[key] = doc[key]
+    body.update(discovery_status(doc))
     return body
+
+
+def discovery_status(doc: Mapping[str, Any]) -> dict[str, Any]:
+    """What the console draws for discovery: the stored list and who ran it,
+    the last failure's sentence, and the running one's workflow."""
+    running = doc.get("discovering") or None
+    return {
+        "discovered": [dict(s) for s in doc.get("discovered") or []] if doc.get("discovered") else None,
+        "discovered_at": _iso(doc.get("discovered_at")),
+        "discovered_by": doc.get("discovered_by"),
+        "discovered_workflow": doc.get("discovered_workflow"),
+        "discovery_error": doc.get("discovery_error"),
+        "discovering": None if not isinstance(running, Mapping) else {
+            "workflow_id": running.get("workflow_id"),
+            "by": running.get("by"),
+            "at": _iso(running.get("at")),
+        },
+    }
 
 
 # --------------------------------------------------------------------------
@@ -950,7 +1009,18 @@ class QaTargets:
     def runnable(self, tenant_id: str, target_id: str, *, file: str) -> dict[str, Any]:
         """The target, when a run may start against it now; the refusal
         otherwise, before anything spends."""
-        target = self.get(tenant_id, target_id)
+        target = self._startable(self.get(tenant_id, target_id), tenant_id, file=file)
+        if target.get("screens") is None and not target.get("discovered"):
+            # The discovery is the console's button (lane QA-DISCOVER); the
+            # code is the renderer's, which said "run its discovery first"
+            # when nothing could.
+            raise ValidationFailed(NO_SCREENS_MESSAGE, detail={"reason": "qa_target_no_screens"})
+        return target
+
+    def _startable(self, target: dict[str, Any], tenant_id: str, *, file: str) -> dict[str, Any]:
+        """`target` when anything may browse it now: its host approved, its
+        repository registered (and filing allowed, for `file="issues"`), its
+        own login's credential set. The refusal otherwise."""
         if target.get("host_state") != HOST_APPROVED:
             raise QaTargetHostPending(HOST_PENDING_MESSAGE)
         record = Repositories(self._db, now=self._now).find(tenant_id, str(target.get("repo_id") or ""))
@@ -965,7 +1035,7 @@ class QaTargets:
         return target
 
     def record_run(self, *, tenant_id: str, target: Mapping[str, Any], workflow_id: str,
-                   task_ids: Sequence[str], file: str, by: str) -> None:
+                   task_ids: Sequence[str], file: str, by: str, kind: str = "run") -> None:
         self._db.collection(RUNS_COLLECTION).document(workflow_id).set({
             "workflow_id": workflow_id,
             "tenant_id": tenant_id,
@@ -973,9 +1043,190 @@ class QaTargets:
             "revision": target.get("revision"),
             "task_ids": list(task_ids),
             "file": file,
+            "kind": kind,
             "by": by,
             "at": self._now(),
         })
+
+    # -- discovery (§4.1, lane QA-DISCOVER) ------------------------------------------
+
+    def discoverable(self, tenant_id: str, target_id: str, *, inspection: Any) -> dict[str, Any]:
+        """The target, when a discovery may start against it now: it asks to
+        discover, and it may be browsed (`_startable`, with nothing filed).
+        A discovery whose task has already ended is settled first, so a lost
+        wake never holds the target."""
+        [target] = self.settle_running(tenant_id, [self.get(tenant_id, target_id)], inspection)
+        if target.get("discover") is None:
+            raise _invalid(NOT_DISCOVERING_MESSAGE, field="discover")
+        return self._startable(target, tenant_id, file="none")
+
+    @staticmethod
+    def _running(doc: Mapping[str, Any], now: datetime) -> Mapping[str, Any] | None:
+        """The discovery that holds the target, or None. A claim that never
+        recorded its workflow holds it for `DISCOVERY_CLAIM_TTL` only."""
+        running = doc.get("discovering")
+        if not isinstance(running, Mapping):
+            return None
+        if not running.get("workflow_id"):
+            at = running.get("at")
+            if not isinstance(at, datetime) or now - at > DISCOVERY_CLAIM_TTL:
+                return None
+        return running
+
+    def claim_discovery(self, tenant_id: str, target: Mapping[str, Any], *, by: str) -> str:
+        """Hold the target for one discovery, in a transaction: two calls at
+        once cannot both pass. 409 `qa_discovery_running` when one holds it."""
+        target_id = str(target.get("id"))
+        ref = self._ref(target_id)
+        now = self._now()
+        claim = secrets.token_hex(8)
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            snap = _snapshot(txn.get(ref))
+            doc = (snap.to_dict() or {}) if snap.exists else None
+            if doc is None or doc.get("tenant_id") != tenant_id:
+                raise NotFound(NOT_FOUND_MESSAGE)
+            running = self._running(doc, now)
+            if running is not None:
+                workflow_id = running.get("workflow_id")
+                if workflow_id:
+                    raise QaDiscoveryRunning(
+                        f"a discovery of this QA target is running (workflow {workflow_id}); "
+                        "wait for it to end", detail={"workflow_id": workflow_id})
+                raise QaDiscoveryRunning("a discovery of this QA target is starting; wait for it",
+                                         detail={"workflow_id": None})
+            txn.update(ref, {"discovering": {"claim": claim, "workflow_id": None, "task_id": None,
+                                             "by": by, "at": now}})
+
+        _apply(transaction)
+        return claim
+
+    def _claimed(self, target_id: str, claim: str, change: Callable[[Mapping[str, Any]], dict[str, Any]]) -> None:
+        """Apply `change(discovering)` to the target while `claim` holds it."""
+        ref = self._ref(target_id)
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            snap = _snapshot(txn.get(ref))
+            running = ((snap.to_dict() or {}) if snap.exists else {}).get("discovering")
+            if isinstance(running, Mapping) and running.get("claim") == claim:
+                txn.update(ref, change(running))
+
+        _apply(transaction)
+
+    def record_discovery(self, target_id: str, claim: str, *, workflow_id: str, task_id: str) -> None:
+        self._claimed(target_id, claim, lambda running: {
+            "discovering": {**running, "workflow_id": workflow_id, "task_id": task_id}})
+        log.info("qa target discovery started target=%s workflow=%s", target_id, workflow_id)
+
+    def release_discovery(self, target_id: str, claim: str) -> None:
+        """The submission failed: free the target at once."""
+        self._claimed(target_id, claim, lambda running: {"discovering": None})
+
+    def settle_running(self, tenant_id: str, docs: Sequence[dict[str, Any]],
+                       inspection: Any) -> list[dict[str, Any]]:
+        """`docs`, each running discovery whose task has ended settled and
+        read again. One task read per running discovery, none otherwise."""
+        out: list[dict[str, Any]] = []
+        for doc in docs:
+            running = doc.get("discovering")
+            task_id = running.get("task_id") if isinstance(running, Mapping) else None
+            if isinstance(task_id, str) and task_id and self.settle_discovery(
+                    task_id, inspection, tenant_id=tenant_id):
+                doc = self.find(tenant_id, str(doc.get("id"))) or doc
+            out.append(doc)
+        return out
+
+    def settle_discovery(self, task_id: str, inspection: Any, *, tenant_id: str | None = None) -> bool:
+        """The discovery `task_id` ran has ended: store what it found, or why
+        nothing. True when the target was written. A doorbell, as
+        `verdictpublish.on_task_finished` is: everything is read again, and a
+        task that is not a running discovery's, not ended, or of another
+        tenant than the wake said is a no-op."""
+        snap = self._db.collection(TASKS).document(task_id).get()
+        task = (snap.to_dict() or {}) if snap.exists else None
+        mark = ((task or {}).get("metadata") or {}).get(METADATA_KEY)
+        if task is None or not isinstance(mark, Mapping) or not isinstance(mark.get("id"), str):
+            return False
+        owner = str(task.get("tenant_id") or "")
+        if not owner or (tenant_id and tenant_id != owner):
+            return False
+        try:
+            state = TaskState(task.get("state"))
+        except ValueError:
+            return False
+        if state not in TERMINAL_STATES:
+            return False
+        target = self.find(owner, mark["id"])
+        running = (target or {}).get("discovering")
+        if not isinstance(running, Mapping) or running.get("task_id") != task_id:
+            return False
+        workflow_id = str(running.get("workflow_id") or "")
+        found: list[dict[str, str]] | None = None
+        error: str | None = None
+        if state is not TaskState.SUCCEEDED:
+            error = (f"the discovery step ended {state.value} before its screens could be read; "
+                     f"workflow {workflow_id} says why")
+        else:
+            try:
+                found = qaspec.discovered_screens(target, self._artifact(inspection, owner, task_id))
+            except qaspec.QaSpecError as exc:
+                error = f"the discovery's {DISCOVERY_ARTIFACT} was not stored: {exc.message}"
+        now = self._now()
+        if found is not None:
+            change: dict[str, Any] = {
+                "discovered": found, "discovered_at": now, "discovered_by": running.get("by"),
+                "discovered_workflow": workflow_id, "discovery_error": None, "discovering": None,
+            }
+        else:
+            change = {"discovery_error": error, "discovering": None}
+        ref = self._ref(str(target["id"]))
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> bool:
+            snap = _snapshot(txn.get(ref))
+            current = (snap.to_dict() or {}).get("discovering") if snap.exists else None
+            if not isinstance(current, Mapping) or current.get("task_id") != task_id:
+                return False
+            txn.update(ref, change)
+            return True
+
+        written = _apply(transaction)
+        if written:
+            log.info("qa target discovery settled tenant=%s target=%s task=%s screens=%s",
+                     owner, target["id"], task_id, len(found) if found is not None else "none")
+        return written
+
+    @staticmethod
+    def _artifact(inspection: Any, tenant_id: str, task_id: str) -> Any:
+        """The step's `screens.json`, parsed, through the API's own
+        tenant-checked, redacted artifact read (`InspectionService`). Raises
+        QaSpecError saying what is wrong, never what it holds."""
+        def refused(why: str) -> qaspec.QaSpecError:
+            return qaspec.QaSpecError("qa_target_invalid", why)
+
+        if inspection is None:
+            raise refused("SwarmCloud could not read the step's artifacts")
+        try:
+            row = inspection.read_artifact(tenant_id, task_id, submitted_by=None, name=DISCOVERY_ARTIFACT,
+                                           limit_bytes=DISCOVERY_ARTIFACT_BYTES)
+        except ApiError:
+            raise refused(f"the step uploaded no {DISCOVERY_ARTIFACT}") from None
+        total = row.get("total_bytes")
+        if isinstance(total, int) and total > DISCOVERY_ARTIFACT_BYTES:
+            raise refused(f"it is over {DISCOVERY_ARTIFACT_BYTES} bytes")
+        if row.get("status") != "ok" or row.get("truncated") or row.get("invalid_utf8_bytes"):
+            raise refused("it could not be read whole as text")
+        if row.get("redacted"):
+            raise refused("it holds text the redaction masks")
+        try:
+            return json.loads(row.get("content") or "")
+        except ValueError:
+            raise refused("it is not JSON") from None
 
 
 def render_run(target: Mapping[str, Any], *, screens: Sequence[str] | None,
@@ -989,6 +1240,23 @@ def render_run(target: Mapping[str, Any], *, screens: Sequence[str] | None,
         mark = qaspec.qa_target_metadata(target)
     except qaspec.QaSpecError as exc:
         raise _spec_refusal(exc) from None
+    return _api_workflow(spec, mark)
+
+
+def render_discovery_run(target: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """`render_run` for the target's discovery (§4.1): `qaspec.render_discovery`'s
+    one browser step, marked as a run's are, so the gate signs it in."""
+    try:
+        spec = qaspec.render_discovery(target)
+        mark = qaspec.qa_target_metadata(target)
+    except qaspec.QaSpecError as exc:
+        raise _spec_refusal(exc) from None
+    return _api_workflow(spec, mark)
+
+
+def _api_workflow(spec: Mapping[str, Any],
+                  mark: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """A `qaspec` spec in the API's `WorkflowCreate` shape, the mark on each browser step."""
     browser = set(qaspec.browser_steps(spec))
     steps: list[dict[str, Any]] = []
     for step in spec["steps"]:

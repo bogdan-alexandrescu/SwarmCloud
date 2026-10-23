@@ -11,6 +11,7 @@ import { read, route, write, type Result } from './fetch'
  *   PATCH  /v1/qa-targets/{id}                   change (a workspace admin); a new host is pending
  *   DELETE /v1/qa-targets/{id}                   delete, with its credential (a workspace admin)
  *   POST   /v1/qa-targets/{id}:run               a member starts a run: {screens?, file}
+ *   POST   /v1/qa-targets/{id}:discover          a member starts its discovery (§4.1, lane QA-DISCOVER)
  *   POST   /v1/qa-targets/{id}:approve-host      a PLATFORM admin approves the host: {host, extra_origin?} (VQ-Q1, audited)
  *   POST   /v1/qa-targets/{id}/credential-links  a one-time link to the credential form (an admin)
  *   PUT    /v1/qa-targets/{id}/credential        the form's write, with the link's token
@@ -68,6 +69,12 @@ export interface QaCredentialStatus {
   version: string | null
 }
 
+/** The discovery running now (`discovering`): its workflow, once submitted. */
+export interface QaDiscovering {
+  workflow_id: string | null
+  at: string | null
+}
+
 export interface QaTarget {
   id: string
   name: string
@@ -87,6 +94,15 @@ export interface QaTarget {
   revision: number | null
   /** The `MORE_FIELDS` the target holds, as served. */
   more: Partial<Record<MoreField, unknown>>
+  /** It asks to discover its screens (`discover` is set). */
+  discovers: boolean
+  /** What its last successful discovery stored, which a run starts from when `screens` is empty. */
+  discovered: QaScreen[]
+  discovered_at: string | null
+  discovered_workflow: string | null
+  /** The last discovery's failure, in the API's own sentence; null after a success. */
+  discovery_error: string | null
+  discovering: QaDiscovering | null
 }
 
 /** What a registration or a change sends: `TargetBody`'s fields the form edits. */
@@ -155,19 +171,29 @@ function normCredential(raw: unknown): QaCredentialStatus {
   }
 }
 
-export function normQaTarget(raw: unknown): QaTarget | null {
-  const t = rec(raw)
-  const id = str(t.id)
-  if (id === null) return null
-  const state = t.host_state
-  const screens = Array.isArray(t.screens)
-    ? t.screens.flatMap((s) => {
+function normScreens(raw: unknown): QaScreen[] {
+  return Array.isArray(raw)
+    ? raw.flatMap((s) => {
         const r = rec(s)
         const sid = str(r.id)
         const path = str(r.path)
         return sid !== null && path !== null ? [{ id: sid, path }] : []
       })
     : []
+}
+
+function normDiscovering(raw: unknown): QaDiscovering | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const d = rec(raw)
+  return { workflow_id: str(d.workflow_id), at: str(d.at) }
+}
+
+export function normQaTarget(raw: unknown): QaTarget | null {
+  const t = rec(raw)
+  const id = str(t.id)
+  if (id === null) return null
+  const state = t.host_state
+  const screens = normScreens(t.screens)
   return {
     id,
     name: str(t.name) ?? id,
@@ -185,6 +211,12 @@ export function normQaTarget(raw: unknown): QaTarget | null {
     authorized_by: str(t.authorized_by),
     revision: typeof t.revision === 'number' ? t.revision : null,
     more: Object.fromEntries(MORE_FIELDS.flatMap((k) => (t[k] === undefined || t[k] === null ? [] : [[k, t[k]]]))),
+    discovers: t.discover !== undefined && t.discover !== null,
+    discovered: normScreens(t.discovered),
+    discovered_at: str(t.discovered_at),
+    discovered_workflow: str(t.discovered_workflow),
+    discovery_error: str(t.discovery_error),
+    discovering: normDiscovering(t.discovering),
   }
 }
 
@@ -206,6 +238,21 @@ export function repoSlug(url: string | null): string | null {
  * beside a disabled Run, before anything is asked.
  */
 export function cannotRunBecause(t: QaTarget): string | null {
+  const browse = cannotBrowseBecause(t)
+  if (browse !== null) return browse
+  if (t.screens.length === 0 && t.discovered.length === 0) {
+    return t.discovers
+      ? 'No screens are discovered yet; press Run discovery, and Run is enabled once it has found them.'
+      : 'It lists no screens.'
+  }
+  return null
+}
+
+/**
+ * Why nothing may browse this target now -- a run or a discovery -- or null
+ * (`QaTargets._startable`, with nothing filed).
+ */
+export function cannotBrowseBecause(t: QaTarget): string | null {
   const host = t.host ?? 'its host'
   if (t.host_state === 'pending') {
     return `${host} is waiting for a platform admin to approve it; no run starts against a host until then.`
@@ -265,6 +312,17 @@ export function deleteQaTarget(id: string): Promise<Result<unknown>> {
 export async function runQaTarget(id: string, file: 'issues' | 'none'): Promise<Result<QaRun>> {
   const r = await write(route('/v1/qa-targets/{target_id}:run', { target_id: id }), 'POST', { file })
   if (r.status !== 'ok') return r.status === 'error' ? r : { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The run was not answered.' } }
+  return { ...r, data: { workflow_id: str(rec(r.data).workflow_id) } }
+}
+
+/**
+ * `:discover`, with nothing the caller picks: the API renders the discovery
+ * from the stored target (invariant 10). A second press while one runs is the
+ * API's 409 `qa_discovery_running`, said in its own words.
+ */
+export async function discoverQaTarget(id: string): Promise<Result<QaRun>> {
+  const r = await write(route('/v1/qa-targets/{target_id}:discover', { target_id: id }), 'POST', {})
+  if (r.status !== 'ok') return r.status === 'error' ? r : { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The discovery was not answered.' } }
   return { ...r, data: { workflow_id: str(rec(r.data).workflow_id) } }
 }
 

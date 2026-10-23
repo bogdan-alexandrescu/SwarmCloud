@@ -9,9 +9,11 @@ import { PageHead } from './Shell'
 import { timeAgo } from './types'
 import {
   approveQaTargetHost,
+  cannotBrowseBecause,
   cannotRunBecause,
   createQaTarget,
   deleteQaTarget,
+  discoverQaTarget,
   loadQaTargets,
   MORE_FIELDS,
   mintQaCredentialLink,
@@ -56,6 +58,15 @@ import './styles/repositories.css'
  * words. The approved target the API answers is drawn at once, until a read
  * of a later revision replaces it.
  *
+ * DISCOVERY (lane QA-DISCOVER, §4.1; BGD 2026-10-23: "build discovery, so a
+ * crawl target is started entirely from the console"). A target with
+ * `discover` shows Run discovery (Run discovery again once it has discovered
+ * screens) to any member, as Run is. While one runs the card says
+ * Discovering… and links its workflow, and the list is read again every
+ * `DISCOVERY_POLL_MS` until it ends; then it says how many screens were
+ * discovered and when, or the API's `discovery_error` sentence. Run is
+ * enabled once screens exist (`cannotRunBecause`).
+ *
  * THE CREDENTIAL IS NEVER HELD BY THIS PAGE, exactly as ProviderKeys.tsx
  * holds a key: the two fields are uncontrolled, their values live in the DOM
  * input and nowhere else, submit reads them once, empties the fields and
@@ -75,6 +86,10 @@ import './styles/repositories.css'
 export const QA_TARGETS_PAGE = 'work/repositories?page=qa-targets'
 
 const LIST_ROUTE = 'GET /v1/qa-targets'
+
+/** How often the list is read again while a discovery runs: a crawl of 60
+ *  pages takes minutes, so this is a few reads a discovery, not a poll storm. */
+const DISCOVERY_POLL_MS = 20_000
 
 /** Drop `t` from the address bar, keeping everything else. Idempotent. */
 function stripLinkToken(): void {
@@ -111,6 +126,15 @@ export function QaTargetsScreen({ go, link }: { go: (to: string) => void; link?:
   const [said, setSaid] = useState<{ tone: 'info' | 'bad'; title: string; text: string } | null>(null)
   const targets = list.state.status === 'ok' || list.state.status === 'stale' ? list.state.data : []
   const nameOf = (id: string) => targets.find((t) => t.id === id)?.name ?? id
+  // While a discovery runs, read the list again until it ends: the card's
+  // Discovering… becomes the count or the error without a manual refresh.
+  const discovering = targets.some((t) => t.discovering !== null)
+  const reload = list.reload
+  useEffect(() => {
+    if (!discovering) return
+    const timer = window.setInterval(reload, DISCOVERY_POLL_MS)
+    return () => window.clearInterval(timer)
+  }, [discovering, reload])
 
   async function openCredential(t: QaTarget) {
     setSaid(null)
@@ -206,6 +230,7 @@ export function QaTargetsScreen({ go, link }: { go: (to: string) => void; link?:
                 runGate={runGate}
                 onApproved={(doc) => setApproved((was) => ({ ...was, [doc.id]: doc }))}
                 onEdit={() => setEditing(t)}
+                onDiscovering={list.reload}
                 onCredential={() => void openCredential(t)}
                 onDeleted={() => {
                   setSaid({ tone: 'info', title: `Deleted ${t.name}`, text: 'The target and its test credential are gone.' })
@@ -246,6 +271,7 @@ function TargetCard({
   runGate,
   onApproved,
   onEdit,
+  onDiscovering,
   onCredential,
   onDeleted,
 }: {
@@ -259,6 +285,8 @@ function TargetCard({
   /** The caller's role is below `member`: Run is disabled and this says why. */
   runGate: string | null
   onEdit: () => void
+  /** A discovery was started: read the list again, which now says it runs. */
+  onDiscovering: () => void
   onCredential: () => void
   onDeleted: () => void
 }) {
@@ -270,6 +298,18 @@ function TargetCard({
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [approving, setApproving] = useState(false)
   const canApprove = platformAdmin && t.host !== null && t.host_state !== 'approved'
+  const cannotBrowse = cannotBrowseBecause(t)
+  const [discoveryBusy, setDiscoveryBusy] = useState(false)
+
+  async function discover() {
+    if (runGate !== null || cannotBrowse !== null || t.discovering !== null) return
+    setDiscoveryBusy(true)
+    setFailed(null)
+    const r = await discoverQaTarget(t.id)
+    setDiscoveryBusy(false)
+    if (r.status === 'error') setFailed(writeFailure(r.error))
+    else onDiscovering()
+  }
 
   async function run() {
     if (why !== null || runGate !== null) return
@@ -310,8 +350,9 @@ function TargetCard({
           Host <b className={t.host_state === 'approved' ? undefined : 'ur-bad'}>{hostWords(t)}</b>
         </span>
         <span>{t.environment === 'non_production' ? 'Non-production' : 'Production'}</span>
-        <span>{t.screens.length === 0 ? 'Screens discovered' : `${t.screens.length} screen${t.screens.length === 1 ? '' : 's'}`}</span>
+        <span>{t.screens.length === 0 ? (t.discovers ? 'Discovers its screens' : 'No screens') : `${t.screens.length} screen${t.screens.length === 1 ? '' : 's'}`}</span>
       </div>
+      {t.discovers && <DiscoveryLine t={t} go={go} />}
       {login !== null && <div className="ur-cmeta">{login}</div>}
       {why !== null && (
         <p className="ur-small ur-bad" data-cannot-run="">
@@ -327,6 +368,16 @@ function TargetCard({
         <Button size="sm" kind="primary" busy={busy} disabled={why !== null || runGate !== null} onClick={() => void run()}>
           Run
         </Button>
+        {t.discovers && (
+          <Button
+            size="sm"
+            busy={discoveryBusy}
+            disabled={runGate !== null || cannotBrowse !== null || t.discovering !== null}
+            onClick={() => void discover()}
+          >
+            {t.discovered.length > 0 ? 'Run discovery again' : 'Run discovery'}
+          </Button>
+        )}
         <label className="ur-small">
           <input type="checkbox" checked={reportOnly} onChange={(e) => setReportOnly(e.target.checked)} data-report-only="" /> report
           only, file no issues
@@ -388,6 +439,43 @@ function TargetCard({
       )}
     </Card>
     </div>
+  )
+}
+
+/** The discovery's state on a target that discovers (§4.1): running, found, or failed. */
+function DiscoveryLine({ t, go }: { t: QaTarget; go: (to: string) => void }) {
+  const running = t.discovering
+  const n = t.discovered.length
+  return (
+    <>
+      <div className="ur-cmeta" data-discovery="">
+        {running !== null ? (
+          <span role="status">
+            Discovering…
+            {running.workflow_id !== null && (
+              <>
+                {' '}
+                <UrLink to={`work/workflows?wf=${encodeURIComponent(running.workflow_id)}`} go={go}>
+                  {running.workflow_id}
+                </UrLink>
+              </>
+            )}
+          </span>
+        ) : n > 0 ? (
+          <span>
+            {`${n} screen${n === 1 ? '' : 's'} discovered`}
+            {t.discovered_at !== null && `, ${timeAgo(t.discovered_at)}`}
+          </span>
+        ) : (
+          <span>No screens discovered yet</span>
+        )}
+      </div>
+      {running === null && t.discovery_error !== null && (
+        <p className="ur-small ur-bad" data-discovery-error="">
+          The last discovery stored nothing: {t.discovery_error}
+        </p>
+      )}
+    </>
   )
 }
 
