@@ -30,9 +30,12 @@
 #     a platform account: a sink writing a log bucket in its own project needs
 #     no grant (BGD, 2026-10-22, #1960);
 #   * the view swarm-workers lives on the new bucket, never _Default;
-#   * swarm-api's grant (row L-1) is unchanged: a
-#     google_logging_log_view_iam_member -- a binding on the view's own
-#     policy -- with role roles/logging.viewAccessor;
+#   * terraform/infra holds NO log-view IAM resource at all: row L-1,
+#     swarm-api's viewAccessor on the view, is terraform/bootstrap's
+#     (log_view_read.tf; log_view_read.tftest.hcl holds it). CI's deployer
+#     cannot set IAM on a log view (release run 39888771458, 2026-10-23:
+#     "Error 403: The caller does not have permission"), and BGD decided on
+#     2026-10-23 (#1960) that it never gains the power to;
 #   * no account this root grants project roles to holds any predefined role
 #     measured to read log entries project-wide
 #     (terraform/bootstrap/log-reading-roles.json, read, not restated).
@@ -167,8 +170,8 @@ variables {
 }
 
 # OFF BY DEFAULT. The switch (swarm_workers_log_view_enabled) is on in dev's
-# tfvars only; a root without it plans no bucket, no sink, no view, no L-1
-# binding and no view name for swarm-api to read. Prod stays off until the
+# tfvars only; a root without it plans no bucket, no sink, no view and no
+# view name for swarm-api to read. Prod stays off until the
 # owner turns it on there.
 run "the_swarm_workers_log_path_is_off_by_default" {
   command = plan
@@ -181,12 +184,6 @@ run "the_swarm_workers_log_path_is_off_by_default" {
   assert {
     condition     = length(google_logging_log_view.swarm_workers) == 0
     error_message = "with swarm_workers_log_view_enabled at its default (false) no google_logging_log_view is planned"
-  }
-
-  # MUTATION: dropping the count from google_logging_log_view_iam_member.swarm_api_reads_swarm_workers turns this red.
-  assert {
-    condition     = length(google_logging_log_view_iam_member.swarm_api_reads_swarm_workers) == 0
-    error_message = "with the view off, row L-1's binding is not planned either"
   }
 
   # MUTATION: dropping the count from the bucket or the sink in log_bucket.tf turns this red.
@@ -468,62 +465,51 @@ run "the_swarm_workers_view_lives_on_the_worker_log_bucket" {
   }
 }
 
-run "swarm_api_reads_the_view_and_only_the_view" {
+# ROW L-1 IS NOT GRANTED HERE (lane LOG-VIEW-BOOT, BGD 2026-10-23, #1960).
+# Release run 39888771458 (head 2aa01cbe) failed applying it at
+# `terraform apply, IAM (dev-iam)`: "Error 403: The caller does not have
+# permission". CI's deployer holds roles/logging.configWriter, which cannot set
+# IAM on a log view. The grant moved to terraform/bootstrap/log_view_read.tf,
+# which the owner applies, as verify_cluster_read.tf did for clusterViewer.
+run "infra_grants_no_log_view_iam_and_no_project_log_read" {
   command = plan
 
   module {
     source = "../../terraform/infra"
   }
 
-  # Row L-1 is unchanged by the move to swarm-worker-logs (LOG-BUCKET,
-  # #1960): the same role, the same member, on the same view by name. Only
-  # the location follows the view's bucket.
   variables {
     swarm_workers_log_view_enabled = true
+    # Relative to tests/terraform, where `terraform test` runs (make tf-test).
+    granting_dirs = ["../../terraform/infra", "../../terraform/modules"]
+    view_iam_re   = "(?m)^resource \"google_logging_log_view_iam_(member|binding|policy)\" "
   }
 
-  # MUTATION: count = 0 on google_logging_log_view_iam_member.swarm_api_reads_swarm_workers turns this red.
-  assert {
-    condition     = length(google_logging_log_view_iam_member.swarm_api_reads_swarm_workers) == 1
-    error_message = "with swarm_workers_log_view_enabled = true row L-1's binding is planned, once"
-  }
-
-  # Row L-1: a binding on the VIEW's own IAM policy. The resource type is the
-  # scope; a google_project_iam_member here would be the project.
-  # MUTATION: role = "roles/logging.viewer" (or privateLogViewer) turns this red.
-  assert {
-    condition     = google_logging_log_view_iam_member.swarm_api_reads_swarm_workers[0].role == "roles/logging.viewAccessor"
-    error_message = "swarm-api's role on the view is roles/logging.viewAccessor; logging.viewer reads every log in this SHARED project"
-  }
-
-  # The account's email is computed; the mock is told swarm-api's, so the
-  # member is known at plan. Any other account's stays unknown, which fails
-  # the run as surely as a wrong string would.
-  override_resource {
-    target          = module.iam.google_service_account.platform["swarm-api"]
-    override_during = plan
-    values = {
-      email = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
-      name  = "projects/saga-agents-staging/serviceAccounts/swarm-api@saga-agents-staging.iam.gserviceaccount.com"
-    }
-  }
-
-  # MUTATION: member = module.iam.service_account_members["swarm-scheduler"] turns this red.
-  assert {
-    condition     = google_logging_log_view_iam_member.swarm_api_reads_swarm_workers[0].member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
-    error_message = "the view's reader is swarm-api's account and nobody else (row L-1)"
-  }
-
-  # The binding names the view this root creates, field for field.
-  # MUTATION: name = "_AllLogs" (the bucket's every-log view) turns this red.
+  # The control: the scan read real files, and its pattern finds a log-view
+  # IAM resource in a text built to hold one, so an empty match is a finding
+  # and not a wrong path or a wrong pattern.
   assert {
     condition = (
-      google_logging_log_view_iam_member.swarm_api_reads_swarm_workers[0].parent == "projects/saga-agents-staging"
-      && google_logging_log_view_iam_member.swarm_api_reads_swarm_workers[0].location == "us-central1"
-      && google_logging_log_view_iam_member.swarm_api_reads_swarm_workers[0].bucket == google_logging_log_view.swarm_workers[0].bucket
-      && google_logging_log_view_iam_member.swarm_api_reads_swarm_workers[0].name == google_logging_log_view.swarm_workers[0].name
+      alltrue([for d in var.granting_dirs : length(fileset(d, "**/*.tf")) > 0])
+      && length(fileset(var.granting_dirs[0], "log_view.tf")) == 1
+      && length(regexall(var.view_iam_re, "resource \"google_logging_log_view_iam_member\" \"x\" {\n}\n")) == 1
     )
-    error_message = "swarm-api's binding must be on exactly the swarm-workers view this root creates, never _AllLogs or another view"
+    error_message = "the scan read no file under terraform/infra or terraform/modules (or no log_view.tf), or its pattern finds nothing in a text built to hold a log-view grant; the assertion below would pass on nothing"
+  }
+
+  # MUTATION: putting google_logging_log_view_iam_member.swarm_api_reads_swarm_workers back in log_view.tf turns this red.
+  assert {
+    condition = alltrue([
+      for f in flatten([for d in var.granting_dirs : [for p in fileset(d, "**/*.tf") : "${d}/${p}"]]) : length(regexall(var.view_iam_re, file(f))) == 0
+    ])
+    error_message = "a .tf file under terraform/infra or terraform/modules declares a google_logging_log_view_iam_* resource; CI applies that root and cannot set IAM on a log view. Row L-1 is terraform/bootstrap/log_view_read.tf's (BGD, 2026-10-23, #1960)"
+  }
+
+  # The view itself stays here: the grant names it, by id.
+  # MUTATION: count = 0 on google_logging_log_view.swarm_workers turns this red.
+  assert {
+    condition     = length(google_logging_log_view.swarm_workers) == 1 && google_logging_log_view.swarm_workers[0].name == "swarm-workers"
+    error_message = "terraform/infra still creates the swarm-workers view that bootstrap's L-1 grant is made on"
   }
 
   # Never on the project: no account this root grants project roles holds a
@@ -536,6 +522,6 @@ run "swarm_api_reads_the_view_and_only_the_view" {
       toset(flatten(values(module.iam.granted_roles))),
       toset(keys(jsondecode(file("../../terraform/bootstrap/log-reading-roles.json")).roles)),
     )) == 0 && length(module.iam.granted_roles["swarm-api"]) > 0
-    error_message = "an account holds a project-wide log-reading role (terraform/bootstrap/log-reading-roles.json); swarm-api's one log read is the view binding in log_view.tf"
+    error_message = "an account holds a project-wide log-reading role (terraform/bootstrap/log-reading-roles.json); swarm-api's one log read is the view binding in terraform/bootstrap/log_view_read.tf"
   }
 }
