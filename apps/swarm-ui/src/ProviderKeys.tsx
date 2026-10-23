@@ -67,7 +67,17 @@ interface Who {
   personal: boolean
 }
 
-/** Admin and the selected tenant's kind, from the frame's read. Unknown is not an admin: the API is still the gate. */
+/**
+ * Admin and the selected tenant's kind, from the frame's read. Unknown is not an admin: the API is still the gate.
+ *
+ * ADMIN IS THE WORKSPACE'S `admin` OR A PLATFORM ADMIN (visual QA 5b:QA-033,
+ * box 6343774758, #1680). The tenant routes admit the group workspace's admin
+ * before the platform rule (`_require_tenant_admin`,
+ * swarm_api/routes/provider_keys.py), and `/v1/tenants/me` serves that role as
+ * `role.name`. Reading `is_admin` alone told a workspace admin, whom People
+ * and roles calls "this workspace's admin", that only an admin could set the
+ * key, and offered them no control.
+ */
 function useWho(): Who | null {
   const [who, setWho] = useState<Who | null>(null)
   useEffect(() => {
@@ -77,7 +87,7 @@ function useWho(): Who | null {
         if (!live) return
         const ok = r.status === 'ok' || r.status === 'stale'
         setWho({
-          admin: ok && r.data.principal?.is_admin === true,
+          admin: ok && (r.data.principal?.is_admin === true || (r.data as { role?: { name?: unknown } }).role?.name === 'admin'),
           personal: ok && r.data.tenant?.kind === 'user',
         })
       },
@@ -117,7 +127,7 @@ export function ProviderKeysScreen({ link }: { link: KeyLink | null }) {
         <Banner tone="info" title="Opened from a one-time link">
           Paste the key below. It goes from this page to the platform&rsquo;s secret store and nowhere else: Claude, the
           /sc command and this page&rsquo;s address never see it. The link works once, for ten minutes.
-          {linkScope === 'tenant' && who !== null && !who.admin ? ' It is for the tenant key, which only an admin can set.' : ''}
+          {linkScope === 'tenant' && who !== null && !who.admin ? ' It is for the tenant key, which only this workspace’s admins or a platform admin can set.' : ''}
         </Banner>
       )}
       {/* Which backend Jev judges with (JUDGE-SELECT): a TypeSafe key below is
@@ -152,7 +162,10 @@ export function ProviderKeysScreen({ link }: { link: KeyLink | null }) {
                   }}
                   onChange={keys.reload}
                 />
-                {who.admin ? (
+                {/* A personal workspace has no tenant key of its own, and its
+                    row says so to anyone, admin or not; elsewhere the refusal
+                    names the two roles the API admits (box 6343774758). */}
+                {who.admin || who.personal ? (
                   <KeyRow
                     scope="tenant"
                     status={d.tenant}
@@ -168,7 +181,7 @@ export function ProviderKeysScreen({ link }: { link: KeyLink | null }) {
                   />
                 ) : (
                   <p className="ur-small">
-                    {`The tenant key for ${d.tenant.tenant_id} is ${d.tenant.set ? 'set' : 'not set'}; only an admin can set or remove it.`}
+                    {`The tenant key for ${d.tenant.tenant_id} is ${d.tenant.set ? 'set' : 'not set'}; only this workspace’s admins or a platform admin can set or remove it.`}
                   </p>
                 )}
               </>

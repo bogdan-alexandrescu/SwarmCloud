@@ -2116,6 +2116,17 @@ def park_human_required(
     worker's resolve route cleared it before this park, and `human-ready`
     clears one a failed resolve left behind.
 
+    THE ATTEMPT'S END, THE EVENT AND THE LEASE RELEASE ARE IN THE SAME
+    TRANSACTION (`ControlPlane._end_in_transaction`, #2064), as in every
+    park. They used to follow it: the attempt's end best effort, the event,
+    and the release as a second transaction. A contention abort on that
+    release (2026-10-23 09:05:41Z, on a quota park) crashed the worker, its
+    crash path met its own park as a fence, and the PARKED task held its
+    lease (invariant 1). Now PARKED or READY and the pools coming back down
+    commit together or not at all, an abort is run again by the runner, and
+    `control._ended` records the committed end so the crash path knows it
+    as this attempt's own (`Worker._own_end_exit`).
+
     Built on the control plane's own fenced-transaction helpers rather than as
     a `ControlPlane` method because `control.py` is outside lane L4's files;
     the transaction is the same one the other parks run.
@@ -2157,8 +2168,13 @@ def park_human_required(
     reason = ParkReason.HUMAN_REQUIRED
     now = utcnow()
     returned: dict[str, Any] = {}
+    # Minted outside the body, which a contended transaction runs again, so
+    # every run writes the same event ids; its type, PARKED or READY, is
+    # decided inside it (`ControlPlane._filled`).
+    ended = control._event_write(EventType.PARKED)
+    released_slot = control._event_write(EventType.LEASE_RELEASED)
 
-    def _apply(txn: Any) -> tuple[bool, int]:
+    def _apply(txn: Any) -> tuple[bool, TaskState, list[dict[str, Any]]]:
         returned.clear()  # a retried transaction starts again
         task = control._fenced_task(txn, write="human park")
         current = TaskState(task.get("state"))
@@ -2169,6 +2185,7 @@ def park_human_required(
         used = used if isinstance(used, int) and not isinstance(used, bool) and used >= 0 else 0
         attempt_count = int(task.get("attempt_count", 0))
         refund = used < max_resumes and attempt_count > 0
+        resumes = used + (1 if refund else 0)
         payload: dict[str, Any] = {
             "state": TaskState.PARKED.value,
             "park_reason": reason.value,
@@ -2196,50 +2213,48 @@ def park_human_required(
             payload.update({"state": TaskState.READY.value, "park_reason": None,
                             "next_eligible_at": None, "blocked_by": [], "metadata": metadata})
             returned["by"] = by
-        txn.update(control._task_ref(), payload)
-        if uploads:
-            control._record_parked_uploads(txn, index, uploads, at=now)
-        return refund, used + (1 if refund else 0)
-
-    refunded, resumes = control._run_transaction(_apply)
-    returned_by = returned.get("by")
-    # Best effort, as in every park: the event and the release below are what
-    # give the slot back.
-    try:
-        control.record_attempt_end(exit_code=ExitCode.PARKED, error=reason.value)
-    except Exception as exc:
-        control._log.warning(
-            "the human park landed but its attempt end was not recorded",
-            error=f"{type(exc).__name__}: {str(exc)[:300]}",
-        )
-    if returned_by is not None:
-        # swarm-api's "I'm ready" event's shape (`handoff.ready_writes`).
-        control.emit(
-            EventType.READY,
-            {
+            state = TaskState.READY
+            release = "requeued:human_returned"
+            # swarm-api's "I'm ready" event's shape (`handoff.ready_writes`).
+            event = control._filled(ended, EventType.READY, {
                 "reason": "human_returned",
                 "park_reason": reason.value,
-                "by": returned_by,
-                "attempt_refunded": refunded,
+                "by": by,
+                "attempt_refunded": refund,
                 HUMAN_WAIT_RESUMES_METADATA_KEY: resumes,
                 **(detail or {}),
-            },
+            })
+        else:
+            state = TaskState.PARKED
+            release = f"parked:{reason.value}"
+            event = control._filled(ended, EventType.PARKED, {
+                "reason": reason.value,
+                "next_eligible_at": now,
+                "attempt_refunded": refund,
+                HUMAN_WAIT_RESUMES_METADATA_KEY: resumes,
+                **(detail or {}),
+                # When the scheduler dead-letters it, from the park's own
+                # instant (WAIT-RECORD, part of #1782). An event detail only:
+                # the task document is not given a field for it.
+                "expires_at": now + timedelta(seconds=HUMAN_PARK_MAX_SECONDS),
+            })
+        # After every read above (the fence, the task, the carry index) and
+        # before any write: the release reads the lease and its pools, and
+        # Firestore refuses a read after a write.
+        written = control._end_in_transaction(
+            txn,
+            payload=payload,
+            release=release,
+            exit_code=ExitCode.PARKED,
+            error=reason.value,
+            events=[event],
+            released_slot=released_slot,
+            now=now,
         )
-        control.release_lease("requeued:human_returned")
-        return HumanPark(refunded, returned_by)
-    control.emit(
-        EventType.PARKED,
-        {
-            "reason": reason.value,
-            "next_eligible_at": now,
-            "attempt_refunded": refunded,
-            HUMAN_WAIT_RESUMES_METADATA_KEY: resumes,
-            **(detail or {}),
-            # When the scheduler dead-letters it, from the park's own instant
-            # (WAIT-RECORD, part of #1782). An event detail only: the task
-            # document is not given a field for it.
-            "expires_at": now + timedelta(seconds=HUMAN_PARK_MAX_SECONDS),
-        },
-    )
-    control.release_lease(f"parked:{reason.value}")
-    return HumanPark(refunded, None)
+        if uploads:
+            control._record_parked_uploads(txn, index, uploads, at=now)
+        return refund, state, written
+
+    refunded, state, written = control._run_transaction(_apply)
+    control._ended(state, written)
+    return HumanPark(refunded, returned.get("by"))

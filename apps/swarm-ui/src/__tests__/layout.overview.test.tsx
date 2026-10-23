@@ -668,7 +668,9 @@ describe('OV-9: while the checks read, the lead says so and draws no figure', ()
       loadAccountPool: ok(accountsPage([reading('fine', 0.1)])),
     })
     const mark = el.querySelector('#ov-needs')!.querySelector<HTMLElement>('.ctl-mark.is-partial')!
-    expect(painted(mark, 'border-right-style', { width: 1440 })).toBe('dashed')
+    // One even edge off Accounts (visual QA run 6, box 6343768697, part of
+    // #1680): the dashed right side drew as a bracket off the pill.
+    expect(painted(mark, ['border-right-style', 'border-style', 'border'], { width: 1440 })).toBe('1px solid currentColor')
     for (const corner of ['border-top-right-radius', 'border-bottom-right-radius']) {
       // MUTATION: square the corners in the shared `.ctl-mark.is-partial` rule
       // again -- every partial mark on every screen loses its rounded side.

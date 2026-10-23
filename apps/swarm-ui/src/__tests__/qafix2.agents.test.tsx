@@ -313,18 +313,19 @@ describe('QA-111: the sort button says the order the list is in', () => {
     const sort = document.querySelector<HTMLElement>('.ag-sort')!
     // MUTATION: draw `Started ⇅` while the list is newest END first -- the
     // label names the opposite of the order on screen.
-    expect(flat(sort)).toBe('Ended ↓')
+    // The direction is words since run 6 (6:flow-find-failure-desktop-03).
+    expect(flat(sort)).toBe('Ended, newest first')
     fireEvent.click(sort)
     // MUTATION: keep one label for every state.
-    expect(flat(sort)).toBe('Started ↓')
+    expect(flat(sort)).toBe('Started, newest first')
     fireEvent.click(sort)
-    expect(flat(sort)).toBe('Started ↑')
+    expect(flat(sort)).toBe('Started, oldest first')
     fireEvent.click(sort)
-    expect(flat(sort)).toBe('Ended ↓')
+    expect(flat(sort)).toBe('Ended, newest first')
     // MUTATION: name it apart from its words (axe label-content-name-mismatch).
     expect(sort.getAttribute('aria-label')!.startsWith('Ended')).toBe(true)
     // MUTATION: drop what the press will do from the name and the tooltip.
-    expect(sort.getAttribute('aria-label')).toBe('Ended: newest end first; press to sort by start, newest first')
+    expect(sort.getAttribute('aria-label')).toBe('Ended, newest first; press to sort by start, newest first')
     expect(sort.getAttribute('title')).toBe(sort.getAttribute('aria-label'))
   })
 
@@ -334,7 +335,7 @@ describe('QA-111: the sort button says the order the list is in', () => {
     await waitFor(() => expect(document.querySelector('.row.is-compact')).not.toBeNull())
     fireEvent.click(screen.getByRole('tab', { name: /^Live/ }))
     // MUTATION: say `Ended` on a list of agents that have not ended.
-    expect(flat(document.querySelector('.ag-sort'))).toBe('Submitted ↓')
+    expect(flat(document.querySelector('.ag-sort'))).toBe('Submitted, newest first')
   })
 })
 

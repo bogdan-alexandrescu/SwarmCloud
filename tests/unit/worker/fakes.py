@@ -12,6 +12,7 @@ back down.
 
 from __future__ import annotations
 
+import copy
 from typing import Any, Iterator
 
 
@@ -184,8 +185,10 @@ class FakeTransaction:
         # worker passes its startup budget there.
         return ref.get()
 
-    def set(self, ref: FakeDocumentRef, data: dict[str, Any]) -> None:
-        ref.set(data)
+    def set(self, ref: FakeDocumentRef, data: dict[str, Any], merge: bool = False) -> None:
+        # `merge`, as `Transaction.set` takes it: an end writes its attempt's
+        # end in its own transaction, merged into the attempt document (#2064).
+        ref.set(data, merge=merge)
 
     def update(self, ref: FakeDocumentRef, data: dict[str, Any]) -> None:
         ref.update(data)
@@ -198,7 +201,30 @@ class FakeTransactionRunner:
     def run(self, fn: Any, *, call_options: Any = None) -> Any:
         # `call_options` is the budget for begin, commit and rollback, which
         # an in-memory transaction does not make.
-        return fn(FakeTransaction(self._db))
+        #
+        # ALL OR NOTHING, as a Firestore commit is: a body that raises -- a
+        # refused write, a fence met after a write, an abort -- leaves no
+        # write behind. The writes still land as they are made, so a
+        # `FakeTransaction` used outside a runner behaves as before; a body
+        # that fails is undone here, document by document: only what the
+        # body wrote, so a test's own concurrent change (a fence placed from
+        # a hook) stands. Without it, an end that releases its lease and then
+        # has its task write refused (#2064) would read as a released lease
+        # and an unwritten task, which Firestore never shows. The snapshot is
+        # deep: a body that mutated a nested value (a list or map it read)
+        # in place before it failed is undone too.
+        documents = copy.deepcopy(self._db.documents)
+        written = len(self._db.writes)
+        try:
+            return fn(FakeTransaction(self._db))
+        except BaseException:
+            for _, path, _ in self._db.writes[written:]:
+                if path in documents:
+                    self._db.documents[path] = documents[path]
+                else:
+                    self._db.documents.pop(path, None)
+            del self._db.writes[written:]
+            raise
 
 
 class FakeFirestore:
