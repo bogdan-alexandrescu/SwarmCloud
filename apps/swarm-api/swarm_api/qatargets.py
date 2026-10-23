@@ -37,6 +37,23 @@ minting person's email, the tenant and the target, 15 minutes), and is never
 returned, logged or written to Firestore: the target records only
 `credential: {set, set_at, set_by, version}`.
 
+THE CHALLENGE BYPASS (§2.5; lane CAPTCHA-BYPASS, BGD 2026-10-23: "a QA target
+may carry a challenge bypass its owner configures, and only the gate applies
+it, only on the target's own origins"). The spec, `challenge_bypass: {kind:
+header | cookie, name}`, is a registration field checked by
+`qaspec.challenge_bypass` (no reserved header name, a host to scope it to).
+Its VALUE is write-only, set by a workspace admin with `PUT
+/v1/qa-targets/{id}/challenge-bypass`, and stored exactly where the
+credential is: the tenant's one QA secret, in the target's own entry beside
+the username and password (each write keeps the other's keys), read only by
+swarm-api, so no IAM changes. The target records only
+`challenge_bypass_value: {set, set_at, set_by, version}`, audited
+`qa_target_challenge_bypass_set`. Removing the bypass, or changing the host
+or the login's `extra_origin`, removes the value from the secret before the
+change is written: a value an owner made for one host is never sent to
+another. The worker's route answers it beside the sign-in, for a public
+target too.
+
 THE RUN (§1.1, §5, §6). A member names a target; swarm-api renders the
 workflow from it (`qaspec.render`) and stamps each browser step's agent with
 `metadata.qa_target = {id, revision}`. A caller never sends the target, its
@@ -162,6 +179,7 @@ AUDIT_CHANGED = "qa_target_changed"
 AUDIT_DELETED = "qa_target_deleted"
 AUDIT_HOST_APPROVED = "qa_target_host_approved"
 AUDIT_CREDENTIAL_SET = "qa_target_credential_set"
+AUDIT_BYPASS_SET = "qa_target_challenge_bypass_set"
 #: The `live_audit` entry each answer with a target appends (§2.2).
 AUDIT_ISSUED = "qa_target_issued"
 
@@ -203,13 +221,24 @@ DISCOVERY_CLAIM_TTL = timedelta(minutes=5)
 
 USERNAME_MAX = 256
 PASSWORD_MAX = 1024
+#: A challenge bypass's value (§2.5): what both a header and a cookie can
+#: carry unquoted (RFC 6265's cookie-octet, less nothing a header refuses),
+#: and at least 16 characters, because the gate scrubs every occurrence of it
+#: from what the agent receives and a short value would blank unrelated text.
+BYPASS_VALUE_MIN = 16
+BYPASS_VALUE_MAX = 1024
+_BYPASS_VALUE = re.compile(r"[!#-+\--:<-\[\]-~]{%d,%d}" % (BYPASS_VALUE_MIN, BYPASS_VALUE_MAX))
+#: The target's record of its bypass value: a reference, never the value.
+BYPASS_FIELD = "challenge_bypass_value"
+#: The value's key in the target's entry of the tenant's QA secret.
+BYPASS_KEY = "challenge_bypass"
 
 #: The fields a registration body carries, besides `authorized_by`. Each is
 #: stored only when given, so `qaspec`'s defaults apply to the rest.
 SPEC_FIELDS = (
     "name", "base_url", "repository", "sign_in", "screens", "discover", "flows",
     "widths", "themes", "exclusions", "environment", "read_posts", "design_docs",
-    "file", "rate", "clock",
+    "file", "rate", "clock", "challenge_bypass",
 )
 REQUIRED_FIELDS = ("name", "base_url", "repository", "authorized_by")
 
@@ -268,6 +297,10 @@ UNAVAILABLE_MESSAGE = (
     "it is declared, with swarm-api's adder and accessor bindings, by lane VQ-3"
 )
 NOT_FOUND_MESSAGE = "no such QA target"
+BYPASS_VALUE_MESSAGE = (
+    f"a challenge bypass value is {BYPASS_VALUE_MIN} to {BYPASS_VALUE_MAX} characters a header and a "
+    "cookie can both carry: no space, quote, comma, semicolon, backslash or line break"
+)
 NO_SCREENS_MESSAGE = (
     "the target lists no screens and none were discovered; press Run discovery on the QA "
     "targets page (or call POST /v1/qa-targets/{id}:discover), then run it"
@@ -604,6 +637,14 @@ def credential_status(doc: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def bypass_status(doc: Mapping[str, Any]) -> dict[str, Any]:
+    """Whether the challenge bypass's value is set (§2.5): never the value."""
+    return credential_status({"credential": doc.get(BYPASS_FIELD) or {}})
+
+
+_UNSET = {"set": False, "set_at": None, "set_by": None, "version": None}
+
+
 def to_api(doc: Mapping[str, Any]) -> dict[str, Any]:
     body = {
         "id": doc.get("id"),
@@ -616,6 +657,7 @@ def to_api(doc: Mapping[str, Any]) -> dict[str, Any]:
         "approved_origins": list(doc.get("approved_origins") or []),
         "repo_id": doc.get("repo_id"),
         "credential": credential_status(doc),
+        BYPASS_FIELD: bypass_status(doc),
         "authorized_by": doc.get("authorized_by"),
         "attested_by": doc.get("attested_by"),
         "attested_at": _iso(doc.get("attested_at")),
@@ -750,6 +792,12 @@ class QaTargets:
         posts = _read_posts(values.get("read_posts"))
         if posts is not None:
             doc["read_posts"] = posts
+        try:
+            bypass = qaspec.challenge_bypass(doc)
+        except qaspec.QaSpecError as exc:
+            raise _invalid(exc.message, field="challenge_bypass") from None
+        if bypass is not None:
+            doc["challenge_bypass"] = bypass
         check_spec(doc)
         return doc
 
@@ -771,7 +819,8 @@ class QaTargets:
             "approved_by": None,
             "approved_at": None,
             "approved_origins": [],
-            "credential": {"set": False, "set_at": None, "set_by": None, "version": None},
+            "credential": dict(_UNSET),
+            BYPASS_FIELD: dict(_UNSET),
             "authorized_by": authorized_by,
             "attested_by": by,
             "attested_at": now,
@@ -794,9 +843,14 @@ class QaTargets:
         return doc
 
     def patch(self, tenant_id: str, target_id: str, changes: Mapping[str, Any], *,
-              by: str) -> dict[str, Any]:
+              by: str, credentials: QaCredentialStore | None = None) -> dict[str, Any]:
         """`changes` holds only the fields the caller sent; a None clears an
-        optional one. A change of host or `extra_origin` resets the approval."""
+        optional one. A change of host or `extra_origin` resets the approval.
+
+        A change that removes the challenge bypass, or moves the host or the
+        login's `extra_origin`, removes the bypass's value from the secret
+        FIRST (§2.5): a value its owner made for one host never reaches another,
+        and a change whose value cannot be removed is not written."""
         if not changes:
             raise _invalid("a change names at least one field")
         for key in REQUIRED_FIELDS:
@@ -833,6 +887,10 @@ class QaTargets:
         if host_reset:
             new.update(host_state=HOST_PENDING, approved_by=None, approved_at=None,
                        approved_origins=[])
+        bypass_cleared = bypass_status(current)["set"] and (host_reset or doc.get("challenge_bypass") is None)
+        if bypass_cleared:
+            self._forget_bypass(tenant_id, target_id, credentials)
+            new[BYPASS_FIELD] = dict(_UNSET)
         ref = self._ref(target_id)
         transaction = self._db.transaction()
 
@@ -845,6 +903,7 @@ class QaTargets:
             _audit(txn, self._db, action=AUDIT_CHANGED, tenant_id=tenant_id, target_id=target_id,
                    by=by, now=now, detail={"fields": changed, "host": new["host"],
                                            "host_reset": host_reset,
+                                           "bypass_value_cleared": bypass_cleared,
                                            "revision": new["revision"]})
 
         _apply(transaction)
@@ -856,9 +915,10 @@ class QaTargets:
                credentials: QaCredentialStore | None) -> None:
         """The document, its audit row, and its entry in the tenant's QA
         secret. The secret first: a target whose credential cannot be removed
-        is not deleted, so the password never outlives its registration."""
+        is not deleted, so the password (or the challenge bypass's value)
+        never outlives its registration."""
         current = self.get(tenant_id, target_id)
-        if credential_status(current)["set"]:
+        if credential_status(current)["set"] or bypass_status(current)["set"]:
             if credentials is None:
                 raise QaCredentialUnavailable(UNAVAILABLE_MESSAGE)
             values = credentials.read(tenant_id)
@@ -976,7 +1036,10 @@ class QaTargets:
                            field="sign_in")
         self.consume_link(link_token, email=by, tenant_id=tenant_id, target_id=target_id)
         values = credentials.read(tenant_id)
-        values[target_id] = {"username": username, "password": password}
+        # The entry's other keys (the challenge bypass's value, §2.5) are kept.
+        entry = values.get(target_id)
+        values[target_id] = {**(entry if isinstance(entry, dict) else {}),
+                             "username": username, "password": password}
         try:
             version = credentials.write(tenant_id, values)
         finally:
@@ -1001,6 +1064,65 @@ class QaTargets:
         doc = _apply(transaction)
         log.info("qa target credential set tenant=%s target=%s", tenant_id, target_id)
         return credential_status(doc)
+
+    # -- the challenge bypass's value (§2.5) -----------------------------------------
+
+    def set_challenge_bypass(self, tenant_id: str, target_id: str, *, value: str, by: str,
+                             credentials: QaCredentialStore) -> dict[str, Any]:
+        """A workspace admin's write of the bypass's value: the secret's new
+        version, then the record on the target with its audit row, as the
+        credential's. The value is a local here and in the store, and nothing else."""
+        current = self.get(tenant_id, target_id)
+        spec = current.get("challenge_bypass")
+        if not isinstance(spec, Mapping):
+            raise _invalid("this QA target has no challenge_bypass; set its kind and name first",
+                           field="challenge_bypass")
+        if not isinstance(value, str) or not _BYPASS_VALUE.fullmatch(value):
+            raise _invalid(BYPASS_VALUE_MESSAGE, field="challenge_bypass")
+        values = credentials.read(tenant_id)
+        entry = values.get(target_id)
+        values[target_id] = {**(entry if isinstance(entry, dict) else {}), BYPASS_KEY: value}
+        try:
+            version = credentials.write(tenant_id, values)
+        finally:
+            values = {}
+            entry = None
+            value = ""
+        now = self._now()
+        ref = self._ref(target_id)
+        record = {"set": True, "set_at": now, "set_by": by, "version": version}
+        detail = {"version": version, "kind": spec.get("kind"), "name": spec.get("name")}
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> dict[str, Any]:
+            snap = _snapshot(txn.get(ref))
+            if not snap.exists:
+                raise NotFound(NOT_FOUND_MESSAGE)
+            doc = {**(snap.to_dict() or {}), BYPASS_FIELD: record}
+            txn.set(ref, doc)
+            _audit(txn, self._db, action=AUDIT_BYPASS_SET, tenant_id=tenant_id,
+                   target_id=target_id, by=by, now=now, detail=detail)
+            return doc
+
+        doc = _apply(transaction)
+        log.info("qa target challenge bypass set tenant=%s target=%s", tenant_id, target_id)
+        return bypass_status(doc)
+
+    def _forget_bypass(self, tenant_id: str, target_id: str,
+                       credentials: QaCredentialStore | None) -> None:
+        """The bypass's value out of the target's entry, its other keys kept."""
+        if credentials is None:
+            raise QaCredentialUnavailable(UNAVAILABLE_MESSAGE)
+        values = credentials.read(tenant_id)
+        entry = values.get(target_id)
+        if isinstance(entry, dict) and BYPASS_KEY in entry:
+            rest = {k: v for k, v in entry.items() if k != BYPASS_KEY}
+            values = {k: v for k, v in values.items() if k != target_id}
+            if rest:
+                values[target_id] = rest
+            credentials.write(tenant_id, values)
+        log.info("qa target challenge bypass value removed tenant=%s target=%s", tenant_id, target_id)
 
     # -- the run (§6) ------------------------------------------------------------
 
@@ -1398,8 +1520,17 @@ class QaTargetIssuer:
         answer = self._answer(target)
         answer["mutating"] = self._mutating(target, task)
         sign_in = target.get("sign_in") or {"kind": "none"}
-        if sign_in.get("kind") == "own_login":
-            answer["sign_in"].update(self._credential(tenant_id, target))
+        own_login = sign_in.get("kind") == "own_login"
+        if own_login and not credential_status(target)["set"]:
+            raise Conflict("the QA target signs in with its own login and no credential is set")
+        if own_login or "challenge_bypass" in answer:
+            # One read of the target's entry serves both (§2.2, §2.5).
+            entry = self._entry(tenant_id, target)
+            if own_login:
+                answer["sign_in"].update(self._credential(entry))
+            if "challenge_bypass" in answer:
+                answer["challenge_bypass"]["value"] = self._bypass_value(entry)
+            entry = {}
 
         now = self._now()
         entry_id = new_id("la")
@@ -1413,7 +1544,9 @@ class QaTargetIssuer:
             "email": None,
             "at": now,
             "detail": {"target_id": target_id, "revision": target.get("revision"),
-                       "sign_in": sign_in.get("kind")},
+                       "sign_in": sign_in.get("kind"),
+                       # The bypass's kind, never its value.
+                       "challenge_bypass": (answer.get("challenge_bypass") or {}).get("kind")},
         })
         log.info("qa target issued tenant=%s task=%s attempt=%s generation=%d target=%s",
                  tenant_id, attempt.task_id, attempt.attempt_id, attempt.generation, target_id)
@@ -1435,7 +1568,13 @@ class QaTargetIssuer:
                 # §2.2: the gate clicks these on the login page before the form.
                 served_sign_in["start_clicks"] = [dict(c) for c in sign_in["start_clicks"]]
         paths, controls = qaspec._exclusions(target)
+        served: dict[str, Any] = {}
+        bypass = target.get("challenge_bypass")
+        if isinstance(bypass, Mapping) and bypass_status(target)["set"]:
+            # §2.5: the gate adds it on `origins` alone. Its value is added by `issue`.
+            served["challenge_bypass"] = {"kind": bypass.get("kind"), "name": bypass.get("name")}
         return {
+            **served,
             "target_id": target.get("id"),
             "revision": target.get("revision"),
             "base_url": target.get("base_url"),
@@ -1472,16 +1611,27 @@ class QaTargetIssuer:
         return any(isinstance(flow, Mapping) and flow.get("id") == flow_id
                    and flow.get("mutating") is True for flow in flows)
 
-    def _credential(self, tenant_id: str, target: Mapping[str, Any]) -> dict[str, str]:
-        if not credential_status(target)["set"]:
-            raise Conflict("the QA target signs in with its own login and no credential is set")
+    def _entry(self, tenant_id: str, target: Mapping[str, Any]) -> Mapping[str, Any]:
+        """The target's entry of the tenant's QA secret, read at this moment."""
         if self._credentials is None:
             raise QaCredentialUnavailable(UNAVAILABLE_MESSAGE)
         entry = self._credentials.read(tenant_id).get(str(target.get("id")))
-        if not isinstance(entry, Mapping) or not isinstance(entry.get("username"), str) \
-                or not isinstance(entry.get("password"), str):
+        if not isinstance(entry, Mapping):
+            raise QaCredentialUnavailable(UNAVAILABLE_MESSAGE)
+        return entry
+
+    @staticmethod
+    def _credential(entry: Mapping[str, Any]) -> dict[str, str]:
+        if not isinstance(entry.get("username"), str) or not isinstance(entry.get("password"), str):
             raise QaCredentialUnavailable(UNAVAILABLE_MESSAGE)
         return {"username": entry["username"], "password": entry["password"]}
+
+    @staticmethod
+    def _bypass_value(entry: Mapping[str, Any]) -> str:
+        value = entry.get(BYPASS_KEY)
+        if not isinstance(value, str) or not _BYPASS_VALUE.fullmatch(value):
+            raise QaCredentialUnavailable(UNAVAILABLE_MESSAGE)
+        return value
 
 
 __all__ = [
@@ -1493,6 +1643,7 @@ __all__ = [
     "QaTargetIssuer",
     "QaTargets",
     "SecretManagerQaCredentials",
+    "bypass_status",
     "check_public_host",
     "qa_target_message",
     "render_run",

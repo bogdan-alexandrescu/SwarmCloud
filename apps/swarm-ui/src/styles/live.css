@@ -85,6 +85,12 @@
 .live-frame.is-phone { border-radius: 36px; }
 .live-frame.is-tablet { border-radius: 22px; }
 .live-frame.is-phone > .live-screen { border-radius: 26px; }
+/* THE DESKTOP FRAME'S OWN BOX (visual QA run 6, task-006): an inset ring, so
+   it takes no room from the fit (MOBILE_BEZEL / DESKTOP_BEZEL in
+   LiveBrowser.tsx stay true) and sits under the screen, whose own hairline --
+   warn in control -- still draws over it. Where the screen is not there, the
+   frame is still a bordered, rounded box. */
+.live-frame.is-desktop.is-bordered { box-shadow: inset 0 0 0 1px var(--line); border-radius: var(--radius); }
 .live-frame.is-tablet > .live-screen { border-radius: 12px; }
 .live-stage-caption { flex: none; }
 .live-screen {
@@ -218,3 +224,17 @@
 }
 .bb-card[hidden] { display: none; }
 .bb-how { opacity: .8; }
+
+/* `LOG DONE` IS A STATUS, NOT A BUTTON (visual QA run 6,
+   flow-find-failure-desktop-04). AgentLogs.tsx draws the finished chip as the
+   console's status mark (`is-mark`: the ended glyph and its words), and this
+   takes away the pill agents.css gives `.ag-logs-final` -- a bordered,
+   rounded box in a row of buttons read as one more. It is here, not in
+   agents.css, only because this lane's territory holds this sheet; every
+   screen that draws the Logs toolbar loads it (AgentSplit and LiveBrowser
+   both import LiveBrowser.tsx). Two classes, so it wins whatever order the
+   two sheets load in. */
+.ag-logs-final.is-mark {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 0; border: none; border-radius: 0;
+}

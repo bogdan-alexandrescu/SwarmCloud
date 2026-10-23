@@ -11,6 +11,7 @@ lane VQ-2 TARGETS, part of #1933).
     POST   /v1/qa-targets/{id}:discover            a member starts its discovery (§4.1)
     POST   /v1/qa-targets/{id}/credential-links    a one-time link to the console's form (an admin)
     PUT    /v1/qa-targets/{id}/credential          the form's write, with the link's token
+    PUT    /v1/qa-targets/{id}/challenge-bypass    its challenge bypass's value (a workspace admin, §2.5)
     POST   /v1/attempts/{attempt_id}/qa-target     WORKER ONLY: its attempt's target
 
 Four kinds of caller. A WORKSPACE ADMIN registers, changes and deletes a
@@ -28,6 +29,17 @@ THE CREDENTIAL IS ACCEPTED ON THE PUT AND NOWHERE ELSE, and no route returns
 it. Its body is not a `StrictModel`, whose whitespace stripping would change a
 password; the validation handler never echoes a body. The PUT and the
 worker's route are in `main.UNCAPTURED_ROUTES`.
+
+THE CHALLENGE BYPASS'S VALUE (§2.5; lane CAPTCHA-BYPASS) is write-only in the
+same way: accepted on its PUT alone, from a workspace admin, in a body that is
+not a `StrictModel`, and answered as `{set, set_at, set_by, version}`. Its
+kind and name are registration fields (`TargetBody.challenge_bypass`). The
+PUT takes no one-time link: the value is a key the app's owner made for this
+platform's runs, typed in the console's target form by the admin who is
+signed in, rather than a person's own password reaching the form by a link a
+chat could carry. `BYPASS_ROUTE` is the route `main.UNCAPTURED_ROUTES` should
+name beside `CREDENTIAL_ROUTE` (a request in this lane's PR: main.py is
+outside its territory, and nothing captures a body today).
 """
 
 from __future__ import annotations
@@ -46,6 +58,7 @@ from ..errors import Forbidden
 from ..mergesettings import is_owner
 from ..qatargets import (
     ADMIN_REQUIRED_MESSAGE,
+    BYPASS_VALUE_MAX,
     PASSWORD_MAX,
     USERNAME_MAX,
     QaCredentialStore,
@@ -68,6 +81,7 @@ router = APIRouter(prefix="/v1", tags=["qa-targets"])
 #: The routes `main.UNCAPTURED_ROUTES` names: the one that takes the
 #: credential, and the one that serves it to the worker.
 CREDENTIAL_ROUTE = "/v1/qa-targets/{target_id}/credential"
+BYPASS_ROUTE = "/v1/qa-targets/{target_id}/challenge-bypass"
 ISSUE_ROUTE = "/v1/attempts/{attempt_id}/qa-target"
 
 
@@ -92,6 +106,8 @@ class TargetBody(StrictModel):
     file: Any = None
     rate: Any = None
     clock: Any = None
+    #: `{kind: header | cookie, name}` (§2.5); its value is the bypass PUT's.
+    challenge_bypass: Any = None
     #: The registrant's statement of who said this application may be tested.
     authorized_by: Any = None
 
@@ -116,6 +132,14 @@ class CredentialWrite(BaseModel):
     password: str = Field(min_length=1, max_length=PASSWORD_MAX)
     #: The `t` of the one-time link (`POST .../credential-links`): required.
     link_token: str = Field(min_length=1, max_length=256)
+
+
+class BypassWrite(BaseModel):
+    #: Write-only, and not stripped: the value is the app owner's, byte for byte.
+    #: Its pattern is `QaTargets.set_challenge_bypass`'s, whose refusal names no value.
+    model_config = ConfigDict(extra="forbid")
+
+    value: str = Field(min_length=1, max_length=BYPASS_VALUE_MAX)
 
 
 def _resolver(request: Request) -> Any:
@@ -200,7 +224,9 @@ def patch_target(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     by = require_workspace_admin(ctx, auth, tenant_id)
-    doc = _targets(request, ctx).patch(tenant_id, target_id, _changes(body), by=by)
+    # The store, for a change that removes the challenge bypass's value (§2.5).
+    doc = _targets(request, ctx).patch(tenant_id, target_id, _changes(body), by=by,
+                                       credentials=_credentials(request, ctx))
     return {"qa_target": to_api(doc)}
 
 
@@ -321,6 +347,21 @@ def put_credential(
         tenant_id, target_id, username=body.username, password=body.password,
         link_token=body.link_token, by=by, credentials=_credentials(request, ctx))
     return {"credential": status_}
+
+
+@router.put("/qa-targets/{target_id}/challenge-bypass")
+def put_challenge_bypass(
+    target_id: str,
+    body: BypassWrite,
+    request: Request,
+    auth: AuthContext = Depends(current_auth),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    by = require_workspace_admin(ctx, auth, tenant_id)
+    status_ = _targets(request, ctx).set_challenge_bypass(
+        tenant_id, target_id, value=body.value, by=by, credentials=_credentials(request, ctx))
+    return {"challenge_bypass_value": status_}
 
 
 @router.post("/attempts/{attempt_id}/qa-target")

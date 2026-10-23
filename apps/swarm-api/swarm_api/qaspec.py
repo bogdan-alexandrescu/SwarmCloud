@@ -105,6 +105,30 @@ START_CLICK_REFUSED = ("logout", "log out", "sign out")
 _PLAYWRIGHT_SELECTOR = re.compile(
     r":(?:has-text|text|text-is|text-matches|nth-match|left-of|right-of|above|below|near)\(|:visible\b|>>"
     r"|^\s*(?:text|css|xpath|id|role|data-testid|internal:[a-z-]+)=")
+#: A challenge bypass (§2.5; lane CAPTCHA-BYPASS, BGD 2026-10-23): a header or
+#: a cookie the app's owner configured to skip their own challenge, which the
+#: live gate adds on the target's approved origins alone. Its name is an HTTP
+#: token (RFC 9110 §5.6.2, less the backtick no prompt or command quotes).
+CHALLENGE_BYPASS_KINDS = ("header", "cookie")
+CHALLENGE_BYPASS_NAME_MAX = 64
+_BYPASS_NAME = re.compile(r"[A-Za-z0-9!#$%&'*+.^_|~-]{1,64}")
+#: Header names a bypass never takes, lower case. The app's own credentials
+#: (`authorization`, `cookie`: a bypass header would replace the session the
+#: gate signed in with), the request's routing and framing (`host`,
+#: `content-length`, `transfer-encoding`, `connection`, `upgrade`, `te`,
+#: `trailer`, `keep-alive`, `expect`), what the browser itself vouches for
+#: (`origin`, `referer`), and a response's (`set-cookie`). Chromium refuses
+#: several of them in `Fetch.continueRequest` anyway ("Unsafe header",
+#: docs/design/qa-identity-measurements.md M3). Restated by the gate
+#: (`agent_worker.livegate.qatarget`), which cannot import swarm-api;
+#: tests/unit/worker/test_qa_target_challenge_bypass.py holds the two equal.
+RESERVED_BYPASS_HEADERS = frozenset({
+    "authorization", "cookie", "host", "set-cookie", "content-length", "transfer-encoding",
+    "connection", "upgrade", "te", "trailer", "keep-alive", "expect", "origin", "referer",
+})
+#: And every name under these prefixes: `Proxy-*` is the proxy's credentials,
+#: `Sec-*` is the browser's own (fetch metadata, client hints).
+RESERVED_BYPASS_HEADER_PREFIXES = ("proxy-", "sec-")
 DEFAULT_DESIGN_DOCS = ("DESIGN.md", "docs/design*/**", "**/style-guide*")
 DEFAULT_READY = "body"
 DEFAULT_FILE: Mapping[str, Any] = {
@@ -386,6 +410,37 @@ def start_clicks(target: Mapping[str, Any]) -> list[dict[str, str]]:
             click["css"] = css
         out.append(click)
     return out
+
+
+def challenge_bypass(target: Mapping[str, Any]) -> dict[str, str] | None:
+    """The target's `challenge_bypass`, checked (§2.5): `{kind, name}`, or
+    None when it has none. Never its value, which is write-only and set apart
+    (`PUT /v1/qa-targets/{id}/challenge-bypass`): a value here is refused, so
+    one sent with the registration is never stored on the document."""
+    raw = target.get("challenge_bypass")
+    if raw is None:
+        return None
+    shape = "challenge_bypass must be {kind: header or cookie, name}; its value is set on its own"
+    if not isinstance(raw, Mapping) or set(raw) != {"kind", "name"}:
+        raise _invalid(shape)
+    try:
+        base_url(target)
+    except QaSpecError:
+        raise _invalid("a challenge bypass needs the target's host: the gate adds it on that host's "
+                       "approved origins and nowhere else") from None
+    kind, name = raw.get("kind"), raw.get("name")
+    if kind not in CHALLENGE_BYPASS_KINDS:
+        raise _invalid(shape)
+    if not isinstance(name, str) or not _BYPASS_NAME.fullmatch(name):
+        raise _invalid(f"challenge_bypass.name must be a {kind} name: 1 to {CHALLENGE_BYPASS_NAME_MAX} "
+                       "letters, digits or !#$%&'*+.^_|~- with no space or colon")
+    lowered = name.lower()
+    if kind == "header" and (lowered in RESERVED_BYPASS_HEADERS
+                             or lowered.startswith(RESERVED_BYPASS_HEADER_PREFIXES)):
+        raise _invalid("challenge_bypass.name is a header the app's session, the request's framing or the "
+                       "browser owns (Authorization, Cookie, Host, Proxy-* and the like); name one of your own, "
+                       "such as X-QA-Bypass")
+    return {"kind": kind, "name": name}
 
 
 def _repository(target: Mapping[str, Any]) -> str:

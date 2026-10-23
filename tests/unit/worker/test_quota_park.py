@@ -14,6 +14,7 @@ from agent_worker.errors import ExitCode
 from swarm_common.models import ProviderState
 from swarm_common.states import EventType, ParkReason, TaskState
 
+from fakes import FakeTransactionRunner
 from worker_seeds import TENANT, seed_attempt, seed_tenant
 
 
@@ -67,26 +68,38 @@ def test_quota_park_releases_the_lease(db, store, worker_factory):
     assert manifests, "a parked attempt must leave a checkpoint behind"
 
 
-def test_park_happens_before_the_slot_is_returned(db, worker_factory):
-    """Ordering: the task must leave the concurrency states before the pools
-    are decremented, so no document ever claims a released slot is in use."""
+def test_park_and_the_slot_coming_back_are_one_commit(db, worker_factory):
+    """The task leaves the concurrency states in the same commit that brings the
+    pools back down (#2064), so no document ever claims a released slot is in
+    use, and no PARKED task ever holds one. It used to be two transactions in
+    that order; a contention abort on the second left the task PARKED with its
+    lease held."""
     seed_attempt(
         db,
         task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.05,
                     "quota_exhausted": True, "retry_after_seconds": 3600},
     )
-    worker, _, _ = worker_factory()
+    commits: list[list[tuple[str, str, dict]]] = []
+
+    class Recording(FakeTransactionRunner):
+        def run(self, fn, *, call_options=None):
+            start = len(db.writes)
+            result = super().run(fn, call_options=call_options)
+            commits.append(list(db.writes[start:]))
+            return result
+
+    worker, _, _ = worker_factory(txn_runner=Recording(db))
     assert worker.run() == ExitCode.PARKED
 
-    state_write = max(
-        i for i, (op, path, data) in enumerate(db.writes)
-        if path == "tasks/task_1" and data.get("state") == TaskState.PARKED.value
-    )
-    pool_write = min(
-        i for i, (op, path, data) in enumerate(db.writes)
-        if path.startswith("pools/") and "active" in data
-    )
-    assert state_write < pool_write, "the slot was returned before the task stopped holding it"
+    parked = [
+        writes for writes in commits
+        if any(path == "tasks/task_1" and data.get("state") == TaskState.PARKED.value
+               for _, path, data in writes)
+    ]
+    assert len(parked) == 1, commits
+    # MUTATION: release the lease in its own transaction after the park.
+    assert any(path.startswith("pools/") and "active" in data
+               for _, path, data in parked[0]), "the slot came back outside the park's commit"
 
 
 def test_short_wait_retries_in_place_then_parks_when_it_keeps_failing(db, worker_factory):

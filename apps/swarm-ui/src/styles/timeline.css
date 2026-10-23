@@ -177,6 +177,9 @@
 .tl-ended { flex-wrap: wrap; }
 .tl-xp { white-space: nowrap; }
 .tl-dash { color: var(--text-faint); }
+/* The headline's own window, at the figure's weight (6:work-a-003): kept on
+   one line, so 'Sep 12 – Sep 25' never splits at its dash. */
+.tl-win { white-space: nowrap; }
 .tl-legend {
   display: flex;
   flex-wrap: wrap;
@@ -619,7 +622,11 @@
   .tl-seg.is-park.is-now { height: 5px; }
   .tl-seg-t,
   .tl-tag { display: none; }
-  .tl-axis .tl-lab { display: none; }
+  /* THE LANE COUNT STAYS AT 390 (visual QA run 6, 6:work-a-011): hidden here,
+     '2 workflows · 15 standalone' was in neither the image nor the page text.
+     The phone stacks a row's label above its track, so the count is the
+     sticky head's first line, above the axis. */
+  .tl-axis .tl-lab { padding-bottom: 2px; }
   .tl-detail {
     position: fixed;
     left: 0;

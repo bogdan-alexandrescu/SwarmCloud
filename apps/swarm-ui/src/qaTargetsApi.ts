@@ -15,11 +15,18 @@ import { read, route, write, type Result } from './fetch'
  *   POST   /v1/qa-targets/{id}:approve-host      a PLATFORM admin approves the host: {host, extra_origin?} (VQ-Q1, audited)
  *   POST   /v1/qa-targets/{id}/credential-links  a one-time link to the credential form (an admin)
  *   PUT    /v1/qa-targets/{id}/credential        the form's write, with the link's token
+ *   PUT    /v1/qa-targets/{id}/challenge-bypass  its challenge bypass's value (a workspace admin, §2.5)
  *
  * A TARGET IS COPIED FIELD BY FIELD (`normQaTarget`), its credential as
  * status only -- set, when, by whom, which version -- so a reply that
  * (wrongly) carried a value could not reach the page. The credential itself
  * is taken by `putQaCredential` alone and held by nothing here.
+ *
+ * A CHALLENGE BYPASS (lane CAPTCHA-BYPASS, part of #2058; §2.5) is a header or
+ * cookie the app's owner configured to skip their own CAPTCHA for these runs.
+ * Its kind and name are registration fields; its value is status only here,
+ * exactly as the credential's (`challenge_bypass_value`), and is taken by
+ * `putQaChallengeBypass` alone.
  */
 
 /** `swarm_api.qatargets._TARGET_ID`. */
@@ -62,6 +69,12 @@ export interface QaSignIn {
   start_clicks: QaStartClick[]
 }
 
+/** `qaspec.challenge_bypass`: the owner's header or cookie, by kind and name. Never its value. */
+export interface QaChallengeBypass {
+  kind: 'header' | 'cookie'
+  name: string
+}
+
 export interface QaCredentialStatus {
   set: boolean
   set_at: string | null
@@ -88,6 +101,10 @@ export interface QaTarget {
   repository: string | null
   sign_in: QaSignIn
   credential: QaCredentialStatus
+  /** Its challenge bypass, or null when it has none (§2.5). */
+  challenge_bypass: QaChallengeBypass | null
+  /** Whether the bypass's value is set: status only, as `credential`. */
+  challenge_bypass_value: QaCredentialStatus
   screens: QaScreen[]
   environment: 'production' | 'non_production'
   authorized_by: string | null
@@ -114,6 +131,8 @@ export interface QaTargetBody {
   sign_in?: Record<string, unknown>
   screens?: QaScreen[]
   environment?: 'production' | 'non_production'
+  /** `{kind, name}`; null on a change removes it (and the API removes its value). */
+  challenge_bypass?: QaChallengeBypass | null
 }
 
 /** A body: the form's fields, and any `MORE_FIELDS` (null clears one on a change). */
@@ -171,6 +190,13 @@ function normCredential(raw: unknown): QaCredentialStatus {
   }
 }
 
+function normBypass(raw: unknown): QaChallengeBypass | null {
+  const b = rec(raw)
+  const name = str(b.name)
+  if (name === null || (b.kind !== 'header' && b.kind !== 'cookie')) return null
+  return { kind: b.kind, name }
+}
+
 function normScreens(raw: unknown): QaScreen[] {
   return Array.isArray(raw)
     ? raw.flatMap((s) => {
@@ -206,6 +232,8 @@ export function normQaTarget(raw: unknown): QaTarget | null {
     repository: str(t.repository),
     sign_in: normSignIn(t.sign_in),
     credential: normCredential(t.credential),
+    challenge_bypass: normBypass(t.challenge_bypass),
+    challenge_bypass_value: normCredential(t.challenge_bypass_value),
     screens,
     environment: t.environment === 'non_production' ? 'non_production' : 'production',
     authorized_by: str(t.authorized_by),
@@ -345,6 +373,11 @@ export async function mintQaCredentialLink(id: string): Promise<Result<{ token: 
   if (r.status !== 'ok') return r.status === 'error' ? r : { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The link was not answered.' } }
   const body = rec(r.data)
   return { ...r, data: { token: tokenOfLinkPath(body.path), expires_at: str(body.expires_at) } }
+}
+
+/** The one call that carries a challenge bypass's value, in that one request's body. */
+export function putQaChallengeBypass(id: string, value: string): Promise<Result<unknown>> {
+  return write(route('/v1/qa-targets/{target_id}/challenge-bypass', { target_id: id }), 'PUT', { value })
 }
 
 /** The one call that carries the credential, in that one request's body. */
