@@ -174,8 +174,28 @@ run "the_workflow_rollup_runs_per_tenant_as_its_own_identity" {
   }
 
   assert {
-    condition     = google_cloud_scheduler_job.workflow_rollup["eng"].http_target[0].uri == "https://swarm-api-abcdef-uc.a.run.app/v1/admin/workflows/rollup?tenant_id=eng"
-    error_message = "the job must call the route swarm_api/routes/admin.py serves, with the tenant as the query parameter it requires"
+    # MUTATION: drop `&seal_outcomes=true` from the job's uri -> no tick seals outcome_days.
+    condition     = google_cloud_scheduler_job.workflow_rollup["eng"].http_target[0].uri == "https://swarm-api-abcdef-uc.a.run.app/v1/admin/workflows/rollup?tenant_id=eng&seal_outcomes=true"
+    error_message = "the job must call the route swarm_api/routes/admin.py serves, with the tenant as the query parameter it requires, and ask it to seal the tenant's ended outcome days (COUNTS-SEAL, #2149)"
+  }
+
+  # COUNTS-SEAL (#2149): the same job seals each tenant's ended outcome_days, so
+  # no new job, route grant or IAM row. Its schedule is the variable's
+  # fifteen-minute default, so a day is sealed within a quarter hour of its
+  # 00:15Z grace, and every later tick finds it sealed and derives nothing.
+  assert {
+    # MUTATION: give the job a schedule other than the variable's -> this fails.
+    condition     = google_cloud_scheduler_job.workflow_rollup["eng"].schedule == var.workflow_rollup_schedule && google_cloud_scheduler_job.workflow_rollup["eng"].time_zone == "Etc/UTC"
+    error_message = "the rollup job, which also seals outcome days, runs on var.workflow_rollup_schedule in UTC, the zone outcome days are cut in"
+  }
+
+  assert {
+    # MUTATION: drop the sealing from the job's description -> this fails.
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.workflow_rollup :
+      strcontains(job.description, "seals tenant ${t}'s ended outcome days")
+    ])
+    error_message = "each rollup job's description says it seals its tenant's ended outcome days"
   }
 
   assert {
