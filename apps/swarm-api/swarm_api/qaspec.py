@@ -653,7 +653,10 @@ def _gate_report_line() -> str:
         "write first \"the gate refused N requests (<count> <method> to <origin>, ...), so these screens "
         "show the app without them:\", by method and origin, then list every screen whose errors file has "
         "a non-empty `gate_refused`; when N is 0 say the gate refused none, and when a manifest's "
-        "`gate_refusals` was not read say so. Carry every review's `about_run` into findings.json's "
+        "`gate_refusals` was not read say so. Then, on a line of its own, name what the gate let through: "
+        "for each entry of the manifests' `gate_refusals.allowed`, write its label (\"allowed: IdP token "
+        "refresh\") with its count, method, origin and path; these are not refusals and never count toward "
+        "N. Carry every review's `about_run` into findings.json's "
         "`about_run`, and move there any finding whose evidence is a request in a screen's `gate_refused` "
         "or a console error naming one of its URLs: a gate refusal is never the app's defect."
     )

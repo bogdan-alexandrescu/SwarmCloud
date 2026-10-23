@@ -149,6 +149,13 @@ NOT_SWITCHABLE_CODES = frozenset({
     # so a parent a deployed worker runs has a signature to verify; only a
     # rewritten one is refused.
     "child_parent_unsigned",
+    # An issue run's owner signature (#1569, lane RUN-OWNER-SIG; owner
+    # decision 2026-10-23 ~17:27Z, "sign the owner fields now"), for the same
+    # reason: continuing past it IS the breach -- the run's workflow submitted
+    # as a member an agent wrote into its own run document, and that member's
+    # forge slot resolved for it. Enforced wherever runs are signed (a
+    # deployed swarm-api always has the signer), never report-only.
+    "run_owner_unverified",
     # The loan decline (LOAN-DECLINE, docs/workspaces.md §6.4), as the
     # workspace codes above: raised only by the POST
     # /v1/admin/people/{workspace_id}/loan/decline that change introduces, so

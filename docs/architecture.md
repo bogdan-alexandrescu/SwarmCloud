@@ -350,6 +350,15 @@ That policy still demanded CPU request == limit when bursting first
 released, and refused every GKE job for about 40 minutes on 2026-10-20 until
 it was amended; the policy and the renderer are one rule in two places.
 
+The control-plane services follow the same rule on Cloud Run, with one
+recorded exception: swarm-api runs with startup CPU boost on, which bursts
+past its 1 vCPU limit while an instance starts, by BGD's decision of
+2026-10-23 (#1816 option (a)) after slow Python starts outlasted its startup
+probe; every other Cloud Run service keeps boost off, swarm-api keeps CPU
+always allocated, and the terraform tests (`tests/terraform/cloud_run.tftest.hcl`,
+`github_hooks.tftest.hcl`, `mcp_test_server.tftest.hcl`) fail if another
+service turns it on.
+
 ### Resource classes were measured, not guessed
 
 One working Claude Code lane on the reference workstation, measured 2026-09-15:

@@ -49,35 +49,61 @@ function pick(container: HTMLElement, name: string) {
 // QA-103
 // ---------------------------------------------------------------------------
 
-describe('QA-103: the prompt field says it is missing where it is, at both widths', () => {
-  it('names the missing prompt under its own field as soon as claude-code is chosen', async () => {
+// RULE REVERSED BY RUN 6 (6:flow-submit-form-desktop-02, owner pick
+// 2026-10-23, "Show only 'required'"): QAFIX5 drew a quiet "prompt missing"
+// line under the untouched prompt, and run 6 read it as an error before anyone
+// had tried anything. Before an attempt the field now carries only its
+// `required` tag; a submit attempt, or leaving the field empty, draws the
+// error line at the field itself. qafix6.submit.test.tsx (a2) holds the rest.
+describe('QA-103: the prompt field says it is required where it is, and missing once tried, at both widths', () => {
+  it('shows only its `required` tag as soon as claude-code is chosen', async () => {
     const container = await form()
     pick(container, 'claude-code')
     const field = container.querySelector<HTMLElement>('.sbf-field.is-required')!
     const editor = field.querySelector('textarea')!
-    const line = field.querySelector<HTMLElement>('.sbf-unfilled')
-    // MUTATION: drop the unfilled line -> the field shows only its `required` tag, as run 5b saw at 1440.
-    expect(line, 'the field does not say the prompt is missing').not.toBeNull()
-    // MUTATION: word it without the key -> the reader cannot tell which field the panel's "prompt missing" means.
-    expect(visible(line)).toBe('prompt missing')
-    // MUTATION: drop the editor's describedby -> a screen reader on the field never hears it.
-    expect(editor.getAttribute('aria-describedby')).toBe(line!.id)
-    // MUTATION: hide the line from 1080 like `.sbf-why-at` -> the desktop is back to the panel alone.
-    expect(painted(line!, 'display', WIDE) ?? 'block').not.toBe('none')
-    expect(painted(line!, 'display', PHONE) ?? 'block').not.toBe('none')
+    // MUTATION: restore QAFIX5's pre-attempt line -> the untouched prompt reads "prompt missing" again.
+    expect(visible(field)).not.toContain('prompt missing')
+    expect(field.querySelector('.sbf-unfilled')).toBeNull()
+    // MUTATION: keep the describedby before an attempt -> it names a line that is not drawn.
+    expect(editor.getAttribute('aria-describedby')).toBeNull()
+    const tag = field.querySelector<HTMLElement>('.sbf-req')
+    // MUTATION: drop the `required` tag -> the field says nothing about the prompt at all.
+    expect(visible(tag)).toBe('required')
+    // MUTATION: hide `.sbf-req` from 1080 -> the desktop is back to the panel alone, as run 5b saw it.
+    expect(painted(tag!, 'display', WIDE) ?? 'inline').not.toBe('none')
+    expect(painted(tag!, 'display', PHONE) ?? 'inline').not.toBe('none')
   })
 
   it('does not paint a field the reader has not reached yet in the warning ink', async () => {
     const container = await form()
     pick(container, 'claude-code')
     const field = container.querySelector<HTMLElement>('.sbf-field.is-required')!
-    const line = field.querySelector<HTMLElement>('.sbf-unfilled')!
+    const tag = field.querySelector<HTMLElement>('.sbf-req')!
     // TS-15's owner decision stands: a runner just picked is not painted red.
-    // MUTATION: draw the unfilled line as `.sbf-miss` -> the freshly picked field reads as an error.
+    // MUTATION: draw `gap` before an attempt -> the freshly picked field reads as an error.
     expect(field.querySelector('textarea')!.getAttribute('aria-invalid')).toBeNull()
     expect(field.querySelector('.sbf-miss')).toBeNull()
-    // MUTATION: colour `.sbf-unfilled` with `--warn-ink` -> red before the reader has touched it.
-    expect(painted(line, 'color', WIDE)).toBe('var(--text-dim)')
+    // MUTATION: colour `.sbf-req` with `--warn-ink` -> red before the reader has touched it.
+    expect(painted(tag, 'color', WIDE)).toBe('var(--text-dim)')
+  })
+
+  it('names the missing prompt at its own field once a submit is attempted', async () => {
+    const container = await form()
+    pick(container, 'claude-code')
+    const field = container.querySelector<HTMLElement>('.sbf-field.is-required')!
+    const editor = field.querySelector('textarea')!
+    fireEvent.submit(container.querySelector('form')!)
+    const line = field.querySelector<HTMLElement>('.sbf-miss')
+    // MUTATION: drop `attempted` from `gap` -> the attempt leaves the field with its tag alone.
+    expect(line, 'the attempt did not name the prompt at its field').not.toBeNull()
+    // MUTATION: word it without the key -> the reader cannot tell which field is missing.
+    expect(visible(line)).toBe('claude-code will not start without prompt')
+    // MUTATION: drop the editor's describedby -> a screen reader on the field never hears it.
+    expect(editor.getAttribute('aria-describedby')).toBe(line!.id)
+    expect(editor.getAttribute('aria-invalid')).toBe('true')
+    // MUTATION: hide the line from 1080 like `.sbf-why-at` -> the desktop names it only in the panel.
+    expect(painted(line!, 'display', WIDE) ?? 'block').not.toBe('none')
+    expect(painted(line!, 'display', PHONE) ?? 'block').not.toBe('none')
   })
 
   it('hands over to the warning line once the field is left empty, and says it once', async () => {
@@ -85,8 +111,7 @@ describe('QA-103: the prompt field says it is missing where it is, at both width
     pick(container, 'claude-code')
     const field = container.querySelector<HTMLElement>('.sbf-field.is-required')!
     fireEvent.blur(field.querySelector('textarea')!)
-    // MUTATION: keep the unfilled line after the blur -> the field says it is missing twice.
-    expect(field.querySelector('.sbf-unfilled')).toBeNull()
+    // MUTATION: draw two lines for one gap -> the field says it is missing twice.
     expect(field.querySelectorAll('.sbf-miss')).toHaveLength(1)
   })
 
@@ -95,8 +120,8 @@ describe('QA-103: the prompt field says it is missing where it is, at both width
     pick(container, 'claude-code')
     const field = container.querySelector<HTMLElement>('.sbf-field.is-required')!
     fireEvent.change(field.querySelector('textarea')!, { target: { value: 'do the thing' } })
-    // MUTATION: draw the line for every required field -> a filled prompt still reads "prompt missing".
-    expect(field.querySelector('.sbf-unfilled')).toBeNull()
+    // MUTATION: draw the line for every required field -> a filled prompt still reads as missing.
+    expect(field.querySelector('.sbf-miss')).toBeNull()
     expect(field.querySelector('textarea')!.getAttribute('aria-describedby')).toBeNull()
   })
 })

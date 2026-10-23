@@ -6,7 +6,8 @@ lane VQ-2 TARGETS, part of #1933).
     GET    /v1/qa-targets/{id}                     one (any role)
     PATCH  /v1/qa-targets/{id}                     change (a workspace admin); a new host is pending
     DELETE /v1/qa-targets/{id}                     delete, with its credential (a workspace admin)
-    POST   /v1/qa-targets/{id}:approve-host        a PLATFORM admin approves the host (VQ-Q1)
+    POST   /v1/qa-targets/{id}:approve-host        a PLATFORM admin approves the host (VQ-Q1),
+                                                   its extra origin and IdP token path
     POST   /v1/qa-targets/{id}:run                 a member starts a run: {screens?, file?}
     POST   /v1/qa-targets/{id}:discover            a member starts its discovery (§4.1)
     POST   /v1/qa-targets/{id}/credential-links    a one-time link to the console's form (an admin)
@@ -119,6 +120,9 @@ class ApproveBody(StrictModel):
     host: str = Field(min_length=1, max_length=253)
     #: The login's other origin, approved only when named here (§1.2).
     extra_origin: str | None = Field(default=None, max_length=300)
+    #: QA-IDP-POST: one exact path on `extra_origin` the gate lets a POST
+    #: through to after its sign-in; checked by `QaTargets.approve_host`.
+    idp_token_path: str | None = Field(default=None, max_length=600)
 
 
 class RunBody(StrictModel):
@@ -260,7 +264,8 @@ def approve_host(
 ) -> dict:
     """A platform admin approves the host they name (VQ-Q1, audited)."""
     doc = _targets(request, ctx).approve_host(target_id, host=body.host,
-                                              extra_origin=body.extra_origin, by=_email(auth))
+                                              extra_origin=body.extra_origin, by=_email(auth),
+                                              idp_token_path=body.idp_token_path)
     return {"qa_target": to_api(doc)}
 
 

@@ -8150,7 +8150,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   /* THE RECORD. `--ctl-s3` of air inside it, the panel's own padding at the
      sides, and NOTHING between two of them (§13.3: a row is separated by
      nothing). What tells two records apart is that each opens with a name at
-     lead rank and the fields under it are a mono key column. */
+     lead rank and the fields under it are a key column. */
   .is-stacked > table > tbody > tr {
     /* `height: auto` IS LOAD-BEARING, and it cost a broken screenshot to find.
        `.ctl-table tbody tr` pins the row at `--row-h` (30px) -- correct for a
@@ -8237,6 +8237,9 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
      A table whose keys are longer says so with `--stack-key` on its wrapper
      (Sizing's `Workspace (of memory)`, styles/capacity.css), rather than
      every record on every screen giving its values 40px less.
+     The key is sans since QA-044 (2026-10-23) and the width was left as it
+     was: DM Sans' keys are narrower than DM Mono's 0.6em advance, so the
+     mono measure is an upper bound and no value moved.
 
      THE KEYS ARE LEFT-ALIGNED, EVERY ONE (CH-11). The key is the cell's
      `::before`, it inherits the cell's `text-align`, and `.ctl-table .is-num`
@@ -8259,9 +8262,15 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     text-align: left;
     white-space: normal;
   }
+  /* THE KEY IS A LABEL, IN THE LABELS' FACE (QA-044, part of #1680). It was
+     mono, and beside sans column heads a mono key read as a value. BGD decided
+     on 2026-10-23 (QA-044, task_7f0095fb2fd9481790cc q0): sans, console-wide,
+     so Pool limits' own override (QAFIX5, styles/admin.css) is gone. Only the
+     face moved: size, weight, colour and the key column are as they were, and
+     a value that is an identifier keeps its own mono (`.id`, `.mono`). */
   .is-stacked > table > tbody > tr > td[data-label]::before {
     content: attr(data-label);
-    font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
+    font: 500 var(--t-micro)/var(--lh-micro) var(--font);
     color: var(--text-faint);
     text-align: left;
   }
@@ -8438,7 +8447,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   }
   .is-stacked > table > tbody > tr > td[data-label]::before {
     content: attr(data-label);
-    font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
+    font: 500 var(--t-micro)/var(--lh-micro) var(--font);
     color: var(--text-faint);
     text-align: left;
   }

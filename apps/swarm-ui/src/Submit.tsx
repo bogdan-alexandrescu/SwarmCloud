@@ -821,12 +821,12 @@ export function InputFields({ profile, fields, required, onChange, idPrefix, att
         const id = inputFieldId(idPrefix, f.key)
         const note = noteFor(f.name.trim())
         const key = f.name.trim()
+        // BEFORE AN ATTEMPT, ONLY THE `required` TAG (visual QA run 6,
+        // 6:flow-submit-form-desktop-02; owner pick 2026-10-23, "Show only
+        // 'required'"). QAFIX5 drew a quiet "prompt missing" line under an
+        // untouched field; it read as an error before the reader had tried
+        // anything. A field left empty, or a submit attempt, draws `gap`'s line.
         const gap = f.required && missing.has(key) && (left.has(f.key) || attempted)
-        // NOT LEFT YET, STILL SAID AT THE FIELD (visual QA QA-103): at 1440
-        // the panel was the only place that named the empty prompt, and the
-        // field carried a bare `required` tag. A quiet line in the field's own
-        // ink until the reader leaves it; then `gap`'s warning line replaces it.
-        const unfilled = f.required && missing.has(key) && !gap
         const missId = `${id}-missing`
         return (
           <div className={f.required ? 'sbf-field is-required' : 'sbf-field has-remove'} key={f.key}>
@@ -858,7 +858,7 @@ export function InputFields({ profile, fields, required, onChange, idPrefix, att
               )}
             </div>
             <ValueEditor f={f} id={id} choices={choicesFor(key)} invalid={gap}
-              describedBy={gap || unfilled ? missId : undefined} onBlur={() => leave(f.key)}
+              describedBy={gap ? missId : undefined} onBlur={() => leave(f.key)}
               onChange={(next) => set(i, next)} />
             {/* AFTER ITS FIELD, AND NAMING IT (live QA SUB-17): it came before
                 the value in Tab order, so a screen reader heard "remove" and
@@ -877,7 +877,6 @@ export function InputFields({ profile, fields, required, onChange, idPrefix, att
                 {profile} will not start without <code>{key}</code>
               </p>
             )}
-            {unfilled && <p id={missId} className="sb-note sbf-unfilled"><code>{key}</code> missing</p>}
             {note && <p className="sbf-note">{note}</p>}
             {/* A ROW WITH NO NAME IS NOT SENT, AND SAYS SO (visual QA QA-102):
                 `buildInput` skips it, and it looked like any other setting.
