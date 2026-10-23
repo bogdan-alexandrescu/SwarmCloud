@@ -40,7 +40,11 @@ encodings (standard and URL-safe, padded or not, and the core of each of
 the three byte alignments a longer base64 text could carry it at) replaced
 with `PLACEHOLDER`; a `base64Encoded` body and a `postDataEntries` chunk are
 decoded, scrubbed and re-encoded. A base64 body the gate cannot decode is
-refused while a password is held (`undecodable_body`). The scrub's needles
+refused while a password is held (`undecodable_body`). THE SCRUB FAILS CLOSED
+(#2116): a dict or list nested past `MAX_SCRUB_DEPTH` becomes `SCRUB_TOO_DEEP`,
+a value that is not JSON `SCRUB_NOT_JSON`, a number is read as its JSON text,
+and a scrub that raises refuses the whole message (`SCRUB_REFUSED`); what
+the scrub did not read is never passed on. The scrub's needles
 outlive the wipe, as the QA identity's do: a frame in flight when Chromium
 closes is still scrubbed. KNOWN LIMIT: a password under
 `MIN_ALIGNED_BYTES` bytes is not matched at the shifted base64 alignments
@@ -147,6 +151,16 @@ log = logging.getLogger(__name__)
 OP = "qa_sign_in"
 #: What the password reads as in anything the agent receives.
 PLACEHOLDER = "[qa-credential]"
+#: How deep the scrub walks (#2116). A dict or list nested deeper, or a value
+#: that is not JSON, becomes `SCRUB_TOO_DEEP` or `SCRUB_NOT_JSON`: the scrub
+#: fails closed and never passes on what it did not read. 64 is far past any
+#: CDP message's own nesting (a capture's rows sit about 10 levels deep).
+MAX_SCRUB_DEPTH = 64
+SCRUB_TOO_DEEP = "[qa-scrub: nesting too deep]"
+SCRUB_NOT_JSON = "[qa-scrub: not JSON]"
+#: A message whose scrub raised: the agent gets this in its place, never the original.
+SCRUB_REFUSED = ("refused by the live gate: this message could not be scrubbed of the QA target's "
+                 "credential, so it was withheld")
 
 #: §2.3: at most three sign-ins an attempt, then `qa_sign_in_exhausted`.
 MAX_SIGN_INS = 3
@@ -347,6 +361,8 @@ class QaTarget:
         self._wall = wall
         self._refusals: deque[dict[str, Any]] = deque(maxlen=MAX_REFUSALS)
         self._refused = 0
+        #: Messages the scrub refused whole (`_refuse_whole`), for the record's count.
+        self._scrub_refusals = 0
         self.target_id: str | None = None
         self.base_url: str | None = None
         self.base_origin: str | None = None
@@ -527,44 +543,97 @@ class QaTarget:
     # ------------------------------------------------------------- scrub
 
     def scrub(self, message: dict[str, Any]) -> dict[str, Any]:
-        """`message` as an agent may receive it. Unchanged when nothing matched."""
+        """`message` as an agent may receive it. Unchanged when nothing matched.
+
+        Fails closed (#2116): a container past `MAX_SCRUB_DEPTH` or a value
+        that is not JSON is replaced by a marker, and a scrub that raises
+        refuses the whole message (`_refuse_whole`). Neither record carries the
+        value, its length or the exception's text."""
         if not self._needles:
             return message
-        counter = [0]
-        out = self._walk(message, counter, 0)
-        result = out.get("result") if isinstance(out, dict) else None
-        if isinstance(result, dict) and result.get("base64Encoded") is True:
-            out = {**out, "result": self._scrub_bodies(result, counter)}
+        counter, marked = [0], [0]
+        try:
+            out = self._walk(message, counter, 0, marked)
+            result = out.get("result") if isinstance(out, dict) else None
+            if isinstance(result, dict) and result.get("base64Encoded") is True:
+                out = {**out, "result": self._scrub_bodies(result, counter)}
+        except Exception as exc:  # noqa: BLE001 - any failure refuses; none forwards the original
+            return self._refuse_whole(message, exc)
+        route = self._route(message)
+        if marked[0]:
+            self._record("qa_target_scrub_marked", {"route": route, "count": marked[0]})
         if counter[0]:
             fields: dict[str, Any] = {"count": counter[0]}
-            method = message.get("method")
-            if isinstance(method, str):
-                fields["method"] = method
+            if route != "response":
+                fields["method"] = route
             self._record("qa_target_scrubbed", fields)
-            return out
-        return message
+        return out if counter[0] or marked[0] else message
 
-    def _walk(self, value: Any, counter: list[int], depth: int) -> Any:
+    def _route(self, message: Mapping[str, Any]) -> str:
+        """The record's name for `message`: its CDP method, or "response". A
+        method carrying a needle is named "event", never echoed."""
+        method = message.get("method")
+        if not isinstance(method, str):
+            return "response"
+        return "event" if any(n in method for n in self._needles) else method[:128]
+
+    def _refuse_whole(self, message: Mapping[str, Any], exc: BaseException) -> dict[str, Any]:
+        """What the agent gets for a message the scrub could not finish: an
+        error answer to its command, or the event's method with no params."""
+        self._scrub_refusals += 1
+        try:
+            route = self._route(message)
+        except Exception:  # noqa: BLE001 - the record still goes, unnamed
+            route = "unknown"
+        self._record("qa_target_scrub_refused", {"route": route, "count": self._scrub_refusals,
+                                                 "error": type(exc).__name__})
+        msg_id = message.get("id") if isinstance(message, Mapping) else None
+        if isinstance(msg_id, int) and not isinstance(msg_id, bool):
+            return {"id": msg_id, "error": {"code": -32000, "message": SCRUB_REFUSED}}
+        out: dict[str, Any] = {"params": {"qaScrub": SCRUB_REFUSED}}
+        if route not in ("response", "event", "unknown"):
+            out["method"] = route
+        return out
+
+    def _walk(self, value: Any, counter: list[int], depth: int, marked: list[int]) -> Any:
         if isinstance(value, str):
             return self._replace(value, counter)
-        if depth > 64:
+        if value is None or isinstance(value, bool):
             return value
+        if isinstance(value, (int, float)):
+            # A number reads as its JSON text: an all-digit password returned
+            # as a number would otherwise pass as one.
+            text = json.dumps(value)
+            cleaned = self._replace(text, counter)
+            return value if cleaned == text else cleaned
+        if not isinstance(value, (dict, list)):
+            marked[0] += 1
+            return SCRUB_NOT_JSON
+        if depth > MAX_SCRUB_DEPTH:
+            marked[0] += 1
+            return SCRUB_TOO_DEEP
         if isinstance(value, dict):
             changed = False
             out: dict[Any, Any] = {}
             for key, item in value.items():
-                new_key = self._replace(key, counter) if isinstance(key, str) else key
-                if key == "postDataEntries" and isinstance(item, list):
-                    new_item: Any = [self._scrub_entry(e, counter) for e in item]
+                if isinstance(key, str):
+                    new_key: Any = self._replace(key, counter)
                 else:
-                    new_item = self._walk(item, counter, depth + 1)
-                changed = changed or new_key != key or new_item is not item
+                    # JSON has string keys only; anything else is read as the text it serialises to.
+                    new_key = self._walk(key, counter, depth + 1, marked)
+                if key == "postDataEntries" and isinstance(item, list):
+                    if depth + 1 > MAX_SCRUB_DEPTH:
+                        marked[0] += 1
+                        new_item: Any = SCRUB_TOO_DEEP
+                    else:
+                        new_item = [self._scrub_entry(e, counter, depth + 2, marked) for e in item]
+                else:
+                    new_item = self._walk(item, counter, depth + 1, marked)
+                changed = changed or new_key is not key or new_item is not item
                 out[new_key] = new_item
             return out if changed else value
-        if isinstance(value, list):
-            items = [self._walk(item, counter, depth + 1) for item in value]
-            return items if any(a is not b for a, b in zip(items, value)) else value
-        return value
+        items = [self._walk(item, counter, depth + 1, marked) for item in value]
+        return items if any(a is not b for a, b in zip(items, value)) else value
 
     def _replace(self, text: str, counter: list[int]) -> str:
         hits = 0
@@ -582,19 +651,20 @@ class QaTarget:
                 raw = raw.replace(needle, PLACEHOLDER.encode())
         return raw
 
-    def _scrub_entry(self, entry: Any, counter: list[int]) -> Any:
-        """A `postDataEntries` item: `{bytes: <base64>}`."""
+    def _scrub_entry(self, entry: Any, counter: list[int], depth: int, marked: list[int]) -> Any:
+        """A `postDataEntries` item: `{bytes: <base64>}`, at `depth` in the message."""
         if not isinstance(entry, dict) or not isinstance(entry.get("bytes"), str):
-            return self._walk(entry, counter, 1)
+            return self._walk(entry, counter, depth, marked)
         try:
             raw = base64.b64decode(entry["bytes"], validate=True)
         except (binascii.Error, ValueError):
-            return self._walk(entry, counter, 1)
+            return self._walk(entry, counter, depth, marked)
         before = counter[0]
         cleaned = self._replace_bytes(raw, counter)
         if counter[0] == before:
-            return self._walk(entry, counter, 1)
-        return {**entry, "bytes": base64.b64encode(cleaned).decode("ascii")}
+            return self._walk(entry, counter, depth, marked)
+        rest = self._walk({k: v for k, v in entry.items() if k != "bytes"}, counter, depth, marked)
+        return {**rest, "bytes": base64.b64encode(cleaned).decode("ascii")}
 
     def _scrub_bodies(self, result: dict[str, Any], counter: list[int]) -> dict[str, Any]:
         out = result

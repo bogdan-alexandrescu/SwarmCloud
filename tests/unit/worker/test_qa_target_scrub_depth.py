@@ -109,7 +109,8 @@ def test_a_password_at_depth_3_is_still_replaced_by_the_placeholder():
     assert gate_qt.SCRUB_TOO_DEEP not in _readable(out)
     # MUTATION: record a marked event for an ordinary scrub -> the count of refusals is wrong: red.
     assert [e for e, _ in records if e.startswith("qa_target_scrub")] == ["qa_target_scrubbed"]
-    clean = {"id": 4, "result": {"a": _nested("nothing here", 64)}}
+    # The deepest list sits at depth 64, the limit itself: walked, not marked.
+    clean = {"id": 4, "result": {"a": _nested("nothing here", 63)}}
     # MUTATION: lower the depth limit -> a clean 64-level result is marked: red.
     assert target.scrub(clean) is clean
 
