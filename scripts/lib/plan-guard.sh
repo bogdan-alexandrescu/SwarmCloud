@@ -331,7 +331,8 @@ report() {
 # ---------------------------------------------------------------------------
 #
 # Measured 2026-10-22 on release 39712409927 (02:37Z): PR 1911 added a label to
-# `metric_descriptor.labels` of google_logging_metric.events["generation_fenced"].
+# `metric_descriptor.labels` of the google_logging_metric.events entry for the
+# metric swarm/generation-fenced.
 # A new label forces replacement, so the plan was delete-then-create, and GCP
 # refused the delete: "Error 400: Cannot delete metric swarm/generation-fenced.
 # That metric is still used in an alerting policy." Every release from main
@@ -530,7 +531,7 @@ FIXTURE_JSON
       allowed)
         if [[ "${rc}" -eq 0 ]]; then ok "${label}"; else err "${label}: refused (exit ${rc})"; FAILED=1; fi ;;
       refused)
-        if [[ "${rc}" -eq 2 ]] && grep -qF 'events["generation_fenced"]' "${WORK}/metric.out" \
+        if [[ "${rc}" -eq 2 ]] && grep -qF 'events["example"]' "${WORK}/metric.out" \
              && grep -qF 'gcloud logging metrics update' "${WORK}/metric.out"; then
           ok "${label}"
         else
@@ -542,10 +543,12 @@ FIXTURE_JSON
   }
 
   metric_change() {
-    printf '{"format_version":"1.2","resource_changes":[{"address":"%s","type":"%s","change":{"actions":%s,"before":{"name":"swarm/generation-fenced"},"after":{"name":"swarm/generation-fenced"}}}]}' \
+    printf '{"format_version":"1.2","resource_changes":[{"address":"%s","type":"%s","change":{"actions":%s,"before":{"name":"swarm/example"},"after":{"name":"swarm/example"}}}]}' \
       "$1" "$2" "$3"
   }
-  fenced='module.monitoring.google_logging_metric.events[\"generation_fenced\"]'
+  # A neutral key: an event type spelled in a script is a contract restatement
+  # (tests/unit/common/test_startup_progress_contract.py).
+  fenced='module.monitoring.google_logging_metric.events[\"example\"]'
   metric_case "a replaced log-based metric is refused (delete, create)" refused \
     "$(metric_change "${fenced}" google_logging_metric '["delete","create"]')"
   metric_case "a replaced log-based metric is refused (create, delete)" refused \
