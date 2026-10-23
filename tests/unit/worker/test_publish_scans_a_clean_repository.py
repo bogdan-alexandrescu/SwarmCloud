@@ -185,7 +185,8 @@ def test_a_forged_commit_graph_does_not_hide_a_key_in_the_final_tree(
     branch = f"{config.git_branch_prefix}{config.task_id}"
     assert out["published"] is False, out
     assert out.get("final_tree_leak") == (
-        "the final tree adds a credential in .env (rule registered_secret, line 1); remove it"
+        "the final tree adds a credential in .env (rule registered_secret, line 1)"
+        ": it is the value of a secret registered for this task; remove the value, or read it at runtime from configuration"
     ), out
     assert not _branch_exists(origin, branch), "a branch was pushed"
     assert KEY.encode() not in _all_object_bytes(origin), "the key reached a pushed object"
@@ -453,7 +454,9 @@ def test_a_credential_shaped_token_in_a_test_file_publishes_nothing_and_names_th
     assert out["published"] is False, out
     assert out.get("final_tree_leak") == (
         "the final tree adds a credential in tests/unit/test_client.py "
-        "(rule key_value_assignment, line 2); remove it"
+        "(rule key_value_assignment, line 2): it is a literal given to a credential's name, "
+        "at least 16 characters of letters and digits with at least 3.5 bits of entropy "
+        "per character; remove the value, or read it at runtime from configuration"
     ), out
     assert token not in str(out), "the value reached the publish result"
     assert token not in log_stream.getvalue()

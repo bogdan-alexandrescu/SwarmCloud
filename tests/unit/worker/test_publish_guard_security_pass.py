@@ -255,7 +255,8 @@ def test_an_ordinary_path_is_still_named_in_full(tmp_path):
     _commit_all(repo, "add")
 
     assert _final(repo, tmp_path, base) == (
-        "the final tree adds a credential in src/settings.py (rule aws_access_key_id, line 1); remove it"
+        "the final tree adds a credential in src/settings.py (rule aws_access_key_id, line 1)"
+        ": it matches the aws_access_key_id vendor format; remove the value, or read it at runtime from configuration"
     )
 
 
@@ -372,7 +373,8 @@ def test_a_key_body_between_an_unchanged_marker_pair_is_refused(tmp_path):
 
     reason = _final(repo, tmp_path, base)
     assert reason == (
-        "the final tree adds a credential in src/keys.txt (rule private_key_block, line 3); remove it"
+        "the final tree adds a credential in src/keys.txt (rule private_key_block, line 3)"
+        ": it is a private key block; remove the value, or read it at runtime from configuration"
     ), reason
     assert _first(repo, tmp_path, [sha], base) == 1
 
