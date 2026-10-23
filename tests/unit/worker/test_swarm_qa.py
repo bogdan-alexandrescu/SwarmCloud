@@ -538,6 +538,9 @@ def world(tmp_path, monkeypatch, qa):
     w.page = FakePage(qa)
     w.playwright = FakePlaywright()
     monkeypatch.setattr(qa, "_connect", lambda: (w.playwright, FakeBrowser(), FakeContext(w.page)))
+    # The gate's refusal record (QA-GATE-REFUSALS): a gate holding no QA
+    # target, read without a socket; test_swarm_qa_gate_refusals drives it.
+    monkeypatch.setattr(qa, "_gate_document", lambda: {"format": 1, "armed": False, "refusals": [], "dropped": 0})
 
     def handoff_calls():
         return log.read_text(encoding="utf-8").splitlines() if log.exists() else []

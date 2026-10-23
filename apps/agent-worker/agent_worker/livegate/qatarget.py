@@ -106,6 +106,20 @@ hosts would be sent and their origins' storage.
 
 `wipe` drops the credential and refuses the verb from then on (§2.3).
 
+THE GATE'S REFUSALS ARE KNOWN TO THE RUN (QA-GATE-REFUSALS, part of #2067).
+Every request the guard answers itself, a refused write (`qa_write_refused`)
+or a top frame sent to the gate's page (`qa_target_left`), is kept in
+`refusals()`: its wall-clock time, method, origin, path (never the query,
+never the body, and scrubbed like anything bound for the agent) and the
+gate's code, numbered, the last `MAX_REFUSALS` of them. The visual-QA capture
+reads it at `REFUSALS_PATH` on the gate's CDP endpoint and writes each
+screen's share into that screen's `errors.json` as `gate_refused`: a 403 the
+gate sends to another origin carries no CORS header, so Chrome logs it as a
+CORS block, and on 2026-10-23 a run filed exactly that against the app. This
+records refusals; it changes none of the rules above. `undecodable_body` is
+not among them: it withholds a CDP response from the agent, and the page's
+own request went through, so the app saw nothing the gate answered.
+
 NOTHING HERE LOGS OR RECORDS A CREDENTIAL, A USERNAME OR A SELECTOR'S MATCH.
 Records carry the target id, causes, origins, methods and counts.
 """
@@ -121,6 +135,7 @@ import json
 import logging
 import re
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -208,6 +223,17 @@ RESERVED_BYPASS_HEADERS = frozenset({
 RESERVED_BYPASS_HEADER_PREFIXES = ("proxy-", "sec-")
 _BYPASS_NAME = re.compile(r"[A-Za-z0-9!#$%&'*+.^_|~-]{1,64}")
 _BYPASS_VALUE = re.compile(r"[!#-+\--:<-\[\]-~]{16,1024}")
+
+#: QA-GATE-REFUSALS: the refusal record (module docstring). Where the capture
+#: reads it on the gate's CDP endpoint, its format, and how many it keeps: a
+#: capture of 57 routes at four widths and themes that refused one token
+#: exchange per load is 228; past this the oldest go, counted in `dropped`.
+REFUSALS_PATH = "/json/swarm/qa-refusals"
+REFUSALS_FORMAT = 1
+MAX_REFUSALS = 1000
+#: The gate's codes for a request it answered itself.
+WRITE_REFUSED = "qa_write_refused"
+TARGET_LEFT = "qa_target_left"
 
 Record = Callable[[str, Mapping[str, Any]], None]
 Sleep = Callable[[float], Awaitable[None]]
@@ -312,9 +338,15 @@ class QaTarget:
     guard over the same target. `clock` is monotonic seconds.
     """
 
-    def __init__(self, record: Record, *, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, record: Record, *, clock: Callable[[], float] = time.monotonic,
+                 wall: Callable[[], float] = time.time) -> None:
         self._record = record
         self._clock = clock
+        #: Epoch seconds for the refusal record: the capture, in the agent's
+        #: container on the same node, compares it with its own `time.time()`.
+        self._wall = wall
+        self._refusals: deque[dict[str, Any]] = deque(maxlen=MAX_REFUSALS)
+        self._refused = 0
         self.target_id: str | None = None
         self.base_url: str | None = None
         self.base_origin: str | None = None
@@ -604,6 +636,24 @@ class QaTarget:
             return ("refused by the live gate: while a QA target is held, a paused request is "
                     "continued as it was, never rewritten")
         return None
+
+    # --------------------------------------------------------- refusals
+
+    def note_refusal(self, code: str, method: Any, url: Any) -> None:
+        """Keep one request the guard answered itself (module docstring): its
+        origin and path alone, the path scrubbed of the held secrets."""
+        origin = origin_of(url) or "unknown"
+        path = _path_of(str(url)) if isinstance(url, str) else "/"
+        self._refused += 1
+        self._refusals.append({
+            "n": self._refused, "at": float(self._wall()), "method": str(method or "GET").upper()[:16],
+            "origin": origin, "path": self._replace(path, [0])[:512], "code": code,
+        })
+
+    def refusals(self) -> dict[str, Any]:
+        """What `REFUSALS_PATH` answers: the kept refusals, oldest first."""
+        return {"format": REFUSALS_FORMAT, "armed": self.armed, "refusals": [dict(r) for r in self._refusals],
+                "dropped": self._refused - len(self._refusals)}
 
     # ------------------------------------------------------------- rules
 
@@ -922,12 +972,14 @@ class QaTargetGuard:
         top = self._top_document(session, params)
         verdict = self._target.judge(request.get("method"), url, top_document=top)
         if verdict.action == "refuse":
-            self._record("qa_write_refused", {"method": verdict.method, "origin": verdict.origin})
+            self._record(WRITE_REFUSED, {"method": verdict.method, "origin": verdict.origin})
+            self._target.note_refusal(WRITE_REFUSED, verdict.method, url)
             await self._answer(session, request_id, 403, "text/plain; charset=utf-8",
                                b"refused by the live gate: this QA run is read-only here")
             return
         if verdict.action == "leave":
-            self._record("qa_target_left", {"origin": verdict.origin})
+            self._record(TARGET_LEFT, {"origin": verdict.origin})
+            self._target.note_refusal(TARGET_LEFT, verdict.method, url)
             await self._answer(session, request_id, 200, "text/html; charset=utf-8",
                                left_page(verdict.origin or "unknown").encode())
             return
