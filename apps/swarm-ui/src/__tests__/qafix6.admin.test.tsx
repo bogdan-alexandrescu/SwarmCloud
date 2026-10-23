@@ -37,7 +37,7 @@ import type { Result } from '../fetch'
 import type { Capacity, Pool, Tenant } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { build, painted } from './marks'
-import { cellStyle, fixedColumns, fontPx, lengthPx, textPx } from './tablefit'
+import { cellStyle, fixedColumns, fontPx, lengthPx, textPx, type CellStyle } from './tablefit'
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
@@ -177,21 +177,29 @@ describe('a. 6:admin-006, 5b:QA-052: Model prices fits its 1440 card, as admin a
       // `fixedColumns` refuses it, or its min-width passes the card.
       const { width, cols } = fixedColumns(table, PRICES_1440, WIDE)
       expect(width, 'the table is wider than its card: it scrolls').toBeLessThanOrEqual(PRICES_1440)
+      // READ ONCE PER COLUMN AND KIND OF CELL: the cascade is slow, and each
+      // column's cells share their rules (tablefit.ts says the same).
+      const styles = new Map<string, CellStyle>()
+      const style = (el: Element, key: string): CellStyle => {
+        if (!styles.has(key)) styles.set(key, cellStyle(el, WIDE))
+        return styles.get(key)!
+      }
       const heads = [...table.querySelectorAll('thead th')]
       cols.forEach((box, i) => {
         const th = heads[i]!
-        const st = cellStyle(th, WIDE)
+        const st = style(th, `head:${th.className}`)
         const room = box.end - box.start - st.pl - st.pr
         // A head may take two lines, never a cut word.
         for (const word of (th.textContent ?? '').split(/\s+/)) {
-          expect(textPx(word, th, WIDE), `head ${th.textContent} cuts '${word}'`).toBeLessThanOrEqual(room)
+          expect([...word].length * st.em, `head ${th.textContent} cuts '${word}'`).toBeLessThanOrEqual(room)
         }
       })
+      let fieldFont: number | null = null
       for (const row of table.querySelectorAll('tbody tr')) {
         const cells = [...row.children]
         cells.forEach((cell, i) => {
           const box = cols[i]!
-          const st = cellStyle(cell, WIDE)
+          const st = style(cell, `${i}:${cell.tagName}:${cell.className}`)
           const room = box.end - box.start - st.pl - st.pr
           const input = cell.querySelector<HTMLInputElement>('input')
           if (input !== null) {
@@ -199,7 +207,8 @@ describe('a. 6:admin-006, 5b:QA-052: Model prices fits its 1440 card, as admin a
             const w = painted(input, 'width', WIDE)!
             const m = /^calc\((\d+)ch \+ (\d+)px\)$/.exec(w)
             expect(m, `${input.getAttribute('aria-label')} width ${w}`).not.toBeNull()
-            const px = Number(m![1]) * 0.6 * fontPx(input, WIDE) + Number(m![2])
+            fieldFont ??= fontPx(input, WIDE)
+            const px = Number(m![1]) * 0.6 * fieldFont + Number(m![2])
             expect(px, `${input.getAttribute('aria-label')} is wider than its column`).toBeLessThanOrEqual(room)
             return
           }
@@ -207,22 +216,22 @@ describe('a. 6:admin-006, 5b:QA-052: Model prices fits its 1440 card, as admin a
             // MUTATION: give Set by less than its address: 'ops@example.c'.
             const text = cell.textContent ?? ''
             if (text === '—') return
-            expect(textPx(text, cell, WIDE), `Set by cuts '${text}'`).toBeLessThanOrEqual(room)
+            expect([...text].length * st.em, `Set by cuts '${text}'`).toBeLessThanOrEqual(room)
             return
           }
           // The model's name and tier lines, Currency and Source wrap at spaces
           // and hyphens; none of their runs may be wider than the column.
           const tiers = [...cell.querySelectorAll('li')]
           const own = tiers.length > 0 ? (cell.firstChild?.textContent ?? '') : (cell.textContent ?? '')
-          const lines: [string, Element][] = [[own, cell], ...tiers.map((li): [string, Element] => [li.textContent ?? '', li])]
-          for (const [line, face] of lines) {
+          const lines: [string, number][] = [[own, st.em], ...tiers.map((li): [string, number] => [li.textContent ?? '', style(li, 'tier').em])]
+          for (const [line, em] of lines) {
             const run = longestRun(line)
-            expect(textPx(run, face, WIDE), `${cell.getAttribute('data-label')} cuts '${run}'`).toBeLessThanOrEqual(room)
+            expect([...run].length * em, `${cell.getAttribute('data-label')} cuts '${run}'`).toBeLessThanOrEqual(room)
           }
         })
       }
       expect(within(table).getAllByText((_, el) => el?.textContent === 'ops@example.com' && el.tagName === 'TD')).toHaveLength(1)
-    })
+    }, 30_000)
   }
 
   it("lets Set by break after '@' and nowhere else", async () => {

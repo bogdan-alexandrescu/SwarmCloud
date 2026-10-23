@@ -200,13 +200,14 @@ describe('admin-004: the in-use and ceiling numerals line up, and N /M stays who
     await limits([pool('global', { effective_limit: 6, hard_limit: 10 })])
     const cell = document.getElementById('limit-global')!.querySelector('td.adm-ceiling-cell')!
     expect(cell.closest('.ctl-table')!.classList.contains('is-stacked')).toBe(true)
-    // MUTATION: drop `display: contents` from the phone `.adm-fig` rule: the
-    // run becomes one grid item and its slots leave columns 2 and 3.
-    expect(painted(cell.querySelector('.adm-fig')!, 'display', PHONE)).toBe('contents')
+    // ONE GRID ITEM ON A PHONE TOO (run 6, 6:admin-017, qafix6.admin.test.tsx):
+    // as columns 2 and 3 the figure's 6ch slot stood between `6` and `/10`.
+    // MUTATION: put `display: contents` back on the phone `.adm-fig` rule.
+    expect(painted(cell.querySelector('.adm-fig')!, 'display', PHONE)).toBe('inline-block')
+    expect(painted(cell.querySelector('.adm-fig')!, 'grid-column', PHONE)).toBe('2')
     // MUTATION: drop the phone `text-align: left`: the figure leaves the value column.
     expect(painted(cell.querySelector('.adm-ceiling')!, 'text-align', PHONE)).toBe('left')
-    expect(painted(cell.querySelector('.adm-ceiling')!, 'grid-column', PHONE)).toBe('2')
-    expect(painted(cell.querySelector('.adm-was')!, 'grid-column', PHONE)).toBe('3')
+    expect(painted(cell.querySelector('.limit-edit')!, 'grid-column', PHONE)).toBe('3')
   })
 })
 

@@ -73,6 +73,7 @@ import { Button, NamedMark, Segmented, StateMark, WarnMark } from './components'
 import { NewWorkspaceDialog, WorkspaceTimeline } from './NewWorkspace'
 import { QaIdentityGrants } from './QaIdentityGrants'
 import { WORKSPACE_POLL_MS } from './OnboardingWorkspace'
+import { addressBreaks } from './AdminSettings'
 import { Absent, Mark } from './primitives'
 import { CountNote, Id, PageHead, RefreshControl, Screen, useClaimPageAge, useIdleStop, usePoll } from './Shell'
 import { TIMELINE_POLL_MS, TimelinePages } from './TimelineLanes'
@@ -1854,7 +1855,7 @@ export function TenantsScreen() {
                         </td>
                         <td role="cell" data-label="Kind">{t.kind}</td>
                         <td role="cell" data-label="Principal" className="mono">
-                          <Ident value={t.principal} noun="principal" tenant={t.tenant_id} />
+                          <TenantIdent value={t.principal} noun="principal" tenant={t.tenant_id} phone={phone} />
                         </td>
                         <td role="cell" data-label="Enforced" className="n">
                           {/* To the tenant pool's own row on Pool limits, which
@@ -1915,7 +1916,7 @@ export function TenantsScreen() {
                           {/* null means NO IDENTITY, not an empty string. A blank
                               cell here reads as fine and it is the opposite. */}
                           {typeof t.service_account === 'string' ? (
-                            <Ident value={t.service_account} noun="service account" tenant={t.tenant_id} />
+                            <TenantIdent value={t.service_account} noun="service account" tenant={t.tenant_id} phone={phone} />
                           ) : (
                             <span className="tag full">no service account</span>
                           )}
@@ -2012,7 +2013,13 @@ const SHORT_LOCAL = 20
 /** How much of a long local part that does not end in the tenant id is kept. */
 const OWN_TAIL = 12
 
-function Ident({ value, noun, tenant }: { value: string; noun: string; tenant: string }) {
+/**
+ * One identity and its copy control. Wide, it is the three pieces above, cut
+ * in the middle; on a PHONE (the stacked record) it is whole, as runs that
+ * break after an `@` or a `.` only (visual QA run 6, 6:admin-008): the record
+ * let `alice@example` / `.com` and `bogdan@exampl` / `e-` break anywhere.
+ */
+export function TenantIdent({ value, noun, tenant, phone }: { value: string; noun: string; tenant: string; phone: boolean }) {
   const parts = identParts(value, tenant)
   const [said, setSaid] = useState('')
   const refused = `copy refused; select the ${noun} instead`
@@ -2038,11 +2045,19 @@ function Ident({ value, noun, tenant }: { value: string; noun: string; tenant: s
   return (
     <span className="ten-ident-row">
       <span className="ten-ident" title={value}>
-        {parts.head !== '' && <span className="ten-ident-head">{parts.head}</span>}
-        <span className="ten-ident-key">{parts.key}</span>
-        {parts.tail !== '' && <span className="ten-ident-tail">{parts.tail}</span>}
+        {phone ? (
+          addressBreaks(value, '@.', 'ten-seg')
+        ) : (
+          <>
+            {parts.head !== '' && <span className="ten-ident-head">{parts.head}</span>}
+            <span className="ten-ident-key">{parts.key}</span>
+            {parts.tail !== '' && <span className="ten-ident-tail">{parts.tail}</span>}
+          </>
+        )}
       </span>
-      <button type="button" className="ten-copy" aria-label={`Copy ${noun} ${value}`} title={`Copy the whole ${noun}`} onClick={copy}>
+      {/* THE CONTROL CARRIES THE WHOLE VALUE (6:admin-009): on its name and
+          its title, whatever the cut beside it shows. */}
+      <button type="button" className="ten-copy" aria-label={`Copy ${noun} ${value}`} title={`Copy the whole ${noun}: ${value}`} onClick={copy}>
         copy
       </button>
       <span className="ten-copy-said" role="status">

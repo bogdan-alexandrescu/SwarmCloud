@@ -791,6 +791,34 @@ export function keyBreaks(name: string): ReactNode {
 }
 
 /**
+ * AN ADDRESS THAT BREAKS ONLY WHERE IT IS ASKED TO (visual QA run 6,
+ * 6:admin-006 and 6:admin-008, part of #1680). `value` as unbroken runs, each
+ * ending at a character of `after`, with a `<wbr>` between two runs: the
+ * Model prices card's Set by breaks after its `@` and nowhere else, and the
+ * Tenants phone record after `@` and `.`. Each run is a `className` span the
+ * sheet holds whole (styles/admin.css); the text is unchanged, so a selection
+ * still copies the whole value.
+ */
+export function addressBreaks(value: string, after: string, className: string): ReactNode {
+  const runs: string[] = []
+  let run = ''
+  for (const ch of value) {
+    run += ch
+    if (after.includes(ch)) {
+      runs.push(run)
+      run = ''
+    }
+  }
+  if (run !== '') runs.push(run)
+  return runs.map((r, i) => (
+    <Fragment key={i}>
+      <span className={className}>{r}</span>
+      {i < runs.length - 1 && <wbr />}
+    </Fragment>
+  ))
+}
+
+/**
  * `ops@… · 20 → 10 · 3h ago`, with the instant on the `time` element.
  *
  * EACH `·` LEADS THE PART IT INTRODUCES (VQA V191). The separator trailed
@@ -2072,15 +2100,19 @@ export function ModelPricesCard({ admin }: { admin: boolean | null }) {
           <div className={`ctl-table ${tableMode(phone)}`}>
             <table role="table" className="adm-price-table" aria-label="Model prices">
               <thead role="rowgroup">
+                {/* EACH HEAD NAMES ITS COLUMN (`data-col`), and its class
+                    is the width styles/admin.css sets: the table is laid out fixed, so it
+                    is its card's width and never scrolls at 1440 (visual QA
+                    run 6, 6:admin-006). */}
                 <tr role="row">
-                  <th role="columnheader" scope="col">Model</th>
+                  <th role="columnheader" scope="col" className="adm-pc-model" data-col="model">Model</th>
                   {PRICE_COLUMNS.map((c) => (
-                    <th key={c.key} role="columnheader" scope="col" className="is-num">{c.head} /M</th>
+                    <th key={c.key} role="columnheader" scope="col" className="is-num adm-pc-fig" data-col={c.key}>{c.head} /M</th>
                   ))}
-                  <th role="columnheader" scope="col">Currency</th>
-                  <th role="columnheader" scope="col">Source</th>
-                  <th role="columnheader" scope="col">As of</th>
-                  <th role="columnheader" scope="col">Set by</th>
+                  <th role="columnheader" scope="col" className="adm-pc-cur" data-col="currency">Currency</th>
+                  <th role="columnheader" scope="col" className="adm-pc-src" data-col="source">Source</th>
+                  <th role="columnheader" scope="col" className="adm-pc-day" data-col="as_of">As of</th>
+                  <th role="columnheader" scope="col" className="adm-pc-by" data-col="by">Set by</th>
                 </tr>
               </thead>
               <tbody role="rowgroup">
@@ -2111,7 +2143,11 @@ export function ModelPricesCard({ admin }: { admin: boolean | null }) {
                       <td data-label="Currency">{p === undefined ? '—' : p.currency}</td>
                       <td data-label="Source">{p === undefined ? <span className="is-absent">cost not reported</span> : p.source}</td>
                       <td className="mono" data-label="As of">{edits ? cell(m, 'as_of', 'As of') : p === undefined ? '—' : p.as_of}</td>
-                      <td data-label="Set by">{p?.updated_by ?? '—'}</td>
+                      {/* Whole at 1440, and where a card is narrower it
+                          breaks after the `@` only (6:admin-006). */}
+                      <td data-label="Set by" className="adm-price-by">
+                        {p?.updated_by == null ? '—' : addressBreaks(p.updated_by, '@', 'adm-addr-seg')}
+                      </td>
                     </tr>
                   )
                 })}
