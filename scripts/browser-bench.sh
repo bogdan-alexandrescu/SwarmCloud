@@ -131,7 +131,10 @@ if [[ -n "${COLLECT}" ]]; then
     visited=$((visited + 1))
     base="${TASKS_DIR}/${task_id}"
     fetch "/tasks/${task_id}" "${base}.task.json"
-    state="$(jq -r '.state // ""' "${base}.task.json")"
+    # The API answers {"task": {...}}; `.task // .` also reads a document saved
+    # bare. Reading `.state` off the wrapper made every run of bench3-2026-10-23
+    # look unfinished until the documents were unwrapped by hand.
+    state="$(jq -r '(.task // .).state // ""' "${base}.task.json")"
     case "${state}" in
       SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED) ;;
       *) unfinished=$((unfinished + 1)); dim "  ${run_label}: ${state:-unknown}, not finished" ;;

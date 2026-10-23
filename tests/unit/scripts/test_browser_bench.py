@@ -22,6 +22,7 @@ import importlib.util
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 from pathlib import Path
@@ -416,3 +417,182 @@ def test_pypi_license_accepts_how_pypi_writes_it_now():
         assert bb.check(prompt, f"RESULT: {answer}"), answer
     for wrong in ("MIT", "Apache Software License (MIT)", "page could not be opened"):
         assert not bb.check(prompt, f"RESULT: {wrong}"), wrong
+
+
+# ---------------------------------------------------------------------------
+# CAPTCHA-AVOID (BGD, 2026-10-23; part of #2058): the challenge pages a run
+# met, read from what the run recorded -- the gate's own hand-offs (a
+# `human_handoff_requested` event with `origin: "gate"`) and challenge pages
+# in the action log's visited URLs -- never from the agent's own words.
+
+
+def _challenge_run(tmp_path: Path, *, events, actions, transcript_text: str = "fine") -> dict:
+    tasks = tmp_path / "tasks"
+    tasks.mkdir(parents=True, exist_ok=True)
+    task_id = "task_chl1"
+    _write(tasks / f"{task_id}.task.json", {"task": {"id": task_id, "state": "SUCCEEDED"}})
+    if events is not None:
+        _write(tasks / f"{task_id}.events.json", {"events": events})
+    if actions is not None:
+        _write(tasks / f"{task_id}.actions.json", {"attempt_id": "a1", "actions": actions})
+    _write(tasks / f"{task_id}.transcript.0.json",
+           {"steps": [{"type": "text", "text": transcript_text}], "stream": {"next_offset": None}})
+    run = {"label": "bench-playwright-mcp-x-1", "tool": "playwright-mcp",
+           "prompt": "google-python-release", "rep": 1, "task_id": task_id}
+    return bb.measure(tasks, run)
+
+
+def test_challenges_counts_a_sorry_visit_and_a_gate_challenge_event_as_two(tmp_path):
+    row = _challenge_run(tmp_path, events=[
+        {"type": "running"},
+        {"type": "human_handoff_requested",
+         "detail": {"reason": "CAPTCHA on www.example.org", "expect": "www.example.org",
+                    "origin": "gate"}},
+        # The agent's own request is not a challenge the gate saw.
+        {"type": "human_handoff_requested",
+         "detail": {"reason": "please sign in", "expect": "github.com", "origin": "agent"}},
+    ], actions=[
+        {"kind": "cdp", "method": "Page.navigate", "url": "https://www.example.org/"},
+        {"kind": "cdp", "method": "Page.navigate", "url": "https://www.google.com/sorry/index"},
+    ])
+    # MUTATION: count only the gate's events (or only the /sorry visits) and this is 1.
+    assert row["challenges"] == 2
+
+
+def test_challenges_is_zero_for_a_run_that_met_none(tmp_path):
+    row = _challenge_run(tmp_path, events=[{"type": "running"}, {"type": "succeeded"}],
+                         actions=[{"kind": "cdp", "method": "Page.navigate",
+                                   "url": "https://www.google.com/search"}])
+    # MUTATION: return None whenever nothing was found and this fails: none met is 0.
+    assert row["challenges"] == 0
+
+
+def test_challenges_is_unknown_when_the_events_were_not_read(tmp_path):
+    row = _challenge_run(tmp_path, events=None,
+                         actions=[{"kind": "cdp", "method": "Page.navigate",
+                                   "url": "https://www.google.com/sorry/index"}])
+    # MUTATION: treat a missing events document as no events and this reads 1.
+    assert row["challenges"] is None
+    line = bb.render_tsv([row]).splitlines()
+    header = line[0].split("\t")
+    # MUTATION: render a None challenges cell as "0" and this fails.
+    assert line[1].split("\t")[header.index("challenges")] == "unknown"
+
+
+def test_challenges_never_reads_the_agents_own_claim(tmp_path):
+    row = _challenge_run(tmp_path, events=[{"type": "running"}], actions=[],
+                         transcript_text="I hit a CAPTCHA at https://www.google.com/sorry/index")
+    # MUTATION: count transcript mentions of /sorry or "CAPTCHA" and this reads 1.
+    assert row["challenges"] == 0
+
+
+def test_challenges_is_a_column_and_a_total_per_tool(tmp_path):
+    batch = _canned(tmp_path)
+    _write(batch / "tasks" / "task_ccc3.events.json", {"events": [
+        {"type": "human_handoff_requested", "detail": {"origin": "gate"}},
+        {"type": "human_control_returned"}]})
+    rows = bb.collect(batch)
+    by_task = {r["task_id"]: r for r in rows}
+    # task_aaa1 navigated to /sorry once; task_ccc3 met one gate challenge.
+    assert by_task["task_aaa1"]["challenges"] == 1
+    assert by_task["task_ccc3"]["challenges"] == 1
+    summary = bb.summarize(rows)
+    # MUTATION: leave `challenges` out of summarize() and this raises KeyError.
+    assert summary["playwright-mcp"]["challenges"] == 2
+    assert summary["dev-browser"]["challenges"] == 0
+    header = bb.render_tsv(rows).splitlines()[0].split("\t")
+    # MUTATION: leave `challenges` out of TSV_COLUMNS and this fails.
+    assert "challenges" in header
+    md = bb.render_markdown(summary, rows)
+    head = next(line for line in md.splitlines() if line.startswith("| tool |"))
+    # MUTATION: leave the column out of render_markdown and this fails.
+    assert "| challenges |" in head
+    mcp_line = next(line for line in md.splitlines() if line.startswith("| playwright-mcp |"))
+    cells = [c.strip() for c in head.strip("|").split("|")]
+    assert [c.strip() for c in mcp_line.strip("|").split("|")][cells.index("challenges")] == "2"
+
+
+# ---------------------------------------------------------------------------
+# `GET /v1/tasks/{id}` answers `{"task": {...}}`; a saved document of either
+# shape is read (2026-10-23: every run read as unfinished until CLD unwrapped
+# the saved documents by hand with `jq '.task // .'`).
+
+
+@pytest.mark.parametrize("wrapped", [True, False])
+def test_measure_reads_the_task_document_in_both_shapes(tmp_path, wrapped):
+    batch = _canned(tmp_path)
+    path = batch / "tasks" / "task_aaa1.task.json"
+    task = json.loads(path.read_text())
+    _write(path, {"task": task} if wrapped else task)
+    row = next(r for r in bb.collect(batch) if r["task_id"] == "task_aaa1")
+    # MUTATION: read `.state` off the saved document without unwrapping `task` and the
+    # wrapped case reads state None, unfinished.
+    assert row["state"] == "SUCCEEDED" and row["finished"] is True
+    assert row["turns"] == 30 and row["duration_s"] == pytest.approx(300.0)
+
+
+FAKE_CURL = r"""#!/usr/bin/env bash
+set -euo pipefail
+d="${FAKE_API_DIR:?}"
+url="${*: -1}"
+path="${url#*/v1}"
+path="${path%%\?*}"
+case "${path}" in
+  /tasks/*/attempts) printf '{"attempts": []}' ;;
+  /tasks/*/events) printf '{"events": [], "next_page_token": null}' ;;
+  /tasks/*/live/actions|/tasks/*/answer|/tasks/*/transcript) printf '{"detail":"none"}'; printf '\n404'; exit 0 ;;
+  /tasks/*) cat "${d}/${path##*/}.json" ;;
+  *) printf 'fake curl: unexpected call: %s\n' "$*" >&2; exit 3 ;;
+esac
+printf '\n200'
+"""
+
+
+def _collect_with_fake_api(tmp_path: Path, documents: dict[str, dict]) -> str:
+    bench = tmp_path / "bench"
+    batch = bench / "b1"
+    batch.mkdir(parents=True)
+    api = tmp_path / "api"
+    api.mkdir()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    lines = []
+    for n, (task_id, document) in enumerate(documents.items(), start=1):
+        lines.append("\t".join([f"bench-playwright-mcp-x-{n}", "playwright-mcp",
+                                "google-python-release", str(n), task_id]))
+        (api / f"{task_id}.json").write_text(json.dumps(document))
+    (batch / "runs.tsv").write_text("\n".join(lines) + "\n")
+    curl = fake_bin / "curl"
+    curl.write_text(FAKE_CURL)
+    curl.chmod(0o755)
+    gcloud = fake_bin / "gcloud"
+    gcloud.write_text("#!/usr/bin/env bash\nexit 1\n")
+    gcloud.chmod(0o755)
+    env = {**os.environ,
+           "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+           "FAKE_API_DIR": str(api),
+           "SWARM_BROWSER_BENCH_DIR": str(bench),
+           # A Cloud Run address, so the credential is an ID token: built at runtime.
+           "API_URL": "https://swarm-api-bench-test.a.run.app",
+           "API_HOST": "swarm.bench-test.example",
+           "SWARM_ID_TOKEN": secrets.token_hex(16)}
+    proc = subprocess.run(["bash", str(SCRIPT), "--collect", "b1"], capture_output=True,
+                          text=True, timeout=120, env=env)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert f"{len(documents)} run(s) visited" in out, out
+    return out
+
+
+def test_the_collector_reads_the_state_of_a_wrapped_and_a_bare_task(tmp_path):
+    out = _collect_with_fake_api(tmp_path, {
+        "task_wrap1": {"task": {"id": "task_wrap1", "state": "SUCCEEDED"}},
+        "task_bare2": {"id": "task_bare2", "state": "FAILED"},
+        # The control: a wrapped task that IS unfinished still reads so.
+        "task_wrap3": {"task": {"id": "task_wrap3", "state": "RUNNING"}},
+    })
+    # MUTATION: read `.state` in browser-bench.sh without `.task // .` and the
+    # wrapped finished task reads "unknown, not finished" too, so this is 2.
+    assert "1 run(s) not finished yet" in out, out
+    assert "bench-playwright-mcp-x-3: RUNNING, not finished" in out, out
+    assert "bench-playwright-mcp-x-1:" not in out and "bench-playwright-mcp-x-2:" not in out, out
