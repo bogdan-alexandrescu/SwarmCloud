@@ -357,15 +357,29 @@ def test_a_wake_for_another_task_changes_nothing(client, db, seeded, objects):
 # --------------------------------------------------------------------------
 
 
-def test_run_before_discovery_says_to_press_run_discovery(client, db, seeded):
+def test_run_before_discovery_crawls_from_the_base(client, db, seeded):
+    """QAENV-RUN (qa-environments.md §3.1, "a run with no stored screens"): a
+    target that asks to discover runs before any discovery, its capture steps
+    crawling from the base."""
     target = crawl_target(client, db)
+    response = client.post(f"{TARGETS}/{target['id']}:run", json={"file": "none"},
+                           headers=auth_header("carol"))
+    # MUTATION: keep `runnable`'s qa_target_no_screens for a discovering target and this is 422.
+    assert response.status_code == 201, response.text
+    captures = [t for t in tasks_of(db, response.json()["workflow_id"]) if t["step_id"].startswith("capture-")]
+    assert len(captures) == 4 and all("--crawl" in t["input"]["prompt"] for t in captures)
+
+
+def test_run_of_a_target_with_neither_screens_nor_discover_names_discover(client, db, seeded):
+    target = crawl_target(client, db)
+    # A document no registration writes today (`check_spec` refuses it), as one stored before could be.
+    stored(db, target["id"]).pop("discover")
     response = client.post(f"{TARGETS}/{target['id']}:run", json={"file": "none"},
                            headers=auth_header("carol"))
     assert response.status_code == 422, response.text
     assert response.json()["detail"]["reason"] == "qa_target_no_screens"
-    # MUTATION: keep the old "run its discovery first" and nobody knows where.
-    assert "Run discovery" in response.json()["message"]
-    assert ":discover" in response.json()["message"]
+    # MUTATION: keep the old "press Run discovery", which no longer makes a target runnable.
+    assert "`discover`" in response.json()["message"]
     assert workflows(db) == []
 
 

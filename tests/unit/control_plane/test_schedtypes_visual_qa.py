@@ -8,8 +8,12 @@ WHAT IS HELD HERE
   catalogue serves it available and the tick's real loader imports it.
 * THE MINIMUM INTERVAL IS 24 HOURS: a cron that fires more often is refused
   when the schedule is built.
-* ITS ONE PARAMETER IS `target`, a QA target id; a caller can name nothing
-  else about the run (invariant 10).
+* ITS PARAMETERS ARE `target`, a QA target id, and `environments`, the
+  names of its legs (default: every entry); a caller can name nothing else
+  about the run (invariant 10). The names are checked against the target at
+  create, edit and every firing (qa-environments.md §7, QAENV-RUN).
+* A FIRING IS ONE WORK ITEM PER LEG, within the firing's room, its caps $40
+  a leg, `max_concurrent` 2 and $160 a day (BGD, 2026-10-23, Q9 (a)).
 * A FIRING RUNS `:run` FOR ITS TARGET: one workflow, the schedule owner's,
   marked with the firing, its browser steps stamped `metadata.qa_target` and
   named in `qa_target_runs/{workflow_id}` exactly as the route's are.
@@ -141,12 +145,15 @@ def test_the_type_is_available_because_its_file_exists() -> None:
     assert schedulefire.load_executor(entry) is visual_qa
 
 
-def test_its_caps_are_the_owners_after_the_first_measured_run() -> None:
-    # QA run 5b (wf_025ae735511546d99eff: 17 steps, 362 screenshots) cost $23.62,
-    # 94% of the provisional $25; BGD set 40 / 80 / 1 on 2026-10-22 (VQ7-CAPS, #1933).
-    # MUTATION: restore the provisional per_run_usd=25, per_day_usd=50 and this fails.
+def test_the_schedules_caps_are_40_a_leg_2_at_once_and_160_a_day() -> None:
+    # QA run 5b (wf_025ae735511546d99eff: 17 steps, 362 screenshots) cost $23.62;
+    # BGD set 40 / 80 / 1 on 2026-10-22 (VQ7-CAPS, #1933) for one leg, and on
+    # 2026-10-23 (qa-environments.md §10, Q9 (a)) $40 a leg, max_concurrent 2 and
+    # $160 a day: a firing is one work item per leg, so a two-leg app keeps "the
+    # daily firing plus one run-now" for both legs.
+    # MUTATION: keep VQ7-CAPS' per_day_usd=80, max_concurrent=1 and this is (40, 80, 1).
     caps = scheduletypes.budget_caps(scheduletypes.get(TYPE))
-    assert (caps.per_run_usd, caps.per_day_usd, caps.max_concurrent) == (40, 80, 1)
+    assert (caps.per_run_usd, caps.per_day_usd, caps.max_concurrent) == (40, 160, 2)
 
 
 def test_it_files_issues_and_never_merges_or_pushes() -> None:
@@ -184,8 +191,13 @@ def test_the_minimum_interval_is_24_hours() -> None:
     {"target": "oracle"},
     {"target": "qat_" + "1" * 16, "base_url": "https://elsewhere.example.com"},
     {"target": "qat_" + "1" * 16, "screens": ["home"]},
-], ids=["missing", "not-an-id", "a-url", "a-screen-list"])
-def test_the_one_parameter_is_a_target_id(params) -> None:
+    {"target": "qat_" + "1" * 16, "environments": []},
+    {"target": "qat_" + "1" * 16, "environments": ["Staging"]},
+    {"target": "qat_" + "1" * 16, "environments": ["staging", "staging"]},
+    {"target": "qat_" + "1" * 16, "environments": [{"name": "staging", "base_url": "https://x.example.com"}]},
+], ids=["missing", "not-an-id", "a-url", "a-screen-list", "no-environment", "a-bad-name", "a-repeated-name",
+        "an-entry-not-a-name"])
+def test_the_parameters_are_a_target_id_and_environment_names(params) -> None:
     entry = scheduletypes.get(TYPE)
     gate = schedules.resolve_gate(entry, None)
     # MUTATION: give `target` a default, or allow extra keys, and one of these validates.
@@ -465,3 +477,145 @@ def test_a_dry_run_submits_nothing_and_names_the_refusal(db, ctx, resolver) -> N
     assert ready["would"] == "run" and ready["file"] == "issues"
     assert ready["browser_steps"] == ["capture-g1"]
     assert workflows(db) == [] and not [p for p in db.docs if p.startswith("qa_target_runs/")]
+
+
+# ---------------------------------------------------------------------------
+# Environments: one work item per leg (qa-environments.md §2.2, §7; QAENV-RUN)
+# ---------------------------------------------------------------------------
+
+
+def two_leg_target(db, resolver, *, approve: tuple[str, ...] = ("staging", "production")) -> dict[str, Any]:
+    """Carol's app with a staging and a production leg, each on its own host."""
+    body = target_body()
+    body.pop("base_url")
+    body["environments"] = [
+        {"name": "staging", "base_url": "https://widgets.example.com", "environment": "non_production"},
+        {"name": "production", "base_url": "https://shop.example.com"},
+    ]
+    target = _targets(db, resolver).create(CAROL_TENANT, body, by=CAROL)
+    hosts = {"staging": "widgets.example.com", "production": "shop.example.com"}
+    for name in approve:
+        target = _targets(db, resolver).approve_host(target["id"], host=hosts[name], extra_origin=None, by=ROOT,
+                                                     environment=name)
+    db.docs[f"repositories/{CAROL_SHOP}"]["agents_may_file_issues"] = True
+    return target
+
+
+def leg_schedule(db, target_id: str, environments: list[str] | None = None, **kwargs: Any) -> dict[str, Any]:
+    params: dict[str, Any] = {"target": target_id}
+    if environments is not None:
+        params["environments"] = environments
+    return make_schedule(db, type_=TYPE, scope_mode="all", params=params, tenant_id=CAROL_TENANT, owner=CAROL,
+                         cron="0 6 * * *", max_concurrent=2, **kwargs)
+
+
+def runs(db) -> list[dict[str, Any]]:
+    return [d for p, d in db.docs.items() if p.startswith("qa_target_runs/")]
+
+
+def test_a_firing_is_one_work_item_per_leg(db, ctx, resolver) -> None:
+    target = two_leg_target(db, resolver)
+    schedule = leg_schedule(db, target["id"])
+
+    items = visual_qa.create(firing_for(ctx, schedule, room=2))
+
+    # MUTATION: run only the first entry in `create` and this is one item.
+    assert len(items) == 2 and len(workflows(db)) == 2
+    marks = {}
+    for item in items:
+        made = [t for t in tasks(db) if t.get("workflow_id") == item["id"]]
+        (mark,) = {tuple(sorted(t["metadata"]["qa_target"].items())) for t in made
+                   if (t.get("metadata") or {}).get("qa_target")}
+        marks[dict(mark)["environment"]] = item["id"]
+    # Each workflow carries its own leg's mark only.
+    assert set(marks) == {"staging", "production"}
+    rows = {r["environment"]: r for r in runs(db)}
+    assert {name: rows[name]["workflow_id"] for name in rows} == marks
+    # The two legs are one group, as a dispatch by hand is.
+    (group_id,) = {r["group_id"] for r in rows.values()}
+    group = db.docs[f"qa_run_groups/{group_id}"]
+    assert group["schedule_id"] == SCHEDULE_ID
+    assert {g["environment"]: g["state"] for g in group["legs"]} == {"staging": "submitted",
+                                                                     "production": "submitted"}
+
+
+def test_a_firing_with_room_for_one_leg_starts_one_and_says_why_not_the_other(db, ctx, resolver) -> None:
+    target = two_leg_target(db, resolver)
+    schedule = leg_schedule(db, target["id"])
+    firing = firing_for(ctx, schedule, room=1)
+
+    items = visual_qa.create(firing)
+
+    # MUTATION: submit every leg whatever the room and `Firing._spend` raises RoomExceeded.
+    assert len(items) == 1 and len(workflows(db)) == 1
+    assert firing.explanation["not_started"] == [{"environment": "production", "reason": "no_room"}]
+    (group,) = [d for p, d in db.docs.items() if p.startswith("qa_run_groups/")]
+    assert {g["environment"]: g["state"] for g in group["legs"]} == {"staging": "submitted",
+                                                                     "production": "not_started"}
+
+
+def test_a_firing_runs_only_the_legs_its_schedule_names(db, ctx, resolver) -> None:
+    target = two_leg_target(db, resolver, approve=("staging",))
+    schedule = leg_schedule(db, target["id"], ["staging"])
+
+    (item,) = visual_qa.create(firing_for(ctx, schedule, room=2))
+
+    # Production's host is pending, and the schedule does not name it: staging runs.
+    # MUTATION: run every entry whatever `environments` names and production's refusal ends the firing.
+    (row,) = runs(db)
+    assert row["environment"] == "staging" and row["workflow_id"] == item["id"]
+
+
+def test_every_named_leg_is_checked_before_a_firing_submits_any(db, ctx, resolver) -> None:
+    target = two_leg_target(db, resolver, approve=("staging",))
+    leg_schedule(db, target["id"])
+
+    schedulefire.Ticker(ctx).tick()
+
+    (firing,) = firings(db).values()
+    # MUTATION: submit staging before checking production and its workflow exists.
+    assert firing["state"] == schedulefire.REFUSED, firing
+    assert firing["skip"]["code"] == qatargets.QaTargetHostPending.code
+    assert workflows(db) == [] and runs(db) == []
+
+
+def test_environments_are_checked_against_the_target_at_create_and_edit(db, ctx, resolver) -> None:
+    target = two_leg_target(db, resolver)
+    schedule = leg_schedule(db, target["id"], ["staging", "qa"])
+
+    with pytest.raises(ApiError) as caught:
+        visual_qa.check_target(ctx, schedule, auth_of(ctx, schedule))
+    # MUTATION: check only the target in `check_target` and a schedule names a leg that is not there.
+    assert caught.value.code == visual_qa.ENVIRONMENT_NOT_FOUND
+    assert caught.value.detail == {"environment": "qa"}
+    # CONTROL: names the target has are accepted.
+    ok = leg_schedule(db, target["id"], ["production"])
+    assert visual_qa.check_target(ctx, ok, auth_of(ctx, ok)) is None
+
+
+def test_environments_are_checked_again_at_every_firing(db, ctx, resolver) -> None:
+    target = two_leg_target(db, resolver)
+    leg_schedule(db, target["id"], ["staging", "production"])
+    # The admin removes the production leg after the schedule was made.
+    doc = db.docs[f"qa_targets/{target['id']}"]
+    doc["environments"] = [e for e in doc["environments"] if e["name"] == "staging"]
+
+    schedulefire.Ticker(ctx).tick()
+
+    (firing,) = firings(db).values()
+    # MUTATION: skip the names nobody has any more and the firing runs staging alone, unasked.
+    assert firing["state"] == schedulefire.REFUSED, firing
+    assert firing["skip"]["code"] == "qa_target_environment_unknown"
+    assert workflows(db) == []
+
+
+def test_a_dry_run_names_every_leg_it_would_run(db, ctx, resolver) -> None:
+    target = two_leg_target(db, resolver)
+    schedule = leg_schedule(db, target["id"])
+
+    answer = visual_qa.dry_run(firing_for(ctx, schedule, room=2))
+
+    assert answer["would"] == "run"
+    # MUTATION: dry-run the first entry only and production is missing.
+    assert [leg["environment"] for leg in answer["legs"]] == ["staging", "production"]
+    assert workflows(db) == []
