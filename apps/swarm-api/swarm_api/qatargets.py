@@ -120,6 +120,25 @@ target settles a discovery whose task has ended too (`settle_running`).
 Storing the list never bumps `revision`: the mark a run already carries
 stays the target's, and nothing a caller sends ever writes `discovered`.
 
+WHAT A RUN FOUND (docs/design/qa-environments.md §5, §7; lane QAENV-SETTLE,
+BGD's Q5 (c) and Q8 (a), 2026-10-23, part of #2136). Every capture step of a
+run crawls and writes `capture-<g>/found.json` (§3.5). The same
+`task_finished` push calls `QaTargets.settle_run`: once every capture step of
+a leg's run has ended, each `found.json` is read through the tenant-checked,
+redacted artifact read, held to `qaspec.found_routes` on that leg's view, and
+the union merged into THAT leg's `discovered` (`merge_discovered`), each route
+with `first_seen`, `last_seen` and the `workflow_id` that last saw it. A route
+a complete crawl (`stopped_by: done` in every step) did not see is marked
+`missing_since` and dropped after `MISSING_DROP_AFTER` (3) such crawls in a
+row; a crawl stopped by a bound changes nothing. `screens` and `revision` are
+never written: the routes the last run added are answered per leg as
+`new_since_last_run`, and Promote is an admin's PATCH of `screens`. The run
+record's `settled_at` is written in the same transaction, so a run settles
+once. Findings are filed per leg: the file step's dedupe key is
+`visual-qa:<target_id>:<environment>:<screen>:<title>`, its titles start
+`[<leg>]`, and a grouped run's issues link the run group's page, whose id
+`runnable_legs` mints before it renders.
+
 ONE APP, SEVERAL ENVIRONMENTS (docs/design/qa-environments.md §1; lane
 QAENV-MODEL, BGD's Q1 (a), 2026-10-23, part of #2136). A target is an APP: its
 name, repository, screens, discovery settings, flows, exclusions and filing
@@ -194,7 +213,7 @@ import socket
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Callable, Mapping, Protocol, Sequence
+from typing import Any, Callable, Collection, Mapping, Protocol, Sequence
 from urllib.parse import urlsplit
 
 from google.cloud import firestore
@@ -302,6 +321,16 @@ DISCOVERY_ARTIFACT = "screens.json"
 #: The most of it read. 60 listed routes of 512-character paths, with the
 #: tool's `discovered` summary, is well under this; past it is refused.
 DISCOVERY_ARTIFACT_BYTES = 512 * 1024
+#: A crawling capture step's record (qa-environments.md §3.5): where
+#: `capture --out $SWARM_ARTIFACTS_DIR/capture-<g>` writes it, so its
+#: artifact name is `capture-<g>/found.json`. Read when the leg's run settles (§5).
+FOUND_ARTIFACT = "found.json"
+CAPTURE_STEP_PREFIX = "capture-"
+#: A route in a leg's `discovered` that this many consecutive COMPLETE
+#: crawls (`stopped_by: done`) did not see is dropped (§5). Three, not one:
+#: a page that rendered a link for one session and not the next is not gone,
+#: and a crawl stopped by a bound proves nothing and is never counted.
+MISSING_DROP_AFTER = 3
 #: A claim whose submission never recorded its workflow (the process died
 #: between the two) frees the target after this.
 DISCOVERY_CLAIM_TTL = timedelta(minutes=5)
@@ -339,7 +368,7 @@ _ENTRY_KEYS = frozenset({"name", *LEG_SPEC_FIELDS})
 _STATUS_FIELDS = (
     "host_state", "approved_by", "approved_at", "approved_origins", "approved_idp_token_path",
     "credential", "challenge_bypass_value", "discovered", "discovered_at", "discovered_by",
-    "discovered_workflow", "discovery_error", "discovering", "legacy_map_key",
+    "discovered_workflow", "discovered_new", "discovery_error", "discovering", "legacy_map_key",
 )
 
 _SELECTOR_KEYS = ("username_selector", "password_selector", "submit_selector")
@@ -818,7 +847,7 @@ def _flat_api(doc: Mapping[str, Any]) -> dict[str, Any]:
     for key in SPEC_FIELDS:
         if key in doc:
             body[key] = doc[key]
-    body.update(discovery_status(doc))
+    body.update(discovery_status(doc, screens=doc.get("screens")))
     return body
 
 
@@ -826,11 +855,11 @@ def _flat_api(doc: Mapping[str, Any]) -> dict[str, Any]:
 _LEG_API_KEYS = frozenset({
     "host", "host_state", "approved_by", "approved_at", "approved_origins", IDP_TOKEN_FIELD, "credential",
     BYPASS_FIELD, "discovered", "discovered_at", "discovered_by", "discovered_workflow", "discovery_error",
-    "discovering",
+    "discovering", "new_since_last_run",
 })
 
 
-def _entry_api(entry: Mapping[str, Any]) -> dict[str, Any]:
+def _entry_api(entry: Mapping[str, Any], *, screens: Any = None) -> dict[str, Any]:
     """One entry's answer: its settings and the status of its values, never
     a value, a length or its map key."""
     body: dict[str, Any] = {
@@ -850,7 +879,7 @@ def _entry_api(entry: Mapping[str, Any]) -> dict[str, Any]:
     for key in ("read_posts", "rate", "challenge_bypass"):
         if key in entry:
             body[key] = entry[key]
-    body.update(discovery_status(entry))
+    body.update(discovery_status(entry, screens=screens))
     return body
 
 
@@ -868,16 +897,24 @@ def to_api(doc: Mapping[str, Any]) -> dict[str, Any]:
     else:
         app = {k: v for k, v in normal.items() if k not in ("environments", qaspec.MIGRATED)}
         body = {k: v for k, v in _flat_api(app).items() if k not in _LEG_API_KEYS}
-    body["environments"] = [_entry_api(e) for e in entries]
+    body["environments"] = [_entry_api(e, screens=normal.get("screens")) for e in entries]
     return body
 
 
-def discovery_status(doc: Mapping[str, Any]) -> dict[str, Any]:
+def discovery_status(doc: Mapping[str, Any], *, screens: Any = None) -> dict[str, Any]:
     """What the console draws for discovery: the stored list and who ran it,
-    the last failure's sentence, and the running one's workflow."""
+    the last failure's sentence, the running one's workflow, and the routes
+    the last settled run added (`new_since_last_run`, qa-environments.md §5:
+    what the card offers a workspace admin to Promote into `screens`, less
+    any `screens` already lists)."""
     running = doc.get("discovering") or None
+    discovered = [{k: _iso(v) for k, v in s.items()} for s in doc.get("discovered") or [] if isinstance(s, Mapping)]
+    listed = {qaspec.route_key(s) for s in screens or [] if isinstance(s, Mapping) and isinstance(s.get("path"), str)}
+    new_ids = set(doc.get("discovered_new") or [])
     return {
-        "discovered": [dict(s) for s in doc.get("discovered") or []] if doc.get("discovered") else None,
+        "discovered": discovered or None,
+        "new_since_last_run": [s for s in discovered if s.get("id") in new_ids
+                               and isinstance(s.get("path"), str) and qaspec.route_key(s) not in listed],
         "discovered_at": _iso(doc.get("discovered_at")),
         "discovered_by": doc.get("discovered_by"),
         "discovered_workflow": doc.get("discovered_workflow"),
@@ -1688,16 +1725,20 @@ class QaTargets:
         else:
             names = list(environments)
         legs: list[LegRun] = []
+        group_id = new_group_id()
+        group = {"group_id": group_id, "legs": list(names)} if len(names) > 1 else None
         for name in names:
             try:
                 view = self._runnable_view(normal, tenant_id, file=file, environment=name)
-                workflow, mark, browser = render_run(view, screens=screens, file=file, browser_tool=browser_tool)
+                workflow, mark, browser = render_run(view, screens=screens, file=file, browser_tool=browser_tool,
+                                                     group=group)
             except ApiError as exc:
                 # The name is the target's own or a checked `[a-z0-9-]` one,
                 # carried beside the fixed sentence, never inside it.
                 exc.detail = {**exc.detail, "environment": name}
                 raise
-            legs.append(LegRun(name=name, target=view, workflow=workflow, mark=mark, browser=browser))
+            legs.append(LegRun(name=name, target=view, workflow=workflow, mark=mark, browser=browser,
+                               group_id=group_id))
         return legs
 
     def _startable(self, target: dict[str, Any], tenant_id: str, *, file: str) -> dict[str, Any]:
@@ -1747,8 +1788,9 @@ class QaTargets:
                    browser_tool: str | None = None, schedule_id: str | None = None) -> str:
         """`qa_run_groups/{group_id}`, written BEFORE the first submission with
         every leg `pending`, so a crash between two submissions leaves a group
-        that says which leg never started."""
-        group_id = "qrg_" + secrets.token_hex(8)
+        that says which leg never started. Its id is the one `runnable_legs`
+        rendered the legs with, so the issues they file link this group."""
+        group_id = legs[0].group_id or new_group_id()
         first = legs[0].target
         self._db.collection(GROUPS_COLLECTION).document(group_id).set({
             "group_id": group_id,
@@ -1984,21 +2026,133 @@ class QaTargets:
                      owner, target["id"], task_id, len(found) if found is not None else "none")
         return written
 
+    # -- a run's found routes (qa-environments.md §5, lane QAENV-SETTLE) ----------
+
+    def settle_run(self, task_id: str, inspection: Any, *, tenant_id: str | None = None) -> bool:
+        """A step of a leg's QA run has ended: once every capture step of the
+        run has, merge what their crawls found into THAT leg's `discovered`
+        (§5, BGD's Q5 (c)). True when the target was written. A doorbell, as
+        `settle_discovery` is: everything is read again, and a task that is
+        not a run's, of another tenant than the wake said, or of a run with a
+        capture still going or already settled is a no-op.
+
+        Each capture's `capture-<g>/found.json` is read through the
+        tenant-checked, redacted artifact read and held to
+        `qaspec.found_routes` on the leg's own view (its origin, the target's
+        exclusions, `reveal` to the start-click rules). A file that is absent
+        or refused merges nothing, says why in `discovery_error`, and makes
+        the run's crawl incomplete, so no route is marked missing on its
+        account. `screens` and `revision` are never written: what a run found
+        is offered for Promote (`new_since_last_run`), and a running leg's
+        mark stays good. The run record's `settled_at` is written in the same
+        transaction, so two wakes settle once."""
+        snap = self._db.collection(TASKS).document(task_id).get()
+        task = (snap.to_dict() or {}) if snap.exists else None
+        if task is None or not isinstance(task.get("workflow_id"), str) or not task["workflow_id"]:
+            return False
+        owner = str(task.get("tenant_id") or "")
+        if not owner or (tenant_id and tenant_id != owner):
+            return False
+        workflow_id = task["workflow_id"]
+        run_ref = self._db.collection(RUNS_COLLECTION).document(workflow_id)
+        run_snap = run_ref.get()
+        run = (run_snap.to_dict() or {}) if run_snap.exists else None
+        if not run or run.get("kind") != "run" or run.get("tenant_id") != owner or run.get("settled_at"):
+            return False
+        captures = self._ended_captures(owner, workflow_id, run.get("task_ids") or [])
+        target = self.find(owner, str(run.get("target_id") or ""))
+        if captures is None or target is None:
+            return False
+        name = run.get("environment")
+        try:
+            view = qaspec.leg(target, name if isinstance(name, str) else None)
+        except qaspec.QaSpecError:
+            return False
+        name = view[qaspec.LEG_NAME]
+        results: list[qaspec.FoundRoutes] = []
+        errors: list[str] = []
+        for capture in captures:
+            step = str(capture.get("step_id"))
+            artifact = f"{step}/{FOUND_ARTIFACT}"
+            try:
+                results.append(qaspec.found_routes(view, self._artifact(inspection, owner, capture["id"], artifact)))
+            except qaspec.QaSpecError as exc:
+                errors.append(f"{artifact} was not stored: {exc.message}")
+        # Complete only when every capture's crawl read whole and stopped by
+        # `done`: one bounded or unread crawl proves nothing about absence.
+        complete = bool(results) and len(results) == len(captures) and all(r.complete for r in results)
+        now = self._now()
+        ref = self._ref(str(target["id"]))
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> bool:
+            current_run = _snapshot(txn.get(run_ref))
+            if not current_run.exists or (current_run.to_dict() or {}).get("settled_at"):
+                return False
+            snap = _snapshot(txn.get(ref))
+            doc = (snap.to_dict() or {}) if snap.exists else None
+            if doc is None or doc.get("tenant_id") != owner:
+                return False
+            normal = _normal(doc)
+            entry = next((e for e in normal["environments"] if e.get("name") == name), None)
+            if entry is None:
+                return False
+            merged, new_ids = merge_discovered(entry.get("discovered"), results, complete=complete, now=now,
+                                               workflow_id=workflow_id, taken=_screen_ids(normal))
+            txn.set(ref, _stored(_replace_entry(normal, str(name), {
+                "discovered": merged, "discovered_new": new_ids, "discovered_at": now,
+                "discovered_by": run.get("by"), "discovered_workflow": workflow_id,
+                "discovery_error": "; ".join(errors) or None,
+            })))
+            txn.set(run_ref, {**(current_run.to_dict() or {}), "settled_at": now, "settled": {
+                "complete": complete, "captures": len(captures), "read": len(results), "new": len(new_ids)}})
+            return True
+
+        written = _apply(transaction)
+        if written:
+            log.info("qa run settled tenant=%s target=%s environment=%s workflow=%s complete=%s errors=%d",
+                     owner, target["id"], name, workflow_id, complete, len(errors))
+        return written
+
+    def _ended_captures(self, tenant_id: str, workflow_id: str,
+                        task_ids: Sequence[Any]) -> list[dict[str, Any]] | None:
+        """The run's capture step tasks when every one has ended, else None.
+        Only tasks of this tenant and this workflow count."""
+        captures: list[dict[str, Any]] = []
+        for task_id in task_ids:
+            if not isinstance(task_id, str) or not task_id:
+                continue
+            snap = self._db.collection(TASKS).document(task_id).get()
+            doc = (snap.to_dict() or {}) if snap.exists else None
+            if not doc or doc.get("tenant_id") != tenant_id or doc.get("workflow_id") != workflow_id \
+                    or not str(doc.get("step_id") or "").startswith(CAPTURE_STEP_PREFIX):
+                continue
+            try:
+                state = TaskState(doc.get("state"))
+            except ValueError:
+                return None
+            if state not in TERMINAL_STATES:
+                return None
+            captures.append({**doc, "id": doc.get("id") or task_id})
+        return captures or None
+
     @staticmethod
-    def _artifact(inspection: Any, tenant_id: str, task_id: str) -> Any:
-        """The step's `screens.json`, parsed, through the API's own
-        tenant-checked, redacted artifact read (`InspectionService`). Raises
-        QaSpecError saying what is wrong, never what it holds."""
+    def _artifact(inspection: Any, tenant_id: str, task_id: str, name: str = DISCOVERY_ARTIFACT) -> Any:
+        """The step's `name` (`screens.json`, or a capture's `found.json`),
+        parsed, through the API's own tenant-checked, redacted artifact read
+        (`InspectionService`). Raises QaSpecError saying what is wrong, never
+        what it holds."""
         def refused(why: str) -> qaspec.QaSpecError:
             return qaspec.QaSpecError("qa_target_invalid", why)
 
         if inspection is None:
             raise refused("SwarmCloud could not read the step's artifacts")
         try:
-            row = inspection.read_artifact(tenant_id, task_id, submitted_by=None, name=DISCOVERY_ARTIFACT,
+            row = inspection.read_artifact(tenant_id, task_id, submitted_by=None, name=name,
                                            limit_bytes=DISCOVERY_ARTIFACT_BYTES)
         except ApiError:
-            raise refused(f"the step uploaded no {DISCOVERY_ARTIFACT}") from None
+            raise refused(f"the step uploaded no {name}") from None
         total = row.get("total_bytes")
         if isinstance(total, int) and total > DISCOVERY_ARTIFACT_BYTES:
             raise refused(f"it is over {DISCOVERY_ARTIFACT_BYTES} bytes")
@@ -2012,6 +2166,70 @@ class QaTargets:
             raise refused("it is not JSON") from None
 
 
+def _screen_ids(normal: Mapping[str, Any]) -> set[str]:
+    return {str(s.get("id")) for s in normal.get("screens") or [] if isinstance(s, Mapping)}
+
+
+def merge_discovered(existing: Any, found: Sequence[qaspec.FoundRoutes], *, complete: bool, now: datetime,
+                     workflow_id: str, taken: Collection[str] = ()) -> tuple[list[dict[str, Any]], list[str]]:
+    """A leg's `discovered` after a run (qa-environments.md §5), and the ids
+    it added. Pure: the settle's rules, testable without a store.
+
+    A listed route the run saw (any step's stored list or new routes, by
+    `qaspec.route_key`) keeps its `first_seen` and gets `last_seen` and the
+    run's `workflow_id`, and is no longer missing. One it did not see is
+    marked `missing_since` only when the run's crawl was `complete`, and is
+    dropped after `MISSING_DROP_AFTER` such crawls in a row; an incomplete
+    crawl changes nothing about it. A new route is appended with all three
+    stamps, its id given the key's sha256 suffix (as `swarm_qa.found_ids`
+    does) when another route or a screen holds it. At most
+    `qaspec.MAX_SCREENS` routes are kept."""
+    seen: set[str] = set()
+    for result in found:
+        seen |= result.seen
+    out: list[dict[str, Any]] = []
+    keys: set[str] = set()
+    ids: set[str] = set(taken)
+    for raw in existing or []:
+        if not isinstance(raw, Mapping) or not isinstance(raw.get("id"), str) or not isinstance(raw.get("path"), str):
+            continue
+        route = dict(raw)
+        key = qaspec.route_key(route)
+        if key in keys:
+            continue
+        if key in seen:
+            route.update(last_seen=now, workflow_id=workflow_id, missing_since=None, missed_crawls=0)
+            if not route.get("first_seen"):
+                route["first_seen"] = now
+        elif complete:
+            missed = int(route.get("missed_crawls") or 0) + 1
+            if missed >= MISSING_DROP_AFTER:
+                continue
+            route.update(missed_crawls=missed, missing_since=route.get("missing_since") or now)
+        keys.add(key)
+        ids.add(route["id"])
+        out.append(route)
+    added: list[str] = []
+    for result in found:
+        for new in result.routes:
+            key = qaspec.route_key(new)
+            if key in keys or len(out) >= qaspec.MAX_SCREENS:
+                continue
+            rid = new["id"]
+            if rid in ids:
+                rid = f"{rid[:41].rstrip('-')}-{hashlib.sha256(key.encode('utf-8')).hexdigest()[:6]}"
+                if rid in ids:
+                    continue
+            route = {"id": rid, "path": new["path"], **({"reveal": new["reveal"]} if new.get("reveal") else {}),
+                     "first_seen": now, "last_seen": now, "workflow_id": workflow_id,
+                     "missing_since": None, "missed_crawls": 0}
+            keys.add(key)
+            ids.add(rid)
+            out.append(route)
+            added.append(rid)
+    return out, added
+
+
 @dataclass(frozen=True)
 class LegRun:
     """One leg of a dispatch, checked and rendered (`runnable_legs`): its
@@ -2023,17 +2241,27 @@ class LegRun:
     workflow: dict[str, Any]
     mark: dict[str, Any]
     browser: list[str]
+    #: The run group's id, minted before the render so the file step's
+    #: issues link the group's page (§7); `open_group` writes it.
+    group_id: str | None = None
+
+
+def new_group_id() -> str:
+    """A run group's id (§2.1): `qrg_` and 16 hex digits."""
+    return "qrg_" + secrets.token_hex(8)
 
 
 def render_run(target: Mapping[str, Any], *, screens: Sequence[str] | None,
-               file: str, browser_tool: str | None = None) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+               file: str, browser_tool: str | None = None,
+               group: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     """(the `WorkflowCreate` body, the mark, the browser step ids) for a run
     of `target`. The body is `qaspec.render`'s spec in the API's shape, with
     `metadata.qa_target` on each browser step: written here, never accepted
     from a caller (§1.1). `browser_tool` is the run's own choice of the flows'
-    tool, by name (lane VQ9-TOOL). Raises 422 for anything the spec cannot hold."""
+    tool, by name (lane VQ9-TOOL); `group` the dispatch the leg is one of
+    (§7). Raises 422 for anything the spec cannot hold."""
     try:
-        spec = qaspec.render(target, screens=screens, file=file, browser_tool=browser_tool)
+        spec = qaspec.render(target, screens=screens, file=file, browser_tool=browser_tool, group=group)
         mark = qaspec.qa_target_metadata(target)
     except qaspec.QaSpecError as exc:
         raise _spec_refusal(exc) from None
