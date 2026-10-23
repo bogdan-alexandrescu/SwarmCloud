@@ -85,7 +85,7 @@ table.doc tr:last-child td{border-bottom:0}
 .wsb{display:flex;align-items:center;gap:9px;margin:0 10px 10px;padding:8px 10px;border:1px solid var(--line);border-radius:10px}
 .wsb .tg{width:26px;height:26px;border-radius:7px;background:var(--tint);color:var(--info-ink);font:650 12px/26px var(--font);text-align:center;flex:none}
 .wsb .tt{display:flex;flex-direction:column;line-height:1.25;flex:1;min-width:0}
-.wsb .tt b{font-size:13px}.wsb .tt small{font-size:12px;color:var(--text-dim)}
+.wsb .tt b{font-size:13px}.wsb .tt small{font-size:12px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pt{font-size:13px;font-weight:600;color:var(--text-dim);padding:8px 18px 6px;display:flex;align-items:center;gap:6px}
 .pg{display:flex;align-items:center;gap:9px;padding:6px 9px;margin:1px 10px;border-radius:8px;color:var(--text-dim);position:relative;font-size:13.5px}
 .pg .pl{color:var(--text);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -158,6 +158,8 @@ table.doc tr:last-child td{border-bottom:0}
 .tb tr.hi td{background:color-mix(in srgb,var(--warn-ink) 7%,var(--surface))}
 .tb tr.grp td{background:var(--surface-2);font-weight:600;font-size:12.5px}
 .tb td.c,.tb th.c{text-align:center}
+.tb td.nm code{overflow-wrap:normal}
+.tb.brk td.nm code{white-space:nowrap}
 .box{display:inline-block;width:16px;height:16px;border:1.5px solid var(--ctl-bd);border-radius:4px;vertical-align:-3px;position:relative;background:var(--surface)}
 .box.on{background:var(--info);border-color:var(--info)}
 .box.on::after{content:"";position:absolute;left:4.5px;top:1px;width:4px;height:8px;border:solid var(--ctl-onac);border-width:0 2px 2px 0;transform:rotate(45deg)}
@@ -215,6 +217,8 @@ table.doc tr:last-child td{border-bottom:0}
 .rr small{display:block;font-size:12px;color:var(--text-dim)}
 .modal{position:relative;border-radius:var(--r-dlg);background:var(--surface);border:1px solid var(--line);box-shadow:var(--shadow);padding:18px 20px;display:flex;flex-direction:column;gap:12px;max-width:560px;width:100%}
 .modal h4{margin:0;font-size:17px;overflow-wrap:anywhere}
+.modal .mh{flex-wrap:nowrap;align-items:flex-start}.modal .mh h4{flex:1;min-width:0}
+.phone.sheet{height:844px}
 .overlay{position:absolute;inset:0;background:rgba(6,16,30,.45);display:flex;align-items:flex-start;justify-content:center;padding:70px 20px 20px;z-index:4}
 .recap{display:grid;grid-template-columns:110px minmax(0,1fr);gap:4px 12px;font-size:13px;background:var(--surface-2);border-radius:10px;padding:10px 12px}
 .recap dt{color:var(--text-dim)}.recap dd{margin:0;overflow-wrap:anywhere}
@@ -285,6 +289,13 @@ table.doc tr:last-child td{border-bottom:0}
   .olist{display:none}.ophone{display:flex}
   .rc dl{grid-template-columns:96px minmax(0,1fr)}
   .secnav{flex-wrap:nowrap;overflow-x:auto}
+  .st{white-space:normal;align-items:flex-start}
+  .st .mk{margin-top:4px}
+  .tb.st2 td .chip{white-space:normal;text-align:left}
+  .envrow{grid-template-columns:22px minmax(0,1fr)}
+  .envrow>.mu{grid-column:2}
+  .envrow .sm .sep{display:none}
+  .envrow .sm>.st{display:flex}
 }
 /* the overlay sits outside the content column, so the phone rule is by frame */
 .phone .overlay{padding:0}
@@ -432,7 +443,7 @@ function adminPages(o){
 function workPages(o){return '<div class="pt">Work</div>'+pk(o,'agents','Agents','work')+pk(o,'workflows','Workflows','graph')+pk(o,'runs','Runs','submit')+pk(o,'timeline','Timeline','counts');}
 function automatePages(o){return '<div class="pt">Automate</div>'+pk(o,'sched','Schedules','cal')+pk(o,'appr','Approvals','admin','<span class="cnt">2</span>');}
 function panel(o){
-  var ws=o.ws==='personal'?{g:'O',n:'Operator',s:'personal workspace · 3 of 3'}:o.ws==='design'?{g:'D',n:'design',s:'group workspace · 2 of 3'}:{g:'E',n:'eng',s:'group workspace · 1 of 3'};
+  var ws=o.ws==='personal'?{g:'O',n:'Operator',s:'personal · 3 of 3'}:o.ws==='design'?{g:'D',n:'design',s:'group workspace · 2 of 3'}:{g:'E',n:'eng',s:'group workspace · 1 of 3'};
   var pages=o.sec==='admin'?adminPages(o):o.sec==='automate'?automatePages(o):o.sec==='work'?workPages(o):configPages(o);
   return '<nav class="panel" aria-label="Pages"><div class="ph"><span class="wm">Swarm<span>Cloud</span></span><span class="env">dev</span></div>'+
     '<div class="wsb"><span class="tg">'+ws.g+'</span><span class="tt"><b>'+ws.n+'</b><small>'+ws.s+'</small></span>'+I('swap')+'</div>'+
@@ -441,7 +452,7 @@ function panel(o){
 }
 function desk(o,body){return '<div class="scroller"><div class="app'+(o.short?' short':'')+'">'+spine(o)+panel(o)+'<main class="mn">'+body+'</main>'+(o.over||'')+'</div></div>';}
 function phone(o,body){var ws=o.ws==='personal'?'Operator':o.ws==='design'?'design':'eng';
-  return '<div class="phone">'+'<div class="pbar">'+I('menu')+hive(22)+'<b>'+o.title+'</b><span class="wsc">'+ws+'</span><span class="env">dev</span></div><main class="mn">'+body+'</main>'+(o.over||'')+'</div>';}
+  return '<div class="phone'+(o.over?' sheet':'')+'">'+'<div class="pbar">'+I('menu')+hive(22)+'<b>'+o.title+'</b><span class="wsc">'+ws+'</span><span class="env">dev</span></div><main class="mn">'+body+'</main>'+(o.over||'')+'</div>';}
 function drawer(o){return '<div class="phone drw"><div class="pbar">'+I('menu')+hive(22)+'<b>'+o.title+'</b><span class="env">dev</span></div><div class="ghost"><i style="width:60%"></i><i style="width:85%"></i><i style="width:72%"></i><i style="width:90%"></i></div><div class="scrim"></div><div class="drawer">'+spine(o)+panel(o)+'</div></div>';}
 
 /* ---------- example data ---------- */
@@ -550,7 +561,7 @@ function secWorkspace(){
    ]),{act:'<span class="mu sm">You may set these: workspace admin</span>',sub:'Released to the agents of eng whose runner, tool or MCP server is ticked below.'})+
   card('Grants',
    '<p class="cs" style="margin-top:0">Tick a box to let that runner profile, tool or platform component read the secret. A box that cannot be ticked says why.</p>'+
-   tbl([['Secret'],['claude-code','c'],['codex','c'],['playwright','c'],['jev','c'],['mcp:search','c']],[
+   tbl([['Secret','nm'],['claude-code','c'],['codex','c'],['playwright','c'],['jev','c'],['mcp:search','c']],[
      ['<code>TEST_DB_PASSWORD</code>',box('on'),box(''),box('on'),box(''),box('no')],
      ['<code>STAGING_SIGNIN</code>',box(''),box(''),box('on'),box(''),box('no')],
      ['<code>SEARCH_INDEX</code>',box('no'),box('no'),box('no'),box('no'),box('on')]
@@ -633,7 +644,7 @@ function repoSecActions(){
 }
 function setForm(dest){
   var actions=dest==='actions';
-  return '<div class="overlay"><div class="modal" role="dialog" aria-label="Set a secret"><div class="row"><h4>'+(actions?'Set SMOKE_SIGNIN in environment repo-secrets':'Set TEST_DB_PASSWORD for agents')+'</h4><span style="margin-left:auto">'+btn('','q sm','x')+'</span></div>'+
+  return '<div class="overlay"><div class="modal" role="dialog" aria-label="Set a secret"><div class="row mh"><h4>'+(actions?'Set SMOKE_SIGNIN in environment repo-secrets':'Set TEST_DB_PASSWORD for agents')+'</h4><span style="margin-left:auto">'+btn('','q sm','x')+'</span></div>'+
    '<dl class="recap"><dt>Scope</dt><dd>Repository · <code>example-org/web-app</code></dd><dt>Destination</dt><dd>'+(actions?'GitHub Actions · environment <code>repo-secrets</code> (main only)':'Agents that clone it')+'</dd><dt>Who</dt><dd>Operator, '+(actions?'GitHub admin of the repository, checked at the write':'workspace admin')+'</dd></dl>'+
    '<div class="ban"><b>This form works once</b><p>It closes after one save or in 10 minutes (<span class="mono">9:41</span> left). It is never prefilled, and no page, route or log can show the value again.</p></div>'+
    (actions?'':'<label class="fld"><span>Kind</span><span class="in val">Username and password '+'<span style="margin-left:auto">'+I('chev')+'</span></span></label><label class="fld"><span>Username</span><span class="in val">qa-reader</span><small>Shown: it names an identity.</small></label>')+
@@ -698,7 +709,7 @@ function wsSettings(){
   card('Workspace setup',
    '<ol class="steps">'+[['ok','Sign in','done'],['ok','Request your workspace','approved 90d ago'],['ok','Add a Claude account','2 accounts'],['ok','Connect GitHub','as @operator'],['ok','Install the App','on example-org, operator'],['ok','Enable orgs','2 enabled'],['ok','Choose repositories','4 chosen'],['warn','Verify access','example-org/api: Push missing'],['','Ready','after Verify access']].map(function(s,i){
      return '<li><span class="sn '+s[0]+'">'+(s[0]==='ok'?'✓':i+1)+'</span><div><b>'+s[1]+'</b><small>'+s[2]+'</small></div>'+(s[0]==='warn'?btn('Fix on example-org/api','sm'):'<span></span>')+'</li>';}).join('')+'</ol>',
-   {act:'<span class="mu sm">7 of 8 done</span>'+btn('Show on Overview','q sm'),id:'setup'})+
+   {act:'<span class="mu sm">6 of 8 required done · 1 optional (Request your workspace)</span>'+btn('Show on Overview','q sm'),id:'setup'})+
   '</div>'+
   card('Add a new workspace',
    '<div class="stack"><label class="fld"><span>Name</span><span class="in">e.g. Research</span></label><label class="fld"><span>Id</span><span class="in mono">research</span><small>Lower case, digits and dashes; its secrets, GCS prefix and namespace take it.</small></label><label class="fld"><span>Admins</span><span class="in val">Operator (you) · add a person</span></label>'+
@@ -722,7 +733,7 @@ function platformSecrets(){
    ['swarm-graph-ticket-key','Terraform declares','create-secrets.sh --graph-ticket-key',st('ok','set'),'1','21d','swarm-api'],
    ['swarm-settings-key','Terraform declares','create-secrets.sh --settings-mac-key',st('ok','set'),'1','21d','swarm-api'],
    ['swarm-workspace-grant-key','Terraform declares','create-secrets.sh --workspace-grant-key',st('ok','set'),'1','9d','swarm-api'],
-   ['swarm-typesafe-fwd-key','Terraform declares','create-secrets.sh --typesafe-fwd-key',st('neu','not declared'),'<span class="dash">–</span> <span class="why">not declared</span>','<span class="dash">–</span> <span class="why">this deployment does not enable the forwarder</span>','<span class="dash">–</span> <span class="why">nothing reads it here</span>'],
+   ['swarm-typesafe-fwd-key','Terraform, if the forwarder is on','create-secrets.sh --typesafe-fwd-key',st('neu','not declared'),'<span class="dash">–</span> <span class="why">not declared</span>','<span class="dash">–</span> <span class="why">this deployment does not enable the forwarder</span>','<span class="dash">–</span> <span class="why">nothing reads it here</span>'],
    ['swarm-tailscale-oauth','Terraform declares','create-secrets.sh --tailscale-oauth',st('bad','no enabled version'),'0','<span class="dash">–</span> <span class="why">declared, never written</span>','workers'],
    ['swarm-account-* (6)','the quota broker','the broker','6 of 6 set','<span class="dash">–</span> <span class="why">one row per account there</span>','newest 2h','pools · <a>Capacity › Accounts</a>']
   ];
@@ -739,7 +750,7 @@ function countsOverTime(){
   var top=Math.ceil(mx/20)*20;var reported=tot-83;var cost=Math.round(reported*1.52);
   function fmt(n){return n.toLocaleString('en-US');}
   var bars=DAYS.map(function(x,i){var lab=x.d.toISOString().slice(0,10)+': '+x.a+' agents, '+x.rt+' retries'+(i===29?' (today so far)':'');return '<div class="bar'+(i===29?' today':'')+'" title="'+lab+'" role="img" aria-label="'+lab+'"><i style="height:'+(x.a/top*100)+'%"></i><i class="rt" style="height:'+(x.rt/top*100)+'%"></i></div>';}).join('');
-  function brk(title,rows,note){var m=rows[0][1];return card(title,tbl([['Name','nm'],['Agents','r'],[''],['Run hours','r']],rows.map(function(r){return ['<code>'+r[0]+'</code>',fmt(r[1]),'<span class="hb"><span class="tr"><i style="width:'+(r[1]/m*100)+'%"></i></span></span>',r[2]];})),{foot:note||''});}
+  function brk(title,rows,note){var m=rows[0][1];return card(title,tbl([['Name','nm'],['Agents','r'],[''],['Run hours','r']],rows.map(function(r){return ['<code>'+r[0]+'</code>',fmt(r[1]),'<span class="hb"><span class="tr"><i style="width:'+(r[1]/m*100)+'%"></i></span></span>',r[2]];}),{cls:'brk'}),{foot:note||''});}
   var share=function(p){return Math.round(tot*p);};
   return head('Admin / <b>Platform counts</b>','Platform counts',{chips:chip('platform admins only','info'),acts:'<span class="mu sm">counted 4m ago · not refreshed on its own</span>'+btn('Run it again · 6 reads','sm')})+
   card('Every workspace, now',tbl([['State','nm'],['Agents','r']],[['Running','14'],['Parked','6'],['Ready','9'],['Queued','22']],{stack:false}),{sub:'As today: the count of each state, This workspace and Every workspace.'})+
@@ -769,8 +780,8 @@ function qaCard(){
   '<p class="intro">Web applications whose visual-QA findings are filed in this repository. A new or changed host waits for a platform admin&rsquo;s approval before any run.</p>'+
   '<section class="card"><header class="ch"><h4>Console</h4>'+chip('2 environments')+chip('24 screens · 3 widths · light and dark')+'<span class="ca">'+btn('Edit','q sm')+btn('','q sm','more')+'</span></header>'+
   '<div class="stack">'+
-   '<div class="envrow">'+box('on')+'<div><div class="envh"><b>staging</b>'+chip('non-production')+'</div><div class="mono">https://swarm.example.com</div><div class="sm">'+st('ok','host approved by Operator 3d ago')+' · '+st('ok','test credential set 2d ago')+' · '+st('ok','bypass value set')+'</div></div><span class="mu sm">last run 2h ago</span></div>'+
-   '<div class="envrow dis">'+box('no')+'<div><div class="envh"><b>production</b>'+chip('production · read only','warn')+'</div><div class="mono">https://app.example.com</div><div class="sm">'+st('ok','host approved by Operator 3d ago')+' · '+st('warn','test credential not set')+'</div><div class="sm" style="margin-top:4px;color:var(--warn-ink)">Cannot run: its test credential is not set. <a>Set it on Secrets › Sign-in for QA</a></div></div><span class="mu sm">never run</span></div>'+
+   '<div class="envrow">'+box('on')+'<div><div class="envh"><b>staging</b>'+chip('non-production')+'</div><div class="mono">https://swarm.example.com</div><div class="sm">'+st('ok','host approved by Operator 3d ago')+'<span class="sep"> · </span>'+st('ok','test credential set 2d ago')+'<span class="sep"> · </span>'+st('ok','bypass value set')+'</div></div><span class="mu sm">last run 2h ago</span></div>'+
+   '<div class="envrow dis">'+box('no')+'<div><div class="envh"><b>production</b>'+chip('production · read only','warn')+'</div><div class="mono">https://app.example.com</div><div class="sm">'+st('ok','host approved by Operator 3d ago')+'<span class="sep"> · </span>'+st('warn','test credential not set')+'</div><div class="sm" style="margin-top:4px;color:var(--warn-ink)">Cannot run: its test credential is not set. <a>Set it on Secrets › Sign-in for QA</a></div></div><span class="mu sm">never run</span></div>'+
   '</div>'+
   '<div class="row" style="margin-top:12px">'+'<span class="row sm">'+box('')+' Report only, file no issues</span><span class="row sm">Flows with '+seg(['Playwright','Jev'],0)+'</span><span style="margin-left:auto" class="row"><span class="mu sm">up to $40 a leg</span>'+btn('Run staging','p')+'</span></div>'+
   '<div class="ban" style="margin-top:12px"><b>New since the last run: 5 routes on staging</b><p><code>/billing/usage</code>, <code>/settings/alerts</code> and 3 more were found by the crawl. '+btn('Review and promote','sm')+'</p></div>'+
@@ -808,7 +819,7 @@ function runnerSizes(){
 }
 function tenants(){
   return head('Admin / <b>Tenants</b>','Tenants',{chips:chip('platform admins only','info'),intro:'As built: every workspace registered on the platform, its pools, and its QA identity grants.'})+
-  tbl([['Workspace','nm'],['Kind'],['People','r'],['Ceiling','r'],['Repositories','r'],['QA identity grants'],['','r']],[['<b>eng</b>','group','12','12','4','1',btn('Open','q sm')],['<b>design</b>','group','5','6','2','0',btn('Open','q sm')],['<b>ops</b>','group','3','4','1','0',btn('Open','q sm')],['<b>u-operator</b>','personal','1','2','2','0',btn('Open','q sm')]]);
+  tbl([['Workspace','nm'],['Kind'],['People','r'],['Ceiling','r'],['Repositories','r'],['QA identity grants','r'],['','r']],[['<b>eng</b>','group','12','12','4','1',btn('Open','q sm')],['<b>design</b>','group','5','6','2','0',btn('Open','q sm')],['<b>ops</b>','group','3','4','1','0',btn('Open','q sm')],['<b>u-operator</b>','personal','1','2','2','0',btn('Open','q sm')]]);
 }
 function schedAdmin(){
   return head('Automate / <b>Schedules</b>','Schedules',{chips:chip('All workspaces','info'),acts:seg(['This workspace','All workspaces'],1),intro:'Kept in Automate (SCHED-ONE-PAGE, 2026-10-13): an admin&rsquo;s every-workspace view is this switch, not a second page. Admin&rsquo;s panel links here under "Elsewhere, every workspace".'})+
@@ -938,7 +949,7 @@ function applyFit(on){document.body.classList.toggle('fit',on);document.querySel
 function sizeFit(){if(!document.body.classList.contains('fit'))return;document.querySelectorAll('.scroller').forEach(function(sc){var z=Math.min(1,(sc.clientWidth-2)/1440);sc.style.setProperty('--z',z.toFixed(4));});}
 window.addEventListener('resize',sizeFit);
 document.addEventListener('click',function(e){var t=e.target.closest('[data-theme-set]');if(t){applyTheme(t.getAttribute('data-theme-set'));return;}var f=e.target.closest('[data-fit]');if(f)applyFit(f.getAttribute('data-fit')==='1');});
-applyFit(false);
+applyFit(window.innerWidth>=900);
 })();
 </script>
 </body>
