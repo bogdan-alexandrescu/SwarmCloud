@@ -814,6 +814,7 @@ holds for schedules exactly as for agents.
 | 14 | `model-prices-check` | API | R1 | no (issues) | auto | auto | admin, platform scope only | 24 h | 2 |
 | 15 | `failure-review` | one `claude-code` investigator, then API and issue runs | R3 with `merge: auto`, else R2 | yes (fix runs) | plan auto · **approve merge** | plan auto · merge auto, reached only through the audited switch (Q8) | **owner**, platform scope only | 6 h | 3 |
 | 16 | `visual-qa` | workflow: a QA target's `:run` | R1 | no (issues) | auto · merge off | auto · merge off | a **workspace admin** of the tenant, `all` scope | 24 h | 3 |
+| 17 | `image-tool-rescan` | task: one `claude-code` agent | R2 | yes | **approve merge** | **approve merge** | members | 24 h (created weekly) | 2 |
 
 The **floor** column is the lowest gate the type allows. Between the floor and
 the default, only a platform admin may set the gate (§4.2), with one
@@ -1369,6 +1370,65 @@ on-demand one is `POST /v1/qa-targets/{id}:run`.
 * **Blast radius.** Issues in one repository the tenant registered, at most
   the target's `max_issues` per run, and read-only traffic to one approved
   host at the target's rate.
+
+### 3.18 `image-tool-rescan`
+
+Built by lane IMAGE-TOOL-RESCAN (PR 2099, part of #442):
+`swarm_api/schedtypes/image_tool_rescan.py` and its `TYPES` entry in
+`swarm_api/scheduletypes.py`.
+
+* **Why it exists.** `agent-runtime-base` ships without `tofu` and `tflint`
+  (their `INSTALL_TOFU` and `INSTALL_TFLINT` holds), because every published
+  release of each carried a fixable HIGH CVE and the release's promote gate
+  refuses the whole image for one. BGD decided on 2026-10-01 that each tool
+  is added once a release passes the scan, with **no waiver**; and on
+  2026-10-09 that #442 becomes this schedule: "a weekly 'image-tool-rescan'
+  schedule re-scans the newest tofu and tflint releases with the promote
+  gate's filter and adds each one that scans clean (no waiver, as decided
+  2026-10-01)". A person re-checking by hand is how a tool stays held for
+  months after a clean release ships; a waiver is how a CVE ships in the
+  image every agent runs.
+* **Does.** Over the repositories in scope, in scope order, until **one**
+  task has been submitted: it reads `images/agent-runtime-base/Dockerfile`
+  on the default branch with the tenant's token, and classes each tool in
+  `tools` as `on` (its hold reads 1, or the hold is gone and the install
+  left), `held` or `absent`. Only `held` tools are re-scanned. Nothing held
+  is `nothing_held`; a pull request this schedule opened that is still open
+  (its body carries the schedule's marker) is `pr_open`; either way nothing
+  is submitted. Otherwise it submits one `claude-code` task, strategy
+  `direct-pr`, naming only the held tools. The task finds each tool's newest
+  release, verifies the download against the vendor's checksum file, and
+  scans it with the promote gate's filter **as read from main**
+  (`GATE_SOURCES`: `scripts/lib/image-scan.sh`, the release's
+  `TRIVY_VERSION`, the promote step), quoted, never retyped. Each clean tool
+  is switched on in one pull request; a tool with findings changes nothing
+  and its findings go in `rescan.md`. A week with nothing clean writes
+  `verification.md`, the worker's `no_change` result, so it is a success,
+  not an `empty_diff` failure.
+* **Never a waiver.** The prompt forbids a `.trivyignore` entry,
+  `--ignorefile`, a severity change and building from source. The scan does
+  not pass the repository's `.trivyignore.yaml`: an accepted finding there
+  is a waiver for the image's own packages, not for another project's
+  binary.
+* **Parameters.** `tools`: a list of `tofu` and `tflint`
+  (`IMAGE_RESCAN_TOOLS`), both by default, no repeats. A name is a row of
+  `image_tool_rescan.TOOLS`, never a URL or a command (invariant 10).
+* **Cadence and minimum interval.** The schedule is created weekly,
+  `DEFAULT_CRON` `0 6 * * 1` (Mondays 06:00); the type's floor is 24 hours,
+  `dependency-cve-refresh`'s, so a release day can be re-scanned by hand.
+* **Gate.** Run and plan auto, **approve merge**, and the floor is the same.
+  A single task's pull request has no `merge` step, so it waits for a person
+  on GitHub: the release builds this image, so a person reads the scan in
+  the body.
+* **Budget.** `BUDGET_CAPS` in the executor: `per_run_usd` 5, `per_day_usd`
+  10, `max_concurrent` 1. Caps, not measurements, no larger than
+  `dependency-cve-refresh`'s: one task a firing, $5 a one-task `claude-code`
+  run, $10 a day room for one run-now beside a firing.
+* **Creates.** Members, at `repos` or `all` scope. Risk R2; it pushes.
+* **Produces.** At most one pull request per firing; each repository's
+  outcome (`queued`, `room`, `deferred`, `pr_open`, `nothing_held`,
+  `no_dockerfile`, `not_registered`, `failed: <code>`) is logged and is the
+  dry run's answer. No outcome is a refusal.
 
 ---
 
