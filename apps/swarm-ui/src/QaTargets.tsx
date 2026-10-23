@@ -19,10 +19,12 @@ import {
   mintQaCredentialLink,
   normQaTarget,
   patchQaTarget,
+  putQaChallengeBypass,
   putQaCredential,
   qaCredentialLinkFrom,
   repoSlug,
   runQaTarget,
+  type QaCredentialStatus,
   type QaLink,
   type QaScreen,
   type QaTarget,
@@ -80,6 +82,16 @@ import './styles/repositories.css'
  * credential mints the same link for the signed-in admin and keeps its token
  * in memory, never drawn. Either way the token is sent at most once: the API
  * consumes it before the write, so a retry needs a new link.
+ *
+ * A CHALLENGE BYPASS (lane CAPTCHA-BYPASS, part of #2058; §2.5) is the app
+ * owner's own way past their CAPTCHA or WAF challenge: a header or a cookie
+ * the live gate adds on the target's approved origins alone. The card says
+ * its kind and name and whether its value is set, when and by whom. The
+ * target form edits the kind and name, and its value field is write-only as
+ * the credential's are: uncontrolled, read once on save and emptied, and sent
+ * only in the PUT to `/challenge-bypass` once the target is saved. No link:
+ * the admin is signed in here, and the value is a key the owner made for
+ * these runs rather than a person's own password.
  */
 
 /** This page's address under Repositories (`RepositoriesScreen` mounts it on `page`). */
@@ -263,6 +275,21 @@ function credentialWords(t: QaTarget): string | null {
   return parts.join(' ')
 }
 
+/** `Challenge bypass · header X-QA-Bypass · value set 2h ago by …`: never the value. */
+function bypassWords(t: QaTarget): string | null {
+  const b = t.challenge_bypass
+  if (b === null) return null
+  return `Challenge bypass · ${b.kind} ${b.name} · ${valueWords(t.challenge_bypass_value)}`
+}
+
+function valueWords(v: QaCredentialStatus): string {
+  if (!v.set) return 'value not set'
+  const parts = ['value set']
+  if (v.set_at !== null) parts.push(timeAgo(v.set_at))
+  if (v.set_by !== null) parts.push(`by ${v.set_by}`)
+  return parts.join(' ')
+}
+
 function TargetCard({
   t,
   go,
@@ -334,6 +361,7 @@ function TargetCard({
 
   const slug = repoSlug(t.repository)
   const login = credentialWords(t)
+  const bypass = bypassWords(t)
   return (
     <div className="qa-target" data-target-id={t.id} data-host-state={t.host_state ?? undefined}>
     <Card className="ur-card" title={t.name}>
@@ -354,6 +382,11 @@ function TargetCard({
       </div>
       {t.discovers && <DiscoveryLine t={t} go={go} />}
       {login !== null && <div className="ur-cmeta">{login}</div>}
+      {bypass !== null && (
+        <div className="ur-cmeta" data-challenge-bypass="">
+          {bypass}
+        </div>
+      )}
       {why !== null && (
         <p className="ur-small ur-bad" data-cannot-run="">
           Cannot run: {why}
@@ -664,6 +697,9 @@ interface Draft {
   screens: string
   /** `MORE_FIELDS` as one JSON object; empty is none. */
   more: string
+  /** The challenge bypass's kind (§2.5), `none` for none, and its header or cookie name. */
+  bypass_kind: 'none' | 'header' | 'cookie'
+  bypass_name: string
 }
 
 /** `qaspec.MAX_START_CLICKS`: the API refuses a fourth. */
@@ -686,6 +722,8 @@ function draftOf(t: QaTarget | null): Draft {
     extra_origin: t?.sign_in.extra_origin ?? '',
     screens: screensText(t?.screens ?? []),
     more: t === null || Object.keys(t.more).length === 0 ? '' : JSON.stringify(t.more, null, 2),
+    bypass_kind: t?.challenge_bypass?.kind ?? 'none',
+    bypass_name: t?.challenge_bypass?.name ?? '',
   }
 }
 
@@ -734,6 +772,7 @@ function bodyOf(d: Draft, was: Draft | null): QaTargetSend | string {
     environment: d.environment,
     ...more,
   }
+  if (d.bypass_kind !== 'none') full.challenge_bypass = { kind: d.bypass_kind, name: d.bypass_name.trim() }
   if (was === null) return full
   const old = bodyOf(was, null)
   if (typeof old === 'string') return full
@@ -762,6 +801,8 @@ function TargetForm({
   const [d, setD] = useState<Draft>(() => draftOf(target))
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
+  // The bypass's value: UNCONTROLLED, in the DOM input alone until a save reads and empties it.
+  const bypassValue = useRef<HTMLInputElement>(null)
   const set = (k: keyof Draft) => (e: { target: { value: string } }) => setD((was) => ({ ...was, [k]: e.target.value }))
   const setClick = (i: number, k: 'text' | 'css') => (e: { target: { value: string } }) =>
     setD((was) => ({ ...was, start_clicks: was.start_clicks.map((c, j) => (j === i ? { ...c, [k]: e.target.value } : c)) }))
@@ -770,24 +811,40 @@ function TargetForm({
 
   async function submit(e: FormEvent) {
     e.preventDefault()
+    const value = d.bypass_kind === 'none' ? '' : (bypassValue.current?.value ?? '')
+    if (bypassValue.current !== null) bypassValue.current.value = ''
     const body = bodyOf(d, target === null ? null : draftOf(target))
     if (typeof body === 'string') {
       setFailed(body)
       return
     }
-    if (target !== null && Object.keys(body).length === 0) {
+    if (target !== null && Object.keys(body).length === 0 && value === '') {
       onClose()
       return
     }
     setBusy(true)
     setFailed(null)
-    const r = target === null ? await createQaTarget(body) : await patchQaTarget(target.id, body)
-    setBusy(false)
-    if (r.status === 'error') {
-      setFailed(writeFailure(r.error))
-      return
+    let doc: QaTarget | null = target
+    if (target === null || Object.keys(body).length > 0) {
+      const r = target === null ? await createQaTarget(body) : await patchQaTarget(target.id, body)
+      if (r.status === 'error') {
+        setBusy(false)
+        setFailed(writeFailure(r.error))
+        return
+      }
+      doc = r.status === 'ok' ? normQaTarget((r.data as { qa_target?: unknown } | null)?.qa_target) : null
     }
-    const doc = r.status === 'ok' ? normQaTarget((r.data as { qa_target?: unknown } | null)?.qa_target) : null
+    // The value travels alone, once the target that names its kind and name is saved.
+    const id = doc?.id ?? target?.id ?? null
+    if (value !== '' && id !== null) {
+      const v = await putQaChallengeBypass(id, value)
+      if (v.status === 'error') {
+        setBusy(false)
+        setFailed(`The target is saved; its challenge bypass value is not: ${writeFailure(v.error)} Type it again to retry.`)
+        return
+      }
+    }
+    setBusy(false)
     onSaved(doc, target === null)
   }
 
@@ -873,6 +930,35 @@ function TargetForm({
                 Add start click
               </Button>
             )}
+          </fieldset>
+        )}
+        <label>
+          Challenge bypass{' '}
+          <select name="bypass_kind" value={d.bypass_kind} onChange={set('bypass_kind')}>
+            <option value="none">None</option>
+            <option value="header">A header the app&rsquo;s owner set up</option>
+            <option value="cookie">A cookie the app&rsquo;s owner set up</option>
+          </select>
+        </label>
+        {d.bypass_kind !== 'none' && (
+          <fieldset className="qa-bypass">
+            <p className="ur-small">
+              Only for an app your workspace owns: the header or cookie its CAPTCHA test keys or WAF skip rule accept. The live
+              browser adds it on this target&rsquo;s approved origins and nowhere else, and the agent never sees its value.
+            </p>
+            <label>
+              {d.bypass_kind === 'header' ? 'Header name' : 'Cookie name'}{' '}
+              <input name="bypass_name" value={d.bypass_name} onChange={set('bypass_name')} maxLength={64} spellCheck={false} placeholder="X-QA-Bypass" />
+            </label>
+            <label>
+              Value (write-only){' '}
+              <input name="bypass_value" type="password" ref={bypassValue} autoComplete="new-password" spellCheck={false} />
+            </label>
+            <span className="ur-small" data-bypass-value="">
+              {target === null || target.challenge_bypass === null
+                ? 'value not set'
+                : `${valueWords(target.challenge_bypass_value)}; type a value to replace it`}
+            </span>
           </fieldset>
         )}
         <label>
