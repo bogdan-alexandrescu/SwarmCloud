@@ -233,3 +233,26 @@ def test_the_step_and_task_agents_say_the_object_is_never_wrapped():
         # the instruction the review, fix and merge rows of #1763 broke.
         assert ("The object passed to `StructuredOutput` IS `{state, result}`, "
                 "never wrapped in another `result`") in flat, name
+
+
+# --------------------------------------------------------------------------
+# 5. The agents list the owner's answers among the result's fields
+# --------------------------------------------------------------------------
+
+
+def test_the_step_and_task_agents_list_owner_answers_beside_questions():
+    """ANSWERS-429 made `step_result` serve `owner_answers` (compact.py) and
+    `run.js` keep them as `answered`; a reader of a row agent trusts its list
+    of the result's fields, so both agents name it there (AGENT-DOCS-ANSWERS,
+    part of #1904)."""
+    for name in ("step.md", "task.md"):
+        _, body = _load(_PLUGIN / "agents" / name)
+        flat = " ".join(body.split())
+        start = flat.index("* `result` holds `state`, `answer_excerpt`")
+        fields = flat[start:flat.index("* `result` — the reply's `result` object", start)]
+        # MUTATION: dropping the `owner_answers` sentence from either agent's
+        # field list fails here.
+        assert "`owner_answers`" in fields, name
+        assert "`{question_index, choice, text}`" in fields, name
+        assert "absent when nothing is answered" in fields, name
+        assert "never write or choose an answer yourself" in fields, name
