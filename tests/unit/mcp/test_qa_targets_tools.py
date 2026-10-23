@@ -14,8 +14,9 @@ WHAT EACH CASE HOLDS:
   * no tool returns one: every answer is copied field by field, so a value the
     API (wrongly) sent back is not forwarded;
   * `swarm_qa_target_credential_link` answers ONLY `url` and `expires_at`;
-  * `swarm_qa_run` sends only `file` and the screens subset, to the target's
-    own `:run`, and a name is resolved to its id first;
+  * `swarm_qa_run` sends only `file`, the screens subset and an optional
+    `browser_tool` (`playwright` or `jev`, anything else refused unsent), to
+    the target's own `:run`, and a name is resolved to its id first;
   * a pending host is said as the reason a target cannot run.
 
 Every fake credential is built at runtime (CLAUDE.md). Offline: no
@@ -128,7 +129,9 @@ def test_each_qa_tool_is_advertised_with_no_field_a_credential_fits_in(name):
     properties = schema.get("properties") or {}
     # MUTATION: add a `password` (or `username`) property to any of the three schemas.
     assert [p for p in properties if _CREDENTIALISH.search(p)] == []
-    assert set(properties) <= {"target", "repository", "screens", "file"}, sorted(properties)
+    # `browser_tool` is an enum of two tool names (lane QA-RUN-TOOL): no credential fits.
+    assert set(properties) <= {"target", "repository", "screens", "file", "browser_tool"}, \
+        sorted(properties)
 
 
 def test_an_undeclared_credential_argument_is_refused_with_nothing_sent():
@@ -234,6 +237,50 @@ def test_the_apis_pending_host_refusal_reaches_the_caller_as_its_own_words():
         server._call(api, "swarm_qa_run", {"target": PENDING_ID})
     # MUTATION: swallow the API's refusal and answer a workflow id of None.
     assert "qa_target_host_pending" in str(caught.value)
+
+
+# -- swarm_qa_run's browser_tool (lane QA-RUN-TOOL, part of #1649) ------------------
+
+
+def test_a_run_that_names_jev_sends_it_in_the_run_body():
+    api = FakeApi()
+    _call(api, "swarm_qa_run", {"target": APPROVED_ID, "browser_tool": "jev"})
+    # MUTATION: drop `browser_tool` from the payload, or send it under another key.
+    assert api.sent == [("POST", f"{LIST_PATH}/{APPROVED_ID}:run",
+                         {"file": "issues", "browser_tool": "jev"})]
+
+
+def test_a_run_that_names_no_browser_tool_sends_no_such_key():
+    api = FakeApi()
+    _call(api, "swarm_qa_run", {"target": APPROVED_ID})
+    # MUTATION: default `browser_tool` to "playwright" (or send null) and the
+    # target's own `flows_browser_tool` no longer decides.
+    assert "browser_tool" not in api.sent[-1][2]
+
+
+def test_an_unknown_browser_tool_is_refused_before_any_request():
+    api = FakeApi()
+    with pytest.raises(SwarmError) as caught:
+        server._call(api, "swarm_qa_run", {"target": APPROVED_ID, "browser_tool": "chrome"})
+    # MUTATION: check the value after resolving the target (a GET is sent), or not at all.
+    assert api.sent == []
+    # MUTATION: a refusal that does not name the field and both values.
+    assert "browser_tool" in str(caught.value)
+    assert "playwright" in str(caught.value) and "jev" in str(caught.value)
+
+
+def test_the_run_schema_lists_exactly_playwright_and_jev():
+    tool = _tool("swarm_qa_run")
+    field = tool["inputSchema"]["properties"]["browser_tool"]
+    # MUTATION: add a third value, drop one, or leave the field without an enum.
+    assert field["type"] == "string"
+    assert sorted(field["enum"]) == ["jev", "playwright"]
+    # MUTATION: give the field a default, which the platform would read as a choice.
+    assert "default" not in field
+    assert "browser_tool" not in tool["inputSchema"].get("required", [])
+    # MUTATION: a description that does not say what the field does or its default.
+    assert "browser_tool" in tool["description"]
+    assert "flows_browser_tool" in tool["description"]
 
 
 # -- swarm_qa_target_credential_link ------------------------------------------------

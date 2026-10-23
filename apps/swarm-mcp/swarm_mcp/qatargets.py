@@ -15,8 +15,9 @@ API's reply -- never forwarded whole -- so a reply that (wrongly) carried a
 value would still not reach a transcript. `credential` is its status: set,
 when, by whom, which version.
 
-A run is started by NAMING a target (invariant 10): the caller sends `file`
-and an optional subset of the target's own screen ids, and swarm-api renders
+A run is started by NAMING a target (invariant 10): the caller sends `file`,
+an optional subset of the target's own screen ids and an optional
+`browser_tool` (`playwright` or `jev`, by name), and swarm-api renders
 the workflow from the registration. Registering, changing and approving a
 target are the console's (§1), not the plugin's.
 """
@@ -34,6 +35,12 @@ TARGET_ID = re.compile(r"^qat_[0-9a-f]{16}$")
 
 #: `RunBody.file` in routes/qatargets.py.
 FILES = ("issues", "none")
+
+#: `RunBody.browser_tool` in routes/qatargets.py (`qaspec.FLOW_BROWSER_TOOLS`,
+#: lane VQ9-TOOL): the flows' tool for one run. BGD, 2026-10-23: Playwright by
+#: default, Jev when a target or a run chooses it. Left out of the body when
+#: the caller names none, so the target's `flows_browser_tool` decides.
+BROWSER_TOOLS = ("playwright", "jev")
 
 #: `RunBody.screens`' bound, so a longer list is refused before anything is sent.
 MAX_SCREENS = 60
@@ -145,10 +152,12 @@ def resolve_target(client: Any, target: Any) -> str:
                      "swarm_qa_targets lists them. Nothing was sent")
 
 
-def qa_run(client: Any, target: Any, *, screens: Any = None, file: Any = "issues") -> dict[str, Any]:
-    """`POST /v1/qa-targets/{id}:run` with `file` and the optional screens
-    subset, and nothing else. A refusal (`qa_target_host_pending`,
-    `issue_writes_off`, a member's missing role) is the API's, unchanged."""
+def qa_run(client: Any, target: Any, *, screens: Any = None, file: Any = "issues",
+           browser_tool: Any = None) -> dict[str, Any]:
+    """`POST /v1/qa-targets/{id}:run` with `file`, the optional screens
+    subset and the optional `browser_tool`, and nothing else. A refusal
+    (`qa_target_host_pending`, `issue_writes_off`, a member's missing role, a
+    jev run without the workspace's TypeSafe key) is the API's, unchanged."""
     if file not in FILES:
         raise SwarmError(f"file must be one of {list(FILES)}; nothing was sent")
     payload: dict[str, Any] = {"file": file}
@@ -158,6 +167,10 @@ def qa_run(client: Any, target: Any, *, screens: Any = None, file: Any = "issues
             raise SwarmError(f"screens must be 1 to {MAX_SCREENS} of the target's screen ids; "
                              "nothing was sent")
         payload["screens"] = list(screens)
+    if browser_tool is not None:
+        if browser_tool not in BROWSER_TOOLS:
+            raise SwarmError(f"browser_tool must be one of {list(BROWSER_TOOLS)}; nothing was sent")
+        payload["browser_tool"] = browser_tool
     target_id = resolve_target(client, target)
     answer = client.request("POST", f"/v1/qa-targets/{target_id}:run", payload=payload)
     answer = answer if isinstance(answer, dict) else {}
