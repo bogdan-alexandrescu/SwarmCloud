@@ -146,16 +146,17 @@ describe('QA-030 and QA-111: the sort is named by its words and shows its direct
     for (let i = 0; i < 3; i++) {
       // MUTATION: name it `Sort by start time` again -- the visible word is
       // no longer the start of its name.
-      expect(sort.getAttribute('aria-label')!.startsWith(flat(sort).split(' ')[0]!)).toBe(true)
+      expect(sort.getAttribute('aria-label')!.startsWith(flat(sort))).toBe(true)
       // MUTATION: draw a bare word -- the control shows no direction at all.
-      expect(flat(sort)).toMatch(/^(Ended|Started) [↓↑]$/)
+      // The direction is words since run 6 (6:flow-find-failure-desktop-03).
+      expect(flat(sort)).toMatch(/^(Ended|Started), (newest|oldest) first$/)
       seen.push(flat(sort))
       fireEvent.click(sort)
     }
     // MUTATION: one label for two orders.
     expect(new Set(seen).size).toBe(3)
     // The list's own order on Recent is said, as the newest end first (QA-111, run 2: it read `Started`).
-    expect(screen.getByRole('button', { name: /^Ended: newest end first/ })).toBe(sort)
+    expect(screen.getByRole('button', { name: /^Ended, newest first/ })).toBe(sort)
   })
 
   it('does not offer `Failed first` on a list filtered to one state', async () => {

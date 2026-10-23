@@ -67,6 +67,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 from urllib.parse import quote
 
+from swarm_redaction import redact as redact_text
+
 from . import gitops
 from .children import AttemptKey, ChildApi, ChildApiError, ChildSubmitFenced
 from .gitmcp.server import (
@@ -376,6 +378,13 @@ class GitTools:
         #: (`lifecycle.Worker._adopt_rebase_base`, SPEED-D1), so a lane rebased
         #: onto a newer base does not republish the base's commits as its own.
         self.rebased_onto: str | None = None
+        #: The tip each successful `git_push_branch` left on a branch: the
+        #: `new_sha` swarm-api answered with, which is the tip it recorded for
+        #: this task and branch (`record_tip`). Only pushes write it -- never a
+        #: fetch, whose tips are in `origin.tips` -- because the end-of-task
+        #: publish leases on it (`pushed_tip`, #1188), and a lease on a tip
+        #: this attempt did not itself push would replace somebody's work.
+        self.pushed_tips: dict[str, str] = {}
         if cfg.clone_base != EMPTY_CLONE_BASE:
             self.origin.learn(cfg.clone_base)
 
@@ -461,11 +470,33 @@ class GitTools:
             self.log.warning("git tool failed", tool=str(tool)[:40], request_id=request_id)
             return self._record(tool, request_id, refusal.as_dict())
         except GitToolRefused as refusal:
+            # The message is what says WHY (#1188: a `forge_refused` from
+            # pr_checks logged only its code, so a 401 and a 403 -- and which
+            # read -- looked the same). swarm-api scrubbed it of the token
+            # (`_forge_refusal`); scrubbed here again of the task's registered
+            # values and of anything credential-shaped.
             self.log.warning("git tool refused", tool=str(tool)[:40], code=refusal.code,
+                             refusal=self._scrub_message(refusal.message),
                              request_id=request_id)
             return self._record(tool, request_id, refusal.as_dict())
         self.log.info("git tool answered", tool=name, request_id=request_id)
         return {"tool": name, "result": result}
+
+    def _scrub_message(self, text: Any) -> str:
+        """`text` for a log line: registered values and credential shapes masked, cut."""
+        return str(scrub_text(redact_text(str(text)[:600]).text, self._secrets))[:300]
+
+    def pushed_tip(self, branch: str) -> str | None:
+        """The tip this attempt's own last `git_push_branch` left on `branch`, or None.
+
+        Answered only for a branch this task may push (`cfg.pushable`), so the
+        publish is never handed a lease on a branch it was not granted. Read by
+        `lifecycle.Worker._adopt_tool_pushed_tip` (#1188).
+        """
+        if branch not in self.cfg.pushable or not self.cfg.pushes:
+            return None
+        tip = self.pushed_tips.get(branch)
+        return tip if isinstance(tip, str) and _FULL_SHA.match(tip) else None
 
     def _record(self, tool: Any, request_id: str, answer: dict[str, Any]) -> dict[str, Any]:
         """Append a refusal to `answers_path`; return it unchanged.
@@ -697,6 +728,7 @@ class GitTools:
             raise GitToolRefused("api_unavailable", "the platform answered without a sha",
                                  retryable=True)
         self.origin.learn(new_sha, chosen)
+        self.pushed_tips[chosen] = new_sha
         return {"branch": chosen, "old_sha": payload.get("old_sha"), "new_sha": new_sha}
 
     def prepare_push(self, branch: str, *, request_id: str) -> "PreparedPush":
