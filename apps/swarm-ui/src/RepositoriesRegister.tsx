@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { loadReadableRepositories, loadRunnerProfiles, registerRepository, runRepositoryIndex, type RegisterRepositoryBody } from './api'
 import { Banner, Button, Card, EmptyState } from './components'
-import { normRepo, triggerLabel, TRIGGER_OPTIONS, WEBHOOK_NOTE, type ChangeTrigger, type Readable, type ReadableList } from './RepositoriesData'
+import { normRepo, triggerLabel, TRIGGER_OPTIONS, WEBHOOK_NOTE, WORKFLOW_FILES_WHY, type ChangeTrigger, type Readable, type ReadableList } from './RepositoriesData'
 import { LIST, UrCrumb, UrNavButton, UrRadio, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
+import { useRoleGate } from './Profile'
 import { PageHead } from './Shell'
 import { timeAgo } from './types'
 
@@ -310,6 +311,13 @@ function ScheduleStep({
   const [every, setEvery] = useState<IntervalKey>('24')
   const [trigger, setTrigger] = useState<ChangeTrigger>('poll')
   const [firstIndex, setFirstIndex] = useState(true)
+  // WORKFLOW FILES: OFF BY DEFAULT, CHOSEN WHEN THE REPO IS ADDED, BY THE
+  // WORKSPACE'S ADMIN ONLY (#2029; BGD, 2026-10-22). A branch workflow runs with
+  // the repository's secrets before any merge hold, so nothing turns it on but
+  // the admin's tick. Below admin the box is not offered; the API refuses it too.
+  const workflowGate = useRoleGate('admin', 'set whether agents may push workflow files')
+  const [workflowFiles, setWorkflowFiles] = useState(false)
+  const sendWorkflowFiles = workflowGate === null && workflowFiles
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<string | null>(null)
   const [registeredId, setRegisteredId] = useState<string | null>(null)
@@ -326,6 +334,8 @@ function ScheduleStep({
       ...(picked.default_branch !== null ? { default_branch: picked.default_branch } : {}),
       ...(names !== null ? { allowed_profiles: selected } : {}),
       index: { interval_hours: every === 'off' ? 'off' : Number(every), on_change: trigger },
+      // Sent only when ticked: absent is the API's default, off.
+      ...(sendWorkflowFiles ? { workflow_files: true } : {}),
     }
     const res = await registerRepository(body)
     if (res.status === 'error') {
@@ -378,6 +388,12 @@ function ScheduleStep({
               ? "A full index run is queued straight after. It holds a slot of this tenant's capacity while it runs."
               : 'Not queued now.'}
           </div>
+          <div className="ur-fl">Workflow files</div>
+          <div data-review="workflow-files">
+            {sendWorkflowFiles
+              ? 'On: agents may push changes to workflow files.'
+              : 'Off: a push that changes workflow files is refused and left as a patch.'}
+          </div>
         </div>
       ) : (
       <div className="ur-fgrid">
@@ -422,6 +438,20 @@ function ScheduleStep({
           <p className="ur-hint">
             A full run. It queues like any agent and holds a slot of this tenant's capacity only while it runs.
           </p>
+        </div>
+        <div className="ur-fl">Workflow files</div>
+        <div className="ur-register-workflow-files">
+          {workflowGate === null ? (
+            <label className="ur-check">
+              <input type="checkbox" checked={workflowFiles} onChange={(e) => setWorkflowFiles(e.target.checked)} />
+              Agents may push changes to workflow files
+            </label>
+          ) : (
+            <p className="ur-small">
+              Off. <span data-role-gate="admin">set by a workspace admin</span>
+            </p>
+          )}
+          <p className="ur-hint">{WORKFLOW_FILES_WHY}</p>
         </div>
       </div>
       )}

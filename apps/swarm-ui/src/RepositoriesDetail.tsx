@@ -7,7 +7,7 @@ import { Banner, Button, Card, Chip, Dash, EmptyState, NamedMark, StatePill, Ton
 import { addressToPath } from './paths'
 import {
   coverageWords, freshness, HEAD_UNREAD, intervalWords, kindWords, pct, repoName, shortSha, notServed, expiryWords,
-  thousands, TRIGGER_OPTIONS, WEBHOOK_NOTE, KEEP_VERSIONS_RANGE,
+  thousands, TRIGGER_OPTIONS, WEBHOOK_NOTE, KEEP_VERSIONS_RANGE, WORKFLOW_FILES_WHY, workflowsNotGranted,
   type ChangeTrigger, type IndexDoc, type IndexRetention, type IndexRun, type LanguageRow, type RepoDetail, type RepoRecord, type ResolvedToken, type UsedBy,
 } from './RepositoriesData'
 import type { Result } from './fetch'
@@ -16,7 +16,7 @@ import {
   type UrRead,
   useUrRead, writeFailure,
 } from './RepositoriesParts'
-import { RepoPermissions } from './PermissionCards'
+import { RepoPermissions, useForgePermissions } from './PermissionCards'
 import { PageHead } from './Shell'
 import { GraphTab, type GraphOpen } from './RepoGraph'
 import { AlwaysRun, EdgeGroups, PathLookup, Suites } from './RepoTestMap'
@@ -838,6 +838,8 @@ function SettingsTab({
           {/* Drawn only where the registration serves the fields: an API older than lane S11 has no card to show. */}
           {stops !== null && <HardStopsCard stops={stops} />}
           <FileIssuesCard on={r.agents_may_file_issues} />
+          {/* Like the hard stops: an API older than WF-APP-TOKEN (#2029) serves no switch, so there is no card. */}
+          {r.workflow_files !== null && <WorkflowFilesCard on={r.workflow_files} repoId={r.repo_id} />}
         </div>
         <div className="ur-stack">
           <Card title="Graph" className="ur-graph">
@@ -1197,6 +1199,63 @@ function FileIssuesCard({ on }: { on: boolean | null }) {
         <span>set on the Repositories list by a workspace admin</span>
       </p>
     </Card>
+  )
+}
+
+/**
+ * Whether an agent's push that changes workflow files is made here (#2029,
+ * WF-APP-TOKEN; BGD's decision 2026-10-22: self-serve, per-repo opt-in, off by
+ * default): the served value, shown and not changed. Like the issue-filing
+ * switch, its one control is on the Repositories list's card, for a workspace
+ * admin only. Drawn only where the API serves the switch.
+ */
+function WorkflowFilesCard({ on, repoId }: { on: boolean; repoId: string }) {
+  return (
+    <Card title="Workflow files">
+      <div className="ur-detail-workflow-files" data-workflow-files={String(on)}>
+        <p className="ur-meta">
+          <span>
+            Workflow files <b>{on ? 'on' : 'off'}</b>
+          </span>
+          <span>set on the Repositories list by a workspace admin</span>
+        </p>
+        <p className="ur-hint">{WORKFLOW_FILES_WHY}</p>
+        {/* The GitHub read is made only where the switch is on: off, there is nothing to say. */}
+        {on && <WorkflowsGrantRead repoId={repoId} />}
+      </div>
+    </Card>
+  )
+}
+
+/** The detail page's own read of the GitHub permissions, for the not-granted line alone. */
+function WorkflowsGrantRead({ repoId }: { repoId: string }) {
+  const s = useForgePermissions().state
+  if (s.status !== 'ok' && s.status !== 'stale') return null
+  return <WorkflowsGrantLine grant={workflowsNotGranted(true, s.data.repositories.find((x) => x.repo_id === repoId), s.data.orgs)} />
+}
+
+/**
+ * "Workflows: not granted" (#2029, BGD's decision 4): the switch is on, and the
+ * App installation has not accepted "Workflows: Read and write" -- or no
+ * installation covers the repository -- so a workflow-file push still falls
+ * back to a patch. The link is the API's, never built here.
+ */
+export function WorkflowsGrantLine({ grant }: { grant: { installed: boolean; link: string | null } | null }) {
+  if (grant === null) return null
+  return (
+    <p className="ur-small ur-workflows-grant">
+      <b className="ur-bad">
+        {grant.installed
+          ? 'Workflows: not granted by the GitHub App installation'
+          : 'Workflows: not granted, because the GitHub App is not installed on this repository'}
+      </b>{' '}
+      Pushes that change workflow files are left as a patch until it is.{' '}
+      {grant.link !== null && (
+        <a href={grant.link} target="_blank" rel="noreferrer">
+          Review on GitHub
+        </a>
+      )}
+    </p>
   )
 }
 

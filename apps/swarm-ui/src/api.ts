@@ -6495,6 +6495,12 @@ const FIXTURE_REPOS = [
  */
 const fixtureFileIssues = new Map<string, boolean>()
 
+/**
+ * Each fixture registration's `workflow_files` once the fixture build changed
+ * it (`patchRepositoryWorkflowFiles`); absent is off, the API's default (#2029).
+ */
+const fixtureWorkflowFiles = new Map<string, boolean>()
+
 function fixtureRepositories(): unknown {
   return {
     repositories: FIXTURE_REPOS.map((r, i) => ({
@@ -6512,6 +6518,7 @@ function fixtureRepositories(): unknown {
       last_run: null,
       index_credential: { source: 'tenant', secret_name: `swarm-tenant-${FIXTURE_TENANT}-git` },
       agents_may_file_issues: fixtureFileIssues.get(r.repo_id) ?? false,
+      workflow_files: fixtureWorkflowFiles.get(r.repo_id) ?? false,
     })),
   }
 }
@@ -6957,6 +6964,8 @@ export interface RegisterRepositoryBody {
   allowed_profiles?: string[]
   /** repo-index.md §3.3: 1-168 or `'off'`; `poll`, `webhook` (poll and push, graph-service.md §6.2) or `off`. */
   index?: { interval_hours: number | 'off'; on_change: 'poll' | 'webhook' | 'off' }
+  /** #2029: sent only when the workspace's admin ticked it; absent is off. */
+  workflow_files?: boolean
 }
 
 /** `POST /v1/repositories`: register; the API reads the forge once and is idempotent on `repo_id`. */
@@ -7470,6 +7479,24 @@ export async function patchRepositoryFileIssues(repoId: string, value: boolean):
     return { status: 'ok', fetchedAt: Date.now(), data: { repository: { repo_id: repoId, agents_may_file_issues: value }, tenant_id: FIXTURE_TENANT } }
   }
   return write(target, 'PATCH', { agents_may_file_issues: value })
+}
+
+/**
+ * `PATCH /v1/repositories/{repo_id}` with `workflow_files` alone (#2029,
+ * WF-APP-TOKEN). Only the workspace's admin may send it; the API writes the
+ * `repository_workflow_files_set` audit entry with the change. The fixture
+ * build keeps the value for its own registrations, so its list reads it back.
+ */
+export async function patchRepositoryWorkflowFiles(repoId: string, value: boolean): Promise<Result<unknown>> {
+  const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
+  if (USE_FIXTURES) {
+    if (!FIXTURE_REPOS.some((r) => r.repo_id === repoId)) return repoNotServed<unknown>(target)
+    await new Promise((r) => setTimeout(r, 180))
+    noteFixtureProbe(target, 180, true)
+    fixtureWorkflowFiles.set(repoId, value)
+    return { status: 'ok', fetchedAt: Date.now(), data: { repository: { repo_id: repoId, workflow_files: value }, tenant_id: FIXTURE_TENANT } }
+  }
+  return write(target, 'PATCH', { workflow_files: value })
 }
 
 // ---------------------------------------------------------------------------
