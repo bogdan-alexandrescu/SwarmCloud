@@ -5,6 +5,8 @@ Each test names the rule of the row it holds:
 
   * each skip rule skips exactly its case and names itself;
   * a person's cancel and its cascade are skipped, a system cancel is not;
+  * an expired await-input step and the steps its sweep cancelled are skipped,
+    a sweep a FAILED step caused is not;
   * content fields appear only for the platform's own agents (owner decision Q1);
   * the digest is redacted, bounded and carries no prompt;
   * the same failure in two overlapping windows is one entry;
@@ -23,8 +25,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
 import pytest
+from swarm_common.profiles import RUNNER_PROFILES
 
 from swarm_api import failuredigest as fd
+from swarm_api.awaitinput import is_await_profile
 from swarm_api.failuredigest import Documents, Scope
 
 from .fakes import FakeFirestore
@@ -34,6 +38,8 @@ SINCE, UNTIL = fd.window(FIRE)
 PLATFORM = "plat"
 OTHER = "acme"
 SA_DOMAIN = "example-proj.iam.gserviceaccount.com"
+#: The await-input step's profile, read from the catalogue rather than guessed.
+AWAIT_PROFILE = next(name for name in RUNNER_PROFILES if is_await_profile(name))
 
 
 def at(hours_before: float) -> datetime:
@@ -171,8 +177,17 @@ _case(fd.PERSON_CANCEL,
       events=[cancel_event("person", "dev@example.com"),
               cancel_event("by-sa", f"swarm-scheduler@{SA_DOMAIN}")])
 _case(fd.QUESTION_UNANSWERED,
-      [task("silent", state="DEAD_LETTERED", last_error="owner question unanswered after 24h")],
-      [task("loud", state="DEAD_LETTERED", last_error="the owner answered no")])
+      [task("silent", state="DEAD_LETTERED", last_error="owner question unanswered after 24h"),
+       task("await-expired", state="DEAD_LETTERED", runner_profile=AWAIT_PROFILE, end_cause=None,
+            last_error="await_input_expired: nobody answered within 72000 seconds")],
+      [task("loud", state="DEAD_LETTERED", last_error="the owner answered no"),
+       # A step whose signed declaration did not verify: a defect, not silence.
+       task("await-refused", state="DEAD_LETTERED", runner_profile=AWAIT_PROFILE, end_cause=None,
+            last_error="await_input_spec_refused: signature does not verify"),
+       # Only the await-input profile's expiry sweep writes the marker; an agent
+       # printing it is not that sweep.
+       task("not-await", state="DEAD_LETTERED",
+            last_error="await_input_expired: nobody answered within 60 seconds")])
 _case(fd.FIX_ROUND_LIVE,
       [task("in-checking", metadata={"issue_run": "run_live"}),
        task("merge-sibling", workflow_id="wf_m")],
@@ -242,6 +257,68 @@ def test_a_persons_cancel_and_its_cascade_are_skipped_and_a_system_cancel_is_not
     # MUTATION: drop the CANCELLED_PARENT branch and "step2" is reviewed.
     # MUTATION: drop the workflow fold and wf_p (FAILED only because of the cancel) is reviewed.
     assert set(digest.skipped[fd.PERSON_CANCEL]) == {"parent", "child", "step2", "wf_p"}
+
+
+def sweep_event(task_id: str, workflow_id: str, *failed: tuple[str, str, str]) -> dict[str, Any]:
+    """The CANCELLED event `SchedulerStore.cancel_if_not_started` writes for the fail_workflow sweep."""
+    steps = [{"step_id": s, "task_id": t, "state": st} for s, t, st in failed]
+    return {"event_id": f"ev_{task_id}", "task_id": task_id, "tenant_id": OTHER, "type": "cancelled",
+            "at": at(1.5),
+            "detail": {"reason": f"workflow step {steps[0]['step_id']} is {steps[0]['state']} and "
+                                 "on_step_failure is fail_workflow, so steps that had not started "
+                                 "were cancelled",
+                       "from_state": "PARKED", "workflow_id": workflow_id,
+                       "on_step_failure": "fail_workflow", "failed_steps": steps}}
+
+
+def swept(task_id: str, workflow_id: str) -> dict[str, Any]:
+    return task(task_id, state="CANCELLED", end_cause="workflow_sweep", workflow_id=workflow_id,
+                last_error="workflow step x is DEAD_LETTERED and on_step_failure is fail_workflow, "
+                           "so steps that had not started were cancelled")
+
+
+def test_an_expired_await_input_step_and_the_steps_its_sweep_cancelled_are_skipped_and_a_failed_steps_sweep_is_not():
+    ask = task("ask", state="DEAD_LETTERED", runner_profile=AWAIT_PROFILE, end_cause=None,
+               workflow_id="wf_q",
+               last_error="await_input_expired: nobody answered within 72000 seconds")
+    sib1, sib2, sib3 = swept("sib1", "wf_q"), swept("sib2", "wf_q"), swept("sib3", "wf_q")
+    after = task("after", state="CANCELLED", end_cause="cancelled_parent", depends_on=["ask"],
+                 workflow_id="wf_q", last_error="parent ask ended DEAD_LETTERED")
+    crash = task("crash", workflow_id="wf_f")
+    fsib1, fsib2 = swept("fsib1", "wf_f"), swept("fsib2", "wf_f")
+    ask2 = task("ask2", state="DEAD_LETTERED", runner_profile=AWAIT_PROFILE, end_cause=None,
+                workflow_id="wf_mix",
+                last_error="await_input_expired: nobody answered within 600 seconds")
+    crash2 = task("crash2", workflow_id="wf_mix")
+    msib = swept("msib", "wf_mix")
+    events = [sweep_event("sib1", "wf_q", ("ask", "ask", "DEAD_LETTERED")),
+              sweep_event("sib2", "wf_q", ("ask", "ask", "DEAD_LETTERED")),
+              # sib3 has no event in the read: its causes are the workflow's failed steps.
+              sweep_event("fsib1", "wf_f", ("build", "crash", "FAILED")),
+              sweep_event("msib", "wf_mix", ("ask", "ask2", "DEAD_LETTERED"),
+                          ("build", "crash2", "FAILED"))]
+    workflows = [
+        {"workflow_id": "wf_q", "tenant_id": OTHER, "state": "FAILED", "updated_at": at(1),
+         "steps": [{"step_id": s, "task_id": s} for s in ("ask", "sib1", "sib2", "sib3", "after")]},
+        {"workflow_id": "wf_f", "tenant_id": OTHER, "state": "FAILED", "updated_at": at(1),
+         "steps": [{"step_id": "build", "task_id": "crash"}, {"step_id": "a", "task_id": "fsib1"},
+                   {"step_id": "b", "task_id": "fsib2"}]},
+    ]
+    digest = build(docs_of(ask, sib1, sib2, sib3, after, crash, fsib1, fsib2, ask2, crash2, msib,
+                           events=events, workflows=workflows))
+    # MUTATION: drop the await-input expiry branch of `_question_unanswered` and "ask"
+    # (and with it everything below) is reviewed.
+    # MUTATION: drop the WORKFLOW_SWEEP branch and "sib1", "sib2", "sib3" are reviewed.
+    # MUTATION: read only the event's failed_steps, no fallback, and "sib3" is reviewed.
+    # MUTATION: drop the CANCELLED_PARENT branch and "after" is reviewed.
+    # MUTATION: drop the workflow fold and wf_q (FAILED only because of the silence) is reviewed.
+    assert set(digest.skipped[fd.QUESTION_UNANSWERED]) == {"ask", "sib1", "sib2", "sib3", "after",
+                                                            "ask2", "wf_q"}
+    # MUTATION: a sweep counted as silence whatever caused it (`any` for `all`, or no
+    # cause check at all), and the FAILED claude-code step's sweep is skipped too.
+    assert {"crash", "fsib1", "fsib2", "crash2", "msib"} <= reviewed_ids(digest)
+    assert "wf_f" not in digest.skipped[fd.QUESTION_UNANSWERED]
+    assert not any(n for r, n in digest.doc["skipped"].items() if r != fd.QUESTION_UNANSWERED)
 
 
 def test_is_person_names_people_only():
