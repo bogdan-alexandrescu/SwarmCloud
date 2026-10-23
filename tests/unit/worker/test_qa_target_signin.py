@@ -112,6 +112,12 @@ class LoginChromium(qi.FakeChromium):
         self.typed: list[tuple[str | None, str]] = []
         self.on_first_probe: Any = None
         self.closed: list[str] = []
+        #: A chooser before the form: how many visible controls read each
+        #: start click's text (none when unnamed), the texts clicked in turn,
+        #: and what a click on one does (`on_click`).
+        self.controls: dict[str, int] = {}
+        self.clicked: list[str] = []
+        self.on_click: dict[str, Any] = {}
 
     async def send(self, message: dict[str, Any]) -> None:
         method = message["method"]
@@ -133,6 +139,16 @@ class LoginChromium(qi.FakeChromium):
         if method == "Runtime.evaluate" and str(params.get("expression", "")).startswith("/*swarm-qa:"):
             self.received.append(message)
             op = params["expression"][len("/*swarm-qa:"):].split("*/", 1)[0]
+            if op == "start-click":
+                click = json.loads(params["expression"].rsplit(")(", 1)[1][:-1])
+                count = self.controls.get(click["text"], 0)
+                if count == 1:
+                    self.clicked.append(click["text"])
+                    hook = self.on_click.get(click["text"])
+                    if hook is not None:
+                        hook()
+                self.queue.put_nowait({"id": message["id"], "result": {"result": {"value": count}}})
+                return
             self.queue.put_nowait({"id": message["id"], "result": {"result": {"value": self._page(op)}}})
             return
         if method == "Input.insertText":
@@ -804,3 +820,124 @@ def test_a_public_target_is_handed_over_with_no_credential(tmp_path, db):
     assert "credential" not in handed and handed["sign_in"] == {"kind": "none"}
     assert world.gate.target.state == "ready" and world.path.qa_target.state == "ready"
     assert world.log.secrets == []
+
+
+# --------------------------------------------------------------------------
+# Start clicks before the form (§2.2; BGD, 2026-10-23, AI Studio's chooser)
+# --------------------------------------------------------------------------
+
+_CHOOSER = [{"text": "Staging", "css": "button"}, {"text": "Sign in"}]
+
+
+def _chooser_args(password: str, username: str | None = None, clicks: Any = None) -> dict[str, Any]:
+    sign_in = {"kind": "own_login", "login_url": f"{ORIGIN}/", "signed_in_selector": "#account",
+               "start_clicks": clicks or _CHOOSER}
+    return _args(_target_id(), password, username, sign_in=sign_in)
+
+
+def _is_start_click(m: dict[str, Any]) -> bool:
+    return str((m.get("params") or {}).get("expression", "")).startswith("/*swarm-qa:start-click")
+
+
+def test_the_start_clicks_happen_in_order_before_the_form_and_the_password_stays_scrubbed(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        link = qi.FakeLink()
+        conn = await rig.proxy.connect_agent(link)
+        assert conn is not None
+        rig.fake.controls = {"Staging": 1, "Sign in": 1}
+        # The form appears only once "Sign in" was clicked (the IdP's page).
+        rig.fake.probes = ["loading"]
+        rig.fake.on_click["Sign in"] = lambda: setattr(rig.fake, "probes", ["form"])
+        password, username = _password(), _username()
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(password, username))
+        # The agent's tab echoes the password while it is held.
+        rig.fake.emit("Runtime.consoleAPICalled", {"args": [{"value": f"<{password}>"}]}, conn.browser_session)
+        await rig.finished()
+        status = rig.target.status()
+        # MUTATION: skip the start-click loop in `SignIn.run` and the form never appears: no_form.
+        assert status["qa_sign_in"] == "signed_in", status
+        # MUTATION: reverse the start clicks (or drop `_parse_start_clicks`) and this fails.
+        assert rig.fake.clicked == ["Staging", "Sign in"]
+        clicks = rig.fake.index(lambda m: _is_start_click(m))
+        typed_at = rig.fake.index(lambda m: m["method"] == "Input.insertText")
+        # MUTATION: run the start clicks after the form steps and this fails.
+        assert clicks and typed_at and max(clicks) < min(typed_at)
+        assert [t for _, t in rig.fake.typed] == [username, password]
+        # The clicks and the typing were the gate's, on its own tab, never the agent's session.
+        assert all(rig.fake.received[i].get("sessionId") not in (conn.browser_session, *conn.sessions)
+                   for i in clicks)
+        await rig.settle()
+        text = json.dumps(link.sent, ensure_ascii=False)
+        for form in _forms(password):
+            # MUTATION: skip QaTarget.scrub for a target with start clicks and the password reaches the agent.
+            assert form not in text
+        assert password not in json.dumps(rig.records, ensure_ascii=False)
+        assert password not in json.dumps(rig.target.status(), ensure_ascii=False)
+        await rig.fake.stop()
+
+    run(body)
+
+
+@pytest.mark.parametrize("count", [0, 2], ids=["missing", "ambiguous"])
+def test_a_missing_or_ambiguous_start_click_ends_the_sign_in_with_a_sentence_naming_it(tmp, count):
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        rig.fake.controls = {"Staging": 1, "Sign in": count}
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(_password()))
+        await rig.finished()
+        status = rig.target.status()
+        # MUTATION: click the first of several matches (or carry on past a missing one) and this fails.
+        assert status["qa_sign_in"] == "failed" and status["cause"] == gate_qt.START_CLICK_MISSING
+        assert gate_qt.START_CLICK_MISSING == "qa_sign_in_start_click_missing"
+        # MUTATION: leave `sentence` out of QaTarget.status and the cause names no control.
+        assert "'Sign in'" in status["sentence"]
+        assert rig.fake.clicked == ["Staging"]
+        # Nothing was typed, the gate's tab was closed and the agent released.
+        assert rig.fake.typed == [] and rig.fake.closed and not rig.proxy.paused
+        # MUTATION: wait without a bound (or past START_CLICK_SECONDS) and the clock runs on.
+        assert rig.clock.now - qi.Clock().now <= gate_qt.START_CLICK_SECONDS * 3
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_a_start_click_toward_an_unapproved_origin_gets_the_left_page_and_no_form(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        rig.fake.controls = {"Staging": 1, "Sign in": 1}
+        rig.fake.probes = ["loading"]
+        elsewhere = "https://login." + secrets.token_hex(4) + ".example"
+
+        def leave() -> None:
+            # The click sends the gate's tab to an origin the target was not approved for.
+            guarded = next(sid for sid, s in rig.proxy._qa_guard._sessions.items()
+                           if s.kind == "page" and s.target_id.startswith("TAB"))
+            tab = rig.proxy._qa_guard._sessions[guarded].target_id
+            rig.fake.request(guarded, f"{elsewhere}/auth", frame=tab)
+
+        rig.fake.on_click["Sign in"] = leave
+        password = _password()
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(password))
+        await rig.finished()
+        # MUTATION: let the gate's tab leave the approved origins while signing in (judge) and this fails.
+        assert ("qa_target_left", {"origin": elsewhere}) in rig.records
+        fulfilled = rig.fake.sent("Fetch.fulfillRequest")
+        assert fulfilled and not any(u.startswith(elsewhere) for u, _ in rig.fake.network)
+        assert rig.target.state == "failed" and rig.fake.typed == []
+        assert password not in json.dumps(rig.records, ensure_ascii=False)
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_the_gate_refuses_a_malformed_start_click_hand_off():
+    target = gate_qt.QaTarget(lambda e, f: None)
+    for clicks in ([{"text": t} for t in "abcd"], [{"text": " padded "}], [{"text": "x", "xpath": "//a"}]):
+        with pytest.raises(gate_qt.QaTargetRefused) as refused:
+            target.handle(_chooser_args(_password(), clicks=clicks))
+        # MUTATION: drop `_parse_start_clicks` from `_parse_sign_in` and a malformed hand-off is taken.
+        assert refused.value.code == "start_clicks"

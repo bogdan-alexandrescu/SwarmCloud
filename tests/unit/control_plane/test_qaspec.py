@@ -595,3 +595,80 @@ def test_the_refusals_redact_what_they_quote() -> None:
     token = "ghp_" + "x" * 36
     checked = qaspec.validate_findings({"format": 1, "findings": [_finding(severity=token)]})
     assert token not in json.dumps(checked.refused)
+
+
+# --------------------------------------------------------------------------
+# Start clicks (§2.2; BGD, 2026-10-23: a chooser before the IdP's form)
+# --------------------------------------------------------------------------
+
+#: AI Studio's chooser: a Staging | Production toggle, then "Sign in".
+_CHOOSER = [{"text": "Staging", "css": "button"}, {"text": "Sign in"}]
+
+
+def _with_clicks(clicks: Any, **over: Any) -> dict[str, Any]:
+    return _target(sign_in={**_own_login(), "start_clicks": clicks}, **over)
+
+
+def test_valid_start_clicks_are_accepted_trimmed_and_in_order() -> None:
+    clicks = qaspec.start_clicks(_with_clicks([{"text": "  Staging ", "css": "button"}, {"text": "Sign in"}]))
+    # MUTATION: drop the strip in `start_clicks` (or reorder) and this fails.
+    assert clicks == _CHOOSER
+    # MUTATION: require start clicks on every own-login target and this raises.
+    assert qaspec.start_clicks(_target(sign_in=_own_login())) == []
+    qaspec.render(_with_clicks(_CHOOSER))
+
+
+@pytest.mark.parametrize("css", ["button:has-text('Sign in')", "text=Sign in", "div >> button", "button:visible"])
+def test_playwright_selector_syntax_is_refused_with_why(css: str) -> None:
+    with pytest.raises(qaspec.QaSpecError) as refused:
+        qaspec.start_clicks(_with_clicks([{"text": "Sign in", "css": css}]))
+    # MUTATION: drop `_PLAYWRIGHT_SELECTOR` from `start_clicks` and a selector the gate cannot run is stored.
+    assert "CDP" in refused.value.message and "Playwright" in refused.value.message
+
+
+@pytest.mark.parametrize("clicks", [[{"text": "a"}, {"text": "b"}, {"text": "c"}, {"text": "d"}], [],
+                                    "Sign in", [{"text": "x" * 61}], [{"text": "Sign in", "css": "b" * 201}],
+                                    [{"text": "Sign in", "selector": "button"}]])
+def test_more_than_three_or_a_malformed_start_click_is_refused(clicks: Any) -> None:
+    # MUTATION: raise MAX_START_CLICKS (or drop a bound in `start_clicks`) and this fails.
+    with pytest.raises(qaspec.QaSpecError):
+        qaspec.start_clicks(_with_clicks(clicks))
+
+
+@pytest.mark.parametrize("text,exclusions", [("Log out", None), ("Logout", None), ("Delete account", None),
+                                             ("Buy now", None), ("Archive workspace", {"controls": ["archive"]})])
+def test_a_start_click_naming_an_exclusion_word_is_refused(text: str, exclusions: Any) -> None:
+    over = {"exclusions": exclusions} if exclusions else {}
+    with pytest.raises(qaspec.QaSpecError) as refused:
+        qaspec.start_clicks(_with_clicks([{"text": text}], **over))
+    # MUTATION: skip the exclusion-word check in `start_clicks` (or read only the defaults) and this fails.
+    assert "excluded control" in refused.value.message
+
+
+def test_start_clicks_on_a_public_target_are_refused() -> None:
+    target = _target(sign_in={"kind": "none", "start_clicks": [{"text": "Sign in"}]})
+    # MUTATION: drop the own_login check in `start_clicks` and a public target carries clicks.
+    with pytest.raises(qaspec.QaSpecError) as refused:
+        qaspec.start_clicks(target)
+    assert "own_login" in refused.value.message
+    with pytest.raises(qaspec.QaSpecError):
+        qaspec.render(target)
+
+
+def test_the_capture_flow_and_discovery_prompts_name_the_start_clicks_in_order_only_when_set() -> None:
+    flows = [{"id": "f", "goal": "g", "start_path": "/"}]
+    chooser = "If your tab shows the sign-in chooser, click 'Staging' then 'Sign in'; the sign-in completes"
+    spec = qaspec.render(_with_clicks(_CHOOSER, flows=flows))
+    browser = [s for s in spec["steps"] if (s.get("inputs") or {}).get("browser_tool")]
+    assert {s["step_id"].split("-")[0] for s in browser} == {"capture", "flow"}
+    for step in browser:
+        # MUTATION: leave the clicks out of `_sign_in_note` (or a caller's call) and this fails.
+        assert chooser in step["prompt"], step["step_id"]
+        assert "Never type into a login form" in step["prompt"]
+    discovery = qaspec.render_discovery(_with_clicks(_CHOOSER, screens=None,
+                                                     discover={"max_pages": 5, "max_depth": 1}))
+    assert chooser in discovery["steps"][0]["prompt"]
+    plain = qaspec.render(_target(sign_in=_own_login(), flows=flows))
+    # MUTATION: write the chooser sentence for every own-login target and this fails.
+    assert all("chooser" not in s["prompt"] for s in plain["steps"])
+    assert all("chooser" not in s["prompt"] for s in qaspec.render(_target())["steps"])

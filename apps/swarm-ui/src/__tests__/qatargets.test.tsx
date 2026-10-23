@@ -75,24 +75,24 @@ function target(id: string, name: string, over: Json = {}): Json {
   }
 }
 
-function targets(pendingOver: Json = {}): Json {
+function targets(pendingOver: Json = {}, loginSignIn: Json = { kind: 'own_login', login_path: '/login', signed_in_selector: '#me' }): Json {
   return {
     qa_targets: [
       target(APPROVED, 'shop', { themes: ['light'] }),
       target(PENDING, 'blog', { host_state: 'pending', ...pendingOver }),
-      target(LOGIN, 'portal', { sign_in: { kind: 'own_login', login_path: '/login', signed_in_selector: '#me' } }),
+      target(LOGIN, 'portal', { sign_in: loginSignIn }),
     ],
   }
 }
 
 function live(
   role: string,
-  opts: { run?: Reply; link?: Reply; put?: Reply; create?: Reply; platformAdmin?: boolean; approve?: Reply; pending?: Json } = {},
+  opts: { run?: Reply; link?: Reply; put?: Reply; create?: Reply; platformAdmin?: boolean; approve?: Reply; pending?: Json; login?: Json } = {},
 ) {
   const calls = serve((m, url) => {
     const path = url.split('?')[0] ?? ''
     if (m === 'GET' && path === '/v1/tenants/me') return { status: 200, body: me(role, opts.platformAdmin === true) }
-    if (m === 'GET' && path === '/v1/qa-targets') return { status: 200, body: targets(opts.pending) }
+    if (m === 'GET' && path === '/v1/qa-targets') return { status: 200, body: targets(opts.pending, opts.login) }
     if (m === 'POST' && path.endsWith(':approve-host')) {
       return opts.approve ?? { status: 200, body: { qa_target: target(PENDING, 'blog', { approved_by: 'root@example.com', ...opts.pending, host_state: 'approved' }) } }
     }
@@ -430,6 +430,61 @@ describe('QA targets: registration', () => {
     expect(sent.url).toBe(`/v1/qa-targets/${APPROVED}`)
     // MUTATION: send the whole form on an edit, or leave a removed setting out instead of null.
     expect(sent.body).toEqual({ name: 'shop-2', themes: null })
+  })
+})
+
+describe('QA targets: sign-in start clicks (VQ8-START-CLICKS, §2.2)', () => {
+  // AI Studio's chooser: a Staging | Production toggle, then "Sign in" before the IdP.
+  const CHOOSER = [{ text: 'Staging', css: 'button' }, { text: 'Sign in' }]
+  const SSO = 'https://sso.portal.example.test'
+  const login = { kind: 'own_login', login_path: '/', signed_in_selector: '#me', extra_origin: SSO, start_clicks: CHOOSER }
+
+  async function editLogin(calls: ReturnType<typeof live>) {
+    void calls
+    const { RepositoriesScreen } = await import('../Repositories')
+    render(<RepositoriesScreen view="page=qa-targets" go={vi.fn()} />)
+    await waitFor(() => expect(button(card(LOGIN), 'Edit')).not.toBeNull(), WAIT)
+    fireEvent.click(button(card(LOGIN), 'Edit')!)
+    return waitFor(() => {
+      const f = document.querySelector<HTMLFormElement>('form.qa-edit')
+      if (f === null) throw new Error('no edit form')
+      return f
+    }, WAIT)
+  }
+
+  it('the edit form draws each start click, and a sign-in change keeps them and the extra origin', async () => {
+    const calls = live('admin', { login })
+    const form = await editLogin(calls)
+    const value = (name: string) => form.querySelector<HTMLInputElement>(`[name="${name}"]`)?.value
+    // MUTATION: drop `start_clicks` from `normSignIn` (or the draft) and the rows open empty.
+    expect([value('start_click_text_0'), value('start_click_css_0'), value('start_click_text_1'), value('start_click_css_1')]).toEqual([
+      'Staging',
+      'button',
+      'Sign in',
+      '',
+    ])
+    fireEvent.change(form.querySelector('[name="signed_in_selector"]')!, { target: { value: '#account' } })
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'PATCH').length).toBe(1), WAIT)
+    const sent = calls.find((c) => c.method === 'PATCH')!.body as Json
+    // MUTATION: rebuild sign_in from the drawn fields alone and the clicks and the extra origin are dropped.
+    expect(sent).toEqual({ sign_in: { ...login, signed_in_selector: '#account' } })
+  })
+
+  it('an admin adds up to three start clicks and removes one; a save sends them in order', async () => {
+    const calls = live('admin', { login })
+    const form = await editLogin(calls)
+    // MUTATION: offer a fourth row and the API's 1-to-3 bound is met only by a refusal.
+    fireEvent.click(button(form, 'Add start click')!)
+    expect(form.querySelector('[name="start_click_text_2"]')).not.toBeNull()
+    expect(button(form, 'Add start click')).toBeNull()
+    fireEvent.change(form.querySelector('[name="start_click_text_2"]')!, { target: { value: ' Continue ' } })
+    fireEvent.click(form.querySelectorAll<HTMLButtonElement>('button[name="remove_start_click"]')[0]!)
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'PATCH').length).toBe(1), WAIT)
+    const sent = calls.find((c) => c.method === 'PATCH')!.body as Json
+    // MUTATION: send an empty css, keep the removed row, or leave the text untrimmed and this fails.
+    expect((sent.sign_in as Json).start_clicks).toEqual([{ text: 'Sign in' }, { text: 'Continue' }])
   })
 })
 
