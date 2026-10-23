@@ -9,6 +9,11 @@
 # swarm-api holds no accessor on such a secret -- in the plan (every tenant's
 # secret module.secret_manager declares) and in the source of every root and
 # module file, so a resource added outside the module is caught too.
+#
+# Two more (WF-APP-FOLLOW): var.tenants refuses a provider named git-wf in
+# every environment -- the validation git_wf_tenant carried went with it --
+# and still accepts an ordinary provider, so the refusal is not a refusal of
+# everything.
 
 mock_provider "google" {}
 
@@ -142,5 +147,58 @@ run "no_git_wf_secret_and_no_swarm_api_accessor_on_one" {
   assert {
     condition     = output.tenant_secret_ids != null && length(regexall("(?m)^\\s*git_wf_tenant\\s*=|\"git-wf\"", file("../../terraform/environments/dev/dev.tfvars"))) == 0
     error_message = "dev.tfvars no longer sets git_wf_tenant nor lists git-wf as a provider (#2029)"
+  }
+}
+
+run "a_tenant_listing_git_wf_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    # prod, not dev: the refusal holds in every environment, not only where
+    # the slot once lived.
+    environment = "prod"
+    tenants = {
+      eng = { kind = "group", principal = "eng@example.com", providers = ["anthropic", "git", "git-wf"] }
+    }
+  }
+
+  # MUTATION: delete the git-wf validation on var.tenants in
+  # terraform/infra/variables.tf and the plan goes through, giving the tenant
+  # a swarm-tenant-eng-git-wf secret its worker can read.
+  expect_failures = [var.tenants]
+}
+
+run "a_tenant_listing_ordinary_providers_is_accepted" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    environment = "prod"
+    tenants = {
+      eng = { kind = "group", principal = "eng@example.com", providers = ["anthropic", "git"] }
+    }
+  }
+
+  override_resource {
+    target          = module.iam.google_service_account.platform["swarm-api"]
+    override_during = plan
+    values = {
+      email = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      name  = "projects/saga-agents-staging/serviceAccounts/swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  # MUTATION: write the validation as a refusal of every provider starting
+  # "git" (or of any non-empty list) and this plan fails on var.tenants.
+  assert {
+    condition     = output.tenant_secret_ids["eng"]["git"] == "swarm-tenant-eng-git"
+    error_message = "a tenant listing anthropic and git plans, with its -git slot"
   }
 }
