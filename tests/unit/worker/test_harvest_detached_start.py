@@ -16,6 +16,8 @@ bare repository on disk (only HTTP to the forge is faked):
     publishes nothing, and says why;
   * a by-sha implement step that commits on top of its start (detached, on no
     origin tip) publishes its commits;
+  * a detached end HEAD on the tracking tip of the step's own branch is not
+    a move;
   * a detached end HEAD equal to the start sha publishes its uncommitted
     edits, even with an origin tip on that same commit -- from a by-sha start
     or from a branch start;
@@ -126,6 +128,26 @@ def test_a_by_sha_implement_step_that_commits_on_its_start_publishes_its_commits
     assert [c["message"].strip() for c in commits] == ["Add the fix", "Add the tests"]
     assert_only_the_worker_wrote(commits, config)
     assert [pull["head"] for pull in forge.pulls] == [branch]
+
+
+def test_a_by_sha_step_detached_on_its_own_branchs_tracking_tip_publishes_its_commits(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """A `git_fetch` of the step's own branch writes its tracking ref onto the
+    step's own commits; that branch is never a fetched line (PR 2126)."""
+    worker, config, repo, _ = _cloned_by_sha(
+        worker_factory, monkeypatch, origin, task_id="t-sha-own-tip", dispatch=IMPLEMENT
+    )
+    _commits(repo, "tests")
+    _git(repo, "update-ref", f"refs/remotes/origin/swarm/{config.task_id}", "HEAD")
+
+    out = worker._harvest_git(publish=True)
+
+    # MUTATION: count the step's own branch among the fetched tips and its
+    # own commit reads as a move onto someone else's line.
+    assert out["published"] is True, out.get("publish_reason")
+    assert "head_moved" not in out, out
+    assert "tests.py" in tree_at(origin, f"swarm/{config.task_id}")
 
 
 def test_a_by_sha_step_on_its_start_sha_with_edits_publishes_them(
