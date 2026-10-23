@@ -217,7 +217,10 @@
   /* EXCEPT THE CPU TILE'S (task-012, visual QA run 3, #1680): its line says
      whose limit the `/ 2 cores` is and what the attempt was guaranteed, and
      two lines cut it to `cgroup limit (clas…` -- the very words FF-D5a put
-     there to reconcile the tile with the head's `4 vCPU`. */
+     there to reconcile the tile with the head's `4 vCPU`. AND PEAK MEMORY'S
+     AND COST'S (#1680 comments 6343769495, 6343792637): two lines cut
+     `worst 7.20 GiB, attempt…` and `cost 1 of 3 reported · last…` at 1440,
+     so those tiles are `whole` too (`DtStrip`). */
   .dt-sc.is-whole > .dt-sc-s {
     display: block;
     -webkit-line-clamp: none;
@@ -248,6 +251,10 @@
 .dt-phb > .is-c, .dt-lg .is-c { background: var(--info); }
 .dt-phb > .is-r, .dt-lg .is-r { background: var(--s-live); }
 .dt-phb > .is-b, .dt-lg .is-b { background: var(--s-bad); }
+/* THE REST OF THE TRACK, PAST A SHORTER ATTEMPT (6:task-008): every row is
+   drawn on the longest attempt's scale (`DtPhaseRow`), and what this attempt
+   did not take is the track's own fill, not a phase. */
+.dt-phb > .is-rest { background: transparent; }
 /* AN OPEN RUN IS DRAWN OPEN: it fades at its end rather than closing at now. */
 .dt-phb > .is-open { mask-image: linear-gradient(90deg, #000 85%, transparent); }
 .dt-lg { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
@@ -412,6 +419,10 @@
   .dt-sc:nth-child(-n + 2) { border-top: 0; }
   .dt-sc:nth-child(even) { border-left: 1px solid var(--line); }
   .dt-sc:last-child { grid-column: 1 / -1; }
+  /* THE PEAK BARS KEEP A WIDTH ON A PHONE (5b:QA-008, #1680 comment
+     6343756607): the row's track floor (`.dt-rr` above) said so once; the
+     bar says it itself here, so no track list can squeeze it to 0 px. */
+  .dt-rr > .dt-bar { min-width: 48px; }
 }
 
 /* `parked since <time>` beside "I'm ready to sign in" (LB-V4, U1): the park
@@ -519,3 +530,10 @@
   .att-pane .att-card .ctl-card-body > .ctl-facts > .ctl-fact { grid-column: 1 / -1; }
   .att-pane .att-card .ctl-card-body > .ctl-facts > .ctl-fact.att-fact-short { grid-column: auto; flex-direction: column; gap: 0; }
 }
+
+/* A GAP AND A DOT AFTER THE `partial` CHIP (6:task-004, #1680 comment
+   6343768697). The toolbar's `partial 2 attempts without events` put the
+   count against the chip's edge, a space's width away; the separator
+   (`AttemptTimeline` `Body`) draws the page's ` · ` with room either side. */
+.att-pane .att-mark-sep { margin-inline: 4px; color: var(--text-faint); }
+.att-pane .att-mark-sep::before { content: "·"; }

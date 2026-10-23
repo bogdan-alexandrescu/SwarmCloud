@@ -1222,8 +1222,11 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
   const ofLimit = cls === null ? (noCeiling ?? 'limit unknown') : `of ${cls.memory_gib} GiB`
   // THE WORST EARLIER ATTEMPT IS THE CAPTION (c06): `of 8 GiB · worst 7.20
   // GiB, attempt 2 · OOM near miss`, in the alert tone, the owner's words.
-  // A 480-639px pane cuts it at two lines; it is whole in the tooltip, and
-  // Resources' Memory row says it with the reading's age (`so far · 1m ago`).
+  // IT WRAPS, WHOLE (5b:QA-024, box comment 6343769495): the 480-639px
+  // pane's two-line clamp cut it to `worst 7.20 GiB, attempt…` at 1440, the
+  // half that names the attempt and the near miss lost. Every Peak memory
+  // cell is `whole`, as the CPU tile is; Resources' Memory row says it too,
+  // with the reading's age (`so far · 1m ago`).
   const worst = worstWords(mem.worst)
   const nearWords = nearMiss ? ' · OOM near miss' : ''
   if (mem.bytes !== null) {
@@ -1251,6 +1254,7 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
       // warning takes the alert tone.
       tone: worst !== null || nearMiss || mem.kind === 'last' ? 'alert' : mem.kind === 'live' ? 'live' : undefined,
       help: 'peak-memory',
+      whole: true,
     })
   } else if (mem.kind === 'pending') {
     cells.push({
@@ -1260,6 +1264,7 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
       bar: null,
       sub: worst !== null ? `${ofLimit} · ${worst}${nearWords} · no heartbeat reading yet` : `${ofLimit} · no heartbeat reading yet`,
       help: 'peak-memory',
+      whole: true,
     })
   } else if (latest === null) {
     // ONE CAUSE, ONE WORD (QA G2-28): with no attempt, Peak memory, CPU and
@@ -1275,6 +1280,7 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
       // The newest wrote none; an earlier one that did is still named.
       sub: worst !== null ? `attempt ${attempts.length} wrote none · ${worst}${nearWords}` : 'no attempt wrote one',
       help: 'peak-memory',
+      whole: true,
     })
   }
 
@@ -1376,7 +1382,12 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
       help: 'token-cost',
     })
   }
-  return <DtStripView cells={cells} />
+  // THE COST LINE WRAPS, WHOLE (5b:ff-desktop-05, box comment 6343792637).
+  // The 480-639px pane's two-line clamp cut a failed task's line to `cost 1
+  // of 3 reported · last...` at 1440: the coverage it opens with is the
+  // reason the figure says `at least`. Like CPU and Peak memory, the Cost
+  // tile's sub-line is never clamped; a taller strip is the price.
+  return <DtStripView cells={cells.map((c) => (c.label === 'Cost' ? { ...c, whole: true } : c))} />
 }
 
 function DtStripView({ cells }: { cells: DtCell[] }) {
@@ -1470,6 +1481,8 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
   const { task, events, attempts } = run
   const { ordered } = orderedAttempts(attempts)
   const rows = attempts === null || attempts.length === 0 ? [] : phasesFor(task, attempts, events).rows
+  // The longest attempt's whole span: the one scale every row is drawn on (6:task-008).
+  const scale = rows.reduce((m, r, i) => Math.max(m, phaseSpans(r, i === rows.length - 1 ? liveRun(task, now) : null).total), 0)
   const ownerOf = (e: TaskEvent): string | null => {
     if (e.attempt_id == null || attempts === null) return null
     const i = ordered.findIndex((a) => a.attempt_id === e.attempt_id)
@@ -1533,10 +1546,10 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
               `Run · attempt N` tile, and its head names all three (c07). */}
           <div className="dt-phrow is-head">
             <span />
-            <span>whole attempt: queue + cold start + run</span>
+            <span title="Every bar is drawn on one time scale: the longest attempt fills the track.">whole attempt: queue + cold start + run</span>
           </div>
           {rows.map((r, i) => (
-            <DtPhaseRow key={r.attempt.attempt_id} r={r} live={i === rows.length - 1 ? liveRun(task, now) : null} />
+            <DtPhaseRow key={r.attempt.attempt_id} r={r} live={i === rows.length - 1 ? liveRun(task, now) : null} scale={scale} />
           ))}
           <p className="dt-lg">
             <span>
@@ -1640,8 +1653,8 @@ function failedRun(a: AttemptRow): boolean {
   return a.exit_code !== null && a.exit_code !== 0 && !isParked(a)
 }
 
-/** One attempt's phases as a compact bar: queue, cold start, run -- open runs drawn open, never closed at now. */
-function DtPhaseRow({ r, live }: { r: AttemptPhases; live: { ms: number } | null }) {
+/** One attempt's phases in ms, as its Progress row draws them. */
+function phaseSpans(r: AttemptPhases, live: { ms: number } | null): { q: number; c: number; run: number; total: number; ticking: boolean } {
   const part = (s: Segment | null): number => (s === null ? 0 : s.kind === 'closed' ? s.ms : s.kind === 'open' ? s.atLeastMs : 0)
   const q = part(r.queue)
   const c = part(r.cold)
@@ -1650,7 +1663,21 @@ function DtPhaseRow({ r, live }: { r: AttemptPhases; live: { ms: number } | null
   // no `+`. Any other open run is still a floor at its newest event.
   const ticking = r.run?.kind === 'open' && r.run.live && live !== null
   const run = ticking ? live.ms : part(r.run)
-  const total = q + c + run
+  return { q, c, run, total: q + c + run, ticking }
+}
+
+/**
+ * One attempt's phases as a compact bar: queue, cold start, run -- open runs
+ * drawn open, never closed at now.
+ *
+ * EVERY ROW ON ONE TIME SCALE (6:task-008, visual QA run 6). Each row's
+ * segments grew inside its own track, so an 8 s attempt filled the track as
+ * a 1m 38s one did and the card read as three attempts of one length. The
+ * longest attempt (`scale`, ms) fills the track; a shorter one leaves the
+ * rest of it empty (`is-rest`), so the bars compare as their figures do.
+ */
+function DtPhaseRow({ r, live, scale }: { r: AttemptPhases; live: { ms: number } | null; scale: number }) {
+  const { q, c, run, total, ticking } = phaseSpans(r, live)
   const open = r.run?.kind === 'open' && !ticking
   const failed = failedRun(r.attempt)
   return (
@@ -1662,6 +1689,7 @@ function DtPhaseRow({ r, live }: { r: AttemptPhases; live: { ms: number } | null
             <i className="is-q" style={{ flexGrow: q }} />
             <i className="is-c" style={{ flexGrow: c }} />
             <i className={`${failed ? 'is-b' : 'is-r'}${r.run?.kind === 'open' ? ' is-open' : ''}`} style={{ flexGrow: run }} />
+            {scale > total && <i className="is-rest" style={{ flexGrow: scale - total }} />}
           </>
         )}
       </span>
@@ -2046,6 +2074,15 @@ function reportsSpend(profile: string): boolean {
 export function attemptLabel(ordinal: number, generation: number): string {
   return `Attempt ${ordinal} · gen ${generation}`
 }
+
+/**
+ * WHAT `gen` IS, WHERE IT IS PRINTED (QA-113, box comment 6283738266). The
+ * label keeps its short `gen` -- at 390 it is one unbroken name -- and every
+ * place it is drawn titles it, so the word is never a key a reader had to
+ * have been told.
+ */
+export const GEN_TITLE = 'gen: the fencing generation this attempt ran under. A stale worker carries an older one and exits without running.'
+
 
 // `agentName` and `workflowHref` live in `agentlist.ts` so the Agents list
 // and Overview name an agent and link its workflow by the same rule.
@@ -2771,10 +2808,40 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
  * the latest attempt: the stream is read from the task's `result_summary`,
  * which is written once, by the last attempt.
  */
+/**
+ * WHY NO MODEL IS RECORDED, FOR THIS ATTEMPT (6:task-003, visual QA run 6,
+ * box comment 6283738266). One sentence offered both reasons on every card,
+ * `older attempt, or no-model runner`, and on the newest attempt of a
+ * claude-code task neither applies: it is not older, and its runner starts a
+ * model. So the reason is the one that can be true here. A runner that starts
+ * no model (`reportsSpend`: the CLI agents are the profiles that start one)
+ * says so on every attempt; otherwise the newest attempt's model was not
+ * written by its worker, and an earlier one may predate the record. With no
+ * task read the runner is unknown, and both reasons stay.
+ */
+function modelAbsence(task: Task | null, isLatest: boolean): { words: string; title: string } {
+  if (task === null) {
+    return {
+      words: 'older attempt, or no-model runner',
+      title: 'No model is recorded for this attempt: it ran before attempts recorded their model, or its runner starts no model.',
+    }
+  }
+  if (!reportsSpend(task.runner_profile)) {
+    return { words: 'no model', title: `The ${task.runner_profile} runner starts no model, so there is none to record.` }
+  }
+  return isLatest
+    ? {
+        words: 'the worker did not write it',
+        title: `The ${task.runner_profile} runner starts a model, and this attempt's worker wrote none on the attempt.`,
+      }
+    : { words: 'older attempt', title: 'No model is recorded for this attempt: it is an earlier attempt, and may predate the record.' }
+}
+
 export function AttemptModel({ a, task, isLatest }: { a: AttemptRow; task: Task | null; isLatest: boolean }) {
   const model = a.model ?? null
   const modelClass = task?.model_class ?? null
   const ranOther = isLatest && task !== null ? modelMismatch(model, task) : null
+  const why = modelAbsence(task, isLatest)
   return (
     <>
       <li className={`ctl-fact${model === null ? ' is-absent' : ''}`}>
@@ -2785,15 +2852,13 @@ export function AttemptModel({ a, task, isLatest }: { a: AttemptRow; task: Task 
           // one `Mark kind="absent"` draws -- said nothing of why. The mark's
           // shape stays, with the word that is true, and the reason is on
           // the glass beside it rather than in an accessible name only --
-          // five words, since it repeats on every attempt card (prose budget,
-          // prose.runs.test.tsx); the whole sentence is its title.
+          // a few words, since it repeats on every attempt card (prose
+          // budget, prose.runs.test.tsx); the whole sentence is its title.
+          // Which reason is `modelAbsence`'s (6:task-003).
           <>
             <span className="ctl-mark is-absent">not recorded</span>
-            <small
-              className="att-model-why"
-              title="No model is recorded for this attempt: it ran before attempts recorded their model, or its runner starts no model."
-            >
-              older attempt, or no-model runner
+            <small className="att-model-why" title={why.title}>
+              {why.words}
             </small>
           </>
         ) : (
@@ -2887,7 +2952,7 @@ function AttemptCard({
     <section className="ctl-card att-card">
       <div className="ctl-card-head">
         <h2 className="ctl-card-title">
-          {attemptLabel(ordinal, a.generation)}
+          <span title={GEN_TITLE}>{attemptLabel(ordinal, a.generation)}</span>
           <ToneMark tone={chip.tone}>{chip.label}</ToneMark>
           {/* `latest` IS METADATA, NOT A STATE, and it is the one place on
               these four screens where a hairline box is the right answer --
