@@ -469,6 +469,9 @@ const STEP_FIELDS = {
     last_error: { type: ['string', 'null'] },
     console: { type: ['string', 'null'] },
     questions: { type: ['array', 'null'] },
+    // The owner's answers to them, `{question_index, choice, text}` each
+    // (swarm_mcp.compact.step_result; ANSWERS-429).
+    owner_answers: { type: ['array', 'null'] },
   },
   required: [],
 }
@@ -498,12 +501,12 @@ const STEP_RESULT = {
 // re-review row, in the documented shape, kept them all. The unwrap is taken
 // only when the middle object carries no step field of its own, and once:
 // a third level is not read.
-const NESTED_STEP_FIELDS = ['answer_excerpt', 'cost_usd', 'duration_s', 'pr_url', 'artifacts', 'last_error', 'console', 'questions']
+const NESTED_STEP_FIELDS = ['answer_excerpt', 'cost_usd', 'duration_s', 'pr_url', 'artifacts', 'last_error', 'console', 'questions', 'owner_answers']
 
 function stepAnswer(answer) {
   if (!answer || typeof answer !== 'object') return answer
   if (!answer.result || typeof answer.result !== 'object') {
-    if (!Object.prototype.hasOwnProperty.call(answer, 'result')) return withQuestions(Object.assign({}, answer), answer.questions)
+    if (!Object.prototype.hasOwnProperty.call(answer, 'result')) return withQuestions(Object.assign({}, answer), answer.questions, answer.owner_answers)
   }
   const outer = answer.result && typeof answer.result === 'object' ? answer.result : {}
   const nested = outer.result && typeof outer.result === 'object' && !Array.isArray(outer.result) &&
@@ -521,7 +524,7 @@ function stepAnswer(answer) {
     last_error: text(given.last_error),
   }
   if (text(given.console)) flat.console = given.console
-  return withQuestions(flat, given.questions)
+  return withQuestions(flat, given.questions, given.owner_answers)
 }
 
 // THE QUESTIONS A ROW HANDS ON (PLUGIN-OWNER-QUESTIONS, part of #1904).
@@ -569,11 +572,35 @@ function ownerQuestions(given) {
 
 // `flat` with its `questions` read by ownerQuestions(), or without the key
 // when the agent asked none -- as `console` is left out when there is none.
-function withQuestions(flat, given) {
+//
+// And `answered`: the indexes of the questions the owner has answered, read
+// from the bridge's `owner_answers` (ANSWERS-429, part of #1904). PR 1908
+// built it for the summary mode only, so a per-step row handed every
+// question on as open and the session asked the owner again what the
+// console already held an answer to. Indexes only, as the summary row's;
+// without the key when nothing is answered. The raw `owner_answers` is not
+// kept: the run's result names the open questions, not the answers.
+function withQuestions(flat, given, answers) {
   const asked = ownerQuestions(given)
   if (asked.length > 0) flat.questions = asked
   else delete flat.questions
+  const answered = answeredIndexes(answers)
+  delete flat.owner_answers
+  if (answered.length > 0) flat.answered = answered
+  else delete flat.answered
   return flat
+}
+
+// The `question_index` of each answer, once each, in order: [] for none.
+function answeredIndexes(answers) {
+  if (!Array.isArray(answers)) return []
+  const out = []
+  for (const answer of answers) {
+    const index = answer && typeof answer === 'object' ? answer.question_index : null
+    if (typeof index !== 'number' || !Number.isInteger(index) || index < 0 || out.indexOf(index) >= 0) continue
+    out.push(index)
+  }
+  return out
 }
 
 // THE RUN'S `owner_questions` (PLUGIN-OWNER-QUESTIONS). One entry per step or
@@ -632,7 +659,8 @@ function withOwnerQuestions(result, askers, workflowId) {
 
 // A per-step or per-task row as an asker for withOwnerQuestions().
 function rowAsker(row, where, name) {
-  return { where: where, name: name, task_id: row && row.task_id, console: row && row.console, questions: row && row.questions }
+  return { where: where, name: name, task_id: row && row.task_id, console: row && row.console, questions: row && row.questions,
+    answered: row && row.answered }
 }
 
 const WORKFLOW_STATE = {
