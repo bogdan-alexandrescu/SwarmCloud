@@ -154,8 +154,10 @@ describe('QA-054: the summary wraps between clauses', () => {
     expect(tenant, clauses.map((c) => c.textContent).join(' | ')).toBeDefined()
     // MUTATION: drop `.cap-clause { white-space: nowrap }`.
     expect(painted(tenant!, 'white-space', PHONE)).toBe('nowrap')
-    // The words are unchanged for a reader and for a copy.
-    expect(tenant!.parentElement!.textContent).toMatch(/^5 pools in 3 families · 1 paused · tenant u-bogdan$/)
+    // The words are unchanged for a reader and for a copy. `1 too small` is
+    // resource:large at 0 / 2 under a 4-unit class, which the summary counts
+    // since 6:capacity-011 (QAFIX6-CAPACITY).
+    expect(tenant!.parentElement!.textContent).toMatch(/^5 pools in 3 families · 1 paused · 1 too small · tenant u-bogdan$/)
   })
 })
 

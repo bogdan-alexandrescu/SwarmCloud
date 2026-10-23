@@ -188,11 +188,19 @@ export async function loadPoolsBoard(): Promise<Result<PoolsBoard>> {
  */
 function PoolsSummary({ capacity }: { capacity: Capacity }) {
   const pools = capacity.pools
+  // `too small` IS COUNTED BY THE ROW'S OWN RULE (visual QA run 6,
+  // 6:capacity-011, part of #1680). Needs action listed resource:large as
+  // `too small` while this line read `1 full · 1 lowered · 1 paused`, so the
+  // summary named every state but the one a person had to act on. `isTooSmall`
+  // is what `classifyPool` draws the chip from, weighed against the same
+  // catalogue, so the count and the marks cannot disagree.
+  const classes = useResourceClasses()
   const families = new Set(pools.map((p) => poolKind(p.name))).size
   const full = pools.filter((p) => !overCeiling(p) && p.effective_limit !== null && p.effective_limit > 0 && p.active >= p.effective_limit).length
   const lowered = pools.filter((p) => p.effective_limit !== null && p.hard_limit !== null && p.effective_limit < p.hard_limit).length
   const paused = pools.filter(isPaused).length
   const over = pools.filter(overCeiling).length
+  const small = pools.filter((p) => isTooSmall(p, poolWeight(p, classes)?.units ?? null)).length
   const viewer = poolViewer(capacity)
   // EACH CLAUSE IS ONE UNBREAKABLE ITEM (QA-054, 2026-10-20): at 390 the line
   // wrapped inside the tenant id, at its hyphen -- `tenant u-` / `bogdan`. The
@@ -202,6 +210,7 @@ function PoolsSummary({ capacity }: { capacity: Capacity }) {
     full > 0 ? `${full} full` : null,
     lowered > 0 ? `${lowered} lowered` : null,
     paused > 0 ? `${paused} paused` : null,
+    small > 0 ? `${small} too small` : null,
     over > 0 ? `${over} over ceiling` : null,
     viewer !== undefined ? `tenant ${viewer}` : null,
   ].filter((c): c is string => c !== null)
@@ -516,8 +525,7 @@ function PoolRow({
 }) {
   // The weight `needsAction` weighed this pool against, so the row draws the
   // reason it was filed under Needs action (QA-052).
-  const resourceClass = poolKind(pool.name) === 'resource' ? pool.name.slice('resource:'.length) : null
-  const marks = classifyPool(pool, resourceClass === null ? null : { name: resourceClass, units: classUnits(classes, resourceClass) })
+  const marks = classifyPool(pool, poolWeight(pool, classes))
   const by = setBy(pool)
   const limit = pool.effective_limit
   // UNROUNDED for the track: 1 unit of 300 is 0.3%, and rounding it to 0
@@ -665,6 +673,32 @@ interface PoolClass {
  * `paused` and `over ceiling` can both be true, and both are drawn: the drift
  * is not hidden by the pause. The row and the track take the worse of them.
  */
+/**
+ * The class a `resource:` pool is weighed against, and its `units` from the
+ * catalogue (null unread). No other pool has one class, so it has no weight.
+ */
+function poolWeight(pool: Pool, classes: ResourceClasses | null): { name: string; units: number | null } | null {
+  if (poolKind(pool.name) !== 'resource') return null
+  const name = pool.name.slice('resource:'.length)
+  return { name, units: classUnits(classes, name) }
+}
+
+/**
+ * TOO SMALL FOR ONE TASK OF ITS CLASS: a positive limit below `units`, on a
+ * pool neither paused nor over its ceiling (those marks say more). The row's
+ * chip and the summary's count both read this.
+ */
+function isTooSmall(pool: Pool, units: number | null): boolean {
+  const limit = pool.effective_limit
+  return (
+    !isPaused(pool) &&
+    !overCeiling(pool) &&
+    limit !== null &&
+    limit > 0 &&
+    blockerCeiling({ reason: '', pool: pool.name, limit }, units) === 'below-units'
+  )
+}
+
 function classifyPool(pool: Pool, weight: { name: string; units: number | null } | null = null): PoolClass {
   const paused = isPaused(pool)
   const over = overCeiling(pool)
@@ -676,8 +710,7 @@ function classifyPool(pool: Pool, weight: { name: string; units: number | null }
   // nothing on it said why it was there. `blockerCeiling` decides it, so the
   // group and the mark are one rule.
   const units = weight?.units ?? null
-  const small =
-    !paused && !over && limit !== null && limit > 0 && blockerCeiling({ reason: '', pool: pool.name, limit }, units) === 'below-units'
+  const small = isTooSmall(pool, units)
   // NO LIMIT SET (#374) is neither `limit 0` nor `ok`: the ceiling was never
   // read, admission refuses on it, and a person has to set one. The verdict is
   // the blockers' own `limit-unset`, so the screens cannot disagree.
