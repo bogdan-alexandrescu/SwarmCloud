@@ -113,9 +113,9 @@ input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: ins
    card in dark and 1.34:1 in light, and it is the only mark an enabled,
    unchosen option carries: the card's own edge is the hairline too. WCAG 2.1
    SC 1.4.11 asks 3:1 of it; `--ctl-bd` is 3.45:1 on `--surface` in dark and
-   3.35:1 in light. Chosen is the accent's 4px ring; DISABLED keeps the
-   hairline, which is what tells a refused runner's radio from a live one
-   (an inactive control is outside 1.4.11). */
+   3.35:1 in light. Chosen is the accent's 4px ring; DISABLED shares the
+   live ring's `--ctl-bd` but is dashed and on `--surface-2`, which is what
+   tells a refused runner's radio from a live one (QA-046, below). */
 .sbf-runners.is-cards .sbf-runner > input[type='radio'],
 .dsp-option > input[type='radio'] {
   appearance: none;
