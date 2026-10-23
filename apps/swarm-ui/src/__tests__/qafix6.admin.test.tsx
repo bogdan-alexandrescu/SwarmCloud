@@ -376,7 +376,12 @@ describe('f. QA-044: the phone card’s field labels are set in the sans face', 
     const cells = [...document.getElementById('limit-global')!.querySelectorAll('td[data-label]')]
     expect(cells.map((c) => c.getAttribute('data-label'))).toEqual(['In use (units)', 'Ceiling (units)', 'Set by', 'Last changed'])
     for (const c of cells) {
-      // MUTATION: drop the admin.css override: the key is styles.css's mono.
+      // The key face is console-wide since BGD's decision of 2026-10-23
+      // (QA-044, task_7f0095fb2fd9481790cc q0): styles.css's shared stacked
+      // rule draws it sans and admin.css carries no override of its own
+      // (qa044.sanskeys.test.tsx holds the other pages).
+      // MUTATION: put `var(--mono)` back in styles.css's stacked
+      // `td[data-label]::before` font: Pool limits' keys are mono again.
       const face = painted(c, ['font-family', 'font'], PHONE, 'before') ?? ''
       expect(face, c.getAttribute('data-label')!).toMatch(/var\(--font\)/)
       expect(face).not.toMatch(/--mono/)

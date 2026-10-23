@@ -782,16 +782,6 @@ table.adm-limits th.pool-name > .ctl-sub > .adm-key-seg {
   .is-stacked .adm-changed > .adm-changed-part { display: block; }
   .is-stacked .adm-changed > .adm-changed-part > .adm-changed-sep { display: none; }
 }
-/* THE PHONE CARD'S KEYS ARE LABELS, IN THE LABELS' FACE (QA-044, part of
-   #1680). styles.css sets a stacked record's keys in mono; on Pool limits
-   `In use (units)`, `Ceiling (units)`, `Set by` and `Last changed` are the
-   column heads, which are sans at every width, and in mono they read as
-   values. Scoped to the families: the console-wide key face is asked in the
-   PR rather than changed here. */
-@media (max-width: 899px) {
-  .adm-family .is-stacked > table > tbody > tr > td[data-label]::before { font-family: var(--font); }
-}
-
 /* -- Runner sizes --------------------------------------------------------- */
 /* SIZES-UI (part of #1689; docs/design/runner-sizes.md §4.6): one card per
    class, its three numbers side by side with the bound under each, then the
