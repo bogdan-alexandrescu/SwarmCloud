@@ -521,3 +521,94 @@ def test_the_repair_prompt_names_why_and_never_advises_splitting(tmp_path):
     assert _ADVICE in prompt, prompt
     # MUTATION: restore "built at runtime from pieces" and this turns red.
     assert not any(word in prompt.lower() for word in _FORBIDDEN_ADVICE), prompt
+
+
+# -- a bare identifier with a digit run (SCAN-IDENT, #2030) --------------------
+#
+# BGD, 2026-10-23: an unquoted camelCase, PascalCase or snake_case identifier
+# holding one short digit run is code, not a credential. Quoted values, values
+# that are not word segments, longer or repeated digit runs, high entropy,
+# vendor prefixes and password names are still refused. `token = <name>` is
+# already left alone by the redaction rule's expression exemption; the shapes
+# that reached tier 2 are a YAML-style `token: <name>` and an environment
+# line's `TOKEN=<name>`, so every name form is asked.
+
+_FORMS = (
+    "token = {}", "token: {}", "TOKEN={}", f"{_SEC.lower()}: {{}}",
+    f"API_{_KEY}={{}}", "key = {}", "t = {}", f"{_SEC.lower()} = {{}}",
+)
+
+
+@pytest.mark.parametrize("value", ["sessionToken2", "api_key_v2", "MockUser01", "token2fa"])
+@pytest.mark.parametrize("form", _FORMS)
+def test_a_bare_identifier_with_a_digit_run_publishes(form, value):
+    # MUTATION: drop `_is_an_identifier` from `_assigns_a_literal` and the
+    # `token:`, `TOKEN=` and `secret:` cases of `sessionToken2` turn red.
+    assert _rule("src/app.ts", form.format(value) + "\n") is None
+    # MUTATION: stop stripping a trailing `;` before `_is_an_identifier` and this turns red.
+    assert _rule("src/app.ts", form.format(value) + ";\n") is None
+
+
+@pytest.mark.parametrize("form", ['token = "{}"', 'token: "{}"', "TOKEN='{}'"])
+def test_a_quoted_identifier_with_a_digit_is_judged_as_before(form):
+    # MUTATION: apply `_is_an_identifier` inside quotes and this turns red.
+    assert _rule("src/app.ts", form.format("sessionToken2") + "\n") == "key_value_assignment"
+
+
+def test_an_identifier_under_a_password_name_is_refused():
+    value = "my" + "Dog" + "Buddy" + str(2024)
+    # MUTATION: drop the password-name check from `_assigns_a_literal` and this turns red.
+    assert _rule("src/app.ts", f"db_{_PW}: {value}\n") == "key_value_assignment"
+
+
+def _not_words() -> list[str]:
+    """Values that are not word segments, built at run time: 12 letters and
+    digits interleaved (six digit runs), and 12 PascalCase characters with one
+    digit run whose segments hold no vowel."""
+    interleaved = "".join(c + d for c, d in zip("aBxQkR", "394817"))
+    vowelless = "".join(["Xq", "Zv", "Bk", "Pm"]) + str(7) + "Rtw"
+    return [interleaved, vowelless]
+
+
+@pytest.mark.parametrize("value", _not_words(), ids=["interleaved", "vowelless"])
+@pytest.mark.parametrize("form", ["token: {}", "TOKEN={}"])
+def test_a_bare_value_that_is_not_word_segments_is_refused(form, value):
+    # MUTATION: build a shorter value and the scan's 12-character floor, not
+    # `_is_an_identifier`, refuses it; this precondition turns red first.
+    assert len(value) == 12
+    # MUTATION: drop the vowel or the digit-run count from `_is_an_identifier`
+    # and the vowelless or the interleaved case turns red.
+    assert _rule("src/app.ts", form.format(value) + "\n") == "key_value_assignment"
+
+
+@pytest.mark.parametrize("form", ["token: {}", "TOKEN={}"])
+def test_a_digit_run_longer_than_four_or_a_second_run_is_refused(form):
+    five = "session" + "Token" + str(12345)
+    # MUTATION: raise `_IDENTIFIER_DIGITS_MAX` to 5 and this turns red.
+    assert _rule("src/app.ts", form.format(five) + "\n") == "key_value_assignment"
+    two_runs = "session" + str(12) + "Token" + str(34)
+    # MUTATION: allow two digit runs in `_is_an_identifier` and this turns red.
+    assert _rule("src/app.ts", form.format(two_runs) + "\n") == "key_value_assignment"
+
+
+def test_a_long_high_entropy_identifier_is_refused():
+    value = "quick" + "Brown" + "Fox" + "Jumps" + str(2)
+    # MUTATION: pick a low-entropy value and the next assertion proves nothing;
+    # this precondition turns red first.
+    assert lifecycle._shannon_bits(value[:-1]) >= lifecycle.CREDENTIAL_MIN_ENTROPY_BITS
+    # MUTATION: drop the entropy check from `_is_an_identifier` and this turns red.
+    assert _rule("src/app.ts", f"token: {value}\n") == "key_value_assignment"
+
+
+def test_a_vendor_prefixed_identifier_is_refused():
+    # MUTATION: drop the vendor-prefix check from `_is_an_identifier` and this turns red.
+    assert not lifecycle._is_an_identifier("AK" + "IA" + "UserToken2")
+    # MUTATION: make `_is_an_identifier` refuse everything and this turns red.
+    assert lifecycle._is_an_identifier("User" + "Token2")
+
+
+@pytest.mark.parametrize("form", ["token = {}", "token: {}", "TOKEN={}"])
+def test_a_random_40_character_value_is_still_refused(form):
+    value = secrets.token_hex(20)
+    # MUTATION: pass every bare value in `_assigns_a_literal` and this turns red.
+    assert _rule("src/app.ts", form.format(value) + "\n") == "key_value_assignment"

@@ -15053,6 +15053,10 @@ def _scan_diff_stream(
 # Since 2026-10-23 (#2030, BGD), NEITHER tier reads a comment line or a
 # template literal of runtime slots with the generic rules
 # (`_on_a_comment_line`, `_runtime_template`); the vendor and key rules do.
+#
+# Since 2026-10-23 (#2030, SCAN-IDENT, BGD), an UNQUOTED word-segment
+# identifier holding one short digit run (`sessionToken2`, `api_key_v2`) is
+# not a literal either, outside password names (`_is_an_identifier`).
 
 #: The `swarm_redaction` rules that match a NAME followed by a value rather
 #: than a provider's own token format. Tiers 2 and 3 apply to these. Any rule
@@ -15340,6 +15344,65 @@ def _is_a_reference(value: str, rule: Any = None, match: re.Match[str] | None = 
         or _REFERENCE_SHAPE.fullmatch(candidate) is not None
     )
     return shaped and not _looks_like_a_credential(candidate)
+
+
+#: An identifier's shape: optional leading underscores, then letters and
+#: digits joined by single underscores (snake_case, camelCase, PascalCase).
+_IDENTIFIER_SHAPE = re.compile(r"_*[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*")
+#: One segment of an identifier: a capitalised or lowercase word, a run of
+#: capitals not followed by a lowercase letter (`API`, `KEY`), or a digit run.
+_IDENTIFIER_SEGMENT = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|[0-9]+")
+#: The longest digit run an identifier may hold: a version or an index
+#: (`v2`, `01`, `2024`), not a number long enough to be a secret's body.
+_IDENTIFIER_DIGITS_MAX = 4
+_VOWELS = frozenset("aeiouyAEIOUY")
+
+
+def _is_an_identifier(value: str) -> bool:
+    """True when an UNQUOTED bare `value` is a code identifier holding a digit
+    run, not a credential (SCAN-IDENT, #2030; BGD's decision of 2026-10-23,
+    on SCAN-FP's question): `sessionToken2`, `api_key_v2`, `MockUser01`,
+    `token2fa`. `_assigns_a_literal` asks it only for a bare value; a quoted
+    value is a literal whatever its shape, and this is never asked of one.
+
+    The value is split at `_` and at case changes into segments. It is an
+    identifier when every letter segment has at least 2 letters and a vowel
+    (`y` counts) -- word-like, not `Xq`, `Zv` -- except that one letter may
+    stand right before the digit run (`v2`, `V2`); it holds at most ONE digit
+    run, of at most `_IDENTIFIER_DIGITS_MAX` digits, after the first segment;
+    it does not open with a vendor key's prefix (`_VENDOR_PREFIX`); and it is
+    not at least `CREDENTIAL_MIN_CHARS` long with at least
+    `CREDENTIAL_MIN_ENTROPY_BITS` of entropy once its digits are removed.
+    So `aB3xQ9` (three digit runs), a five-digit run, and a long run of
+    distinct letters are still refused.
+
+    RESIDUAL RISK, accepted by BGD on 2026-10-23: a short real value shaped
+    like words plus digits (`hunterHorse42`), assigned bare to a credential
+    name in YAML or in an environment file, publishes. There is no dictionary;
+    "word-like" is the vowel and length test above. CI's trivy secret scan
+    still runs after the push. Under a password name `_assigns_a_literal`
+    does not ask this at all: a human picks `myDog2024` as a password.
+    """
+    if len(value) > _REFERENCE_MAX_CHARS or _IDENTIFIER_SHAPE.fullmatch(value) is None:
+        return False
+    if _VENDOR_PREFIX.match(value.lstrip("_")) is not None:
+        return False
+    segments = [s for part in value.split("_") for s in _IDENTIFIER_SEGMENT.findall(part)]
+    runs = [i for i, segment in enumerate(segments) if segment.isdigit()]
+    if len(runs) > 1 or runs == [0]:
+        return False
+    if runs and len(segments[runs[0]]) > _IDENTIFIER_DIGITS_MAX:
+        return False
+    for i, segment in enumerate(segments):
+        if segment.isdigit() or (len(segment) == 1 and runs and i == runs[0] - 1):
+            continue
+        if len(segment) < 2 or not _VOWELS.intersection(segment):
+            return False
+    letters = "".join(c for c in value if not c.isdigit())
+    return not (
+        len(value) >= CREDENTIAL_MIN_CHARS
+        and _shannon_bits(letters) >= CREDENTIAL_MIN_ENTROPY_BITS
+    )
 
 
 #: What may follow an unquoted reference on its line: nothing, or a closing
@@ -15799,8 +15862,10 @@ def _assigns_a_literal(match: re.Match[str]) -> bool:
     touches authentication. So the key/value rule counts only for a quoted
     string -- the rule's group 1 ends with the opening quote, or the value
     opens with a single quote the rule's value class takes as a character --
-    or for a bare value shaped like a credential (`_BARE_CREDENTIAL_RE`). The
-    specific families (AWS keys, private keys, JWTs, provider tokens) and the
+    or for a bare value shaped like a credential (`_BARE_CREDENTIAL_RE`) that
+    is not a code identifier (`_is_an_identifier`; BGD, 2026-10-23, #2030),
+    or that sits under a password name, where an identifier-shaped value is a
+    plausible password. The specific families (AWS keys, private keys, JWTs, provider tokens) and the
     registered literals count wherever they appear.
     """
     prefix = match.group(1)
@@ -15809,7 +15874,12 @@ def _assigns_a_literal(match: re.Match[str]) -> bool:
     # quoted value); without it `` secret = `x\` <token>` `` was never counted.
     if prefix.rstrip().endswith('"') or value.startswith(("'", "`")):
         return True
-    return _BARE_CREDENTIAL_RE.fullmatch(value.rstrip(";)}]'")) is not None
+    bare = value.rstrip(";)}]'")
+    if _BARE_CREDENTIAL_RE.fullmatch(bare) is None:
+        return False
+    if "pw" in match.re.groupindex and match.group("pw"):
+        return True
+    return not _is_an_identifier(bare)
 
 
 def _first_leaking_commit(
