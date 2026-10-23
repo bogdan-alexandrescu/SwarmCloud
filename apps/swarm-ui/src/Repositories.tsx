@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { loadRepositories, loadRepositoryIndex, patchRepositoryFileIssues, runRepositoryIndex } from './api'
+import { loadRepositories, loadRepositoryIndex, patchRepositoryFileIssues, patchRepositoryWorkflowFiles, runRepositoryIndex } from './api'
 import { Banner, Button, Card, Dash, EmptyState, NamedMark } from './components'
-import { HEAD_UNREAD, freshness, indexCredentialWords, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
+import { HEAD_UNREAD, WORKFLOW_FILES_WHY, freshness, indexCredentialWords, repoName, scheduleWords, shortSha, workflowsNotGranted, type RepoRecord } from './RepositoriesData'
 import { REGISTER, GT_PAGE, TestsMapped, UrConfirmIndex, UrFreshPill, UrLink, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { RegisterRepository } from './RepositoriesRegister'
-import { RepositoryDetail } from './RepositoriesDetail'
+import { RepositoryDetail, WorkflowsGrantLine } from './RepositoriesDetail'
 import { GitTokensPage, PermissionsPage } from './GitTokens'
-import { RepoDot, useRepoStatuses } from './PermissionCards'
+import { RepoDot, useForgePermissions } from './PermissionCards'
 import { QA_TARGETS_PAGE, QaTargetsScreen } from './QaTargets'
 import type { ForgeRepoStatus } from './api'
 import type { QaLink } from './qaTargetsApi'
@@ -80,7 +80,10 @@ function RepositoryList({
 }) {
   const { state, reload } = useUrRead(loadRepositories, 'list')
   // GitHub permissions per repository (#1086): one dot each, absent until read.
-  const perms = useRepoStatuses()
+  // The orgs too, for the not-granted line's installation link (#2029).
+  const forge = useForgePermissions().state
+  const forgeDoc = forge.status === 'ok' || forge.status === 'stale' ? forge.data : null
+  const perms = new Map((forgeDoc?.repositories ?? []).map((p) => [p.repo_id, p]))
   const [failed, setFailed] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   // The card whose Index now is waiting for its confirmation (RSA-15): one at a time.
@@ -93,6 +96,11 @@ function RepositoryList({
   const fileGate = useRoleGate('admin', 'set whether agents may file issues')
   const [filing, setFiling] = useState<string | null>(null)
   const [fileFailed, setFileFailed] = useState<string | null>(null)
+  // WORKFLOW FILES ARE THE WORKSPACE ADMIN'S TO TURN ON, PER REPOSITORY (#2029;
+  // BGD, 2026-10-22). Below admin the card shows the setting with no control.
+  const workflowGate = useRoleGate('admin', 'set whether agents may push workflow files')
+  const [workflowBusy, setWorkflowBusy] = useState<string | null>(null)
+  const [workflowFailed, setWorkflowFailed] = useState<string | null>(null)
   const count = state.status === 'ok' || state.status === 'stale' ? state.data.length : state.status === 'empty' ? 0 : null
 
   async function indexNow(r: RepoRecord) {
@@ -115,6 +123,18 @@ function RepositoryList({
     setFiling(null)
     if (res.status === 'error') {
       setFileFailed(`${repoName(r)}: ${writeFailure(res.error)}`)
+      return
+    }
+    reload()
+  }
+
+  async function setWorkflowFiles(r: RepoRecord, on: boolean) {
+    setWorkflowBusy(r.repo_id)
+    setWorkflowFailed(null)
+    const res = await patchRepositoryWorkflowFiles(r.repo_id, on)
+    setWorkflowBusy(null)
+    if (res.status === 'error') {
+      setWorkflowFailed(`${repoName(r)}: ${writeFailure(res.error)}`)
       return
     }
     reload()
@@ -173,6 +193,11 @@ function RepositoryList({
           {fileFailed}
         </Banner>
       )}
+      {workflowFailed !== null && (
+        <Banner tone="bad" title="Workflow files was not changed">
+          {workflowFailed}
+        </Banner>
+      )}
       <UrRegion
         state={state}
         route="GET /v1/repositories"
@@ -220,6 +245,15 @@ function RepositoryList({
                     admin={fileGate === null}
                     busy={filing === r.repo_id}
                     onSet={(on) => void setFileIssues(r, on)}
+                  />
+                }
+                workflowFiles={
+                  <WorkflowFiles
+                    on={r.workflow_files}
+                    admin={workflowGate === null}
+                    busy={workflowBusy === r.repo_id}
+                    onSet={(on) => void setWorkflowFiles(r, on)}
+                    grant={workflowsNotGranted(r.workflow_files, perms.get(r.repo_id), forgeDoc?.orgs ?? [])}
                   />
                 }
               />
@@ -385,6 +419,51 @@ function FileIssues({ on, admin, busy, onSet }: { on: boolean | null; admin: boo
   )
 }
 
+/**
+ * The card's line for `workflow_files` (#2029, WF-APP-TOKEN; BGD's decision
+ * 2026-10-22: self-serve, per-repo opt-in, off by default), with a control for
+ * the workspace admin only, exactly as `FileIssues`. It draws the value as
+ * served; null is a dash, with no control to set it. Under it, what turning it
+ * on means, and "Workflows: not granted" where it is on and the App
+ * installation has not accepted Workflows.
+ */
+function WorkflowFiles({
+  on,
+  admin,
+  busy,
+  onSet,
+  grant,
+}: {
+  on: boolean | null
+  admin: boolean
+  busy: boolean
+  onSet: (on: boolean) => void
+  grant: { installed: boolean; link: string | null } | null
+}) {
+  return (
+    <div className="ur-workflow-files" data-workflow-files={on === null ? undefined : String(on)}>
+      <div className="ur-cmeta">
+        <span>
+          Workflow files{' '}
+          {on === null ? <Dash why="Whether agents may push workflow files was not served" /> : <b>{on ? 'on' : 'off'}</b>}
+        </span>
+        {on !== null &&
+          (admin ? (
+            <Button size="sm" busy={busy} onClick={() => onSet(!on)} data-workflow-files-set={String(!on)}>
+              {on ? 'Turn off' : 'Turn on'}
+            </Button>
+          ) : (
+            <span className="ur-small" data-role-gate="admin">
+              set by a workspace admin
+            </span>
+          ))}
+      </div>
+      <p className="ur-hint">{WORKFLOW_FILES_WHY}</p>
+      <WorkflowsGrantLine grant={grant} />
+    </div>
+  )
+}
+
 function RepoCard({
   r,
   go,
@@ -396,6 +475,7 @@ function RepoCard({
   perm,
   viewerOnly = false,
   fileIssues,
+  workflowFiles,
 }: {
   r: RepoRecord
   go: (to: string) => void
@@ -410,6 +490,8 @@ function RepoCard({
   viewerOnly?: boolean
   /** The `agents_may_file_issues` line (AU-0 REG-FLAG). */
   fileIssues?: ReactNode
+  /** The `workflow_files` line (#2029). */
+  workflowFiles?: ReactNode
 }) {
   const f = freshness(r.index)
   const head = r.index.head_sha
@@ -457,6 +539,7 @@ function RepoCard({
       </div>
       <IndexingUses r={r} go={go} />
       {fileIssues}
+      {workflowFiles}
       <FailureLine r={r} go={go} />
       <div className="ur-cacts" ref={acts}>
         <UrNavButton to={repoAddress(r.repo_id)} go={go} size="sm">

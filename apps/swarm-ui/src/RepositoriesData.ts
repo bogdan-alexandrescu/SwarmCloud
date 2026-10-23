@@ -15,6 +15,7 @@
  * git-tokens.md §5.4). `last4` is the one part of a value any route serves,
  * and it is kept because the owner asked to see it.
  */
+import type { ForgeReach } from './api'
 import type { ApiError } from './fetch'
 import { timeAgo, type TaskState } from './types'
 
@@ -353,6 +354,15 @@ export interface RepoRecord {
    * older than REG-FLAG -- which is not a confident off.
    */
   agents_may_file_issues: boolean | null
+  /**
+   * Whether an agent's push that changes `.github/workflows/**` or
+   * `.github/actions/**` is made here, by the GitHub App with a token for this
+   * one repository (#2029; BGD's decision 2026-10-22: self-serve, per-repo
+   * opt-in, off by default). Set by the workspace's admin only. Off, such a
+   * push is refused and left as `workflow-lines.patch`. Null: not served -- an
+   * API older than WF-APP-TOKEN -- which is not a confident off.
+   */
+  workflow_files: boolean | null
 }
 
 export interface UsedBy {
@@ -451,7 +461,44 @@ export function normRepo(v: unknown): RepoRecord | null {
     },
     index_credential: normIndexCredential(v.index_credential),
     agents_may_file_issues: bool(v.agents_may_file_issues),
+    workflow_files: bool(v.workflow_files),
   }
+}
+
+/**
+ * What the `workflow_files` switch means, said under it wherever it is drawn
+ * (#2029). A branch workflow runs with the repository's secrets on push, before
+ * any merge hold, which is why the switch is per repository and off by default;
+ * the merge of a workflow change is still held for an owner (`STOP_WORKFLOWS`).
+ */
+export const WORKFLOW_FILES_WHY =
+  "An agent's workflow on a pushed branch runs in this repository with its secrets before any merge hold. Merges of workflow changes always wait for an owner."
+
+/** What the not-granted line needs of one `GET /v1/forge/permissions` row. */
+export interface WorkflowsGrantRow {
+  credential: ForgeReach | null
+  installation_id: number | null
+  capabilities: Readonly<Record<string, boolean | null>>
+}
+
+/**
+ * Whether to say "Workflows: not granted" for a repository (#2029): only when
+ * its switch is on AND the forge read measured its `workflow_files` capability
+ * false (forgeperms.py checks it for a switched-on registration only). Null:
+ * nothing to say -- the switch is off or unserved, the row was not read, or the
+ * capability is granted or not measured. `link` is the installation's page as
+ * the API served it, already held to github.com; it is never built here.
+ * `installed` false is a repository no App installation covers at all.
+ */
+export function workflowsNotGranted(
+  on: boolean | null,
+  row: WorkflowsGrantRow | undefined,
+  orgs: readonly { installation_id: number; review_url: string | null }[],
+): { installed: boolean; link: string | null } | null {
+  if (on !== true || row === undefined || row.capabilities.workflow_files !== false) return null
+  if (row.credential !== 'app' || row.installation_id === null) return { installed: false, link: null }
+  const org = orgs.find((o) => o.installation_id === row.installation_id)
+  return { installed: true, link: org?.review_url ?? null }
 }
 
 /** `GET /v1/repositories`: `{repositories: [...]}`. A record missing its id or name is dropped, not guessed. */
