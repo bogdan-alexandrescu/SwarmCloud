@@ -263,6 +263,11 @@ describe('5b:QA-010: the register form does not say no profile takes MCP servers
     // lists is still offered, so the form never says none takes them under it.
     // MUTATION: treat an empty `inputs` as unserved -> the unserved note appears: red.
     expect(await within(profilesGroup()).findByRole('checkbox', { name: 'claude-code' })).toBeTruthy()
+    // The registrations name claude-code before /v1/capacity answers, so the
+    // box is there under the in-flight note ("Could not read the runner
+    // list"): wait for the read to land before reading the group, or the
+    // assertion below races the fetch.
+    await waitFor(() => expect(visible(profilesGroup())).not.toMatch(/Could not read the runner list/))
     expect(within(profilesGroup()).queryByRole('checkbox', { name: 'generic' })).toBeNull()
     expect(visible(profilesGroup())).not.toMatch(/Could not read/)
   })

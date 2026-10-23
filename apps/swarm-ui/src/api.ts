@@ -61,6 +61,21 @@ export type { AnswerVia, OwnerAnswer, OwnerAnswerVersion } from './types'
 export const USE_FIXTURES = import.meta.env.DEV && !import.meta.env.VITE_LIVE
 
 /**
+ * THE INSTANT EVERY FIXTURE TIME IS COUNTED FROM (QAFIX6-FIXTURE a, visual QA
+ * run 6 flow-find-failure-desktop-02 and -phone-03, part of #1680): the
+ * capture clock `qa/routes.json` freezes the page at. Each fixture read used
+ * to mint its times from its own `Date.now()`, so a finished task's end moved
+ * on every open -- 'ended 07:53:11', then 07:53:22, then 07:54:04 on the
+ * phone. Read once, here, so every read, every reload and both devices serve
+ * the same document. A capture sees the times it always saw, because its page
+ * clock IS this instant; a session on a running clock sees them as past.
+ * `fetchedAt` stays the client's own clock: it is when the browser read, not
+ * a time the fixture serves. Held to routes.json by qafix6.fixture.test.tsx.
+ */
+export const FIXTURE_CLOCK = '2026-10-19T12:00:00Z'
+const FIXTURE_NOW = Date.parse(FIXTURE_CLOCK)
+
+/**
  * WHO THE FIXTURE BUILD ANSWERS AS (QAFIX4-FIXTURE-A; docs/design/visual-qa.md
  * §4.3, visual QA run 4 admin-004 and admin-005). `member` is the fixture
  * identity every capture has always seen: alice@example.com in u-bogdan, not
@@ -133,7 +148,7 @@ async function fixtureAdminPools(): Promise<Result<{ pools: AdminPool[] }>> {
       ? {
           ...p,
           admin_changed_by: 'ops@example.com',
-          admin_changed_at: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+          admin_changed_at: new Date(FIXTURE_NOW - 3 * 3_600_000).toISOString(),
           admin_change: { hard_limit: { from: p.hard_limit * 2, to: p.hard_limit } },
         }
       : { ...p, admin_changed_by: null, admin_changed_at: null, admin_change: null },
@@ -440,7 +455,7 @@ function fixtureGit(task: Task): Record<string, unknown> {
     commits: [
       {
         sha: '9b1c7f00aa', subject: 'Harden the destroy guard against an unreadable cluster',
-        author: 'agent', committed_at: new Date().toISOString(),
+        author: 'agent', committed_at: new Date(FIXTURE_NOW).toISOString(),
         files_changed: 3, insertions: 61, deletions: 12, binary_files: 0,
       },
     ],
@@ -911,7 +926,7 @@ async function fixtureTaskLogs(
   const started = span?.started ?? null
   const ended = span?.ended ?? null
   const source = ended === null ? 'live' : 'final'
-  const last = ended ?? (task === undefined ? Date.now() : Date.parse(task.updated_at))
+  const last = ended ?? (task === undefined ? FIXTURE_NOW : Date.parse(task.updated_at))
   const wrote = span?.checkpoints.includes('ckpt_0002') === true
   const body =
     started === null || task === undefined
@@ -966,7 +981,7 @@ async function fixtureTaskLogs(
       redaction_count: 0,
       tail_window: source === 'live' && size > 0 ? { object_offset: 0, stream_size: size, published_at: new Date(last - 3_000).toISOString() } : null,
       object_updated_at: new Date(source === 'live' ? last - 3_000 : last).toISOString(),
-      age_seconds: Math.max(0, Math.round((Date.now() - (source === 'live' ? last - 3_000 : last)) / 1000)),
+      age_seconds: Math.max(0, Math.round((FIXTURE_NOW - (source === 'live' ? last - 3_000 : last)) / 1000)),
     }
   }
   return {
@@ -977,7 +992,7 @@ async function fixtureTaskLogs(
       tenant_id: 'u-bogdan',
       attempt_id: attemptId,
       attempt,
-      read_at: new Date().toISOString(),
+      read_at: new Date(FIXTURE_NOW).toISOString(),
       prefix: `tenants/u-bogdan/tasks/${taskId}/attempts/${attemptId ?? 'none'}/`,
       redaction: { applied_at_read_time: true, rules: 6 },
       streams: names.map(pick),
@@ -1498,7 +1513,7 @@ function fixtureIssueRun(id: string, over: Partial<IssueRun> = {}): IssueRun {
     url: 'https://github.com/example-org/agent-swarm-infra/issues/512',
     repository_url: 'https://github.com/example-org/agent-swarm-infra',
   }
-  const at = new Date(Date.now() - 6 * 60_000).toISOString()
+  const at = new Date(FIXTURE_NOW - 6 * 60_000).toISOString()
   return {
     id, tenant_id: 'eng', state: 'PLANNED', terminal: false, issue,
     plan_approval: 'required', auto_merge: false, fix_rounds: 3, planner_task_id: 'task_planner_fixture',
@@ -1517,8 +1532,8 @@ function fixtureIssueRuns(): IssueRun[] {
     fixtureIssueRun('run_4c1e09d2'),
     fixtureIssueRun('run_19ab77e0', {
       state: 'RUNNING', workflow_id: 'wf_8b21d0e4', approved_by: 'operator@example.com',
-      approved_at: new Date(Date.now() - 30 * 60_000).toISOString(),
-      created_at: new Date(Date.now() - 50 * 60_000).toISOString(),
+      approved_at: new Date(FIXTURE_NOW - 30 * 60_000).toISOString(),
+      created_at: new Date(FIXTURE_NOW - 50 * 60_000).toISOString(),
     }),
   ]
 }
@@ -1583,7 +1598,7 @@ async function fixturePlanAction(runId: string, action: 'approve' | 'edit' | 're
     : action === 'edit' ? '/v1/runs/{id}/plan:edit' : '/v1/runs/{id}/plan:reject'
   noteFixtureProbe(route(planPath, { id: runId }), 60, true)
   const over: Partial<IssueRun> = action === 'approve'
-    ? { state: 'RUNNING', workflow_id: 'wf_8b21d0e4', approved_by: 'operator@example.com', approved_at: new Date().toISOString() }
+    ? { state: 'RUNNING', workflow_id: 'wf_8b21d0e4', approved_by: 'operator@example.com', approved_at: new Date(FIXTURE_NOW).toISOString() }
     : action === 'reject'
       ? { state: 'REJECTED', terminal: true, rejected_by: 'operator@example.com' }
       : { plan: plan ?? FIXTURE_PLAN, plan_revision: 2, plan_edited_by: 'operator@example.com' }
@@ -1649,7 +1664,7 @@ async function fixtureTaskInput(taskId: string): Promise<Result<TaskInputCopy>> 
     data: {
       task_id: taskId,
       tenant_id: detail.data.task.tenant_id,
-      read_at: new Date().toISOString(),
+      read_at: new Date(FIXTURE_NOW).toISOString(),
       prompt_key: typeof prompt === 'string' ? 'string' : 'prompt' in input ? 'other' : 'missing',
       prompt: typeof prompt === 'string' ? clean(prompt) : null,
       rest: typeof prompt === 'string' && Object.keys(others).length > 0 ? clean(JSON.stringify(others, null, 2)) : null,
@@ -1690,11 +1705,11 @@ async function fixtureAnswer(taskId: string): Promise<Result<TaskAnswer>> {
       tenant_id: 'u-bogdan',
       attempt_id: attemptId,
       attempt,
-      read_at: new Date().toISOString(),
+      read_at: new Date(FIXTURE_NOW).toISOString(),
       status: ok ? 'ok' : finished ? 'absent' : 'not_yet',
       source: ok ? 'agent_result_event' : null,
       object: ok
-        ? { stream: 'agent_stdout', source: 'final', uri: null, object_updated_at: new Date(Date.now() - 60_000).toISOString() }
+        ? { stream: 'agent_stdout', source: 'final', uri: null, object_updated_at: new Date(FIXTURE_NOW - 60_000).toISOString() }
         : null,
       format: ok ? 'markdown' : null,
       content: ok ? content : null,
@@ -1753,7 +1768,7 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
       ]
     : []
   const size = started ? 4096 : 0
-  const at = span?.ended ?? Date.now() - 4_000
+  const at = span?.ended ?? FIXTURE_NOW - 4_000
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -1762,7 +1777,7 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
       tenant_id: 'u-bogdan',
       attempt_id: attemptId,
       attempt,
-      read_at: new Date().toISOString(),
+      read_at: new Date(FIXTURE_NOW).toISOString(),
       stream: {
         stream: 'agent_stdout',
         source: started ? (finished ? 'final' : 'live') : null,
@@ -1772,7 +1787,7 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
           ? `gs://swarm-logs/tenants/u-bogdan/tasks/${taskId}/attempts/${attemptId}/logs/${finished ? 'final' : 'live'}/agent_stdout${finished ? '' : '.tail'}.log`
           : null,
         object_updated_at: started ? new Date(at).toISOString() : null,
-        age_seconds: started ? Math.max(0, Math.round((Date.now() - at) / 1000)) : null,
+        age_seconds: started ? Math.max(0, Math.round((FIXTURE_NOW - at) / 1000)) : null,
         total_bytes: started ? size : null,
         offset: 0,
         returned_bytes: size,
@@ -2381,7 +2396,7 @@ export async function loadUtilisation(taskId: string): Promise<Result<Utilisatio
  * not read -- every shape the chart draws, in development.
  */
 async function fixtureUtilisation(taskId: string): Promise<Result<UtilisationRead>> {
-  const now = Date.now()
+  const now = FIXTURE_NOW
   // The newest attempt's points, inside its own run (F14a): up to twenty
   // minutes of them, ending at its end or now, and never before its start.
   const task = fixtureTaskDoc(taskId)
@@ -2463,14 +2478,14 @@ function fixtureCpu(a: AttemptRow): AttemptRow {
   }
   // Contract request #26: dated and sourced. A running attempt's reading is
   // 20 s old, an ended one's was written at its end.
-  const age = a.completed_at === null ? 20 : Math.max(0, (Date.now() - Date.parse(a.completed_at)) / 1000)
+  const age = a.completed_at === null ? 20 : Math.max(0, (FIXTURE_NOW - Date.parse(a.completed_at)) / 1000)
   return {
     ...a,
     cpu_seconds: 402.311,
     peak_cpu_cores: 1.62,
     mean_cpu_cores: 0.842,
     cpu_limit_cores: 2,
-    cpu_measured_at: new Date(Date.now() - age * 1000).toISOString(),
+    cpu_measured_at: new Date(FIXTURE_NOW - age * 1000).toISOString(),
     cpu_limit_source: 'cgroup',
     cpu_reading_age_seconds: Math.round(age),
   }
@@ -2546,7 +2561,7 @@ async function fixtureStats(options: { frame?: boolean } = {}): Promise<Result<S
       dispatch_paused: false,
       tasks_by_state: tasksByState,
       limits: { max_batch_size: 100, max_input_bytes: 65536, max_workflow_steps: 50 },
-      generated_at: new Date().toISOString(),
+      generated_at: new Date(FIXTURE_NOW).toISOString(),
     },
   }
 }
@@ -2575,7 +2590,7 @@ async function fixtureProviders(): Promise<Result<ProvidersPage>> {
     fetchedAt: Date.now(),
     data: {
       tenant_id: 'u-bogdan',
-      generated_at: new Date().toISOString(),
+      generated_at: new Date(FIXTURE_NOW).toISOString(),
       providers: [
         {
           provider: 'anthropic',
@@ -2583,12 +2598,12 @@ async function fixtureProviders(): Promise<Result<ProvidersPage>> {
           runner_profiles: ['browser', 'claude-code'],
           quota: {
             provider: 'anthropic', tenant_id: 'u-bogdan', state: 'THROTTLED',
-            updated_at: new Date(Date.now() - 40_000).toISOString(),
+            updated_at: new Date(FIXTURE_NOW - 40_000).toISOString(),
             configured_hard_max: 50, adaptive_target: 6, quota_derived_limit: null,
             requests_remaining: 118, tokens_remaining: null,
-            reset_at: new Date(Date.now() + 900_000).toISOString(),
+            reset_at: new Date(FIXTURE_NOW + 900_000).toISOString(),
             cooldown_until: null,
-            last_429_at: new Date(Date.now() - 240_000).toISOString(),
+            last_429_at: new Date(FIXTURE_NOW - 240_000).toISOString(),
             retry_after_seconds: null, success_count: 412, rate_limit_count: 9,
             effective_limit: 6,
           },
@@ -2799,7 +2814,7 @@ async function fixtureMe(options: { frame?: boolean } = {}): Promise<Result<Me>>
     data: {
       tenant: {
         tenant_id: 'u-bogdan', kind: 'user', principal: 'alice@example.com',
-        display_name: 'Bogdan', created_at: new Date(Date.now() - 86_400_000 * 9).toISOString(),
+        display_name: 'Bogdan', created_at: new Date(FIXTURE_NOW - 86_400_000 * 9).toISOString(),
         max_active: 2, capacity_units: 40, monthly_budget_usd: null, enabled: true,
         credentials: [
           'anthropic',
@@ -2846,7 +2861,7 @@ async function fixtureWindow(budget: number): Promise<Result<TaskWindow>> {
  * 2), and u-bogdan is fixtureMe's tenant field for field.
  */
 function fixtureRoster(): Tenant[] {
-  const created = (days: number) => new Date(Date.now() - 86_400_000 * days).toISOString()
+  const created = (days: number) => new Date(FIXTURE_NOW - 86_400_000 * days).toISOString()
   const t = (tenant_id: string, kind: string, principal: string, display_name: string, days: number, max_active: number,
     capacity_units: number, credentials: string[]): Tenant => ({
     tenant_id, kind, principal, display_name, created_at: created(days), max_active, capacity_units,
@@ -2975,7 +2990,7 @@ async function fixtureAttemptsPage(since: string, until: string): Promise<Result
   return {
     status: 'ok',
     fetchedAt: Date.now(),
-    data: { tenant_id: 'u-bogdan', read_at: new Date().toISOString(), attempts: inWindow, next_page_token: null, coverage: { scope: 'page' } },
+    data: { tenant_id: 'u-bogdan', read_at: new Date(FIXTURE_NOW).toISOString(), attempts: inWindow, next_page_token: null, coverage: { scope: 'page' } },
   }
 }
 
@@ -2990,7 +3005,7 @@ async function fixtureEventsPage(taskId: string, order: 'asc' | 'desc'): Promise
 async function fixtureLeases(): Promise<Result<LeasePage>> {
   await new Promise((r) => setTimeout(r, 180))
   noteFixtureProbe(route('/v1/admin/leases'), 180, true)
-  const iso = (secAgo: number) => new Date(Date.now() - secAgo * 1000).toISOString()
+  const iso = (secAgo: number) => new Date(FIXTURE_NOW - secAgo * 1000).toISOString()
   const row = (
     id: string,
     silent: number,
@@ -3038,7 +3053,7 @@ async function fixtureLeases(): Promise<Result<LeasePage>> {
         }),
       ],
       thresholds: { heartbeat_grace_seconds: 90, lease_timeout_seconds: 120 },
-      evaluated_at: new Date().toISOString(),
+      evaluated_at: new Date(FIXTURE_NOW).toISOString(),
       active_only: true,
       tenant_id: null,
       units_held: 4,
@@ -3061,7 +3076,7 @@ async function fixtureLeaseHeartbeats(): Promise<Result<LeaseHeartbeatPage>> {
   const held = page.status === 'ok'
     ? page.data.tasks.filter((t) => CONCURRENCY_STATES.has(t.state) && t.current_lease_id !== null)
     : []
-  const now = Date.now()
+  const now = FIXTURE_NOW
   const iso = (secAgo: number) => new Date(now - secAgo * 1000).toISOString()
   const grace = 90
   const row = (task: (typeof held)[number], i: number): LeaseHeartbeat => {
@@ -3280,9 +3295,23 @@ export async function loadAdminQuota(): Promise<Result<{ quota: QuotaState[] }>>
   return read<{ quota: QuotaState[] }>(route('/v1/admin/quota'), (d) => d.quota.length === 0)
 }
 
-async function fixtureAdminQuota(): Promise<Result<{ quota: QuotaState[] }>> {
-  await new Promise((r) => setTimeout(r, 170))
-  noteFixtureProbe(route('/v1/admin/quota'), 170, true)
+/**
+ * THE FIXTURE'S QUOTA DOCUMENTS, one source for Provider quota and for the
+ * provider pools they feed (QAFIX6-FIXTURE i, run 5b QA-051, box 6343783860).
+ * The broker writes each document's cap into its `provider:<p>:tenant:<t>`
+ * pool as `quota_derived_limit`, with its `adaptive_target`
+ * (quota_broker/service.py `_pool_write`, aimd.py `quota_derived_limit_for`),
+ * and the pool's ceiling is the least of those and its hard limit
+ * (`SlotPool.effective_limit`). Typed apart, openai · eng read exhausted at
+ * cap 0 beside a pool at ceiling 5 and 'ok'.
+ *
+ * One of every treatment, so none of them ships unlooked-at: a healthy row,
+ * THROTTLED (the one a fallthrough would mislabel), EXHAUSTED, whose cap of 0
+ * is a FACT that closes its pool, and UNKNOWN, which is not healthy but does
+ * not close anything: `QuotaState.effective_limit` forces 0 only for
+ * EXHAUSTED, DISABLED and COOLDOWN, so UNKNOWN's cap is its configured max.
+ */
+function fixtureQuotaRows(): QuotaState[] {
   const q = (
     provider: string,
     tenant: string,
@@ -3290,29 +3319,36 @@ async function fixtureAdminQuota(): Promise<Result<{ quota: QuotaState[] }>> {
     extra: Partial<QuotaState> = {},
   ): QuotaState => ({
     provider, tenant_id: tenant, state,
-    updated_at: new Date(Date.now() - 60_000).toISOString(),
+    updated_at: new Date(FIXTURE_NOW - 60_000).toISOString(),
     configured_hard_max: 50, adaptive_target: null, quota_derived_limit: null,
     requests_remaining: null, tokens_remaining: null, reset_at: null,
     cooldown_until: null, last_429_at: null, retry_after_seconds: null,
     success_count: 120, rate_limit_count: 0, effective_limit: 50,
     ...extra,
   })
+  return [
+    q('anthropic', 'eng', 'AVAILABLE', { requests_remaining: 4210 }),
+    q('anthropic', 'u-bogdan', 'THROTTLED', {
+      adaptive_target: 6, effective_limit: 6, rate_limit_count: 9,
+      last_429_at: new Date(FIXTURE_NOW - 240_000).toISOString(),
+    }),
+    q('openai', 'eng', 'EXHAUSTED', { effective_limit: 0, rate_limit_count: 41 }),
+    q('openai', 'u-bogdan', 'UNKNOWN', { success_count: 0 }),
+  ]
+}
+
+async function fixtureAdminQuota(): Promise<Result<{ quota: QuotaState[] }>> {
+  await new Promise((r) => setTimeout(r, 170))
+  noteFixtureProbe(route('/v1/admin/quota'), 170, true)
+  // `feeds_pool` as `GET /v1/admin/quota` serves it (routes/admin.py): the
+  // pool document each cap feeds, so Provider quota says where the pool's
+  // ceiling sits against the cap rather than leaving two numbers to disagree.
+  const pools = new Map(fixturePools().map((p) => [p.name, p]))
   return {
     status: 'ok',
     fetchedAt: Date.now(),
     data: {
-      // One of every treatment, so none of them ships unlooked-at: a healthy
-      // row, THROTTLED (the one a fallthrough would mislabel), an effective
-      // limit of 0 that is a FACT, and UNKNOWN which is not healthy.
-      quota: [
-        q('anthropic', 'eng', 'AVAILABLE', { requests_remaining: 4210 }),
-        q('anthropic', 'u-bogdan', 'THROTTLED', {
-          adaptive_target: 6, effective_limit: 6, rate_limit_count: 9,
-          last_429_at: new Date(Date.now() - 240_000).toISOString(),
-        }),
-        q('openai', 'eng', 'EXHAUSTED', { effective_limit: 0, rate_limit_count: 41 }),
-        q('openai', 'u-bogdan', 'UNKNOWN', { effective_limit: 0, success_count: 0 }),
-      ],
+      quota: fixtureQuotaRows().map((q) => ({ ...q, feeds_pool: pools.get(`provider:${q.provider}:tenant:${q.tenant_id}`) ?? null })),
     },
   }
 }
@@ -3387,7 +3423,7 @@ export async function setPoolLimit(poolName: string, limit: number): Promise<Res
  * seed (`code`, no admin), one an admin's edit. Built per call, dated off now.
  */
 function fixturePrices(): Record<string, unknown> {
-  const day = (days: number) => new Date(Date.now() - 86_400_000 * days).toISOString().slice(0, 10)
+  const day = (days: number) => new Date(FIXTURE_NOW - 86_400_000 * days).toISOString().slice(0, 10)
   return {
     'claude-opus-5': { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25, currency: 'USD', source: 'pricing-page', as_of: day(3), updated_by: null },
     'demo-model-deep-2': { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75, currency: 'USD', source: 'console', as_of: day(12), updated_by: 'ops@example.com' },
@@ -3408,7 +3444,7 @@ function fixturePlatformSettings(): Record<string, unknown> {
     max_additional_repositories: 4,
     additional_repositories_budget_gib: 20,
     model_prices: fixturePrices(),
-    updated_at: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+    updated_at: new Date(FIXTURE_NOW - 2 * 86_400_000).toISOString(),
     updated_by: 'ops@example.com',
     settings_document: 'present',
   }
@@ -4133,19 +4169,38 @@ const FIXTURE_REASON_GROUPS: Record<string, string[]> = {
  * and compares it with the server's function -- so a runner that starts
  * demanding a key fails that test here rather than teaching the screen a rule
  * production does not apply.
+ *
+ * `inputs` ON claude-code, codex AND claude-code-large, the profiles that take
+ * MCP servers and declare nothing else a form draws (QAFIX6-FIXTURE f, run 6
+ * overview-automate-019, box 6343758363): with no profile serving `inputs`,
+ * `mcpProfiles` (McpServers.tsx) read the fixture as an API too old to say,
+ * and the register form printed 'This API does not say…' under a table listing
+ * docs-search for claude-code. Each block is `input_contract()`'s whole
+ * `inputs`, which the test above holds it to; the other profiles still leave
+ * it out, which that test permits. claude-code-browser takes MCP servers too,
+ * but its block declares `qa_identity`, and serving it would offer the QA
+ * identity on every fixture Submit form, which qa-identity.test.tsx holds the
+ * fixture to not declaring. No fixture MCP server allows it, so the form and
+ * the table still agree.
+ *
+ * The value type is NAMED, as FixtureAvailability's below is: the reader takes
+ * the first `{` after the declaration as the literal. It widens
+ * RunnerInputContract (types.ts) by the `inputs` the API serves and McpServers
+ * reads through `unknown`.
  */
-const FIXTURE_INPUT_CONTRACTS: Record<string, RunnerInputContract> = {
+type FixtureInputContract = RunnerInputContract & { inputs?: Record<string, unknown> }
+const FIXTURE_INPUT_CONTRACTS: Record<string, FixtureInputContract> = {
   "mock": {"required_keys": []},
   "generic": {"required_keys": []},
-  "claude-code": {"required_keys": ["prompt"]},
-  "codex": {"required_keys": ["prompt"]},
+  "claude-code": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}}},
+  "codex": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}}},
   "browser": {"required_keys": []},
   "merge": {"required_keys": []},
   "post-verdict": {"required_keys": []},
   "claude-code-review": {"required_keys": ["prompt"]},
   "indexer": {"required_keys": ["prompt"]},
   "claude-code-browser": {"required_keys": ["prompt"]},
-  "claude-code-large": {"required_keys": ["prompt"]},
+  "claude-code-large": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}}},
   "await-input": {"required_keys": []}
 }
 
@@ -4187,29 +4242,11 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
 async function fixtureCapacity(): Promise<Result<Capacity>> {
   await new Promise((r) => setTimeout(r, 400))
   noteFixtureProbe(route('/v1/capacity'), 400, true)
-  const pool = (
-    name: string,
-    hard: number,
-    active: number,
-    extra: Partial<Capacity['pools'][number]> = {},
-  ) => ({
-    name,
-    hard_limit: hard,
-    adaptive_target: null,
-    quota_derived_limit: null,
-    effective_limit: hard,
-    active,
-    available: Math.max(0, hard - active),
-    enabled: true,
-    updated_at: new Date().toISOString(),
-    ...extra,
-  })
-
   return {
     status: 'ok',
     fetchedAt: Date.now(),
     data: {
-      generated_at: new Date().toISOString(),
+      generated_at: new Date(FIXTURE_NOW).toISOString(),
       tenant_id: 'u-bogdan',
       // The listing was not truncated, so a pool absent from it is
       // unconfigured rather than unread.
@@ -4282,37 +4319,86 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
           input_contract: FIXTURE_INPUT_CONTRACTS['claude-code-browser'],
         },
       },
-      pools: [
-        pool('global', 20, 5),
-        pool('tenant:u-bogdan', 40, 5),
-        pool('provider:anthropic', 10, 5),
-        pool('provider:anthropic:tenant:u-bogdan', 5, 5),
-        pool('provider:anthropic:tenant:eng', 5, 0),
-        pool('provider:openai', 10, 0),
-        pool('provider:openai:tenant:eng', 5, 0),
-        // THE POOL openai u-bogdan's QUOTA ROW FEEDS (QAFIX4-FIXTURE-B F11, run 4
-        // capacity-009): `pool_names_for` gives every provider its per-tenant
-        // slice, so codex's list carries it and Provider quota's row links a
-        // pool the board and Holders' accounting both list. At 10, so codex
-        // stays tied, now across three ceilings (FIXTURE_ADMISSION's note).
-        pool('provider:openai:tenant:u-bogdan', 10, 0),
-        pool('runner:claude-code', 10, 5),
-        pool('runner:mock', 20, 0),
-        pool('runner:browser', 4, 0),
-        pool('runner:codex', 10, 0),
-        pool('runner:generic', 10, 0),
-        pool('resource:standard', 20, 5),
-        pool('resource:browser', 4, 0),
-        pool('resource:large', 2, 0),
-        pool('backend:CLOUD_RUN_JOB', 20, 5),
-        pool('backend:GKE_AUTOPILOT', 4, 0),
-        pool('tenant:smoke', 2, 0),
-        // Paused, and at a reduced ceiling: the two states this screen must
-        // make obvious at a glance.
-        pool('tenant:eng', 10, 0, { enabled: false, adaptive_target: 6, effective_limit: 6 }),
-      ],
+      pools: fixturePools(),
     },
   }
+}
+
+/**
+ * THE POOL DOCUMENTS `/v1/capacity` serves, and `feeds_pool` names.
+ *
+ * TWO RULES THEY WERE TYPED APART FROM (QAFIX6-FIXTURE c and i, part of
+ * #1680). `global` and `tenant:u-bogdan` count the leases the task list holds,
+ * one unit each, because every lease is a unit of every pool on its profile's
+ * list (invariant 2): typed as 5, they sat under Overview's 7 holding
+ * capacity (run 6 task-007, box 6343775508). The 7 is a LITERAL because
+ * tests/unit/control_plane/test_blocker_ui_surface.py reads these rows out of
+ * this file, between `fixtureCapacity` and `fixtureTasks`, to regenerate
+ * FIXTURE_ADMISSION; qafix6.fixture.test.tsx holds it to the task list, so a
+ * live task added or removed fails there by name. And each provider-tenant pool
+ * carries what its quota document's broker writes -- `quota_derived_limit`,
+ * the document's cap, and its `adaptive_target` -- so its ceiling is the
+ * least of those and its hard limit, as `SlotPool.effective_limit` computes,
+ * and `available` is that ceiling less its leases (box 6343783860).
+ */
+function fixturePools(): Capacity['pools'] {
+  const quota = new Map(fixtureQuotaRows().map((q) => [`provider:${q.provider}:tenant:${q.tenant_id}`, q]))
+  const pool = (
+    name: string,
+    hard: number,
+    active: number,
+    extra: Partial<Capacity['pools'][number]> = {},
+  ) => {
+    const fed = quota.get(name)
+    const adaptive = extra.adaptive_target ?? fed?.adaptive_target ?? null
+    const derived = fed === undefined ? null : fed.effective_limit
+    const effective = Math.max(0, Math.min(hard, adaptive ?? hard, derived ?? hard))
+    return {
+      name,
+      hard_limit: hard,
+      quota_derived_limit: derived,
+      active,
+      enabled: true,
+      updated_at: new Date(FIXTURE_NOW).toISOString(),
+      ...extra,
+      adaptive_target: adaptive,
+      effective_limit: effective,
+      available: Math.max(0, effective - active),
+    }
+  }
+  return [
+    // 22, not 20, since it counts the seven leases: 22 - 7 = 15 keeps
+    // FIXTURE_ADMISSION's `mock` capped by THREE pools tied at 15 (global,
+    // resource:standard, backend:CLOUD_RUN_JOB), the shape that literal's note
+    // says it exists to teach. At 20 global bound alone at 13.
+    pool('global', 22, 7),
+    pool('tenant:u-bogdan', 40, 7),
+    pool('provider:anthropic', 10, 5),
+    pool('provider:anthropic:tenant:u-bogdan', 5, 5),
+    pool('provider:anthropic:tenant:eng', 5, 0),
+    pool('provider:openai', 10, 0),
+    pool('provider:openai:tenant:eng', 5, 0),
+    // THE POOL openai u-bogdan's QUOTA ROW FEEDS (QAFIX4-FIXTURE-B F11, run 4
+    // capacity-009): `pool_names_for` gives every provider its per-tenant
+    // slice, so codex's list carries it and Provider quota's row links a
+    // pool the board and Holders' accounting both list. At 10, so codex
+    // stays tied, now across three ceilings (FIXTURE_ADMISSION's note).
+    pool('provider:openai:tenant:u-bogdan', 10, 0),
+    pool('runner:claude-code', 10, 5),
+    pool('runner:mock', 20, 0),
+    pool('runner:browser', 4, 0),
+    pool('runner:codex', 10, 0),
+    pool('runner:generic', 10, 0),
+    pool('resource:standard', 20, 5),
+    pool('resource:browser', 4, 0),
+    pool('resource:large', 2, 0),
+    pool('backend:CLOUD_RUN_JOB', 20, 5),
+    pool('backend:GKE_AUTOPILOT', 4, 0),
+    pool('tenant:smoke', 2, 0),
+    // Paused, and at a reduced ceiling: the two states this screen must
+    // make obvious at a glance.
+    pool('tenant:eng', 10, 0, { enabled: false, adaptive_target: 6 }),
+  ]
 }
 
 /**
@@ -4331,7 +4417,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
 function fixtureWaitingTasks(listed: Task[]): Task[] {
   const base = listed.find((t) => t.state === 'PARKED') ?? listed[0]
   if (base === undefined) return []
-  const now = Date.now()
+  const now = FIXTURE_NOW
   const at = (minsAgo: number) => new Date(now - minsAgo * 60_000).toISOString()
   const one = (
     reason: string,
@@ -4679,7 +4765,7 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
 
 /** The fixture's task list, built at one instant: `fixtureTasks` serves it, and the stats and workflow rows count it. */
 function fixtureTaskRows(): Task[] {
-  const now = Date.now()
+  const now = FIXTURE_NOW
   const at = (minsAgo: number) => new Date(now - minsAgo * 60_000).toISOString()
 
   // The fan-out that actually ran on 2026-09-19: fourteen script fixes, one
@@ -4716,8 +4802,11 @@ function fixtureTaskRows(): Task[] {
     model: profile === 'mock' ? null : 'claude-opus-5',
     timeout_seconds: 3600,
     // Only a PARKED task has one. Left null elsewhere on purpose: a date here
-    // on a RUNNING task would imply a retry that is not scheduled.
-    next_eligible_at: state === 'PARKED' ? at(minsAgo - 15) : null,
+    // on a RUNNING task would imply a retry that is not scheduled. AFTER THE
+    // CLOCK (QAFIX6-FIXTURE f, run 6 overview-automate-015): `minsAgo - 15`
+    // put the 24-minute-old parked step's at 11:51 with the page at 12:00, a
+    // time to wait for that had already passed.
+    next_eligible_at: state === 'PARKED' ? at(-6) : null,
     metadata: null,
     repository_ref: 'main',
     // THE FENCING PAIR, as `task_to_api` now serves it. Two different rules,
@@ -4802,7 +4891,12 @@ function fixtureTaskRows(): Task[] {
     // its transcript ends `result · success` and the task still failed
     // after it, which is the case Logs explains. The only one: every other
     // failed task's transcript ends in its error (`fixtureTranscript`).
-    mk('task_8e33a3de', 'FAILED', 'claude-code', 42, {
+    // SUBMITTED 52 MINUTES BEFORE THE CLOCK, NOT 42 (QAFIX6-FIXTURE b, run 6
+    // flow-find-failure-desktop-01): at 42 it ended 6 s from task_fan_3, so
+    // both read '34m ago' and 'the most recently failed' had no answer on the
+    // page. At 52 it ends ten minutes earlier, still inside its workflow's
+    // order (research at 58, review cancelled at 62).
+    mk('task_8e33a3de', 'FAILED', 'claude-code', 52, {
       metadata: { title: FIXTURE_WORKFLOW_TITLES.wf_bcdc9180e4fb4a209f31 },
     }),
     mk('task_a3881bec', 'SUCCEEDED', 'claude-code', 58, {
@@ -4973,7 +5067,7 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
     task_id,
   })
 
-  return [
+  const workflows: Workflow[] = [
     {
       workflow_id: 'wf_audit_01',
       tenant_id: 'u-bogdan',
@@ -4988,7 +5082,8 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
         state: 'RUNNING',
         complete: true,
         reason: 'steps_hold_capacity',
-        counts: { SUCCEEDED: 1, RUNNING: 2, READY: 1, unstarted: 1 },
+        // Counted from the steps' tasks below the list, never typed here.
+        counts: {},
         unreadable_steps: [],
         unstarted_steps: ['publish'],
         steps_read: 4,
@@ -5045,7 +5140,7 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
           state: 'FAILED',
           complete: true,
           reason: 'terminal_worst_first',
-          counts: { SUCCEEDED: 4, FAILED: 1, CANCELLED: 1 },
+          counts: {},
           unreadable_steps: [],
           unstarted_steps: [],
           steps_read: 6,
@@ -5103,6 +5198,20 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
         ],
       },
   ]
+  // THE ROLLUP COUNTS ITS OWN STEPS (QAFIX6-FIXTURE i, run 5b QA-042, box
+  // 6343779183): Workflows' Steps done reads `rollup.counts.SUCCEEDED`, and
+  // wf_audit_01's were typed as one succeeded beside two step tasks the
+  // Timeline drew as succeeded. Counted here as `rollup.py` counts them: each
+  // step's task state, `unstarted` for a step with no task yet.
+  return workflows.map((w) => {
+    if (w.rollup === undefined || w.rollup === null) return w
+    const counts: Record<string, number> = {}
+    for (const st of w.steps) {
+      const key = !st.task_id ? 'unstarted' : (byId.get(st.task_id)?.state ?? 'unreadable')
+      counts[key] = (counts[key] ?? 0) + 1
+    }
+    return { ...w, rollup: { ...w.rollup, counts } }
+  })
 }
 
 /**
@@ -5558,7 +5667,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 // observed at all, one in REAUTH_REQUIRED, and one the provider reports only a
 // five-hour window for.
 
-const ISO = (msFromNow: number): string => new Date(Date.now() + msFromNow).toISOString()
+const ISO = (msFromNow: number): string => new Date(FIXTURE_NOW + msFromNow).toISOString()
 
 function fixtureAccount(
   owner: string,
@@ -5604,7 +5713,9 @@ let fixtureAccounts: ServedAccount[] = [
     observed_at: ISO(-2 * 3600_000),
     stale: true,
     windows: {
-      five_hour: { utilization: 0.88, resets_at: ISO(19 * 3600_000 + 43 * 60_000), reset: false },
+      // A five-hour window resets within five hours (QAFIX6-FIXTURE f, run 6
+      // overview-automate-016): 19h 43m read as a window no provider has.
+      five_hour: { utilization: 0.88, resets_at: ISO(3600_000 + 43 * 60_000), reset: false },
       seven_day: { utilization: 0.12, resets_at: ISO(94 * 3600_000), reset: false },
     },
   }),
@@ -5915,7 +6026,7 @@ async function fixtureRefresh(accountId: string): Promise<Result<unknown>> {
       } satisfies RefreshResponse,
     }
   }
-  const refreshed: Account = { ...account, observed_at: new Date().toISOString(), stale: false }
+  const refreshed: Account = { ...account, observed_at: new Date(FIXTURE_NOW).toISOString(), stale: false }
   fixtureAccounts = fixtureAccounts.map((a) => (a.account_id === accountId ? refreshed : a))
   return {
     status: 'ok',
@@ -6422,7 +6533,8 @@ async function fixtureOutcomes(query: URLSearchParams): Promise<Result<Outcomes>
   // A sectioned read carries the envelope and its sections only, as the route
   // serves it, so a card that reads a key it did not ask for fails here too.
   const asked = query.getAll('section')
-  const whole: Record<string, unknown> = { ...ledgerFixture() }
+  // Ending at the fixture's clock, so the decided window is the fourteen days before it (QAFIX6-FIXTURE e).
+  const whole: Record<string, unknown> = { ...ledgerFixture(FIXTURE_CLOCK) }
   if (asked.length > 0) {
     for (const s of OUTCOME_SECTIONS) if (!asked.includes(s)) delete whole[s]
   }
@@ -6472,7 +6584,7 @@ function repoNotServed<T>(target: ApiRoute): Result<T> {
 type FixtureBody = { body: unknown } | 'admin'
 
 const FIXTURE_HOUR = 3_600_000
-const fixtureAgo = (ms: number): string => new Date(Date.now() - ms).toISOString()
+const fixtureAgo = (ms: number): string => new Date(FIXTURE_NOW - ms).toISOString()
 /** A short commit sha, as the fixture tasks write them, from a prefix. */
 const fixtureSha = (prefix: string): string => prefix.padEnd(10, '0')
 
@@ -6512,7 +6624,7 @@ function fixtureRepositories(): unknown {
         current_sha: fixtureSha(r.sha), last_indexed_at: fixtureAgo((i + 2) * FIXTURE_HOUR), head_sha: fixtureSha(r.sha),
         behind_by: 0, stale: false, in_flight_task_id: null,
         coverage: { modules: r.modules, modules_with_tests: r.tested, test_map_edges: r.edges, always_tests: 1 },
-        next_run_at: new Date(Date.now() + (r.interval_hours - i - 2) * FIXTURE_HOUR).toISOString(),
+        next_run_at: new Date(FIXTURE_NOW + (r.interval_hours - i - 2) * FIXTURE_HOUR).toISOString(),
         last_failure: null, keep_versions: 5,
       },
       last_run: null,
@@ -6558,7 +6670,7 @@ function fixtureProfile(): unknown {
   }
   const github = workspaces.map((w, i) => ({
     tenant_id: w.tenant_id, state: 'active', forge_login: 'alice-example', method: 'app',
-    access_expires_at: new Date(Date.now() + (6 - i) * FIXTURE_HOUR).toISOString(), refreshed_at: fixtureAgo((2 + i) * FIXTURE_HOUR),
+    access_expires_at: new Date(FIXTURE_NOW + (6 - i) * FIXTURE_HOUR).toISOString(), refreshed_at: fixtureAgo((2 + i) * FIXTURE_HOUR),
   }))
   return {
     identity: fixtureIdentity(),
@@ -8496,8 +8608,8 @@ export async function loadSchedules(): Promise<Result<{ schedules: Schedule[]; t
 async function fixtureSchedules(): Promise<Result<{ schedules: Schedule[]; tenant_id: string }>> {
   await new Promise((r) => setTimeout(r, 110))
   noteFixtureProbe(route('/v1/schedules'), 110, true)
-  const day = new Date().toISOString().slice(0, 10)
-  const at = (h: number) => new Date(Date.now() + h * FIXTURE_HOUR).toISOString()
+  const day = new Date(FIXTURE_NOW).toISOString().slice(0, 10)
+  const at = (h: number) => new Date(FIXTURE_NOW + h * FIXTURE_HOUR).toISOString()
   const base = {
     tenant_id: FIXTURE_TENANT, params: {}, owner: 'alice@example.com', created_by: 'alice@example.com',
     last_firing: null, consecutive_failures: 0,
@@ -8969,7 +9081,7 @@ export async function loadLiveSession(taskId: string): Promise<Result<LiveRead>>
     if (taskId !== 'task_b40e5a1c') {
       return { status: 'ok', fetchedAt: Date.now(), data: { live_browser: false, session: null } }
     }
-    const at = (minsAgo: number) => new Date(Date.now() - minsAgo * 60_000).toISOString()
+    const at = (minsAgo: number) => new Date(FIXTURE_NOW - minsAgo * 60_000).toISOString()
     return {
       status: 'ok',
       fetchedAt: Date.now(),
