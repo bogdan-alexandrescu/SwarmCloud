@@ -5632,6 +5632,67 @@ class Worker:
                       "where it landed", onto=onto, base=base)
         return onto
 
+    def _adopt_tool_pushed_tip(self, publish_repo: Path, branch: str) -> str | None:
+        """The tip this attempt's own `git_push_branch` left on `branch`, when
+        HEAD stands on it; the publish diffs from it and leases on it. Else None.
+
+        MEASURED 2026-10-23 (#1188, acceptance run 39926360548): a continuation
+        granted the lane's branch rebased it onto main and pushed it through
+        swarm-api. The publish then diffed from the CLONE base -- the lane's
+        old tip, which the rebased head no longer stands on -- folded the tree
+        into one worker commit on it, pushed that never-forced, was refused as
+        behind its remote, and failed publish_failed with its work already on
+        the branch.
+
+        The tip is the `new_sha` swarm-api answered this attempt's push with
+        (`GitTools.pushed_tip`), the tip it recorded for the task and branch:
+        never a ref in the agent's clone, never a fetched tip, and only for a
+        branch this task may push. HEAD must descend from it in the worker's
+        own repository, so a head the agent moved off its push publishes as
+        before. Adopted, the commits after it -- none, when the head is the
+        tip -- are the agent's new work, and the push is `--force-with-lease`
+        to exactly the tip: a branch somebody else moved since is refused.
+        """
+        relay = getattr(self.children, "_git", None)
+        read = getattr(relay, "pushed_tip", None)
+        tip = read(branch) if callable(read) else None
+        if not isinstance(tip, str) or not _FULL_SHA_RE.fullmatch(tip):
+            return None
+        ws = self.ws
+        assert ws is not None
+        code, _ = _git_text(
+            ["git", *_NO_HOOKS, "merge-base", "--is-ancestor", tip, "HEAD"],
+            repo=Path(publish_repo), private_dir=ws.private, logs_dir=ws.logs,
+            slug="publish-tool-tip", timeout_seconds=self.cfg.git_harvest_timeout_seconds,
+            logger=self.log,
+        )
+        if code != 0:
+            self.log.warning(
+                "the agent pushed this branch through git_push_branch but its head no "
+                "longer stands on that push; the publish diffs from the clone base",
+                branch=branch, tool_tip=tip,
+            )
+            return None
+        code, head = _git_text(
+            ["git", *_NO_HOOKS, "rev-parse", "HEAD"],
+            repo=Path(publish_repo), private_dir=ws.private, logs_dir=ws.logs,
+            slug="publish-tool-head", timeout_seconds=self.cfg.git_harvest_timeout_seconds,
+            logger=self.log,
+        )
+        if code == 0 and head.strip() == tip:
+            self.log.info(
+                "the head is the tip the agent already pushed through git_push_branch; "
+                "the publish adds nothing and checks the branch under a lease on it",
+                branch=branch, tool_tip=tip,
+            )
+        else:
+            self.log.info(
+                "the agent pushed this branch through git_push_branch and committed "
+                "since; the publish adds those commits under a lease on that push",
+                branch=branch, tool_tip=tip,
+            )
+        return tip
+
     def _prepublish_advisory(self) -> str:
         """The runner's "Advisory signals (not a gate)" section, or "" (CTXQ-G).
 
@@ -12087,6 +12148,18 @@ class Worker:
             # replay or the fold, the integrator's merges. The bot only when
             # the task names nobody. See `_publish_identity`.
             author_name, author_email = self._publish_identity()
+            # A BRANCH THE AGENT PUSHED THROUGH `git_push_branch` IS PUBLISHED
+            # (#1188). From here the publish diffs from the tip that push left
+            # and the push below is leased on it; see `_adopt_tool_pushed_tip`.
+            # `carrier: branches` keeps its own fold onto the branch's tip.
+            tool_tip = (
+                self._adopt_tool_pushed_tip(publish_repo, branch)
+                if carrier != "branches" else None
+            )
+            if tool_tip is not None:
+                out["tool_pushed_from"] = self._publish_base
+                out["tool_pushed_tip"] = tool_tip
+                self._publish_base = tool_tip
             # A CONFLICT FIX ROUND READS MAIN'S TIP WHETHER OR NOT IT MERGED
             # (#1321): the check before the push asks whether the round's
             # branch now stands on it, and a round that merged nothing is the
@@ -12350,8 +12423,22 @@ class Worker:
                         logger=self.log,
                         branch_prefix=cfg.git_branch_prefix,
                         protected=protected,
+                        # The tip this attempt's own tool push left (#1188):
+                        # a head equal to it is an up-to-date no-op that
+                        # still proves the branch holds it; a branch moved
+                        # since, by anyone, is refused.
+                        lease=tool_tip,
                     )
                 except PushRejected as rejected:
+                    if tool_tip is not None:
+                        # Somebody moved the branch past this task's own push.
+                        # Their work is not replaced, and no other lease is tried.
+                        self.log.warning(
+                            "the branch moved past the tip this task pushed through "
+                            "git_push_branch; publishing nothing",
+                            branch=branch, tool_tip=tool_tip,
+                        )
+                        raise
                     pushed = self._push_over_own_earlier_attempt(
                         publish_repo, rejected, url=url, token=token, branch=branch,
                         protected=protected, author_name=author_name,

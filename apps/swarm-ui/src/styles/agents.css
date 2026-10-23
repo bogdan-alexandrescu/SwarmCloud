@@ -944,6 +944,20 @@
      and moved it 16px when the header compacted. At 0 it sits flush under
      the header in both heights and moves only with the scroller's edge. */
   .ag-list-tabs { position: sticky; top: 0; z-index: 2; padding-top: 4px; }
+  /* NOTHING SHOWS THROUGH UNDER THE STUCK STRIP (visual QA run 6,
+     6:work-a-007, part of #1680). Its `margin-bottom` is a transparent band
+     under its rule, and the search field's rounded bottom border scrolled
+     through it as a stray line. A shadow in the page's own colour, offset by
+     exactly that margin, paints the band opaque; it is not padding because
+     padding would lift the rule off the tabs' underlines. Unstuck, the band
+     lies over the empty margin, so nothing it covers is drawn there. */
+  .ag-list-tabs { box-shadow: 0 var(--ctl-s2) 0 var(--bg); }
+  /* THE SORT SAYS ITS DIRECTION IN WORDS (run 6, 6:flow-find-failure-
+     desktop-03): `Ended, newest first` beside `Failed first` and `Group by
+     workflow` is wider than a 390 screen, so on a phone the tail that never
+     breaks at 1440 (V147, `.ag-tools-tail` above) wraps between its controls,
+     each kept whole, rather than run off the edge. */
+  .ag-list-head .ag-tools-tail { flex: 0 1 auto; min-width: 0; flex-wrap: wrap; }
   .ag-head-actions { margin-inline-start: 0; }
   /* The back link replaces the ✕ on a phone, as it did on the column. */
   .ag-head-actions > .drawer-close { display: none; }
