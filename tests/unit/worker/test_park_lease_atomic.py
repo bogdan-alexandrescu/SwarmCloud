@@ -9,7 +9,8 @@ and task_7782dd6c7a9e4cb3ade0 sat PARKED with lease_e4e73d61780845b19cfa
 still holding capacity (invariant 1).
 
 What these tests hold, for every path that writes a state that holds no
-capacity and gives the lease back:
+capacity and gives the lease back -- `handoff.park_human_required`'s PARKED,
+and its READY on a person's return, included (PARK-LEASE-ATOMIC-2):
 
   * aborted once, then committed: the new state AND the released lease, with
     one commit carrying both, and each event once;
@@ -38,6 +39,7 @@ from typing import Any, Callable
 import pytest
 
 from agent_worker import control as control_mod
+from agent_worker import handoff as handoff_mod
 from agent_worker.control import ControlPlane, FirestoreTransactionRunner
 from agent_worker.errors import ExitCode, FencedWriteRefused
 from agent_worker.logs import build_logger
@@ -227,6 +229,22 @@ def _retry(control: ControlPlane) -> Any:
     return control.fail_retryably(exit_code=1, error="runner failed", cause="runner_error")
 
 
+def _human_park(control: ControlPlane) -> Any:
+    return handoff_mod.park_human_required(
+        control, max_resumes=handoff_mod.MAX_HUMAN_RESUMES, detail={"cause": "login"}
+    )
+
+
+def _returned(db: AbortingFirestore) -> None:
+    """A person returned control to THIS attempt while it parked (LB-RETURN):
+    the human park re-queues READY instead of parking."""
+    db.documents["tasks/task_1"]["metadata"] = {
+        handoff_mod.HUMAN_RETURNED_METADATA_KEY: {
+            "attempt_id": "att_1", "generation": 1, "by": "alice@example.com",
+        },
+    }
+
+
 PATHS: dict[str, tuple[Callable[[ControlPlane], Any], TaskState, str, EventType]] = {
     "park": (_park, TaskState.PARKED, "parked:", EventType.PARKED),
     "park_awaiting_children": (_await_children, TaskState.PARKED, "parked:", EventType.PARKED),
@@ -234,13 +252,28 @@ PATHS: dict[str, tuple[Callable[[ControlPlane], Any], TaskState, str, EventType]
     "park_ci_pending": (_ci_pending, TaskState.PARKED, "parked:", EventType.PARKED),
     "finish": (_finish, TaskState.FAILED, "terminal:", EventType.FAILED),
     "fail_retryably": (_retry, TaskState.READY, "retry:", EventType.RETRYING),
+    "park_human_required": (_human_park, TaskState.PARKED, "parked:", EventType.PARKED),
+    "park_human_required_returned": (
+        _human_park, TaskState.READY, "requeued:human_returned", EventType.READY,
+    ),
 }
+
+#: name -> what the path finds on the task before it runs, beyond `_seeded`.
+SEEDS: dict[str, Callable[[AbortingFirestore], None]] = {
+    "park_human_required_returned": _returned,
+}
+
+
+def _seeded_for(name: str, *, task_generation: int | None = None) -> AbortingFirestore:
+    db = _seeded(task_generation=task_generation)
+    SEEDS.get(name, lambda _db: None)(db)
+    return db
 
 
 @pytest.mark.parametrize("name", sorted(PATHS))
 def test_an_end_aborted_once_then_committed_leaves_the_state_and_the_released_lease(name):
     call, state, release_prefix, event = PATHS[name]
-    db = _seeded()
+    db = _seeded_for(name)
     db.pool_aborts = 1
     control = _control(db)
 
@@ -278,7 +311,7 @@ def test_an_end_aborted_once_then_committed_leaves_the_state_and_the_released_le
 @pytest.mark.parametrize("name", sorted(PATHS))
 def test_an_end_aborted_for_good_leaves_the_task_running_and_the_lease_held(name):
     call, _state, _prefix, event = PATHS[name]
-    db = _seeded()
+    db = _seeded_for(name)
     db.pool_aborts = 10_000
     pools = _pools(db)
     control = _control(db)
@@ -309,7 +342,7 @@ def test_an_end_aborted_for_good_leaves_the_task_running_and_the_lease_held(name
 @pytest.mark.parametrize("name", sorted(PATHS))
 def test_a_stale_generations_end_writes_nothing_and_releases_nothing(name):
     call, _state, _prefix, _event = PATHS[name]
-    db = _seeded(task_generation=2)
+    db = _seeded_for(name, task_generation=2)
     before = copy.deepcopy(db.documents)
     control = _control(db, generation=1)
 
