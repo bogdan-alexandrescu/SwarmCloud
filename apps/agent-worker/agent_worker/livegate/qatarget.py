@@ -122,6 +122,17 @@ hosts would be sent and their origins' storage.
 
 `wipe` drops the credential and refuses the verb from then on (§2.3).
 
+ONE LEG AN ATTEMPT (docs/design/qa-environments.md §1.5; QAENV-GATE, part of
+#2136). A target carries several environments (legs: `staging`,
+`production`), each with its own origins, credential and write rule, and an
+attempt is one leg's. The hand-off names the leg in `environment_name` (the
+entry's `name`); the first hand-off fixes `(target_id, environment_name)` and
+a later one naming anything else is refused `target_changed` before any of
+its fields is taken. A hand-off without the name is an old mark, from before
+the target was migrated to `environments[]`, and is accepted; an absent name
+is itself the value compared, so a named attempt cannot switch legs by
+dropping the name, nor an unnamed one by adding one.
+
 THE GATE'S REFUSALS ARE KNOWN TO THE RUN (QA-GATE-REFUSALS, part of #2067).
 Every request the guard answers itself, a refused write (`qa_write_refused`)
 or a top frame sent to the gate's page (`qa_target_left`), is kept in
@@ -234,6 +245,8 @@ _TARGET_ID = re.compile(r"qat_[0-9a-f]{16}")
 _ORIGIN = re.compile(r"https://[a-z0-9.-]{1,253}(?::[0-9]{1,5})?")
 _PATH = re.compile(r"/[^\s#]{0,511}")
 _CAUSE = re.compile(r"[a-z0-9_]{1,64}")
+#: An `environments[]` entry's `name` (qa-environments.md §1.1).
+_ENVIRONMENT_NAME = re.compile(r"[a-z0-9-]{1,20}")
 _SELECTOR_KEYS = ("username_selector", "password_selector", "submit_selector")
 MAX_SELECTOR = 512
 MAX_USERNAME = 256
@@ -394,6 +407,8 @@ class QaTarget:
         #: Messages the scrub refused whole (`_refuse_whole`), for the record's count.
         self._scrub_refusals = 0
         self.target_id: str | None = None
+        #: The leg's `environments[]` name, None for an old mark (module docstring).
+        self.environment_name: str | None = None
         self.base_url: str | None = None
         self.base_origin: str | None = None
         self.origins: tuple[str, ...] = ()
@@ -504,7 +519,8 @@ class QaTarget:
         except QaTargetRefused as exc:
             self._record("qa_sign_in_refused", {"cause": exc.code})
             raise
-        if self.target_id is not None and parsed["target_id"] != self.target_id:
+        if self.target_id is not None and (parsed["target_id"], parsed["environment_name"]) \
+                != (self.target_id, self.environment_name):
             self._refuse("target_changed")
         if self.signing_in or self.state == STATE_SIGNING_IN:
             self._refuse(BUSY)
@@ -514,6 +530,7 @@ class QaTarget:
             self._record("qa_sign_in_refused", {"cause": EXHAUSTED, "target_id": parsed["target_id"]})
             raise QaTargetRefused(EXHAUSTED)
         self.target_id = parsed["target_id"]
+        self.environment_name = parsed["environment_name"]
         self.base_url = parsed["base_url"]
         self.base_origin = origin_of(parsed["base_url"])
         self.origins = tuple(parsed["origins"])
@@ -542,7 +559,8 @@ class QaTarget:
             self.state = STATE_SIGNING_IN
         else:
             self.state = STATE_READY
-        self._record("qa_target_set", {"target_id": self.target_id, "sign_in": parsed["sign_in"]["kind"],
+        self._record("qa_target_set", {"target_id": self.target_id, "environment_name": self.environment_name,
+                                       "sign_in": parsed["sign_in"]["kind"],
                                        "sign_ins": self.sign_ins, "mutating": self.mutating,
                                        "challenge_bypass": self.bypass_kind,
                                        "idp_token_path": self.idp_token_path is not None})
@@ -841,6 +859,10 @@ def _parse(args: Mapping[str, Any]) -> dict[str, Any]:
     target_id = args.get("target_id")
     if not isinstance(target_id, str) or not _TARGET_ID.fullmatch(target_id):
         raise QaTargetRefused("target_id")
+    environment_name = args.get("environment_name")
+    if "environment_name" in args and not (isinstance(environment_name, str)
+                                           and _ENVIRONMENT_NAME.fullmatch(environment_name)):
+        raise QaTargetRefused("environment_name")
     origins = args.get("origins")
     if (not isinstance(origins, list) or not 1 <= len(origins) <= MAX_ORIGINS
             or not all(isinstance(o, str) and _ORIGIN.fullmatch(o) for o in origins)):
@@ -885,7 +907,7 @@ def _parse(args: Mapping[str, Any]) -> dict[str, Any]:
         credential = (username, password)
     elif "credential" in args:
         raise QaTargetRefused("credential")
-    return {"target_id": target_id, "origins": origins, "base_url": base_url,
+    return {"target_id": target_id, "environment_name": environment_name, "origins": origins, "base_url": base_url,
             "environment": environment, "navigation_ms": nav, "requests_per_s": rps,
             "read_posts": read_posts, "excluded_paths": paths, "mutating": mutating,
             "idp_token_path": token_path, "idp_token_url": token_url,
