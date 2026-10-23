@@ -289,11 +289,13 @@ describe('V077: a long pool list gets the filter at every width, and the columns
   it('takes the Ceiling column down to its slot and gives Last changed the room', async () => {
     await limits([pool('global')])
     const width = (key: string) => won(document.querySelector(`col.adm-col-${key}`)!, 'width', WIDE)
-    expect(width('pool')).toBe('25%')
+    // Pool 27% holds provider:anthropic:tenant:u-bogdan on one line, from Set
+    // by's slack and Last changed's 1% (run 5b, Providers; qafix6.admin.test.tsx).
+    expect(width('pool')).toBe('27%')
     expect(width('use')).toBe('15%')
     expect(width('ceiling')).toBe('21%')
-    expect(width('by')).toBe('13%')
-    expect(width('changed')).toBe('26%')
+    expect(width('by')).toBe('12%')
+    expect(width('changed')).toBe('25%')
   })
 })
 
@@ -362,9 +364,10 @@ describe('V079: Tenants gives the id and the credentials their room, and links o
     await screen.findByText('u-a-rather-long-tenant-id', undefined, WAIT)
     const width = (c: string) => won(container.querySelector(`col.ten-col-${c}`)!, 'width', WIDE)
     // MUTATION: put Tenant back to 11% or Credentials to 14%. (Re-split to
-    // what each column holds by VQA V186: vqa2.r3.admin.test.tsx.)
-    expect(width('tenant')).toBe('14%')
-    expect(width('credentials')).toBe('17.5%')
+    // what each column holds by VQA V186: vqa2.r3.admin.test.tsx; and again
+    // by run 6, 6:admin-009, for a whole Principal: qafix6.admin.test.tsx.)
+    expect(width('tenant')).toBe('12%')
+    expect(width('credentials')).toBe('17%')
     const rowOf = (id: string) =>
       [...container.querySelectorAll('tbody th[scope="row"]')].find((h) => h.textContent === id)!.closest('tr')!
     expect(won(rowOf('u-a-rather-long-tenant-id').querySelector('th')!, 'overflow-wrap', WIDE)).toBe('break-word')

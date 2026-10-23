@@ -207,10 +207,14 @@ describe('admin-009: edit starts at one x in every phone record', () => {
       expect(cell.closest('.ctl-table')!.classList.contains('is-stacked')).toBe(true)
       const figure = cell.querySelector(':scope > .adm-fig > .adm-ceiling')!
       const was = cell.querySelector(':scope > .adm-fig > .adm-was')!
-      // MUTATION: put `width: auto` back on either slot at 560px and under:
-      // `8`, `50 /100` and `—` each push `edit` to a different x.
-      expect(painted(figure, 'width', PHONE), id).toBe('6ch')
-      expect(painted(was, 'width', PHONE), id).toBe('7ch')
+      // THE FIXED WIDTH IS THE RUN'S NOW (run 6, 6:admin-017,
+      // qafix6.admin.test.tsx): `6` and `/10` sit side by side in one 8ch
+      // track rather than in 6ch and 7ch tracks 60px apart.
+      // MUTATION: drop the run's `min-width` at 560px and under: `8`,
+      // `50 /100` and `—` each push `edit` to a different x.
+      expect(painted(figure.parentElement!, 'min-width', PHONE), id).toBe('8ch')
+      expect(painted(figure, 'width', PHONE), id).toBe('auto')
+      expect(painted(was, 'width', PHONE), id).toBe('auto')
       expect(painted(figure, 'text-align', PHONE), id).toBe('left')
     }
   })

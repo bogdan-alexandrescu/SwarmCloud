@@ -35,7 +35,7 @@ import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'rea
 
 import { loadRunnerSizes, loadRunnerSizeVersions, previewRunnerSizes, restoreRunnerSizes, saveRunnerSizes } from './api'
 import { usePhoneTables } from './capacityPoll'
-import { Banner, Button, Card, Dialog, TypedConfirm } from './components'
+import { Banner, Button, Card, Dialog, ToneMark, TypedConfirm } from './components'
 import type { ApiError, Result } from './fetch'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
@@ -492,7 +492,7 @@ function RunnerSizesBody({ doc, reload, history }: { doc: RunnerSizesDoc; reload
         </ul>
       )}
       <Card title="What the pools admit" className="rs-pools-card">
-        <PoolsTable pools={fresh?.pools ?? null} />
+        <PoolsTable pools={fresh?.pools ?? null} classes={fresh?.classes ?? null} />
         {previewError !== null && <p className="rs-note">The preview could not be read ({previewError.message}); the sizes are checked against the served bounds only, and the save is judged again by the API.</p>}
       </Card>
       <div className="rs-save">
@@ -695,7 +695,33 @@ function RecentUse({ use, size, ratio }: { use: RunnerRecentUse | null; size: Ru
  * drawn as blocks loses its implicit ones. Wider, it is the table it was, in a
  * wrapper that scrolls inside the card rather than cutting a head.
  */
-export function PoolsTable({ pools }: { pools: RunnerSizesPreview['pools'] | null }) {
+/**
+ * The units one agent of `cls` weighs after the save, or before it where the
+ * body leaves the class refused; null where the preview does not say.
+ */
+function unitsAfter(classes: RunnerSizesPreview['classes'] | null, cls: string): number | null {
+  const c = classes?.[cls]
+  if (c === undefined) return null
+  return c.units_after ?? c.units_before
+}
+
+/**
+ * A CLASS ITS POOL ADMITS NONE OF IS MARKED (visual QA run 6, 6:admin-013,
+ * part of #1680). `resource:large` read `0 → 0` against a 2-unit ceiling with
+ * a 4-unit class and nothing else, so a save that left the class unable to
+ * start a single agent was silent. The row carries the mark Pools gives the
+ * same pool (Capacity.tsx `classifyPool`, `too small`, in the parked tone: no
+ * wait clears it) and says so in words. A pool at limit 0 is not too small:
+ * it admits nothing of any class, and Pools marks it `limit 0`.
+ */
+export function PoolsTable({
+  pools,
+  classes = null,
+}: {
+  pools: RunnerSizesPreview['pools'] | null
+  /** The preview's per-class units; without it a class is judged by the figure the pool admits. */
+  classes?: RunnerSizesPreview['classes'] | null
+}) {
   const phone = usePhoneTables()
   if (pools === null) return <p className="rs-note">Reading what the platform-wide pools admit…</p>
   if (pools.length === 0) return <p className="rs-note">No platform-wide pool has a ceiling set, so a resize moves no ceiling.</p>
@@ -717,13 +743,44 @@ export function PoolsTable({ pools }: { pools: RunnerSizesPreview['pools'] | nul
                 <th role="rowheader" scope="row">{p.pool}</th>
                 <td role="cell" data-label="Ceiling (units)">{p.hard_limit}</td>
                 <td role="cell" data-label="Class">{cls}</td>
-                <td role="cell" data-label="Agents admitted, before → after">{`${before} → ${p.admits_after[cls] ?? '—'}`}</td>
+                <td role="cell" data-label="Agents admitted, before → after">
+                  <AdmitsCell pool={p} cls={cls} before={before} units={unitsAfter(classes, cls)} />
+                </td>
               </tr>
             )),
           )}
         </tbody>
       </table>
     </div>
+  )
+}
+
+function AdmitsCell({
+  pool,
+  cls,
+  before,
+  units,
+}: {
+  pool: RunnerSizesPreview['pools'][number]
+  cls: string
+  before: number
+  units: number | null
+}) {
+  const after = pool.admits_after[cls]
+  const figures = `${before} → ${after ?? '—'}`
+  // By the units where the preview names them, else by the figure it admits.
+  const small = pool.hard_limit > 0 && (units !== null ? units > pool.hard_limit : after === 0)
+  if (!small) return <>{figures}</>
+  const weighs = units === null ? 'more units than this pool’s ceiling' : `${units} units, more than this pool’s ${pool.hard_limit}`
+  // ONE ELEMENT, so the stacked record keeps every part in its value column.
+  return (
+    <span className="rs-admits">
+      {figures}{' '}
+      <ToneMark tone="is-paused" title={`This pool's ceiling is ${pool.hard_limit} units, below what one ${cls} agent weighs, so it admits no ${cls} agent. Raise the ceiling or shrink the class.`}>
+        too small
+      </ToneMark>
+      <span className="rs-admits-none">{`One ${cls} agent weighs ${weighs}: none of it can start.`}</span>
+    </span>
   )
 }
 
