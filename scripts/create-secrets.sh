@@ -30,7 +30,6 @@
 #   scripts/create-secrets.sh --graph-ticket-key [--overwrite swarm-graph-ticket-key]
 #   scripts/create-secrets.sh --github-app-webhook-secret --stdin
 #   scripts/create-secrets.sh --settings-mac-key [--overwrite swarm-settings-key]
-#   scripts/create-secrets.sh --git-wf --tenant <platform tenant> --stdin
 #
 # The forge token (`--provider git`, stored as swarm-tenant-<tenant>-git) is
 # read by the tenant's workers AND by swarm-api, which writes an issue run's
@@ -174,21 +173,14 @@
 # replaced version as SWARM_SETTINGS_KEY_PREVIOUS on both readers until the
 # re-sign has run.
 #
-# --git-wf adds a version to `swarm-tenant-<platform tenant>-git-wf`, the
-# forge token with the `workflow` scope (a classic PAT) or `workflows: write`
-# (a fine-grained PAT or App) that swarm-api alone uses to push a change under
-# .github/workflows/ or .github/actions/ for a `platform: true` repository
-# (docs/design/agent-autonomy.md §3.3; owner decision Q3, 2026-10-22). The
-# value is read from --stdin ONLY: a value on the command line, glued to the
-# flag or after it, is refused without being repeated, and so is a file
-# argument, for the reasons --github-app gives. Terraform declares the slot,
-# empty, for the platform tenant alone (terraform/infra/git_tools.tf,
-# git_wf_tenant) with swarm-api's account as its one reader; this never
-# creates it and never binds a reader, so a tenant that is not the platform
-# tenant has no slot to add to, and no worker is ever pointed at one. The
-# generic path refuses `--provider git-wf` for the same reason. A rotation:
-# store the new token here, revoke the old one at GitHub, then disable the old
-# version by hand.
+# There is no --git-wf. The `-git-wf` slot (a person's workflow-scoped token
+# for the platform tenant) was removed on 2026-10-22 by BGD's decision (#2029,
+# WF-APP-TOKEN): swarm-api now pushes a change under .github/workflows/ or
+# .github/actions/ with a token the SwarmCloud GitHub App mints per push, for
+# one repository whose registration has `workflow_files` switched on
+# (docs/design/agent-autonomy.md §3.3, docs/runbooks/github-app.md). Nothing
+# is stored for it, so there is nothing to store here: `--git-wf` is an
+# unknown argument and `--provider git-wf` is refused.
 #
 # A tenant credential's NAME is never an input. It is always
 # swarm-tenant-<tenant>-<provider>, which is what swarm_common.models.Tenant's
@@ -220,7 +212,6 @@ GITHUB_APP_WEBHOOK_SECRET=0
 SETTINGS_MAC_KEY=0
 OVERWRITE=""
 TAILSCALE_OAUTH=0
-GIT_WF=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -249,8 +240,8 @@ while [[ $# -gt 0 ]]; do
     --egress-key=*|--egress-credential=*|--typesafe-fwd-key=*|--workspace-grant-key=*|--graph-ticket-key=*|--github-app-webhook-secret=*|--settings-mac-key=*)
       die "${1%%=*} takes no value on the command line: the key is generated, and the credential is read from --stdin only. Nothing was stored." ;;
     --tailscale-oauth)  TAILSCALE_OAUTH=1; shift ;;
-    --git-wf)           GIT_WF=1; shift ;;
-    --git-wf=*)         die "--git-wf takes no value on the command line: the token is read from --stdin only. Nothing was stored." ;;
+    # The removed slot's flag: unknown, and a glued value is never repeated.
+    --git-wf|--git-wf=*) die "unknown argument: --git-wf. The -git-wf slot no longer exists: a workflow-file push uses a token the SwarmCloud GitHub App mints per push, for a repository whose workflow_files switch is on (docs/runbooks/github-app.md). Nothing was stored." ;;
     # The header above `set -euo pipefail`, however long it grows; a fixed
     # line range stops mid-sentence the first time the header changes.
     -h|--help)          awk 'NR > 1 && /^set -euo pipefail$/ { exit } NR > 1 { print }' "$0"; exit 0 ;;
@@ -266,8 +257,7 @@ while [[ $# -gt 0 ]]; do
   worker asks Secret Manager for. Any other name is a secret nothing will ever read." ;;
     -*) die "unknown argument: $1" ;;
     # Not a flag, so possibly a value someone meant to store: never repeated.
-    *) [[ "${GIT_WF}" -eq 0 ]] || die "--git-wf takes no value on the command line (not shown): the token is read from --stdin only. Nothing was stored."
-       die "unexpected value on the command line (not shown). Values are read from --stdin or --from-file, never from arguments; nothing was stored." ;;
+    *) die "unexpected value on the command line (not shown). Values are read from --stdin or --from-file, never from arguments; nothing was stored." ;;
   esac
 done
 
@@ -288,70 +278,6 @@ if [[ -n "${PROVIDER}" ]]; then
   case "${PROVIDER}" in
     *[!a-z0-9-]*) die "provider '${PROVIDER}' must be lowercase letters, digits and hyphens" ;;
   esac
-fi
-
-if [[ "${GIT_WF}" -eq 1 ]]; then
-  if [[ -n "${PROVIDER}${FROM_FILE}${GITHUB_APP_SLOT}${OVERWRITE}" || "${SUBSCRIPTION}" -eq 1 || "${LIST}" -eq 1 || "${CHILD_KEY}" -eq 1 || "${LIVE_KEY}" -eq 1 || "${EGRESS_KEY}" -eq 1 || "${EGRESS_CREDENTIAL}" -eq 1 || "${TAILSCALE_OAUTH}" -eq 1 || "${SEARCH_API_KEY}" -eq 1 || "${TYPESAFE_FWD_KEY}" -eq 1 || "${WORKSPACE_GRANT_KEY}" -eq 1 || "${GRAPH_TICKET_KEY}" -eq 1 || "${GITHUB_APP_WEBHOOK_SECRET}" -eq 1 || "${SETTINGS_MAC_KEY}" -eq 1 || "${DISABLE_PREVIOUS}" -eq 1 ]]; then
-    die "--git-wf takes only --tenant and --stdin: the slot's name is swarm-tenant-<tenant>-git-wf, a file argument is a path to a plaintext copy, and an old version is disabled by hand once the old token is revoked at GitHub. Nothing was stored."
-  fi
-  [[ -n "${TENANT}" ]] || die "--git-wf needs --tenant: the platform tenant, whose registration of the SwarmCloud repository carries platform: true"
-  [[ "${READ_STDIN}" -eq 1 ]] || die "--git-wf reads the token from --stdin and nothing else"
-  # The same spelling terraform/infra/git_tools.tf declares;
-  # tests/unit/scripts/test_create_secrets_git_wf.py holds the two equal.
-  GIT_WF_NAME="swarm-tenant-${TENANT}-git-wf"
-  if is_shared_resource "${GIT_WF_NAME}" || is_shared_resource "${TENANT}"; then
-    die "'${GIT_WF_NAME}' names a resource on the shared deny-list (scripts/lib/common.sh). Refusing."
-  fi
-
-  step "Secret ${GIT_WF_NAME}"
-  GIT_WF_ERR=""
-  if ! GIT_WF_ERR="$(gcloud secrets describe "${GIT_WF_NAME}" --project "${PROJECT_ID}" \
-       --format='value(name)' 2>&1 >/dev/null)"; then
-    die_if_auth_failure "${GIT_WF_ERR}"
-    die "${GIT_WF_NAME} does not exist in ${PROJECT_ID}. terraform declares it for the platform tenant alone, with swarm-api as its one reader (terraform/infra/git_tools.tf, git_wf_tenant): apply that first, then this. A tenant that is not the platform tenant has no -git-wf slot. Nothing was stored."
-  fi
-
-  GIT_WF_TMP="$(mktemp -d "${TMPDIR:-/tmp}/swarm-secret.XXXXXX")"
-  chmod 0700 "${GIT_WF_TMP}"
-  # shellcheck disable=SC2064  # expand now: the path is fixed for this run
-  trap "find '${GIT_WF_TMP}' -type f -exec rm -f {} + 2>/dev/null || true; rmdir '${GIT_WF_TMP}' 2>/dev/null || true" EXIT INT TERM
-  GIT_WF_FILE="${GIT_WF_TMP}/value"
-  ( umask 077; : >"${GIT_WF_FILE}" )
-  if [[ -t 0 ]]; then
-    printf 'Paste the workflow-scoped forge token for tenant %s (input hidden), then press Enter: ' "${TENANT}" >&2
-    IFS= read -rs GIT_WF_VALUE
-    printf '\n' >&2
-    printf '%s' "${GIT_WF_VALUE}" >"${GIT_WF_FILE}"
-    unset GIT_WF_VALUE
-  else
-    cat >"${GIT_WF_FILE}"
-  fi
-  # The paste's trailing newline off; anything else is judged, not repaired.
-  if [[ -s "${GIT_WF_FILE}" ]]; then
-    printf '%s' "$(cat "${GIT_WF_FILE}")" >"${GIT_WF_FILE}.trimmed"
-    mv "${GIT_WF_FILE}.trimmed" "${GIT_WF_FILE}"
-    chmod 0600 "${GIT_WF_FILE}"
-  fi
-  # The shape, judged without echoing it: one token, so not empty, not a PEM
-  # block (an App's private key is not a token git can push with), no
-  # whitespace inside and nowhere near a file's size.
-  GIT_WF_BYTES="$(wc -c <"${GIT_WF_FILE}" | tr -d ' ')"
-  [[ "${GIT_WF_BYTES}" -gt 0 ]] || die "the token is empty; nothing was stored"
-  [[ "${GIT_WF_BYTES}" -lt 1024 ]] || die "value is ${GIT_WF_BYTES} bytes; that is not a forge token, and nothing was stored"
-  if grep -q -- '-----BEGIN' "${GIT_WF_FILE}"; then
-    die "that is a PEM block, not a token git can push with; nothing was stored"
-  fi
-  if grep -q '[[:space:]]' "${GIT_WF_FILE}"; then
-    die "the value has whitespace inside it, so it is not one token; nothing was stored"
-  fi
-  info "stored value is ${GIT_WF_BYTES} bytes"
-
-  GIT_WF_VERSION="$(gcloud secrets versions add "${GIT_WF_NAME}" \
-    --project "${PROJECT_ID}" --data-file="${GIT_WF_FILE}" --format='value(name)')"
-  ok "added version ${GIT_WF_VERSION##*/} of ${GIT_WF_NAME}; its value was never printed"
-  dim "its one reader is swarm-api's account (terraform/infra/git_tools.tf, IAM row L-2); no worker reads it"
-  dim "rotating: store the new token here, revoke the old one at GitHub, then disable the old version by hand"
-  exit 0
 fi
 
 if [[ "${LIST}" -eq 1 ]]; then
@@ -893,10 +819,10 @@ fi
 
 [[ -n "${TENANT}" ]]   || die "--tenant is required (e.g. eng, or u-alice for a personal tenant)"
 [[ -n "${PROVIDER}" ]] || die "--provider is required (e.g. anthropic, openai)"
-# The -git-wf slot is not a provider key: this path would create it labelled
-# tenant-credential and send the operator to bind the tenant's worker to it.
+# The removed -git-wf slot is not a provider key either: this path would
+# create it labelled tenant-credential, and nothing reads it any more.
 if [[ "${PROVIDER}" == "git-wf" ]]; then
-  die "the -git-wf slot is stored with --git-wf --tenant ${TENANT} --stdin, never as a provider: terraform declares it for the platform tenant alone and only swarm-api reads it. Nothing was stored."
+  die "the -git-wf slot no longer exists (#2029): a workflow-file push uses a token the SwarmCloud GitHub App mints per push, for a repository whose workflow_files switch is on (docs/runbooks/github-app.md). Nothing was stored."
 fi
 
 # Must match swarm_common.models.Tenant.secret_name(), which is what the worker

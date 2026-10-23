@@ -94,14 +94,16 @@ fenced between this call's nonce lines (`_Fence`); a write needs the
 registration's `agents_may_file_issues` (owner Q2), is refused `leak_found`
 rather than masked, and is counted (`_reserve_write`: 10 an attempt, 30 an
 agent). And `git_push_branch` reads the pushed range's paths from the bundle:
-a range touching `.github/workflows/` or `.github/actions/` is pushed with the
-`-git-wf` slot for a `platform: true` registration whose slot holds a version
-(owner Q3), and is otherwise `workflow_scope_missing`, naming the files.
+a range touching `.github/workflows/` or `.github/actions/` is pushed only
+for a registration whose `workflow_files` switch is on, with a token the
+GitHub App mints for that one repository at push time (#2029, WF-APP-TOKEN;
+BGD, 2026-10-22), and is otherwise `workflow_scope_missing`, naming the files.
 
 INVARIANTS. Nothing here creates infrastructure demand (1), touches capacity
 (2, 3) or the lease (5: a fenced call is refused, never released). The
-tenant's own slot, its own GCS prefix for a large bundle, and its own
-repository records only (9). The caller names a tool and its arguments,
+tenant's own slot (for a workflow push, a token from its own App
+installation, for one repository, never held), its own GCS prefix for a
+large bundle, and its own repository records only (9). The caller names a tool and its arguments,
 never a URL, a remote, a refspec or a credential (10).
 """
 
@@ -142,6 +144,9 @@ from .cifix import BRANCH_PREFIX
 from .errors import ApiError, NotFound
 from .forge import GIT_PROVIDER
 from .forgechecks import evaluate, required_status_checks
+from .forge_installation import (
+    MINT_FAILED, MINT_NO_INSTALLATION, MINT_NOT_COVERED, MINT_NOT_GRANTED, WorkflowMintRefused,
+)
 from .forgewrite import (
     ForgeUnreachable,
     ForgeWriteError,
@@ -159,9 +164,9 @@ from .repositories import (
     Repositories,
     agents_may_file_issues_of,
     parse_repository,
-    platform_of,
     readable_by_tasks_of,
     repo_id_for,
+    workflow_files_of,
 )
 from .store import LEASES, TASKS, Store
 from .validation import DISPATCH_METADATA_KEY, IssueRef
@@ -228,10 +233,10 @@ TIP_PURPOSE = "swarm-git-tip/v1"
 #: The fenced code the worker reads (`agent_worker.gittools.GIT_FENCED`).
 GIT_FENCED = "git_fenced"
 
-#: §3.3, owner decision Q3: the slot a workflow-touching push of a
-#: `platform: true` repository is made with, read by swarm-api alone
-#: (terraform/infra/git_tools.tf, IAM row L-2), and what "touching" means.
-WORKFLOW_SLOT = "git-wf"
+#: §3.3: what "touching" a workflow file means. Such a push is made only for
+#: a registration whose `workflow_files` switch is on, with a GitHub App token
+#: minted for it (#2029); `WORKFLOW_PUSHED_AS` is what its audit row names.
+WORKFLOW_PUSHED_AS = "app_installation"
 WORKFLOW_PREFIXES = (".github/workflows/", ".github/actions/")
 WORKFLOW_PATHSPECS = (".github/workflows", ".github/actions")
 #: The most workflow paths an audit row or a refusal names.
@@ -684,7 +689,7 @@ class _Call:
     started: float
     fields: dict[str, Any] = field(default_factory=dict)
     token: str = field(default="", repr=False)
-    #: Any other credential this call read (the `-git-wf` slot's value).
+    #: Any other credential this call held (a workflow push's App token).
     also: tuple[str, ...] = field(default=(), repr=False)
 
     def scrub(self, text: str) -> str:
@@ -726,19 +731,20 @@ class GitTools:
     bundles: BundleStore | None = None
     now: Callable[[], datetime] = utcnow
     clock: Callable[[], float] = time.time
-    #: The `-git-wf` reader (§3.3). None: there is no slot, and a
-    #: workflow-touching push is `workflow_scope_missing`.
-    workflow_slot: "WorkflowSlot | None" = None
+    #: The App mint for a workflow-touching push (#2029,
+    #: `InstallationTokens.workflow_push_token`). None: nothing can mint, and
+    #: such a push is `workflow_scope_missing`.
+    workflow_tokens: "WorkflowTokens | None" = None
 
     @classmethod
     def from_context(cls, ctx: Any, *, verifier: Any, gitexec: GitExec | None = None,
                      remote_url: Callable[[IssueRef], str] = remote_url,
                      bundles: BundleStore | None = None,
-                     workflow_slot: "WorkflowSlot | None" = None) -> "GitTools":
+                     workflow_tokens: "WorkflowTokens | None" = None) -> "GitTools":
         if bundles is None and getattr(ctx.settings.core, "artifact_bucket", ""):
             bundles = GcsBundles(ctx.settings.core.artifact_bucket, ctx.settings.project_id)
-        if workflow_slot is None and getattr(ctx.settings, "project_id", ""):
-            workflow_slot = SecretManagerWorkflowSlot(ctx.settings.project_id)
+        if workflow_tokens is None:
+            workflow_tokens = _workflow_tokens_of(ctx)
         children = ChildService(
             settings=ctx.settings, db=ctx.db, store=ctx.store, submissions=ctx.submissions,
             verifier=verifier, limiter=ctx.limiter, metrics=ctx.metrics, now=ctx.now,
@@ -747,7 +753,7 @@ class GitTools:
             settings=ctx.settings, db=ctx.db, store=ctx.store, children=children,
             forge_tokens=ctx.forge_tokens, writer=ctx.forge_writer,
             gitexec=gitexec or GitExec(), remote_url=remote_url, bundles=bundles, now=ctx.now,
-            workflow_slot=workflow_slot,
+            workflow_tokens=workflow_tokens,
         )
 
     # -- the call ------------------------------------------------------------
@@ -1257,7 +1263,7 @@ class GitTools:
         return {"pr": pull.number, "head_sha": pull.head_sha, "state": reading.state,
                 "rows": rows}
 
-    # -- the -git-wf slot (§3.3, owner decision Q3) ----------------------------
+    # -- workflow files (§3.3; #2029, the App token behind `workflow_files`) ----
 
     def _workflow_paths(self, url: str, token: str, bundle: bytes | Path) -> list[str]:
         """The workflow and action files the bundle's commits touch, sorted.
@@ -1301,34 +1307,42 @@ class GitTools:
                        if line.strip().startswith(WORKFLOW_PREFIXES)})
 
     def _workflow_token(self, call: _Call, ref: IssueRef, paths: list[str]) -> str:
-        """The `-git-wf` value for a workflow-touching push, or `workflow_scope_missing`.
+        """The App token a workflow-touching push is made with, or `workflow_scope_missing`.
 
-        Only a `platform: true` registration's push uses it, and only when the
-        slot holds a version; the slot is not read at all for any other
-        repository. The refusal names the files, so the agent can push the
-        rest and write the workflow change as `workflow-lines.patch`."""
+        Only when the task's OWN registration has `workflow_files` on (a
+        stored `True`; `platform: true` no longer matters here), and then a
+        token minted now, for this one repository, from the tenant's own
+        installation (`workflow_push_token`). Nothing is minted for any other
+        registration. Every refusal names the files and ends with the same
+        advice, so the agent can push the rest and write the workflow change
+        as `workflow-lines.patch`."""
         tenant_id = call.attempt.tenant_id
         named = ", ".join(paths[:MAX_WORKFLOW_PATHS])
+        detail = {"paths": paths[:MAX_WORKFLOW_PATHS]}
+
+        def refused(why: str) -> GitToolRefused:
+            return GitToolRefused("workflow_scope_missing", (
+                f"the push touches {named}; GitHub takes a workflow file only from a credential "
+                f"with the workflows permission, and {why}. {WORKFLOW_ADVICE}"), detail=detail)
+
         record = Repositories(self.db, now=self.now).find(
             tenant_id, repo_id_for(tenant_id, ref.owner, ref.repo))
-        if not platform_of(record or {}):
-            raise GitToolRefused("workflow_scope_missing", (
-                f"the push touches {named}; GitHub takes a workflow file only from a credential "
-                f"with the workflow scope, and {ref.repository} is not the tenant's platform: true "
-                "registration, the only one whose pushes may use the -git-wf slot (owner "
-                "decision Q3). Push without those files and write them as workflow-lines.patch"),
-                detail={"paths": paths[:MAX_WORKFLOW_PATHS]})
-        value = self.workflow_slot.read(tenant_id) if self.workflow_slot is not None else None
-        if not value:
-            raise GitToolRefused("workflow_scope_missing", (
-                f"the push touches {named}; GitHub takes a workflow file only from a credential "
-                f"with the workflow scope, and {secret_name_for(tenant_id, WORKFLOW_SLOT)} holds "
-                "no version (the owner stores one with scripts/create-secrets.sh --git-wf "
-                f"--tenant {tenant_id} --stdin). Push without those files and write them as "
-                "workflow-lines.patch"), detail={"paths": paths[:MAX_WORKFLOW_PATHS]})
-        call.also = (*call.also, value)
-        call.fields["slot"] = WORKFLOW_SLOT
-        return value
+        if not workflow_files_of(record or {}):
+            raise refused(f"{ref.repository}'s registration does not have workflow_files "
+                          "switched on (the workspace's admin sets it; off by default, because "
+                          "a workflow on a pushed branch runs with the repository's secrets)")
+        if self.workflow_tokens is None:
+            raise refused("swarm-api has no GitHub App to mint a token with")
+        try:
+            token = self.workflow_tokens.workflow_push_token(tenant_id, ref.owner, ref.repo)
+        except WorkflowMintRefused as failed:
+            raise refused(_MINT_REASONS.get(failed.reason, _MINT_REASONS[MINT_FAILED])
+                          .format(repository=ref.repository)) from None
+        if not token:
+            raise refused(_MINT_REASONS[MINT_FAILED].format(repository=ref.repository))
+        call.also = (*call.also, token)
+        call.fields["credential"] = WORKFLOW_PUSHED_AS
+        return token
 
     # -- the AU-1 tools' common steps --------------------------------------------
 
@@ -1874,61 +1888,42 @@ class _Fence:
 
 
 # --------------------------------------------------------------------------
-# the -git-wf slot's readers (§3.3)
+# the App mint a workflow-touching push is made with (#2029)
 # --------------------------------------------------------------------------
 
 
-class WorkflowSlot(Protocol):
-    def read(self, tenant_id: str) -> str | None: ...
+class WorkflowTokens(Protocol):
+    def workflow_push_token(self, tenant_id: str, owner: str, repo: str) -> str: ...
 
 
-@dataclass
-class StaticWorkflowSlot:
-    """Values held in memory, by tenant: the tests', and a deployment's that
-    configures none (an empty map is "no slot anywhere")."""
+#: The sentence every `workflow_scope_missing` ends with, whole: the worker
+#: and the agent read it to write the change as a patch instead.
+WORKFLOW_ADVICE = "Push without those files and write them as workflow-lines.patch"
 
-    values: Mapping[str, str] = field(default_factory=dict, repr=False)
-    on_read: Callable[[str], None] | None = None
+#: Each mint failure's own reason inside `workflow_scope_missing`.
+_MINT_REASONS: Mapping[str, str] = {
+    MINT_NOT_GRANTED: ("the workspace's GitHub App installation has not granted Workflows "
+                       "(its owner accepts the App's \"Workflows: Read and write\" request)"),
+    MINT_NOT_COVERED: "the workspace's GitHub App installation does not cover {repository}",
+    MINT_NO_INSTALLATION: ("the workspace has no installation of the GitHub App for "
+                           "{repository}'s owner"),
+    MINT_FAILED: "the GitHub App could not mint a token for {repository} just now",
+}
 
-    def read(self, tenant_id: str) -> str | None:
-        if self.on_read is not None:
-            self.on_read(tenant_id)
-        return self.values.get(tenant_id) or None
 
+def _workflow_tokens_of(ctx: Any) -> "WorkflowTokens | None":
+    """The mint a production `GitTools` uses: the context's installation
+    source when it can mint for a push, else one built over the App
+    (`build_installation_tokens` builds no client). None without a project."""
+    source = getattr(ctx, "forge_installations", None)
+    if callable(getattr(source, "workflow_push_token", None)):
+        return source  # type: ignore[return-value]
+    project_id = getattr(ctx.settings, "project_id", "")
+    if not project_id:
+        return None
+    from .forge_installation import build_installation_tokens
 
-class SecretManagerWorkflowSlot:
-    """`swarm-tenant-<tenant>-git-wf`'s latest version, read per call, never cached.
-
-    swarm-api's account is the slot's one reader (IAM row L-2, applied by the
-    owner at dev-iam). No secret, no enabled version, and no grant yet all
-    read as "no version": the push is then `workflow_scope_missing`, which
-    says how the owner stores one. The client is built on first use, never
-    at import."""
-
-    def __init__(self, project_id: str) -> None:
-        self._project_id = project_id
-        self._client: Any = None
-
-    def read(self, tenant_id: str) -> str | None:
-        from google.api_core import exceptions as gexc
-
-        if self._client is None:
-            from google.cloud import secretmanager
-
-            self._client = secretmanager.SecretManagerServiceClient()
-        name = (f"projects/{self._project_id}/secrets/"
-                f"{secret_name_for(tenant_id, WORKFLOW_SLOT)}/versions/latest")
-        try:
-            version = self._client.access_secret_version(request={"name": name})
-        except (gexc.NotFound, gexc.FailedPrecondition, gexc.PermissionDenied) as exc:
-            log.info("git_wf_slot_unavailable tenant=%s (%s)", tenant_id, type(exc).__name__)
-            return None
-        except Exception as exc:
-            raise GitToolRefused("no_credential", f"{secret_name_for(tenant_id, WORKFLOW_SLOT)} "
-                                                  f"could not be read ({type(exc).__name__})",
-                                 status=503) from None
-        value = version.payload.data.decode("utf-8").strip()
-        return value or None
+    return build_installation_tokens(ctx.db, project_id, now=ctx.now)
 
 
 # --------------------------------------------------------------------------

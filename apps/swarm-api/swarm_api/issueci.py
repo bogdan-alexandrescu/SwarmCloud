@@ -209,7 +209,9 @@ from .issueruns import (
 )
 from .issuesync import _tenant, keyword_mark, sync_pull_request
 from .redaction import redact
-from .repositories import Repositories, hard_stop_paths_of, platform_of, repo_id_for
+from .repositories import (
+    Repositories, hard_stop_paths_of, platform_of, repo_id_for, workflow_files_of,
+)
 from .reviewcontext import EARLIER_FIXES, read_fix_context
 from .rollup import SKIPPED_SUMMARY_KEY
 from .schemas import WorkflowCreate
@@ -1668,7 +1670,10 @@ def merge_gate(
             ) or {}
             hold = widen_hold(hold, hard_stop_hold(
                 files, platform=platform_of(registration),
-                hard_stop_paths=hard_stop_paths_of(registration), issue_read=run.issue_read,
+                hard_stop_paths=hard_stop_paths_of(registration),
+                # #2029: a workflow change's merge is held for the owner
+                # where the switch let it be pushed (STOP_WORKFLOWS, Q3).
+                workflow_files=workflow_files_of(registration), issue_read=run.issue_read,
                 iam_files=iam_files, at=now,
             ))
             record["files_checked_head"] = head

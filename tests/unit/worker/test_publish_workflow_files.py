@@ -6,7 +6,9 @@ push that adds or changes a workflow file, and the brief recorded lanes ending
 SUCCEEDED with the file unpushed. The end-of-agent publish (`_publish_git`)
 therefore routes a branch whose new commits touch `.github/workflows/**` or
 `.github/actions/**` through swarm-api's `git_push_branch` -- the broker that
-alone reads the `-git-wf` slot -- instead of the worker's own token push. A
+alone pushes those files, with a GitHub App token it mints per push and only
+for a registration whose `workflow_files` switch is on (#2029, WF-APP-TOKEN) --
+instead of the worker's own token push. A
 refusal (`workflow_scope_missing`, a fence, no broker at all) publishes
 nothing, sets `PUBLISH_FAILED_FIELD`, and leaves the workflow change as
 `workflow-lines.patch` in the attempt's artifacts, so `_publish_failed` ends
@@ -236,7 +238,8 @@ def test_without_a_broker_the_tenant_token_never_pushes_a_workflow(
 def test_a_refused_workflow_publish_never_ends_succeeded(
     worker_factory, monkeypatch, origin, local_urls, forge, own_pushes, tmp_path
 ):
-    refusal = gittools.GitToolRefused("workflow_scope_missing", "no -git-wf version")
+    refusal = gittools.GitToolRefused(
+        "workflow_scope_missing", "the registration does not have workflow_files switched on")
     broker = FakeBroker(origin, tmp_path, refuse=refusal)
     worker, _, out = _refused_attempt(worker_factory, monkeypatch, origin, broker, "t-never")
     why = worker._publish_failed({"git": out, "artifacts": []})

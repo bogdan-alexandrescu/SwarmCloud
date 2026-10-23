@@ -102,6 +102,7 @@ from ..repositories import (
     platform_of,
     registered_merge_policy,
     repo_id_for,
+    workflow_files_of,
 )
 from ..plancontext import read_plan_context
 from ..reviewcontext import read_review_context
@@ -184,9 +185,10 @@ def jev_holds_for_human(run: IssueRun, advisory: dict | None) -> bool:
 def workflows_refusal(paths: list[str]) -> str:
     """The run's `error` when its plan names `.github/workflows/` files (§4.4)."""
     return (
-        f"{WORKFLOWS_PATH}: the plan changes {', '.join(paths[:10])}. SwarmCloud's forge "
-        "credential cannot push workflow files, so this change must be made by a person or "
-        "split out of the issue"
+        f"{WORKFLOWS_PATH}: the plan changes {', '.join(paths[:10])}. SwarmCloud pushes "
+        "workflow files only to a repository whose registration has workflow_files switched "
+        "on (the workspace's admin sets it), and this one does not, so this change must be "
+        "made by a person or split out of the issue"
     )
 
 
@@ -198,13 +200,14 @@ def _registration(ctx: AppContext, tenant_id: str, run: IssueRun) -> dict:
 
 def hard_stops_at_plan(ctx: AppContext, tenant_id: str, run: IssueRun, plan: dict) -> dict | None:
     """The §4.4 hold a plan puts on its run: IAM and bootstrap anywhere, the
-    frozen contract in a `platform: true` repository, the registration's
+    frozen contract in a `platform: true` repository, workflow files where the
+    registration's `workflow_files` switch is on (#2029), the registration's
     protected paths, and a security-class issue. Widened over the run's
     current hold, never narrower (`widen_hold`)."""
     record = _registration(ctx, tenant_id, run)
     found = plan_hold(
         plan, platform=platform_of(record), hard_stop_paths=hard_stop_paths_of(record),
-        issue_read=run.issue_read, at=ctx.now(),
+        workflow_files=workflow_files_of(record), issue_read=run.issue_read, at=ctx.now(),
     )
     hold = widen_hold(run.approval_hold, found)
     if hold and hold != run.approval_hold:
@@ -248,10 +251,12 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
             return runs.transition(
                 tenant_id, run.id, RunState.NOT_READY, by=SYSTEM, patch={"not_ready": plan},
             )
-        refused = workflow_paths(plan)
+        refused = workflow_paths(
+            plan, workflow_files=workflow_files_of(_registration(ctx, tenant_id, run)))
         if refused:
-            # §4.4: refused, not held. The forge credential cannot push these
-            # files, so the step would fail after spending. No plan is
+            # §4.4: refused, not held. Without the registration's
+            # `workflow_files` switch nothing may push these files (#2029),
+            # so the step would fail after spending. No plan is
             # stored, no workflow submitted, no re-plan attempted; the status
             # comment carries this error.
             log.info("issue run %s tenant=%s: plan names workflow files; refused (%s)",
@@ -1048,13 +1053,15 @@ def edit_plan(
     # `PlanOverlap.action` (#587) may still lack one; any other may not. The
     # transition's digest check refuses the edit if the plan moved since.
     plan = parse_edited_plan(body.plan, current.plan)
-    refused = workflow_paths(plan)
+    refused = workflow_paths(
+        plan, workflow_files=workflow_files_of(_registration(ctx, tenant_id, current)))
     if refused:
         # §4.4: an edit cannot add what the planner's plan would have been
         # refused for.
         raise InvalidPlan(
             f"the plan may not change workflow files ({', '.join(refused[:10])}): "
-            "SwarmCloud's forge credential cannot push them",
+            "SwarmCloud pushes them only to a repository whose registration has "
+            "workflow_files switched on",
             detail={"code": WORKFLOWS_PATH, "paths": refused[:10]},
         )
     # An edit can add a hold but never clears one (§4.5): `widen_hold` over

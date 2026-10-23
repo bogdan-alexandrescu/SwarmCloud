@@ -40,6 +40,16 @@ owner decision Q2: "admin-set, off by default") is gated exactly as `context`
 before anything is written, and the change and its `admin_audit` entry
 (`agents_may_file_issues_set`) commit in one transaction.
 
+`workflow_files` (#2029, WF-APP-TOKEN; BGD's decision 2, 2026-10-22) is
+gated exactly as `agents_may_file_issues`, on create AND on PATCH: the
+workspace's admin, so a member's answers 403 before the forge is read or
+anything is written, and the change and its `admin_audit` entry
+(`repository_workflow_files_set`) commit in one transaction. It lets
+swarm-api push workflow files to that one repository with a token the GitHub
+App mints per push; a workflow on a pushed branch runs with the repository's
+secrets before any merge hold, which is why it is per repository and off by
+default.
+
 WORKSPACE ROLES (docs/design/workspace-roles.md §4.1, §4.8, Q13; lane
 ROLES-GATES-AUTOMATE). Register, PATCH, DELETE, index and index:run need the
 role `member` (`_member`): a `viewer` is `role_member_required`, through its
@@ -208,8 +218,8 @@ def _context_by(ctx: AppContext, auth: AuthContext, tenant_id: str) -> str:
     switch; with the switch off (or the role unreadable) the caller is held
     to today's rule, `codeintel.require_owner_or_admin`, so nobody it refuses
     today is let through. It also gates `agents_may_file_issues` (AU-0
-    REG-FLAG, §3.2's "workspace admin"), so a change to this rule changes
-    who may set that flag too."""
+    REG-FLAG, §3.2's "workspace admin") and `workflow_files` (#2029), so a
+    change to this rule changes who may set those flags too."""
     if ctx.roles is not None:
         me = ctx.roles.require(auth, roles.ADMIN)
         if me is not None and roles.at_least(me.role, roles.ADMIN):
@@ -253,6 +263,9 @@ def create_repository(
     _member(ctx, auth)
     platform_by = _platform_admin(body.model_fields_set, auth)
     merge_policy_by = _platform_admin(body.model_fields_set, auth, "merge_policy")
+    # Before the forge is read: a member's create carrying it writes nothing.
+    workflow_files_by = (_context_by(ctx, auth, tenant_id)
+                         if body.workflow_files is not None else None)
     tenant = _tenant(ctx, tenant_id, auth)
     # The caller's own GitHub connection when they have one (lane OB4).
     credential = get_access(request).credential_for(
@@ -262,6 +275,7 @@ def create_repository(
             body, tenant, created_by=auth.email, store=_store(ctx),
             tokens=ctx.forge_tokens, forge=ctx.forge, now=ctx.now, credential=credential,
             platform_by=platform_by, merge_policy_by=merge_policy_by,
+            workflow_files_by=workflow_files_by,
         )
     except ForgeReadError as refused:
         log.info("repository register tenant=%s outcome=%s", tenant_id, refused.code)
@@ -349,9 +363,12 @@ def patch_repository(
     context_by = _context_by(ctx, auth, tenant_id) if body.context is not None else None
     file_issues_by = (_context_by(ctx, auth, tenant_id)
                       if body.agents_may_file_issues is not None else None)
+    workflow_files_by = (_context_by(ctx, auth, tenant_id)
+                         if body.workflow_files is not None else None)
     record = _store(ctx).patch(tenant_id, repo_id, body, platform_by=platform_by,
                                merge_policy_by=merge_policy_by, readable_by=readable_by,
-                               context_by=context_by, file_issues_by=file_issues_by)
+                               context_by=context_by, file_issues_by=file_issues_by,
+                               workflow_files_by=workflow_files_by)
     log.info(
         "repository patch tenant=%s repo_id=%s by=%s fields=%s", tenant_id, record["repo_id"],
         auth.email, ",".join(sorted(body.model_dump(exclude_none=True))),

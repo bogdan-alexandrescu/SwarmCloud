@@ -450,9 +450,10 @@ SECRET_PAYLOAD_READERS = {
     # only to the worker of a proven, fenced attempt whose run names the target,
     # at qatargets.ISSUE_ROUTE, which main.UNCAPTURED_ROUTES keeps out of capture.
     "qatargets.py",
-    # The tenant's `-git-wf` slot, the credential for a workflow-touching push
-    # on its platform: true registration only, scrubbed from every answer.
-    "gittools.py",
+    # gittools.py read the `-git-wf` slot until #2029 (WF-APP-TOKEN) removed
+    # it: a workflow-touching push now uses an App installation token minted
+    # per push, never a stored secret. MUTATION: keep the slot reader and
+    # gittools.py is a reader again, outside this set.
 }
 
 

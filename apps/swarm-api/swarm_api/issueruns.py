@@ -1022,9 +1022,10 @@ STOP_IAM = "iam"
 STOP_CONTRACT = "contract"
 STOP_PROTECTED_PATH = "protected_path"
 STOP_SECURITY = "security"
-#: A change under `.github/workflows/` or `.github/actions/` in a
-#: `platform: true` repository, which only the `-git-wf` slot can push
-#: (docs/design/agent-autonomy.md §3.3). Enforced from its first day, like
+#: A change under `.github/workflows/` or `.github/actions/` in a repository
+#: whose registration has `workflow_files` switched on, the only kind swarm-api
+#: pushes such files to, with the GitHub App's token (#2029, WF-APP-TOKEN;
+#: docs/design/agent-autonomy.md §3.3). Enforced from its first day, like
 #: `security`: owner decision 2026-10-22 (Q3), "merge held NEEDS_OWNER",
 #: whatever the run's merge gate says. A workflow can reach CI's secrets and
 #: the deployer's identity.
@@ -1040,11 +1041,11 @@ STOP_COST = "cost"
 ENFORCED_STOPS = frozenset({STOP_SECURITY, STOP_WORKFLOWS})
 
 #: The `.github/workflows/` refusal's code. Refused at plan unless the
-#: repository is `platform: true` AND the platform tenant's `-git-wf` slot
-#: holds a version (`workflow_paths`): without it the forge credential cannot
-#: push those files (§0), so the step would fail after spending. The run
-#: moves PLANNING -> FAILED with this code in `error`. With it, the plan is
-#: held STOP_WORKFLOWS instead (agent-autonomy.md §3.3, owner decision Q3).
+#: registration's `workflow_files` switch is on (`workflow_paths`, #2029):
+#: without it nothing may push those files (§0), so the step would fail after
+#: spending. The run moves PLANNING -> FAILED with this code in `error`. With
+#: it, the plan is held STOP_WORKFLOWS instead (agent-autonomy.md §3.3, owner
+#: decision Q3).
 WORKFLOWS_PATH = "WORKFLOWS_PATH"
 WORKFLOWS_PATTERN = ".github/workflows/**"
 #: What STOP_WORKFLOWS holds: the refusal's pattern and the composite
@@ -1344,18 +1345,16 @@ def prompt_paths(plan: Mapping[str, Any] | None) -> set[str]:
     return {p for p in found if p}
 
 
-def workflow_paths(
-    plan: Mapping[str, Any] | None, *, platform: bool = False, workflow_slot: bool = False,
-) -> list[str]:
+def workflow_paths(plan: Mapping[str, Any] | None, *, workflow_files: bool = False) -> list[str]:
     """The `.github/workflows/` files a plan's steps NAME in `files`: refused at plan.
 
-    None are refused where the `-git-wf` slot can push them: a `platform:
-    true` repository (`platform`) while the platform tenant's slot holds a
-    version (`workflow_slot`, read by the caller). There `plan_hold` holds
-    them NEEDS_OWNER instead (STOP_WORKFLOWS). Both default False, so a
-    caller that says nothing refuses exactly as before.
+    None are refused where the GitHub App's token can push them (#2029): a
+    registration whose `workflow_files` switch is on (`repositories.
+    workflow_files_of`, read by the caller). There `plan_hold` holds them
+    NEEDS_OWNER instead (STOP_WORKFLOWS). `platform: true` alone lifts
+    nothing. The default is False, so a caller that says nothing refuses.
     """
-    if platform and workflow_slot:
+    if workflow_files:
         return []
     return _matching(plan_files(plan), (WORKFLOWS_PATTERN,))
 
@@ -1378,6 +1377,7 @@ def hard_stop_hold(
     *,
     platform: bool,
     hard_stop_paths: Any,
+    workflow_files: bool = False,
     issue_read: Mapping[str, Any] | None = None,
     prompt_text: str = "",
     iam_files: Any = (),
@@ -1390,12 +1390,18 @@ def hard_stop_hold(
     plan, or the pull request's changed files at merge, and the
     registration's `platform` and `hard_stop_paths` (`repositories.
     hard_stop_paths_of`, the four defaults included). The workflow pattern
-    is left out of the protected paths: outside a `platform: true`
-    repository those files are refused, not held.
+    is left out of the protected paths: where `workflow_files` is off those
+    files are refused, not held.
 
-    In a `platform: true` repository three more kinds of stop apply
-    (failure-review.md §6): STOP_WORKFLOWS on `.github/workflows/` and
-    `.github/actions/` (owner decision Q3), and owner decision Q7's four
+    STOP_WORKFLOWS on `.github/workflows/` and `.github/actions/` (owner
+    decision Q3) applies where the registration's `workflow_files` switch is
+    on (#2029) -- every repository a workflow file can be pushed to -- and,
+    as before the switch, in a `platform: true` repository, whose workflow
+    changes a person may still push by hand from `workflow-lines.patch`.
+    It makes the hold NEEDS_OWNER (owner_only) in any repository.
+
+    In a `platform: true` repository two more kinds of stop apply
+    (failure-review.md §6): the frozen contract, and owner decision Q7's four
     categories, `secrets`, `tenancy`, `shared` and `cost`, read from the
     paths, from `patches` (path to unified diff; the pull request's at
     merge) and from `prompt_text` (the steps' prompts at plan).
@@ -1413,10 +1419,12 @@ def hard_stop_hold(
         if contract:
             reasons.append(STOP_CONTRACT)
             matched += contract
+    if platform or workflow_files:
         workflows = _matching(paths, WORKFLOW_HOLD_PATTERNS)
         if workflows:
             reasons.append(STOP_WORKFLOWS)
             matched += workflows
+    if platform:
         for stop, hits in _category_hits(paths, patches, prompt_text):
             reasons.append(stop)
             matched += hits
@@ -1431,9 +1439,11 @@ def hard_stop_hold(
         matched += security
     if not reasons:
         return None
+    # Q3: a workflow change's merge is the owner's, in any repository.
+    owner = platform or STOP_WORKFLOWS in reasons
     return {
-        "code": HOLD_NEEDS_OWNER if platform else HOLD_NEEDS_SECOND_MEMBER,
-        "approvers": APPROVERS_OWNER_ONLY if platform else APPROVERS_SECOND_MEMBER,
+        "code": HOLD_NEEDS_OWNER if owner else HOLD_NEEDS_SECOND_MEMBER,
+        "approvers": APPROVERS_OWNER_ONLY if owner else APPROVERS_SECOND_MEMBER,
         "reasons": reasons,
         "matched": list(dict.fromkeys(matched))[:MAX_HOLD_MATCHED],
         "set_at": at,
@@ -1445,6 +1455,7 @@ def plan_hold(
     *,
     platform: bool,
     hard_stop_paths: Any,
+    workflow_files: bool = False,
     issue_read: Mapping[str, Any] | None = None,
     at: datetime | None = None,
 ) -> dict[str, Any] | None:
@@ -1454,7 +1465,7 @@ def plan_hold(
     )
     return hard_stop_hold(
         plan_files(plan) | prompt_paths(plan), platform=platform, hard_stop_paths=hard_stop_paths,
-        issue_read=issue_read, prompt_text=texts, at=at,
+        workflow_files=workflow_files, issue_read=issue_read, prompt_text=texts, at=at,
     )
 
 
