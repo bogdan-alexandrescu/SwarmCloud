@@ -100,6 +100,7 @@ class ActionOutcome:
     it CI_PENDING (`control.ControlPlane.park_ci_pending`): the merge's facts
     may change by themselves, so it waits holding nothing until swarm-api's
     wake tick or the fallback instant (docs/merge-step.md, 2026-10-06, §1).
+    `owner_wait` parks it HUMAN_REQUIRED on the owner's questions (#2070).
     """
 
     state: TaskState
@@ -113,6 +114,12 @@ class ActionOutcome:
     credential_missing: Any = None
     #: `{"code", "head", "pull_request", "pending"}`: what the park waits on.
     ci_wait: dict[str, Any] | None = None
+    #: `{"code", "questions", "unreadable"}`: the owner questions the review
+    #: said hold the merge and that are still unanswered (#2070). Parks the
+    #: task HUMAN_REQUIRED (`handoff.park_human_required`), holding nothing,
+    #: until a person returns it (`human-ready`) and the merge reads the
+    #: answers again.
+    owner_wait: dict[str, Any] | None = None
 
 
 @dataclass
