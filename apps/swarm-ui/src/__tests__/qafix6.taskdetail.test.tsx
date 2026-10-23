@@ -207,7 +207,11 @@ describe('a: every `cgroup limit` figure on Details divides by one limit', () =>
   it('prints the tile, Resources and the over-time summary against the attempt’s 2 cores', async () => {
     const el = host(runOf(running(), threeAttempts(false), [beat()]))
     // The utilisation route serves the attempt document's own `cpu_limit_cores`
-    // (swarm_api/utilisation.py), so a served series carries the same 2.
+    // (swarm_api/utilisation.py), so a served series carries the same 2. This
+    // pins that case only, and it holds on main too. The brief's other case
+    // (the 5 s samples carry 4, the record 2, as the fixture build serves) is
+    // named in UtilisationPanel.tsx, outside this lane's files: its change and
+    // test wait on the owner (questions.json, item-a-utilisation-limit.patch).
     const p = (i: number, cpu: number) => ({ at: at(30 + i / 12), cpu_cores: cpu, memory_bytes: 2 * GIB, throttled_share: 0 })
     const data: UtilisationRead = {
       task_id: ID,
@@ -241,6 +245,7 @@ describe('a: every `cgroup limit` figure on Details divides by one limit', () =>
     // MUTATION: divide the CPU tile by the class's cpu instead of the attempt's limit -- `/ 4 cores` beside `of 2 cores`.
     expect(new Set(limits)).toEqual(new Set(['2']))
   })
+
 })
 
 // ---------------------------------------------------------------------------
@@ -338,6 +343,11 @@ describe('e: the Progress card draws every attempt on the longest attempt’s sc
     expect(share[0]).toBeCloseTo(8 / 98, 3)
     expect(share[1]).toBeCloseTo(48 / 98, 3)
     expect(share[2]).toBeCloseTo(1, 3)
+    // The filler takes back the 2 px flex gap in front of it, so a shorter
+    // row's phases get the same free width as the longest row's.
+    const rest = bars[0]!.querySelector<HTMLElement>('.dt-phb > .is-rest')!
+    // MUTATION: drop the filler's `margin-left: -2px` -- every shorter row loses one more gap of its track.
+    expect(painted(rest, 'margin-left', PANE_1440)).toBe('-2px')
   })
 })
 

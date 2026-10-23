@@ -253,8 +253,10 @@
 .dt-phb > .is-b, .dt-lg .is-b { background: var(--s-bad); }
 /* THE REST OF THE TRACK, PAST A SHORTER ATTEMPT (6:task-008): every row is
    drawn on the longest attempt's scale (`DtPhaseRow`), and what this attempt
-   did not take is the track's own fill, not a phase. */
-.dt-phb > .is-rest { background: transparent; }
+   did not take is the track's own fill, not a phase. Its -2px margin takes
+   back the `.dt-phb` gap in front of it, so a shorter row's phases share the
+   same free width as the longest row's, which has no filler and one gap less. */
+.dt-phb > .is-rest { background: transparent; margin-left: -2px; }
 /* AN OPEN RUN IS DRAWN OPEN: it fades at its end rather than closing at now. */
 .dt-phb > .is-open { mask-image: linear-gradient(90deg, #000 85%, transparent); }
 .dt-lg { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }

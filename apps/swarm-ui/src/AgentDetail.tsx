@@ -1320,7 +1320,7 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
     )
   if (!reports) {
     // NO MODEL CALL IS A FACT, NOT A GAP (owner decision, 2026-09-29).
-    cells.push({ label: 'Cost', value: 'no model call', tone: 'absent', sub: 'this profile reports no spend', help: 'token-cost' })
+    cells.push({ label: 'Cost', value: 'no model call', tone: 'absent', sub: 'this profile reports no spend', help: 'token-cost', whole: true })
   } else if (served !== null) {
     // WHERE IT CAME FROM, said as the graph says it: the API's sum over every
     // attempt, or the last attempt's result alone.
@@ -1337,11 +1337,12 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
       ),
       tone: open !== null ? 'reading' : undefined,
       help: 'token-cost',
+      whole: true,
     })
   } else if (cost === null && open !== null) {
-    cells.push({ label: 'Cost', value: 'at exit', tone: 'reading', sub: tokenLine ?? 'with tokens, when the attempt ends', help: 'token-cost' })
+    cells.push({ label: 'Cost', value: 'at exit', tone: 'reading', sub: tokenLine ?? 'with tokens, when the attempt ends', help: 'token-cost', whole: true })
   } else if (cost === null && latest === null) {
-    cells.push({ label: 'Cost', value: '— no attempt', tone: 'absent', ...(tokenLine === null ? {} : { sub: tokenLine }), help: 'token-cost' })
+    cells.push({ label: 'Cost', value: '— no attempt', tone: 'absent', ...(tokenLine === null ? {} : { sub: tokenLine }), help: 'token-cost', whole: true })
   } else if (cost === null) {
     cells.push({
       label: 'Cost',
@@ -1349,6 +1350,7 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
       tone: 'absent',
       sub: tokenLine ?? 'tokens not reported',
       help: 'token-cost',
+      whole: true,
     })
   } else {
     // THE TOTAL OVER EVERY ATTEMPT, the last attempt as secondary text (lane
@@ -1380,14 +1382,17 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
             ? 'reading'
             : 'unread',
       help: 'token-cost',
+      whole: true,
     })
   }
   // THE COST LINE WRAPS, WHOLE (5b:ff-desktop-05, box comment 6343792637).
   // The 480-639px pane's two-line clamp cut a failed task's line to `cost 1
   // of 3 reported · last...` at 1440: the coverage it opens with is the
   // reason the figure says `at least`. Like CPU and Peak memory, the Cost
-  // tile's sub-line is never clamped; a taller strip is the price.
-  return <DtStripView cells={cells.map((c) => (c.label === 'Cost' ? { ...c, whole: true } : c))} />
+  // tile's sub-line is never clamped; a taller strip is the price. Each Cost
+  // cell above says `whole` where it is pushed, as Peak memory and CPU do, so
+  // a renamed label cannot bring the clamp back.
+  return <DtStripView cells={cells} />
 }
 
 function DtStripView({ cells }: { cells: DtCell[] }) {
