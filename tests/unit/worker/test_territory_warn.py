@@ -281,3 +281,70 @@ def test_no_labels_asks_the_forge_for_none(monkeypatch):
     forge.open_pull_request(access=access, token="t", head="swarm/x", base="main",
                             title="T", body="B")
     assert [url for _, url, _ in asked if "/labels" in url] == []
+
+
+# ---------------------------------------------------------------------------
+# A CI-fix round's push onto the lane's open pull request (CIFIX-TERRITORY,
+# part of #1499): `cifix.stamp` gives the round its lane's territory, and the
+# forge's adopt path carries the warning the worker hands it.
+# ---------------------------------------------------------------------------
+
+
+def test_the_api_names_the_label_the_worker_sets():
+    """The round's prompt (`laneterritory.round_brief`) names the label; the two
+    images cannot share the constant, so it is held equal here."""
+    from agent_worker import territory as worker_rule
+    from swarm_api import laneterritory as api_rule
+
+    # MUTATION: rename the label on one side only -- the fixer is told of a
+    # label its pull request never gets.
+    assert api_rule.OUT_OF_TERRITORY_LABEL == worker_rule.OUT_OF_TERRITORY_LABEL == LABEL
+
+
+def test_a_push_onto_an_open_pull_request_labels_it_and_appends_the_paths(monkeypatch):
+    """A round never opens the pull request: its 422 adopts the lane's. The
+    label still goes on, and the paths arrive in the appended section, the
+    lane's own body kept verbatim above it."""
+    from agent_worker import forge, territory as worker_rule
+
+    asked: list[tuple[str, str, dict | None]] = []
+    lane_body = "The lane's own text.\n\nPart of #1499\n"
+
+    def request(url, *, token, method="GET", payload=None):
+        asked.append((method, url, payload))
+        if url.endswith("/pulls") and method == "POST":
+            return 422, {"message": "Validation Failed",
+                         "errors": [{"message": "A pull request already exists"}]}
+        if "/pulls?head=" in url:
+            return 200, [{"number": 7, "html_url": "https://github.com/acme/widgets/pull/7",
+                          "state": "open", "title": "The lane's title", "body": lane_body}]
+        if url.endswith("/pulls/7") and method == "PATCH":
+            return 200, {}
+        if url.endswith("/issues/7/labels"):
+            return 200, [{"name": name} for name in payload["labels"]]
+        raise AssertionError(f"unexpected {method} {url}")
+
+    monkeypatch.setattr(forge, "_request", request)
+    access = forge.RepoAccess(
+        ref=forge.RepoRef(host="github.com", owner="acme", name="widgets"),
+        default_branch="main", can_push=True, reason="write",
+    )
+    header = worker_rule.warning_header(["apps/swarm-mcp/swarm_mcp/sc.py"])
+    section = "## Continuation (attempt 1): `task_round`\n\n- task: `task_round`\n\n" + header
+
+    pr = forge.open_pull_request(
+        access=access, token="t", head="swarm/task_lane", base="main", title="T",
+        body="never sent to an adopted pull request", amendment=section, labels=[LABEL],
+    )
+
+    assert pr.number == 7 and not pr.created
+    # MUTATION: add labels only to a pull request this call created -- a
+    # round's out-of-territory push onto the lane's pull request is unlabelled.
+    assert pr.labelled == (LABEL,), pr.label_error
+    (patch,) = [payload for method, _, payload in asked if method == "PATCH"]
+    # MUTATION: replace the adopted body -- the lane's `Part of #1499` is lost.
+    assert patch["body"].startswith(lane_body.rstrip())
+    # MUTATION: drop the header from the amendment -- the label says "outside"
+    # and nothing on the pull request says which path.
+    assert header in patch["body"]
+    assert "- `apps/swarm-mcp/swarm_mcp/sc.py`" in patch["body"]
