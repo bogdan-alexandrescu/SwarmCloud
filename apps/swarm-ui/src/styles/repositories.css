@@ -123,6 +123,16 @@
 .ur-fgrid { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 14px 18px; align-items: start; }
 .ur-fl { font-size: var(--t-meta); font-weight: 600; padding-top: 6px; }
 .ur-fl small { display: block; font-weight: 400; color: var(--text-dim); font-size: var(--t-micro); }
+/* A BOX OF LINES TAKES THE FIELD COLUMN'S WIDTH (QA-TARGETS-FORM). The QA
+   target form's Screens and More settings boxes are the first textareas in an
+   `ur-fgrid`; at their browser default they were about 100 px wide at 1512
+   (CLD, 2026-10-23), too narrow for one "id path" line or a JSON object. */
+.ur-fgrid textarea { width: 100%; box-sizing: border-box; }
+/* ONE START CLICK IS ONE ROW (QA-TARGETS-FORM): "Click N", its text, its CSS
+   and Remove. `ur-checks` wraps several options onto one line, which is the
+   very thing that ran "Click 1 … Remove Click 2 … Remove" together; a row
+   per click needs a block of its own, wrapping only inside itself at 390. */
+.qa-start-click { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 8px; }
 .ur-checks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .ur-check { display: inline-flex; align-items: center; gap: 6px; min-height: var(--h-ctl); font-size: var(--t-meta); }
 .ur-radio { flex-wrap: wrap; height: auto; min-height: var(--h-ctl); }
