@@ -540,15 +540,20 @@ def tree_at_refs(bare: Path) -> set[str]:
 def test_head_is_resolved_from_the_files_the_way_git_would_or_refused(
     worker_factory, monkeypatch, origin, local_urls, forge, how
 ):
-    """A detached HEAD and a branch that lives only in `packed-refs` publish
-    the agent's commit as before. A HEAD that is a symbolic ref to anything
-    outside `refs/heads/` is refused, with a reason naming HEAD, and nothing
-    is pushed: the worker reads the ref files itself now, and it follows no
-    ref it would have to trust the agent about."""
+    """A branch that lives only in `packed-refs` publishes the agent's commit
+    as before. A detached HEAD is read from the files too, and since #2094 a
+    step given a branch whose HEAD ends detached has moved off it: nothing is
+    pushed, and the reason names the commit the files resolve to. A HEAD that
+    is a symbolic ref to anything outside `refs/heads/` is refused, with a
+    reason naming HEAD, and nothing is pushed: the worker reads the ref files
+    itself now, and it follows no ref it would have to trust the agent about."""
+    heads: list[str] = []
+
     def edit(repo: Path) -> None:
         (repo / "committed.txt").write_text("the agent's commit\n")
         _commit(repo, "Add committed")
         head = _git(repo, "rev-parse", "HEAD")
+        heads.append(head)
         if how == "detached":
             (repo / ".git" / "HEAD").write_text(f"{head}\n")
         elif how == "packed-ref":
@@ -569,6 +574,12 @@ def test_head_is_resolved_from_the_files_the_way_git_would_or_refused(
         assert out.get("published") is not True, out
         reason = f"{out.get('publish_reason', '')} {out.get('error', '')}"
         assert "HEAD" in reason and "refs/heads/" in reason, out
+        assert branch not in tree_at_refs(origin), "a branch was pushed"
+    elif how == "detached":
+        # MUTATION: resolve a detached HEAD to anything but the commit its
+        # file names and the moved head names another commit, or none.
+        assert out.get("published") is False, out
+        assert out["head_moved"] == heads[0][:12], out
         assert branch not in tree_at_refs(origin), "a branch was pushed"
     else:
         assert out["published"] is True, out.get("publish_reason")

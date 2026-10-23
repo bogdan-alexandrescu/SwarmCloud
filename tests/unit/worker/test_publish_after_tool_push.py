@@ -227,3 +227,26 @@ def test_the_publish_reads_the_tip_through_child_path_pushed_tip(
     # MUTATION: read the tip for any branch but the one being published and
     # this list names another branch, or is empty.
     assert asked == [RED]
+
+
+def test_a_tool_pushed_head_off_the_start_sha_is_not_a_moved_head(
+    worker_factory, monkeypatch, origin, local_urls, forge, pushes, tmp_path
+):
+    """#2094's guard and this path, together: the rebased head no longer
+    descends from the commit the step started on, but it stands on the tip
+    this attempt's own tool push left on the task's branch. That is this
+    task's work, already published, and not a HEAD that moved off it."""
+    worker, _, repo, tip = _rebased_and_tool_pushed(worker_factory, monkeypatch, origin, tmp_path)
+    start = worker._publish_base
+    assert subprocess.run(
+        ["git", "merge-base", "--is-ancestor", start, "HEAD"], cwd=str(repo),
+    ).returncode == 1, "the scenario needs a head off the start sha"
+
+    out = worker._harvest_git(publish=True)
+
+    # MUTATION: anchor the moved-HEAD check on the start sha alone and this
+    # publishes nothing with "HEAD moved off this task's branch".
+    assert "head_moved" not in out, out.get("publish_reason")
+    assert out["published"] is True, out.get("publish_reason")
+    assert out["tool_pushed_tip"] == tip and refs(origin)[RED] == tip
+    assert [pull["head"] for pull in forge.pulls] == [RED]
