@@ -122,10 +122,22 @@ export function useForgePermissions(): ForgePermsRead {
   const fresh = useRef(false)
   const armed = useRef(false)
   const [checking, setChecking] = useState(false)
+  // A read that settles after the page is gone sets no state: the test that
+  // renders <App /> on /repositories tore jsdom down first, and React's update
+  // then reached for a `window` that was no longer there (run 40002946294).
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
   const read = useUrRead(() => {
     const refresh = fresh.current
     fresh.current = false
-    return loadForgePermissions(refresh).finally(() => setChecking(false))
+    return loadForgePermissions(refresh).finally(() => {
+      if (mounted.current) setChecking(false)
+    })
   }, 'forge-permissions')
   const { reload } = read
   const recheck = useCallback(() => {
