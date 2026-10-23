@@ -760,6 +760,28 @@ class GitTools:
 
     def handle(self, tool: str, attempt_id: str, raw: bytes, *, authorization: str | None,
                proof: str | None, timestamp: str | None, path: str) -> dict[str, Any]:
+        """One call's answer. Every refusal is logged here, once (#1188).
+
+        On 2026-10-23 `pr_checks` answered 422 `forge_refused` and nothing
+        said why: the audit row holds the code only, and the worker logged
+        the code only. The line names the tool, the code, the status and the
+        message the agent was answered -- already scrubbed of the call's
+        token (`call.scrub`, `_forge_refusal`), and passed through the
+        credential patterns again here -- so a 401 and a 403, and which read
+        drew it, are told apart in swarm-api's own log.
+        """
+        try:
+            return self._handle(tool, attempt_id, raw, authorization=authorization,
+                                proof=proof, timestamp=timestamp, path=path)
+        except GitToolRefused as refused:
+            log.warning("git_tool_refused tool=%s code=%s status=%s attempt=%s message=%s",
+                        tool if tool in TOOLS else "unknown", refused.code,
+                        refused.status_code, _name(attempt_id, 120),
+                        " ".join(redact(str(refused.message)).text.split())[:600])
+            raise
+
+    def _handle(self, tool: str, attempt_id: str, raw: bytes, *, authorization: str | None,
+                proof: str | None, timestamp: str | None, path: str) -> dict[str, Any]:
         if tool not in TOOLS:
             raise NotFound("no such git tool; the tools are " + ", ".join(TOOLS))
         self.children._require_configured()
