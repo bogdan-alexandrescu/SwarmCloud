@@ -123,3 +123,35 @@ def test_the_capture_asks_for_the_record_at_the_gates_refusals_path(qa):
     # MUTATION: rename either constant and the capture asks for a path the gate does not serve.
     assert qa.GATE_REFUSALS_PATH == qatarget.REFUSALS_PATH
     assert qa._gate_url("http://127.0.0.1:9222") == "http://127.0.0.1:9222" + qatarget.REFUSALS_PATH
+
+
+def test_the_manifest_names_the_idp_token_refreshes_the_gate_let_through(qa, world, monkeypatch):
+    """QA-IDP-POST (part of #2067): the gate lets a target's IdP token path
+    through after its sign-in, and its record lists those apart from the
+    refusals. The manifest names them separately, so a run shows what was let
+    through and never counts it as refused."""
+    # Dated inside the capture: the record is read for what the gate did after it began.
+    allowed = [{"n": i + 1, "at": time.time() + 60, "method": "POST", "origin": IDP, "path": TOKEN_PATH,
+                "code": "idp_token_refresh", "label": "allowed: IdP token refresh"} for i in range(2)]
+    monkeypatch.setattr(qa, "_gate_document", lambda: {"format": 1, "armed": True, "refusals": [],
+                                                       "dropped": 0, "allowed": allowed,
+                                                       "allowed_dropped": 0})
+    code, out, bundle = _capture(qa, world, "--settle", "generic", presets="desktop", themes="light")
+    assert code == 0
+    manifest = _manifest(bundle)
+    # An allowed request is not a refusal: no screen carries it as `gate_refused`.
+    assert manifest["gate_refusals"]["count"] == 0
+    assert _errors(out, "runs--desktop--light")["gate_refused"] == []
+    # MUTATION: leave `allowed` out of `_GateRefusals.summary` and the report cannot say what was let through.
+    assert manifest["gate_refusals"]["allowed"] == [
+        {"label": "allowed: IdP token refresh", "method": "POST", "origin": IDP, "path": TOKEN_PATH, "count": 2}]
+
+
+def test_a_record_with_no_allowed_list_reads_as_none_allowed(qa, world, monkeypatch):
+    # A gate from before QA-IDP-POST answers no `allowed` key.
+    monkeypatch.setattr(qa, "_gate_document", lambda: {"format": 1, "armed": True, "refusals": [], "dropped": 0})
+    code, _out, bundle = _capture(qa, world, "--settle", "generic", presets="desktop", themes="light")
+    assert code == 0
+    # MUTATION: index `document["allowed"]` and an older gate's record is unread.
+    assert _manifest(bundle)["gate_refusals"]["allowed"] == []
+    assert _manifest(bundle)["gate_refusals"]["read"] is True

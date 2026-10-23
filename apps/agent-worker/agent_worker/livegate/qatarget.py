@@ -62,6 +62,18 @@ by `QaTarget.judge`:
   worker marked `mutating` on a `non_production` target;
 * anything but `GET` and `HEAD` to any other origin is refused the same way,
   ALWAYS: nothing lifts it, a mutating flow included;
+* ONE EXCEPTION, the IdP token refresh (QA-IDP-POST; BGD decided
+  2026-10-23, part of #2067): a target whose platform admin approved an
+  `idp_token_path` with its `extra_origin` has exactly `POST
+  <extra_origin><idp_token_path>` continued, compared as the whole URL
+  (`idp_token_url`: no query, no fragment, no other port, case or encoding),
+  and only while the gate's own sign-in has completed (`signed_in`, not
+  wiped): never before it, never after one that failed or met a challenge,
+  never on a target that does not sign in. An app that refreshes its SSO
+  token after sign-in (Keycloak's `/protocol/openid-connect/token`) would
+  otherwise render signed out. Every other method or path to that origin
+  is refused as above, a top frame posted there still leaves the target, and
+  a redirect of the POST is a pause of its own, judged by its own URL;
 * a top-frame navigation outside the approved origins, or to an excluded
   path, gets the gate's page instead (`left_page`, `qa_target_left`). The
   login's other origin (`extra_origin`, approved with the host) is a
@@ -122,7 +134,11 @@ gate sends to another origin carries no CORS header, so Chrome logs it as a
 CORS block, and on 2026-10-23 a run filed exactly that against the app. This
 records refusals; it changes none of the rules above. `undecodable_body` is
 not among them: it withholds a CDP response from the agent, and the page's
-own request went through, so the app saw nothing the gate answered.
+own request went through, so the app saw nothing the gate answered. An IdP
+token refresh the gate let through is kept apart, in `allowed`
+(`note_allowed`, code `IDP_TOKEN_ALLOWED`, labelled "allowed: IdP token
+refresh"), bounded the same way: a run shows what was let through, and never
+counts it as refused.
 
 NOTHING HERE LOGS OR RECORDS A CREDENTIAL, A USERNAME OR A SELECTOR'S MATCH.
 Records carry the target id, causes, origins, methods and counts.
@@ -248,6 +264,15 @@ MAX_REFUSALS = 1000
 #: The gate's codes for a request it answered itself.
 WRITE_REFUSED = "qa_write_refused"
 TARGET_LEFT = "qa_target_left"
+#: QA-IDP-POST: the code and the report's words for a token refresh let through.
+IDP_TOKEN_ALLOWED = "idp_token_refresh"
+IDP_TOKEN_LABEL = "allowed: IdP token refresh"
+#: swarm-api's `qatargets._IDP_TOKEN_PATH`, restated: one plain path, segments
+#: of unreserved and sub-delim characters less the glob characters, no `%`
+#: (so no encoded variant), no empty segment (no `//`, no trailing slash).
+#: `.` and `..` segments are refused apart.
+_IDP_TOKEN_PATH = re.compile(r"(?:/[A-Za-z0-9._~!$&'()+,;=:@-]+)+")
+MAX_IDP_TOKEN_PATH = 512
 
 Record = Callable[[str, Mapping[str, Any]], None]
 Sleep = Callable[[float], Awaitable[None]]
@@ -339,6 +364,8 @@ class Verdict:
     action: str                # "continue", "refuse" (a write) or "leave" (a navigation)
     origin: str | None = None
     method: str | None = None
+    #: A write continued under an exception the run is told of (`IDP_TOKEN_ALLOWED`).
+    allowed: str | None = None
 
 
 CONTINUE = Verdict("continue")
@@ -361,6 +388,9 @@ class QaTarget:
         self._wall = wall
         self._refusals: deque[dict[str, Any]] = deque(maxlen=MAX_REFUSALS)
         self._refused = 0
+        #: QA-IDP-POST: the token refreshes let through, kept apart from the refusals.
+        self._allowed: deque[dict[str, Any]] = deque(maxlen=MAX_REFUSALS)
+        self._allowed_count = 0
         #: Messages the scrub refused whole (`_refuse_whole`), for the record's count.
         self._scrub_refusals = 0
         self.target_id: str | None = None
@@ -372,6 +402,9 @@ class QaTarget:
         self.request_spacing = 0.1
         self.read_posts: tuple[str, ...] = ()
         self.excluded_paths: tuple[str, ...] = ()
+        #: QA-IDP-POST: the approved token path, and the one URL it allows.
+        self.idp_token_path: str | None = None
+        self.idp_token_url: str | None = None
         self.sign_in: dict[str, Any] = {}
         #: Why the last sign-in ended, in a sentence, when its cause alone does
         #: not say (a start click's text). Public settings only, never a credential.
@@ -489,6 +522,8 @@ class QaTarget:
         self.request_spacing = 1.0 / parsed["requests_per_s"]
         self.read_posts = tuple(parsed["read_posts"])
         self.excluded_paths = tuple(parsed["excluded_paths"])
+        self.idp_token_path = parsed["idp_token_path"]
+        self.idp_token_url = parsed["idp_token_url"]
         self.sign_in = parsed["sign_in"]
         self.mutating = parsed["mutating"] and self.environment == "non_production"
         self.cause = None
@@ -509,7 +544,8 @@ class QaTarget:
             self.state = STATE_READY
         self._record("qa_target_set", {"target_id": self.target_id, "sign_in": parsed["sign_in"]["kind"],
                                        "sign_ins": self.sign_ins, "mutating": self.mutating,
-                                       "challenge_bypass": self.bypass_kind})
+                                       "challenge_bypass": self.bypass_kind,
+                                       "idp_token_path": self.idp_token_path is not None})
         return self.status()
 
     def _refuse(self, code: str) -> None:
@@ -720,10 +756,24 @@ class QaTarget:
             "origin": origin, "path": self._replace(path, [0])[:512], "code": code,
         })
 
+    def note_allowed(self, code: str, method: Any, url: Any) -> None:
+        """Keep one write the guard let through under an exception (QA-IDP-POST),
+        apart from the refusals, in the same shape."""
+        origin = origin_of(url) or "unknown"
+        path = _path_of(str(url)) if isinstance(url, str) else "/"
+        self._allowed_count += 1
+        self._allowed.append({
+            "n": self._allowed_count, "at": float(self._wall()), "method": str(method or "GET").upper()[:16],
+            "origin": origin, "path": self._replace(path, [0])[:512], "code": code, "label": IDP_TOKEN_LABEL,
+        })
+
     def refusals(self) -> dict[str, Any]:
-        """What `REFUSALS_PATH` answers: the kept refusals, oldest first."""
+        """What `REFUSALS_PATH` answers: the kept refusals, oldest first, and
+        apart from them the token refreshes let through (`allowed`)."""
         return {"format": REFUSALS_FORMAT, "armed": self.armed, "refusals": [dict(r) for r in self._refusals],
-                "dropped": self._refused - len(self._refusals)}
+                "dropped": self._refused - len(self._refusals),
+                "allowed": [dict(r) for r in self._allowed],
+                "allowed_dropped": self._allowed_count - len(self._allowed)}
 
     # ------------------------------------------------------------- rules
 
@@ -751,7 +801,17 @@ class QaTarget:
             return CONTINUE
         if verb == "POST" and origin == self.base_origin and self._read_post(str(url)):
             return CONTINUE
+        if verb == "POST" and self._idp_token(url):
+            return Verdict("continue", origin, verb, allowed=IDP_TOKEN_ALLOWED)
         return Verdict("refuse", origin, verb)
+
+    def _idp_token(self, url: Any) -> bool:
+        """QA-IDP-POST: `url` is exactly the approved token URL, and the gate's
+        own sign-in has completed and holds (module docstring). The whole URL
+        is compared as a string: a query, a fragment, a port, userinfo, case
+        or an encoding is another URL."""
+        return (self.idp_token_url is not None and isinstance(url, str) and url == self.idp_token_url
+                and self.state == STATE_SIGNED_IN and not self.signing_in and not self.wiped)
 
     def _excluded(self, url: str) -> bool:
         path = _path_of(url)
@@ -812,6 +872,8 @@ def _parse(args: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(mutating, bool):
         raise QaTargetRefused("mutating")
     sign_in = _parse_sign_in(args.get("sign_in"), origins)
+    token_path, token_url = _parse_idp_token_path(args.get("idp_token_path"), origins,
+                                                  origin_of(base_url), sign_in["kind"])
     credential = None
     if sign_in["kind"] == "own_login":
         raw = args.get("credential")
@@ -826,8 +888,27 @@ def _parse(args: Mapping[str, Any]) -> dict[str, Any]:
     return {"target_id": target_id, "origins": origins, "base_url": base_url,
             "environment": environment, "navigation_ms": nav, "requests_per_s": rps,
             "read_posts": read_posts, "excluded_paths": paths, "mutating": mutating,
+            "idp_token_path": token_path, "idp_token_url": token_url,
             "sign_in": sign_in, "credential": credential,
             "challenge_bypass": _parse_bypass(args.get("challenge_bypass"))}
+
+
+def _parse_idp_token_path(raw: Any, origins: list[str], base_origin: str | None,
+                          sign_in_kind: str) -> tuple[str | None, str | None]:
+    """(path, the one URL it allows), checked again (QA-IDP-POST): swarm-api
+    took it only from a platform admin's approval with the extra origin, and
+    the hand-off crossed the worker. The extra origin is the one approved
+    origin that is not the base's; with none, or more than one, or a target
+    that never signs in, there is nothing to bound it, and it is refused."""
+    if raw is None:
+        return None, None
+    if (not isinstance(raw, str) or len(raw) > MAX_IDP_TOKEN_PATH or not _IDP_TOKEN_PATH.fullmatch(raw)
+            or any(segment in (".", "..") for segment in raw.split("/"))):
+        raise QaTargetRefused("idp_token_path")
+    extra = [o for o in origins if o != base_origin]
+    if sign_in_kind != "own_login" or len(extra) != 1:
+        raise QaTargetRefused("idp_token_path")
+    return raw, f"{extra[0]}{raw}"
 
 
 def _parse_bypass(raw: Any) -> tuple[str, str, str] | None:
@@ -1041,6 +1122,10 @@ class QaTargetGuard:
         url = request.get("url")
         top = self._top_document(session, params)
         verdict = self._target.judge(request.get("method"), url, top_document=top)
+        if verdict.allowed is not None:
+            # QA-IDP-POST: let through, and the run is told so, apart from the refusals.
+            self._record(verdict.allowed, {"method": verdict.method, "origin": verdict.origin})
+            self._target.note_allowed(verdict.allowed, verdict.method, url)
         if verdict.action == "refuse":
             self._record(WRITE_REFUSED, {"method": verdict.method, "origin": verdict.origin})
             self._target.note_refusal(WRITE_REFUSED, verdict.method, url)

@@ -148,7 +148,10 @@ gate's (`GATE_MARK`, `bad_responses`' `gate`). The manifest's
 `gate_refusals` counts the run's refusals by method and origin. A record
 that cannot be read leaves `gate_refused` null, never `[]`, and is not read
 again in that capture (`why` says what failed), so an unreadable gate costs
-one timeout, not one a route.
+one timeout, not one a route. The record's `allowed` list (QA-IDP-POST, part
+of #2067: a target's IdP token refresh, let through after the gate's sign-in)
+is not a refusal: the manifest names it apart, as `gate_refusals.allowed`, by
+label, method, origin and path, and no screen carries it as `gate_refused`.
 
 EVERY SHOT MASKS THE QA TARGET'S CREDENTIAL (QA-SHOT-MASK, part of #2055).
 The live gate replaces a QA target's configured credential (its password,
@@ -944,6 +947,8 @@ class _GateRefusals:
         self.armed: bool | None = None
         self.seen: dict[int, dict] = {}
         self.given: set[int] = set()
+        #: The record's `allowed` (QA-IDP-POST): let through, never refused.
+        self.allowed: dict[int, dict] = {}
 
     def _read(self) -> bool:
         if self.why is not None:
@@ -958,6 +963,12 @@ class _GateRefusals:
             record = _refusal(raw)
             if record is not None and record["at"] >= self.started:
                 self.seen[record["n"]] = record
+        allowed = document.get("allowed")
+        for raw in allowed if isinstance(allowed, list) else []:
+            record = _refusal(raw)
+            label = raw.get("label") if isinstance(raw, dict) else None
+            if record is not None and isinstance(label, str) and record["at"] >= self.started:
+                self.allowed[record["n"]] = {**record, "label": label[:MAX_ERROR_CHARS]}
         return True
 
     def during(self, start: float, end: float) -> list[dict] | None:
@@ -979,8 +990,14 @@ class _GateRefusals:
         for record in self.seen.values():
             key = (record["method"], record["origin"])
             counts[key] = counts.get(key, 0) + 1
+        allowed: dict[tuple[str, str, str, str], int] = {}
+        for record in self.allowed.values():
+            key = (record["label"], record["method"], record["origin"], record["path"])
+            allowed[key] = allowed.get(key, 0) + 1
         out: dict = {"read": self.why is None, "armed": self.armed, "count": len(self.seen),
-                     "by": [{"method": m, "origin": o, "count": c} for (m, o), c in sorted(counts.items())]}
+                     "by": [{"method": m, "origin": o, "count": c} for (m, o), c in sorted(counts.items())],
+                     "allowed": [{"label": lb, "method": m, "origin": o, "path": p, "count": c}
+                                 for (lb, m, o, p), c in sorted(allowed.items())]}
         if self.why is not None:
             out["why"] = self.why
         return out

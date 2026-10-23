@@ -56,6 +56,21 @@ reaches the fixer marked -- and is NEVER dropped. `verdict` is not read,
 written or reordered by any of it: the gate, auto-merge and the requirements
 decide exactly as they would without Jev.
 
+THE OWNER QUESTIONS THAT HOLD THE MERGE (#2070, owner decision 2026-10-23,
+option (c)). A review is given the workflow's owner questions
+(`owner_questions`, `owner-questions.json`) and writes, beside `verdict`:
+
+    "needs_owner":    [{"task_id", "step_id", "question_index", "question"}, ...]
+    "open_questions": [the same shape]
+
+`needs_owner` holds the unanswered questions that must hold the merge;
+`open_questions` the others, which the merge lists on the pull request.
+Both are read here as `OwnerQuestionRef`s, bounded. An entry that names no
+task id or no question index is not dropped silently: `needs_owner_unreadable`
+counts it, and the merge holds for it as for an unanswered one, because a
+hold the merge cannot read is still a hold. Neither key changes the gate:
+`verdict` alone decides who runs.
+
 AN UNREADABLE VERDICT FAILS THE ATTEMPT. It is not read as MERGE, which would
 publish unreviewed work, and not as NOT_YET, which would run a fixer against
 findings that are not there. Every refusal is `InputUnavailable`, so the
@@ -176,6 +191,70 @@ class FindingLocation:
         return record
 
 
+#: The verdict keys the review writes its owner questions under
+#: (`owner_questions.NEEDS_OWNER_KEY`, `OPEN_QUESTIONS_KEY`).
+NEEDS_OWNER_KEY = "needs_owner"
+OPEN_QUESTIONS_KEY = "open_questions"
+#: How many of each are kept: `questions.MAX_QUESTIONS` per step, a few steps.
+MAX_OWNER_QUESTIONS = 50
+#: The longest question text kept for a pull request comment or a park record.
+MAX_OWNER_QUESTION_CHARS = 500
+_TASK_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+@dataclass(frozen=True)
+class OwnerQuestionRef:
+    """One owner question a verdict names: whose, and which."""
+
+    task_id: str
+    question_index: int
+    step_id: str = ""
+    question: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"task_id": self.task_id, "step_id": self.step_id,
+                "question_index": self.question_index, "question": self.question}
+
+
+def owner_question_refs(value: Any) -> tuple[tuple[OwnerQuestionRef, ...], int]:
+    """`(refs, unreadable)` for a verdict's `needs_owner` or `open_questions`.
+
+    Absent or null is none. A value that is not a list is one unreadable
+    entry; so is every entry that is not an object with a task id and a
+    non-negative integer `question_index`. A repeated question is kept once.
+    Past `MAX_OWNER_QUESTIONS` the rest count as unreadable: the merge then
+    holds, rather than merging past a question it did not look at.
+    """
+    if value is None:
+        return (), 0
+    if not isinstance(value, list):
+        return (), 1
+    refs: list[OwnerQuestionRef] = []
+    unreadable = 0
+    seen: set[tuple[str, int]] = set()
+    for item in value:
+        task_id = item.get("task_id") if isinstance(item, dict) else None
+        index = item.get("question_index") if isinstance(item, dict) else None
+        if (not isinstance(task_id, str) or not _TASK_ID.match(task_id.strip())
+                or type(index) is not int or index < 0):
+            unreadable += 1
+            continue
+        key = (task_id.strip(), index)
+        if key in seen:
+            continue
+        seen.add(key)
+        if len(refs) >= MAX_OWNER_QUESTIONS:
+            unreadable += 1
+            continue
+        assert isinstance(item, dict)
+        refs.append(OwnerQuestionRef(
+            task_id=key[0], question_index=index,
+            step_id=_one_line(item.get("step_id"), MAX_WHERE_CHARS),
+            question=_one_line(item.get("question"), MAX_OWNER_QUESTION_CHARS),
+        ))
+    return tuple(refs), unreadable
+
+
 @dataclass(frozen=True)
 class Verdict:
     """A verdict file, read and bounded."""
@@ -189,6 +268,12 @@ class Verdict:
     locations: tuple[FindingLocation, ...] = field(default=())
     #: Findings whose `file`, `line` or `side` was offered and not kept.
     locations_dropped: int = 0
+    #: The unanswered owner questions the review said hold the merge (#2070).
+    needs_owner: tuple[OwnerQuestionRef, ...] = field(default=())
+    #: `needs_owner` entries that could not be read; the merge holds for them.
+    needs_owner_unreadable: int = 0
+    #: The other unanswered owner questions, listed on the pull request.
+    open_questions: tuple[OwnerQuestionRef, ...] = field(default=())
 
 
 def _normalise(value: Any) -> str | None:
@@ -471,6 +556,8 @@ def read_verdict(path: Path, *, task_id: str, filename: str) -> Verdict:
             locations.append(location)
         locations_dropped += dropped
     minors, minors_dropped = minor_findings(items)
+    needs_owner, needs_owner_unreadable = owner_question_refs(document.get(NEEDS_OWNER_KEY))
+    open_questions, _ = owner_question_refs(document.get(OPEN_QUESTIONS_KEY))
     return Verdict(
         verdict=verdict,
         findings=tuple(texts[:MAX_FINDINGS]),
@@ -479,6 +566,9 @@ def read_verdict(path: Path, *, task_id: str, filename: str) -> Verdict:
         minors_dropped=minors_dropped,
         locations=tuple(locations),
         locations_dropped=locations_dropped,
+        needs_owner=needs_owner,
+        needs_owner_unreadable=needs_owner_unreadable,
+        open_questions=open_questions,
     )
 
 
