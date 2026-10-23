@@ -361,7 +361,7 @@ describe('b. F2: the inspector says each thing once, in words', () => {
     // MUTATION: print the exit fact as-is for a failed step -- 'exit code 0'
     // reads as the step having succeeded.
     expect(flat(p)).not.toMatch(/exit (code ?)?0\b/)
-    expect(flat(p.querySelector('.wf-inspect-cause'))).toMatch(/process ended cleanly/)
+    expect(flat(p.querySelector('.wf-inspect-facts'))).toMatch(/agent process ?ended cleanly · the step failed on what it reported/)
   })
 })
 
@@ -424,8 +424,8 @@ describe('e. F5: a finished step’s empty Changes', () => {
     // MUTATION: put back 'no file known yet' for a step that has ended.
     expect(text).not.toMatch(/\byet\b/)
     // MUTATION: print `${n}+` when no step's list is known.
-    expect(text).not.toMatch(/\b0\+/)
-    expect(text).toMatch(/\b0 files across 6 steps/)
+    expect(text).not.toMatch(/(^|\D)0\+/)
+    expect(text).toMatch(/(^|\D)0 files across 6 steps/)
     // Still one column for the selected step (QAFIX5, L6).
     expect(within(table).getAllByRole('columnheader').map((th) => th.getAttribute('data-step') ?? 'File')).toEqual(['File', 'checkpoints'])
   })
