@@ -69,6 +69,37 @@ The agent cannot route around the guard with its own interception: while a
 target is held, the proxy refuses the agent's `Fetch.continueRequest` that
 rewrites a request's `url`, `method` or `postData` (`agent_refusal`).
 
+A CHALLENGE BYPASS ITS OWNER CONFIGURED, APPLIED BY THE GATE ALONE, ON THE
+TARGET'S OWN ORIGINS ALONE (§2.5; lane CAPTCHA-BYPASS, BGD 2026-10-23, part
+of #2058). The hand-off may carry `challenge_bypass: {kind, name, value}`:
+a header or a cookie the app's owner set up to skip their own CAPTCHA or
+WAF challenge for this platform's runs. The gate never solves a challenge
+and never hides from one; it presents the owner's own pass.
+
+* `header`: every request a gate session pauses whose URL's origin is one of
+  `origins` (the base origin and the approved `extra_origin`, exactly, port
+  included) is continued with the header added, a same-named header the
+  request already had replaced (`QaTargetGuard._paused`). No other request
+  gets it. Never `Network.setExtraHTTPHeaders`, which would send it to every
+  origin a page touches. An added header follows no redirect (M5 of
+  docs/design/qa-identity-measurements.md): a redirect's own request is a
+  pause of its own, judged by its own URL.
+* `cookie`: planted by the gate on its own pipe (`Storage.setCookies`, at
+  `QaTargetGuard.start`), once per approved origin, host-only (`url`, no
+  `domain`, so no subdomain is sent it), `Secure`, `HttpOnly` (no page
+  script, the agent's `Runtime.evaluate` included, reads it) and
+  `SameSite=None`, so the browser sends it to that host and no other. The
+  agent's CDP can neither read nor write cookies (cdppolicy.py), and the
+  session carry already leaves these origins' cookies out (`excluded_origins`).
+
+The name is checked again here against swarm-api's reserved list
+(`RESERVED_BYPASS_HEADERS`, `RESERVED_BYPASS_HEADER_PREFIXES`, restated:
+this image does not carry swarm-api; the bypass tests hold them equal). THE
+VALUE IS A SCRUB NEEDLE like the password: every agent-bound message has
+it replaced (a page that echoes its request headers, Chromium's
+`requestWillBeSentExtraInfo`), records carry its kind and never its name's
+value, and the wipe drops it while its needles stay.
+
 THE SESSION STAYS IN CHROMIUM (§2.3). `excluded_origins` is what the session
 carry (session.py) leaves out of every export and import: the cookies those
 hosts would be sent and their origins' storage.
@@ -166,6 +197,17 @@ MAX_ORIGINS = 4
 MAX_PATHS = 64
 #: The keys whose value is base64 when the message says so.
 _BODY_FIELDS = ("body", "content", "data")
+
+#: §2.5: swarm-api's `qaspec.CHALLENGE_BYPASS_KINDS`, `RESERVED_BYPASS_HEADERS`
+#: and `RESERVED_BYPASS_HEADER_PREFIXES`, and `qatargets._BYPASS_VALUE`, restated.
+BYPASS_KINDS = ("header", "cookie")
+RESERVED_BYPASS_HEADERS = frozenset({
+    "authorization", "cookie", "host", "set-cookie", "content-length", "transfer-encoding",
+    "connection", "upgrade", "te", "trailer", "keep-alive", "expect", "origin", "referer",
+})
+RESERVED_BYPASS_HEADER_PREFIXES = ("proxy-", "sec-")
+_BYPASS_NAME = re.compile(r"[A-Za-z0-9!#$%&'*+.^_|~-]{1,64}")
+_BYPASS_VALUE = re.compile(r"[!#-+\--:<-\[\]-~]{16,1024}")
 
 Record = Callable[[str, Mapping[str, Any]], None]
 Sleep = Callable[[float], Awaitable[None]]
@@ -289,6 +331,10 @@ class QaTarget:
         self.mutating = False
         self._username: str | None = None
         self._password: str | None = None
+        #: The challenge bypass (§2.5): its kind and name, and its value while held.
+        self.bypass_kind: str | None = None
+        self.bypass_name: str | None = None
+        self._bypass_value: str | None = None
         self._needles: list[str] = []
         self._byte_needles: list[bytes] = []
         self.state = STATE_NONE
@@ -320,6 +366,31 @@ class QaTarget:
         if self._username is None or self._password is None:
             raise QaTargetRefused("no_credential")
         return self._username, self._password
+
+    def bypass_header(self, url: Any) -> tuple[str, str] | None:
+        """(name, value) to add to a request for `url`: a header bypass held,
+        and `url`'s origin exactly one of the approved origins. Else None."""
+        if self.bypass_kind != "header" or self._bypass_value is None or self.bypass_name is None:
+            return None
+        if origin_of(url) not in self.origins:
+            return None
+        return self.bypass_name, self._bypass_value
+
+    def bypass_cookies(self) -> list[dict[str, Any]]:
+        """`Storage.setCookies`' cookies for a cookie bypass held: one per
+        approved origin, host-only, Secure and HttpOnly (module docstring)."""
+        if self.bypass_kind != "cookie" or self._bypass_value is None or self.bypass_name is None:
+            return []
+        return [{"name": self.bypass_name, "value": self._bypass_value, "url": f"{origin}/", "path": "/",
+                 "secure": True, "httpOnly": True, "sameSite": "None"}
+                for origin in self.origins if origin.startswith("https://")]
+
+    def _add_needles(self, secret: str) -> None:
+        for form in needles(secret):
+            if form not in self._needles:
+                self._needles.append(form)
+        self._needles.sort(key=len, reverse=True)
+        self._byte_needles = [n.encode("utf-8") for n in self._needles]
 
     def excluded_origins(self) -> tuple[str, ...]:
         """§2.3: the origins whose cookies and storage no session export carries."""
@@ -374,20 +445,23 @@ class QaTarget:
         self.mutating = parsed["mutating"] and self.environment == "non_production"
         self.cause = None
         self.sentence = None
+        bypass = parsed["challenge_bypass"]
+        if bypass is not None:
+            self.bypass_kind, self.bypass_name, self._bypass_value = bypass
+            self._add_needles(self._bypass_value)
+        else:
+            self.bypass_kind = self.bypass_name = self._bypass_value = None
         if own_login:
             username, password = parsed["credential"]
             self._username, self._password = username, password
-            for form in needles(password):
-                if form not in self._needles:
-                    self._needles.append(form)
-            self._needles.sort(key=len, reverse=True)
-            self._byte_needles = [n.encode("utf-8") for n in self._needles]
+            self._add_needles(password)
             self.sign_ins += 1
             self.state = STATE_SIGNING_IN
         else:
             self.state = STATE_READY
         self._record("qa_target_set", {"target_id": self.target_id, "sign_in": parsed["sign_in"]["kind"],
-                                       "sign_ins": self.sign_ins, "mutating": self.mutating})
+                                       "sign_ins": self.sign_ins, "mutating": self.mutating,
+                                       "challenge_bypass": self.bypass_kind})
         return self.status()
 
     def _refuse(self, code: str) -> None:
@@ -414,6 +488,7 @@ class QaTarget:
         self.wiped = True
         self._username = None
         self._password = None
+        self._bypass_value = None
         self.signing_in = False
         self._record("qa_target_wiped", {"target_id": self.target_id})
 
@@ -631,7 +706,26 @@ def _parse(args: Mapping[str, Any]) -> dict[str, Any]:
     return {"target_id": target_id, "origins": origins, "base_url": base_url,
             "environment": environment, "navigation_ms": nav, "requests_per_s": rps,
             "read_posts": read_posts, "excluded_paths": paths, "mutating": mutating,
-            "sign_in": sign_in, "credential": credential}
+            "sign_in": sign_in, "credential": credential,
+            "challenge_bypass": _parse_bypass(args.get("challenge_bypass"))}
+
+
+def _parse_bypass(raw: Any) -> tuple[str, str, str] | None:
+    """(kind, name, value), checked again: swarm-api refused a reserved name and
+    a value no header or cookie carries, and the hand-off crossed the worker."""
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping) or set(raw) != {"kind", "name", "value"}:
+        raise QaTargetRefused("challenge_bypass")
+    kind, name, value = raw.get("kind"), raw.get("name"), raw.get("value")
+    if kind not in BYPASS_KINDS or not isinstance(name, str) or not _BYPASS_NAME.fullmatch(name) \
+            or not isinstance(value, str) or not _BYPASS_VALUE.fullmatch(value):
+        raise QaTargetRefused("challenge_bypass")
+    lowered = name.lower()
+    if kind == "header" and (lowered in RESERVED_BYPASS_HEADERS
+                             or lowered.startswith(RESERVED_BYPASS_HEADER_PREFIXES)):
+        raise QaTargetRefused("challenge_bypass")
+    return kind, name, value
 
 
 def _parse_sign_in(raw: Any, origins: Iterable[str]) -> dict[str, Any]:
@@ -727,6 +821,12 @@ class QaTargetGuard:
         if self.started or self._closed or not self._target.armed:
             return
         self.started = True
+        cookies = self._target.bypass_cookies()
+        if cookies:
+            # §2.5: on the gate's own pipe, host-only, for the approved origins alone.
+            planted = await self._quietly("Storage.setCookies", {"cookies": cookies}, None)
+            self._record("qa_bypass_cookie" if planted is not None else "qa_bypass_cookie_refused",
+                         {"origins": len(cookies)})
         await self._quietly("Target.setDiscoverTargets", {"discover": True}, None)
         listed = await self._quietly("Target.getTargets", {}, None) or {}
         for info in listed.get("targetInfos") or []:
@@ -838,7 +938,26 @@ class QaTargetGuard:
             wait = self._target.request_wait()
         if wait > 0:
             await self._sleep(wait)
+        bypass = self._target.bypass_header(url)
+        if bypass is not None:
+            await self._continue_with(session, request_id, request.get("headers"), bypass)
+            return
         await self._quietly("Fetch.continueRequest", {"requestId": request_id}, session)
+
+    async def _continue_with(self, session: str, request_id: str, raw_headers: Any,
+                             bypass: tuple[str, str]) -> None:
+        """§2.5: the request's own headers, a same-named one dropped, and the bypass's."""
+        name, value = bypass
+        headers = raw_headers if isinstance(raw_headers, Mapping) else {}
+        out = [{"name": str(n), "value": str(v)} for n, v in headers.items() if str(n).lower() != name.lower()]
+        out.append({"name": name, "value": value})
+        try:
+            await self._cdp.call("Fetch.continueRequest", {"requestId": request_id, "headers": out}, session)
+        except Exception as exc:  # noqa: BLE001 -- never leave a request paused: it goes without the bypass
+            self._record("qa_bypass_continue_refused", {"cause": type(exc).__name__})
+            await self._quietly("Fetch.continueRequest", {"requestId": request_id}, session)
+        finally:
+            out.clear()
 
     async def _answer(self, session: str, request_id: str, status: int, content_type: str, body: bytes) -> None:
         done = await self._quietly("Fetch.fulfillRequest", {
@@ -1103,6 +1222,7 @@ async def handle_ctl(target: QaTarget, proxy: Any, args: Mapping[str, Any]) -> d
 
 
 __all__ = [
+    "BYPASS_KINDS", "RESERVED_BYPASS_HEADERS", "RESERVED_BYPASS_HEADER_PREFIXES",
     "BUSY", "CHALLENGE", "CHALLENGE_FRAMES", "CHALLENGE_SENTENCE", "EXHAUSTED", "FINAL", "MAX_SIGN_INS", "OP", "PLACEHOLDER",
     "QaTarget", "QaTargetGuard", "QaTargetRefused", "SIGN_IN_FAILED", "START_CLICK_MISSING", "SignIn", "Verdict",
     "handle_ctl",

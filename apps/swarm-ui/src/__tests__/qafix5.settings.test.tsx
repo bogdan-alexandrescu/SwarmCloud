@@ -236,14 +236,15 @@ describe('5b:QA-010: the register form does not say no profile takes MCP servers
     // The registrations name claude-code before /v1/capacity answers, so the
     // box is there (under "could not be read") while the read is in flight:
     // wait for the capacity read's own note before reading the group.
-    await waitFor(() => expect(visible(profilesGroup())).toMatch(/does not say which profiles take MCP servers/))
+    // (Worded for the person since QAFIX6-SETTINGS, 6:overview-automate-019.)
+    await waitFor(() => expect(visible(profilesGroup())).toMatch(/Could not read which runners take MCP servers/))
     const box = await within(profilesGroup()).findByRole('checkbox', { name: 'claude-code' })
     expect((box as HTMLInputElement).checked).toBe(false)
     // MUTATION: read a contract with no `inputs` as "declares nothing" (the
     // old `mcpProfiles`) -> no box, and the note says no profile takes MCP servers: red.
     expect(visible(profilesGroup())).not.toMatch(/No profile here takes MCP servers/)
     // MUTATION: drop the unserved note -> the form offers names without saying where they came from: red.
-    expect(visible(profilesGroup())).toMatch(/does not say which profiles take MCP servers/)
+    expect(visible(profilesGroup())).toMatch(/Could not read which runners take MCP servers; offering the ones your servers already use/)
   })
 
   it('offers what the runners declare when the API serves their inputs', async () => {
@@ -255,12 +256,15 @@ describe('5b:QA-010: the register form does not say no profile takes MCP servers
     expect(visible(profilesGroup())).not.toMatch(/does not say/)
   })
 
-  it('still says none takes them when every served contract declares none', async () => {
+  it('offers only what a registration names when every served contract declares none', async () => {
     await mountMcp(capacity('none-declare'))
-    // A measured "none": `inputs` is served and empty on every runner.
-    // MUTATION: treat an empty `inputs` as unserved -> the measured answer is lost: red.
-    expect(await within(profilesGroup()).findByText(/No profile here takes MCP servers yet/)).toBeTruthy()
-    expect(within(profilesGroup()).queryAllByRole('checkbox')).toHaveLength(0)
+    // A measured "none": `inputs` is served and empty on every runner. Since
+    // QAFIX6-SETTINGS (6:overview-automate-019) a profile the table already
+    // lists is still offered, so the form never says none takes them under it.
+    // MUTATION: treat an empty `inputs` as unserved -> the unserved note appears: red.
+    expect(await within(profilesGroup()).findByRole('checkbox', { name: 'claude-code' })).toBeTruthy()
+    expect(within(profilesGroup()).queryByRole('checkbox', { name: 'generic' })).toBeNull()
+    expect(visible(profilesGroup())).not.toMatch(/Could not read/)
   })
 })
 

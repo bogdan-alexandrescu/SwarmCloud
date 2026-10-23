@@ -309,7 +309,7 @@ function Registrations({ data, onChange }: { data: McpServerList; onChange: () =
               <th scope="col">Profiles</th>
               <th scope="col">Tools</th>
               <th scope="col">State</th>
-              <th scope="col">Last used</th>
+              <th scope="col" data-col="last">Last used</th>
               {data.can_manage && <th scope="col" aria-label="Actions" />}
             </tr>
           </thead>
@@ -438,13 +438,17 @@ function ServerForm({ editing, named, onDone }: { editing: McpServer | null; nam
   const state = capacity.state
   const read = state.status === 'ok' || state.status === 'stale'
   const served = state.status === 'ok' || state.status === 'stale' ? mcpProfiles(state.data.runner_profiles) : null
-  // Unread or unserved, the profiles this workspace's registrations already
-  // name are offered: the API accepted each of them as taking MCP servers.
-  const offered = [...new Set([...(served ?? named), ...profiles])].sort()
+  // The profiles this workspace's registrations already name are offered
+  // whatever the runner list says: the API accepted each of them as taking MCP
+  // servers, and the table above lists them (visual QA 6:overview-automate-019,
+  // #1680), so the form never says none does under a row naming one.
+  const offered = [...new Set([...(served ?? []), ...named, ...profiles])].sort()
+  // Words for the person, not about the API: what could not be read, and so
+  // where the offered names came from.
   const unsaid = served === null
     ? read
-      ? 'This API does not say which profiles take MCP servers'
-      : 'The runner list could not be read'
+      ? 'Could not read which runners take MCP servers'
+      : 'Could not read the runner list'
     : null
   const verb = editing === null ? 'Register' : 'Save'
 
@@ -550,8 +554,9 @@ function ServerForm({ editing, named, onDone }: { editing: McpServer | null; nam
                 </label>
               ))}
               <span className="jb-note">
-                {unsaid !== null && `${unsaid}; these are the profiles this workspace's servers already name. `}
-                None ticked allows every profile that takes MCP servers.
+                {unsaid !== null && `${unsaid}; offering the ones your servers already use. `}
+                Tick a profile to let only its agents use this server; none ticked allows every profile that takes MCP
+                servers.
               </span>
             </>
           )}

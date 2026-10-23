@@ -369,6 +369,27 @@ working auth tier — `uv run swarm doctor` says which deployment it resolved
 and from where, which tier this machine has, **which door it will use**, and
 what that door takes.
 
+### How the bridge paces its calls to the API
+
+Every live row's `swarm_follow` and every other tool call this session makes
+reach swarm-api as one principal, which the API allows 20 requests a second
+with a burst of 40. So the bridge holds itself below that: a quick call (a
+submit, a check, a status) goes before a hold (a row waiting on its task),
+reads several rows share are made once, and a GET answered 429 is tried again
+— a quick one for at most 20 s of waiting in all, so a person is never held
+minutes by a rate-limit storm. Three settings move it, read once when the
+bridge starts, from the environment Claude Code was started with:
+
+| setting | what it bounds | default | why that default |
+|---|---|---|---|
+| `SWARM_MCP_MAX_HOLDS` | how many holds — rows waiting on a task — the bridge runs at once; held to 32–1024 | 256 | 50 five-step workflows, three times the 17 measured on #1437; a waiting hold costs one mostly idle thread. Under 32 one big workflow's rows queue again; over 1024 threads is a host problem |
+| `SWARM_MCP_RATE_PER_SECOND` | requests a second the bridge sends swarm-api; held to 0.5–20 | 15 | below the API's 20/s, so the console open as the same person keeps 5/s; never above 20, since a gate above the limit it exists to stay under is no gate |
+| `SWARM_MCP_RATE_BURST` | requests the bridge may send at once before the rate applies; held to 1–40 | 30 | below the API's burst of 40, so the console keeps 10; a third of it is kept for quick calls, which holds never spend |
+
+A value that is not a number is ignored and the default used. Raising the
+rate or the burst toward the API's own figures leaves nothing for the console
+and the `sc` commands run beside the session, which then answer 429.
+
 ### Where the API actually is
 
 Wherever **you** configured it: `--context`, `SWARM_URL`, the plugin's

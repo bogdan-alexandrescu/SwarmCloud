@@ -19,6 +19,7 @@ life. It lives in this process and nowhere else.
 
 from __future__ import annotations
 
+import collections
 import copy
 import email.utils
 import json
@@ -947,6 +948,18 @@ RETRY_429_DELAYS = (2.0, 4.0, 8.0)
 RETRY_JITTER = 0.25
 RETRY_AFTER_CAP_SECONDS = 60.0
 
+#: The most a QUICK call's GET waits out 429s in all, summed over its retries;
+#: a retry that would pass it is not taken, and the 429 is reported. A quick
+#: call is one a person is waiting on -- a submit's read, a check, a status --
+#: and under a 429 storm the cap above, three times over, held one for about
+#: three minutes, and every caller joined to its shared read as long (review
+#: of PR 1455, BRIDGE-POOL). 20 s still covers the default backoff whole
+#: (2 + 4 + 8, at most 17.5 s with jitter), so a passing burst is ridden out,
+#: while a `Retry-After` longer than that is the API saying the storm will
+#: outlast the person's patience. A hold is not bounded by it: it is a row
+#: waiting in the background, and its own poll already waits out a 429.
+QUICK_RETRY_BUDGET_SECONDS = 20.0
+
 #: Which lane the current thread serves: the bridge's hold pool marks its
 #: threads at start (`enter_hold_lane`), and the rate gate reads it.
 _LANE = threading.local()
@@ -975,7 +988,16 @@ def _env_number(environ: Any, name: str, default: float, low: float, high: float
 
 class RateGate:
     """A token bucket: `rate` per second, `burst` at most, with a `reserve`
-    a hold may not spend (see `RATE_HOLD_RESERVE_FRACTION`)."""
+    a hold may not spend (see `RATE_HOLD_RESERVE_FRACTION`).
+
+    WAITERS QUEUE, AND ONLY THE HEAD WAITS FOR THE REFILL. Every waiter used
+    to sleep on one condition to the moment the bucket would hold its token,
+    so 256 holds woke together at every refill, one took the token and 255
+    slept again (review of PR 1455). Now the head of the queue -- the first
+    quick caller, else the first hold -- sleeps to its refill, and a waiter
+    behind it sleeps untimed until the one before it leaves and wakes it
+    (`_wake_head`): one wake per token, in arrival order within a lane, and
+    quick callers still before every hold."""
 
     def __init__(
         self,
@@ -992,7 +1014,10 @@ class RateGate:
         self._clock = clock
         self._tokens = float(self.burst)
         self._stamp = clock()
-        self._cond = threading.Condition()
+        self._lock = threading.Lock()
+        # One condition per waiter, on the one lock, so a wake names its thread.
+        self._quicks: collections.deque[threading.Condition] = collections.deque()
+        self._holds: collections.deque[threading.Condition] = collections.deque()
         self._quick_waiting = 0
 
     def _refill(self) -> None:
@@ -1000,26 +1025,42 @@ class RateGate:
         self._tokens = min(float(self.burst), self._tokens + (now - self._stamp) * self.rate)
         self._stamp = now
 
+    def _head(self) -> threading.Condition | None:
+        if self._quicks:
+            return self._quicks[0]
+        return self._holds[0] if self._holds else None
+
+    def _wake_head(self) -> None:
+        head = self._head()
+        if head is not None:
+            head.notify()
+
     def take(self, *, hold: bool = False) -> None:
         """Return once this caller has a token."""
-        with self._cond:
+        with self._lock:
             floor = 1.0 + (self.reserve if hold else 0)
-            counted = False
+            queue = self._holds if hold else self._quicks
+            me = threading.Condition(self._lock)
+            queue.append(me)
+            if not hold:
+                self._quick_waiting += 1
             try:
                 while True:
+                    if self._head() is not me:
+                        # Woken by the waiter before it, or by a quick caller
+                        # taking the head from this hold.
+                        me.wait()
+                        continue
                     self._refill()
-                    if self._tokens >= floor and (not hold or self._quick_waiting == 0):
+                    if self._tokens >= floor:
                         self._tokens -= 1.0
                         return
-                    if not hold and not counted:
-                        self._quick_waiting += 1
-                        counted = True
-                    short = max(floor - self._tokens, 0.0)
-                    self._cond.wait(timeout=max(short / self.rate, 0.001))
+                    me.wait(timeout=max((floor - self._tokens) / self.rate, 0.001))
             finally:
-                if counted:
+                queue.remove(me)
+                if not hold:
                     self._quick_waiting -= 1
-                    self._cond.notify_all()
+                self._wake_head()
 
 
 class _Flight:
@@ -1558,8 +1599,13 @@ class SwarmClient:
         timeout: int,
     ) -> Any:
         """`_request_once`, and for a GET answered 429, up to
-        `len(RETRY_429_DELAYS)` more tries (`RETRY_429_DELAYS`)."""
+        `len(RETRY_429_DELAYS)` more tries (`RETRY_429_DELAYS`) -- for a quick
+        call, only while their waits sum to `QUICK_RETRY_BUDGET_SECONDS`."""
         tried = 0
+        waited = 0.0
+        # A quick call stops at `QUICK_RETRY_BUDGET_SECONDS` of waiting; its
+        # shared read's waiters are then handed the same 429 (`SharedReads`).
+        budget = None if in_hold_lane() else QUICK_RETRY_BUDGET_SECONDS
         while True:
             try:
                 return self._request_once(method, path, payload=payload, timeout=timeout)
@@ -1570,7 +1616,10 @@ class SwarmClient:
                     delay = min(exc.retry_after, RETRY_AFTER_CAP_SECONDS)
                 else:
                     delay = RETRY_429_DELAYS[tried] * (1.0 + random.uniform(0.0, RETRY_JITTER))
+                if budget is not None and waited + delay > budget:
+                    raise
                 tried += 1
+                waited += delay
                 self._sleep(delay)
 
     def _request_once(
