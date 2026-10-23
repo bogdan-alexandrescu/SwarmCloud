@@ -1025,6 +1025,47 @@ Why the choices in it:
   That is the run-time half of QA-KIT's "the model receives the screenshot as
   an image": the report quotes it, so a run where the model got no image says
   so in the report.
+* **Amendment, 2026-10-23 (QAFIX6-QATEMPLATE, epic #1680): the flows' error
+  and evidence rules.** The committed template, not the JSON above, is what
+  runs; these rules are now in all three flow prompts, and
+  `tests/unit/mcp/test_qa_workflow_template.py` holds each.
+  * *A stale ref is not a refusal.* Playwright MCP answers a ref from an old
+    snapshot with "Ref … not found in the current page snapshot". Run 6 read
+    two of those as refusals, and the rule that a second refusal ends the run
+    ended `flow-submit-form` before three runner profiles and the submit
+    (6:flow-submit-form-run-01; run 5b had retried one against the rule then
+    in force). The page had not failed: the ref was old. A flow now takes a
+    new `browser_snapshot` and uses its ref, and only three stale refs in a
+    row on one step count as a refusal. A malformed call is still retried
+    once and a second refusal still ends the run.
+  * *A stop ends the run, not the step.* In run 6 the desktop preset's stop
+    ended the step, so nothing was recorded at 390
+    (6:flow-submit-form-run-02). A stop the agent's own calls caused ends that
+    preset or theme, and the next one runs. A page or browser failure (a
+    timeout, a navigation error, a closed page) still ends the whole step:
+    that is the run 2 rule, and a hung tool call still costs up to 1800 s.
+  * *Cite only what is bundled.* Run 6's json cited a console log its tar did
+    not hold and called a state reached over a screenshot that showed
+    otherwise (-03, -04); run 5b's ff-desktop-08 was read from a page
+    snapshot alone. Each flow cites only files it bundles and lists a
+    screenshot for every state it calls reached, and `flow-report` checks
+    both against the tar.
+  * *Read the console log, and give it a time base.* Run 6's workflow-graph
+    log recorded the dev server lost at +67.7 s, and the json never said so;
+    the log carried no start time, so the report could not place the loss
+    against the screenshots (6:flow-workflow-graph-run-01). Each flow writes
+    `date +%s` into the log when it starts and reads it before writing its
+    json.
+  * *Run 5b's flow boxes.* A tie in "most recent" is broken by the task's own
+    end time and the choice is stated; both find-failure runs go through
+    Agents › Recent; the workflow-graph goal includes the step's `Agent’s
+    changes ›` and `Logs ›`, since its Changes page can show no change; the
+    dark run's switch reading "System" is stated as expected (dark is set
+    through `prefers-color-scheme`); `flow-submit-form.json` states its goal
+    and per-preset steps, with elapsed minutes computed from the same
+    `date +%s` start and end; a page that scrolls inside its main region is
+    shot in segments, since `fullPage` returns only the viewport there; and
+    findings are filed per preset or theme.
 * **No `resource_class`**: each profile's own class is the right one.
 * **The authenticated arm is not in the template.** Once QA-IDENTITY's option
   is built, it is one more group of steps on `claude-code-browser` against the
