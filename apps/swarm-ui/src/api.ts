@@ -7199,6 +7199,191 @@ export async function deleteProviderKey(provider: string, scope: ProviderKeyScop
 }
 
 // ---------------------------------------------------------------------------
+// The workspace secrets store (SEC-STORE-API; docs/design/workspace-secrets.md
+// §5). Settings › Workspace › Secrets (WorkspaceSecrets.tsx) is the only
+// caller. A VALUE IS AN ARGUMENT OF `createWorkspaceSecret` AND NOTHING ELSE:
+// it goes into that one request's body and is not kept, logged or returned
+// here. A record is copied field by field from an allow-list
+// (`normWorkspaceSecret`), so a value, a length or the last characters a
+// response carried by mistake are never drawn -- the API's own `record_api`
+// is an allow-list for the same reason.
+// ---------------------------------------------------------------------------
+
+/** One grant as the list serves it: a consumer name and whether it is on. */
+export interface WorkspaceSecretGrant {
+  consumer: string
+  enabled: boolean
+}
+
+/** One stored secret: never a value, its length, a prefix or a suffix. */
+export interface WorkspaceSecret {
+  name: string
+  provider: string
+  kind: string
+  current_version: string | null
+  /** The newest write: the rotation if there was one, else the creation. */
+  set_at: string | null
+  set_by: string | null
+  grants: WorkspaceSecretGrant[]
+  /**
+   * When an attempt was last released it; null when none was. Undefined when
+   * the API does not serve the field: SEC-STORE-API's list does not yet, and
+   * the page says so rather than "never".
+   */
+  last_used_at: string | null | undefined
+}
+
+/** `GET /v1/workspace/secrets`, as the page reads it. */
+export interface WorkspaceSecretList {
+  tenant_id: string
+  /** Only an explicit true: an unread flag offers no write. */
+  can_manage: boolean
+  secrets: WorkspaceSecret[]
+}
+
+/** `GET /v1/workspace/secrets/consumers`: what the add form offers. */
+export interface WorkspaceSecretCatalogue {
+  kinds: string[]
+  providers: string[]
+}
+
+/** What a create sends: `value` for a one-line kind, `fields` for a structured one. */
+export interface WorkspaceSecretCreate {
+  name: string
+  provider: string
+  kind: string
+  value?: string
+  fields?: Record<string, string>
+}
+
+function wsText(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : typeof v === 'number' ? String(v) : null
+}
+
+function wsStrings(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string' && s !== '') : []
+}
+
+function normWorkspaceSecret(raw: unknown): WorkspaceSecret | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const r = raw as Record<string, unknown>
+  const name = wsText(r.name)
+  if (name === null) return null
+  const grants = (Array.isArray(r.grants) ? r.grants : []).flatMap((g): WorkspaceSecretGrant[] => {
+    if (typeof g !== 'object' || g === null) return []
+    const consumer = wsText((g as Record<string, unknown>).consumer)
+    return consumer === null ? [] : [{ consumer, enabled: (g as Record<string, unknown>).enabled === true }]
+  })
+  const rotated = wsText(r.rotated_at)
+  return {
+    name,
+    provider: wsText(r.provider) ?? '',
+    kind: wsText(r.kind) ?? '',
+    current_version: wsText(r.current_version),
+    set_at: rotated ?? wsText(r.created_at),
+    set_by: rotated !== null ? wsText(r.rotated_by) : wsText(r.created_by),
+    grants,
+    last_used_at: 'last_used_at' in r ? wsText(r.last_used_at) : undefined,
+  }
+}
+
+function normWorkspaceSecretList(raw: unknown): WorkspaceSecretList {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  return {
+    tenant_id: wsText(r.tenant_id) ?? '',
+    can_manage: r.can_manage === true,
+    secrets: (Array.isArray(r.secrets) ? r.secrets : []).map(normWorkspaceSecret).filter((s): s is WorkspaceSecret => s !== null),
+  }
+}
+
+function normWorkspaceSecretCatalogue(raw: unknown): WorkspaceSecretCatalogue {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  return { kinds: wsStrings(r.kinds), providers: wsStrings(r.providers) }
+}
+
+/**
+ * The fixture build's list: one secret on the personal workspace, which its
+ * owner manages, granted to two consumers and not a third. No value: the API
+ * serves none.
+ */
+async function fixtureWorkspaceSecrets(target: ApiRoute): Promise<Result<WorkspaceSecretList>> {
+  await new Promise((r) => setTimeout(r, 80))
+  noteFixtureProbe(target, 80, true)
+  const at = new Date(Date.now() - 2 * 86_400_000).toISOString()
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: normWorkspaceSecretList({
+      tenant_id: 'u-bogdan',
+      can_manage: true,
+      secrets: [{
+        name: 'typesafe-key', provider: 'typesafe', kind: 'api_key', current_version: '1',
+        created_at: at, created_by: 'alice@example.com', rotated_at: null, rotated_by: null,
+        grants: [
+          { consumer: 'tool:jev-browser', enabled: true },
+          { consumer: 'component:judge', enabled: true },
+          { consumer: 'profile:claude-code', enabled: false },
+        ],
+      }],
+    }),
+  }
+}
+
+/** The fixture build's answer to a secrets WRITE: not served, as an API without the routes answers. */
+function fixtureSecretsNotServed(target: ApiRoute): Result<unknown> {
+  noteFixtureProbe(target, 0, false)
+  return {
+    status: 'error',
+    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no workspace-secret writes.', template: target.template },
+  }
+}
+
+/** `GET /v1/workspace/secrets`: the selected workspace's secrets and grants, and whether this caller manages them. */
+export async function loadWorkspaceSecrets(): Promise<Result<WorkspaceSecretList>> {
+  const target = route('/v1/workspace/secrets')
+  if (USE_FIXTURES) return fixtureWorkspaceSecrets(target)
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normWorkspaceSecretList(r.data) }
+  return r
+}
+
+/** `GET /v1/workspace/secrets/consumers`: the kinds and providers a secret may be stored as. */
+export async function loadWorkspaceSecretCatalogue(): Promise<Result<WorkspaceSecretCatalogue>> {
+  const target = route('/v1/workspace/secrets/consumers')
+  if (USE_FIXTURES) {
+    noteFixtureProbe(target, 0, true)
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: { kinds: ['api_key', 'bearer_token', 'basic_auth', 'oauth_client', 'opaque'], providers: ['anthropic', 'brave', 'openai', 'typesafe', 'other'] },
+    }
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normWorkspaceSecretCatalogue(r.data) }
+  return r
+}
+
+/**
+ * `POST /v1/workspace/secrets`: store a secret, its value once. `linkToken`
+ * is the `t` of a one-time add link, sent back so the API can consume it; it
+ * authorises nothing (the caller's session does). The answer is not handed
+ * back: it is a record, and the page reads the list again.
+ */
+export async function createWorkspaceSecret(body: WorkspaceSecretCreate, linkToken: string | null): Promise<Result<null>> {
+  const target = route('/v1/workspace/secrets')
+  if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<null>
+  const r = await write(target, 'POST', linkToken === null ? body : { ...body, link_token: linkToken })
+  return r.status === 'error' ? r : { status: 'ok', fetchedAt: Date.now(), data: null }
+}
+
+/** `DELETE /v1/workspace/secrets/{name}`: destroy every version and disable every grant; the body repeats the name. */
+export async function deleteWorkspaceSecret(name: string): Promise<Result<unknown>> {
+  const target = route('/v1/workspace/secrets/{name}', { name })
+  if (USE_FIXTURES) return fixtureSecretsNotServed(target)
+  return write(target, 'DELETE', { name })
+}
+
+// ---------------------------------------------------------------------------
 // Settings › Profile (docs/design/user-profile.md §4.2; PROFILE-API, PR #1544).
 // Profile.tsx is the only caller. Every field is copied BY NAME from an
 // allow-list, as the API builds it, so a field a response carries by mistake

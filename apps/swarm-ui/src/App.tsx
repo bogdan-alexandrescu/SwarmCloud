@@ -30,11 +30,12 @@ import {
 } from './fetch'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP as HELP_TOPICS, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, type TopicId } from './help'
-import { GITHUB_CALLBACK_ADDRESS, KEY_LINK_ADDRESS, QA_LINK_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, keyLinkScope, keyLinkToken, pathToAddress } from './paths'
+import { GITHUB_CALLBACK_ADDRESS, KEY_LINK_ADDRESS, QA_LINK_ADDRESS, SECRETS_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, keyLinkScope, keyLinkToken, pathToAddress, secretsLinkToken, secretsLinkView } from './paths'
 import { GitHubCallbackScreen } from './GitHubConnect'
 import { ProviderKeysScreen } from './ProviderKeys'
 import { WorkspaceSettingsScreen } from './CodeIntelligence'
 import { McpServersScreen } from './McpServers'
+import { WorkspaceSecretsEntry, WorkspaceSecretsScreen, secretsLinkOf } from './WorkspaceSecrets'
 import { NotFound, nearestPath } from './NotFound'
 import { fmtLatency } from './panes'
 import { Icon, SkyShell, type SpineSection } from './Spine'
@@ -596,6 +597,18 @@ const WORKSPACE_TAB = 'workspace'
 /** The page's `<h1>` and the second half of its name in the issue forms. */
 const WORKSPACE_LABEL = 'Workspace'
 /**
+ * SETTINGS › WORKSPACE › SECRETS (SEC-UI-LIST, part of #1347;
+ * docs/design/workspace-secrets.md §5): the workspace secrets store, a pane
+ * of Workspace, entered from a card on it. Its one-time link,
+ * `settings/workspace/secrets?action=..`, opens the same page; the token
+ * never enters the address (paths.ts `SECRETS_ADDRESS`). Not a SECTIONS tab,
+ * so the issue forms' "Where" list is unchanged: a report about it names
+ * Settings › Workspace, the page it is a pane of.
+ */
+const SECRETS_TAB = SECRETS_ADDRESS.slice(SETTINGS.length + 1)
+/** The page's `<h1>` and the head's crumb. */
+const SECRETS_LABEL = 'Workspace secrets'
+/**
  * SETTINGS › MCP SERVERS (MCP-UI; docs/design/registered-mcp-servers.md
  * §4.11): the workspace's registered MCP servers, which a task names on
  * Submit. A sibling of Workspace and not a section, for the same reason. One
@@ -988,6 +1001,11 @@ export function fromAddress(full: string): Route {
   // as the eleven-item nav's Pool limits. Only the link's scope is kept.
   if (hash === `${SETTINGS}/${KEYS_TAB}`) return { sectionId: SETTINGS, tab: KEYS_TAB, ...blank }
   if (hash === `${SETTINGS}/${WORKSPACE_TAB}`) return { sectionId: SETTINGS, tab: WORKSPACE_TAB, ...blank }
+  if (hash === SECRETS_ADDRESS) {
+    // The link's action and name, never a token (`secretsLinkView`).
+    const view = secretsLinkView(query)
+    return { sectionId: SETTINGS, tab: SECRETS_TAB, ...blank, ...(view === '' ? {} : { view }) }
+  }
   if (hash === `${SETTINGS}/${MCP_TAB}`) return { sectionId: SETTINGS, tab: MCP_TAB, ...blank }
   if (hash === `${SETTINGS}/${PROFILE_TAB}`) return { sectionId: SETTINGS, tab: PROFILE_TAB, ...blank }
   if (hash === `${SETTINGS}/${PEOPLE_TAB}`) return { sectionId: SETTINGS, tab: PEOPLE_TAB, ...blank }
@@ -1225,6 +1243,16 @@ export function App() {
   // later than this render, behind a takeover, and would find it gone. Held
   // here and handed to that page, never written into a route.
   const keyLink = useRef(typeof window === 'undefined' ? null : keyLinkToken(window.location.pathname, window.location.search))
+  // THE SECRETS LINK'S TOKEN (paths.ts `SECRETS_ADDRESS`), read here for the
+  // key link's reason and handed to Settings › Workspace › Secrets, which
+  // sends it once with its first add. Never written into a route or storage.
+  const secretsLink = useRef(typeof window === 'undefined' ? null : secretsLinkToken(window.location.pathname, window.location.search))
+  // Dropped once that page has mounted with it, as the QA link is below, so a
+  // later visit is never handed a token already sent.
+  const onSecretsPage = at.missing == null && at.taskId === null && at.sectionId === SETTINGS && at.tab === SECRETS_TAB
+  useEffect(() => {
+    if (onSecretsPage) secretsLink.current = null
+  }, [onSecretsPage])
   // THE QA CREDENTIAL LINK'S TARGET AND TOKEN (lane VQ6-ROUTE; paths.ts
   // `QA_LINK_ADDRESS`), read here for the key link's reason, before the
   // normalise effect rewrites the bar to `/repositories?page=qa-targets`.
@@ -1411,13 +1439,15 @@ export function App() {
           : at.sectionId === SETTINGS
             ? at.tab === WORKSPACE_TAB
               ? WORKSPACE_LABEL
-              : at.tab === MCP_TAB
-                ? MCP_LABEL
-                : at.tab === PROFILE_TAB
-                  ? PROFILE_LABEL
-                  : at.tab === PEOPLE_TAB
-                    ? PEOPLE_LABEL
-                    : KEYS_LABEL
+              : at.tab === SECRETS_TAB
+                ? SECRETS_LABEL
+                : at.tab === MCP_TAB
+                  ? MCP_LABEL
+                  : at.tab === PROFILE_TAB
+                    ? PROFILE_LABEL
+                    : at.tab === PEOPLE_TAB
+                      ? PEOPLE_LABEL
+                      : KEYS_LABEL
             : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
   const object = at.missing ? null : documentObjectOf(at)
   useEffect(() => {
@@ -1508,7 +1538,14 @@ export function App() {
                 ) : at.sectionId === GITHUB_CALLBACK ? (
                   <GitHubCallbackScreen go={go} />
                 ) : at.sectionId === SETTINGS && at.tab === WORKSPACE_TAB ? (
-                  <WorkspaceSettingsScreen />
+                  // The secrets store is a pane of this page (SEC-UI-LIST):
+                  // its entry card sits under the page's own, at the page's gap.
+                  <div className="pk-page">
+                    <WorkspaceSettingsScreen />
+                    <WorkspaceSecretsEntry />
+                  </div>
+                ) : at.sectionId === SETTINGS && at.tab === SECRETS_TAB ? (
+                  <WorkspaceSecretsScreen link={at.view ? { ...secretsLinkOf(at.view), token: secretsLink.current } : null} />
                 ) : at.sectionId === SETTINGS && at.tab === MCP_TAB ? (
                   <McpServersScreen />
                 ) : at.sectionId === SETTINGS && at.tab === PROFILE_TAB ? (
@@ -1598,7 +1635,7 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
     case GITHUB_CALLBACK:
       return 'work'
     // EVERY SETTINGS PAGE LIGHTS PROFILE (NAV-PROFILE; part of #1633): its
-    // panel holds them. Only the six exact addresses are these pages;
+    // panel holds them. Only the seven exact addresses are these pages;
     // `#settings/<anything else>` is Pool limits (LEGACY), and lights Admin.
     case SETTINGS:
       return PROFILE_PANEL_TABS.includes(tab) ? 'profile' : null
@@ -1608,7 +1645,7 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
 }
 
 /** The settings tabs Profile's panel lists, and the one-time key link that opens API keys. */
-const PROFILE_PANEL_TABS: readonly string[] = [PROFILE_TAB, KEYS_TAB, KEY_LINK_TAB, WORKSPACE_TAB, MCP_TAB, PEOPLE_TAB]
+const PROFILE_PANEL_TABS: readonly string[] = [PROFILE_TAB, KEYS_TAB, KEY_LINK_TAB, WORKSPACE_TAB, SECRETS_TAB, MCP_TAB, PEOPLE_TAB]
 
 /**
  * THE HEAD (§B3): 44px, spanning the work area, above everything routed.
