@@ -722,7 +722,14 @@ tenant_job_vpc_egress = true
 # vpc-access-egress all-traffic on swarm-subnet-us-central1 and the swarm-worker
 # tag, as the runbook's switch-on check requires. Its GKE workers already passed
 # every state route on the first try (196 calls, all 200).
-state_via_api_tenants = ["u-bogdan"]
+# ISOLATION CUTOVER STEP b1 (#1457, docs/runbooks/isolation-cutover.md b1).
+# eng joins u-bogdan on the state routes. a2 closed first (2026-10-23): u-bogdan's
+# worker lost its direct Firestore role, its verify read 34 of 34 objects, and the
+# isolation probe from a u-bogdan pod passed all three checks. BGD chose on
+# 2026-10-23 to prepare b1 and merge it. The release renders "u-bogdan,eng";
+# rollback is removing "eng" here (a1's rollback). eng's Firestore role stays
+# bound until b2, which is a separate plan at dev-iam.
+state_via_api_tenants = ["u-bogdan", "eng"]
 # ISOLATION CUTOVER STEP a2 (#1457, docs/runbooks/isolation-cutover.md):
 # swarm-api records u-bogdan as a tenant whose worker has no direct Firestore
 # access (WORKER_FIRESTORE_OFF_TENANTS), so the next admin action writes
