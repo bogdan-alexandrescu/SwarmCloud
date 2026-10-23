@@ -340,7 +340,12 @@ other team's `agents-staging` cluster logs. So:
   `managed-by=swarm-terraform`.
 * **IAM row L-1:** `roles/logging.viewAccessor` for swarm-api's account
   **on that view only** (the resource-level binding with the view name in its
-  condition), not project-wide. Owner at dev-iam (§3.12).
+  condition), not project-wide. Owner at dev-iam (§3.12). **Since
+  2026-10-23 L-1 is applied by the owner's bootstrap
+  (`terraform/bootstrap/log_view_read.tf`), not by CI's release** (BGD's
+  decision, #1960): CI's dev-iam apply of it failed with "Error 403: The
+  caller does not have permission" (release run 39888771458), because the
+  deployer's `roles/logging.configWriter` cannot set IAM on a log view.
 
 **Owner decision, 2026-10-22 (Q4): "A log view filtered to SwarmCloud
 resources, viewAccessor on the view only".** Row L-1 is decided as written;
@@ -539,7 +544,7 @@ acted on. `<option>` must be one of the question's option labels.
 | registration field | `workflow_files` (workspace-admin-set, off by default, audited; BGD 2026-10-22, #2029) | no |
 | runner profile | `claude-code-large` (contract request 113, accepted by the owner, Q6) | no IAM; the contract change is accepted, lane AU-9 applies it |
 | Terraform | log view `swarm-workers` on `_Default` | **yes**, with L-1 |
-| **IAM L-1** | swarm-api's account: `roles/logging.viewAccessor` on the view `swarm-workers` only | **yes** (decided, Q4; applied by the owner) |
+| **IAM L-1** | swarm-api's account: `roles/logging.viewAccessor` on the view `swarm-workers` only | **yes** (decided, Q4; applied by the owner). Since 2026-10-23 the owner applies it with `scripts/bootstrap.sh` (`terraform/bootstrap/log_view_read.tf`), not CI's release at `dev-iam`, whose apply of it 403'd (BGD's decision, #1960) |
 | ~~**IAM L-2**~~ | **Removed** (BGD, 2026-10-22, #2029): swarm-api's `secretmanager.secretAccessor` on `swarm-tenant-<platform tenant>-git-wf`. A workflow-file push uses an App installation token minted per push; no IAM row replaces it | **yes**, the removal holds at `dev-iam` |
 | ~~**secret**~~ | **Removed** (#2029): `swarm-tenant-<platform tenant>-git-wf` and `create-secrets.sh --git-wf` | no |
 

@@ -894,3 +894,19 @@ variable "front_door_admit_role_bound" {
   type        = bool
   default     = false
 }
+
+variable "swarm_workers_log_view_exists" {
+  description = <<-EOT
+    Whether terraform/infra has created the swarm-workers log view on the
+    swarm-worker-logs bucket (its swarm_workers_log_view_enabled), so this
+    root grants IAM row L-1 on it: swarm-api's roles/logging.viewAccessor in
+    that view's own policy (log_view_read.tf, agent-autonomy.md §3.5).
+  EOT
+  type        = bool
+  # On: this root's project is dev's, and dev.tfvars turns the view on (BGD,
+  # 2026-10-22, #1960). BGD moved L-1 here on 2026-10-23 (#1960) after CI's
+  # dev-iam apply of it 403'd (release run 39888771458). Set it false for a
+  # project whose infra has the view off: a binding on a view that does not
+  # exist fails the apply.
+  default = true
+}
