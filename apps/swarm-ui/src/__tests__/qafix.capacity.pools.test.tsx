@@ -147,6 +147,12 @@ describe('QA-053: the Use track shows on a tinted row', () => {
 describe('QA-054: the summary wraps between clauses', () => {
   it('holds `tenant u-bogdan` on one line at 390', async () => {
     await renderPools()
+    // The words are unchanged for a reader and for a copy. `1 too small` is
+    // resource:large at 0 / 2 under a 4-unit class, which the summary counts
+    // since 6:capacity-011 (QAFIX6-CAPACITY) -- once the class catalogue,
+    // read after the board, has arrived, so the line is waited for.
+    const line = /^5 pools in 3 families · 1 paused · 1 too small · tenant u-bogdan$/
+    await waitFor(() => expect(document.querySelector('.cap-clause')?.parentElement?.textContent).toMatch(line), WAIT)
     const clauses = [...document.querySelectorAll<HTMLElement>('.cap-clause')]
     const tenant = clauses.find((c) => c.textContent === 'tenant u-bogdan')
     // MUTATION: render the summary as one text run again -- no clause element
@@ -154,10 +160,7 @@ describe('QA-054: the summary wraps between clauses', () => {
     expect(tenant, clauses.map((c) => c.textContent).join(' | ')).toBeDefined()
     // MUTATION: drop `.cap-clause { white-space: nowrap }`.
     expect(painted(tenant!, 'white-space', PHONE)).toBe('nowrap')
-    // The words are unchanged for a reader and for a copy. `1 too small` is
-    // resource:large at 0 / 2 under a 4-unit class, which the summary counts
-    // since 6:capacity-011 (QAFIX6-CAPACITY).
-    expect(tenant!.parentElement!.textContent).toMatch(/^5 pools in 3 families · 1 paused · 1 too small · tenant u-bogdan$/)
+    expect(tenant!.parentElement!.textContent).toMatch(line)
   })
 })
 
