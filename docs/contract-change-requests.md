@@ -121,6 +121,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 111 | `models.py`: `Attempt.size_version` and the `sized_*` fields, the size the scheduler rendered an attempt at (SIZES-CONTRACT-2, runner sizes request RS-4, part of #1689) | ACCEPTED by the owner 2026-10-20 (design `docs/design/runner-sizes.md` §5, §7) and APPLIED by the pull request that adds this line. No writer yet: the scheduler's `create_attempt` writes them in SIZES-SCHED-2 |
 | 112 | `CONTRACT.md`: "Primary backend Cloud Run Jobs" no longer says where agents run; every agent profile but `mock` is on GKE Autopilot (DOCS-TRUTH, part of #1822) | open, REQUESTED 2026-10-21 by lane DOCS-TRUTH. Not applied: `CONTRACT.md` is not edited by a lane |
 | 113 | `profiles.py`: a `claude-code-large` runner profile on the `large` class with a 14,400 s timeout, picked by name for heavy lanes (AUTONOMY-DESIGN, part of #1933) | ACCEPTED by the owner 2026-10-22 and APPLIED by the pull request that adds this line (lane AU9-PROFILE-LARGE, part of #1933; Q6 of `docs/design/agent-autonomy.md` §7: "Accept contract request 113: a claude-code-large profile") |
+| 114 | `CONTRACT.md` invariant 7: swarm-api alone starts with Cloud Run's startup CPU boost, the one recorded exception; every other Cloud Run service and every worker stays under invariant 7 as written (API-CPU-BOOST, part of #1816) | ACCEPTED by BGD 2026-10-23 (#1816 option (a)) and APPLIED by PR 2132; recorded here by lane FOLLOWUPS-1023 (part of #2150). The invariant's text is unchanged |
 
 ---
 
@@ -14262,3 +14263,72 @@ input tables) follow it.
 Heavy lanes keep dying at 8 GiB and 7,200 s, and the alternative is raising
 `standard` itself through a runner-size version (`runner-sizes.md` §4.5),
 which every standard agent pays for.
+
+---
+
+## 114. `CONTRACT.md` invariant 7: swarm-api's startup CPU boost, the one recorded exception (API-CPU-BOOST, part of #1816)
+
+**Status:** ACCEPTED by BGD on 2026-10-23 (~17:37Z; #1816 option (a)) and
+APPLIED by PR 2132 (lane API-CPU-BOOST). Recorded here the same day by lane
+FOLLOWUPS-1023 (part of #2150), because PR 2132 asked for this entry and its
+file was outside that lane. This is an exception to invariant 7 for one
+service, not an amendment of it: the invariant's text in `CONTRACT.md` and
+`CLAUDE.md` stays exactly as request 108 left it.
+
+### What is true today
+
+swarm-api, a Cloud Run service with a 1 vCPU limit, starts with Cloud Run's
+startup CPU boost on: `terraform/infra/main.tf` sets
+`startup_cpu_boost = true` in swarm-api's entry and nowhere else, and
+`terraform/modules/cloud_run/main.tf` passes each service's
+`startup_cpu_boost` (default `false`, `terraform/modules/cloud_run/variables.tf`)
+to its revision. While an instance starts, the boost gives it more CPU than
+its declared limit. That is a burst on Cloud Run, which invariant 7 does not
+allow there: "Cloud Run renders the request as its single limit".
+
+### Why it was allowed
+
+Startup latency of the API, and of nothing else. swarm-api's Python start on
+1 vCPU sometimes ran past its startup probe: four instances were killed at
+96 s on 2026-10-21, and callers got Cloud Run's 429 "no available instance"
+(#1816). The boost covers only the start: once the instance is serving it
+runs at its 1 vCPU limit like every other service. It costs about $1 a month
+(35-80 starts a day, about 30 boosted vCPU-seconds each). The burst
+invariant 7 guards against is a worker's. An agent's memory burst is what
+gets OOM-killed, and an agent's CPU is what admission charges. swarm-api
+holds no lease, runs no agent and is charged to no pool, and its memory
+stays at its limit while it is boosted.
+
+### What it does not change
+
+* **every other Cloud Run service** keeps the module's `false`: swarm-scheduler,
+  swarm-quota-broker, swarm-reconciler and swarm-ui in `terraform/infra/main.tf`,
+  and `github-hooks` and `mcp-test-server`, which hard-code
+  `startup_cpu_boost = false` (`terraform/infra/github_hooks.tf`,
+  `terraform/infra/mcp_test_server.tf`).
+* **every worker** stays under invariant 7 as written: memory and ephemeral
+  storage request == limit on every container, and CPU at the request on a
+  Cloud Run Job or within `CPU_BURST_MAX_RATIO` of it on GKE Autopilot
+  (request 108). A Cloud Run Job has no startup boost, and no worker
+  manifest asks for one.
+* `cpu_idle` stays `false` on every service, swarm-api included, so CPU
+  stays allocated for the whole of a request.
+* The tests hold all three: `tests/terraform/cloud_run.tftest.hcl`
+  (`a_service_that_sets_startup_cpu_boost_gets_it_and_no_other_does`,
+  `the_infra_root_boosts_swarm_api_and_nothing_else`, and the file-level
+  invariant-7 assertion), `github_hooks.tftest.hcl` and
+  `mcp_test_server.tftest.hcl` fail if another service turns the boost on.
+  `docs/architecture.md` names the exception in its invariant-7 section.
+
+### Rollback
+
+Delete `startup_cpu_boost = true` from swarm-api's entry in
+`terraform/infra/main.tf` and apply: its next revision starts unboosted, and
+the slow starts of #1816 come back with it. Nothing else reads the flag.
+
+### Invariants
+
+**7**: one recorded exception, for swarm-api's start only. The invariant's
+text is unchanged and every other container is held to it. **1-6 and 8-10**
+are untouched: swarm-api holds no capacity, and no runner profile, resource
+class or admission charge changes.

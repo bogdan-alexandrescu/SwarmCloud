@@ -93,15 +93,20 @@ tenant-gated upstream read -- and counts it answered when that task's
 review counts as answered. While any is still open, or an entry cannot be
 read, it parks for a person (`owner_wait`, `handoff.park_human_required`),
 naming each question's step and index: no lease, nothing counted, the
-attempt refunded within the hand-off's bound. ONLY a person's `human-ready`
-brings it back, and it reads every answer again: answering through
-`swarm_task_answer` writes `owner_answers` on the ASKING task and wakes
-nothing here, a review re-running wakes nothing either, and the scheduler's
-human-wait expiry (`_expire_human_waits`, which spares only a
-`question_wait` or `release_wait` park) dead-letters this park after
-`human_park_max_seconds`. Whether to wake it on the last answer and spare it
-that expiry is an open owner question (swarm-api's answer route and the
-scheduler, outside this lane). The review's `open_questions`, the ones it
+attempt refunded within the hand-off's bound. The answer that clears the
+hold brings it back (owner decision 2026-10-23, "Resume on answer, no
+expiry"; QUESTION-WAKE, PR 2151): answering through `swarm_task_answer`
+writes `owner_answers` on the ASKING task, and in the same transaction
+swarm-api's answer route (`swarm_api.agent_questions.answer_question`)
+returns this park to READY, reason `owner_questions_answered`, once every
+question its `owner_questions` hold names is answered. An answer while
+another named question is still open leaves it parked, and a hold the route
+cannot read -- `unreadable` entries, a malformed or out-of-workflow entry --
+waits for a person's `human-ready`, as before. A review re-running wakes
+nothing. Either way the next attempt reads every answer again. The
+scheduler's human-wait expiry (`_expire_human_waits`) spares this park, as
+it spares a `question_wait` or `release_wait` one, so it never dead-letters
+at `human_park_max_seconds`. The review's `open_questions`, the ones it
 judged need not hold, never stop the merge; those still unanswered are
 listed, in the asking task's own words, in the comment that records the
 merge -- so a merge made by `auto-merge.yml` rather than this step lists
