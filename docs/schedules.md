@@ -2163,8 +2163,11 @@ tick. The owner chose not to.
 
 `workflow_rollup`, `issue_run_advance`, `merge_wake`, `forge_refresh`,
 `quota_refresh`, `reconciler` and `safety_tick` are **platform machinery**.
-They are not jobs a tenant manages, and they stay in Terraform. Admin ›
-Platform counts lists them read-only, as "Platform ticks", from a static list
+They are not jobs a tenant manages, and they stay in Terraform.
+`workflow_rollup` also seals each registered tenant's ended outcome days, so
+the counts over time read sealed days (`seal_outcomes=true`, COUNTS-SEAL,
+#2149; [outcomes.md](outcomes.md#the-nightly-seal-the-workflow-rollup-job-counts-seal-2149)).
+Admin › Platform counts lists them read-only, as "Platform ticks", from a static list
 (`PLATFORM_TICKS` in `PlatformCounts.tsx`, held to `jobs.tf` by a test), so an
 admin sees every recurring thing in one place. They were on Admin › Schedules
 until the owner folded that page into Automate › Schedules (2026-10-13, §6.1).

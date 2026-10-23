@@ -1804,7 +1804,13 @@ class SubmissionService:
 
     # -- read models ------------------------------------------------------
 
-    def stats(self, ctx: AuthContext) -> dict[str, Any]:
+    def stats(self, ctx: AuthContext, *, platform: bool = False) -> dict[str, Any]:
+        """The caller's tenant counts, and the platform's when asked for.
+
+        `platform` is `GET /v1/stats?scope=platform` (#2149): the cross-tenant
+        counts run only when the caller asks AND is an admin, never on a plain
+        read, because the shell's 30 s poll makes plain reads.
+        """
         # Through the collision check, never the raw `ctx.tenant_id`: these
         # counts are this tenant's, and two unrelated principals can hold the
         # same id string. See `scope_for`.
@@ -1826,7 +1832,7 @@ class SubmissionService:
             "limits": configured_limits(self._settings),
             "generated_at": self._now(),
         }
-        if ctx.is_admin:
+        if platform and ctx.is_admin:
             payload["platform_tasks_by_state"] = self._store.count_tasks_by_state(None)
         return payload
 

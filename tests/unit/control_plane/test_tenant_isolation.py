@@ -163,7 +163,10 @@ def test_stats_counts_only_the_callers_tenant(client):
     # A non-admin gets no platform-wide view at all.
     assert "platform_tasks_by_state" not in bob_stats
 
-    root_stats = client.get("/v1/stats", headers=auth_header("root")).json()
+    # The platform half is opt-in (#2149): an admin asks for it by name.
+    root_stats = client.get(
+        "/v1/stats", params={"scope": "platform"}, headers=auth_header("root")
+    ).json()
     assert root_stats["platform_tasks_by_state"]["READY"] == 4
 
 

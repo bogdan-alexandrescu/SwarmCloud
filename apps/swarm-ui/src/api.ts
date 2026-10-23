@@ -2491,7 +2491,7 @@ function fixtureCpu(a: AttemptRow): AttemptRow {
   }
 }
 
-export async function loadStats(options: { frame?: boolean } = {}): Promise<Result<Stats>> {
+export async function loadStats(options: { frame?: boolean; platform?: boolean } = {}): Promise<Result<Stats>> {
   if (USE_FIXTURES) return fixtureStats(options)
   // A successful read always yields twelve numbers, because count_tasks_by_state
   // iterates the whole enum and writes a key for each. So there is no empty
@@ -2500,7 +2500,13 @@ export async function loadStats(options: { frame?: boolean } = {}): Promise<Resu
   //
   // `frame`: the shell's panel counts (Live, Waiting) read this as the FRAME's
   // read (CH-2), so its age never stands in for the page's own.
-  return read<Stats>(route('/v1/stats'), () => false, { frame: options.frame === true })
+  //
+  // `platform`: ask for the platform half too (`?scope=platform`, #2149),
+  // which the API serves to an admin only. Platform counts' Run asks for it
+  // and nothing else does: it is twelve count()s over every tenant, and a
+  // read on a timer must never bill them (owner ruling 2026-10-07, #138).
+  const path = options.platform === true ? '/v1/stats?scope=platform' : '/v1/stats'
+  return read<Stats>(route(path), () => false, { frame: options.frame === true })
 }
 
 export async function loadDispatchControl(): Promise<Result<DispatchControl>> {

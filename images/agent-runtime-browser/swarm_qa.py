@@ -6,11 +6,15 @@
         --presets desktop,phone-390 --themes light,dark \\
         --out "$SWARM_ARTIFACTS_DIR/capture-work-a" \\
         --bundle "$SWARM_ARTIFACTS_DIR/capture-work-a.tar" [--axe] \\
-        [--keep-storage] [--settle console|generic] [--clock INSTANT]
+        [--keep-storage] [--settle console|generic] [--clock INSTANT] \\
+        [--crawl --step K --steps G [--found-per-step 8] [--crawl-seconds 600] \\
+         [--start-path /] [--max-pages 60] [--max-depth 3] [--exclude GLOB ...] \\
+         [--exclude-control WORD ...] [--exclude-selector CSS ...] [--navigation-ms 2000]]
 
     python -m swarm_qa discover --base https://app.example[/path/] \\
         --max-pages 60 --max-depth 3 [--exclude GLOB ...] [--hash-routes] \\
-        --out screens.json
+        [--no-clicks] [--exclude-control WORD ...] [--exclude-selector CSS ...] \\
+        [--crawl-seconds 600] [--navigation-ms 2000] --out screens.json
 
     python -m swarm_qa diff A.tar B.tar --out DIR [--threshold 0.001]
 
@@ -189,7 +193,7 @@ so a page script that rewrites the DOM's methods could hide a box from it.
 `discover` writes a route list for an app nobody listed (§4.1): from `--base`
 (an http(s) address at a public host name, its path where the app starts:
 `discover_base`) it loads each page through the live browser, reads its
-links (LINKS_JS, the rendered `a[href]`s), and keeps the same-origin ones
+links (LINKS_JS: the link sources below), and keeps the same-origin ones
 (scheme, host and port) under the base's path, breadth first, as paths from
 the origin (what `capture --base <origin>` takes). It keeps the path only: a
 query or fragment can carry a token. `--hash-routes` also keeps a page's
@@ -207,6 +211,58 @@ depth cap is listed and never loaded. The route list it writes has no
 DISCOVER_GROUP_SIZE routes, and `load_routes` accepts it. It sets no persona
 cookie and no storage reset, and switches no device or theme.
 
+THE WALK READS MORE THAN LINKS, AND CLICKS WHAT ONLY REVEALS (QAENV-CRAWL,
+docs/design/qa-environments.md §4; part of #2136; BGD 2026-10-23, Q4 (a)).
+`discover` and a crawling capture share one walk (`_Walk`). Besides
+`a[href]` it reads `area[href]`, `[role=link][href]`, `[routerlink]`,
+`[data-href]` and `link rel=next|prefetch|prerender` (LINKS_JS), hidden
+elements included. On every page it loads it may click DISCLOSURE controls
+only (CONTROLS_JS reports them, `click_refusal` decides): aria-expanded
+false, an aria-haspopup, a tab, a menu item with a popup, a summary; never a
+control in a form, a submit or reset, an input, a link off the origin, one
+whose text or label contains an exclusion word (DEFAULT_EXCLUDED_CONTROLS
+plus `--exclude-control`), or one matching or inside an `--exclude-selector`.
+CLICK_JS makes the click in the page, refusing the form, input and submit
+cases again itself. After each click the walk reads the links again, records
+a router push as a route and reloads the page, presses Escape otherwise, and
+records a tab whose section changed under the same address as a route STATE,
+`{path, reveal: [{text, css}]}`, start-click form (`check_reveal`: plain CSS,
+exact visible text, 1 to 3 clicks, no exclusion word), which `capture`
+replays (CLICK_JS) once the route is ready and before it settles and shoots.
+It then reads the gate's refusal record: a click that made the gate refuse a
+write marks its control `write_attempting`, listed, and never clicked again
+in the walk; a record it cannot read stops the clicking. The gate's refusal
+of writes on a production leg is the backstop that depends on none of this.
+Bounds: `--max-pages` (60) routes listed, `--max-depth` (3) links from a
+seed, a click adding no depth; MAX_CLICKS_PAGE (20) clicks a page and
+MAX_CLICKS_CRAWL (200) a walk; `--crawl-seconds` (600, at most 900); every
+navigation, a click's push and its reload included, at least
+`--navigation-ms` (2000, never under MIN_NAVIGATION_MS, 1 s) after the last;
+robots.txt's Disallow for `*` for every path it would load or record.
+`discover --no-clicks` reads links only.
+
+`capture --crawl` DISCOVERS WHILE IT CAPTURES (§3.1; BGD 2026-10-23, Q3
+(a)). `--routes` is then the WHOLE RUN's stored list (it may be empty: a run
+from nothing but the base), and `--group` this step's share of it. The step
+captures its own stored routes as above, reading each page's links as it
+goes (LINKS_JS on a page already loaded costs no navigation, and a menu drawn
+at one width is read at that width), then walks from `--start-path` and
+every stored route of the run, hash routes on, so every step walks the same
+graph. A route it lists that is not stored is NEW, and belongs to step
+`owner(key, G) = 1 + int(sha256(key)[:8], 16) mod G`: every step computes the
+same owner, so no two capture one route. It captures the new routes it owns,
+in breadth-first order, up to `--found-per-step` (FOUND_PER_STEP, 8: BGD's
+§10 answer, not the design's 4), cut further so the leg's stored plus new
+routes stay within MAX_SCREENS (60) with every step at its cap; their ids
+are `found_ids`' (route_id's slug, and on a collision a suffix from the key's
+sha256, the same in every step and run). It writes `found.json` beside the
+manifest, in the tarball (§3.5): `{format, stored, captured_new: [{id, path,
+depth}], not_owned (each with its owner), over_cap, skipped: {off_origin,
+outside_base, excluded, robots, http_error, failed, write_attempting (the
+controls, {path, text})}, crawl: {pages, depth, seconds, stopped_by: done |
+pages | depth | time}}`. A capture aborted mid-walk still writes it, stopped
+by `time`, so a route it did not reach is never read as gone.
+
 `diff` compares two tarballs image by image: a changed-pixel ratio per image
 present in both, a `<name>.diff.png` where the ratio is over the threshold
 (the changed pixels in DIFF_MARK over a faded copy of A), and the names only
@@ -222,6 +278,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import fnmatch
+import hashlib
 import ipaddress
 import json
 import os
@@ -349,6 +406,59 @@ ROBOTS_MAX_BYTES = 512 * 1024
 ROBOTS_UNREACHABLE = "User-agent: *\nDisallow: /\n"
 #: A page's links are read up to this many.
 MAX_LINKS = 2000
+
+#: `capture --crawl` (QAENV-CRAWL, qa-environments.md §3.1 and §4; part of
+#: #2136). New routes a step captures by default: BGD, 2026-10-23 (§10),
+#: answered 8, not the design's 4, and 8 is also the ceiling (§3.1).
+FOUND_PER_STEP = 8
+MAX_FOUND_PER_STEP = 8
+#: Capture steps in one leg: qaspec's MAX_GROUPS, and discover.slots' ceiling.
+MAX_STEPS = 8
+#: Stored plus new routes, a leg (qaspec.MAX_SCREENS): a step's cap is cut so
+#: that every step at its cap still fits.
+MAX_SCREENS = 60
+#: The crawl's time bound (§4): a crawling step's timeout grows from 1,800 s
+#: to 2,700 s, which holds the 900 s ceiling plus the step's own captures.
+CRAWL_SECONDS = 600
+MAX_CRAWL_SECONDS = 900
+#: Every top-frame navigation the walk makes, a click's router push included,
+#: is spaced by the leg's `navigation_ms` (the gate holds it too). Never under
+#: a second: someone else's app is not ours to load fast.
+NAVIGATION_MS = 2000
+MIN_NAVIGATION_MS = 1000
+#: Disclosure clicks (§4): at most 20 a page and 200 a crawl. A click waits
+#: CLICK_SETTLE_MS for what it opens to draw before the links are read again.
+MAX_CLICKS_PAGE = 20
+MAX_CLICKS_CRAWL = 200
+CLICK_SETTLE_MS = 500
+#: CONTROLS_JS reports at most this many candidates a page.
+MAX_CONTROLS = 200
+#: Never clicked, whatever the target says (qaspec.DEFAULT_EXCLUDED_CONTROLS,
+#: plus the exits: a crawl that signs itself out walks the login page after).
+#: A control whose text or label CONTAINS one, case-insensitively, is refused;
+#: `--exclude-control` adds the target's own.
+DEFAULT_EXCLUDED_CONTROLS = (
+    "delete", "remove", "pay", "buy", "purchase", "send", "invite",
+    "unsubscribe", "cancel subscription", "logout", "log out", "sign out",
+)
+#: A route state's `reveal` (§4.3): qaspec.start_clicks' rules, restated
+#: because the image cannot import swarm-api (a unit test holds the two equal).
+MAX_REVEAL_CLICKS = 3
+REVEAL_TEXT_MAX = 60
+REVEAL_CSS_MAX = 200
+#: qaspec._PLAYWRIGHT_SELECTOR: Playwright's own selector syntax, which the
+#: page's querySelectorAll does not take.
+PLAYWRIGHT_SELECTOR = re.compile(
+    r":(?:has-text|text|text-is|text-matches|nth-match|left-of|right-of|above|below|near)\(|:visible\b|>>"
+    r"|^\s*(?:text|css|xpath|id|role|data-testid|internal:[a-z-]+)=")
+#: What a tab state is clicked by when replayed: plain CSS and the tab's
+#: exact text, start-click form.
+TAB_CSS = '[role="tab"]'
+#: found.json's format (§3.5).
+FOUND_FORMAT = 1
+#: Separates a route state's path from its reveal texts in its key, the
+#: string the owner rule hashes (no path or visible text carries it).
+STATE_MARK = " >> "
 #: Host suffixes that only ever name something inside a cluster, a VPC or a
 #: LAN: `swarm_egress.policy.INTERNAL_SUFFIXES`, restated because the image
 #: cannot import it (a unit test holds the two equal). `discover --base`
@@ -608,7 +718,92 @@ VIEWPORT_JS = ("() => [window.innerWidth, window.innerHeight, window.devicePixel
 #: How many times `_shot` takes a screenshot again when it is not the size
 #: of the viewport, before it keeps it and lists it in `failed`.
 SHOT_RETRIES = 2
-LINKS_JS = "() => Array.from(document.querySelectorAll('a[href]'), (a) => a.href).slice(0, %d)" % MAX_LINKS
+#: Every link source §4 names, read from the whole DOM, hidden elements
+#: included (a collapsed menu's links are usually already in it), each value
+#: resolved against the document's base: `a`, `area` and `[role=link]` hrefs,
+#: Angular's `routerlink`, `data-href`, and `link rel=next|prefetch|prerender`.
+#: Python holds every value to the same origin, base and exclusion checks.
+LINKS_JS = """() => {
+  const out = [];
+  const add = (value) => {
+    if (typeof value !== 'string' || !value.trim() || out.length >= %d) return;
+    try { out.push(new URL(value.trim(), document.baseURI).href); } catch (e) { /* not an address */ }
+  };
+  const read = (selector, name) => {
+    for (const el of document.querySelectorAll(selector)) add(el.getAttribute(name));
+  };
+  read('a[href], area[href], [role=link][href]', 'href');
+  read('[routerlink]', 'routerlink');
+  read('[data-href]', 'data-href');
+  read('link[rel~=next][href], link[rel~=prefetch][href], link[rel~=prerender][href]', 'href');
+  return out;
+}""" % MAX_LINKS
+#: The disclosure controls on a page (§4.2): `summary`, `[aria-expanded]`,
+#: `[aria-haspopup]`, `[role=tab]`, `[role=menuitem]`, each as the facts the
+#: never-click rules read (`click_refusal` decides, in Python): its CSS path
+#: from the body, its text (drawn, else its whole text), aria-label or title,
+#: tag, type, role, aria-expanded, aria-haspopup, whether it is inside a
+#: form, an `<a>`'s resolved href, whether it or an ancestor matches an
+#: exclusion selector (one the page cannot parse counts as a match: fail
+#: closed), and whether it has a box. Reads only; clicks nothing.
+CONTROLS_JS = """(arg) => {
+  const norm = (s) => (s || '').trim().replace(/\\s+/g, ' ');
+  const path = (el) => {
+    const parts = [];
+    for (let e = el; e && e.parentElement; e = e.parentElement) {
+      const same = Array.from(e.parentElement.children).filter((c) => c.localName === e.localName);
+      parts.unshift(same.length > 1 ? `${e.localName}:nth-of-type(${same.indexOf(e) + 1})` : e.localName);
+    }
+    return parts.join(' > ') || el.localName;
+  };
+  const excluded = (el) => (arg.selectors || []).some((s) => {
+    try { return !!el.closest(s); } catch (e) { return true; }
+  });
+  const out = [];
+  const found = document.querySelectorAll('summary, [aria-expanded], [aria-haspopup], [role=tab], [role=menuitem]');
+  for (const el of found) {
+    if (out.length >= arg.limit) break;
+    const href = el.localName === 'a' ? el.getAttribute('href') : null;
+    let resolved = null;
+    if (href) { try { resolved = new URL(href, document.baseURI).href; } catch (e) { resolved = 'invalid:'; } }
+    out.push({
+      css: path(el), text: norm(el.innerText) || norm(el.textContent),
+      label: norm(el.getAttribute('aria-label') || el.getAttribute('title')),
+      tag: el.localName, type: (el.getAttribute('type') || '').toLowerCase(),
+      role: (el.getAttribute('role') || '').toLowerCase(),
+      expanded: el.getAttribute('aria-expanded'), haspopup: el.getAttribute('aria-haspopup'),
+      in_form: !!el.closest('form'), href: resolved, excluded: excluded(el),
+      visible: el.getClientRects().length > 0,
+    });
+  }
+  return out;
+}"""
+#: Clicks ONE control: the first element with a box matching `css` (by
+#: default, any clickable or disclosure control) whose text is exactly
+#: `text`, the way a person's click arrives (pointer and mouse down and up,
+#: then click: a menu that opens on pointerdown opens). It refuses, in the
+#: page, a control inside a form, an input and a submit or reset, whatever
+#: the caller decided. Answers true when it clicked, else why not.
+CLICK_JS = """(arg) => {
+  const norm = (s) => (s || '').trim().replace(/\\s+/g, ' ');
+  let found = [];
+  try {
+    found = Array.from(document.querySelectorAll(arg.css ||
+      'summary, button, a, [role=button], [role=tab], [role=menuitem], [aria-expanded], [aria-haspopup]'));
+  } catch (e) { return 'not a selector'; }
+  const el = found.find((e) => (norm(e.innerText) || norm(e.textContent)) === arg.text && e.getClientRects().length > 0);
+  if (!el) return 'no such control';
+  const type = (el.getAttribute('type') || '').toLowerCase();
+  if (el.closest('form') || el.localName === 'input' || type === 'submit' || type === 'reset') return 'never clicked';
+  const init = {bubbles: true, cancelable: true, composed: true, button: 0, buttons: 1, view: window};
+  const Pointer = typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+  el.dispatchEvent(new Pointer('pointerdown', {...init, pointerType: 'mouse', isPrimary: true}));
+  el.dispatchEvent(new MouseEvent('mousedown', init));
+  el.dispatchEvent(new Pointer('pointerup', {...init, buttons: 0, pointerType: 'mouse', isPrimary: true}));
+  el.dispatchEvent(new MouseEvent('mouseup', {...init, buttons: 0}));
+  el.click();
+  return true;
+}"""
 AXE_INJECT_JS = "(source) => { (0, eval)(source); return typeof axe !== 'undefined'; }"
 AXE_RUN_JS = "() => axe.run(document, {resultTypes: ['violations']})"
 
@@ -787,9 +982,44 @@ class UsageError(ValueError):
 # -- the route list ------------------------------------------------------------
 
 
-def load_routes(path: str | os.PathLike) -> dict:
+def check_reveal(raw: Any, words: list[str] | tuple[str, ...] = DEFAULT_EXCLUDED_CONTROLS) -> list[dict]:
+    """A route state's `reveal` (qa-environments.md §4.3), held to
+    qaspec.start_clicks' rules: 1 to MAX_REVEAL_CLICKS clicks, each `{text,
+    css?}`, the text the control's exact visible text and naming no excluded
+    control (`words`), the css plain CSS the page takes, never Playwright's.
+    Returns the clicks; raises UsageError."""
+    shape = f"reveal must list 1 to {MAX_REVEAL_CLICKS} clicks, each {{text, css?}}"
+    if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_REVEAL_CLICKS:
+        raise UsageError(shape)
+    refused = [w.lower() for w in words]
+    out = []
+    for item in raw:
+        if not isinstance(item, dict) or set(item) - {"text", "css"}:
+            raise UsageError(shape)
+        text = item.get("text")
+        if not isinstance(text, str) or not text.strip() or len(text) > REVEAL_TEXT_MAX:
+            raise UsageError(f"a reveal click's text must be 1..{REVEAL_TEXT_MAX} characters")
+        if any(word in text.lower() for word in refused):
+            raise UsageError("a reveal click's text names an excluded control: it is never clicked")
+        click = {"text": text.strip()}
+        if item.get("css") is not None:
+            css = item["css"]
+            if not isinstance(css, str) or not css.strip() or len(css) > REVEAL_CSS_MAX:
+                raise UsageError(f"a reveal click's css must be 1..{REVEAL_CSS_MAX} characters")
+            if PLAYWRIGHT_SELECTOR.search(css):
+                raise UsageError("a reveal click's css is Playwright syntax; the page takes plain CSS, "
+                                 "and the control's visible text goes in text")
+            click["css"] = css.strip()
+        out.append(click)
+    return out
+
+
+def load_routes(path: str | os.PathLike, *, allow_empty: bool = False) -> dict:
     """apps/swarm-ui/qa/routes.json, checked: every route has a file-name-safe
-    id unique across groups, a router path and a ready selector."""
+    id unique across groups, a router path and a ready selector, and a
+    route state's `reveal` is start-click form (check_reveal). `allow_empty`
+    (a crawling capture's run list, QAENV-CRAWL) accepts a run with no
+    stored route at all."""
     try:
         document = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -801,7 +1031,7 @@ def load_routes(path: str | os.PathLike) -> dict:
     if document.get("clock") is not None:
         clock_at(document)
     groups = document.get("groups")
-    if not isinstance(groups, dict) or not groups:
+    if not isinstance(groups, dict) or not (groups or allow_empty):
         raise UsageError("the route list has no groups")
     seen: set[str] = set()
     for group, routes in groups.items():
@@ -821,6 +1051,11 @@ def load_routes(path: str | os.PathLike) -> dict:
             segments = route.get("segments", DEFAULT_SEGMENTS)
             if not isinstance(segments, int) or isinstance(segments, bool) or not 1 <= segments <= MAX_SEGMENTS:
                 raise UsageError(f"route {rid}: segments must be 1..{MAX_SEGMENTS}")
+            if "reveal" in route:
+                try:
+                    route["reveal"] = check_reveal(route["reveal"])
+                except UsageError as exc:
+                    raise UsageError(f"route {rid}: {exc}") from exc
     mockups = document.setdefault("mockups", [])
     if not isinstance(mockups, list) or not all(
         isinstance(m, dict) and isinstance(m.get("id"), str) and isinstance(m.get("path"), str) for m in mockups
@@ -1412,10 +1647,13 @@ def _shot(page, segment: int, preset: str | None = None) -> tuple[bytes, list[di
 
 def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict, preset: str, theme: str,
                    out: Path, axe_source: str | None, settle: str = "console",
-                   persona_cookie: bool = True, gate: _GateRefusals | None = None) -> dict:
+                   persona_cookie: bool = True, gate: _GateRefusals | None = None,
+                   links: dict[str, list] | None = None) -> dict:
     """One route at one preset and theme. Raises with the step that failed.
     `persona_cookie` False (sets_persona) sets no PERSONA_COOKIE. `gate`
-    gives the route the refusals the live gate made while it loaded."""
+    gives the route the refusals the live gate made while it loaded. A route
+    state's `reveal` clicks are made, in order, once it is ready (CLICK_JS).
+    `links` (a crawling capture) collects the links the page shows, by path."""
     rid, ready = route["id"], route["ready"]
     stem = _stem(group, rid, preset, theme)
     persona = persona_of(route) if persona_cookie else None
@@ -1450,8 +1688,24 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
         page.evaluate(FONTS_READY_JS)
         step = "ready"
         page.wait_for_selector(ready, state="visible", timeout=READY_TIMEOUT_MS)
+        for n, click in enumerate(route.get("reveal") or [], 1):
+            step = f"reveal {n}"
+            answer = page.evaluate(CLICK_JS, {"css": click.get("css"), "text": click["text"]})
+            if answer is not True:
+                raise RuntimeError(f"the control {click['text']!r} was not clicked: {_one_line(answer)}")
+            page.wait_for_timeout(CLICK_SETTLE_MS)
         step = "settle"
         pending = _settle_generic(page) if settle == "generic" else _settle(page)
+        if links is not None:
+            # The page is loaded and settled: its links cost no navigation
+            # (§3.1), and a menu drawn at one width only is read at that one.
+            try:
+                bucket = links.setdefault(route["path"], [])
+                for href in list(page.evaluate(LINKS_JS) or [])[:MAX_LINKS]:
+                    if href not in bucket and len(bucket) < MAX_LINKS:
+                        bucket.append(href)
+            except Exception:  # noqa: BLE001 -- unread links are the crawl's to find, never a failed route
+                pass
         step = "measure"
         measured = page.evaluate(MEASURE_JS, ready)
         total, view = measured[0], max(1, measured[1])
@@ -1571,10 +1825,18 @@ def _bundle(out: Path, bundle: Path) -> None:
 
 def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: list[str],
             out: Path, bundle: Path, axe_source: str | None = None, keep_storage: bool = False,
-            settle: str = "console", clock: str | None = None) -> dict:
+            settle: str = "console", clock: str | None = None, crawl: dict | None = None) -> dict:
     """Capture `group` at every preset and theme; write the manifest and the
     tarball, whatever failed. Returns the manifest. `clock` (else the route
-    list's) freezes the page clock; neither leaves it running."""
+    list's) freezes the page clock; neither leaves it running.
+
+    `crawl` (QAENV-CRAWL, qa-environments.md §3.1): `routes` is then the
+    whole run's stored list, and after its own routes the step walks the
+    graph every step walks (`_Walk`, from `crawl["start"]` and every stored
+    route), captures the new routes it owns (`owner`) up to its cap, and
+    writes `found.json` (§3.5) beside the manifest. Its keys: step, steps,
+    found_per_step, seconds, start, max_pages, max_depth, exclude, words,
+    selectors, navigation_ms."""
     frozen = clock if clock is not None else routes.get("clock")
     gate = _GateRefusals(time.time())
     playwright, browser, context = _connect()
@@ -1585,39 +1847,35 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
         "base": base, "presets": presets, "themes": themes,
         "routes": [], "failed": [],
     }
-    group_routes = routes["groups"][group]
+    group_routes = routes["groups"].get(group, [])
     persona_cookie = sets_persona(routes, settle)
+    harvested: dict[str, list] | None = {} if crawl is not None else None
+    walk: _Walk | None = None
+    found: dict | None = None
 
-    def fail_all(preset: str, theme: str, why: str) -> None:
+    def fail_all(members: list[dict], preset: str, theme: str, why: str) -> None:
         manifest["failed"].extend({"id": r["id"], "preset": preset, "theme": theme, "error": why}
-                                  for r in group_routes)
+                                  for r in members)
 
-    page = None
-    try:
-        page = context.new_page()
-        parts = urlsplit(base)
-        if not keep_storage:
-            page.add_init_script(script=reset_state_script(f"{parts.scheme}://{parts.netloc}".lower()))
-        errors = _Errors(page)
-        if frozen is not None:
-            page.clock.set_fixed_time(clock_at({"clock": frozen}))
+    def sweep(page, errors: _Errors, members: list[dict]) -> None:
         for preset in presets:
             why = _handoff("device", preset)
             if why is not None:
                 for theme in themes:
-                    fail_all(preset, theme, f"device {preset}: {why}")
+                    fail_all(members, preset, theme, f"device {preset}: {why}")
                 continue
             for theme in themes:
                 why = _handoff("theme", theme)
                 if why is not None:
-                    fail_all(preset, theme, f"theme {theme}: {why}")
+                    fail_all(members, preset, theme, f"theme {theme}: {why}")
                     continue
                 page.emulate_media(color_scheme=theme, reduced_motion="reduce")
-                for route in group_routes:
+                for route in members:
                     try:
                         entry = _capture_route(page, errors, base=base, group=group, route=route,
                                                preset=preset, theme=theme, out=out, axe_source=axe_source,
-                                               settle=settle, persona_cookie=persona_cookie, gate=gate)
+                                               settle=settle, persona_cookie=persona_cookie, gate=gate,
+                                               links=harvested)
                         manifest["routes"].append(entry)
                         why = []
                         if entry["pending"]:
@@ -1639,6 +1897,22 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
                         manifest["failed"].append({"id": route["id"], "preset": preset, "theme": theme,
                                                    "error": str(exc),
                                                    "gate_refused": gate.during(errors.since, time.time())})
+
+    page = None
+    try:
+        page = context.new_page()
+        parts = urlsplit(base)
+        if not keep_storage:
+            page.add_init_script(script=reset_state_script(f"{parts.scheme}://{parts.netloc}".lower()))
+        errors = _Errors(page)
+        if frozen is not None:
+            page.clock.set_fixed_time(clock_at({"clock": frozen}))
+        sweep(page, errors, group_routes)
+        if crawl is not None:
+            walk = _crawl_walk(routes, base, crawl, gate, harvested or {})
+            walk.run(page)
+            found, owned = _found(walk, routes, crawl)
+            sweep(page, errors, owned)
     except Exception as exc:  # noqa: BLE001 -- the browser went away: record it, still bundle
         manifest["aborted"] = f"{type(exc).__name__}: {_one_line(exc)}"
     finally:
@@ -1650,9 +1924,90 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
                 pass
         playwright.stop()
         manifest["gate_refusals"] = gate.summary()
+        if crawl is not None:
+            if found is None:
+                # Aborted before the crawl was read: what it had, never
+                # nothing, and stopped by `time`, the one stop that tells the
+                # settle (§5) a route it did not see may still be there.
+                if walk is not None:
+                    walk.out_of_time = True
+                found = _found(walk, routes, crawl)[0] if walk is not None else _found_empty(routes)
+            _write(out / "found.json", json.dumps(found, indent=1))
+            manifest["found"] = "found.json"
+            manifest["crawl"] = {**found["crawl"], **{k: len(found[k]) for k in ("captured_new", "not_owned",
+                                                                                  "over_cap")}}
         _write(out / "manifest.json", json.dumps(manifest, indent=1))
         _bundle(out, bundle)
     return manifest
+
+
+def _stored(routes: dict) -> list[dict]:
+    """Every stored route of the run, in its groups' order."""
+    return [route for members in routes["groups"].values() for route in members]
+
+
+def _crawl_walk(routes: dict, base: str, crawl: dict, gate: _GateRefusals, harvested: dict) -> _Walk:
+    """The walk a crawling capture makes: from its start path and every
+    stored route, hash routes on, disclosure clicks on, robots.txt read."""
+    origin = _origin(base)
+    if origin is None:
+        raise UsageError("--base must be an http(s) origin")
+    globs = list(DEFAULT_EXCLUDE) + [g for g in crawl.get("exclude", []) if g not in DEFAULT_EXCLUDE]
+    words = list(DEFAULT_EXCLUDED_CONTROLS) + [w for w in crawl.get("words", [])
+                                               if w not in DEFAULT_EXCLUDED_CONTROLS]
+    rules = robots_disallow(_fetch_robots(base + "/robots.txt"))
+    walk = _Walk(root=base, origin=origin, start=crawl.get("start", "/"), globs=globs, rules=rules,
+                 max_pages=crawl.get("max_pages", DISCOVER_MAX_PAGES),
+                 max_depth=crawl.get("max_depth", DISCOVER_MAX_DEPTH), hash_routes=True, clicks=True,
+                 words=words, selectors=crawl.get("selectors", []),
+                 seconds=crawl.get("seconds", CRAWL_SECONDS),
+                 navigation_ms=crawl.get("navigation_ms", NAVIGATION_MS), gate=gate, harvested=harvested)
+    for route in _stored(routes):
+        walk.seed(route["path"], route.get("reveal"))
+    # The start path heads the walk; listed after the stored routes, so one
+    # that is stored is stored, not new.
+    listed = len(walk.entries)
+    walk.admit(walk.start, 0)
+    if len(walk.entries) > listed:
+        walk.entries.insert(0, walk.entries.pop())
+    return walk
+
+
+def _found_empty(routes: dict) -> dict:
+    return {"format": FOUND_FORMAT, "stored": [state_key(r["path"], r.get("reveal")) for r in _stored(routes)],
+            "captured_new": [], "not_owned": [], "over_cap": [],
+            "skipped": {"off_origin": 0, "outside_base": 0, "excluded": 0, "robots": 0, "http_error": 0,
+                        "failed": 0, "write_attempting": []},
+            "crawl": {"pages": 0, "depth": 0, "seconds": 0.0, "stopped_by": "time"}}
+
+
+def _found(walk: _Walk, routes: dict, crawl: dict) -> tuple[dict, list[dict]]:
+    """found.json (§3.5) and the new routes this step captures: those it
+    owns, in breadth-first order, up to its cap, which is cut so that every
+    step at its cap keeps the leg's stored plus new routes within
+    MAX_SCREENS."""
+    stored = _stored(routes)
+    steps, step = crawl["steps"], crawl["step"]
+    cap = min(crawl.get("found_per_step", FOUND_PER_STEP), max(0, (MAX_SCREENS - len(stored)) // steps))
+    new = [e for e in walk.entries if not e["stored"]]
+    ids = found_ids([e["key"] for e in new], {r["id"] for r in stored})
+    captured, not_owned, over_cap, owned = [], [], [], []
+    for e in new:
+        row = {"id": ids[e["key"]], "path": e["path"], "depth": e["depth"],
+               **({"reveal": e["reveal"]} if e.get("reveal") else {})}
+        who = owner(e["key"], steps)
+        if who != step:
+            not_owned.append({**row, "owner": who})
+        elif len(captured) < cap:
+            captured.append(row)
+            owned.append({"id": row["id"], "path": e["path"], "ready": DISCOVER_READY,
+                          **({"reveal": e["reveal"]} if e.get("reveal") else {})})
+        else:
+            over_cap.append(row)
+    found = {"format": FOUND_FORMAT, "stored": [e["key"] for e in walk.entries if e["stored"]],
+             "captured_new": captured, "not_owned": not_owned, "over_cap": over_cap,
+             "skipped": walk.skipped, "crawl": walk.summary()}
+    return found, owned
 
 
 # -- discover ------------------------------------------------------------------
@@ -1783,9 +2138,13 @@ def _fetch_robots(url: str) -> str | None:
         return ROBOTS_UNREACHABLE
 
 
+def _slug(path: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", path.lower()).strip("-")[:40].rstrip("-") or "home"
+
+
 def route_id(path: str, taken: set[str]) -> str:
     """A file-name-safe route id for `path`, unique in `taken` (and added to it)."""
-    slug = re.sub(r"[^a-z0-9]+", "-", path.lower()).strip("-")[:40].rstrip("-") or "home"
+    slug = _slug(path)
     rid, n = slug, 2
     while rid in taken:
         rid = f"{slug}-{n}"
@@ -1794,93 +2153,385 @@ def route_id(path: str, taken: set[str]) -> str:
     return rid
 
 
+def _sha(key: str) -> str:
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def owner(key: str, steps: int) -> int:
+    """The capture step, 1..`steps`, that captures the new route `key`
+    (§3.1): the same in every step, so no two steps capture one route and
+    none needs to ask another."""
+    return 1 + int(_sha(key)[:8], 16) % steps
+
+
+def found_ids(keys: list[str], taken: set[str]) -> dict[str, str]:
+    """New routes' ids (§3.1): `route_id`'s slug, and where it collides with
+    a stored id (`taken`) or another new route's slug, the slug and the first
+    six hex digits of the key's sha256, so a route has the same id in every
+    step and every run whatever was found before it."""
+    slugs = {key: _slug(key) for key in keys}
+    counts: dict[str, int] = {}
+    for slug in slugs.values():
+        counts[slug] = counts.get(slug, 0) + 1
+    return {key: slug if counts[slug] == 1 and slug not in taken else f"{slug}-{_sha(key)[:6]}"
+            for key, slug in slugs.items()}
+
+
+def state_key(path: str, reveal: list[dict] | None) -> str:
+    """What identifies a route, and what the owner rule hashes: its path, and
+    for a route state the texts it reveals by."""
+    return path + "".join(STATE_MARK + click["text"] for click in reveal or [])
+
+
+def click_refusal(control: Any, words: list[str] | tuple[str, ...], origin: tuple[str, str, int]) -> str | None:
+    """Why the crawl never clicks this control (§4.2), or None when it may.
+    `control` is one CONTROLS_JS fact. It must REVEAL rather than act
+    (aria-expanded false, an aria-haspopup, a tab, a menuitem with a popup,
+    a summary), and it must not be inside a form, a submit or reset, an
+    input, a link off the origin, named by an exclusion word in its text or
+    label, or matched by an exclusion selector."""
+    if not isinstance(control, dict):
+        return "not a control"
+    tag, role = str(control.get("tag") or ""), str(control.get("role") or "")
+    popup = control.get("haspopup") not in (None, "", "false")
+    if not (control.get("expanded") == "false" or popup or role == "tab" or tag == "summary"):
+        return "not a disclosure control"
+    if role == "menuitem" and not popup and control.get("expanded") != "false":
+        return "a menu item that acts"
+    if control.get("in_form") is not False:
+        return "inside a form"
+    if str(control.get("type") or "") in ("submit", "reset"):
+        return "a submit or reset"
+    if tag in ("input", "select", "textarea"):
+        return "an input"
+    href = control.get("href")
+    if tag == "a" and href is not None and same_origin_path(href, origin) is None:
+        return "a link off the origin"
+    said = f"{control.get('text') or ''} {control.get('label') or ''}".lower()
+    if any(word.lower() in said for word in words):
+        return "named by an exclusion word"
+    if control.get("excluded") is not False:
+        return "matched by an exclusion selector"
+    if control.get("visible") is False:
+        return "not drawn"
+    return None
+
+
+#: The walk's clock and its sleep, for the time bound and the navigation
+#: spacing (module-level so a test can run them on a clock of its own).
+_now = time.monotonic
+_sleep = time.sleep
+
+
+class _Walk:
+    """The bounded breadth-first walk `discover` and `capture --crawl` share
+    (§3.1, §4): from its seeds, it loads each page, reads its links
+    (LINKS_JS, plus what a capture already read there: `harvested`) and,
+    with `clicks`, clicks the page's disclosure controls (click_refusal says
+    which), reading the links again after each. It lists same-origin paths
+    under `start`, outside the exclusions and robots.txt's Disallow, at most
+    `max_pages` in all (seeds included) and `max_depth` links from a seed, a
+    disclosure click adding no depth; it loads only the pages whose links
+    could still be listed. Every navigation, a click's router push and the
+    reload that undoes it included, is spaced by `navigation_ms`, and nothing
+    starts after `seconds`.
+
+    After each click it reads the gate's refusal record (`gate`): a click
+    that made the gate refuse a write marks its control `write_attempting`,
+    never clicked again in the walk. A record that cannot be read stops the
+    clicking (what a click did could no longer be told), not the walk."""
+
+    def __init__(self, *, root: str, origin: tuple[str, str, int], start: str, globs: list[str],
+                 rules: list[str], max_pages: int, max_depth: int, hash_routes: bool,
+                 clicks: bool = False, words: list[str] | tuple[str, ...] = DEFAULT_EXCLUDED_CONTROLS,
+                 selectors: list[str] | None = None, seconds: float = CRAWL_SECONDS,
+                 navigation_ms: int = NAVIGATION_MS, gate: _GateRefusals | None = None,
+                 harvested: dict[str, list] | None = None) -> None:
+        self.root, self.origin, self.start = root, origin, start
+        self.globs, self.rules = globs, rules
+        self.max_pages, self.max_depth, self.hash_routes = max_pages, max_depth, hash_routes
+        self.clicks, self.words, self.selectors = clicks, list(words), list(selectors or [])
+        self.seconds, self.spacing = seconds, max(navigation_ms, MIN_NAVIGATION_MS) / 1000
+        self.gate, self.harvested = gate, harvested if harvested is not None else {}
+        #: Every route listed, in breadth-first order: {key, path, depth,
+        #: stored, walk, reveal?}.
+        self.entries: list[dict] = []
+        self.seen: set[str] = set()
+        self.skipped: dict[str, Any] = {"off_origin": 0, "outside_base": 0, "excluded": 0, "robots": 0,
+                                        "failed": 0, "http_error": 0, "write_attempting": []}
+        self.off: set[str] = set()
+        self.outside: set[str] = set()
+        self.failed: list[str] = []
+        self.http_errors: dict[str, int] = {}
+        self.loaded: set[str] = set()
+        self.refused_controls: set[tuple[str, str]] = set()
+        self.clicked = 0
+        self.cut_pages = self.cut_depth = self.out_of_time = False
+        self.started: float | None = None
+        self.ended: float | None = None
+        self.last_nav: float | None = None
+
+    # -- listing ---------------------------------------------------------------
+
+    def seed(self, path: str, reveal: list[dict] | None = None) -> None:
+        """A stored route: listed whatever the caps, walked when the walk may load it."""
+        key = state_key(path, reveal)
+        if key in self.seen:
+            return
+        self.seen.add(key)
+        walk = reveal is None and under(path.partition("#")[0], self.start) and not self._barred(path)
+        self.entries.append({"key": key, "path": path, "depth": 0, "stored": True, "walk": walk,
+                             **({"reveal": reveal} if reveal else {})})
+
+    def _barred(self, path: str) -> str | None:
+        document, _, route = path.partition("#")
+        if excluded(document, self.globs) or (route and excluded(route, self.globs)):
+            return "excluded"
+        if disallowed(document, self.rules):
+            return "robots"
+        return None
+
+    def admit(self, path: str, depth: int, reveal: list[dict] | None = None) -> None:
+        key = state_key(path, reveal)
+        if key in self.seen:
+            return
+        self.seen.add(key)
+        barred = self._barred(path)
+        if barred is not None:
+            self.skipped[barred] += 1
+        elif depth > self.max_depth:
+            self.cut_depth = True
+        elif len(self.entries) >= self.max_pages:
+            self.cut_pages = True
+        else:
+            self.entries.append({"key": key, "path": path, "depth": depth, "stored": False, "walk": not reveal,
+                                 **({"reveal": reveal} if reveal else {})})
+
+    def _links(self, hrefs: Any, here: str, depth: int) -> None:
+        for href in list(hrefs if isinstance(hrefs, (list, tuple)) else [])[:MAX_LINKS]:
+            found = same_origin_path(href, self.origin)
+            if found is None:
+                if str(href) not in self.off:
+                    self.off.add(str(href))
+                    self.skipped["off_origin"] += 1
+                continue
+            if not under(found, self.start):
+                if found not in self.outside:
+                    self.outside.add(found)
+                    self.skipped["outside_base"] += 1
+                continue
+            if self.hash_routes:
+                route = hash_route(href, here)
+                if route is not None:
+                    self.admit(route, depth + 1)
+            self.admit(found, depth + 1)
+
+    # -- time ------------------------------------------------------------------
+
+    def _expired(self) -> bool:
+        if self.started is not None and _now() - self.started >= self.seconds:
+            self.out_of_time = True
+        return self.out_of_time
+
+    def _space(self) -> None:
+        if self.last_nav is not None:
+            wait = self.last_nav + self.spacing - _now()
+            if wait > 0:
+                _sleep(wait)
+
+    def _goto(self, page, path: str):
+        self._space()
+        try:
+            return page.goto(self.root + path, wait_until="load", timeout=NAV_TIMEOUT_MS)
+        finally:
+            self.last_nav = _now()
+
+    # -- the walk --------------------------------------------------------------
+
+    def run(self, page) -> None:
+        self.started = _now()
+        try:
+            at = 0
+            while at < len(self.entries):
+                if len(self.entries) >= self.max_pages:
+                    # Nothing more can be listed: loading the rest finds nothing.
+                    self.cut_pages = True
+                    break
+                if self._expired():
+                    break
+                entry = self.entries[at]
+                at += 1
+                if not entry["walk"]:
+                    continue
+                if entry["depth"] >= self.max_depth:
+                    self.cut_depth = True
+                    continue
+                if not self._visit(page, entry):
+                    at -= 1
+                    self.entries.pop(at)
+        finally:
+            self.ended = _now()
+
+    def _visit(self, page, entry: dict) -> bool:
+        """Load one page, read its links, click its disclosure controls.
+        False when it answered an HTTP error and is no route (a stored one
+        stays listed: its capture says so)."""
+        path, depth = entry["path"], entry["depth"]
+        try:
+            response = self._goto(page, path)
+            self.loaded.add(path)
+            # A 4xx or 5xx document is no screen (#1981: a GitHub Pages 404
+            # was listed); None is a same-document (hash) navigation.
+            status = getattr(response, "status", None) if response is not None else None
+            if isinstance(status, int) and status >= 400:
+                self.http_errors[path] = status
+                self.skipped["http_error"] += 1
+                return entry["stored"]
+            try:
+                page.wait_for_load_state("networkidle", timeout=NETWORK_IDLE_MS)
+            except Exception:  # noqa: BLE001 -- an app that polls may never be idle
+                pass
+            hrefs = list(page.evaluate(LINKS_JS) or [])
+        except Exception:  # noqa: BLE001 -- a page that failed is listed; its capture says so
+            self.skipped["failed"] += 1
+            self.failed.append(path)
+            return True
+        here = path.partition("#")[0]
+        self._links(hrefs + list(self.harvested.get(path, [])), here, depth)
+        if self.clicks:
+            self._click_controls(page, entry, here)
+        return True
+
+    def _click_controls(self, page, entry: dict, here: str) -> None:
+        path = entry["path"]
+        try:
+            controls = page.evaluate(CONTROLS_JS, {"selectors": self.selectors, "limit": MAX_CONTROLS})
+        except Exception:  # noqa: BLE001 -- a page whose controls cannot be read is walked without clicks
+            return
+        done = 0
+        for control in controls if isinstance(controls, list) else []:
+            if done >= MAX_CLICKS_PAGE or self.clicked >= MAX_CLICKS_CRAWL or self.gate is None:
+                return
+            if click_refusal(control, self.words, self.origin) is not None:
+                continue
+            text, css = str(control.get("text") or ""), str(control.get("css") or "")
+            if not text or (text, css) in self.refused_controls:
+                continue
+            if self._expired():
+                return
+            # The click may push a route: it is spaced as a navigation is.
+            self._space()
+            try:
+                before_url = page.url
+                before = _fingerprint(page.evaluate(TEXT_JS))
+                at = time.time()
+                answer = page.evaluate(CLICK_JS, {"css": css, "text": text})
+            except Exception:  # noqa: BLE001 -- a click that threw is no click
+                continue
+            if answer is not True:
+                continue
+            done += 1
+            self.clicked += 1
+            try:
+                page.wait_for_timeout(CLICK_SETTLE_MS)
+            except Exception:  # noqa: BLE001
+                pass
+            refused = self.gate.during(at, time.time())
+            if refused is None:
+                # The record is unreadable: a write a click attempts could no
+                # longer be told, so nothing more is clicked.
+                self.gate = None
+            elif refused:
+                self.refused_controls.add((text, css))
+                self.skipped["write_attempting"].append({"path": path, "text": text[:REVEAL_TEXT_MAX]})
+            if not self._after_click(page, entry, here, control, text, before_url, before):
+                return
+
+    def _after_click(self, page, entry: dict, here: str, control: dict, text: str,
+                     before_url: str, before: tuple | None) -> bool:
+        """Record what a click showed and put the page back. False when the
+        page could not be put back (no more clicks on it)."""
+        path, depth = entry["path"], entry["depth"]
+        after_url = str(getattr(page, "url", before_url))
+        if after_url != before_url:
+            # The router pushed, or the click navigated: a route, not a state.
+            self.last_nav = _now()
+            pushed = same_origin_path(after_url, self.origin)
+            if pushed is None:
+                self.skipped["off_origin"] += 1
+            else:
+                self._links([after_url], here, depth)
+            try:
+                self._goto(page, path)
+            except Exception:  # noqa: BLE001
+                return False
+            return True
+        try:
+            self._links(list(page.evaluate(LINKS_JS) or []), here, depth)
+            now = _fingerprint(page.evaluate(TEXT_JS))
+        except Exception:  # noqa: BLE001
+            return False
+        if control.get("role") == "tab" and now is not None and now != before:
+            # A tab whose section changed and whose address did not (§4.3): a
+            # route state, replayed by its capture before it shoots.
+            try:
+                reveal = check_reveal([{"text": text, "css": TAB_CSS}], self.words)
+            except UsageError:
+                reveal = None
+            if reveal is not None:
+                self.admit(path, depth, reveal)
+        try:
+            page.keyboard.press("Escape")
+        except Exception:  # noqa: BLE001 -- a page with nothing open has nothing to close
+            pass
+        return True
+
+    # -- the record ------------------------------------------------------------
+
+    def stopped_by(self) -> str:
+        if self.out_of_time:
+            return "time"
+        if self.cut_pages:
+            return "pages"
+        if self.cut_depth:
+            return "depth"
+        return "done"
+
+    def summary(self) -> dict:
+        """found.json's `crawl` (§3.5)."""
+        seconds = (self.ended if self.ended is not None else _now()) - (self.started or _now())
+        return {"pages": len(self.loaded), "depth": max((e["depth"] for e in self.entries), default=0),
+                "seconds": round(max(0.0, seconds), 1), "stopped_by": self.stopped_by()}
+
+
 def discover(*, base: str, max_pages: int, max_depth: int, exclude: list[str],
-             hash_routes: bool = False) -> dict:
+             hash_routes: bool = False, clicks: bool = True, words: list[str] | None = None,
+             selectors: list[str] | None = None, seconds: float = CRAWL_SECONDS,
+             navigation_ms: int = NAVIGATION_MS) -> dict:
     """The route list of what `base` links to, breadth first (module
     docstring). Returns `{"document": route list or None, "why": str}`:
     None when nothing could be listed (the start page excluded, disallowed
-    or answering an HTTP error), and why."""
+    or answering an HTTP error), and why. `clicks` clicks disclosure
+    controls (QAENV-CRAWL, §4); `words` and `selectors` are the target's
+    own excluded controls, added to DEFAULT_EXCLUDED_CONTROLS."""
     origin, root, start = discover_base(base)
     globs = list(DEFAULT_EXCLUDE) + [g for g in exclude if g not in DEFAULT_EXCLUDE]
+    words = list(DEFAULT_EXCLUDED_CONTROLS) + [w for w in words or [] if w not in DEFAULT_EXCLUDED_CONTROLS]
     # robots.txt is the origin's, whatever path the app is served under.
     robots = _fetch_robots(root + "/robots.txt")
     rules = robots_disallow(robots)
-    skipped = {"off_origin": 0, "outside_base": 0, "excluded": 0, "robots": 0, "failed": 0, "http_error": 0}
-    off: set[str] = set()
-    outside: set[str] = set()
-    seen: set[str] = set()
-    listed: list[tuple[str, int]] = []
-    failed: list[str] = []
-    http_errors: dict[str, int] = {}
-    loaded: set[str] = set()
-
-    def admit(path: str, depth: int) -> None:
-        if path in seen:
-            return
-        seen.add(path)
-        document, _, route = path.partition("#")
-        if excluded(document, globs) or (route and excluded(route, globs)):
-            skipped["excluded"] += 1
-        elif disallowed(document, rules):
-            skipped["robots"] += 1
-        elif len(listed) < max_pages and depth <= max_depth:
-            listed.append((path, depth))
-
-    admit(start, 0)
-    if not listed:
-        why = "excluded" if skipped["excluded"] else "disallowed by robots.txt"
+    walk = _Walk(root=root, origin=origin, start=start, globs=globs, rules=rules, max_pages=max_pages,
+                 max_depth=max_depth, hash_routes=hash_routes, clicks=clicks, words=words, selectors=selectors,
+                 seconds=seconds, navigation_ms=navigation_ms, gate=_GateRefusals(time.time()))
+    walk.admit(start, 0)
+    if not walk.entries:
+        why = "excluded" if walk.skipped["excluded"] else "disallowed by robots.txt"
         return {"document": None, "why": f"the start page {start} is {why}: nothing to discover"}
     playwright, _browser, context = _connect()
     page = None
     try:
         page = context.new_page()
-        at = 0
-        # Load a page only while its links could still be listed: under the
-        # depth cap, and before the page cap is reached.
-        while at < len(listed) and len(listed) < max_pages:
-            path, depth = listed[at]
-            at += 1
-            if depth >= max_depth:
-                continue
-            try:
-                response = page.goto(root + path, wait_until="load", timeout=NAV_TIMEOUT_MS)
-                loaded.add(path)
-                # A 4xx or 5xx document is no screen (#1981: a GitHub Pages
-                # 404 was listed); None is a same-document (hash) navigation.
-                status = getattr(response, "status", None) if response is not None else None
-                if isinstance(status, int) and status >= 400:
-                    at -= 1
-                    listed.pop(at)
-                    http_errors[path] = status
-                    skipped["http_error"] += 1
-                    continue
-                try:
-                    page.wait_for_load_state("networkidle", timeout=NETWORK_IDLE_MS)
-                except Exception:  # noqa: BLE001 -- an app that polls may never be idle
-                    pass
-                hrefs = page.evaluate(LINKS_JS) or []
-            except Exception:  # noqa: BLE001 -- a page that failed is listed; its capture says so
-                skipped["failed"] += 1
-                failed.append(path)
-                continue
-            here = path.partition("#")[0]
-            for href in list(hrefs)[:MAX_LINKS]:
-                found = same_origin_path(href, origin)
-                if found is None:
-                    if str(href) not in off:
-                        off.add(str(href))
-                        skipped["off_origin"] += 1
-                    continue
-                if not under(found, start):
-                    if found not in outside:
-                        outside.add(found)
-                        skipped["outside_base"] += 1
-                    continue
-                if hash_routes:
-                    route = hash_route(href, here)
-                    if route is not None:
-                        admit(route, depth + 1)
-                admit(found, depth + 1)
+        walk.run(page)
     finally:
         if page is not None:
             try:
@@ -1888,11 +2539,12 @@ def discover(*, base: str, max_pages: int, max_depth: int, exclude: list[str],
             except Exception:  # noqa: BLE001
                 pass
         playwright.stop()
-    if not listed:
+    if not walk.entries:
         return {"document": None,
-                "why": f"the start page {start} answered HTTP {http_errors.get(start)}: nothing to discover"}
+                "why": f"the start page {start} answered HTTP {walk.http_errors.get(start)}: nothing to discover"}
     taken: set[str] = set()
-    routes = [{"id": route_id(path, taken), "path": path, "ready": DISCOVER_READY} for path, _depth in listed]
+    routes = [{"id": route_id(e["key"], taken), "path": e["path"], "ready": DISCOVER_READY,
+               **({"reveal": e["reveal"]} if e.get("reveal") else {})} for e in walk.entries]
     groups = {f"pages-{n + 1}": routes[i:i + DISCOVER_GROUP_SIZE]
               for n, i in enumerate(range(0, len(routes), DISCOVER_GROUP_SIZE))}
     document = {
@@ -1900,11 +2552,13 @@ def discover(*, base: str, max_pages: int, max_depth: int, exclude: list[str],
         "discovered": {
             "base": base, "max_pages": max_pages, "max_depth": max_depth, "exclude": globs,
             "robots": "absent" if robots is None else ("unreachable" if robots == ROBOTS_UNREACHABLE else "read"),
-            "depths": {path: depth for path, depth in listed}, "skipped": skipped, "failed": failed,
-            "hash_routes": hash_routes, "http_errors": http_errors,
+            "depths": {e["key"]: e["depth"] for e in walk.entries}, "skipped": walk.skipped,
+            "failed": walk.failed, "hash_routes": hash_routes, "http_errors": walk.http_errors,
             # Listed at a cap and never loaded, so their status was not read:
             # their capture's navigate step reads it.
-            "unchecked": [path for path, _depth in listed if path not in loaded and path not in failed],
+            "unchecked": [e["path"] for e in walk.entries
+                          if not e.get("reveal") and e["path"] not in walk.loaded and e["path"] not in walk.failed],
+            "clicks": clicks, "crawl": walk.summary(),
         },
     }
     return {"document": document, "why": ""}
@@ -2089,6 +2743,27 @@ def _parser() -> argparse.ArgumentParser:
                           f"{GENERIC_QUIET_MS} ms")
     cap.add_argument("--clock", default=None,
                      help="freeze the page clock at this ISO 8601 instant (else the route list's clock, if any)")
+    cap.add_argument("--crawl", action="store_true",
+                     help="--routes is the whole run's stored list: after --group's routes, walk the app and "
+                          "capture the new routes this step owns (qa-environments.md §3.1); writes found.json")
+    cap.add_argument("--step", type=int, default=None, help="--crawl: this capture step's number, 1..--steps")
+    cap.add_argument("--steps", type=int, default=None, help=f"--crawl: the leg's capture steps, 1..{MAX_STEPS}")
+    cap.add_argument("--found-per-step", type=int, default=FOUND_PER_STEP,
+                     help=f"--crawl: new routes this step captures at most (0..{MAX_FOUND_PER_STEP})")
+    cap.add_argument("--crawl-seconds", type=int, default=CRAWL_SECONDS,
+                     help=f"--crawl: the walk's time bound (1..{MAX_CRAWL_SECONDS})")
+    cap.add_argument("--start-path", default="/", help="--crawl: where the app starts; only paths under it are walked")
+    cap.add_argument("--max-pages", type=int, default=DISCOVER_MAX_PAGES)
+    cap.add_argument("--max-depth", type=int, default=DISCOVER_MAX_DEPTH)
+    cap.add_argument("--exclude", action="append", default=[],
+                     help=f"--crawl: a path glob never listed or loaded ({', '.join(DEFAULT_EXCLUDE)} always)")
+    cap.add_argument("--exclude-control", action="append", default=[],
+                     help="a word no clicked control's text may contain (repeatable; "
+                          f"{', '.join(DEFAULT_EXCLUDED_CONTROLS)} always)")
+    cap.add_argument("--exclude-selector", action="append", default=[],
+                     help="--crawl: a CSS selector no clicked control may match or sit inside (repeatable)")
+    cap.add_argument("--navigation-ms", type=int, default=NAVIGATION_MS,
+                     help=f"--crawl: the leg's spacing between navigations (at least {MIN_NAVIGATION_MS})")
     dis = sub.add_parser("discover", help="write a route list of the same-origin pages an app links to")
     dis.add_argument("--base", required=True,
                      help="where the app starts, e.g. https://app.example or https://app.example/todomvc/; "
@@ -2099,6 +2774,16 @@ def _parser() -> argparse.ArgumentParser:
                      help=f"a path glob never listed or loaded (repeatable; {', '.join(DEFAULT_EXCLUDE)} always)")
     dis.add_argument("--hash-routes", action="store_true",
                      help="also list a page's own links whose fragment is a route (#/active), as routes")
+    dis.add_argument("--no-clicks", action="store_true", help="read links only; click no disclosure control")
+    dis.add_argument("--exclude-control", action="append", default=[],
+                     help="a word no clicked control's text may contain (repeatable; "
+                          f"{', '.join(DEFAULT_EXCLUDED_CONTROLS)} always)")
+    dis.add_argument("--exclude-selector", action="append", default=[],
+                     help="a CSS selector no clicked control may match or sit inside (repeatable)")
+    dis.add_argument("--crawl-seconds", type=int, default=CRAWL_SECONDS,
+                     help=f"the walk's time bound (1..{MAX_CRAWL_SECONDS})")
+    dis.add_argument("--navigation-ms", type=int, default=NAVIGATION_MS,
+                     help=f"the spacing between navigations (at least {MIN_NAVIGATION_MS})")
     dis.add_argument("--out", required=True, help="the route list to write, e.g. screens.json")
     dif = sub.add_parser("diff", help="compare two capture tarballs image by image")
     dif.add_argument("a")
@@ -2114,9 +2799,16 @@ def _capture_command(args) -> int:
                          "this capture would not match its baseline, so it was not taken\n")
         return EXIT_NO_LIVE_BROWSER
     try:
-        routes = load_routes(args.routes)
-        if args.group not in routes["groups"]:
+        routes = load_routes(args.routes, allow_empty=args.crawl)
+        crawl = _crawl_options(args, routes) if args.crawl else None
+        if args.step is not None and not args.crawl:
+            raise UsageError("--step and --steps are --crawl's")
+        # A crawling step owns new routes by number, and may have no stored
+        # route of its own (a run from nothing but the base, §3.1).
+        if args.group not in routes["groups"] and not args.crawl:
             raise UsageError(f"no group {args.group!r} in {args.routes}; groups: {', '.join(routes['groups'])}")
+        if not NAME.fullmatch(args.group):
+            raise UsageError(f"--group must be a file-name-safe name, got {args.group!r}")
         presets = _names(args.presets, "presets")
         themes = _names(args.themes, "themes")
         if not set(themes) <= set(THEMES):
@@ -2138,13 +2830,54 @@ def _capture_command(args) -> int:
     out.mkdir(parents=True, exist_ok=True)
     manifest = capture(routes=routes, group=args.group, base=args.base.rstrip("/"), presets=presets,
                        themes=themes, out=out, bundle=bundle, axe_source=axe_source,
-                       keep_storage=args.keep_storage, settle=args.settle, clock=args.clock)
+                       keep_storage=args.keep_storage, settle=args.settle, clock=args.clock, crawl=crawl)
     images = sum(len(r["images"]) for r in manifest["routes"])
     sys.stdout.write(json.dumps({"group": args.group, "images": images, "captured": len(manifest["routes"]),
                                  "failed": len(manifest["failed"]),
                                  "truncated": sum(1 for r in manifest["routes"] if r.get("truncated")),
-                                 "aborted": manifest.get("aborted"), "bundle": str(bundle)}) + "\n")
+                                 "aborted": manifest.get("aborted"), "bundle": str(bundle),
+                                 **({"crawl": manifest["crawl"]} if "crawl" in manifest else {})}) + "\n")
     return EXIT_OK if images else EXIT_NOTHING_CAPTURED
+
+
+def _walk_bounds(args) -> None:
+    """The bounds a walk's caller may set, held to §4's."""
+    if not 1 <= args.max_pages <= DISCOVER_MAX_PAGES:
+        raise UsageError(f"--max-pages must be 1..{DISCOVER_MAX_PAGES}")
+    if not 0 <= args.max_depth <= DISCOVER_MAX_DEPTH:
+        raise UsageError(f"--max-depth must be 0..{DISCOVER_MAX_DEPTH}")
+    if not all(isinstance(g, str) and g.startswith("/") for g in args.exclude):
+        raise UsageError("--exclude takes path globs starting with /")
+    if not 1 <= args.crawl_seconds <= MAX_CRAWL_SECONDS:
+        raise UsageError(f"--crawl-seconds must be 1..{MAX_CRAWL_SECONDS}")
+    if args.navigation_ms < MIN_NAVIGATION_MS:
+        raise UsageError(f"--navigation-ms must be at least {MIN_NAVIGATION_MS}: the walk never loads faster")
+    if not all(w.strip() for w in args.exclude_control):
+        raise UsageError("--exclude-control takes a word")
+    if not all(c.strip() for c in args.exclude_selector):
+        raise UsageError("--exclude-selector takes a CSS selector")
+
+
+def _crawl_options(args, routes: dict) -> dict:
+    """`capture --crawl`'s options, checked."""
+    if args.step is None or args.steps is None:
+        raise UsageError("--crawl needs --step and --steps: the owner of a new route is a step's number")
+    if not 1 <= args.steps <= MAX_STEPS or not 1 <= args.step <= args.steps:
+        raise UsageError(f"--steps must be 1..{MAX_STEPS} and --step 1..--steps")
+    if not 0 <= args.found_per_step <= MAX_FOUND_PER_STEP:
+        raise UsageError(f"--found-per-step must be 0..{MAX_FOUND_PER_STEP}")
+    if not args.start_path.startswith("/") or "?" in args.start_path or "#" in args.start_path:
+        raise UsageError("--start-path must be a path starting with /, with no query or fragment")
+    _walk_bounds(args)
+    words = [w.strip() for w in args.exclude_control]
+    # A stored state is replayed: its clicks are held to the target's own words too.
+    for route in _stored(routes):
+        if route.get("reveal"):
+            check_reveal(route["reveal"], [*DEFAULT_EXCLUDED_CONTROLS, *words])
+    return {"step": args.step, "steps": args.steps, "found_per_step": args.found_per_step,
+            "seconds": args.crawl_seconds, "start": args.start_path, "max_pages": args.max_pages,
+            "max_depth": args.max_depth, "exclude": list(args.exclude), "words": words,
+            "selectors": [c.strip() for c in args.exclude_selector], "navigation_ms": args.navigation_ms}
 
 
 def _discover_command(args) -> int:
@@ -2155,17 +2888,15 @@ def _discover_command(args) -> int:
     base = args.base
     try:
         discover_base(base)
-        if not 1 <= args.max_pages <= DISCOVER_MAX_PAGES:
-            raise UsageError(f"--max-pages must be 1..{DISCOVER_MAX_PAGES}")
-        if not 0 <= args.max_depth <= DISCOVER_MAX_DEPTH:
-            raise UsageError(f"--max-depth must be 0..{DISCOVER_MAX_DEPTH}")
-        if not all(isinstance(g, str) and g.startswith("/") for g in args.exclude):
-            raise UsageError("--exclude takes path globs starting with /")
+        _walk_bounds(args)
     except (UsageError, ValueError) as exc:
         sys.stderr.write(f"swarm_qa: {exc}\n")
         return EXIT_USAGE
     found = discover(base=base, max_pages=args.max_pages, max_depth=args.max_depth, exclude=args.exclude,
-                     hash_routes=args.hash_routes)
+                     hash_routes=args.hash_routes, clicks=not args.no_clicks,
+                     words=[w.strip() for w in args.exclude_control],
+                     selectors=[c.strip() for c in args.exclude_selector], seconds=args.crawl_seconds,
+                     navigation_ms=args.navigation_ms)
     document = found["document"]
     if document is None:
         sys.stderr.write(f"swarm_qa: {found['why']}\n")

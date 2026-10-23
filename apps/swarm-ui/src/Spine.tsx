@@ -761,7 +761,13 @@ const OVER_THE_PAGE = '[role="dialog"], [aria-modal="true"], aside.adm-side'
 const SUBMIT_SHORTCUT = shortcut('anywhere', 'n')
 const HELP_SHORTCUT = shortcut('anywhere', '?')
 const loadFrameCapacity = () => loadCapacity({ frame: true })
-const loadFrameStats = () => loadStats({ frame: true })
+/**
+ * The panel's Live and Waiting counts, polled every 30 s: the caller's tenant
+ * only. Never the platform scope (#2149) -- that is twelve count()s over every
+ * tenant, which Platform counts runs behind its priced button and nothing
+ * re-reads on a timer (owner ruling 2026-10-07, #138).
+ */
+export const loadFrameStats = () => loadStats({ frame: true })
 const loadFrameApprovals = () => loadApprovals({ frame: true })
 
 /**

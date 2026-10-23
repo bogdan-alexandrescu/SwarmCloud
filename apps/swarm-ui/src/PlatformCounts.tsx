@@ -80,7 +80,7 @@ export const PLATFORM_TICKS: readonly { name: string; job: string; does: string 
   { name: 'safety_tick', job: 'scheduler-tick', does: 'A one-minute safety tick for the scheduler’s drain loop.' },
   { name: 'reconciler', job: 'reconciler-tick', does: 'Reclaims expired leases and garbage-collects unused Job resources.' },
   { name: 'quota_refresh', job: 'quota-refresh', does: 'Recomputes provider quota state and adaptive pool targets.' },
-  { name: 'workflow_rollup', job: 'workflow-rollup-<tenant>', does: 'Converges the stored state of each tenant’s workflows nobody reads.' },
+  { name: 'workflow_rollup', job: 'workflow-rollup-<tenant>', does: 'Converges the stored state of each tenant’s workflows nobody reads, and seals each tenant’s ended outcome days (yesterday and the two before) so the counts over time read sealed days.' },
   { name: 'issue_run_advance', job: 'issue-run-advance-<tenant>', does: 'Advances each tenant’s issue runs nobody is reading.' },
   { name: 'stranded_pr_sweep', job: 'stranded-pr-sweep-<tenant>', does: 'Finds each tenant’s SwarmCloud pull requests nothing is going to merge, and logs them.' },
   { name: 'repo_index_poll', job: 'repo-index-poll-<tenant>', does: 'Reads each tenant’s registered repositories’ heads and queues their index runs.' },
@@ -160,7 +160,8 @@ export function PlatformCountsScreen() {
     if (counting.current) return
     counting.current = true
     setBusy(true)
-    loadStats().then((r) => {
+    // The platform half is asked for here and nowhere on a timer (#2149).
+    loadStats({ platform: true }).then((r) => {
       counting.current = false
       setRun(r)
       setBusy(false)

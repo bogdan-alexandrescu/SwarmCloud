@@ -52,7 +52,7 @@ import logging
 import threading
 from collections import OrderedDict
 from datetime import datetime, timezone
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from google.cloud.firestore_v1.base_query import FieldFilter
 
@@ -192,7 +192,12 @@ def _static(task: Task) -> dict[str, Any] | None:
 # --------------------------------------------------------------------------
 
 def read_account_events(
-    db: Any, tenant_id: str, task_ids: Sequence[str]
+    db: Any,
+    tenant_id: str,
+    task_ids: Sequence[str],
+    *,
+    strict: bool = False,
+    meter: Callable[[int], None] | None = None,
 ) -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
     """Every account event of the named tasks, and the ids whose read was complete.
 
@@ -200,6 +205,12 @@ def read_account_events(
     A chunk whose query failed, or came back at its limit, is incomplete for
     every task in it: which task's rows the limit cut off is not knowable from
     the rows that did arrive. A task past `PER_TASK_CAP` is incomplete alone.
+
+    `strict` re-raises a failed query instead of marking its chunk incomplete.
+    The outcome ledger reads this way (#2149): a day it derives is sealed, so
+    an account it could not read would be stored for good, and a derive that
+    fails is retried instead. `meter` is handed each query's billed reads --
+    its rows, or 1 when it returns none -- the way the ledger counts.
     """
     wanted = list(dict.fromkeys(t for t in task_ids if t))
     events: dict[str, list[dict[str, Any]]] = {t: [] for t in wanted}
@@ -218,8 +229,12 @@ def read_account_events(
         try:
             rows = [snap.to_dict() or {} for snap in query.stream()]
         except Exception as exc:  # the tasks were read; only this reading failed
+            if strict:
+                raise
             log.warning("task account read failed: %s", type(exc).__name__)
             continue
+        if meter is not None:
+            meter(max(1, len(rows)))
         members = set(chunk)
         for row in rows:
             # The query already filters both; this is the boundary restated
@@ -293,6 +308,54 @@ def _from_rows(rows: Sequence[Mapping[str, Any]], *, live: bool) -> dict[str, An
         generation=held.get("generation"),
         swaps=swaps,
     )
+
+
+def could_hold_account(task: Mapping[str, Any]) -> bool:
+    """Whether a task DOCUMENT may have an account event at all: `_static`'s
+    rule, for a reader that holds the raw document rather than a `Task`.
+
+    False for a profile with no provider (it calls no model), a profile that
+    takes no subscription token (it never asks the pool) and a task never
+    admitted (no worker ran). A profile the catalogue does not know is read,
+    as `_static` reads it, because its events are the only record left.
+    """
+    profile = RUNNER_PROFILES.get(str(task.get("runner_profile")))
+    if profile is not None and profile.provider is None:
+        return False
+    if profile is not None and ACCOUNT_TOKEN_ENV not in (profile.secrets or ()):
+        return False
+    try:
+        generation = int(task.get("current_generation") or 0)
+    except (TypeError, ValueError):
+        generation = 0
+    return generation > 0
+
+
+def last_account_id(task: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> str | None:
+    """The account a FINISHED task last ran on, from a complete read of its events, or None.
+
+    The account its final attempt (`current_generation`) held, as `derive`
+    serves it. When the final attempt held none -- it ended before the pool
+    answered, or gave back every account it was offered -- the latest attempt
+    before it that held one, because that attempt is the one that spent.
+    None when no attempt held an account.
+    """
+    by_generation: dict[int, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        try:
+            generation = int(row.get("generation") or 0)
+        except (TypeError, ValueError):
+            continue
+        by_generation.setdefault(generation, []).append(row)
+    try:
+        final = int(task.get("current_generation") or 0)
+    except (TypeError, ValueError):
+        final = 0
+    for generation in sorted((g for g in by_generation if g <= final), reverse=True):
+        held, _ = _walk(by_generation[generation])
+        if held is not None:
+            return str((held.get("detail") or {})["account_id"])
+    return None
 
 
 def derive(task: Task, rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:

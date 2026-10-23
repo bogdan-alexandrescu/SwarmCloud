@@ -163,6 +163,17 @@ describe('Automate › Schedules, All tenants', () => {
     expect(PLATFORM_TICKS.map((t) => ({ name: t.name, job: t.job }))).toEqual(declared)
   })
 
+  it('COUNTS-SEAL: says the workflow rollup tick also seals each tenant’s outcome days, as jobs.tf asks it to', async () => {
+    const { PLATFORM_TICKS } = await import('../PlatformCounts')
+    const tf = readFileSync(join(__dirname, '..', '..', '..', '..', 'terraform', 'modules', 'scheduler', 'jobs.tf'), 'utf8')
+    // A control: the job really asks the route to seal (#2149), so the row is
+    // describing what the tick does, not what it might.
+    expect(tf).toContain('/v1/admin/workflows/rollup?tenant_id=${urlencode(each.key)}&seal_outcomes=true')
+    const row = PLATFORM_TICKS.find((t) => t.name === 'workflow_rollup')
+    // MUTATION: drop the sealing sentence from the workflow_rollup row.
+    expect(row?.does).toMatch(/seals each tenant’s ended outcome days/)
+  })
+
   it('pauses one schedule with its reason through the admin route, then reads the list again', async () => {
     const { calls } = await mount(
       routes((m, url) => (m === 'POST' && url === '/v1/admin/schedules/sch_a:pause' ? { status: 200, body: { schedule: row('sch_a', { state: 'paused' }) } } : null)),
