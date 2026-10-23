@@ -47,6 +47,10 @@ NOT_CREDENTIALS = frozenset({
     # header or cookie name only; its value is the challenge-bypass PUT's
     # (qatargets.py `TargetBody`).
     "challenge_bypass",
+    # `POST /v1/qa-targets/{target_id}:approve-host`: the URL path of the
+    # extra origin's token endpoint (`/...`, held to `_IDP_TOKEN_PATH`), not a
+    # token (qatargets.py `_idp_token_path`, routes/qatargets.py `ApproveBody`).
+    "idp_token_path",
 })
 
 
