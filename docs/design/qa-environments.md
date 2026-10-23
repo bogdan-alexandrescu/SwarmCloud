@@ -739,7 +739,7 @@ schedule naming two legs refused until then.
 ## 10. Owner decisions (2026-10-23, ~12:00 PDT / 19:00Z)
 
 BGD answered every question in §9 in the console session that dispatched this
-lane. Each answer is recorded on the design task (`task_182e885f55a44323940e`,
+lane. Each answer is recorded on the design agent (`task_182e885f55a44323940e`,
 `owner_answers`). The build lanes of §8 follow these:
 
 | question | BGD's answer |
