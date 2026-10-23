@@ -701,10 +701,12 @@ function failureTable(
                     short id, `agentName`'s, but a workflow step's read
                     'title · checkpoints' and nothing else, so it could not
                     be matched to its row on Agents without opening it. The
-                    step's row says the same short id under its name. */}
+                    step's row says the same short id under its name, the id
+                    in an element of its own: drawn as an id, it is the
+                    user's data, not a code identifier (walk.copy E). */}
                 {(t.step_id ?? null) !== null && (
                   <span className="ov-tid" title={t.id}>
-                    task {shortTaskId(t.id)}
+                    task <span className="mono">{shortTaskId(t.id)}</span>
                   </span>
                 )}
               </th>
