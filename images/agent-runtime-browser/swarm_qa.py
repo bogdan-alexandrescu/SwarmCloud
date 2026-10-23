@@ -150,6 +150,39 @@ that cannot be read leaves `gate_refused` null, never `[]`, and is not read
 again in that capture (`why` says what failed), so an unreadable gate costs
 one timeout, not one a route.
 
+EVERY SHOT MASKS THE QA TARGET'S CREDENTIAL (QA-SHOT-MASK, part of #2055).
+The live gate replaces a QA target's configured credential (its password,
+its challenge bypass value, and their URL and base64 forms) with
+CREDENTIAL_MARK in everything it sends the agent, so the text and ARIA files
+never carried it; a screenshot is pixels, which no scrub can match, and on
+2026-10-23 a login demo that prints its own password on its home page had it
+readable in every stored image. So before every screenshot (`_shot`, each
+retake included; this tool takes no other) the capture finds where the page
+draws it and covers it, using the gate's comparison and never the value:
+this process never holds the credential, and nothing here asks for it.
+MASK_FIND_JS returns the page's text as the gate scrubs it on the way back
+(every text node; every form control's value, a select's options, a
+placeholder, an alt, a ::before or ::after content, through open shadow
+roots; and each tree scope's whole text), and wherever a mark came back,
+that node is masked. A scope whose whole text holds more marks than its text
+nodes do holds a credential split across elements, which `_mask_targets`
+finds by descending, child by child (MASK_CHILDREN_JS), to the node whose
+text holds the mark its children's do not. MASK_DRAW_JS then draws an opaque
+MASK_COLOUR box over each such text box or element box, in the page, in a
+closed shadow root in the top layer, for that shot only; MASK_CLEAR_JS takes
+it down, so the next shot and the agent's own view are unchanged. Each
+segment's `geometry` says how many places were masked (`masked`, a count,
+never the value or its length), the entry sums them. IT FAILS CLOSED: a
+sweep, a draw or a take-down that throws or answers malformed, or a mask the
+page removed or changed before the take-down, drops that shot unread, and
+the route fails at that segment saying why. KNOWN LIMITS: what the page draws
+as pixels (a canvas, an image of text), and what lives in a closed shadow
+root or another frame, is not text the sweep can read; nor is a mark the
+gate's scrub would not make (its own limits, livegate/qatarget.py). A page
+that shows the credential only between the sweep and the shot is not seen,
+and the sweep runs in the page's own world (Playwright's `page.evaluate`),
+so a page script that rewrites the DOM's methods could hide a box from it.
+
 `discover` writes a route list for an app nobody listed (§4.1): from `--base`
 (an http(s) address at a public host name, its path where the app starts:
 `discover_base`) it loads each page through the live browser, reads its
@@ -575,6 +608,173 @@ SHOT_RETRIES = 2
 LINKS_JS = "() => Array.from(document.querySelectorAll('a[href]'), (a) => a.href).slice(0, %d)" % MAX_LINKS
 AXE_INJECT_JS = "(source) => { (0, eval)(source); return typeof axe !== 'undefined'; }"
 AXE_RUN_JS = "() => axe.run(document, {resultTypes: ['violations']})"
+
+#: THE CREDENTIAL MASK (QA-SHOT-MASK, part of #2055; module docstring). What
+#: the live gate writes in place of a QA target's credential in everything
+#: bound for the agent (livegate/qatarget.py `PLACEHOLDER`, restated: this
+#: image does not carry agent_worker; test_swarm_qa_shot_mask holds them
+#: equal). The capture never holds the credential: it finds where the page
+#: shows it by finding this in the page's own text, as the gate returned it.
+CREDENTIAL_MARK = "[qa-credential]"
+#: The mask's colour, opaque, and how far each box reaches past the text's
+#: own box (anti-aliased glyph edges and underlines sit just outside it).
+MASK_COLOUR = "#000000"
+MASK_PAD_PX = 2
+#: The window property one shot's sweep lives in, from MASK_FIND_JS to
+#: MASK_CLEAR_JS: element references and the mask's host, never text.
+MASK_KEY = "__swarmQaMask"
+#: How many levels MASK_CHILDREN_JS descends looking for a credential split
+#: across elements before the shot is refused: deeper than any page this
+#: capture has met, and a bound, so a page cannot hold a shot open.
+MASK_MAX_LEVELS = 512
+
+
+def _mask_js(template: str) -> str:
+    return (template.replace("__KEY__", MASK_KEY).replace("__COLOUR__", MASK_COLOUR)
+            .replace("__PAD__", str(MASK_PAD_PX)))
+
+
+#: Every place the page could draw text, as `[kind, node, scope, ...]` rows
+#: whose strings the gate scrubs on the way back: `s` a tree scope's whole
+#: text (the document's, each open shadow root's), `t` one text node (its
+#: index among its parent's child nodes, then its text), `x` what an element
+#: draws that is no text node (a form control's value, a select's options:
+#: a list box draws them all, and an option's text has no box of its own;
+#: its placeholder and alt, a ::before or ::after content, and every
+#: attribute of an element whose content reads one). Whitespace is left out.
+MASK_FIND_JS = _mask_js("""() => {
+  const nodes = [];
+  const index = new Map();
+  const rows = [];
+  const add = (node) => { index.set(node, nodes.length); nodes.push(node); return nodes.length - 1; };
+  const text = (value) => typeof value === 'string' && /\\S/.test(value);
+  const drawn = (el) => {
+    const out = [];
+    if ((el.localName === 'input' || el.localName === 'textarea') && text(el.value)) out.push(el.value);
+    if (el.localName === 'select' && el.options) {
+      for (const option of Array.from(el.options)) out.push(option.textContent || '');
+    }
+    for (const name of ['placeholder', 'alt', 'value', 'label']) out.push(el.getAttribute(name) || '');
+    for (const pseudo of ['::before', '::after']) {
+      const content = getComputedStyle(el, pseudo).content || '';
+      if (content === 'none' || content === 'normal') continue;
+      out.push(content);
+      if (content.includes('attr(')) for (const a of Array.from(el.attributes)) out.push(a.value);
+    }
+    return out.filter(text);
+  };
+  const walk = (node, scope) => {
+    const at = add(node);
+    const own = scope === null ? at : scope;
+    if (scope === null) rows.push(['s', at, own, node.textContent || '']);
+    if (node.nodeType === 1) for (const value of drawn(node)) rows.push(['x', at, own, value]);
+    Array.from(node.childNodes).forEach((child, k) => {
+      if (child.nodeType === 3) { if (text(child.data)) rows.push(['t', at, own, k, child.data]); }
+      else if (child.nodeType === 1) walk(child, own);
+    });
+    if (node.nodeType === 1 && node.shadowRoot) walk(node.shadowRoot, null);
+  };
+  const left = window.__KEY__;
+  if (left && left.host) left.host.remove();
+  walk(document.documentElement, null);
+  Object.defineProperty(window, '__KEY__', {value: {nodes, index, host: null, root: null, boxes: 0},
+    configurable: true, writable: true, enumerable: false});
+  return rows;
+}""")
+#: The element children of each node named, as `[node, child, text]`: the
+#: descent that finds a credential split across elements (`_mask_targets`).
+MASK_CHILDREN_JS = _mask_js("""(ids) => {
+  const state = window.__KEY__;
+  if (!state) throw new Error('the mask sweep is gone: the page changed under it');
+  const rows = [];
+  for (const at of ids) {
+    const node = state.nodes[at];
+    if (!node) throw new Error('a node of the mask sweep is gone');
+    for (const child of Array.from(node.childNodes)) {
+      if (child.nodeType !== 1) continue;
+      const text = child.textContent || '';
+      if (!/\\S/.test(text)) continue;
+      const idx = state.index.get(child);
+      if (idx === undefined) throw new Error('the page changed under the mask sweep');
+      rows.push([at, idx, text]);
+    }
+  }
+  return rows;
+}""")
+#: An opaque box over each target's boxes on the screen (`t` a text node,
+#: `n` all the text under a node, `x` an element's own border boxes), in a
+#: closed shadow root no page style reaches, on a manual popover so it is in
+#: the top layer over anything the page stacks, fixed to the viewport (the
+#: boxes are the viewport's). Answers `[sites drawn, boxes]`.
+MASK_DRAW_JS = _mask_js("""(targets) => {
+  const state = window.__KEY__;
+  if (!state) throw new Error('the mask sweep is gone: the page changed under it');
+  const boxes = [];
+  let sites = 0;
+  for (const [kind, at, k] of targets) {
+    const node = state.nodes[at];
+    if (!node) throw new Error('a node of the mask sweep is gone');
+    let rects;
+    if (kind === 'x') {
+      rects = node.getClientRects();
+    } else {
+      const range = document.createRange();
+      if (kind === 't') {
+        const child = node.childNodes[k];
+        if (!child || child.nodeType !== 3) throw new Error('a text node of the mask sweep is gone');
+        range.selectNodeContents(child);
+      } else {
+        range.selectNodeContents(node);
+      }
+      rects = range.getClientRects();
+    }
+    let drew = false;
+    for (const r of Array.from(rects)) {
+      if (r.width > 0 && r.height > 0) { boxes.push(r); drew = true; }
+    }
+    if (drew) sites += 1;
+  }
+  if (!boxes.length) return [0, 0];
+  const css = (el, decls) => { for (const [k, v] of Object.entries(decls)) el.style.setProperty(k, v, 'important'); };
+  const host = document.createElement('swarm-qa-mask');
+  host.setAttribute('popover', 'manual');
+  css(host, {display: 'block', position: 'fixed', left: '0px', top: '0px', right: 'auto', bottom: 'auto',
+    width: '100%', height: '100%', margin: '0px', padding: '0px', border: '0px', background: 'transparent',
+    overflow: 'visible', 'pointer-events': 'none', opacity: '1', visibility: 'visible', transform: 'none',
+    filter: 'none', 'z-index': '2147483647'});
+  const root = host.attachShadow({mode: 'closed'});
+  const pad = __PAD__;
+  for (const r of boxes) {
+    const box = document.createElement('div');
+    css(box, {position: 'absolute', display: 'block', margin: '0px', padding: '0px', border: '0px',
+      left: (r.left - pad) + 'px', top: (r.top - pad) + 'px',
+      width: (r.width + 2 * pad) + 'px', height: (r.height + 2 * pad) + 'px', background: '__COLOUR__'});
+    root.appendChild(box);
+  }
+  state.host = host;
+  state.root = root;
+  state.boxes = boxes.length;
+  document.documentElement.appendChild(host);
+  host.showPopover();
+  return [sites, boxes.length];
+}""")
+#: Takes the mask down and ends the sweep. Answers `[intact, boxes]`: false
+#: when the sweep is gone (the page navigated) or the mask was not whole and
+#: on top at the moment it was taken down, so the shot before it is refused.
+MASK_CLEAR_JS = _mask_js("""() => {
+  const state = window.__KEY__;
+  if (!state) return [false, 0];
+  delete window.__KEY__;
+  if (!state.host) return [true, 0];
+  const host = state.host;
+  let open = false;
+  try { open = host.matches(':popover-open'); } catch (e) { open = false; }
+  const intact = open && host.isConnected && host.parentNode === document.documentElement
+    && state.root.childElementCount === state.boxes;
+  try { host.hidePopover(); } catch (e) { /* already closed */ }
+  host.remove();
+  return [intact, state.boxes];
+}""")
 
 
 class UsageError(ValueError):
@@ -1025,12 +1225,130 @@ def _faithful(size: tuple[int, int], sizes: list[tuple[float, float]]) -> bool:
     return any(abs(size[0] - w) < 1 and abs(size[1] - h) < 1 for w, h in sizes)
 
 
-def _shot(page, segment: int, preset: str | None = None) -> tuple[bytes, list[dict], str | None]:
+class _MaskFailed(RuntimeError):
+    """The credential mask could not be drawn, or was not whole when the shot
+    was taken: that shot is not stored (`_masked_screenshot`)."""
+
+
+def _int(value: Any) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError("the mask sweep answered a malformed row")
+    return value
+
+
+def _str(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("the mask sweep answered a malformed row")
+    return value
+
+
+def _mask_targets(page, rows: Any) -> list[list]:
+    """What MASK_DRAW_JS covers: every text node and every element's drawn
+    value in which the gate's scrub left CREDENTIAL_MARK, and every node whose
+    whole text holds more marks than its children's and own text nodes' do,
+    which is a credential split across elements (`<b>pa</b><i>ss</i>`), found
+    by descending (MASK_CHILDREN_JS) from each tree scope whose whole text
+    holds more marks than its text nodes. Counts, never text, are kept: the
+    marks are the scrub's, so nothing here ever held the credential."""
+    if not isinstance(rows, list):
+        raise ValueError("the mask sweep answered no rows")
+    targets: list[list] = []
+    drawn: set[int] = set()
+    own: dict[int, int] = {}
+    parts: dict[int, int] = {}
+    scopes: list[tuple[int, int]] = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) < 4:
+            raise ValueError("the mask sweep answered a malformed row")
+        kind, at, scope = row[0], _int(row[1]), _int(row[2])
+        if kind == "s":
+            scopes.append((at, _str(row[3]).count(CREDENTIAL_MARK)))
+        elif kind == "t" and len(row) == 5:
+            marks = _str(row[4]).count(CREDENTIAL_MARK)
+            own[at] = own.get(at, 0) + marks
+            parts[scope] = parts.get(scope, 0) + marks
+            if marks:
+                targets.append(["t", at, _int(row[3])])
+        elif kind == "x":
+            if _str(row[3]).count(CREDENTIAL_MARK) and at not in drawn:
+                drawn.add(at)
+                targets.append(["x", at, 0])
+        else:
+            raise ValueError("the mask sweep answered a malformed row")
+    frontier = [(at, marks) for at, marks in scopes if marks > parts.get(at, 0)]
+    levels = 0
+    while frontier:
+        levels += 1
+        if levels > MASK_MAX_LEVELS:
+            raise ValueError(f"a credential split across elements is more than {MASK_MAX_LEVELS} levels deep")
+        children: dict[int, list[tuple[int, int]]] = {}
+        answer = page.evaluate(MASK_CHILDREN_JS, [at for at, _ in frontier])
+        if not isinstance(answer, list):
+            raise ValueError("the mask descent answered no rows")
+        for row in answer:
+            if not isinstance(row, list) or len(row) != 3:
+                raise ValueError("the mask descent answered a malformed row")
+            children.setdefault(_int(row[0]), []).append((_int(row[1]), _str(row[2]).count(CREDENTIAL_MARK)))
+        nxt = []
+        for at, marks in frontier:
+            kids = children.get(at, [])
+            if marks > sum(m for _, m in kids) + own.get(at, 0):
+                targets.append(["n", at, 0])
+            nxt.extend((child, m) for child, m in kids if m > own.get(child, 0))
+        frontier = nxt
+    return targets
+
+
+def _clear_mask(page) -> list:
+    answer = page.evaluate(MASK_CLEAR_JS)
+    if (not isinstance(answer, list) or len(answer) != 2 or not isinstance(answer[0], bool)
+            or not isinstance(answer[1], int) or isinstance(answer[1], bool)):
+        raise ValueError("the mask's clear answered malformed")
+    return answer
+
+
+def _masked_screenshot(page) -> tuple[bytes, int]:
+    """One viewport screenshot with every on-screen occurrence of the QA
+    target's credential under an opaque box (QA-SHOT-MASK, module
+    docstring), and how many places were masked. The mask is drawn for this
+    shot alone and taken down after it, whatever happened. Raises
+    `_MaskFailed`, and the shot is dropped unread, when the mask could not be
+    drawn, could not be taken down, or was not whole when it was."""
+    try:
+        targets = _mask_targets(page, page.evaluate(MASK_FIND_JS))
+        drew = page.evaluate(MASK_DRAW_JS, targets) if targets else [0, 0]
+        if (not isinstance(drew, list) or len(drew) != 2
+                or not all(isinstance(v, int) and not isinstance(v, bool) for v in drew)):
+            raise ValueError("the mask's draw answered malformed")
+    except Exception as exc:  # noqa: BLE001 -- any failure refuses the shot
+        try:
+            _clear_mask(page)
+        except Exception:  # noqa: BLE001 -- the shot is refused either way
+            pass
+        raise _MaskFailed(f"the credential mask could not be drawn, so no shot was stored: "
+                          f"{type(exc).__name__}: {_one_line(exc)}") from exc
+    try:
+        png = page.screenshot(type="png", animations="disabled", caret="hide", timeout=SHOT_TIMEOUT_MS)
+    finally:
+        try:
+            intact, boxes = _clear_mask(page)
+        except Exception as exc:  # noqa: BLE001 -- unknown is not intact
+            raise _MaskFailed(f"the credential mask could not be checked after the shot, so it was not "
+                              f"stored: {type(exc).__name__}: {_one_line(exc)}") from exc
+    if not intact or boxes != drew[1]:
+        raise _MaskFailed("the credential mask was not whole when the shot was taken (the page changed or "
+                          "removed it), so the shot was not stored")
+    return png, drew[0]
+
+
+def _shot(page, segment: int, preset: str | None = None) -> tuple[bytes, list[dict], str | None, int]:
     """One screenshot of the viewport, taken again (up to SHOT_RETRIES times)
     while its size disagrees with the page's layout viewport read just after
     it, then, given the `preset`, once more after putting the device back
     (`swarm-handoff device <preset>`). Returns the PNG, a record of each shot
-    taken again, and a line for `failed` when the last one is still off.
+    taken again, a line for `failed` when the last one is still off, and how
+    many places the credential mask covered in the PNG returned. Every shot,
+    a retake included, is a `_masked_screenshot`, and raises as it does.
 
     MEASURED (box 6343795935, run 5b's 5b:QA-001, after PR 1998 had the gate
     put the device back after a clipped capture): every admin-persona
@@ -1055,16 +1373,16 @@ def _shot(page, segment: int, preset: str | None = None) -> tuple[bytes, list[di
     attempt = 0
     reset = False
     while True:
-        png = page.screenshot(type="png", animations="disabled", caret="hide", timeout=SHOT_TIMEOUT_MS)
+        png, masked = _masked_screenshot(page)
         size = png_size(png)
         sizes = _viewport_sizes(page.evaluate(VIEWPORT_JS))
         if size is None or not sizes or _faithful(size, sizes):
-            return png, reshot, None
+            return png, reshot, None, masked
         view = (round(sizes[0][0]), round(sizes[0][1]))
         if attempt >= SHOT_RETRIES and (preset is None or reset):
             after = f"{attempt + 1} shots" + (f" and a reset of the device to {preset}" if reset else "")
             return png, reshot, (f"segment {segment} was {size[0]}x{size[1]}, not the page's layout viewport "
-                                 f"{view[0]}x{view[1]}, after {after} (kept as it came)")
+                                 f"{view[0]}x{view[1]}, after {after} (kept as it came)"), masked
         record = {"segment": segment, "size": list(size), "viewport": list(view)}
         if attempt >= SHOT_RETRIES:
             reset = True
@@ -1122,19 +1440,23 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
         total, view = measured[0], max(1, measured[1])
         budget = segment_budget(route, preset)
         images, overlaps, covers, reshot, off_size, geometry = [], [], [], [], [], []
+        masked_total = 0
         duplicate = None
         step = "segment 1"
         y, _top, under, view, total, around = _scrolled(page.evaluate(SCROLL_JS, 0), 0, view, total)
         for segment in range(1, budget + 1):
             step = f"segment {segment}"
-            png, again, off = _shot(page, segment, preset)
+            png, again, off, masked = _shot(page, segment, preset)
             reshot.extend(again)
             if off is not None:
                 off_size.append(off)
             name = image_name(group, rid, preset, theme, segment)
             _write(out / name, png)
             images.append(name)
-            geometry.append({"segment": segment, "at": y, "view": view, **around})
+            # How many places the credential mask covered in this image: a
+            # count, never the value or its length (QA-SHOT-MASK).
+            geometry.append({"segment": segment, "at": y, "view": view, **around, "masked": masked})
+            masked_total += masked
             if segment == budget or y + view >= total:
                 break
             # What the screen showed of the scroller, less what is fixed over
@@ -1177,7 +1499,7 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
             "settled": not pending, "pending": pending, "scroller": measured[2] if len(measured) > 2 else None,
             "overlaps": overlaps, "covers": covers,
             "truncated": truncated, "reached": reached, "total": total, "duplicate": duplicate,
-            "geometry": geometry, "reshot": reshot, "off_viewport": off_size,
+            "geometry": geometry, "masked": masked_total, "reshot": reshot, "off_viewport": off_size,
             "text": f"{stem}.txt", "a11y": f"{stem}.a11y.json", "errors": f"{stem}.errors.json",
         }
         if axe_source is not None:

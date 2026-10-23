@@ -84,6 +84,7 @@ class FakeElement extends FakeNode {
     const props = {};
     this.style = {_p: props, setProperty: (k, v) => { props[k] = v; }};
   }
+  get options() { return this.localName === 'select' ? this.children.filter((c) => c.localName === 'option') : undefined; }
   get attributes() { return Object.entries(this._attrs).map(([name, value]) => ({name, value})); }
   getAttribute(n) { return n in this._attrs ? this._attrs[n] : null; }
   setAttribute(n, v) { this._attrs[n] = String(v); }
@@ -275,6 +276,17 @@ class MaskPage(FakePage):
         return picture
 
 
+#: Every DOM a test opened, ended when it ends (`_close_doms`).
+_OPEN: list[MaskDom] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_doms():
+    yield
+    while _OPEN:
+        _OPEN.pop().close()
+
+
 def _page(*children, **flags) -> dict:
     return {"width": WIDTH, "height": HEIGHT, **flags,
             "root": {"tag": "html", "children": [{"tag": "body", "children": list(children)}]}}
@@ -289,11 +301,9 @@ def _shoot(qa, world, dom: dict, credential: str | None):
     """One route, desktop, light, through `capture`: the manifest's entry,
     the stored image's pixels, and the page."""
     live = MaskDom(dom, credential)
+    _OPEN.append(live)
     world.page = MaskPage(qa, live)
-    try:
-        code, out, bundle = _capture(qa, world, group="other", presets="desktop", themes="light")
-    finally:
-        live.close()
+    _code, out, bundle = _capture(qa, world, group="other", presets="desktop", themes="light")
     manifest = _manifest(bundle)
     entries = [r for r in manifest["routes"] if r["id"] == "pools"]
     entry = entries[0] if entries else None
@@ -383,6 +393,22 @@ def test_a_credential_drawn_by_a_pseudo_elements_content_is_masked(qa, world):
     # left as the page drew it.
     assert entry["geometry"][0]["masked"] == 1
     assert _covered(pixels, label)
+
+
+def test_a_credential_among_a_list_boxs_options_is_masked_though_not_chosen(qa, world):
+    secret = _credential()
+    listbox = (10, 60, 120, 40)
+    # An option's text has no box of its own (the control draws it), so the
+    # option text nodes here carry none, as in a browser.
+    dom = _page({"tag": "select", "attrs": {"size": "3"}, "rect": list(listbox), "children": [
+        {"tag": "option", "children": [{"text": "first"}]},
+        {"tag": "option", "children": [{"text": secret}]},
+    ]})
+    _, entry, pixels, _page_, _out = _shoot(qa, world, dom, secret)
+    # MUTATION: read only the chosen option (`selectedOptions`) and the list
+    # box, which draws every option, is left as the page drew it.
+    assert entry["geometry"][0]["masked"] == 1
+    assert _covered(pixels, listbox)
 
 
 def test_a_page_without_the_credential_is_shot_unchanged_and_says_masked_0(qa, world):
