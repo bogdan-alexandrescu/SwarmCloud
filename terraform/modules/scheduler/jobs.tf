@@ -118,6 +118,16 @@ resource "google_cloud_scheduler_job" "quota_refresh" {
 # state"). Until this job nothing called the route on a schedule, and such a
 # workflow kept a stale stored state for ever.
 #
+# IT ALSO SEALS THE TENANT'S OUTCOME DAYS (COUNTS-SEAL, #2149). BGD's decision,
+# 2026-10-23: `outcome_days`, which Admin › Platform counts reads over 12
+# months, is "sealed nightly by the existing rollup job". `seal_outcomes=true`
+# makes the route seal the tenant's ended UTC days, yesterday and the two
+# before (swarm_api.outcomes.Outcomes.seal_recent): the first tick after a
+# day's 00:15Z grace seals it, and every later tick reads 3 stored docs and
+# derives nothing. Riding this job rather than a new one is what keeps it free
+# of IAM: same route, same identity, same run.invoker grant. Today's live day
+# is never touched.
+#
 # ONE JOB PER REGISTERED TENANT, because the route takes exactly one tenant_id
 # and deliberately will not derive it from the caller. Keyed on the tenant ids
 # the root already knows at plan (the keys of var.tenants), never on anything
@@ -163,18 +173,19 @@ resource "google_cloud_scheduler_job" "workflow_rollup" {
   region  = var.region
   name    = "${var.name_prefix}-workflow-rollup-${each.key}"
 
-  description = "managed-by=swarm-terraform; converges the stored Workflow.state of tenant ${each.key}'s workflows nobody reads"
+  description = "managed-by=swarm-terraform; converges the stored Workflow.state of tenant ${each.key}'s workflows nobody reads, and seals tenant ${each.key}'s ended outcome days"
   schedule    = var.workflow_rollup_schedule
   time_zone   = var.time_zone
   paused      = var.paused
 
   # A sweep reads at most one page of live workflows and their step tasks; it
-  # is bounded by the API's page size, not by the tenant's history.
+  # is bounded by the API's page size, not by the tenant's history. The seal
+  # is bounded by the derive budget (5,000 reads, 20 s) and 3 days.
   attempt_deadline = "300s"
 
   http_target {
     http_method = "POST"
-    uri         = "${trimsuffix(var.api_endpoint, "/")}/v1/admin/workflows/rollup?tenant_id=${urlencode(each.key)}"
+    uri         = "${trimsuffix(var.api_endpoint, "/")}/v1/admin/workflows/rollup?tenant_id=${urlencode(each.key)}&seal_outcomes=true"
 
     oidc_token {
       service_account_email = local.rollup_sweeper_email

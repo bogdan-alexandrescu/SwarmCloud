@@ -112,6 +112,53 @@ reason: a written value and a derived value are two records of one fact.
   2026-09-25 only `derive_version` was read, so the classifier's version was
   written and never acted on.)
 
+### The nightly seal: the workflow-rollup job (COUNTS-SEAL, #2149)
+
+BGD's decision, 2026-10-23: `outcome_days` is "sealed nightly by the existing
+rollup job", so a 12-month view on Admin › Platform counts reads sealed days
+instead of spending a reader's derive budget on them. Before this, a day was
+sealed only when somebody happened to read it after its grace.
+
+* **Which job.** The existing `workflow-rollup-<tenant>` Cloud Scheduler job
+  (`terraform/modules/scheduler/jobs.tf`, every 15 minutes) calls
+  `POST /v1/admin/workflows/rollup?tenant_id=T&seal_outcomes=true`. The flag
+  makes the route call `Outcomes.seal_recent` before its workflow sweep.
+* **Why that job and not a new tick.** It already calls swarm-api as the
+  `swarm-rollup-sweeper` identity, which swarm-api admits to that route
+  (`auth.ROLLUP_SWEEPER_ROUTES`), and which already holds its one grant,
+  `run.invoker` on swarm-api. So the seal needs no new job, no new route on
+  the allow-list and **no new IAM binding**. A new tick on
+  `POST /v1/admin/outcomes/rollup` would have needed that route added to the
+  sweeper's allow-list, which widens what a leaked sweeper token reaches.
+* **What one call does.** It looks at yesterday and the two days before it
+  (`OUTCOMES_SEAL_LOOKBACK_DAYS = 3`), newest first. A day still inside its
+  15-minute grace is `not_yet`. A day already sealed at this module's versions
+  is `already_sealed` and costs its one stored-doc read. Any other day is
+  sealed by a full derive, exactly what the next read would do. The two older
+  days are there so a night the job missed is sealed by the next tick.
+* **Never today.** The live day is not in the window, so it is never written
+  or rewritten by the seal.
+* **Idempotent.** A second call writes nothing: every day it looks at is
+  `already_sealed`. Unlike the drift check, the seal never re-derives a sealed
+  day, so a tick does not re-read history.
+* **Bounded.** At most 3 days per call, inside the backfill's 31-day cap. No
+  derive starts once the call has spent the derive budget (5,000 reads or
+  20 s). A day it did not reach is `deferred` and is sealed by the next tick.
+  It is never written as a zero.
+* **Logged.** One line per tenant per call: `outcome seal tenant=T sealed=..
+  already_sealed=.. not_yet=.. deferred=.. unknown=.. reads=..`. The route
+  returns the same report under `outcomes`.
+* **It never fails the sweep.** The seal runs first and never raises. A
+  failure is `outcomes.error` in the response, and the workflow sweep still
+  runs. An unregistered tenant is `skipped: unknown_tenant`, not sealed.
+* **What it does not reach.**
+  * A personal `u-*` tenant is not in `var.rollup_tenant_ids`, so no job
+    seals its days. They seal on the next read past their grace, as before.
+  * Days older than three days are not sealed by the job. A cold 12-month
+    view still needs the admin backfill (`POST /v1/admin/outcomes/rollup`,
+    31 days per call) once, after which the job keeps it sealed. That
+    includes the one-off re-derive of every v8 day to v9 (below).
+
 ### The read budget
 
 * One request may spend 5,000 reads and 20 s building missing days. It builds
@@ -233,7 +280,8 @@ change to the frozen contract was needed.
 
 Every stored day was derived under `DERIVE_VERSION` 8, which has no usage
 columns, so each one is derived again once: by the next read that needs it,
-or by the rollup job. A re-derive costs what a first build costs (see the
+by the admin backfill, or, for the last three days, by the workflow-rollup
+job's nightly seal. A re-derive costs what a first build costs (see the
 measured table above): every agent that ended or arrived that day, their
 attempts and their parents. On top of that come the events: one query per 30
 pooled ended agents, billed per account event returned, about one or two per

@@ -122,10 +122,22 @@ export function useForgePermissions(): ForgePermsRead {
   const fresh = useRef(false)
   const armed = useRef(false)
   const [checking, setChecking] = useState(false)
+  // A read can settle after the surface is gone (a route change, a test's
+  // teardown): setting state then schedules an update against a torn-down
+  // window, which vitest reports as an unhandled rejection.
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
   const read = useUrRead(() => {
     const refresh = fresh.current
     fresh.current = false
-    return loadForgePermissions(refresh).finally(() => setChecking(false))
+    return loadForgePermissions(refresh).finally(() => {
+      if (mounted.current) setChecking(false)
+    })
   }, 'forge-permissions')
   const { reload } = read
   const recheck = useCallback(() => {
