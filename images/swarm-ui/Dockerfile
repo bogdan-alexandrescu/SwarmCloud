@@ -112,8 +112,8 @@ FROM ${MIRROR_DOCKER_HUB}/${NGINX_IMAGE}
 # Releases 39158785934, 39161799433 and 39162254559 (2026-10-18) refused it over
 # libx11 1.8.13-r0 (CVE-2026-88806, HIGH, fixed in 1.8.14-r0), holding every merge
 # since 17:33Z.
-# Pull request #2156's image build (run 40025854388, 2026-10-23) refused it over
-# brotli-libs 1.2.0-r1 (CVE-2026-111497, HIGH, fixed in 1.2.1-r0).
+# PR #2130's build-check (run 40024164828, 2026-10-23) refused it over brotli-libs
+# 1.2.0-r1 (CVE-2026-111497, HIGH, fixed in 1.2.1-r0); same reason, same fix.
 USER root
 # APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
 # main build and release), so the upgrade below is never an older build's

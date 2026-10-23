@@ -706,7 +706,9 @@ def test_a_failed_read_is_unread_everywhere_and_no_number_is_invented(tokens, gr
 def test_a_day_too_large_to_store_is_unread_not_truncated(ctx, clock):
     ctx.outcomes = Outcomes(
         store=ctx.store, rollups=ctx.rollups, metrics=ctx.metrics, now=clock,
-        shard_bytes=600, max_shards=0,
+        # An empty day's two column headers are 626 bytes under DERIVE_VERSION 9
+        # (433 under 8, when this was 600), so 800 holds an empty day and not 22 Sep.
+        shard_bytes=800, max_shards=0,
     )
     body = ok(TestClient(create_app(ctx), raise_server_exceptions=False), "alice", **WEEK)
     assert body["buckets"][0]["state"] == "sealed", "an empty day fits"
@@ -718,7 +720,9 @@ def test_a_day_too_large_to_store_is_unread_not_truncated(ctx, clock):
 def test_a_large_day_is_sharded_and_read_back_whole(ctx, clock, db):
     ctx.outcomes = Outcomes(
         store=ctx.store, rollups=ctx.rollups, metrics=ctx.metrics, now=clock,
-        shard_bytes=900, max_shards=11,
+        # Every part repeats the 626-byte headers (DERIVE_VERSION 9; this was
+        # 900 under 8), so 1300 leaves room for a row or two per part.
+        shard_bytes=1300, max_shards=11,
     )
     client = TestClient(create_app(ctx), raise_server_exceptions=False)
     first = ok(client, "alice", **WEEK)
