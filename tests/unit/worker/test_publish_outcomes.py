@@ -280,6 +280,23 @@ def test_a_prompt_with_a_repository_ends_with_the_publish_paragraph(tmp_path, mo
         assert phrase in cliagent.PUBLISH_PARAGRAPH
 
 
+def test_a_prompt_with_a_repository_says_how_to_end_with_no_change(tmp_path, monkeypatch):
+    """#2140: build-170 found its issue already built, wrote pr-body.md and no
+    verification.md, and failed `published_nothing`, cancelling its dependant.
+    The worker reads "no change plus verification.md" as SUCCEEDED no_change
+    (Proposal J); the prompt has to say so, under the name the worker reads."""
+    ctx = _ctx(tmp_path, {"prompt": "fix it"}, repo=True)
+    _install(tmp_path, monkeypatch, ctx, [{"answer": DONE}])
+    claude_code.body(ctx)
+    prompt = _runs(ctx)[0]["prompt"]
+    named = f"$SWARM_ARTIFACTS_DIR/{lifecycle.VERIFICATION_FILE}"
+    assert named == "$SWARM_ARTIFACTS_DIR/verification.md"
+    assert named in prompt, prompt[-800:]
+    assert named in cliagent.PUBLISH_PARAGRAPH
+    assert "commit nothing" in cliagent.PUBLISH_PARAGRAPH
+    assert "no change" in cliagent.PUBLISH_PARAGRAPH
+
+
 def test_a_prompt_without_a_repository_has_no_publish_paragraph(tmp_path, monkeypatch):
     ctx = _ctx(tmp_path, {"prompt": "summarise the notes"}, repo=False)
     _install(tmp_path, monkeypatch, ctx, [{"answer": DONE}])
