@@ -10,7 +10,10 @@ lane VQ-2 TARGETS, part of #1933).
                                                    with one origin into environments[]
     POST   /v1/qa-targets/{id}:approve-host        a PLATFORM admin approves an entry's host (VQ-Q1),
                                                    its extra origin and IdP token path
-    POST   /v1/qa-targets/{id}:run                 a member starts a run: {screens?, file?, environment?}
+    POST   /v1/qa-targets/{id}:run                 a member starts a run of one or several legs:
+                                                   {screens?, file?, environments?} (or the one-leg
+                                                   `environment`), one workflow per leg, one run group
+    GET    /v1/qa-runs/{group_id}                  a run group, in its own tenant (any role)
     POST   /v1/qa-targets/{id}:discover            a member starts its discovery (§4.1): {environment?}
     POST   /v1/qa-targets/{id}/credential-links    a one-time link to the console's form (an admin),
                                                    bound to one entry: {environment?}
@@ -58,7 +61,7 @@ from starlette.concurrency import run_in_threadpool
 from ..auth import AuthContext
 from ..children import PROOF_HEADER, TIMESTAMP_HEADER, ChildService
 from ..deps import AppContext, admin_auth, current_auth, get_context, tenant_scope
-from ..errors import Forbidden
+from ..errors import ApiError, Forbidden, ValidationFailed
 from ..mergesettings import is_owner
 from ..qatargets import (
     ADMIN_REQUIRED_MESSAGE,
@@ -70,7 +73,6 @@ from ..qatargets import (
     QaTargets,
     SecretManagerQaCredentials,
     render_discovery_run,
-    render_run,
     resolve_host,
     to_api,
 )
@@ -147,7 +149,10 @@ class RunBody(StrictModel):
     #: `flows_browser_tool` (lane VQ9-TOOL; `qaspec.FLOW_BROWSER_TOOLS`).
     #: Recorded on the run's record; never stored on the target.
     browser_tool: Literal["playwright", "jev"] | None = None
-    #: The leg to run, by name; required on a target of several entries.
+    #: The legs to run, by name (qa-environments.md §2.1, QAENV-RUN): one
+    #: workflow each, linked by a run group. Unset is every entry.
+    environments: list[str] | None = Field(default=None, max_length=8)
+    #: One leg, as a caller named it before `environments`; never with it.
     environment: str | None = EnvironmentName
 
 
@@ -315,27 +320,79 @@ def run_target(
     target_id: str,
     body: RunBody,
     request: Request,
+    response: Response,
     auth: AuthContext = Depends(current_auth),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    """A run of the target, as this member's submission in this workspace.
-    Every refusal comes before anything is admitted (§5)."""
+    """A run of the target's named legs (every entry when none is named), as
+    this member's submissions in this workspace: one workflow per leg, linked
+    by a run group (qa-environments.md §2.1). Every leg's refusal comes before
+    anything is admitted (§5); a later submission refused after an earlier
+    one started answers 207, the group naming that leg not started and why."""
     require_member(ctx, auth)
+    if body.environment is not None and body.environments is not None:
+        raise ValidationFailed("name the legs in environments, or one leg in environment, not both",
+                               detail={"reason": "qa_target_invalid", "field": "environments"})
+    names = [body.environment] if body.environment is not None else body.environments
     targets = _targets(request, ctx)
-    target = targets.runnable(tenant_id, target_id, file=body.file, environment=body.environment)
-    workflow, mark, browser = render_run(target, screens=body.screens, file=body.file,
-                                         browser_tool=body.browser_tool)
-    # The mark is reserved (`validation.QA_TARGET_METADATA_KEY`): only this
-    # exact value, only for this submission, gets past the refusal.
-    with qa_target_mark_allowed(mark):
-        submission = ctx.submissions.submit_workflow(auth, WorkflowCreate.model_validate(workflow))
-    workflow_id = submission.workflow.workflow_id
-    task_ids = [t.id for t in submission.tasks if t.step_id in set(browser)]
-    targets.record_run(tenant_id=tenant_id, target=target, workflow_id=workflow_id,
-                       task_ids=task_ids, file=body.file, by=_email(auth), browser_tool=body.browser_tool)
-    return {"workflow_id": workflow_id, "qa_target": mark, "file": body.file,
-            "browser_steps": browser}
+    legs = targets.runnable_legs(tenant_id, target_id, file=body.file, environments=names,
+                                 screens=body.screens, browser_tool=body.browser_tool)
+    specs = [WorkflowCreate.model_validate(leg.workflow) for leg in legs]
+    by = _email(auth)
+    group_id = targets.open_group(tenant_id=tenant_id, legs=legs, file=body.file, by=by,
+                                  browser_tool=body.browser_tool)
+    answered: list[dict[str, Any]] = []
+    refusals: list[ApiError] = []
+    for leg, spec in zip(legs, specs):
+        try:
+            # The mark is reserved (`validation.QA_TARGET_METADATA_KEY`): only
+            # this leg's exact value, only for this submission, gets past the refusal.
+            with qa_target_mark_allowed(leg.mark):
+                submission = ctx.submissions.submit_workflow(auth, spec)
+        except ApiError as exc:
+            targets.leg_not_started(group_id, leg.name, code=exc.code, message=exc.message)
+            refusals.append(exc)
+            answered.append({"environment": leg.name, "state": "not_started", "workflow_id": None,
+                             "qa_target": leg.mark, "browser_steps": leg.browser,
+                             "reason": {"code": exc.code, "message": exc.message}})
+            continue
+        except BaseException:
+            targets.leg_not_started(group_id, leg.name, code="internal_error",
+                                    message="the submission failed before it was admitted")
+            raise
+        workflow_id = submission.workflow.workflow_id
+        task_ids = [t.id for t in submission.tasks if t.step_id in set(leg.browser)]
+        targets.record_run(tenant_id=tenant_id, target=leg.target, workflow_id=workflow_id,
+                           task_ids=task_ids, file=body.file, by=by, browser_tool=body.browser_tool,
+                           group_id=group_id)
+        targets.leg_submitted(group_id, leg.name, workflow_id=workflow_id)
+        answered.append({"environment": leg.name, "state": "submitted", "workflow_id": workflow_id,
+                         "qa_target": leg.mark, "browser_steps": leg.browser, "reason": None})
+    if len(refusals) == len(legs):
+        # Nothing started: the refusal is the answer, as it was for one leg.
+        raise refusals[0]
+    if refusals:
+        response.status_code = status.HTTP_207_MULTI_STATUS
+    answer: dict[str, Any] = {"group_id": group_id, "file": body.file, "legs": answered}
+    if len(legs) == 1:
+        # A one-leg run answers as it always did, beside its group.
+        (only,) = answered
+        answer.update({"workflow_id": only["workflow_id"], "qa_target": only["qa_target"],
+                       "browser_steps": only["browser_steps"]})
+    return answer
+
+
+@router.get("/qa-runs/{group_id}")
+def get_run_group(
+    group_id: str,
+    request: Request,
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """One dispatch's legs (§7's run page), in the caller's workspace only, as
+    a target is read: another workspace's group answers exactly as a missing one."""
+    return {"qa_run": _targets(request, ctx).group(tenant_id, group_id)}
 
 
 @router.post("/qa-targets/{target_id}:discover", status_code=status.HTTP_201_CREATED)

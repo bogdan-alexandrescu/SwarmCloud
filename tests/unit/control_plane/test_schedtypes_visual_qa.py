@@ -183,7 +183,8 @@ def test_the_minimum_interval_is_24_hours() -> None:
     daily = schedules.parse_create({**body.model_dump(mode="json"), "cron": "0 6 * * *"})
     doc = schedules.build_schedule(daily, tenant_id="eng", actor=ROOT, now=NOW,
                                    registered_repo_ids=[ENG_WIDGETS], is_admin=True)
-    assert doc["params"] == {"target": "qat_" + "1" * 16}
+    # `environments` unset is every entry of the target (QAENV-RUN), stored as the default.
+    assert doc["params"] == {"target": "qat_" + "1" * 16, "environments": None}
 
 
 @pytest.mark.parametrize("params", [
@@ -251,13 +252,15 @@ def test_a_firings_qa_target_mark_gets_past_the_reserved_key_check(db, ctx, reso
     target = carol_target(db, resolver)
     schedule = qa_schedule(db, target["id"])
     rendered: list[tuple[dict[str, Any], dict[str, Any], list[str]]] = []
+    real_render = qatargets.render_run
 
     def render_and_keep(*args: Any, **kwargs: Any):
-        answer = qatargets.render_run(*args, **kwargs)
+        answer = real_render(*args, **kwargs)
         rendered.append(answer)
         return answer
 
-    monkeypatch.setattr(visual_qa, "render_run", render_and_keep)
+    # The firing renders each leg through `QaTargets.runnable_legs` (QAENV-RUN).
+    monkeypatch.setattr(qatargets, "render_run", render_and_keep)
     # The service is the real one: no fake that skips the check.
     assert type(ctx.submissions).__module__ == "swarm_api.service"
 
