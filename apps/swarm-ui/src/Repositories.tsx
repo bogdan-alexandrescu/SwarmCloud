@@ -507,16 +507,16 @@ function RepoCard({
     wasConfirming.current = confirming
   }, [confirming])
   return (
-    <Card
-      className="ur-card"
-      title={repoName(r)}
-      action={
-        <span className="ur-acts">
-          <RepoDot row={perm} />
-          <UrFreshPill f={f} />
-        </span>
-      }
-    >
+    <Card className="ur-card" title={repoName(r)}>
+      {/* THE BADGE HAS ONE SLOT (visual QA run 6, work-a-009, part of #1680).
+          As the head's action it sat right of the name, and a long name pushed
+          it onto a line of its own, so no two cards drew it in the same place.
+          It is the first row under the name now, from the card's left edge,
+          whatever the name's length. */}
+      <div className="ur-cbadge" data-badge="">
+        <UrFreshPill f={f} />
+        <RepoDot row={perm} />
+      </div>
       <div className="ur-cmeta">
         <span>
           Default branch {r.default_branch === null ? <Dash why="The default branch was not served" /> : <b>{r.default_branch}</b>}
@@ -533,8 +533,11 @@ function RepoCard({
         </span>
       </div>
       <TestsMapped r={r} cut={cut} />
-      <div className="ur-cmeta">
-        {lastIndexed(r)}
+      <div className="ur-cmeta">{lastIndexed(r)}</div>
+      {/* SCHEDULE ON ITS OWN LINE (work-a-009): beside the last-indexed item it
+          wrapped under it on one card and stayed beside it on the next, so the
+          cards' rows did not line up. */}
+      <div className="ur-cmeta" data-row="schedule">
         <span>Schedule {sched === null ? <Dash why="The schedule was not served" /> : <b>{sched}</b>}</span>
       </div>
       <IndexingUses r={r} go={go} />

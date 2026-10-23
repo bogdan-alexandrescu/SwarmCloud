@@ -59,6 +59,9 @@
 .ur-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: stretch; }
 .ur-card { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .ur-card > .ur-cacts { margin-top: auto; }
+/* The freshness badge's one slot (visual QA run 6, work-a-009): the row
+   under the name, from the left edge, on every card at every width. */
+.ur-cbadge { display: flex; flex-wrap: wrap; gap: var(--ctl-s2); align-items: center; justify-content: flex-start; min-width: 0; }
 /* The last failed index run (INDEX-FAIL): a bad-toned note above the actions.
    Access failures and a stopped poll are the operator's to fix; a transient
    one is quieter, it retries on its own. */
@@ -309,6 +312,18 @@ table.ur-mx tr.ur-grp td { background: var(--surface-2); font-weight: 600; text-
 .ur-treerow small { color: var(--text-dim); font-size: var(--t-micro); }
 .ur-legend { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 
+/* THE PLAN APPROVAL WORD FITS ITS COLUMN (review of QAFIX6-WORKPAGES, part
+   of #1680). Runs' Plan approval column is 86px (intake.css), about 74px of
+   content, sized for 'required'. 'awaiting approval' is about 107px at
+   --t-meta and 'not required' about 78px, and the row's cells never wrap, so
+   at 1440 the Planned run's word ran about 35px over the Workflow cell's 'no
+   workflow'. The word is drawn at the micro size, as the row's other short
+   values are, and wraps inside its cell: each of its words is narrower than
+   the column. The rule sits in this lane's sheet because intake.css was not
+   in the lane's files; questions.json asks whether to move it there or widen
+   the column instead. qafix6.workpages.test.tsx. */
+.rn-row > td[data-label='Plan approval'] { white-space: normal; font-size: var(--t-micro); line-height: var(--lh-micro); }
+
 /* ---- narrower screens, and the 390px phone frame ---------------------------- */
 @media (max-width: 1079px) {
   .ur-cards, .ur-toks { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -341,6 +356,15 @@ table.ur-mx tr.ur-grp td { background: var(--surface-2); font-weight: 600; text-
   .ur-tmap-row, .ur-always-row, .ur-suite-row { grid-template-columns: minmax(0, 1fr); }
   .ur-lookup-form { flex-direction: column; align-items: stretch; }
   .ur-acts { margin-left: 0; }
+  /* ACCESS'S HEAD WRAPS AS ONE GROUP, AS SETUP'S DOES (visual QA run 6,
+     work-b-003, part of #1680). The head's actions kept `margin-left: auto`
+     and `flex-end`, and the switch-and-Setup group's own width put it on a
+     line under Refresh, so Refresh sat alone, right-aligned, on a row between
+     the title and the switch. The actions take the full row under the title
+     from the left edge, and the group starts from no width: it stays on
+     Refresh's row, the switch beside Refresh, and Setup wraps inside it. */
+  .ac-page > .c-phead > .c-acts { flex: 1 1 100%; margin-left: 0; justify-content: flex-start; }
+  .ac-page > .c-phead > .c-acts > .ur-acts { flex: 1 1 0; min-width: 0; }
   /* The grid needs the full width (screen 13's risk): a phone reads perms-b's cards. */
   .ur-mx-wide { display: none; }
   .ur-mx-cards { display: grid; gap: 12px; }
