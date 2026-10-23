@@ -360,6 +360,36 @@ def test_no_scan_in_the_walked_commits_says_how_far_it_looked(db, ctx, repo_id, 
     assert row["outcome"] == "no_scan" and "last 3 commits" in row["why"]
 
 
+# CHECK-STUCK-2 (BGD, 2026-10-23, task_9e9080121b104370b079 Q1; part of
+# #2031): the scan lookup reads a check run as finished the way every merge
+# judge does (`forgechecks.check_run_finished`) -- `status` completed, OR a
+# conclusion together with a completed_at. GitHub left PR 2006's `secret
+# scan` at in_progress after giving it both. A run with no conclusion is not
+# a scan. (case, conclusion, completed_at, found)
+STUCK_SCAN = [
+    ("in_progress, failure, completed_at", "failure", "2026-10-05T06:02:00Z", True),
+    ("in_progress, no conclusion", None, None, False),
+]
+
+
+@pytest.mark.parametrize(("case", "conclusion", "completed_at", "found"), STUCK_SCAN,
+                         ids=[row[0] for row in STUCK_SCAN])
+def test_a_scan_run_left_in_progress_with_a_conclusion_is_read(
+    db, ctx, repo_id, github, case, conclusion, completed_at, found
+) -> None:
+    github.actions = False
+    github.check_runs[SCANNED] = [{**check_run(SCANNED, output={"summary": LOG}), "status": "in_progress",
+                                   "conclusion": conclusion, "completed_at": completed_at}]
+
+    row = cve.dry_run(firing_for(ctx, refresh(db, repo_id)))["repositories"][repo_id]
+
+    # MUTATION: read status alone (`status == "completed"`) -> the first row
+    # walks past the scan and reads "no_scan".
+    assert (row["outcome"] != "no_scan") is found, (case, row)
+    if found:
+        assert row["scan"]["sha"] == SCANNED and row["sources"] == ["check_run_output"], (case, row)
+
+
 # ---------------------------------------------------------------------------
 # Missing GitHub permissions are reported, not silent
 # ---------------------------------------------------------------------------
