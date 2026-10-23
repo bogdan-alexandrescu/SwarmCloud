@@ -66,6 +66,19 @@ from everything the agent receives. A hand-off on the console host is refused
 qa_identity_host`; the session carry leaves the host out; the wipe clears the
 credential BEFORE Chromium closes, and the verb is refused after it.
 
+A CAPTCHA ON THE AGENT'S PAGE IS A HAND-OFF THE GATE RAISES (CAPTCHA-HANDOFF;
+docs/design/live-browser.md §4.1, part of #2058). BGD decided on 2026-10-23
+that an agent need not notice a CAPTCHA itself: when a frame on the page the
+follower shows is a challenge (mask.py `SHOWN_IN_CONTROL`, the list the mask
+and tabs.py already read), the mask tells `_on_challenge` once per page load,
+and the gate puts one request in `status` (`challenge`: `request_id`, the
+reason "CAPTCHA on <host>", host only, and `expect` that host). ctl.sock is
+the worker's to call, so the request waits there for the worker's next read;
+the worker raises it through its own hand-off path and its `pause` takes it
+off. Nothing is raised while the gate signs in on its own QA tab (that ends
+with `qa_sign_in_challenge`, qatarget.py) or while the browser is already
+held for a person. The gate never solves or evades a challenge.
+
 A GATE THAT RESTARTS keeps Chromium closed (ctl.py): when the first start's
 marker is already in /tmp, only ctl.sock is served -- it refuses every
 registration and records `gate_restarted` -- and nothing else starts.
@@ -93,6 +106,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import signal
 import sys
@@ -156,6 +170,10 @@ CONTROL_FPS = 30
 #: Frames per second while people only watch, or only the relay records:
 #: as before, since nobody is waiting on a key.
 WATCH_FPS = 10
+#: The reason of a hand-off the gate raises for a challenge (CAPTCHA-HANDOFF):
+#: fixed text and the page's host, never a path or a query.
+CHALLENGE_REASON = "CAPTCHA on {host}"
+
 #: The longest ticket the relay accepts (swarm_live.rendezvous MAX_TICKET_CHARS).
 MAX_TICKET_CHARS = 4096
 #: The keys of the relay's `DEVICE` frame (rendezvous.DeviceRequest.payload):
@@ -1208,7 +1226,11 @@ class LiveGate:
         self.startup: dict[str, float] = {}
         self.desktop = resolve(DEFAULT_PRESET)
         #: The event log hears of every challenge frame shown in a hand-off (mask.py SHOWN_IN_CONTROL).
-        self.mask_state = MaskState(record=self.record)
+        #: It tells `_on_challenge` of a challenge on the agent's page, once per load.
+        self.mask_state = MaskState(record=self.record, on_challenge=self._on_challenge)
+        #: The hand-off the gate asks the worker for (CAPTCHA-HANDOFF), in
+        #: `status` until the worker's `pause` takes it off; None otherwise.
+        self.challenge: dict[str, Any] | None = None
         self.hub = FrameHub(self.desktop.display_width, self.desktop.display_height)
         #: Set once ctl.sock listens: the dispatcher's startup probe condition.
         self.ready = asyncio.Event()
@@ -2010,7 +2032,22 @@ class LiveGate:
             "qa_identity": self.qa.status(),
             # VQ-4: the QA target's sign-in state, never the credential.
             "qa_target": self.qa_target.status(),
+            # CAPTCHA-HANDOFF: the hand-off the gate asks for, or None.
+            "challenge": dict(self.challenge) if self.challenge is not None else None,
         }
+
+    def _on_challenge(self, host: str) -> None:
+        """The mask saw a challenge on the page it follows: ask for a person (module docstring).
+
+        Not on the gate's own QA sign-in tab (`qa_target.signing_in`: its
+        challenge ends the sign-in), and not while a person already holds the
+        browser or the agent is held for one: the person sees it there.
+        """
+        if self.qa_target.signing_in or self._handed_off or self._episode is not None:
+            return
+        self.challenge = {"request_id": "gate-" + secrets.token_hex(6),
+                          "reason": CHALLENGE_REASON.format(host=host), "expect": host}
+        self.record("handoff_challenge_raised", {"host": host})
 
     async def open_tunnel(self, args: Mapping[str, Any]) -> dict[str, Any]:
         ticket = args.get("ticket")
@@ -2343,6 +2380,8 @@ class LiveGate:
         self._self_paused = False
         await proxy.pause()
         self._handed_off = True
+        # The gate's own request is answered by this hand-off, whoever asked.
+        self.challenge = None
         expect = args.get("expect")
         if (args.get("fresh_page") is True and isinstance(expect, str) and expect
                 and _HOST.fullmatch(expect)):

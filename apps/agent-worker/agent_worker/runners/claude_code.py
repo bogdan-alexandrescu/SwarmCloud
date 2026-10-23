@@ -391,7 +391,13 @@ LIVE_BROWSER_NOTE = (
     "`from swarm_browser import live; playwright, browser, context = live()` "
     "connects over CDP to $SWARM_CDP_ENDPOINT; call `playwright.stop()` when "
     "done, never `browser.close()`. Open each new page in its own tab so the "
-    "person sees it. When a site shows a CAPTCHA, a bot check, a consent wall "
+    "person sees it. "
+    # CAPTCHA-HANDOFF (BGD, 2026-10-23; part of #2058): the gate raises the
+    # hand-off itself when it sees a challenge on the agent's page.
+    "Never try to solve or get around a CAPTCHA yourself: the platform asks a "
+    "person to solve it, so when the browser stops answering on one, run "
+    "`swarm-handoff wait` and carry on once it returns. "
+    "When a site shows a CAPTCHA, a bot check, a consent wall "
     "or a sign-in, do not try to get around it and do not switch to a "
     "different site than the one asked for: run `swarm-handoff request "
     "--reason \"<what the person should do>\" --expect <domain>`, then "
