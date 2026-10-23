@@ -185,9 +185,10 @@ describe('a2 (6:flow-submit-form-desktop-02): before an attempt the empty prompt
       const miss = field.querySelectorAll<HTMLElement>('.sbf-miss')
       // MUTATION: drop the `.sbf-miss` line -> the attempt marks the field and never says why.
       expect(miss).toHaveLength(1)
-      expect(visible(miss[0])).toBe('claude-code will not start without prompt')
+      const line = miss[0]!
+      expect(visible(line)).toBe('claude-code will not start without prompt')
       // MUTATION: describe the editor by nothing -> a screen reader on the field never hears the error.
-      expect(editor.getAttribute('aria-describedby')).toBe(miss[0].id)
+      expect(editor.getAttribute('aria-describedby')).toBe(line.id)
     })
   }
 })
