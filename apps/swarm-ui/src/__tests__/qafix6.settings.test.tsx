@@ -393,18 +393,33 @@ describe("i. box 6343774758: People and API keys read the same role", () => {
     expect(keys).toMatch(/u-carol is your personal workspace, so its key is Your key above/)
   })
 
-  it('names the role the tenant key needs: platform admin', async () => {
+  async function keysAs(me: Json): Promise<string> {
     serve((m, url) => {
-      if (m === 'GET' && url.startsWith('/v1/tenants/me')) return { status: 200, body: meBody(false, 'group') }
+      if (m === 'GET' && url.startsWith('/v1/tenants/me')) return { status: 200, body: me }
       if (m === 'GET' && url.startsWith('/v1/provider-keys/typesafe')) return { status: 200, body: keysBody('eng') }
       return null
     })
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
     const { ProviderKeysScreen } = await import('../ProviderKeys')
-    render(<ProviderKeysScreen link={null} />)
+    const { container } = render(<ProviderKeysScreen link={null} />)
     await screen.findByText(/your agents in eng would use/i)
-    // MUTATION: say 'only an admin' -> a workspace admin reads it as themself: red.
-    expect(visible(document.body)).toMatch(/only a platform admin can set or remove it/)
+    return visible(container)
+  }
+
+  it("offers the tenant key to the group workspace's admin, whom the API admits", async () => {
+    // People calls this persona the workspace's admin (`can_manage`); the
+    // tenant routes admit it before the platform rule (`_require_tenant_admin`).
+    await keysAs({ ...meBody(false, 'group'), role: { name: 'admin', source: 'override' } })
+    // MUTATION: read `principal.is_admin` alone -> no tenant key row for the workspace admin: red.
+    expect(screen.getByRole('region', { name: /tenant key/i })).toBeTruthy()
+    expect(visible(document.body)).not.toMatch(/only .*admin.* can set/)
+  })
+
+  it('names both roles that may set it to a member who is neither', async () => {
+    const text = await keysAs({ ...meBody(false, 'group'), role: { name: 'member', source: 'default' } })
+    expect(screen.queryByRole('region', { name: /tenant key/i })).toBeNull()
+    // MUTATION: say 'only an admin' -> a reader cannot tell which admin: red.
+    expect(text).toMatch(/only this workspace’s admins or a platform admin can set or remove it/)
   })
 })

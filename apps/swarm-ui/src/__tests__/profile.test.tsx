@@ -160,7 +160,7 @@ describe('Settings › Profile', () => {
     expect(headings(region('Your connections'))).toEqual(['GitHub', 'TypeSafe key'])
     expect(headings(region('Notifications'))).toEqual(['Notifications'])
     expect(headings(region('Claude accounts'))).toEqual(['Claude accounts'])
-    expect(visible(region('Claude accounts'))).toMatch(/main · yours · AVAILABLE · 5-hour 42%/)
+    expect(visible(region('Claude accounts'))).toMatch(/main · yours · AVAILABLE · 5\u2011hour 42%/)
     expect(calls.filter((c) => c.url === '/v1/profile')).toHaveLength(1)
   })
 
