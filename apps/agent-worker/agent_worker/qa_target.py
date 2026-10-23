@@ -106,6 +106,9 @@ _TARGET_CAUSES = frozenset({"qa_target_host_pending", "qa_credential_unavailable
 _CAUSE = re.compile(r"[a-z0-9_]{1,64}")
 _REQUEST_ID = re.compile(r"[a-z0-9-]{1,64}")
 _TARGET_ID = re.compile(r"qat_[0-9a-f]{16}")
+#: The gate's `sentence`, said in place of `_WHY`'s reason only when it is one
+#: plain line: it quotes a start click's text, which a workspace admin typed.
+_SENTENCE = re.compile(r"[^\x00-\x1f\x7f`]{1,400}")
 
 _WHY = {
     CHALLENGE: ("the target's login asks for MFA or a CAPTCHA; register a test account "
@@ -115,6 +118,9 @@ _WHY = {
     "qa_sign_in_no_form": "the gate did not find the login form's username and password fields",
     "qa_sign_in_busy": "a person was in control of the browser, so the gate did not sign in",
     "qa_sign_in_browser_gone": "the live browser closed during the sign-in",
+    # The gate's status names the click's text (`sentence`); this is its fallback.
+    "qa_sign_in_start_click_missing": ("a start click's text did not name exactly one visible "
+                                       "control on the login page, so the gate did not click it"),
     SIGN_IN_TIMEOUT: "the sign-in did not finish in time",
     "qa_target_host_pending": "a platform admin has not approved the target's host",
     "qa_credential_unavailable": "SwarmCloud cannot read the workspace's QA credential",
@@ -150,9 +156,11 @@ def reason(cause: str) -> str:
     return _WHY.get(cause, "the QA target's sign-in is unavailable")
 
 
-def notice(cause: str) -> str:
+def notice(cause: str, sentence: str | None = None) -> str:
+    """The agent's notice. `sentence` is the gate's own, when its status
+    carried one (it names the start click it could not make)."""
     retry = "" if cause in (CHALLENGE, EXHAUSTED) else _RETRY.format(n=MAX_SIGN_INS)
-    return _NOTICE.format(cause=cause, why=reason(cause), retry=retry)
+    return _NOTICE.format(cause=cause, why=sentence or reason(cause), retry=retry)
 
 
 class IssueRefused(Exception):
@@ -263,6 +271,8 @@ class QaTargetSignIn:
         #: `challenge`, `failed`), or None while nothing was handed over.
         self.state: str | None = None
         self.cause: str | None = None
+        #: The gate's sentence for `cause`, when its last status carried one.
+        self.sentence: str | None = None
         self.sign_ins = 0
         self._own_login = False
         self._started = False
@@ -271,7 +281,7 @@ class QaTargetSignIn:
 
     def notice(self) -> str | None:
         if self.wanted and self.has_target and self.state in ("challenge", "failed") and self.cause:
-            return notice(self.cause)
+            return notice(self.cause, self.sentence)
         return None
 
     # -- what the hand-off path calls ---------------------------------------------
@@ -384,11 +394,14 @@ class QaTargetSignIn:
         cause = result.get("cause")
         self.state = state if state in (READY, SIGNING_IN, *FINAL) else "failed"
         self.cause = cause if isinstance(cause, str) and _CAUSE.fullmatch(cause) else None
+        sentence = result.get("sentence")
+        self.sentence = sentence if isinstance(sentence, str) and _SENTENCE.fullmatch(sentence) else None
         if self.state == "failed" and self.cause is None:
             self.cause = "qa_sign_in_failed"
+            self.sentence = None
 
     def _fail(self, cause: str) -> None:
-        self.state, self.cause = "failed", cause
+        self.state, self.cause, self.sentence = "failed", cause, None
         if self.has_target:
             self.log.warning("qa target unavailable; the browser is signed out of the target",
                              target_id=self.target_id, cause=cause)
@@ -400,7 +413,8 @@ class QaTargetSignIn:
             document = {"outcome": "applied", "exit": 0, "signed_in": True}
         else:
             cause = self.cause or ("qa_sign_in_failed" if self.wanted else NONE)
-            document = {"outcome": "refused", "exit": 5, "code": cause, "message": reason(cause)}
+            document = {"outcome": "refused", "exit": 5, "code": cause,
+                        "message": (self.cause == cause and self.sentence) or reason(cause)}
         _write_atomic(root / "responses" / f"{request_id}.json", {"request_id": request_id, **document})
 
     def _refuse(self, root: Path, request_id: str, cause: str, message: str) -> None:

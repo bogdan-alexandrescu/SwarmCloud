@@ -52,6 +52,7 @@ from ..mergewake import wake_tenant
 from ..prgate import wake_tenant as wake_after_prs
 from ..mergetrain import tick_tenant as tick_merge_trains
 from ..purge import HistoryPurge, parse_query
+from ..qatargets import QaTargets
 from ..verdictpublish import on_task_finished
 from ..waker import TASK_FINISHED
 from ..repoindex import RepoIndex
@@ -1364,7 +1365,9 @@ def task_finished_push(
     identity, admitted to this route by `auth.ROLLUP_SWEEPER_ROUTES`. For the
     finished task's gated integrators that need no worker, swarm-api opens
     the pull request itself and ends the step (`verdictpublish`); every other
-    dependant is left to the scheduler, which receives the same message.
+    dependant is left to the scheduler, which receives the same message. A QA
+    target's discovery step stores what it found on the target
+    (`QaTargets.settle_discovery`, lane QA-DISCOVER).
 
     ALWAYS 200 to a well-formed push. A wake is a doorbell: this route reads
     everything again, and anything it cannot do is the worker's, after the
@@ -1377,6 +1380,14 @@ def task_finished_push(
     if fields.get("reason") != TASK_FINISHED or not task_id:
         return {"handled": False, "reason": fields.get("reason")}
     report = on_task_finished(ctx, task_id, tenant_id=fields.get("tenant_id"))
+    # A QA target's discovery step ended: store the screens it found, or why
+    # none (lane QA-DISCOVER). Never raises: every read of the target settles
+    # it too, so a wake this could not use costs one read's delay.
+    try:
+        QaTargets(ctx.db, now=ctx.now).settle_discovery(
+            task_id, ctx.inspection, tenant_id=fields.get("tenant_id"))
+    except Exception:  # noqa: BLE001 -- a doorbell: the target's next read settles it
+        log.exception("qa target discovery settle failed task=%s", task_id)
     # A personal workflow that this step ended loses its browser session
     # carry now (docs/design/live-browser.md §5.5.1, lane LB-L9b). Never
     # raises; the carry sweep and the 24-hour TTL are behind it.

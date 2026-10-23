@@ -366,6 +366,45 @@ finding) carries over.
    `#section`, because a hash-routed app's screens are otherwise one route.
    A page whose main document answered 4xx or 5xx is not listed, because the
    first external proof listed and captured a GitHub Pages 404 as a screen.
+
+   **How a discovery is started and stored** (lane QA-DISCOVER; BGD,
+   2026-10-23, after `ai-studio-staging-crawl` could not be started: "build
+   discovery, so a crawl target is started entirely from the console").
+   Any member starts one with **Run discovery** on the QA targets page
+   (**Run discovery again** once the target has discovered screens), which
+   is `POST /v1/qa-targets/{id}:discover`. It takes no body: swarm-api
+   renders `render_discovery(target)` and submits it as the member's own
+   workflow, its one browser step marked `metadata.qa_target` and recorded
+   in `qa_target_runs` exactly as `:run`'s are, so the gate signs it in
+   (start clicks included) and the same refusals apply first: an approved
+   host, a registered repository, an own login's credential set. One at a
+   time per target: the target's `discovering` is claimed in a transaction
+   before the submission, and a second call while one runs answers 409
+   (`detail.reason` `qa_discovery_running`) naming the workflow. The console says
+   **Discovering…** with a link to it, and reads the list again until it
+   ends.
+
+   When the step ends, the `task_finished` push swarm-api already answers
+   (`POST /v1/admin/tasks/finished`, `routes/admin.py`) settles it
+   (`QaTargets.settle_discovery`). A SUCCEEDED step's `screens.json` is read
+   through the API's own tenant-checked, redacted artifact read and held to
+   `qaspec.discovered_screens`, as strictly as `screens` at registration: a
+   route off `base_url`'s origin (another host, scheme or port) and a route
+   on an excluded path are dropped, a same-origin absolute URL is kept as its
+   path, past 60 (`MAX_SCREENS`) the rest is cut, and an ill-formed id or
+   path or two routes sharing an id refuse the whole file. The result is
+   stored as `discovered: [{id, path}]` with `discovered_at`,
+   `discovered_by` and `discovered_workflow`, and the console says "N
+   screens discovered, <time ago>" and enables Run. A failed step, a missing
+   or refused file, or nothing left stores only `discovery_error`, the
+   sentence the console shows, and keeps the previous `discovered` list:
+   only a successful discovery replaces it. A wake can be lost, and an agent
+   the scheduler or reconciler ends rings none, so every read of the target
+   settles a discovery whose agent has ended too. Storing the list never
+   bumps the target's `revision`, so a run already started keeps its mark.
+   `:run` on a target with `discover` and nothing discovered is refused
+   (`qa_target_no_screens`) with "press Run discovery on the QA targets page
+   (or call `:discover`)".
 2. **capture-<group>**: `claude-code-browser`, haiku, as the console's, with
    the console-specific parts replaced (§4.2). Groups of at most 8 screens,
    at most 8 groups (60 screens a run, the discovery cap).
