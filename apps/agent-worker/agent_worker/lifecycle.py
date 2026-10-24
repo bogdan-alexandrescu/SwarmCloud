@@ -991,6 +991,12 @@ class Worker:
         # input_from name)`. A step whose gate stays shut re-publishes it as
         # its own artifact (`_republish_staged_verdict`); None with no gate.
         self._verdict_staged: tuple[Path, str] | None = None
+        # The UI paths the patch this REVIEW step reviews touches (#2184),
+        # measured before its agent starts; None when it is no review or the
+        # patch touches none, which leaves its verdict exactly as written.
+        self._ui_review_paths: list[str] | None = None
+        # What `verdict.gate_rendered_review` found, for `result_summary`.
+        self._rendered_review: dict[str, Any] | None = None
         # Where the pull request text of a step whose verdict gate stayed shut
         # came from (`_adopt_pull_request_text`), `{"title", "body"}`, each
         # `implementer`, `label` or None; None when the gate did not shut.
@@ -3324,6 +3330,14 @@ class Worker:
             store=self.store,
             tenant_id=cfg.tenant_id,
         ))
+        # A review of a patch that touches a UI path (#2184): its MERGE counts
+        # only from a rendered review, and its prompt says so before it writes
+        # a verdict. `_upload_outputs` holds the verdict to it.
+        self._ui_review_paths = self._ui_paths_reviewed(task, staged_inputs)
+        if self._ui_review_paths is not None and isinstance(payload.get("prompt"), str):
+            payload["prompt"] += verdict_mod.rendered_review_guidance(
+                self._ui_review_paths, cfg.runner_profile
+            )
         ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
 
         # ---- STEP 6: tenant credentials ---------------------------------
@@ -4262,6 +4276,8 @@ class Worker:
                 summary[findings_epic_mod.SUMMARY_KEY] = self._file_review_minors()
         if self._pr_text_from is not None:
             summary["pull_request_text_from"] = dict(self._pr_text_from)
+        if self._rendered_review is not None:
+            summary[verdict_mod.RENDERED_REVIEW_KEY] = self._scrub(dict(self._rendered_review))
 
         runner_result = self._add_runner_block(summary)
 
@@ -6608,6 +6624,84 @@ class Worker:
             else:
                 kept.append(task_id)
         return kept
+
+    def _ui_paths_reviewed(
+        self, task: dict[str, Any], staged: list[inputs_mod.StagedInput]
+    ) -> list[str] | None:
+        """The UI paths the patch this review step reviews touches (#2184), or None.
+
+        None for a step that is not a review (no dependant stages its
+        `verdict.json`) and for a patch that touches no UI path. The patch is
+        every `*.patch` staged through `input_from`, and the `builds_on`
+        step's own file list (`verdict.ui_paths_in_files`). A list cut at its
+        bound with no UI path in it, or a `builds_on` step that cannot be
+        read, is [] -- gated, naming no path -- because a review that could
+        not be told what it reviews is not one that saw it.
+        """
+        if not owner_questions_mod.is_review(task.get("metadata")):
+            return None
+        ws = self.ws
+        assert ws is not None
+        found: dict[str, None] = {}
+        unknown = False
+        for item in staged:
+            if not item.filename.endswith(verdict_mod.PATCH_SUFFIX):
+                continue
+            try:
+                text = (ws.work / item.path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                unknown = True
+                continue
+            found.update(dict.fromkeys(verdict_mod.ui_paths_in_patch(text)))
+        builds_on = self._dispatch_builds_on()
+        if builds_on:
+            try:
+                upstream = inputs_mod.fetch_upstream_task(
+                    self.db, upstream_task_id=builds_on, tenant_id=self.cfg.tenant_id,
+                    call_options=self.control.call_options(),
+                )
+            except InputUnavailable:
+                unknown = True
+            else:
+                paths, cut = verdict_mod.ui_paths_in_files(upstream.get("result_summary"))
+                found.update(dict.fromkeys(paths))
+                unknown = unknown or cut
+        if not found and not unknown:
+            return None
+        self.log.info(
+            "this review's patch touches a UI path: a MERGE counts only from a rendered review",
+            ui_paths=list(found)[: verdict_mod.MAX_UI_PATHS_SHOWN],
+            runner_profile=self.cfg.runner_profile,
+        )
+        return list(found)
+
+    def _hold_ui_review_to_rendered(self) -> None:
+        """Rewrite this UI-gated review's MERGE to NOT_YET unless it rendered (#2184)."""
+        ws = self.ws
+        if ws is None or self._ui_review_paths is None:
+            return
+        try:
+            record = verdict_mod.gate_rendered_review(
+                ws.artifacts / owner_questions_mod.REVIEW_OUTPUT,
+                ui_paths=self._ui_review_paths,
+                runner_profile=self.cfg.runner_profile,
+                artifacts=ws.artifacts,
+            )
+        except OSError as exc:
+            # A MERGE that should read NOT_YET and could not be rewritten is
+            # removed rather than left to count: the missing-output check then
+            # fails the attempt by name, and no dependant reads a MERGE.
+            (ws.artifacts / owner_questions_mod.REVIEW_OUTPUT).unlink(missing_ok=True)
+            record = {"ui_paths": self._ui_review_paths[: verdict_mod.MAX_UI_PATHS_SHOWN],
+                      "error": f"the verdict could not be rewritten ({type(exc).__name__}), "
+                               "so it was removed"}
+            self.log.error("a UI-gated review's verdict could not be rewritten; removed",
+                           error=type(exc).__name__)
+        self._rendered_review = record
+        if record is not None and record.get("reason"):
+            self.log.warning(
+                "a UI-gated review's MERGE is recorded as NOT_YET", reason=record["reason"]
+            )
 
     def _evaluate_verdict_gate(self, staged: list[inputs_mod.StagedInput]) -> bool | None:
         """Read this step's verdict gate (#264). None: no gate. True/False: run the agent or not.
@@ -14209,6 +14303,10 @@ class Worker:
         except Exception as exc:  # pragma: no cover - defensive
             self.log.exception("the git harvest raised; continuing without it", exc)
             git_summary = {"error": "the git harvest failed unexpectedly"}
+        if defer_publish:
+            # After the harvest's reap, so the agent can no longer write it,
+            # and before the upload, so what goes up is the verdict that counts.
+            self._hold_ui_review_to_rendered()
         # WHICH FILES OF THE ARTIFACTS FOLDER, IN WHICH ORDER (#228, owner
         # decision of 2026-09-26): at most `max_artifact_files`, a declared
         # output first, no name past the manifest's bound; see

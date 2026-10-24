@@ -604,3 +604,209 @@ def pull_request_lines(record: dict[str, Any]) -> list[str]:
     if dropped:
         lines.append(f"{dropped} more finding(s) are in the verdict file and not shown here.")
     return lines
+
+
+# ---------------------------------------------------------------------------
+# A UI lane's MERGE counts only from a review that saw the pages (#2184)
+# ---------------------------------------------------------------------------
+#
+# BGD's decision, 2026-10-24 (~00:30Z). On 2026-10-23 ten mock-up lanes'
+# review steps ran on `claude-code`, with no browser, and gave MERGE; two
+# said "No browser was available here, so I reviewed the static HTML". The
+# pages had clipped frames, crushed text and contradictory counts, found only
+# when they were rendered (#2157, #2149). So a review of a patch that touches
+# a UI path is UI-GATED: its MERGE counts only when the step ran on
+# `RENDERED_REVIEW_PROFILE` and left `RENDERED_REVIEW_REPORT` and at least one
+# image under `RENDERED_REVIEW_SHOTS/` in its artifacts. Otherwise the review's
+# own worker rewrites its verdict.json to NOT_YET, with the reason, before the
+# upload, so the step a `verdict_in: [NOT_YET]` gate holds runs (or the lane
+# fails where everyone sees it). A patch that touches no UI path, and a
+# NOT_YET, are left exactly as the review wrote them.
+#
+# WHAT THE PATCH TOUCHES IS THE WORKER'S MEASUREMENT, read before the agent
+# starts: the `*.patch` files staged through `input_from`, and the `builds_on`
+# step's `result_summary.git.files`. A file list that was cut at its bound
+# with no UI path in what it kept cannot say the patch touches none, and is
+# read as touching one: a review that could not be told is not one that saw.
+
+#: The repository paths whose change makes a review UI-gated.
+UI_PATH_PREFIXES = ("apps/swarm-ui/", "docs/web-ui/")
+#: The one profile that renders pages (contract request 108's browser runner).
+RENDERED_REVIEW_PROFILE = "claude-code-browser"
+#: What a rendered review leaves in its artifacts directory.
+RENDERED_REVIEW_REPORT = "review.md"
+RENDERED_REVIEW_SHOTS = "shots"
+#: What counts as an image under `shots/`, by suffix (any case).
+SHOT_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+#: The words every downgraded verdict's reason starts with.
+NOT_REVIEWED_RENDERED = "not reviewed rendered"
+#: Where the rewrite is recorded, in verdict.json and `result_summary`.
+RENDERED_REVIEW_KEY = "rendered_review"
+#: How many of the UI paths found are kept in a record or a prompt.
+MAX_UI_PATHS_SHOWN = 20
+#: How deep and how wide `shots/` is looked through for one image.
+MAX_SHOTS_WALKED = 2000
+
+_PATCH_HEADER = re.compile(
+    r"^(?:diff --git |--- |\+\+\+ |rename from |rename to |copy from |copy to )(.*)$"
+)
+
+
+def _patch_paths(header: str) -> list[str]:
+    """The repository paths one patch header line names (`a/`, `b/` dropped)."""
+    text = header.strip()
+    if text.startswith('"') or " " not in text:
+        parts = [text]
+    else:
+        # `diff --git a/x b/x`: split at the " b/" that starts the second path.
+        cut = text.find(" b/")
+        parts = [text[:cut], text[cut + 1:]] if cut > 0 else [text]
+    paths = []
+    for part in parts:
+        part = part.strip().split("\t", 1)[0].strip('"')
+        if part == "/dev/null" or not part:
+            continue
+        if part.startswith(("a/", "b/")):
+            part = part[2:]
+        paths.append(part)
+    return paths
+
+
+def is_ui_path(path: str) -> bool:
+    """Whether a repository-relative path is one a rendered review must see."""
+    return isinstance(path, str) and path.lstrip("/").startswith(UI_PATH_PREFIXES)
+
+
+def ui_paths_in_patch(text: str) -> list[str]:
+    """The UI paths a unified diff's headers name, in first-seen order."""
+    found: dict[str, None] = {}
+    for line in text.splitlines():
+        match = _PATCH_HEADER.match(line)
+        if match is None:
+            continue
+        for path in _patch_paths(match.group(1)):
+            if is_ui_path(path):
+                found.setdefault(path.lstrip("/"), None)
+    return list(found)
+
+
+def ui_paths_in_files(summary: Any) -> tuple[list[str], bool]:
+    """`(UI paths, unknown)` from a step's `result_summary.git` record.
+
+    `unknown` is True when its file list was cut at its bound and the part
+    kept names no UI path: the rest may, and nobody measured it.
+    """
+    git = summary.get("git") if isinstance(summary, dict) else None
+    rows = git.get("files") if isinstance(git, dict) else None
+    found: dict[str, None] = {}
+    for row in rows if isinstance(rows, list) else ():
+        if not isinstance(row, dict):
+            continue
+        for key in ("path", "old_path"):
+            value = row.get(key)
+            if isinstance(value, str) and is_ui_path(value):
+                found.setdefault(value.lstrip("/"), None)
+    truncated = isinstance(git, dict) and git.get("files_truncated") is True
+    return list(found), truncated and not found
+
+
+def _has_shot(shots: Path) -> bool:
+    """At least one non-empty regular image file under `shots/`, links not followed."""
+    if shots.is_symlink() or not shots.is_dir():
+        return False
+    stack, walked = [shots], 0
+    while stack and walked < MAX_SHOTS_WALKED:
+        folder = stack.pop()
+        try:
+            entries = list(folder.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            walked += 1
+            if entry.is_symlink():
+                continue
+            if entry.is_dir():
+                stack.append(entry)
+            elif (entry.is_file() and entry.suffix.lower() in SHOT_SUFFIXES
+                  and entry.stat().st_size > 0):
+                return True
+    return False
+
+
+def rendered_review_missing(*, runner_profile: str, artifacts: Path) -> list[str]:
+    """What a UI-gated review lacks for its MERGE to count; [] when nothing."""
+    missing: list[str] = []
+    if runner_profile != RENDERED_REVIEW_PROFILE:
+        missing.append(f"ran on runner profile {runner_profile!r}, not {RENDERED_REVIEW_PROFILE!r}")
+    report = artifacts / RENDERED_REVIEW_REPORT
+    if report.is_symlink() or not report.is_file() or report.stat().st_size == 0:
+        missing.append(f"no {RENDERED_REVIEW_REPORT} in its artifacts")
+    if not _has_shot(artifacts / RENDERED_REVIEW_SHOTS):
+        missing.append(f"no image under {RENDERED_REVIEW_SHOTS}/ in its artifacts")
+    return missing
+
+
+def rendered_review_guidance(ui_paths: list[str], runner_profile: str) -> str:
+    """The review step's own instructions on the rule, appended to its prompt."""
+    shown = ", ".join(ui_paths[:MAX_UI_PATHS_SHOWN]) or "a UI path its file list did not name"
+    more = len(ui_paths) - MAX_UI_PATHS_SHOWN
+    return (
+        f"\n\nTHIS LANE CHANGES WHAT PEOPLE SEE ({shown}"
+        + (f", and {more} more" if more > 0 else "")
+        + "). A MERGE in verdict.json counts only from a review that saw the pages "
+        f"rendered: this step must run on runner profile {RENDERED_REVIEW_PROFILE} and "
+        f"leave {RENDERED_REVIEW_REPORT} and at least one screenshot under "
+        f"{RENDERED_REVIEW_SHOTS}/ in the artifacts directory. This step runs on "
+        f"{runner_profile}. Without all three the worker records your verdict as "
+        f'NOT_YET with the reason "{NOT_REVIEWED_RENDERED}: <what was missing>", and '
+        "the fix step runs. Never give MERGE on pages you only read as HTML."
+    )
+
+
+def gate_rendered_review(
+    path: Path, *, ui_paths: list[str], runner_profile: str, artifacts: Path
+) -> dict[str, Any] | None:
+    """Rewrite a UI-gated MERGE in `path` to NOT_YET when the review did not render.
+
+    None when nothing was looked at: no verdict file, or one that is not a
+    readable verdict (`read_verdict` refuses that downstream, by name). Else
+    the record kept in `result_summary`: `{"ui_paths", "verdict_given",
+    "verdict", ...}`, with `missing` and `reason` when it was rewritten. The
+    reason is also the verdict's first finding, so the fix step reads it.
+    """
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        if path.stat().st_size > MAX_VERDICT_BYTES:
+            return None
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    given = _normalise(document.get("verdict"))
+    if given is None:
+        return None
+    record: dict[str, Any] = {
+        "ui_paths": ui_paths[:MAX_UI_PATHS_SHOWN],
+        "verdict_given": given,
+        "verdict": given,
+    }
+    if given != "MERGE":
+        return record
+    missing = rendered_review_missing(runner_profile=runner_profile, artifacts=artifacts)
+    if not missing:
+        return record
+    reason = f"{NOT_REVIEWED_RENDERED}: {'; '.join(missing)}"
+    record.update({"verdict": "NOT_YET", "missing": missing, "reason": reason})
+    findings = document.get("findings")
+    findings = list(findings) if isinstance(findings, list) else (
+        [findings] if findings not in (None, "") else []
+    )
+    document["verdict"] = "NOT_YET"
+    document["findings"] = [reason, *findings]
+    document[RENDERED_REVIEW_KEY] = record
+    staging = path.with_name(f".{path.name}.rendered")
+    staging.write_text(json.dumps(document, indent=2), encoding="utf-8")
+    staging.replace(path)
+    return record
