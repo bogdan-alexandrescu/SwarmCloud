@@ -372,6 +372,26 @@ def test_add_authorizes_then_exchanges_and_sends_the_code_only_in_the_exchange(b
     _no_secret_shown(out + err)
 
 
+def test_add_names_the_organisation_the_sign_in_registered(browser):
+    """#2222: a sign-in authorises whichever organisation is selected on
+    claude.ai, so the output says which one it was -- a wrong pick shows at once."""
+
+    class Named(FakeApi):
+        def request(self, method, path, payload=None, **kwargs):
+            answer = super().request(method, path, payload, **kwargs)
+            if path == "/v1/accounts/exchange":
+                answer = {**answer, "registered": "registered acme:fresh: organisation Personal (Max)",
+                          "organisation": {"name": "Personal", "plan": "Max"}}
+            return answer
+
+    code, out = run(["account", "add", "--label", "fresh"], Named())
+    assert code == sc.EXIT_OK, out
+    # MUTATION: dropping the `registered` line hides the organisation the sign-in authorised.
+    assert "\nregistered acme:fresh: organisation Personal (Max)\n" in out
+    _, older = run(["account", "add", "--label", "fresh"], FakeApi())
+    assert "(organisation not reported)" in older
+
+
 def test_add_never_uses_the_credential_upload_route(browser):
     api = FakeApi()
     run(["account", "add", "--label", "fresh"], api)
