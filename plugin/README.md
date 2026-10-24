@@ -1332,7 +1332,7 @@ are the same value.
   different; its reply carries the digest of what it received.
 * `swarm_workflow` (and `swarm workflow`, and `/sc:swarmcloud` through
   `swarm_workflow_launch`) passes `publish_to_pr` through (#2183, PTP-PLUGIN):
-  a spec's top-level key, or the tool's argument beside `steps` or a spec,
+  a spec's top-level key, or the tool's argument beside a step list or a spec,
   naming an existing pull request of the workflow's repository — `41`,
   `"#41"`, `"owner/repo#41"` or its URL (a number is sent as the integer, a
   form naming a repository as `owner/repo#N`). The lane's commits are pushed

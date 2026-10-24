@@ -613,8 +613,8 @@ ships both.
 * **A follow-up lane on a pull request that already exists** (a re-review, a
   fix round, the owner's answers applied; #2183): give the spec a top-level
   `publish_to_pr` — `41`, `"#41"`, `"owner/repo#41"` or the pull request's
-  URL — or pass `publish_to_pr` to `swarm_workflow` beside `steps` or the
-  spec. The lane starts from that pull request's head and its commits are
+  URL — or pass `publish_to_pr` to `swarm_workflow` beside a step list or
+  the spec. The lane starts from that pull request's head and its commits are
   pushed onto its branch as a fast-forward; no new pull request is opened.
   It travels top-level, and no `merge` goes with it: a spec naming it beside
   a merge step or a `merge` other than `"off"` is refused before anything is
