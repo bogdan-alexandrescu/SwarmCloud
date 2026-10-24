@@ -5,7 +5,9 @@
 <title>SwarmCloud Platform counts over time: proposal E, Period comparison (COUNTS-MOCKUPS-E, #2149)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;550;600;650;700&display=swap" rel="stylesheet">
 <style>
-/* Layout: one 1180px reading column; the mock-up frames sit in their own sideways scrollers.
+/* Layout: one 1180px reading column. A desktop frame's figure (.fr.dk) leaves the column for the window's
+   width, up to 1440, and its app is laid out at its box's width (no narrower than 1280, the narrowest its columns fit), so at a 1440 window
+   every desktop frame fits with no sideways scroll; in a narrower window it scrolls inside its own box, as before.
    Page tokens, frame tokens, the Sky shell and the icon sprite are copied from graph-overlays.html,
    which copied them from diff-viewer.html (navigation.html V2 and components.html pick A, as built).
    PICKS.md rules: 12px floor, no all-caps, no letter-spacing, a light / dark / system toggle, and an
@@ -42,6 +44,8 @@ p{max-width:78ch}
 .fr figcaption{font-size:13px;color:var(--mute);margin-top:6px;max-width:100ch}
 .fr figcaption b{color:var(--ink)}
 .scroller{overflow:auto;border-radius:12px;border:1px solid var(--line);max-width:100%}
+/* --sbw is the window's scrollbar width, set by the script below, so 100vw minus it is the width the page has. */
+.fr.dk{--fw:min(1440px,calc(100vw - var(--sbw,0px) - 32px));width:var(--fw);margin-left:calc((100% - var(--fw)) / 2)}
 .pair{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
 .pair>div{max-width:100%;overflow-x:auto}
 .idea{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:16px;margin-top:16px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
@@ -56,7 +60,7 @@ p{max-width:78ch}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .fx:not([data-ftheme="light"]){--f-bg:#06101e;--f-sf:#0b1829;--f-ink:#eef4fa;--f-mu:#9fb0c4;--f-ln:#1d3049;--f-hv:#11233b;--f-ac:#7cc8f8;--f-acs:#10294a;--f-acl:#1f4a7a;--s-live:#4cd9a0;--s-liveb:#0d2e25;--s-park:#b69cf5;--s-parkb:#251a45;--s-bad:#ff8a80;--s-badb:#3a1512;--s-warn:#f5c451;--s-warnb:#3a2a0c;--s-neu:#9aa8b8;--s-neub:#16263b;--f-bd:#5f7087;--f-sh:0 10px 30px rgba(0,0,0,.55);--hive:url(#g-hive-d);color-scheme:dark}}
 
 /* ======== shell: Sky spine + panel (navigation.html V2, as built) ======== */
-.app{display:flex;background:var(--f-bg);color:var(--f-ink);width:1440px;min-width:1440px;min-height:900px;font-size:13px;position:relative;text-align:left;font-family:var(--f-display);line-height:1.45}
+.app{display:flex;background:var(--f-bg);color:var(--f-ink);width:100%;min-width:1280px;max-width:1440px;min-height:900px;font-size:13px;position:relative;text-align:left;font-family:var(--f-display);line-height:1.45}
 .app button,.phone button{font:inherit;color:inherit;cursor:pointer}
 .ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
 .pill{font:600 12px/1 var(--f-mono);padding:4px 8px;border-radius:99px;white-space:nowrap;flex:none}
@@ -200,6 +204,8 @@ svg .rw{stroke:var(--f-mu);stroke-width:2}
 .mv .ch2{grid-column:3;grid-row:1/3;text-align:right;font:600 12.5px var(--f-mono);font-variant-numeric:tabular-nums;line-height:1.35}
 .mv .ch2 small{display:block;font-weight:400;font-size:12px;color:var(--f-mu)}
 .dv{grid-column:2;grid-row:1/3;height:14px;position:relative;border-left:0}
+/* In a desktop frame laid out under 1440 the right column is under 384px, so the "from → to" line runs under the bar too. */
+.app .mv .dv{grid-row:1}.app .mv .sub{grid-column:1/3}
 .dv::before{content:"";position:absolute;left:50%;top:-3px;bottom:-3px;border-left:1px solid var(--f-bd)}
 .dv i{position:absolute;top:2px;height:10px;border-radius:2px}
 .dv i.up{left:50%;background:var(--f-ac)}
@@ -281,7 +287,7 @@ svg .rw{stroke:var(--f-mu);stroke-width:2}
 <p class="kicker">Admin › Platform counts · over time · proposal E of five · drawn 2026-10-23</p>
 <h1>Proposal E: Period comparison</h1>
 <p class="lede">One of five mock-up proposals for the charts on Admin › Platform counts (#2149), drawn in parallel so the owner can pick one. Proposal E reads every figure against the period just before it: it leads with one sentence that says what changed, draws this period's line over a ghosted line of the period before, names the top movers, and sets each group's share of the total beside its share last time.</p>
-<p class="cap">All data is <b>example data</b>: the user is "Operator", the workspaces are <code>eng</code>, <code>smoke</code> and <code>u-operator</code>, and the host is <code>swarm.example.com</code>. Desktop frames are 1440 wide and scroll sideways inside their own box; phone frames are 390. The page theme is below; each frame group has its own Light / Dark switch, and the sun / moon / screen buttons in a desktop frame's panel footer pin that one frame, so one state can be read in both themes side by side.</p>
+<p class="cap">All data is <b>example data</b>: the user is "Operator", the workspaces are <code>eng</code>, <code>smoke</code> and <code>u-operator</code>, and the host is <code>swarm.example.com</code>. Desktop frames take the window's width, up to 1440, and are laid out at their box's width, so at a 1440 window they fit with no sideways scroll; phone frames are 390. The page theme is below; each frame group has its own Light / Dark switch, and the sun / moon / screen buttons in a desktop frame's panel footer pin that one frame, so one state can be read in both themes side by side.</p>
 <div class="themebar" role="group" aria-label="Page theme"><button data-set-theme="light" aria-pressed="false">Light</button><button data-set-theme="dark" aria-pressed="false">Dark</button><button data-set-theme="system" aria-pressed="true">System</button></div>
 <ul class="toc"><li><a href="#idea">Idea, pros, risks</a></li><li><a href="#f1">F1 Before Run</a></li><li><a href="#f2">F2 Week, no breakdown</a></li><li><a href="#f3">F3 By agent type</a></li><li><a href="#f4">F4 Month, by pool account</a></li><li><a href="#f5">F5 Partial data</a></li><li><a href="#f6">F6 Readout and breakdown picker</a></li><li><a href="#f7">F7 Phone reflow</a></li></ul>
 
@@ -373,15 +379,15 @@ const DS={
    measured zeros (it reports 0), never absences. */
 const DIMS={
   type:{label:'Agent type',kind:'agent type',groups:[
-    {k:'claude-code',a:[.46,.56],f:{hours:1.2,tokM:1.3,cost:1.35}},
-    {k:'codex',a:[.36,.17],f:{hours:1,tokM:.9,cost:.8}},
-    {k:'claude-code-review',a:[.12,.13],f:{hours:.45,tokM:.6,cost:.55}},
-    {k:'live-browser',a:[0,.08],f:{hours:1.6,tokM:.7,cost:.6},from:.25},
+    {k:'claude-code',a:[.58,.60],f:{hours:1.2,tokM:1.3,cost:1.35}},
+    {k:'claude-code-large',a:[.14,.16],f:{hours:1.5,tokM:1.4,cost:1.6}},
+    {k:'indexer',a:[.22,.12],f:{hours:.45,tokM:.6,cost:.55}},
+    {k:'claude-code-browser',a:[0,.08],f:{hours:1.6,tokM:.7,cost:.6},from:.25},
     {k:'mock',a:[.06,.04],f:{hours:.2,tokM:0,cost:0}}]},
   model:{label:'Model',kind:'model',groups:[
     {k:'claude-opus',a:[.18,.38],f:{hours:1.25,tokM:1.15,cost:2.3}},
     {k:'claude-sonnet',a:[.44,.40],f:{hours:1,tokM:1.1,cost:.8}},
-    {k:'gpt-codex',a:[.32,.18],f:{hours:1,tokM:.9,cost:.7}},
+    {k:'claude-haiku',a:[.32,.18],f:{hours:.8,tokM:.9,cost:.25}},
     {k:'no model (mock)',a:[.06,.04],f:{hours:.2,tokM:0,cost:0},same:'mock'}]},
   ws:{label:'Workspace',kind:'workspace',groups:[
     {k:'eng',a:[.66,.68],f:{hours:1.1,tokM:1.1,cost:1.1}},
@@ -390,7 +396,7 @@ const DIMS={
   acct:{label:'Pool account',kind:'pool account',groups:[
     {k:'acct-claude-a',a:[.52,.38],f:{hours:1.15,tokM:1.2,cost:1.3}},
     {k:'acct-claude-b',a:[0,.26],f:{hours:1.15,tokM:1.2,cost:1.3},from:0},
-    {k:'acct-codex-a',a:[.34,.16],f:{hours:1,tokM:.9,cost:.75}},
+    {k:'acct-claude-c',a:[.34,.16],f:{hours:1,tokM:.9,cost:.75}},
     {k:'holds no account',a:[.13,.14],f:{hours:.4,tokM:.35,cost:.3}},
     {k:'not recorded',a:[.05,.04],f:{hours:1,tokM:1,cost:1}}]},
 };
@@ -674,7 +680,7 @@ const F=[
   cap:`<b>One sentence first, then four charts, each against its ghost.</b> The solid line is these 26 weeks; the dashed line is the 26 before, laid week over week. Agents carry retries apart, as bars under the line with the period before's retries as ticks. Run hours, tokens and cost read <b>at least</b>, because 33 agents submitted this week are still running and are counted when they end. Tokens list all four kinds, each with how many attempts reported it. A change (▲ 32% on agents) compares the 25 closed weeks with the 25 before; this week so far is drawn against the same five days 26 weeks earlier, hollow and dashed, and kept out of every change. With no breakdown, Top movers ranks across every agent type, model, workspace and pool account, and Share of total asks for a breakdown.`},
  {id:'f3',t:'F3 · The same, broken down by agent type',
   d:{run:true,bucket:'week',by:'type',metric:'agents'},p:{run:true,bucket:'week',by:'type',metric:'agents'},
-  cap:`<b>A breakdown turns the four charts into one small chart per group, each over its own ghost.</b> A measure switch (Agents · Run hours · Tokens · Estimated cost) picks what the small charts draw; each has its own scale, so shapes are compared here and sizes in Share of total, which sets each type's slice now (filled) beside its slice before (outlined). <code>live-browser</code> did not exist in the period before: its ghost lies on the zero rule, because that zero was measured, and its change reads <b>new</b>, not a percent. Top movers narrows to agent types and lists all five.`},
+  cap:`<b>A breakdown turns the four charts into one small chart per group, each over its own ghost.</b> A measure switch (Agents · Run hours · Tokens · Estimated cost) picks what the small charts draw; each has its own scale, so shapes are compared here and sizes in Share of total, which sets each type's slice now (filled) beside its slice before (outlined). <code>claude-code-browser</code> did not exist in the period before: its ghost lies on the zero rule, because that zero was measured, and its change reads <b>new</b>, not a percent. Top movers narrows to agent types and lists all five.`},
  {id:'f4',t:'F4 · Month buckets, broken down by pool account',
   d:{run:true,bucket:'month',by:'acct',metric:'cost',sm:'cost',mm:'cost'},p:{run:true,bucket:'month',by:'acct',metric:'cost',sm:'cost',mm:'cost'},
   cap:`<b>Twelve months, this period only, by pool account, drawn in estimated cost.</b> The 12 months before Nov 2025 predate the backfill, which reaches back only to Oct 2025, so they were never recorded: month view draws no ghost, no "was" share, no Top movers and no change against the period before, and one note under the heading says why (BGD, 2026-10-24). Day and Week views keep their comparison. The button prices the 12 months alone (~1,120 reads). Each account's cost carries its own coverage; <code>holds no account</code> is mock and API-key agents, and <code>not recorded</code> is agents whose events name no account (docs/outcomes.md), both named rather than folded into "other". An agent that ran on two pool accounts is charged to the last one it leased, so no agent is counted twice. October is so far (23 days), drawn hollow and dashed.`},
@@ -690,11 +696,11 @@ function frameGroup(f,inner){
 }
 let html='';
 F.forEach(f=>{
-  html+=frameGroup(f,`<figure class="fr"><div class="scroller">${desktop(f.d)}</div><figcaption><b>Desktop, 1440.</b> ${f.cap}</figcaption></figure><figure class="fr"><div class="pair"><div>${phone(f.p)}</div><figcaption style="flex:1;min-width:260px;max-width:60ch"><b>Phone, 390.</b> The same state in one column, scrolled inside the frame: the head, then the Run button full width with its price, the toolbar wrapped, ${f.id==='f4'?'the note on why nothing is compared, the charts at their 300-wide drawing, shares this period only (no movers in month view)':'the sentence, the charts at their 300-wide drawing, movers, shares'}, the live counts. ${f.id==='f1'?'The not-run card lists what a Run will show; no chart is drawn.':f.id==='f5'?'The hatched week, the floors and the withheld changes read the same at 390.':'Scroll the frame to see the rest; F7 shows the whole length.'}</figcaption></div></figure>`);
+  html+=frameGroup(f,`<figure class="fr dk"><div class="scroller">${desktop(f.d)}</div><figcaption><b>Desktop, 1440.</b> ${f.cap}</figcaption></figure><figure class="fr"><div class="pair"><div>${phone(f.p)}</div><figcaption style="flex:1;min-width:260px;max-width:60ch"><b>Phone, 390.</b> The same state in one column, scrolled inside the frame: the head, then the Run button full width with its price, the toolbar wrapped, ${f.id==='f4'?'the note on why nothing is compared, the charts at their 300-wide drawing, shares this period only (no movers in month view)':'the sentence, the charts at their 300-wide drawing, movers, shares'}, the live counts. ${f.id==='f1'?'The not-run card lists what a Run will show; no chart is drawn.':f.id==='f5'?'The hatched week, the floors and the withheld changes read the same at 390.':'Scroll the frame to see the rest; F7 shows the whole length.'}</figcaption></div></figure>`);
 });
 html+=frameGroup(F6,
- `<figure class="fr"><div class="scroller">${desktop({run:true,bucket:'week',by:'type',metric:'agents',hover:20,rx:96,ry:120})}</div><figcaption><b>Desktop, hover.</b> Pointing at the week of 14 Sep draws one crosshair through all five small charts, a filled dot on each line and a hollow one on each ghost, and opens a readout beside it: that week against the week 26 weeks earlier, per agent type, with retries apart, the change, and a total row. The readout is a <code>role="status"</code> card, not a live region; keyboard focus on the chart steps bucket by bucket (one tab stop, arrow keys), and Escape closes it.</figcaption></figure>
- <figure class="fr"><div class="scroller">${desktop({run:true,bucket:'week',menu:true,menuHover:'type'})}</div><figcaption><b>Desktop, picking a breakdown.</b> Breakdown is one menu: None, Agent type, Model, Workspace, Pool account, each with what it groups by. Picking does not read, so the page cannot spend reads by surprise; the menu says the price is unchanged, and the page then dims the old figures under a line that says what they still are, with the Run button beside it (as on the phone frame).</figcaption></figure>
+ `<figure class="fr dk"><div class="scroller">${desktop({run:true,bucket:'week',by:'type',metric:'agents',hover:20,rx:96,ry:120})}</div><figcaption><b>Desktop, hover.</b> Pointing at the week of 14 Sep draws one crosshair through all five small charts, a filled dot on each line and a hollow one on each ghost, and opens a readout beside it: that week against the week 26 weeks earlier, per agent type, with retries apart, the change, and a total row. The readout is a <code>role="status"</code> card, not a live region; keyboard focus on the chart steps bucket by bucket (one tab stop, arrow keys), and Escape closes it.</figcaption></figure>
+ <figure class="fr dk"><div class="scroller">${desktop({run:true,bucket:'week',menu:true,menuHover:'type'})}</div><figcaption><b>Desktop, picking a breakdown.</b> Breakdown is one menu: None, Agent type, Model, Workspace, Pool account, each with what it groups by. Picking does not read, so the page cannot spend reads by surprise; the menu says the price is unchanged, and the page then dims the old figures under a line that says what they still are, with the Run button beside it (as on the phone frame).</figcaption></figure>
  <figure class="fr"><div class="pair"><div>${phone({run:true,bucket:'week',by:'type',metric:'agents',hover:20})}</div><div>${phone({run:true,bucket:'week',pick:'type'})}</div><figcaption style="flex:1;min-width:260px;max-width:60ch"><b>Phone, tap and pick.</b> Left: there is no hover on a phone, so a tap on a bucket opens the same readout as a bottom sheet, with 44px ‹ › buttons to step week by week and a Close. Right: after picking Agent type, the figures still on screen are dimmed under a banner that says they are week buckets with no breakdown, as last read, and the full-width Run button there carries the price.</figcaption></div></figure>`);
 html+=frameGroup(F7,
  `<figure class="fr"><div class="pair"><div>${phone({run:true,bucket:'week',by:'type',metric:'agents',tall:true})}</div><figcaption style="flex:1;min-width:260px;max-width:62ch"><b>The whole page at 390, by agent type, unscrolled.</b> Nothing here is wider than the phone, so the page never scrolls sideways:
@@ -708,6 +714,9 @@ html+=frameGroup(F7,
  <li>The live state cards stack, and Platform ticks stays one folded row.</li>
  </ul></figcaption></div></figure>`);
 document.getElementById('frames').innerHTML=html;
+/* The scrollbar's width, so a desktop frame's figure (.fr.dk) ends at the window's edge, not under the scrollbar. */
+const setSbw=()=>document.documentElement.style.setProperty('--sbw',(window.innerWidth-document.documentElement.clientWidth)+'px');
+setSbw();window.addEventListener('resize',setSbw);
 
 /* Frame themes: a group's switch pins every frame in it; a desktop frame's footer pins that frame. */
 document.querySelectorAll('[data-vtheme]').forEach(b=>b.addEventListener('click',()=>{
