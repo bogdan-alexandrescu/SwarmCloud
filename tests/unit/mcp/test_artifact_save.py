@@ -202,16 +202,18 @@ def test_a_save_to_that_symlinks_out_of_the_working_directory_is_refused(swarm, 
     outside.mkdir()
     (here / "link").symlink_to(outside)
 
-    with pytest.raises(SwarmError):
+    with pytest.raises(SwarmError) as caught:
         _call(swarm, {"task_id": "task_0000000000savelink", "name": "a.png", "save_to": str(here / "link")})
+    assert "outside" in str(caught.value), str(caught.value)
 
     assert requests == []
     assert list(outside.iterdir()) == []
 
 
 def test_a_task_id_that_is_not_one_path_segment_is_refused_before_any_request(swarm, requests, here):
-    with pytest.raises(SwarmError):
+    with pytest.raises(SwarmError) as caught:
         _call(swarm, {"task_id": "../task_x", "name": "a.png", "save_to": str(here)})
+    assert "Nothing was read" in str(caught.value), str(caught.value)
 
     assert requests == []
 
