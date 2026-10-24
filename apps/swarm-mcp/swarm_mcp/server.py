@@ -46,6 +46,7 @@ from urllib.parse import urlsplit
 from swarm_common.profiles import MODEL_CLASSES, RESOURCE_CLASSES
 
 from . import artifacts, checkout, compact, config, keys, progress, qatargets
+from . import secrets as secret_tools
 from . import profiles as catalogue
 from . import workflows
 from .client import (
@@ -2403,7 +2404,9 @@ TOOLS: list[dict[str, Any]] = [
             "the credential: never ask for it, never accept it in chat. Give the "
             "person the url and tell them to open it. Each environment has its own "
             "test account, so `environment` names the entry the link is for (required "
-            "when the target has several)."
+            "when the target has several). `field` picks the form: `credential` (the "
+            "default, the test account) or `challenge_bypass` (the value the app's "
+            "challenge bypass sends; it too is typed only into that form)."
         ),
         "inputSchema": {
             "type": "object",
@@ -2411,9 +2414,102 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "target": {"type": "string", "maxLength": 100},
                 "environment": {"type": "string", "pattern": qatargets.ENVIRONMENT_NAME.pattern},
+                "field": {"type": "string", "enum": list(qatargets.LINK_FIELDS)},
             },
             "required": ["target"],
         },
+    },
+    # -- Config › Secrets (SSC-SC, docs/design/secrets-scopes.md §6.4, §11 Q8) --
+    #
+    # Links and reads only: NO TOOL TAKES A VALUE. A value arrives through the
+    # console form a one-time link opens, or a terminal's --stdin. Every
+    # string below is an enum or a pattern a value does not fit, checked again
+    # in `secrets` before anything is sent and refused without being repeated;
+    # every answer is copied field by field. tests/unit/mcp/test_secret_links.py.
+    {
+        "name": "swarm_secret_set_link",
+        "description": (
+            "A one-time console link to Config > Secrets' add or rotate form, where the "
+            "person types a secret's value themselves: answers ONLY `url` and "
+            "`expires_at` (ten minutes, one use, bound to their own console session). "
+            "There is deliberately no argument for the value: never ask for it, never "
+            "accept it in chat. `scope`: `workspace` (the selected workspace's store, "
+            "an admin's), `personal` (your own personal workspace's; the link is minted "
+            "there, so open it with that workspace selected) or `repository` (released "
+            "only to agents that clone it; name it in `repository` as owner/repo or its "
+            "repo_ id). `action`: `add` (the form asks for the name) or `rotate` (name "
+            "the secret in `name`, as swarm_secrets lists it). A null url comes with a "
+            "`note`: show it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "scope": {"type": "string", "enum": list(secret_tools.SCOPES)},
+                "action": {"type": "string", "enum": list(secret_tools.ACTIONS)},
+                "name": {"type": "string", "pattern": secret_tools.STORE_NAME.pattern},
+                "repository": {"type": "string", "pattern": secret_tools.REPOSITORY_PATTERN},
+            },
+            "required": ["scope", "action"],
+        },
+    },
+    {
+        "name": "swarm_actions_secret_link",
+        "description": (
+            "A one-time console link to the form that sets a GitHub Actions secret of a "
+            "repository registered in the selected workspace, at repository level or in "
+            "one `environment`: answers ONLY `url` and `expires_at` (ten minutes, one "
+            "use). The person types the value into the form; SwarmCloud seals it to "
+            "GitHub's key, sends it to GitHub and keeps only the name, who and when. "
+            "There is deliberately no argument for the value: never ask for it. "
+            "`repository` is owner/repo or its repo_ id; `name` is GitHub's secret name "
+            "(letters, digits, underscores; not GITHUB_...). Writing needs a workspace "
+            "admin whom GitHub calls admin of the repository; the API checks that when "
+            "the link is minted and again when the form is sent."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "repository": {"type": "string", "pattern": secret_tools.REPOSITORY_PATTERN},
+                "name": {"type": "string", "pattern": secret_tools.ACTIONS_NAME.pattern},
+                "environment": {"type": "string", "pattern": secret_tools.ENVIRONMENT.pattern},
+            },
+            "required": ["repository", "name"],
+        },
+    },
+    {
+        "name": "swarm_secrets",
+        "description": (
+            "Config > Secrets' one read: the secrets of one scope of the selected "
+            "workspace -- `workspace` (its store, TypeSafe and runner keys, MCP servers' "
+            "stored credentials, GitHub token status), `personal` (your own) or "
+            "`repository` (name it in `repository`: its secrets for agents, its QA "
+            "targets' sign-in status, the Actions secrets SwarmCloud wrote). Names, "
+            "status, who set each and when, what it is granted to, and which scope's "
+            "value wins a shared name (`shadowed_by`, `shadows`). Never a value, a "
+            "length or any part of one. Read-only; `text` is what to show."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "scope": {"type": "string", "enum": list(secret_tools.SCOPES)},
+                "repository": {"type": "string", "pattern": secret_tools.REPOSITORY_PATTERN},
+            },
+            "required": ["scope"],
+        },
+    },
+    {
+        "name": "swarm_platform_secrets",
+        "description": (
+            "Admin > Platform secrets: each platform secret's status from Secret Manager "
+            "metadata (set, enabled versions, the newest one's time, who declares and "
+            "who writes it), then the quota broker's account secrets. Platform admins "
+            "only: anyone else is refused 403 by the API, and that refusal is the answer. "
+            "Never a value. Read-only; `text` is what to show."
+        ),
+        "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
     },
     # -- cluster state -----------------------------------------------------
     #
@@ -4973,7 +5069,28 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # copies those two fields, so not even the API's `path` (which holds
         # the link's token) reaches a transcript.
         return json.dumps(qatargets.credential_link(client, args.get("target"),
-                                                    args.get("environment")), indent=2)
+                                                    args.get("environment"),
+                                                    args.get("field")), indent=2)
+
+    if name == "swarm_secret_set_link":
+        # The url and its expiry, nothing else (secrets-scopes.md §6.4).
+        return json.dumps(secret_tools.secret_set_link(
+            client, args.get("scope"), args.get("action"), name=args.get("name"),
+            repository=args.get("repository")), indent=2)
+
+    if name == "swarm_actions_secret_link":
+        return json.dumps(secret_tools.actions_secret_link(
+            client, args.get("repository"), args.get("name"),
+            environment=args.get("environment")), indent=2)
+
+    if name == "swarm_secrets":
+        view = secret_tools.overview(client, args.get("scope"), args.get("repository"))
+        return json.dumps({**view, "text": secret_tools.overview_text(view)}, indent=2)
+
+    if name == "swarm_platform_secrets":
+        # A 403 for anyone but a platform admin is the route's, raised unchanged.
+        view = secret_tools.platform_secrets(client)
+        return json.dumps({**view, "text": secret_tools.platform_text(view)}, indent=2)
 
     if name == "swarm_roles":
         # One GET. A refusal (a deployment predating roles, a 403 for a tenant

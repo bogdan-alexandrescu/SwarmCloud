@@ -436,3 +436,33 @@ def test_the_qa_link_refuses_an_unknown_field_without_repeating_it():
 def test_the_qa_link_schema_offers_the_two_fields():
     spec = _tool("swarm_qa_target_credential_link")["inputSchema"]["properties"]["field"]
     assert spec["enum"] == ["credential", "challenge_bypass"]
+
+
+# -- the seam: every route `secrets.py` calls is one swarm-api serves ----------------------
+
+
+def test_every_route_the_secret_tools_call_is_served_by_swarm_api():
+    from pathlib import Path
+
+    from swarm_api.routes import actions_secrets, admin, repository_secrets, secrets_overview
+    from swarm_api.routes import workspace_secrets
+
+    def shape(path: str) -> str:
+        return re.sub(r"\{[^}]+\}", "{}", path.split("?")[0])
+
+    served = {(m, shape(r.path))
+              for module in (actions_secrets, admin, repository_secrets, secrets_overview,
+                             workspace_secrets)
+              for r in module.router.routes for m in getattr(r, "methods", ())}
+    source = (Path(server.__file__).with_name("secrets.py")).read_text()
+    spoken = {(m, shape(p)) for m, p in
+              re.findall(r'request\(\s*"(GET|POST)"\s*,\s*f?"(/v1[^"]*)"', source)}
+    # MUTATION: call a route spelled differently from swarm-api's and this goes red.
+    assert spoken == {
+        ("POST", "/v1/workspace/secrets/links"),
+        ("POST", "/v1/repositories/{}/secrets/links"),
+        ("POST", "/v1/repositories/{}/actions/links"),
+        ("GET", "/v1/secrets/overview"),
+        ("GET", "/v1/admin/platform-secrets"),
+    }
+    assert spoken <= served, sorted(spoken - served)
