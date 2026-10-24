@@ -123,7 +123,7 @@ from swarm_redaction import redact as redact_text
 from .capture import CaptureError, Frame, XvfbFramebuffer
 from .cdppolicy import PolicyPaths
 from .cdpproxy import AgentConnection, AgentLink, CdpError, CdpProxy, PipeTransport, serve_agents
-from .ctl import DEFAULT_MARKER, CtlServer, OpRefused
+from .ctl import DEFAULT_MARKER, CtlServer, GateDown, OpRefused
 from .device import WINDOW_OVERHANG, DeviceController, XRandrDisplay, captured
 from .. import browser_tools
 from .egress import EgressConfigError, EgressSettings, LocalForwarder, chromium_proxy_args, describe, notice_url
@@ -1993,9 +1993,25 @@ class LiveGate:
             self.record("egress_notice_failed", {"cause": cause, "error": type(exc).__name__})
 
     def _need(self, component: Any) -> Any:
-        if component is None or self.wiped or self.browser_closed:
-            raise RuntimeError("the browser is not running")
+        """`component`, or `GateDown` saying why the browser is not there to serve
+        it (GATE-STAYS-UP; #2205): the worker waits out `starting` and
+        `restarting` and tells the agent which it was, where a bare `failed`
+        read as a refusal of the preset itself."""
+        if self.wiped:
+            raise GateDown("wiped")
+        if self.browser_closed or component is None:
+            raise GateDown(self.down_reason())
         return component
+
+    def down_reason(self) -> str:
+        """Why the browser is not serving now: `crashed` once the relaunch budget
+        is spent (`browser_state` `closed`), `restarting` from the exit until a
+        relaunch is up or given up, `starting` before the first launch is done."""
+        if self.browser_state == "closed":
+            return "crashed"
+        if self.browser_closed or self.browser_state == "restarting":
+            return "restarting"
+        return "starting"
 
     def status(self) -> dict[str, Any]:
         device = self.devices.device if self.devices is not None else self.desktop

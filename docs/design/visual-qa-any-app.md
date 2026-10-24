@@ -157,8 +157,9 @@ the console's form checks the link token):
 1. A workspace admin asks for a link: `POST /v1/qa-targets/{id}/credential-links`
    (console button, or the plugin's `swarm_qa_target_credential_link`, which
    returns **only** the URL and its expiry, as `keys.key_set_link` does).
-   The link is single-use, bound to the asking person's email and the target,
-   and expires in 15 minutes.
+   The link is single-use, bound to the asking person's email, the target,
+   its entry and its `field` (`credential`, the default, or
+   `challenge_bypass`, §2.5), and expires in 15 minutes.
 2. The person opens it **in the browser**, types the test account's username
    and password into the console's form, and submits
    (`PUT /v1/qa-targets/{id}/credential` with the link token). Nothing passes
@@ -350,10 +351,20 @@ cookie can both carry unquoted. It is stored in the tenant's one QA secret
 write keeps the other's keys): the same secret, the same reader (swarm-api
 alone), so **no IAM changes**. The target records only
 `challenge_bypass_value: {set, set_at, set_by, version}`, audited
-`qa_target_challenge_bypass_set` with the version, kind and name. The PUT
-takes no one-time link: the admin is signed in to the console that sends it,
-and the value is a key the owner made for these runs, not a person's own
-password. Removing the bypass, or changing the host or `extra_origin` (which
+`qa_target_challenge_bypass_set` with the version, kind, name and
+`via_link`. **The value arrives through a one-time link, as the password
+does** (BGD's Q8 of [secrets-scopes.md](secrets-scopes.md) §11, lane
+SSC-LINKS): `POST .../credential-links {"field": "challenge_bypass"}` mints a
+link to the console's bypass form (`/qa-targets/{id}/challenge-bypass?t=`),
+only for an entry whose `challenge_bypass` names its kind and name; the PUT
+sends its token as `link_token`. A link is bound to its field too, so a
+password link never sets the bypass nor a bypass link the password, and one
+presented for the wrong field is not burned. A PUT without a token is 403
+`qa_bypass_link_required` through its switch, which ships off: off, the write
+goes through, as the target form sends it today, and the log names the
+tenant, target, entry and caller, never the value. A token that is presented
+and not the caller's live bypass link is 403 `qa_credential_link_invalid`
+whatever the switch says. Removing the bypass, or changing the host or `extra_origin` (which
 sends the host back to `pending`), removes the value from the secret first:
 a value made for one host never reaches another. Deleting the target removes
 it with the credential.

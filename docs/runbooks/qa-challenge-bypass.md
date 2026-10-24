@@ -97,6 +97,12 @@ notice where it has one.
    refused. Type the value into **Value (write-only)** and save. The card
    then says `Challenge bypass · header X-QA-Bypass · value set`, with when
    and by whom, and never shows the value again.
+   That form sends the value without a one-time link, which the API logs as
+   `challenge bypass set without a link` and lets through while the
+   `qa_bypass_link_required` switch is off (its default). Leave it off until
+   the console's bypass form opens from a link
+   (`POST /v1/qa-targets/{id}/credential-links {"field": "challenge_bypass"}`,
+   lane SSC-UI): on, a value sent without one is refused 403.
 4. **Check it.** Run the target (Run, with "report only, file no issues").
    A screen that showed the challenge before now shows the page. Your edge's
    logs show the rule matching requests from the run.
