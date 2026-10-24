@@ -438,8 +438,12 @@ RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # the last release.
 ARG BRACE_EXPANSION_VERSION=5.0.12
 ARG BRACE_EXPANSION_SHA512=628bd0debce168b308ac38cd0cc90d4b4d6d79af77aa11211b9c72f1febe47497e770dca8bee6c0a822823de368ae2d94c75a881692d830543854d3d88d12299
-ARG UNDICI_VERSION=6.29.0
-ARG UNDICI_SHA512=47e44e0c1aa9ea2da93df94676afb120e52497e44d7c6807c288a779c2aefc90ae7f6b8ed3a70e2a80db2363fb0e7e8a72cc1d2b0adccdb53a21827a2bc5fec2
+# 6.29.1 (2026-10-24): trivy flagged CVE-2026-109869 (HIGH) in 6.29.0, fixed in
+# 6.29.1 / 7.30.1 / 8.12.2; every release and image build failed on it from
+# 2026-10-24 ~01:17Z. Still major 6 for node-gyp's "^6.25.0", still zero
+# dependencies (registry package.json), same index.js exports.
+ARG UNDICI_VERSION=6.29.1
+ARG UNDICI_SHA512=12f46552dfd0a8012f5dd41e44c6147f0390b1fce90f3b7292b1b6a3018413fac1381a18bfdb85dfd673b0d0e1e254c51e14ebd973998ca91882e783d7666618
 ARG TAR_VERSION=7.5.22
 ARG TAR_SHA512=3053bf433bed00e9896e484e6824ef6c670537d2fd6fe26e9c8b03c1a2a58d239d70b31e6b7349d64f54b33feb8dd7d25d3ab875fcdf792ed6e29e1838000778
 ARG IP_ADDRESS_VERSION=10.7.2
