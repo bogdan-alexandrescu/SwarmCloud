@@ -365,7 +365,7 @@ table.doc code,.cs code,.recap code,.nw{white-space:nowrap}
 <ul class="toc" id="toc"></ul>
 
 <div class="idea" id="idea">
-  <div><h4>Idea</h4><p>Config holds six pages: GitHub access, Repositories, Secrets, MCP servers, People and roles (group workspaces, admins only) and Workspace Settings. <b>Repositories is the hub.</b> A repository's page has five sections on one scroll, each with its own address: Overview, Access, Secrets (Agents | GitHub Actions), QA targets, Index. When a repository is open, the panel nests those sections under Repositories, so the spine and panel always say where you are. Secrets' own page has the scopes Workspace · Yours · Repository; its Repository scope is an index across repositories whose rows open each repository's Secrets section. A QA run group page hangs off its repository. Settings keeps Profile; Admin is drawn only for admins.</p></div>
+  <div><h4>Idea</h4><p>Config holds six pages: GitHub access, Repositories, Secrets, MCP servers, People and roles (group workspaces only: every member reads it, only admins change it; BGD, 2026-10-24 00:31Z) and Workspace Settings. <b>Repositories is the hub.</b> A repository's page has five sections on one scroll, each with its own address: Overview, Access, Secrets (Agents | GitHub Actions), QA targets, Index. When a repository is open, the panel nests those sections under Repositories, so the spine and panel always say where you are. Secrets' own page has the scopes Workspace · Yours · Repository; its Repository scope is an index across repositories whose rows open each repository's Secrets section. A QA run group page hangs off its repository. Settings keeps Profile; Admin is drawn only for admins.</p></div>
   <div><h4>Pros</h4><ul>
     <li>One page answers "can agents work on this repository?": a failing push check, a missing QA sign-in, an Actions environment's branch rule and a stale index sit side by side.</li>
     <li>It mirrors GitHub's own layout (repository › secrets › environments), so the Actions destination and "Create on GitHub ↗" read naturally.</li>
@@ -387,7 +387,7 @@ table.doc code,.cs code,.recap code,.nw{white-space:nowrap}
 <tr><td>Repositories › QA targets</td><td>The QA targets section of the repository its findings file in; the run group page under it</td><td><code>…/&lt;repo&gt;#qa</code>, <code>…/&lt;repo&gt;/qa-runs/&lt;group_id&gt;</code> (<code>/qa-runs/&lt;group_id&gt;</code> redirects)</td></tr>
 <tr><td>Settings › Workspace › Workspace secrets</td><td>Config › Secrets, scopes Workspace · Yours · Repository</td><td><code>/config/secrets?scope=…</code></td></tr>
 <tr><td>Settings › API keys (the TypeSafe keys)</td><td>Config › Secrets › Keys for agents and MCP, with person and workspace scopes and the one-time set link (BGD, 2026-10-23 23:57Z)</td><td><code>/config/secrets?scope=…</code></td></tr>
-<tr><td>Settings › MCP servers; Settings › People and roles</td><td>Config › MCP servers; Config › People and roles</td><td><code>/config/mcp-servers</code>, <code>/config/people</code></td></tr>
+<tr><td>Settings › MCP servers; Settings › People and roles</td><td>Config › MCP servers; Config › People and roles (group workspaces: every member reads it, only admins change it; BGD, 2026-10-24 00:31Z)</td><td><code>/config/mcp-servers</code>, <code>/config/people</code></td></tr>
 <tr><td>Settings › Workspace; Work › Setup</td><td>Config › Workspace Settings, with Workspace setup; Add a new workspace for platform admins only (BGD, 2026-10-23 23:57Z)</td><td><code>/config/workspace</code>, <code>#setup</code>, <code>/config/workspace/new</code></td></tr>
 <tr><td>Settings › Profile</td><td>Settings › Profile, the only page Settings keeps, opened from the avatar and the panel footer</td><td><code>/settings/profile</code></td></tr>
 <tr><td>Admin › People</td><td>Admin › People and roles, across workspaces</td><td><code>/admin/people</code></td></tr>
@@ -438,10 +438,10 @@ function configPages(o){
   var h='<div class="pt">Config</div>'+pk(o,'github','GitHub access','github')+pk(o,'repos','Repositories','repo','<span class="cnt">'+(personal?2:4)+'</span>');
   if(o.repo){h+='<div class="kids"><span class="kr">'+o.repo+'</span>'+['Overview','Access','Secrets','QA targets','Index'].map(function(k){return '<a class="kid '+(o.kid===k?'on':'')+'">'+k+'</a>';}).join('')+'</div>';}
   h+=pk(o,'secrets','Secrets','key')+pk(o,'mcp','MCP servers','plug');
-  if(!personal&&o.role!=='member')h+=pk(o,'people','People and roles','people');
+  if(!personal)h+=pk(o,'people','People and roles','people');
   h+=pk(o,'wss','Workspace Settings','building');
   if(personal)h+='<p class="pnote">A personal workspace has no People and roles: it has one person.</p>';
-  else if(o.role==='member')h+='<p class="pnote">People and roles is for this workspace&rsquo;s admins.</p>';
+  else if(o.role==='member')h+='<p class="pnote">People and roles is read-only for you: an admin of eng changes roles.</p>';
   return h;
 }
 function adminPages(o){
@@ -475,7 +475,7 @@ function checks(c){var L=['Clone','Push','Pull request'];return c.map(function(s
 
 /* ---------- S1 navigation ---------- */
 function s1body(o){
-  var t={padmin:'A platform admin sees Config with every page and Admin with every tab.',wadmin:'A workspace admin of eng sees every Config page; Admin holds only People and roles and Workspaces you admin, for the workspaces they administer.',member:'A member of eng sees Config without People and roles, and no Admin at all: the spine has no Admin item, and the API refuses every Admin route for them.',personal:'In a personal workspace Config has no People and roles. Repositories, Secrets and Workspace Settings are the personal workspace&rsquo;s.'}[o.who];
+  var t={padmin:'A platform admin sees Config with every page and Admin with every tab.',wadmin:'A workspace admin of eng sees every Config page; Admin holds only People and roles and Workspaces you admin, for the workspaces they administer.',member:'A member of eng sees every Config page, People and roles included, read-only there, and no Admin at all: the spine has no Admin item, and the API refuses every Admin route for them.',personal:'In a personal workspace Config has no People and roles. Repositories, Secrets and Workspace Settings are the personal workspace&rsquo;s.'}[o.who];
   return head('Config / <b>Repositories</b>','Repositories',{acts:btn('Add new repository','p','submit'),intro:t})+
    '<div class="rcards">'+REPOS.filter(function(r){return o.ws==='personal'?r.n.indexOf('operator/')===0||r.n==='example-org/docs-site':true;}).slice(0,2).map(function(r){return '<div class="rc"><div class="rn">'+I('repo')+'<b>'+r.n+'</b>'+chip(r.mode)+'</div><div class="sm mu">'+r.ver+'</div></div>';}).join('')+'</div>'+
    '<p class="exd">'+(o.ws==='personal'?'Both of this workspace&rsquo;s 2 repositories are drawn.':'2 more not drawn: eng has 4 repositories, all drawn in S3.')+'</p>';
@@ -571,17 +571,16 @@ function secWorkspace(){
    ]),{act:'<span class="mu sm">You may set these: workspace admin</span>',sub:'Released to the agents of eng whose runner, tool or MCP server is ticked below.'})+
   card('Grants',
    '<p class="cs" style="margin-top:0">Tick a box to let that runner profile, tool or platform component read the secret. A box that cannot be ticked says why.</p>'+
-   tbl([['Secret','nm'],['claude-code','c'],['codex','c'],['playwright','c'],['jev','c'],['mcp:search','c']],[
-     ['<code>TEST_DB_PASSWORD</code>',box('on'),box(''),box('on'),box(''),box('no')],
-     ['<code>STAGING_SIGNIN</code>',box(''),box(''),box('on'),box(''),box('no')],
-     ['<code>SEARCH_INDEX</code>',box('no'),box('no'),box('no'),box('no'),box('on')]
-   ],{stack:false,cls:'matrix'})+'<p class="exd phonly" style="margin:6px 0 0">On a phone the matrix scrolls sideways: playwright, jev and mcp:search are to the right.</p>',{foot:'A hatched box: that consumer reads another kind, or no secret yet. A change takes effect at the next attempt.'});
+   tbl([['Secret','nm'],['claude-code','c'],['playwright','c'],['jev','c'],['mcp:search','c']],[
+     ['<code>TEST_DB_PASSWORD</code>',box('on'),box('on'),box(''),box('no')],
+     ['<code>STAGING_SIGNIN</code>',box(''),box('on'),box(''),box('no')],
+     ['<code>SEARCH_INDEX</code>',box('no'),box('no'),box('no'),box('on')]
+   ],{stack:false,cls:'matrix'})+'<p class="exd phonly" style="margin:6px 0 0">On a phone the matrix scrolls sideways: the rest of playwright, then jev and mcp:search, are to the right.</p>',{foot:'A hatched box: that consumer reads another kind, or no secret yet. A change takes effect at the next attempt.'});
 }
 function secKeys(){
   return card('Keys for agents and MCP',
    tbl([['Key','nm'],['Scope'],['Status'],['Used by'],['','r']],[
      ['<b>Anthropic</b><span class="sub">runner LLM provider key</span>','Workspace',st('ok','set 20d ago by Operator'),'claude-code',btn('Set','sm')],
-     ['<b>OpenAI</b><span class="sub">runner LLM provider key</span>','Workspace',st('neu','not set'),'codex',btn('Set','sm')],
      ['<b>TypeSafe</b>','Workspace',st('ok','set 4d ago by Rae'),'every agent of eng, unless its submitter has their own',btn('Set','sm')+btn('Delete','q sm dg')],
      ['<b>TypeSafe</b>','Yours',st('ok','set 2d ago'),'<span class="chip info">overrides the workspace&rsquo;s on your agents</span>',btn('Set','sm')+btn('Delete','q sm dg')],
      ['<b>mcp:search</b><span class="sub">MCP server credential, stored</span>','Workspace',st('ok','SEARCH_INDEX, granted'),'agents that attach the search server','<a>MCP servers ›</a>']
@@ -677,14 +676,18 @@ function mcpPage(){
     ['<b>tracker</b>','<code>https://app.example.com/mcp</code>','at dispatch','not recently',btn('Edit','q sm')]
   ]));
 }
-function wsPeople(){
-  return head('Config / <b>People and roles</b>','People and roles',{chips:chip('eng · group workspace'),acts:btn('Add a person','p','submit'),intro:'This workspace&rsquo;s people and roles, as today (WorkspacePeople.tsx). Shown only in a group workspace, to its admins.'})+
-  card('Roles in this workspace',tbl([['Person','nm'],['Role'],['Since'],['','r']],[
-    ['<b>Operator</b><span class="sub">operator@example.com</span>',seg(['viewer','member','admin'],2),'90d',''],
-    ['<b>Rae</b>',seg(['viewer','member','admin'],1),'40d',btn('Remove','q sm dg')],
-    ['<b>Kim</b>',seg(['viewer','member','admin'],1),'12d',btn('Remove','q sm dg')],
-    ['<b>Sam</b>',seg(['viewer','member','admin'],0),'2d',btn('Remove','q sm dg')]
-  ]),{foot:'8 more not drawn: eng has 12 people.'});
+function wsPeople(x){
+  var adm=!x||x.role!=='member';
+  function roleCell(on){return adm?seg(['viewer','member','admin'],on):['viewer','member','admin'][on];}
+  function rm(){return adm?btn('Remove','q sm dg'):'';}
+  var rows=[
+    ['<b>Operator</b><span class="sub">operator@example.com</span>',roleCell(2),'90d',''],
+    ['<b>Rae</b>',roleCell(1),'40d',rm()],
+    ['<b>Kim</b>',roleCell(1),'12d',rm()],
+    ['<b>Sam</b>',roleCell(0),'2d',rm()]
+  ];
+  return head('Config / <b>People and roles</b>','People and roles',{chips:chip('eng · group workspace')+(adm?'':chip('read-only for you','info')),acts:adm?btn('Give a person a role','p','submit'):'',intro:adm?'This workspace&rsquo;s people and roles, as today (WorkspacePeople.tsx). Shown in a group workspace to every member; only its admins and a platform admin see the change controls (BGD, 2026-10-24 00:31Z).':'What a member or viewer sees: the roster and each person&rsquo;s role, read-only, as today (workspace-roles.md Q7). Giving a role, changing one and removing a person are an admin&rsquo;s (BGD, 2026-10-24 00:31Z).'})+
+  card('Roles in this workspace',adm?tbl([['Person','nm'],['Role'],['Since'],['','r']],rows):tbl([['Person','nm'],['Role'],['Since']],rows.map(function(r){return r.slice(0,3);})),{foot:'8 more not drawn: eng has 12 people.'});
 }
 function adminPeople(role){
   var pa=role==='padmin';
@@ -764,6 +767,9 @@ function countsOverTime(){
   var bars=DAYS.map(function(x,i){var lab=x.d.toISOString().slice(0,10)+': '+x.a+' agents, '+x.rt+' retries'+(i===29?' (today so far)':'');return '<div class="bar'+(i===29?' today':'')+'" title="'+lab+'" role="img" aria-label="'+lab+'"><i style="height:'+(x.a/top*100)+'%"></i><i class="rt" style="height:'+(x.rt/top*100)+'%"></i></div>';}).join('');
   function brk(title,rows,note){var m=rows[0][1];return card(title,tbl([['Name','nm'],['Agents','r'],[''],['Run hours','r']],rows.map(function(r){return ['<code>'+r[0]+'</code>',fmt(r[1]),'<span class="hb"><span class="tr"><i style="width:'+(r[1]/m*100)+'%"></i></span></span>',r[2]];}),{cls:'brk'}),{foot:note||''});}
   var share=function(p){return Math.round(tot*p);};
+  /* Each breakdown sums to tot: its first row is what the others leave. */
+  function parts(ps){var r=ps.map(share);r[0]=tot-r.slice(1).reduce(function(a,b){return a+b;},0);return r;}
+  var ty=parts([0,.14,.06]),mo=parts([0,.33,.05]),pl=parts([0,.48]);mo[0]-=tot-reported;
   return head('Admin / <b>Platform counts</b>','Platform counts',{chips:chip('platform admins only','info'),acts:'<span class="mu sm">counted 4m ago · not refreshed on its own</span>'+btn('Run it again · 6 reads','sm')})+
   card('Every workspace, now',tbl([['State','nm'],['Agents','r']],[['Running','27'],['Parked','6'],['Ready','9'],['Queued','22']],{stack:false}),{sub:'As today: the count of each state, This workspace and Every workspace.'})+
   '<section class="card" id="over-time"><header class="ch"><h4>Over time</h4><span class="ca">'+seg(['Day','Week','Month'],0)+seg(['30 days','90 days','12 months'],0)+btn('Count over time · 31 reads','p sm')+'</span></header>'+
@@ -777,10 +783,10 @@ function countsOverTime(){
   '<div class="chart"><div class="yax"><span>'+top+'</span><span>'+top/2+'</span><span>0</span></div><div class="plot"><i class="gl" style="top:0"></i><i class="gl" style="top:50%"></i><div class="bars">'+bars+'</div></div><div class="xax"><span>Sep 24</span><span>Oct 1</span><span>Oct 8</span><span>Oct 15</span><span>Oct 23</span></div></div>'+
   '<p class="exd" style="margin:8px 0 0">Hover a day for its figures. <a>Show as a table</a></p></section>'+
   '<div class="g2">'+
-   brk('By agent type',[['claude-code',share(.62),fmt(Math.round(tot*1.7))+' h'],['codex',share(.21),fmt(Math.round(tot*.5))+' h'],['browser',share(.12),fmt(Math.round(tot*.3))+' h'],['visual-qa',share(.05),fmt(Math.round(tot*.1))+' h']])+
-   brk('By model',[['claude-opus-5-5',share(.48),fmt(Math.round(tot*1.4))+' h'],['claude-sonnet-5',share(.27),fmt(Math.round(tot*.65))+' h'],['claude-haiku-4-5',share(.04),fmt(Math.round(tot*.05))+' h'],['not reported',share(.21),fmt(Math.round(tot*.5))+' h']],'Each agent counts once, under its main model; a sub-model&rsquo;s work counts under the agent&rsquo;s main model. Codex agents do not report their model yet, so they are "not reported", not a model of their own.')+
+   brk('By agent type',[['claude-code',ty[0],fmt(Math.round(tot*2.1))+' h'],['browser',ty[1],fmt(Math.round(tot*.35))+' h'],['visual-qa',ty[2],fmt(Math.round(tot*.15))+' h']],'The codex runner profile is disabled (2026-09-23), so it ran no agents in these 30 days and has no row.')+
+   brk('By model',[['claude-opus-5-5',mo[0],fmt(Math.round(tot*1.6))+' h'],['claude-sonnet-5',mo[1],fmt(Math.round(tot*.8))+' h'],['claude-haiku-4-5',mo[2],fmt(Math.round(tot*.07))+' h'],['not reported',tot-reported,fmt(Math.round(tot*.13))+' h']],'Each agent counts once, under its main model; a sub-model&rsquo;s work counts under the agent&rsquo;s main model. "Not reported" is the '+fmt(tot-reported)+' agents that reported no usage, as the tiles say.')+
    brk('By workspace',[['eng',share(.58),fmt(Math.round(tot*1.5))+' h'],['design',share(.22),fmt(Math.round(tot*.6))+' h'],['ops',share(.14),fmt(Math.round(tot*.4))+' h'],['personal workspaces (4)',share(.06),fmt(Math.round(tot*.1))+' h']])+
-   brk('By pool account',[['claude-pool-a',share(.41),fmt(Math.round(tot*1.1))+' h'],['claude-pool-b',share(.38),fmt(Math.round(tot*1.0))+' h'],['openai-pool-a',share(.21),fmt(Math.round(tot*.5))+' h']])+
+   brk('By pool account',[['claude-pool-a',pl[0],fmt(Math.round(tot*1.35))+' h'],['claude-pool-b',pl[1],fmt(Math.round(tot*2.6)-Math.round(tot*1.35))+' h']])+
   '</div>'+
   card('What the platform runs on its own',tbl([['Tick','nm'],['Cloud Scheduler job'],['What it does']],[['workflow_rollup','<code class="nw">workflow-rollup-&lt;tenant&gt;</code>','Converges stored workflow state and seals each ended outcome day, so the counts over time read sealed days.'],['reconcile','<code>reconcile</code>','Reclaims stale generations and releases what they held.']]),{sub:'As today.'});
 }
@@ -857,7 +863,7 @@ var S=[
    {k:'d',o:o({sec:'config',page:'repos',short:1,who:'padmin'}),b:function(x){return s1body(x);},c:'<b>Platform admin</b> in eng: Config with all six pages, and Admin on the spine.'},
    {k:'d',o:o({sec:'admin',page:'counts',short:1}),b:function(){return head('Admin / <b>Platform counts</b>','Platform counts',{chips:chip('platform admins only','info'),intro:'A platform admin opens Admin and finds every tab: People and roles and Workspaces you admin, then the platform&rsquo;s own pages, and links (not tabs) to Automate › Schedules, All workspaces, and Automate › Approvals. S7, S8 and S10 draw these pages.'});},c:'<b>Platform admin</b> in Admin: every tab.'},
    {k:'d',o:o({sec:'admin',page:'apeople',role:'wadmin',short:1}),b:function(){return head('Admin / <b>People and roles</b>','People and roles',{chips:chip('your 2 workspaces: eng, design','info'),intro:'A workspace admin opens Admin and finds only People and roles and Workspaces you admin; the panel says which tabs are a platform admin&rsquo;s. S5 draws this page in full.'});},c:'<b>Workspace admin</b>: Admin holds two tabs, scoped to the workspaces they administer.'},
-   {k:'d',o:o({sec:'config',page:'repos',role:'member',short:1,who:'member'}),b:function(x){return s1body(x);},c:'<b>Member</b>: no Admin on the spine; Config without People and roles.'},
+   {k:'d',o:o({sec:'config',page:'repos',role:'member',short:1,who:'member'}),b:function(x){return s1body(x);},c:'<b>Member</b>: no Admin on the spine; Config lists People and roles, read-only for them (BGD, 2026-10-24 00:31Z).'},
    {k:'d',o:o({sec:'config',page:'repos',ws:'personal',short:1,who:'personal'}),b:function(x){return s1body(x);},c:'<b>Personal workspace</b>: Config has five pages; there is no People and roles.'},
    {k:'w',o:o({sec:'config',page:'repos',title:'Repositories'}),c:'Phone menu, <b>platform admin</b>: spine and panel in a drawer.'},
    {k:'w',o:o({sec:'admin',page:'wya',role:'wadmin',title:'Workspaces you admin'}),c:'Phone menu, <b>workspace admin</b> in Admin.'},
@@ -896,11 +902,13 @@ var S=[
    {k:'d',o:o({sec:'config',page:'repos',repo:'example-org/docs-site',kid:'Secrets',short:1}),b:secEmpty,c:'<b>Empty state</b>: no repository secrets yet, and an Actions pane that says why it cannot be written.'},
    {k:'p',o:o({title:'example-org/docs-site'}),b:secEmpty,c:'Phone, empty.'}
  ]},
- {id:'s5',n:'S5',t:'Config › MCP servers, Config › People and roles, and Admin › People and roles',lede:'The two Config pages keep today&rsquo;s bodies and move from Settings. Admin › People and roles is the cross-workspace view.',f:[
+ {id:'s5',n:'S5',t:'Config › MCP servers, Config › People and roles, and Admin › People and roles',lede:'The two Config pages keep today&rsquo;s bodies and move from Settings. <b>Decided (BGD, 2026-10-24 00:31Z):</b> Config › People and roles is readable by every member of a group workspace and changeable only by its admins and a platform admin; viewers follow members. Admin › People and roles stays admin-only and cross-workspace.',f:[
    {k:'d',o:o({sec:'config',page:'mcp',short:1}),b:mcpPage,c:'<b>Config › MCP servers</b>, as today.'},
    {k:'p',o:o({title:'MCP servers'}),b:mcpPage,c:'Phone: Config › MCP servers.'},
-   {k:'d',o:o({sec:'config',page:'people',short:1}),b:wsPeople,c:'<b>Config › People and roles</b>, this workspace only; absent in a personal workspace and for members.'},
-   {k:'p',o:o({title:'People and roles'}),b:wsPeople,c:'Phone: Config › People and roles.'},
+   {k:'d',o:o({sec:'config',page:'people',short:1}),b:wsPeople,c:'<b>Config › People and roles, admin</b>: this workspace only, with the change controls a workspace admin and a platform admin see; absent in a personal workspace.'},
+   {k:'p',o:o({title:'People and roles'}),b:wsPeople,c:'Phone: Config › People and roles, admin.'},
+   {k:'d',o:o({sec:'config',page:'people',role:'member',short:1}),b:wsPeople,c:'<b>Config › People and roles, member</b> (a viewer sees the same): the roster and roles, read-only, with no Give a person a role, role switch or Remove (BGD, 2026-10-24 00:31Z).'},
+   {k:'p',o:o({title:'People and roles',role:'member'}),b:wsPeople,c:'Phone, member: read-only.'},
    {k:'d',o:o({sec:'admin',page:'apeople'}),b:function(){return adminPeople('padmin');},c:'<b>Admin › People and roles, platform admin</b>: every person and every workspace, requests waiting, the audit.'},
    {k:'d',o:o({sec:'admin',page:'apeople',role:'wadmin',short:1}),b:function(){return adminPeople('wadmin');},c:'<b>Admin › People and roles, workspace admin</b>: only eng and design, roles only.'},
    {k:'p',o:o({title:'People and roles',role:'wadmin'}),b:function(){return adminPeople('wadmin');},c:'Phone, workspace admin.'},
