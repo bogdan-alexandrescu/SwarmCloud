@@ -833,7 +833,7 @@ database, `swarm_accept`, in
 `tests/acceptance/fixtures/test-services/test_store.py` writes a row and
 reads it back, connecting in its pytest fixture so a missing service is an
 error at setup, never a failure. The group asks an agent to break the
-assertion and submits the task twice as collect steps, so no pull request
+assertion and runs that agent twice, as collect steps, so no pull request
 opens and the pre-publish record is read where the runner wrote it:
 
 * **declared**: the first round's `graph-pytest` is `failed`, with a fix
