@@ -1,0 +1,7 @@
+# The acceptance suite's declared test service (scripts/acceptance/groups/
+# claude-code.sh, TS-ACCEPT, #1627). Names only: the platform owns the image,
+# the command, the port and the resources (SwarmCloud invariant 10). The
+# worker starts it after the clone; test_store.py writes to it.
+[postgres]
+version = 16
+databases = ["swarm_accept"]
