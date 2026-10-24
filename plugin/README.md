@@ -1330,6 +1330,20 @@ are the same value.
   same function the terminal uses, and infers the repository the same way.
   With `spec_digest` it refuses, before sending, a spec that arrived
   different; its reply carries the digest of what it received.
+* `swarm_workflow` (and `swarm workflow`, and `/sc:swarmcloud` through
+  `swarm_workflow_launch`) passes `publish_to_pr` through (#2183, PTP-PLUGIN):
+  a spec's top-level key, or the tool's argument beside `steps` or a spec,
+  naming an existing pull request of the workflow's repository — `41`,
+  `"#41"`, `"owner/repo#41"` or its URL (a number is sent as the integer, a
+  form naming a repository as `owner/repo#N`). The lane's commits are pushed
+  onto that pull request's branch as a fast-forward and no pull request is
+  opened. It is sent top-level, beside `steps`, only when given, and with no
+  `metadata.merge`: swarm-api refuses it beside a merge step or a merge
+  choice, so a spec naming both — a merge step, or `merge` other than
+  `"off"` — is refused before any request, with the API's reason, rather
+  than its merge dropped. The argument and a spec naming different pull
+  requests are refused. The reply's `publish_to_pr` says what was sent and
+  that no merge was.
 * `swarm_workflow_spec` reads a spec file from the checkout, checks it, and
   returns it with its digest, submitting nothing — the half of `/sc:swarmcloud` that
   takes a path. A file that is not a spec is refused without its content being

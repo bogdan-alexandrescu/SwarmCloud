@@ -206,7 +206,7 @@ def test_publish_to_pr_beside_a_merge_choice_is_refused_before_any_request(merge
 def test_publish_to_pr_beside_a_merge_step_is_refused_before_any_request():
     recorder = _Recorder()
     spec = _spec(publish_to_pr=41, strategy="integrate", steps=[
-        dict(STEP), {"step_id": "merge", "runner_profile": "merge", "depends_on": ["fix"]},
+        dict(STEP), {"step_id": "merge", "prompt": "merge it", "runner_profile": "merge", "depends_on": ["fix"]},
     ])
     with pytest.raises(SwarmError, match=API_REASON):
         _submit_spec(recorder, spec)
