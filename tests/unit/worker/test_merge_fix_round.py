@@ -30,6 +30,7 @@ No credentials, no network. The fake forge is `merge_world.MergeWorld`.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -288,6 +289,96 @@ def test_red_with_no_rounds_asked_for_is_checks_failed(tmp_path, rounds):
     assert outcome.summary["refusal"]["code"] == "checks_failed"
 
 
+def _rerun(world: MergeWorld, *, ago: float = 60, head: str = PINNED, rounds: int = 0,
+           **extra: Any) -> None:
+    """swarm-api's free re-run of the failing Actions jobs at `head` (SPEED-D2,
+    #2257), requested `ago` seconds ago, on the merge task's own document."""
+    entry: dict[str, Any] = {"round": 1, "head": head, "claimed_at": None, "jobs": [7],
+                             "requested_at": datetime.now(timezone.utc) - timedelta(seconds=ago),
+                             **extra}
+    entry["claimed_at"] = entry["requested_at"]
+    world.docs[TASK]["metadata"] = {
+        "merge_fix_rounds": rounds,
+        merge.MERGE_FIX_METADATA_KEY: {merge.RERUNS_KEY: [entry]},
+    }
+
+
+def test_red_with_no_rounds_and_a_fresh_rerun_at_this_head_parks(tmp_path):
+    """Zero rounds asked (#2257, task_076d1ae89d014e4688ce): the tick re-ran
+    the failing jobs at this head a minute ago, so a wake inside the settle
+    window waits for the re-run's answer instead of refusing on the old one."""
+    world = MergeWorld(tmp_path)
+    _red(world)
+    _rerun(world)
+
+    outcome = merge.run_merge(world.context())
+
+    _parked(outcome, merge.CI_RERUN_PENDING, PINNED)
+    assert merge.CI_RERUN_PENDING == "ci_rerun_pending"
+    assert CHECK in outcome.summary["wait"]["message"]
+    assert "re-run" in outcome.summary["wait"]["message"]
+    assert world.merge_calls() == []
+
+
+def test_red_with_rounds_left_and_a_fresh_rerun_parks(tmp_path):
+    world = MergeWorld(tmp_path)
+    _red(world)
+    _rerun(world, rounds=2)
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert "refusal" not in outcome.summary
+
+
+def test_red_after_the_rerun_settle_window_is_checks_failed(tmp_path):
+    world = MergeWorld(tmp_path)
+    _red(world)
+    _rerun(world, ago=merge.RERUN_SETTLE_SECONDS + 5)
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+
+
+def _future(world: MergeWorld) -> None:
+    _rerun(world, ago=-3600)
+
+
+def _naive(world: MergeWorld) -> None:
+    _rerun(world)
+    entry = world.docs[TASK]["metadata"][merge.MERGE_FIX_METADATA_KEY][merge.RERUNS_KEY][0]
+    entry["requested_at"] = entry["requested_at"].replace(tzinfo=None)
+
+
+def _string_instant(world: MergeWorld) -> None:
+    _rerun(world)
+    entry = world.docs[TASK]["metadata"][merge.MERGE_FIX_METADATA_KEY][merge.RERUNS_KEY][0]
+    entry["requested_at"] = entry["requested_at"].isoformat()
+
+
+@pytest.mark.parametrize("mutate", [
+    pytest.param(lambda w: _rerun(w, error="GitHub refused the re-run", requested_at=None),
+                 id="refused"),
+    pytest.param(lambda w: _rerun(w, head=FIXED), id="other-head"),
+    pytest.param(lambda w: _rerun(w, requested_at=None), id="claimed-not-requested"),
+    pytest.param(_future, id="forged-future"),
+    pytest.param(_naive, id="naive-instant"),
+    pytest.param(_string_instant, id="string-instant"),
+])
+def test_a_refused_or_other_head_rerun_does_not_hold_the_refusal(tmp_path, mutate):
+    """Only a re-run GitHub accepted, at this head, inside the window holds
+    it. The document is tenant-writable, so an instant the tick could not
+    have written -- in the future, naive, not a datetime -- holds nothing."""
+    world = MergeWorld(tmp_path)
+    _red(world)
+    mutate(world)
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+
+
 def test_a_forged_round_budget_is_capped_at_the_apis_maximum(tmp_path):
     from swarm_api import validation
 
@@ -310,6 +401,8 @@ def test_the_tick_and_the_worker_read_the_same_keys_and_codes():
     assert merge.MERGE_FIX_METADATA_KEY == mergewake.MERGE_FIX_METADATA_KEY == "merge_fix"
     assert merge.BRANCH_UPDATE_PENDING == mergewake.BRANCH_UPDATE_PENDING
     assert merge.MERGE_FIX_ROUNDS_MAX == mergewake.MERGE_FIX_ROUNDS_MAX
+    assert merge.RERUNS_KEY == mergewake.RERUNS_KEY == "reruns"
+    assert merge.RERUN_SETTLE_SECONDS == mergewake.RERUN_SETTLE_SECONDS
 
 
 # ---------------------------------------------------------------------------
