@@ -795,6 +795,11 @@ def _apt_layer() -> Instruction:
     return runs[0]
 
 
+def _flat(ins: Instruction) -> str:
+    """A RUN body on one line, every run of whitespace one space."""
+    return " ".join(_shell_text(ins).split())
+
+
 def test_the_smoke_step_checks_the_postgres_binaries_at_the_pinned_major() -> None:
     always, _ = _smoke_tool_lists()
     # MUTATION: drop postgres or initdb from the smoke step's tools= list -- this fails.
@@ -826,24 +831,26 @@ def test_the_pgdg_key_is_pinned_by_its_full_fingerprint() -> None:
     args = _arg_defaults(_runtime_stage())
     # MUTATION: change one hex digit of ARG PGDG_KEY_FINGERPRINT -- this fails (and so would the build).
     assert _arg_value(args["PGDG_KEY_FINGERPRINT"]) == PGDG_KEY_FINGERPRINT
-    text = _shell_text(_apt_layer())
+    text = _flat(_apt_layer())
     steps = [
         'curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/pgdg-key.asc '
         '"https://www.postgresql.org/media/keys/ACCC4CF8.asc"',
-        "gpg --batch --quiet --import /tmp/pgdg-key.asc",
-        f'gpg --batch --export "${{PGDG_KEY_FINGERPRINT}}" > {PGDG_KEYRING}',
-        f"gpg --batch --with-colons --show-keys {PGDG_KEYRING}",
+        'test "$(gpg --batch --with-colons --show-keys /tmp/pgdg-key.asc',
         '= "${PGDG_KEY_FINGERPRINT}"',
+        f"gpg --batch --dearmor --output {PGDG_KEYRING} /tmp/pgdg-key.asc",
         f"[signed-by={PGDG_KEYRING}]",
         'apt-get install --no-install-recommends -y "postgresql-${POSTGRES_MAJOR}"',
     ]
     at = [text.find(step) for step in steps]
-    # MUTATION: write the downloaded .asc straight to the keyring (no export by fingerprint) -- this fails.
+    # MUTATION: drop the fingerprint `test` -- whatever the URL serves becomes the keyring.
     assert -1 not in at, [s for s, a in zip(steps, at) if a == -1]
-    # MUTATION: move the fingerprint `test` after the sources entry -- apt would trust it first.
-    assert at == sorted(at), "the key must be exported and checked by fingerprint before apt uses it"
-    # Exactly one primary key, and it is the pinned one: the check reads the
-    # fpr line that follows each `pub`, so a second key in the file fails it.
+    # MUTATION: dearmor into the keyring before the fingerprint `test` -- this fails.
+    assert at == sorted(at), "the key must be checked by fingerprint before it becomes apt's keyring"
+    # Exactly one primary key, and it is the pinned one: the check prints the
+    # fpr line that follows each `pub`, so a second key in the file (or none)
+    # fails it. `--show-keys`, never `--import`: an import starts gpg-agent,
+    # which `gpg` installed without its recommends does not carry.
+    assert "gpg --batch --quiet --import" not in text and "--recv-keys" not in text, text
     assert re.search(r"""awk -F: '\$1 == "fpr" && prev == "pub" \{ print \$10 \} \{ prev = \$1 \}'""", text), text
     # MUTATION: add [trusted=yes] or --allow-unauthenticated -- the signature is no longer checked.
     for unsafe in ("apt-key", "trusted=yes", "--allow-unauthenticated", "--allow-insecure"):
@@ -854,11 +861,11 @@ def test_the_postgres_server_is_installed_in_the_apt_upgrade_layer() -> None:
     stage = _runtime_stage()
     server = [
         i for i in stage
-        if i.keyword == "RUN" and re.search(r"postgresql-(\$\{POSTGRES_MAJOR\}|\d+)\b", _shell_text(i))
+        if i.keyword == "RUN" and re.search(r"postgresql-(\$\{POSTGRES_MAJOR\}|\d+\b)", _shell_text(i))
     ]
     # MUTATION: install the server in a RUN of its own -- APT_REFRESH no longer rebuilds it.
-    assert server == [_apt_layer()], [i.body[:80] for i in server]
-    text = _shell_text(_apt_layer())
+    assert [i.index for i in server] == [_apt_layer().index], [i.body[:80] for i in server]
+    text = _flat(_apt_layer())
     assert text.startswith('echo "apt layer of ${APT_REFRESH}"'), text[:80]
     upgrade = text.find("apt-get upgrade")
     install = text.find('apt-get install --no-install-recommends -y "postgresql-${POSTGRES_MAJOR}"')
@@ -879,7 +886,7 @@ def test_the_postgres_server_is_installed_in_the_apt_upgrade_layer() -> None:
 
 
 def test_the_build_creates_no_cluster_and_starts_no_server() -> None:
-    text = _shell_text(_apt_layer())
+    text = _flat(_apt_layer())
     common = text.find("apt-get install --no-install-recommends -y postgresql-common")
     no_cluster = text.find(
         "sed -ri 's/^#?create_main_cluster = .*/create_main_cluster = false/' "
