@@ -207,11 +207,18 @@ def test_a_parked_keyless_task_is_promoted_once_an_account_is_lent(
     assert db.docs["tasks/task_waiting"]["state"] == "DISPATCHED"
 
 
-def test_the_pool_is_read_once_per_drain_and_only_for_a_keyless_tenant(
+def test_the_pool_is_read_at_most_once_per_drain(
     db, make_scheduler, dispatcher, monkeypatch
 ):
-    """The common case -- a tenant with its own key -- costs no extra read, and
-    a drain full of keyless work costs one."""
+    """One read per drain, however many tasks ask.
+
+    A tenant with its own key used to cost no read at all. Since #2222
+    (POOL-WAKE-GATE, "Ask the pool before a container") admission asks the
+    pool for a keyed tenant's task too, because the worker asks the broker
+    whenever an account serves the tenant, key or no key
+    (`lifecycle._lease_account`). So the property is the drain's, not the
+    tenant's: a drain of keyed work reads once, and a drain full of keyless
+    work also reads once."""
     world(db)
     seed_tenant(db, "keyed", credentials=("anthropic",))
     AccountStore(db).register(OWNER, "team", lend_to=[TENANT])
@@ -220,14 +227,15 @@ def test_the_pool_is_read_once_per_drain_and_only_for_a_keyless_tenant(
     reads = count_account_reads(db, monkeypatch)
 
     scheduler.drain()
-    assert reads == [], "a tenant with its own key made admission read the pool"
+    # MUTATION: reading per task instead of per drain turns these red.
+    assert len(reads) == 1, reads
 
     task(db, "task_a")
     task(db, "task_b")
     task(db, "task_c", state="PARKED", park_reason="CREDENTIAL_MISSING")
     scheduler.drain()
 
-    assert len(reads) == 1, reads
+    assert len(reads) == 2, reads
     for task_id in ("task_a", "task_b", "task_c"):
         assert db.docs[f"tasks/{task_id}"]["state"] == "DISPATCHED", task_id
 

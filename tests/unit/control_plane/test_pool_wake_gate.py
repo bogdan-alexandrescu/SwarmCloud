@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from quota_broker.accounts import Account, WindowReading, account_id_for
+from quota_broker.accounts import Account, WindowReading
 from quota_broker.accountstore import AccountStore
 from quota_broker.main import acquire_hold
 from scheduler.credentials import AccountPool
