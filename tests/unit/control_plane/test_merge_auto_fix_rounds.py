@@ -54,6 +54,7 @@ from .test_merge_wake import (  # noqa: F401 -- fixtures, used by name
     conflicting_merge,
     fixable_merge,
     github,
+    pr_side_claim,
     tenant_tokens,
     wake_client,
 )
@@ -204,25 +205,162 @@ def test_a_red_status_that_is_no_actions_job_is_not_rerun(db, wake_client, githu
     assert body["report"]["fixing"] == 1, body
 
 
-@pytest.mark.parametrize("rounds", [0, None])
-def test_no_rounds_asked_keeps_todays_behaviour_no_rerun_and_a_red_wake(
-    db, wake_client, github, rounds,
-):
-    doc = fixable_merge(db, github)
+# A merge granted no rounds -- every issue run's merge, a lane's
+# `fix_rounds: 0` -- still gets the one free re-run per head (#2257: PR
+# #2229's one flaky shard on a hidden attempt refused an issue run's merge
+# `checks_failed` at once). A re-run pushes nothing, so neither the round
+# budget nor the branch the pull request is on bounds it.
+
+def _no_rounds(doc: dict, rounds: int | None) -> dict:
     if rounds is None:
         doc["metadata"].pop("merge_fix_rounds")
     else:
         doc["metadata"]["merge_fix_rounds"] = rounds
+    return doc
+
+
+@pytest.mark.parametrize("rounds", [0, None])
+def test_no_rounds_asked_still_reruns_the_failing_actions_job_once_per_head(
+    db, wake_client, github, rounds,
+):
+    _no_rounds(fixable_merge(db, github), rounds)
+    check_id = _red(github)
+    github.rerun_answer = 201
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["rerun"] == 1, body
+    assert body["report"]["woken"] == 0 and body["report"]["fixing"] == 0
+    assert github.reruns == [check_id]
+    assert ("POST", f"/repos/example-org/widgets/actions/jobs/{check_id}/rerun") \
+        in github.writes()
+    (rerun,) = _fix_record(db)[mergewake.RERUNS_KEY]
+    assert rerun["head"] == HEAD and rerun["jobs"] == [check_id]
+    assert rerun["requested_at"] == NOW and "error" not in rerun
+    assert "rounds" not in _fix_record(db)
+    assert _fix_workflows(db) == []
+    assert mergewake.WAKE_MARKER not in _wait(db)
+
+
+@pytest.mark.parametrize("rounds", [0, None])
+@pytest.mark.parametrize("again", ["new-check-run", "settle-window-past"])
+def test_no_rounds_asked_red_again_after_the_rerun_wakes_red(
+    db, wake_client, github, clock, rounds, again,
+):
+    _no_rounds(fixable_merge(db, github), rounds)
     _red(github)
+    github.rerun_answer = 201
+    _tick(wake_client)
+
+    if again == "new-check-run":
+        _red(github)  # the re-run's own check run: a new id, red again
+        _later(clock, issueci.CI_READ_SECONDS)
+    else:
+        _later(clock, mergewake.RERUN_SETTLE_SECONDS)
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1 and body["report"]["fixing"] == 0, body
+    assert _wait(db)["wake_reason"] == "red"
+    assert len(github.reruns) == 1, "a head is re-run once, never per tick"
+    assert _fix_workflows(db) == [] and "rounds" not in _fix_record(db)
+
+
+def test_no_rounds_asked_refused_rerun_wakes_red_in_the_same_tick(db, wake_client, github):
+    _no_rounds(fixable_merge(db, github), 0)
+    _red(github)  # rerun_answer stays 403: no `actions: write`
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1 and body["report"]["fixing"] == 0, body
+    assert _wait(db)["wake_reason"] == "red"
+    (rerun,) = _fix_record(db)[mergewake.RERUNS_KEY]
+    assert rerun["head"] == HEAD and "error" in rerun
+    assert github.reruns == [] and _fix_workflows(db) == []
+
+
+@pytest.mark.parametrize("app_slug", ["circleci-checks", None], ids=["other-app", "status"])
+def test_no_rounds_asked_red_that_no_rerun_can_fix_wakes_red_at_once(
+    db, wake_client, github, app_slug,
+):
+    _no_rounds(fixable_merge(db, github), 0)
+    github.check_runs[HEAD] = []
+    if app_slug is None:
+        # A red commit status beside a red Actions job: re-running the job
+        # could not turn the status green.
+        github.require(CHECK, "ci / lint", app_id=None)
+        github.statuses[HEAD] = [{"context": "ci / lint", "state": "failure"}]
+        github.check(HEAD, CHECK, "failure")
+    else:
+        github.check(HEAD, CHECK, "failure", app_slug=app_slug)
     github.rerun_answer = 201
 
     body = _tick(wake_client).json()
 
     assert body["report"]["woken"] == 1, body
     assert _wait(db)["wake_reason"] == "red"
-    assert github.reruns == [] and _fix_workflows(db) == []
-    assert ("POST", f"/repos/example-org/widgets/actions/jobs/{github._next}/rerun") \
-        not in github.writes()
+    assert github.reruns == [] and mergewake.RERUNS_KEY not in _fix_record(db)
+
+
+@pytest.mark.parametrize("rounds", [0, 2])
+def test_a_merge_not_on_the_roots_branch_still_gets_the_rerun(
+    db, wake_client, github, clock, rounds,
+):
+    """merge_pr's shape: no task whose branch a round would push to. A round
+    is impossible; the re-run, which pushes nothing, is not."""
+    doc = fixable_merge(db, github, rounds=rounds)
+    doc["metadata"]["dispatch"].pop("merge_target")
+    check_id = _red(github)
+    github.rerun_answer = 201
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["rerun"] == 1 and body["report"]["woken"] == 0, body
+    assert github.reruns == [check_id]
+
+    _red(github)
+    _later(clock, issueci.CI_READ_SECONDS)
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1, body
+    assert _wait(db)["wake_reason"] == "red"
+    assert _fix_workflows(db) == [] and len(github.reruns) == 1
+
+
+def test_rounds_spent_new_head_gets_one_rerun_before_the_wake(db, wake_client, github, clock):
+    fixable_merge(db, github, rounds=1)
+    db.docs["tasks/task_merge"]["metadata"][mergewake.MERGE_FIX_METADATA_KEY] = {
+        "rounds": [{"round": 1, "head": MOVED, "task_id": "task_" + "2" * 20}]}
+    check_id = _red(github)
+    github.rerun_answer = 201
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["rerun"] == 1 and body["report"]["woken"] == 0, body
+    assert github.reruns == [check_id]
+    (rerun,) = _fix_record(db)[mergewake.RERUNS_KEY]
+    assert rerun["head"] == HEAD
+
+    _red(github)
+    _later(clock, issueci.CI_READ_SECONDS)
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1, body
+    assert _wait(db)["wake_reason"] == "red"
+    assert len(_fix_record(db)["rounds"]) == 1 and _fix_workflows(db) == []
+    assert len(github.reruns) == 1
+
+
+def test_no_rounds_asked_waits_on_a_live_pr_side_fix_without_a_rerun(db, wake_client, github):
+    _no_rounds(fixable_merge(db, github), 0)
+    _red(github)
+    github.rerun_answer = 201
+    pr_side_claim(db)
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["waiting"] == 1 and body["report"]["woken"] == 0, body
+    assert github.reruns == [] and _fix_record(db) == {}
+    assert mergewake.WAKE_MARKER not in _wait(db)
 
 
 # --------------------------------------------------------------------------
