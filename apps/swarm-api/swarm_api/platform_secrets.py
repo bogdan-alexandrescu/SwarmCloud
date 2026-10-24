@@ -9,10 +9,11 @@ and `secretmanager.versions.list`. Lane SSC-PLATFORM-STATUS, part of #2158.
 WHAT IT NEVER DOES, each held by tests/unit/control_plane/test_platform_secrets.py:
 
 * **It never reads a value.** The reader calls `get_secret` and
-  `list_secret_versions` and nothing else; `access_secret_version` appears in
-  no code path. A row carries no value, no length and no last characters --
-  only whether an enabled version exists, how many, and the newest one's
-  `create_time`. The role could not read a value if this code asked.
+  `list_secret_versions` and nothing else: it never accesses a version, so
+  this module is not in test_no_route_serves_credentials.py's
+  SECRET_PAYLOAD_READERS. A row carries no value, no length and no last
+  characters -- only whether an enabled version exists, how many, and the
+  newest one's `create_time`. The role could not read a value if this code asked.
 * **It never names a secret outside `swarm-`.** saga-agents-staging is shared
   (CLAUDE.md rule 2): the other team's secrets are agents-* and promptlab-*.
   Every name is checked by `_full_name` before a call is built, a broker
