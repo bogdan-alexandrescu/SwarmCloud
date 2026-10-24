@@ -274,6 +274,40 @@ arrives. A tenant with no key is still admitted if a pool account it owns or is
 lent can run the profile. That is `claude-code` only, never `browser`: see
 [quota management, section 4](quota-management.md).
 
+### Platform secrets: status in Admin, values only from this terminal
+
+`GET /v1/admin/platform-secrets` (Admin › Platform secrets; lane
+SSC-PLATFORM-STATUS, part of #2158; [design §5](design/secrets-scopes.md#5-admin--platform-secrets))
+says, for every secret in `platform_secrets.PLATFORM_SECRETS` and for both
+halves of every quota-broker account (`swarm-account-<t>--<label>` and its
+`-refresh`): `set` (an enabled version exists), `not_set`, `not_declared`, or
+`unreadable` with its reason; how many versions are enabled (two means a
+rotation is still in its grace, so disable the old one); the newest one's
+`create_time`; and what writes it. It never serves a value, a length or
+trailing characters, and no route writes a platform secret: a value is set
+only by `scripts/create-secrets.sh --stdin` here, or by the broker for an
+account. Every caller who is not a full platform admin is 403, a pool admin
+included.
+
+**Why metadata and a role of its own.** The read runs under
+`swarmSecretStatusViewer`, which holds exactly `secretmanager.secrets.get` and
+`secretmanager.versions.list` (`terraform/bootstrap/platform_secret_status.tf`).
+Without `versions.access` it cannot read a value even if the code asked.
+Without `secrets.list` it cannot enumerate the shared project: the names come
+from the catalogue and from the broker's `accounts` documents. A recorded
+account secret outside `swarm-account-` is counted in `accounts_refused` and
+never sent. The grant's condition admits `projects/<NUMBER>/secrets/swarm-`
+only. IAM names a secret by project number, and a condition spelled with the
+project ID matches nothing, so the number comes from `data.google_project`.
+
+**Until the owner applies it, every row reads `unreadable: permission_denied`.**
+It is a bootstrap grant, so the release does not apply it; `make bootstrap`
+does. Off by default (`enable_platform_secret_status`). To turn it on, set it
+in `terraform/bootstrap/terraform.tfvars`, lint the
+`platform_secret_status_grants` output with `iamPolicies:lintPolicy`, then
+apply a plan of 2 adds / 0 changes / 0 destroys: the role and its conditioned
+member for swarm-api.
+
 ---
 
 ## 6. Investigating one agent
