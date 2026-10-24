@@ -80,7 +80,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, status
-from pydantic import Field
+from pydantic import Field, StrictInt
 
 from .. import roles
 from ..accountholds import (
@@ -515,6 +515,63 @@ def set_model_classes(
     tenant_id = _writer_tenant_id(ctx, auth)
     _owned(pool, tenant_id, account_id)
     return _own_answer(pool.set_model_classes(account_id, model_classes=list(body.model_classes)), tenant_id)
+
+
+#: The most agents one account may be set to hold at once (#2222). The
+#: broker's `quota_broker.accounts.MAX_AGENTS_LIMIT`, restated because this
+#: service does not import the broker; `test_account_max_agents_api.py` holds
+#: the two equal. Checked HERE as well as there so a bad number is refused
+#: before any broker call, in the broker's own words.
+MAX_AGENTS_LIMIT = 50
+
+
+class AccountMaxAgents(StrictModel):
+    """How many agents an account may hold at once (#2222), 1 to MAX_AGENTS_LIMIT.
+
+    Declared here, beside the one route that takes it, like
+    `AccountModelClasses`. Required, so an empty body is not read as the
+    default. `StrictInt`, so `true`, `"6"` and `6.5` are refused as not a
+    number rather than coerced into one; the range is `_checked_max_agents`.
+    """
+
+    max_agents: StrictInt
+
+
+def _checked_max_agents(value: int) -> int:
+    """`value`, or a 422 in the words `quota_broker.accounts.validate_max_agents`
+    uses. Zero is refused rather than read as "take no agents": pausing the
+    account says that, and one switch for it is enough."""
+    if not 1 <= value <= MAX_AGENTS_LIMIT:
+        raise ValidationFailed(
+            f"an account's max_agents is 1 to {MAX_AGENTS_LIMIT}, and this is {value}; "
+            "pause the account to stop it taking new agents"
+        )
+    return value
+
+
+@router.put("/{account_id}/max-agents")
+def set_max_agents(
+    account_id: str,
+    body: AccountMaxAgents,
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """How many agents this account may hold at once. Owner only, exactly as
+    lending, the served classes and the Name are (#2222).
+
+    The caller rule is the broker's: the account's owner tenant, a `member`
+    there. A platform admin acting in that workspace passes the same way and
+    is recorded by `deps.current_auth`'s platform-admin audit before this
+    body runs, as on every other account write. The number is checked before
+    the broker is asked anything, so a bad one reads no account and writes
+    none. Lowering it moves no agent already on the account; the broker
+    applies it at the next assignment.
+    """
+    tenant_id = _writer_tenant_id(ctx, auth)
+    max_agents = _checked_max_agents(body.max_agents)
+    _owned(pool, tenant_id, account_id)
+    return _own_answer(pool.set_max_agents(account_id, max_agents=max_agents), tenant_id)
 
 
 class AccountName(StrictModel):

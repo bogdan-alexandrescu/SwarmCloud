@@ -756,6 +756,84 @@ def format_account_state(account: dict[str, Any], style: Style = PLAIN) -> Cell:
     return Cell(text, _ACCOUNT_STATE_TONE.get(raw, "dim"))
 
 
+def format_takes_agent(account: dict[str, Any], style: Style = PLAIN) -> Cell:
+    """`yes`, `no`, or a dash when the broker did not say."""
+    takes = account.get("can_take_new_agent")
+    if takes is True:
+        return Cell("yes")
+    if takes is False:
+        return Cell("no", "bad")
+    return Cell(style.dash, "dim")
+
+
+def format_agents(account: dict[str, Any], style: Style = PLAIN) -> Cell:
+    """`N of M`: the agents it holds of the most it may (#2222)."""
+    held = _int_or_none(account.get("assigned"))
+    most = _int_or_none(account.get("max_agents"))
+    if held is None:
+        return Cell(style.dash, "dim")
+    if most is None:
+        return Cell(str(held))
+    return Cell(f"{held} of {most}", "warn" if held >= most else None)
+
+
+#: A window's name as a person says it, for the words under the table.
+_WINDOW_WORDS = {
+    "five_hour": "5-hour", "session": "5-hour", "5h": "5-hour",
+    "seven_day": "7-day", "weekly": "7-day", "weekly_all": "7-day", "7d": "7-day",
+}
+
+
+def _percent(value: Any) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return f"{round(value * 100)}%"
+
+
+def block_words(entry: dict[str, Any], style: Style, now: datetime) -> str:
+    """One `blocked_by` entry as a person reads it.
+
+    Window under its floor, full, first reading pending, duplicate withheld,
+    possible duplicate -- the five the broker serves -- and the broker's own
+    `reason` for anything else, so a new kind reads as itself rather than
+    being dropped.
+    """
+    if "window" in entry:
+        name = str(entry.get("window") or "")
+        words = f"{_WINDOW_WORDS.get(name, name.replace('_', ' '))} window under its floor"
+        used = entry.get("used")
+        left = _percent(1 - used) if isinstance(used, (int, float)) and not isinstance(used, bool) else None
+        floor = _percent(entry.get("floor"))
+        if left and floor:
+            words += f" ({left} left, floor {floor})"
+        if entry.get("resets_at"):
+            words += f", clears {format_until(entry.get('resets_at'), now, style)}"
+        if entry.get("aged_reading") is True:
+            words += ", on an aged reading counted at half"
+        return words
+    if "cap" in entry:
+        return (
+            f"full, {entry.get('cap')} of {entry.get('max_agents')} agents; "
+            "a slot frees when one of them finishes"
+        )
+    if "first_reading" in entry:
+        return (
+            f"first reading pending: it holds {entry.get('assigned')} and takes "
+            f"no more than {entry.get('max_before_reading')} until it is measured"
+        )
+    if "duplicate_of" in entry:
+        other = entry.get("duplicate_of")
+        reason = details.shown(entry.get("reason")) or (
+            f"the same subscription as {other}" if other else ANOTHER_WORKSPACE
+        )
+        return f"duplicate withheld: {reason}"
+    if "possible_duplicate" in entry:
+        reason = details.shown(entry.get("reason")) or "identical readings on two polls"
+        return f"possible duplicate, still given agents: {reason}"
+    reason = details.shown(entry.get("reason"))
+    return reason or "blocked for a reason this sc does not name"
+
+
 # --------------------------------------------------------------------------
 # Accounts
 # --------------------------------------------------------------------------
@@ -778,11 +856,107 @@ _ACCOUNT_FIELDS = (
     "assigned",
     "observed_at",
     "stale",
+    # Whether the pool would hand it a new agent, and what stops it (#2222,
+    # POOL-ACCOUNT-CAP and POOL-DUP-DETECT). Each nested shape has its own
+    # allow-list below, and every name of another workspace's account is
+    # taken out first (`own_view`).
+    "max_agents",
+    "can_take_new_agent",
+    "blocked_by",
+    "next_eligible_at",
+    "organisation",
+    "duplicate_of",
+    "duplicate_reason",
+    "possible_duplicate",
 )
 _WINDOW_FIELDS = ("utilization", "resets_at", "reset")
+#: What one `blocked_by` entry may carry: a window under its floor
+#: (`window, used, floor, resets_at, aged_reading`), a full account (`cap,
+#: max_agents`), a first reading pending (`first_reading, assigned,
+#: max_before_reading`), a duplicate withheld (`duplicate_of, reason`) or a
+#: possible duplicate (`possible_duplicate, advisory, reason`).
+_BLOCK_FIELDS = (
+    "window", "used", "floor", "resets_at", "aged_reading",
+    "cap", "max_agents",
+    "first_reading", "assigned", "max_before_reading",
+    "duplicate_of", "possible_duplicate", "advisory", "reason",
+)
+#: The organisation an account's credential runs on: its name and plan as the
+#: provider gave them. The broker never serves the organisation's id.
+_ORGANISATION_FIELDS = ("name", "plan")
+_POSSIBLE_FIELDS = ("of", "reason")
+
+#: What a reader is told of the other side of a duplicate pair another
+#: workspace owns (#2222; BGD, 2026-10-24 17:26Z: "only within the same
+#: tenant"). The broker's and swarm-api's wording, so the three never differ.
+ANOTHER_WORKSPACE = "this subscription is already registered in another workspace"
+ANOTHER_WORKSPACE_READINGS = (
+    "identical readings on two polls with an account in another workspace"
+)
 
 
-def public_account(account: dict[str, Any]) -> dict[str, Any]:
+def _foreign(other: Any, tenant: str | None) -> bool:
+    """Whether the account id `other` may NOT be named to a reader in `tenant`.
+
+    An id is `<owner_tenant>:<label>`. A listing that did not say whose it is
+    names nobody: with no tenant to compare, every id counts as foreign.
+    """
+    return isinstance(other, str) and (not tenant or not other.startswith(f"{tenant}:"))
+
+
+def own_view(account: dict[str, Any], tenant: str | None) -> dict[str, Any]:
+    """`account` with every name of ANOTHER workspace's account taken out of
+    its duplicate marks (#2222, POOL-DUP-FIX's rule).
+
+    The broker and swarm-api already answer in the caller's view; this is the
+    third line, so an older API cannot make `sc` print or dump another
+    workspace's label. A mark whose other side is withheld also has its words
+    replaced, because a reason is free text and could carry the name the field
+    no longer does.
+    """
+    out = dict(account)
+    if "duplicate_of" in out and (out["duplicate_of"] is None or _foreign(out["duplicate_of"], tenant)):
+        if out["duplicate_of"] is not None or out.get("duplicate_reason"):
+            out["duplicate_reason"] = ANOTHER_WORKSPACE
+        out["duplicate_of"] = None
+    possible = out.get("possible_duplicate")
+    if isinstance(possible, dict):
+        possible = {k: possible[k] for k in _POSSIBLE_FIELDS if k in possible}
+        if possible.get("of") is None or _foreign(possible.get("of"), tenant):
+            possible = {"of": None, "reason": ANOTHER_WORKSPACE_READINGS}
+        out["possible_duplicate"] = possible
+    elif "possible_duplicate" in out:
+        out["possible_duplicate"] = None
+    blocked = out.get("blocked_by")
+    if isinstance(blocked, list):
+        entries: list[dict[str, Any]] = []
+        for entry in blocked:
+            if not isinstance(entry, dict):
+                continue
+            if "duplicate_of" in entry and (
+                entry["duplicate_of"] is None or _foreign(entry["duplicate_of"], tenant)
+            ):
+                entry = {"duplicate_of": None, "reason": ANOTHER_WORKSPACE}
+            elif "possible_duplicate" in entry and (
+                entry["possible_duplicate"] is None
+                or _foreign(entry["possible_duplicate"], tenant)
+            ):
+                entry = {"possible_duplicate": None, "advisory": True,
+                         "reason": ANOTHER_WORKSPACE_READINGS}
+            entries.append({k: entry[k] for k in _BLOCK_FIELDS if k in entry})
+        out["blocked_by"] = entries
+    elif "blocked_by" in out:
+        out["blocked_by"] = []
+    organisation = out.get("organisation")
+    if "organisation" in out:
+        out["organisation"] = (
+            {k: organisation[k] for k in _ORGANISATION_FIELDS if k in organisation}
+            if isinstance(organisation, dict) else None
+        )
+    return out
+
+
+def public_account(account: dict[str, Any], tenant: str | None = None) -> dict[str, Any]:
     """One account, reduced to the fields this surface is allowed to show.
 
     The table is defended by construction -- it prints named columns and can
@@ -791,6 +965,7 @@ def public_account(account: dict[str, Any]) -> dict[str, Any]:
     and none in a file. `sc` never sees key material today; this is what keeps
     that true when the broker's shape widens.
     """
+    account = own_view(account, tenant)
     out = {key: account[key] for key in _ACCOUNT_FIELDS if key in account}
     windows = account.get("windows")
     if isinstance(windows, dict):
@@ -839,12 +1014,24 @@ def render_accounts(
         # utilisation; the heads now say so, as the Accounts table's do.
         Column("short", f"{window_heading(short_key) if short_key else '5H'} USED", drop=1),
         Column("long", f"{window_heading(long_key) if long_key else '7D'} USED", drop=2),
-        Column("clears", "CLEARS", align="right", drop=4),
-        Column("state", "STATE", flex=True, drop=3),
+        Column("clears", "CLEARS", align="right", drop=6),
+        Column("state", "STATE", flex=True, drop=5),
     ]
+    # WHETHER IT CAN TAKE AN AGENT, AND HOW MANY IT HOLDS OF HOW MANY (#2222).
+    # Only when the broker says: an older one serves neither field, and a
+    # column of dashes beside every account would read as "no" -- the claim
+    # the issue was opened about, "7 available" while the pool parked all.
+    capped = any("max_agents" in a or "can_take_new_agent" in a for a in accounts)
+    if capped:
+        columns[3:3] = [
+            Column("new", "NEW AGENT", drop=3),
+            Column("agents", "AGENTS", align="right", drop=4),
+        ]
+    tenant = listing_tenant(accounts)
 
     rows: list[dict[str, Any]] = []
     for account in accounts:
+        account = own_view(account, tenant)
         account_id = str(account.get("account_id") or account.get("label") or "?")
         # THE NAME WITH THE ID BESIDE IT (#1913): an owner's Name for the
         # account, and the id this column always printed, so the Name never
@@ -866,10 +1053,26 @@ def render_accounts(
                     "dim" if binding is None else None,
                 ),
                 "state": format_account_state(account, style),
+                "new": format_takes_agent(account, style),
+                "agents": format_agents(account, style),
             }
         )
 
     lines = render_table(columns, rows, style)
+
+    # WHAT BLOCKS EACH ONE, IN WORDS: the table says yes or no, and "no" with
+    # nothing beside it is the page the issue was opened about.
+    for account in accounts:
+        account = own_view(account, tenant)
+        said = [block_words(entry, style, now) for entry in account.get("blocked_by") or []]
+        if not said:
+            continue
+        refused = account.get("can_take_new_agent") is False
+        head = (
+            f"{account.get('account_id')} cannot take a new agent: "
+            if refused else f"{account.get('account_id')}: "
+        )
+        lines += detail(head + "; ".join(said), style, tone="warn" if refused else "dim")
 
     for account in accounts:
         if account.get("lend_to"):
