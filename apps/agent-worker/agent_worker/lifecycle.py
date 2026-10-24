@@ -866,6 +866,15 @@ class Worker:
         # run the schedule without waiting it out.
         self.startup_sleep: Callable[[float], Any] = time.sleep
         self.startup_clock: Callable[[], float] = time.monotonic
+        # What a beat and `_heartbeat_meanwhile`'s thread read the time from,
+        # and what that thread waits with (`wait(stop, seconds)`, True once
+        # stopped). Replaceable so a test runs the thread on a virtual clock:
+        # on real sleeps a busy runner scheduled one beat 0.01 s past its
+        # band with nothing wrong in the thread (#2233). A replacement holds
+        # for those two only; the loop and the lease's outage check read
+        # `time.monotonic`, so a test that swaps it runs no loop.
+        self.heartbeat_clock: Callable[[], float] = time.monotonic
+        self.heartbeat_wait: Callable[[threading.Event, float], bool] = threading.Event.wait
         # The egress probe (#721 (a), `agent_worker.egress`): started at the
         # top of `run`, waited for by the clone only, stopped when the startup
         # window closes. The connect, cap and interval are replaceable so a
@@ -10105,7 +10114,7 @@ class Worker:
         # Read BEFORE the beat: the lease's new expiry is computed from the
         # time the beat started, and a beat that retried for most of its
         # budget must not be credited with that time again.
-        started = time.monotonic()
+        started = self.heartbeat_clock()
         if self.control.heartbeat() is not False:
             # Landed: the lease is live for one more extension from when the
             # beat started (#70). A refused beat (False) extends nothing, and
@@ -11234,13 +11243,14 @@ class Worker:
         from .config import HEARTBEAT_MEANWHILE_BOUND_LEASE_TIMEOUTS
 
         stop = threading.Event()
+        clock, wait = self.heartbeat_clock, self.heartbeat_wait
         interval = self.cfg.heartbeat_interval_seconds
         bound = self.cfg.heartbeat_meanwhile_max_seconds
         ceiling_seconds = max(bound, self.cfg.heartbeat_meanwhile_ceiling_seconds)
         # One lease timeout: the longest the block may go without progress
         # past the bound before it is treated as wedged.
         stall = bound / HEARTBEAT_MEANWHILE_BOUND_LEASE_TIMEOUTS
-        opened = time.monotonic()
+        opened = clock()
         deadline = opened + bound
         ceiling = opened + ceiling_seconds
         # What the extension saw, for its one log event: the reading at the
@@ -11298,17 +11308,17 @@ class Worker:
 
         def beat() -> None:
             while True:
-                now = time.monotonic()
+                now = clock()
                 until = limit(now)
                 if until is None:
                     return
-                if stop.wait(max(0.0, min(due() - now, until - now))):
+                if wait(stop, max(0.0, min(due() - now, until - now))):
                     return
-                if time.monotonic() >= until:
+                if clock() >= until:
                     continue  # the top of the loop re-reads and decides
-                if time.monotonic() < due():
+                if clock() < due():
                     continue  # another beat landed meanwhile; wait for the next
-                asked[:] = [time.monotonic()]
+                asked[:] = [clock()]
                 try:
                     signals = self.control.poll()
                     if signals.is_fenced(self.cfg.generation):
