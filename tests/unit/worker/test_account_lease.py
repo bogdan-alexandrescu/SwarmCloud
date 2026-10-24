@@ -1305,6 +1305,7 @@ def test_the_worker_and_the_broker_spell_the_reasons_the_same_way():
         al.NO_ACCOUNT_AVAILABLE,
         al.POOL_PAUSED,
         al.NO_RECENT_READING,
+        al.ACCOUNTS_FULL,
     }
 
 
