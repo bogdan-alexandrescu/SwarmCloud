@@ -87,6 +87,7 @@ from .routes import (
     workspace_secrets,
     workspaces,
 )
+from .routes import repository_secrets
 from .qa_identity import QaIdentityOrigin
 from .validation import FORBIDDEN_CALLER_FIELDS
 
@@ -404,6 +405,7 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # write-only values, each write audited in its own transaction. The
     # release is SEC-RELEASE's, `attempts_secrets` below.
     app.include_router(workspace_secrets.router)
+    app.include_router(repository_secrets.router)  # SSC-REPO-SCOPE, secrets-scopes.md §6.2
     # Each workspace's Jev judgment backend -- Internal Jev (the default),
     # Internal Laya or TypeSafe -- its owner's or an admin's to choose,
     # audited (swarm_api.judgment, lane JUDGE-SELECT).

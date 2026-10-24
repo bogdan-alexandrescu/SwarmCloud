@@ -408,6 +408,26 @@ SWITCHES: dict[str, Switch] = {
         "registration carries `platform: true` in every environment that has a "
         "failure-review schedule",
     ),
+    # Repository secrets (docs/design/secrets-scopes.md §2.2, §2.5, §3.6;
+    # lane SSC-REPO-SCOPE, part of #2158). Neither switch lets a write
+    # through that should be refused. github_admin_required off: the caller
+    # is still refused, with the established `forbidden` code
+    # (`github_repo_admin.require_repo_admin`). grant_key_required off: the
+    # grant is written unattested and the release drops it, because a
+    # repository grant is released only when attested.
+    "github_admin_required": Switch(
+        code="github_admin_required",
+        why="a member who is not the workspace's admin, setting a repository's secret, is "
+        "refused 403 github_admin_required with detail.reason when GitHub, asked with their "
+        "own token, does not call them admin of it; off, the same refusal is served as "
+        "`forbidden`. On once the console (SSC-UI) shows detail.reason's copy",
+    ),
+    "grant_key_required": Switch(
+        code="grant_key_required",
+        why="enabling a grant on a repository secret where the deployment has no "
+        "swarm-workspace-grant-key is refused 422 instead of writing a grant the release "
+        "will never honour. On once every environment holds the grant key",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "

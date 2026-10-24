@@ -34,7 +34,13 @@ MANAGER BEFORE STEP 5:
      owner decision Q3, each grant's attestation checked (SEC-GRANT-ATTEST:
      `grant_attest.GrantPolicy`; a forged or altered grant is dropped as a
      disabled one is, logged `grant_attestation_invalid`, and an unattested
-     one too once `grant_attestation_required` is on); then each due record's
+     one too once `grant_attestation_required` is on). A REPOSITORY secret
+     (SSC-REPO-SCOPE, docs/design/secrets-scopes.md §2.2) only when the signed
+     spec clones its repository (`attempt_repositories`) and its grant is
+     bound to that repository and attested "v2", whatever that switch says;
+     one `(slot, name)` offered by several scopes is released once, the
+     person's, then the repository's, then the workspace's (Q1), the others
+     withheld `shadowed_by_<scope>`. Then each due record's
      current version, read from
      Secret Manager under the conditioned grant SEC-IAM wrote. A read swarm-api
      may not make (the grant not yet applied) is 503 with a reason and no name.
@@ -94,6 +100,7 @@ from ..workspace_secrets import (
     RELEASES_COLLECTION,
     Due,
     attempt_consumers,
+    attempt_repositories,
     release_plan,
     release_row,
     version_to_read,
@@ -253,6 +260,7 @@ class SecretRelease:
             project_id=project_id, grants=GrantPolicy.from_settings(self.ctx.settings),
             personal=self._personal(task),
             personal_refusal=lambda: self._membership_refusal(task),
+            repositories=attempt_repositories(task),
         )
         released: list[dict[str, Any]] = []
         for due in plan.due:

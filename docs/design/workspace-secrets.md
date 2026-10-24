@@ -1072,6 +1072,74 @@ Where the build differs from the sketch, and why:
   `SECRET_LINK_INVALID` outright: these routes are new, so no switch is
   needed to keep an older behaviour.
 
+### What SSC-REPO-SCOPE built (2026-10-24, part of #2158)
+
+The repository scope of [secrets-scopes.md](secrets-scopes.md) §2, with the
+owner's answers of its §11 (Q1, Q2, Q9). It is built in this store, not
+beside it: `apps/swarm-api/swarm_api/workspace_secrets.py`,
+`grant_attest.py`, `routes/attempts_secrets.py`, the new
+`routes/repository_secrets.py` and `github_repo_admin.py`, held by
+`tests/unit/control_plane/test_workspace_secrets.py`, `test_grant_attest.py`,
+`test_secret_release.py` and `test_github_repo_admin.py`.
+
+* **A repository is a field of the record, not a consumer (Q9).** A
+  repository secret is an ordinary `-wsec-` secret of the workspace, with
+  `scope: repository`, the registration's `repo_id` and `repository`
+  (`owner/repo`, for display). Its name is unique per (workspace,
+  repository): the name index key is `<tenant>~<repo_id>~<name>`. The
+  workspace's own list (`GET /v1/workspace/secrets`) no longer shows
+  repository secrets; `GET /v1/repositories/{repo_id}/secrets` does.
+  `SECRET_CONSUMER_KINDS` and everything under `apps/common/swarm_common/`
+  are unchanged.
+* **Grant form `"v2"`.** A grant on a repository secret copies the
+  record's `repo_id` and is signed
+  `["v2", secret_id, tenant_id, consumer, slot, enabled, repo_id]`; every
+  other grant is still signed `"v1"`, and a `"v1"` attestation still
+  verifies. The release takes a repository grant only when its `"v2"`
+  attestation verifies **whatever `grant_attestation_required` says**, its
+  `repo_id` is the record's, and the attempt clones that repository. A `"v1"`
+  MAC never vouches for a binding: it does not cover `repo_id`. With no grant
+  key, enabling such a grant is `grant_key_required` (422, behind its switch;
+  off, the grant is written unattested and the release drops it).
+* **Which repositories an attempt clones** is `attempt_repositories`, from
+  the signed spec: `repository_url`'s registration id, then each
+  `additional_repositories` entry's, whose `repo_id` is recomputed from its
+  `repository` and the task's tenant. One mismatch withholds every repository
+  secret of that attempt (`repository_binding_mismatch`, logged). A
+  repository secret whose registration is gone is withheld too.
+* **One `(slot, name)` in several scopes is released once (Q1)**: the
+  person's, then the repository's (the primary repository's before an
+  additional one's), then the workspace's. Each other item is in `withheld`
+  with `shadowed_by_personal`, `shadowed_by_repository` or
+  `shadowed_by_workspace`, so the worker never receives one file twice.
+* **Who may write (Q2).** `require_manager` as before (a workspace admin, a
+  platform admin, or a personal workspace's person), **or** a member whom
+  GitHub calls admin of that repository, asked at each write with that
+  person's own GitHub user token (`github_repo_admin.check`, through
+  `AccessService.user_token`), never with the App's installation token or
+  the tenant's forge token, and never from a stored role. No connection, an
+  expired token, a 404, a refusal or a GitHub error is a 403 with
+  `detail.reason` (`github_not_connected`, `github_token_expired`,
+  `repository_not_visible`, `github_not_admin`, `github_unavailable`); its
+  code is `github_admin_required` with that switch on and `forbidden` while
+  it is off. Every audit row names the rule that let the writer through
+  (`detail.authority`: `workspace_admin` or `github_repo_admin`).
+* **What it refuses.** Another workspace's `repo_id` is 404 on every route,
+  and so is a registration whose `owner/repo` no longer derives its id. An
+  MCP server is never granted a repository secret (422): `mcp:attach` matches
+  no repository, so such a grant would reach every repository's attempts.
+* **A removed registration.** The release withholds its secrets at once.
+  `POST /v1/repositories/{repo_id}/secrets:disable-grants` (a manager) turns
+  every grant on them off, re-signed off, so re-registering the same
+  repository revives nothing. `DELETE /v1/repositories/{repo_id}` does not
+  call it yet: that route is outside this lane, and the question is in its
+  pull request.
+* **What still is not stopped.** An agent that rewrites a repository
+  record to look like a workspace record AND writes itself a fresh,
+  unattested grant on it is released that secret while
+  `grant_attestation_required` is off, exactly as it could grant itself any
+  workspace secret in that window today. Turning the switch on closes both.
+
 ---
 
 ## 6. Migration, without breaking today's readers
