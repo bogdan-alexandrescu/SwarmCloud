@@ -51,6 +51,7 @@ from quota_broker.accounts import (
     Unavailable,
     accounts_serving,
     choose,
+    duplicates,
     eligibility,
 )
 from swarm_common.admission import AdmissionConfig, AdmissionDenied
@@ -299,29 +300,65 @@ POOL_IDLE_RECHECK_SECONDS = 900
 _POOL_SOON = (Unavailable.NO_RECENT_READING, Unavailable.ACCOUNTS_FULL)
 
 
-def pool_blockers(accounts: list[Account], now: datetime) -> list[dict[str, Any]]:
+def _own_label(account_id: str | None, tenant_id: str | None) -> str | None:
+    """The label of `account_id` when it is `tenant_id`'s own account, else None.
+
+    An account id is `<owner_tenant>:<label>`. Another workspace's label is
+    never written into this tenant's park (BGD, #2222 Q2: "only within the
+    same tenant"), so the line says "an account in another workspace".
+    """
+    if not account_id or not tenant_id or not account_id.startswith(f"{tenant_id}:"):
+        return None
+    return account_id.split(":", 1)[1] or None
+
+
+def pool_blockers(
+    accounts: list[Account], now: datetime, tenant_id: str | None = None
+) -> list[dict[str, Any]]:
     """What keeps each account from a new agent, for a park's `blocked_by` (#2222).
 
     The facts the waiting line names, and nothing else: the label, a state
-    other than AVAILABLE, each window under its floor with its share used and
-    when it clears, and `n of m` agents when the account is full. Never a
-    credential, a secret name or a hold's id.
+    other than AVAILABLE, a later registration of a subscription another
+    account holds (`withheld`), each window under its floor with its share
+    used and when it clears, the one agent a never-measured account takes
+    until its first reading, `n of m` agents when the account is full, and an
+    inferred duplicate (`possible_duplicate`, identical readings), which
+    `choose()` still hands out and so is never called withheld. Never a
+    credential, a secret name or a hold's id, and never another tenant's
+    label: the other side of a pair is named only when it is `tenant_id`'s
+    own account (POOL-WAITLINE).
     """
+    # The withheld side as `choose()` decides it (`_withheld`): the stored
+    # mark, or a pair in this very list the broker's sweep has not marked yet.
+    pairs = duplicates(accounts)
     out: list[dict[str, Any]] = []
     for account in accounts:
         item: dict[str, Any] = {"account": account.label}
         if account.state not in ASSIGNABLE_STATES:
             item["state"] = account.state.value
+        other, held = pairs.get(account.account_id, (None, False))
+        if account.duplicate_withheld or held:
+            partner = other if held else account.duplicate_of
+            item["withheld"] = {"same_subscription_as": _own_label(partner, tenant_id)}
         windows = account.blocking_windows(now)
         if windows:
             item["windows"] = {
                 name: {"used": round(float(w.utilization), 4), "resets_at": w.resets_at.isoformat()}
                 for name, w in sorted(windows.items())
             }
-        if account.is_full(now):
+        # Before `is_full`, as `eligibility()` asks it: a never-measured
+        # account whose cap is one is waiting on a reading, not full.
+        if account.awaits_first_reading(now):
+            item["first_reading"] = "pending"
+        elif account.is_full(now):
             item["full"] = f"{len(account.live_holds(now))} of {account.max_agents}"
+        if account.possible_duplicate_of is not None:
+            item["possible_duplicate"] = {
+                "of": _own_label(account.possible_duplicate_of, tenant_id)
+            }
         out.append(item)
     return out
+
 
 _FAILED_PARENT_STATES = frozenset(
     {TaskState.FAILED, TaskState.CANCELLED, TaskState.DEAD_LETTERED}
@@ -2615,7 +2652,7 @@ class Scheduler:
             "park_phase": "account_assign",
             "parked_by": "admission",
             "model_class": model_class,
-            "accounts": pool_blockers(candidates, now),
+            "accounts": pool_blockers(candidates, now, task.tenant_id),
         }
         report.held_by_pool += 1
         self._park(
