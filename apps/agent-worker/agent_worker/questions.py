@@ -28,7 +28,9 @@ DATA, NEVER A CHANNEL. Nothing in the platform reads these questions to decide
 anything: no state, retry, dispatch or merge looks at them. They are text for
 the operator, served back through the artifacts route (which redacts it) by
 `swarm_result` and the follow outcome. An agent cannot use the file to ask the
-platform for anything.
+platform for anything. The one exception is the wait below: a blocking question
+with `await-answers` parks the step, and the prompt says so
+(`expected_outputs.questions_line`, #2180).
 
 THE SHAPE IS STRICT so the bridge can show it without guessing: a list of at
 most `MAX_QUESTIONS` objects, each with exactly the four keys above (the last

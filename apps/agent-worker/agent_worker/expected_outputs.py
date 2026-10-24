@@ -116,6 +116,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Collection, Iterable, Mapping, Sequence
 
+from agent_worker import questions as questions_mod
+
 #: The key under `task.metadata`, and the key `input.json` carries it under.
 #:
 #: `Task.metadata` is a free-form dict on a FROZEN type, and per-dispatch
@@ -268,17 +270,39 @@ def questions_line() -> str:
     `deliverables_line`, so "there" is the folder that line named and the
     prompt still names `$SWARM_ARTIFACTS_DIR` once. The shape is given inline
     because the agent cannot read this platform's docs; the worker checks it
-    (`agent_worker.questions`). "Never acted on" is said because it is true:
-    the file is data for the operator, not a request to the platform.
+    (`agent_worker.questions`).
+
+    IT ALSO SAYS HOW TO WAIT (#2180). The sentence used to end "it is shown to
+    the owner and never acted on", and named neither the `blocking` key nor
+    `await-answers`. That stopped being true for every question with lane
+    AU-7: a `"blocking": true` question plus an empty `await-answers` beside
+    the file is parked HUMAN_REQUIRED by `Worker._await_owner_or_release`
+    (lifecycle STEP 9b'), which runs before `_finalise` and so before the
+    publish check. No agent could know that. Measured on
+    task_adb791a17d2e47d6985f: a ci-fix agent rightly stopped on an owner
+    decision, wrote `questions.json`, committed nothing, and failed
+    `published_nothing` instead of parking. So the sentence now says a
+    question does not stop the step, and how one that must be answered
+    first does. The park holds no lease (invariants 1 and 4) and is the
+    existing fenced, checkpointed one (5 and 8).
+
+    The file names come from `agent_worker.questions`, the module the worker
+    reads them with, so a renamed marker cannot leave the prompt stale.
 
     Shared by claude-code and codex, like the line before it: both are told
-    about the folder in the one place, `agent_instructions`.
+    about the folder in the one place, `agent_instructions`. Like it, it must
+    never carry a rate-limit or credential marker
+    (`cliagent._RATE_LIMIT_MARKERS`).
     """
+    name, marker = questions_mod.NAME, questions_mod.AWAIT_ANSWERS
     return (
         "If a decision is the owner's to make, ask instead of guessing: write "
-        "questions.json there, a JSON list of {question, options: [{label, "
-        "description}], recommended, context}; it is shown to the owner and "
-        "never acted on."
+        f"{name} there, a JSON list of {{question, options: [{{label, "
+        "description}], recommended, context, blocking}; it is shown to the "
+        "owner and does not stop your step. If your work cannot go on without "
+        'the answer, mark that question "blocking": true, write an empty file '
+        f"named {marker} beside {name} and exit: the step is parked until the "
+        "owner answers, then resumed with the answers."
     )
 
 

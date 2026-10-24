@@ -106,8 +106,11 @@ def _warnings_naming(log_stream: io.StringIO, name: str) -> list[dict[str, Any]]
 QUESTIONS_LINE = (
     "If a decision is the owner's to make, ask instead of guessing: write "
     "questions.json there, a JSON list of {question, options: [{label, "
-    "description}], recommended, context}; it is shown to the owner and "
-    "never acted on."
+    "description}], recommended, context, blocking}; it is shown to the "
+    "owner and does not stop your step. If your work cannot go on without "
+    'the answer, mark that question "blocking": true, write an empty file '
+    "named await-answers beside questions.json and exit: the step is parked "
+    "until the owner answers, then resumed with the answers."
 )
 
 
