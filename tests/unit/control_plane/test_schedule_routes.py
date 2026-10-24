@@ -688,7 +688,8 @@ def test_a_member_pauses_all_of_their_own_tenants_schedules_and_none_of_anothers
     response = client.post("/v1/schedules:pause-all", json={"confirm": "eng", "reason": "incident"},
                            headers=auth_header("alice"))
     assert response.status_code == 200, response.text
-    assert response.json() == {"tenant_id": "eng", "paused": sorted([first, second]), "unchanged": [already]}
+    assert response.json() == {"tenant_id": "eng", "paused": sorted([first, second]), "unchanged": [already],
+                               "admin_required": []}
     for sid in (first, second):
         doc = stored(db, sid)
         assert doc["state"] == "paused" and doc["next_run_at"] is None
