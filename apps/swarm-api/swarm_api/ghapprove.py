@@ -433,9 +433,12 @@ def _approve_merge(ctx: Any, item: Item, auth: Any, comment: Comment) -> None:
         ctx, item.tenant_id, ((schedule or {}).get("gate") or {}).get("approvers"),
         email=auth.email, is_owner=auth.is_owner, schedule=schedule, merge_tier=True,
     )
+    from .routes.runs import owner_resigner
+
     now = ctx.now()
     approvals.decide(ctx.db, now, item.tenant_id, item.approval_id, approve=True, by=auth.email,
-                     digest=item.digest, move=approvals.merge_move(ctx.db, now, by=auth.email),
+                     digest=item.digest,
+                     move=approvals.merge_move(ctx.db, now, by=auth.email, resign=owner_resigner(ctx)),
                      audit_detail=_audit_detail(item, comment, auth.email))
 
 

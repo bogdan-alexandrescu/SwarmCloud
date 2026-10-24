@@ -162,6 +162,55 @@ and nothing is submitted -- an `auto` run goes `PLANNED → FAILED`, a CI fix
 round is never claimed. A lookup that fails (Cloud Identity unavailable) is
 not a guess either way: the run waits, unchanged, for the next tick.
 
+**The run's owner is signed (#1569).** A tenant's worker can update any
+Firestore document it can name, and a run's planner knows its run id, so
+nothing on `issue_runs/<id>` that decides who a submission is made as, or
+whether a person must approve it, is believed unsigned. `start_run` signs
+`run_id`, `tenant_id`, `created_by`, `on_behalf_of`, `plan_approval`,
+`auto_merge`, `merge_approval`, `fix_rounds`, `issue` and `schedule_id` with
+the step-spec KMS key (workers hold only its public half: they can verify,
+never sign). Every approval, fix round and merge verifies it first, and a run
+that does not verify is FAILED with `run_owner_unverified`: nothing
+submitted, no forge credential resolved, and a log line that names the run
+and the failing field, never a value, the signature or a token.
+
+**What swarm-api writes after creation is signed too** (RUN-SIG-2, owner
+decision 2026-10-23). The hard-stop hold (`approval_hold`), the plan
+(`plan_digest`, with `plan_revision` and `plan_edited_by`) and the merge
+approval (`merge_approved`) are written later -- by the planner's read
+(`_from_planner`), `plan:edit`, the merge point's re-check (`issueci.merge_gate`)
+and the inbox's merge approval (`approvals.merge_move`) -- and unsigned they
+would let a worker drop a hold, swap the plan or forge a merge approval under
+the verified owner. Each of those writers re-signs the run in the same
+transaction, AFTER verifying the run as it read it: re-signing a run a worker
+had already rewritten would sign the rewrite. The plan itself must hash to its
+signed digest. Because the digest and the revision are signed, a signature from
+before a legitimate `plan:edit`, put back on the edited run, does not verify.
+What a signature in the document cannot stop is a worker putting back a whole
+earlier, legitimately signed version of the document; that needs workers to
+lose write access to `issue_runs` (#1457's Firestore-access flip), which is
+the root fix.
+
+**Runs created before the signature are signed once, by a platform admin,
+and only after a dry run.** A run with no signature, or with PR 2135's first
+signature (which covers none of the later fields), is refused like a forged
+one: the database cannot tell an old run from a rewritten one, and signing a
+run as it stands also signs anything a worker already wrote in it. So
+`POST /v1/runs/owner-signatures` (platform admins only) runs in two modes.
+`dry_run=true`, the default, writes nothing: it lists every run in every
+tenant whose signature is not a verifying current one -- its id, tenant,
+`created_by`, `on_behalf_of`, `plan_approval`, state, whether the person it
+submits as is still a member of its workspace, and whether it may be signed --
+with a `listing_digest` of exactly that list. A person reads the list (CLD
+posts it on #1569) before anything is signed. `dry_run=false` must be given
+that `listing_digest` and is 409 when the runs no longer hash to it, so a field
+rewritten after the list was read is never signed; it then signs each listed
+run's fields exactly as stored, refuses a run whose owner is not a member and
+a run whose signature exists but does not verify (a rewrite the signature
+caught, never laundered), and writes one `admin_audit` row
+(`issue_run_owner_signed`) per run signed. A signed run verifies, so it is
+never listed again: the apply is idempotent.
+
 The permissions it needs, on every repository a tenant submits issues from, are
 tabled in [multi-tenancy.md](multi-tenancy.md#what-the-forge-credential-must-be-allowed):
 `Contents` and `Pull requests` read/write (unchanged, for the agents' push and
