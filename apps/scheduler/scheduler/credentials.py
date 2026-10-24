@@ -161,13 +161,13 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
 
-from quota_broker.accounts import Account, Unavailable, accounts_serving
+from quota_broker.accounts import DEFAULT_HOLD_TTL, Account, Hold, Unavailable, accounts_serving
 from quota_broker.accountstore import AccountStore
 from swarm_common.models import Task, Tenant
 from swarm_common.profiles import RunnerProfile, step_model_class
@@ -340,15 +340,30 @@ class AccountPool:
     same collection in the same database, so the parsing is not restated
     either.
 
-    READ LAZILY. Only a keyless tenant's task for a profile that takes a
-    subscription token, on a deployment with a broker, ever needs it. A drain
-    of keyed tenants' work reads nothing extra.
+    READ LAZILY. Only a task for a profile that takes a subscription token, on
+    a deployment with a broker, ever needs it: a keyless tenant's for its
+    credential, and since #2222 any tenant's, because the worker asks the
+    broker whenever an account serves the tenant, key or no key, and admission
+    now asks first (`loop.Scheduler._pool_question`). A drain of work for
+    profiles that take no subscription token reads nothing extra; any other
+    drain reads the collection once.
 
     READ ONCE PER DRAIN. `Scheduler.drain` calls `forget()` first, so a loan
     made or withdrawn between two drains is seen by the second, and every task
     inside one drain, at admission and at dispatch, is judged on the same list.
     That is also why the dispatcher must be handed the Scheduler's instance: a
     second instance would be read on a schedule nobody resets.
+
+    AND IT COUNTS WHAT THIS RUN ALREADY LET THROUGH (#2222, POOL-WAKE-GATE).
+    The list is read once, so `choose()` over it gives the same answer for
+    every task asked about: one freed slot promoted every park waiting on the
+    pool, each to start a container and park again. Every place this run
+    hands an account's slot to a task -- admission's lease, the finish
+    event's wake, the prewarm sweep -- `claim`s it, and `accounts()` shows
+    the claim as a hold, so the next `choose()` sees one slot fewer. Claims
+    are keyed by task and dropped by `forget()`, at the top of every run: they
+    are this run's arithmetic, never a record. The broker's own hold, taken
+    when the worker asks, is the record.
     """
 
     def __init__(
@@ -360,6 +375,8 @@ class AccountPool:
         self._configured = bool(str(broker_url or "").strip())
         self._read = read_accounts
         self._accounts: list[Account] | None = None
+        #: task id -> (account id, the hold it stands for), this run only.
+        self._claims: dict[str, tuple[str, Hold]] = {}
 
     @classmethod
     def for_deployment(cls, settings: Any, db: Any) -> "AccountPool":
@@ -388,19 +405,50 @@ class AccountPool:
         return self._configured
 
     def forget(self) -> None:
-        """Drop what was read. Called at the top of every drain."""
+        """Drop what was read, and this run's claims. Called at the top of every drain."""
         self._accounts = None
+        self._claims = {}
 
     def accounts(self) -> list[Account]:
-        """Every account document, read at most once per drain like `serves`.
+        """Every account document, read at most once per drain like `serves`,
+        with this run's claims shown as holds.
 
-        For the finish event's account wake (`loop.Scheduler.
-        _wake_account_parks`), which asks the broker's own `choose()` over the
-        same list admission reads, so the two cannot disagree within a run.
+        For admission and the two wakes (`loop.Scheduler._admit_one`,
+        `_wake_account_parks`, `_prewarm`), which ask the broker's own
+        `choose()` over the same list, so they cannot disagree within a run --
+        and each sees the slots the others already handed out.
         """
         if self._accounts is None:
             self._accounts = list(self._read())
-        return list(self._accounts)
+        if not self._claims:
+            return list(self._accounts)
+        extra: dict[str, list[Hold]] = {}
+        for account_id, hold in self._claims.values():
+            extra.setdefault(account_id, []).append(hold)
+        return [
+            replace(a, holds=(*a.holds, *extra[a.account_id]),
+                    assigned=a.assigned + len(extra[a.account_id]))
+            if a.account_id in extra else a
+            for a in self._accounts
+        ]
+
+    def claim(self, account_id: str, *, task_id: str, tenant_id: str, now: datetime) -> None:
+        """Count `task_id` as one more agent on `account_id` for the rest of this run.
+
+        One claim per task: a task claimed again (promoted by a wake, then
+        leased by admission) moves its one claim rather than adding a second.
+        """
+        self._claims[task_id] = (account_id, Hold(
+            assignment_id=f"run-claim:{task_id}",
+            tenant_id=tenant_id,
+            expires_at=now + DEFAULT_HOLD_TTL,
+            task_id=task_id,
+            assigned_at=now,
+        ))
+
+    def release_claim(self, task_id: str) -> None:
+        """Drop `task_id`'s claim, so asking about the task does not count it against itself."""
+        self._claims.pop(task_id, None)
 
     def serves(self, tenant_id: str, provider: str, *, model_class: str | None = "") -> bool:
         """Whether an account the tenant may use serves `provider` -- and, when

@@ -44,7 +44,15 @@ from typing import Any, Callable
 from google.api_core.exceptions import Aborted
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from quota_broker.accounts import HOLD_LOG_COLLECTION, accounts_serving, choose
+from quota_broker.accounts import (
+    ASSIGNABLE_STATES,
+    HOLD_LOG_COLLECTION,
+    Account,
+    Unavailable,
+    accounts_serving,
+    choose,
+    eligibility,
+)
 from swarm_common.admission import AdmissionConfig, AdmissionDenied
 from swarm_common.models import EndCause, Lease, Task, Tenant, pool_names_for, utcnow
 from swarm_common.profiles import RUNNER_PROFILES, Backend, resolve_backend
@@ -62,6 +70,7 @@ from . import sizes as sizes_mod
 from .awaitinput import is_control_plane
 from .codec import as_datetime
 from .credentials import (
+    SUBSCRIPTION_TOKEN_ENV,
     AccountPool,
     CredentialAnswer,
     CredentialSource,
@@ -272,6 +281,47 @@ PREWARM_REASONS = (
     ParkReason.PROVIDER_COOLDOWN,
     ParkReason.PROVIDER_OUTAGE,
 )
+
+#: How soon a task the account pool held back before its lease is looked at
+#: again, when what holds it clears with no instant (#2222): a slot freeing
+#: on a full account, or the broker's next usage poll. The worker parks the
+#: same two waits for the same five minutes
+#: (`agent_worker.lifecycle.STALE_READING_RETRY_SECONDS`), and the finish
+#: event wakes these parks sooner when an account comes free.
+POOL_RECHECK_SECONDS = 300
+
+#: The same, for a pool waiting on a person (every account paused, draining
+#: or needing a sign-in) or spent with nothing saying when:
+#: `agent_worker.lifecycle.NO_ACCOUNT_RETRY_SECONDS`.
+POOL_IDLE_RECHECK_SECONDS = 900
+
+#: The broker's reasons that clear in minutes with no instant.
+_POOL_SOON = (Unavailable.NO_RECENT_READING, Unavailable.ACCOUNTS_FULL)
+
+
+def pool_blockers(accounts: list[Account], now: datetime) -> list[dict[str, Any]]:
+    """What keeps each account from a new agent, for a park's `blocked_by` (#2222).
+
+    The facts the waiting line names, and nothing else: the label, a state
+    other than AVAILABLE, each window under its floor with its share used and
+    when it clears, and `n of m` agents when the account is full. Never a
+    credential, a secret name or a hold's id.
+    """
+    out: list[dict[str, Any]] = []
+    for account in accounts:
+        item: dict[str, Any] = {"account": account.label}
+        if account.state not in ASSIGNABLE_STATES:
+            item["state"] = account.state.value
+        windows = account.blocking_windows(now)
+        if windows:
+            item["windows"] = {
+                name: {"used": round(float(w.utilization), 4), "resets_at": w.resets_at.isoformat()}
+                for name, w in sorted(windows.items())
+            }
+        if account.is_full(now):
+            item["full"] = f"{len(account.live_holds(now))} of {account.max_agents}"
+        out.append(item)
+    return out
 
 _FAILED_PARENT_STATES = frozenset(
     {TaskState.FAILED, TaskState.CANCELLED, TaskState.DEAD_LETTERED}
@@ -486,6 +536,11 @@ class DrainReport:
     #: a finish event, because an account the finished task held serves their
     #: tenant and `choose()` now has one for them (#1885).
     promoted_account_waits: int = 0
+    #: Tasks the account pool held back (#2222): parked by admission BEFORE a
+    #: lease because no account the worker would be offered can take a new
+    #: agent, or a due no-account park the prewarm sweep left parked for the
+    #: same reason. Each is a container that was not started only to park.
+    held_by_pool: int = 0
     #: Children this drain cancelled or flagged because of their parent: its
     #: cancel, its end, or its await deadline (child tasks, §3.4). The ones
     #: that became CANCELLED here are also in `cancelled`.
@@ -846,11 +901,17 @@ class Scheduler:
 
         GATED ON THE BROKER'S OWN `choose()`, over the pool admission reads
         this run and the parked step's model class (`task_model_class`, the
-        rule the broker's `step_class_for` applies). A finish does not by
-        itself make an account eligible -- `choose()` caps no account by its
-        agents -- so promoting unconditionally would start a container per
-        parked task per finish, each to park again. Promoting only when an
-        account would be handed over costs a container only when one runs.
+        rule the broker's `step_class_for` applies). Promoting unconditionally
+        would start a container per parked task per finish, each to park
+        again. Promoting only when an account would be handed over costs a
+        container only when one runs.
+
+        AND EACH PROMOTION TAKES ITS SLOT (#2222). The list is read once, so
+        before this one freed slot answered yes for every park in turn and
+        woke them all. Each promotion now `claim`s the account `choose()`
+        named, so the next park is asked about one slot fewer, and a finish
+        wakes at most as many parks as there are free slots, in the order the
+        store returns them.
 
         Invariant 1 holds: a park this leaves alone holds nothing, a park it
         promotes becomes READY, which holds nothing either, and only the
@@ -885,8 +946,11 @@ class Scheduler:
             if profile is None:
                 continue
             model_class = task_model_class(profile, task)
-            candidates = accounts_serving(pool, task.tenant_id, provider, model_class=model_class)
-            if choose(candidates, task.tenant_id, now, model_class=model_class) is None:
+            candidates = accounts_serving(
+                self._pool.accounts(), task.tenant_id, provider, model_class=model_class
+            )
+            chosen = choose(candidates, task.tenant_id, now, model_class=model_class)
+            if chosen is None:
                 continue
             if self._promote(
                 task,
@@ -901,6 +965,9 @@ class Scheduler:
                 },
                 report=report,
             ):
+                self._pool.claim(
+                    chosen.account_id, task_id=task.id, tenant_id=task.tenant_id, now=now
+                )
                 woken.append(task.id)
         return woken
 
@@ -1199,6 +1266,30 @@ class Scheduler:
             )
             return False
 
+        # ASK THE POOL BEFORE THE LEASE (#2222, BGD 2026-10-24, "Ask the pool
+        # before a container"). The worker asks the broker for an account
+        # whenever one serves this tenant, key or no key (`lifecycle.
+        # _lease_account`), and until now it was the first to: it leased,
+        # started a container, cloned and checkpointed, then learned there
+        # was no account and parked. So admission asks the broker's own
+        # `choose()` first, over the accounts this run read with the slots it
+        # already handed out (`AccountPool.claim`). None is a park here,
+        # PROVIDER_QUOTA_EXHAUSTED at `account_assign` as the worker would
+        # have written it, before any lease: it holds nothing (invariant 1),
+        # nothing was reserved (2), and nothing leased means nothing for
+        # concurrency to count (3). A task this run promoted from such a park
+        # carries a claim; it is dropped first, so the task is not counted
+        # against itself.
+        self._pool.release_claim(task.id)
+        pool_choice: Account | None = None
+        question = self._pool_question(task, profile)
+        if question is not None:
+            candidates, provider, model_class = question
+            pool_choice = choose(candidates, task.tenant_id, now, model_class=model_class)
+            if pool_choice is None:
+                self._park_on_pool(task, candidates, provider, model_class, now, report)
+                return False
+
         backend = resolve_backend(profile)
         # THE SIZE IS PINNED HERE, BEFORE THE LEASE (docs/design/runner-sizes.md
         # §4.4, SIZES-SCHED-2). The units the transaction charges, the size the
@@ -1257,6 +1348,12 @@ class Scheduler:
         self._metrics.leased.labels(
             tenant=task.tenant_id, runner_profile=task.runner_profile
         ).inc()
+        if pool_choice is not None:
+            # This run's arithmetic only: the broker takes the real hold when
+            # the worker asks, and may pick another account of the same pool.
+            self._pool.claim(
+                pool_choice.account_id, task_id=task.id, tenant_id=task.tenant_id, now=now
+            )
 
         # EVERYTHING FROM HERE IS INSIDE THE GUARD, and the guard catches more
         # than DispatchError. `acquire_lease_in_transaction` has committed: the
@@ -1444,6 +1541,8 @@ class Scheduler:
         report: DrainReport,
         *,
         detail: dict[str, Any],
+        next_eligible_at: datetime | None = None,
+        blocked_by: list[dict[str, Any]] | None = None,
     ) -> None:
         # A BUDGET_EXHAUSTED park names its budget (WAIT-RECORD, part of
         # #1782), which the "Why it's waiting" panel serves. Nothing parks on
@@ -1452,7 +1551,9 @@ class Scheduler:
         budget = detail.get("budget")
         if reason is ParkReason.BUDGET_EXHAUSTED and not (isinstance(budget, str) and budget):
             raise ValueError("a BUDGET_EXHAUSTED park names its budget in detail['budget']")
-        outcome = self._store.park(task, reason, detail=detail)
+        outcome = self._store.park(
+            task, reason, detail=detail, next_eligible_at=next_eligible_at, blocked_by=blocked_by
+        )
         if outcome.applied:
             self._metrics.parked.labels(reason=reason.value).inc()
             report.parked += 1
@@ -2386,6 +2487,21 @@ class Scheduler:
         `enable_prewarm=False` or a zero `prewarm_max_agents` stops these parks
         ending at all, not only ending early. docs/quota-management.md section
         5 says so.
+
+        A NO-ACCOUNT PARK IS PROMOTED ONLY WHEN AN ACCOUNT CAN TAKE IT (#2222).
+        A park the worker wrote at `account_assign` waits on the pool, not on
+        the provider pool's ceiling, and promoting it because its instant
+        passed started a container per park to ask the broker the same
+        question: at 10:10Z on 2026-10-24, one 5-hour reset was the instant
+        of 28 of them. So such a park is asked about with the broker's own
+        `choose()` and the slots this run already handed out
+        (`AccountPool.claim`), and left PARKED -- counted in `held_by_pool`,
+        and looked at again on the next drain -- when no account can take it.
+        A park whose tenant no account serves any more is promoted as before:
+        its worker falls back to the tenant's own key. These parks are read
+        with `parked_tasks`, one fixed page of `dependency_sweep_size`; a
+        backlog of held parks larger than that page would hide the rest,
+        which `_parked_window` would cure if it ever grows that large.
         """
         budget = max(0, self._settings.core.prewarm_max_agents)
         if budget == 0:
@@ -2414,6 +2530,16 @@ class Scheduler:
                     # admitted before the window reopens -- a container started
                     # on a guess. It waits for its own instant instead.
                     continue
+                chosen: Account | None = None
+                if reason is ParkReason.PROVIDER_QUOTA_EXHAUSTED and account_park_provider(task):
+                    profile = RUNNER_PROFILES.get(task.runner_profile)
+                    question = self._pool_question(task, profile) if profile else None
+                    if question is not None:
+                        candidates, _provider, model_class = question
+                        chosen = choose(candidates, task.tenant_id, now, model_class=model_class)
+                        if chosen is None:
+                            report.held_by_pool += 1
+                            continue
                 if self._promote(
                     task,
                     kind="prewarm",
@@ -2423,4 +2549,80 @@ class Scheduler:
                     report=report,
                 ):
                     promoted += 1
+                    if chosen is not None:
+                        self._pool.claim(
+                            chosen.account_id, task_id=task.id, tenant_id=task.tenant_id,
+                            now=now,
+                        )
         return promoted
+
+    def _pool_question(
+        self, task: Task, profile: Any
+    ) -> tuple[list[Account], str, str | None] | None:
+        """The accounts the worker would ask the broker among, or None when it would not ask.
+
+        The worker asks whenever a broker is configured, the profile takes a
+        subscription token and an account serves the tenant, the provider and
+        the step's model class -- whatever key the tenant also has
+        (`lifecycle._lease_account`, and the broker's assign route, which
+        answers `no_accounts_registered` when none serves, the one answer
+        that sends the worker to the key). So this asks the same three things.
+        """
+        provider = getattr(profile, "provider", None)
+        if not provider or not self._pool.configured:
+            return None
+        if SUBSCRIPTION_TOKEN_ENV not in (getattr(profile, "secrets", None) or ()):
+            return None
+        model_class = task_model_class(profile, task)
+        candidates = accounts_serving(
+            self._pool.accounts(), task.tenant_id, provider, model_class=model_class
+        )
+        if not candidates:
+            return None
+        return candidates, provider, model_class
+
+    def _park_on_pool(
+        self,
+        task: Task,
+        candidates: list[Account],
+        provider: str,
+        model_class: str | None,
+        now: datetime,
+        report: DrainReport,
+    ) -> None:
+        """Park a task no pool account can take, before its lease (#2222).
+
+        The park the worker would have written after a container (`lifecycle.
+        _park_no_account`): PROVIDER_QUOTA_EXHAUSTED, `park_phase:
+        account_assign`, the broker's reason and the provider, so the finish
+        event's wake and the prewarm sweep treat it exactly as theirs. Its
+        instant is the worker's rule: an undated wait that clears in minutes
+        (`_POOL_SOON`) is looked at again within POOL_RECHECK_SECONDS, or at
+        a window that clears sooner; anything else at the broker's instant, or
+        POOL_IDLE_RECHECK_SECONDS when it has none. `accounts` names what
+        holds each account, which is what the waiting line reads.
+        """
+        reason, instant = eligibility(candidates, task.tenant_id, now, model_class=model_class)
+        if reason in _POOL_SOON:
+            soon = now + timedelta(seconds=POOL_RECHECK_SECONDS)
+            next_eligible = min(instant, soon) if instant is not None else soon
+        else:
+            next_eligible = instant or now + timedelta(seconds=POOL_IDLE_RECHECK_SECONDS)
+        block = {
+            "reason": ParkReason.PROVIDER_QUOTA_EXHAUSTED.value,
+            "provider": provider,
+            "account_pool_reason": reason.value,
+            "park_phase": "account_assign",
+            "parked_by": "admission",
+            "model_class": model_class,
+            "accounts": pool_blockers(candidates, now),
+        }
+        report.held_by_pool += 1
+        self._park(
+            task,
+            ParkReason.PROVIDER_QUOTA_EXHAUSTED,
+            report,
+            detail=block,
+            next_eligible_at=next_eligible,
+            blocked_by=[block],
+        )
