@@ -1562,6 +1562,45 @@ What each step does, and why each field is there:
   when the branch is absent. Release acceptance fails on any `- missing:`
   line, so the distinction is what lets that check stay strict.
 
+### A UI lane's MERGE counts only from a rendered review
+
+Owner decision, 2026-10-24 (#2184). On 2026-10-23 ten mock-up lanes' reviews
+ran on `claude-code`, with no browser, and gave MERGE on pages they had only
+read as HTML; two said so in their verdicts. The pages had clipped frames,
+crushed text and contradictory counts, found only when someone rendered them
+(#2157, #2149). Reading markup is not seeing a page.
+
+So a review step (one a dependant stages `verdict.json` from) whose patch
+touches `apps/swarm-ui/**` or `docs/web-ui/**` is **UI-gated**. Its MERGE
+counts only when the step ran on runner profile `claude-code-browser` **and**
+left `review.md` **and** at least one non-empty image under `shots/` in its
+artifacts directory. Otherwise the review's own worker rewrites its
+`verdict.json` to `NOT_YET` before the upload, puts the reason
+`not reviewed rendered: <what was missing>` first among its findings, and
+records `result_summary.rendered_review` (`ui_paths`, `verdict_given`,
+`verdict`, `missing`, `reason`). Every reader downstream -- the `when` gate,
+the control plane's pull request, the requirements check -- then reads
+NOT_YET, so the `verdict_in: ["NOT_YET"]` step runs, or the lane fails where
+everyone sees it.
+
+* **What the patch touches is the worker's measurement, taken before the
+  agent starts**: the headers of every `*.patch` staged through `input_from`,
+  and the `builds_on` step's `result_summary.git.files`. A file list cut at
+  its bound with no UI path in the part kept, or a `builds_on` step that
+  cannot be read, is gated too: a review that could not be told what it
+  reviews is not one that saw it.
+* **The rule is in the review's own prompt.** The worker appends it, naming
+  the UI paths and the profile the step runs on, so a reviewer knows before
+  it writes a verdict that MERGE from anywhere but a rendered review will not
+  count.
+* **Unchanged:** a lane whose patch touches no UI path, every NOT_YET, and an
+  unreadable verdict (which the gate still refuses by name, never reads as
+  either verdict).
+* **Not covered:** the merge-step workflow's `review.json`, which only
+  `claude-code-review` may publish and `post-verdict` posts as a GitHub
+  review. Holding it to the browser profile would make a UI lane unmergeable
+  there; that is the owner's call, asked on the pull request that added this.
+
 ### What a MERGE verdict publishes
 
 On MERGE the fix step starts **no agent** (owner decision, 2026-10-05: a fix
