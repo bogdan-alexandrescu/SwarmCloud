@@ -407,13 +407,55 @@ export function ActivityScreen({
       live = false
     }
   }, [openInView, openAsk])
+
+  // ---- the platform half, read once per scope pick (#2149) ----------------
+  // PLATFORM SCOPE STOPS POLLING THE PLATFORM HALF (BGD, 2026-10-23 ~20:39Z,
+  // task_875ae68942a241a899f2). Since #2152 `GET /v1/stats` counts every
+  // tenant -- twelve more count()s -- only on `?scope=platform` from an admin,
+  // and a read on a timer must never bill them (#138). So the card's poll
+  // above keeps reading the tenant half, and the platform half is its own
+  // read: once when an admin picks platform scope, again only when the page's
+  // own refresh is pressed (or the failed card is retried), never on a tick.
+  // Leaving platform scope forgets it, so coming back reads once more. A
+  // non-admin never asks; the API would not serve it. The card prints the
+  // read's time beside the counts ("as of"), because nothing re-reads them.
+  const platformOn = view.platform && admin === true
+  const [pressed, setPressed] = useState(0)
+  const [platformRead, setPlatformRead] = useState<OpenWork['platform']>(null)
+  /** The ask whose platform read landed while the card was in view. */
+  const platformAnswered = useRef<string | null>(null)
+  const platformAsk = `${pressed}\n${openRetry}`
+  useEffect(() => {
+    if (!platformOn) {
+      platformAnswered.current = null
+      setPlatformRead(null)
+      return
+    }
+    if (!openInView || platformAnswered.current === platformAsk) return
+    let live = true
+    loadStats({ platform: true }).then((r) => {
+      if (!live) return
+      platformAnswered.current = platformAsk
+      setPlatformRead(
+        r.status === 'ok' || r.status === 'stale'
+          ? { status: 'ok', data: r.data }
+          : { status: 'error', message: r.status === 'error' ? r.error.message : 'the read did not complete' },
+      )
+    })
+    return () => {
+      live = false
+    }
+  }, [platformOn, openInView, platformAsk])
+
   const retryOpen = () => {
     // Back to the skeleton, not the failure, while the retry is in flight.
     setOpen({ stats: null, parked: null })
+    if (platformOn) setPlatformRead(null)
     setOpenRetry((n) => n + 1)
   }
   const openFailures = [
     open.stats?.status === 'error' ? `The live state counts could not be read: ${open.stats.message}` : null,
+    platformOn && platformRead?.status === 'error' ? `The platform counts could not be read: ${platformRead.message}` : null,
     open.parked?.status === 'error' ? `The parked list could not be read: ${open.parked.message}` : null,
   ].filter((f): f is string => f !== null)
 
@@ -484,7 +526,11 @@ export function ActivityScreen({
           cadence={{ base: TIMELINE_POLL_MS, wait: TIMELINE_POLL_MS }}
           reading={pending}
           idle={idle}
-          onRefresh={refresh}
+          onRefresh={() => {
+            // The page's own refresh, and only it, re-reads the platform half (#2149).
+            setPressed((n) => n + 1)
+            refresh()
+          }}
           onResume={() => {
             resume()
             refresh()
@@ -593,7 +639,12 @@ export function ActivityScreen({
                   lines={OPEN_SKELETON}
                 />
               ) : (
-                <OpenWorkCard open={open} view={view} tenant={myTenant} now={now} />
+                <OpenWorkCard
+                  open={{ ...open, platform: platformOn ? platformRead : admin === null && view.platform ? null : undefined }}
+                  view={view}
+                  tenant={myTenant}
+                  now={now}
+                />
               )}
             </div>
             <LedgerPart id="cancels" title="Why agents were cancelled" className="ol-cancels" query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[60, 52, 44, 36, 30]}>
