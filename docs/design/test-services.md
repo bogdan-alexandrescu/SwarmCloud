@@ -618,7 +618,7 @@ recurring** (recommended: no repository has been recorded needing one);
 ## 10. Owner decisions (2026-10-23, ~09:47 PDT)
 
 BGD answered all six questions in Claude Code with the recommended option.
-Each answer is recorded on the design task (task_2d20d9db23d941459f06,
+Each answer is recorded on the design agent (`task_2d20d9db23d941459f06`,
 questions 0-5), so the console shows them as answered.
 
 | question | decision |
