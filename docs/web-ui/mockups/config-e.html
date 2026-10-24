@@ -58,6 +58,7 @@ table.doct{border-collapse:collapse;width:100%;min-width:640px;font-size:14px}
 table.doct th,table.doct td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
 table.doct th{font-size:13px;color:var(--text-dim);font-weight:600}
 table.doct tr:last-child td{border-bottom:0}
+table.doct th:last-child,table.doct td:last-child{white-space:nowrap}
 .yes{color:var(--ok-ink);font-weight:600}.no{color:var(--text-dim)}
 
 /* the page's theme control, the same control the frames' panel foot draws */
@@ -395,10 +396,10 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <p>Config sits between Capacity and Admin. While setup is unfinished the spine item carries an amber dot and the panel carries the setup meter; each page in the panel shows its own state (done, a count, or what is missing). Settings is reached from the avatar at the spine's foot and now holds only Profile.</p>
 <div class="pair">
   <figure class="fr"><div class="scroller" data-f="nav-platform"></div><figcaption><b>S1a · Platform admin, group workspace.</b> Config open. All six pages; Secrets shows "3 to set". Admin is in the spine.</figcaption></figure>
-  <figure class="fr"><div class="scroller" data-f="nav-admin-platform"></div><figcaption><b>S1b · Platform admin, Admin open.</b> Two groups: the workspaces they administer, then the platform's own pages.</figcaption></figure>
-  <figure class="fr"><div class="scroller" data-f="nav-admin-ws"></div><figcaption><b>S1c · Workspace admin, Admin open.</b> Only People and roles and Workspaces you admin, scoped to the workspaces they admin. No platform page, no lock, no disabled row.</figcaption></figure>
+  <figure class="fr"><div class="scroller" data-f="nav-admin-platform"></div><figcaption><b>S1b · Platform admin, Admin open.</b> Two groups: the workspaces they administer, then the platform's own pages. Under them, "In Automate" only links to Automate › Schedules and Approvals; Admin draws neither.</figcaption></figure>
+  <figure class="fr"><div class="scroller" data-f="nav-admin-ws"></div><figcaption><b>S1c · Workspace admin, Admin open.</b> Only People and roles and Workspaces you admin, scoped to the workspaces they admin, plus the two links into Automate. No platform page, no lock, no disabled row.</figcaption></figure>
   <figure class="fr"><div class="scroller" data-f="nav-member"></div><figcaption><b>S1d · Member.</b> No Admin in the spine. Config has no People and roles (that page is for the workspace's admins), and the panel says so. Here someone else holds admin, so the strip's step 4, People invited, is done: 3 of 4, where S1a's lone admin reads 2 of 4. S4h shows how a member meets an admin's step.</figcaption></figure>
-  <figure class="fr"><div class="scroller" data-f="nav-personal"></div><figcaption><b>S1e · Personal workspace.</b> No People and roles, and the strip has three steps: there is nobody to invite.</figcaption></figure>
+  <figure class="fr"><div class="scroller" data-f="nav-personal"></div><figcaption><b>S1e · Personal workspace.</b> No People and roles, and the strip has three steps: there is nobody to invite. Drawn for the platform admin in their own workspace, so Admin stays in the spine; a member's personal workspace has no Admin, as in S1d.</figcaption></figure>
 </div>
 <div class="pair">
   <figure class="fr"><div data-f="nav-phone-platform"></div><figcaption><b>S1f · Phone menu, platform admin.</b> The header in the spine colour opens a drawer that holds both columns; the setup meter rides along.</figcaption></figure>
@@ -457,17 +458,17 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <div class="pair">
   <figure class="fr"><div data-f="mcp-p"></div><figcaption><b>S5d · MCP servers, phone.</b></figcaption></figure>
   <figure class="fr"><div data-f="cpeople-p"></div><figcaption><b>S5e · Config › People and roles, phone.</b></figcaption></figure>
-  <figure class="fr"><div data-f="apeople-ws-p"></div><figcaption><b>S5f · Admin › People and roles, workspace admin, phone.</b> Only the two workspaces they administer.</figcaption></figure>
+  <figure class="fr"><div data-f="apeople-ws-p"></div><figcaption><b>S5f · Admin › People and roles, workspace admin, phone.</b> Only the two workspaces they administer: of S5c's two requests, only lee's (to join Example Labs) is theirs to answer.</figcaption></figure>
 </div>
 
 <!-- ==================== S6 ==================== -->
 <h2 id="s6"><span class="n">S6</span>Config › Workspace Settings</h2>
-<p>Three parts on one page: Settings, Workspace setup (today's Work › Setup, the full checklist behind the strip) and, for an admin, Add a new workspace.</p>
+<p>Settings and Workspace setup (today's Work › Setup, the full checklist behind the strip) on one page, and for a platform admin only a third part, Add a new workspace (BGD, 2026-10-23: the rule of today's Admin › Tenants › New workspace). A workspace admin sees their own workspaces' settings with no such tab or button. A member asks for a workspace as today, through the setup checklist's Request your workspace step.</p>
 <figure class="fr"><div class="scroller" data-f="wss-d"></div><figcaption><b>S6a · Settings, desktop.</b> Today's Settings › Workspace (code intelligence, off by default) and the workspace's identity.</figcaption></figure>
 <figure class="fr"><div class="scroller" data-f="wsetup-d"></div><figcaption><b>S6b · Workspace setup, desktop.</b> The checklist the strip summarises: every step id the API serves, its status word and the failing step's copy inline. Show on Overview stays.</figcaption></figure>
-<figure class="fr"><div class="scroller" data-f="wsnew-d"></div><figcaption><b>S6c · Add a new workspace, desktop.</b> Drawn for a platform admin, who can create one today (Admin › Tenants › New workspace); the progress steps are NewWorkspace.tsx's.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="wsnew-d"></div><figcaption><b>S6c · Add a new workspace, desktop.</b> A platform admin's tab only: the same form as Admin › Tenants › New workspace; the progress steps are NewWorkspace.tsx's.</figcaption></figure>
 <div class="pair">
-  <figure class="fr"><div data-f="wss-p"></div><figcaption><b>S6d · Settings, phone.</b></figcaption></figure>
+  <figure class="fr"><div data-f="wss-p"></div><figcaption><b>S6d · Settings, phone, workspace admin.</b> Two tabs: no Add a new workspace.</figcaption></figure>
   <figure class="fr"><div data-f="wsetup-p"></div><figcaption><b>S6e · Workspace setup, phone.</b></figcaption></figure>
   <figure class="fr"><div data-f="wsnew-p"></div><figcaption><b>S6f · Add a new workspace, phone.</b></figcaption></figure>
 </div>
@@ -507,27 +508,27 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <tr><td>Tenants</td><td class="yes">yes</td><td class="no">no</td><td class="no">no</td><td>S10d</td></tr>
 <tr><td>Platform counts</td><td class="yes">yes</td><td class="no">no</td><td class="no">no</td><td>S8</td></tr>
 <tr><td>Platform secrets</td><td class="yes">yes</td><td class="no">no</td><td class="no">no</td><td>S7</td></tr>
-<tr><td>Schedules and approvals (every tenant)</td><td class="yes">yes</td><td class="no">no</td><td class="no">no</td><td>S10e</td></tr>
+<tr><td>Schedules and Approvals: links into Automate, not Admin tabs (Automate › Schedules keeps its "All workspaces" switch)</td><td class="yes">links</td><td class="yes">links</td><td class="no">no Admin at all</td><td>S1b, S1c</td></tr>
 </tbody></table></div>
-<p class="hint">Today's <code>SECTIONS</code> Admin tabs are Pool limits, Runner sizes, Tenants, Platform counts, People and Workspaces you admin. People becomes People and roles; Platform secrets is new (secrets-scopes.md §5); the every-tenant Schedules view moves here from Automate's admin filter, beside the approvals waiting across tenants.</p>
+<p class="hint">Today's <code>SECTIONS</code> Admin tabs are Pool limits, Runner sizes, Tenants, Platform counts, People and Workspaces you admin. People becomes People and roles; Platform secrets is new (secrets-scopes.md §5). Every-workspace schedules and approvals stay in Automate: Automate › Schedules keeps its "All workspaces" switch (SCHED-ONE-PAGE, 2026-10-13), and Admin's panel only links to Schedules and Approvals (BGD, 2026-10-23). No Admin tab draws them a second time.</p>
 <figure class="fr"><div class="scroller" data-f="wya-d"></div><figcaption><b>S10a · Workspaces you admin, desktop (drawn for a workspace admin).</b> Each workspace with its own setup progress, so an admin of several sees which one is behind.</figcaption></figure>
 <figure class="fr"><div class="scroller" data-f="limits-d"></div><figcaption><b>S10b · Pool limits, desktop.</b> The table as built, led by the pool closest to its ceiling. The cards below it (Additional repositories, Model prices, GitHub fallback token) are unchanged and folded here.</figcaption></figure>
 <figure class="fr"><div class="scroller" data-f="sizes-d"></div><figcaption><b>S10c · Runner sizes, desktop.</b></figcaption></figure>
 <figure class="fr"><div class="scroller" data-f="tenants-d"></div><figcaption><b>S10d · Tenants, desktop.</b> Led by the workspace waiting to be created.</figcaption></figure>
-<figure class="fr"><div class="scroller" data-f="sched-d"></div><figcaption><b>S10e · Schedules and approvals, desktop.</b> Every tenant's schedules, and the approvals waiting across tenants.</figcaption></figure>
 <div class="pair">
   <figure class="fr"><div data-f="wya-p"></div><figcaption><b>S10f · Workspaces you admin, phone.</b></figcaption></figure>
   <figure class="fr"><div data-f="limits-p"></div><figcaption><b>S10g · Pool limits, phone.</b></figcaption></figure>
   <figure class="fr"><div data-f="sizes-p"></div><figcaption><b>S10h · Runner sizes, phone.</b></figcaption></figure>
   <figure class="fr"><div data-f="tenants-p"></div><figcaption><b>S10i · Tenants, phone.</b></figcaption></figure>
-  <figure class="fr"><div data-f="sched-p"></div><figcaption><b>S10j · Schedules and approvals, phone.</b></figcaption></figure>
 </div>
 
-<h2 id="notes">What this proposal decides that the brief left open</h2>
+<h2 id="notes">What the brief left open, and what BGD has since decided</h2>
 <ul>
-  <li><b>Settings › API keys</b> moves into Config › Secrets › Keys for agents and MCP (it holds the TypeSafe keys, which secrets-scopes.md lists there); Settings keeps Profile alone, as BGD said. Its two addresses would redirect.</li>
-  <li><b>"Needed, not set"</b> is a new read: a secret that something registered names and that is not stored. Until it exists, the strip's step 3 would read "—, not measured yet" rather than a count.</li>
-  <li><b>Who may add a workspace</b> from Workspace Settings is drawn as a platform admin. Whether a workspace admin may also create one is BGD's to say.</li>
+  <li><b>Decided (BGD, 2026-10-23T23:57Z): Settings › API keys</b> moves to Config › Secrets › Keys for agents and MCP, with person and workspace scopes, set through the one-time link as today (S4a, S4d). Settings keeps only Profile; the old addresses redirect.</li>
+  <li><b>This proposal's call: "needed, not set"</b> is a new read: a secret that something registered names and that is not stored. Until it exists, the strip's step 3 would read "—, not measured yet" rather than a count.</li>
+  <li><b>Decided (BGD, 2026-10-23T23:57Z): Add a new workspace</b> in Workspace Settings is for platform admins only (S6c). A workspace admin sees their own workspaces' settings with no such tab (S6d); members keep Request your workspace in the setup checklist.</li>
+  <li><b>Decided (BGD, 2026-10-23T23:57Z): schedules and approvals</b> for every workspace stay in Automate; Admin only links to them (S1b, S1c).</li>
+  <li><b>Still open for BGD: Config › People and roles for a member.</b> This proposal draws no People and roles in a member's Config panel, with a note that the page is shown to the workspace's admins (S1d, S1g).</li>
 </ul>
 </main>
 <style>
@@ -596,6 +597,7 @@ const segs=(arr)=>`<span class="segs">${arr.map(m=>`<i class="${m==='d'?'d':m===
 const SETUP={
   none:[['n','GitHub connected','Next: connect GitHub'],['t','Repositories chosen','waits for GitHub'],['t','Secrets set','waits for repositories'],['t','People invited','any time after GitHub']],
   repos:[['d','GitHub connected','@operator · checked 2 min ago'],['n','Repositories chosen','Next: choose at least one'],['t','Secrets set','none needed yet'],['t','People invited','only you so far']],
+  choosing:[['d','GitHub connected','@operator · checked 2 min ago'],['n','Repositories chosen','3 chosen · none registered yet'],['t','Secrets set','none needed yet'],['t','People invited','only you so far']],
   part:[['d','GitHub connected','@operator · checked 2 min ago'],['d','Repositories chosen','4 chosen · 3 registered'],['n','Secrets set','Next: 3 needed, not set'],['t','People invited','only you so far']],
   part2:[['d','GitHub connected','@operator · checked 2 min ago'],['d','Repositories chosen','4 chosen · 3 registered'],['n','Secrets set','Next: 2 needed, not set'],['t','People invited','only you so far']],
   fresh:[['d','GitHub connected','@operator · checked 2 min ago'],['d','Repositories chosen','2 chosen · 2 registered'],['n','Secrets set','Next: add the first one'],['t','People invited','only you so far']],
@@ -635,7 +637,7 @@ const PI=(on,ic,lb,badge,cls)=>`<span class="pi ${on?'on':''} ${cls||''}">${ic?I
 function badges(k){
   const tick=`<span class="st ok">${I('check')}</span>`;
   if(k==='none') return {gh:C('Start here','in'),repos:'',sto:'',mcp:'',people:''};
-  if(k==='repos') return {gh:tick,repos:C('Next','in'),sto:'',mcp:'<span class="sm12 dim">0</span>',people:'<span class="sm12 dim">1</span>'};
+  if(k==='repos'||k==='choosing') return {gh:tick,repos:C('Next','in'),sto:'',mcp:'<span class="sm12 dim">0</span>',people:'<span class="sm12 dim">1</span>'};
   if(k==='fresh') return {gh:tick,repos:'<span class="sm12 dim">2</span>',sto:C('Next','in'),mcp:'<span class="sm12 dim">0</span>',people:'<span class="sm12 dim">1</span>'};
   if(k==='personal') return {gh:tick,repos:'<span class="sm12 dim">2</span>',sto:C('1 to set','wn'),mcp:'<span class="sm12 dim">1</span>',people:''};
   return {gh:tick,repos:'<span class="sm12 dim">4</span>',sto:C(k==='part2'?'2 to set':'3 to set','wn'),mcp:C('1 to set','wn'),people:'<span class="sm12 dim">'+(k==='member'?'6':'1')+'</span>'};
@@ -655,11 +657,13 @@ function panel(x){
   } else if(x.sec==='admin'){
     h+=`<div class="sec">Admin</div>`;
     h+=`<div class="pg">${x.role==='platform'?'People and workspaces':'Your workspaces'}</div>`;
-    h+=PI(x.page==='apeople','people','People and roles',x.role==='platform'?C('2 waiting','wn'):'')+PI(x.page==='wya','building','Workspaces you admin','<span class="sm12 dim">2</span>');
+    h+=PI(x.page==='apeople','people','People and roles',C(x.role==='platform'?'2':'1','wn'))+PI(x.page==='wya','building','Workspaces you admin','<span class="sm12 dim">2</span>');
     if(x.role==='platform'){
       h+=`<div class="pg">Platform</div>`+PI(x.page==='limits','config','Pool limits',C('1 near ceiling','wn'))+PI(x.page==='sizes','sizes','Runner sizes','')+PI(x.page==='tenants','building','Tenants',C('1 waiting','wn'))+
-      PI(x.page==='counts','counts','Platform counts','')+PI(x.page==='psec','lock','Platform secrets',C('1 to look at','wn'))+PI(x.page==='sched','cal','Schedules and approvals',C('3 waiting','wn'));
+      PI(x.page==='counts','counts','Platform counts','')+PI(x.page==='psec','lock','Platform secrets',C('1','wn'));
     } else h+=`<p class="pnote">Showing Example Team and Example Labs, the workspaces you administer. The platform’s own pages are shown to platform admins only.</p>`;
+    /* schedules and approvals stay in Automate (BGD, 2026-10-23T23:57Z): Admin only links there */
+    h+=`<div class="pg">In Automate</div>`+PI(false,'cal','Schedules ↗',x.role==='platform'?'<span class="sm12 dim">all workspaces</span>':'')+PI(false,'check','Approvals ↗',x.role==='platform'?C('3 waiting','wn'):'');
   } else if(x.sec==='settings'){
     h+=`<div class="sec">Settings</div>`+PI(true,'person','Profile','');
   }
@@ -694,8 +698,8 @@ function ghConn(ph){
   return LEAD('Step 2 of 4 · next','Choose the repositories SwarmCloud may reach','GitHub is connected as @operator and the App is installed on 2 owners. Pick Read or Write for each repository.',B('Choose repositories','p'))+
   `<div class="g21"><div class="col">`+CARD('GitHub',C('acts as you','ln'),`<div class="col" style="gap:6px"><span>${S('ok','@operator · GitHub App · user token · active')}</span><span class="dim sm12">Token expires in 7 h · renewed automatically · last renewed 52 min ago</span><div class="acts" style="margin-top:6px">${B('Disconnect GitHub','d s')}</div></div>`)+
   CARD('Where the App is installed',B('Install on an organisation…','s'),T(['Owner','Install','Chosen',''],[
-    ['operator<small>your account</small>','all repositories','1','' ],
-    ['example-org<small>organisation</small>','selected repositories','3',B('Choose','s')],
+    ['operator<small>your account</small>','all repositories','0','' ],
+    ['example-org<small>organisation</small>','selected repositories','0',B('Choose','s')],
     ['example-labs<small>organisation</small>',S('wn','not installed'),DASH('nothing to list until it is'),B('Request install','s')]]))+
   `</div>${RULES}</div>`;
 }
@@ -727,8 +731,8 @@ function repos(ph){
   return LEAD('Repositories · one thing left','example-labs/console is chosen but not registered','Register it so it is indexed on a schedule and agents start from its map.',B('Register','p'))+
   CARD('Repositories SwarmCloud may reach as you',B('Re-check all','s'),reachTable()+`<p class="hint" style="margin:8px 0 0">Last verified 3 min ago. An agent for a repository not on this list is refused at submission. Add new repository opens GitHub access › Choose repositories.</p>`)+
   `<div class="g3">`+
-  repCard('example-org/example-api',C('fresh','ok'),['Default branch <b>main</b> · head <span class="mn">4f2c1a9</span>','Tests mapped 412 · indexed 2 h ago','Schedule <b>nightly</b>','Secrets: 2 for agents · 2 for Actions','QA targets: 1'],B('Open','s')+B('Index now','s'))+
-  repCard('example-org/example-web',C('1 day behind','wn'),['Default branch <b>main</b> · head <span class="mn">b81d03e</span>','Tests mapped 188 · indexed 26 h ago','Schedule <b>nightly</b>','Secrets: none','QA targets: 1'],B('Open','s')+B('Index now','s'))+
+  repCard('example-org/example-api',C('fresh','ok'),['Default branch <b>main</b> · head <span class="mn">4f2c1a9</span>','Tests mapped 412 · indexed 2 h ago','Schedule <b>nightly</b>','Secrets: 2 for agents · 3 for Actions','QA targets: 1'],B('Open','s')+B('Index now','s'))+
+  repCard('example-org/example-web',C('1 day behind','wn'),['Default branch <b>main</b> · head <span class="mn">b81d03e</span>','Tests mapped 188 · indexed 26 h ago','Schedule <b>nightly</b>','Secrets: none','QA targets: none'],B('Open','s')+B('Index now','s'))+
   repCard('example-org/docs-site',C('indexing now','in'),['Default branch <b>main</b>','Tests mapped: — not indexed yet','Schedule <b>on change</b>','Secrets: none','QA targets: 1'],B('Open','s'))+
   repCard('example-labs/console',C('chosen, not registered','wn'),['Read grant · default branch main','Not indexed: registering starts it'],B('Register','p s'),true)+`</div>`;
 }
@@ -759,7 +763,7 @@ function secWs(ph){
     ['TypeSafe key<small>yours</small>','your own submissions',S('ok','set 6 d ago'),B('Replace','s')],
     ['Codex provider key<small>runner LLM key</small>','codex runner','uses <b>openai-codex</b>',B('Change','s')],
     {cls:'need',c:['MCP server kb','every profile that takes MCP servers',C('needs kb-token','wn'),B('Set','p s')]},
-    ['MCP server docs-search','claude-code','per-run credential, not stored','']]))+
+    ['MCP server docs-search','claude-code','per-run credential, not stored','']])+`<p class="hint" style="margin:8px 0 0">Was Settings › API keys. Set and Replace open the one-time form (S4d); no value is shown again.</p>`)+
   CARD('GitHub token','',`<dl class="kv"><dt>Kind</dt><dd>Workspace token (GitHub App user token)</dd><dt>State</dt><dd>${S('ok','active')}</dd><dt>GitHub login</dt><dd>@operator</dd><dt>Verified</dt><dd>3 min ago</dd><dt>Expires</dt><dd>in 7 h · renewed automatically</dd></dl><p class="hint" style="margin-top:8px">Status only: no part of a token is ever shown. Connect or disconnect on <a>GitHub access</a>.</p>`)+`</div>`;
 }
 /* one destination switch; each destination is its own state of the page (S4b, S4b2) */
@@ -839,11 +843,11 @@ function mcp(ph){
   return LEAD('Secrets set · 1 of the 3 missing is here','MCP server kb has no credential stored','It is registered to read workspace secret kb-token, which is not set, so every call to kb fails until it is.',B('Set kb-token','p'),'wn')+
   CARD('Registered MCP servers',B('Register an MCP server','s','plus'),T(['Name','URL','Credential','Profiles','Tools','State','Last used',''],[
     {cls:'need',c:['kb','https://kb.app.example.com/mcp','Workspace secret kb-token<small>'+C('needed, not set','wn')+'</small>','every profile that takes MCP servers','every tool it lists',S('ok','enabled'),'never',B('Edit','s')]},
-    ['docs-search','https://docs.app.example.com/mcp','Per-run credential','claude-code','search, fetch',S('ok','enabled'),'2 h ago',B('Edit','s')]]))+
+    ['<span style="white-space:nowrap">docs-search</span>','https://docs.app.example.com/mcp','Per-run credential','claude-code','search, fetch',S('ok','enabled'),'2 h ago',B('Edit','s')]]))+
   `<div class="fold">${I('chev')}<b>Addresses to allowlist</b><span class="dim sm12">2 hosts</span></div>`;
 }
 function cpeople(ph){
-  return LEAD('Step 4 of 4 · next','Only you hold a role in Example Team so far','Give each person who will run agents their own role. Everyone else signed in to Example Team holds viewer, the default.',B('Give a person a role','p'))+
+  return LEAD('Step 4 of 4 · this page','Only you hold a role in Example Team so far','Give each person who will run agents their own role. Everyone else signed in to Example Team holds viewer, the default.',B('Give a person a role','p'))+
   CARD('Roles in this workspace','',`<p>You hold <b style="color:var(--text)">admin</b> in Example Team. Everyone else in Example Team holds <b style="color:var(--text)">viewer</b>, the workspace’s default.</p>`+T(['Person','Role','Given by','When','Reason',''],[['Operator','admin','a platform admin','3 d ago','workspace owner','']]))+
   `<div class="g2">`+CARD('Give a person their own role','',`<div class="col" style="gap:10px">${F('Email','name@your-domain')}<div class="fld"><span>Role</span>${SG(['viewer','member','admin'],1)}</div>${F('Reason (optional, shown in the events)','')}<div class="acts">${B('Set role','p')}</div></div>`)+
   CARD('Role events','',`<div class="stp"><span class="tx"><b>a platform admin gave Operator admin</b><small>3 d ago · workspace owner</small></span></div><div class="stp"><span class="tx"><b>Operator set the default to viewer (was member)</b><small>2 d ago</small></span></div>`)+`</div>`;
@@ -857,15 +861,16 @@ const PEOPLE=[
 function apeople(ph,ws){
   const cols=ws?['Person','Example Team','Example Labs','Last active']:['Person','Platform role','Example Team','Example Labs','Research Pod','Personal','Last active'];
   const rows=PEOPLE.map(r=>ws?[r[0],r[2],r[3],r[6]]:r).filter(r=>!ws||r[1]!=='—'||r[2]!=='—');
-  return LEAD(ws?'Your workspaces':'Needs an admin',ws?'Nothing waiting in your workspaces':'2 people are waiting for a workspace',ws?'Showing Example Team and Example Labs, the workspaces you administer.':'Approve or deny each; a denial says why to the person.',ws?'':B('Review the 2','p'),ws?'ok':'wn')+
+  return LEAD(ws?'Your workspaces':'Needs an admin',ws?'1 person is waiting to join Example Labs':'2 people are waiting for a workspace',ws?'Showing Example Team and Example Labs, the workspaces you administer. A request for a personal workspace is a platform admin’s.':'Approve or deny each; a denial says why to the person.',B(ws?'Review it':'Review the 2','p'),'wn')+
   `<div class="scope"><span class="lbl">Workspace</span>${ws?SG(['Both','Example Team','Example Labs'],0):SG(['Every workspace','Example Team','Example Labs','Research Pod'],0)}<span class="inp" style="min-width:200px">${I('search')}Find a person</span></div>`+
-  (ws?'':CARD('Waiting for you','',T(['Person','Asked for','When',''],[['jo@example.com','a personal workspace','40 min ago',B('Approve','p s')+' '+B('Deny','s')],['lee@example.com','to join Example Labs','2 h ago',B('Approve','p s')+' '+B('Deny','s')]])))+
+  CARD('Waiting for you','',T(['Person','Asked for','When',''],(ws?[]:[['jo@example.com','a personal workspace','40 min ago',B('Approve','p s')+' '+B('Deny','s')]]).concat([['lee@example.com','to join Example Labs','2 h ago',B('Approve','p s')+' '+B('Deny','s')]])))+
   CARD('People and their roles',ws?'':B('Grant admin','s'),T(cols,rows))+
   (ws?'':`<div class="fold">${I('chev')}<b>Recent admin actions</b><span class="dim sm12">12 this week</span></div>`);
 }
 
 /* ================= S6 Workspace Settings ================= */
-const WSHD=(on)=>({cr:'Config',h:'Workspace Settings',age:'read 2 min ago',tabs:['Settings','Workspace setup','Add a new workspace'],on});
+/* Add a new workspace is a platform admin's tab only (BGD, 2026-10-23T23:57Z), the rule of Admin › Tenants › New workspace */
+const WSHD=(on,plat=true)=>({cr:'Config',h:'Workspace Settings',age:'read 2 min ago',tabs:plat?['Settings','Workspace setup','Add a new workspace']:['Settings','Workspace setup'],on});
 function wss(ph){
   return LEAD('Nothing here needs you','This page is set. Setup’s next step is on Secrets.','',B('Go to Secrets','p'),'ok')+
   `<div class="g2">`+CARD('This workspace',B('Rename','s'),`<dl class="kv"><dt>Name</dt><dd>Example Team</dd><dt>Id</dt><dd><span class="mn">example-team</span></dd><dt>Kind</dt><dd>group</dd><dt>Your role</dt><dd>admin</dd><dt>Default role</dt><dd>viewer · <a>People and roles</a></dd></dl>`)+
@@ -874,14 +879,14 @@ function wss(ph){
 function wsetup(ph){
   const st=(m,t,s,w)=>`<div class="stp"><span class="sm ${m}">${m==='d'?I('check'):''}</span><span class="tx"><b>${t}</b><small>${s}</small></span>${w||''}</div>`;
   return LEAD('Step 3 of 4 · next','Set the 3 secrets that are needed','The strip above is this checklist, summarised. Each step is checked again on every read; nothing here is marked done by hand.',B('Open Secrets','p'))+
-  `<div class="g2">`+CARD('Set up SwarmCloud',C('7 of 8 required done','in'),
-   st('d','Sign in','done')+st('d','Request your workspace','done')+st('d','Add a Claude account','done')+st('d','Connect GitHub','done · @operator')+st('d','Install the App','done · 2 owners')+st('d','Enable orgs','done')+st('d','Choose repositories','done · 4 chosen')+
-   st('',`Verify access ${C('stale','wn')}`,'checked 3 d ago; example-labs/console was chosen since',B('Re-check','s'))+`<p class="hint" style="margin:8px 0 0">Derived 2 min ago for Operator in tenant example-team.</p>`)+
+  `<div class="g2">`+CARD('Set up SwarmCloud',C('6 of 8 required done · 1 optional (Request your workspace)','in'),
+   st('d','Sign in','done')+st('d','Request your workspace','done · optional')+st('d','Add a Claude account','done')+st('d','Connect GitHub','done · @operator')+st('d','Install the App','done · 2 owners')+st('d','Enable orgs','done')+st('d','Choose repositories','done · 4 chosen')+
+   st('',`Verify access ${C('stale','wn')}`,'checked 3 d ago; example-labs/console was chosen since',B('Re-check','s'))+st('','Ready','to do · follows Verify access')+`<p class="hint" style="margin:8px 0 0">Derived 2 min ago for Operator in tenant example-team.</p>`)+
   `<div class="col">`+CARD('After the checklist','',st('n','Secrets set','3 needed, not set: kb-token, the workspace TypeSafe key, Studio production’s QA sign-in',B('Set','p s'))+st('','People invited','only you hold a role so far',B('Invite','s')))+
   CARD('On Overview','',`<p>The setup card is hidden on Overview for you.</p><div class="acts">${B('Show on Overview','s')}</div>`)+`</div></div>`;
 }
 function wsnew(ph){
-  return LEAD('Admins only','Add a new workspace','It opens on Config with the setup strip at step 1, for whoever will run it.','','')+
+  return LEAD('Platform admins only','Add a new workspace','It opens on Config with the setup strip at step 1, for whoever will run it.','','')+
   `<div class="g21">`+CARD('New workspace','',`<div class="col" style="gap:12px"><div class="fld"><span>Kind</span>${SG(['Personal','Group','Service'],1)}</div>${F('Display name','Example Research','v')}${F('Group email address','group@your-domain')}${F('First admin’s email address','name@your-domain')}<div class="acts">${B('Create workspace','p')}${B('Close','q')}</div></div>`)+
   CARD('What creating it does','',['Approved and claimed','Checking the service account','Checking the name is free','Worker account','Its own IAM','Storage prefix','Forge slot','Namespace','Tenant and pool','Admitted at the front door','Final check'].map(s=>`<div class="stp"><span class="sm"></span><span class="tx"><b>${s}</b></span></div>`).join('')+`<p class="hint" style="margin:8px 0 0">Each line ticks as it is checked, after Create.</p>`)+`</div>`;
 }
@@ -950,10 +955,10 @@ function countsUnread(ph){
 const QAHD={cr:'Config › Repositories',h:'QA targets',age:'read 2 min ago',tabs:['Repositories','QA targets'],on:1,right:B('Register QA target','p','plus')};
 function qa(ph){
   const envs=T(['','Environment','Host','Host approval','Credential','Screens'],[
-    [CHK('',true),'staging','https://staging.app.example.com',S('ok','approved 3 d ago'),S('ok','own login · test credential set'),'18'],
-    {cls:'need',c:[CHK('',false,true),'production<small>Cannot run: no test credential</small>','https://app.example.com',S('ok','approved 3 d ago'),C('not set','wn'),'18']}]);
+    [CHK('',true),'staging','https://staging.app.example.com',S('ok','approved 3 d ago'),S('ok','own login · test credential set'),'20'],
+    {cls:'need',c:[CHK('',false,true),'production<small>Cannot run: no test credential</small>','https://app.example.com',S('ok','approved 3 d ago'),C('not set','wn'),'20']}]);
   return LEAD('QA targets · 1 missing','Studio production has no test credential','Its leg cannot run until it is set. Staging runs now.',B('Set production’s credential','p'),'wn')+
-  CARD('Studio',B('Edit','s')+B('Set credential','s')+B('Approve host','s'),`<dl class="kv"><dt>Files in</dt><dd>example-org/example-web</dd><dt>Sign-in</dt><dd>The app’s own login</dd></dl><div style="margin:12px 0">${envs}</div>`+
+  CARD('Studio',B('Edit','s')+B('Set credential','s'),`<dl class="kv"><dt>Files in</dt><dd>example-org/example-api</dd><dt>Sign-in</dt><dd>The app’s own login</dd></dl><div style="margin:12px 0">${envs}</div>`+
    `<div class="acts">${B('Run 1 environment','p','play')}${CHK('report only, file no issues')}<span class="sm12 dim">Flows with</span>${SG(['the target’s (Playwright)','Jev, this run'],0)}${B('Run discovery','s')}</div>`)+
   CARD('Docs site',B('Edit','s'),`<dl class="kv"><dt>Files in</dt><dd>example-org/docs-site</dd><dt>Sign-in</dt><dd>Public pages, no sign-in</dd></dl><div style="margin:12px 0">`+T(['','Environment','Host','Host approval','Credential','Screens'],[[CHK('',true),'production','https://docs.app.example.com',S('ok','approved 9 d ago'),'none needed','Discovers its screens']])+`</div><div class="acts">${B('Run 1 environment','p','play')}</div>`);
 }
@@ -961,7 +966,7 @@ const QRHD={cr:'Config › Repositories › QA targets › Studio',h:'Run group 
 function leg(n,host,state,body){return CARD(`${n}`,state,`<p class="mn" style="margin:-6px 0 10px">${host}</p>`+body)}
 function qarun(ph){
   const kv=(rows)=>`<dl class="kv">${rows.map(r=>`<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join('')}</dl>`;
-  const stg=leg('staging','https://staging.app.example.com',S('ok','succeeded'),kv([['Workflow','4 of 4 steps · 38 min'],['Screens captured','18 stored · 2 new'],['Coverage',`<span class="mtr"><span class="bar"><i style="width:90%"></i></span>18 of 20 stored routes</span>`],['New routes this run','/beta/reports, /settings/labs'],['Findings','1 high · 2 medium'],['Issues filed','3'],['Gate refusals','0']]));
+  const stg=leg('staging','https://staging.app.example.com',S('ok','succeeded'),kv([['Workflow','4 of 4 steps · 38 min'],['Screens captured','18 of 20 stored · 2 new'],['Coverage',`<span class="mtr"><span class="bar"><i style="width:90%"></i></span>18 of 20 stored routes</span>`],['New routes this run','/beta/reports, /settings/labs'],['Findings','1 high · 2 medium'],['Issues filed','3'],['Gate refusals','0']]));
   const prd=leg('production','https://app.example.com',S('in','running, step 2 of 4'),kv([['Workflow','2 of 4 steps · 21 min so far'],['Screens captured','11 stored so far'],['Coverage',DASH('still running')],['New routes this run','/legal/imprint'],['Findings',DASH('when the leg ends')],['Issues filed','0 so far'],['Gate refusals','0']]));
   return LEAD('New since last run','3 routes were found that are not stored yet','Promote adds a route to the target’s stored screens; admins only.',B('Review below','p'))+
   CARD('Seen on one environment only','',`<div class="stp"><span class="tx"><b>On staging, not on production</b><small>/beta/reports · /settings/labs</small></span></div><div class="stp"><span class="tx"><b>On production, not on staging</b><small>/legal/imprint</small></span></div>`)+
@@ -1000,17 +1005,6 @@ function tenants(ph){
     ['research-pod',S('nu','disabled'),'group','group@your-domain',S('ok','yes'),S('ok','yes'),S('ok','1 account'),S('ok','own GSA')],
     ['operator','enabled','personal','operator@example.com',S('ok','yes'),S('ok','yes'),S('ok','1 account'),S('ok','own GSA')]]));
 }
-function sched(ph){
-  return LEAD('Needs an admin','3 schedules wait for approval in 2 tenants','A schedule spends nothing until it is approved.',B('Review the 3','p'),'wn')+
-  CARD('Waiting for approval','',T(['Tenant','Schedule','Asked by','Spend cap',''],[
-    ['example-team','nightly-deps · dependency bump','riley@example.com','$20 a day',B('Approve','p s')+' '+B('Reject','s')],
-    ['example-team','weekly-qa · visual QA','Operator','$40 a leg',B('Approve','p s')+' '+B('Reject','s')],
-    ['example-labs','triage · issue triage','sam@example.com','$10 a day',B('Approve','p s')+' '+B('Reject','s')]]))+
-  CARD('Every tenant’s schedules',`<span class="sm12 dim">Last 60 min: 60 ticks, 4 fired, 0 errors</span>`,T(['Tenant','Name · type','When','Next run','Last outcome','Spend today','State',''],[
-    ['example-team','docs-refresh · agent','daily 06:00','in 7 h',S('ok','succeeded'),'$3.10','enabled',B('Pause','s')],
-    ['example-labs','index-console · index','hourly','in 22 min',S('bd','failed'),'$0.40','enabled',B('Pause','s')],
-    ['research-pod','weekly-report · agent','Mon 09:00','—, tenant disabled',S('ok','succeeded'),'$0.00',S('nu','paused'),B('Re-enable','s')]]));
-}
 
 /* ================= the frame registry ================= */
 const FR={
@@ -1020,13 +1014,13 @@ const FR={
   'nav-member':()=>crop(X({role:'member',setup:'member',page:'secrets'})),
   'nav-personal':()=>crop(X({ws:'personal',setup:'personal',page:'secrets'})),
   'nav-phone-platform':()=>drawer(X({page:'secrets'}),SECHD,secWs),
-  'nav-phone-member':()=>drawer(X({role:'member',setup:'member',page:'secrets'}),SECHD,secWs),
+  'nav-phone-member':()=>drawer(X({role:'member',setup:'member',page:'secrets'}),SECHD,secMember),
   'gh-none-d':()=>desk(X({setup:'none',page:'gh'}),GHHD(0),ghNone),
   'gh-conn-d':()=>desk(X({setup:'repos',page:'gh'}),GHHD(0),ghConn),
-  'gh-choose-d':()=>desk(X({setup:'repos',page:'gh'}),GHHD(1),ghChoose),
+  'gh-choose-d':()=>desk(X({setup:'choosing',page:'gh'}),GHHD(1),ghChoose),
   'gh-none-p':()=>phone(X({setup:'none',page:'gh'}),GHHD(0),ghNone),
   'gh-conn-p':()=>phone(X({setup:'repos',page:'gh'}),GHHD(0),ghConn),
-  'gh-choose-p':()=>phone(X({setup:'repos',page:'gh'}),GHHD(1),ghChoose),
+  'gh-choose-p':()=>phone(X({setup:'choosing',page:'gh'}),GHHD(1),ghChoose),
   'repos-d':()=>desk(X({page:'repos'}),REPHD,repos),
   'repos-p':()=>phone(X({page:'repos'}),REPHD,repos),
   'repos-empty-p':()=>phone(X({setup:'repos',page:'repos'}),REPHD0,reposEmpty),
@@ -1050,7 +1044,7 @@ const FR={
   'apeople-d':()=>desk(X({sec:'admin',page:'apeople'}),{cr:'Admin',h:'People and roles',age:'read 1 min ago'},ph=>apeople(ph,false)),
   'apeople-ws-p':()=>phone(X({sec:'admin',role:'wsadmin',page:'apeople'}),{cr:'Admin',h:'People and roles',age:'read 1 min ago'},ph=>apeople(ph,true)),
   'wss-d':()=>desk(X({page:'wss'}),WSHD(0),wss),
-  'wss-p':()=>phone(X({page:'wss'}),WSHD(0),wss),
+  'wss-p':()=>phone(X({page:'wss',role:'wsadmin'}),WSHD(0,false),wss),
   'wsetup-d':()=>desk(X({page:'wsetup'}),WSHD(1),wsetup),
   'wsetup-p':()=>phone(X({page:'wsetup'}),WSHD(1),wsetup),
   'wsnew-d':()=>desk(X({page:'wsnew'}),WSHD(2),wsnew),
@@ -1072,8 +1066,7 @@ const FR={
   'sizes-p':()=>phone(X({sec:'admin',page:'sizes'}),{cr:'Admin',h:'Runner sizes',age:'read 1 min ago'},sizes),
   'tenants-d':()=>desk(X({sec:'admin',page:'tenants'}),{cr:'Admin',h:'Tenants',age:'read 1 min ago'},tenants),
   'tenants-p':()=>phone(X({sec:'admin',page:'tenants'}),{cr:'Admin',h:'Tenants',age:'read 1 min ago'},tenants),
-  'sched-d':()=>desk(X({sec:'admin',page:'sched'}),{cr:'Admin',h:'Schedules and approvals',age:'read 1 min ago'},sched),
-  'sched-p':()=>phone(X({sec:'admin',page:'sched'}),{cr:'Admin',h:'Schedules and approvals',ph:'Schedules',age:'read 1 min ago'},sched)
+
 };
 let drawn=0;
 document.querySelectorAll('[data-f]').forEach(el=>{const f=FR[el.dataset.f];if(!f){el.textContent='Missing frame: '+el.dataset.f;return}el.innerHTML=f();drawn++});
