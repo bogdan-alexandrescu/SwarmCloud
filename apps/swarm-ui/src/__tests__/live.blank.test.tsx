@@ -143,6 +143,13 @@ describe('the gate’s reason for not showing the page', () => {
     expect(gateReason('')).toBeNull()
   })
 
+  it('reads the gate’s word that the agent finished, said with no lead (GREY-TAIL; part of #1344)', () => {
+    // MUTATION: a gateReason that reads only the two leads drops it, and the closed browser's grey says nothing.
+    expect(gateReason('The agent has finished; its browser is closed.')).toBe('The agent has finished; its browser is closed.')
+    // MUTATION: matching it as a prefix would read any name that starts with it.
+    expect(gateReason('The agent has finished; its browser is closed. Or is it')).toBeNull()
+  })
+
   it('is said in the strip while the gate names it, and goes when the page is back', async () => {
     render(<LiveBrowserPane task={task} live={{ status: 'ok', liveBrowser: true, session: session() }} reload={() => {}} />)
     const r = await waitFor(() => {
