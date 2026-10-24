@@ -716,10 +716,49 @@ def _name_id(tenant_id: str, name: str, repo_id: str | None = None) -> str:
     return f"{tenant_id}~{name}" if repo_id is None else f"{tenant_id}~{repo_id}~{name}"
 
 
+#: A repository secret's Secret Manager id is marked, so that what it IS
+#: does not rest on its tenant-writable record: the 16 hex of
+#: `swarm-tenant-<t>-wsec-<16 hex>` are 8 random hex and the first 8 hex of
+#: sha256 over this tag and those 8. The mark is no secret and needs none: a
+#: tenant's agent cannot create a Secret Manager secret, only point a record at
+#: one swarm-api made, and the id it points at says which kind it is. A
+#: workspace secret's id is drawn until it does NOT carry the mark.
+_REPOSITORY_MARK = b"swarm-repository-secret:"
+
+
+def _mark(head: str) -> str:
+    return hashlib.sha256(_REPOSITORY_MARK + head.encode("ascii")).hexdigest()[:8]
+
+
+def repository_hex() -> str:
+    head = _random.token_hex(4)
+    return head + _mark(head)
+
+
+def workspace_hex() -> str:
+    while True:
+        tail = _random.token_hex(8)
+        if not _marked(tail):
+            return tail
+
+
+def _marked(tail: str) -> bool:
+    return len(tail) == 16 and tail[8:] == _mark(tail[:8])
+
+
+def is_repository_secret_id(secret_id: Any) -> bool:
+    """Was `secret_id` made for a repository secret (`repository_hex`)?"""
+    if not isinstance(secret_id, str) or "-wsec-" not in secret_id:
+        return False
+    return _marked(secret_id.rsplit("-wsec-", 1)[1])
+
+
 def is_repository_record(doc: Mapping[str, Any]) -> bool:
-    """A record bound to a repository, by either field: a record rewritten to
-    drop one of the two is still treated as bound, never as the workspace's."""
-    return doc.get("scope") == SCOPE_REPOSITORY or doc.get(REPO_ID_FIELD) is not None
+    """A record bound to a repository, by its secret's id or by either field:
+    a record rewritten to drop `scope` or `repo_id` is still treated as bound,
+    never as the workspace's."""
+    return (doc.get("scope") == SCOPE_REPOSITORY or doc.get(REPO_ID_FIELD) is not None
+            or is_repository_secret_id(doc.get("secret_id")))
 
 
 def _bound_to(doc: Mapping[str, Any], repo_id: str | None) -> bool:
@@ -882,7 +921,8 @@ class WorkspaceSecrets:
             raise Conflict("a secret by that name already exists in this workspace"
                            if repo_id is None else
                            "a secret by that name already exists for this repository")
-        secret_id = tenant.secret_name(f"wsec-{_random.token_hex(8)}")
+        secret_id = tenant.secret_name(
+            f"wsec-{repository_hex() if repository is not None else workspace_hex()}")
         self._writer.create_secret(tenant_id, secret_id)
         version = self._writer.add_version(secret_id, payload)
         payload = b""
@@ -1536,9 +1576,14 @@ def _version_number(doc: Mapping[str, Any]) -> str | None:
     return number if _VERSION_TAIL.fullmatch(number) else None
 
 
-def owned_by(doc: Mapping[str, Any], tenant_id: str, project_id: str) -> bool:
+def owned_by(doc: Mapping[str, Any], tenant_id: str, project_id: str, *,
+             repository: bool = False) -> bool:
     """Is `doc` a live store record of `tenant_id` whose current version is
-    that tenant's own `-wsec-` secret?
+    that tenant's own `-wsec-` secret, of a WORKSPACE (or personal) secret, or
+    with `repository` of a repository secret (`is_repository_secret_id`)?
+    The default keeps every reader that predates repository secrets
+    (`routes/attempts_mcp.py`, a person's opt-in) off them, whatever their
+    tenant-writable record says.
 
     The record is tenant-writable, so its `secret_id` is checked as a NAME,
     `swarm-tenant-<tenant>-wsec-<16 hex>`, and its `current_version` as a
@@ -1550,7 +1595,10 @@ def owned_by(doc: Mapping[str, Any], tenant_id: str, project_id: str) -> bool:
     prefix = wsec_prefix(tenant_id)
     if not isinstance(secret_id, str) or not secret_id.startswith(prefix):
         return False
-    return bool(_WSEC_HEX.fullmatch(secret_id[len(prefix):])) and _version_number(doc) is not None
+    tail = secret_id[len(prefix):]
+    if not _WSEC_HEX.fullmatch(tail) or _marked(tail) != repository:
+        return False
+    return _version_number(doc) is not None
 
 
 def version_to_read(doc: Mapping[str, Any], project_id: str) -> str:
@@ -1725,11 +1773,15 @@ def release_plan(db: Any, *, tenant_id: str, consumers: tuple[str, ...], project
     for secret_id in secret_ids:
         snap = db.collection(SECRETS_COLLECTION).document(secret_id).get()
         doc = (snap.to_dict() or {}) if snap.exists else {}
-        if doc.get("secret_id") != secret_id or not owned_by(doc, tenant_id, project_id):
+        if doc.get("secret_id") != secret_id:
             continue
-        if not is_repository_record(doc):
-            own.append(doc)
-        elif _released_to(db, doc, tenant_id, order):
+        if owned_by(doc, tenant_id, project_id):
+            # A workspace secret's record rewritten to claim a repository
+            # only loses its own grants; it is never released as one.
+            if not is_repository_record(doc):
+                own.append(doc)
+        elif owned_by(doc, tenant_id, project_id, repository=True) \
+                and _released_to(db, doc, tenant_id, order):
             bound.append(doc)
     if repositories is None:
         log.warning("%s tenant=%s: an additional repository's repo_id is not its "

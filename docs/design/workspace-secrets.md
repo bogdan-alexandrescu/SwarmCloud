@@ -1134,11 +1134,14 @@ beside it: `apps/swarm-api/swarm_api/workspace_secrets.py`,
   repository revives nothing. `DELETE /v1/repositories/{repo_id}` does not
   call it yet: that route is outside this lane, and the question is in its
   pull request.
-* **What still is not stopped.** An agent that rewrites a repository
-  record to look like a workspace record AND writes itself a fresh,
-  unattested grant on it is released that secret while
-  `grant_attestation_required` is off, exactly as it could grant itself any
-  workspace secret in that window today. Turning the switch on closes both.
+* **What a repository secret IS does not rest on its record.** Its Secret
+  Manager id is marked: of the 16 hex in `-wsec-<16 hex>`, the last 8 are
+  sha256 over a fixed tag and the first 8 (`repository_hex`), and a workspace
+  secret's id is drawn until it is not marked. An agent cannot create a
+  Secret Manager secret, so stripping `scope` and `repo_id` from a record and
+  writing itself an unattested grant (released for a workspace secret while
+  `grant_attestation_required` is off) releases nothing: `owned_by` keeps a
+  marked id off the workspace path, the person's opt-in and `mcp:attach`.
 
 ---
 
