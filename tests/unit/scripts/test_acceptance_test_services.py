@@ -37,11 +37,19 @@ import tomllib
 from pathlib import Path
 
 import pytest
-from agent_worker import prepublish, testservices
 
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURE = ROOT / "tests" / "acceptance" / "fixtures" / "test-services"
 GROUP = ROOT / "scripts" / "acceptance" / "groups" / "claude-code.sh"
+
+
+def _worker():
+    """The worker's catalogue and gate, imported here and not at module top:
+    every collection of tests/unit/scripts would pay for them
+    (test_collection_stays_cheap.py)."""
+    from agent_worker import prepublish, testservices
+
+    return prepublish, testservices
 
 
 def _group_value(name: str) -> str:
@@ -60,6 +68,7 @@ def _client():
 
 
 def test_the_fixtures_declaration_validates_with_the_catalogue_parser_to_postgres_16():
+    _, testservices = _worker()
     declaration = testservices.read_declaration(FIXTURE)
     # MUTATION: a fixture with no .swarm/test-services.toml is "nothing declared", and
     # the declared half of the acceptance check would run the undeclared case twice.
@@ -74,6 +83,7 @@ def test_the_fixtures_declaration_validates_with_the_catalogue_parser_to_postgre
 
 
 def test_the_fixtures_client_defaults_to_the_catalogue_address_and_the_declared_database():
+    _, testservices = _worker()
     client = _client()
     (service,) = testservices.read_declaration(FIXTURE).services
     # MUTATION: a client defaulting to 5433 or to localhost on another host: without
@@ -87,6 +97,7 @@ def test_the_fixtures_client_defaults_to_the_catalogue_address_and_the_declared_
 
 
 def test_a_refused_connection_names_the_address_the_gate_reads_as_unreachable():
+    prepublish, _ = _worker()
     client = _client()
     # MUTATION: a client that raises a bare `[Errno 111]` with no address: the gate's
     # `unreachable_services` needs an address, keeps the check failed, and the
@@ -103,6 +114,7 @@ def test_a_refused_connection_names_the_address_the_gate_reads_as_unreachable():
 
 
 def test_the_gate_runs_the_fixtures_test_as_a_changed_test_of_its_own_project():
+    prepublish, _ = _worker()
     test = "test_store.py"
     # MUTATION: a test file the gate does not recognise is never selected, and the
     # record holds no graph-pytest at all.
