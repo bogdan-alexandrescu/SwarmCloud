@@ -204,14 +204,43 @@ while IFS="${TAB}" read -r ns tenant; do
     FAILED+=("${ns}"); continue
   fi
   # READ BACK, BY NAME: the apply's own report is not the cluster's state.
+  # Only a NotFound answer means missing. Any other failed get is retried, 3
+  # tries 2 s apart, and one that never succeeds fails the namespace as
+  # UNREADABLE, with its error. Release 40034319802 (2026-10-23) failed its
+  # deploy on swarm-allow-typesafe-fwd in swarm-tenant-u-devops, a policy the
+  # apply had just reported "unchanged": one get failed, and any failed get was
+  # then counted as "not found", with its stderr thrown away (#2185).
   missing=""
+  unreadable=""
+  readerr="${WORK}/${ns}.readback.err"
   while IFS="${TAB}" read -r _kind name _namespace; do
     [[ -n "${name}" ]] || continue
-    "${KUBECTL}" "${KARGS[@]}" get networkpolicies "${name}" --namespace "${ns}" -o name \
-      >/dev/null 2>&1 || missing="${missing} ${name}"
+    tries=0
+    while :; do
+      tries=$((tries + 1))
+      if "${KUBECTL}" "${KARGS[@]}" get networkpolicies "${name}" --namespace "${ns}" -o name \
+          >/dev/null 2>"${readerr}"; then
+        break
+      fi
+      if grep -q 'NotFound' "${readerr}"; then
+        missing="${missing} ${name}"; break
+      fi
+      if [[ "${tries}" -ge 3 ]]; then
+        unreadable="${unreadable} ${name}"
+        cp "${readerr}" "${readerr}.last"
+        break
+      fi
+      sleep 2
+    done
   done <"${objects}"
   if [[ -n "${missing}" ]]; then
     err "${ns}: applied, but not found on read-back:${missing}"
+  fi
+  if [[ -n "${unreadable}" ]]; then
+    err "${ns}: applied, but could not be read back:${unreadable}"
+    redact <"${readerr}.last" | sed -n '1,5p' | sed 's/^/     /' >&2
+  fi
+  if [[ -n "${missing}" || -n "${unreadable}" ]]; then
     FAILED+=("${ns}"); continue
   fi
   applied=$((applied + 1))
