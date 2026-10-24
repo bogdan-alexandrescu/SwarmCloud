@@ -1,12 +1,30 @@
 # Workspace secrets: one store, granted per consumer by checkbox
 
-**Status: designed 2026-10-15 (lane SECRETS-DESIGN, part of #1347).** Built so
-far: §3.3's IAM (lane SEC-IAM, `terraform/bootstrap/workspace_secrets.tf`, not
-yet applied: `enable_workspace_secrets` turns on when SEC-RELEASE merges) and
-phase 1's management API (lane SEC-STORE-API, §5 "What SEC-STORE-API built").
-The release (SEC-RELEASE), the console (SEC-UI) and the migrations are not
-built. The owner's answers are in §10; where they differ from §9's
+**Status: designed 2026-10-15 (lane SECRETS-DESIGN, part of #1347); the
+store, its grants, the release and the console are built.** Built: §3.3's IAM
+(lane SEC-IAM, `terraform/bootstrap/workspace_secrets.tf`, applied
+2026-10-15 with `enable_workspace_secrets = true`), phase 1's management API
+(SEC-STORE-API, §5), the release and its admission park (SEC-RELEASE,
+SEC-ADMIT-PARK, §4), grant attestation (SEC-GRANT-ATTEST), the TypeSafe
+forwarder (SEC-INJECT-A, SEC-INJECT-B, §3.5) and the console pane (SEC-UI-LIST,
+SEC-UI-GRANTS, `apps/swarm-ui/src/WorkspaceSecrets.tsx`). Not built: the
+migrations and the retirement of §8's phases 4 and 5 are partial or open.
+SEC-MIGRATE-TYPESAFE is built behind `SWARM_TYPESAFE_INJECT`, which is off
+(§3.5 says what remains), and SEC-MIGRATE-FORGE and SEC-RETIRE are not
+built. Forge tokens appear only as Config › Secrets' status rows (SSC-OVERVIEW). The owner's answers are in §10; where they differ from §9's
 recommendation (Q5, Q8), the answer wins.
+
+**Extended 2026-10-24 by [secrets-scopes.md](secrets-scopes.md) (#2158).**
+A secret now has a third scope, **repository**: an ordinary `-wsec-` secret of
+this store, bound to one registered repository and released only to attempts
+that clone it, under a grant signed form `"v2"`. When a person's, a
+repository's and the workspace's secret share a name, the person's wins, then
+the repository's. The store also gained a write-only destination it does not
+keep, a repository's GitHub Actions secrets, and one read of every scope,
+`GET /v1/secrets/overview`. §4 and §5 here record what SSC-REPO-SCOPE,
+SSC-ADMIT-REPO and SSC-OVERVIEW built inside this store; secrets-scopes.md
+§12 records the rest. This store's console moves to Config › Secrets with
+lane SSC-UI, which is not built.
 
 **Amended 2026-10-19 (ROLES-DOCS, part of #1518): Q4 is superseded.** A
 group workspace's secrets are managed by its workspace `admin`, a role that

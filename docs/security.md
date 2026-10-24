@@ -214,7 +214,8 @@ Covered in depth in [multi-tenancy.md](multi-tenancy.md#secrets). In short:
    #1347) and `POST /v1/attempts/{attempt_id}/mcp:attach` (a registered MCP
    server's credential, Q9 of #1433, [below](#registered-mcp-servers-the-callers-credential-is-never-in-the-agents-reach)).
    `tests/unit/control_plane/test_no_route_serves_credentials.py` fails on a
-   third. (Amended 2026-10-18: this line used to say there was no read path
+   third. The GitHub Actions secret routes (2026-10-24, #2158) take a value
+   in and serve none, so they are not a third. (Amended 2026-10-18: this line used to say there was no read path
    at all, which stopped being true when the release shipped.)
 4. keys reach the agent through the child's environment only — never argv, never
    the workspace, never an artifact.
@@ -391,6 +392,103 @@ What holds once they are on:
   read-only. `sc roles set|clear|default` reads its typed confirmation from
   `/dev/tty`, never from arguments or stdin, and ignores `SWARM_ASSUME_YES`,
   so an agent driving a person's own session cannot raise anyone.
+
+---
+
+## Secrets scopes and GitHub Actions secrets
+
+A secret has one of three scopes: the workspace's, a person's, or a
+**repository's** ([design](design/secrets-scopes.md), part of #2158; what
+each lane built is its §12). SwarmCloud also writes a repository's **GitHub
+Actions** secrets, which it sends to GitHub and does not keep. Both are
+built. What carries the security weight:
+
+* **A repository secret reaches only agents that clone that repository.** It
+  is an ordinary `-wsec-` secret of the workspace, so SEC-IAM's condition,
+  the per-tenant store and its release already confine it to that workspace
+  (invariant 9), and no IAM row was added. Within the workspace, the release
+  hands it only to an attempt whose **signed** spec clones the repository
+  (`apps/swarm-api/swarm_api/workspace_secrets.py::attempt_repositories`).
+  The binding is in the grant's MAC (form `"v2"`,
+  `apps/swarm-api/swarm_api/grant_attest.py::FORM_REPOSITORY`), not only in
+  the record, because an agent that can write its workspace's Firestore could
+  rewrite a record's `repo_id` to a sibling repository. A repository grant is
+  released only when attested, whatever `grant_attestation_required` says: no
+  repository grant was ever written unsigned, so there is nothing to migrate.
+* **One name, one value.** When the person, the repository and the
+  workspace each offer one name, the person's wins, then the repository's,
+  and the others are withheld with their reason before the release leaves, so
+  the worker never receives two values for one file. A person's secret
+  shadows only on that person's own agents.
+* **A removed registration takes its grants with it.** Deleting a repository,
+  or revoking the last access grant that registered it, disables every grant
+  on its secrets in the transaction that removes the registration
+  (`apps/swarm-api/swarm_api/workspace_secrets.py::WorkspaceSecrets.delete_repository`).
+  A delete too large for one transaction is refused whole, rather than split
+  into two writes, because the gap between two writes is a window in which a
+  grant outlives its repository.
+* **Who may set it.** A repository's secrets for agents: the workspace's
+  admin, a platform admin, or a member whom GitHub, asked at that moment
+  with their own token, calls admin of the repository
+  (`apps/swarm-api/swarm_api/github_repo_admin.py::require_repo_admin`). A
+  repository's Actions secrets: a workspace manager **and** a GitHub admin of
+  the repository, both. The writer is an App, not the person, so without the
+  second check SwarmCloud would let a person write what GitHub would not let
+  them write.
+
+**GitHub Actions secrets are written, never read and never kept.** The value
+arrives once, in one request body, from the console's one-time link form or
+from a terminal's `--stdin`. It never comes through a Claude session: no MCP
+tool's schema accepts a value (`apps/swarm-mcp/swarm_mcp/secrets.py`). It is
+sealed in swarm-api with PyNaCl to the public key GitHub serves
+(`apps/swarm-api/swarm_api/actions_secrets.py::seal`), PUT to GitHub and
+dropped. So the plaintext passes through swarm-api's memory, as every other
+store's value does: BGD chose that over sealing in the browser (Q5). Firestore
+keeps the name, who set it and when, and GitHub's status. It keeps no value,
+no ciphertext and no token. Each GitHub call uses an installation token of the
+existing SwarmCloud App, minted for **one repository and one permission**
+(`apps/swarm-api/swarm_api/forge_installation.py::ACTIONS_PERMISSIONS`),
+registered with redaction while held and never stored. No mint asks
+`administration`. SwarmCloud does not create or change an environment. It
+reads the environment's branch rule, and a write into an environment that
+any branch can deploy needs the environment's name typed, because a secret
+there reaches every branch's workflows.
+
+**Accepted residual risk (BGD, Q3 of the design's §11, until
+user-scoped-secrets step 5).** BGD chose to give the **existing** SwarmCloud
+App `Secrets` and `Environments` write, instead of a second App with no user
+tokens. That App acts through user access tokens, and each person's token
+sits in a `-git-u-` slot that tenant workers can still read
+(`terraform/bootstrap/forge_user_slots.tf`, `forge_slot_reader`; step 5 of
+[user-scoped-secrets.md](design/user-scoped-secrets.md) removes it). A user
+token carries the App's permissions intersected with the person's. So once
+the App holds Secrets: write, **a compromised agent that reads a repository
+admin's user token can overwrite or delete that repository's Actions
+secrets.** It cannot read one, because GitHub serves no secret's value. But
+it can replace a value a privileged workflow trusts: `MERGE_APP_PRIVATE_KEY`
+would make auto-merge act as the attacker's App, and a signing or deploy key
+would make main's own workflow sign or deploy for the attacker. It can also
+delete every secret and stop releases. Three limits hold:
+
+1. Step 5 closes the risk.
+2. `Administration: write` (environment creation, branch protection, deploy
+   keys) is held back until step 5 ships, because on these tokens it would
+   come close to control of the repository.
+3. Until BGD grants the two permissions and each installation accepts them,
+   the App holds neither, and every Actions write is refused
+   `secrets_not_granted`.
+
+While the risk is open, treat a leaked `-git-u-` slot of a repository admin
+as a reason to rotate that repository's Actions secrets.
+
+**Admin › Platform secrets shows status only.** `GET
+/v1/admin/platform-secrets` is admin only on every surface. It reads Secret
+Manager **metadata**, never a payload, under a role holding exactly
+`secretmanager.secrets.get` and `secretmanager.versions.list`, conditioned on
+`swarm-` names in this project (`terraform/bootstrap/platform_secret_status.tf`).
+That role cannot read a value, and the condition keeps it off the shared
+project's `agents-*` secrets. It is off until BGD applies it with `make
+bootstrap`.
 
 ## Cloud metadata abuse
 

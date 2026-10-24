@@ -2027,3 +2027,204 @@ def test_test_services_checks_fail_on_a_one_line_mutation(check, doc, old, new, 
     _ts_run_check(check, doc, text, tmp_path)
     with pytest.raises(AssertionError):
         _ts_run_check(check, doc, text.replace(old, new), tmp_path)
+
+
+# --------------------------------------------------------------------------
+# SSC-DOCS (part of #2158): a secret is the workspace's, a person's or a
+# repository's, and GitHub Actions is a write-only destination
+# --------------------------------------------------------------------------
+#
+# docs/design/secrets-scopes.md was written before any lane built it, and its
+# §11 (BGD's answers of 2026-10-23) overrode §3 on the App, the environments
+# and the seal. Its status line and §9 say which lanes are built, with their
+# PRs; §12 records what each built and where the code departs from §2-§6.
+# workspace-secrets.md's status line points at the extension, security.md
+# carries the threat model and the accepted residual risk (Q3), and
+# provider-keys.md §7 what the scopes change for its keys. Every permission,
+# switch, limit and binding they state is read from the code here, so a
+# switch turned on, a permission widened or step 5 shipping fails until the
+# documents follow.
+
+SSC_DESIGN = DOCS / "design" / "secrets-scopes.md"
+PROVIDER_KEYS = DOCS / "provider-keys.md"
+SSC_BUILT = "## 12. What was built (2026-10-24, lane SSC-DOCS, part of #2158)"
+SSC_SECURITY = "## Secrets scopes and GitHub Actions secrets"
+SSC_KEYS = "## 7. Secrets scopes: what changes for these keys, and what does not (#2158)"
+#: §9's lanes that are not built, each for a reason the status line gives:
+#: phase 0 because Q3 declined the second App, the console rows because they
+#: wait for #2157's Config section.
+SSC_UNBUILT = ("SSC-SECRETS-APP", "SSC-UI", "SSC-UI-ACTIONS")
+#: Lanes the build added, each answered on #2158 from §2.1's rule.
+SSC_ADDED = {"SSC-REPO-DELETE": 2239, "SSC-REPO-DELETE-TXN": 2245, "SSC-UNREGISTER-TXN": 2249,
+             "LINK-ADMIN-WRITES": 2229, "PLATFORM-SECRETS-500": 2221}
+#: The new refusals the lanes shipped off (refusals.SWITCHES).
+SSC_SWITCHES = ("github_admin_required", "grant_key_required", "qa_bypass_link_required")
+SSC_ACTIONS_PY = "apps/swarm-api/swarm_api/forge_installation.py"
+SSC_STEP5 = 'resource "google_project_iam_member" "forge_slot_reader" {'
+
+
+def _ssc_head(text: str) -> str:
+    return _flat(text.split("\n---\n", 1)[0])
+
+
+def _ssc_plan(text: str) -> dict[str, str]:
+    """§9's rows: lane -> the text of its lane cell after the name."""
+    plan = _section(text, "## 9. Build plan")
+    rows = dict(re.findall(r"^\|[^|\n]*\| \*\*(SSC-[A-Z-]+)\*\*([^|\n]*)\|", plan, flags=re.M))
+    assert len(rows) >= 11 and "SSC-DOCS" in rows, rows
+    return rows
+
+
+def _check_ssc_status(text: str) -> None:
+    head = _ssc_head(text)
+    assert "Nothing in this document is built" not in head
+    assert "**Status: built 2026-10-24" in head and "§12" in head
+    assert "§11 overrides this document" in head
+    for lane in SSC_UNBUILT:
+        assert lane in head, f"the status line does not say {lane} is not built"
+    # Q3: no second App, so neither its key nor its setting exists.
+    assert "no `swarm-github-secrets-app-private-key`" in head
+    assert not (REPO / "terraform" / "infra" / "github_secrets_app.tf").exists()
+    from swarm_api import settings
+
+    assert "GITHUB_SECRETS_APP_ID" not in _text(Path(settings.__file__))
+
+
+def _check_ssc_lanes(text: str) -> None:
+    rows = _ssc_plan(text)
+    built = _section(text, SSC_BUILT)
+    for lane, cell in rows.items():
+        if lane in SSC_UNBUILT:
+            assert cell.strip().startswith("(not built"), f"§9 does not mark {lane} not built"
+            continue
+        if lane == "SSC-DOCS":
+            assert cell.strip().startswith("(built"), cell
+            continue
+        pr = re.match(r"\s*\(built, PR (\d+)", cell)
+        assert pr, f"§9 does not mark {lane} built with its PR: {cell!r}"
+        assert f"**{lane} (PR {pr.group(1)}" in built, f"§12 has no entry for {lane} with PR {pr.group(1)}"
+    for lane, pr in SSC_ADDED.items():
+        assert f"**{lane} (PR {pr})" in built or f"PR {pr} ({lane})" in built, lane
+    # The console rows stay unbuilt only while their files are absent.
+    if (REPO / "apps" / "swarm-ui" / "src" / "Secrets.tsx").exists():
+        raise AssertionError("SSC-UI's Secrets.tsx exists: mark SSC-UI built in §9 and §12")
+
+
+def _check_ssc_code(text: str) -> None:
+    from swarm_api import refusals, workspace_secrets
+    from swarm_api.forge_installation import ACTIONS_PERMISSIONS
+    from swarm_api.grant_attest import FORM_REPOSITORY
+
+    raw = _section(text, SSC_BUILT)
+    body = _flat(raw)
+    # Q3/Q4: one permission per mint, the ones §12 names, never administration.
+    assert f"`{SSC_ACTIONS_PY}::ACTIONS_PERMISSIONS`" in raw
+    granted = {(k, v) for perm in ACTIONS_PERMISSIONS.values() for k, v in perm.items()}
+    assert all(len(perm) == 1 for perm in ACTIONS_PERMISSIONS.values())
+    assert not any(k == "administration" for k, _ in granted) and "Never `administration`" in body
+    for name, level in granted:
+        assert f"`{name}: {level}`" in body or "read levels for the name lists" in body, (name, level)
+    assert ("secrets", "write") in granted and ("environments", "write") in granted
+    assert "`secrets: write`" in body and "`environments: write`" in body and "`actions: read`" in body
+    # Q5: sealed in swarm-api, with PyNaCl, which swarm-api depends on.
+    assert "pynacl" in _text(REPO / "apps" / "swarm-api" / "pyproject.toml").lower()
+    assert "SealedBox" in _cited_symbol("apps/swarm-api/swarm_api/actions_secrets.py", "seal")
+    assert FORM_REPOSITORY == "v2" and 'form `"v2"`' in body
+    # One transaction, refused whole above the limit.
+    assert workspace_secrets.MAX_TRANSACTION_WRITES == 500 and "about 33" in body
+    for code in SSC_SWITCHES:
+        assert refusals.SWITCHES[code].default is False, code
+        assert f"| `{code}` |" in raw, f"§12 does not say {code} ships off"
+    # Platform secrets: off until BGD's bootstrap apply.
+    tf = _text(REPO / "terraform" / "bootstrap" / "platform_secret_status.tf")
+    assert re.search(r'variable "enable_platform_secret_status" \{.*?default\s*=\s*false', tf, flags=re.S)
+    if "enable_platform_secret_status" not in _text(REPO / "terraform" / "bootstrap" / "terraform.tfvars"):
+        assert "**It is off:**" in body
+    # Q3's residual risk is open exactly while workers can read the slots.
+    if SSC_STEP5 in _text(REPO / "terraform" / "bootstrap" / "forge_user_slots.tf"):
+        assert "**The residual risk BGD accepted (Q3) is live.**" in body
+        assert f"`terraform/bootstrap/forge_user_slots.tf`\n(`{SSC_STEP5}`)" in raw
+    assert "**The done check (§9) is not met yet.**" in body
+
+
+def _check_ssc_workspace_secrets(text: str) -> None:
+    head = _ssc_head(text)
+    assert "The release (SEC-RELEASE), the console (SEC-UI) and the migrations are not built" not in head
+    assert "turns on when SEC-RELEASE merges" not in head
+    assert "[secrets-scopes.md](secrets-scopes.md)" in head and "**repository**" in head
+    assert "SEC-UI-LIST" in head and "SEC-RELEASE" in head
+    tfvars = _text(REPO / "terraform" / "bootstrap" / "terraform.tfvars")
+    assert "enable_workspace_secrets = true" in tfvars and "`enable_workspace_secrets = true`" in head
+
+
+def _check_ssc_security(text: str) -> None:
+    raw = _section(text, SSC_SECURITY)
+    body = _flat(raw)
+    assert "design/secrets-scopes.md" in body
+    assert "`apps/swarm-api/swarm_api/workspace_secrets.py::attempt_repositories`" in raw
+    assert "`apps/swarm-api/swarm_api/grant_attest.py::FORM_REPOSITORY`" in raw
+    assert f"`{SSC_ACTIONS_PY}::ACTIONS_PERMISSIONS`" in raw and "No mint asks `administration`" in body
+    assert "**Accepted residual risk (BGD, Q3" in body and "step 5" in body
+    assert "`MERGE_APP_PRIVATE_KEY`" in body and "cannot read one" in body
+    if SSC_STEP5 in _text(REPO / "terraform" / "bootstrap" / "forge_user_slots.tf"):
+        assert "tenant workers can still read" in body
+    assert "keeps no value, no ciphertext and no token" in body
+    assert "`secretmanager.secrets.get` and `secretmanager.versions.list`" in body
+    # Credential theft still counts two payload-serving routes.
+    theft = _flat(_section(text, "## Credential theft"))
+    assert "Exactly two routes serve credential material" in theft
+    assert "take a value in and serve none, so they are not a third" in theft
+
+
+def _check_ssc_provider_keys(text: str) -> None:
+    assert "**A workspace secrets store is proposed, not built**" not in text
+    head = _flat(text.split("## 1. Routes", 1)[0])
+    assert "`apps/swarm-api/swarm_api/secrets_overview.py::_provider_key_rows`" in head
+    assert "lane SSC-UI, not built" in head
+    body = _flat(_section(text, SSC_KEYS))
+    assert "the person's wins, then the repository's, then the workspace's" in body
+    assert "PyNaCl" in body and "security.md#secrets-scopes-and-github-actions-secrets" in body
+
+
+_SSC_CHECKS = {
+    "status": (SSC_DESIGN, _check_ssc_status), "lanes": (SSC_DESIGN, _check_ssc_lanes),
+    "code": (SSC_DESIGN, _check_ssc_code), "workspace-secrets": (SECRETS_DESIGN, _check_ssc_workspace_secrets),
+    "security": (SECURITY, _check_ssc_security), "provider-keys": (PROVIDER_KEYS, _check_ssc_provider_keys),
+}
+
+
+@pytest.mark.parametrize("check", sorted(_SSC_CHECKS))
+def test_secrets_scopes_docs_describe_what_was_built(check: str):
+    doc, run = _SSC_CHECKS[check]
+    run(_text(doc))
+
+
+@pytest.mark.parametrize("doc", (SSC_DESIGN, SECRETS_DESIGN, SECURITY, PROVIDER_KEYS), ids=lambda p: p.name)
+def test_secrets_scopes_docs_cite_only_what_resolves(doc: Path):
+    _assert_cites_resolve(doc)
+
+
+#: One-line mutations, each a way the documents could drift: each must fail
+#: its check, so the checks above are shown to catch what they claim to.
+_SSC_MUTATIONS = [
+    ("lanes", "| 1 | **SSC-OVERVIEW** (built, PR 2248) |", "| 1 | **SSC-OVERVIEW** |"),
+    ("lanes", "**SSC-OVERVIEW (PR 2248).** §4 and §6.2: `GET /v1/secrets/overview` reads",
+     "**SSC-OVERVIEW.** §4 and §6.2: `GET /v1/secrets/overview` reads"),
+    ("status", "and the console.** Designed 2026-10-23 (lane SECRETS-SCOPES-DESIGN, PR 2159);",
+     "and the console.** Nothing in this document is built (lane SECRETS-SCOPES-DESIGN, PR 2159);"),
+    ("code", "| `grant_key_required` | a repository grant is written unattested, and the release drops it, "
+     "because a repository grant is released only when attested (§2.2) | every environment holds the grant key |",
+     ""),
+    ("code", "**The residual risk BGD accepted (Q3) is live.** User-scoped-secrets step 5",
+     "**The residual risk BGD accepted (Q3) is closed.** User-scoped-secrets step 5"),
+]
+
+
+@pytest.mark.parametrize("check,old,new", _SSC_MUTATIONS, ids=[f"{m[0]}-{i}" for i, m in enumerate(_SSC_MUTATIONS)])
+def test_secrets_scopes_checks_fail_on_a_one_line_mutation(check: str, old: str, new: str):
+    doc, run = _SSC_CHECKS[check]
+    text = _text(doc)
+    assert "\n" not in old and text.count(old) == 1, f"the mutation's line is not once in {doc.name}: {old!r}"
+    run(text)
+    with pytest.raises(AssertionError):
+        run(text.replace(old, new))

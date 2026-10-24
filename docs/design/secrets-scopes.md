@@ -1,11 +1,30 @@
 # Secrets scopes: workspace, person and repository on one Config › Secrets page, and GitHub Actions as a write-only destination
 
-**Status: designed 2026-10-23 (lane SECRETS-SCOPES-DESIGN, part of #2158).
-Nothing in this document is built.** It extends
-[workspace-secrets.md](workspace-secrets.md), whose store, grants, release
-(Option B, §3.3) and console (SEC-UI-LIST, SEC-UI-GRANTS) are built, and it
-uses the **Config** section that #2157 adds to the console. BGD's answers to
-§10 decide the build; §9's lanes wait for them.
+**Status: built 2026-10-24 (lane SSC-DOCS, part of #2158), except phase 0
+and the console.** Designed 2026-10-23 (lane SECRETS-SCOPES-DESIGN, PR 2159);
+BGD answered §10 the same evening (§11), and **§11 overrides this document
+wherever the two differ**. Every §9 lane but three has merged, each marked
+built with its PR in §9, and §12 records what each one built, the five lanes
+added during the build, and where the code departs from the text above:
+
+* **SSC-SECRETS-APP (phase 0) is not built and will not be**: Q3 put the
+  Actions permissions on the existing SwarmCloud App, so there is no second
+  App, no `swarm-github-secrets-app-private-key` and no
+  `GITHUB_SECRETS_APP_ID`. What remained of phase 0 is BGD's step on
+  GitHub, written in `docs/runbooks/github-app.md` ("Writing GitHub Actions
+  secrets"). §3.5's second App, and every "under Q5 a" sentence, describe
+  the design BGD declined.
+* **SSC-UI and SSC-UI-ACTIONS are not built.** They wait for #2157's Config
+  section. Until they ship, the routes, the one-time links and the `/sc`
+  tools are built and a link opens a page that does not offer its form yet.
+* **Not yet live:** the Actions writes are refused (`secrets_not_granted`)
+  until BGD grants the App Secrets and Environments and each installation
+  accepts them; Admin › Platform secrets reads `unreadable` until BGD sets
+  `enable_platform_secret_status = true` and runs `make bootstrap`; and the
+  new refusals ship off (§12).
+
+It extends [workspace-secrets.md](workspace-secrets.md), whose store, grants,
+release (Option B, §3.3) and console (SEC-UI-LIST, SEC-UI-GRANTS) are built.
 
 BGD's decisions, 2026-10-23 (~21:20-21:30Z, #2158 and #2157), which this
 design takes as given rather than asks again:
@@ -44,7 +63,8 @@ What the design settles, in one line each:
 * **GitHub Actions is a destination, not a store.** The value is sealed to
   GitHub's public key and PUT to GitHub. SwarmCloud keeps the name, who set
   it and when, and nothing else (§3).
-* **The writer is a second, narrow GitHub App**, whose installation tokens
+* **The writer is a second, narrow GitHub App** (*declined, Q3 of §11: the
+  existing SwarmCloud App writes, and §12 says how*), whose installation tokens
   are minted by swarm-api for one repository and one permission at a time and
   never stored, logged or sent to a pod. The existing SwarmCloud App does not
   gain `Secrets` or `Environments`, because its user tokens sit in slots a
@@ -90,7 +110,7 @@ Two facts from this table shape everything below.
    even if nothing else checked, which is invariant 9 for free.
 2. **The repositories an attempt clones are already in its signed spec.**
    `Task.repository_url` is in every spec format and `additional_repositories`
-   since format 4 (`apps/swarm-api/swarm_api/specsign.py::canonical_step_spec`,
+   since format 4 (`apps/common/swarm_common/specsign.py::canonical_step_spec`,
    contract request 96), and the release verifies the spec before it reads
    anything (`verdictpublish.spec_refusal`). No contract change is needed to
    bind a secret to a repository (§8).
@@ -679,22 +699,23 @@ Each lane owns the files named; **two lanes that touch one file are one
 lane, or run one after the other**, never in parallel (CLAUDE.md, "Issues").
 Every lane pushes its tests first to the PR branch and its fix to
 `<branch>-fix`, and runs `scripts/changed-guards.sh` before finishing. Every
-new refusal ships off (`test_new_refusals_ship_off.py`). The lanes wait for
-BGD's answers in §10.
+new refusal ships off (`test_new_refusals_ship_off.py`). The lanes waited
+for BGD's answers, which are §11; each row says whether it is built, and §12
+what it built.
 
 | phase | lane | territory | red-first tests (each fails before the change) |
 |---|---|---|---|
-| 0 | **SSC-SECRETS-APP** (owner registers the App and applies) | `docs/runbooks/github-secrets-app.md` (new), `terraform/infra/github_secrets_app.tf` (new), `tests/terraform/github_secrets_app.tftest.hcl` (new), `scripts/create-secrets.sh` (the `--github-secrets-app` slot) and `tests/unit/scripts/test_create_secrets_github_secrets_app.py` (new) | the secret is declared with no version and `managed-by=swarm-terraform`; only swarm-api's account reads it; no tenant worker or KSA binding names it; the slot refuses a value on argv and reads `--stdin` only |
-| 1 | **SSC-REPO-SCOPE** | `apps/swarm-api/swarm_api/workspace_secrets.py` (records, `release_plan`, shadowing), `grant_attest.py` (form `"v2"`), `routes/workspace_secrets.py`, `routes/repository_secrets.py` (new), `routes/attempts_secrets.py`; `tests/unit/control_plane/test_workspace_secrets.py`, `test_grant_attest.py`, `test_secret_release.py` | a repository secret is not released to an attempt whose signed `repository_url` is another repository; it is released through a matching `additional_repositories` entry and withheld when that entry's `repo_id` is not `repo_id_for` its repository; a record whose `repo_id` was rewritten is dropped; an unattested repository grant is dropped with `grant_attestation_required` off; a `"v1"` grant still verifies; Q1's order resolves one `(slot, name)` to one item and withholds the rest with their reason; another workspace's `repo_id` is 404; a member is 403; removing a registration disables its secrets' grants |
-| 1 | **SSC-ADMIT-REPO** | `apps/scheduler/scheduler/secret_slots.py`, `apps/scheduler/scheduler/credentials.py`, `tests/unit/control_plane/test_secret_slot_admission.py` | a required slot filled only by another repository's secret parks `CREDENTIAL_MISSING`; filled by this repository's, it admits |
-| 1 | **SSC-ACTIONS-API** (after SSC-SECRETS-APP) | `apps/swarm-api/swarm_api/actions_secrets.py` (new), `secrets_app.py` (new: the second App's JWT and mint), `routes/actions_secrets.py` (new), the `GITHUB_SECRETS_APP_ID` setting; under Q5 b also `apps/swarm-api/pyproject.toml` and `uv.lock` (PyNaCl); `tests/unit/control_plane/test_actions_secrets.py` (new) | each mint names exactly one repository and one permission; no response, log line or Firestore document carries a value, a ciphertext or a token (runtime-built fakes); a caller GitHub does not call admin is 403; an environment is created with custom branch policies and gets its `main` rule before any write is offered; an existing environment is never modified; a `GITHUB_`-prefixed or digit-led name is 422; a stale `key_id` is 409; a link is consumed once; no App configured is 503 |
-| 1 | **SSC-OVERVIEW** | `apps/swarm-api/swarm_api/secrets_overview.py` (new), `routes/secrets_overview.py` (new), `tests/unit/control_plane/test_secrets_overview.py` (new) | every §4 store is present in its scope; no row carries a value, a length or `last4`; personal rows are only the caller's; TypeSafe rows are read from `provider_keys`; shadowing is reported |
-| 1 | **SSC-LINKS** | `apps/swarm-api/swarm_api/qatargets.py`, `routes/qatargets.py`, `routes/tenants.py` (the runner-key link), their tests | the bypass `PUT` without a link token is refused once the switch is on and logged while off; a runner-key link is single use and bound to the caller and the provider |
-| 1 | **SSC-PLATFORM-STATUS** | `apps/swarm-api/swarm_api/platform_secrets.py` (new), its route in `routes/admin.py`, `terraform/bootstrap/platform_secret_status.tf` (new), `tests/terraform/platform_secret_status.tftest.hcl` (new), `tests/unit/control_plane/test_platform_secrets.py` (new) | a non-admin is 403; the reader never calls `versions.access`; the role holds exactly `secrets.get` and `versions.list`; the condition refuses a name outside `swarm-` and another project |
-| 2 | **SSC-UI** (after #2157's Config lane merges `App.tsx`) | `apps/swarm-ui/src/Secrets.tsx` (new, absorbing `WorkspaceSecrets.tsx`), `AdminPlatformSecrets.tsx` (new), `App.tsx`, `paths.ts`, `api.ts`, `types.ts`, `.github/ISSUE_TEMPLATE/*` (the Where list, held by `test_issue_forms.py`), vitest files | the old addresses redirect with their link tokens; no value is rendered after save; the Platform secrets tab is absent for a non-admin; the repository scope lists only registered repositories; a shadowed row shows its winner |
-| 3 | **SSC-UI-ACTIONS** (after SSC-UI: same `Secrets.tsx` and `api.ts`) | `apps/swarm-ui/src/SecretsActions.tsx` (new), the import line in `Secrets.tsx`, `api.ts`; under Q5 a, `apps/swarm-ui/package.json` and its lock (libsodium); vitest files | the request body carries `encrypted_value` and never the value; the field is empty before the request leaves; writing into an any-branch environment needs the typed name; the install link appears when the App is not installed |
-| 2 | **SSC-SC** | `apps/swarm-mcp/swarm_mcp/secrets.py` (new), `apps/swarm-mcp/swarm_mcp/server.py`, `apps/swarm-mcp/swarm_mcp/qatargets.py` (`field`), `plugin/skills/sc/SKILL.md`, `tests/unit/mcp/test_secret_links.py` (new) | no tool's schema accepts a value field; each link tool returns a URL and its expiry and nothing else; `url` is null without a console origin; `swarm_platform_secrets` passes the route's 403 through |
-| each | **SSC-DOCS** | this file, `docs/design/workspace-secrets.md` (status line), `docs/security.md`, `docs/provider-keys.md` | `test_docs_describe_what_was_built` |
+| 0 | **SSC-SECRETS-APP** (not built: Q3 declined the second App; BGD's App permission step is in `docs/runbooks/github-app.md`) | `docs/runbooks/github-secrets-app.md` (new), `terraform/infra/github_secrets_app.tf` (new), `tests/terraform/github_secrets_app.tftest.hcl` (new), `scripts/create-secrets.sh` (the `--github-secrets-app` slot) and `tests/unit/scripts/test_create_secrets_github_secrets_app.py` (new) | the secret is declared with no version and `managed-by=swarm-terraform`; only swarm-api's account reads it; no tenant worker or KSA binding names it; the slot refuses a value on argv and reads `--stdin` only |
+| 1 | **SSC-REPO-SCOPE** (built, PR 2225) | `apps/swarm-api/swarm_api/workspace_secrets.py` (records, `release_plan`, shadowing), `grant_attest.py` (form `"v2"`), `routes/workspace_secrets.py`, `routes/repository_secrets.py` (new), `routes/attempts_secrets.py`; `tests/unit/control_plane/test_workspace_secrets.py`, `test_grant_attest.py`, `test_secret_release.py` | a repository secret is not released to an attempt whose signed `repository_url` is another repository; it is released through a matching `additional_repositories` entry and withheld when that entry's `repo_id` is not `repo_id_for` its repository; a record whose `repo_id` was rewritten is dropped; an unattested repository grant is dropped with `grant_attestation_required` off; a `"v1"` grant still verifies; Q1's order resolves one `(slot, name)` to one item and withholds the rest with their reason; another workspace's `repo_id` is 404; a member is 403; removing a registration disables its secrets' grants |
+| 1 | **SSC-ADMIT-REPO** (built, PR 2238) | `apps/scheduler/scheduler/secret_slots.py`, `apps/scheduler/scheduler/credentials.py`, `tests/unit/control_plane/test_secret_slot_admission.py` | a required slot filled only by another repository's secret parks `CREDENTIAL_MISSING`; filled by this repository's, it admits |
+| 1 | **SSC-ACTIONS-API** (built, PR 2240; under Q3 it waited for no App, and mints from the existing one) | `apps/swarm-api/swarm_api/actions_secrets.py` (new), `secrets_app.py` (new: the second App's JWT and mint), `routes/actions_secrets.py` (new), the `GITHUB_SECRETS_APP_ID` setting; under Q5 b also `apps/swarm-api/pyproject.toml` and `uv.lock` (PyNaCl); `tests/unit/control_plane/test_actions_secrets.py` (new) | each mint names exactly one repository and one permission; no response, log line or Firestore document carries a value, a ciphertext or a token (runtime-built fakes); a caller GitHub does not call admin is 403; an environment is created with custom branch policies and gets its `main` rule before any write is offered; an existing environment is never modified; a `GITHUB_`-prefixed or digit-led name is 422; a stale `key_id` is 409; a link is consumed once; no App configured is 503 |
+| 1 | **SSC-OVERVIEW** (built, PR 2248) | `apps/swarm-api/swarm_api/secrets_overview.py` (new), `routes/secrets_overview.py` (new), `tests/unit/control_plane/test_secrets_overview.py` (new) | every §4 store is present in its scope; no row carries a value, a length or `last4`; personal rows are only the caller's; TypeSafe rows are read from `provider_keys`; shadowing is reported |
+| 1 | **SSC-LINKS** (built, PR 2219) | `apps/swarm-api/swarm_api/qatargets.py`, `routes/qatargets.py`, `routes/tenants.py` (the runner-key link), their tests | the bypass `PUT` without a link token is refused once the switch is on and logged while off; a runner-key link is single use and bound to the caller and the provider |
+| 1 | **SSC-PLATFORM-STATUS** (built, PR 2218; PR 2221 fixed its 500) | `apps/swarm-api/swarm_api/platform_secrets.py` (new), its route in `routes/admin.py`, `terraform/bootstrap/platform_secret_status.tf` (new), `tests/terraform/platform_secret_status.tftest.hcl` (new), `tests/unit/control_plane/test_platform_secrets.py` (new) | a non-admin is 403; the reader never calls `versions.access`; the role holds exactly `secrets.get` and `versions.list`; the condition refuses a name outside `swarm-` and another project |
+| 2 | **SSC-UI** (not built: after #2157's Config lane merges `App.tsx`) | `apps/swarm-ui/src/Secrets.tsx` (new, absorbing `WorkspaceSecrets.tsx`), `AdminPlatformSecrets.tsx` (new), `App.tsx`, `paths.ts`, `api.ts`, `types.ts`, `.github/ISSUE_TEMPLATE/*` (the Where list, held by `test_issue_forms.py`), vitest files | the old addresses redirect with their link tokens; no value is rendered after save; the Platform secrets tab is absent for a non-admin; the repository scope lists only registered repositories; a shadowed row shows its winner |
+| 3 | **SSC-UI-ACTIONS** (not built: after SSC-UI, same `Secrets.tsx` and `api.ts`) | `apps/swarm-ui/src/SecretsActions.tsx` (new), the import line in `Secrets.tsx`, `api.ts`; under Q5 a, `apps/swarm-ui/package.json` and its lock (libsodium); vitest files | the request body carries `encrypted_value` and never the value; the field is empty before the request leaves; writing into an any-branch environment needs the typed name; the install link appears when the App is not installed |
+| 2 | **SSC-SC** (built, PR 2251) | `apps/swarm-mcp/swarm_mcp/secrets.py` (new), `apps/swarm-mcp/swarm_mcp/server.py`, `apps/swarm-mcp/swarm_mcp/qatargets.py` (its `field`), `plugin/skills/sc/SKILL.md`, `tests/unit/mcp/test_secret_links.py` (new) | no tool's schema accepts a value field; each link tool returns a URL and its expiry and nothing else; `url` is null without a console origin; `swarm_platform_secrets` passes the route's 403 through |
+| each | **SSC-DOCS** (built: this status, §12, `docs/security.md` and `docs/provider-keys.md`) | this file, `docs/design/workspace-secrets.md` (status line), `docs/security.md`, `docs/provider-keys.md` | `test_docs_describe_what_was_built` |
 
 The review CLAUDE.md requires for credentials, isolation, redaction and IAM
 applies to SSC-SECRETS-APP, SSC-REPO-SCOPE, SSC-ACTIONS-API and
@@ -831,3 +852,169 @@ BGD answered §10. Each answer is recorded on the design agent (`task_dffdc81d0b
 **Residual risk BGD accepted (Q3, until user-scoped-secrets step 5).** A repository admin's App user token sits in a `-git-u-` slot that tenant workers can read. With Secrets: write on the App, such a token can overwrite that repository's Actions secrets. Step 5 closes this; the build plan names it as a dependency of the Administration step.
 
 **The console** (§6.1) follows Q4: under GitHub Actions › Environments, **Create environment** is shown as "Create on GitHub ↗" plus **Check rule** until step 5 ships.
+
+---
+
+## 12. What was built (2026-10-24, lane SSC-DOCS, part of #2158)
+
+Read on main at `6571518`, after SSC-SC (PR 2251) merged. Each entry names
+the lane, its PR and what it built; where the build departs from §2-§6, the
+departure is §11's answer or a reason the lane recorded, and it is said here
+so that nobody "fixes" the code back to the paragraph above.
+
+**SSC-REPO-SCOPE (PR 2225).** §2 as written, with Q2 widened by §11. A
+repository secret is a `-wsec-` secret of the workspace, with `scope:
+repository` and the registration's `repo_id`, managed under
+`/v1/repositories/{repo_id}/secrets` (`apps/swarm-api/swarm_api/routes/repository_secrets.py`).
+Its grants are signed form `"v2"`
+(`apps/swarm-api/swarm_api/grant_attest.py::FORM_REPOSITORY`), which covers
+the `repo_id`; a `"v1"` grant still verifies. The release hands one only to
+an attempt whose signed spec clones that repository
+(`apps/swarm-api/swarm_api/workspace_secrets.py::attempt_repositories`), and
+resolves one name offered by several scopes in Q1's order: the person's,
+then the repository's, then the workspace's. **Departure, from Q2:** a
+member whom GitHub calls admin of the repository may also set its secrets for
+agents, asked live with their own token
+(`apps/swarm-api/swarm_api/github_repo_admin.py::require_repo_admin`). The
+review added one thing §2.1 did not say: a repository secret's id is marked
+(`apps/swarm-api/swarm_api/workspace_secrets.py::is_repository_secret_id`),
+so a record stripped of its `scope` cannot pass as a workspace secret.
+
+**SSC-ADMIT-REPO (PR 2238).** §2.3: admission counts a repository grant only
+for an attempt that clones that repository, in Q1's order, so a required
+slot filled only by another repository's secret parks `CREDENTIAL_MISSING`.
+**Departure:** the scheduler's codec does not decode
+`Task.additional_repositories`, so admission reads the task document for it.
+A follow-up on #2158 moves that decode into
+`apps/scheduler/scheduler/codec.py`; it is not built.
+
+**SSC-ACTIONS-API (PR 2240).** §3, with §11's Q3, Q4 and Q5, which change
+most of it:
+
+* **The writer is the existing SwarmCloud App (Q3), not §3.5's second App.**
+  Each call mints, from that App, a token for one repository and the one
+  permission the call needs
+  (`apps/swarm-api/swarm_api/forge_installation.py::ACTIONS_PERMISSIONS`):
+  `secrets: write` for a repository secret, `environments: write` for an
+  environment's, read levels for the name lists and `actions: read` for an
+  environment's branch rule. Never `administration`. The token is never held,
+  stored or logged. An environment secret's mint asks `environments: write`,
+  not the `read` the build brief said, because GitHub refuses an
+  environment-secret PUT or DELETE without write.
+* **SwarmCloud never creates, edits or deletes an environment (Q4).** `GET
+  .../actions/environments/{environment}/rule` reads whether an existing one
+  lets only the default branch deploy. A missing environment is answered with
+  GitHub's page to create it. A write into an environment whose rule is not
+  main-only needs `confirm_environment`, the environment's name typed. §3.4's
+  create route and §6.2's environment delete do not exist, and will not
+  until user-scoped-secrets step 5 lets the App hold Administration: write.
+* **The value is sealed in swarm-api (Q5)**, with PyNaCl's sealed box
+  (`apps/swarm-api/swarm_api/actions_secrets.py::seal`), and dropped after
+  GitHub's PUT. It passes through swarm-api's memory as every other store's
+  value does; §3.2's browser seal and §6.2's public-key route are not built.
+* **Who (Q6):** a workspace manager whom GitHub, asked with their own token
+  at the write, calls admin of the repository. Both, never either.
+* **What is kept (§3.8):** one `actions_secret_writes` document per
+  destination and name, and one `admin_audit` row in the same transaction.
+  No value, ciphertext or token.
+* **Not live yet.** Until BGD gives the App Secrets and Environments read and
+  write and each installation accepts them, every write is refused 409 with
+  `secrets_not_granted` or `environments_not_granted` and the installation's
+  review link (`docs/runbooks/github-app.md`, "Writing GitHub Actions
+  secrets"). Nothing has written to a real repository.
+
+**SSC-OVERVIEW (PR 2248).** §4 and §6.2: `GET /v1/secrets/overview` reads
+every store of one scope in one call: names, status, who set it and when, the
+consumers granted, `can_manage` per row, and which row a shadowed name lost
+to. It serves no value, length or `last4`. **Known limits, recorded by the
+lane:** shadowing is computed without checking attestation, two
+repositories' secrets of one name are not compared with each other (no
+attempt sees both as one repository's), and runner-key rows carry no set-by
+or set-at, because their store keeps none.
+
+**SSC-LINKS (PR 2219).** §6.3 and Q8: a QA target's credential link takes a
+`field` (`credential` or `challenge_bypass`) and works only for that field;
+the challenge-bypass `PUT` takes its `link_token`; and the runner key gets its
+own link, `POST /v1/tenants/me/credentials/links`, which opens
+`/config/secrets?scope=workspace&runner_key=<provider>&t=<token>` (BGD,
+2026-10-24 06:30Z). A bypass write without a link is refused under
+`qa_bypass_link_required`, which ships off; a bad runner-key link falls under
+the existing `KEY_LINK_INVALID`, also off.
+
+**SSC-PLATFORM-STATUS (PR 2218, and PR 2221).** §5 with Q7: `GET
+/v1/admin/platform-secrets`, admin only, reads Secret Manager metadata
+(`get_secret`, `list_secret_versions`) and never a version's payload. The
+grant is a custom role holding exactly `secretmanager.secrets.get` and
+`secretmanager.versions.list`, conditioned on `swarm-` names of this project
+by number (`terraform/bootstrap/platform_secret_status.tf`). **It is off:**
+`enable_platform_secret_status` defaults to false, BGD sets it when he runs
+`make bootstrap` (his answer of 2026-10-24 06:30Z), and until then every row
+reads `unreadable` with `permission_denied`. The lane corrected its brief:
+no release applies `terraform/bootstrap`, so the grant does not hold at
+`dev-iam`; only `make bootstrap` applies it. PR 2221 (PLATFORM-SECRETS-500)
+made a deployment with no Secret Manager client answer `unreadable` with
+`read_failed` instead of a 500. The catalogue dropped
+`swarm-github-secrets-app-private-key`, because Q3 means it never exists.
+
+**SSC-SC (PR 2251).** §6.4 with Q8: `swarm_secret_set_link`,
+`swarm_actions_secret_link`, `swarm_secrets` and `swarm_platform_secrets`, in
+`apps/swarm-mcp/swarm_mcp/secrets.py`, and `/sc secrets list` and `/sc
+secrets link`. No tool's input schema has a value field. A link tool answers
+`url` and `expires_at` only, and `url: null` without a console origin. The
+runner-key link has no tool yet; whether it should is an open owner
+question on PR 2251.
+
+**Lanes the build added (each answered on #2158 from §2.1's rule, "a
+removed registration disables every grant on its secrets in the transaction
+that removes it"):**
+
+* **SSC-REPO-DELETE (PR 2239)**: `DELETE /v1/repositories/{repo_id}`
+  disables the repository's secrets' grants first, and keeps the
+  registration when that fails.
+* **SSC-REPO-DELETE-TXN (PR 2245)**: the disable, the audit rows and the
+  delete are one Firestore transaction
+  (`apps/swarm-api/swarm_api/workspace_secrets.py::WorkspaceSecrets.delete_repository`).
+  A delete that would need more than
+  `apps/swarm-api/swarm_api/workspace_secrets.py::MAX_TRANSACTION_WRITES`
+  writes (about 33 fully granted secrets) is refused whole with a 409, rather
+  than split into two writes, so "one transaction" holds in every case.
+* **SSC-UNREGISTER-TXN (PR 2249)**: revoking the last access grant on a
+  repository (`apps/swarm-api/swarm_api/access.py::AccessService._unregister_if_last`)
+  goes through the same transaction. If it fails, the revoke still answers
+  200 with `unregistered: false` and keeps the registration, because the
+  access grant is already gone.
+* **LINK-ADMIN-WRITES (PR 2229)**: BGD's answer to SSC-LINKS: the runner-key
+  and QA-target link routes are admin writes
+  (`apps/swarm-api/swarm_api/roles.py::ADMIN_WRITES`), so a platform admin
+  minting one where they hold less than admin leaves a `platform_admin_acted`
+  audit row.
+* **PLATFORM-SECRETS-500 (PR 2221)**: above, under SSC-PLATFORM-STATUS.
+
+**What ships off, and why each is safe off.** Every new refusal ships off
+(`test_new_refusals_ship_off.py`), and none of these lets through a write
+that should be refused:
+
+| switch | off means | on once |
+|---|---|---|
+| `github_admin_required` | the caller is still refused, as `forbidden` instead of the new code | the console shows `detail.reason`'s copy (SSC-UI) |
+| `grant_key_required` | a repository grant is written unattested, and the release drops it, because a repository grant is released only when attested (§2.2) | every environment holds the grant key |
+| `qa_bypass_link_required` | a bypass value sent without a link is written and logged without the value | the console's bypass form opens from a link (SSC-UI) |
+
+**The residual risk BGD accepted (Q3) is live.** User-scoped-secrets step 5
+has not shipped: `terraform/bootstrap/forge_user_slots.tf`
+(`resource "google_project_iam_member" "forge_slot_reader" {`) still lets
+tenant workers read the `-git-u-` user-token slots. Once the App holds
+Secrets: write, a repository admin's user token read from such a slot can
+overwrite that repository's Actions secrets. GitHub serves no read of a
+secret, so it cannot disclose one; it can replace one a privileged workflow
+trusts, such as `MERGE_APP_PRIVATE_KEY`, or delete them all. Step 5 closes
+it, and Administration: write (and **Create environment**) waits for step 5
+for exactly this reason. `docs/security.md` ("Secrets scopes and GitHub
+Actions secrets") carries the threat model.
+
+**The done check (§9) is not met yet.** It needs BGD's App permission step
+and the console (SSC-UI, SSC-UI-ACTIONS). Until both land, the same write is
+reachable as `PUT /v1/repositories/{repo_id}/actions/secrets/{name}` from a
+one-time link's form, or from a terminal, and `/sc secrets link repository
+MERGE_APP_PRIVATE_KEY --repo bogdan-alexandrescu/SwarmCloud --actions --env
+repo-secrets` already returns the link.
