@@ -44,6 +44,15 @@ from test_prepublish_graph_gate import MOD_TEST, _fixture_repo
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
+
+@pytest.fixture(autouse=True)
+def _cache_volume(tmp_path, monkeypatch):
+    """The worker as on GKE, with a cache volume: without `CACHE_ROOT_ENV` in
+    the worker's environment `testservices.start` refuses every service before
+    `initdb` (TS-CLOUDRUN-REFUSE), and no row past row 4 could be reached."""
+    monkeypatch.setenv(testservices.CACHE_ROOT_ENV, str(tmp_path / "cache-volume"))
+
+
 DECLARATION = '[postgres]\nversion = 16\ndatabases = ["app_test", "other_test"]\n'
 #: §5.1's variables: what the stand-in uv reports it saw.
 SERVICE_VARS = ("PGHOST", "PGPORT", "PGUSER", "PGDATABASE", "DATABASE_URL",
