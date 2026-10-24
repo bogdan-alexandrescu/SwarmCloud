@@ -512,6 +512,18 @@ def required_check_state(runs: list[Mapping[str, Any]]) -> str:
     return _judge_latest(runs, REQUIRED_GREEN)
 
 
+def failing_run_ids(runs: list[Mapping[str, Any]],
+                    green: frozenset[str] | set[str]) -> set[int]:
+    """GitHub's ids of the runs that make ONE check red: each event's latest
+    run (`latest_per_event`) that finished with a conclusion not in `green`.
+    A commit status has no id and adds none. What `_rerun_settling` matches
+    against the jobs the tick re-ran: a re-run makes new ids, so a red one
+    is no longer among them."""
+    return {run["run_id"] for _event, run in latest_per_event(runs)
+            if isinstance(run.get("run_id"), int) and check_run_finished(run)
+            and (run.get("conclusion") or "") not in green}
+
+
 def required_check_label(runs: list[Mapping[str, Any]]) -> str:
     """What a failed check's label says in brackets: the latest run's
     conclusion per event, `push: success, pull_request: failure`; one
@@ -1747,6 +1759,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     summary["required_checks_source"] = required.source
     pending: list[str] = []
     failed: list[str] = []
+    failing_ids: set[int] = set()
     if required.checks:
         run.reading = (head, *latest_reading(
             {check.context: [c for c in checks if c.name == check.context
@@ -1762,6 +1775,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                 pending.append(check.context)
             elif state == "failed":
                 failed.append(f"{check.context} ({required_check_label(mine)})")
+                failing_ids |= failing_run_ids(mine, REQUIRED_GREEN)
     else:
         # No protection, or protection that requires no check, or a plan that
         # has neither rulesets nor protection to read (`required.source`
@@ -1776,8 +1790,13 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                         f"{pr.base_ref} requires no check and none has reported at "
                         f"{head}; the merge needs at least one green check", [])
         pending, failed = judge_other_checks(checks)
+        by_check: dict[tuple[str, int | None], list[dict[str, Any]]] = {}
+        for check in checks:
+            by_check.setdefault((check.name, check.app_id), []).append(check.as_run())
+        for runs in by_check.values():
+            failing_ids |= failing_run_ids(runs, OTHER_TOLERATED)
     if failed:
-        return _red(run, own, head=head, failed=failed, wait=wait)
+        return _red(run, own, head=head, failed=failed, failing_ids=failing_ids, wait=wait)
     if pending:
         return wait("checks_pending", f"at {head}: " + ", ".join(sorted(pending)), pending)
 
@@ -2296,11 +2315,17 @@ def _fix_rounds(own: Mapping[str, Any], key: str = "rounds") -> list[Mapping[str
     return [r for r in rounds if isinstance(r, Mapping)] if isinstance(rounds, list) else []
 
 
-def _rerun_settling(own: Mapping[str, Any], head: str) -> datetime | None:
+def _rerun_settling(own: Mapping[str, Any], head: str,
+                    failing_ids: set[int]) -> datetime | None:
     """When the tick's last re-run at `head` was requested, while it settles.
 
     None unless GitHub accepted it (no `error`) less than
-    RERUN_SETTLE_SECONDS ago. The document is tenant-writable, so only an
+    RERUN_SETTLE_SECONDS ago, and a failing run this step reads
+    (`failing_ids`) is one of the jobs it re-ran: the reading is still the
+    one the re-run replaces. A re-run makes new run ids, so once every
+    failing run is a new one the reading is the re-run's own answer and
+    nothing is held -- the tick's `_rerun_first` asks `asked & set(jobs)`
+    for the same reason. The document is tenant-writable, so only an
     instant the tick could have written counts: a tz-aware datetime not in
     the future, or its ISO 8601 text, which is how swarm-api's state routes
     serve a Firestore instant (`attemptstate.jsonable`). A forged one can at
@@ -2308,6 +2333,11 @@ def _rerun_settling(own: Mapping[str, Any], head: str) -> datetime | None:
     """
     mine = [r for r in _fix_rounds(own, RERUNS_KEY) if r.get("head") == head]
     if not mine or mine[-1].get("error"):
+        return None
+    jobs = mine[-1].get("jobs")
+    asked = {j for j in jobs if isinstance(j, int) and not isinstance(j, bool)} if isinstance(
+        jobs, list) else set()
+    if not asked & failing_ids:
         return None
     since = mine[-1].get("requested_at")
     if isinstance(since, str):
@@ -2597,7 +2627,7 @@ def _ended(ctx: ActionContext, task_id: str) -> bool:
 
 
 def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
-         wait: Any) -> ActionOutcome:
+         failing_ids: set[int], wait: Any) -> ActionOutcome:
     """A failing required check at `head`: a CI-fix round's to fix, or `checks_failed`.
 
     docs/merge-step.md "Revised 2026-10-06" §1: with rounds left the tick
@@ -2610,8 +2640,10 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
     Before the budget is read, a re-run of the failing Actions jobs the tick
     asked GitHub for at this head (#2257), accepted and inside
     RERUN_SETTLE_SECONDS, parks `CI_RERUN_PENDING` whatever the budget, even
-    none: the reading is the one the re-run replaces. Once it answers red the
-    tick wakes the step and this refuses (or hands it to a round) as before.
+    none, while a failing run is one it re-ran (`failing_ids`): the reading
+    is the one the re-run replaces. Once it answers red -- the failing runs
+    are new ids, inside the window or not -- the tick wakes the step and
+    this refuses (or hands it to a round) as before.
     """
     message = f"at {head}: " + ", ".join(sorted(failed))
     rounds = _fix_rounds(own)
@@ -2630,7 +2662,7 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
                         [])
         return run.refuse("checks_failed",
                           f"{message}, after CI fix round {number} ({task_id}) ended at this head")
-    requested_at = _rerun_settling(own, head)
+    requested_at = _rerun_settling(own, head, failing_ids)
     if requested_at is not None:
         return wait(CI_RERUN_PENDING,
                     f"{message}; the failing jobs were re-run at {requested_at.isoformat()}, "

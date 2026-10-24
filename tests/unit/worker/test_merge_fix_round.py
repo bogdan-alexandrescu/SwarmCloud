@@ -292,7 +292,9 @@ def test_red_with_no_rounds_asked_for_is_checks_failed(tmp_path, rounds):
 def _rerun(world: MergeWorld, *, ago: float = 60, head: str = PINNED, rounds: int = 0,
            **extra: Any) -> None:
     """swarm-api's free re-run of the failing Actions jobs at `head` (SPEED-D2,
-    #2257), requested `ago` seconds ago, on the merge task's own document."""
+    #2257), requested `ago` seconds ago, on the merge task's own document.
+    The red check run the step reads is job 7, the one the tick re-ran."""
+    world.runs[0]["id"] = 7
     entry: dict[str, Any] = {"round": 1, "head": head, "claimed_at": None, "jobs": [7],
                              "requested_at": datetime.now(timezone.utc) - timedelta(seconds=ago),
                              **extra}
@@ -335,6 +337,61 @@ def test_red_after_the_rerun_settle_window_is_checks_failed(tmp_path):
     world = MergeWorld(tmp_path)
     _red(world)
     _rerun(world, ago=merge.RERUN_SETTLE_SECONDS + 5)
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+
+
+def _rerun_answered_red(world: MergeWorld) -> None:
+    """The re-run's own check run: a new id, red again, beside job 7."""
+    world.runs.append({**world.runs[0], "id": 8})
+
+
+@pytest.mark.parametrize("ago", [60, merge.RERUN_SETTLE_SECONDS - 5])
+def test_the_reruns_own_red_answer_inside_the_window_is_checks_failed(tmp_path, ago):
+    """#2257 review: the hold is for the reading the re-run replaces. Once the
+    failing run is a new id -- the re-run's own answer, inside the settle
+    window -- the step refuses rather than parking on it, so the tick's red
+    wake is not repeated every CI_READ_SECONDS until the window ends."""
+    world = MergeWorld(tmp_path)
+    _red(world)
+    _rerun(world, ago=ago)
+    _rerun_answered_red(world)
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+    assert world.merge_calls() == []
+
+
+def test_the_reruns_own_red_answer_with_no_required_check_is_checks_failed(tmp_path):
+    """The same on the no-required path (`judge_other_checks`)."""
+    world = MergeWorld(tmp_path)
+    world.rules = []
+    world.branch = {"name": "main", "protected": False}
+    _red(world)
+    _rerun(world)
+    stale = merge.run_merge(world.context())
+    _parked(stale, merge.CI_RERUN_PENDING, PINNED)
+
+    (tmp_path / "answered").mkdir()
+    world = MergeWorld(tmp_path / "answered")
+    world.rules = []
+    world.branch = {"name": "main", "protected": False}
+    _red(world)
+    _rerun(world)
+    _rerun_answered_red(world)
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+
+
+def test_a_rerun_of_other_jobs_does_not_hold_the_refusal(tmp_path):
+    world = MergeWorld(tmp_path)
+    _red(world)
+    _rerun(world, jobs=[99])
 
     outcome = merge.run_merge(world.context())
 
