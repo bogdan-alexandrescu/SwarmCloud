@@ -775,17 +775,19 @@ function mcp(ph){
 }
 function cfgPeople(ph,role='pa'){
   const ro=role==='mem';
+  /* In the member frame the signed-in Operator is a member of eng, given by Rae, an admin listed here; Rae gives the roles Operator gives in the admin frame. */
+  const by=ro?'Rae':'Operator';
   const rows=[
-    ['<b>Operator</b><span class="sub">operator@example.com</span>','admin','Operator','30d ago',dash('your own role')],
-    ['<b>Rae</b><span class="sub">rae@example.com</span>','admin','Operator','12d ago',btn('Return to default','g sm')],
-    ['<b>Kai</b><span class="sub">kai@example.com</span>','admin','Operator','20d ago',btn('Return to default','g sm')],
+    ['<b>Operator</b><span class="sub">operator@example.com</span>',ro?'member':'admin',by,'30d ago',dash('your own role')],
+    ['<b>Rae</b><span class="sub">rae@example.com</span>','admin',by,'12d ago',btn('Return to default','g sm')],
+    ['<b>Kai</b><span class="sub">kai@example.com</span>','admin',by,'20d ago',btn('Return to default','g sm')],
     ['<b>Sam</b><span class="sub">sam@example.com</span>','member','Rae','3d ago',btn('Return to default','g sm')],
   ].map(r=>ro?r.slice(0,4):r);
   return `${phead('Config / <b>People and roles</b>','People and roles',{sub:ro?'eng\'s people and roles, read-only: you are a member. A workspace admin or a platform admin changes them.':'This workspace\'s people and roles. Every member and viewer reads this page; only its admins change it.'})}
   ${health([
    {s:'n',label:'People',big:'18',sub:'in eng\'s Google group'},
-   {s:'n',label:'Default role',big:'viewer',sub:'set by Operator 9d ago'},
-   {s:'n',label:'Admins',big:'3',sub:'named one by one'},
+   {s:'n',label:'Default role',big:'viewer',sub:`set by ${by} 9d ago`},
+   {s:'n',label:'Admins',big:ro?'2':'3',sub:ro?'Rae, Kai · named one by one':'named one by one'},
    {s:'n',label:'Own roles',big:'4',sub:'people with a role of their own'},
   ])}
   ${card('People with their own role',tbl(ro?['Person','Role','Given by','When']:['Person','Role','Given by','When',''],rows,ph),{flush:true,acts:ro?'':btn('Give a person a role','sm','plus'),foot:ro?'Everyone else in eng\'s Google group has the default role, viewer. The body is today\'s Settings › People and roles as a member reads it: what each role permits and the role events, with no forms.':'The body is today\'s Settings › People and roles: what each role permits, the forms and the role events.'})}`;
@@ -819,7 +821,7 @@ S('s5','S5','Config › MCP servers, Config › People and roles, and Admin › 
  [
   F('Config › MCP servers','1440 · 390',{d:desk({page:'mcp'},mcp(false)),p:[phone({title:'MCP servers',tabs:CFG_TABS,on:4},mcp(true))],cap:'<b>Desktop and phone.</b> It sits under Config and keeps the built body, drawn briefly. A server never served shows a dash and its reason under Last used.'}),
   F('Config › People and roles, admin (group workspace)','1440 · 390',{d:desk({page:'people'},cfgPeople(false)),p:[phone({title:'People and roles',tabs:CFG_TABS,on:5},cfgPeople(true))],cap:'<b>Desktop and phone, platform admin.</b> eng\'s people and roles with the change controls: Give a person a role and Return to default. A workspace admin of eng sees the same page. In a personal workspace this page does not exist (S1).'}),
-  F('Config › People and roles, member (read-only)','1440 · 390',{d:desk({page:'people',role:'mem'},cfgPeople(false,'mem')),p:[phone({title:'People and roles',tabs:CFG_TABS,on:5},cfgPeople(true,'mem'))],cap:'<b>Desktop and phone, member of eng.</b> The same roster and roles, read-only (BGD, 2026-10-24 00:31Z): no Give a person a role, no role switch and no Return to default. A viewer sees the same page. As in S1\'s member frames, the person in the footer stands in for any member of eng; the roster is eng\'s, the same as the admin\'s frame above.'}),
+  F('Config › People and roles, member (read-only)','1440 · 390',{d:desk({page:'people',role:'mem'},cfgPeople(false,'mem')),p:[phone({title:'People and roles',tabs:CFG_TABS,on:5},cfgPeople(true,'mem'))],cap:'<b>Desktop and phone, member of eng.</b> eng\'s roster and roles, read-only (BGD, 2026-10-24 00:31Z): no Give a person a role, no role switch and no Return to default. A viewer sees the same page. As in S1\'s member frames, the person in the footer stands in for any member of eng, and the roster lists Operator as a member, given by Rae: eng\'s 2 admins are Rae and Kai, and the 4 own roles are the 4 rows.'}),
   F('Admin › People and roles, platform admin','1440 · 390',{d:desk({sec:'admin',page:'people'},admPeople(false,'pa')),p:[phone({title:'People and roles',tabs:ADM_TABS,on:1},admPeople(true,'pa'))],cap:'<b>Desktop and phone.</b> Every person and every workspace. The workspace requests waiting for a platform admin lead the page. The workspace picker narrows the list to one workspace.'}),
   F('Admin › People and roles, workspace admin','1440 · 390',{d:desk({sec:'admin',page:'people',role:'wa'},admPeople(false,'wa')),p:[phone({title:'People and roles',tabs:['At a glance','People and roles','Workspaces you admin'],on:1},admPeople(true,'wa'))],cap:'<b>Desktop and phone.</b> The same page, limited to the workspaces this person administers (eng and design). There is no platform role or Claude account column, and no requests: those are a platform admin\'s.'}),
  ]);
