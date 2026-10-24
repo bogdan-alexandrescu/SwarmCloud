@@ -13,6 +13,11 @@ socket. The row's list, each assertion carrying the mutation it catches:
 cache root; the child's `oom_score_adj` is 1000; not ready in the bound is
 an error with scrubbed log lines; stop removes the data directory; nothing
 listens on a non-loopback address.
+
+TS-CLOUDRUN-REFUSE (BGD 2026-10-24, "Refuse on Cloud Run"): with no
+SWARM_CACHE_ROOT the data directory would sit in the workspace tmpfs,
+charged to the container's memory, so `start` refuses before `initdb`. Every
+other test here runs with it set, as on GKE (`_cache_volume`).
 """
 
 from __future__ import annotations
@@ -57,6 +62,15 @@ class FakeChild:
         if self.returncode is None:
             raise subprocess.TimeoutExpired("postgres", timeout or 0)
         return self.returncode
+
+
+@pytest.fixture(autouse=True)
+def _cache_volume(tmp_path, monkeypatch):
+    """The GKE worker: its cache on a volume of its own."""
+    root = tmp_path / "cache-volume"
+    root.mkdir()
+    monkeypatch.setenv("SWARM_CACHE_ROOT", str(root))
+    return root
 
 
 class FakeRunner:
@@ -400,6 +414,99 @@ def test_a_running_server_reports_alive_and_a_dead_one_its_exit(tmp_path):
     runner.child.returncode = -9
     # MUTATION: report a server the OOM killer took as still running.
     assert service.exit_status() == -9
+
+
+NO_CACHE_VOLUME = (
+    "test services need SWARM_CACHE_ROOT on its own volume; "
+    "this runner keeps its workspace in memory"
+)
+
+
+@pytest.mark.parametrize("value", [None, "", "  "])
+def test_without_a_cache_volume_start_refuses_and_runs_no_initdb(tmp_path, monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv("SWARM_CACHE_ROOT", raising=False)
+    else:
+        monkeypatch.setenv("SWARM_CACHE_ROOT", value)
+    runner = FakeRunner()
+    running = _start(tmp_path, runner)
+    # MUTATION: initdb into the Cloud Run workspace tmpfs, charged to memory.
+    assert runner.calls == []
+    [service] = running.services
+    # MUTATION: refuse silently, or with a reason that does not name the volume.
+    assert service.error == NO_CACHE_VOLUME
+    assert running.errors() == [NO_CACHE_VOLUME]
+    # MUTATION: leave a data directory behind in the workspace.
+    assert not (tmp_path / "cache" / "services").exists()
+    running.stop()
+
+
+def test_the_refusal_reads_the_environment_it_is_given(tmp_path, monkeypatch):
+    monkeypatch.delenv("SWARM_CACHE_ROOT", raising=False)
+    runner = FakeRunner()
+    clock = FakeClock()
+    running = testservices.start(
+        DECLARED,
+        tmp_path / "cache",
+        scrub=lambda s: s,
+        runner=runner,
+        clock=clock,
+        sleep=clock.sleep,
+        environ={"SWARM_CACHE_ROOT": str(tmp_path)},
+    )
+    # MUTATION: decide by a hard-coded profile name rather than the environment.
+    assert running.errors() == [] and _names(runner)[0] == ("run", "initdb")
+    running.stop()
+
+
+def test_with_a_cache_volume_start_proceeds_as_before(tmp_path, _cache_volume):
+    runner = FakeRunner()
+    running = _start(tmp_path, runner)
+    # MUTATION: refuse on GKE too, where the data sits on the cache volume.
+    assert running.errors() == []
+    assert [name for _, name in _names(runner)][:2] == ["initdb", "postgres"]
+    running.stop()
+
+
+def test_the_pre_publish_report_shows_the_refusal_as_not_started(tmp_path, monkeypatch):
+    monkeypatch.delenv("SWARM_CACHE_ROOT", raising=False)
+    running = _start(tmp_path, FakeRunner())
+    # MUTATION: report the refused service as running, or drop its reason.
+    assert running.report() == [f"postgres: service not started: {NO_CACHE_VOLUME}"]
+
+
+def test_the_pre_publish_report_names_every_service_that_did_not_start(tmp_path):
+    started = _start(tmp_path / "up", FakeRunner())
+    # MUTATION: report a running service as not started.
+    assert started.report() == []
+    started.stop()
+    failed = _start(tmp_path / "down", FakeRunner(initdb_status=1))
+    [line] = failed.report()
+    # MUTATION: report TS-RUN's own start failures differently from the refusal.
+    assert line.startswith("postgres: service not started: the declared postgres did not start")
+
+
+def test_the_worker_logs_the_refusal_as_not_started(tmp_path, monkeypatch):
+    from agent_worker.lifecycle import Worker
+
+    monkeypatch.delenv("SWARM_CACHE_ROOT", raising=False)
+    runner = FakeRunner()
+    real_start = testservices.start
+    monkeypatch.setattr(
+        testservices,
+        "start",
+        lambda declaration, cache, *, scrub: real_start(
+            declaration, cache, scrub=scrub, runner=runner
+        ),
+    )
+    stub = _worker_stub(tmp_path, '[postgres]\nversion = 16\ndatabases = ["app_test"]\n')
+    Worker._start_test_services(stub)
+    assert runner.calls == []
+    warnings = [kw for level, _, kw in stub.log.lines if level == "warning"]
+    # MUTATION: log the refusal as something other than a service not started.
+    assert [w.get("report") for w in warnings] == [
+        f"postgres: service not started: {NO_CACHE_VOLUME}"
+    ]
 
 
 def test_the_worker_starts_the_service_after_the_clone_and_stops_it_in_cleanup():
