@@ -201,6 +201,22 @@ def test_a_read_back_whose_probe_is_refused_starts_no_row(tmp_path):
     assert _rows(got) == []
 
 
+def test_a_reply_with_the_specs_digest_but_no_steps_says_the_digest_matched(tmp_path):
+    """The read-back settles the missing steps; the note must not claim a
+    digest that was served, and matched, went unserved."""
+    got = _run(tmp_path, _ONE, _answers(_thin(spec_digest=_bridge_digest(_ONE)), _read_back()))
+
+    assert "error" not in got, got.get("error")
+    result = got["result"]
+    assert result["state"] == "SUCCEEDED", result.get("error")
+    assert len(_reads(got)) == 1
+    assert _rows(got) == ["build"]
+    assert result["verified_by"] == "read_back", result
+    assert "named 0 of the spec's 1 step(s)" in result["verify_note"], result["verify_note"]
+    assert "not served" not in result["verify_note"], result["verify_note"]
+    assert "matches the spec's" in result["verify_note"], result["verify_note"]
+
+
 def test_a_served_digest_that_differs_is_unverified_even_when_steps_are_missing(tmp_path):
     """A digest that was served and is not the spec's is evidence the relay
     changed the spec (a prompt, say), which no read of step ids and profiles
