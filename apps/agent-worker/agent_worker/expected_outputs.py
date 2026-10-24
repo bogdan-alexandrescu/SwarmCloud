@@ -276,7 +276,7 @@ def questions_line() -> str:
     the owner and never acted on", and named neither the `blocking` key nor
     `await-answers`. That stopped being true for every question with lane
     AU-7: a `"blocking": true` question plus an empty `await-answers` beside
-    the file is parked HUMAN_REQUIRED by `Worker._await_owner_or_release`
+    the file parks the step for the owner in `Worker._await_owner_or_release`
     (lifecycle STEP 9b'), which runs before `_finalise` and so before the
     publish check. No agent could know that. Measured on
     task_adb791a17d2e47d6985f: a ci-fix agent rightly stopped on an owner
