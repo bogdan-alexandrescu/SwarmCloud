@@ -157,6 +157,7 @@ figcaption b{color:var(--text)}
 .chip.ok{color:var(--ok-ink);background:color-mix(in srgb,var(--ok) 13%,transparent)}
 .chip.info{color:var(--info-ink);background:color-mix(in srgb,var(--info) 14%,transparent)}
 .chip svg{width:10px;height:10px}
+.chip.multi{white-space:normal;border-radius:8px;min-width:0}
 .st{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .st svg{width:12px;height:12px;flex:none}
 .st.ok{color:var(--ok)}.st.warn{color:var(--warn)}.st.bad{color:var(--bad)}.st.unk,.st.n{color:var(--text-faint)}.st.info{color:var(--info)}.st.run{color:var(--info)}
@@ -377,8 +378,13 @@ figcaption b{color:var(--text)}
 
 <div class="idea" aria-label="Proposal B: idea, pros and risks">
   <div><h3>Idea</h3><p>Every page answers "is this working?" before "what is in it?". <b>Config</b> opens on status cards: GitHub connected, N repositories reachable, secrets set or missing per scope, setup progress, MCP servers and people. Each card names its one problem, if it has one, and leads to its page. Each page then opens with a row of health tiles before its lists. Secrets is a card per scope, each with counts, and missing items are flagged on the card. Every value is set through a one-time form in a modal. Admin opens the same way, and Platform counts' Over time leads with big headline figures, then the chart, then the breakdown.</p></div>
-  <div><h3>Pros</h3><ul><li>A workspace admin sees what is broken from one screen, without opening six pages.</li><li>The panel carries the same marks as the cards (for example "2 missing" on Secrets), so a problem is visible from any page in Config.</li><li>Health tiles are one component used on every page, so the pages stay consistent when they are built.</li><li>The phone reads well: tiles go two across, and lists become stacked rows.</li></ul></div>
+  <div><h3>Pros</h3><ul><li>A workspace admin sees what is broken from one screen, without opening six pages.</li><li>The panel carries the same marks as the cards (for example "1 missing" on Secrets), so a problem is visible from any page in Config.</li><li>Health tiles are one component used on every page, so the pages stay consistent when they are built.</li><li>The phone reads well: tiles go two across, and lists become stacked rows.</li></ul></div>
   <div><h3>Risks</h3><ul><li>Each landing reads more than one route, so the overview needs a summary route per card (or it reads slowly). The figures must stay honest while those reads are in flight: a dash with "reading…", never 0.</li><li>"At a glance" adds an entry to the Config and Admin panels. It is the section's landing page, not a seventh Config page.</li><li>Tiles take vertical space above every list. A person who visits only to find one row scrolls past them every time.</li><li>"Missing" needs a definition per item. Here it means a consumer that needs a value which is not set, never a guess.</li></ul></div>
+</div>
+
+<div class="idea" aria-label="Decided and open">
+  <div><h3>Decided</h3><ul><li><b>Config › People and roles</b> in a group workspace is readable by every member and every viewer; only a workspace admin or a platform admin changes it. A personal workspace has no People and roles (BGD, 2026-10-24 00:31Z).</li><li>Add a new workspace is a platform admin's only; schedules and approvals stay in Automate; Settings › API keys moves to Config › Secrets (BGD, 2026-10-23 23:57Z).</li></ul></div>
+  <div><h3>Open</h3><ul><li>Which of the five proposals BGD picks.</li></ul></div>
 </div>
 
 <ul class="toc" id="toc"></ul>
@@ -444,10 +450,10 @@ const ROLE={pa:'platform admin',wa:'workspace admin',mem:'member'};
 const CONFIG_PAGES=[
   ['github','GitHub access','github',''],
   ['repos','Repositories','repo','<span class="pmark bad">'+M('bad')+'1</span>'],
-  ['secrets','Secrets','key','<span class="pmark warn">'+M('warn')+'2 missing</span>'],
+  ['secrets','Secrets','key','<span class="pmark warn">'+M('warn')+'1 missing</span>'],
   ['mcp','MCP servers','plug',''],
   ['people','People and roles','people',''],
-  ['wss','Workspace Settings','ws','<span class="pmark n">7 of 9</span>'],
+  ['wss','Workspace Settings','ws','<span class="pmark n" title="6 of 8 required done · 1 optional (Request your workspace)">6 of 8</span>'],
 ];
 const ADMIN_PAGES=[
   ['people','People and roles','people','<span class="pmark warn">3 waiting</span>','both'],
@@ -466,8 +472,8 @@ function rail(role,on,ws=WS.eng){
 }
 function panelPages(sec,page,role,ws,mk=null){
   if(sec==='config'){
-    const pages=CONFIG_PAGES.filter(p=>p[0]!=='people'||(ws.group&&hasAdmin(role)));
-    return `<div class="pt">Config</div><a class="pk home ${page==='home'?'on':''}">${I('overview')}<span class="l">At a glance</span></a>${pages.map(([k,l,ic,m])=>`<a class="pk ${k===page?'on':''}">${I(ic)}<span class="l">${l}</span>${ws===WS.eng&&role!=='mem'?(mk&&k in mk?mk[k]:m):''}</a>`).join('')}${!ws.group?'<p class="pnote">A personal workspace has only you, so it has no People and roles.</p>':(!hasAdmin(role)?'<p class="pnote">People and roles is shown to this workspace\'s admins.</p>':'')}`;
+    const pages=CONFIG_PAGES.filter(p=>p[0]!=='people'||ws.group);
+    return `<div class="pt">Config</div><a class="pk home ${page==='home'?'on':''}">${I('overview')}<span class="l">At a glance</span></a>${pages.map(([k,l,ic,m])=>`<a class="pk ${k===page?'on':''}">${I(ic)}<span class="l">${l}</span>${ws===WS.eng&&role!=='mem'?(mk&&k in mk?mk[k]:m):''}</a>`).join('')}${!ws.group?'<p class="pnote">A personal workspace has only you, so it has no People and roles.</p>':(!hasAdmin(role)?'<p class="pnote">You read People and roles; this workspace\'s admins change it.</p>':'')}`;
   }
   if(sec==='admin'){
     const pages=ADMIN_PAGES.filter(p=>role==='pa'||p[4]==='both');
@@ -505,29 +511,30 @@ function configHome(ph){
   <div class="scards">
   ${scard({ic:'github',title:'GitHub access',s:'ok',big:'Connected',line:'as @operator · GitHub App · renewed 3h ago',flags:[chip('installed on 2 owners'),chip('quota 4,812 of 5,000 left')],go:'GitHub access'})}
   ${scard({ic:'repo',title:'Repositories',s:'bad',big:'12 <small>reachable as you</small>',line:'8 Write · 4 Read · 9 registered for indexing',flags:[chip('1 Push check missing','bad'),chip('2 index behind','warn'),chip('Push test not run on 7')],go:'Repositories'})}
-  ${scard({ic:'key',title:'Secrets',s:'warn',big:'20 <small>set</small>',rows:`<div class="rows"><div><span>Workspace · eng</span><span>10 set · ${chip('1 missing','warn')}</span></div><div><span>Yours</span><span>5 set</span></div><div><span>Repositories</span><span>5 set · ${chip('1 missing','warn')}</span></div></div>`,flags:[chip('2 shadowed by yours','info')],go:'Secrets'})}
-  ${scard({ic:'ws',title:'Setup progress',s:'warn',big:'7 <small>of 9 done</small>',rows:`<div class="bar" role="img" aria-label="7 of 9 steps done"><i style="width:77.8%"></i></div>`,line:'Next: Verify access, 1 check failed on example-org/example-web',go:'Workspace Settings · Workspace setup'})}
+  ${scard({ic:'key',title:'Secrets',s:'warn',big:'20 <small>set</small>',rows:`<div class="rows"><div><span>Workspace · eng</span><span>10 set</span></div><div><span>Yours</span><span>5 set</span></div><div><span>Repositories</span><span>5 set · ${chip('1 missing','warn')}</span></div></div>`,flags:[chip('2 shadowed by yours','info')],go:'Secrets'})}
+  ${scard({ic:'ws',title:'Setup progress',s:'warn',big:'6 <small>of 8 required done</small>',rows:`<div class="bar" role="img" aria-label="6 of 8 required steps done"><i style="width:75%"></i></div>`,line:'1 optional (Request your workspace). Next: Verify access, 1 check failed on example-org/example-web',go:'Workspace Settings · Workspace setup'})}
   ${scard({ic:'plug',title:'MCP servers',s:'ok',big:'3 <small>registered</small>',line:'3 enabled · kb last used 2h ago',flags:[chip('docs: last used —, not served yet')],go:'MCP servers'})}
   ${scard({ic:'people',title:'People and roles',s:'n',big:'18 <small>people</small>',line:'Default role viewer · 3 admins · 4 with their own role',go:'People and roles'})}
   </div>
   ${ph?'':'<span class="exd">example data · the dot on the spine\'s Config item is the worst card\'s state</span>'}`;
 }
 function configHomeMember(){
-  return `${phead('Config / <b>At a glance</b>','Config',{sub:'You are a member of eng. You can read every card; changing workspace secrets, MCP servers and settings is an admin\'s.'})}
+  return `${phead('Config / <b>At a glance</b>','Config',{sub:'You are a member of eng. You can read every card; changing workspace secrets, MCP servers, people\'s roles and settings is an admin\'s.'})}
   <div class="scards">
   ${scard({ic:'github',title:'GitHub access',s:'ok',big:'Connected',line:'as @operator',go:'GitHub access'})}
   ${scard({ic:'repo',title:'Repositories',s:'ok',big:'5 <small>reachable as you</small>',go:'Repositories'})}
   ${scard({ic:'key',title:'Secrets',s:'n',big:'2 <small>of yours set</small>',line:'Workspace: 10 names you can read, not change',go:'Secrets'})}
   ${scard({ic:'plug',title:'MCP servers',s:'n',big:'3 <small>registered</small>',go:'MCP servers'})}
+  ${scard({ic:'people',title:'People and roles',s:'n',big:'18 <small>people</small>',line:'Default role viewer · 3 admins · read-only for you',go:'People and roles'})}
   ${scard({ic:'ws',title:'Workspace Settings',s:'n',big:'eng',line:'group workspace · your role: member',go:'Workspace Settings'})}
   </div>`;
 }
 S('s1','S1','Navigation: Config in the spine, the panel and the phone menu',
  'Config sits between Automate and Capacity. Its panel lists BGD\'s six pages under "At a glance", the section\'s landing page, and each page carries its worst mark from the overview. Admin appears in the spine only for an admin. Settings keeps only Profile, behind the avatar at the foot of the spine.',
  [
-  F('Config at a glance, platform admin in a group workspace','1440 · 390',{d:desk({},configHome(false)),p:[phone({title:'Config',tabs:CFG_TABS},configHome(true))],cap:'<b>Desktop and phone.</b> The landing page of Config. Six cards: GitHub, repositories, secrets per scope, setup progress, MCP servers and people. Each card names its one problem and opens its page. Because a card needs a look, the spine\'s Config item carries a dot, so the problem is visible from every section. On the phone, the page strip under the header replaces the panel, and the cards stack.'}),
-  F('The Config panel for each role, and the personal workspace','4 × 320',{d:`<div class="navs">${navOnly({sec:'config',page:'home',role:'pa',ws:WS.eng})}${navOnly({sec:'config',page:'home',role:'wa',ws:WS.eng})}${navOnly({sec:'config',page:'home',role:'mem',ws:WS.eng})}${navOnly({sec:'config',page:'home',role:'pa',ws:WS.own})}</div>`,cap:'<b>In order.</b> A <b>platform admin</b> in eng: all six Config pages, each with its mark, and Admin in the spine. A <b>workspace admin</b> of eng: the same six pages, and Admin in the spine (its two pages are drawn in S10). A <b>member</b>: no Admin in the spine, and no People and roles under Config, with one line saying who sees it. A <b>personal workspace</b>: Config has no People and roles, and the panel says why. Admin\'s panel for each kind of admin is drawn with its pages in S10.'}),
-  F('Settings after the move, and a member\'s Config','320 · 390',{d:`<div class="navs">${navOnly({sec:'settings',page:'profile',role:'mem',ws:WS.eng})}</div>`,p:[phone({title:'Config',tabs:CFG_TABS.filter(t=>t!=='People and roles')},configHomeMember())],cap:'<b>Panel:</b> Settings holds only Profile, reached from the avatar at the foot of the spine. API keys moved to Config › Secrets, and Workspace, MCP servers and People and roles moved to Config. <b>Phone:</b> a member\'s Config has five cards and no People and roles. A member reads names and states; the cards say what is an admin\'s to change.'}),
+  F('Config at a glance, platform admin in a group workspace','1440 · 390',{d:desk({},configHome(false)),p:[phone({title:'Config',tabs:CFG_TABS},configHome(true))],cap:'<b>Desktop and phone.</b> The landing page of Config. Six cards: GitHub, repositories, secrets per scope, setup progress, MCP servers and people. Each card names its one problem and opens its page. The mark on Workspace Settings, 6 of 8, counts the required setup steps only, as the built checklist does: Request your workspace is optional and is not counted. Because a card needs a look, the spine\'s Config item carries a dot, so the problem is visible from every section. On the phone, the page strip under the header replaces the panel, and the cards stack.'}),
+  F('The Config panel for each role, and the personal workspace','4 × 320',{d:`<div class="navs">${navOnly({sec:'config',page:'home',role:'pa',ws:WS.eng})}${navOnly({sec:'config',page:'home',role:'wa',ws:WS.eng})}${navOnly({sec:'config',page:'home',role:'mem',ws:WS.eng})}${navOnly({sec:'config',page:'home',role:'pa',ws:WS.own})}</div>`,cap:'<b>In order.</b> A <b>platform admin</b> in eng: all six Config pages, each with its mark, and Admin in the spine. A <b>workspace admin</b> of eng: the same six pages, and Admin in the spine (its two pages are drawn in S10). A <b>member</b>: no Admin in the spine, and People and roles under Config, which a member reads but does not change (BGD, 2026-10-24), with one line saying so. A viewer\'s panel is the member\'s. A <b>personal workspace</b>: Config has no People and roles, and the panel says why. Admin\'s panel for each kind of admin is drawn with its pages in S10.'}),
+  F('Settings after the move, and a member\'s Config','320 · 390',{d:`<div class="navs">${navOnly({sec:'settings',page:'profile',role:'mem',ws:WS.eng})}</div>`,p:[phone({title:'Config',tabs:CFG_TABS},configHomeMember())],cap:'<b>Panel:</b> Settings holds only Profile, reached from the avatar at the foot of the spine. API keys moved to Config › Secrets, and Workspace, MCP servers and People and roles moved to Config. <b>Phone:</b> a member\'s Config has six cards, People and roles among them (read-only, S5). A member reads names and states; the cards say what is an admin\'s to change.'}),
   F('The phone menu, for each role','390 × 3',{d:'',p:[phoneMenu({sec:'config',page:'home',role:'pa',ws:WS.eng}),phoneMenu({sec:'admin',page:'home',role:'wa',ws:WS.eng}),phoneMenu({sec:'config',page:'home',role:'mem',ws:WS.own})],cap:'<b>Phone.</b> The menu button in the spine-coloured header opens a drawer with both columns. <b>First:</b> a platform admin in Config. <b>Second:</b> a workspace admin in Admin, with its two pages. <b>Third:</b> someone who administers no group workspace, in their personal workspace: no Admin, and no People and roles.'}),
  ]);
 
@@ -571,7 +578,7 @@ function ghChoose(ph){
 S('s2','S2','Config › GitHub access','The GitHub connection and the repository chooser, moved from Work › Access. The connection\'s health leads the page, then the account, then the rules. Choose repositories is the page\'s second view, and Repositories\' "Add new repository" lands on it.',
  [
   F('Connected','1440 · 390',{d:desk({page:'github'},ghConnected(false)),p:[phone({title:'GitHub access',tabs:CFG_TABS,on:1},ghConnected(true))],cap:'<b>Desktop and phone.</b> Four tiles first: the connection, where the App is installed, an org still waiting for its owners, and the GitHub quota. Below them are the account, Disconnect (which confirms, as today), and the three rules from Work › Access, unchanged.'}),
-  F('Not connected','1440 · 390',{d:desk({page:'github',mk:{github:'<span class="pmark bad">'+M('bad')+'not connected</span>',repos:'',wss:'<span class="pmark n">3 of 9</span>'}},ghNot(false)),p:[phone({title:'GitHub access',tabs:CFG_TABS,on:1},ghNot(true))],cap:'<b>Desktop and phone.</b> Before a connection, the figures that need GitHub are dashes with their reason, never 0. The page has one action, Connect GitHub. The banner above the tiles is the one drawn after a Disconnect.'}),
+  F('Not connected','1440 · 390',{d:desk({page:'github',mk:{github:'<span class="pmark bad">'+M('bad')+'not connected</span>',repos:'',wss:'<span class="pmark n" title="2 of 8 required done · 1 optional (Request your workspace)">2 of 8</span>'}},ghNot(false)),p:[phone({title:'GitHub access',tabs:CFG_TABS,on:1},ghNot(true))],cap:'<b>Desktop and phone.</b> Before a connection, the figures that need GitHub are dashes with their reason, never 0. The page has one action, Connect GitHub. The banner above the tiles is the one drawn after a Disconnect.'}),
   F('Choose repositories','1440 · 390',{d:desk({page:'github'},ghChoose(false)),p:[phone({title:'GitHub access',tabs:CFG_TABS,on:1},ghChoose(true))],cap:'<b>Desktop and phone.</b> Onboarding chooser A, as built: owners with their install state, including an org waiting for its owners (Re-check, Withdraw request). Each repository is Not chosen, Read or Write, with "you can push" shown before Write, plus the typed owner/repo row. On the phone the owners stack above the repositories.'}),
  ]);
 
@@ -606,10 +613,10 @@ function secHome(ph){
   return `${phead('Config / <b>Secrets</b>','Secrets',{sub:SEC_CAP,acts:ph?'':btn('Set a secret','p','plus'),age:ph?'':'read 6s ago'})}
   ${seg(['Overview','Workspace','Yours','Repository'],0)}
   <div class="scards">
-  ${scard({ic:'ws',title:'Workspace · eng',s:'warn',big:'10 <small>set</small>',rows:`<div class="rows"><div><span>For agents</span><span>9 set</span></div><div><span>LLM provider keys</span><span>1 set · ${chip('1 missing','warn')}</span></div><div><span>GitHub token</span><span>${st('ok','active')}</span></div></div>`,flags:[chip('openai key missing: codex needs it','warn'),chip('2 shadowed by yours','info')],go:'Open the workspace\'s secrets'})}
+  ${scard({ic:'ws',title:'Workspace · eng',s:'ok',big:'10 <small>set</small>',rows:`<div class="rows"><div><span>For agents</span><span>9 set</span></div><div><span>LLM provider keys</span><span>1 set · anthropic</span></div><div><span>GitHub token</span><span>${st('ok','active')}</span></div></div>`,flags:[chip('2 shadowed by yours','info')],go:'Open the workspace\'s secrets'})}
   ${scard({ic:'people',title:'Yours',s:'ok',big:'5 <small>set</small>',rows:`<div class="rows"><div><span>Personal secrets</span><span>2 · 1 used in eng</span></div><div><span>Your TypeSafe key</span><span>set · wins over eng\'s</span></div><div><span>Browser sessions</span><span>2 · 1 expires in 2d</span></div><div><span>GitHub</span><span>${st('ok','App token active')}</span></div></div>`,go:'Open yours'})}
   ${scard({ic:'repo',title:'Repositories',s:'warn',big:'5 <small>set in 2 repositories</small>',rows:`<div class="rows"><div><span>example-org/example-web</span><span>4 · ${chip('1 missing','warn')}</span></div><div><span>example-org/example-api</span><span>1</span></div><div><span>7 other repositories</span><span>none</span></div></div>`,flags:[chip('QA production sign-in not set','warn'),chip('Actions environment preview: any branch','warn')],go:'Pick a repository'})}
-  ${scard({ic:'key',title:'Keys for agents and MCP',s:'warn',big:'4 <small>of 5</small>',line:'LLM provider keys, TypeSafe (yours and eng\'s), MCP server credentials',flags:[chip('openai not set','warn')],go:'Keys for agents and MCP'})}
+  ${scard({ic:'key',title:'Keys for agents and MCP',s:'ok',big:'4 <small>set</small>',line:'LLM provider keys, TypeSafe (yours and eng\'s), MCP server credentials',go:'Keys for agents and MCP'})}
   ${scard({ic:'github',title:'GitHub tokens',s:'ok',big:'3 <small>active</small>',line:'workspace token · your App token · 1 owner fallback',go:'GitHub token status'})}
   </div>
   <p class="hint">When one name is set in several scopes, yours wins, then the repository's, then the workspace's. Each card shows the overrides it causes.</p>`;
@@ -625,7 +632,7 @@ function secWorkspace(ph){
   ${seg(['Overview','Workspace','Yours','Repository'],1)}
   ${health([
    {s:'ok',label:'For agents',big:'9 <small>set</small>',sub:'7 granted · 2 granted to nothing yet'},
-   {s:'warn',label:'LLM provider keys',big:'1 <small>of 2</small>',sub:'openai not set',go:'Keys'},
+   {s:'ok',label:'LLM provider keys',big:'1 <small>set</small>',sub:'anthropic · every live profile has its key',go:'Keys'},
    {s:'ok',label:'GitHub token',big:'Active',sub:'workspace token · verified 1h ago',go:'GitHub'},
    {s:'info',label:'Overridden',big:'2',sub:'search-api-key, typesafe-key: Operator\'s own win on their agents'},
   ])}
@@ -689,14 +696,14 @@ function secRepoActions(ph){
 function secKeys(ph){
   return `${phead('Config / Secrets / <b>Keys for agents and MCP</b>','Keys for agents and MCP',{sub:'The keys agents and MCP servers run on, in your scope and eng\'s. Settings › API keys (the TypeSafe keys) moved here and its old address redirects. Each Set opens the one-time set link, as today.'})}
   ${health([
-   {s:'warn',label:'LLM provider keys',big:'1 <small>of 2</small>',sub:'openai not set: the codex profile needs it'},
+   {s:'ok',label:'LLM provider keys',big:'1 <small>set</small>',sub:'anthropic · every live profile has its key'},
    {s:'ok',label:'TypeSafe',big:'Your key',sub:'is what your agents in eng use'},
    {s:'ok',label:'MCP credentials',big:'1 <small>stored</small>',sub:'2 servers need none stored'},
    {s:'n',label:'Subscription accounts',big:'4',sub:'on Capacity › Accounts',go:'Accounts'},
   ])}
   ${card('LLM provider keys · eng',tbl(['Provider','State','Set','Needed by',''],[
     ['<b>anthropic</b>',st('ok','set'),'14d ago by Operator','claude-code, browser',btn('Set','sm')],
-    {flag:'flag',cells:['<b>openai</b>',st('warn','not set'),'—','codex',btn('Set','p sm')]},
+    ['<b class="dim">openai</b>',st('n','not set'),'—','<span class="dim">nothing: codex is disabled</span>',btn('Set','g sm')],
   ],ph),{flush:true})}
   ${card('TypeSafe',tbl(['Key','State','Set',''],[
     ['<b>Your key</b><span class="sub">scope: you</span>',st('ok','set'),'6d ago',btn('Set','sm')+' '+btn('Delete','g sm')],
@@ -741,12 +748,12 @@ function secEmpty(ph){
 }
 S('s4','S4','Config › Secrets','One page for every scope (secrets-scopes.md §6.1): an overview of one card per scope, then the scope picker Workspace · Yours · Repository. A repository has the destination switch Agents | GitHub Actions. Every Set opens a one-time form in a modal.',
  [
-  F('The scope view: one card per scope','1440 · 390',{d:desk({page:'secrets'},secHome(false)),p:[phone({title:'Secrets',tabs:CFG_TABS,on:3},secHome(true))],cap:'<b>Desktop and phone.</b> Each scope is a card with its counts and its missing items flagged: a key a profile needs, a QA sign-in, an environment any branch can deploy. The override order (yours, then the repository\'s, then the workspace\'s) is stated once, and each card flags the overrides it causes.'}),
+  F('The scope view: one card per scope','1440 · 390',{d:desk({page:'secrets'},secHome(false)),p:[phone({title:'Secrets',tabs:CFG_TABS,on:3},secHome(true))],cap:'<b>Desktop and phone.</b> Each scope is a card with its counts and its missing items flagged: a QA sign-in, an environment any branch can deploy. The override order (yours, then the repository\'s, then the workspace\'s) is stated once, and each card flags the overrides it causes.'}),
   F('Workspace scope','1440 · 390',{d:desk({page:'secrets'},secWorkspace(false)),p:[phone({title:'Secrets',tabs:CFG_TABS,on:3},secWorkspace(true))],cap:'<b>Desktop and phone.</b> The built SEC-UI-LIST, moved, with an Override column. search-api-key and typesafe-key are flagged as shadowed on Operator\'s agents, because Operator set their own (the TypeSafe one on Keys for agents and MCP). A dash means "not served yet", never 0. Grants opens the built matrix.'}),
   F('Yours (personal secrets and browser sessions)','1440 · 390',{d:desk({page:'secrets'},secYours(false)),p:[phone({title:'Secrets',tabs:CFG_TABS,on:3},secYours(true))],cap:'<b>Desktop and phone.</b> Personal secrets, with where each one is used and what it overrides. Browser sessions, the sessions browser agents ask for by name, can be deleted here but not typed: they are saved from a live browser.'}),
   F('One repository: secrets for agents and QA sign-ins','1440 · 390',{d:desk({page:'secrets'},secRepoAgents(false)),p:[phone({title:'Secrets',tabs:CFG_TABS,on:3},secRepoAgents(true))],cap:'<b>Desktop and phone.</b> Repository scope with the destination Agents: secrets released only to agents that clone this repository, then Sign-in for QA per environment of its QA target, with the production sign-in flagged as not set. The foot names who may set them, per BGD\'s answer to Q2.'}),
   F('One repository: GitHub Actions with environments','1440 · 390',{d:desk({page:'secrets'},secRepoActions(false)),p:[phone({title:'Secrets',tabs:CFG_TABS,on:3},secRepoActions(true))],cap:'<b>Desktop and phone.</b> The first tile is "You may write here", checked live: a workspace manager whom GitHub calls admin of the repository. Below it are the repository secrets and the environments with their branch rule. repo-secrets is main only; preview lets any branch deploy, so a write there asks for its name. Until a later step, Create environment is "Create on GitHub ↗" plus Check rule.'}),
-  F('Keys for agents and MCP','1440 · 390',{d:desk({page:'secrets'},secKeys(false)),p:[phone({title:'Secrets',tabs:CFG_TABS,on:3},secKeys(true))],cap:'<b>Desktop and phone.</b> LLM provider keys with the profile that needs each one, so "missing" is a fact, not a guess. TypeSafe, yours and the workspace\'s, says which one your agents use. MCP credentials: stored, per-run (never stored), or none. Subscription accounts are a link to Capacity › Accounts.'}),
+  F('Keys for agents and MCP','1440 · 390',{d:desk({page:'secrets'},secKeys(false)),p:[phone({title:'Secrets',tabs:CFG_TABS,on:3},secKeys(true))],cap:'<b>Desktop and phone.</b> LLM provider keys with the profile that needs each one, so "missing" is a fact, not a guess. The codex profile has been disabled since 2026-09-23, so openai is needed by nothing and is not flagged. TypeSafe, yours and the workspace\'s, says which one your agents use. MCP credentials: stored, per-run (never stored), or none. Subscription accounts are a link to Capacity › Accounts.'}),
   F('GitHub token status','1440 · 390',{d:desk({page:'secrets'},secGit(false)),p:[phone({title:'Secrets',tabs:CFG_TABS,on:3},secGit(true))],cap:'<b>Desktop and phone.</b> Status only, per scope: kind, state, verified, expires and login. It never shows a last-four. An expiry GitHub does not report is a dash with that reason.'}),
   F('The one-time set form','1440 · 390',{d:desk({page:'secrets'},secForm(false)),p:[phone({title:'Secrets',tabs:CFG_TABS,on:3},secForm(true))],cap:'<b>Desktop and phone.</b> Every Set opens this modal from a one-time link the page mints on click. It names the destination and what the value replaces, is never prefilled, and the value is never shown again. The same modal serves every scope; only its first lines change.'}),
   F('Empty state','1440 · 390',{d:desk({page:'secrets',ws:WS.design},secEmpty(false)),p:[phone({title:'Secrets',ws:WS.design,tabs:CFG_TABS,on:3},secEmpty(true))],cap:'<b>Desktop and phone.</b> A new group workspace, design, with nothing stored. The repository card is a dash with its reason (no repository is registered), not 0, and the page has one obvious action.'}),
@@ -766,20 +773,22 @@ function mcp(ph){
     ['<b>docs</b>','https://docs.example.com/mcp','none',st('ok','enabled'),dash('not served yet'),btn('Edit','sm')+' '+btn('Disable','g sm')],
   ],ph),{flush:true,foot:'The body is today\'s Settings › MCP servers, unchanged: the register form, profiles, allowed tools and the addresses to allowlist.'})}`;
 }
-function cfgPeople(ph){
-  return `${phead('Config / <b>People and roles</b>','People and roles',{sub:'This workspace\'s people and roles. Shown only in a group workspace, to its admins.'})}
+function cfgPeople(ph,role='pa'){
+  const ro=role==='mem';
+  const rows=[
+    ['<b>Operator</b><span class="sub">operator@example.com</span>','admin','Operator','30d ago',dash('your own role')],
+    ['<b>Rae</b><span class="sub">rae@example.com</span>','admin','Operator','12d ago',btn('Return to default','g sm')],
+    ['<b>Kai</b><span class="sub">kai@example.com</span>','admin','Operator','20d ago',btn('Return to default','g sm')],
+    ['<b>Sam</b><span class="sub">sam@example.com</span>','member','Rae','3d ago',btn('Return to default','g sm')],
+  ].map(r=>ro?r.slice(0,4):r);
+  return `${phead('Config / <b>People and roles</b>','People and roles',{sub:ro?'eng\'s people and roles, read-only: you are a member. A workspace admin or a platform admin changes them.':'This workspace\'s people and roles. Every member and viewer reads this page; only its admins change it.'})}
   ${health([
    {s:'n',label:'People',big:'18',sub:'in eng\'s Google group'},
    {s:'n',label:'Default role',big:'viewer',sub:'set by Operator 9d ago'},
    {s:'n',label:'Admins',big:'3',sub:'named one by one'},
    {s:'n',label:'Own roles',big:'4',sub:'people with a role of their own'},
   ])}
-  ${card('People with their own role',tbl(['Person','Role','Given by','When',''],[
-    ['<b>Operator</b><span class="sub">operator@example.com</span>','admin','Operator','30d ago',dash('your own role')],
-    ['<b>Rae</b><span class="sub">rae@example.com</span>','admin','Operator','12d ago',btn('Return to default','g sm')],
-    ['<b>Kai</b><span class="sub">kai@example.com</span>','admin','Operator','20d ago',btn('Return to default','g sm')],
-    ['<b>Sam</b><span class="sub">sam@example.com</span>','member','Rae','3d ago',btn('Return to default','g sm')],
-  ],ph),{flush:true,acts:btn('Give a person a role','sm','plus'),foot:'The body is today\'s Settings › People and roles: what each role permits, the forms and the role events.'})}`;
+  ${card('People with their own role',tbl(ro?['Person','Role','Given by','When']:['Person','Role','Given by','When',''],rows,ph),{flush:true,acts:ro?'':btn('Give a person a role','sm','plus'),foot:ro?'Everyone else in eng\'s Google group has the default role, viewer. The body is today\'s Settings › People and roles as a member reads it: what each role permits and the role events, with no forms.':'The body is today\'s Settings › People and roles: what each role permits, the forms and the role events.'})}`;
 }
 function admPeople(ph,role){
   const pa=role==='pa';
@@ -809,7 +818,8 @@ function admPeople(ph,role){
 S('s5','S5','Config › MCP servers, Config › People and roles, and Admin › People and roles','MCP servers and People and roles move from Settings to Config with their bodies as built; each gains its health row. People and roles under Config is the workspace\'s own; Admin › People and roles is the cross-workspace view.',
  [
   F('Config › MCP servers','1440 · 390',{d:desk({page:'mcp'},mcp(false)),p:[phone({title:'MCP servers',tabs:CFG_TABS,on:4},mcp(true))],cap:'<b>Desktop and phone.</b> It sits under Config and keeps the built body, drawn briefly. A server never served shows a dash and its reason under Last used.'}),
-  F('Config › People and roles (group workspace, admins only)','1440 · 390',{d:desk({page:'people'},cfgPeople(false)),p:[phone({title:'People and roles',tabs:CFG_TABS,on:5},cfgPeople(true))],cap:'<b>Desktop and phone.</b> eng\'s people and roles. In a personal workspace this page does not exist (S1), and members do not see it.'}),
+  F('Config › People and roles, admin (group workspace)','1440 · 390',{d:desk({page:'people'},cfgPeople(false)),p:[phone({title:'People and roles',tabs:CFG_TABS,on:5},cfgPeople(true))],cap:'<b>Desktop and phone, platform admin.</b> eng\'s people and roles with the change controls: Give a person a role and Return to default. A workspace admin of eng sees the same page. In a personal workspace this page does not exist (S1).'}),
+  F('Config › People and roles, member (read-only)','1440 · 390',{d:desk({page:'people',role:'mem'},cfgPeople(false,'mem')),p:[phone({title:'People and roles',tabs:CFG_TABS,on:5},cfgPeople(true,'mem'))],cap:'<b>Desktop and phone, member of eng.</b> The same roster and roles, read-only (BGD, 2026-10-24 00:31Z): no Give a person a role, no role switch and no Return to default. A viewer sees the same page. As in S1\'s member frames, the person in the footer stands in for any member of eng; the roster is eng\'s, the same as the admin\'s frame above.'}),
   F('Admin › People and roles, platform admin','1440 · 390',{d:desk({sec:'admin',page:'people'},admPeople(false,'pa')),p:[phone({title:'People and roles',tabs:ADM_TABS,on:1},admPeople(true,'pa'))],cap:'<b>Desktop and phone.</b> Every person and every workspace. The workspace requests waiting for a platform admin lead the page. The workspace picker narrows the list to one workspace.'}),
   F('Admin › People and roles, workspace admin','1440 · 390',{d:desk({sec:'admin',page:'people',role:'wa'},admPeople(false,'wa')),p:[phone({title:'People and roles',tabs:['At a glance','People and roles','Workspaces you admin'],on:1},admPeople(true,'wa'))],cap:'<b>Desktop and phone.</b> The same page, limited to the workspaces this person administers (eng and design). There is no platform role or Claude account column, and no requests: those are a platform admin\'s.'}),
  ]);
@@ -817,16 +827,16 @@ S('s5','S5','Config › MCP servers, Config › People and roles, and Admin › 
 /* S6 ---------- Workspace Settings ---------- */
 function wss(ph,role='pa'){
   const pa=role==='pa';
-  const steps=[['ok','Sign in','done'],['ok','Request your workspace','done · eng is ready'],['ok','Add a Claude account','done · 1 of your own'],['ok','Connect GitHub','connected as @operator · GitHub App'],['ok','Install the App','installed on operator, example-org'],['ok','Enable orgs','2 enabled · example-labs waits for its owners'],['ok','Choose repositories','12 granted'],['bad','Verify access','11 passed · 1 failed · example-web Push'],['n','Ready','submit a first agent in eng']];
+  const steps=[['ok','Sign in','done'],['ok','Request your workspace','done · eng is ready',1],['ok','Add a Claude account','done · 1 of your own'],['ok','Connect GitHub','connected as @operator · GitHub App'],['ok','Install the App','installed on operator, example-org'],['ok','Enable orgs','2 enabled · example-labs waits for its owners'],['ok','Choose repositories','12 granted'],['bad','Verify access','11 passed · 1 failed · example-web Push'],['n','Ready','submit a first agent in eng']];
   return `${phead('Config / <b>Workspace Settings</b>','Workspace Settings',{sub:'eng · group workspace. Its settings, and the steps that make it ready to run agents.',acts:pa?btn('Add a new workspace','p','plus'):''})}
   ${health([
-   {s:'warn',label:'Workspace setup',big:'7 <small>of 9</small>',sub:'next: Verify access',go:'Fix it'},
+   {s:'warn',label:'Workspace setup',big:'6 <small>of 8 required</small>',sub:'1 optional · next: Verify access',go:'Fix it'},
    {s:'ok',label:'Workspace',big:'Ready',sub:'eng · group · made 30d ago'},
    {s:'n',label:'Send code to Jev',big:'Off',sub:'the default · set by Operator 9d ago'},
    {s:'n',label:'Your role',big:pa?'platform admin':'admin',sub:pa?'and admin of eng, given to you by name':'of eng, given to you by name'},
   ])}
   <div class="grid2">
-  ${card('Workspace setup',`<ol class="steps">${steps.map(([s,l,e],i)=>`<li>${st(s,'')}<span class="sl"><b>${l}</b><span>${e}</span></span>${s==='bad'?btn('Verify access','sm'):''}${s==='n'&&i===8?chip('to do'):''}</li>`).join('')}</ol>`,{acts:chip('7 of 9 done'),foot:'Each step is checked again on every read; nothing here is marked done by hand. Derived 2m ago for Operator.'+(pa?'':' Another workspace is asked for on Workspace setup › Request your workspace; a platform admin approves it.')})}
+  ${card('Workspace setup',`<ol class="steps">${steps.map(([s,l,e,opt],i)=>`<li>${st(s,'')}<span class="sl"><b>${l}${opt?' (optional)':''}</b><span>${e}</span></span>${s==='bad'?btn('Verify access','sm'):''}${s==='n'&&i===8?chip('to do'):''}</li>`).join('')}</ol>`,{acts:'<span class="chip multi">6 of 8 required done · 1 optional (Request your workspace)</span>',foot:'Each step is checked again on every read; nothing here is marked done by hand. Derived 2m ago for Operator.'+(pa?'':' Another workspace is asked for on Workspace setup › Request your workspace; a platform admin approves it.')})}
   <div style="display:flex;flex-direction:column;gap:14px">
   ${card('Code intelligence',`<p><b>Send code to Jev: off (default)</b></p><p class="dim">When on, excerpts of this workspace's code go to Jev, which ranks and judges them. Jev advises; it never decides a verdict.</p>${seg(['Off','On'],0)}`,{foot:'Set by Operator 9d ago.'})}
   ${card('Workspace',`<div class="kvgrid"><span>Name</span><span>eng</span><span>Google group</span><span>eng@example.com</span><span>Kind</span><span>group workspace</span><span>Default role</span><span>viewer · on People and roles</span></div>`)}
@@ -842,7 +852,7 @@ function wssAdd(ph){
 }
 S('s6','S6','Config › Workspace Settings, with Workspace setup and Add a new workspace','Today\'s Settings › Workspace and Work › Setup become one page. Its health row leads with setup progress, and the checklist sits beside the settings. Only a platform admin adds a new workspace from here (BGD, 2026-10-23), the same rule as today\'s Admin › Tenants › New workspace. A workspace admin sees their own workspaces\' settings with no such button, and a member keeps Workspace setup › Request your workspace (today\'s Setup › Request a workspace).',
  [
-  F('Workspace Settings and Workspace setup','1440 · 390',{d:desk({page:'wss'},wss(false)),p:[phone({title:'Workspace Settings',tabs:CFG_TABS,on:6},wss(true))],cap:'<b>Desktop and phone, platform admin.</b> The nine built setup steps with their evidence lines, the failing one with its fix inline, next to Code intelligence and the workspace\'s facts. Add a new workspace is in the header because this person is a platform admin. The Overview card from onboarding pick 1A still links here.'}),
+  F('Workspace Settings and Workspace setup','1440 · 390',{d:desk({page:'wss'},wss(false)),p:[phone({title:'Workspace Settings',tabs:CFG_TABS,on:6},wss(true))],cap:'<b>Desktop and phone, platform admin.</b> The nine built setup steps with their evidence lines, counted as the built checklist counts them: eight required, and Request your workspace optional, the failing one with its fix inline, next to Code intelligence and the workspace\'s facts. Add a new workspace is in the header because this person is a platform admin. The Overview card from onboarding pick 1A still links here.'}),
   F('Workspace Settings for a workspace admin','1440 · 390',{d:desk({page:'wss',role:'wa'},wss(false,'wa')),p:[phone({title:'Workspace Settings',tabs:CFG_TABS,on:6},wss(true,'wa'))],cap:'<b>Desktop and phone, workspace admin of eng.</b> The same page with no Add a new workspace button: adding a workspace is a platform admin\'s. The setup card\'s foot names Workspace setup › Request your workspace, where a member or a workspace admin asks for another one.'}),
   F('Add a new workspace (platform admin only)','1440 · 390',{d:desk({page:'wss'},wssAdd(false)),p:[phone({title:'Workspace Settings',tabs:CFG_TABS,on:6},wssAdd(true))],cap:'<b>Desktop and phone.</b> A modal with name, Google group and default role, opened from the header button only a platform admin has. It is approved automatically, because a platform admin made it. Anyone else asks on Workspace setup › Request your workspace, and that request waits for a platform admin.'}),
  ]);
@@ -886,12 +896,12 @@ function chart(ph){
   return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Agents per day by submission day, first attempts and retries">${g}${bars}</svg></div>`;
 }
 function counts(ph){
-  const shares=[['claude-code',.52,1.0],['codex',.23,.8],['browser',.15,1.6],['visual-qa',.10,1.3]];
+  const shares=[['claude-code',.75,.94],['browser',.15,1.6],['visual-qa',.10,1.3]];
   let accA=0,accR=0,accH=0,accC=0,accK=0;
   const rows=shares.map(([n,s,hw],i)=>{const last=i===shares.length-1;
     const a=last?TOT_F-accA:Math.round(TOT_F*s);accA+=a;const r=last?TOT_R-accR:Math.round(TOT_R*s);accR+=r;
     const h=last?HOURS-accH:Math.round(HOURS*s*hw/1.08);accH+=h;const k=last?REPORTED-accK:Math.round(REPORTED*s);accK+=k;const c=last?COST-accC:Math.round(COST*s);accC+=c;
-    return [`<b>${n}</b>`,fmt(a),fmt(r),fmt(h)+' h',['0.98 B','0.44 B','0.31 B','0.19 B'][i],['0.11 B','0.05 B','0.03 B','0.02 B'][i],['1.31 B','0.55 B','0.33 B','0.22 B'][i],['0.15 B','0.07 B','0.04 B','0.02 B'][i],'at least $'+fmt(c),`${fmt(k)} of ${fmt(a+r)}`]});
+    return [`<b>${n}</b>`,fmt(a),fmt(r),fmt(h)+' h',['1.42 B','0.31 B','0.19 B'][i],['0.16 B','0.03 B','0.02 B'][i],['1.86 B','0.33 B','0.22 B'][i],['0.22 B','0.04 B','0.02 B'][i],'at least $'+fmt(c),`${fmt(k)} of ${fmt(a+r)}`]});
   return `${phead('Admin / <b>Platform counts</b>','Platform counts',{sub:'Every workspace\'s agents over time. A count costs reads, so it runs only when you press Run, never by itself.',acts:btn('Run · 31 reads','p','refresh'),age:'last run 14:02 · 6m ago · not refreshed by itself'})}
   <div class="phead">${seg(['Over time','By state now'],0)}${seg(['Day','Week','Month'],0)}<span class="input filled">Oct 1 to Oct 23 (today) ▾</span><span class="input filled">Every workspace ▾</span></div>
   <div class="hero">
@@ -968,7 +978,7 @@ function admHome(ph,role){
 function admWorkspaces(ph){
   return `${phead('Admin / <b>Workspaces you admin</b>','Workspaces you admin',{sub:'Each group workspace whose stored role for you is admin. A link selects that workspace, then opens the page.'})}
   <div class="scards">
-  ${scard({ic:'ws',title:'eng',s:'warn',big:'7 <small>of 9 set up</small>',rows:`<div class="rows"><div><span>People</span><span>18 · 3 admins</span></div><div><span>Secrets</span><span>10 · ${chip('1 missing','warn')}</span></div><div><span>MCP servers</span><span>3</span></div></div>`,go:'Open eng\'s Config'})}
+  ${scard({ic:'ws',title:'eng',s:'warn',big:'6 <small>of 8 required set up</small>',rows:`<div class="rows"><div><span>People</span><span>18 · 3 admins</span></div><div><span>Secrets</span><span>10</span></div><div><span>MCP servers</span><span>3</span></div></div>`,go:'Open eng\'s Config'})}
   ${scard({ic:'ws',title:'design',s:'n',big:'Ready',rows:`<div class="rows"><div><span>People</span><span>5 · 1 admin</span></div><div><span>Secrets</span><span>none yet</span></div><div><span>MCP servers</span><span>0</span></div></div>`,go:'Open design\'s Config'})}
   </div>`;
 }
