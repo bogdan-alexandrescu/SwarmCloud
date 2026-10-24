@@ -1560,7 +1560,7 @@ admin, not by a gate set to `auto`.
 
 | stop | detected | what happens |
 |---|---|---|
-| **IAM, Terraform bootstrap, `terraform/**/iam*.tf`, any `google_*_iam_*` change** | at plan (the plan's `files`, and a scan of step prompts for the paths) **and** at merge (the pull request's changed files, read through the forge API before the merge continuation is submitted, `issueci._merge`'s point) | **Held** (§4.5, "The hold lives on the issue run"), and the approver must satisfy BOTH the hold's rule and the schedule's approvers (`owner_only` or a named list): a hold only ever makes approval stricter and never replaces them. In a `platform: true` repository the hold is `NEEDS_OWNER` with `approvers: owner_only`. In any other repository it is `NEEDS_SECOND_MEMBER` with `approvers: second_member` (§4.6, SD11). The plan's files are advisory, which is why the merge check exists |
+| **IAM, Terraform bootstrap, `terraform/**/iam*.tf`, any `google_*_iam_*` change** | at plan (the plan's `files`, and a scan of step prompts for the paths) **and** at merge (the pull request's changed files, read through the forge API before the merge continuation is submitted, `issueci._merge`'s point) | **Held** (§4.5, "The hold lives on the issue run"), and the approver must satisfy BOTH the hold's rule and the schedule's approvers (`owner_only` or a named list): a hold only ever makes approval stricter and never replaces them. In a `platform: true` repository the hold is `NEEDS_OWNER` with `approvers: owner_only`. In any other repository it is `NEEDS_SECOND_MEMBER` with `approvers: second_member` (§4.6, SD11). The plan's files are advisory, which is why the merge check exists. The merge check reads the changed files AND their patches, and a hold whose every stop came from the plan's prompt alone (none from the plan's files or the issue; never `security`) clears there when none of it matches the real change: the run's pull request records `hold_cleared` ("hold set from the plan's prompt; the pull request changes none of it"), and the merge follows the gate's ordinary approval (#2259) |
 | **The frozen contract**, `apps/common/swarm_common/**`, in a repository whose registration marks it `platform: true` | the same two points | `NEEDS_OWNER` with `approvers: owner_only`, and the inbox item links [contract-change-requests.md](contract-change-requests.md). `platform: true` exists only in a platform repository, so this hold never reaches another tenant |
 | **`.github/workflows/**`** | at plan | **Refused, not held.** The credential cannot push those files (§0), so the step would fail after spending. When the planner's plan names such a file, the plan is not stored: the run moves `PLANNING` → `FAILED`, a transition `RUN_TRANSITIONS` already has, with `error` carrying the code `WORKFLOWS_PATH` and the matched files. No workflow is submitted, no re-plan is attempted, and no state is added. The issue gets a comment saying the change must be made by a person or split out of the issue, and the sweep's cooldown (§3.1) applies to it as to `NOT_READY`. A person's plan edit (`PLANNED` → `PLANNED`) that adds such a path is refused with the existing 422 `invalid_plan`, naming the path |
 | **A security-class issue**: label `security`, or the form's severity S0 | at selection and at plan | Excluded from `issue-sweep` by default. If a member removes `security` from `labels_exclude`, or a run is created on such an issue by any path, its plan is **always** held and its merge is never `auto` (owner decision 2026-10-08). The hold is `NEEDS_OWNER`, `approvers: owner_only`, in a `platform: true` repository, and `NEEDS_SECOND_MEMBER` elsewhere (SD11) |
@@ -1674,6 +1674,18 @@ Two approvers racing produce one transition, and the loser gets 409
   merges, or switch its merge to automatic (§4.2), when the tenant has more
   than one member. In a personal `u-*` tenant there is one person, so the
   rule cannot apply, and the console says so on the gate card.
+* **The owner waiver** (**Owner decision 2026-10-24, "Owner may decide,
+  audited"**, #2259). Where only the owner may decide -- the gate's approvers
+  or the item's hold are `owner_only` -- the second-person rule would leave
+  nobody: `owner_only` refuses every other member and the rule refuses the
+  owner as the last editor. Measured on `apr_76e9cdc4800ea95c5609fd9b`. So
+  there the platform owner decides even as the last editor, from the
+  inbox, and the decision's transaction writes a second `schedule_audit` row,
+  `second_person_waived_owner`, naming the approval, the schedule and the
+  last editor. Nobody else reaches it, and a named list -- even one naming
+  only the owner -- keeps the rule. A refusal names who may decide (the
+  owner, or the named approvers), never "another member" where no other
+  member is allowed. The `/swarmcloud approve` comment path does not waive.
 * **Platform admins cannot approve another tenant's work** by being admins
   (§5.3), and that includes `PLATFORM_OWNER`. An admin who is also a member
   approves as a member. So an `owner_only` item can only exist where the owner

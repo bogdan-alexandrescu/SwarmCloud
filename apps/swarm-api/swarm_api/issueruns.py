@@ -1494,6 +1494,84 @@ def widen_hold(current: Mapping[str, Any] | None, found: Mapping[str, Any] | Non
     }
 
 
+#: What a run records when the merge point's re-check clears its hold (#2259).
+HOLD_CLEARED_PROMPT_ONLY = "hold set from the plan's prompt; the pull request changes none of it"
+
+
+def prompt_only_hold(
+    hold: Mapping[str, Any] | None,
+    plan: Mapping[str, Any] | None,
+    *,
+    platform: bool,
+    hard_stop_paths: Any,
+    workflow_files: bool = False,
+    issue_read: Mapping[str, Any] | None = None,
+) -> bool:
+    """Whether every stop of `hold` came from the plan's PROMPT alone (#2259).
+
+    Each of its reasons is one `plan_hold` finds over `plan` (its files and
+    the paths and terms its prompts name), and none is one the plan's files
+    and the issue find without the prompt. A reason from anywhere else -- a
+    plan file an edit took out, an earlier head's real files, a registration
+    since narrowed -- is not the prompt's, and keeps the hold. A security-
+    class stop (the issue's label or S0) is never the prompt's.
+
+    `plan` is the run's own, which its signed `plan_digest` covers, so the
+    worker that can write the run document cannot make a real stop look
+    like a mention.
+    """
+    reasons = set((hold or {}).get("reasons") or ())
+    if not reasons or STOP_SECURITY in reasons or is_security_issue(issue_read):
+        return False
+    common = {"platform": platform, "hard_stop_paths": hard_stop_paths, "workflow_files": workflow_files,
+              "issue_read": issue_read}
+    with_prompt = set((plan_hold(plan, **common) or {}).get("reasons") or ())
+    files_only = set((hard_stop_hold(plan_files(plan), **common) or {}).get("reasons") or ())
+    return reasons <= with_prompt and not reasons & files_only
+
+
+def merge_hold(
+    current: Mapping[str, Any] | None,
+    plan: Mapping[str, Any] | None,
+    paths: Any,
+    *,
+    platform: bool,
+    hard_stop_paths: Any,
+    workflow_files: bool = False,
+    issue_read: Mapping[str, Any] | None = None,
+    iam_files: Any = (),
+    patches: Mapping[str, str | None] | None = None,
+    at: datetime | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """`(hold, why it cleared)` after the merge point re-checks the pull
+    request's own changed files and patches (§4.4; owner decision 2026-10-24,
+    #2259).
+
+    The stops run over `paths` and `patches` -- the `_category_hits`
+    path/patch scan, never a prompt -- and the result widens `current`, as
+    `widen_hold` always has, EXCEPT where `current` is `prompt_only_hold`
+    and none of its stops matches the real change: then the prompt's hold
+    clears, the real change's own hold (or None) replaces it, and the second
+    value says why. A stop the real files match keeps the hold as today.
+
+    Clearing needs EVERY changed file's patch: without one a prompt's
+    `secrets` or `tenancy` term could not be shown absent from that file's
+    lines, so a None `patches`, or a file the forge sent no patch for (a
+    large diff, a binary), only ever widens.
+    """
+    found = hard_stop_hold(
+        paths, platform=platform, hard_stop_paths=hard_stop_paths, workflow_files=workflow_files,
+        issue_read=issue_read, iam_files=iam_files, patches=patches, at=at,
+    )
+    reasons = set((current or {}).get("reasons") or ())
+    every_patch = patches is not None and all(patches.get(str(p)) is not None for p in paths)
+    if (current and every_patch and not reasons & set((found or {}).get("reasons") or ())
+            and prompt_only_hold(current, plan, platform=platform, hard_stop_paths=hard_stop_paths,
+                                 workflow_files=workflow_files, issue_read=issue_read)):
+        return (dict(found) if found else None), HOLD_CLEARED_PROMPT_ONLY
+    return widen_hold(current, found), None
+
+
 def hold_always_enforced(hold: Mapping[str, Any] | None) -> bool:
     """Whether a hold carries a stop that is enforced whatever its switch says."""
     return bool(hold) and bool(ENFORCED_STOPS & set(hold.get("reasons") or ()))

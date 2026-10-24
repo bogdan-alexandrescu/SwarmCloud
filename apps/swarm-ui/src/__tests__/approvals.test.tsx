@@ -211,6 +211,32 @@ describe('one item', () => {
     await screen.findByText(/Someone decided this first: run run_8f2a was decided first/, undefined, WAIT)
   })
 
+  it('says who may decide when the last editor is refused, not "Not decided" (#2259)', async () => {
+    const message = "the member who last changed this schedule's gate, scope or spec cannot approve its merge-tier items; another of the schedule's named approvers must: dave@example.com"
+    await mount(
+      'approval=run%3Arun_8f2a',
+      routes((m, url) =>
+        m === 'POST' && url === '/v1/approvals/run%3Arun_8f2a:approve' ? { status: 403, body: { code: 'second_person_required', message } } : null,
+      ),
+    )
+    const detail = await loaded()
+    await waitFor(() => expect(within(detail).getByRole('button', { name: 'Approve' })).toBeTruthy(), WAIT)
+    fireEvent.click(within(detail).getByRole('button', { name: 'Approve' }))
+    await screen.findByText(/You last changed this schedule’s gate, scope or spec: .*named approvers must: dave@example\.com/, undefined, WAIT)
+  })
+
+  it('says an owner-only item is the owner’s even as its last editor (#2259)', async () => {
+    const owner = { ...item('run:run_8f2a'), approvers: 'owner_only', projected: true }
+    await mount(
+      'approval=run%3Arun_8f2a',
+      routes((m, url) =>
+        m === 'GET' && url.split('?')[0] === '/v1/approvals/run%3Arun_8f2a' ? { status: 200, body: { approval: owner, run: { id: 'run_8f2a', state: 'PLANNED', plan: PLAN } } } : null,
+      ),
+    )
+    const detail = await loaded()
+    await within(detail).findByText(/the platform owner only, even as the schedule’s last editor \(the waiver is audited\)/, undefined, WAIT)
+  })
+
   it('asks a one-person tenant for the words its own hold names, and sends them', async () => {
     const held = { ...item('run:run_8f2a', { kind: 'hold' }), hold: { code: 'NEEDS_SECOND_MEMBER', approvers: 'second_member', matched: ['terraform/iam.tf'] } }
     let first = true

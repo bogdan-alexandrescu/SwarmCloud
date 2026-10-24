@@ -101,7 +101,8 @@ const APPROVE_DOES: Readonly<Record<string, string>> = {
 function approversWords(a: unknown): string | null {
   if (a === undefined || a === null || a === '') return null
   if (a === 'members') return 'any member of this tenant'
-  if (a === 'owner_only') return 'the platform owner only'
+  // #2259: the owner decides even as the schedule's last editor, audited.
+  if (a === 'owner_only') return 'the platform owner only, even as the schedule’s last editor (the waiver is audited)'
   if (a === 'second_member') return 'a second member: not the run’s creator, its last plan editor or its schedule’s last gate editor'
   if (Array.isArray(a)) return a.map(String).join(', ')
   return String(a)
@@ -141,6 +142,10 @@ function refusalWords(e: ApiError): string {
       return `The hold does not admit you: ${e.message}`
     case 'approver_not_allowed':
       return `You are not one of this item’s approvers: ${e.message}`
+    // #2259: the server's message names who may decide instead; never
+    // "another member" where the item's approvers admit no other member.
+    case 'second_person_required':
+      return `You last changed this schedule’s gate, scope or spec: ${e.message}`
     default:
       return `Not decided: ${e.message}`
   }

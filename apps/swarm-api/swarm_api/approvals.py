@@ -303,13 +303,20 @@ def decide(
     reason: str | None = None,
     move: Move | None = None,
     audit_detail: Mapping[str, Any] | None = None,
+    waiver: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """§4.5's transaction: state and digest checked, subject moved, decision and audit written.
 
     `move(txn, doc)` moves the subject inside the same transaction. It must
     do its reads before its writes, as every Firestore transaction must, and
     may raise to refuse; nothing is then written.
+
+    `waiver` is `check_gate_approver`'s owner waiver: a second audit row,
+    `second_person_waived_owner`, beside the decision's, in the same
+    transaction, so no waived decision is ever stored without it (#2259).
     """
+    if waiver and not approve:
+        raise ValueError("a waiver is written only beside an approval")
     ref = db.collection(COLLECTION).document(item_id)
     if not approve and not (reason or "").strip():
         raise ScheduleInvalid("reason_required", "a rejection says why")
@@ -348,6 +355,13 @@ def decide(
                 action=schedaudit.APPROVED if approve else schedaudit.REJECTED, by=by, at=now,
                 detail={"approval_id": item_id, "kind": doc.get("kind"), "subject": dict(subject),
                         "reason": update["reason"], **moved, **dict(audit_detail or {})},
+            )
+        if waiver:
+            schedaudit.append(
+                txn, db, schedule_id=str(waiver.get("schedule_id") or subject.get("schedule_id") or ""),
+                tenant_id=tenant_id, action=schedaudit.SECOND_PERSON_WAIVED_OWNER, by=by, at=now,
+                detail={"approval_id": item_id, "kind": doc.get("kind"), "subject": dict(subject),
+                        **dict(waiver)},
             )
         return {**doc, **update}
 
@@ -501,9 +515,29 @@ def require_decider(ctx: Any, auth: Any) -> None:
         store.require(auth, roles.MEMBER, fresh=True)
 
 
+def owner_alone(approvers: Any, hold: Mapping[str, Any] | None = None) -> bool:
+    """Whether only the platform owner may decide: the gate's approvers are
+    `owner_only`, or the item's hold is. A named list is never this, even a
+    list of one."""
+    owner = (APPROVERS_OWNER_ONLY, "owner_only")
+    return approvers in owner or (bool(hold) and (hold or {}).get("approvers") in owner)
+
+
 def check_gate_approver(ctx: Any, tenant_id: str, approvers: Any, *, email: str, is_owner: bool,
-                        schedule: Mapping[str, Any] | None, merge_tier: bool) -> None:
-    """§4.6 for an item with no hold: the gate's approvers, and SD5's second person."""
+                        schedule: Mapping[str, Any] | None, merge_tier: bool,
+                        hold: Mapping[str, Any] | None = None,
+                        owner_waiver: bool = False) -> dict[str, Any] | None:
+    """§4.6 for an item with no hold: the gate's approvers, and SD5's second person.
+
+    THE OWNER WAIVER (#2259, owner decision 2026-10-24 "Owner may decide,
+    audited"): where only the platform owner may decide (`owner_alone` over
+    the gate's approvers and the item's `hold`), the second-person rule would
+    leave nobody, so the owner decides even as the schedule's last editor.
+    Only a caller that writes the audit asks for it (`owner_waiver=True`, and
+    `decide(waiver=...)` with what this returns): the waiver is returned, never
+    applied silently. Nobody but `is_owner` reaches it; a named list and
+    `members` keep the rule exactly. None: no waiver was needed.
+    """
     email = email.strip().lower()
     if approvers == APPROVERS_OWNER_ONLY or approvers == "owner_only":
         if not is_owner:
@@ -514,12 +548,32 @@ def check_gate_approver(ctx: Any, tenant_id: str, approvers: Any, *, email: str,
         if email not in names or tenant is None or not ctx.authenticator.is_tenant_member(email, tenant):
             raise ScheduleForbidden("approver_not_allowed", "only the schedule's named approvers decide its items")
     if merge_tier and schedule is not None and not one_person(ctx, tenant_id):
-        if schedaudit.last_editor(ctx.db, tenant_id, schedule) == email:
+        editor = schedaudit.last_editor(ctx.db, tenant_id, schedule)
+        if editor == email:
+            alone = owner_alone(approvers, hold)
+            if alone and is_owner and owner_waiver:
+                return {"waived": "second_person_required", "last_editor": editor,
+                        "schedule_id": schedule.get("schedule_id"),
+                        "approvers": APPROVERS_OWNER_ONLY,
+                        "hold": (hold or {}).get("code") if hold else None}
             raise ScheduleForbidden(
                 "second_person_required",
                 "the member who last changed this schedule's gate, scope or spec cannot approve its "
-                "merge-tier items; another member must",
+                f"merge-tier items; {_who_may_decide(approvers, alone)}",
+                may_decide=APPROVERS_OWNER_ONLY if alone else approvers,
             )
+    return None
+
+
+def _who_may_decide(approvers: Any, alone: bool) -> str:
+    """The second-person refusal's last clause: who CAN decide, never a
+    person the item's approvers would refuse."""
+    if alone:
+        return ("only the platform owner may decide it, and the owner may as its last editor "
+                "from the console's approvals inbox, where the waiver is audited")
+    if isinstance(approvers, list):
+        return "another of the schedule's named approvers must: " + ", ".join(str(n) for n in approvers)
+    return "another member must"
 
 
 def merge_tier(schedule: Mapping[str, Any] | None) -> bool:
