@@ -1,0 +1,560 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="icon" href="data:,"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Capacity › Accounts: proposal A, Answer first</title>
+<style>
+:root{--bg:#f3f6f9;--surface:#ffffff;--ink:#0d1724;--mute:#4f5d6e;--line:#d6e0ea;--accent:#0369a1;--soft:#e5f3fc;--code:#e9f0f6;
+--bezel:#0d1724;--f-bg:#f3f6f9;--f-sf:#ffffff;--f-ink:#0d1724;--f-mu:#4f5d6e;--f-ln:#d6e0ea;--f-hv:#eef4fa;--f-ac:#0369a1;--f-acs:#e5f3fc;--f-acl:#b6daf2;--ctl:#7d8ea3;
+--ok:#15662c;--ok-bg:#e3f4e7;--ok-bar:#2f8f4a;--bad:#a71b25;--bad-bg:#fbe9ea;--bad-bar:#c2414a;--warn:#805500;--warn-bg:#fbf1dc;--bar-bg:#e3eaf1;--bar-mu:#7d8ea3;--proj:#9fc9e6;
+--f-sh:0 10px 30px rgba(11,58,122,.14);
+--f-display:"Inter Tight",ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;--f-mono:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--soft:#10294a;--code:#12233b;
+--bezel:#3a4f6b;--f-bg:#06101e;--f-sf:#0c1a2e;--f-ink:#eef4fa;--f-mu:#9fb0c4;--f-ln:#1e3350;--f-hv:#11233b;--f-ac:#7cc8f8;--f-acs:#10294a;--f-acl:#1f4a7a;--ctl:#5f7087;
+--ok:#58c668;--ok-bg:#12301f;--ok-bar:#42bf53;--bad:#fa7872;--bad-bg:#3a1418;--bad-bar:#e0605a;--warn:#e0b04a;--warn-bg:#33270c;--bar-bg:#1d3049;--bar-mu:#6f88aa;--proj:#2f5f88;
+--f-sh:0 10px 30px rgba(0,0,0,.5);color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--soft:#10294a;--code:#12233b;
+--bezel:#3a4f6b;--f-bg:#06101e;--f-sf:#0c1a2e;--f-ink:#eef4fa;--f-mu:#9fb0c4;--f-ln:#1e3350;--f-hv:#11233b;--f-ac:#7cc8f8;--f-acs:#10294a;--f-acl:#1f4a7a;--ctl:#5f7087;
+--ok:#58c668;--ok-bg:#12301f;--ok-bar:#42bf53;--bad:#fa7872;--bad-bg:#3a1418;--bad-bar:#e0605a;--warn:#e0b04a;--warn-bg:#33270c;--bar-bg:#1d3049;--bar-mu:#6f88aa;--proj:#2f5f88;
+--f-sh:0 10px 30px rgba(0,0,0,.5);color-scheme:dark}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 var(--f-display);overflow-x:hidden}
+code,.mono{font-family:var(--f-mono)}
+code{font-size:13px;background:var(--code);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+a{color:var(--accent)}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 16px 80px}
+.topbar{position:relative;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(6px);border-bottom:1px solid var(--line)}
+.topbar .in{max-width:1180px;margin:0 auto;padding:8px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.topbar .in span{font-size:13px;color:var(--mute);flex:1;min-width:200px}
+.kick{font:500 13px var(--f-mono);color:var(--accent);margin:0}
+h1{font-size:clamp(28px,5vw,40px);line-height:1.1;margin:.3em 0 .4em}
+h2{font-size:24px;margin:64px 0 8px;padding-top:20px;border-top:1px solid var(--line)}
+h2 .n{font:500 14px var(--f-mono);color:var(--accent);margin-right:10px}
+.lede{font-size:17px;color:var(--mute);max-width:780px}
+p{max-width:80ch}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 0;padding:0;list-style:none}
+.toc a{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:99px;color:var(--ink);text-decoration:none;font-size:13px;background:var(--surface)}
+.idea{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px;margin-top:16px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.idea h3{margin:0 0 4px;font-size:15px;color:var(--accent)}
+.idea p,.idea ul{margin:0;font-size:14px}.idea ul{padding-left:18px}.idea li{margin:3px 0}
+.docmap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin-top:14px}
+.docmap table{border-collapse:collapse;width:100%;font-size:13.5px;min-width:720px}
+.docmap th,.docmap td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+.docmap th{font-size:13px;color:var(--mute);font-weight:600}
+.docmap tr:last-child td{border-bottom:0}
+.dl2{margin:12px 0 0;padding-left:20px;font-size:14px}.dl2 li{margin:6px 0;max-width:90ch}
+figure.fr{margin:18px 0 0;min-width:0}
+figure.fr>figcaption{font-size:13.5px;color:var(--mute);margin-top:8px;max-width:90ch}
+figure.fr>figcaption b{color:var(--ink)}
+.frow{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start;margin-top:18px}
+.frow figure.fr{margin:0;width:402px}
+.scroller{overflow:auto;border-radius:12px;border:1px solid var(--line);max-width:100%}
+.tseg{display:inline-flex;border:1px solid var(--ctl);border-radius:8px;overflow:hidden;background:var(--f-sf)}
+.tseg button{border:0;background:none;padding:4px 10px;font-size:12px;cursor:pointer;color:var(--f-mu)}
+.tseg button+button{border-left:1px solid var(--f-ln)}
+.tseg button[aria-pressed="true"]{background:var(--f-acs);color:var(--f-ac);font-weight:600}
+
+/* ---- the console frame: the V2 Sky spine (navigation.html) ---- */
+figure.fr:has(>.scroller>.app){width:min(1424px,calc(100vw - 16px));margin-left:calc(50% - min(712px,50vw - 8px))}
+figure.fr:has(>.scroller>.app)>figcaption{margin-left:calc(min(712px,50vw - 8px) - min(574px,50vw - 16px))}
+.app{display:flex;width:100%;min-width:1180px;background:var(--f-bg);color:var(--f-ink);font:13px/1.45 var(--f-display);text-align:left;position:relative}
+.rail{width:84px;flex:none;background:linear-gradient(180deg,#0b3a7a,#06101e);display:flex;flex-direction:column;align-items:center;padding:16px 0 12px;gap:2px;color:#bcd6ee}
+.rbrand{padding:2px 0 12px;display:flex}
+.ri{width:76px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;border-radius:10px;color:#bcd6ee;position:relative;text-decoration:none}
+.ri small{font-size:12px;line-height:1.15}
+.ri.on{background:rgba(124,200,248,.2);color:#fff}
+.ri.on::before{content:"";position:absolute;left:-4px;top:10px;bottom:10px;width:3px;border-radius:2px;background:#7cc8f8}
+.ri.rcta{background:#38bdf8;color:#06101e;width:62px;border-radius:12px;font-weight:600}
+.rsep{width:32px;height:1px;background:rgba(255,255,255,.16);margin:6px 0}
+.rgrow{flex:1;min-height:40px}
+.ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.av{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#38bdf8,#0b3a7a);color:#fff;font:600 12px/28px var(--f-display);text-align:center;flex:none;margin-top:8px}
+.av.sm{margin:0}
+.panel{width:236px;flex:none;background:var(--f-sf);border-right:1px solid var(--f-ln);display:flex;flex-direction:column;padding:14px 0}
+.ph{display:flex;align-items:center;gap:8px;padding:2px 16px 12px}
+.wm{font-weight:650;font-size:16.5px}.wm span{color:var(--f-ac)}
+.pill{margin-left:auto;font:600 12px/1 var(--f-mono);padding:4px 7px;border-radius:99px;color:var(--f-ac);border:1px solid var(--f-acl);background:var(--f-acs)}
+.pscroll{flex:1}
+.pt{font-size:12px;color:var(--f-mu);padding:8px 18px 6px;font-weight:600}
+.pk{display:flex;align-items:center;padding:7px 9px;margin:0 10px;border-radius:8px;position:relative;opacity:.86}
+.pk.on{background:var(--f-acs);color:var(--f-ac);opacity:1;font-weight:600}
+.pk.on::before{content:"";position:absolute;left:-10px;top:7px;bottom:7px;width:3px;border-radius:2px;background:var(--f-ac)}
+.pfoot{border-top:1px solid var(--f-ln);padding:10px 14px 0;display:flex;flex-direction:column;gap:8px;margin-top:24px}
+.pfrow{display:flex;gap:8px;align-items:center}
+.pfoot .tseg{align-self:flex-start}
+.ut{display:flex;flex-direction:column;line-height:1.25}.ut b{font-size:13px}.ut small{font-size:12px;color:var(--f-mu)}
+.ct{flex:1;min-width:0;padding:22px 16px 28px;display:flex;flex-direction:column;gap:14px;position:relative}
+.crumb{font-size:12px;color:var(--f-mu)}.crumb b{color:var(--f-ink);font-weight:600}
+.phead{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.phead h3{margin:2px 0 0;font-size:21px}
+.hright{margin-left:auto;display:flex;align-items:center;gap:12px}
+.prov{font:12px var(--f-mono);color:var(--f-mu)}
+.btn{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 12px;border-radius:8px;border:1px solid var(--ctl);background:var(--f-sf);font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;color:var(--f-ink);text-decoration:none}
+.btn.primary{background:var(--f-ac);border-color:var(--f-ac);color:var(--f-sf)}
+.btn.sm{height:28px;font-size:12px;padding:0 10px}
+.btn.danger{color:var(--bad);border-color:var(--bad)}
+.mu{color:var(--f-mu)}
+.ex{font:500 12px var(--f-mono);color:var(--warn);background:var(--warn-bg);border-radius:99px;padding:0 6px;white-space:nowrap}
+
+/* ---- the answer ---- */
+.answer{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:22px;align-items:center;background:var(--f-sf);border:1px solid var(--f-ln);border-radius:12px;padding:18px 20px}
+.answer.none{border-left:4px solid var(--bad-bar)}
+.answer.some{border-left:4px solid var(--ok-bar)}
+.big{font-size:52px;font-weight:650;line-height:1;font-variant-numeric:tabular-nums;white-space:nowrap}
+.big small{font-size:22px;font-weight:550;color:var(--f-mu)}
+.answer .say{font-size:17px;font-weight:600;margin:0;max-width:none}
+.answer .sub{margin:4px 0 0;font-size:13px;color:var(--f-mu);max-width:none}
+.answer .sub b{color:var(--f-ink)}
+.wait{display:flex;flex-direction:column;align-items:flex-end;gap:4px;text-align:right;border-left:1px solid var(--f-ln);padding-left:20px;max-width:320px}
+.wait .wn{font-size:26px;font-weight:650;line-height:1.1;font-variant-numeric:tabular-nums}
+.wait a{font-weight:600}
+.wait small{font-size:12px;color:var(--f-mu)}
+.rule{font-size:12px;color:var(--f-mu);margin:-4px 0 0;max-width:none}
+.rule b{color:var(--f-ink);font-weight:600}
+.banner{display:flex;gap:12px;align-items:flex-start;border:1px solid var(--warn);background:var(--warn-bg);border-radius:12px;padding:12px 14px}
+.banner .bt{flex:1;min-width:0}
+.banner p{margin:2px 0 0;font-size:13px;max-width:none}
+.banner b.h{font-size:14px}
+.banner .acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+
+/* ---- the ranked table ---- */
+.card{background:var(--f-sf);border:1px solid var(--f-ln);border-radius:12px;min-width:0}
+.chd{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;padding:12px 14px 8px}
+.chd h4{margin:0;font-size:15px}
+.cnote{font-size:12px;color:var(--f-mu)}
+.tbl{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums;table-layout:fixed}
+.tbl th{font-size:12px;font-weight:600;color:var(--f-mu);text-align:left;padding:7px 8px;background:var(--f-hv);border-bottom:1px solid var(--f-ln);border-top:1px solid var(--f-ln)}
+.tbl td{padding:9px 8px;border-bottom:1px solid var(--f-ln);vertical-align:top}
+.tbl td small{display:block;font-size:12px;color:var(--f-mu)}
+.tbl tr.grp td{background:var(--f-bg);font-weight:600;font-size:12px;color:var(--f-mu);padding:6px 8px}
+.tbl tr.sel td{background:var(--f-acs)}
+.tbl tr:last-child td{border-bottom:0}
+.tbl .rk{color:var(--f-mu);text-align:right}
+.tbl .nm{font-weight:600}
+.tbl .nm a{color:var(--f-ink);text-decoration:none;border-bottom:1px dotted var(--f-mu)}
+.tag{display:inline-block;font-size:12px;font-weight:500;padding:0 6px;border-radius:9px;margin-top:3px;max-width:100%;overflow-wrap:anywhere}
+.tag.dup{color:var(--warn);background:var(--warn-bg)}
+.tag.unk{color:var(--f-mu);background:var(--f-hv);border:1px dashed var(--ctl)}
+.chip{display:inline-block;font-size:12px;font-weight:600;padding:1px 8px;border-radius:99px;white-space:nowrap}
+.chip.yes{color:var(--ok);background:var(--ok-bg)}
+.chip.no{color:var(--bad);background:var(--bad-bg)}
+.chip.full{color:var(--warn);background:var(--warn-bg)}
+.clr b{font-weight:600}
+.win{display:flex;flex-direction:column;gap:3px}
+.app small,.phone small{font-size:12px}
+.win small{display:block;color:var(--f-mu)}
+.answer .big small{font-size:22px}
+.fcs .v small{font-size:12px}
+.wl{font-size:12.5px}
+.wl b{font-weight:600}
+.bar{position:relative;height:6px;border-radius:3px;background:var(--bar-bg);width:100%;max-width:150px}
+.bar i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:var(--bar-mu)}
+.bar i.under{background:var(--bad-bar)}
+.bar s{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--f-ink);border-radius:1px}
+.bar.reset{background:repeating-linear-gradient(90deg,var(--bar-bg) 0 6px,transparent 6px 9px)}
+.dash{color:var(--f-mu)}
+.tfoot{font-size:12px;color:var(--f-mu);padding:10px 14px;border-top:1px solid var(--f-ln);margin:0;max-width:none}
+
+/* ---- forecast ---- */
+.fc{padding:0 14px 14px}
+.fcsay{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:10px}
+.fcs{border:1px solid var(--f-ln);border-radius:9px;padding:8px 12px}
+.fcs .k{font-size:12px;color:var(--f-mu)}
+.fcs .v{font-size:17px;font-weight:650}
+.fcs .v small{font-size:12px;font-weight:500;color:var(--f-mu)}
+svg.lanes{display:block;width:100%;height:auto}
+.lanes text{font:12px var(--f-display);fill:var(--f-mu)}
+.lanes text.nm{fill:var(--f-ink);font-weight:600}
+.lanes .open{fill:var(--ok-bar)}
+.lanes .openp{fill:var(--ok-bar);opacity:.45}
+.lanes .shut{fill:var(--bar-bg)}
+.lanes .grid{stroke:var(--f-ln)}
+.lanes .now{stroke:var(--f-ink);stroke-dasharray:3 3}
+.lanes .dark{fill:var(--bad-bar);opacity:.18}
+.marks{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:var(--f-mu);margin-top:6px}
+.marks span{display:inline-flex;gap:6px;align-items:center}
+.marks i{display:inline-block;width:14px;height:10px;border-radius:2px}
+.cs-note{font-size:12px;color:var(--f-ink);background:var(--f-hv);border-radius:8px;padding:8px 10px;margin:10px 0 0;max-width:none}
+
+/* ---- the side sheet ---- */
+.scrimd{position:absolute;top:0;right:0;bottom:0;left:320px;background:rgba(6,16,30,.35);z-index:3}
+.dsheet{position:absolute;top:0;right:0;bottom:0;width:480px;background:var(--f-sf);border-left:1px solid var(--f-ln);box-shadow:var(--f-sh);z-index:4;padding:18px 20px;display:flex;flex-direction:column;gap:14px;overflow:hidden}
+.shh{display:flex;align-items:flex-start;gap:10px}
+.shh h4{margin:0;font-size:19px}
+.shh .x{margin-left:auto}
+.shsec{border-top:1px solid var(--f-ln);padding-top:12px}
+.shsec h5{margin:0 0 6px;font-size:13px}
+.shsec p{margin:0;font-size:13px}
+.kv{display:grid;grid-template-columns:120px minmax(0,1fr);gap:4px 12px;font-size:13px;margin:0}
+.kv dt{color:var(--f-mu)}.kv dd{margin:0}
+.wbig{display:grid;grid-template-columns:72px minmax(0,1fr);gap:4px 12px;align-items:center;margin-top:6px;font-size:13px}
+.wbig .bar{max-width:none;height:10px;border-radius:5px}
+.wbig .bar i{border-radius:5px}
+.wbig .bar s{top:-4px;bottom:-4px}
+.wbig small{grid-column:2;font-size:12px;color:var(--f-mu)}
+.acts{display:flex;gap:8px;flex-wrap:wrap}
+
+/* ---- empty ---- */
+.empty{display:flex;flex-direction:column;align-items:flex-start;gap:10px;padding:26px 24px}
+.empty p{margin:0;font-size:14px}
+
+/* ---- phone ---- */
+.phone{width:402px;flex:none;border-radius:30px;border:6px solid var(--bezel);background:var(--f-bg);color:var(--f-ink);font:13px/1.45 var(--f-display);overflow:hidden;text-align:left;position:relative}
+.pbar{display:flex;align-items:center;gap:8px;padding:12px 12px;background:#0b3a7a;color:#eef4fa}
+.pbar b{font-size:15px;flex:1;font-weight:650}
+.pbar .tn{font-size:12px;color:#bcd6ee}
+.ibtn{border:0;background:none;color:inherit;padding:4px;border-radius:6px;display:inline-flex;cursor:pointer}
+.ibtn .ic{width:20px;height:20px}
+.pbody{padding:12px;display:flex;flex-direction:column;gap:12px}
+.phone .answer{grid-template-columns:1fr;gap:8px;padding:14px}
+.phone .big{font-size:40px}
+.phone .answer .say{font-size:15px}
+.phone .wait{max-width:none;flex-direction:row;flex-wrap:wrap;align-items:baseline;text-align:left;border-left:0;border-top:1px solid var(--f-ln);padding:8px 0 0;gap:4px 8px}
+.phone .wait .wn{font-size:20px}
+.phone .banner{padding:10px 12px}
+.phone .btn{height:36px}
+.acard{background:var(--f-sf);border:1px solid var(--f-ln);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:6px}
+.acard .top{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.acard .top .nm{font-weight:650;font-size:15px}
+.acard .top .chip{margin-left:auto}
+.acard .why{margin:0;font-size:13px}
+.acard .w2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.acard .meta{font-size:12px;color:var(--f-mu);margin:0}
+.acard .meta b{color:var(--f-ink);font-weight:600}
+.pgrp{font-size:12px;font-weight:600;color:var(--f-mu);margin:4px 0 -4px}
+.phone .fcs .v{font-size:15px}
+.phone .fcsay{grid-template-columns:1fr}
+.psheet{display:flex;flex-direction:column;gap:12px;padding:14px 14px 20px;background:var(--f-sf)}
+.psheet .kv{grid-template-columns:96px minmax(0,1fr)}
+.psheet .wbig{grid-template-columns:60px minmax(0,1fr)}
+.back{font-size:13px;color:var(--f-ac);text-decoration:none;font-weight:600}
+@media (max-width:600px){.wrap{padding:20px 12px 60px}h2{margin-top:44px}
+.phone{width:auto;margin:0 -12px;border-width:6px 0;border-radius:0}.frow figure.fr{width:100%}
+figure.fr:has(>.scroller>.app)>.scroller{display:none}
+figure.fr:has(>.scroller>.app)::before{content:"Desktop frame, drawn at 1424: open this page in a wider window to see it. Every state has its phone frame at 390 on this page (P1 to P5).";display:block;padding:12px 14px;border:1px dashed var(--line);border-radius:12px;font-size:13.5px;color:var(--mute)}
+figure.fr:has(>.scroller>.app)>figcaption{margin-left:0}
+.docmap table{min-width:0}.docmap thead{display:none}.docmap tr,.docmap td{display:block}.docmap td{border-bottom:0;padding:2px 12px}.docmap td:first-child{font-weight:600;padding-top:10px}.docmap td:last-child{padding-bottom:10px;border-bottom:1px solid var(--line)}.docmap tr:last-child td:last-child{border-bottom:0}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<linearGradient id="g-hive-b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#7dd3fc"/></linearGradient>
+<symbol id="hive" viewBox="0 0 32 32"><polygon points="16,4 26.39,10 26.39,22 16,28 5.61,22 5.61,10" fill="none" stroke-width="1.6" opacity=".5"/><path d="M16 16 16 4M16 16 26.39 22M16 16 5.61 22" fill="none" stroke-width="1.3" opacity=".5"/><g stroke="none"><circle cx="16" cy="4" r="2.6"/><circle cx="26.39" cy="10" r="2.6"/><circle cx="26.39" cy="22" r="2.6"/><circle cx="16" cy="28" r="2.6"/><circle cx="5.61" cy="22" r="2.6"/><circle cx="5.61" cy="10" r="2.6"/><circle cx="16" cy="16" r="4.6"/></g></symbol>
+<symbol id="i-overview" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5"/><rect x="13.5" y="11" width="7" height="9.5" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
+<symbol id="i-agents" viewBox="0 0 24 24"><rect x="5" y="7.5" width="14" height="11" rx="3"/><path d="M12 4v3.5M9 12.5v1M15 12.5v1M2.5 12v3M21.5 12v3"/></symbol>
+<symbol id="i-auto" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/></symbol>
+<symbol id="i-submit" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-pools" viewBox="0 0 24 24"><path d="M12 3.5 3.5 8 12 12.5 20.5 8Z"/><path d="m3.5 12 8.5 4.5 8.5-4.5"/><path d="m3.5 16 8.5 4.5 8.5-4.5"/></symbol>
+<symbol id="i-limits" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+<symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .8-1 1.5v.4M12 16.8v.2"/></symbol>
+<symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+</defs></svg>
+<div class="topbar"><div class="in"><span>Proposal A of four · every frame follows this toggle</span><div class="tseg" role="group" aria-label="Theme"><button type="button" data-set="light">Light</button><button type="button" data-set="dark">Dark</button><button type="button" data-set="system">System</button></div></div></div>
+<div class="wrap">
+<p class="kick">SwarmCloud · Capacity › Accounts · proposal A · 2026-10-24 · #2222</p>
+<h1>Capacity › Accounts: A, Answer first</h1>
+<p class="lede">On 2026-10-24 the page read “7 accounts · 7 available” while 28 agents waited, because “available” meant only “not paused” and no floor was drawn anywhere. Four lanes draw four proposals for the changed page; this is <b>A</b>. It opens on the pool’s verdict, one sentence and one large number, then ranks the accounts by when each can take a new agent. Detail is a side sheet.</p>
+<p>Figures in F1, F2, F4, P1, P2 and P3 are the ones #2222 measured (the table read 2026-10-24 between 09:04Z and 09:16Z, the organisations read 09:43Z). Anything #2222 does not record is a dash with its reason, or carries an <span class="ex">example</span> mark. F3 and P4 are an example afternoon, and F5 and P5 an example empty pool. Desktop frames are drawn at the window’s width (1424 in a 1440 window); on a phone they give way to a note, because each one has a phone frame.</p>
+<ul class="toc"><li><a href="#idea">Idea, pros, risks</a></li><li><a href="#map">What each mark reads</a></li><li><a href="#f1">F1 09:04Z, old floor</a></li><li><a href="#f2">F2 New floors + forecast</a></li><li><a href="#f3">F3 A full account</a></li><li><a href="#f4">F4 devops-team detail</a></li><li><a href="#f5">F5 Empty pool</a></li><li><a href="#phones">P1–P5 Phone</a></li><li><a href="#decided">Decided and open</a></li></ul>
+
+<h2 id="idea"><span class="n">A</span>Answer first</h2>
+<div class="idea">
+<div><h3>Idea</h3><p>The first thing on the page is the question an operator came with: can the pool take another agent, and if not, when? One big number (“0 of 7”), one sentence naming the account that frees first and when, and on the right how many agents are waiting, linked to them. Under it, one table ranked by <i>when each account can take an agent</i>, grouped as “Can take now”, “Frees when an agent finishes” and “Waits for a window”. Each row says, in words, what blocks it and when that clears, with both windows drawn against their floors. A forecast card says when the pool goes dark at this pace and when it comes back. Everything else about one account (holds, loans, organisation, credential, actions) is in a side sheet.</p></div>
+<div><h3>Pros</h3><ul>
+<li>It answers “why are my agents waiting?” in the first line, and nothing else on the page can contradict it: the number is the count of rows in the first group.</li>
+<li>The rank order is the order the broker’s own <code>next_eligible_at</code> gives, so the top row is the next account the pool will use.</li>
+<li>Each row reads its block in words (“7-day window: 14% left, under its 15% floor”), with the floor drawn as a tick on the bar, so the 15% / 5% rule can be seen, not just known.</li>
+<li>A reset window is drawn as reset, a dashed empty bar, and never shows its old figure.</li>
+<li>The table keeps the built split view’s address (<code>?account=</code>): the side sheet is that pane, opened over the table rather than beside it.</li></ul></div>
+<div><h3>Risks</h3><ul>
+<li>Ranking moves rows whenever a window resets, so an account is not always in the same place. Searching by name, or the address, finds it; the built page sorts by id.</li>
+<li>A side sheet covers the right of the table, so you cannot read one account’s detail beside another’s row. The built page’s split view could.</li>
+<li>The forecast needs a pace, and the broker serves none yet. F2 draws one as an example; built today, the card would have only the reset times (which are facts), and its “goes dark” line would be a dash with its reason.</li>
+<li>Nine columns at 1072 px is tight. The organisation lives under the name, not in a column of its own.</li>
+<li>One large number invites being quoted. It is right only for the tenant reading it: an account not lent to you is not in your 7.</li></ul></div>
+</div>
+
+<h2 id="map"><span class="n">·</span>What each mark reads</h2>
+<p>From <code>GET /v1/accounts</code> as built after PR 2223 and POOL-ACCOUNT-CAP (PR 2231, <code>quota_broker/main.py</code> <code>account_to_api</code>). Two marks need fields that are not served yet; they are named.</p>
+<div class="docmap"><table><thead><tr><th>Mark</th><th>Field</th><th>When it is not a plain value</th></tr></thead><tbody>
+<tr><td>The big number, “N of M”</td><td>count of <code>can_take_new_agent</code> over the rows</td><td>Paused, draining and reauth accounts count in M and never in N. An unreadable document makes the sentence say “of at least M”</td></tr>
+<tr><td>“next: … at …”</td><td>the earliest <code>next_eligible_at</code></td><td>A full account has none (“frees when an agent finishes, no clock”); it is named but given no time</td></tr>
+<tr><td>Agents waiting on the pool</td><td>parked tasks whose park says <code>account_pool_reason</code> (the Agents list, filtered)</td><td>A dash with “could not read the waiting list” if that read fails; never 0</td></tr>
+<tr><td>Can take</td><td><code>can_take_new_agent</code>, and free slots = <code>max_agents</code> − live holds</td><td>“Full” when <code>blocked_by</code> carries <code>{cap, max_agents}</code></td></tr>
+<tr><td>What blocks it</td><td><code>blocked_by[]</code>: <code>window</code>, <code>used</code>, <code>floor</code>, <code>resets_at</code>, <code>aged_reading</code></td><td>An aged reading reads “counted at half, read N min ago”. Paused/draining/reauth say the state and who can change it</td></tr>
+<tr><td>Window bars</td><td><code>windows{}</code>: <code>utilization</code>, <code>resets_at</code>, <code>reset</code>; the floor tick at 100 − floor</td><td><code>reset: true</code> draws a dashed empty bar, “reset 08:39Z · nothing read since”. A window not named <code>five_hour</code> or <code>seven_day</code> is a tag, “1 window not known by name”, held to the 15% default</td></tr>
+<tr><td>Read age</td><td><code>observed_at</code>, <code>stale</code></td><td>Never read: “no reading yet”. Stale: the age in words and “counted at half”</td></tr>
+<tr><td>Signed in to</td><td><b>not served yet</b>: the organisation and plan POOL-DUP-DETECT records at add and refresh</td><td>Until then a dash, “organisation not recorded”</td></tr>
+<tr><td>One subscription twice</td><td><b>not served yet</b>: POOL-DUP-DETECT’s flag</td><td>Until then the page draws nothing; it does not guess from readings in the browser</td></tr>
+<tr><td>Forecast</td><td>window <code>resets_at</code> (served) and a pace (<b>not served</b>)</td><td>Resets are drawn as facts; projected closing times are lighter, labelled, and a dash without a pace</td></tr>
+</tbody></table></div>
+
+<h2 id="f1"><span class="n">F1</span>The pool as read on 2026-10-24 09:04Z, under the old floor</h2>
+<figure class="fr"><div class="scroller" id="F1"></div>
+<figcaption><b>F1 · desktop 1440 · light and dark.</b> The pool #2222 measured, ranked by when each account can take an agent, under the one 15% floor that held until PR 2223 released at 10:25Z. 0 of 7 can take one; aieng-claude1 frees first at 10:10Z (its 5-hour window). Six are under the floor on their 7-day window, and every 5-hour window except aieng-claude1’s has reset, so it is drawn as reset rather than as its old figure. The banner is POOL-DUP-DETECT’s flag on team and saga-personal, which #2222 found were one Personal · Max subscription registered twice; team’s extra window <code>harbor_lantern</code> is a tag. The cap of 6 agents per account did not exist at 09:04Z; it is drawn because the page will have it. No agent held any account (#2222: assigned 0 with 28 waiting).</figcaption></figure>
+
+<h2 id="f2"><span class="n">F2</span>The same pool under the new floors, with the forecast</h2>
+<figure class="fr"><div class="scroller" id="F2"></div>
+<figcaption><b>F2 · desktop 1440 · light and dark.</b> The same readings under the per-window floors (5-hour 15%, 7-day 5%): ai-eng-2, devops-team and devops-main can take agents, 18 free slots. The waiting box says how many of the 28 the wake gate can start, and that another ceiling may start fewer. The forecast card draws each account’s open and blocked stretches from Oct 24 09:00Z to Oct 28 13:00Z. The resets are facts from #2222; the closing times past “now” are lighter and drawn at an <span class="ex">example</span> pace, because the broker serves no pace yet. The claudeswitch note sits under it: laptop sessions spend these same windows.</figcaption></figure>
+
+<h2 id="f3"><span class="n">F3</span>A full account (6 of 6) and an aged reading</h2>
+<figure class="fr"><div class="scroller" id="F3"></div>
+<figcaption><b>F3 · desktop 1440 · light and dark · <span class="ex">example</span>.</b> An example afternoon, shaped after the 13:53Z reading in #2222 (saga-team and aieng-claude1 blocked by their 5-hour floor until 15:00Z and 15:10Z) with invented holds and figures. devops-main holds 6 of 6 and is in its own group, “Frees when an agent finishes”: no clock says when. ai-eng-2’s reading is 52 minutes old, so it counts at half and its 9% left counts as 4.5%, under the 5% floor; the row says so rather than calling it exhausted. eng:team has been replaced by saga-team (Saga · Team).</figcaption></figure>
+
+<h2 id="f4"><span class="n">F4</span>The account detail for devops-team</h2>
+<figure class="fr"><div class="scroller" id="F4"></div>
+<figcaption><b>F4 · desktop 1440 · light and dark.</b> F2’s table with devops-team chosen (<code>?account=eng:devops-team</code>). The side sheet leads with the same verdict as its row, then both windows large with their floors, the reading’s age, agents on it (none at 09:04Z), the cap, its loans and the organisation it was signed in to, its own forecast, and the actions the built page already has. Readings are #2222’s; the loans and the organisation are not in #2222 and carry the <span class="ex">example</span> mark.</figcaption></figure>
+
+<h2 id="f5"><span class="n">F5</span>An empty pool</h2>
+<figure class="fr"><div class="scroller" id="F5"></div>
+<figcaption><b>F5 · desktop 1440 · light and dark · <span class="ex">example</span>.</b> No account is registered for this tenant and none is lent to it. The answer still comes first: none can take an agent, and none will until one is added. The waiting count is an example. On an empty pool the built page opens its sign-in form with no click; it is unchanged, so the frame names it rather than redrawing it.</figcaption></figure>
+
+<h2 id="phones"><span class="n">P</span>Phone, 390</h2>
+<p>The same page at 390: the answer card stacks, the table becomes one card per account in the same rank order and groups, and the side sheet is a full screen with a Back link.</p>
+<div class="frow" id="PH"></div>
+
+<h2 id="decided"><span class="n">·</span>Decided and open</h2>
+<p><b>Decided in this proposal</b></p>
+<ul class="dl2">
+<li>The page opens on the verdict, “N of M accounts can take a new agent”, and the account that frees first. “Available” as a count is gone: the state (paused, draining, reauth) is a reason in the blocks column, not a headline.</li>
+<li>Rank order: can take now (most free slots, then most headroom), then full accounts (no clock), then by <code>next_eligible_at</code>. Paused, draining and reauth accounts would go last, in a group of their own.</li>
+<li>A reset window reads “reset HH:MMZ · nothing read since”, with a dashed empty bar. “Nothing <i>read</i> since” rather than BGD’s “nothing used since”: the broker counts the window as unused, but whether it really was is not known until the next reading.</li>
+<li>The floor is a tick on every bar, and named in words in the blocks column. The rule line under the answer names all four parts of the rule (two floors, the halving, the cap).</li>
+<li>A window the console does not know by name is a tag under the account, held to the default floor, never hidden.</li>
+<li>Detail is a side sheet over the table on desktop and a full screen on a phone, at the address the built page already uses.</li></ul>
+<p><b>Open, for BGD</b></p>
+<ul class="dl2">
+<li>The organisation and plan, and the duplicate flag, need POOL-DUP-DETECT to serve them. Until it does, should the page show a dash, as drawn here, or hide the line?</li>
+<li>The forecast needs a pace the broker does not serve. Is the forecast card worth a broker change (burn per hour per window, from the readings it already stores), or should A ship with resets only?</li>
+<li>Should the waiting count include the later workflow steps that wait on the parked agents (32 on 2026-10-24), or only the 28 that wait on the pool itself? Drawn: 28, with the 32 as a second line.</li>
+<li>Whether a full account outranks one whose window clears in ten minutes. Drawn: it does, because it can free at any moment.</li></ul>
+<p>This is a proposal: nothing is built until BGD picks one of the four.</p>
+</div>
+
+<script>
+(function(){
+/* ---------- theme ---------- */
+var K='accounts-a-theme';
+function apply(m){var r=document.documentElement;if(m==='system'){r.removeAttribute('data-theme')}else{r.setAttribute('data-theme',m)}
+document.querySelectorAll('[data-set]').forEach(function(b){b.setAttribute('aria-pressed',String(b.getAttribute('data-set')===m))})}
+document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('[data-set]');if(!b)return;var m=b.getAttribute('data-set');apply(m);try{localStorage.setItem(K,m)}catch(_){}});
+
+/* ---------- frame chrome ---------- */
+var THEME='<div class="tseg" role="group" aria-label="Theme"><button type="button" data-set="light">Light</button><button type="button" data-set="dark">Dark</button><button type="button" data-set="system">System</button></div>';
+function rail(){return '<nav class="rail" aria-label="Sections"><div class="rbrand"><svg width="44" height="44" aria-hidden="true" style="fill:url(#g-hive-b);stroke:url(#g-hive-b)"><use href="#hive"/></svg></div>'+
+'<a class="ri rcta"><svg class="ic" aria-hidden="true"><use href="#i-submit"/></svg><small>Submit</small></a><div class="rsep"></div>'+
+'<a class="ri"><svg class="ic" aria-hidden="true"><use href="#i-overview"/></svg><small>Overview</small></a>'+
+'<a class="ri"><svg class="ic" aria-hidden="true"><use href="#i-agents"/></svg><small>Work</small></a>'+
+'<a class="ri"><svg class="ic" aria-hidden="true"><use href="#i-auto"/></svg><small>Automate</small></a>'+
+'<a class="ri on"><svg class="ic" aria-hidden="true"><use href="#i-pools"/></svg><small>Capacity</small></a>'+
+'<a class="ri"><svg class="ic" aria-hidden="true"><use href="#i-limits"/></svg><small>Admin</small></a><div class="rgrow"></div>'+
+'<a class="ri"><svg class="ic" aria-hidden="true"><use href="#i-help"/></svg><small>Help</small></a><span class="av">OP</span></nav>';}
+function panel(){var tabs=['Pools','Runtimes','By runner profile','Holders','Accounts','Provider quota','API reads'];
+return '<nav class="panel" aria-label="Pages"><div class="ph"><span class="wm">Swarm<span>Cloud</span></span><span class="pill">eng</span></div><div class="pscroll"><div class="pt">Capacity</div>'+
+tabs.map(function(t){return '<a class="pk'+(t==='Accounts'?' on':'')+'">'+t+'</a>'}).join('')+
+'</div><div class="pfoot"><div class="pfrow"><span class="av sm">OP</span><span class="ut"><b>Operator</b><small>platform admin · eng</small></span></div>'+THEME+'</div></nav>';}
+function app(main,extra){return '<div class="app">'+rail()+panel()+'<main class="ct">'+main+'</main>'+(extra||'')+'</div>';}
+function head(read){return '<div class="phead"><div><div class="crumb">Capacity › <b>Accounts</b></div><h3>Accounts</h3></div><div class="hright"><span class="prov">'+read+'</span><button type="button" class="btn">+ Add account</button></div></div>';}
+
+/* ---------- windows ---------- */
+function pct(x){return Math.round(x*100)+'%'}
+function winCell(label,w,floor,big){
+  if(!w) return '<div class="win"><div class="wl"><b>'+label+'</b> <span class="dash">—</span></div><small class="mu">no reading yet</small></div>';
+  var tick=100-floor;
+  if(w.reset){
+    var b='<div class="bar reset" title="Reset: counted as unused until the next reading"><s style="left:'+tick+'%"></s></div>';
+    if(big) return '<b>'+label+'</b>'+b+'<small>reset '+w.at+' · nothing read since · floor '+floor+'% left</small>';
+    return '<div class="win"><div class="wl"><b>'+label+'</b> reset '+w.at+'</div>'+b+'<small>nothing read since</small></div>';}
+  var used=Math.round(w.used*100),left=100-used,eff=w.aged?left/2:left,under=eff<floor;
+  var bar='<div class="bar"><i class="'+(under?'under':'')+'" style="width:'+used+'%"></i><s style="left:'+tick+'%" title="floor: '+floor+'% left"></s></div>';
+  if(big) return '<b>'+label+'</b>'+bar+'<small>'+used+'% used · <b>'+left+'% left</b>, floor '+floor+'% left · resets '+w.resets+(w.inn?' <span style="white-space:nowrap">('+w.inn+')</span>':'')+'</small>';
+  return '<div class="win"><div class="wl"><b>'+label+'</b> '+left+'% left</div>'+bar+'<small>'+used+'% used</small><small>resets '+w.resets+'</small></div>';
+}
+function chip(a){
+  if(a.can==='yes') return '<span class="chip yes">Yes · '+(a.max-a.holds)+' free</span>';
+  if(a.can==='full') return '<span class="chip full">Full · '+a.holds+' of '+a.max+'</span>';
+  return '<span class="chip no">No</span>';}
+function orgLine(a){
+  if(a.org) return a.org+(a.orgEx?' <span class="ex">example</span>':'');
+  return '<span title="Recorded at add and refresh once POOL-DUP-DETECT ships">organisation not recorded</span>';}
+function loans(a){
+  if(a.loans===null) return '<span class="dash" title="#2222 does not record this account’s loans">—</span>';
+  if(!a.loans.length) return 'not lent';
+  return a.loans.map(function(l){return '<span style="white-space:nowrap">'+l+'</span>'}).join(', ')+(a.loansEx?' <span class="ex">example</span>':'');}
+
+/* ---------- desktop table ---------- */
+function table(rows,o){
+  var h='<div class="card"><div class="chd"><h4>Accounts, by when each can take a new agent</h4><span class="cnote">'+o.note+'</span></div>'+
+  '<table class="tbl"><colgroup><col style="width:30px"><col style="width:172px"><col style="width:96px"><col style="width:212px"><col style="width:112px"><col style="width:140px"><col style="width:140px"><col style="width:60px"><col></colgroup>'+
+  '<thead><tr><th class="rk">#</th><th>Account · signed in to</th><th>Can take</th><th>What blocks it</th><th>Clears</th><th>5-hour</th><th>7-day</th><th>Agents</th><th>Lent to</th></tr></thead><tbody>';
+  var g=null,n=0;
+  rows.forEach(function(a){
+    if(a.grp!==g){g=a.grp;var c=rows.filter(function(r){return r.grp===g}).length;h+='<tr class="grp"><td colspan="9">'+g+' · '+c+'</td></tr>';}
+    n++;
+    var tags='';
+    if(a.dup) tags+='<span class="tag dup">same subscription as '+a.dup+'</span> ';
+    if(a.extra) tags+='<span class="tag unk" title="'+a.extra+': a window this console does not know by name. Held to the 15% default floor.">1 window not known by name: '+a.extra+'</span>';
+    h+='<tr'+(o.sel===a.name?' class="sel"':'')+'><td class="rk">'+n+'</td><td><div class="nm"><a>'+a.name+'</a></div><small>'+orgLine(a)+'</small><small>'+a.age+'</small>'+tags+'</td>'+
+      '<td>'+chip(a)+'</td><td>'+a.why+'</td><td class="clr">'+a.clr+'</td>'+
+      '<td>'+winCell('5-hour',a.w5,15)+'</td><td>'+winCell('7-day',a.w7,o.f7)+'</td>'+
+      '<td>'+a.holds+' of '+a.max+'</td><td>'+loans(a)+'</td></tr>';
+  });
+  return h+'</tbody></table><p class="tfoot">'+o.foot+'</p></div>';
+}
+function answer(o){
+  return '<div class="answer '+(o.n>0?'some':'none')+'"><div class="big">'+o.n+' <small>'+(o.unit||('of '+o.m))+'</small></div><div><p class="say">'+o.say+'</p><p class="sub">'+o.sub+'</p></div>'+
+  '<div class="wait"><span class="wn">'+o.wait+'</span><a>'+o.waitl+' →</a><small>'+o.waits+'</small></div></div>';}
+
+/* ---------- data: #2222, read 2026-10-24 09:04Z-09:16Z ---------- */
+var AGE='read ≤ 11 min before 09:16Z';
+function base(){return {
+ 'aieng-claude1':{name:'aieng-claude1',org:null,loans:null,holds:0,max:6,age:AGE,w5:{used:.99,resets:'10:10Z',inn:'in 1 h 6 min'},w7:{used:.39,resets:'Oct 30 14:00Z',inn:'in 6 d 5 h'}},
+ 'ai-eng-2':{name:'ai-eng-2',org:null,loans:null,holds:0,max:6,age:AGE,w5:{reset:1,at:'08:39Z'},w7:{used:.86,resets:'Oct 25 18:59Z',inn:'in 1 d 10 h'}},
+ 'ai-eng-3':{name:'ai-eng-3',org:null,loans:null,holds:0,max:6,age:AGE,w5:{reset:1,at:'03:20Z'},w7:{used:.97,resets:'Oct 27 10:59Z',inn:'in 3 d 2 h'}},
+ 'devops-main':{name:'devops-main',org:null,loans:null,holds:0,max:6,age:AGE,w5:{reset:1,at:'04:59Z'},w7:{used:.88,resets:'Oct 26 14:59Z',inn:'in 2 d 6 h'}},
+ 'devops-team':{name:'devops-team',org:'Saga · Team',orgEx:1,loans:['smoke','u-bogdan'],loansEx:1,holds:0,max:6,age:AGE,w5:{reset:1,at:'04:20Z'},w7:{used:.86,resets:'Oct 28 12:00Z',inn:'in 4 d 3 h'}},
+ 'saga-personal':{name:'saga-personal',org:'Personal · Max',loans:null,holds:0,max:6,age:AGE,w5:{reset:1,at:'06:00Z'},w7:{used:.98,resets:'Oct 26 07:59Z',inn:'in 1 d 23 h'}},
+ 'team':{name:'team',org:'Personal · Max',loans:['smoke','u-bogdan'],holds:0,max:6,age:AGE,w5:{reset:1,at:'05:59Z'},w7:{used:.98,resets:'Oct 26 08:00Z',inn:'in 1 d 23 h'},extra:'harbor_lantern',dup:'saga-personal'}
+};}
+function W(a,can,grp,why,clr){a.can=can;a.grp=grp;a.why=why;a.clr=clr;return a}
+function under7(a,f){var l=100-Math.round(a.w7.used*100);return '<b>7-day window</b>: '+l+'% left, under its '+f+'% floor'}
+function clr7(a){return '<b>'+a.w7.resets+'</b><small>'+a.w7.inn+'</small>'}
+var WAITW='Waits for a window';
+
+/* F1: one 15% floor */
+var d=base();
+var F1rows=[
+ W(d['aieng-claude1'],'no',WAITW,'<b>5-hour window</b>: 1% left, under its 15% floor','<b>10:10Z</b><small>in 1 h 6 min</small>'),
+ W(d['ai-eng-2'],'no',WAITW,under7(d['ai-eng-2'],15),clr7(d['ai-eng-2'])),
+ W(d['saga-personal'],'no',WAITW,under7(d['saga-personal'],15),clr7(d['saga-personal'])),
+ W(d['team'],'no',WAITW,under7(d['team'],15)+'<small>and the pool hands out only saga-personal of the two</small>',clr7(d['team'])),
+ W(d['devops-main'],'no',WAITW,under7(d['devops-main'],15),clr7(d['devops-main'])),
+ W(d['ai-eng-3'],'no',WAITW,under7(d['ai-eng-3'],15),clr7(d['ai-eng-3'])),
+ W(d['devops-team'],'no',WAITW,under7(d['devops-team'],15),clr7(d['devops-team']))];
+var FOOT='A dash under Lent to: #2222 does not record that account’s loans, so none are drawn. It does not mean none. The organisations of saga-personal and team are #2222’s 09:43Z reading; devops-team’s organisation and loans are examples, so its detail (F4) has something to show; the rest are not recorded until POOL-DUP-DETECT.';
+var dupBanner=function(ph){return '<div class="banner" role="status"><div class="bt"><b class="h">team and saga-personal are one subscription</b>'+
+ '<p>Both were signed in to the organisation <b>Personal · Max</b>, and their readings are identical, with resets one second apart. The pool hands out only the older, saga-personal, so team adds no capacity. '+(ph?'':'One claude.ai login can hold two organisations; the sign-in took the one that was selected.')+'</p>'+
+ '<p><b>To fix it:</b> on team, Replace the credential, signed in to the organisation you meant (for example Saga · Team) from that organisation’s browser profile. Or remove team.</p>'+
+ '<div class="acts"><button type="button" class="btn sm">Open team</button><button type="button" class="btn sm">Replace the credential</button></div></div></div>';};
+var F1ans={n:0,m:7,say:'No account can take a new agent. Next: aieng-claude1 at 10:10Z.',sub:'in 1 h 6 min, when its 5-hour window resets. Then ai-eng-2 on <b>Oct 25 18:59Z</b>, when its week resets. Six of the seven are under the floor on their 7-day window.',
+ wait:'28',waitl:'agents wait on the pool',waits:'and 32 later steps wait on them · read 09:16Z'};
+var RULE1='<p class="rule">Floor: <b>15% left on every window</b> (the rule until PR 2223, 10:25Z) · a reading older than 30 min counts at half · at most <b>6 agents</b> per account</p>';
+document.getElementById('F1').innerHTML=app(head('as read 2026-10-24 09:04Z · every 60 s')+answer(F1ans)+RULE1+dupBanner(false)+
+ table(F1rows,{f7:15,note:'Ranked by when each can take one. Times are UTC.',foot:FOOT}));
+
+/* F2: per-window floors */
+d=base();
+function ok7(a){var l=100-Math.round(a.w7.used*100);return '<b>Nothing.</b> 7-day '+l+'% left, above its 5% floor; 5-hour reset'}
+var CAN='Can take now';
+var F2rows=[
+ W(d['ai-eng-2'],'yes',CAN,ok7(d['ai-eng-2']),'<b>now</b>'),
+ W(d['devops-team'],'yes',CAN,ok7(d['devops-team']),'<b>now</b>'),
+ W(d['devops-main'],'yes',CAN,ok7(d['devops-main']),'<b>now</b>'),
+ W(d['aieng-claude1'],'no',WAITW,'<b>5-hour window</b>: 1% left, under its 15% floor','<b>10:10Z</b><small>in 1 h 6 min</small>'),
+ W(d['saga-personal'],'no',WAITW,under7(d['saga-personal'],5),clr7(d['saga-personal'])),
+ W(d['team'],'no',WAITW,under7(d['team'],5)+'<small>and it is saga-personal’s subscription</small>',clr7(d['team'])),
+ W(d['ai-eng-3'],'no',WAITW,under7(d['ai-eng-3'],5),clr7(d['ai-eng-3']))];
+var F2ans={n:3,m:7,say:'3 accounts can take a new agent: 18 free slots.',sub:'ai-eng-2, devops-team and devops-main, 6 each. Of the rest, aieng-claude1 frees first, at <b>10:10Z</b>.',
+ wait:'28',waitl:'agents wait on the pool',waits:'the pool can start 18 of them now, oldest first; another ceiling may start fewer (Pools says which)'};
+var RULE2='<p class="rule">Floors: <b>5-hour 15% left</b> · <b>7-day 5% left</b> · a reading older than 30 min counts at half · at most <b>6 agents</b> per account</p>';
+
+/* forecast lanes: hours from Oct 24 09:00Z */
+function fcCard(){
+  var H=100,L=150,PW=880,X=function(h){return L+h*PW/H},now=1/15; /* 09:04Z */
+  /* [start,end,kind] kind: o open (fact), p open projected (example pace), s shut */
+  var cyc=[[0,1.17,'s']];var t=1.17;while(t<H){cyc.push([t,Math.min(t+3,H),'p']);t+=3;if(t<H){cyc.push([t,Math.min(t+2,H),'s']);t+=2}}
+  var lanes=[
+   ['ai-eng-2',[[0,now,'o'],[now,9,'p'],[9,33.98,'s'],[33.98,H,'o']]],
+   ['devops-team',[[0,now,'o'],[now,9,'p'],[9,99,'s'],[99,H,'o']]],
+   ['devops-main',[[0,now,'o'],[now,7,'p'],[7,53.98,'s'],[53.98,H,'o']]],
+   ['aieng-claude1',cyc],
+   ['saga-personal',[[0,46.98,'s'],[46.98,H,'o']]],
+   ['team (duplicate)',[[0,H,'s']]],
+   ['ai-eng-3',[[0,73.98,'s'],[73.98,H,'o']]]];
+  var rowH=24,top=40,svgH=top+lanes.length*rowH+30;
+  /* dark stretches: no lane open */
+  var dark=[];for(var h=0;h<H;h+=.05){var any=lanes.some(function(l){return l[1].some(function(s){return s[2]!=='s'&&h>=s[0]&&h<s[1]})});if(!any){if(dark.length&&Math.abs(dark[dark.length-1][1]-h)<.06)dark[dark.length-1][1]=h+.05;else dark.push([h,h+.05])}}
+  var s='<svg class="lanes" viewBox="0 0 '+(L+PW+10)+' '+svgH+'" role="img" aria-label="Which accounts can take an agent, Oct 24 09:00Z to Oct 28 13:00Z">';
+  var days=[[0,'Oct 24 09:00Z'],[15,'Oct 25 00:00Z'],[39,'Oct 26'],[63,'Oct 27'],[87,'Oct 28']];
+  days.forEach(function(d){s+='<line class="grid" x1="'+X(d[0])+'" x2="'+X(d[0])+'" y1="18" y2="'+(svgH-24)+'"/><text x="'+(X(d[0])+3)+'" y="14">'+d[1]+'</text>'});
+  dark.forEach(function(r){s+='<rect class="dark" x="'+X(r[0])+'" y="22" width="'+(X(r[1])-X(r[0]))+'" height="'+(lanes.length*rowH+10)+'"/>'});
+  lanes.forEach(function(l,i){var y=top+i*rowH;s+='<text class="nm" x="0" y="'+(y+12)+'">'+l[0]+'</text>';
+    l[1].forEach(function(g){s+='<rect class="'+({o:'open',p:'openp',s:'shut'})[g[2]]+'" x="'+X(g[0])+'" y="'+(y+2)+'" width="'+Math.max(1,X(g[1])-X(g[0]))+'" height="14" rx="3"/>'})});
+  s+='<line class="now" x1="'+X(now)+'" x2="'+X(now)+'" y1="18" y2="'+(svgH-24)+'"/><text x="'+(X(now)+4)+'" y="'+(svgH-8)+'">now, 09:04Z</text></svg>';
+  return '<div class="card"><div class="chd"><h4>Forecast: when the pool goes dark, and when it comes back</h4><span class="cnote">Resets are read from the windows. Closing times after now are at an example pace <span class="ex">example</span>: the broker serves no pace yet.</span></div><div class="fc">'+
+   '<div class="fcsay"><div class="fcs"><div class="k">Goes dark first</div><div class="v">≈ 18:10Z today <small>for 2 h <span class="ex">example</span></small></div></div>'+
+   '<div class="fcs"><div class="k">Why dark</div><div class="v">aieng-claude1’s 5-hour pauses <small>it is the only open account then <span class="ex">example</span></small></div></div>'+
+   '<div class="fcs"><div class="k">Back for good</div><div class="v">Oct 25 18:59Z <small>ai-eng-2’s week resets (read)</small></div></div></div>'+
+   s+'<div class="marks"><span><i style="background:var(--ok-bar)"></i>can take agents (read)</span><span><i style="background:var(--ok-bar);opacity:.45"></i>can take, until the example pace closes it</span><span><i style="background:var(--bar-bg);outline:1px solid var(--f-ln)"></i>blocked by a window</span><span><i style="background:var(--bad-bar);opacity:.3"></i>no account can take one</span></div>'+
+   '<p class="cs-note"><b>Laptop sessions spend the same windows.</b> These accounts are claudeswitch’s accounts too: a laptop session on one of them uses its 5-hour and 7-day windows like an agent does, so the pool goes dark sooner than this says. The forecast counts what the readings show, which includes laptop use already spent, not laptop use to come.</p></div></div>';
+}
+document.getElementById('F2').innerHTML=app(head('as read 2026-10-24 09:04Z · every 60 s')+answer(F2ans)+RULE2+dupBanner(false)+
+ table(F2rows,{f7:5,note:'Ranked by when each can take one. Times are UTC.',foot:FOOT})+fcCard());
+
+/* F3: example afternoon */
+var F3rows=[
+ {name:'devops-team',org:'Saga · Team',orgEx:1,loans:['smoke'],loansEx:1,holds:4,max:6,age:'read 4 min ago',w5:{used:.40,resets:'16:20Z'},w7:{used:.89,resets:'Oct 28 12:00Z'},can:'yes',grp:CAN,why:'<b>Nothing.</b> 7-day 11% left, above its 5% floor; 5-hour 60% left',clr:'<b>now</b><small>2 slots</small>'},
+ {name:'devops-main',org:'Saga · Team',orgEx:1,loans:[],holds:6,max:6,age:'read 3 min ago',w5:{used:.52,resets:'18:59Z'},w7:{used:.91,resets:'Oct 26 14:59Z'},can:'full',grp:'Frees when an agent finishes',why:'<b>Full</b>: 6 of 6 agents. Both windows are above their floors',clr:'<b>when one of its 6 finishes</b><small>no clock says when</small>'},
+ {name:'saga-team',org:'Saga · Team',loans:['smoke','u-bogdan'],holds:0,max:6,age:'read 6 min ago',w5:{used:.92,resets:'15:00Z'},w7:{used:.41,resets:'Oct 28 18:00Z'},can:'no',grp:WAITW,why:'<b>5-hour window</b>: 8% left, under its 15% floor',clr:'<b>15:00Z</b><small>in 40 min</small>'},
+ {name:'aieng-claude1',org:'Personal · Max',orgEx:1,loans:[],holds:0,max:6,age:'read 2 min ago',w5:{used:.90,resets:'15:10Z'},w7:{used:.52,resets:'Oct 30 14:00Z'},can:'no',grp:WAITW,why:'<b>5-hour window</b>: 10% left, under its 15% floor',clr:'<b>15:10Z</b><small>in 50 min</small>'},
+ {name:'ai-eng-2',org:'Saga · Team',orgEx:1,loans:[],holds:0,max:6,age:'read 52 min ago · stale',w5:{used:.30,resets:'17:40Z',aged:1},w7:{used:.91,resets:'Oct 25 18:59Z',aged:1},can:'no',grp:WAITW,why:'<b>An aged reading</b>: 7-day 9% left, read 52 min ago, counts at half (4.5%), under its 5% floor',clr:'<b>at the next reading</b><small>or Oct 25 18:59Z at the latest</small>'},
+ {name:'saga-personal',org:'Personal · Max',loans:[],holds:0,max:6,age:'read 5 min ago',w5:{reset:1,at:'11:00Z'},w7:{used:.98,resets:'Oct 26 07:59Z'},can:'no',grp:WAITW,why:'<b>7-day window</b>: 2% left, under its 5% floor',clr:'<b>Oct 26 07:59Z</b><small>in 1 d 18 h</small>'},
+ {name:'ai-eng-3',org:'Saga · Team',orgEx:1,loans:[],holds:0,max:6,age:'read 7 min ago',w5:{reset:1,at:'13:20Z'},w7:{used:.97,resets:'Oct 27 10:59Z'},can:'no',grp:WAITW,why:'<b>7-day window</b>: 3% left, under its 5% floor',clr:'<b>Oct 27 10:59Z</b><small>in 2 d 21 h</small>'}];
+var F3ans={n:1,m:7,say:'1 account can take a new agent: 2 free slots on devops-team.',sub:'Next: devops-main when one of its 6 agents finishes, then saga-team at <b>15:00Z</b>.',
+ wait:'9',waitl:'agents wait on the pool',waits:'the pool can start 2 of them now <span class="ex">example</span>'};
+document.getElementById('F3').innerHTML=app(head('read 14:20Z · every 60 s <span class="ex">example</span>')+answer(F3ans)+RULE2+
+ table(F3rows,{f7:5,note:'Example figures. Ranked by when each can take one. Times are UTC.',foot:'An aged reading is not an empty account: it counts at half until a fresh one arrives, and the row says so.'}));
+
+/* F4: devops-team side sheet over F2 */
+d=base();var dt=d['devops-team'];
+function sheetBody(ph){
+  return '<p style="margin:0"><span class="chip yes">Can take a new agent · 6 of 6 slots free</span></p>'+
+  '<p style="margin:0;font-size:13px">Nothing blocks it. Its 7-day window has <b>14% left</b>, above its 5% floor, and its 5-hour window reset at 04:20Z.</p>'+
+  '<div class="shsec"><h5>Windows</h5><div class="wbig">'+winCell('5-hour',dt.w5,15,1)+'</div><div class="wbig">'+winCell('7-day',dt.w7,5,1)+'</div>'+
+  '<p class="mu" style="font-size:12px;margin-top:6px">Read ≤ 11 min before 09:16Z: fresh. After 30 min a reading counts at half.</p></div>'+
+  '<div class="shsec"><h5>Agents on it · 0 of 6</h5><p>None hold it now. <a>History</a></p><p class="mu" style="font-size:12px;margin-top:4px">At most 6 agents at once. <a>Change the cap</a> (1 to 50, owner only).</p></div>'+
+  '<div class="shsec"><h5>Account</h5><dl class="kv"><dt>Signed in to</dt><dd>Saga · Team <span class="ex">example</span></dd><dt>Owner</dt><dd>eng</dd><dt>Lent to</dt><dd>smoke, u-bogdan <span class="ex">example</span></dd><dt>Id</dt><dd class="mono">eng:devops-team</dd></dl></div>'+
+  '<div class="shsec"><h5>Forecast</h5><p>At the example pace it reaches its 5% floor near <b>18:00Z today</b> <span class="ex">example</span>, and its week resets <b>Oct 28 12:00Z</b> (read). Laptop sessions on this subscription spend the same window.</p></div>'+
+  '<div class="shsec"><div class="acts"><button type="button" class="btn sm">Rename</button><button type="button" class="btn sm">Pause</button><button type="button" class="btn sm">Drain</button><button type="button" class="btn sm">Lending</button><button type="button" class="btn sm">Replace the credential</button><button type="button" class="btn sm danger">Remove</button></div></div>';
+}
+var sheet='<div class="scrimd"></div><aside class="dsheet" aria-label="devops-team"><div class="shh"><div><div class="crumb">Accounts ›</div><h4>devops-team</h4></div><button type="button" class="btn sm x" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>'+sheetBody(0)+'</aside>';
+document.getElementById('F4').innerHTML=app(head('as read 2026-10-24 09:04Z · every 60 s')+answer(F2ans)+RULE2+dupBanner(false)+
+ table(F2rows,{f7:5,sel:'devops-team',note:'Ranked by when each can take one. Times are UTC.',foot:FOOT}),sheet);
+
+/* F5: empty */
+var F5ans={n:0,m:0,unit:'accounts',say:'No account is registered, so no agent that needs the pool can start.',sub:'Agents whose runner profile uses the pool wait until an account is added here, or one is lent to this tenant. Agents with their own key are not affected.',
+ wait:'4',waitl:'agents wait on the pool',waits:'<span class="ex">example</span>'};
+document.getElementById('F5').innerHTML=app(head('read 09:04Z · every 60 s')+answer(F5ans)+
+ '<div class="card"><div class="empty"><b style="font-size:15px">No accounts yet</b><p>An account is a Claude subscription, signed in once. Its 5-hour and 7-day windows are read from the agents that use it.</p><p class="mu" style="font-size:13px">Sign in to the organisation you mean: one claude.ai login can hold two (for example Saga · Team and Personal · Max), and the sign-in takes the one that is selected.</p><p class="mu" style="font-size:13px">The built sign-in form opens here with no click on an empty pool (Accounts.tsx <code>addOpen</code>); it is unchanged, so it is not redrawn.</p></div></div>');
+
+/* ---------- phone ---------- */
+function pbar(){return '<div class="pbar"><button type="button" class="ibtn" aria-label="Menu"><svg class="ic" aria-hidden="true"><use href="#i-menu"/></svg></button><svg width="24" height="24" aria-hidden="true" style="fill:url(#g-hive-b);stroke:url(#g-hive-b)"><use href="#hive"/></svg><b>Accounts</b><span class="tn">Capacity</span></div>';}
+function pcards(all,f7,pick){var rows=pick?pick.map(function(i){return all[i]}):all;var h='',g=null;rows.forEach(function(a){
+  if(a.grp!==g){g=a.grp;h+='<div class="pgrp">'+g+' · '+all.filter(function(r){return r.grp===g}).length+'</div>';}
+  var tags='';if(a.dup)tags+='<span class="tag dup">same subscription as '+a.dup+'</span>';if(a.extra)tags+=' <span class="tag unk">1 window not known by name: '+a.extra+'</span>';
+  h+='<div class="acard"><div class="top"><span class="nm">'+a.name+'</span>'+chip(a)+'</div><p class="why">'+a.why.replace(/<small>/g,' <span class="mu">').replace(/<\/small>/g,'</span>')+'</p>'+
+  '<p class="meta">Clears: '+a.clr.replace(/<small>/g,' · <span>').replace(/<\/small>/g,'</span>')+'</p>'+
+  '<div class="w2">'+winCell('5-hour',a.w5,15)+winCell('7-day',a.w7,f7)+'</div>'+
+  '<p class="meta"><b>'+a.holds+' of '+a.max+'</b> agents · '+(a.loans&&!a.loans.length?'':'lent to ')+loans(a)+' · '+orgLine(a)+'</p><p class="meta">'+a.age+'</p>'+(tags?'<div>'+tags+'</div>':'')+'</div>';});return h;}
+function phone(id,cap,body){return '<figure class="fr" id="'+id+'"><div class="phone">'+pbar()+body+'</div><figcaption>'+cap+'</figcaption></figure>';}
+function prule(t){return '<p class="rule">'+t+'</p>';}
+var P=[];
+P.push(phone('p1','<b>P1 · phone 390 · light and dark.</b> F1 at 390: 09:04Z under the old floor. The answer card stacks; the waiting count goes under it. Cards keep F1’s rank and groups.',
+ '<div class="pbody"><div class="crumb">Capacity › <b>Accounts</b> · read 09:04Z</div>'+answer(F1ans)+prule('Floor: <b>15% left on every window</b> (until 10:25Z) · aged readings count at half · 6 agents per account')+dupBanner(true)+pcards(F1rows,15,[0,1,2,3])+'<p class="meta">3 more: devops-main (Oct 26 14:59Z), ai-eng-3 (Oct 27 10:59Z), devops-team (Oct 28 12:00Z). <a>Show all 7</a></p></div>'));
+P.push(phone('p2','<b>P2 · phone 390 · light and dark.</b> F2 at 390: the new floors. The forecast is three lines here, not lanes, with the claudeswitch note.',
+ '<div class="pbody"><div class="crumb">Capacity › <b>Accounts</b> · read 09:04Z</div>'+answer(F2ans)+prule('Floors: <b>5-hour 15%</b> · <b>7-day 5%</b> left · aged readings count at half · 6 agents per account')+dupBanner(true)+pcards(F2rows,5,[0,1,2,3])+
+ '<p class="meta">3 more, waiting for their week: saga-personal, team, ai-eng-3. <a>Show all 7</a></p>'+
+ '<div class="card"><div class="chd"><h4>Forecast</h4></div><div class="fc"><div class="fcsay"><div class="fcs"><div class="k">Goes dark first</div><div class="v">≈ 18:10Z today <small>for 2 h <span class="ex">example</span></small></div></div><div class="fcs"><div class="k">Back for good</div><div class="v">Oct 25 18:59Z <small>ai-eng-2’s week resets (read)</small></div></div></div>'+
+ '<p class="cs-note"><b>Laptop sessions spend the same windows</b> through claudeswitch, so the pool goes dark sooner than this says.</p></div></div></div>'));
+P.push(phone('p3','<b>P3 · phone 390 · light and dark.</b> F4 at 390: devops-team’s detail as a full screen, Back to the list. Same order as the side sheet. Loans and organisation are <span class="ex">example</span>.',
+ '<div class="psheet"><a class="back">‹ Accounts</a><h3 style="margin:0;font-size:20px">devops-team</h3>'+sheetBody(1)+'</div>'));
+P.push(phone('p4','<b>P4 · phone 390 · light and dark · <span class="ex">example</span>.</b> F3 at 390: devops-main full at 6 of 6 in its own group, and ai-eng-2’s aged reading.',
+ '<div class="pbody"><div class="crumb">Capacity › <b>Accounts</b> · read 14:20Z <span class="ex">example</span></div>'+answer(F3ans)+pcards(F3rows,5,[0,1,2,3,4])+'<p class="meta">2 more: saga-personal (Oct 26 07:59Z), ai-eng-3 (Oct 27 10:59Z). <a>Show all 7</a></p></div>'));
+P.push(phone('p5','<b>P5 · phone 390 · light and dark · <span class="ex">example</span>.</b> F5 at 390: no account registered.',
+ '<div class="pbody"><div class="crumb">Capacity › <b>Accounts</b> · read 09:04Z</div>'+answer(F5ans)+'<div class="card"><div class="empty" style="padding:16px"><b style="font-size:15px">No accounts yet</b><p>An account is a Claude subscription, signed in once.</p><p class="mu" style="font-size:13px">Sign in to the organisation you mean: one claude.ai login can hold two, and the sign-in takes the selected one.</p><button type="button" class="btn primary">+ Add account</button><p class="mu" style="font-size:12px;margin:0">Opens the built sign-in form.</p></div></div></div>'));
+document.getElementById('PH').innerHTML=P.join('');
+
+var s=null;try{s=localStorage.getItem(K)}catch(_){}apply(s||'system');
+})();
+</script>
+</body></html>
