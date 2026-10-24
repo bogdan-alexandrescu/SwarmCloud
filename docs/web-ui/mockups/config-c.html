@@ -57,6 +57,7 @@ table.doc tr:last-child td{border-bottom:0}
 .fig figcaption b{color:var(--text)}
 .scroller{overflow:auto;border:1px solid var(--line);border-radius:12px;max-width:100%}
 .fit .scroller{overflow:hidden}
+.fit .scroller.floored{overflow:auto}
 .fit .scroller>.app{zoom:var(--z,1)}
 .exd{font-size:12px;color:var(--text-faint)}
 /* an identifier, path or flag never breaks at its own hyphens or slashes */
@@ -146,6 +147,7 @@ table.doc code,.cs code,.recap code,.nw{white-space:nowrap}
 .seg>span.off{opacity:.55}
 .seg em{font:normal 12px var(--mono)}
 .st{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.chsp{display:inline-block;width:14px}
 .st.ok{color:var(--ok-ink)}.st.warn{color:var(--warn-ink)}.st.bad{color:var(--bad-ink)}.st.neu{color:var(--text-dim)}.st.pa{color:var(--paused-ink)}.st.info{color:var(--info-ink)}
 .st>span{color:var(--text)}
 .dash{color:var(--text-dim);font-weight:600}
@@ -469,13 +471,14 @@ var REPOS=[
  {n:'example-org/docs-site',mode:'Read',chk:['ok','na','na'],ver:'verified 5h ago',reg:'registered',idx:'stale: indexed 9d ago, 41 commits behind main',sec:'none yet',qa:'no QA target',look:null},
  {n:'operator/notes',mode:'Read',chk:['ok','na','na'],ver:'verified 2d ago',reg:'no',idx:null,sec:null,qa:null,look:null}
 ];
-function checks(c){var L=['Clone','Push','Pull request'];return c.map(function(s,i){return s==='ok'?st('ok',L[i]):s==='bad'?st('bad',L[i]+' missing'):st('neu',L[i]+': not asked, read grant');}).join(' ');}
+function checks(c){var L=['Clone','Push','Pull request'];return c.map(function(s,i){return s==='ok'?st('ok',L[i]):s==='bad'?st('bad',L[i]+' missing'):st('neu',L[i]+': not asked, read grant');}).join('<span class="chsp"></span>');}
 
 /* ---------- S1 navigation ---------- */
 function s1body(o){
   var t={padmin:'A platform admin sees Config with every page and Admin with every tab.',wadmin:'A workspace admin of eng sees every Config page; Admin holds only People and roles and Workspaces you admin, for the workspaces they administer.',member:'A member of eng sees Config without People and roles, and no Admin at all: the spine has no Admin item, and the API refuses every Admin route for them.',personal:'In a personal workspace Config has no People and roles. Repositories, Secrets and Workspace Settings are the personal workspace&rsquo;s.'}[o.who];
   return head('Config / <b>Repositories</b>','Repositories',{acts:btn('Add new repository','p','submit'),intro:t})+
-   '<div class="rcards">'+REPOS.filter(function(r){return o.ws==='personal'?r.n.indexOf('operator/')===0||r.n==='example-org/docs-site':true;}).slice(0,2).map(function(r){return '<div class="rc"><div class="rn">'+I('repo')+'<b>'+r.n+'</b>'+chip(r.mode)+'</div><div class="sm mu">'+r.ver+'</div></div>';}).join('')+'</div>';
+   '<div class="rcards">'+REPOS.filter(function(r){return o.ws==='personal'?r.n.indexOf('operator/')===0||r.n==='example-org/docs-site':true;}).slice(0,2).map(function(r){return '<div class="rc"><div class="rn">'+I('repo')+'<b>'+r.n+'</b>'+chip(r.mode)+'</div><div class="sm mu">'+r.ver+'</div></div>';}).join('')+'</div>'+
+   '<p class="exd">'+(o.ws==='personal'?'Both of this workspace&rsquo;s 2 repositories are drawn.':'2 more not drawn: eng has 4 repositories, all drawn in S3.')+'</p>';
 }
 
 /* ---------- S2 GitHub access ---------- */
@@ -748,7 +751,7 @@ function platformSecrets(){
   ];
   return head('Admin / <b>Platform secrets</b>','Platform secrets',{chips:chip('platform admins only','info'),age:'read live 20s ago · metadata only',acts:btn('Read again','sm'),
    intro:'Status only: set or not, versions, age and what manages each. No value, no length and no last characters; there is no form here. A value is written only by its manager, on the operator&rsquo;s machine.'})+
-  tbl([['Secret','nm'],['Managed by'],['Value written by'],['Set'],['Versions','r'],['Age'],['Read by']],R.map(function(r,i){var c=r.slice();c[0]='<code>'+c[0]+'</code>';c[2]='<code>'+c[2].split(' ').map(function(t){return '<span class="nw">'+t+'</span>';}).join(' ')+'</code>';return r[0]==='swarm-tailscale-oauth'?{cls:'hi',c:c}:c;}))+
+  tbl([['Secret','nm'],['Managed by'],['Value written by'],['Set'],['Versions','r'],['Age'],['Read by']],R.map(function(r,i){var c=r.slice();c[0]='<code class="nw">'+c[0]+'</code>';c[2]='<code>'+c[2].split(' ').map(function(t){return '<span class="nw">'+t+'</span>';}).join(' ')+'</code>';return r[0]==='swarm-tailscale-oauth'?{cls:'hi',c:c}:c;}))+
   '<p class="exd">Two enabled versions means a rotation is in its grace. "Not declared" means Secret Manager has no such secret in this deployment.</p>';
 }
 
@@ -775,7 +778,7 @@ function countsOverTime(){
   '<p class="exd" style="margin:8px 0 0">Hover a day for its figures. <a>Show as a table</a></p></section>'+
   '<div class="g2">'+
    brk('By agent type',[['claude-code',share(.62),fmt(Math.round(tot*1.7))+' h'],['codex',share(.21),fmt(Math.round(tot*.5))+' h'],['browser',share(.12),fmt(Math.round(tot*.3))+' h'],['visual-qa',share(.05),fmt(Math.round(tot*.1))+' h']])+
-   brk('By model',[['claude-opus-5-5',share(.48),fmt(Math.round(tot*1.4))+' h'],['claude-sonnet-5',share(.27),fmt(Math.round(tot*.7))+' h'],['claude-haiku-4-5',share(.04),'<span class="dash">–</span> <span class="why">ran only as a sub-model; its hours count under the agent&rsquo;s main model</span>'],['not reported',share(.21),fmt(Math.round(tot*.5))+' h']],'Codex agents do not report their model yet, so they are "not reported", not a model of their own.')+
+   brk('By model',[['claude-opus-5-5',share(.48),fmt(Math.round(tot*1.4))+' h'],['claude-sonnet-5',share(.27),fmt(Math.round(tot*.65))+' h'],['claude-haiku-4-5',share(.04),fmt(Math.round(tot*.05))+' h'],['not reported',share(.21),fmt(Math.round(tot*.5))+' h']],'Each agent counts once, under its main model; a sub-model&rsquo;s work counts under the agent&rsquo;s main model. Codex agents do not report their model yet, so they are "not reported", not a model of their own.')+
    brk('By workspace',[['eng',share(.58),fmt(Math.round(tot*1.5))+' h'],['design',share(.22),fmt(Math.round(tot*.6))+' h'],['ops',share(.14),fmt(Math.round(tot*.4))+' h'],['personal workspaces (4)',share(.06),fmt(Math.round(tot*.1))+' h']])+
    brk('By pool account',[['claude-pool-a',share(.41),fmt(Math.round(tot*1.1))+' h'],['claude-pool-b',share(.38),fmt(Math.round(tot*1.0))+' h'],['openai-pool-a',share(.21),fmt(Math.round(tot*.5))+' h']])+
   '</div>'+
@@ -820,7 +823,8 @@ function wya(){
 function poolLimits(){
   return head('Admin / <b>Pool limits</b>','Pool limits',{chips:chip('platform admins only','info'),age:'read 12s ago',intro:'As built: the side editor with impact and history, and a typed confirmation for 0 or a cut of half or more. Its other cards (GitHub fallback token, Additional repositories, Model prices) stay.'})+
   '<div class="side">'+tbl([['Pool','nm'],['Ceiling','r'],['Leased','r'],['Running','r'],['','r']],[['<b>global</b>','40','31','27',btn('Change','sm')],['<b>class:browser</b>','4','4','4',btn('Change','sm')],['<b>class:standard</b>','24','19','16',btn('Change','sm')],['<b>tenant:eng</b>','12','9','8',btn('Change','sm')]])+
-  card('Change class:browser','<label class="fld"><span>New ceiling</span><span class="in val">6</span></label><p class="sm" style="margin:8px 0">Admits up to 2 more of the 3 ready browser agents. Concurrency counts from LEASED.</p>'+btn('Save','p'),{sub:'History: 4 since 2026-10-02, by Operator.'})+'</div>';
+  card('Change class:browser','<label class="fld"><span>New ceiling</span><span class="in val">6</span></label><p class="sm" style="margin:8px 0">Admits up to 2 more of the 3 ready browser agents. Concurrency counts from LEASED.</p>'+btn('Save','p'),{sub:'History: 4 since 2026-10-02, by Operator.'})+'</div>'+
+  '<p class="exd">Not drawn: the other class pools, which hold the remaining 8 leased and 7 running of global&rsquo;s 31 and 27, and the other tenants&rsquo; pools. A tenant pool caps a share of global and is not added to it.</p>';
 }
 function runnerSizes(){
   return head('Admin / <b>Runner sizes</b>','Runner sizes',{chips:chip('platform admins only','info'),intro:'As built (RunnerSizes.tsx): each class&rsquo;s CPU request, CPU limit and memory, versioned and audited. Memory and ephemeral storage: request equals limit.'})+
@@ -958,7 +962,8 @@ function applyTheme(t){if(t==='light'||t==='dark')document.documentElement.setAt
 var saved='system';try{saved=localStorage.getItem(KEY)||'system';}catch(e){}
 applyTheme(saved);
 function applyFit(on){document.body.classList.toggle('fit',on);document.querySelectorAll('[data-fit]').forEach(function(b){b.setAttribute('aria-pressed',String((b.getAttribute('data-fit')==='1')===on));});sizeFit();}
-function sizeFit(){if(!document.body.classList.contains('fit'))return;document.querySelectorAll('.scroller').forEach(function(sc){var z=Math.min(1,(sc.clientWidth-2)/1440);sc.style.setProperty('--z',z.toFixed(4));});}
+/* Fit never zooms under 0.96: 0.96 × the 12px type floor is 11.5px. A narrower window scrolls the frame instead. */
+function sizeFit(){if(!document.body.classList.contains('fit'))return;document.querySelectorAll('.scroller').forEach(function(sc){var raw=(sc.clientWidth-2)/1440;var z=Math.min(1,Math.max(0.96,raw));sc.classList.toggle('floored',raw<0.96);sc.style.setProperty('--z',z.toFixed(4));});}
 window.addEventListener('resize',sizeFit);
 document.addEventListener('click',function(e){var t=e.target.closest('[data-theme-set]');if(t){applyTheme(t.getAttribute('data-theme-set'));return;}var f=e.target.closest('[data-fit]');if(f)applyFit(f.getAttribute('data-fit')==='1');});
 applyFit(window.innerWidth>=900);
