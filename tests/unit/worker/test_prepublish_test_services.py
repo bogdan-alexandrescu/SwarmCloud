@@ -409,6 +409,7 @@ def test_the_service_environment_reaches_the_pytest_checks_and_never_the_gates_o
     repo, env = _setup(tmp_path, declaration=DECLARATION, report=_all_refused(5432),
                        report_up=_junit(_passed("test_covered"), _passed("test_db")),
                        guards=True)
+    env["FAKE_EXIT"] = "0"
     before = dict(env)
     runner, turns = GateRunner(up=True), Turns()
     gate = _gate(repo, tmp_path, env, turns, runner)
