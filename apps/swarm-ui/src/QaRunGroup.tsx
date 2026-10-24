@@ -76,7 +76,7 @@ function workflowAddress(id: string): string {
 }
 
 /** A figure's value drawn, or its dash with why; its note (how much was read) after it. */
-function Fig<T>({ f, children }: { f: Figure<T>; children: (v: T) => ReactNode }) {
+function Fig<T>({ f, block = false, children }: { f: Figure<T>; block?: boolean; children: (v: T) => ReactNode }) {
   if (f.kind === 'absent') {
     return (
       <span className="qr-absent">
@@ -87,7 +87,7 @@ function Fig<T>({ f, children }: { f: Figure<T>; children: (v: T) => ReactNode }
   return (
     <>
       {children(f.value)}
-      {f.note !== null && <span className="qr-note"> · {f.note}</span>}
+      {f.note !== null && (block ? <span className="qr-note qr-note-line">{f.note}</span> : <span className="qr-note"> · {f.note}</span>)}
     </>
   )
 }
@@ -120,7 +120,7 @@ function LegFigures({ d }: { d: LegDetail }) {
       </dd>
       <dt>Coverage</dt>
       <dd data-figure="coverage">
-        <Fig f={d.coverage}>
+        <Fig f={d.coverage} block>
           {(c) => (
             <span className="qr-lines">
               <span>
@@ -246,7 +246,7 @@ function Lead({ group, details, go }: { group: QaRunGroup; details: Record<strin
     return (
       <Banner tone="warn" title={`${idle.environment} did not start`}
         actions={<Button kind="primary" size="sm" onClick={() => go(QA_LINK_ADDRESS)}>Open QA targets</Button>}>
-        {notStartedWhy(idle, group)}
+        Nothing of it ran, so it cost nothing; its column says why. Run it again from the target&rsquo;s card.
       </Banner>
     )
   }

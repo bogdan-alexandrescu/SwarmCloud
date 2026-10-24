@@ -158,7 +158,7 @@ export function notStartedWhy(leg: QaRunLeg, group: QaRunGroup): string {
   if (leg.reason !== null) return leg.reason.message
   const started = group.legs.filter((l) => l !== leg && l.workflow_id !== null).map((l) => l.environment)
   if (started.length > 0) {
-    return `${started.join(' and ')} started, and this leg was never submitted: the dispatch stopped between the two submissions. Run it again from the target to start it.`
+    return `${started.join(' and ')} started, and this leg was never submitted: the dispatch stopped between the two submissions.`
   }
   return 'The dispatch has not submitted this leg yet.'
 }
@@ -298,7 +298,7 @@ export function oneLegOnlyOf(target: unknown, legs: readonly string[]): OneLegOn
 // -- the reads -------------------------------------------------------------------
 
 export async function loadQaRunGroup(groupId: string): Promise<Result<QaRunGroup>> {
-  if (USE_FIXTURES) return { status: 'ok', data: { ...FIXTURE_GROUP, group_id: groupId }, fetchedAt: Date.now() }
+  if (USE_FIXTURES) return { status: 'ok', data: fixtureGroup(groupId), fetchedAt: Date.now() }
   const r = await read<unknown>(route('/v1/qa-runs/{group_id}', { group_id: groupId }), () => false)
   if (r.status !== 'ok' && r.status !== 'stale') return r
   const data = normQaRunGroup(r.data)
@@ -440,6 +440,18 @@ const FIXTURE_GROUP: QaRunGroup = {
     { environment: 'staging', state: 'submitted', workflow_id: 'wf_' + 'a'.repeat(20), workflow_state: 'SUCCEEDED', reason: null },
     { environment: 'production', state: 'submitted', workflow_id: 'wf_' + 'b'.repeat(20), workflow_state: 'RUNNING', reason: null },
   ],
+}
+
+/** The fixture group, and under FIXTURE_HALF_STARTED the dispatch that stopped between its two submissions (§2.1). */
+export const FIXTURE_HALF_STARTED = 'qrg_' + '1'.repeat(16)
+
+function fixtureGroup(groupId: string): QaRunGroup {
+  if (groupId !== FIXTURE_HALF_STARTED) return { ...FIXTURE_GROUP, group_id: groupId }
+  return {
+    ...FIXTURE_GROUP,
+    group_id: groupId,
+    legs: [FIXTURE_GROUP.legs[0]!, { environment: 'production', state: 'pending', workflow_id: null, workflow_state: null, reason: null }],
+  }
 }
 
 const FIXTURE_TARGET = {

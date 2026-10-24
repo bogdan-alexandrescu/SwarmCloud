@@ -42,3 +42,4 @@
   .qr-kv { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .qr-kv dd { margin-bottom: 6px; }
 }
+.qr-note-line { display: block; margin-top: 2px; }
