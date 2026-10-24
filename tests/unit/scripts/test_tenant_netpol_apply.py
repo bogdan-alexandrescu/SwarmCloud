@@ -191,6 +191,16 @@ PY
     set -- $*
     while [[ "$1" != "networkpolicies" ]]; do shift; done
     name="$2"; ns="$4"
+    # getfail/<ns>.<name> holds how many more gets of that policy fail with an
+    # error that is not NotFound (a transient API-server answer); -1 is forever.
+    fail="${d}/getfail/${ns}.${name}"
+    if [[ -f "${fail}" ]]; then
+      left="$(cat "${fail}")"
+      if [[ "${left}" != 0 ]]; then
+        [[ "${left}" == -1 ]] || echo $((left - 1)) >"${fail}"
+        echo "Unable to connect to the server: dial tcp 10.0.0.1:443: i/o timeout" >&2; exit 1
+      fi
+    fi
     if grep -qx "${ns}	${name}" "${d}/present" 2>/dev/null; then
       echo "networkpolicy.networking.k8s.io/${name}"
     else
@@ -203,10 +213,13 @@ PY
     mkdir -p "${d}/applied"
     n=$(ls "${d}/applied" | wc -l)
     cp "${f}" "${d}/applied/${n}.yaml"
-    "${FAKE_PYTHON:?}" - "${f}" >>"${d}/present" <<'PY'
-import sys, yaml
+    "${FAKE_PYTHON:?}" - "${f}" "${d}/drop" >>"${d}/present" <<'PY'
+import pathlib, sys, yaml
+# A name in `drop` is accepted by the apply but never reaches the cluster.
+drop = pathlib.Path(sys.argv[2])
+dropped = set(drop.read_text().split()) if drop.exists() else set()
 for doc in yaml.safe_load_all(open(sys.argv[1])):
-    if doc:
+    if doc and doc['metadata']['name'] not in dropped:
         print(f"{doc['metadata']['namespace']}\t{doc['metadata']['name']}")
 PY
     echo "applied" ;;
@@ -357,3 +370,69 @@ def test_no_labelled_namespace_is_a_failure_not_a_clean_sweep(tmp_path):
     result = cluster.run("--confirm")
     assert result.returncode != 0
     assert "no namespace is labelled swarm-tenant" in result.stderr
+
+
+# --- the read-back: only NotFound is missing (#2185) -------------------------
+#
+# Release 40034319802 (2026-10-23) failed its deploy job on
+# swarm-allow-typesafe-fwd in swarm-tenant-u-devops: the apply reported it
+# `unchanged`, one read-back get failed, and the script counted ANY failed get
+# as "not found". These hold the three answers apart.
+
+READBACK_NS = "swarm-tenant-u-sw-c90291"
+READBACK_POLICY = "swarm-allow-live-egress"
+
+
+def fail_gets(cluster: Cluster, times: int) -> None:
+    (cluster.dir / "getfail").mkdir(exist_ok=True)
+    (cluster.dir / "getfail" / f"{READBACK_NS}.{READBACK_POLICY}").write_text(str(times))
+
+
+def test_one_transient_read_back_failure_is_retried_and_the_run_passes(tmp_path):
+    cluster = Cluster(tmp_path, TENANTS)
+    fail_gets(cluster, 1)
+    result = cluster.run("--confirm")
+    assert result.returncode == 0, result.stderr
+    assert "not found on read-back" not in result.stderr
+    assert "could not be read back" not in result.stderr
+    gets = [
+        line for line in cluster.log("kubectl").splitlines()
+        if f"get networkpolicies {READBACK_POLICY} --namespace {READBACK_NS} " in line
+    ]
+    # The control: the failure was served, and the get was asked again.
+    assert len(gets) == 2, gets
+    assert (cluster.dir / "getfail" / f"{READBACK_NS}.{READBACK_POLICY}").read_text().strip() == "0"
+
+
+def test_a_read_back_that_keeps_failing_is_unreadable_not_missing(tmp_path):
+    cluster = Cluster(tmp_path, TENANTS)
+    fail_gets(cluster, -1)
+    result = cluster.run("--confirm")
+    assert result.returncode != 0
+    assert f"{READBACK_NS}: applied, but could not be read back: {READBACK_POLICY}" in result.stderr
+    assert "i/o timeout" in result.stderr
+    assert "not found on read-back" not in result.stderr
+    gets = [
+        line for line in cluster.log("kubectl").splitlines()
+        if f"get networkpolicies {READBACK_POLICY} --namespace {READBACK_NS} " in line
+    ]
+    assert len(gets) == 3, gets
+    assert f"failed: {READBACK_NS}" in result.stderr
+    # The other namespaces still passed their read-back.
+    assert "1 of 3 tenant namespace(s) failed" in result.stderr
+
+
+def test_a_policy_truly_absent_after_the_apply_is_still_not_found(tmp_path):
+    cluster = Cluster(tmp_path, TENANTS)
+    (cluster.dir / "drop").write_text(READBACK_POLICY + "\n")
+    result = cluster.run("--confirm")
+    assert result.returncode != 0
+    for namespace in TENANTS:
+        assert f"{namespace}: applied, but not found on read-back: {READBACK_POLICY}" in result.stderr
+    assert "could not be read back" not in result.stderr
+    # NotFound is an answer, not a failure: it is not retried.
+    gets = [
+        line for line in cluster.log("kubectl").splitlines()
+        if f"get networkpolicies {READBACK_POLICY} --namespace {READBACK_NS} " in line
+    ]
+    assert len(gets) == 1, gets
