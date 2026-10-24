@@ -599,6 +599,7 @@ def _credential() -> str:
     ("minor_finding", "minor_findings"),
     ("two_contributors", "contributors"),
     ("continues", "continuation"),
+    ("publish_to_pr", "publish_to_pr"),
     ("no_title", "title_absent"),
     ("task_id_title", "title_unusable"),
     ("attribution_title", "title_unusable"),
@@ -621,6 +622,9 @@ def test_every_other_case_declines_and_rings_the_parent(
         kwargs["integrates"] = [IMPL, "task_other00001"]
     elif case == "continues":
         kwargs["dispatch"] = {"continues": "task_root000001"}
+    elif case == "publish_to_pr":
+        # #2183: the worker fast-forwards the existing pull request instead.
+        kwargs["dispatch"] = {"publish_to_pr": {"number": 2164, "task_id": "task_" + "a" * 20}}
     elif case == "no_title":
         kwargs["title"] = None
     elif case == "task_id_title":
