@@ -681,8 +681,8 @@ function wsPeople(x){
   function roleCell(on){return adm?seg(['viewer','member','admin'],on):['viewer','member','admin'][on];}
   function rm(){return adm?btn('Remove','q sm dg'):'';}
   var rows=[
-    ['<b>Operator</b><span class="sub">operator@example.com</span>',roleCell(2),'90d',''],
-    ['<b>Rae</b>',roleCell(1),'40d',rm()],
+    ['<b>Operator</b><span class="sub">operator@example.com</span>',roleCell(adm?2:1),'90d',''],
+    ['<b>Rae</b>',roleCell(adm?1:2),'40d',rm()],
     ['<b>Kim</b>',roleCell(1),'12d',rm()],
     ['<b>Sam</b>',roleCell(0),'2d',rm()]
   ];
