@@ -30,10 +30,10 @@ import {
 } from './fetch'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP as HELP_TOPICS, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, type TopicId } from './help'
-import { CONFIG_SECRETS_ADDRESS, GITHUB_CALLBACK_ADDRESS, KEY_LINK_ADDRESS, QA_LINK_ADDRESS, SUBMIT_ADDRESS, WORKSPACE_SETUP_ADDRESS, addressToPath, agentListSearch, isLegacyHash, keyLinkScope, keyLinkToken, movedToConfig, pathToAddress, secretsLinkToken, secretsLinkView } from './paths'
+import { CONFIG_SECRETS_ADDRESS, GITHUB_CALLBACK_ADDRESS, KEY_LINK_ADDRESS, QA_LINK_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, keyLinkScope, keyLinkToken, movedToConfig, pathToAddress, secretsLinkToken, secretsLinkView } from './paths'
 import { GitHubCallbackScreen } from './GitHubConnect'
 import { ProviderKeysScreen } from './ProviderKeys'
-import { WorkspaceSettingsScreen } from './CodeIntelligence'
+import { WorkspaceSettingsScreen, workspacePartOf } from './WorkspaceSettings'
 import { McpServersScreen } from './McpServers'
 import { WorkspaceSecretsScreen, secretsLinkOf, type SecretsLink } from './WorkspaceSecrets'
 import { SetupStrip } from './ConfigSetup'
@@ -41,12 +41,12 @@ import { NotFound, nearestPath } from './NotFound'
 import { fmtLatency } from './panes'
 import { Icon, SkyShell, type SpineSection } from './Spine'
 import { NotificationBell } from './Notifications'
-import { routedClick, Segmented, Tabs, ToneMark } from './components'
+import { routedClick, Segmented, ToneMark } from './components'
 import { Mark } from './primitives'
 import { HelpScreen, helpPageOf } from './HelpSection'
 import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
-import { OnboardingScreen, SetupCard } from './Onboarding'
+import { SetupCard } from './Onboarding'
 import { AccessScreen } from './Access'
 import { PeopleScreen } from './People'
 import { PlatformCountsScreen } from './PlatformCounts'
@@ -1003,10 +1003,13 @@ export function fromAddress(full: string): Route {
     const view = secretsLinkView(query)
     return { sectionId: CONFIG, tab: CONFIG_SECRETS_TAB, ...blank, ...(view === '' ? {} : { view }) }
   }
-  // Workspace Settings' Workspace setup part (today's Work › Setup): the one
-  // value of `part` there is, so no other rides on the address.
-  if (hash === `${CONFIG}/${CONFIG_WORKSPACE_TAB}` && new URLSearchParams(query).get('part') === 'setup') {
-    return { sectionId: CONFIG, tab: CONFIG_WORKSPACE_TAB, ...blank, view: 'part=setup' }
+  // Workspace Settings' parts past Settings: Workspace setup (Work › Setup
+  // until CONFIG-NAV) and a platform admin's Add a new workspace
+  // (WS-SETTINGS-PAGE). The two values of `part` there are, so no other rides
+  // on the address.
+  if (hash === `${CONFIG}/${CONFIG_WORKSPACE_TAB}`) {
+    const part = workspacePartOf(query)
+    if (part !== 'settings') return { sectionId: CONFIG, tab: CONFIG_WORKSPACE_TAB, ...blank, view: `part=${part}` }
   }
   if (hash === KEY_LINK_ADDRESS) {
     const scope = keyLinkScope(query)
@@ -1578,7 +1581,7 @@ export function App() {
                         secretsLink={onSecretsPage && at.view ? { ...secretsLinkOf(at.view), token: secretsLink.current } : null}
                       />
                     )
-                    return section.id === CONFIG ? <ConfigPage tab={at.tab} view={at.view ?? null} go={go}>{body}</ConfigPage> : body
+                    return section.id === CONFIG ? <ConfigPage go={go}>{body}</ConfigPage> : body
                   })()}
                   </FrameAge.Provider>
                 </RoutedPage.Provider>
@@ -2208,7 +2211,7 @@ function SectionBody({
     case 'config/people':
       return <WorkspacePeopleScreen />
     case 'config/workspace':
-      return <WorkspaceSettingsScreen />
+      return <WorkspaceSettingsScreen part={workspacePartOf(view)} go={go} />
 
     case 'admin/limits':
       return <AdminSettingsScreen />
@@ -2252,30 +2255,16 @@ function SectionBody({
  * here once, so no Config page can be missing it and no two can draw it
  * differently; it reads what the shell read (ConfigSetup.tsx).
  *
- * Workspace Settings holds two parts, Settings and Workspace setup (today's
- * Work › Setup, unchanged), each at its own address: `/config/workspace` and
- * `/config/workspace/setup`. Add a new workspace, S6's third part, is
- * WS-SETTINGS-PAGE's. The pages under the strip are today's, moved whole;
- * each page's own lead and layout are later lanes'.
+ * Workspace Settings draws its own parts (WorkspaceSettings.tsx): Settings,
+ * Workspace setup and, for a platform admin, Add a new workspace. The pages
+ * under the strip are today's, moved whole; each page's own lead and layout
+ * are its page lane's.
  */
-function ConfigPage({ tab, view, go, children }: { tab: string; view: string | null; go: (to: string) => void; children: ReactNode }) {
-  const setup = tab === CONFIG_WORKSPACE_TAB && view === 'part=setup'
+function ConfigPage({ go, children }: { go: (to: string) => void; children: ReactNode }) {
   return (
     <div className="cfg-page">
       <SetupStrip go={go} />
-      {tab === CONFIG_WORKSPACE_TAB && (
-        <Tabs
-          className="cfg-parts"
-          label="Workspace Settings"
-          current={setup ? 'setup' : 'settings'}
-          onGo={go}
-          tabs={[
-            { key: 'settings', label: 'Settings', href: addressToPath(`${CONFIG}/${CONFIG_WORKSPACE_TAB}`) },
-            { key: 'setup', label: 'Workspace setup', href: addressToPath(WORKSPACE_SETUP_ADDRESS) },
-          ]}
-        />
-      )}
-      {setup ? <OnboardingScreen /> : children}
+      {children}
     </div>
   )
 }
