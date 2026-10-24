@@ -505,7 +505,7 @@ function configHome(ph){
   <div class="scards">
   ${scard({ic:'github',title:'GitHub access',s:'ok',big:'Connected',line:'as @operator · GitHub App · renewed 3h ago',flags:[chip('installed on 2 owners'),chip('quota 4,812 of 5,000 left')],go:'GitHub access'})}
   ${scard({ic:'repo',title:'Repositories',s:'bad',big:'12 <small>reachable as you</small>',line:'8 Write · 4 Read · 9 registered for indexing',flags:[chip('1 Push check missing','bad'),chip('2 index behind','warn'),chip('Push test not run on 7')],go:'Repositories'})}
-  ${scard({ic:'key',title:'Secrets',s:'warn',big:'20 <small>set</small>',rows:`<div class="rows"><div><span>Workspace · eng</span><span>10 set · ${chip('1 missing','warn')}</span></div><div><span>Yours</span><span>5 set</span></div><div><span>Repositories</span><span>5 set · ${chip('1 missing','warn')}</span></div></div>`,flags:[chip('1 shadowed by yours','info')],go:'Secrets'})}
+  ${scard({ic:'key',title:'Secrets',s:'warn',big:'20 <small>set</small>',rows:`<div class="rows"><div><span>Workspace · eng</span><span>10 set · ${chip('1 missing','warn')}</span></div><div><span>Yours</span><span>5 set</span></div><div><span>Repositories</span><span>5 set · ${chip('1 missing','warn')}</span></div></div>`,flags:[chip('2 shadowed by yours','info')],go:'Secrets'})}
   ${scard({ic:'ws',title:'Setup progress',s:'warn',big:'7 <small>of 9 done</small>',rows:`<div class="bar" role="img" aria-label="7 of 9 steps done"><i style="width:77.8%"></i></div>`,line:'Next: Verify access, 1 check failed on example-org/example-web',go:'Workspace Settings · Workspace setup'})}
   ${scard({ic:'plug',title:'MCP servers',s:'ok',big:'3 <small>registered</small>',line:'3 enabled · kb last used 2h ago',flags:[chip('docs: last used —, not served yet')],go:'MCP servers'})}
   ${scard({ic:'people',title:'People and roles',s:'n',big:'18 <small>people</small>',line:'Default role viewer · 3 admins · 4 with their own role',go:'People and roles'})}
@@ -606,7 +606,7 @@ function secHome(ph){
   return `${phead('Config / <b>Secrets</b>','Secrets',{sub:SEC_CAP,acts:ph?'':btn('Set a secret','p','plus'),age:ph?'':'read 6s ago'})}
   ${seg(['Overview','Workspace','Yours','Repository'],0)}
   <div class="scards">
-  ${scard({ic:'ws',title:'Workspace · eng',s:'warn',big:'10 <small>set</small>',rows:`<div class="rows"><div><span>For agents</span><span>9 set</span></div><div><span>LLM provider keys</span><span>1 set · ${chip('1 missing','warn')}</span></div><div><span>GitHub token</span><span>${st('ok','active')}</span></div></div>`,flags:[chip('openai key missing: codex needs it','warn'),chip('search-api-key shadowed by yours','info')],go:'Open the workspace\'s secrets'})}
+  ${scard({ic:'ws',title:'Workspace · eng',s:'warn',big:'10 <small>set</small>',rows:`<div class="rows"><div><span>For agents</span><span>9 set</span></div><div><span>LLM provider keys</span><span>1 set · ${chip('1 missing','warn')}</span></div><div><span>GitHub token</span><span>${st('ok','active')}</span></div></div>`,flags:[chip('openai key missing: codex needs it','warn'),chip('2 shadowed by yours','info')],go:'Open the workspace\'s secrets'})}
   ${scard({ic:'people',title:'Yours',s:'ok',big:'5 <small>set</small>',rows:`<div class="rows"><div><span>Personal secrets</span><span>2 · 1 used in eng</span></div><div><span>Your TypeSafe key</span><span>set · wins over eng\'s</span></div><div><span>Browser sessions</span><span>2 · 1 expires in 2d</span></div><div><span>GitHub</span><span>${st('ok','App token active')}</span></div></div>`,go:'Open yours'})}
   ${scard({ic:'repo',title:'Repositories',s:'warn',big:'5 <small>set in 2 repositories</small>',rows:`<div class="rows"><div><span>example-org/example-web</span><span>4 · ${chip('1 missing','warn')}</span></div><div><span>example-org/example-api</span><span>1</span></div><div><span>7 other repositories</span><span>none</span></div></div>`,flags:[chip('QA production sign-in not set','warn'),chip('Actions environment preview: any branch','warn')],go:'Pick a repository'})}
   ${scard({ic:'key',title:'Keys for agents and MCP',s:'warn',big:'4 <small>of 5</small>',line:'LLM provider keys, TypeSafe (yours and eng\'s), MCP server credentials',flags:[chip('openai not set','warn')],go:'Keys for agents and MCP'})}
@@ -616,7 +616,7 @@ function secHome(ph){
 }
 function secWorkspace(ph){
   const rows=[
-    ['<b>typesafe-key</b><span class="sub">TypeSafe</span>','API key','3d ago by Operator','v2','2h ago','profile claude-code, tool jev','—',btn('Set','sm')+' '+btn('Delete','g sm')],
+    {flag:'flag',cells:['<b>typesafe-key</b><span class="sub">TypeSafe</span>','API key','3d ago by Operator','v2','2h ago','profile claude-code, tool jev',chip('shadowed on agents of Operator','info'),btn('Set','sm')+' '+btn('Delete','g sm')]},
     {flag:'flag',cells:['<b>search-api-key</b><span class="sub">Search</span>','API key','12d ago by Operator','v1','1d ago','tool web-search',chip('shadowed on agents of Operator','info'),btn('Set','sm')+' '+btn('Delete','g sm')]},
     ['<b>kb-auth</b><span class="sub">MCP · kb</span>','Bearer','5d ago by Operator','v1','2h ago','mcp:kb','—',btn('Set','sm')+' '+btn('Delete','g sm')],
     ['<b>sentry-read</b><span class="sub">Sentry</span>','API key','20d ago by Operator','v1',dash('not served yet'),'nothing yet','—',btn('Set','sm')+' '+btn('Delete','g sm')],
@@ -627,7 +627,7 @@ function secWorkspace(ph){
    {s:'ok',label:'For agents',big:'9 <small>set</small>',sub:'7 granted · 2 granted to nothing yet'},
    {s:'warn',label:'LLM provider keys',big:'1 <small>of 2</small>',sub:'openai not set',go:'Keys'},
    {s:'ok',label:'GitHub token',big:'Active',sub:'workspace token · verified 1h ago',go:'GitHub'},
-   {s:'info',label:'Overridden',big:'1',sub:'search-api-key: Operator\'s own wins on their agents'},
+   {s:'info',label:'Overridden',big:'2',sub:'search-api-key, typesafe-key: Operator\'s own win on their agents'},
   ])}
   ${card('For agents · eng',tbl(['Name','Kind','Set','Version','Last used','Granted to','Override',''],rows,ph),{flush:true,acts:btn('Grants','sm'),foot:'4 of the 9 are drawn; 5 more are not drawn. Managed by a workspace admin or a platform admin; every member reads the names. Grants opens the matrix of profiles, tools and components, as built (SEC-UI-GRANTS).'})}`;
 }
@@ -700,7 +700,7 @@ function secKeys(ph){
   ],ph),{flush:true})}
   ${card('TypeSafe',tbl(['Key','State','Set',''],[
     ['<b>Your key</b><span class="sub">scope: you</span>',st('ok','set'),'6d ago',btn('Set','sm')+' '+btn('Delete','g sm')],
-    ['<b>Workspace key</b><span class="sub">scope: workspace eng</span>',st('ok','set'),'30d ago by Operator',btn('Set','sm')+' '+btn('Delete','g sm')],
+    ['<b>Workspace key</b><span class="sub">scope: workspace eng</span>',st('ok','set'),'3d ago by Operator',btn('Set','sm')+' '+btn('Delete','g sm')],
   ],ph),{flush:true,foot:'Two scopes: yours, and the workspace\'s. Your own key wins over the workspace\'s. Your agents in eng use: your key. Set opens the one-time set link; the value is never shown again.'})}
   ${card('MCP server credentials',tbl(['Server','Credential','State',''],[
     ['<b>kb</b>','workspace secret kb-auth, granted to mcp:kb',st('ok','set 5d ago'),btn('Set','sm')],
@@ -742,7 +742,7 @@ function secEmpty(ph){
 S('s4','S4','Config › Secrets','One page for every scope (secrets-scopes.md §6.1): an overview of one card per scope, then the scope picker Workspace · Yours · Repository. A repository has the destination switch Agents | GitHub Actions. Every Set opens a one-time form in a modal.',
  [
   F('The scope view: one card per scope','1440 · 390',{d:desk({page:'secrets'},secHome(false)),p:[phone({title:'Secrets',tabs:CFG_TABS,on:3},secHome(true))],cap:'<b>Desktop and phone.</b> Each scope is a card with its counts and its missing items flagged: a key a profile needs, a QA sign-in, an environment any branch can deploy. The override order (yours, then the repository\'s, then the workspace\'s) is stated once, and each card flags the overrides it causes.'}),
-  F('Workspace scope','1440 · 390',{d:desk({page:'secrets'},secWorkspace(false)),p:[phone({title:'Secrets',tabs:CFG_TABS,on:3},secWorkspace(true))],cap:'<b>Desktop and phone.</b> The built SEC-UI-LIST, moved, with an Override column. search-api-key is flagged as shadowed on Operator\'s agents, because Operator set their own. A dash means "not served yet", never 0. Grants opens the built matrix.'}),
+  F('Workspace scope','1440 · 390',{d:desk({page:'secrets'},secWorkspace(false)),p:[phone({title:'Secrets',tabs:CFG_TABS,on:3},secWorkspace(true))],cap:'<b>Desktop and phone.</b> The built SEC-UI-LIST, moved, with an Override column. search-api-key and typesafe-key are flagged as shadowed on Operator\'s agents, because Operator set their own (the TypeSafe one on Keys for agents and MCP). A dash means "not served yet", never 0. Grants opens the built matrix.'}),
   F('Yours (personal secrets and browser sessions)','1440 · 390',{d:desk({page:'secrets'},secYours(false)),p:[phone({title:'Secrets',tabs:CFG_TABS,on:3},secYours(true))],cap:'<b>Desktop and phone.</b> Personal secrets, with where each one is used and what it overrides. Browser sessions, the sessions browser agents ask for by name, can be deleted here but not typed: they are saved from a live browser.'}),
   F('One repository: secrets for agents and QA sign-ins','1440 · 390',{d:desk({page:'secrets'},secRepoAgents(false)),p:[phone({title:'Secrets',tabs:CFG_TABS,on:3},secRepoAgents(true))],cap:'<b>Desktop and phone.</b> Repository scope with the destination Agents: secrets released only to agents that clone this repository, then Sign-in for QA per environment of its QA target, with the production sign-in flagged as not set. The foot names who may set them, per BGD\'s answer to Q2.'}),
   F('One repository: GitHub Actions with environments','1440 · 390',{d:desk({page:'secrets'},secRepoActions(false)),p:[phone({title:'Secrets',tabs:CFG_TABS,on:3},secRepoActions(true))],cap:'<b>Desktop and phone.</b> The first tile is "You may write here", checked live: a workspace manager whom GitHub calls admin of the repository. Below it are the repository secrets and the environments with their branch rule. repo-secrets is main only; preview lets any branch deploy, so a write there asks for its name. Until a later step, Create environment is "Create on GitHub ↗" plus Check rule.'}),
