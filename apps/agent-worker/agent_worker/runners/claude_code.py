@@ -149,7 +149,7 @@ browser image behaves as before: the real browsers and the headless note.
 A TEST PROCESS MAY LAUNCH ITS OWN CHROMIUM (PW-TESTRUNNER, BGD 2026-10-24,
 "Test-runner exception on browser"; part of #2253). With the stub above, a
 repository's own `npx playwright test` could not launch the headless Chromium
-it needs, and /opt/playwright is read-only, so the revision its
+it needs, and the image's browsers directory is read-only, so the revision its
 `@playwright/test` pins had nowhere to go (task_2791f0996eab4f958252). So on
 the browser image, live browser or not, the runner makes a writable directory,
 `<XDG_CACHE_HOME>/swarm-test-browsers` (`prepare_test_browsers`), seeded with
