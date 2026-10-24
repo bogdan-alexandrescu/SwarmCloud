@@ -247,12 +247,28 @@ MERGE_FIX_METADATA_KEY = "merge_fix"
 #: (`MERGE_FIX_ROUNDS_MAX`, the API's): a forged count is read under it.
 MERGE_FIX_ROUNDS_KEY = "merge_fix_rounds"
 MERGE_FIX_ROUNDS_MAX = 5
+#: The tick's free re-run of a red head's failing Actions jobs, once per head
+#: and ahead of any round, even when none were asked for (SPEED-D2, #2257):
+#: `merge_fix.reruns`, each `{round, head, claimed_at}` then `jobs` and
+#: `requested_at`, or `error` when GitHub refused. Written only by swarm-api's
+#: wake tick (`swarm_api.mergewake.RERUNS_KEY`/`RERUN_SETTLE_SECONDS`, held
+#: equal by tests/unit/worker/test_merge_fix_round.py). For the settle window
+#: after `requested_at` the failed check runs this step reads are the ones
+#: GitHub has not replaced yet, not the re-run's answer, so a wake inside it
+#: (the MERGE_CI_FALLBACK_SECONDS fallback, any other) parks rather than
+#: refusing on them: task_076d1ae89d014e4688ce refused `checks_failed` on one
+#: flaky shard a re-run would have passed (PR #2229).
+RERUNS_KEY = "reruns"
+RERUN_SETTLE_SECONDS = 600
 
 #: The park codes of a red reading a CI-fix round may still fix: rounds are
 #: left and the tick has not claimed the next one yet, or one is running at
 #: this head. Never `checks_failed` while either holds.
 CI_FIX_PENDING = "ci_fix_pending"
 CI_FIX_RUNNING = "ci_fix_running"
+#: The park code of a red reading whose failing jobs the tick re-ran at this
+#: head less than RERUN_SETTLE_SECONDS ago: the re-run has not answered yet.
+CI_RERUN_PENDING = "ci_rerun_pending"
 
 #: A CONFLICTING pull request is never waited on for checks: GitHub runs none
 #: on it (#1076, measured on PR 1028: `checks_timeout` after 366 min while
@@ -2280,6 +2296,31 @@ def _fix_rounds(own: Mapping[str, Any], key: str = "rounds") -> list[Mapping[str
     return [r for r in rounds if isinstance(r, Mapping)] if isinstance(rounds, list) else []
 
 
+def _rerun_settling(own: Mapping[str, Any], head: str) -> datetime | None:
+    """When the tick's last re-run at `head` was requested, while it settles.
+
+    None unless GitHub accepted it (no `error`) less than
+    RERUN_SETTLE_SECONDS ago. The document is tenant-writable, so only an
+    instant the tick could have written counts: a tz-aware datetime not in
+    the future, or its ISO 8601 text, which is how swarm-api's state routes
+    serve a Firestore instant (`attemptstate.jsonable`). A forged one can at
+    most make the step wait that long.
+    """
+    mine = [r for r in _fix_rounds(own, RERUNS_KEY) if r.get("head") == head]
+    if not mine or mine[-1].get("error"):
+        return None
+    since = mine[-1].get("requested_at")
+    if isinstance(since, str):
+        try:
+            since = datetime.fromisoformat(since)
+        except ValueError:
+            return None
+    if not isinstance(since, datetime) or since.tzinfo is None:
+        return None
+    age = (utcnow() - since).total_seconds()
+    return since if 0 <= age < RERUN_SETTLE_SECONDS else None
+
+
 def _rounds_asked(own: Mapping[str, Any]) -> int:
     value = _mapping(own.get("metadata")).get(MERGE_FIX_ROUNDS_KEY)
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
@@ -2565,6 +2606,12 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
     or one due that the tick has not claimed yet, parks (`wait`, which
     `MERGE_CI_MAX_SECONDS` bounds). A round that ended at this head without
     moving it, or was never submitted, is spent.
+
+    Before the budget is read, a re-run of the failing Actions jobs the tick
+    asked GitHub for at this head (#2257), accepted and inside
+    RERUN_SETTLE_SECONDS, parks `CI_RERUN_PENDING` whatever the budget, even
+    none: the reading is the one the re-run replaces. Once it answers red the
+    tick wakes the step and this refuses (or hands it to a round) as before.
     """
     message = f"at {head}: " + ", ".join(sorted(failed))
     rounds = _fix_rounds(own)
@@ -2583,6 +2630,11 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
                         [])
         return run.refuse("checks_failed",
                           f"{message}, after CI fix round {number} ({task_id}) ended at this head")
+    requested_at = _rerun_settling(own, head)
+    if requested_at is not None:
+        return wait(CI_RERUN_PENDING,
+                    f"{message}; the failing jobs were re-run at {requested_at.isoformat()}, "
+                    "and the re-run has not answered yet", [])
     asked = _rounds_asked(own)
     if len(rounds) < asked:
         return wait(CI_FIX_PENDING,

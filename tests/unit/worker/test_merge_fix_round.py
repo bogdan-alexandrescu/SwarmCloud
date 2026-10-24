@@ -351,10 +351,24 @@ def _naive(world: MergeWorld) -> None:
     entry["requested_at"] = entry["requested_at"].replace(tzinfo=None)
 
 
-def _string_instant(world: MergeWorld) -> None:
+def _naive_text(world: MergeWorld) -> None:
+    _rerun(world)
+    entry = world.docs[TASK]["metadata"][merge.MERGE_FIX_METADATA_KEY][merge.RERUNS_KEY][0]
+    entry["requested_at"] = entry["requested_at"].replace(tzinfo=None).isoformat()
+
+
+def test_a_fresh_rerun_served_as_iso_text_still_parks(tmp_path):
+    """swarm-api's state routes serve a Firestore instant as ISO 8601 text
+    (`attemptstate.jsonable`): a tz-aware one is read as the instant."""
+    world = MergeWorld(tmp_path)
+    _red(world)
     _rerun(world)
     entry = world.docs[TASK]["metadata"][merge.MERGE_FIX_METADATA_KEY][merge.RERUNS_KEY][0]
     entry["requested_at"] = entry["requested_at"].isoformat()
+
+    outcome = merge.run_merge(world.context())
+
+    _parked(outcome, merge.CI_RERUN_PENDING, PINNED)
 
 
 @pytest.mark.parametrize("mutate", [
@@ -364,7 +378,8 @@ def _string_instant(world: MergeWorld) -> None:
     pytest.param(lambda w: _rerun(w, requested_at=None), id="claimed-not-requested"),
     pytest.param(_future, id="forged-future"),
     pytest.param(_naive, id="naive-instant"),
-    pytest.param(_string_instant, id="string-instant"),
+    pytest.param(_naive_text, id="naive-text"),
+    pytest.param(lambda w: _rerun(w, requested_at="yesterday"), id="not-an-instant"),
 ])
 def test_a_refused_or_other_head_rerun_does_not_hold_the_refusal(tmp_path, mutate):
     """Only a re-run GitHub accepted, at this head, inside the window holds
