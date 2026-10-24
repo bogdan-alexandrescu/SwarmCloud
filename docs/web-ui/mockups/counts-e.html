@@ -297,11 +297,15 @@ svg .rw{stroke:var(--f-mu);stroke-width:2}
 <li>Builds on what the Timeline already has: <code>compare=previous</code>, its bucket edges in the viewer's zone, and its read budget.</li>
 </ul></div>
 <div><h3>Risks</h3><ul>
-<li><b>It reads twice the days.</b> A warm platform read costs about one stored day per workspace per day, plus the 24 live counts (docs/outcomes.md, "The read budget"). With three workspaces, 26 weeks against 26 is 364 days, about 1,120 reads, against about 570 for the period alone. A month view is two years of days, about 2,220. A cold first Run past the 5,000-read budget leaves buckets unread (F5), and the count grows with every workspace.</li>
+<li><b>It reads twice the days.</b> A warm platform read costs about one stored day per workspace per day, plus the 24 live counts (docs/outcomes.md, "The read budget"). With three workspaces, 26 weeks against 26 is 364 days, about 1,120 reads, against about 570 for the period alone. A month view reads its own 12 months only, about 1,120, because the 12 before were never recorded (below). A cold first Run past the 5,000-read budget leaves buckets unread (F5), and the count grows with every workspace.</li>
 <li><b>The route needs work.</b> The <code>previous</code> section of <code>GET /v1/outcomes</code> carries outcome totals only (succeeded, failed, rate). This proposal needs the <code>usage</code> block per bucket and per group for the previous span too: an <code>apps/swarm-api</code> change, no frozen-contract change.</li>
-<li><b>A young platform has little "before".</b> The one-time backfill (2026-10-23) reaches 12 months back, so the twelve months before a 12-month view were never recorded: that ghost is unknown, not zero, and has to be drawn absent with its reason. Day and Week views have a full "before" today (the 26 weeks before start 27 Oct 2025, inside it). F4 as drawn here shows a ghost for Nov 2024 – Oct 2025, which the backfill does not have; built, that ghost would be absent, and a month view gains one month of ghost per month from here.</li>
+<li><b>A young platform has little "before".</b> The one-time backfill (2026-10-23) reaches back only to Oct 2025, so the twelve months before a 12-month view (Nov 2024 – Oct 2025) were never recorded. The month view therefore compares nothing: F4 draws this period only, with a note that says why (decided, below). Day and Week views have a full "before" today (the 26 weeks before start 27 Oct 2025, inside it) and keep their comparison.</li>
 <li>Two lines per chart double the ink; at 300 wide they cross often. Holidays break the week-1-against-week-1 alignment.</li>
 <li>With a bucket unread, E compares over the buckets read in both periods (F5). The Timeline instead drops the change. The two rules would differ until one is chosen for both.</li>
+</ul></div>
+<div><h3>Decided and open</h3><ul>
+<li><b>Decided (BGD, 2026-10-24):</b> the month view has no ghost, no "was" shares, no Top movers and no % change against the period before, on desktop and phone. It draws this period only, and one note says the 12 months before Nov 2025 predate the backfill. Day and Week views keep their comparison.</li>
+<li><b>Open:</b> which unread-bucket rule E and the Timeline share (F5), and the <code>usage</code> block for the previous span on <code>GET /v1/outcomes</code>.</li>
 </ul></div>
 </div>
 </section>
@@ -344,7 +348,8 @@ const jit=a=>1+(R()*2-1)*a;
 /* ================= the example data ================= */
 /* Week: these 26 weeks start Mon 27 Apr 2026; the 26 before start Mon 27 Oct 2025. The last week is
    "so far" (Mon 19 to Fri 23 Oct), and its ghost is the same five days 26 weeks earlier.
-   Month: Nov 2025 to Oct 2026 (Oct so far, 23 days), against Nov 2024 to Oct 2025 (Oct, the same 23 days). */
+   Month: Nov 2025 to Oct 2026 (Oct so far, 23 days), drawn alone: the 12 months before predate the backfill (BGD,
+   2026-10-24), so month carries a noPrev note and its prev series is never drawn, compared or read. */
 const W0=Date.UTC(2026,3,27),P0=Date.UTC(2025,9,27);
 /* The token mix: cache reads grew as a share between the two periods. */
 const TOKSPLIT={in:.061,out:.016,cr:.858,cw:.065},TOKPREV={in:.068,out:.018,cr:.845,cw:.069};
@@ -360,7 +365,8 @@ const DS={
     span:'27 Apr – 25 Oct 2026',pspan:'27 Oct 2025 – 26 Apr 2026',reads:1120,running:33,est:[41,96]},
   month:{n:12,unit:'month',units:'months',per:'a month',cur:totals(12,700,1230,.09,.39,1.42,1.62,23/31,.05),prev:totals(12,500,760,.115,.33,1.18,1.35,23/31,.06),
     lab:i=>MON[(10+i)%12],plab:i=>MON[(10+i)%12],long:i=>`${MON[(10+i)%12]} ${i<2?2025:2026}`,plong:i=>`${MON[(10+i)%12]} ${i<2?2024:2025}`,
-    span:'Nov 2025 – Oct 2026',pspan:'Nov 2024 – Oct 2025',reads:2220,running:33,est:[88,212]},
+    span:'Nov 2025 – Oct 2026',pspan:'Nov 2024 – Oct 2025',reads:1120,running:33,est:[88,212],
+    noPrev:'Nothing is compared in month view: the 12 months before Nov 2025 predate the backfill (it reaches back to Oct 2025), so they were never recorded.'},
 };
 /* The breakdowns. a = [share of agents in the period before, share now]; f = per-agent weight of hours,
    tokens and cost against the platform's mean. mock spends nothing on purpose: its tokens and cost are
@@ -424,7 +430,7 @@ function view(st){
     tok:{k:attempts-runAtt,n:attempts,floor:true,closedFloor:false},
     cost:{k:tot.agents-run-noCost,n:tot.agents,floor:true,closedFloor:noCost>0,noCost,est},
   };
-  return {ds,n,unread,closed,read,tot,prev,cc,cp,cov,run};
+  return {ds,n,unread,closed,read,tot,prev,cc,cp,cov,run,np:!!ds.noPrev};
 }
 const pctCh=(a,b)=>b===0?null:Math.round((a-b)/b*100);
 function chip(a,b){const p=pctCh(a,b);if(p===null)return `<span class="dl" aria-label="new: none in the period before">new</span>`;
@@ -441,7 +447,7 @@ function path(arr,X,Y,skip,upto){let d='',pen=false;for(let i=0;i<upto;i++){cons
 function svg1(o,W){
   const L=58,Rm=14,T=12,ph=o.ph?o.ph[W]:(W===640?120:104),lane=o.retries?32:0,B=22,H=T+ph+lane+B;
   const n=o.cur.length,step=(W-L-Rm)/n,X=i=>L+(i+.5)*step;
-  const vals=o.cur.concat(o.prev).filter((v,i)=>v!=null&&!(i<n&&o.unread.has(i)));
+  const vals=o.cur.concat(o.prev||[]).filter((v,i)=>v!=null&&!(i<n&&o.unread.has(i)));
   const mx=Math.max(0,...vals),top=mx||1,Y=v=>T+ph-(v/top)*ph;
   const id='hz'+(++PID);
   let s=`<svg class="d${W}" viewBox="0 0 ${W} ${H}" role="group" aria-label="${esc(o.aria)}"><defs><pattern id="${id}" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path class="hz" d="M0 0V5"/></pattern></defs>`;
@@ -450,7 +456,7 @@ function svg1(o,W){
   if(mx>0)s+=`<line class="g1" x1="${L}" x2="${W-Rm}" y1="${T}" y2="${T}"/><text class="tk" x="${L-6}" y="${T+4}" text-anchor="end">${esc(o.ax(mx))}</text>`;
   s+=`<text class="tk" x="${L-6}" y="${Y(0)+4}" text-anchor="end">0</text>`;
   if(o.hover!=null)s+=`<line class="xh" x1="${X(o.hover).toFixed(1)}" x2="${X(o.hover).toFixed(1)}" y1="${T-4}" y2="${T+ph+lane}"/>`;
-  s+=`<path class="ghost" d="${path(o.prev,X,Y,new Set(),n)}"/>`;
+  if(o.prev)s+=`<path class="ghost" d="${path(o.prev,X,Y,new Set(),n)}"/>`;
   s+=`<path class="cur" style="stroke:${o.color}" d="${path(o.cur,X,Y,o.unread,n-1)}"/>`;
   const a=n-2,b=n-1;
   if(o.cur[a]!=null&&!o.unread.has(a))s+=`<path class="cur open" style="stroke:${o.color}" d="M${X(a).toFixed(1)} ${Y(o.cur[a]).toFixed(1)}L${X(b).toFixed(1)} ${Y(o.cur[b]).toFixed(1)}"/>`;
@@ -460,7 +466,7 @@ function svg1(o,W){
   s+=`<circle cx="${X(b).toFixed(1)}" cy="${Y(o.cur[b]).toFixed(1)}" r="3.4" fill="var(--f-sf)" stroke="${o.color}" stroke-width="1.6" stroke-dasharray="2 1.5"/>`;
   /* "so far" sits clear of both lines: above every segment under its width (and the one running in from the
      left), below them, or in the widest gap between the two lines when neither the top nor the zero rule leaves room. */
-  const lw=36,sp=[];[o.cur,o.prev].forEach((arr,k)=>{let py=null;for(let i=0;i<n;i++){const v=arr[i];if(v==null||(k===0&&o.unread.has(i))){py=null;continue}
+  const lw=36,sp=[];[o.cur,o.prev||[]].forEach((arr,k)=>{let py=null;for(let i=0;i<n;i++){const v=arr[i];if(v==null||(k===0&&o.unread.has(i))){py=null;continue}
     const y=Y(v);if(X(i)+step>=W-Rm-lw-2)sp.push([Math.min(y,py??y),Math.max(y,py??y)]);py=y}});
   sp.sort((p,q)=>p[0]-q[0]);let gap=[T-12,sp[0][0]],end=sp[0][1];
   for(const [a0,a1] of sp.slice(1)){if(a0-end>gap[1]-gap[0])gap=[end,a0];end=Math.max(end,a1)}
@@ -468,9 +474,9 @@ function svg1(o,W){
   const sfY=gap[0]===T-12?gap[1]-8:gap[1]===T+ph?gap[0]+14:(gap[0]+gap[1])/2+4;
   s+=`<text class="tk" x="${(W-Rm).toFixed(1)}" y="${sfY.toFixed(1)}" text-anchor="end">so far</text>`;
   if(o.hover!=null){const h=o.hover;if(o.cur[h]!=null)s+=`<circle cx="${X(h).toFixed(1)}" cy="${Y(o.cur[h]).toFixed(1)}" r="4.6" fill="${o.color}" stroke="var(--f-sf)" stroke-width="1.5"/>`;
-    s+=`<circle cx="${X(h).toFixed(1)}" cy="${Y(o.prev[h]).toFixed(1)}" r="4" fill="var(--f-sf)" stroke="var(--f-mu)" stroke-width="1.6"/>`}
+    if(o.prev)s+=`<circle cx="${X(h).toFixed(1)}" cy="${Y(o.prev[h]).toFixed(1)}" r="4" fill="var(--f-sf)" stroke="var(--f-mu)" stroke-width="1.6"/>`}
   if(o.retries){
-    const rc=o.retries.cur,rp=o.retries.prev,rmx=Math.max(1,...rc.filter((v,i)=>v!=null&&!o.unread.has(i)),...rp),y0=T+ph+lane-4,rh=lane-10;
+    const rc=o.retries.cur,rp=o.retries.prev||[],rmx=Math.max(1,...rc.filter((v,i)=>v!=null&&!o.unread.has(i)),...rp),y0=T+ph+lane-4,rh=lane-10;
     s+=`<line class="g0" x1="${L}" x2="${W-Rm}" y1="${y0}" y2="${y0}"/><text class="tk" x="${L-6}" y="${y0-6}" text-anchor="end">retries</text>`;
     rc.forEach((v,i)=>{if(v==null||o.unread.has(i))return;const h=v/rmx*rh,w=Math.max(2,step*.5);s+=`<rect x="${(X(i)-w/2).toFixed(1)}" y="${(y0-h).toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" fill="var(--series-5)" rx="1"/>`});
     rp.forEach((v,i)=>{const h=v/rmx*rh,w=Math.max(4,step*.72);s+=`<line class="rw" x1="${(X(i)-w/2).toFixed(1)}" x2="${(X(i)+w/2).toFixed(1)}" y1="${(y0-h).toFixed(1)}" y2="${(y0-h).toFixed(1)}"/>`});
@@ -505,7 +511,7 @@ function toolbar(st,ph){
   const byL=st.pick?DIMS[st.pick].label:st.by?DIMS[st.by].label:'None';
   return `<div class="tb"><span class="grp"><span class="lb">Buckets</span><span class="segb" role="group" aria-label="Buckets">${b('day','Day','30')}${b('week','Week','26')}${b('month','Month','12')}</span></span>
 <span class="grp" style="position:relative"><span class="lb">Breakdown</span><button class="dd${st.menu?' hl':''}" aria-haspopup="listbox" aria-expanded="${!!st.menu}"><b>${esc(byL)}</b>${I('i-down')}</button>${st.menu?menu(st):''}</span>
-<span class="grp"><span class="lb">Against</span><span>the ${ds.n} ${ds.units} before</span></span>
+${ds.noPrev?'':`<span class="grp"><span class="lb">Against</span><span>the ${ds.n} ${ds.units} before</span></span>`}
 <span class="tz">${ph?'':'in your time zone, '}Europe/London</span></div>`;
 }
 function menu(st){
@@ -513,9 +519,11 @@ function menu(st){
   return `<div class="menu" role="listbox" aria-label="Breakdown" style="left:0;top:34px">${it(null,'None','the platform as one line per chart')}${it('type','Agent type','runner profile, e.g. claude-code')}${it('model','Model','the model each agent ran')}${it('ws','Workspace','eng, smoke, u-operator')}${it('acct','Pool account','the last account each agent leased; an agent that ran on two is charged to the last')}<div class="ft">Picking does not read. Run reads it, ~${n0(DS[st.bucket].reads)} reads: a breakdown costs no more than none.</div></div>`;
 }
 function keyline(st,v){
+  if(v.np)return `<div class="keyline"><span><i class="k-now"></i>this period, ${v.ds.span}</span><span>the ${v.ds.unit} so far is drawn hollow and dashed</span></div>`;
   return `<div class="keyline"><span><i class="k-now"></i>this period, ${v.ds.span}</span><span><i class="k-was"></i>the period before, ${v.ds.pspan}</span><span>${v.ds.unit} against ${v.ds.unit}; a change compares the ${v.closed.length} closed ${v.ds.units}${st.partial?' read in both':''}, not the ${v.ds.unit} so far</span></div>`;
 }
 function sentence(st,v){
+  if(v.np)return `<p class="lead nocmp">${esc(v.ds.noPrev)}</p>`;
   const top=movers(st,v,'agents',null).up[0];
   const pa=pctCh(v.cc.agents,v.cp.agents),pc=pctCh(v.cc.cost,v.cp.cost);
   if(st.partial){
@@ -528,7 +536,7 @@ function sentence(st,v){
 }
 function series(v,m,idx){return v.ds.cur.map((b,i)=>v.unread.has(i)?null:b[m])}
 function metricCard(st,v,m){
-  const ds=v.ds,cur=series(v,m),prev=ds.prev.map(b=>b[m]);
+  const ds=v.ds,cur=series(v,m),prev=v.np?null:ds.prev.map(b=>b[m]);
   const isCost=m==='cost',c=m==='hours'?v.cov.hours:m==='tokM'?v.cov.tok:isCost?v.cov.cost:null;
   const floor=c&&c.k<c.n;
   let fig=`${floor?'<span class="al">at least</span> ':''}<span class="fig">${m==='agents'?n0(v.tot.agents):m==='hours'?hrs(v.tot.hours):m==='tokM'?tok(v.tot.tokM):money(v.tot.cost)}</span>`;
@@ -537,8 +545,8 @@ function metricCard(st,v,m){
   if(short)fig=`<span class="al">at least</span> `+fig;
   if(m==='agents')fig+=` <span class="unit">agents</span> ${short?'<span class="al">at least</span> ':''}<span class="fig2">${n0(v.tot.retries)}</span> <span class="unit">retries</span>`;
   else if(m==='tokM')fig+=` <span class="unit">tokens</span>`;
-  const was=`<span class="was">before: ${m==='agents'?n0(v.prev.agents)+' agents, '+n0(v.prev.retries)+' retries':AXF[m](v.prev[m])}</span>`;
-  const ch=c&&c.closedFloor?withheld(isCost?`${n0(c.noCost)} agents in closed ${ds.units} reported no cost, so this period's cost is a floor and the period before's is not: the two are not like figures.`:`${c.why}, so this period's run hours are a floor and the period before's are not.`):chip(v.cc[m],v.cp[m]);
+  const was=v.np?'':`<span class="was">before: ${m==='agents'?n0(v.prev.agents)+' agents, '+n0(v.prev.retries)+' retries':AXF[m](v.prev[m])}</span>`;
+  const ch=v.np?'':c&&c.closedFloor?withheld(isCost?`${n0(c.noCost)} agents in closed ${ds.units} reported no cost, so this period's cost is a floor and the period before's is not: the two are not like figures.`:`${c.why}, so this period's run hours are a floor and the period before's are not.`):chip(v.cc[m],v.cp[m]);
   let covL='';
   if(m==='agents')covL=`<p class="cov">${short?`<span class="mk partial"><i></i></span><span><b>${v.unread.size} of ${n0(v.n)}</b> ${ds.units} not read, so agents and retries are floors</span>`:''}<span>counted by submission day</span><span>retries are attempts after an agent's first, in its submission ${ds.unit}</span></p>`;
   if(m==='hours')covL=`<p class="cov">${floor?'<span class="mk partial"><i></i></span>':''}<span><b>${n0(c.k)} of ${n0(c.n)}</b> attempts measured</span><span>${v.run} agents still running, counted when they end</span>${c.why?`<span>${c.why}</span>`:''}</p>`;
@@ -546,15 +554,15 @@ function metricCard(st,v,m){
   if(isCost)covL=`<p class="cov">${floor?'<span class="mk partial"><i></i></span>':''}<span><b>${n0(c.k)} of ${n0(c.n)}</b> agents reported</span><span>${v.run} still running</span>${c.noCost?`<span>${n0(c.noCost)} reported nothing (not $0)</span>`:''}<span><b>${c.est[0]}</b> estimated from a stopped run (${money(c.est[1])}, included)</span></p>`;
   const o={cur,prev,unread:v.unread,unreadWhy:`${ds.long(15)}: not read. The derive budget (5,000 reads) ran out; Run again continues where this one stopped. Nothing here is a zero.`,
     color:'var(--series-1)',ax:AXF[m],stride:STRIDE[st.bucket],lab:ds.lab,hover:st.hover,
-    aria:`${isCost?COSTL:MT[m]} ${ds.per}, this period against the period before`,
-    retries:m==='agents'?{cur:v.ds.cur.map((b,i)=>v.unread.has(i)?null:b.retries),prev:ds.prev.map(b=>b.retries)}:null};
+    aria:`${isCost?COSTL:MT[m]} ${ds.per}, ${v.np?'this period':'this period against the period before'}`,
+    retries:m==='agents'?{cur:v.ds.cur.map((b,i)=>v.unread.has(i)?null:b.retries),prev:v.np?null:ds.prev.map(b=>b.retries)}:null};
   let extra='';
   if(m==='tokM'){
     const rows=[['input','in'],['output','out'],['cache read','cr'],['cache write','cw']].map(([nm,k])=>{const a=v.tot.tokM*TOKSPLIT[k],b=v.prev.tokM*TOKPREV[k];
-      return `<div class="tkr"><b>${nm}</b><span>${floor?'≥ ':''}${tok(a)}</span><span class="w">before ${tok(b)} ${chip(v.cc.tokM*TOKSPLIT[k],v.cp.tokM*TOKPREV[k])}</span><span class="c">${n0(c.k)} of ${n0(c.n)} attempts reported</span></div>`}).join('');
+      return `<div class="tkr"><b>${nm}</b><span>${floor?'≥ ':''}${tok(a)}</span>${v.np?'':`<span class="w">before ${tok(b)} ${chip(v.cc.tokM*TOKSPLIT[k],v.cp.tokM*TOKPREV[k])}</span>`}<span class="c">${n0(c.k)} of ${n0(c.n)} attempts reported</span></div>`}).join('');
     extra=`<div class="tks">${rows}</div>`;
   }
-  const leg=`<div class="keyline"><span><i class="k-now"></i>this period</span><span><i class="k-was"></i>before</span>${m==='agents'?'<span><i class="k-ret"></i>retries</span><span><i class="k-retw"></i>retries before</span>':''}<span><i class="k-open"></i>so far</span>${v.unread.size?'<span><i class="k-hatch"></i>not read</span>':''}<span>${m==='agents'?'agents':m==='hours'?'hours':m==='tokM'?'tokens':'US dollars'} ${ds.per}</span></div>`;
+  const leg=`<div class="keyline"><span><i class="k-now"></i>this period</span>${v.np?'':'<span><i class="k-was"></i>before</span>'}${m==='agents'?`<span><i class="k-ret"></i>retries</span>${v.np?'':'<span><i class="k-retw"></i>retries before</span>'}`:''}<span><i class="k-open"></i>so far</span>${v.unread.size?'<span><i class="k-hatch"></i>not read</span>':''}<span>${m==='agents'?'agents':m==='hours'?'hours':m==='tokM'?'tokens':'US dollars'} ${ds.per}</span></div>`;
   return `<div class="card mc" data-m="${m}"><div class="mh"><span class="t">${isCost?COSTL:MT[m]}</span>${fig}${ch}${was}</div>${covL}${chart(o)}${leg}${extra}</div>`;
 }
 function movers(st,v,m,dimKey){
@@ -587,9 +595,9 @@ function shareCard(st,v){
   const order=G.map((g,j)=>j).sort((a,b)=>c[b]-c[a]);
   const seg=`<span class="segb" role="group" aria-label="Share of">${['agents','hours','tokM','cost'].map(k=>`<button aria-pressed="${k===m}">${k==='tokM'?'Tokens':k==='cost'?'Cost':k==='hours'?'Hours':'Agents'}</button>`).join('')}</span>`;
   const rows=order.map(j=>{const col=`var(--series-${(j%5)+1})`,a=c[j]/C*100,b=p[j]/P*100;
-    return `<div class="shr"><span class="nm"><i class="sw" style="background:${col}"></i><span>${esc(G[j].k)}</span></span><span class="bt" aria-hidden="true">${a>0?`<i style="width:${a.toFixed(1)}%;background:${col}"></i>`:''}</span><span class="v">${a.toFixed(0)}%</span><span class="bt was" aria-hidden="true">${b>0?`<i style="width:${b.toFixed(1)}%;border-color:${col}"></i>`:''}</span><span class="v was">${b.toFixed(0)}%</span></div>`}).join('');
+    return `<div class="shr"><span class="nm"><i class="sw" style="background:${col}"></i><span>${esc(G[j].k)}</span></span><span class="bt" aria-hidden="true">${a>0?`<i style="width:${a.toFixed(1)}%;background:${col}"></i>`:''}</span><span class="v">${a.toFixed(0)}%</span>${v.np?'':`<span class="bt was" aria-hidden="true">${b>0?`<i style="width:${b.toFixed(1)}%;border-color:${col}"></i>`:''}</span><span class="v was">${b.toFixed(0)}%</span>`}</div>`}).join('');
   const costNote=m==='cost'?`<p class="note">Shares of the cost reported: ${n0(v.cov.cost.k)} of ${n0(v.cov.cost.n)} agents. ${G.some(g=>g.f.cost===0)?'A 0% here is a measured zero: mock reports $0 on purpose.':''}</p>`:'';
-  return `<div class="card"><div class="ch"><b>Share of total, by ${DIMS[st.by].kind}</b><span class="r">${seg}</span></div>${costNote}<div>${rows}</div><div class="keyline"><span><i class="k-sh" style="background:var(--f-mu)"></i>this period</span><span><i class="k-shw"></i>the period before</span><span>each row's colour is its line in the charts</span></div></div>`;
+  return `<div class="card"><div class="ch"><b>Share of total, by ${DIMS[st.by].kind}</b><span class="r">${seg}</span></div>${costNote}<div>${rows}</div><div class="keyline"><span><i class="k-sh" style="background:var(--f-mu)"></i>this period</span>${v.np?'':'<span><i class="k-shw"></i>the period before</span>'}<span>each row's colour is its line in the charts</span></div></div>`;
 }
 function groupCard(st,v){
   const m=st.metric||'agents',ds=v.ds,gd=GD[st.bucket][st.by],G=DIMS[st.by].groups;
@@ -597,7 +605,7 @@ function groupCard(st,v){
   const sub=m==='cost'?`${COSTL}, US dollars ${ds.per}`:m==='agents'?`agents ${ds.per}, by submission day; retries apart`:m==='hours'?`run hours ${ds.per}`:`tokens ${ds.per}, all four kinds`;
   const runShare=splitInt(v.run,G.map((g,j)=>gd.cur[ds.n-1][j].agents));
   const panels=G.map((g,j)=>{
-    const col=`var(--series-${(j%5)+1})`,cur=gd.cur.map((b,i)=>v.unread.has(i)?null:b[j][m]),prev=gd.prev.map(b=>b[j][m]);
+    const col=`var(--series-${(j%5)+1})`,cur=gd.cur.map((b,i)=>v.unread.has(i)?null:b[j][m]),prev=v.np?null:gd.prev.map(b=>b[j][m]);
     const tc=sum(v.read.map(i=>gd.cur[i][j][m])),tp=sum(gd.prev.map(b=>b[j][m]));
     const cc=sum(v.closed.map(i=>gd.cur[i][j][m])),cp=sum(v.closed.map(i=>gd.prev[i][j][m]));
     const floor=m!=='agents'&&runShare[j]>0;
@@ -606,10 +614,10 @@ function groupCard(st,v){
     if(m==='cost'){const na=sum(v.read.map(i=>gd.cur[i][j].agents));cov=`<p class="cov">${floor?'<span class="mk partial"><i></i></span>':''}<span><b>${n0(na-runShare[j])} of ${n0(na)}</b> agents reported</span>${runShare[j]?`<span>${runShare[j]} still running</span>`:''}${g.f.cost===0?'<span>reports $0 on purpose: a measured zero</span>':''}</p>`}
     if(m==='hours'&&runShare[j])cov=`<p class="cov"><span class="mk partial"><i></i></span><span>${runShare[j]} still running</span></p>`;
     const zeroWhole=tp===0&&tc===0;
-    return `<div class="pn"><div class="pnh"><span class="nm"><i class="sw" style="background:${col}"></i>${esc(g.k)}</span><span>${floor&&tc>0?'<span class="al">at least</span> ':''}<span class="fig2">${AXF[m](tc)}</span>${ret}</span>${zeroWhole?'<span class="dl flat">0 in both</span>':chip(cc,cp)}<span class="was">before: ${AXF[m](tp)}</span></div>${cov}${chart({cur,prev,unread:v.unread,unreadWhy:'not read',color:col,ax:AXF[m],stride:STRIDE[st.bucket],lab:ds.lab,hover:st.hover,ph:{640:78,300:72},
-      aria:`${g.k}: ${MT[m]} ${ds.per}, this period against the period before`,retries:null})}</div>`;
+    return `<div class="pn"><div class="pnh"><span class="nm"><i class="sw" style="background:${col}"></i>${esc(g.k)}</span><span>${floor&&tc>0?'<span class="al">at least</span> ':''}<span class="fig2">${AXF[m](tc)}</span>${ret}</span>${v.np?'':`${zeroWhole?'<span class="dl flat">0 in both</span>':chip(cc,cp)}<span class="was">before: ${AXF[m](tp)}</span>`}</div>${cov}${chart({cur,prev,unread:v.unread,unreadWhy:'not read',color:col,ax:AXF[m],stride:STRIDE[st.bucket],lab:ds.lab,hover:st.hover,ph:{640:78,300:72},
+      aria:`${g.k}: ${MT[m]} ${ds.per}, ${v.np?'this period':'this period against the period before'}`,retries:null})}</div>`;
   }).join('');
-  return `<div class="card"><div class="ch"><b>By ${DIMS[st.by].kind}</b><span class="r">${seg}</span></div><p class="note">${sub}. One chart per ${DIMS[st.by].kind}, each over its own ghost; every chart has its own scale, so compare shapes here and sizes in Share of total.</p>${panels}<div class="keyline"><span><i class="k-now" style="border-color:var(--f-ink)"></i>this period, in the row's colour</span><span><i class="k-was"></i>the period before</span><span><i class="k-zero"></i>a measured zero</span><span><i class="k-open"></i>so far</span></div></div>`;
+  return `<div class="card"><div class="ch"><b>By ${DIMS[st.by].kind}</b><span class="r">${seg}</span></div><p class="note">${sub}. One chart per ${DIMS[st.by].kind}${v.np?'':', each over its own ghost'}; every chart has its own scale, so compare shapes here and sizes in Share of total.</p>${panels}<div class="keyline"><span><i class="k-now" style="border-color:var(--f-ink)"></i>this period, in the row's colour</span>${v.np?'':'<span><i class="k-was"></i>the period before</span>'}<span><i class="k-zero"></i>a measured zero</span><span><i class="k-open"></i>so far</span></div></div>`;
 }
 function nowCards(st){
   const tenant={READY:3,PARKED:1,LEASED:2,DISPATCHED:0,STARTING:1,RUNNING:9,SUCCEEDED:4812,FAILED:391,CANCELLED:264};
@@ -630,8 +638,8 @@ function overTime(st,v,ph){
   const banner=st.pick&&!st.menu?`<div class="banner">${I('i-clock')}<span>You picked <b>${DIMS[st.pick].label}</b>. The figures below are still ${st.bucket} buckets, no breakdown, as last read.</span><button class="btn pri sm">Run<span class="cost">~${n0(v.ds.reads)} reads</span></button></div>`:'';
   const dim=st.pick&&!st.menu?' dim':'';
   const left=st.by?groupCard(st,v):METS.map(m=>metricCard(st,v,m)).join('');
-  const right=moversCard(st,v)+shareCard(st,v);
-  return `<div class="sec">Over time <small>${v.ds.unit} by ${v.ds.unit}, against the ${v.ds.n} ${v.ds.units} before</small></div>${banner}<div class="${dim}" style="display:flex;flex-direction:column;gap:12px">${sentence(st,v)}${keyline(st,v)}<div class="cols"><div class="colL">${left}${st.hover!=null&&!ph?readout(st,v):''}</div><div class="colR">${right}</div></div></div>`;
+  const right=(v.np?'':moversCard(st,v))+shareCard(st,v);
+  return `<div class="sec">Over time <small>${v.ds.unit} by ${v.ds.unit}, ${v.np?`over the last ${v.ds.n} ${v.ds.units}`:`against the ${v.ds.n} ${v.ds.units} before`}</small></div>${banner}<div class="${dim}" style="display:flex;flex-direction:column;gap:12px">${sentence(st,v)}${keyline(st,v)}<div class="cols"><div class="colL">${left}${st.hover!=null&&!ph?readout(st,v):''}</div><div class="colR">${right}</div></div></div>`;
 }
 function readout(st,v,sheet){
   const h=st.hover,ds=v.ds,m=st.metric||'agents',dk=st.by;
@@ -660,7 +668,7 @@ function phone(st){
 const F=[
  {id:'f1',t:'F1 · The page before Run',
   d:{run:false,bucket:'week'},p:{run:false,bucket:'week'},
-  cap:`<b>Before Run, nothing is drawn that a read did not fill.</b> No empty axes and no zeros: the section says it has not run, what one Run reads (the ${DS.week.n} weeks and the ${DS.week.n} before, plus the live counts), and what it will show. The cost is on the button, <code>Run · ~1,120 reads</code>, and changes with the buckets (Day ~200, Week ~1,120, Month ~2,220 with three workspaces), never with the breakdown. The live state cards keep today's "not run yet" wording. The page never auto-refreshes.`},
+  cap:`<b>Before Run, nothing is drawn that a read did not fill.</b> No empty axes and no zeros: the section says it has not run, what one Run reads (the ${DS.week.n} weeks and the ${DS.week.n} before, plus the live counts), and what it will show. The cost is on the button, <code>Run · ~1,120 reads</code>, and changes with the buckets (Day ~200, Week ~1,120, Month ~1,120 for its 12 months alone, with three workspaces), never with the breakdown. The live state cards keep today's "not run yet" wording. The page never auto-refreshes.`},
  {id:'f2',t:'F2 · After Run: week buckets, no breakdown',
   d:{run:true,bucket:'week'},p:{run:true,bucket:'week'},
   cap:`<b>One sentence first, then four charts, each against its ghost.</b> The solid line is these 26 weeks; the dashed line is the 26 before, laid week over week. Agents carry retries apart, as bars under the line with the period before's retries as ticks. Run hours, tokens and cost read <b>at least</b>, because 33 agents submitted this week are still running and are counted when they end. Tokens list all four kinds, each with how many attempts reported it. A change (▲ 32% on agents) compares the 25 closed weeks with the 25 before; this week so far is drawn against the same five days 26 weeks earlier, hollow and dashed, and kept out of every change. With no breakdown, Top movers ranks across every agent type, model, workspace and pool account, and Share of total asks for a breakdown.`},
@@ -669,7 +677,7 @@ const F=[
   cap:`<b>A breakdown turns the four charts into one small chart per group, each over its own ghost.</b> A measure switch (Agents · Run hours · Tokens · Estimated cost) picks what the small charts draw; each has its own scale, so shapes are compared here and sizes in Share of total, which sets each type's slice now (filled) beside its slice before (outlined). <code>live-browser</code> did not exist in the period before: its ghost lies on the zero rule, because that zero was measured, and its change reads <b>new</b>, not a percent. Top movers narrows to agent types and lists all five.`},
  {id:'f4',t:'F4 · Month buckets, broken down by pool account',
   d:{run:true,bucket:'month',by:'acct',metric:'cost',sm:'cost',mm:'cost'},p:{run:true,bucket:'month',by:'acct',metric:'cost',sm:'cost',mm:'cost'},
-  cap:`<b>Twelve months against the twelve before, by pool account, drawn in estimated cost.</b> The button prices the longer read (~2,220 reads). Each account's cost carries its own coverage; <code>holds no account</code> is mock and API-key agents, and <code>not recorded</code> is agents whose events name no account (docs/outcomes.md), both named rather than folded into "other". An agent that ran on two pool accounts is charged to the last one it leased, so no agent is counted twice. <code>acct-claude-b</code> joined the pool in this period, so it reads new. October is so far (23 days), drawn against the same 23 days a year earlier.`},
+  cap:`<b>Twelve months, this period only, by pool account, drawn in estimated cost.</b> The 12 months before Nov 2025 predate the backfill, which reaches back only to Oct 2025, so they were never recorded: month view draws no ghost, no "was" share, no Top movers and no change against the period before, and one note under the heading says why (BGD, 2026-10-24). Day and Week views keep their comparison. The button prices the 12 months alone (~1,120 reads). Each account's cost carries its own coverage; <code>holds no account</code> is mock and API-key agents, and <code>not recorded</code> is agents whose events name no account (docs/outcomes.md), both named rather than folded into "other". An agent that ran on two pool accounts is charged to the last one it leased, so no agent is counted twice. October is so far (23 days), drawn hollow and dashed.`},
  {id:'f5',t:'F5 · Partial data, with the honesty marks',
   d:{run:true,bucket:'week',partial:true},p:{run:true,bucket:'week',partial:true},
   cap:`<b>What is missing is drawn as missing, and a change is shown only between like figures.</b> The week of 10 Aug was not read (a cold first Run spent the 5,000-read budget): it is a hatched band across every chart, the line breaks there and nothing is plotted as 0; Run again continues the read. Cost reads <b>at least</b> with "5,566 of 5,885 agents reported", "286 reported nothing (not $0)" and "37 estimated from a stopped run ($88, included)". Run hours read "k of n measured", with the 71 attempts that ended without a run time named. Cost and run hours are floors in closed weeks while the period before is whole, so their change is <b>not shown</b> and says why, and Top movers will not rank by them. The unread week makes this period's agents and retries totals floors too: the Agents card reads <b>at least</b> on both, with "1 of 26 weeks not read". Agents and tokens are still like figures within the closed weeks, so their change is shown, compared over the 24 closed weeks read in both.`},
@@ -682,7 +690,7 @@ function frameGroup(f,inner){
 }
 let html='';
 F.forEach(f=>{
-  html+=frameGroup(f,`<figure class="fr"><div class="scroller">${desktop(f.d)}</div><figcaption><b>Desktop, 1440.</b> ${f.cap}</figcaption></figure><figure class="fr"><div class="pair"><div>${phone(f.p)}</div><figcaption style="flex:1;min-width:260px;max-width:60ch"><b>Phone, 390.</b> The same state in one column, scrolled inside the frame: the head, then the Run button full width with its price, the toolbar wrapped, the sentence, the charts at their 300-wide drawing, movers, shares, the live counts. ${f.id==='f1'?'The not-run card lists what a Run will show; no chart is drawn.':f.id==='f5'?'The hatched week, the floors and the withheld changes read the same at 390.':'Scroll the frame to see the rest; F7 shows the whole length.'}</figcaption></div></figure>`);
+  html+=frameGroup(f,`<figure class="fr"><div class="scroller">${desktop(f.d)}</div><figcaption><b>Desktop, 1440.</b> ${f.cap}</figcaption></figure><figure class="fr"><div class="pair"><div>${phone(f.p)}</div><figcaption style="flex:1;min-width:260px;max-width:60ch"><b>Phone, 390.</b> The same state in one column, scrolled inside the frame: the head, then the Run button full width with its price, the toolbar wrapped, ${f.id==='f4'?'the note on why nothing is compared, the charts at their 300-wide drawing, shares this period only (no movers in month view)':'the sentence, the charts at their 300-wide drawing, movers, shares'}, the live counts. ${f.id==='f1'?'The not-run card lists what a Run will show; no chart is drawn.':f.id==='f5'?'The hatched week, the floors and the withheld changes read the same at 390.':'Scroll the frame to see the rest; F7 shows the whole length.'}</figcaption></div></figure>`);
 });
 html+=frameGroup(F6,
  `<figure class="fr"><div class="scroller">${desktop({run:true,bucket:'week',by:'type',metric:'agents',hover:20,rx:96,ry:120})}</div><figcaption><b>Desktop, hover.</b> Pointing at the week of 14 Sep draws one crosshair through all five small charts, a filled dot on each line and a hollow one on each ghost, and opens a readout beside it: that week against the week 26 weeks earlier, per agent type, with retries apart, the change, and a total row. The readout is a <code>role="status"</code> card, not a live region; keyboard focus on the chart steps bucket by bucket (one tab stop, arrow keys), and Escape closes it.</figcaption></figure>
