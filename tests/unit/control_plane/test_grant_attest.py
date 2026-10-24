@@ -561,3 +561,37 @@ def test_a_record_whose_repo_id_was_rewritten_is_dropped(db, sm, world, keys, re
         again = running(client, db, Attempt(task="task-two", attempt="att-two", lease="lease-two"),
                         repository_url=registration["repository_url"])
         assert names(release(client, again)) == []
+
+
+def test_a_repository_secret_rewritten_to_look_like_the_workspaces_is_not_released(
+        db, sm, world, keys):
+    """The review's attack: with grant_attestation_required OFF (which releases
+    an unattested workspace grant), an agent strips `scope` and `repo_id` from
+    the record and writes itself a fresh unattested grant with no repository.
+    The secret's id still says it is a repository secret, so neither the
+    release nor any other reader takes it as the workspace's."""
+    registration = _repo_world(db, sm, keys)
+    secret_id = store(db, sm).find("eng", "widgets-db", registration["repo_id"])["secret_id"]
+    record = db.docs[f"{SECRETS_COLLECTION}/{secret_id}"]
+    record.pop("repo_id")
+    record["scope"] = "workspace"
+    record.pop("repository")
+    db.docs[f"{GRANTS_COLLECTION}/{secret_id}~profile:claude-code"] = {
+        "secret_id": secret_id, "tenant_id": "eng", "consumer": "profile:claude-code",
+        "slot": "files", "enabled": True}
+    client = world(workspace_grant_key=keys["one"], grant_attestation_required=False)
+    for n, url in enumerate(("https://github.com/acme/gadgets", registration["repository_url"])):
+        attempt = running(client, db, Attempt(task=f"task-{n}", attempt=f"att-{n}",
+                                              lease=f"lease-{n}"), repository_url=url)
+        assert names(release(client, attempt)) == []
+
+
+def test_a_repository_secrets_id_says_what_it_is_and_a_workspace_ones_never_does():
+    from swarm_api.workspace_secrets import (
+        is_repository_secret_id,
+        repository_hex,
+        workspace_hex,
+    )
+    for _ in range(200):
+        assert is_repository_secret_id(f"swarm-tenant-eng-wsec-{repository_hex()}")
+        assert not is_repository_secret_id(f"swarm-tenant-eng-wsec-{workspace_hex()}")
