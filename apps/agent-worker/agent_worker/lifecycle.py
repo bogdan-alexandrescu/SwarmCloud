@@ -147,6 +147,7 @@ from . import artifact_manifest as manifest_mod
 from . import cachedirs as cachedirs_mod
 from . import children as children_mod
 from . import continuation as continuation_mod
+from . import publishpr as publishpr_mod
 from . import egress as egress_mod
 from . import expected_outputs as expected_mod
 from . import gitops as gitops_mod
@@ -228,6 +229,7 @@ from . import mergetrain as mergetrain_mod
 from . import post_verdict as post_verdict_mod
 from . import specverify
 from .forge import ForgeError, PullRequest, RepoAccess, probe_repository, open_pull_request
+from .forge import PullHead, read_pull_request, update_pull_request_text
 from .gitops import (
     ATTRIBUTION_MARKERS,
     DETACHED_HEAD,
@@ -778,6 +780,16 @@ class Outcome:
     detail: dict[str, Any] = field(default_factory=dict)
 
 
+class _PullUnreachable(GitError):
+    """The forge did not answer the re-read of a `publish_to_pr` pull
+    request before the push (#2183): nothing was pushed, and the attempt ends
+    retryably, as any publish the forge did not answer does."""
+
+    def __init__(self, cause: "forge_mod.ForgeUnavailable") -> None:
+        super().__init__(f"the pull request could not be read before the push: {cause}")
+        self.cause = cause
+
+
 class _CloneUnreachable(WorkerError):
     """The clone's forge did not answer through every in-process try (#623).
 
@@ -944,6 +956,11 @@ class Worker:
         # known -- a manifest from before it was recorded -- and then only the
         # start sha decides whether HEAD moved (`_head_moved`).
         self._start_branch: str | None = None
+        # The head of the pull request a `publish_to_pr` step started from
+        # (#2183, `agent_worker.publishpr`): read from GitHub before the
+        # clone, or back from the checkpoint manifest on a resume. The push
+        # onto that pull request fast-forwards exactly this sha or nothing.
+        self._pr_start_head: str | None = None
         # The base BRANCH the runner rebases the lane onto before it publishes
         # (SPEED-D1, `agent_worker.prepublish`), when that is safe for this
         # step (`_prepublish_rebase_ref`); None, and no rebase, otherwise.
@@ -5346,6 +5363,12 @@ class Worker:
                 self._restored_from.start_branch if self._restored_from else None
             )
             self.checkpoints.start_branch = self._start_branch
+            # The pull request's head the FIRST attempt started from (#2183),
+            # so a head moved while this task was parked is still refused.
+            self._pr_start_head = (
+                self._restored_from.pr_start_head if self._restored_from else None
+            )
+            self.checkpoints.pr_start_head = self._pr_start_head
             return {
                 "path": REPO_DIR_NAME,
                 "from_checkpoint": True,
@@ -5378,8 +5401,21 @@ class Worker:
         # branch starts from that branch, instead of from the default branch
         # with the parent's patch to apply. Asked only when nothing above
         # chose a branch, so `continues` and `builds_on` keep their meaning.
+        # `publish_to_pr` (#2183, publishpr.py): the pull request is read and
+        # checked BEFORE anything is cloned, and a step that would otherwise
+        # clone the workflow's ref starts from its head commit instead. A
+        # step that builds on an upstream step keeps that step's branch,
+        # which stands on the same head; the push checks it does.
+        onto_pr = self._publish_to_pr()
+        pr_head = self._read_pull_at_start(url, onto_pr) if onto_pr is not None else None
+        pr_start = (
+            onto_pr.branch(self.cfg.git_branch_prefix)
+            if onto_pr is not None and not (pr_branch or continued or builds_on)
+            else ""
+        )
         carried, carried_head = (
-            ("", None) if pr_branch or continued or builds_on else self._carrier_parent(task, url)
+            ("", None) if pr_branch or continued or builds_on or onto_pr
+            else self._carrier_parent(task, url)
         )
         # A resumed index run whose checkpoint left the checkout out clones
         # again at the commit its first attempt cloned, by the same call and
@@ -5394,6 +5430,7 @@ class Worker:
             or pr_branch
             or continued
             or (f"{self.cfg.git_branch_prefix}{builds_on}" if builds_on else None)
+            or pr_start
             or (f"{self.cfg.git_branch_prefix}{carried}" if carried else None)
             or (self.cfg.repository_ref or task.get("repository_ref"))
         )
@@ -5406,8 +5443,13 @@ class Worker:
         # pinned. `_upstream_base_pin` reads nothing for a root step or a
         # non-workflow task, which is therefore unchanged.
         pinned_sha: str | None = None
-        if not (resumed_at or pr_branch or continued or builds_on or carried):
+        if not (resumed_at or pr_branch or continued or builds_on or carried or onto_pr):
             pinned_sha, self._base_pin = self._upstream_base_pin(task)
+        if pr_start and not resumed_at:
+            # THE HEAD THAT WAS CHECKED, NOT THE BRANCH'S TIP: whatever moved
+            # the branch since the read above was not checked, and the push
+            # is leased on this sha anyway.
+            pinned_sha = pr_head
         if carried:
             # THE PARENT'S RECORDED HEAD, NOT THE BRANCH'S TIP (#453). The tip
             # is whatever was pushed last, and the parent's record is the one
@@ -5512,6 +5554,15 @@ class Worker:
                 self._mark_egress_ready()
                 raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
             except GitError as exc:
+                if pr_start and pinned_sha == pr_head:
+                    self._mark_clone_timed(None, tries=tries, pinned=True)
+                    self._mark_egress_ready()
+                    raise WorkerError(
+                        f"repository clone failed: this step starts from pull request "
+                        f"#{onto_pr.number if onto_pr else ''}'s head {pinned_sha} on "
+                        f"{ref}, and that commit could not be fetched: "
+                        f"{self._scrub(str(exc)[:500])}"
+                    ) from exc
                 if carried:
                     # Never the tip instead: the tip is exactly what the pin
                     # refuses to trust. The parent's head is not on the
@@ -5596,10 +5647,14 @@ class Worker:
             self.log.warning("could not read the branch the clone landed on", error=str(exc))
         # Into every manifest from here on, so a resumed attempt knows it too.
         self.checkpoints.start_branch = self._start_branch
+        self._pr_start_head = pr_head
+        self.checkpoints.pr_start_head = pr_head
+        # A `publish_to_pr` step is never rebased onto the default branch:
+        # its push must fast-forward the pull request's head (#2183).
         self._prepublish_rebase = self._prepublish_rebase_ref(
             ref=ref,
             checkout=Path(destination),
-            fixed_base=bool(pr_branch or continued or builds_on or carried)
+            fixed_base=bool(pr_branch or continued or builds_on or carried or onto_pr)
             or pinned_sha is not None,
         )
         self._write_clone_base(clone.commit)
@@ -5621,6 +5676,10 @@ class Worker:
         if carried:
             info["carried_from"] = carried
             info["carried_head"] = carried_head
+        if onto_pr is not None:
+            info["publish_to_pr"] = {
+                **onto_pr.to_record(self.cfg.git_branch_prefix), "head": pr_head,
+            }
         if self._base_pin is not None:
             info["base_pin"] = dict(self._base_pin)
         if refusal:
@@ -11692,6 +11751,127 @@ class Worker:
             )
         return f"{self.cfg.git_branch_prefix}{raw.strip()}"
 
+    def _publish_to_pr(self) -> "publishpr_mod.Target | None":
+        """The existing pull request this step publishes onto (#2183), or None.
+
+        From the signed dispatch block only (`publishpr.target`), which raises
+        WorkerError for a value swarm-api could not have written.
+        """
+        return publishpr_mod.target((self._task or {}).get("metadata"))
+
+    def _read_pull(self, access: RepoAccess, token: str, number: int) -> PullHead:
+        """Pull request `number` of the task's repository, read now, an outage
+        tried again within the forge retry policy."""
+        return forge_mod.retry_transient(
+            lambda: read_pull_request(ref=access.ref, token=token, number=number),
+            policy=self._forge_retry(),
+            what="the pull request",
+        )
+
+    def _read_pull_at_start(self, url: str, target: "publishpr_mod.Target") -> str:
+        """Read and check the pull request a `publish_to_pr` step starts from,
+        before anything is cloned; return its head sha (#2183).
+
+        Every refusal is a WorkerError, so the attempt fails with the reason
+        and no agent ever starts. An outage is `_CloneUnreachable`: the
+        ATTEMPT ends retryably, as a clone the forge did not answer does.
+        """
+        number = target.number
+        refusal = self._git_token_refusal()
+        if refusal:
+            raise WorkerError(
+                f"publish_to_pr: pull request #{number} is read and pushed with the "
+                f"tenant git token, which this worker may not hold: {refusal}; nothing "
+                "was cloned and no agent ran"
+            )
+        token = self._git_token()
+        if not token:
+            raise WorkerError(
+                f"publish_to_pr: pull request #{number} is read and pushed with the "
+                "tenant git token, and this task has none; nothing was cloned and no "
+                "agent ran"
+            )
+        try:
+            token, access = self._probe_reading_again(url, token, "the publish_to_pr probe")
+            if access is None:
+                raise WorkerError(
+                    "publish_to_pr: this repository is not on a forge this worker can "
+                    "publish to; nothing was cloned and no agent ran"
+                )
+            pull = self._read_pull(access, token or "", number)
+        except forge_mod.ForgeUnavailable as exc:
+            raise _CloneUnreachable(
+                str(self._scrub(f"pull request #{number}: {forge_mod.loggable(str(exc))}")),
+                int(exc.tries),
+            ) from exc
+        except ForgeError as exc:
+            raise WorkerError(
+                f"publish_to_pr: could not read pull request #{number}: "
+                f"{self._scrub(str(exc)[:400])}; nothing was cloned and no agent ran"
+            ) from exc
+        why = publishpr_mod.refusal(
+            pull, target=target, repository=access.ref.full_name,
+            branch_prefix=self.cfg.git_branch_prefix,
+        )
+        if why:
+            raise WorkerError(
+                f"publish_to_pr refused before the agent started: {self._scrub(why)}; "
+                "nothing was cloned and no agent ran"
+            )
+        self.log.info(
+            "publish_to_pr: starting from the pull request's head",
+            number=number, branch=pull.head_ref, head=pull.head_sha,
+        )
+        return pull.head_sha
+
+    def _check_pull_before_push(
+        self, publish_repo: Path, target: "publishpr_mod.Target", *,
+        access: RepoAccess, token: str,
+    ) -> PullHead:
+        """Read the pull request again and refuse, as a GitError, everything
+        that would make the push onto it anything but a fast-forward of the
+        head this step started from (#2183). Nothing has been pushed yet."""
+        ws = self.ws
+        assert ws is not None
+        try:
+            pull = self._read_pull(access, token, target.number)
+        except forge_mod.ForgeUnavailable as exc:
+            raise _PullUnreachable(exc) from exc
+        except ForgeError as exc:
+            raise GitError(
+                f"publish_to_pr: could not read pull request #{target.number} before "
+                f"the push: {exc}; nothing was pushed"
+            ) from exc
+        why = publishpr_mod.refusal(
+            pull, target=target, repository=access.ref.full_name,
+            branch_prefix=self.cfg.git_branch_prefix,
+        )
+        if why:
+            raise GitError(f"publish_to_pr refused before the push: {why}; nothing was pushed")
+        moved = publishpr_mod.head_moved(
+            started=self._pr_start_head, now=pull.head_sha, number=target.number
+        )
+        if moved:
+            raise GitError(moved)
+        # The lane's HEAD must DESCEND from that head, or the push is not a
+        # fast-forward: an upstream step that started from an older head of
+        # the pull request (it moved between that step and this one) left a
+        # branch this one stands on.
+        code, _ = _git_text(
+            ["git", *_NO_HOOKS, "merge-base", "--is-ancestor", pull.head_sha, "HEAD"],
+            repo=Path(publish_repo), private_dir=ws.private, logs_dir=ws.logs,
+            slug="publish-to-pr-ancestor",
+            timeout_seconds=self.cfg.git_harvest_timeout_seconds, logger=self.log,
+        )
+        if code != 0:
+            raise GitError(
+                f"{publishpr_mod.HEAD_MOVED}: the lane's work does not stand on pull "
+                f"request #{target.number}'s head {pull.head_sha[:12]}, so pushing it "
+                "would not be a fast-forward; the head moved after the lane's first "
+                "step started. Nothing was pushed and nothing was forced"
+            )
+        return pull
+
     def _dispatch_carrier(self) -> str:
         """Where a step's work is kept for the next step. Defaults to checkpoints.
 
@@ -12303,6 +12483,21 @@ class Worker:
                     (self._task or {}).get("metadata"), cfg.git_branch_prefix, cfg.task_id
                 )
             )
+            # `publish_to_pr` (#2183): the step that would open the pull
+            # request -- `direct-pr`, the `integrate` integrator -- pushes
+            # onto the existing one's branch instead, derived from the signed
+            # task id. A contributor still pushes its own branch: the
+            # integrator merges it, as without the field.
+            onto_pr = (
+                self._publish_to_pr()
+                if not pr_role and self._opens_pull_request() else None
+            )
+            if onto_pr is not None:
+                branch = onto_pr.branch(cfg.git_branch_prefix)
+                out["publish_to_pr"] = {
+                    **onto_pr.to_record(cfg.git_branch_prefix),
+                    "started_head": self._pr_start_head,
+                }
         except WorkerError as exc:
             out["published"] = False
             out["publish_reason"] = f"refusing to publish: {exc}"
@@ -12450,7 +12645,7 @@ class Worker:
             # `carrier: branches` keeps its own fold onto the branch's tip.
             tool_tip = (
                 self._adopt_tool_pushed_tip(publish_repo, branch)
-                if carrier != "branches" else None
+                if carrier != "branches" and onto_pr is None else None
             )
             if tool_tip is not None:
                 out["tool_pushed_from"] = self._publish_base
@@ -12694,7 +12889,29 @@ class Worker:
             # `git log` it reads the bundle with; a
             # refusal publishes nothing, fails the step and leaves the change as
             # `workflow-lines.patch`. Every check above has already run here.
+            # ONTO AN EXISTING PULL REQUEST, ONLY AS A FAST-FORWARD OF THE HEAD
+            # THIS STEP STARTED FROM (#2183): read again, checked again, and
+            # the push below is leased on that head. Refused here, as the
+            # attempt's error, before anything is pushed.
+            onto_pull = (
+                self._check_pull_before_push(publish_repo, onto_pr, access=access, token=token)
+                if onto_pr is not None else None
+            )
             workflow_paths = self._workflow_paths(publish_repo, floor=scan_floor)
+            if workflow_paths and onto_pr is not None:
+                out["workflow_paths"] = workflow_paths[:WORKFLOW_PATHS_NAMED]
+                return self._workflow_push_refused(
+                    out, publish_repo,
+                    {
+                        "code": "publish_to_pr_workflow_files",
+                        "message": (
+                            "this step publishes onto an existing pull request's branch, "
+                            "and a workflow file is pushed only by swarm-api's "
+                            "git_push_branch, which pushes a task's own branch"
+                        ),
+                    },
+                    floor=scan_floor, auto_committed=auto_committed,
+                )
             if workflow_paths:
                 out["workflow_paths"] = workflow_paths[:WORKFLOW_PATHS_NAMED]
                 pushed, refused = self._push_through_broker(
@@ -12722,10 +12939,20 @@ class Worker:
                         # The tip this attempt's own tool push left (#1188):
                         # a head equal to it is an up-to-date no-op that
                         # still proves the branch holds it; a branch moved
-                        # since, by anyone, is refused.
-                        lease=tool_tip,
+                        # since, by anyone, is refused. Onto an existing
+                        # pull request (#2183): its head as this step
+                        # started from it, which HEAD was just shown to
+                        # descend from -- so the push is a fast-forward
+                        # or nothing.
+                        lease=onto_pull.head_sha if onto_pull is not None else tool_tip,
                     )
                 except PushRejected as rejected:
+                    if onto_pull is not None:
+                        raise GitError(
+                            f"{publishpr_mod.HEAD_MOVED}: pull request #{onto_pull.number}'s "
+                            f"branch moved off {onto_pull.head_sha[:12]} while this step "
+                            "pushed; the forge refused the push and nothing was forced"
+                        ) from rejected
                     if tool_tip is not None:
                         # Somebody moved the branch past this task's own push.
                         # Their work is not replaced, and no other lease is tried.
@@ -12744,6 +12971,13 @@ class Worker:
             out["published"] = False
             out["auto_committed"] = auto_committed
             out["publish_reason"] = self._scrub(str(exc)[:500])
+            if isinstance(exc, _PullUnreachable):
+                # An outage, not a refusal: the attempt ends retryably
+                # (`_publish_unreachable`), and nothing was pushed (#2183).
+                out[PUBLISH_UNREACHABLE_FIELD] = self._unreachable_marker(exc.cause)
+                self.log.warning("could not read the pull request before the push",
+                                 error=str(exc))
+                return out
             # Read at the finish (#872): a pull-request step whose push failed
             # has not delivered, however cleanly its agent exited.
             out[PUBLISH_FAILED_FIELD] = True
@@ -12767,6 +13001,10 @@ class Worker:
         self._record_pushed_branch(publish_repo, branch=branch, head=str(pushed or work_head or ""))
         if carrier == "branches":
             self._carrier_pushed = {"name": branch, "head": str(pushed or work_head or "")}
+        if onto_pull is not None:
+            return self._publish_onto_pull_text(
+                out, access=access, token=token, pull=onto_pull, branch=branch,
+            )
         if pr_role == "amender":
             out["published"] = True
             out["publish_reason"] = (
@@ -13013,6 +13251,68 @@ class Worker:
             }
         )
         self.log.info("pull request ready", number=pr.number, url=pr.url, created=pr.created)
+        return out
+
+    def _publish_onto_pull_text(
+        self, out: dict[str, Any], *, access: RepoAccess, token: str,
+        pull: PullHead, branch: str,
+    ) -> dict[str, Any]:
+        """The end of a publish onto an existing pull request (#2183).
+
+        The branch is pushed; no pull request is opened. The pull request's
+        title is replaced only when the agent wrote a usable `pr-title.txt`,
+        and its body only when it wrote a usable `pr-body.md` -- otherwise
+        each is left exactly as it is. The body goes through the closing-line
+        guard (`forge._update_pull_request`, #807), and a forge that does not
+        take the edit leaves the push published, saying so.
+        """
+        agent_title, agent_body, refused = self._agent_pull_request_text()
+        if refused:
+            out["pull_request_text_refused"] = refused
+        body = _neutralise_mentions(agent_body) if agent_body else None
+        out["pull_request_text"] = {
+            "title": "agent" if agent_title else "kept",
+            "body": "agent" if body else "kept",
+        }
+        pr: PullRequest
+        try:
+            pr = forge_mod.retry_transient(
+                lambda: update_pull_request_text(
+                    access=access, token=token, pull=pull, title=agent_title, body=body,
+                ),
+                policy=self._forge_retry(),
+                what="the pull request's text",
+            )
+        except ForgeError as exc:
+            out["pull_request_text_error"] = str(self._scrub(str(exc)[:300]))
+            self.log.warning("the pull request's title or body was not updated",
+                             error=str(exc)[:300])
+            pr = PullRequest(number=pull.number, url=pull.url, state=pull.state, created=False)
+        if pr.body_refused:
+            out["pull_request_body_refused"] = (
+                f"{len(pr.body_refused)} closing-keyword line(s) would have been dropped; "
+                "the body was not sent"
+            )
+        out.update({
+            "published": True,
+            "pull_request": {
+                "number": pull.number,
+                "url": pull.url,
+                "state": pull.state,
+                "created": False,
+                "updated": bool(pr.updated),
+                "retitled": bool(pr.retitled),
+                "body_replaced": bool(pr.appended),
+            },
+            "publish_reason": (
+                f"publish_to_pr: fast-forward pushed {branch}, the head of pull request "
+                f"#{pull.number}, and opened no pull request"
+                + (", retitled" if pr.retitled else "")
+                + (", its body replaced" if pr.appended else "")
+            ),
+        })
+        self.log.info("published onto the existing pull request", number=pull.number,
+                      branch=branch)
         return out
 
     # -- the publish's workflow route (AU-3, agent-autonomy.md §3.3) -----------
@@ -13744,6 +14044,13 @@ class Worker:
         if not self.cfg.git_publish_enabled:
             return False
         if not (self.cfg.repository_url or task.get("repository_url")):
+            return False
+        # A step publishing onto an existing pull request (#2183) owes no
+        # title: it retitles that pull request only when its agent wrote one.
+        try:
+            if publishpr_mod.target(task.get("metadata")) is not None:
+                return False
+        except WorkerError:
             return False
         # `_opens_pull_request`: `direct-pr`, the `integrate` integrator, and
         # a `single-pr` author, whose `pr-title.txt` is what the review sees

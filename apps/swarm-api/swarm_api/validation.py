@@ -1733,6 +1733,11 @@ class DispatchOptions:
     #: dispatch block, so the spec signature covers what the person is asked,
     #: how long the step waits and what happens at expiry. Not hashed: a map.
     await_input: Mapping[str, Any] | None = field(default=None, hash=False)
+    #: `(number, task id)` of the existing pull request this step's lane
+    #: publishes onto instead of opening one (#2183), as
+    #: `publishtopr.resolve` read it from GitHub at submission; empty on every
+    #: other dispatch. The worker derives the branch from the task id.
+    publish_to_pr: tuple[tuple[str, Any], ...] = ()
 
     @property
     def needs_repository(self) -> bool:
@@ -1910,6 +1915,11 @@ class DispatchOptions:
         # every other step stores exactly the block it stored before.
         if self.await_input is not None:
             block[AWAIT_INPUT_FIELD] = json.loads(json.dumps(self.await_input))
+        # Absent unless the spec named a pull request (#2183), so every other
+        # dispatch stores exactly the block it stored before. The worker
+        # spells the key `agent_worker.publishpr.FIELD`.
+        if self.publish_to_pr:
+            block["publish_to_pr"] = dict(self.publish_to_pr)
         return block
 
 
