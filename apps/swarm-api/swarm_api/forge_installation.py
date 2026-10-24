@@ -56,6 +56,21 @@ can never hand it out, and the read mint asks for `READ_PERMISSIONS` only.
 A failure is a typed `WorkflowMintRefused` (`MINT_*`), constant text, never
 GitHub's message or the transport's.
 
+THE SECOND EXCEPTION: A GITHUB ACTIONS SECRET (SSC-ACTIONS-API, part of
+#2158; docs/design/secrets-scopes.md §3, BGD's Q3 and Q4 of its §11).
+`actions_token(tenant, owner, repo, use)` mints the token
+`actions_secrets.py` writes one Actions secret with, or reads one
+environment's branch rule with. No second App: the same installation lookup,
+ONE repository, and exactly one entry of `ACTIONS_PERMISSIONS` -- the one
+permission that GitHub call needs (`secrets: write` for a repository secret,
+`environments: write` for an environment's, `actions: read` for an
+environment's rule, read levels for the name lists). Never `administration`:
+SwarmCloud creates, edits and deletes no environment until user-scoped-
+secrets step 5. Minted fresh, never held, as the workflow push token is. An
+installation that has not granted the permission is a typed
+`ActionsMintRefused` carrying the installation's account, so the caller can
+answer with `forgeperms.review_url`; nothing is written.
+
 WHOSE QUOTA (QUOTA-THROTTLE). `read_credential` answers the token AND the
 identity its quota is kept under in `forge_limits.QUOTAS`,
 `installation:<id>`: the caller reads inside `forge_limits.acting_as(that)`
@@ -86,8 +101,11 @@ from .gittokens import redaction_literal
 log = logging.getLogger(__name__)
 
 __all__ = [
+    "ACTIONS_ENV_READ", "ACTIONS_ENV_WRITE", "ACTIONS_PERMISSIONS", "ACTIONS_REPO_READ",
+    "ACTIONS_REPO_WRITE", "ACTIONS_RULE_READ", "ActionsMintRefused", "ActionsToken",
     "FAILURE_HOLD", "InstallationSource", "InstallationTokens", "MINT_FAILED",
-    "MINT_NO_INSTALLATION", "MINT_NOT_COVERED", "MINT_NOT_GRANTED", "READ_PERMISSIONS",
+    "MINT_NO_INSTALLATION", "MINT_NOT_COVERED", "MINT_NOT_GRANTED", "MintRefused",
+    "READ_PERMISSIONS",
     "REFRESH_BEFORE", "WORKFLOW_PUSH_PERMISSIONS", "WorkflowMintRefused",
     "build_installation_tokens", "read_credential", "read_token",
 ]
@@ -119,6 +137,25 @@ READ_PERMISSIONS: Mapping[str, str] = {
 WORKFLOW_PUSH_PERMISSIONS: Mapping[str, str] = {
     "contents": "write",
     "workflows": "write",
+}
+#: The GitHub calls an Actions secret mint may be for, each with the ONE
+#: permission it needs and nothing more (SSC-ACTIONS-API; GitHub's
+#: "Permissions required for GitHub Apps", read 2026-10-24): the repository
+#: secrets' public key and PUT/DELETE are Secrets; an environment secret's
+#: public key and PUT/DELETE are Environments: write, NOT Secrets; an
+#: environment and its deployment branch policies are read under Actions.
+#: No entry asks `administration`, and none is ever held (Q4).
+ACTIONS_REPO_WRITE = "repository_secret_write"
+ACTIONS_ENV_WRITE = "environment_secret_write"
+ACTIONS_REPO_READ = "repository_secret_names"
+ACTIONS_ENV_READ = "environment_secret_names"
+ACTIONS_RULE_READ = "environment_rule"
+ACTIONS_PERMISSIONS: Mapping[str, Mapping[str, str]] = {
+    ACTIONS_REPO_WRITE: {"secrets": "write"},
+    ACTIONS_ENV_WRITE: {"environments": "write"},
+    ACTIONS_REPO_READ: {"secrets": "read"},
+    ACTIONS_ENV_READ: {"environments": "read"},
+    ACTIONS_RULE_READ: {"actions": "read"},
 }
 #: Why a workflow push token was not minted (`WorkflowMintRefused.reason`).
 #: The tenant has no App installation of the owner (or reaches it only
@@ -163,14 +200,45 @@ class _MintFailed(Exception):
         self.refused = refused
 
 
-class WorkflowMintRefused(Exception):
-    """No workflow push token. `reason` is one of the `MINT_*` words; the
-    text is the reason and a status, never a value or GitHub's message."""
+@dataclass(frozen=True)
+class _Installation:
+    """One enabled owner's installation, as the tenant's `forge_orgs` says."""
 
-    def __init__(self, reason: str, status: int | None = None) -> None:
+    installation_id: int
+    account: str
+    account_type: str | None
+
+
+class MintRefused(Exception):
+    """No token. `reason` is one of the `MINT_*` words; the text is the
+    reason and a status, never a value or GitHub's message. `installation`,
+    when one was found, is what `forgeperms.review_url` is built from."""
+
+    def __init__(self, reason: str, status: int | None = None, *,
+                 installation: _Installation | None = None) -> None:
         super().__init__(reason if status is None else f"{reason} (HTTP {status})")
         self.reason = reason
         self.status = status
+        self.installation = installation
+
+
+class WorkflowMintRefused(MintRefused):
+    """No workflow push token (#2029)."""
+
+
+class ActionsMintRefused(MintRefused):
+    """No GitHub Actions secret token (SSC-ACTIONS-API). A permission the
+    installation has not granted is `<permission>_not_granted`, e.g.
+    `secrets_not_granted`."""
+
+
+@dataclass(frozen=True)
+class ActionsToken:
+    """One minted Actions token and the installation it acts as."""
+
+    token: str = field(repr=False)
+    installation: _Installation
+    permissions: Mapping[str, str]
 
 
 def _refusal_kind(answer: Any) -> str | None:
@@ -222,6 +290,11 @@ class InstallationTokens:
 
     def installation_for(self, tenant_id: str, owner: str) -> int | None:
         """The installation of `owner` THIS tenant enabled, or None."""
+        found = self.installation_record(tenant_id, owner)
+        return found.installation_id if found is not None else None
+
+    def installation_record(self, tenant_id: str, owner: str) -> _Installation | None:
+        """`installation_for`, with the account it is installed on."""
         wanted = owner.lower()
         query = (self._db.collection(ORGS)
                  .where(filter=FieldFilter("tenant_id", "==", tenant_id))
@@ -236,7 +309,9 @@ class InstallationTokens:
             installation = doc.get("installation_id")
             if isinstance(installation, int) and not isinstance(installation, bool) \
                     and installation > 0:
-                return installation
+                kind = doc.get("owner_type")
+                return _Installation(installation, str(doc.get("owner") or owner),
+                                     kind if isinstance(kind, str) else None)
         return None
 
     # -- the token -----------------------------------------------------------
@@ -290,31 +365,57 @@ class InstallationTokens:
         minted now from THIS tenant's installation of `owner` with exactly
         `WORKFLOW_PUSH_PERMISSIONS`. Never held: every call mints, and nothing
         here keeps the value once it is returned. Raises `WorkflowMintRefused`."""
+        token, _installation = self._mint_now(
+            tenant_id, owner, repo, WORKFLOW_PUSH_PERMISSIONS, what="workflow push token",
+            refused=WorkflowMintRefused, not_granted=lambda: MINT_NOT_GRANTED)
+        return token
+
+    def actions_token(self, tenant_id: str, owner: str, repo: str, use: str) -> ActionsToken:
+        """A token for ONE GitHub Actions secret call on `owner/repo`, minted
+        now from THIS tenant's installation of `owner` with exactly
+        `ACTIONS_PERMISSIONS[use]`: one repository, one permission. Never
+        held. Raises `ActionsMintRefused`; `KeyError` for a `use` not in the
+        table, so no caller can ask for anything else."""
+        permissions = ACTIONS_PERMISSIONS[use]
+        token, installation = self._mint_now(
+            tenant_id, owner, repo, permissions, what="actions secret token",
+            refused=ActionsMintRefused,
+            not_granted=lambda: f"{next(iter(permissions))}_not_granted")
+        return ActionsToken(token=token, installation=installation, permissions=permissions)
+
+    def _mint_now(self, tenant_id: str, owner: str, repo: str,
+                  permissions: Mapping[str, str], *, what: str,
+                  refused: type[MintRefused],
+                  not_granted: Callable[[], str]) -> tuple[str, _Installation]:
+        """One fresh, unheld mint for one repository, or `refused`."""
         try:
-            installation = self.installation_for(tenant_id, owner)
+            installation = self.installation_record(tenant_id, owner)
         except Exception as exc:
-            log.warning("workflow push token not minted owner=%s repo=%s (installation lookup %s)",
-                        owner.lower(), repo.lower(), type(exc).__name__)
-            raise WorkflowMintRefused(MINT_FAILED) from None
+            log.warning("%s not minted owner=%s repo=%s (installation lookup %s)",
+                        what, owner.lower(), repo.lower(), type(exc).__name__)
+            raise refused(MINT_FAILED) from None
         if installation is None:
-            log.info("workflow push token not minted owner=%s repo=%s (%s)",
-                     owner.lower(), repo.lower(), MINT_NO_INSTALLATION)
-            raise WorkflowMintRefused(MINT_NO_INSTALLATION)
+            log.info("%s not minted owner=%s repo=%s (%s)",
+                     what, owner.lower(), repo.lower(), MINT_NO_INSTALLATION)
+            raise refused(MINT_NO_INSTALLATION)
+        inst = installation.installation_id
         try:
-            token, _expires = self._mint(installation, repo, WORKFLOW_PUSH_PERMISSIONS)
+            token, _expires = self._mint(inst, repo, permissions)
         except _MintFailed as failed:
             reason = failed.refused or MINT_FAILED
-            log.warning("workflow push token not minted owner=%s repo=%s installation=%s (%s%s)",
-                        owner.lower(), repo.lower(), installation, reason,
+            if reason == MINT_NOT_GRANTED:
+                reason = not_granted()
+            log.warning("%s not minted owner=%s repo=%s installation=%s (%s%s)",
+                        what, owner.lower(), repo.lower(), inst, reason,
                         "" if failed.status is None else f" HTTP {failed.status}")
-            raise WorkflowMintRefused(reason, failed.status) from None
+            raise refused(reason, failed.status, installation=installation) from None
         except Exception as exc:
-            log.warning("workflow push token not minted owner=%s repo=%s installation=%s (%s)",
-                        owner.lower(), repo.lower(), installation, type(exc).__name__)
-            raise WorkflowMintRefused(MINT_FAILED) from None
-        log.info("workflow push token minted owner=%s repo=%s installation=%s",
-                 owner.lower(), repo.lower(), installation)
-        return token
+            log.warning("%s not minted owner=%s repo=%s installation=%s (%s)",
+                        what, owner.lower(), repo.lower(), inst, type(exc).__name__)
+            raise refused(MINT_FAILED, installation=installation) from None
+        log.info("%s minted owner=%s repo=%s installation=%s",
+                 what, owner.lower(), repo.lower(), inst)
+        return token, installation
 
     def _failed(self, key: tuple[str, str], failed: _MintFailed, now: float) -> None:
         with self._lock:
