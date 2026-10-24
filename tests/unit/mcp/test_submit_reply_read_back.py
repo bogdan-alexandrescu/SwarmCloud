@@ -201,6 +201,21 @@ def test_a_read_back_whose_probe_is_refused_starts_no_row(tmp_path):
     assert _rows(got) == []
 
 
+def test_a_served_digest_that_differs_is_unverified_even_when_steps_are_missing(tmp_path):
+    """A digest that was served and is not the spec's is evidence the relay
+    changed the spec (a prompt, say), which no read of step ids and profiles
+    can clear: a reply also missing its steps is not thin, it is a mismatch."""
+    got = _run(tmp_path, _ONE, _answers(_thin(spec_digest="fnv1a32:deadbeef"), _read_back()))
+
+    assert "error" not in got, got.get("error")
+    result = got["result"]
+    assert result["state"] == "SUBMITTED_UNVERIFIED", result
+    assert "the relay changed it on the way" in result["error"], result["error"]
+    assert "verified_by" not in result, "a digest that was served and differs is never reported verified"
+    assert not any("The digest was not served" in line for line in got["logs"]), got["logs"]
+    assert _reads(got) == [], "a served digest that differs is judged from the reply, with no read-back"
+
+
 # --------------------------------------------------------------------------
 # 3. A read-back that fails is unverified with the read's error
 # --------------------------------------------------------------------------
