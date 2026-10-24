@@ -52,6 +52,15 @@ _TOKEN_TTL_SECONDS = 45 * 60
 TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED", "DEAD_LETTER", "DEAD_LETTERED"}
 
 
+@dataclass(frozen=True)
+class RawBody:
+    """A 2xx answer read as bytes rather than JSON (`SwarmClient.artifact_raw`):
+    the body, and the response headers with their names lower-cased."""
+
+    data: bytes
+    headers: dict[str, str]
+
+
 class SwarmError(RuntimeError):
     """Something the operator needs to read, not a stack trace.
 
@@ -762,6 +771,7 @@ def task_payload(
     strategy: str | None = None,
     additional_repositories: list[dict[str, str]] | None = None,
     model_class: str | None = None,
+    publish_to_pr: int | str | None = None,
 ) -> dict[str, Any]:
     """One task's `TaskCreate` body, for `POST /v1/tasks` and each entry of
     `POST /v1/tasks/batch` alike.
@@ -799,6 +809,12 @@ def task_payload(
         # As checked by `check_additional_repositories`: names, sent as given.
         # Absent when not given, so a task naming none sends what it always did.
         payload["additional_repositories"] = additional_repositories
+    if publish_to_pr is not None:
+        # The pull request this task's commits are pushed onto (#2183), in
+        # the form `workflows.check_publish_to_pr` returns, top-level as
+        # `TaskCreate.publish_to_pr`. Absent when not given, so a task naming
+        # none sends what it always did.
+        payload["publish_to_pr"] = publish_to_pr
     return payload
 
 
@@ -1657,6 +1673,7 @@ class SwarmClient:
         *,
         payload: dict[str, Any] | None,
         timeout: int,
+        raw_limit: int | None = None,
     ) -> Any:
         """`_request_once`, and for a GET answered 429, up to
         `len(RETRY_429_DELAYS)` more tries (`RETRY_429_DELAYS`) -- for a quick
@@ -1668,7 +1685,9 @@ class SwarmClient:
         budget = None if in_hold_lane() else QUICK_RETRY_BUDGET_SECONDS
         while True:
             try:
-                return self._request_once(method, path, payload=payload, timeout=timeout)
+                return self._request_once(
+                    method, path, payload=payload, timeout=timeout, raw_limit=raw_limit
+                )
             except SwarmError as exc:
                 if exc.status != 429 or method != "GET" or tried >= len(RETRY_429_DELAYS):
                     _give_up(exc, tried)
@@ -1691,6 +1710,7 @@ class SwarmClient:
         *,
         payload: dict[str, Any] | None = None,
         timeout: int = 60,
+        raw_limit: int | None = None,
     ) -> Any:
         """One API call; ONE retry when a cached credential is refused with 401.
 
@@ -1703,10 +1723,10 @@ class SwarmClient:
         """
         cached = self._sends_cached_credential()
         try:
-            return self._send(method, path, payload=payload, timeout=timeout)
+            return self._send(method, path, payload=payload, timeout=timeout, raw_limit=raw_limit)
         except SwarmError as exc:
             if exc.status == 401 and cached and self.forget_credentials():
-                return self._send(method, path, payload=payload, timeout=timeout)
+                return self._send(method, path, payload=payload, timeout=timeout, raw_limit=raw_limit)
             raise
 
     def _send(
@@ -1716,7 +1736,11 @@ class SwarmClient:
         *,
         payload: dict[str, Any] | None,
         timeout: int,
+        raw_limit: int | None = None,
     ) -> Any:
+        """One request. With `raw_limit`, the 2xx body is NOT JSON-decoded: it
+        comes back as `RawBody`, at most `raw_limit` bytes, or a SwarmError
+        when there is more. An error answer is the JSON envelope either way."""
         if self._gate is not None:
             self._gate.take(hold=in_hold_lane())
         url = f"{self.base_url}{path}"
@@ -1726,11 +1750,22 @@ class SwarmClient:
             req.add_header("Authorization", f"Bearer {self.credential()}")
         if self.tenant:
             req.add_header(TENANT_HEADER, self.tenant)
-        req.add_header("Accept", "application/json")
+        req.add_header("Accept", "application/json" if raw_limit is None else "*/*")
         if body is not None:
             req.add_header("Content-Type", "application/json")
         try:
             with _open(req, timeout=timeout) as response:
+                if raw_limit is not None:
+                    data = response.read(raw_limit + 1)
+                    if len(data) > raw_limit:
+                        raise SwarmError(
+                            f"{method} {path} -> {response.status}, but the body is over "
+                            f"{raw_limit} bytes, the most this client reads into memory; "
+                            "nothing was kept",
+                            status=response.status,
+                        )
+                    headers = getattr(response, "headers", None) or {}
+                    return RawBody(data, {str(k).lower(): str(v) for k, v in dict(headers).items()})
                 raw = response.read().decode("utf-8", errors="replace")
                 if not raw.strip():
                     return None
@@ -1790,6 +1825,7 @@ class SwarmClient:
         strategy: str | None = None,
         additional_repositories: list[dict[str, str]] | None = None,
         model_class: str | None = None,
+        publish_to_pr: int | str | None = None,
     ) -> dict[str, Any]:
         """Submit one task.
 
@@ -1830,6 +1866,12 @@ class SwarmClient:
         reads beside its own (#1434), by NAME (`check_additional_repositories`):
         swarm-api resolves each to its registration and pins its ref to a
         commit. Never cloned from a URL given here, and never written back.
+
+        `publish_to_pr` is an existing pull request this task's commits are
+        pushed onto instead of opening one (#2183): a delivery choice, like
+        `strategy`, checked by `workflows.check_publish_to_pr` and sent only
+        when given. swarm-api reads the pull request and refuses one it may
+        not push onto.
         """
         payload = task_payload(
             prompt=prompt,
@@ -1843,6 +1885,7 @@ class SwarmClient:
             strategy=strategy,
             additional_repositories=additional_repositories,
             model_class=model_class,
+            publish_to_pr=publish_to_pr,
         )
         # UNWRAPPED HERE, not by each caller. `cmd_dispatch` printed
         # `task.get("task_id", "")` off the envelope and printed an empty line,
@@ -2007,6 +2050,26 @@ class SwarmClient:
                 "this deployment's artifact route is not the one this client speaks to"
             )
         return data
+
+    def artifact_raw(self, task_id: str, name: str, *, max_bytes: int) -> RawBody:
+        """`GET /v1/tasks/{id}/artifacts/raw`: one artifact's BYTES (#184, #2182).
+
+        The same NAME-not-path resolution and the same tenant boundary as
+        `artifact_content`: both are the route's, and nothing here re-derives
+        them -- another tenant's task is the route's 404, raised as the
+        SwarmError the text read raises. The route classifies the bytes and
+        says so in `x-artifact-kind` (`image`, `text` redacted, `binary` not),
+        which the caller must read before trusting the body to be an image.
+
+        Never through the shared reads: a body of bytes is one caller's, read
+        once, and is not a JSON answer to hand a second waiter. A GET's 429 is
+        still retried, and a cached credential's 401 still retried once.
+        """
+        query = urllib.parse.urlencode([("name", name)])
+        path = f"/v1/tasks/{task_id}/artifacts/raw?{query}"
+        if self._shared is None:
+            return self._request_once("GET", path, raw_limit=max_bytes)
+        return self._request_retrying("GET", path, payload=None, timeout=60, raw_limit=max_bytes)
 
     def attempts(self, task_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
         """Every attempt for one task, newest first, as the route serves them.

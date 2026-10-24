@@ -62,6 +62,7 @@ import { HatchDef, useHatchId } from './charts/parts'
 import {
   CONCURRENCY_STATES,
   PARK_NEEDS_A_PERSON,
+  clockTime,
   pluralise,
   reasonCopy,
   type Stats,
@@ -1150,6 +1151,12 @@ export interface OpenWork {
   /** null while reading; a failure is the Result's error. */
   stats: { status: 'ok'; data: Stats } | { status: 'error'; message: string } | null
   parked: { status: 'ok'; data: TaskPage } | { status: 'empty' } | { status: 'error'; message: string } | null
+  /**
+   * The platform half (`loadStats({platform: true})`, #2149), read once per
+   * scope pick and on the page's refresh, never on a tick: null while reading,
+   * absent when it is not asked for (a non-admin, or tenant scope).
+   */
+  platform?: { status: 'ok'; data: Stats } | { status: 'error'; message: string } | null
 }
 
 /**
@@ -1203,7 +1210,13 @@ export function OpenWorkCard({
   const platform = view.platform
   const notApplied = unfiltered(view)
   const s = open.stats
-  const counts = s?.status === 'ok' ? (platform ? s.data.platform_tasks_by_state : s.data.tasks_by_state) : undefined
+  // IN PLATFORM SCOPE THE COUNTS ARE THE PLATFORM READ'S (#2149). Since #2152
+  // the polled read carries the tenant half only; the platform half is its
+  // own read, asked once per scope pick, so it carries its own age below.
+  const p = open.platform
+  const counts =
+    s?.status !== 'ok' ? undefined : platform ? (p?.status === 'ok' ? p.data.platform_tasks_by_state : undefined) : s.data.tasks_by_state
+  const platformAt = platform && p?.status === 'ok' ? clockTime(p.data.generated_at, now) : null
   const n = (state: string) => counts?.[state] ?? 0
   // PARK REASONS ARE ALWAYS THE CALLER'S OWN TENANT'S (#185, decision 8).
   // `GET /v1/tasks`, which lists the parked tasks, is tenant-scoped, so in
@@ -1232,7 +1245,9 @@ export function OpenWorkCard({
     <Card
       title="Not finished yet"
       note={[
-        s === null ? 'reading' : s.status === 'ok' ? staleFoot(Date.parse(s.data.generated_at), now) : 'not read',
+        // In platform scope the counts carry their own "as of"; the tenant
+        // read's age beside them would be the age of figures not drawn.
+        s === null ? 'reading' : s.status !== 'ok' ? 'not read' : platform ? null : staleFoot(Date.parse(s.data.generated_at), now),
         'span not applied',
       ]
         .filter((p): p is string => p !== null)
@@ -1243,17 +1258,35 @@ export function OpenWorkCard({
         <p className="ol-line">
           <Mark kind="pending" say="The live state counts are still being read." /> reading
         </p>
-      ) : s.status === 'error' || counts === undefined ? (
+      ) : platform && p === null ? (
+        <p className="ol-line">
+          <Mark kind="pending" say="The platform-wide counts are still being read." /> reading
+        </p>
+      ) : s.status === 'error' || (platform && p?.status === 'error') || counts === undefined ? (
         <p className="ol-line">
           <Mark
-            kind={s.status === 'error' ? 'unread' : 'absent'}
-            say={s.status === 'error' ? `The state counts could not be read: ${s.message}` : 'The platform-wide counts are served to administrators only.'}
+            kind={s.status === 'error' || p?.status === 'error' ? 'unread' : 'absent'}
+            say={
+              s.status === 'error'
+                ? `The state counts could not be read: ${s.message}`
+                : p?.status === 'error'
+                  ? `The platform-wide counts could not be read: ${p.message}`
+                  : 'The platform-wide counts are served to administrators only.'
+            }
           />{' '}
-          {s.status === 'error' ? 'state counts not read' : 'platform counts not served'}
+          {s.status === 'error' ? 'state counts not read' : p?.status === 'error' ? 'platform counts not read' : 'platform counts not served'}
         </p>
       ) : (
         <p className="ol-line ol-open-counts">
           {n('PARKED')} parked · {running} running · {n('QUEUED')} queued · {n('READY')} ready
+          {platformAt !== null && (
+            <>
+              {' · '}
+              <span className="ol-q ol-platform-asof" title={platformAt.title}>
+                as of {platformAt.text}
+              </span>
+            </>
+          )}
           {notApplied.length > 0 && <span className="ol-q"> · not filtered by {notApplied.join(', ')}</span>}
         </p>
       )}

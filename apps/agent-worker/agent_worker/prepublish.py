@@ -116,6 +116,39 @@ pass, an ImportError, a fixture bug -- stays failed. tflint is the expected case
 installs it only with `INSTALL_TFLINT=1`, which is off because no tflint
 release passes the image promote gate (images/agent-runtime-base/Dockerfile).
 
+A DECLARED SERVICE'S TESTS RUN FOR REAL (TS-GATE, #1627;
+docs/design/test-services.md §5, owner decisions of 2026-10-23 in §10). A
+repository that checks in `.swarm/test-services.toml` (`agent_worker.testservices`)
+has its database tests judged, not skipped. Each round (`Gate._services`):
+
+1. the declaration is read from the tree being checked (§2.3). Invalid: a
+   `test-services` check, `failed` -- one fix turn -- when the change touched
+   the file, else `error`, in the advisory section only and never sent to the
+   agent; nothing is started and the tests run as if nothing were declared.
+2. only when a check that runs pytest (`SERVICE_CHECKS`) is selected, each
+   declared service is found answering at its address (`probe_argv`: the
+   worker started it after the clone and keeps it for the whole attempt,
+   Q4, in ITS process, so the gate asks the address) or, when nothing
+   answers -- a declaration the agent's own change added, a service that
+   died -- started by the gate for this round. One that does not start is
+   `test-services: error` (advisory), and the tests run without it.
+3. the checks run with §5.1's variables (`service_env`: `PGHOST`, `PGPORT`,
+   `PGUSER`, `PGDATABASE`, `DATABASE_URL`, `SWARM_TEST_SERVICES`), in the
+   checks' environment only: the gate's own, which the agent's session
+   continues with, never carries them.
+4. after each pytest check the services are probed (`watched`): one that
+   stopped during the run makes it `error`, with the exit status when the
+   gate started it (signal 9 is the OOM killer, which ranks it first) -- no
+   fix turn fixes a dead server.
+5. what the gate started is stopped and its data removed after the round, so
+   a fix round starts afresh; the worker's own runs on.
+
+And `unreachable_services` stays the one judge of "every test was refused",
+its addresses now matched against the declared ones (`_pytest_project`): an
+address a running declared service owns is the tests connecting wrongly,
+`failed`; any other is `skipped`, adding that it was not declared. With no
+file nothing here runs, and the check is exactly as PR 1606 made it.
+
 THE CHECKS LEAVE THE TREE AS THEY FOUND IT (PREPUB-UV-OUTSIDE, part of #1964).
 Measured 2026-10-22 on sagaxyz/ai-studio (task_2df71fc1d5d34997957a,
 task_65d0f0328cc6464f8358): graph-pytest's `uv run pytest`, run from
@@ -164,6 +197,7 @@ from xml.etree import ElementTree
 
 from swarm_redaction import redact as redact_text
 
+from . import testservices
 from .graphmcp.snapshot import Snapshot, SnapshotError, load_freshness_record, path_of
 from .redact import scrub_text
 
@@ -253,6 +287,22 @@ _GUARDS_SHARDS = re.compile(r"--shard 1/(\d+)")
 #: Parts to split a timed-out run into when its output advised none: the
 #: script's own minimum (`parts` in changed-guards.sh).
 GUARDS_MIN_PARTS = 2
+
+#: The check that reports `.swarm/test-services.toml` and the services it
+#: names, when there is something to report (TS-GATE, #1627; design §5.3).
+TEST_SERVICES_CHECK = "test-services"
+#: §5.1: the services that answered for this round, comma-separated, so a
+#: conftest can tell. Also how `_pytest_project` knows which refused
+#: addresses a declared service owns.
+TEST_SERVICES_ENV = "SWARM_TEST_SERVICES"
+#: §5.2 step 2: the checks that run pytest, the ones a service is started for.
+SERVICE_CHECKS = ("graph-pytest", GUARDS_CHECK)
+#: Each catalogue service's port on `testservices.LISTEN_HOST`. A refused
+#: local address on one of these ports, while the service ran, is the
+#: tests connecting wrongly, not a service the container lacks (§5.3 row 4).
+SERVICE_PORTS = {"postgres": testservices.LISTEN_PORT}
+#: One `pg_isready` over TCP: `-t` bounds its own wait, this the command.
+SERVICE_PROBE_SECONDS = 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -915,10 +965,94 @@ def _pytest_project(runner: Runner, repo: Path, project: str, members: Sequence[
         except OSError:
             services = None
     if services:
+        # §5.3: an address a declared, running service owns is the tests'
+        # error (row 4); any other stays skipped, saying it was not declared
+        # (row 3), or exactly as PR 1606 made it when nothing is (row 1).
+        declared = declared_services(env)
+        ports = {SERVICE_PORTS[name] for name in declared}
+        owned = [a for a in services if _port(a) in ports]
+        if owned:
+            return FAILED, (f"every selected test was refused at {', '.join(owned[:3])}, the "
+                            f"address of the declared {', '.join(declared)} "
+                            f"({testservices.DECLARATION_PATH}), which was running and "
+                            "answering: the tests connect to it wrongly. DATABASE_URL and "
+                            f"PGHOST/PGPORT name it.\n{output}")
         shown = ", ".join(services[:3]) + (" and more" if len(services) > 3 else "")
-        return SKIPPED, (f"a service the tests need is unreachable ({shown}); every "
-                         "selected test errored at setup connecting to it; CI runs it")
+        undeclared = (f" and not declared in {testservices.DECLARATION_PATH}" if declared
+                      else "")
+        return SKIPPED, (f"a service the tests need is unreachable ({shown}){undeclared}; "
+                         "every selected test errored at setup connecting to it; CI runs it")
     return status, output
+
+
+def declared_services(env: Mapping[str, str]) -> list[str]:
+    """The catalogue services the gate found answering for this round
+    (`TEST_SERVICES_ENV`, which only the gate sets in a check's environment)."""
+    names = (env.get(TEST_SERVICES_ENV) or "").split(",")
+    return [n.strip() for n in names if n.strip() in SERVICE_PORTS]
+
+
+def _port(address: str) -> int | None:
+    port = address.rpartition(":")[2]
+    return int(port) if port.isdigit() else None
+
+
+def service_env(services: Iterable[testservices.DeclaredService]) -> dict[str, str]:
+    """§5.1: what the checks' environment gains while `services` answer.
+
+    The catalogue's fixed address, user and the FIRST declared database. No
+    password exists (`trust` on loopback, §3.1), so no value is secret.
+    """
+    out: dict[str, str] = {}
+    names: list[str] = []
+    for service in services:
+        names.append(service.name)
+        if service.name == "postgres":
+            host, port = testservices.LISTEN_HOST, testservices.LISTEN_PORT
+            user, database = testservices.SERVICE_USER, service.databases[0]
+            out.update({"PGHOST": host, "PGPORT": str(port), "PGUSER": user,
+                        "PGDATABASE": database,
+                        "DATABASE_URL": f"postgresql://{user}@{host}:{port}/{database}"})
+    out[TEST_SERVICES_ENV] = ",".join(names)
+    return out
+
+
+def probe_argv(service: testservices.DeclaredService) -> list[str]:
+    """`pg_isready` over TCP at the address the tests use: the gate runs in
+    the runner's process, so it asks the address, not the worker's handle."""
+    return [str(testservices.bin_dir(service.version) / "pg_isready"),
+            "-h", testservices.LISTEN_HOST, "-p", str(testservices.LISTEN_PORT),
+            "-U", testservices.SERVICE_USER, "-d", testservices.MAINTENANCE_DATABASE,
+            "-t", "2"]
+
+
+def _exit_why(status: int) -> str:
+    """A service process's exit status, said for a person."""
+    if status == -signal.SIGKILL:
+        return "killed by signal 9: the kernel's OOM killer, which ranks it first"
+    if status < 0:
+        return f"killed by signal {-status}"
+    return f"exited with status {status}"
+
+
+def watched(check: Check, stopped: Callable[[], str | None]) -> Check:
+    """`check`, followed by a probe of the declared services (§5.2 step 4):
+    a service that stopped during the run makes the run `error` -- its
+    result says nothing about the change, and no fix turn can fix it (§5.3
+    row 5)."""
+    inner = check.run
+    if inner is None:
+        return check
+
+    def run(runner: Runner, repo: Path, env: Mapping[str, str], timeout: float
+            ) -> tuple[str, str]:
+        status, output = inner(runner, repo, env, timeout)
+        why = stopped()
+        if why:
+            return ERROR, (f"{why}; this run's result says nothing about the change\n\n"
+                           f"{output}")
+        return status, output
+    return Check(check.name, check.files, check.command, run=run, skipped=check.skipped)
 
 
 def _graph_pytest(tests: Sequence[str], base: str
@@ -1386,7 +1520,9 @@ def _run_checks(repo: Path, checks: Sequence[Check], *, env: Mapping[str, str],
             status, output = ERROR, f"{type(exc).__name__}: the check could not run"
         # A check that finds at run time it cannot run (graph-pytest's
         # unreachable service) returns SKIPPED with its reason as the output.
-        reason = {ERROR: "the check could not run", SKIPPED: output.strip() or None}.get(status)
+        first = next((line for line in output.strip().splitlines() if line.strip()), "")
+        reason = {ERROR: first or "the check could not run",
+                  SKIPPED: output.strip() or None}.get(status)
         timed_out = (check.name == GUARDS_CHECK and status == FAILED
                      and guards_timed_out(output))
         if timed_out:
@@ -1655,7 +1791,10 @@ def conflict_prompt(ref: str, onto: str, conflicts: Sequence[str]) -> str:
 def pr_section(rebase: Mapping[str, Any] | None, outcomes: Sequence[Outcome],
                secrets: Sequence[str]) -> str | None:
     """The markdown the worker appends to the pull request's body, or None."""
-    bad = [o for o in outcomes if o.status in (FAILED, ERROR)]
+    # A declaration from the base, or a service that did not start, is the
+    # platform's or the base's, not this branch's: advisory only (§5.3).
+    bad = [o for o in outcomes if o.status == FAILED
+           or (o.status == ERROR and o.name != TEST_SERVICES_CHECK)]
     conflicted = bool(rebase and rebase.get("status") == "conflict_unresolved")
     if not bad and not conflicted:
         return None
@@ -1724,6 +1863,11 @@ def advisory_section(*, graph: Mapping[str, Any], outcomes: Sequence[Outcome],
                                        else "") for o in ran) + ".")
     if guards:
         parts += ["", f"### {GUARDS_CHECK}", *(f"- {note}" for note in guards)]
+    services = [o for o in outcomes if o.name == TEST_SERVICES_CHECK and o.status == ERROR]
+    for outcome in services:
+        parts += ["", f"### {TEST_SERVICES_CHECK} (error, not the change's)",
+                  f"{outcome.reason}. The tests ran as if nothing were declared.",
+                  _fence(clean_output(outcome.output, secrets) or "(no output)")]
     if restored or unrestored:
         parts += ["", "### Side effects of the checks"]
         if restored:
@@ -1789,6 +1933,39 @@ Submit = Callable[..., dict[str, Any]]
 
 
 @dataclass
+class _RoundServices:
+    """The declared services for one round: those answering, what the gate
+    itself started (stopped with the round), and the `test-services`
+    outcome when there is one to report."""
+
+    answers: Callable[[testservices.DeclaredService], bool]
+    ready: list[testservices.DeclaredService] = field(default_factory=list)
+    running: testservices.RunningServices | None = None
+    root: Path | None = None
+    outcome: Outcome | None = None
+
+    def stopped(self) -> str | None:
+        """Why a ready service is no longer there, or None (§5.2 step 4)."""
+        mine = {p.service: p for p in (self.running.services if self.running else ())}
+        for service in self.ready:
+            proc = mine.get(service)
+            status = proc.exit_status() if proc is not None else None
+            if status is not None:
+                return (f"the declared {service.name} stopped during the run "
+                        f"({_exit_why(status)})")
+            if not self.answers(service):
+                return (f"the declared {service.name} stopped during the run (it no longer "
+                        f"answers on {testservices.LISTEN_HOST}:{SERVICE_PORTS[service.name]})")
+        return None
+
+    def stop(self) -> None:
+        if self.running is not None:
+            self.running.stop()
+        if self.root is not None:
+            shutil.rmtree(self.root, ignore_errors=True)
+
+
+@dataclass
 class Gate:
     """One pre-publish pass over a checkout. `resume(text)` continues the
     agent's session for one turn and returns False when it could not (no
@@ -1814,6 +1991,9 @@ class Gate:
     _diff: tuple[str, list[str]] | None = field(default=None, init=False, repr=False)
     #: What happened to the guard script in each round, for the advisory section.
     _guards: list[str] = field(default_factory=list, init=False, repr=False)
+    #: How a service the GATE starts is run (`testservices.ProcessRunner`);
+    #: None runs the binaries. The tests replace it.
+    service_runner: Any = None
     #: The paths a check changed, put back (or not) after its round (#1964).
     _restored: set[str] = field(default_factory=set, init=False, repr=False)
     _unrestored: set[str] = field(default_factory=set, init=False, repr=False)
@@ -1943,15 +2123,84 @@ class Gate:
             checks = [c for c in checks if c.name == only]
         checks = [self._guards_check(c, resolved, guard_parts) if c.name == GUARDS_CHECK else c
                   for c in checks]
+        services = self._services(files, checks)
+        env = self.env
+        if services.ready:
+            # §5.1: the checks' environment only; the gate's own -- which
+            # the agent's session continues with -- never carries it.
+            env = {**self.env, **service_env(services.ready)}
+            checks = [watched(c, services.stopped) if c.name in SERVICE_CHECKS else c
+                      for c in checks]
+        else:
+            env = {k: v for k, v in self.env.items() if k != TEST_SERVICES_ENV}
         timeout = max(30.0, min(CHECK_TIMEOUT_SECONDS, self.remaining() - 30.0))
         state = record_tree(self.repo, runner=self.runner, env=self.env)
-        outcomes = run_checks(self.repo, checks, env=self.env, runner=self.runner,
-                              timeout=timeout, clock=self.clock)
+        try:
+            outcomes = run_checks(self.repo, checks, env=env, runner=self.runner,
+                                  timeout=timeout, clock=self.clock)
+        finally:
+            # §5.2 step 5: what the gate started goes with the round, so a
+            # fix round starts it afresh. The worker's own runs on (Q4).
+            services.stop()
+        if services.outcome is not None:
+            outcomes.insert(0, services.outcome)
         self._restore(state)
         self.record["rounds"].append([o.record() for o in outcomes])
         self.log.info("pre-publish checks ran", changed_files=len(files),
                       checks=[f"{o.name}:{o.status}" for o in outcomes])
         return outcomes
+
+    def _services(self, files: Sequence[str], checks: Sequence[Check]) -> _RoundServices:
+        """§5.2 steps 1-2: read `.swarm/test-services.toml` from the tree being
+        checked (§2.3), and when a check that runs pytest is selected, find
+        each declared service answering or start it.
+
+        The worker starts a valid declaration's services after the clone and
+        keeps them for the whole attempt (TS-RUN, Q4), in ITS process; the
+        gate runs in the runner's, so it asks the address (`probe_argv`).
+        Nothing answering -- a declaration the agent's change added, or a
+        service that died -- the gate starts one itself, for this round.
+        """
+        out = _RoundServices(answers=self._answers)
+        declaration = testservices.read_declaration(self.repo)
+        where = testservices.DECLARATION_PATH
+        if not declaration.valid:
+            # §2.2: the agent's own file is its error to fix; the base's is not.
+            mine = where in files
+            out.outcome = Outcome(
+                TEST_SERVICES_CHECK, FAILED if mine else ERROR, 0.0, (where,), f"read {where}",
+                output=declaration.report(),
+                reason=("the declaration this change made is invalid" if mine else
+                        f"the base branch's {where} is invalid; nothing was started"))
+            return out
+        if not declaration.declared or not any(
+                c.run is not None and c.name in SERVICE_CHECKS for c in checks):
+            return out
+        started = self.clock()
+        down = tuple(s for s in declaration.services if not self._answers(s))
+        out.ready = [s for s in declaration.services if s not in down]
+        if not down:
+            return out
+        out.root = Path(tempfile.mkdtemp(prefix="pp-svc-", dir=_outside(self.repo, self.env)))
+        out.running = testservices.start(
+            testservices.Declaration(present=True, services=down), out.root,
+            scrub=lambda text: redact_text(scrub_text(text, self.secrets)).text,
+            runner=self.service_runner)
+        out.ready += [p.service for p in out.running.services if p.error is None]
+        errors = out.running.errors()
+        if errors:
+            out.outcome = Outcome(
+                TEST_SERVICES_CHECK, ERROR, self.clock() - started, (where,),
+                f"start the services {where} declares", output="\n\n".join(errors),
+                reason="a declared service did not start; the tests ran without it")
+        self.log.info("test services for the pre-publish checks",
+                      ready=[s.name for s in out.ready], started_by_gate=len(down),
+                      errors=len(errors))
+        return out
+
+    def _answers(self, service: testservices.DeclaredService) -> bool:
+        return self.runner(probe_argv(service), self.repo, self.env,
+                           SERVICE_PROBE_SECONDS).code == 0
 
     def _restore(self, state: TreeState | None) -> None:
         """Put back what this round's checks changed in the tree, and say so once per path."""

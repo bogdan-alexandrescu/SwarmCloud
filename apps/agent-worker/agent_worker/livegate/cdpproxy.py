@@ -227,6 +227,24 @@ control), the proxy runs the hook registered with `after_clipped_capture`
 for the page's targetId, on a task of its own: the hook waits on replies,
 and this runs inside the pipe reader. The agent's command and reply pass
 through unchanged, and nothing about what an agent may send changes.
+
+AN AGENT THAT GOES AWAY TAKES ONLY ITSELF (GATE-STAYS-UP; #2205). Every reply
+and event for an agent is sent from inside Chromium's ONE pipe reader
+(`PipeTransport.run`), which also carries the answers to the gate's own
+calls -- the device, the theme, the page follower, a new agent's
+`Target.attachToBrowserTarget`. MEASURED 2026-10-24
+(task_23c48f150cbf4220a301): after one refused `set_viewport_size` the step's
+`swarm-handoff device` and `theme` failed with `gate_unavailable` until the step
+ended, and a fresh CDP attach was refused. A send to an agent that had gone
+(`ConnectionResetError` out of `drain`) went up through the reader and ended
+it, so Chromium was never read again and every gate call waited forever. A
+send to an agent that has stopped reading blocks the reader the same way.
+So every message to an agent goes through `_deliver`: a send that fails, or
+that has not left within `AGENT_SEND_SECONDS`, drops THAT connection
+(`cdp_agent_dropped`, its sessions detached, its link closed on a task of its
+own) and the reader goes on. And `PipeTransport.run` survives its sink:
+a handler that raises on one message is logged by its exception's class, and
+the next message is read.
 """
 
 from __future__ import annotations
@@ -289,6 +307,14 @@ RETRY_AFTER_SECONDS = 5
 CAPTURE_SCREENSHOT = "Page.captureScreenshot"
 #: How often a tool still in use is reported again (module docstring).
 TOOL_REPORT_SECONDS = 15.0
+#: How long one message to an agent may take to leave before that agent's
+#: connection is dropped (AN AGENT THAT GOES AWAY TAKES ONLY ITSELF). WHY 5 s:
+#: asyncio buffers every write and `drain` waits only above its 64 KiB high
+#: water mark, so on loopback this is an agent that has read nothing for
+#: seconds -- and while it waits, Chromium's reader, and so every gate call,
+#: waits too. Under the ctl operations' 8 s (ctl.OP_SECONDS), so a stalled
+#: agent costs a device switch a delay, not a refusal.
+AGENT_SEND_SECONDS = 5.0
 #: A client tag as the path carries it, and the rest of the path after it.
 _CLIENT_PATH = re.compile(r"/" + browser_tools.CLIENT_SEGMENT + r"/([A-Za-z0-9_-]{1,32})(/.*)?")
 
@@ -541,8 +567,12 @@ class CdpProxy:
         qa: QaIdentity | None = None,
         qa_target: QaTarget | None = None,
         qa_sleep: Callable[[float], Awaitable[None]] | None = None,
+        agent_send_seconds: float = AGENT_SEND_SECONDS,
     ) -> None:
         self._send = send_to_chromium
+        self._agent_send_seconds = agent_send_seconds
+        #: Links of dropped agents, closing on tasks of their own (`_drop_agent`).
+        self._closing: set[asyncio.Task[None]] = set()
         #: The task's QA identity, or None (module docstring).
         self._qa = qa
         self._console_requests = ConsoleRequests(qa) if qa is not None else None
@@ -816,7 +846,40 @@ class CdpProxy:
         reply: dict[str, Any] = {"id": message.get("id"), "error": {"code": _ERROR_CODE, "message": text}}
         if "sessionId" in message:
             reply["sessionId"] = message["sessionId"]
-        await connection.link.send(reply)
+        await self._deliver(connection, reply)
+
+    async def _deliver(self, connection: AgentConnection, message: dict[str, Any]) -> bool:
+        """`message` to one agent. A send that fails or stalls drops that
+        connection and returns False; it never raises into the caller, which
+        is Chromium's reader (module docstring, AN AGENT THAT GOES AWAY)."""
+        if connection.closed:
+            return False
+        try:
+            await asyncio.wait_for(connection.link.send(message), self._agent_send_seconds)
+        except asyncio.TimeoutError:
+            await self._drop_agent(connection, "send_stalled")
+            return False
+        except Exception as exc:  # noqa: BLE001 -- a link that went is that agent's end, not the reader's
+            await self._drop_agent(connection, "send_failed", exc)
+            return False
+        return True
+
+    async def _drop_agent(self, connection: AgentConnection, cause: str, exc: BaseException | None = None) -> None:
+        if connection.closed:
+            return
+        self._record("cdp_agent_dropped", {"cause": cause})
+        log.warning("live gate: an agent connection dropped (%s%s); the browser goes on", cause,
+                    f": {type(exc).__name__}" if exc is not None else "")
+        await self.disconnect_agent(connection)
+        task = asyncio.get_running_loop().create_task(self._close_link(connection.link))
+        self._closing.add(task)
+        task.add_done_callback(self._closing.discard)
+
+    async def _close_link(self, link: AgentLink) -> None:
+        try:
+            await asyncio.wait_for(link.close(), self._agent_send_seconds)
+        except Exception:  # noqa: BLE001 -- already gone or stalled: nothing more to close
+            pass
 
     async def on_agent_message(self, connection: AgentConnection, message: Mapping[str, Any]) -> None:
         if connection.closed:
@@ -886,7 +949,7 @@ class CdpProxy:
             reply: dict[str, Any] = {"id": message["id"], "result": dict(cdppolicy.LOCAL_REPLIES[method])}
             if agent_session is not None:
                 reply["sessionId"] = agent_session
-            await connection.link.send(reply)
+            await self._deliver(connection, reply)
             return
         if method in cdppolicy.REQUEST_BODY_METHODS and params.get("requestId") in self._control_requests:
             self._record("cdp_method_refused", {"method": method})
@@ -966,8 +1029,8 @@ class CdpProxy:
             reply["sessionId"] = pending.agent_session
         if self._mode == _PAUSED:
             self._held_responses.append((pending, reply))
-        else:
-            await connection.link.send(reply)
+        elif not await self._deliver(connection, reply):
+            return
         self._clipped_capture_answered(pending, connection)
 
     def _clipped_capture_answered(self, pending: _Pending, connection: AgentConnection) -> None:
@@ -1081,7 +1144,7 @@ class CdpProxy:
         if session != owner.browser_session:
             event["sessionId"] = session
         async with owner.send_lock:
-            await owner.link.send(event)
+            await self._deliver(owner, event)
 
     def _strip(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """A request from the control window, seen after return, without its body."""
@@ -1377,7 +1440,7 @@ class CdpProxy:
                         "code": _ERROR_CODE,
                         "message": f"{pending.method} completed while a person was in control; its result is withheld",
                     }
-                await pending.owner.link.send(reply)
+                await self._deliver(pending.owner, reply)
             while self._held:
                 connection, message = self._held.pop(0)
                 if not connection.closed:
@@ -1403,7 +1466,8 @@ class CdpProxy:
             messages = journal.messages(session, live, session == owner.browser_session)
             async with owner.send_lock:
                 for message in messages:
-                    await owner.link.send(message)
+                    if not await self._deliver(owner, message):
+                        break
             if not journal.contexts_changed:
                 continue
             for frame, name in self._missing_worlds(live, worlds.get(session, set())):
@@ -1583,7 +1647,11 @@ class PipeTransport:
             except ValueError:
                 continue
             if isinstance(message, dict):
-                await sink.on_chromium_message(message)
+                try:
+                    await sink.on_chromium_message(message)
+                except Exception as exc:  # noqa: BLE001 -- one message's handler never stops the reader
+                    log.warning("live gate: a message from Chromium was not handled (%s); reading on",
+                                type(exc).__name__)
 
     async def close(self) -> None:
         if self._writer is not None:
@@ -1634,7 +1702,11 @@ class _WebSocketLink:
             await self._writer.drain()
 
     async def close(self) -> None:
-        await self.control(0x8)
+        # Written, not drained: an agent that stopped reading must not hold
+        # the close up (cdpproxy docstring, AN AGENT THAT GOES AWAY).
+        # `close` flushes what is buffered on its own.
+        if not self._writer.is_closing():
+            self._writer.write(_frame(0x8, b""))
         self._writer.close()
 
 

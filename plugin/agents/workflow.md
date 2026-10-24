@@ -164,8 +164,10 @@ of the reply's `steps` whose `state` is not `SUCCEEDED`, `FAILED`,
 * `bridge_version` — the reply's `bridge_version` (null when it is absent)
 * `follow_error` — from the probe
 * `steps` — for each entry of the reply's `steps`: its `step_id`, `task_id`,
-  `depends_on` and `state`, copied character for character, and its `console`
-  (null when the step row has none)
+  `depends_on`, `state` and `runner_profile`, copied character for character,
+  and its `console` (null when the step row has none). The launch that just
+  submitted a workflow reads it back with this job when the submit reply was
+  too thin to check, and compares each step's `runner_profile` with the spec's
 * `error` — null
 
 If `swarm_workflow_status` returns an error — an id this deployment does not

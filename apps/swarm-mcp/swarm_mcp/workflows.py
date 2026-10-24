@@ -157,6 +157,12 @@ SPEC_KEYS = frozenset(
         # by name: sent as the top-level `additional_repositories`
         # WorkflowCreate takes, the default a step's own list replaces.
         "additional_repositories",
+        # An existing pull request of the spec's repository the lane's commits
+        # are pushed onto, instead of opening a replacement (#2183, PTP-PLUGIN):
+        # sent as the top-level `publish_to_pr` WorkflowCreate takes, in the
+        # form `check_publish_to_pr` returns. swarm-api reads the pull request
+        # and refuses it beside any merge, so `read_spec` refuses that first.
+        "publish_to_pr",
     }
 )
 
@@ -506,6 +512,9 @@ def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, A
         "after": check_after(document.get("after"), where=where),
         "additional_repositories": check_additional_repositories(
             document.get("additional_repositories"), where=where),
+        "publish_to_pr": check_publish_merge(
+            check_publish_to_pr(document.get("publish_to_pr"), where=where),
+            merge=document.get("merge"), steps=document.get("steps"), where=where),
     }
 
 
@@ -526,8 +535,15 @@ def submit(
     after: list[dict[str, int]] | None = None,
     mcp_credentials: dict[str, Any] | None = None,
     additional_repositories: list[dict[str, str]] | None = None,
+    publish_to_pr: int | str | None = None,
 ) -> dict[str, Any]:
     """`POST /v1/workflows`. Returns the route's envelope, not just the workflow.
+
+    `publish_to_pr` (#2183) is sent top-level, only when given, as `merge_pr`
+    is, in the form `check_publish_to_pr` returns. A merge beside it is
+    refused here, before anything is sent (`check_publish_merge`), and a
+    `merge: "off"` beside it is not sent: such a lane opens no pull request,
+    so it has no merge to choose.
 
     `mcp_credentials` is the caller's per-run credential map for the
     registered MCP servers its steps name (`server.check_mcp_credentials` has
@@ -547,6 +563,16 @@ def submit(
     already in `steps`, replaces it. Neither is touched by `infer`, which
     only ever chooses the primary `repository_url`.
     """
+    if publish_to_pr is not None:
+        publish_to_pr = check_publish_merge(
+            check_publish_to_pr(publish_to_pr, where="submit"), merge=merge, steps=steps,
+            where="submit")
+        if merge_pr is not None:
+            raise SwarmError(
+                "publish_to_pr names the pull request to push onto and merge_pr one to "
+                "merge: two pull requests. Send one or the other. Nothing was sent"
+            )
+        merge = None
     body: dict[str, Any] = {
         "steps": steps,
         "metadata": {
@@ -573,6 +599,8 @@ def submit(
         body["priority"] = int(priority)
     if merge_pr is not None:
         body["merge_pr"] = merge_pr
+    if publish_to_pr is not None:
+        body["publish_to_pr"] = publish_to_pr
     if after:
         body["after"] = after
     if additional_repositories is not None:
@@ -625,6 +653,72 @@ def parse_pull_request(text: Any) -> tuple[str | None, int]:
         f"{value!r} is not a pull request: pass its number (41), owner/repo#41, or its "
         "https://github.com/<owner>/<repo>/pull/<n> URL. Nothing was sent"
     )
+
+
+#: The profile of a merge step (`swarm_api.validation.is_merge_step`).
+_MERGE_PROFILE = "merge"
+
+#: The API's own reason for refusing a merge beside `publish_to_pr`
+#: (`swarm_api.publishtopr.check_workflow_shape`), repeated so the caller
+#: reads here what swarm-api would have answered.
+PUBLISH_MERGE_REFUSAL = (
+    "publish_to_pr opens no pull request, and a merge step merges the pull "
+    "request a step of its workflow opened. Remove the merge step (and "
+    "metadata.merge)."
+)
+
+
+def check_publish_to_pr(value: Any, *, where: str = "the workflow spec") -> int | str | None:
+    """`publish_to_pr` in the form it is sent, or None when it names none (#2183).
+
+    Accepts what the API accepts -- `41`, `"#41"`, `"owner/repo#41"` and the
+    pull request's URL -- read by `parse_pull_request`. A number travels as
+    the integer; a form naming a repository travels as `owner/repo#N`, which
+    swarm-api holds to the spec's own repository. A URL is sent in that short
+    form because the API reads `/pull/N` only at its end, so a copied
+    `.../pull/41/files` would be refused there and is read here.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise SwarmError(
+            f"{where}: publish_to_pr is a pull request: its number (41), owner/repo#41 or "
+            "its https://github.com/<owner>/<repo>/pull/<n> URL. Nothing was sent"
+        )
+    try:
+        repository, number = parse_pull_request(value)
+    except SwarmError as exc:
+        raise SwarmError(f"{where}: publish_to_pr: {exc}") from None
+    if repository is None:
+        return number
+    return f"{repository.removeprefix('https://github.com/')}#{number}"
+
+
+def check_publish_merge(publish_to_pr: int | str | None, *, merge: Any, steps: Any,
+                        where: str = "the workflow spec") -> int | str | None:
+    """Refuse `publish_to_pr` beside a merge, before anything is sent.
+
+    swarm-api refuses it beside a merge step or a `metadata.merge` that
+    appends one (PR 2197, and BGD 2026-10-24: "a publish_to_pr lane still may
+    not end in a merge step"). The bridge never drops a merge the caller
+    asked for to make the submission pass: it refuses, with the API's reason.
+    `merge: "off"` asks for none and is not refused. Returns `publish_to_pr`.
+    """
+    if publish_to_pr is None:
+        return None
+    merges = [
+        str(step.get("step_id")) for step in (steps if isinstance(steps, list) else [])
+        if isinstance(step, dict) and step.get("runner_profile") == _MERGE_PROFILE
+    ]
+    # Anything but absent or "off" is a merge asked for, or a value swarm-api
+    # would refuse anyway: never dropped to make the submission pass.
+    if merges or merge not in (None, "off"):
+        named = f"merge steps {merges}" if merges else f"merge {merge!r}"
+        raise SwarmError(
+            f"{where} names publish_to_pr {publish_to_pr!r} and {named}. "
+            f"{PUBLISH_MERGE_REFUSAL} Nothing was sent"
+        )
+    return publish_to_pr
 
 
 def submit_merge_pr(

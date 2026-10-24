@@ -1054,6 +1054,81 @@ agent that holds no capacity.
   HW-UI and HW-MCP. Until they land, `GET .../input` is what either reads, and
   an answer is posted to the route above.
 
+## Publishing onto an existing pull request: `publish_to_pr`
+
+**Why it exists** (#2183, approved by BGD on 2026-10-24). A follow-up lane --
+a re-review, a fix round, the owner's answers applied to a mock-up -- could
+only open a *replacement* pull request: a `repository_ref` of the old branch
+gave an empty diff and failed, so the lane started from main, merged the old
+branch, and opened a new pull request. On 2026-10-23 the ten CONFIG-FINAL and
+COUNTS-REVIEW lanes opened replacements for PRs 2164-2168 and 2170-2174, each
+then closed by hand. Fixing a pull request in place was only possible from
+the laptop. A spec now names the pull request instead:
+
+```json
+{"strategy": "integrate", "repository_url": "https://github.com/owner/repo",
+ "publish_to_pr": 2164,
+ "steps": [{"step_id": "implement", ...},
+           {"step_id": "fix", "depends_on": ["implement"], "builds_on": "implement", ...}]}
+```
+
+A single agent (`POST /v1/tasks`) takes the same field under `direct-pr`.
+
+**What it does.** Every step that would clone the workflow's ref starts from
+the pull request's **head commit** instead, read before anything is cloned.
+A step that `builds_on` an upstream step still clones that step's branch,
+which stands on the same head. The step that would open the pull request --
+the one `direct-pr` step, or the `integrate` integrator (so the fix step of
+an implement -> review -> fix lane) -- pushes the lane's commits onto the pull
+request's branch as a **fast-forward** and opens **no** pull request. A
+contributor still pushes its own `swarm/<task>` branch for the integrator to
+merge, exactly as without the field. If the lane wrote `pr-title.txt`, the
+pull request is retitled; if it wrote `pr-body.md`, its body is replaced
+(never when that would drop a `Closes #N` or `part of #N` line the current
+body has, #807). A lane that wrote neither leaves both as they are, and is
+not asked for a title.
+
+**What the value may be.** A positive integer: a pull request of the spec's
+own repository. `owner/repo#N` or the pull request's URL are accepted only
+when they name that same repository; anything else is refused, because pull
+request N of another repository is a different pull request.
+
+**What is refused at submission** (422 `invalid_dispatch`, nothing written).
+swarm-api reads the pull request once from GitHub with the submitter's forge
+credential (`swarm_api/publishtopr.py`) and refuses one that does not exist,
+is closed or merged, comes from a fork, or whose head branch is not a
+`swarm/task_*` branch of an agent **in the submitting tenant** -- another
+tenant's lane branch is refused in the same words as a branch no lane
+published. It also refuses the shapes that cannot publish onto one branch:
+any strategy but `direct-pr` and `integrate`; more than one agent step under
+`direct-pr` (each would push, and all but the first would meet a moved head);
+`carrier: branches`; a `repository_ref` (the head is the ref);
+`continues_task` or `merge_pr` beside it (two pull requests); and an explicit
+merge step or `metadata.merge` (the merge step merges a pull request its
+workflow opened, and this one opens none). A repository's `merge_policy` or
+the platform's `merge_by_default` simply does not apply to such a workflow.
+What it checked -- the number and the agent whose branch is the head -- is
+signed into every step's dispatch block.
+
+**What the worker refuses** (`agent_worker/publishpr.py`). Before the agent
+starts it reads the pull request again: closed, merged, from a fork, or on
+another branch than the signed agent's, and the step **fails with the reason
+and runs nothing** -- no clone, no agent. Before the push it reads it once
+more and refuses a pull request that has since closed, and a head that
+**moved** since the step started (a person pushed, or another lane did):
+"head moved". The lane's HEAD must descend from that head, and the push is
+leased on it, so a head moved between that read and the push is refused by
+GitHub too. **Nothing is ever force-pushed.** A head moved while an agent was
+parked is still refused: the head the first attempt started from is in the
+checkpoint manifest. A lane whose commits touch `.github/workflows/` is
+refused at the push, with the change left as `workflow-lines.patch`: the
+broker that pushes workflow files pushes only an agent's own branch.
+
+**Without the field nothing changes**: every step clones the workflow's ref,
+pushes `swarm/<its task>` and opens its pull request exactly as before. A
+MERGE verdict's pull request is never opened by swarm-api for such a lane
+(`verdictpublish` declines it); the worker pushes it instead.
+
 ## Waiting for a pull request: `after`
 
 **Why it exists.** On 2026-10-14 three lanes -- RELAY-ROLL, DEVB-GATE and
@@ -1486,6 +1561,45 @@ What each step does, and why each field is there:
   branch is not on the remote are still merged, and still listed missing
   when the branch is absent. Release acceptance fails on any `- missing:`
   line, so the distinction is what lets that check stay strict.
+
+### A UI lane's MERGE counts only from a rendered review
+
+Owner decision, 2026-10-24 (#2184). On 2026-10-23 ten mock-up lanes' reviews
+ran on `claude-code`, with no browser, and gave MERGE on pages they had only
+read as HTML; two said so in their verdicts. The pages had clipped frames,
+crushed text and contradictory counts, found only when someone rendered them
+(#2157, #2149). Reading markup is not seeing a page.
+
+So a review step (one a dependant stages `verdict.json` from) whose patch
+touches `apps/swarm-ui/**` or `docs/web-ui/**` is **UI-gated**. Its MERGE
+counts only when the step ran on runner profile `claude-code-browser` **and**
+left `review.md` **and** at least one non-empty image under `shots/` in its
+artifacts directory. Otherwise the review's own worker rewrites its
+`verdict.json` to `NOT_YET` before the upload, puts the reason
+`not reviewed rendered: <what was missing>` first among its findings, and
+records `result_summary.rendered_review` (`ui_paths`, `verdict_given`,
+`verdict`, `missing`, `reason`). Every reader downstream -- the `when` gate,
+the control plane's pull request, the requirements check -- then reads
+NOT_YET, so the `verdict_in: ["NOT_YET"]` step runs, or the lane fails where
+everyone sees it.
+
+* **What the patch touches is the worker's measurement, taken before the
+  agent starts**: the headers of every `*.patch` staged through `input_from`,
+  and the `builds_on` step's `result_summary.git.files`. A file list cut at
+  its bound with no UI path in the part kept, or a `builds_on` step that
+  cannot be read, is gated too: a review that could not be told what it
+  reviews is not one that saw it.
+* **The rule is in the review's own prompt.** The worker appends it, naming
+  the UI paths and the profile the step runs on, so a reviewer knows before
+  it writes a verdict that MERGE from anywhere but a rendered review will not
+  count.
+* **Unchanged:** a lane whose patch touches no UI path, every NOT_YET, and an
+  unreadable verdict (which the gate still refuses by name, never reads as
+  either verdict).
+* **Not covered:** the merge-step workflow's `review.json`, which only
+  `claude-code-review` may publish and `post-verdict` posts as a GitHub
+  review. Holding it to the browser profile would make a UI lane unmergeable
+  there; that is the owner's call, asked on the pull request that added this.
 
 ### What a MERGE verdict publishes
 

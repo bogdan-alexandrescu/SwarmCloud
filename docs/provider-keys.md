@@ -192,6 +192,36 @@ pastes the key into the console:
   both run before the link is looked at, and the write always lands in the
   caller's own tenant, whatever the link says.
 
+### The runner-key link (SSC-LINKS)
+
+The runner's provider key (`anthropic`, `openai`, any `known_providers()`
+name; `POST /v1/tenants/me/credentials`) gets the same kind of link, because
+BGD's Q8 of [secrets-scopes.md](design/secrets-scopes.md) (§11) is that a
+value arrives only through the console form a link opens, or a terminal's
+`--stdin`, and never through a tool:
+
+    POST /v1/tenants/me/credentials/links {"provider": "anthropic"}
+    -> {"url": "https://<console>/config/secrets?scope=workspace&runner_key=anthropic&t=<token>",
+        "path": "/config/secrets?scope=workspace&runner_key=anthropic&t=<token>",
+        "provider": "anthropic", "expires_at": ...}
+
+* Minted only for a write the caller could make: the provider check and the
+  `role_admin_required` gate of the write run first. The body takes the
+  provider and nothing else, so a value sent to it is a 422.
+* `runner_key_links/{sha256(token)}` keeps who minted it, the workspace, the
+  provider, `expires_at` (ten minutes) and `used_at`; never the token.
+* The form sends the token back as `link_token` on `POST
+  /v1/tenants/me/credentials`. It is consumed, before the write and in one
+  transaction, only if it is unused, unexpired, and minted by this caller for
+  this workspace and provider; someone else presenting it, or presenting it
+  for another provider, does not burn it. The answer carries `via_link`.
+* A bad link is refused under the same code and switch as above,
+  `KEY_LINK_INVALID`, off at ship; off, it is logged without the token and
+  the write goes on. A write that sends no link, a terminal's `--stdin`, is
+  unchanged.
+* The form itself is Config › Secrets' (lane SSC-UI); until it ships, the link
+  opens a page that does not offer it yet.
+
 ## 4. Threat model
 
 | attacker | what they get |

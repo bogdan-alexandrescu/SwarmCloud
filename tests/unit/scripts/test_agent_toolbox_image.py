@@ -97,6 +97,22 @@ SCANNED_FAILING = {
 #: Which pin each toolbox tool's ARG is.
 PIN_OF = {"tofu": "TOFU_VERSION", "tflint": "TFLINT_VERSION", "trivy": "TRIVY_VERSION"}
 
+#: The PostgreSQL server the test services run (docs/design/test-services.md
+#: §3.1, §4.1; owner decision 2026-10-23: option A, Postgres 16 only). The
+#: worker starts `initdb` then `postgres` as its own child and waits on
+#: `pg_isready`; `pg_ctl` stops it. Each must be on the agent's PATH, at this
+#: major, or the build fails.
+POSTGRES_MAJOR = "16"
+POSTGRES_TOOLS = ("postgres", "initdb", "pg_ctl", "pg_isready")
+
+#: The PostgreSQL Global Development Group's apt signing key, ACCC4CF8, by its
+#: FULL fingerprint (https://www.postgresql.org/download/linux/debian/; the key
+#: file https://www.postgresql.org/media/keys/ACCC4CF8.asc, read 2026-10-24,
+#: hashes to it). A short or long key ID can be forged; a fingerprint cannot.
+PGDG_KEY_FINGERPRINT = "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
+PGDG_KEYRING = "/usr/share/keyrings/pgdg.gpg"
+PGDG_SOURCE = "/etc/apt/sources.list.d/pgdg.list"
+
 
 # --------------------------------------------------------------------------- #
 # A small Dockerfile reader: stages, logical instructions, preceding comments.
@@ -341,20 +357,29 @@ def test_the_combined_hold_argument_is_gone_from_the_dockerfile_and_docs() -> No
     assert visited == len(files) == 4
 
 
-def _fake_tools(bin_dir: Path, names: list[str]) -> None:
+def _fake_tools(bin_dir: Path, names: list[str], pg_major: str = POSTGRES_MAJOR) -> None:
     bin_dir.mkdir(parents=True, exist_ok=True)
     for name in names:
         path = bin_dir / name
-        path.write_text(f'#!/bin/sh\necho "{name} fake 1.0"\n')
+        # The PostgreSQL binaries print what the real ones do, e.g.
+        # "postgres (PostgreSQL) 16.15 (Debian 16.15-1.pgdg12+2)".
+        if name in POSTGRES_TOOLS:
+            line = f"{name} (PostgreSQL) {pg_major}.15 (fake)"
+        else:
+            line = f"{name} fake 1.0"
+        path.write_text(f'#!/bin/sh\necho "{line}"\n')
         path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
 def _run_smoke(
-    tmp_path: Path, present: list[str], holds: dict[str, str]
+    tmp_path: Path, present: list[str], holds: dict[str, str], pg_major: str = POSTGRES_MAJOR
 ) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
-    _fake_tools(bin_dir, present)
-    script = _substitute_args(_shell_text(_smoke_step()), holds)
+    _fake_tools(bin_dir, present, pg_major)
+    # The build arguments the step reads, at their Dockerfile defaults, then
+    # the holds the case sets.
+    values = {name: _arg_value(ins) for name, ins in _arg_defaults(_runtime_stage()).items()}
+    script = _substitute_args(_shell_text(_smoke_step()), {**values, **holds})
     # The stand-ins first, then ONLY the plumbing the step itself uses, linked
     # into a private directory. Putting /usr/bin on PATH would let a runner's own
     # gh, kubectl, make or docker satisfy the check, and the missing-tool case
@@ -469,6 +494,11 @@ def test_every_download_is_pinned_by_version_and_verified_before_use() -> None:
     for ins, fetch in downloads:
         text = _shell_text(ins)
         out, url = fetch.group(1), fetch.group(2)
+        if url == "https://www.postgresql.org/media/keys/ACCC4CF8.asc":
+            # A signing key, not a release: it is verified by its full
+            # fingerprint before apt trusts it, which
+            # test_the_pgdg_key_is_pinned_by_its_full_fingerprint asserts.
+            continue
         # A release file read from the build mirror (docs/runbooks/build-mirror.md)
         # comes from the bind-mounted tool mirror, and is checked exactly as a
         # download is.
@@ -522,12 +552,32 @@ def test_every_toolbox_checksum_says_where_it_came_from() -> None:
         )
 
 
-def test_the_toolbox_adds_no_apt_repository() -> None:
+def test_the_only_apt_repository_is_pgdg_and_only_while_the_server_installs() -> None:
     # Vendor .debs are fetched by exact filename and checked like any other
-    # download; a sources.list entry would float with whatever the repo serves.
-    for ins in _runtime_stage():
-        text = _shell_text(ins)
-        assert "sources.list" not in text and "signed-by" not in text, text[:120]
+    # download; a sources.list entry floats with whatever the repo serves. The
+    # one exception is PGDG, for the PostgreSQL server (bookworm's own archive
+    # carries 15, docs/design/test-services.md §4.1), where floating to the
+    # newest 16.x on every APT_REFRESH build is the point. The entry and its
+    # keyring are removed in the same RUN, so the derived images' own
+    # `apt-get update` never reaches apt.postgresql.org.
+    sources = [
+        i for i in _runtime_stage()
+        if "sources.list" in _shell_text(i) or "signed-by" in _shell_text(i)
+    ]
+    # MUTATION: add a second apt source anywhere in the runtime stage -- two entries here.
+    assert len(sources) == 1, [s.body[:120] for s in sources]
+    text = _shell_text(sources[0])
+    assert "apt-get upgrade" in text, "the PGDG source belongs to the apt upgrade layer"
+    entries = re.findall(r'echo "(deb [^"]*)"\s*>\s*(\S+)', text)
+    assert entries == [(
+        f"deb [signed-by={PGDG_KEYRING}] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main",
+        PGDG_SOURCE,
+    )], entries
+    install = text.find('apt-get install --no-install-recommends -y "postgresql-${POSTGRES_MAJOR}"')
+    removed = text.find(f"rm -f {PGDG_SOURCE} {PGDG_KEYRING}")
+    # MUTATION: drop the `rm -f` of the source and keyring -- the derived images' apt reads PGDG.
+    assert -1 not in (install, removed), text
+    assert install < removed, "the PGDG source must outlive the server install, then go"
     assert any("google-cloud-cli" in _shell_text(i) for i in _runtime_stage())
 
 
@@ -730,3 +780,132 @@ def test_jq_is_the_pinned_release_not_debians() -> None:
     # holds the whole manifest equal to the Dockerfile's reads).
     row = f"{sha}  github.com/jqlang/jq/releases/download/jq-{JQ_VERSION}/{JQ_ASSET}"
     assert row in TOOL_MIRROR_MANIFEST.read_text().splitlines()
+
+
+# --------------------------------------------------------------------------- #
+# PostgreSQL 16 for the declared test services (TS-IMAGE, part of #1627).
+# --------------------------------------------------------------------------- #
+
+
+def _apt_layer() -> Instruction:
+    runs = [
+        i for i in _runtime_stage() if i.keyword == "RUN" and "apt-get upgrade" in _shell_text(i)
+    ]
+    assert len(runs) == 1, "expected exactly one apt upgrade layer in the runtime stage"
+    return runs[0]
+
+
+def _flat(ins: Instruction) -> str:
+    """A RUN body on one line, every run of whitespace one space."""
+    return " ".join(_shell_text(ins).split())
+
+
+def test_the_smoke_step_checks_the_postgres_binaries_at_the_pinned_major() -> None:
+    always, _ = _smoke_tool_lists()
+    # MUTATION: drop postgres or initdb from the smoke step's tools= list -- this fails.
+    missing = [t for t in POSTGRES_TOOLS if t not in always]
+    assert not missing, f"the build never checks {missing}"
+    args = _arg_defaults(_runtime_stage())
+    # MUTATION: set ARG POSTGRES_MAJOR=17 -- the image no longer carries the catalogue's 16.
+    assert _arg_value(args["POSTGRES_MAJOR"]) == POSTGRES_MAJOR
+    text = _shell_text(_smoke_step())
+    assert '"(PostgreSQL) ${POSTGRES_MAJOR}."' in text, "the smoke step must check the major"
+
+
+def test_the_smoke_step_fails_the_build_on_a_postgres_of_another_major(tmp_path: Path) -> None:
+    holds = _holds("0", "0")
+    expected = _expected_tools(holds)
+    assert set(POSTGRES_TOOLS) <= set(expected), expected
+    ok = _run_smoke(tmp_path / "ok", expected, holds)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert "postgres: postgres (PostgreSQL) 16." in ok.stdout, ok.stdout
+    # MUTATION: remove the `(PostgreSQL) ${POSTGRES_MAJOR}.` case from the smoke step -- 15 passes.
+    wrong = _run_smoke(tmp_path / "wrong", expected, holds, pg_major="15")
+    assert wrong.returncode != 0, f"the build passed with PostgreSQL 15:\n{wrong.stdout}"
+    out = wrong.stdout + wrong.stderr
+    named = [t for t in POSTGRES_TOOLS if f"{t} (not PostgreSQL {POSTGRES_MAJOR})" in out]
+    assert named == list(POSTGRES_TOOLS), out
+
+
+def test_the_pgdg_key_is_pinned_by_its_full_fingerprint() -> None:
+    args = _arg_defaults(_runtime_stage())
+    # MUTATION: change one hex digit of ARG PGDG_KEY_FINGERPRINT -- this fails (and so would the build).
+    assert _arg_value(args["PGDG_KEY_FINGERPRINT"]) == PGDG_KEY_FINGERPRINT
+    text = _flat(_apt_layer())
+    steps = [
+        'curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/pgdg-key.asc '
+        '"https://www.postgresql.org/media/keys/ACCC4CF8.asc"',
+        'test "$(gpg --batch --with-colons --show-keys /tmp/pgdg-key.asc',
+        '= "${PGDG_KEY_FINGERPRINT}"',
+        f"gpg --batch --dearmor --output {PGDG_KEYRING} /tmp/pgdg-key.asc",
+        f"[signed-by={PGDG_KEYRING}]",
+        'apt-get install --no-install-recommends -y "postgresql-${POSTGRES_MAJOR}"',
+    ]
+    at = [text.find(step) for step in steps]
+    # MUTATION: drop the fingerprint `test` -- whatever the URL serves becomes the keyring.
+    assert -1 not in at, [s for s, a in zip(steps, at) if a == -1]
+    # MUTATION: dearmor into the keyring before the fingerprint `test` -- this fails.
+    assert at == sorted(at), "the key must be checked by fingerprint before it becomes apt's keyring"
+    # Exactly one primary key, and it is the pinned one: the check prints the
+    # fpr line that follows each `pub`, so a second key in the file (or none)
+    # fails it. `--show-keys`, never `--import`: an import starts gpg-agent,
+    # which `gpg` installed without its recommends does not carry.
+    assert "gpg --batch --quiet --import" not in text and "--recv-keys" not in text, text
+    assert re.search(r"""awk -F: '\$1 == "fpr" && prev == "pub" \{ print \$10 \} \{ prev = \$1 \}'""", text), text
+    # MUTATION: add [trusted=yes] or --allow-unauthenticated -- the signature is no longer checked.
+    for unsafe in ("apt-key", "trusted=yes", "--allow-unauthenticated", "--allow-insecure"):
+        assert unsafe not in DOCKERFILE.read_text(), unsafe
+
+
+def test_the_postgres_server_is_installed_in_the_apt_upgrade_layer() -> None:
+    stage = _runtime_stage()
+    server = [
+        i for i in stage
+        if i.keyword == "RUN" and re.search(r"postgresql-(\$\{POSTGRES_MAJOR\}|\d+\b)", _shell_text(i))
+    ]
+    # MUTATION: install the server in a RUN of its own -- APT_REFRESH no longer rebuilds it.
+    assert [i.index for i in server] == [_apt_layer().index], [i.body[:80] for i in server]
+    text = _flat(_apt_layer())
+    assert text.startswith('echo "apt layer of ${APT_REFRESH}"'), text[:80]
+    upgrade = text.find("apt-get upgrade")
+    install = text.find('apt-get install --no-install-recommends -y "postgresql-${POSTGRES_MAJOR}"')
+    assert -1 < upgrade < install, "the server installs after the upgrade, in the same layer"
+    # The PGDG archive floats, so the build refuses one older than the release
+    # this lane measured (16.15, 2026-10-24) rather than ship a stale mirror's.
+    args = _arg_defaults(stage)
+    minimum = _arg_value(args["POSTGRES_MIN_VERSION"])
+    assert minimum.startswith(POSTGRES_MAJOR + "."), minimum
+    # MUTATION: drop the dpkg --compare-versions check -- an older 16.x ships silently.
+    assert (
+        'dpkg --compare-versions "$(dpkg-query -W -f=\'${Version}\' "postgresql-${POSTGRES_MAJOR}")" '
+        'ge "${POSTGRES_MIN_VERSION}"'
+    ) in text, text
+    for tool in POSTGRES_TOOLS:
+        assert tool in text, f"{tool} is not linked onto the PATH"
+    assert 'ln -s "/usr/lib/postgresql/${POSTGRES_MAJOR}/bin/$t" "/usr/local/bin/$t"' in text, text
+
+
+def test_the_build_creates_no_cluster_and_starts_no_server() -> None:
+    text = _flat(_apt_layer())
+    common = text.find("apt-get install --no-install-recommends -y postgresql-common")
+    no_cluster = text.find(
+        "sed -ri 's/^#?create_main_cluster = .*/create_main_cluster = false/' "
+        "/etc/postgresql-common/createcluster.conf"
+    )
+    held = text.find("grep -qx 'create_main_cluster = false' /etc/postgresql-common/createcluster.conf")
+    server = text.find('apt-get install --no-install-recommends -y "postgresql-${POSTGRES_MAJOR}"')
+    # MUTATION: drop the create_main_cluster sed -- the server's postinst runs initdb into the image.
+    assert -1 not in (common, no_cluster, held, server), text
+    assert common < no_cluster < held < server, "the cluster must be refused before the server installs"
+    # MUTATION: drop either `test ! -e` -- a data directory baked into the image goes unnoticed.
+    assert 'test ! -e "/var/lib/postgresql/${POSTGRES_MAJOR}"' in text[server:], text
+    assert 'test ! -e "/etc/postgresql/${POSTGRES_MAJOR}"' in text[server:], text
+    # Nothing in the build runs a server or creates a cluster: the worker does
+    # that at runtime, as its own child (docs/design/test-services.md §4.1).
+    starts = re.compile(r"pg_ctl\s+(start|init)|pg_ctlcluster|pg_createcluster|\binitdb\s+-|postgres\s+-D")
+    for ins in _runtime_stage():
+        if ins.keyword == "RUN":
+            assert not starts.search(_shell_text(ins)), _shell_text(ins)[:120]
+    # The snakeoil pair ssl-cert generates at install is the same in every
+    # pull; the loopback-only service uses no TLS, so neither ships.
+    assert "rm -f /etc/ssl/private/ssl-cert-snakeoil.key /etc/ssl/certs/ssl-cert-snakeoil.pem" in text

@@ -176,8 +176,10 @@ def test_the_value_is_stored_beside_the_credential_and_neither_write_drops_the_o
     assert status["set"] is True and status["set_by"] == CAROL and status["version"].endswith("/versions/2")
     rows = bypass_rows(db)
     # MUTATION: drop the `_audit` call from `set_challenge_bypass` and this is [].
+    # `via_link` is False: this PUT sent no link, which the switch lets through
+    # while off (SSC-LINKS; test_qa_target_bypass_link.py).
     assert len(rows) == 1 and rows[0]["detail"] == {"version": status["version"], "kind": "header",
-                                                    "name": "X-QA-Bypass"}
+                                                    "name": "X-QA-Bypass", "via_link": False}
 
 
 def test_the_value_is_in_no_response_log_line_or_document(client, db, seeded, store, caplog):

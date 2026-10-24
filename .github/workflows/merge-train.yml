@@ -75,6 +75,18 @@ jobs:
     # never `pull_request` (test_fork_prs_off_self_hosted.py checks the
     # triggers). SELF_HOSTED_CI=off sends it back to ubuntu-24.04.
     runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    # The merge App's key (MERGE_APP_PRIVATE_KEY) lives in environment
+    # `repo-secrets`, whose deployment branches are `main` only (BGD,
+    # 2026-10-23, REPO-SECRETS-ENV; docs/ci.md): a repository secret is read
+    # by a workflow on ANY pushed branch, before any review or hold.
+    # Every trigger here runs on main's ref -- schedule, workflow_run of a
+    # train/ branch's run (it runs main's file), workflow_dispatch from main --
+    # so the rule admits them; a dispatch from another branch is refused, and
+    # that is the point. `deployment: false`: no deployment record.
+    # test_repo_secrets_environment.py.
+    environment:
+      name: repo-secrets
+      deployment: false
     # A tick normally takes under a minute; landing four pull requests and
     # starting the next train, a few. Twenty is the backstop for a gh call
     # that hangs, not a budget anything is expected to use.

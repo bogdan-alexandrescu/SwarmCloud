@@ -15,6 +15,21 @@ read is left out rather than guessed; the console then shows the derived one.
 `POST /me/credentials` writes the workspace's provider key, which is its
 admin's (Q6): behind `role_admin_required`'s switch, off at ship.
 
+THE RUNNER-KEY LINK (docs/design/secrets-scopes.md §4, §6.2, §6.3 and §11
+Q8: a value arrives only through the console form a one-time link opens, or
+a terminal's --stdin; lane SSC-LINKS). `POST /me/credentials/links`
+`{provider}` mints a link to the console's runner-key form: 32 random bytes,
+`runner_key_links/{sha256(token)}` (never the token), bound to the caller's
+email, the workspace and the provider, ten minutes, one use. It takes no
+value and answers `{url, path, provider, expires_at}`, `url` null when no
+console origin is configured. The form's write, `POST /me/credentials`,
+sends the token back as `link_token`; the link is consumed before the write
+and grants nothing: every check a write without a link meets runs first. A
+token that is not this caller's live link for this workspace and provider is
+`KEY_LINK_INVALID` through that switch, as on the provider-key routes; off,
+it is logged and the write goes on, on the caller's own session. A write
+without a link (a terminal's --stdin) is unchanged.
+
 FEATURES (FEATURES-READ, part of #1748). `/me` carries `features:
 {caller_mcp, await_input, service_answer}`, each `true`, `false` or
 "unknown" (`schemas.TenantFeatures`), read through the same calls the
@@ -24,24 +39,97 @@ features themselves make. A state that could not be read is "unknown", never
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import secrets
+from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, status
+from google.cloud import firestore
+from pydantic import Field
+
+from swarm_common.admission import _snapshot
 
 from swarm_common.profiles import RUNNER_PROFILES
 
-from .. import awaitinput, mcp_servers, roles
+from .. import awaitinput, mcp_servers, refusals, roles
 from ..auth import AuthContext
-from ..codec import tenant_to_api
+from ..codec import console_origin, tenant_to_api
 from ..deps import AppContext, current_auth, get_context
-from ..errors import ValidationFailed
-from ..schemas import FEATURE_UNKNOWN, CredentialCreate, FeatureState, TenantFeatures
+from ..errors import KeyLinkInvalid, ValidationFailed
+from ..schemas import FEATURE_UNKNOWN, CredentialCreate, FeatureState, StrictModel, TenantFeatures
 from ..validation import AWAIT_INPUT_PROFILE, known_providers
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/tenants", tags=["tenants"])
+
+#: One document per minted runner-key link, keyed by sha256(token). Never the token.
+RUNNER_KEY_LINKS = "runner_key_links"
+#: Ten minutes, one use (secrets-scopes.md §6.3): long enough to switch from
+#: the terminal to the browser and paste, short enough that a link found in
+#: a scrollback or a chat log later is dead. The provider-key link's TTL.
+RUNNER_KEY_LINK_TTL = timedelta(minutes=10)
+#: The console's runner-key form, under Config › Secrets (§6.1): the
+#: workspace scope, the provider, and the link's token.
+RUNNER_KEY_FORM = "/config/secrets?scope=workspace&runner_key={provider}&t={token}"
+RUNNER_KEY_LINK_INVALID_MESSAGE = (
+    "this runner-key link is unknown, already used, expired, or was minted for someone "
+    "else, another workspace or another provider; mint a new one"
+)
+
+
+class RunnerKeyLinkCreate(StrictModel):
+    #: A `known_providers()` name, as the write takes. No value: a link only.
+    provider: str = Field(min_length=1, max_length=64)
+
+
+class RunnerKeyWrite(CredentialCreate):
+    #: The `t` of the one-time link (`POST /me/credentials/links`), when the
+    #: console's form was opened from one. Unset is a terminal's --stdin write.
+    link_token: str | None = Field(default=None, min_length=1, max_length=256)
+
+
+def _link_digest(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _provider(raw: str) -> str:
+    provider = raw.strip().lower()
+    allowed = known_providers()
+    if provider not in allowed:
+        raise ValidationFailed(
+            f"unknown provider {provider!r}",
+            detail={"known_providers": list(allowed)},
+        )
+    return provider
+
+
+def consume_runner_key_link(db: Any, token: str, *, email: str, tenant_id: str, provider: str,
+                            now: datetime) -> bool:
+    """Mark the link used if it is this caller's, for this workspace and
+    provider, unused and unexpired; False otherwise, and then nothing is
+    written: someone else presenting a leaked link does not burn it."""
+    ref = db.collection(RUNNER_KEY_LINKS).document(_link_digest(token))
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _consume(txn: Any) -> bool:
+        snap = _snapshot(txn.get(ref))
+        link = (snap.to_dict() or {}) if snap.exists else None
+        if not link or link.get("used_at") is not None:
+            return False
+        expires_at = link.get("expires_at")
+        if not isinstance(expires_at, datetime) or expires_at <= now:
+            return False
+        if (link.get("email"), link.get("tenant_id"), link.get("provider")) != \
+                (email, tenant_id, provider):
+            return False
+        txn.update(ref, {"used_at": now})
+        return True
+
+    return _consume(transaction)
 
 
 @router.get("/me")
@@ -198,25 +286,56 @@ def _choice(ctx: AppContext, auth: AuthContext, tenant_id: str, principal: str, 
     return entry
 
 
-@router.post("/me/credentials", status_code=status.HTTP_201_CREATED)
-def put_credential(
-    body: CredentialCreate,
+@router.post("/me/credentials/links", status_code=status.HTTP_201_CREATED)
+def mint_credential_link(
+    body: RunnerKeyLinkCreate,
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    provider = body.provider.strip().lower()
-    allowed = known_providers()
-    if provider not in allowed:
-        raise ValidationFailed(
-            f"unknown provider {provider!r}",
-            detail={"known_providers": list(allowed)},
-        )
+    """A one-time link to the console's runner-key form (SSC-LINKS), for
+    whoever the write itself admits: the same provider check and the same
+    `role_admin_required` gate run first. The link's URL, path, provider and
+    expiry, and nothing else: never the link document."""
+    provider = _provider(body.provider)
+    if ctx.roles is not None:
+        ctx.roles.require(auth, roles.ADMIN)
+    tenant = ctx.submissions.tenant_for(auth)
+    token = secrets.token_urlsafe(32)
+    now = ctx.now()
+    expires_at = now + RUNNER_KEY_LINK_TTL
+    ctx.db.collection(RUNNER_KEY_LINKS).document(_link_digest(token)).set({
+        "email": auth.email, "tenant_id": tenant.tenant_id, "provider": provider,
+        "created_at": now, "expires_at": expires_at, "used_at": None,
+    })
+    path = RUNNER_KEY_FORM.format(provider=provider, token=token)
+    base = console_origin(ctx.settings.console_url)
+    log.info("minted a runner-key link provider=%s tenant=%s", provider, tenant.tenant_id)
+    return {"url": f"{base}{path}" if base else None, "path": path,
+            "provider": provider, "expires_at": expires_at.isoformat()}
+
+
+@router.post("/me/credentials", status_code=status.HTTP_201_CREATED)
+def put_credential(
+    body: RunnerKeyWrite,
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    provider = _provider(body.provider)
     # The workspace's provider key is its admin's (Q6). A NEW refusal on an
     # existing route, so through its switch: off, a member's write goes
     # through and `refusal report-only code=role_admin_required` names them.
     if ctx.roles is not None:
         ctx.roles.require(auth, roles.ADMIN)
     tenant = ctx.submissions.tenant_for(auth)
+    # The link is consumed before the write and grants nothing: every check
+    # above ran whatever it says.
+    via_link = False
+    if body.link_token is not None:
+        via_link = consume_runner_key_link(ctx.db, body.link_token, email=auth.email,
+                                           tenant_id=tenant.tenant_id, provider=provider,
+                                           now=ctx.now())
+        if not via_link:
+            refusals.refuse(KeyLinkInvalid(RUNNER_KEY_LINK_INVALID_MESSAGE))
     result = ctx.credentials.put_credential(tenant, provider, body.api_key)
     ctx.store.register_credential(tenant.tenant_id, provider)
     ctx.metrics.credentials_written.labels(
@@ -225,6 +344,7 @@ def put_credential(
     # `result.to_api()` carries no payload and no payload length by construction.
     return {
         "credential": result.to_api(),
+        "via_link": via_link,
         "note": (
             "stored write-only; no read path in this API can return key material"
         ),

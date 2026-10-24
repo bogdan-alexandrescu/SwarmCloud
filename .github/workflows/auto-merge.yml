@@ -231,6 +231,20 @@ jobs:
   enable:
     name: queue for auto-merge
     runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    # The merge App's key (MERGE_APP_PRIVATE_KEY) lives in environment
+    # `repo-secrets`, whose deployment branches are `main` only (BGD,
+    # 2026-10-23, REPO-SECRETS-ENV; docs/ci.md): a repository secret is read
+    # by a workflow on ANY pushed branch, before any review or hold.
+    # Every trigger here runs on main's ref -- pull_request_target (main's
+    # ref whatever the base, since GitHub's 2025-12-08 change), workflow_run,
+    # check_suite, schedule, and the requeue's dispatch with --ref main -- so
+    # the rule admits them; a workflow_dispatch
+    # from another branch is refused, and that is the point. `deployment:
+    # false` (GitHub Actions, March 2026) reads the secrets without a
+    # deployment record on the pull request. test_repo_secrets_environment.py.
+    environment:
+      name: repo-secrets
+      deployment: false
     # The label event itself, or a re-evaluation dispatched by `requeue`.
     if: >-
       (github.event_name == 'pull_request_target' &&
@@ -1064,6 +1078,11 @@ jobs:
   disable:
     name: disable auto-merge on a new head
     runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    # The main-only environment that holds the secret: see the comment on
+    # `enable` above (REPO-SECRETS-ENV).
+    environment:
+      name: repo-secrets
+      deployment: false
     # Only a pull request that is (or was) queued: `ready` still on it. Never
     # for the `labeled` action itself -- GitHub already lists the just-added
     # label in `github.event.pull_request.labels`, so without excluding that
@@ -1356,6 +1375,11 @@ jobs:
   ready-on-green:
     name: mark ready-on-green pull requests ready once green
     runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    # The main-only environment that holds the secret: see the comment on
+    # `enable` above (REPO-SECRETS-ENV).
+    environment:
+      name: repo-secrets
+      deployment: false
     # Owner decision, 2026-10-17: an operator's laptop ran ~20 watcher loops
     # only to add `ready` once a pull request went green. This does it. The
     # events `requeue` runs on, for the `ready-on-green` pull requests at that

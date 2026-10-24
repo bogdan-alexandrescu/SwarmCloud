@@ -122,6 +122,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 112 | `CONTRACT.md`: "Primary backend Cloud Run Jobs" no longer says where agents run; every agent profile but `mock` is on GKE Autopilot (DOCS-TRUTH, part of #1822) | open, REQUESTED 2026-10-21 by lane DOCS-TRUTH. Not applied: `CONTRACT.md` is not edited by a lane |
 | 113 | `profiles.py`: a `claude-code-large` runner profile on the `large` class with a 14,400 s timeout, picked by name for heavy lanes (AUTONOMY-DESIGN, part of #1933) | ACCEPTED by the owner 2026-10-22 and APPLIED by the pull request that adds this line (lane AU9-PROFILE-LARGE, part of #1933; Q6 of `docs/design/agent-autonomy.md` §7: "Accept contract request 113: a claude-code-large profile") |
 | 114 | `CONTRACT.md` invariant 7: swarm-api alone starts with Cloud Run's startup CPU boost, the one recorded exception; every other Cloud Run service and every worker stays under invariant 7 as written (API-CPU-BOOST, part of #1816) | ACCEPTED by BGD 2026-10-23 (#1816 option (a)) and APPLIED by PR 2132; recorded here by lane FOLLOWUPS-1023 (part of #2150). The invariant's text is unchanged |
+| 115 | `models.py`: `Task.publish_to_pr`, the existing pull request a lane's commits are pushed onto instead of opening one, typed rather than carried in `metadata.dispatch` (PUBLISH-TO-PR, part of #2183) | open, REQUESTED 2026-10-24 by lane PUBLISH-TO-PR. Not applied, and not needed for the feature to work: the field ships in the signed `metadata.dispatch` block, as `strategy` and `continues` do |
 
 ---
 
@@ -14332,3 +14333,48 @@ the slow starts of #1816 come back with it. Nothing else reads the flag.
 text is unchanged and every other container is held to it. **1-6 and 8-10**
 are untouched: swarm-api holds no capacity, and no runner profile, resource
 class or admission charge changes.
+
+---
+
+## 115. `models.py`: `Task.publish_to_pr` (PUBLISH-TO-PR, part of #2183)
+
+**Status:** open, REQUESTED 2026-10-24 by lane PUBLISH-TO-PR. Not applied:
+`apps/common/swarm_common/` is frozen. Nothing waits on it; the feature
+ships without it.
+
+### What is true today
+
+A workflow spec or a single agent may name an existing pull request,
+`publish_to_pr: <N>` (BGD's approval of #2183, 2026-10-24). swarm-api checks
+it at submission (`swarm_api/publishtopr.py`) and stores what it checked in
+every step's `metadata.dispatch` as `publish_to_pr: {"number": N, "task_id":
+"<the task whose swarm/ branch is the pull request's head>"}`, inside the
+block the step-spec signature covers. The worker reads it only from the
+verified document (`agent_worker/publishpr.py`). `Task` has no field for it,
+exactly as it has none for `strategy`, `carrier` or `continues`.
+
+### The requested change
+
+Add `publish_to_pr: PublishTarget | None = None` to `Task`, with
+`PublishTarget(number: int, task_id: str)`, signed like every other field,
+and read by the worker from there instead of the dispatch block.
+
+### What it would break if accepted
+
+Nothing at once: the dispatch block's key would be read as a fallback for
+agents stored before the field, then retired. Every reader of the block
+(`lifecycle._publish_to_pr`, `verdictpublish._dispatch_facts`) moves to the
+field in the same change.
+
+### If it is declined
+
+The field stays in `metadata.dispatch`, where the other integration choices
+already live, and nothing changes. The cost is the one #263's `continues`
+already pays: a reader has to know the block to find it.
+
+### Invariants
+
+**10** holds either way: the caller names a pull request number, never a
+branch, image, command or backend parameter. **9**: the pull request is read,
+and its branch pushed, with the tenant's own forge credential, and its head
+branch must be a lane branch of the submitting tenant. **1-8** are untouched.

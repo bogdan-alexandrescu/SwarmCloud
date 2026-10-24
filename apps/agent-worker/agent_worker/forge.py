@@ -1012,6 +1012,118 @@ def _update_pull_request(
 
 
 # ---------------------------------------------------------------------------
+# An existing pull request a lane publishes onto (`publish_to_pr`, #2183)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PullHead:
+    """One pull request as GitHub reports it, read before a lane starts from
+    it and again before the lane pushes onto it (`agent_worker.publishpr`)."""
+
+    number: int
+    url: str
+    #: "open" or "closed"; a merged pull request is "closed" with `merged`.
+    state: str
+    merged: bool
+    #: The branch the pull request merges FROM, and its commit now.
+    head_ref: str
+    head_sha: str
+    #: `owner/repo` of the head's and the base's repositories, "" when GitHub
+    #: named none (a deleted fork). A head in another repository is a fork.
+    head_repo: str
+    base_repo: str
+    title: str = ""
+    body: str = ""
+
+
+def _full_name(side: Any) -> str:
+    repo = side.get("repo") if isinstance(side, dict) else None
+    name = repo.get("full_name") if isinstance(repo, dict) else None
+    return name if isinstance(name, str) else ""
+
+
+def read_pull_request(*, ref: RepoRef, token: str, number: int) -> PullHead:
+    """GET one pull request of `ref`. One read, no side effect.
+
+    An outage is `ForgeUnavailable` (from `_request`), a refused credential
+    `ForgeCredentialRejected`, and anything else that is not the pull request
+    -- a 404, an answer of the wrong shape -- a plain `ForgeError` that says
+    which pull request was asked for.
+    """
+    if not may_receive_forge_token(ref.host):
+        raise ForgeError(
+            f"refusing to send the tenant's git credential to {ref.host}: "
+            "it is sent only to github.com"
+        )
+    what = f"{ref.full_name}#{int(number)}"
+    status, data = _request(
+        f"{ref.api_base}/repos/{ref.owner}/{ref.name}/pulls/{int(number)}", token=token
+    )
+    if status == 401:
+        raise ForgeCredentialRejected(f"could not read pull request {what} ({status})")
+    if status == 404:
+        raise ForgeError(
+            f"{what} is not a pull request this repository has, or the tenant's "
+            "forge credential cannot see it"
+        )
+    if status != 200 or not isinstance(data, dict):
+        message = _message_of(data)
+        raise ForgeError(
+            f"could not read pull request {what} ({status}){': ' + message if message else ''}"
+        )
+    head = data.get("head") if isinstance(data.get("head"), dict) else {}
+    try:
+        answered = int(data.get("number") or 0)
+    except (TypeError, ValueError):
+        answered = 0
+    if answered != int(number):
+        raise ForgeError(f"the forge's answer for {what} is not that pull request")
+    state = data.get("state")
+    title = data.get("title")
+    body = data.get("body")
+    return PullHead(
+        number=answered,
+        url=str(data.get("html_url") or ""),
+        state=state if state in ("open", "closed") else "closed",
+        merged=data.get("merged") is True or bool(data.get("merged_at")),
+        head_ref=str(head.get("ref") or ""),
+        head_sha=str(head.get("sha") or ""),
+        head_repo=_full_name(head),
+        base_repo=_full_name(data.get("base")),
+        title=title if isinstance(title, str) else "",
+        body=body if isinstance(body, str) else "",
+    )
+
+
+def update_pull_request_text(
+    *, access: RepoAccess, token: str, pull: PullHead, title: str | None, body: str | None
+) -> PullRequest:
+    """Retitle and/or rewrite the body of a pull request a lane published onto.
+
+    Each only when not None: a lane that wrote no `pr-title.txt` leaves the
+    title as it is, and one that wrote no `pr-body.md` the body. The body
+    goes through `_update_pull_request`'s guard (#807): one that would drop a
+    closing-keyword or `part of #N` line the current body has is not sent,
+    and `body_refused` names those lines.
+    """
+    existing = PullRequest(
+        number=pull.number, url=pull.url, state=pull.state, created=False,
+        title=pull.title, body=pull.body,
+    )
+    if title is None and body is None:
+        return existing
+    if not may_receive_forge_token(access.ref.host):
+        raise ForgeError(
+            f"refusing to send the tenant's git credential to {access.ref.host}: "
+            "it is sent only to github.com"
+        )
+    return _update_pull_request(
+        access=access, token=token, existing=existing, title=title, body=body
+    )
+
+
+# ---------------------------------------------------------------------------
 # Issue comments: a review's minor findings on the tenant's wave epic (#638)
 # ---------------------------------------------------------------------------
 

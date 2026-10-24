@@ -1051,6 +1051,9 @@ def cmd_workflow(client: SwarmClient, args) -> int:
         # The workflow's default list (#1434): a spec that names one and is
         # accepted must send it, or every step without its own list reads none.
         additional_repositories=spec["additional_repositories"],
+        # An existing pull request to push onto (#2183); `read_spec` refused
+        # it beside a merge.
+        publish_to_pr=spec["publish_to_pr"],
     )
     workflow = envelope["workflow"]
     workflow_id = workflow.get("workflow_id")
@@ -1735,7 +1738,8 @@ def _workflow_epilog() -> str:
         'declares -- e.g. {"sleep_seconds": 120} for mock; the command at the '
         "end lists each profile's. At the top level, all optional: "
         "strategy, carrier, repository_url, repository_ref, on_step_failure, "
-        "priority, label -- the flags below override the file's.",
+        "priority, label, title, merge, after, additional_repositories, "
+        "publish_to_pr -- the flags below override the file's.",
         width=76,
     )
     # Spelled for this install, and on a line of its own: `textwrap.fill`

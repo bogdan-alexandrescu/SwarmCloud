@@ -253,7 +253,7 @@ def approve(
             ctx, tenant_id, ((schedule or {}).get("gate") or {}).get("approvers"),
             email=auth.email, is_owner=auth.is_owner, schedule=schedule, merge_tier=True,
         )
-        move = approvals.merge_move(ctx.db, now, by=auth.email)
+        move = approvals.merge_move(ctx.db, now, by=auth.email, resign=run_routes.owner_resigner(ctx))
     elif kind == approvals.SPEC:
         # §4.5: a `custom-prompt` spec is approved by platform admins only.
         if not (auth.is_admin or auth.is_owner):

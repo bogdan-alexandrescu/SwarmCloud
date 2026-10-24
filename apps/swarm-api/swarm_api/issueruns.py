@@ -2495,14 +2495,31 @@ def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
 #
 # Owner decision 2026-10-23 (~17:27Z, on #1569): sign now, for every tenant,
 # before #1457's worker Firestore-access flip reaches them.
+#
+# AND WHAT SWARM-API WRITES LATER IS SIGNED TOO (lane RUN-SIG-2, owner
+# decision 2026-10-23 ~19:23Z, q0 "Follow-up lane"). The hard-stop hold, the
+# plan and the merge approval are written after creation, and a worker that
+# could rewrite them could drop a hold, swap the plan or forge a merge
+# approval under the verified owner. So every API writer of one of
+# `RESIGNED_FIELDS` re-signs the run IN THE SAME TRANSACTION, after verifying
+# the run as it read it (`IssueRuns.transition`/`patch`, `sign=`): a re-sign
+# over a run that does not verify would sign the rewrite. The signature covers
+# the creation fields AND these, bound to `run_id`; `plan_digest` and
+# `plan_revision` are among them, so a signature from before a legitimate
+# `plan:edit`, put back on the edited run, does not verify, and the plan
+# itself is checked against its signed digest (`owner_refusal`).
 
 #: Domain separation: inside the signed bytes, never a step spec's
 #: (`specsign.SPEC_PURPOSE`) or an approval's (`workspaces.APPROVAL_PURPOSE`).
-#: A change to the fields or their encoding is a new purpose, never an edit.
-OWNER_PURPOSE = "swarm.issue-run-owner/v1"
+#: A change to the fields or their encoding is a new purpose, never an edit:
+#: v1 (PR 2135) covered `OWNER_FIELDS_V1`; v2 (RUN-SIG-2) adds the fields
+#: swarm-api writes after creation. Only v2 verifies on any submission path;
+#: a v1 run is signed again once, by a platform admin (`admin_sign_listing`).
+OWNER_PURPOSE_V1 = "swarm.issue-run-owner/v1"
+OWNER_PURPOSE = "swarm.issue-run-owner/v2"
 #: The run document's field the signature, and the values it covers, live in.
 OWNER_SIGNATURE = "owner_signature"
-#: What the signature covers, in `owner_fields`' order:
+#: What the v1 signature covered, in `owner_fields`' order:
 #:   run_id, tenant_id   -- which run, in which tenant: no copy, no move;
 #:   created_by, on_behalf_of -- who every later submission is made AS
 #:                          (`run_owner_auth`), and so whose forge slot;
@@ -2511,8 +2528,44 @@ OWNER_SIGNATURE = "owner_signature"
 #:   fix_rounds         -- how many CI fix rounds submit as the owner;
 #:   issue              -- the repository every submission works in;
 #:   schedule_id        -- the schedule whose gate names who may approve.
-OWNER_FIELDS = ("run_id", "tenant_id", "created_by", "on_behalf_of", "plan_approval",
-                "auto_merge", "merge_approval", "fix_rounds", "issue", "schedule_id")
+OWNER_FIELDS_V1 = ("run_id", "tenant_id", "created_by", "on_behalf_of", "plan_approval",
+                   "auto_merge", "merge_approval", "fix_rounds", "issue", "schedule_id")
+#: What v2 adds, each written by swarm-api after creation:
+#:   approval_hold    -- the §4.4 hard-stop hold (`widen_hold`): its code,
+#:                       approvers, reasons and matched paths, never `set_at`;
+#:   plan_digest      -- the plan approved and submitted; the plan itself must
+#:                       hash to it (`owner_refusal`);
+#:   plan_revision    -- bumped by every `plan:edit`: the replay counter;
+#:   plan_edited_by   -- who a `second_member` hold excludes from approving;
+#:   merge_approved   -- the merge approval at one head (`approvals.merge_move`):
+#:                       its head, approver and approval id, never `at`.
+RESIGNED_FIELDS = ("approval_hold", "plan_digest", "plan_revision", "plan_edited_by",
+                   "merge_approved")
+OWNER_FIELDS = OWNER_FIELDS_V1 + RESIGNED_FIELDS
+#: The document keys whose write must re-sign the run (`IssueRuns`): the v2
+#: fields, the plan they digest, and `plan_approval` (Jev's narrowing).
+_SIGNED_DOCUMENT_KEYS = frozenset({*RESIGNED_FIELDS, "plan", "plan_approval"})
+
+#: `sign=` on `IssueRuns.transition`/`patch`: given the run as the transaction
+#: read it and as it will be stored, verify the first and sign the second
+#: (`routes.runs.owner_resigner`). None from it means no signer is configured.
+Resign = Callable[["IssueRun", "IssueRun"], "dict[str, Any] | None"]
+
+
+def _signed_hold(hold: Any) -> dict[str, Any] | None:
+    """What of a hold is signed: everything that decides who may approve."""
+    if not isinstance(hold, Mapping) or not hold:
+        return None
+    return {"code": hold.get("code"), "approvers": hold.get("approvers"),
+            "reasons": [str(r) for r in hold.get("reasons") or []],
+            "matched": [str(m) for m in hold.get("matched") or []]}
+
+
+def _signed_merge_approval(approved: Any) -> dict[str, Any] | None:
+    if not isinstance(approved, Mapping) or not approved:
+        return None
+    return {"head_sha": approved.get("head_sha"), "by": approved.get("by"),
+            "approval_id": approved.get("approval_id")}
 
 
 def owner_fields(run: "IssueRun") -> dict[str, Any]:
@@ -2529,13 +2582,18 @@ def owner_fields(run: "IssueRun") -> dict[str, Any]:
         "issue": {"owner": run.issue.owner, "repo": run.issue.repo,
                   "number": run.issue.number},
         "schedule_id": (run.schedule or {}).get("schedule_id"),
+        "approval_hold": _signed_hold(run.approval_hold),
+        "plan_digest": run.plan_digest,
+        "plan_revision": run.plan_revision,
+        "plan_edited_by": run.plan_edited_by,
+        "merge_approved": _signed_merge_approval(run.merge_approved),
     }
 
 
-def canonical_owner(fields: Mapping[str, Any]) -> bytes:
-    """JCS of {"purpose": OWNER_PURPOSE, <OWNER_FIELDS>}: the bytes signed."""
-    return specsign.jcs({"purpose": OWNER_PURPOSE,
-                         **{key: fields.get(key) for key in OWNER_FIELDS}})
+def canonical_owner(fields: Mapping[str, Any], *, purpose: str = OWNER_PURPOSE,
+                    keys: tuple[str, ...] = OWNER_FIELDS) -> bytes:
+    """JCS of {"purpose": <purpose>, <keys>}: the bytes signed."""
+    return specsign.jcs({"purpose": purpose, **{key: fields.get(key) for key in keys}})
 
 
 def sign_owner(signer: Any, run: "IssueRun") -> dict[str, Any] | None:
@@ -2545,11 +2603,13 @@ def sign_owner(signer: Any, run: "IssueRun") -> dict[str, Any] | None:
     allow (`specsigning.signer_from_settings` refuses to start a deployed
     swarm-api without one); there nothing is verified either
     (`routes.runs.verify_run_owner`), exactly as step specs go unsigned
-    there. A KMS failure is `SpecSigningUnavailable` (503), raised before the
-    planner is submitted, so nothing is created."""
+    there. A KMS failure is `SpecSigningUnavailable` (503): at creation it
+    is raised before the planner is submitted, so nothing is created; at a
+    re-sign it is raised inside the write's transaction, so nothing is
+    written."""
     fields = owner_fields(run)
     if signer is None:
-        log.warning("no SPEC_SIGNING_KEY_VERSION: issue run %s created with UNSIGNED owner "
+        log.warning("no SPEC_SIGNING_KEY_VERSION: issue run %s stored with UNSIGNED owner "
                     "fields", run.id)
         return None
     try:
@@ -2558,7 +2618,7 @@ def sign_owner(signer: Any, run: "IssueRun") -> dict[str, Any] | None:
         raise
     except Exception as exc:
         raise SpecSigningUnavailable(
-            "the issue run's owner could not be signed (Cloud KMS); nothing was created",
+            "the issue run's owner could not be signed (Cloud KMS); nothing was written",
         ) from exc
     return {
         "fields": fields,
@@ -2574,46 +2634,98 @@ def _narrowed(field_name: str, signed: Any, current: Any) -> bool:
     return field_name == "plan_approval" and signed == "auto" and current == "required"
 
 
+def _signature_valid(stored: Any, settings: Any, *, purpose: str,
+                     keys: tuple[str, ...]) -> bool:
+    """`stored` is a signature by a trusted key version over its own `fields`,
+    under `purpose`. Verified over SPEC_VERIFY_KEYS, `verdictpublish`'s reading
+    of them, as `workspaces.approval_refusal` is: swarm-api holds `signer` on
+    the key, never `publicKeyViewer`. Unset or malformed keys verify nothing."""
+    from .verdictpublish import _VERSION_SUFFIX, _signature_matches, _verify_keys
+
+    if not isinstance(stored, Mapping) or not isinstance(stored.get("fields"), Mapping):
+        return False
+    signing = str(getattr(settings, "spec_signing_key_version", "") or "")
+    matched = _VERSION_SUFFIX.search(signing)
+    crypto_key = signing[:matched.start()] if matched and matched.end() == len(signing) else ""
+    trusted = _verify_keys(settings)
+    version = stored.get("key_version")
+    if (not crypto_key or not isinstance(version, str) or not version.startswith(crypto_key)
+            or not _VERSION_SUFFIX.fullmatch(version[len(crypto_key):]) or version not in trusted):
+        return False
+    try:
+        canonical = canonical_owner(stored["fields"], purpose=purpose, keys=keys)
+    except (specsign.SpecNotCanonical, UnicodeEncodeError):
+        return False
+    return bool(_signature_matches(trusted[version], stored.get("signature"),
+                                   specsign.spec_digest(canonical)))
+
+
+def _first_unsigned(signed: Mapping[str, Any], current: Mapping[str, Any],
+                    keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        if signed.get(key) != current[key] and not _narrowed(key, signed.get(key), current[key]):
+            return key
+    return None
+
+
 def owner_refusal(run: "IssueRun", settings: Any) -> str | None:
     """The first field of `run` that does not verify, or None when every one does.
 
     The answer is a FIELD NAME -- `owner_signature` for a signature that is
-    missing, by an untrusted key version, or does not verify over its signed
-    values, else the first of `OWNER_FIELDS` whose value on the run is not the
-    signed one -- never a value, so the caller can log it. A missing
-    signature is refused like a forged one: a run created before this change
-    is never trusted for being old (the PR for #1569 says why: re-signing
-    what a worker may already have rewritten would launder the rewrite).
-
-    Verified over SPEC_VERIFY_KEYS, `verdictpublish`'s reading of them, as
-    `workspaces.approval_refusal` is: swarm-api holds `signer` on the key,
-    never `publicKeyViewer`. Unset or malformed keys verify nothing."""
-    from .verdictpublish import _VERSION_SUFFIX, _signature_matches, _verify_keys
-
+    missing, by an untrusted key version, not a v2 signature, or does not
+    verify over its signed values; else the first of `OWNER_FIELDS` whose
+    value on the run is not the signed one; else `plan` for a plan that does
+    not hash to its signed digest -- never a value, so the caller can log it.
+    A missing signature is refused like a forged one: a run created before
+    the signature is never trusted for being old (the PR for #1569 says why);
+    a platform admin signs it once, after a dry run (`admin_sign_listing`).
+    """
     stored = run.owner_signature
-    if not isinstance(stored, Mapping) or not isinstance(stored.get("fields"), Mapping):
+    if not _signature_valid(stored, settings, purpose=OWNER_PURPOSE, keys=OWNER_FIELDS):
         return OWNER_SIGNATURE
-    signing = str(getattr(settings, "spec_signing_key_version", "") or "")
-    matched = _VERSION_SUFFIX.search(signing)
-    crypto_key = signing[:matched.start()] if matched and matched.end() == len(signing) else ""
-    keys = _verify_keys(settings)
-    version = stored.get("key_version")
-    if (not crypto_key or not isinstance(version, str) or not version.startswith(crypto_key)
-            or not _VERSION_SUFFIX.fullmatch(version[len(crypto_key):]) or version not in keys):
-        return OWNER_SIGNATURE
-    signed = stored["fields"]
-    try:
-        canonical = canonical_owner(signed)
-    except (specsign.SpecNotCanonical, UnicodeEncodeError):
-        return OWNER_SIGNATURE
-    if not _signature_matches(keys[version], stored.get("signature"),
-                              specsign.spec_digest(canonical)):
-        return OWNER_SIGNATURE
-    current = owner_fields(run)
-    for key in OWNER_FIELDS:
-        if signed.get(key) != current[key] and not _narrowed(key, signed.get(key), current[key]):
-            return key
+    failed = _first_unsigned(stored["fields"], owner_fields(run), OWNER_FIELDS)
+    if failed is not None:
+        return failed
+    if (run.plan_digest is None) != (run.plan is None) or (
+            run.plan is not None and plan_digest(run.plan) != run.plan_digest):
+        return "plan"
     return None
+
+
+#: `owner_signature_state`'s answers.
+SIGNATURE_SIGNED = "signed"        # v2, and every field verifies: nothing to do
+SIGNATURE_NONE = "unsigned"        # created before PR 2135: no signature at all
+SIGNATURE_V1 = "v1"                # PR 2135's signature, which verifies, over v1 only
+SIGNATURE_INVALID = "invalid"      # a signature that does not verify: never re-signed
+
+
+def owner_signature_state(run: "IssueRun", settings: Any) -> str:
+    """Which of the four a run is, for the one-time admin signing.
+
+    `invalid` is a run whose signature -- v1 or v2 -- exists and does not
+    verify over the run as stored: a rewrite the signature caught. It is
+    listed and NEVER signed, because signing it would launder the rewrite.
+    """
+    if owner_refusal(run, settings) is None:
+        return SIGNATURE_SIGNED
+    stored = run.owner_signature
+    if stored is None:
+        return SIGNATURE_NONE
+    if _signature_valid(stored, settings, purpose=OWNER_PURPOSE_V1, keys=OWNER_FIELDS_V1) and \
+            _first_unsigned(stored["fields"], owner_fields(run), OWNER_FIELDS_V1) is None:
+        return SIGNATURE_V1
+    return SIGNATURE_INVALID
+
+
+def owner_fields_digest(run: "IssueRun") -> str:
+    """`sha256:<hex>` of the v2 bytes `run` would be signed over as it stands:
+    what the admin's dry run showed, compared again before the apply signs."""
+    return "sha256:" + hashlib.sha256(canonical_owner(owner_fields(run))).hexdigest()
+
+
+def signs_owner(changes: Mapping[str, Any]) -> bool:
+    """Whether a write of `changes` must re-sign the run."""
+    return bool(_SIGNED_DOCUMENT_KEYS & set(changes))
 
 
 # --------------------------------------------------------------------------
@@ -3430,8 +3542,16 @@ class IssueRuns:
         patch: Patch | None = None,
         digest: str | None = None,
         from_states: frozenset[RunState] | set[RunState] | None = None,
+        sign: Resign | None = None,
     ) -> IssueRun:
-        """One state change, in one transaction, with the digest check inside it."""
+        """One state change, in one transaction, with the digest check inside it.
+
+        A patch that writes a signed field (`signs_owner`) must pass `sign`
+        (`routes.runs.owner_resigner`): the run as read is verified and the
+        run as it will be stored is signed, inside this transaction, so no
+        write of a signed field ever lands unsigned or over a rewrite. A
+        patch without it that writes one is a ValueError before anything is
+        written: an unsigned writer fails closed, not open."""
         ref = self._ref(run_id)
         transaction = self._db.transaction()
 
@@ -3463,6 +3583,7 @@ class IssueRuns:
                 "history": run.to_firestore()["history"]
                 + [{"at": now, "from": run.state.value, "to": to.value, "by": by}],
             })
+            _resigned(run, data, changes, sign)
             txn.update(ref, changes)
             merged = dict(data)
             merged.update(changes)
@@ -3474,13 +3595,15 @@ class IssueRuns:
         )
         return result
 
-    def patch(self, tenant_id: str, run_id: str, patch: Patch) -> IssueRun:
+    def patch(self, tenant_id: str, run_id: str, patch: Patch, *,
+              sign: Resign | None = None) -> IssueRun:
         """Bookkeeping that is not a state change, in one transaction.
 
         Re-checks the tenant like every read, leaves `state`, `history` and
         `updated_at` alone, and refuses any key outside PATCHABLE_FIELDS: a
         patch that could move a run would be a transition without the
-        machine's check.
+        machine's check. A patch of a signed field re-signs, exactly as
+        `transition` does (`sign`).
         """
         ref = self._ref(run_id)
         transaction = self._db.transaction()
@@ -3497,12 +3620,28 @@ class IssueRuns:
             if refused:
                 raise ValueError(f"IssueRuns.patch may not write {', '.join(refused)}")
             if changes:
+                _resigned(run, data, changes, sign)
                 txn.update(ref, changes)
             merged = dict(data)
             merged.update(changes)
             return IssueRun.from_firestore(merged)
 
         return _apply(transaction)
+
+
+def _resigned(run: IssueRun, data: Mapping[str, Any], changes: dict[str, Any],
+              sign: Resign | None) -> None:
+    """Add the run's new `owner_signature` to `changes` when they write a signed field."""
+    if not signs_owner(changes):
+        return
+    if sign is None:
+        raise ValueError(
+            f"a write of {', '.join(sorted(_SIGNED_DOCUMENT_KEYS & set(changes)))} to issue run "
+            f"{run.id} must re-sign it (sign=routes.runs.owner_resigner(ctx))"
+        )
+    merged = dict(data)
+    merged.update(changes)
+    changes[OWNER_SIGNATURE] = sign(run, IssueRun.from_firestore(merged))
 
 
 def failure_text(message: str) -> str:

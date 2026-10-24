@@ -260,8 +260,15 @@ def test_it_runs_only_on_main(event):
 
 
 def test_it_names_no_environment_and_never_prod():
+    # The one environment allowed is `repo-secrets` (REPO-SECRETS-ENV, BGD
+    # 2026-10-23): it holds the sandbox token, main only, with no reviewers and
+    # no deployment record. It gates nothing; a deploy environment would.
     for job_id, job in _accept()["jobs"].items():
-        assert "environment" not in job, f"accept.yml's {job_id} names an environment"
+        # MUTATION: `environment: dev` (or a repo-secrets that creates a
+        # deployment) on any accept.yml job is red.
+        assert job.get("environment") in (None, {"name": "repo-secrets", "deployment": False}), (
+            f"accept.yml's {job_id} names an environment"
+        )
     assert "prod" not in str(_accept().get("env")), "accept.yml is dev only"
     assert _accept()["env"]["ENVIRONMENT"] == "dev"
 

@@ -719,6 +719,19 @@ the terminal command prints all of it; the tool returns one window and says
 where the next starts. An artifact that is not text is refused with a reason,
 not served: nothing can scan its bytes for a credential.
 
+To look at a lane's screenshots, give `swarm_artifact` a `save_to` directory
+(#2182): an artifact named `.png`, `.jpg`, `.jpeg`, `.webp` or `.gif` that
+`/v1/tasks/{id}/artifacts/raw` serves as an image (its extension and its magic
+bytes agree) is written to `<save_to>/<task_id>/<name>`, and the answer is
+`{status: "saved", path, bytes, content_type}`; the session opens `path` with
+its own Read tool. Only images are saved: a text artifact is still the
+redacted window, and any other binary is still `binary` with no bytes. The
+tenant boundary is the raw route's, so another tenant's task is the same 404
+the text read gets. `save_to` must resolve, symlinks included, under the
+bridge's working directory or the user's Claude Code temp directory (where the
+session's scratchpad is), and a name that is absolute or has a `..` segment is
+refused, both before anything is read.
+
 `swarm tail` prints every event of every task it follows, each once. It read
 the task's oldest 50 events on every poll, so it printed no event after the
 50th (#164); it now reads newest first and pages back to the last event it
@@ -830,7 +843,18 @@ spec it received digests differently. The reply must carry the digest back,
 every step of the spec under its own id (none dropped, none renamed), each
 spec step's `depends_on` as the spec has it, and a distinct task per step — or
 no row starts and the run returns `SUBMITTED_UNVERIFIED` with the workflow id
-and what differed. A step the reply names beyond the spec is one SwarmCloud
+and what differed. A reply MISSING its digest or a spec step is not taken as a
+different workflow, only as a thin copy (measured 2026-10-24 on
+wf_effa3d00346b40d1a1d3: neither the digest nor the one step came back, while
+the step ran and succeeded; #2206). The script reads the workflow back once,
+with the `ATTACH` job (`swarm_workflow_status`), and decides from what
+SwarmCloud shows: the spec's steps, dependencies and the profile each names
+mean it is submitted and its rows start, with `verified_by: "read_back"` and a
+`verify_note` saying the digest was not served. Different steps there are
+`SUBMITTED_UNVERIFIED`, but a row still starts for every unfinished step the
+read-back shows, and `workflow_state` carries the state SwarmCloud derived; a
+read-back that fails is `SUBMITTED_UNVERIFIED` with its error and no row. A
+step the reply names beyond the spec is one SwarmCloud
 added — a `re-review` and a `merge` for the merge choice — and is accepted
 when the bridge marked it `added: true` (it compares the reply with the spec it
 submitted itself) or, from a bridge too old to mark it, when every step it
@@ -850,7 +874,7 @@ is a different step.
 |---|---|---|
 | `NOT_SUBMITTED` | `swarm_workflow` refused the spec, with `error`; or, given a path, the file could not be read as a spec, or the spec relayed from it does not digest to what the bridge read; nothing was sent | fix what `error` names and run again |
 | `SUBMISSION_UNKNOWN` | the Submit row stopped, failed, or answered with neither an id nor an error — possibly AFTER the workflow was created | look for it in the console's workflow list before running again: the API has no idempotency key, so a second run submits a second copy |
-| `SUBMITTED_UNVERIFIED` | SwarmCloud accepted workflow `workflow_id`, but the reply relayed back does not match the spec | it runs regardless: read it with `swarm_workflow_status`, or cancel it with `swarm_workflow_cancel` |
+| `SUBMITTED_UNVERIFIED` | SwarmCloud accepted workflow `workflow_id`, but the reply relayed back does not match the spec, or a thin reply's read-back failed or shows other steps (then the rows for what it shows did start) | it runs regardless: read it with `swarm_workflow_status`, or cancel it with `swarm_workflow_cancel` |
 
 A Result row that fails does not lose the steps: the run returns every row with
 `state` null and a `state_note` saying why.
@@ -1317,6 +1341,27 @@ are the same value.
   same function the terminal uses, and infers the repository the same way.
   With `spec_digest` it refuses, before sending, a spec that arrived
   different; its reply carries the digest of what it received.
+* `swarm_workflow` (and `swarm workflow`, and `/sc:swarmcloud` through
+  `swarm_workflow_launch`) passes `publish_to_pr` through (#2183, PTP-PLUGIN):
+  a spec's top-level key, or the tool's argument beside a step list or a spec,
+  naming an existing pull request of the workflow's repository — `41`,
+  `"#41"`, `"owner/repo#41"` or its URL (a number is sent as the integer, a
+  form naming a repository as `owner/repo#N`). The lane's commits are pushed
+  onto that pull request's branch as a fast-forward and no pull request is
+  opened. It is sent top-level, beside `steps`, only when given, and with no
+  `metadata.merge`: swarm-api refuses it beside a merge step or a merge
+  choice, so a spec naming both — a merge step, or `merge` other than
+  `"off"` — is refused before any request, with the API's reason, rather
+  than its merge dropped. The argument and a spec naming different pull
+  requests are refused. The reply's `publish_to_pr` says what was sent and
+  that no merge was.
+* `swarm_dispatch`'s single-task form takes `publish_to_pr` too (#2183,
+  PTP-DISPATCH), in the same forms, read by the same `check_publish_to_pr`,
+  and sends it top-level in the `POST /v1/tasks` body, only when given: a
+  dispatch without it sends exactly what it sent before. `tasks` refuses it —
+  beside the list or inside one of its tasks — before any request, because
+  one pull request takes one publishing task. The reply's `publish_to_pr`
+  says what was sent.
 * `swarm_workflow_spec` reads a spec file from the checkout, checks it, and
   returns it with its digest, submitting nothing — the half of `/sc:swarmcloud` that
   takes a path. A file that is not a spec is refused without its content being
