@@ -131,7 +131,7 @@ the fork clause back.
   Its default is `on`, and an unset variable also means the pool.
 
 **Secrets on the VMs: the residual risk, accepted.** Two kinds of job hold a
-repository secret and run on the pool all the same:
+GitHub-writing secret (environment `repo-secrets`) and run on the pool all the same:
 
 * auto-merge.yml `enable` and `disable`, and merge-train.yml `tick`, hold the
   merge App's private key (`secrets.MERGE_APP_PRIVATE_KEY`, with
@@ -3068,14 +3068,45 @@ Then:
 
 ```bash
 gh variable set MERGE_APP_ID --repo bogdan-alexandrescu/SwarmCloud --body '<the App ID>'
-gh secret set MERGE_APP_PRIVATE_KEY --repo bogdan-alexandrescu/SwarmCloud < merge-app.private-key.pem
+gh secret set MERGE_APP_PRIVATE_KEY --env repo-secrets --repo bogdan-alexandrescu/SwarmCloud < merge-app.private-key.pem
 rm merge-app.private-key.pem
 ```
 
 The key lives only in that Actions secret: never in this repository, a tfvars
 file or a log. (It is not a tenant's forge token, which lives in Secret
 Manager as `swarm-tenant-<tenant>-git`; this key merges this repository's own
-pull requests and is read only by `auto-merge.yml`.)
+pull requests and is read only by `auto-merge.yml`, `merge-train.yml` and
+`runner-fallback.yml`.)
+
+**Both of this repository's GitHub-writing secrets live in the environment
+`repo-secrets`, not at repository level (BGD's decision, 2026-10-23,
+REPO-SECRETS-ENV, part of #2029).** `MERGE_APP_PRIVATE_KEY` and
+`SWARM_SANDBOX_GITHUB_TOKEN` were repository secrets, and a repository secret
+is readable by a workflow on ANY pushed branch: the branch's own workflow file
+runs on the push, before any review, merge hold or `STOP_WORKFLOWS`, so once
+agents can push workflow files a branch could echo the key that merges pull
+requests. `repo-secrets` admits deployment branch `main` only, with no
+reviewers and no wait timer, and every job that reads either secret declares
+it (`environment: {name: repo-secrets, deployment: false}`):
+auto-merge.yml `enable`, `disable` and `ready-on-green`, merge-train.yml
+`tick`, runner-fallback.yml `judge`, and accept.yml `sandbox` and
+`sandbox-results`. Their triggers all run on main's ref --
+`pull_request_target` (main's ref whatever the base, since GitHub's
+2025-12-08 change), `workflow_run`, `check_suite`, `schedule`, and a
+`workflow_dispatch` from main -- so nothing they did stops; a dispatch from
+another branch is refused, which is the point. `deployment: false` reads the
+environment's secrets without writing a deployment record (GitHub,
+[using environments without deployments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments)).
+[`test_repo_secrets_environment.py`](../tests/unit/scripts/test_repo_secrets_environment.py)
+scans every workflow file and fails on a job that reads either secret without
+the environment. Google Cloud needed no such move: its workload identity
+binding already pins the ref to main. The switch-over runs in this order:
+the owner enters both values in `repo-secrets` first; then the change that
+adds the `environment:` lines merges; then the repository-level copies are
+deleted (`gh secret delete MERGE_APP_PRIVATE_KEY` and
+`gh secret delete SWARM_SANDBOX_GITHUB_TOKEN`). Deleting first would leave
+every merge refused ("The merge App is not configured") and every acceptance
+sync failing until the merge.
 
 **2. Auto-merge allowed on the repository:**
 
@@ -4393,7 +4424,7 @@ caller's default tenant: that fallback is how acceptance came to fill eng.
 **What `accept.yml` holds.** `contents: read` everywhere. `id-token: write`
 only on the jobs that start executions, as its own identity
 ([above](#its-identity-is-not-the-deployer)). `issues: write` only on the
-report. The repository secret `SWARM_SANDBOX_GITHUB_TOKEN` goes to three steps
+report. The secret `SWARM_SANDBOX_GITHUB_TOKEN` (environment `repo-secrets`) goes to three steps
 and never to the suite. The first is `scripts/acceptance/sandbox-sync.sh`, in
 a job of its own before any group starts. It writes the deployed commit's
 `tests/acceptance/fixtures/` to the sandbox's `main` (only when they differ,
@@ -4478,8 +4509,9 @@ in the suite too.
      --stdin` (or `--subscription`), or lend `smoke` an account
      (`PUT /v1/accounts/<id>/lending`). Without one, every claude-code check
      SKIPs on `CREDENTIAL_MISSING`.
-5. **Add the repository secret `SWARM_SANDBOX_GITHUB_TOKEN`** (Settings ->
-   Secrets and variables -> Actions): a fine-grained token scoped to the
+5. **Add the secret `SWARM_SANDBOX_GITHUB_TOKEN` to the environment
+   `repo-secrets`** (Settings -> Environments -> repo-secrets; not a
+   repository secret, [why](#what-the-owner-applies-once)): a fine-grained token scoped to the
    sandbox alone, with Contents, Pull requests and Issues read and write. It
    may be the same token as step 4's. Without it the sync step fails and the
    suite does not start.
