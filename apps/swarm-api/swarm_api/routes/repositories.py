@@ -392,18 +392,19 @@ def delete_repository(
     ctx: AppContext = Depends(get_context),
     writer: SecretWriter = Depends(secret_writer),
 ) -> Response:
-    """Unregister. Every grant on the registration's secrets is disabled
-    first, re-signed off with its audit row (secrets-scopes.md §2.1), so a
-    re-registration (the same `repo_id`) revives nothing. Fails closed: when
-    that raises, the registration stays and the error is the answer. Only the
-    caller's own workspace's secrets are read, so another workspace's
-    `repo_id` disables nothing and is the 404 it always was."""
+    """Unregister. Every grant on the registration's secrets is disabled,
+    re-signed off with its audit row, in the transaction that removes it
+    (secrets-scopes.md §2.1), so a re-registration (the same `repo_id`)
+    revives nothing and a grant enabled at the same moment cannot outlive it.
+    When that transaction fails, neither the grants nor the registration
+    change and the error is the answer. Only the caller's own workspace's
+    registration and secrets are read, so another workspace's `repo_id`
+    disables nothing and is the 404 it always was."""
     _member(ctx, auth)
     disabled = WorkspaceSecrets(
         ctx.db, writer, now=ctx.now, grants=GrantPolicy.from_settings(ctx.settings),
         authority=REPOSITORY_DELETE,
-    ).disable_repository_grants(tenant_id=tenant_id, repo_id=repo_id, by=auth.email)
-    _store(ctx).delete(tenant_id, repo_id)
+    ).delete_repository(tenant_id=tenant_id, repo_id=repo_id, by=auth.email)
     log.info("repository delete tenant=%s repo_id=%s by=%s grants_disabled=%d",
              tenant_id, repo_id, auth.email,
              sum(len(c) for c in disabled["grants_disabled"].values()))

@@ -112,7 +112,7 @@ from .grant_attest import (
 from .mcp_servers import enabled_names, read_registration
 from .refusals import refuse
 from .repositories import COLLECTION as REPOSITORIES_COLLECTION
-from .repositories import _REPO_ID, parse_repository, repo_id_for
+from .repositories import _REPO_ID, Repositories, parse_repository, repo_id_for
 from .roles import ADMIN, RoleStore, at_least, with_tenant
 
 log = logging.getLogger(__name__)
@@ -138,6 +138,11 @@ LINK_TTL = timedelta(minutes=10)
 MAX_LISTED_VERSIONS = 10
 #: Q3's list, bounded so a record cannot grow without limit.
 MAX_USE_IN = 20
+#: Firestore's cap on the documents one transaction may write. A registration's
+#: removal writes each enabled grant, one audit row per secret and the delete;
+#: at 14 catalogue consumers that is ~33 secrets fully granted. Over it, the
+#: removal refuses whole rather than split back into the two writes §2.1 closed.
+MAX_TRANSACTION_WRITES = 500
 
 ACTIVE = "active"
 DELETED = "deleted"
@@ -1116,6 +1121,16 @@ class WorkspaceSecrets:
             if doc.get("tenant_id") != tenant_id or doc.get("state") != ACTIVE \
                     or not _bound_to(doc, repo_id):
                 raise NotFound("no secret by that name in this workspace")
+            if enabled and repo_id is not None:
+                # Re-read in the transaction, as `create` does: an enable that
+                # races `delete_repository` either commits first, and that
+                # transaction's retry disables it, or finds the registration
+                # gone here. Without this read the two never conflict.
+                registration = _snapshot(txn.get(
+                    self._db.collection(REPOSITORIES_COLLECTION).document(repo_id)))
+                if not registration.exists \
+                        or (registration.to_dict() or {}).get("tenant_id") != tenant_id:
+                    raise NotFound(f"repository {repo_id!r} not found")
             txn.set(grant_ref, grant)
             self._audit(txn, AUDIT_GRANT_ENABLED if enabled else AUDIT_GRANT_DISABLED,
                         by=by, at=now, secret_id=secret_id, detail=_with_repo({
@@ -1257,6 +1272,50 @@ class WorkspaceSecrets:
 
     # -- a removed registration (secrets-scopes.md §2.1) ---------------------------
 
+    def _repository_grants(self, read: Callable[[Any], Iterable[Any]], tenant_id: str,
+                           repo_id: str) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
+        """Every live secret of `tenant_id` bound to `repo_id` that has an
+        enabled grant, with those grants, by name. `read` runs each query:
+        a transaction's `get` inside one, so its retry reads them again."""
+        query = self._db.collection(SECRETS_COLLECTION) \
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id)) \
+            .where(filter=FieldFilter("state", "==", ACTIVE))
+        docs = [d for d in (s.to_dict() or {} for s in read(query))
+                if d.get("tenant_id") == tenant_id and d.get(REPO_ID_FIELD) == repo_id]
+        found: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+        for doc in sorted(docs, key=lambda d: str(d.get("name"))):
+            secret_id = str(doc.get("secret_id") or "")
+            grants = self._db.collection(GRANTS_COLLECTION).where(
+                filter=FieldFilter("secret_id", "==", secret_id))
+            enabled = [g for g in (s.to_dict() or {} for s in read(grants))
+                       if g.get("enabled") is True and g.get("tenant_id") == tenant_id
+                       and isinstance(g.get("consumer"), str)]
+            if enabled:
+                found.append((doc, enabled))
+        return found
+
+    def _disable_grants(self, txn: Any, doc: Mapping[str, Any], grants: list[dict[str, Any]],
+                        *, tenant_id: str, repo_id: str, by: str, at: datetime) -> list[str]:
+        """Write `grants` of `doc` disabled, re-signed, with one audit row."""
+        secret_id = str(doc.get("secret_id") or "")
+        for grant in grants:
+            slot = grant.get("slot")
+            txn.set(self._db.collection(GRANTS_COLLECTION)
+                    .document(_grant_id(secret_id, grant["consumer"])),
+                    self._attested(_with_repo({
+                        "secret_id": secret_id, "tenant_id": tenant_id,
+                        "consumer": grant["consumer"],
+                        "slot": slot if isinstance(slot, str) and slot else None,
+                        "enabled": False, "changed_at": at, "changed_by": by},
+                        repo_id)))
+        consumers = sorted(g["consumer"] for g in grants)
+        self._audit(txn, AUDIT_REPOSITORY_GRANTS_DISABLED, by=by, at=at,
+                    secret_id=secret_id, detail={
+                        "tenant_id": tenant_id, "secret_id": secret_id,
+                        "name": doc.get("name"), "repo_id": repo_id,
+                        "grants_disabled": consumers})
+        return consumers
+
     def disable_repository_grants(self, *, tenant_id: str, repo_id: str,
                                   by: str) -> dict[str, Any]:
         """Disable every enabled grant on every live secret of `tenant_id`
@@ -1265,47 +1324,67 @@ class WorkspaceSecrets:
         records stay: the release already withholds a repository secret whose
         registration is gone (`release_plan`), and re-registering the same
         repository (the same `repo_id`) must not revive a grant nobody ticked
-        again. Answers names and consumers, never a value."""
+        again. Answers names and consumers, never a value. Removing the
+        registration itself is `delete_repository`, which does this in the
+        transaction that removes it."""
         if not _REPO_ID.match(repo_id or ""):
             raise NotFound(f"repository {(repo_id or '')[:64]!r} not found")
         now = self._now()
-        query = self._db.collection(SECRETS_COLLECTION) \
-            .where(filter=FieldFilter("tenant_id", "==", tenant_id)) \
-            .where(filter=FieldFilter("state", "==", ACTIVE))
-        docs = [d for d in (s.to_dict() or {} for s in query.stream())
-                if d.get("tenant_id") == tenant_id and d.get(REPO_ID_FIELD) == repo_id]
         disabled: dict[str, list[str]] = {}
-        for doc in sorted(docs, key=lambda d: str(d.get("name"))):
-            secret_id = str(doc.get("secret_id") or "")
-            grants = [g for g in self.grants_of([secret_id]).get(secret_id, [])
-                      if g.get("enabled") is True and g.get("tenant_id") == tenant_id
-                      and isinstance(g.get("consumer"), str)]
-            if not grants:
-                continue
+        for doc, grants in self._repository_grants(lambda q: q.stream(), tenant_id, repo_id):
 
             @firestore.transactional
-            def _write(txn: Any, doc: dict[str, Any] = doc, grants: list = grants,
-                       secret_id: str = secret_id) -> None:
-                for grant in grants:
-                    slot = grant.get("slot")
-                    txn.set(self._db.collection(GRANTS_COLLECTION)
-                            .document(_grant_id(secret_id, grant["consumer"])),
-                            self._attested(_with_repo({
-                                "secret_id": secret_id, "tenant_id": tenant_id,
-                                "consumer": grant["consumer"],
-                                "slot": slot if isinstance(slot, str) and slot else None,
-                                "enabled": False, "changed_at": now, "changed_by": by},
-                                repo_id)))
-                self._audit(txn, AUDIT_REPOSITORY_GRANTS_DISABLED, by=by, at=now,
-                            secret_id=secret_id, detail={
-                                "tenant_id": tenant_id, "secret_id": secret_id,
-                                "name": doc.get("name"), "repo_id": repo_id,
-                                "grants_disabled": sorted(g["consumer"] for g in grants)})
+            def _write(txn: Any, doc: dict[str, Any] = doc, grants: list = grants) -> list[str]:
+                return self._disable_grants(txn, doc, grants, tenant_id=tenant_id,
+                                            repo_id=repo_id, by=by, at=now)
 
-            _write(self._db.transaction())
-            disabled[str(doc.get("name"))] = sorted(g["consumer"] for g in grants)
+            disabled[str(doc.get("name"))] = _write(self._db.transaction())
         log.info("repository secret grants disabled tenant=%s repo_id=%s secrets=%d",
                  tenant_id, repo_id, len(disabled))
+        return {"repo_id": repo_id, "grants_disabled": disabled}
+
+    def delete_repository(self, *, tenant_id: str, repo_id: str, by: str) -> dict[str, Any]:
+        """Remove the registration `repositories/{repo_id}` of `tenant_id` and
+        disable every enabled grant on its live secrets, re-signed off with
+        each secret's audit row, in ONE transaction (secrets-scopes.md §2.1).
+        So nothing commits half: a failure leaves both as they were, and a
+        manager enabling a grant at the same moment either lands first, and
+        the retry here reads and disables it, or lands after, and `set_grant`
+        re-reads the registration in its own transaction and finds it gone.
+
+        Here and not on `Repositories`: this module already imports
+        `repositories`, so the store that owns the grants takes the
+        registration's ref, and neither module imports the other in a cycle.
+        Another workspace's `repo_id` is the same 404 as a missing one, and
+        disables nothing. Answers names and consumers, never a value."""
+        if not _REPO_ID.match(repo_id or ""):
+            raise Repositories.not_found((repo_id or "")[:64])
+        ref = self._db.collection(REPOSITORIES_COLLECTION).document(repo_id)
+
+        @firestore.transactional
+        def _apply(txn: Any) -> dict[str, list[str]]:
+            # Firestore wants every read before the first write.
+            snap = _snapshot(txn.get(ref))
+            if not snap.exists or (snap.to_dict() or {}).get("tenant_id") != tenant_id:
+                raise Repositories.not_found(repo_id)
+            found = self._repository_grants(txn.get, tenant_id, repo_id)
+            writes = 1 + sum(len(grants) + 1 for _, grants in found)
+            if writes > MAX_TRANSACTION_WRITES:
+                raise Conflict(
+                    f"removing this registration would write {writes} documents in one "
+                    f"transaction, over Firestore's {MAX_TRANSACTION_WRITES}; disable its "
+                    "secrets' grants first (POST /v1/repositories/{repo_id}/secrets:"
+                    "disable-grants), then delete it. Nothing was written")
+            now = self._now()
+            disabled = {str(doc.get("name")): self._disable_grants(
+                txn, doc, grants, tenant_id=tenant_id, repo_id=repo_id, by=by, at=now)
+                for doc, grants in found}
+            txn.delete(ref)
+            return disabled
+
+        disabled = _apply(self._db.transaction())
+        log.info("repository secret grants disabled tenant=%s repo_id=%s secrets=%d "
+                 "registration=removed", tenant_id, repo_id, len(disabled))
         return {"repo_id": repo_id, "grants_disabled": disabled}
 
     # -- Q5's sweep ------------------------------------------------------------------
