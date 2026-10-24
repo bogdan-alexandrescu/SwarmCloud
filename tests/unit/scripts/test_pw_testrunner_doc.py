@@ -73,13 +73,17 @@ def _runner_constant(name: str) -> str:
     raise AssertionError(f"{RUNNER} has no module-level {name}")
 
 
-@pytest.mark.parametrize("name", ["AGENT_BROWSERS_PATH", "TEST_BROWSERS_ENV",
-                                  "TEST_BROWSERS_DIR_NAME", "CACHE_HOME_ENV"])
+@pytest.mark.parametrize("name", ["AGENT_BROWSERS_PATH", "TEST_BROWSERS_ENV"])
 def test_the_exception_states_the_runners_names_as_the_code_has_them(name):
     value = _runner_constant(name)
-    assert f"`{value}`" in _exception() or f"`${value}" in _exception(), (
+    assert f"`{value}`" in _exception() or f"`${value}`" in _exception(), (
         f"§3.2's test-runner exception does not state {name} = {value!r} as the runner does"
     )
+
+
+def test_the_exception_states_where_the_directory_is_as_the_code_makes_it():
+    where = f"`${_runner_constant('CACHE_HOME_ENV')}/{_runner_constant('TEST_BROWSERS_DIR_NAME')}`"
+    assert where in _exception(), f"§3.2's test-runner exception does not say the directory is {where}"
 
 
 def test_every_symbol_the_exception_cites_exists():
