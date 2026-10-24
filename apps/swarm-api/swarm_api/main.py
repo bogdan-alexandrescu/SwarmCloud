@@ -137,6 +137,8 @@ UNCAPTURED_ROUTES = frozenset({
     # A repository's secrets (SSC-REPO-SCOPE): the same add and rotate bodies.
     "/v1/repositories/{repo_id}/secrets",
     "/v1/repositories/{repo_id}/secrets/{name}/value",
+    # A GitHub Actions secret's value, before it is sealed (SSC-ACTIONS-API).
+    "/v1/repositories/{repo_id}/actions/secrets/{name}",
     # a provider API key, a person's or the workspace's, and the tenant's;
     "/v1/provider-keys/{provider}/user",
     "/v1/provider-keys/{provider}/tenant",
