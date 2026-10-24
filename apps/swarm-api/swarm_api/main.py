@@ -89,6 +89,7 @@ from .routes import (
 )
 from .routes import repository_secrets
 from .routes import actions_secrets
+from .routes import secrets_overview
 from .qa_identity import QaIdentityOrigin
 from .validation import FORBIDDEN_CALLER_FIELDS
 
@@ -413,6 +414,7 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     app.include_router(workspace_secrets.router)
     app.include_router(repository_secrets.router)  # SSC-REPO-SCOPE, secrets-scopes.md §6.2
     app.include_router(actions_secrets.router)  # SSC-ACTIONS-API, secrets-scopes.md §3, §6.2
+    app.include_router(secrets_overview.router)  # SSC-OVERVIEW, secrets-scopes.md §4, §6.2
     # Each workspace's Jev judgment backend -- Internal Jev (the default),
     # Internal Laya or TypeSafe -- its owner's or an admin's to choose,
     # audited (swarm_api.judgment, lane JUDGE-SELECT).
