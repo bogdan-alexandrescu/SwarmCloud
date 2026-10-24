@@ -586,7 +586,9 @@ The one verb that writes: it spends the shared pool, a step at a time.
    `"owner/repo#41"` or its URL) pushes its lane onto that pull request's
    branch and opens none; it is sent with no `merge`, and a spec naming it
    beside a merge step or a `merge` other than `"off"` ends `NOT_SUBMITTED`
-   with the API's reason.
+   with the API's reason. One task onto an existing pull request needs no
+   spec: `swarm_dispatch` with `prompt`, `repo`, `strategy: "direct-pr"` and
+   `publish_to_pr` (never beside `tasks`).
 4. Report what the workflow returned: its `workflow_id`, its state, and any
    `error` verbatim — `NOT_SUBMITTED`, `SUBMISSION_UNKNOWN`,
    `SUBMITTED_UNVERIFIED` and `FOLLOW_REFUSED` each say what to do next.
