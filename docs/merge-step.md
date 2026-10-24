@@ -54,22 +54,30 @@ defaulted to 0. What this lane changed, and why:
   other's pushes; and **0** for a `merge_pr` workflow (#352), which refuses
   any other number: its branch is no agent's, so no round could push to it,
   and rounds asked for and never possible would park the worker on
-  `ci_fix_pending` until its six-hour bound. `fix_rounds: 0` keeps the behaviour from before this lane:
-  red refuses `checks_failed` at once, and nothing is re-run. Conflict
+  `ci_fix_pending` until its six-hour bound. `fix_rounds: 0` spends no
+  agent on red, but still gets the one free re-run per head below: red
+  again at that head refuses `checks_failed`. Conflict
   rounds keep their own cap of 2 (`MERGE_CONFLICT_ROUNDS_MAX`) whatever
   `fix_rounds` says, as #1076 decided: a conflict nobody resolves is never
   mergeable at all, so 0 does not turn them off.
-* **A flake costs no agent.** The first red reading at a head, when a round
-  is possible and every failing check is an Actions job, asks GitHub to
+* **A flake costs no agent.** The first red reading at a head whose every
+  failing check is an Actions job asks GitHub to
   re-run exactly those jobs (`POST actions/jobs/<id>/rerun`, `actions:
   write`, the tenant's own `-git` token) and spends no round. It is recorded
   in `metadata.merge_fix.reruns`, claimed under the guard a round is claimed
   under, once per head. The re-run's check runs are the latest of their name,
   so the next reading is the re-run's: green wakes the step to merge, red
-  goes to a round. A red commit status or another App's check is not re-run
+  goes to a round if one is left, else wakes the step `red`. The re-run comes
+  before the round budget and the branch check, so a merge granted zero
+  rounds -- every issue run's, a `fix_rounds: 0` lane's, a `merge_pr` -- gets
+  it too: a re-run pushes nothing, so neither the budget nor whose branch it
+  is bounds it. Before #2257 the budget came first, and one flaky shard on a
+  hidden earlier attempt of PR #2229's push run refused an issue run's merge
+  `checks_failed` with no re-run. A red commit status or another App's check is not re-run
   (re-running the rest could not make the head green). A credential without
   `actions: write` is recorded as the re-run's `error`, and the round is
-  claimed in the same tick: the refusal costs one request, not a wait.
+  claimed, or the step woken, in the same tick: the refusal costs one
+  request, not a wait.
   While GitHub still serves the very runs that were re-run, the tick waits,
   at most `RERUN_SETTLE_SECONDS` (10 min).
 * **Each round is a step of the lane's workflow.** The round is still its
