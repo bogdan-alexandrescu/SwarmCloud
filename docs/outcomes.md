@@ -319,7 +319,7 @@ change to the frozen contract was needed.
   the tuple's `profile` and `attempt_count`. `attempt_count` is raised in the
   same admission write that sets `current_generation`, so it is > 0 exactly
   when the generation is. Every v9 day already stores both columns, so no
-  sealed day is re-derived and no task is read for it. An agent that has not
+  sealed day is re-derived and no agent is read again for it. An agent that has not
   ended is judged by its profile alone: an open mock agent "holds no
   account", an open claude-code agent is "not ended". The rule reads today's
   profile catalogue, which is in the frozen contract. A profile that changed
