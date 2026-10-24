@@ -59,6 +59,7 @@ table.doct th,table.doct td{text-align:left;padding:8px 12px;border-bottom:1px s
 table.doct th{font-size:13px;color:var(--text-dim);font-weight:600}
 table.doct tr:last-child td{border-bottom:0}
 table.doct th:last-child,table.doct td:last-child{white-space:nowrap}
+@media (max-width:600px){table.doct{min-width:0}table.doct thead,table.doct tr:has(th){display:none}table.doct tr{display:block;border-bottom:1px solid var(--line)}table.doct tr:last-child{border-bottom:0}table.doct td{display:block;border-bottom:0;padding:3px 12px}table.doct td:first-child{font-weight:600;padding-top:10px}table.doct td:last-child{white-space:normal;padding-bottom:10px}}
 .yes{color:var(--ok-ink);font-weight:600}.no{color:var(--text-dim)}
 
 /* the page's theme control, the same control the frames' panel foot draws */
@@ -308,11 +309,13 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 .wt0 .ar.af{background:repeating-linear-gradient(90deg,color-mix(in srgb,var(--ok) 13%,var(--surface)) 0 6px,color-mix(in srgb,var(--ok) 6%,var(--surface)) 6px 12px)}
 .wt0 .ar.st{background:color-mix(in srgb,var(--warn-ink) 26%,var(--surface));box-shadow:inset 0 2px 0 var(--warn-ink)}
 .wt0 .fl{position:absolute;left:0;right:0;border-top:1.5px dashed var(--text-dim);opacity:.85}
-.wt0 .tx0{position:absolute;left:6px;top:50%;transform:translateY(-50%);font-size:12px;line-height:1.2;white-space:nowrap;color:var(--text);z-index:2;text-shadow:0 0 3px var(--surface),0 0 3px var(--surface)}
+/* a band's words sit above it, on an opaque chip, so the floor, the band's edge and the next-free-slot line never run through them */
+.wt0{margin-top:17px}
+.wt0 .tx0{position:absolute;left:2px;top:-17px;font-size:12px;line-height:15px;padding:0 4px;border-radius:3px;white-space:nowrap;color:var(--text);z-index:5;background:var(--surface)}
 .wt0 .tx0 b{font-weight:650}
 .wt0 .rs0{position:absolute;top:50%;width:11px;height:11px;margin:-6px 0 0 -6px;transform:rotate(45deg);background:var(--surface);border:2px solid var(--text-dim);z-index:3}
 .wt0 .rs0.clr{border-color:var(--ok);background:var(--ok)}
-.wt0 .rl{position:absolute;top:50%;transform:translateY(-50%);margin-left:10px;font-size:12px;white-space:nowrap;color:var(--text-dim);z-index:2;text-shadow:0 0 3px var(--surface),0 0 3px var(--surface)}
+.wt0 .rl{position:absolute;top:50%;transform:translateY(-50%);margin-left:10px;font-size:12px;line-height:15px;padding:0 4px;border-radius:3px;white-space:nowrap;color:var(--text-dim);z-index:5;background:var(--surface)}
 .wt0 .rl.clr{color:var(--ok-ink);font-weight:600}
 .wt0 .rl.lft{margin-left:0;transform:translate(calc(-100% - 10px),-50%)}
 .wt0 .fc{position:absolute;bottom:0;height:2px;border-top:2px dotted var(--info);z-index:2}
@@ -324,6 +327,11 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 .pl .sg0.f{background:transparent;border:1.5px dotted var(--info);border-right-width:1.5px;color:var(--info-ink)}
 .pl .sg0.f.z{border-color:var(--bad-ink);color:var(--bad-ink);background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--bad-ink) 16%,var(--surface)) 0 5px,transparent 5px 10px)}
 .pl.thin{height:22px}
+/* a zero cell is never a sliver: it is the one the pool row exists to show */
+.pl .sg0.z{min-width:20px;z-index:1}
+/* phone: the segments in words under the row, since a narrow one cannot carry its figure */
+.plk{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:var(--text-dim)}
+.plk b{color:var(--text);font-weight:650}
 
 /* the next free slot: a vertical line through every lane, the waiting agents queued against it */
 .nx0{position:absolute;top:0;bottom:0;width:0;border-left:2px solid var(--info);z-index:4;pointer-events:none}
@@ -343,7 +351,10 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 .hb i{position:absolute;top:0;bottom:0;left:0;border-radius:0 3px 3px 0;background:color-mix(in srgb,var(--info) 30%,var(--surface));border-right:2px dashed var(--info)}
 .hb span{position:absolute;top:-2px;font-size:12px;line-height:16px;white-space:nowrap;color:var(--text-dim)}
 .hb.free i{background:none;border:1.5px dashed var(--ctl-bd);border-radius:3px;width:100%}
-.hb.free span{left:8px}
+:root[data-theme="dark"] .hb i{background:color-mix(in srgb,var(--info) 50%,var(--surface))}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .hb i{background:color-mix(in srgb,var(--info) 50%,var(--surface))}}
+.hb.free i{display:none}
+.hb.free span{left:0;right:0;top:0;bottom:0;padding-left:8px;border:1.5px dashed var(--ctl-bd);border-radius:3px;display:flex;align-items:center;line-height:1}
 
 .lg2{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12.5px;color:var(--text-dim);padding:10px 14px;border-top:1px solid var(--line-soft);background:var(--surface)}
 .lg2>span{display:inline-flex;align-items:center;gap:6px}
@@ -402,16 +413,15 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 .tl .lab .st{white-space:normal;align-items:flex-start}
 .tl .lab .st .ic{margin-top:2px}
 .pl .pt{position:absolute;top:50%;transform:translateY(-50%);font-size:12px;color:var(--text-faint);white-space:nowrap}
-.ex .hb{height:16px}.ex .hb span{top:0}
+.ex .hb{height:16px}.ex .hb span{top:0}.ex .hb.free{height:18px}
 .cmp .lab .st{white-space:nowrap}
 .tl .row.dup,.tl .row.dup.hot{box-shadow:inset 4px 0 0 var(--paused)}
 .tl .row.twin{border-bottom-color:transparent}
 .cmp.twin .lab{flex-wrap:wrap;row-gap:4px}.cmp .lab b{white-space:nowrap}.cmp .lab .c{white-space:normal;border-radius:10px}
 .cg{display:inline-flex;gap:8px;align-items:center;white-space:nowrap}
 /* phone: a band's words sit above it, so a reset marker never covers them */
-.ph .wt0{margin-top:17px}
-.ph .wt0 .tx0{top:-17px;transform:none;left:12px!important;text-shadow:none}
-.ph .cmp .wt0{margin-top:0}
+.ph .wt0 .tx0{left:12px!important}
+.cmp .wt0{margin-top:0}
 .ph .nx0{top:-4px!important;bottom:-10px!important}
 .ph .cmp.twin .lab{flex-wrap:wrap}.ph .cmp .lab b{white-space:nowrap}.ph .cmp .lab .c{white-space:normal;border-radius:10px}
 .qp .qq{flex-wrap:wrap;white-space:normal;row-gap:2px}
@@ -554,8 +564,8 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <h2 id="s6"><span class="n">B6</span>No account registered</h2>
 <p>The axis is still drawn, with nothing on it, so the page reads as the same page with no lanes rather than as an error. The answer names what that means for agents that need a pool credential.</p>
 <div class="pair">
-  <figure class="fr"><div class="scroller" data-f="b6-d"></div><figcaption><b>B6 · desktop 1440 · empty pool.</b> The waiting count (3) is an <span class="ex0">example</span>.</figcaption></figure>
-  <figure class="fr"><div class="scroller" data-f="b6-p"></div><figcaption><b>B6p · phone 390 · empty pool.</b></figcaption></figure>
+  <figure class="fr"><div class="scroller" data-f="b6-d"></div><figcaption><b>B6 · desktop 1440 · empty pool.</b> The waiting count (3) is an <span class="ex0">example</span>. Under the empty lane, the lane an account gets the moment it is added, before its first reading (<span class="ex0">example</span>): takes one agent until measured, no bands.</figcaption></figure>
+  <figure class="fr"><div class="scroller" data-f="b6-p"></div><figcaption><b>B6p · phone 390 · empty pool,</b> and the first-reading-pending lane (<span class="ex0">example</span>).</figcaption></figure>
 </div>
 
 <!-- ==================== notes ==================== -->
@@ -729,9 +739,9 @@ function lane(a,R,ph,mode){
 
 function poolRow(segs,R,label,sub,thin,tail,ph){
   const h=segs.map(([a,b,n,f])=>{const x=px(a,R.now),y=px(b,R.now);const w=y-x;
-    const t=ph?(w>=4?String(n):''):(w>9?`${n} open`:w>=1.8?String(n):'');
+    const t=ph?(w>=4||n===0?String(n):''):(w>9?`${n} open`:w>=1.8||n===0?String(n):'');
     return `<span class="sg0 ${n===0?'z':''} ${f?'f':''}" style="left:${x}%;width:${w}%" title="${n} open from ${when(a,R.now)} to ${when(b,R.now)}">${n===0&&w>9&&!ph?'dark':t}</span>`}).join('');
-  return `<div class="row pool"><div class="lab"><b>${label}</b><span class="hl">${sub}</span></div><div class="trk"><div style="position:relative">${nextLine(R)}<div class="pl ${thin?'thin':''}">${h}${tail?`<span class="pt" style="left:calc(${px(segs[segs.length-1][1],R.now)}% + 8px)">${tail}</span>`:''}</div></div></div></div>`;
+  return `<div class="row pool"><div class="lab"><b>${label}</b><span class="hl">${sub}</span></div><div class="trk"><div style="position:relative">${nextLine(R)}<div class="pl ${thin?'thin':''}">${h}${tail?`<span class="pt" style="left:calc(${px(segs[segs.length-1][1],R.now)}% + 8px)">${tail}</span>`:''}</div></div>${ph&&segs.length>1?`<div class="plk">${segs.map(([a,b,n])=>`<span><b>${n}</b> from ${when(a,R.now)}</span>`).join('')}</div>`:''}</div></div>`;
 }
 function queueRow(R,ph){
   const q=R.queue;if(!q)return '';
@@ -747,7 +757,7 @@ function timeline(R,ph,opts){
   opts=opts||{};
   let h=`<div class="row axis"><div class="lab"><b>${R.accts.length} accounts</b><span class="hl">${R.floors.seven_day===0.05?'floors: 5-hour 15%, 7-day 5%':'old floor: 15% on both windows'}</span></div><div class="trk">${axis(R.now,ph)}</div></div>`;
   h+=queueRow(R,ph);
-  h+=poolRow(R.pool,R,'Accounts that can take an agent','if nothing more is used'+(R.cap?' and no agent finishes':''),false,'',ph);
+  h+=poolRow(R.pool,R,'Accounts that can take an agent',R.cap?'by windows only, if nothing more is used · the waiting agents fill these slots':'if nothing more is used',false,'',ph);
   if(R.fcPool)h+=poolRow(R.fcPool,R,'At this pace','last 24 hours\' pace · '+EX,true,ph?'':'not forecast further: too far at one day\'s pace',ph);
   for(const a of R.accts){
     if(opts.expand&&a.id!==opts.expand){h+=lane(a,R,ph,'cmp');continue}
@@ -846,8 +856,6 @@ const R3={now:NOW3,age:'read 14:04Z · every 60 s',floors:NEWF,cap:true,anyStale
   queue:{n:1,nowText:`<span class="dots"><i></i></span><b>1 waiting</b> (parked by admission, accounts full) · takes devops-team's free slot at its next check`},
   ansMore:'ai-eng-2 and devops-main are full at 6 of 6. Next to open: saga-team at 15:00Z and aieng-claude1 at 15:10Z (5-hour resets).',
   pool:[[NOW3,'2026-10-24T15:00Z',1],['2026-10-24T15:00Z','2026-10-24T15:10Z',2],['2026-10-24T15:10Z','2026-10-26T07:59Z',3],['2026-10-26T07:59Z','2026-10-27T10:59Z',4],['2026-10-27T10:59Z','2026-10-31T14:04Z',5]]};
-/* devops-team's lane is drawn with its agents only when expanded (B4); in B3 only the full lanes carry hold bars */
-R3.accts.forEach(a=>{if(a.id==='devops-team'){a.holdBarsX=a.holdBars;delete a.holdBars}});
 
 const R4=Object.assign({},R3,{accts:ACC1404()});
 R4.accts.forEach(a=>{if(a.id!=='devops-team')delete a.holdBars});
@@ -856,10 +864,10 @@ const R5=Object.assign({},R2,{fc:null,fcPool:null,fcText:null});
 function devopsDetail(ph){
   return `<div class="exd"><div><h4>Windows</h4><dl class="kv"><dt>5-hour</dt><dd><b>66% left</b> (34% used ${EX}) · floor 15% · resets 17:20Z · read 3 min ago</dd><dt>7-day</dt><dd><b>11% left</b> (89% used ${EX}) · floor 5% · resets Wed 28 12:00Z · read 3 min ago</dd></dl><p class="hint" style="margin:8px 0 0">Takes new agents while both windows stay over their floors and it holds fewer than 6. At the last day's pace (${EX}) its 7-day window reaches 5% about Sun 25 02:00Z.</p></div>`+
   `<div><h4>Agents on it · 5 of 6</h4><ul>${['task_8c1e… · fix step, 3 of 4','task_2b6d… · review','task_f03a… · implement','task_6e94… · implement','task_ab27… · claude-code-browser'].map(t=>`<li><a class="mn">${t.split(' · ')[0]}</a> <span class="dim">· ${t.split(' · ')[1]} · ${EX}</span></li>`).join('')}</ul><p class="hint" style="margin:8px 0 0">The bars above run to each hold's deadline, 3 hours after it was taken: the latest the agent can still hold the slot, not when it is expected to finish.</p></div>`+
-  `<div><h4>Account</h4><dl class="kv"><dt>Organisation</dt><dd>Saga · Team ${EX}</dd><dt>State</dt><dd>Available</dd><dt>Agents at once</dt><dd>6 · <a>Change</a></dd><dt>Lent to</dt><dd>smoke ${EX}</dd><dt>Model classes</dt><dd>every class</dd><dt>Account id</dt><dd class="mn">eng:devops-team</dd></dl><div class="acts">${B('Rename','s')}${B('Pause','s')}${B('Drain','s')}${B('Lending','s')}${B('Replace the credential','s')}${B('Remove','s d')}</div></div></div>`;
+  `<div><h4>Account</h4><dl class="kv"><dt>Organisation</dt><dd>Saga · Team ${EX}</dd><dt>State</dt><dd>Not paused</dd><dt>Agents at once</dt><dd>6 · <a>Change</a></dd><dt>Lent to</dt><dd>smoke ${EX}</dd><dt>Model classes</dt><dd>every class</dd><dt>Account id</dt><dd class="mn">eng:devops-team</dd></dl><div class="acts">${B('Rename','s')}${B('Pause','s')}${B('Drain','s')}${B('Lending','s')}${B('Replace the credential','s')}${B('Remove','s d')}</div></div></div>`;
 }
 function teamDetail(ph){
-  return `<div class="exd"><div style="grid-column:span ${ph?1:2}"><h4>${I('link')} One subscription, registered twice</h4><p style="margin:0 0 6px;font-size:13.5px">team and saga-personal were signed in to the same organisation, <b>Personal · Max</b> (the organisation ids match). One claude.ai login can belong to two organisations; the sign-in authorised whichever was selected. Only <b>saga-personal</b>, the older registration, is handed out; team takes no agent until this is fixed.</p><p style="margin:0;font-size:13.5px"><b>To fix:</b> in claude.ai, switch the organisation to the one this account should be (for team, Saga · Team), then Replace the credential here. Label, loans and agents are kept. Or remove team if the subscription it should be is not in the pool.</p><div class="acts">${B('Replace the credential','s p')}${B('Remove team','s d')}</div></div>`+
+  return `<div class="exd"><div style="grid-column:span ${ph?1:2}"><h4>${I('link')} One subscription, registered twice</h4><p style="margin:0 0 6px;font-size:13.5px">team and saga-personal were signed in to the same organisation, <b>Personal · Max</b> (the organisation ids match). One claude.ai login can belong to two organisations; the sign-in authorised whichever was selected. Only <b>saga-personal</b>, the older registration, is handed out; team takes no agent until this is fixed.</p><p style="margin:0;font-size:13.5px"><b>To fix:</b> in claude.ai, switch the organisation to the one this account should be (for team, Saga · Team), then Replace the credential here. Label, loans and agents are kept. If that other subscription is not one the pool should have, remove team instead.</p><div class="acts">${B('Replace the credential','s p')}${B('Remove team','s d')}</div></div>`+
   `<div><h4>Windows</h4><dl class="kv"><dt>5-hour</dt><dd>reset 05:59Z, no use read since</dd><dt>7-day</dt><dd><b>2% left</b> · floor 5% · resets Mon 26 08:00Z</dd><dt>harbor_lantern</dt><dd>a window the console does not know by name · reset Oct 15, no reading since</dd></dl><p class="hint" style="margin:8px 0 0">saga-personal reads the same: 5-hour reset 06:00Z, 7-day 2% left, resets Mon 26 07:59Z, one minute apart.</p></div></div>`;
 }
 
@@ -870,7 +878,7 @@ function backRow(){return `<div class="ctlrow"><a>‹ All accounts</a></div>`}
 const R0={now:NOW1,age:'read 09:04Z · every 60 s',floors:NEWF,cap:true,accts:[],pool:[[NOW1,'2026-10-31T09:04Z',0]],queue:{n:3}};
 function empty(ph){
   return `<section class="ans bd"><span class="big">0 <small>accounts</small></span><div class="lt"><b>No account in the pool</b><span>An agent that runs on a pool credential waits until one is added. Agents on a tenant's own key are not affected.</span></div><div class="wt"><b>3</b><span>agents waiting on the pool · ${EX}</span><a>Open them</a></div></section>`+
-  `<section class="tl"><div class="row axis"><div class="lab"><b>0 accounts</b><span class="hl">floors: 5-hour 15%, 7-day 5%</span></div><div class="trk">${axis(NOW1,ph)}</div></div><div class="row"><div class="lab"><b>No lanes yet</b><span class="hl">Each account you add is a lane here</span></div><div class="trk"><div class="emp"><b>Add the first account</b><span>Sign in to claude.ai with the organisation you mean to lend selected (one login can hold Team and Personal), then paste the code the Claude page shows. The console names the organisation and plan it registered, so a wrong pick shows at once.</span><span>${B('Add an account','p','plus')}</span><span class="hint">Or from a terminal: <code>uv run sc account add --label &lt;name&gt;</code></span></div></div></div></section>`;
+  `<section class="tl"><div class="row axis"><div class="lab"><b>0 accounts</b><span class="hl">floors: 5-hour 15%, 7-day 5%</span></div><div class="trk">${axis(NOW1,ph)}</div></div><div class="row"><div class="lab"><b>No lanes yet</b><span class="hl">Each account you add is a lane here</span></div><div class="trk"><div class="emp"><b>Add the first account</b><span>Sign in to claude.ai with the organisation you mean to lend selected (one login can hold Team and Personal), then paste the code the Claude page shows. The console names the organisation and plan it registered, so a wrong pick shows at once.</span><span>${B('Add an account','p','plus')}</span><span class="hint">Or from a terminal: <code style="white-space:nowrap;display:inline-block">uv run sc account add --label &lt;name&gt;</code></span></div></div></div><div class="row"><div class="lab"><b>new-account</b> ${EX}<span class="hl">How a lane reads the moment its account is added; not counted in the 0 above</span><span class="why">${S('ok','First reading pending: takes one agent until measured')}</span></div><div class="trk"><div class="emp" style="padding:${ph?'4px 0 8px':'12px 0 12px 18px'}"><span>5-hour and 7-day: <b style="font-size:inherit">first reading pending</b>. No bands until the broker reads its windows; never drawn as 0% or 100%.</span></div></div></div></section>`;
 }
 
 const FR={
