@@ -13,7 +13,7 @@
 :root{color-scheme:dark;--bg:#06101e;--surface:#0c1a2e;--surface-2:#11233b;--line:#1e3350;--line-soft:#1d3049;--text:#eef4fa;--text-dim:#9fb0c4;--text-faint:#828d9b;--ok:#58c668;--warn:#ffd60a;--bad:#f85149;--info:#7cc8f8;--paused:#b288f8;--ok-ink:#42bf53;--warn-ink:#d29922;--bad-ink:#fa7872;--info-ink:#b9e3fc;--ctl-bd:#5f7087;--ctl-onac:#06101e;--acs:#10294a;--acl:#1f4a7a;--s1:#2f95d4;--s2:#d9692a;--scrim:rgba(2,8,16,.62);--sh:0 16px 40px rgba(0,0,0,.5);--hive:url(#g-hive-d);--f:"Inter Tight",ui-sans-serif,-apple-system,"Segoe UI",sans-serif;--mono:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;--r-ctl:8px;--r-card:12px;--r-dlg:14px}
 :root[data-theme="light"]{color-scheme:light;--bg:#f3f6f9;--surface:#ffffff;--surface-2:#eef4fa;--line:#d6e0ea;--line-soft:#dde5ee;--text:#0d1724;--text-dim:#4f5d6e;--text-faint:#606a77;--ok:#1a7f37;--warn:#6e4a00;--bad:#681117;--info:#0369a1;--paused:#7139db;--ok-ink:#15662c;--warn-ink:#805500;--bad-ink:#a71b25;--info-ink:#075985;--ctl-bd:#7d8ea3;--ctl-onac:#ffffff;--acs:#e5f3fc;--acl:#b6daf2;--s1:#0369a1;--s2:#c2410c;--scrim:rgba(13,23,36,.38);--sh:0 16px 40px rgba(11,58,122,.18);--hive:url(#g-hive-l)}
 *{box-sizing:border-box;letter-spacing:normal}
-html{-webkit-text-size-adjust:100%}
+html{-webkit-text-size-adjust:100%;scrollbar-gutter:stable}
 body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 var(--f)}
 a{color:var(--info)}
 button{font:inherit;color:inherit}
@@ -62,7 +62,7 @@ noscript p{background:var(--surface);border:1px solid var(--line);padding:12px;b
 
 /* ---------- the console inside a frame ---------- */
 .ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
-.app{display:flex;width:1440px;min-height:780px;background:var(--bg);color:var(--text);font:13px/1.45 var(--f);position:relative;text-align:left}
+.app{display:flex;width:100%;min-width:1240px;max-width:1440px;min-height:780px;background:var(--bg);color:var(--text);font:13px/1.45 var(--f);position:relative;text-align:left}
 .rail{width:84px;flex:none;background:linear-gradient(180deg,#0b3a7a,#06101e);display:flex;flex-direction:column;align-items:center;padding:16px 0 12px;gap:2px;color:#bcd6ee}
 .rbrand{padding:2px 0 12px;display:flex}
 .ri{width:72px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;border-radius:10px;color:#bcd6ee;position:relative}
@@ -132,6 +132,7 @@ noscript p{background:var(--surface);border:1px solid var(--line);padding:12px;b
 .tn.ok{color:var(--ok-ink)}.tn.warn{color:var(--warn-ink)}.tn.bad{color:var(--bad-ink)}.tn.neu{color:var(--text-dim)}.tn.run{color:var(--info-ink)}
 .dash{color:var(--text-dim);font-size:12.5px}.dash i{font-style:normal;color:var(--text);margin-right:5px}
 .mono{font-family:var(--mono);font-size:12px}
+.nw{white-space:nowrap}
 .note{font-size:12.5px;color:var(--text-dim);margin:8px 0 0;max-width:76ch}
 .callout{display:flex;gap:10px;align-items:flex-start;background:var(--acs);border:1px solid var(--acl);border-radius:10px;padding:10px 12px;font-size:12.5px;margin-top:12px}
 .callout .ic{color:var(--info);margin-top:1px}
@@ -212,10 +213,10 @@ table.t.fx .tn{white-space:normal}
 .steps li:first-child{border-top:0}
 
 /* nav comparison frame (S1) */
-.navs{display:flex;gap:20px;width:1440px;padding:20px;background:var(--bg)}
+.navs{display:flex;gap:20px;width:100%;min-width:1380px;max-width:1440px;padding:20px;background:var(--bg)}
 .navc{display:flex;flex-direction:column;gap:8px}
 .navc>b{font-size:13px}
-.navc .app{width:320px;min-height:720px}
+.navc .app{width:320px;min-width:0;min-height:720px}
 
 /* phone */
 .phone{width:390px;max-width:100%;margin:0 auto;border:1px solid var(--line);border-radius:22px;overflow:hidden;background:var(--bg);color:var(--text);font:13px/1.45 var(--f);position:relative;text-align:left;box-shadow:0 0 0 6px var(--surface-2)}
@@ -305,7 +306,7 @@ table.t.fx .tn{white-space:normal}
 <div class="wrap">
 <p class="kicker">SwarmCloud · Config, Secrets, Admin counts and QA environments · proposal A · <span style="white-space:nowrap">2026-10-23</span></p>
 <h1>Proposal A: Config as a calm settings app</h1>
-<p class="lede">One of five competing proposals for #2157 (CONFIG-MOCKUPS-A to E). BGD picks one; nothing here is built. Every surface the brief names is drawn once, at desktop width (1440) and at phone width (390). The theme toggle above, and the same toggle in each frame's panel foot, switches every frame between light, dark and system. All data is <b>example data</b>: the user is Operator, hosts are <code>swarm.example.com</code> and <code>app.example.com</code>, and no value on this page is a credential.</p>
+<p class="lede">One of five competing proposals for #2157 (CONFIG-MOCKUPS-A to E). BGD picks one; nothing here is built. Every surface the brief names is drawn once, at desktop width (1440, or the window's width less its scrollbar where that is narrower, so no frame is cut at the right) and at phone width (390). The theme toggle above, and the same toggle in each frame's panel foot, switches every frame between light, dark and system. All data is <b>example data</b>: the user is Operator, hosts are <code>swarm.example.com</code> and <code>app.example.com</code>, and no value on this page is a credential.</p>
 <noscript><p>The frames on this page are drawn by its inline script. Turn JavaScript on to see them; the captions and the visibility table read without it.</p></noscript>
 
 <div class="idea">
@@ -321,7 +322,7 @@ table.t.fx .tn{white-space:normal}
 <h2 class="s" id="s1"><span class="n">S1</span>Navigation: Config in the spine and panel, by role</h2>
 <p>The spine gains <b>Config</b> between Capacity and Admin. <b>Admin</b> is drawn only for an admin. <b>Settings</b> keeps only Profile, reached from the avatar at the foot of the spine and the Settings link in the panel foot. The panel foot also carries the light / dark / system toggle (PICKS.md). Config lists its six pages. Repositories has QA targets beneath it, and Workspace Settings has Workspace setup beneath it.</p>
 <div class="frames">
-<figure><div class="scroller"><div data-f="s1-navs"></div></div><figcaption><b>S1 · desktop.</b> Four roles side by side, spine and panel only (the page bodies are S2 to S10). <b>1. Platform admin, Admin open:</b> the Workspaces group (People and roles, Workspaces you admin) and the Platform group (Pool limits, Runner sizes, Tenants, Platform counts, Platform secrets). <b>2. Workspace admin, Admin open:</b> only People and roles and Workspaces you admin, for the workspaces they admin. <b>3. Member of the group workspace eng, Config open:</b> no Admin in the spine, and no People and roles in Config. <b>4. Personal workspace, Config open:</b> no People and roles, and a line under the list says why.</figcaption></figure>
+<figure><div class="scroller"><div data-f="s1-navs"></div></div><figcaption><b>S1 · desktop.</b> Four roles side by side, spine and panel only (the page bodies are S2 to S10). <b>1. Platform admin, Admin open:</b> the Workspaces group (People and roles, Workspaces you admin) and the Platform group (Pool limits, Runner sizes, Tenants, Platform counts, Platform secrets). Under <b>In Automate</b> are two links out, Schedules, all workspaces and Approvals: they open Automate's own pages, and no Admin tab draws them (BGD, 2026-10-23 23:57Z). <b>2. Workspace admin, Admin open:</b> only People and roles and Workspaces you admin, for the workspaces they admin, and the same two links to Automate. <b>3. Member of the group workspace eng, Config open:</b> no Admin in the spine, and no People and roles in Config. <b>4. Personal workspace, Config open:</b> no People and roles, and a line under the list says why.</figcaption></figure>
 </div>
 <div class="phones">
 <figure><div data-f="s1-ph-platform"></div><figcaption><b>S1 · phone, platform admin.</b> The header is in the spine colour, and the menu opens the spine and panel as a drawer. Shown here: Config in the group workspace eng, all six pages.</figcaption></figure>
@@ -382,13 +383,17 @@ table.t.fx .tn{white-space:normal}
 <figure><div data-f="s5-admin-ws-ph"></div><figcaption><b>S5 · Admin › People and roles, workspace admin, phone.</b></figcaption></figure>
 </div>
 
-<h2 class="s" id="s6"><span class="n">S6</span>Config › Workspace Settings, with Workspace setup and Add a new workspace</h2>
+<h2 class="s" id="s6"><span class="n">S6</span>Config › Workspace Settings, with Workspace setup, and Add a new workspace for platform admins</h2>
 <div class="frames">
-<figure><div class="scroller"><div data-f="s6"></div></div><figcaption><b>S6 · desktop.</b> Settings (name, id, kind, your role), then Code intelligence, off by default (today's Settings › Workspace). Then <b>Workspace setup</b>, today's Work › Setup checklist as a group, with its failing step's fix at the right and Show on Overview. Then <b>Your workspaces</b>, with <b>Add a new workspace</b> for an admin.</figcaption></figure>
-<figure><div class="scroller"><div data-f="s6-new"></div></div><figcaption><b>S6 · Add a new workspace, desktop.</b> A side sheet: Personal | Group | Service, an address and an optional display name, and what the kind gets. A service waits for the platform owner. After submit, the job's steps (Approved, Checking the name is free, Identity, Access, Namespace, Limits, Final check) replace the form. The page behind is a placeholder.</figcaption></figure>
+<figure><div class="scroller"><div data-f="s6"></div></div><figcaption><b>S6 · platform admin, desktop.</b> Settings (name, id, kind, your role), then Code intelligence, off by default (today's Settings › Workspace). Then <b>Workspace setup</b>, today's Work › Setup checklist as a group, with its failing step's fix at the right and Show on Overview. Then <b>Your workspaces</b>, with <b>Add a new workspace</b>. That button is a platform admin's only, the same rule as today's Admin › Tenants › New workspace (BGD, 2026-10-23 23:57Z).</figcaption></figure>
+<figure><div class="scroller"><div data-f="s6-wsadmin"></div></div><figcaption><b>S6 · workspace admin, desktop.</b> The same settings for the workspaces they admin (eng and qa-lab), with no Add a new workspace. Like anyone, they can ask for one with <b>Request a workspace</b>, today's Setup request.</figcaption></figure>
+<figure><div class="scroller"><div data-f="s6-member"></div></div><figcaption><b>S6 · member, desktop.</b> The settings read only, and the setup checklist. A member keeps <b>Request a workspace</b> (today's Setup › Request a workspace) and never sees Add a new workspace.</figcaption></figure>
+<figure><div class="scroller"><div data-f="s6-new"></div></div><figcaption><b>S6 · Add a new workspace, platform admin, desktop.</b> A side sheet: Personal | Group | Service, an address and an optional display name, and what the kind gets. A service waits for the platform owner. After submit, the job's steps (Approved, Checking the name is free, Identity, Access, Namespace, Limits, Final check) replace the form. The page behind is a placeholder.</figcaption></figure>
 </div>
 <div class="phones">
-<figure><div data-f="s6-ph"></div><figcaption><b>S6 · phone.</b></figcaption></figure>
+<figure><div data-f="s6-ph"></div><figcaption><b>S6 · platform admin, phone.</b></figcaption></figure>
+<figure><div data-f="s6-wsadmin-ph"></div><figcaption><b>S6 · workspace admin, phone.</b> No Add a new workspace.</figcaption></figure>
+<figure><div data-f="s6-member-ph"></div><figcaption><b>S6 · member, phone.</b> Request a workspace.</figcaption></figure>
 <figure><div data-f="s6-new-ph"></div><figcaption><b>S6 · Add a new workspace, phone</b>, after submit: the job's progress.</figcaption></figure>
 </div>
 
@@ -415,7 +420,7 @@ table.t.fx .tn{white-space:normal}
 </div>
 
 <h2 class="s" id="s10"><span class="n">S10</span>Every Admin page, in this proposal's style</h2>
-<p>Admin › People and roles is in S5, Platform secrets in S7 and Platform counts in S8. The rest are below. Which tabs each role sees:</p>
+<p>Admin › People and roles is in S5, Platform secrets in S7 and Platform counts in S8. The rest are below. Schedules and approvals for every workspace stay in Automate (BGD, 2026-10-23 23:57Z): Admin's panel only links to them (S1), and they are not drawn again here. Which tabs each role sees:</p>
 <div class="tw"><table class="doc">
 <thead><tr><th>Admin tab</th><th>Platform admin</th><th>Workspace admin</th><th>Member or viewer</th><th>Drawn</th></tr></thead>
 <tbody>
@@ -426,29 +431,35 @@ table.t.fx .tn{white-space:normal}
 <tr><td>Tenants (with QA identity grants)</td><td class="yes">yes</td><td class="no">no</td><td class="no">no</td><td>S10</td></tr>
 <tr><td>Platform counts</td><td class="yes">yes</td><td class="no">no</td><td class="no">no</td><td>S8</td></tr>
 <tr><td>Platform secrets (new)</td><td class="yes">yes</td><td class="no">no</td><td class="no">no</td><td>S7</td></tr>
-<tr><td>Schedules, all workspaces: stays the "All workspaces" switch on Automate › Schedules (SCHED-ONE-PAGE, owner 2026-10-13), not an Admin tab</td><td class="yes">the switch</td><td class="no">their own schedules only</td><td class="no">their own schedules only</td><td>S10</td></tr>
-<tr><td>Approvals: stays Automate › Approvals, per workspace. An admin's console session is not another tenant's identity, so it never approves for one</td><td class="no">their workspace's</td><td class="no">their workspace's</td><td class="no">their workspace's</td><td>not redrawn</td></tr>
+<tr><td>Schedules, all workspaces: stays the "All workspaces" switch on Automate › Schedules (SCHED-ONE-PAGE, owner 2026-10-13; BGD, 2026-10-23 23:57Z). Admin's panel only links to it</td><td class="yes">the switch</td><td class="no">their own schedules only</td><td class="no">their own schedules only</td><td>a link in Admin's panel (S1); not redrawn</td></tr>
+<tr><td>Approvals: stays Automate › Approvals, per workspace (BGD, 2026-10-23 23:57Z). Admin's panel only links to it. An admin's console session is not another tenant's identity, so it never approves for one</td><td class="no">their workspace's</td><td class="no">their workspace's</td><td class="no">their workspace's</td><td>a link in Admin's panel (S1); not redrawn</td></tr>
 <tr><td>Provider quota: stays Capacity › Provider quota, marked admin</td><td class="yes">yes</td><td class="no">no</td><td class="no">no</td><td>not redrawn</td></tr>
 </tbody></table></div>
 <div class="frames">
 <figure><div class="scroller"><div data-f="s10-limits"></div></div><figcaption><b>S10 · Admin › Pool limits, desktop.</b> Ceilings by family, with Edit opening today's side editor (the L2 pick: impact, history, typed confirm for 0 or a cut of half or more). The GitHub fallback token is a status row whose Set opens the one-time form. Then Additional repositories, and Model prices: the list prices Platform counts' estimate uses.</figcaption></figure>
 <figure><div class="scroller"><div data-f="s10-sizes"></div></div><figcaption><b>S10 · Admin › Runner sizes, desktop.</b> Each class's CPU request, CPU limit and memory, versioned, with its history.</figcaption></figure>
 <figure><div class="scroller"><div data-f="s10-tenants"></div></div><figcaption><b>S10 · Admin › Tenants, desktop.</b> Every workspace with its kind, members, state and job, and Add a new workspace, which opens the same sheet as S6. QA identity grants stay on this page.</figcaption></figure>
-<figure><div class="scroller"><div data-f="s10-yours"></div></div><figcaption><b>S10 · Admin › Workspaces you admin, desktop, as a workspace admin.</b> Each workspace links to its Config pages, switching workspace on the way. This and People and roles are all a workspace admin's Admin holds.</figcaption></figure>
-<figure><div class="scroller"><div data-f="s10-sched"></div></div><figcaption><b>S10 · schedules across workspaces, desktop.</b> Drawn in this style but left where the owner put it: the "All workspaces" side of Automate › Schedules, for an admin. It has a workspace column and Pause, Disable or Re-enable per row, and "Pause all of one workspace" asks for the workspace's id typed. It never edits another workspace's parameters.</figcaption></figure>
+<figure><div class="scroller"><div data-f="s10-yours"></div></div><figcaption><b>S10 · Admin › Workspaces you admin, desktop, as a workspace admin.</b> Each workspace links to its Config pages, switching workspace on the way. This and People and roles are all a workspace admin's Admin holds, with the two links to Automate.</figcaption></figure>
 </div>
 <div class="phones">
 <figure><div data-f="s10-limits-ph"></div><figcaption><b>S10 · Pool limits, phone.</b></figcaption></figure>
 <figure><div data-f="s10-sizes-ph"></div><figcaption><b>S10 · Runner sizes, phone.</b></figcaption></figure>
 <figure><div data-f="s10-tenants-ph"></div><figcaption><b>S10 · Tenants, phone.</b></figcaption></figure>
 <figure><div data-f="s10-yours-ph"></div><figcaption><b>S10 · Workspaces you admin, phone.</b></figcaption></figure>
-<figure><div data-f="s10-sched-ph"></div><figcaption><b>S10 · schedules across workspaces, phone.</b></figcaption></figure>
 </div>
 
-<h2 class="s" id="notes">What this proposal does not decide</h2>
+<h2 class="s" id="notes">Decided, and still open</h2>
+<p>Decided by BGD, and drawn that way above:</p>
 <ul>
-<li>Old addresses (<code>/access</code>, <code>/setup</code>, <code>/settings/workspace</code>, <code>/settings/workspace/secrets</code>, <code>/settings/mcp-servers</code>, <code>/settings/keys</code>, <code>/admin/people</code>) redirect to their Config or Admin page. That is CONFIG-NAV's work and the same in every proposal.</li>
-<li>Settings › API keys is folded into Secrets (Keys for agents and MCP, in the Workspace and Yours scopes), following secrets-scopes.md §4. Settings keeps Profile.</li>
+<li><b>Decided</b> (2026-10-23 23:57Z): schedules and approvals for every workspace stay in Automate. Automate › Schedules keeps its "All workspaces" switch, and Admin's panel only links to Schedules and Approvals (S1, S10).</li>
+<li><b>Decided</b> (2026-10-23 23:57Z): Add a new workspace in Config › Workspace Settings is for platform admins only. A workspace admin sees their own workspaces' settings without it, and members keep Request a workspace (S6).</li>
+<li><b>Decided</b> (2026-10-23 23:57Z): Settings › API keys moves to Config › Secrets › Keys for agents and MCP, in the Workspace and Yours scopes, each set through the one-time form (S4). Settings keeps only Profile, and <code>/settings/keys</code> redirects.</li>
+<li><b>Decided</b> (2026-10-23, ~21:40Z): the tab is named Workspace Settings, exactly as BGD wrote it.</li>
+</ul>
+<p>Still open:</p>
+<ul>
+<li>What a member sees of Config › People and roles. This proposal draws no such page for a member (S1, frame 3): the page is shown to a group workspace's admins only, as BGD's rule of ~21:40Z reads. Today every member can read roles, so a member would lose that read. BGD has not answered this yet.</li>
+<li>Old addresses (<code>/access</code>, <code>/setup</code>, <code>/settings/workspace</code>, <code>/settings/workspace/secrets</code>, <code>/settings/mcp-servers</code>, <code>/admin/people</code>) redirect to their Config or Admin page. That is CONFIG-NAV's work and the same in every proposal.</li>
 <li><b>Create environment</b> turns on only after user-scoped-secrets step 5 (BGD, Q4). Until then the frames draw "Create on GitHub ↗" and Check rule.</li>
 </ul>
 </div>
@@ -534,8 +545,9 @@ function panel(c){var w=WS[c.ws||'group'],r=ROLE[c.role],h='';
       h+=pk('counts','Platform counts',c.page==='counts');
       h+=pk('lock','Platform secrets',c.page==='psecrets');
     }
-  } else if(c.sec==='automate'){
-    h+='<div class="pt">Automate</div>'+pk('automate','Schedules',c.page==='schedules')+pk('check','Approvals',false);
+    h+='<div class="pt">In Automate</div>';
+    h+=pk('automate',(c.role==='platform'?'Schedules, all workspaces':'Schedules')+' '+ic('ext'),false);
+    h+=pk('check','Approvals '+ic('ext'),false);
   }
   h+='</div><div class="pfoot"><div class="pfu"><span class="av">OP</span><span class="u"><b>Operator</b><small>'+r.line+'</small></span><a>Settings</a></div>'+themeCtl(true)+'</div></nav>';
   return h}
@@ -577,7 +589,7 @@ function rwSeg(on,why){return '<span class="seg"><span class="'+(on===0?'on':'')
 P.ghChoose=function(){var rw=function(name,sub,push,on,why){return row(name,sub,push,rwSeg(on,why))};
  return head(CR+'GitHub access › Choose repositories','Choose repositories','Pick what SwarmCloud may reach as you. Read is enforced by SwarmCloud; Write needs push on GitHub.',b('Refresh','ghost'))+
  '<div class="bar-row">'+sel('Owner: acme','Organization · installed')+'<span class="inp">'+ic('search')+'Search acme\'s repositories</span></div>'+
- grp('acme · 14 repositories','Matched by SwarmCloud on part of the name; page 1 of 2.',list([
+ grp('acme · 14 repositories','Matched by SwarmCloud on part of the name. Page 1 of 3, five a page: 9 more on pages 2 and 3.',list([
    rw('acme/web-app','Updated 2 h ago',tn('ok','GitHub lets you push here'),2),
    rw('acme/api','Updated yesterday',tn('ok','GitHub lets you push here'),1),
    rw('acme/docs','Updated 5 days ago',tn('neu','You can read, not push'),1,'You can read, not push'),
@@ -589,6 +601,7 @@ P.repos=function(){return head(CR+'Repositories','Repositories','What agents in 
  grp('Repositories SwarmCloud may reach as you','An agent for a repository not on this list is refused at submission. Last verified 8 min ago.',list([
    row('acme/web-app','Write · Clone ok · Push ok · Pull request ok · verified 8 min ago',chip('registered'),b('Re-check')+b('Change to Read')+b('Remove access','ghost dng')),
    row('acme/api','Read · Clone ok · verified 8 min ago',chip('registered'),b('Re-check')+b('Remove access','ghost dng')),
+   row('acme/docs','Read · Clone ok · verified 8 min ago',chip('registered'),b('Re-check')+b('Remove access','ghost dng')),
    row('operator-gh/notes','Read · not checked yet',dash('No check has run'),b('Register')+b('Re-check')+b('Remove access','ghost dng'))]),b('Re-check all'))+
  grp('Registered in this workspace','The repository index, its schedule and what uses it. Open one for Overview, Graph, Impact, Test map, Hot-spots, Index runs, Settings and Used by.',list([
    row('acme/web-app','Nightly and on change · 1,284 tests mapped',tn('ok','matches the head')+'<span>indexed 2 h ago</span>',b('Index now')+b('Open '+ic('chev'),'ghost')),
@@ -607,17 +620,17 @@ P.secWs=function(){
   [['SENTRY_DSN',1,1,0,0],['NPM_READ',1,1,1,0],['LINEAR_MCP',0,0,0,1]].map(function(r){return ['<span class="mono">'+r[0]+'</span>'].concat(r.slice(1).map(function(v){return v?tn('ok','yes'):'<span class="dash">no</span>'}))}));
  return secHead()+tabs(SCOPES,0)+'<p class="note">'+ORDER+'</p>'+
  grp('For agents','Released to an attempt only through a grant below.',tbl(['Name','Updated','Last released',''],[
-   ['<span class="mono">SENTRY_DSN</span>'+chip(ic('info')+'Operator\'s own value wins on Operator\'s agents','ov')+' '+chip('acme/web-app has its own','ov'),'3 days ago · Rin Okafor',dash('the API does not say yet'),setBtns()],
-   ['<span class="mono">NPM_READ</span>','12 days ago · Operator',dash('the API does not say yet'),setBtns()],
-   ['<span class="mono">LINEAR_MCP</span><small>credential of the MCP server linear</small>','20 days ago · Operator',dash('the API does not say yet'),setBtns()]]),b('Add a secret','pri'))+
+   ['<span class="mono">SENTRY_DSN</span>'+chip(ic('info')+'Operator\'s own value wins on Operator\'s agents','ov')+' '+chip('acme/web-app has its own','ov'),'<span class="nw">3 days ago</span><small>Rin Okafor</small>',dash('the API does not say yet'),setBtns()],
+   ['<span class="mono">NPM_READ</span>','<span class="nw">12 days ago</span><small>Operator</small>',dash('the API does not say yet'),setBtns()],
+   ['<span class="mono">LINEAR_MCP</span><small>credential of the MCP server linear</small>','<span class="nw">20 days ago</span><small>Operator</small>',dash('the API does not say yet'),setBtns()]]),b('Add a secret','pri'))+
  grp('Grants','Which runner profiles and MCP servers receive each secret.',matrix,b('Edit grants'))+
- grp('Keys for agents and MCP','Provider keys and stored MCP credentials. Each Set opens the one-time form.',tbl(['Key','Used by','State',''],[
+ grp('Keys for agents and MCP','The workspace\'s keys: provider keys, TypeSafe and stored MCP credentials, moved here from Settings › API keys. Each Set opens the one-time form.',tbl(['Key','Used by','State',''],[
    ['TypeSafe key <small>workspace</small>','Every agent in eng, unless a person set their own',tn('ok','set')+'<small>5 days ago · Operator</small>',setBtns()],
    ['Anthropic API key <small>runner LLM</small>','Runners that bill to a key',tn('ok','set')+'<small>41 days ago · Rin Okafor</small>',setBtns()],
    ['OpenAI API key <small>runner LLM</small>','The codex runner',tn('neu','not set'),b('Set','pri')],
    ['MCP server linear','Stored as LINEAR_MCP above',tn('ok','set')+'<small>20 days ago</small>',b('Open in For agents','ghost')],
    ['Claude subscription accounts','Pool accounts, held by the quota broker','<span>6 accounts</span>',b('Capacity › Accounts '+ic('chev'),'ghost')]]))+
- grp('GitHub','Status only. Connecting is on GitHub access.',list([row('Workspace token','GitHub App installation on acme · verified 1 h ago',tn('ok','active')+dash('installation tokens are minted per use, so there is no expiry to show'),b('GitHub access '+ic('chev'),'ghost'))]))};
+ grp('GitHub','Status only. Connecting is on GitHub access.',list([row('Workspace token','GitHub App installation on acme · verified 1 h ago',tn('ok','active')+dash('no expiry: minted per use'),b('GitHub access '+ic('chev'),'ghost'))]))};
 P.secYours=function(){return secHead()+tabs(SCOPES,1)+'<p class="note">Yours alone, in your personal workspace. Opt a secret in to a group workspace to use it on your own agents there.</p>'+
  grp('For agents','',tbl(['Name','Used in','Updated',''],[
    ['<span class="mono">SENTRY_DSN</span>'+chip(ic('info')+'Overrides eng\'s value on your agents','ov'),'eng (opted in)','2 days ago',setBtns()],
@@ -625,14 +638,14 @@ P.secYours=function(){return secHead()+tabs(SCOPES,1)+'<p class="note">Yours alo
  grp('Browser sessions','Saved from a live browser: the worker exports the session, it is never typed. Delete it here.',tbl(['Session','Saved','Expires',''],[
    ['studio-staging','2 days ago','in 5 days',b('Delete','ghost dng')],
    ['jira-sso','9 days ago',tn('bad','expired 2 days ago'),b('Delete','ghost dng')]]))+
- grp('Keys for agents and MCP','',tbl(['Key','Used by','State',''],[['Your TypeSafe key','Your agents, in every workspace you opt in; wins over the workspace\'s',tn('ok','set')+'<small>20 days ago</small>',setBtns()]]))+
+ grp('Keys for agents and MCP','Your own keys, moved here from Settings › API keys. Each Set opens the one-time form.',tbl(['Key','Used by','State',''],[['Your TypeSafe key','Your agents, in every workspace you opt in; wins over the workspace\'s',tn('ok','set')+'<small>20 days ago</small>',setBtns()]]))+
  grp('GitHub','Status only.',list([row('Your user token','@operator-gh · GitHub App · user token · renewed automatically',tn('ok','active')+'<span>expires in 7 h</span>',b('GitHub access '+ic('chev'),'ghost'))]))};
 function repoBar(r,dest){return '<div class="bar-row">'+sel('Repository: '+r)+seg(['Agents','GitHub Actions'],dest)+'</div>'}
 P.secRepo=function(){return secHead()+tabs(SCOPES,2)+repoBar('acme/web-app',0)+
  callout('Released only to agents that clone <b>acme/web-app</b>. You may set these as a workspace admin; a platform admin, or a member whom '+GHA+' of this repository (checked live), may too.')+
  grp('For agents','',tbl(['Name','Updated','Last released',''],[
-   ['<span class="mono">SENTRY_DSN</span>'+chip(ic('info')+'Overrides eng\'s value; Operator\'s own wins on Operator\'s agents','ov'),'6 days ago · Operator',dash('the API does not say yet'),setBtns()],
-   ['<span class="mono">E2E_FIXTURE_URL</span>','6 days ago · Operator',dash('the API does not say yet'),setBtns()]]),b('Add a secret','pri'))+
+   ['<span class="mono">SENTRY_DSN</span>'+chip(ic('info')+'Overrides eng\'s value; Operator\'s own wins on Operator\'s agents','ov'),'<span class="nw">6 days ago</span><small>Operator</small>',dash('the API does not say yet'),setBtns()],
+   ['<span class="mono">E2E_FIXTURE_URL</span>','<span class="nw">6 days ago</span><small>Operator</small>',dash('the API does not say yet'),setBtns()]]),b('Add a secret','pri'))+
  grp('QA sign-ins','Each QA target of acme/web-app, per environment. A production leg reads only.',tbl(['Target · environment','Sign-in credential','Challenge bypass',''],[
    ['AI Studio · staging <small>staging.app.example.com</small>',tn('ok','set')+'<small>4 days ago · Operator</small>',tn('ok','set')+'<small>4 days ago · Operator</small>',b('Set credential')+b('Set bypass')],
    ['AI Studio · production <small>app.example.com</small>',tn('ok','set')+'<small>1 day ago · Rin Okafor</small>','<span class="dash">no bypass configured</span>',b('Set credential')],
@@ -649,7 +662,7 @@ P.secActions=function(){var envs='<div class="list">'+
    ['<span class="mono">NPM_PUBLISH</span>','2 days ago','SwarmCloud · Operator',setBtns()],
    ['<span class="mono">CODECOV_UPLOAD</span>','3 months ago','set on GitHub',setBtns()]]),b('Set a secret','pri'))+
  grp('Environments','SwarmCloud does not create environments yet. Create one on GitHub, then check its rule here before writing into it.',envs,b('Create on GitHub '+ic('ext'))+b('Check rule'))};
-var SET_BODY='<div class="lbl">Destination</div><div class="list">'+row('acme/web-app › GitHub Actions › environment repo-secrets','Main only, checked 1 min ago · sealed in swarm-api to GitHub\'s key, then sent to GitHub')+'</div>'+
+var SET_BODY='<div class="lbl">Destination</div><div class="list">'+row('acme/web-app › GitHub Actions › environment <span style="white-space:nowrap">repo-secrets</span>','Main only, checked 1 min ago · sealed in swarm-api to GitHub\'s key, then sent to GitHub')+'</div>'+
  '<div class="lbl">Name</div><div class="inp"><span class="mono" style="color:var(--text)">PYPI_PUBLISH</span></div>'+
  '<div class="lbl">Value</div><div class="box">Paste the value here. It is masked as you type and is not kept in this page.</div>'+
  callout('This form works once. SwarmCloud keeps the name, who set it and when, nothing else, and the value is never shown again: not here, not in a log, not to an agent.')+
@@ -697,16 +710,22 @@ P.adminPeopleWs=function(){return head('Admin › People and roles','People and 
  '<p class="note">Ceilings, Claude accounts, platform admins and workspace requests are a platform admin\'s, so they are not on this page.</p>'};
 
 /* S6 */
-P.ws=function(){var st=function(t,ok,extra,act){return row(t,extra||'',ok===true?tn('ok','done'):ok==='warn'?tn('warn','needs a look'):tn('neu','not started'),act||'')};
+P.ws=function(role){role=role||'platform';var adm=role!=='member';
+ var st=function(t,ok,extra,act){return row(t,extra||'',ok===true?tn('ok','done'):ok==='warn'?tn('warn','needs a look'):tn('neu','not started'),act||'')};
+ var mine=role==='platform'?[row('eng','Group · Admin',chip('this one','ac')),row('qa-lab','Group · Admin','',b('Switch')),row('Operator','Personal','',b('Switch'))]
+  :role==='wsadmin'?[row('eng','Group · Admin',chip('this one','ac')),row('qa-lab','Group · Admin','',b('Switch')),row('Operator','Personal','',b('Switch'))]
+  :[row('eng','Group · Member',chip('this one','ac')),row('Operator','Personal','',b('Switch'))];
+ var wsFoot=role==='platform'?b(ic('submit')+'Add a new workspace','pri')
+  :b('Request a workspace');
  return head(CR+'Workspace Settings','Workspace Settings','eng · group workspace')+
- grp('Settings','',list([row('Name','eng','',b('Rename')),row('Workspace id','<span class="mono">eng</span>','',b('Copy','ghost')),row('Kind','Group workspace'),row('Your role','Admin')]))+
- grp('Code intelligence','Off by default. When on, the repository index is used to choose context and tests; nothing leaves the platform until you turn it on.',list([row('Code intelligence','',tn('neu','off'),b('Turn on'))]))+
+ grp('Settings',adm?'':'You can read these. An admin of eng changes them.',list([row('Name','eng','',adm?b('Rename'):''),row('Workspace id','<span class="mono">eng</span>','',b('Copy','ghost')),row('Kind','Group workspace'),row('Your role',adm?'Admin':'Member')]))+
+ grp('Code intelligence','Off by default. When on, the repository index is used to choose context and tests; nothing leaves the platform until you turn it on.',list([row('Code intelligence','',tn('neu','off'),adm?b('Turn on'):'<span class="dash">an admin turns it on</span>')]))+
  grp('Workspace setup','The checklist Overview shows until every step is done. 6 of 7 done.',list([
-   st('Request your workspace',true),st('Add a Claude account',true),st('Connect GitHub',true,'@operator-gh'),st('Install the App',true,'on acme and operator-gh'),st('Enable orgs',true),st('Choose repositories',true,'3 chosen'),
+   st('Request your workspace',true),st('Add a Claude account',true),st('Connect GitHub',true,'@operator-gh'),st('Install the App',true,'on acme and operator-gh'),st('Enable orgs',true),st('Choose repositories',true,'4 chosen'),
    st('Verify access','warn','operator-gh/notes has not been checked yet.',b('Verify','pri'))]),'<span class="dash">Hidden from Overview</span>'+b('Show on Overview'))+
- grp('Your workspaces','',list([row('eng','Group · Admin',chip('this one','ac')),row('qa-lab','Group · Admin','',b('Switch')),row('Operator','Personal','',b('Switch'))]),b(ic('submit')+'Add a new workspace','pri'))};
+ grp('Your workspaces',role==='platform'?'As a platform admin you may add a workspace, as on Admin › Tenants.':'Adding a workspace is a platform admin\'s. Request a workspace asks one.',list(mine),wsFoot)};
 var NEW_BODY='<div class="lbl">Kind</div>'+seg(['Personal','Group','Service'],1)+'<div class="lbl">Address</div><div class="inp">ml-research@example.com</div><div class="lbl">Display name (optional)</div><div class="inp">ML research</div>'+
- callout('A group gets its own namespace, service account, secrets prefix and default limits. As an admin you file it approved; a Service waits for the platform owner.')+
+ callout('A group gets its own namespace, service account, secrets prefix and default limits. As a platform admin you file it approved; a Service waits for the platform owner.')+
  '<p class="note">Limits are the platform\'s default for the kind. Nothing here names an image, a command or a resource size.</p>';
 var NEW_STEPS='<div class="lbl">ml-research · being built</div><ol class="steps">'+
  [['Approved','ok'],['Checking the name is free','ok'],['Identity','ok'],['Access','run'],['Namespace',''],['Limits',''],['Final check','']].map(function(s){return '<li>'+(s[1]==='ok'?tn('ok',''):s[1]==='run'?'<span class="tn run">'+ic('dot')+'</span>':tn('neu',''))+'<span>'+s[0]+'</span>'+(s[1]==='run'?'<span class="dash">running, read 5 s ago</span>':'')+'</li>'}).join('')+'</ol>';
@@ -714,12 +733,12 @@ P.wsSheet=function(){return sheet('Add a new workspace','Files the request; the 
 P.wsSheetDone=function(){return sheet('Add a new workspace','Filed. The workspace job is building it.',NEW_STEPS,b('Close','ghost'))};
 
 /* S7 */
-P.psecrets=function(){var H=['Secret','State','Versions','Age','Managed by · value written by'];
+P.psecrets=function(){var H=['Secret','State','Versions','Age','Managed by'];
  var r=function(name,state,v,age,mgr){return ['<span class="mono">'+name+'</span>',state,v,age,mgr]};
  return head('Admin › Platform secrets','Platform secrets','Status only: set or not, versions, age and what manages each. No value, no length, no last characters, and no form on this page.','<span class="dash">read 2 min ago</span>'+b('Read again'))+
- grp('GitHub App','',tbl(H,[r('swarm-github-app-private-key',tn('ok','set'),'1','41 days','Terraform declares · create-secrets.sh --github-app'),r('swarm-github-app-client-secret',tn('ok','set'),'1','41 days','Terraform declares · create-secrets.sh --github-app'),r('swarm-github-app-webhook-secret',tn('ok','set'),'1','41 days','Terraform declares · create-secrets.sh --github-app-webhook-secret')],{num:[2],cls:'fx'}))+
- grp('Keys the platform signs with','',tbl(H,[r('swarm-live-key',tn('ok','set'),'2 <small>rotation in its grace</small>','3 days','Terraform declares · create-secrets.sh --live-key'),r('swarm-child-key',tn('ok','set'),'1','58 days','Terraform declares · create-secrets.sh --child-key'),r('swarm-settings-key',tn('ok','set'),'1','58 days','Terraform declares · create-secrets.sh --settings-mac-key'),r('swarm-workspace-grant-key',tn('ok','set'),'1','12 days','Terraform declares · create-secrets.sh --workspace-grant-key')],{num:[2],cls:'fx'}))+
- grp('Network, search and forwarding','',tbl(H,[r('swarm-search-api-key',tn('ok','set'),'1','30 days','Terraform declares · create-secrets.sh --search-api-key'),r('swarm-egress-credential',tn('bad','declared, no enabled version'),'0',dash('no version'),'Terraform declares · create-secrets.sh --egress-credential'),r('swarm-tailscale-oauth',tn('neu','not declared'),'—',dash('none'),'Terraform declares · create-secrets.sh --tailscale-oauth')],{num:[2],cls:'fx'}))+
+ grp('GitHub App','',tbl(H,[r('swarm-github-app-private-key',tn('ok','set'),'1','41 days','Terraform declares<small>value written by</small><small class="mono"><span class="nw">create-secrets.sh</span> <span class="nw">--github-app</span></small>'),r('swarm-github-app-client-secret',tn('ok','set'),'1','41 days','Terraform declares<small>value written by</small><small class="mono"><span class="nw">create-secrets.sh</span> <span class="nw">--github-app</span></small>'),r('swarm-github-app-webhook-secret',tn('ok','set'),'1','41 days','Terraform declares<small>value written by</small><small class="mono"><span class="nw">create-secrets.sh</span> <span class="nw">--github-app-webhook-secret</span></small>')],{num:[2],cls:'fx'}))+
+ grp('Keys the platform signs with','',tbl(H,[r('swarm-live-key',tn('ok','set'),'2 <small>rotation in its grace</small>','3 days','Terraform declares<small>value written by</small><small class="mono"><span class="nw">create-secrets.sh</span> <span class="nw">--live-key</span></small>'),r('swarm-child-key',tn('ok','set'),'1','58 days','Terraform declares<small>value written by</small><small class="mono"><span class="nw">create-secrets.sh</span> <span class="nw">--child-key</span></small>'),r('swarm-settings-key',tn('ok','set'),'1','58 days','Terraform declares<small>value written by</small><small class="mono"><span class="nw">create-secrets.sh</span> <span class="nw">--settings-mac-key</span></small>'),r('swarm-workspace-grant-key',tn('ok','set'),'1','12 days','Terraform declares<small>value written by</small><small class="mono"><span class="nw">create-secrets.sh</span> <span class="nw">--workspace-grant-key</span></small>')],{num:[2],cls:'fx'}))+
+ grp('Network, search and forwarding','',tbl(H,[r('swarm-search-api-key',tn('ok','set'),'1','30 days','Terraform declares<small>value written by</small><small class="mono"><span class="nw">create-secrets.sh</span> <span class="nw">--search-api-key</span></small>'),r('swarm-egress-credential',tn('bad','no enabled version')+'<small>declared, never set</small>','0',dash('none'),'Terraform declares<small>value written by</small><small class="mono"><span class="nw">create-secrets.sh</span> <span class="nw">--egress-credential</span></small>'),r('swarm-tailscale-oauth',tn('neu','not declared')+'<small>Tailscale is not turned on here</small>','—',dash('none'),'Terraform declares<small>value written by</small><small class="mono"><span class="nw">create-secrets.sh</span> <span class="nw">--tailscale-oauth</span></small>')],{num:[2],cls:'fx'}))+
  grp('Subscription accounts','',list([row('swarm-account-… (one per account)','14 accounts, written and refreshed by the quota broker','',b('Capacity › Accounts '+ic('chev'),'ghost'))]))};
 
 /* S8 */
@@ -764,8 +783,8 @@ P.qaRun=function(){var col=function(env,host,state,kv,note){return '<div class="
  grp('Seen on one environment only','Information about what has shipped where, never a filed finding.',list([row('/labs/agents-v2','on staging, not on production',chip('staging')),row('/help/shortcuts','on production, not on staging',chip('production'))]))+
  grp('New since the last run','',list([row('/settings/billing','found on both',chip('both'),b('Promote')),row('/labs/agents-v2','found on staging',chip('staging'),b('Promote')),row('/help/shortcuts','found on production',chip('production'),b('Promote'))]))+
  '<div class="grp"><div class="grp-h"><div class="t"><h4>By environment</h4></div></div><div class="cols">'+
- col('staging','staging.app.example.com',tn('ok','succeeded'),[['Steps','8 of 8'],['Screens captured','42 stored · 5 new'],['Coverage','42 of 42 stored · 5 new · 2 over the cap · 0 not reached'],['Crawl stopped by','done'],['Findings','0 critical · 3 major · 7 minor'],['Issues filed','10, titled [staging]'],['Gate refusals','0']])+
- col('production','app.example.com',tn('warn','succeeded, crawl cut short'),[['Steps','8 of 8'],['Screens captured','40 stored · 2 new'],['Coverage','40 of 42 stored · 2 new · 0 over the cap · 1 not reached'],['Crawl stopped by','time: a missing route is not evidence it is gone'],['Findings','0 critical · 1 major · 4 minor'],['Issues filed','5, titled [production]'],['Gate refusals','4 writes refused (reads only)']],'reads only')+
+ col('staging','staging.app.example.com',tn('ok','succeeded'),[['Steps','8 of 8'],['Screens captured','42 stored · 2 new'],['Coverage','42 of 42 stored · 2 new · 0 over the cap · 0 not reached'],['Crawl stopped by','done'],['Findings','0 critical · 3 major · 7 minor'],['Issues filed','10, titled [staging]'],['Gate refusals','0']])+
+ col('production','app.example.com',tn('warn','succeeded, crawl cut short'),[['Steps','8 of 8'],['Screens captured','40 stored · 2 new'],['Coverage','40 of 42 stored · 2 new · 0 over the cap · 2 not reached'],['Crawl stopped by','time: a missing route is not evidence it is gone'],['Findings','0 critical · 1 major · 4 minor'],['Issues filed','5, titled [production]'],['Gate refusals','4 writes refused (reads only)']],'reads only')+
  '</div></div>'};
 
 /* S10 */
@@ -783,10 +802,6 @@ P.tenants=function(){return head('Admin › Tenants','Tenants','Every workspace 
 P.yours=function(){var w=function(name,people){return row(name,'Group · '+people,'',b('People and roles')+b('Secrets')+b('MCP servers')+b('Workspace Settings'))};
  return head('Admin › Workspaces you admin','Workspaces you admin','Each opens its Config pages, switching workspace on the way.')+
  grp('Group workspaces','',list([w('eng','4 people'),w('qa-lab','2 people')]))};
-P.sched=function(){return head('Automate › Schedules','Schedules','Every workspace\'s schedules, for an admin. Edit a schedule from its own workspace.',seg(['Mine','All workspaces'],1))+
- grp('Schedules','',tbl(['Schedule','Workspace','Next','Spend, last 7 days',''],[['Nightly visual QA · AI Studio','qa-lab','tonight, 02:00','$61',b('Pause')+b('Disable','ghost')],['Index acme/web-app','eng','in 3 h','$4',b('Pause')+b('Disable','ghost')],['Weekly dependency review','design',tn('neu','paused'),'$0',b('Re-enable')]]),b('Pause all of one workspace…'))+
- grp('Schedule tick','',list([row('Last hour','12 firings · 0 skipped',tn('ok','healthy'))]))};
-
 /* ---------- frames ---------- */
 var C=function(page,o){o=o||{};return {role:o.role||'platform',ws:o.ws||'group',sec:o.sec||'config',page:page,kid:o.kid}};
 var F={};
@@ -810,7 +825,9 @@ both('s5-mcp',C('mcp'),P.mcp,'MCP servers');
 both('s5-people',C('people'),P.people,'People and roles');
 both('s5-admin-platform',C('apeople',{sec:'admin'}),P.adminPeoplePlatform,'People and roles');
 both('s5-admin-ws',C('apeople',{sec:'admin',role:'wsadmin'}),P.adminPeopleWs,'People and roles');
-both('s6',C('ws'),P.ws,'Workspace Settings');
+both('s6',C('ws'),function(){return P.ws('platform')},'Workspace Settings');
+both('s6-wsadmin',C('ws',{role:'wsadmin'}),function(){return P.ws('wsadmin')},'Workspace Settings');
+both('s6-member',C('ws',{role:'member'}),function(){return P.ws('member')},'Workspace Settings');
 both('s6-new',C('ws'),function(){return placeholder(CR+'Workspace Settings','Workspace Settings')},'Workspace Settings',{sheet:P.wsSheet,phSheet:P.wsSheetDone});
 both('s7',C('psecrets',{sec:'admin'}),P.psecrets,'Platform secrets');
 both('s8',C('counts',{sec:'admin'}),P.counts,'Platform counts');
@@ -820,7 +837,6 @@ both('s10-limits',C('limits',{sec:'admin'}),P.limits,'Pool limits');
 both('s10-sizes',C('sizes',{sec:'admin'}),P.sizes,'Runner sizes');
 both('s10-tenants',C('tenants',{sec:'admin'}),P.tenants,'Tenants');
 both('s10-yours',C('ayours',{sec:'admin',role:'wsadmin'}),P.yours,'Workspaces you admin');
-both('s10-sched',C('schedules',{sec:'automate'}),P.sched,'Schedules');
 
 function render(){
   document.querySelectorAll('[data-theme-toggle]').forEach(function(el){if(!el.children.length)el.outerHTML=themeCtl(false)});
