@@ -1410,6 +1410,9 @@ export interface Rfb {
   readonly _fbHeight?: number
 }
 
+/** The gate's words once the attempt ended and Chromium closed: held equal to mask.py `REASON_BROWSER_CLOSED`. */
+const BROWSER_CLOSED = 'The agent has finished; its browser is closed.'
+
 /**
  * WHY THE PAGE IS NOT SHOWN (LIVE-BLANK; part of #1030). The gate fills a frame
  * it cannot vouch for -- every pixel it sends passes its mask -- and names the
@@ -1419,10 +1422,12 @@ export interface Rfb {
  * flat page area on Google's reCAPTCHA page, and nothing here said why.
  *
  * The reason, when `name` is one; null for the gate's ordinary name (the page is
- * shown), or anything else.
+ * shown), or anything else. After the attempt ends the gate says, with no lead,
+ * that the agent finished (mask.py `REASON_BROWSER_CLOSED`; GREY-TAIL, part of #1344).
  */
 export function gateReason(name: unknown): string | null {
   if (typeof name !== 'string') return null
+  if (name === BROWSER_CLOSED) return name
   return /^(Can['’]t show this page safely|Part of this page is covered): /.test(name) ? name : null
 }
 

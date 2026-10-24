@@ -91,9 +91,9 @@ def test_the_package_pins_jev_browser_and_the_images_playwright_exactly():
     assert pkg["private"] is True
     assert pkg["dependencies"] == {"jev-browser": VERSION, "playwright": "1.63.0"}
     # jev-browser asks for `playwright ^1.63.0`; the override holds it to the
-    # Playwright whose Chromium revision the image already carries. body-parser
-    # (through express) is held at 2.4.0, the fix for CVE-2026-111181, which
-    # trivy refused the browser image for at 2.3.0.
+    # Playwright whose Chromium revision the image already carries.
+    # body-parser 2.4.0 (2026-10-24): express's 2.3.0 carries CVE-2026-111181
+    # (HIGH), which trivy refuses, so every browser image build failed on it.
     assert pkg["overrides"] == {"playwright": "1.63.0", "body-parser": "2.4.0"}
     args = _args(_instructions(DOCKERFILE.read_text()))
     assert args["PLAYWRIGHT_VERSION"] == pkg["dependencies"]["playwright"]

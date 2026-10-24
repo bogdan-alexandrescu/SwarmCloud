@@ -310,6 +310,15 @@ _BATCH_TASK_SCHEMA: dict[str, Any] = {
 _SINGLE_TASK_ARGS = ("prompt", "profile", "repo", "ref", "infer", "strategy", "label", "inputs", "files",
                      "mcp_credentials", "additional_repositories", "model_class")
 
+#: Why `tasks` takes no `publish_to_pr` (#2183, PTP-DISPATCH): a pull request's
+#: branch takes one lane's fast-forward, so several tasks publishing onto one
+#: would race, and only one of them could land.
+_BATCH_PUBLISH_REFUSAL = (
+    "publish_to_pr pushes one task's commits onto one existing pull request: one "
+    "pull request, one publishing task. Dispatch that task alone, with `prompt` and "
+    "`publish_to_pr`. Nothing was sent"
+)
+
 #: `swarm_account_pause`/`resume`/`drain` share one shape.
 _ACCOUNT_STATE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -379,7 +388,17 @@ TOOLS: list[dict[str, Any]] = [
             "\n"
             "MORE THAN ONE REPOSITORY: `additional_repositories` names registered "
             "repositories the agent reads, read-only, at ../repos/<name> beside its own; "
-            "only its own repository's changes come back."
+            "only its own repository's changes come back.\n"
+            "\n"
+            "A FOLLOW-UP TASK ON AN EXISTING PULL REQUEST (#2183): `publish_to_pr` names a "
+            "pull request of the task's repository (41, \"#41\", owner/repo#41 or its URL), "
+            "and the task's commits are pushed onto that pull request's branch as a "
+            "fast-forward instead of opening a new one. One task only: beside `tasks`, or "
+            "in one of them, it is refused before anything is sent, because one pull "
+            "request takes one publishing task. It is sent top-level, only when given. "
+            "The API checks the rest: `strategy: direct-pr`, a repository, no `ref`, and a "
+            "pull request that is open, not from a fork, on a `swarm/task_*` branch a lane "
+            "of your tenant published. The reply's `publish_to_pr` says what was sent."
         ),
         "inputSchema": {
             "type": "object",
@@ -439,6 +458,16 @@ TOOLS: list[dict[str, Any]] = [
                 "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
                 "additional_repositories": _ADDITIONAL_REPOSITORIES_SCHEMA,
                 "model_class": _MODEL_CLASS_SCHEMA,
+                "publish_to_pr": {
+                    "type": ["integer", "string"],
+                    "description": (
+                        "An existing pull request of this task's repository to push its "
+                        "commits onto, instead of opening one (#2183): its number (41), "
+                        "\"#41\", owner/repo#41 or its https://github.com/<owner>/<repo>/"
+                        "pull/<n> URL. Needs `strategy: direct-pr`. One task only: refused "
+                        "beside `tasks`."
+                    ),
+                },
                 "tasks": {
                     "type": "array",
                     "minItems": 1,
@@ -1011,8 +1040,8 @@ TOOLS: list[dict[str, Any]] = [
             "`spec`: a whole workflow spec object exactly as the terminal's "
             "workflow command reads it (`steps`, `strategy`, `carrier`, `repository_url`, "
             "`repository_ref`, `on_step_failure`, `priority`, `label`, "
-            "`additional_repositories`), nothing "
-            "else beside it but `infer` and `mcp_credentials` -- or, so no model has to retype a long "
+            "`additional_repositories`, `after`, `merge`, `title`, `publish_to_pr`), nothing "
+            "else beside it but `infer`, `mcp_credentials` and `publish_to_pr` -- or, so no model has to retype a long "
             "spec, as `spec_path` (a JSON spec file this bridge reads itself), "
             "`spec_ref` (the id `swarm_workflow_spec` handed back for a file it "
             "read) or `spec_handle` (the file swarm_workflow_launch wrote the spec "
@@ -1040,7 +1069,20 @@ TOOLS: list[dict[str, Any]] = [
             "registered repositories every step reads at ../repos/<name>; a step's own "
             "`additional_repositories` REPLACES that list, and `[]` means none. Every "
             "step of one submission reads each at the same pinned commit. `infer` never "
-            "changes them."
+            "changes them.\n"
+            "\n"
+            "A FOLLOW-UP LANE ON AN EXISTING PULL REQUEST (#2183): `publish_to_pr` -- the "
+            "spec's top-level key, or this tool's argument beside `steps` or a spec -- "
+            "names a pull request of the workflow's repository (41, \"#41\", "
+            "owner/repo#41 or its URL), and the lane's commits are pushed onto that pull "
+            "request's branch as a fast-forward instead of opening a new one. It is sent "
+            "top-level, and NO `merge` is sent with it: such a lane opens no pull request, "
+            "so a spec that names it beside a merge step or a `merge` other than \"off\" "
+            "is refused before anything is sent, with the API's reason. The API checks the "
+            "rest: `direct-pr` of one agent step or `integrate`, a repository, no "
+            "`repository_ref`, no `carrier: branches`, and a pull request that is open, "
+            "not from a fork, on a `swarm/task_*` branch a lane of your tenant published. "
+            "The reply's `publish_to_pr` says what was sent and that no merge was."
         ),
         "inputSchema": {
             "type": "object",
@@ -1099,6 +1141,18 @@ TOOLS: list[dict[str, Any]] = [
                     ),
                 },
                 "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
+                "publish_to_pr": {
+                    "type": ["integer", "string"],
+                    "description": (
+                        "An existing pull request of the workflow's repository to push the "
+                        "lane's commits onto, instead of opening one (#2183): its number "
+                        "(41), \"#41\", owner/repo#41 or its https://github.com/<owner>/"
+                        "<repo>/pull/<n> URL. Beside `steps` or a spec; a spec may carry it "
+                        "as its own top-level key, and the two must name the same pull "
+                        "request. No merge is sent with it, and a merge step or a `merge` "
+                        "other than \"off\" beside it is refused before anything is sent."
+                    ),
+                },
                 "merge_pr": {
                     "type": "object",
                     "description": (
@@ -2772,16 +2826,20 @@ def _step_servers(steps: list[dict[str, Any]]) -> set[str]:
 
 def _dispatch_signature(profile: str, prompt: str, strategy: str | None, repository, inputs: Any,
                         additional: list[dict[str, str]] | None = None,
-                        model_class: str | None = None) -> tuple:
+                        model_class: str | None = None,
+                        publish_to_pr: int | str | None = None) -> tuple:
     # The repositories it reads are part of what the task IS: the same prompt
     # over another set of repositories is a different question, not a repeat.
     # So is the model class it runs (#1435): one prompt on `haiku` and on
-    # `opus` is a comparison, not a double dispatch.
+    # `opus` is a comparison, not a double dispatch. So is the pull request it
+    # publishes onto (#2183): the same prompt as a new pull request and onto
+    # an existing one are two deliveries.
     return (
         profile, prompt, strategy or "collect", repository.url, repository.ref,
         json.dumps(inputs or {}, sort_keys=True, default=str),
         json.dumps(additional, sort_keys=True),
         model_class,
+        publish_to_pr,
     )
 
 
@@ -4430,8 +4488,13 @@ def _workflow_created(
     envelope: dict[str, Any], *, placed: dict[str, Any], repository: dict[str, Any],
     digest: str | None = None, expected_digest: Any = None,
     given: list[str] | None = None, name: str | None = None,
+    publish_to_pr: int | str | None = None,
 ) -> str:
     """`swarm_workflow`'s answer to an accepted submission, spec or `merge_pr`.
+
+    With `publish_to_pr` (#2183) the answer says what was sent and that no
+    merge was: the caller who wrote `merge: "off"` reads why it is not in the
+    request, and nobody waits for a merge step that will never be appended.
 
     `given` is the step ids this bridge submitted. Each reply step then says
     whether SwarmCloud ADDED it (`added`): swarm-api appends a re-review and a
@@ -4506,6 +4569,14 @@ def _workflow_created(
         # session's bridge refuses the follow its rows make.
         "bridge_version": bridge_version(),
     })
+    if publish_to_pr is not None:
+        created["publish_to_pr"] = {
+            "pull_request": publish_to_pr,
+            "merge": (
+                "no merge sent: the lane pushes onto this existing pull request and "
+                "opens none, so no merge step is appended and nothing merges it"
+            ),
+        }
     if digest is not None:
         # What was RECEIVED, so a caller that did not pass `spec_digest` can
         # still compare it with the spec it meant.
@@ -4551,6 +4622,15 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
     timeout."""
     _refuse_unknown_arguments(name, args)
     if name == "swarm_dispatch" and args.get("tasks") is not None:
+        # Before any request, `/v1/stats` included: neither the call nor a
+        # task of it may name a pull request to publish onto (#2183).
+        if args.get("publish_to_pr") is not None:
+            raise SwarmError(f"swarm_dispatch was given `tasks` AND `publish_to_pr`. "
+                             f"{_BATCH_PUBLISH_REFUSAL}")
+        for index, item in enumerate(args["tasks"] if isinstance(args["tasks"], list) else []):
+            if isinstance(item, dict) and "publish_to_pr" in item:
+                raise SwarmError(f"swarm_dispatch tasks[{index}] names `publish_to_pr`. "
+                                 f"{_BATCH_PUBLISH_REFUSAL}")
         beside = sorted(k for k in _SINGLE_TASK_ARGS if args.get(k) is not None)
         if beside:
             raise SwarmError(
@@ -4596,6 +4676,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # open yet, say -- comes back as it was answered.
         model_class = catalogue.check_model_class(
             profile, args.get("model_class"), where="swarm_dispatch")
+        # THE PULL REQUEST it publishes onto (#2183), in every form
+        # `parse_pull_request` reads and sent in the form swarm_workflow sends.
+        # Refused here, before any request, when it names none; whether this
+        # tenant may push onto it is the API's to say.
+        publish_to_pr = workflows.check_publish_to_pr(args.get("publish_to_pr"), where="swarm_dispatch")
         # WHAT IS CLONED, decided before anything travels: the caller's repo,
         # or -- only with `infer: true` -- the checkout this bridge runs in,
         # refused when its branch is not pushed, because a remote agent on an
@@ -4607,7 +4692,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             infer=_flag(args, "infer"),
         )
         signature = _dispatch_signature(profile, args["prompt"], strategy, repository, inputs, additional,
-                                        model_class)
+                                        model_class, publish_to_pr)
         _refuse_a_repeat_dispatch(client, signature)
         if strategy == "direct-pr" and not repository.url:
             raise SwarmError(
@@ -4633,6 +4718,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             # Only when named, so a dispatch naming none calls exactly as before.
             **({"additional_repositories": additional} if additional is not None else {}),
             **({"model_class": model_class} if model_class is not None else {}),
+            **({"publish_to_pr": publish_to_pr} if publish_to_pr is not None else {}),
         ))
         task_id = task_id_of(task)
         if not task_id:
@@ -4667,6 +4753,10 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                 # Which target applied, and which layer chose it (S8).
                 "target": placed,
             }, task)
+        if publish_to_pr is not None:
+            # What was sent, so the caller reads which pull request the task
+            # publishes onto in the form the API received.
+            reply["publish_to_pr"] = {"pull_request": publish_to_pr}
         # Its live row, started by the session from this reply (#830).
         reply["rows"] = _dispatch_rows([(task_id, args.get("label") or None, task)])
         reply.update(_submitted_session_fields())
@@ -5123,6 +5213,21 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                     args.get("additional_repositories"), where="swarm_workflow"),
             }
             repo, ref = args.get("repo"), args.get("ref")
+        # `publish_to_pr` (#2183): the spec's own key, or this tool's argument
+        # beside `steps` or a spec. Both naming one pull request is one
+        # answer; two different ones are refused, never one picked.
+        publish_to_pr = workflows.check_publish_to_pr(args.get("publish_to_pr"), where="swarm_workflow")
+        spec_publish = fields.get("publish_to_pr")
+        if publish_to_pr is not None and spec_publish is not None and publish_to_pr != spec_publish:
+            raise SwarmError(
+                f"swarm_workflow was given `publish_to_pr` {publish_to_pr!r} and a spec whose "
+                f"`publish_to_pr` is {spec_publish!r}: two pull requests. Pass one. Nothing was sent"
+            )
+        publish_to_pr = publish_to_pr if publish_to_pr is not None else spec_publish
+        # Checked here too, before the territory reads, so a refused spec
+        # costs no request at all; `submit` checks it again.
+        workflows.check_publish_merge(publish_to_pr, merge=fields.get("merge"),
+                                      steps=fields["steps"], where="swarm_workflow")
         credentials = check_mcp_credentials(
             args.get("mcp_credentials"), _step_servers(fields["steps"]), where="swarm_workflow"
         )
@@ -5154,11 +5259,13 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             mcp_credentials=credentials,
             # As named: `infer` above chose only the primary repository.
             additional_repositories=fields["additional_repositories"],
+            publish_to_pr=publish_to_pr,
         )
         reply = _workflow_created(without_credentials(envelope), placed=placed, repository=repository.as_dict(),
                                   digest=digest, expected_digest=expected_digest,
                                   given=[str(step.get("step_id")) for step in fields["steps"]],
-                                  name=fields["title"] or fields["label"])
+                                  name=fields["title"] or fields["label"],
+                                  publish_to_pr=publish_to_pr)
         if not territory and not checks:
             return reply
         created = json.loads(reply)

@@ -581,7 +581,14 @@ The one verb that writes: it spends the shared pool, a step at a time.
    `per-step`, a row per step in this one run (Claude Code queues the rows
    past its per-run limit; `/sc attach <wf_id> --per-step` after the run
    would duplicate them, so prefer `summary` for a large spec). A spec that
-   changed on the way is refused, not submitted.
+   changed on the way is refused, not submitted. A spec whose top-level
+   `publish_to_pr` names an existing pull request (#2183: `41`, `"#41"`,
+   `"owner/repo#41"` or its URL) pushes its lane onto that pull request's
+   branch and opens none; it is sent with no `merge`, and a spec naming it
+   beside a merge step or a `merge` other than `"off"` ends `NOT_SUBMITTED`
+   with the API's reason. One task onto an existing pull request needs no
+   spec: `swarm_dispatch` with `prompt`, `repo`, `strategy: "direct-pr"` and
+   `publish_to_pr` (never beside `tasks`).
 4. Report what the workflow returned: its `workflow_id`, its state, and any
    `error` verbatim — `NOT_SUBMITTED`, `SUBMISSION_UNKNOWN`,
    `SUBMITTED_UNVERIFIED` and `FOLLOW_REFUSED` each say what to do next.

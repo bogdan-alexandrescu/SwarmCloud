@@ -771,6 +771,7 @@ def task_payload(
     strategy: str | None = None,
     additional_repositories: list[dict[str, str]] | None = None,
     model_class: str | None = None,
+    publish_to_pr: int | str | None = None,
 ) -> dict[str, Any]:
     """One task's `TaskCreate` body, for `POST /v1/tasks` and each entry of
     `POST /v1/tasks/batch` alike.
@@ -808,6 +809,12 @@ def task_payload(
         # As checked by `check_additional_repositories`: names, sent as given.
         # Absent when not given, so a task naming none sends what it always did.
         payload["additional_repositories"] = additional_repositories
+    if publish_to_pr is not None:
+        # The pull request this task's commits are pushed onto (#2183), in
+        # the form `workflows.check_publish_to_pr` returns, top-level as
+        # `TaskCreate.publish_to_pr`. Absent when not given, so a task naming
+        # none sends what it always did.
+        payload["publish_to_pr"] = publish_to_pr
     return payload
 
 
@@ -1818,6 +1825,7 @@ class SwarmClient:
         strategy: str | None = None,
         additional_repositories: list[dict[str, str]] | None = None,
         model_class: str | None = None,
+        publish_to_pr: int | str | None = None,
     ) -> dict[str, Any]:
         """Submit one task.
 
@@ -1858,6 +1866,12 @@ class SwarmClient:
         reads beside its own (#1434), by NAME (`check_additional_repositories`):
         swarm-api resolves each to its registration and pins its ref to a
         commit. Never cloned from a URL given here, and never written back.
+
+        `publish_to_pr` is an existing pull request this task's commits are
+        pushed onto instead of opening one (#2183): a delivery choice, like
+        `strategy`, checked by `workflows.check_publish_to_pr` and sent only
+        when given. swarm-api reads the pull request and refuses one it may
+        not push onto.
         """
         payload = task_payload(
             prompt=prompt,
@@ -1871,6 +1885,7 @@ class SwarmClient:
             strategy=strategy,
             additional_repositories=additional_repositories,
             model_class=model_class,
+            publish_to_pr=publish_to_pr,
         )
         # UNWRAPPED HERE, not by each caller. `cmd_dispatch` printed
         # `task.get("task_id", "")` off the envelope and printed an empty line,

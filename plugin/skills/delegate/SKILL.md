@@ -275,6 +275,17 @@ a **name** from the frozen catalogue, and the image, command and resource
 class come from the name. There is no parameter for an image, a command or a
 model ID.
 
+**One task onto a pull request that already exists** (#2183): the single
+form also takes `publish_to_pr` — `41`, `"#41"`, `"owner/repo#41"` or the
+pull request's URL — with `strategy: "direct-pr"` and a `repo`. The task's
+commits are pushed onto that pull request's branch as a fast-forward and no
+new pull request is opened. It is sent top-level, only when given; the reply's
+`publish_to_pr` names what was sent. `tasks` refuses it, beside the list or in
+one of its tasks, before anything is sent: one pull request, one publishing
+task. The API refuses the rest with its reason — a `ref`, and a pull request
+that is not open, is from a fork, or is not on a `swarm/task_*` branch a lane
+of this tenant published.
+
 **A step picks its model class by name** (#1435). `model_class` — on
 `swarm_dispatch`, on each of its `tasks` and on each `swarm_workflow` step (an
 issue run's planner takes one through `/sc run --issue`) — is one of `opus`, `fable`, `sonnet` or
@@ -606,10 +617,26 @@ ships both.
   Submit row stopped or failed, possibly after the workflow was created — look
   for it before running again, or it is submitted twice) or
   `SUBMITTED_UNVERIFIED` (created, but the relayed reply does not match the
-  spec — it runs regardless; read or cancel it by its `workflow_id`), or
+  spec — it runs regardless; read or cancel it by its `workflow_id`. A reply
+  missing only its digest or steps is read back once first: matching steps
+  are submitted with rows, and other steps still get rows), or
   `FOLLOW_REFUSED` (created, but this session's bridge refused the progress
   follow the rows make — usually a `SWARM_MCP_FROM` override; fix it, then
   attach).
+* **A follow-up lane on a pull request that already exists** (a re-review, a
+  fix round, the owner's answers applied; #2183): give the spec a top-level
+  `publish_to_pr` — `41`, `"#41"`, `"owner/repo#41"` or the pull request's
+  URL — or pass `publish_to_pr` to `swarm_workflow` beside a step list or
+  the spec. The lane starts from that pull request's head and its commits are
+  pushed onto its branch as a fast-forward; no new pull request is opened.
+  It travels top-level, and no `merge` goes with it: a spec naming it beside
+  a merge step or a `merge` other than `"off"` is refused before anything is
+  sent, with the API's reason, because such a lane opens no pull request for
+  a merge step to merge. The API refuses the rest with its reason:
+  `direct-pr` of one agent step or `integrate`, no `repository_ref`, no
+  `carrier: branches`, and a pull request that is open, not from a fork, on a
+  `swarm/task_*` branch a lane of this tenant published. The reply's
+  `publish_to_pr` names what was sent and says no merge was.
 * **Re-attaching to a workflow that is still running:
   `/sc:swarmcloud {attach: "<workflow_id>"}`** (or `/sc attach <workflow_id>`).
   It submits nothing. When the Claude Code session restarts, a workflow's rows
