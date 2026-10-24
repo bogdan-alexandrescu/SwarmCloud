@@ -45,7 +45,7 @@ from urllib.parse import urlsplit
 
 from swarm_common.profiles import MODEL_CLASSES, RESOURCE_CLASSES
 
-from . import checkout, compact, config, keys, progress, qatargets
+from . import artifacts, checkout, compact, config, keys, progress, qatargets
 from . import profiles as catalogue
 from . import workflows
 from .client import (
@@ -882,7 +882,18 @@ TOOLS: list[dict[str, Any]] = [
             "`absent` (listed, but the object is gone) or `unreadable`. One "
             "window per call: when `truncated` is true, call again with "
             "`offset` set to `next_offset` for the rest. A name the task does not "
-            "list is an error naming the ones it does."
+            "list is an error naming the ones it does.\n"
+            "\n"
+            "TO LOOK AT AN IMAGE (a screenshot, a rendered mock-up slice): pass "
+            "`save_to`, a directory under your working directory or your "
+            "scratchpad. An artifact named .png, .jpg, .jpeg, .webp or .gif that "
+            "the API serves as an image is written to "
+            "`<save_to>/<task_id>/<name>` and the answer is `{status: \"saved\", "
+            "path, bytes, content_type}`: open `path` with your own Read tool to "
+            "see it. A text artifact is still the redacted window above (nothing "
+            "is saved), and a binary that is not an image stays `binary` and is "
+            "not saved. A `save_to` outside those directories, or a name with "
+            "`..` or an absolute path, is refused before anything is read."
         ),
         "inputSchema": {
             "type": "object",
@@ -897,6 +908,15 @@ TOOLS: list[dict[str, Any]] = [
                 "limit_bytes": {
                     "type": "integer",
                     "description": "Window size. The API clamps it into its own range and says so.",
+                },
+                "save_to": {
+                    "type": "string",
+                    "description": (
+                        "A directory, under your working directory or your scratchpad, to "
+                        "save an IMAGE artifact into as <save_to>/<task_id>/<name>; read the "
+                        "returned `path` with the Read tool. Ignored for text, which is "
+                        "returned redacted as usual."
+                    ),
                 },
             },
             "required": ["task_id", "name"],
@@ -4890,6 +4910,15 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         )
 
     if name == "swarm_artifact":
+        if args.get("save_to") is not None:
+            # Every check before any request (#2182): a refused call reads nothing.
+            plan = artifacts.plan_save(
+                str(args["task_id"]), str(args["name"]), str(args["save_to"]), base=checkout.directory()
+            )
+            if plan.is_image_name:
+                saved = artifacts.save_image(client, str(args["task_id"]), str(args["name"]), plan)
+                if saved is not None:
+                    return json.dumps(saved, indent=2)
         window = client.artifact_content(
             args["task_id"],
             str(args["name"]),

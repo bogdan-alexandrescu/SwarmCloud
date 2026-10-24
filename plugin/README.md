@@ -719,6 +719,19 @@ the terminal command prints all of it; the tool returns one window and says
 where the next starts. An artifact that is not text is refused with a reason,
 not served: nothing can scan its bytes for a credential.
 
+To look at a lane's screenshots, give `swarm_artifact` a `save_to` directory
+(#2182): an artifact named `.png`, `.jpg`, `.jpeg`, `.webp` or `.gif` that
+`/v1/tasks/{id}/artifacts/raw` serves as an image (its extension and its magic
+bytes agree) is written to `<save_to>/<task_id>/<name>`, and the answer is
+`{status: "saved", path, bytes, content_type}`; the session opens `path` with
+its own Read tool. Only images are saved: a text artifact is still the
+redacted window, and any other binary is still `binary` with no bytes. The
+tenant boundary is the raw route's, so another tenant's task is the same 404
+the text read gets. `save_to` must resolve, symlinks included, under the
+bridge's working directory or the user's Claude Code temp directory (where the
+session's scratchpad is), and a name that is absolute or has a `..` segment is
+refused, both before anything is read.
+
 `swarm tail` prints every event of every task it follows, each once. It read
 the task's oldest 50 events on every poll, so it printed no event after the
 50th (#164); it now reads newest first and pages back to the last event it
