@@ -348,6 +348,10 @@ ADMIN_WRITES: frozenset[tuple[str, str]] = frozenset({
     ("DELETE", "/v1/provider-keys/{provider}/tenant"),
     ("POST", "/v1/provider-keys/{provider}/links"),
     ("POST", "/v1/tenants/me/credentials"),
+    # The one-time links to the runner-key and QA-target credential forms
+    # (SSC-LINKS), admin writes like the two links above (LINK-ADMIN-WRITES).
+    ("POST", "/v1/tenants/me/credentials/links"),
+    ("POST", "/v1/qa-targets/{target_id}/credential-links"),
     ("POST", "/v1/git-tokens"),
     ("POST", "/v1/git-tokens/{token_id}/verify"),
     ("DELETE", "/v1/git-tokens/{token_id}"),
