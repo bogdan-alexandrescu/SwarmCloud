@@ -72,6 +72,13 @@ server (SIGINT, PostgreSQL's fast shutdown; killed after
 its cleanup, which every exit reaches -- finish, park, cancel, fence (§5.5).
 Invariant 7 is untouched: the server shares the worker container's fixed
 requests == limits and nothing is added to the pod.
+
+NEVER IN MEMORY (TS-CLOUDRUN-REFUSE, BGD 2026-10-24, "Refuse on Cloud Run").
+Without `SWARM_CACHE_ROOT` the attempt's cache is inside the workspace tmpfs
+(`cachedirs`), so the data directory would be charged to the container's
+memory, against which §4.1 allows a Postgres only 256 MiB. `start` refuses
+then, before `initdb`, with `NO_CACHE_VOLUME` as each service's error: the
+same not-started report as any other start failure (`RunningServices.report`).
 """
 
 from __future__ import annotations
@@ -85,10 +92,12 @@ import stat
 import subprocess
 import time
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
+
+from .cachedirs import CACHE_ROOT_ENV
 
 #: Where the declaration lives, relative to the clone's root.
 DECLARATION_PATH = ".swarm/test-services.toml"
@@ -544,6 +553,15 @@ class RunningServices:
     def errors(self) -> list[str]:
         return [s.error for s in self.services if s.error is not None]
 
+    def report(self) -> list[str]:
+        """One line per declared service that is not running, with its reason:
+        what the pre-publish check shows for it."""
+        return [
+            f"{s.service.name}: service not started: {s.error}"
+            for s in self.services
+            if s.error is not None
+        ]
+
     def stop(self) -> None:
         for service in self.services:
             service.stop()
@@ -656,6 +674,17 @@ def _start_postgres(
         sleep(READY_INTERVAL_SECONDS)
 
 
+#: Why a declared service is not started when the worker has no cache volume
+#: (`CACHE_ROOT_ENV` unset, as on Cloud Run): its data would sit in the
+#: workspace tmpfs, charged to the container's memory, and design §4.1 caps a
+#: Postgres in memory at 256 MiB -- less than a test database and its backends
+#: need. BGD 2026-10-24: "Refuse on Cloud Run". Read from the environment, not
+#: from a profile name, so any runner without its own cache volume refuses.
+NO_CACHE_VOLUME = (
+    f"test services need {CACHE_ROOT_ENV} on its own volume; "
+    "this runner keeps its workspace in memory"
+)
+
 #: How each catalogue service is started, by name.
 _STARTERS = {"postgres": _start_postgres}
 
@@ -668,13 +697,28 @@ def start(
     runner: ProcessRunner | None = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    environ: Mapping[str, str] | None = None,
 ) -> RunningServices:
     """Run every service a VALID declaration names, under `cache`; never raises
     for a service that fails to start -- that service carries its error.
 
-    A declaration with any refusal, or none at all, starts nothing."""
+    A declaration with any refusal, or none at all, starts nothing. Without a
+    cache volume (`CACHE_ROOT_ENV` in `environ`, the process's by default)
+    nothing runs and every service carries `NO_CACHE_VOLUME`."""
     if not declaration.valid or not declaration.declared:
         return RunningServices()
+    environ = os.environ if environ is None else environ
+    if not environ.get(CACHE_ROOT_ENV, "").strip():
+        return RunningServices(
+            services=tuple(
+                ServiceProcess(
+                    service=service,
+                    root=service_root(cache, service.name),
+                    error=NO_CACHE_VOLUME,
+                )
+                for service in declaration.services
+            )
+        )
     runner = runner if runner is not None else ProcessRunner()
     started = tuple(
         _STARTERS[service.name](
