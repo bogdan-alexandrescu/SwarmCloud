@@ -511,10 +511,10 @@ def test_approving_the_digest_shown_submits_one_new_workflow(client, db, objects
     workflows = _docs(db, "workflows")
     assert list(workflows) == [f"workflows/{approved['workflow_id']}"]
     steps = [s["step_id"] for s in workflows[f"workflows/{approved['workflow_id']}"]["steps"]]
-    assert steps == ["impl-sort-key", "impl-ui", "review", "fix"]
+    assert steps == ["impl-sort-key", "impl-ui", "review", "fix", "re-review"]
     # Every step is a claude-code task of the caller's tenant, pointed at the issue.
     step_tasks = [t for t in _docs(db, "tasks").values() if t.get("workflow_id") == approved["workflow_id"]]
-    assert len(step_tasks) == 4
+    assert len(step_tasks) == 5
     assert all(t["runner_profile"] == "claude-code" and t["tenant_id"] == "eng" for t in step_tasks)
     assert all(t["input"]["issue"] == 42 for t in step_tasks)
     assert all(t["repository_url"] == "https://github.com/example-org/widgets" for t in step_tasks)
@@ -662,13 +662,17 @@ def test_the_plan_compiles_to_implement_review_and_a_gated_fix():
     assert spec.strategy == "integrate"
     assert spec.repository_url == "https://github.com/example-org/widgets"
     by_id = {s.step_id: s for s in spec.steps}
-    assert list(by_id) == ["impl-sort-key", "impl-ui", "review", "fix"]
+    assert list(by_id) == ["impl-sort-key", "impl-ui", "review", "fix", "re-review"]
     assert by_id["impl-ui"].depends_on == ["impl-sort-key"]
     assert by_id["impl-ui"].builds_on == "impl-sort-key"
     assert by_id["review"].input_from == {"impl-ui": "swarm-work.patch"}
     assert by_id["fix"].when.step == "review"
     assert by_id["fix"].when.verdict_in == ["NOT_YET"]
     assert by_id["fix"].input_from == {"review": "verdict.json"}
+    # The re-review of the fix's head (#2217), gated like the fix.
+    assert by_id["re-review"].when.step == "review"
+    assert by_id["re-review"].when.verdict_in == ["NOT_YET"]
+    assert by_id["re-review"].builds_on == "fix"
     # The plan's prompts reach the steps, and nothing in the plan picked a profile.
     assert "Add a name sort key" in by_id["impl-sort-key"].input["prompt"]
     assert all(s.runner_profile == "claude-code" for s in spec.steps)
@@ -684,7 +688,9 @@ def test_the_compiled_workflow_always_says_merge_off(auto_merge):
     the CI loop instead (test_issue_run_auto_merge.py)."""
     spec = compile_plan(_stored_run(auto_merge=auto_merge))
     assert spec.metadata["merge"] == "off"
-    assert [s.step_id for s in spec.steps] == ["impl-sort-key", "impl-ui", "review", "fix"]
+    assert [s.step_id for s in spec.steps] == [
+        "impl-sort-key", "impl-ui", "review", "fix", "re-review",
+    ]
 
 
 def test_the_compiled_workflow_is_titled_by_its_issue_and_labelled_issue_n():
@@ -893,13 +899,17 @@ def test_a_plan_without_depends_on_compiles_to_the_chain_byte_for_byte():
     # And its title and label (RUNS, 2026-10-12): what the console names it by.
     assert dumped["metadata"].pop("title") == "example-org/widgets#42: Make the widget list sortable by name."
     assert dumped["metadata"].pop("unit") == "issue-42"
+    # And the re-review of the fix's head (#2217), appended after the rest.
+    assert dumped["steps"].pop()["step_id"] == "re-review"
     assert dumped == CHAIN_AS_BEFORE
 
 
 def test_dependencies_compile_to_parallel_stages():
     spec = compile_plan(_stored_run(plan=STAGED_PLAN, plan_digest=plan_digest(STAGED_PLAN)))
     by_id = {s.step_id: s for s in spec.steps}
-    assert list(by_id) == ["impl-api", "impl-ui", "impl-docs", "impl-wire", "review", "fix"]
+    assert list(by_id) == [
+        "impl-api", "impl-ui", "impl-docs", "impl-wire", "review", "fix", "re-review",
+    ]
     # The roots start at once, from the default branch.
     for root in ("impl-api", "impl-ui"):
         assert by_id[root].depends_on == [] and by_id[root].builds_on is None
@@ -946,7 +956,7 @@ def test_a_staged_plan_is_accepted_by_the_workflow_validator_on_approval(client,
     assert approved.status_code == 200, approved.text
     workflow = _docs(db, "workflows")[f"workflows/{approved.json()['run']['workflow_id']}"]
     assert [s["step_id"] for s in workflow["steps"]] == [
-        "impl-api", "impl-ui", "impl-docs", "impl-wire", "review", "fix",
+        "impl-api", "impl-ui", "impl-docs", "impl-wire", "review", "fix", "re-review",
     ]
 
 
@@ -1165,7 +1175,7 @@ def test_a_single_mode_plan_compiles_to_the_same_shape_with_one_implementer():
     plan = {"summary": "One change.", "mode": "single",
             "steps": [{"step_id": "all", "title": "Do it", "prompt": "Do it all."}]}
     spec = compile_plan(_stored_run(plan=plan, plan_digest=plan_digest(plan)))
-    assert [s.step_id for s in spec.steps] == ["impl-all", "review", "fix"]
+    assert [s.step_id for s in spec.steps] == ["impl-all", "review", "fix", "re-review"]
     assert spec.strategy == "integrate"
 
 
@@ -1237,7 +1247,7 @@ def test_a_stored_legacy_plan_reads_unchanged_and_its_digest_still_matches():
     assert issueruns.plan_shape(LEGACY_PLAN) is not None
     spec = compile_plan(_stored_run(plan=LEGACY_PLAN, plan_digest=LEGACY_DIGEST,
                                     approved_digest=LEGACY_DIGEST))
-    assert [s.step_id for s in spec.steps][-2:] == ["review", "fix"]
+    assert [s.step_id for s in spec.steps][-3:] == ["review", "fix", "re-review"]
 
 
 def test_a_stored_legacy_plan_is_served_and_approves_against_its_stored_digest(
