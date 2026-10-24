@@ -58,8 +58,9 @@ grant can at worst admit a task the worker then parks). A grant on a marked
 id, or one carrying a `repo_id`, never counts as the workspace's own, so a
 required slot filled only by ANOTHER repository's secret parks
 CREDENTIAL_MISSING, before any lease and holding no capacity (invariant 1).
-The attempt's `additional_repositories` are read from the task's own
-document, by id, once per pass: the scheduler's codec does not decode them.
+The attempt's `additional_repositories` are the decoded task's own
+(`codec.task_from_dict`, CODEC-ADDL-REPOS): admission reads no task document
+for them.
 
 Q1'S ORDER (§2.4, §11): the person's, then the repository's, then the
 workspace's. `missing` asks the scopes in that order, each only for what the
@@ -99,7 +100,6 @@ ACTIVE = "active"
 SCOPE_REPOSITORY = "repository"
 REPO_ID_FIELD = "repo_id"
 REPOSITORIES_COLLECTION = "repositories"
-TASKS_COLLECTION = "tasks"
 #: `swarm_api.workspace_secrets._REPOSITORY_MARK`: a repository secret's 16
 #: hex are 8 random hex and the first 8 hex of sha256 over this tag and them.
 _REPOSITORY_MARK = b"swarm-repository-secret:"
@@ -253,14 +253,9 @@ class WorkspaceGrants:
         # Imported here: credentials imports this module at its top.
         from .credentials import attempt_repositories
 
-        extras = task.additional_repositories
-        if extras is None and task.id:
-            doc = self._doc(TASKS_COLLECTION, task.id)
-            if doc is not None and doc.get("tenant_id") == task.tenant_id:
-                extras = doc.get("additional_repositories")
         return attempt_repositories({"tenant_id": task.tenant_id,
                                      "repository_url": task.repository_url,
-                                     "additional_repositories": extras})
+                                     "additional_repositories": task.additional_repositories})
 
     def _repository(self, task: Task) -> list[Granted]:
         """§2.2: the grants on this workspace's repository secrets whose
