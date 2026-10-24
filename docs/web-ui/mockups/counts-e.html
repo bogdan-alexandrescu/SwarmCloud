@@ -1,0 +1,708 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>SwarmCloud Platform counts over time: proposal E, Period comparison (COUNTS-MOCKUPS-E, #2149)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;550;600;650;700&display=swap" rel="stylesheet">
+<style>
+/* Layout: one 1180px reading column; the mock-up frames sit in their own sideways scrollers.
+   Page tokens, frame tokens, the Sky shell and the icon sprite are copied from graph-overlays.html,
+   which copied them from diff-viewer.html (navigation.html V2 and components.html pick A, as built).
+   PICKS.md rules: 12px floor, no all-caps, no letter-spacing, a light / dark / system toggle, and an
+   unknown figure is a dash with its reason, never 0. Every frame follows the page theme; each
+   frame group also has its own Light / Dark switch, and the toggle in a desktop frame's panel footer
+   pins that one frame. Series colours are the console's --series-1..5 (styles.css), one value in
+   both themes; they are not separable in greyscale, so every multi-series chart names its series. */
+:root{--bg:#f3f6f9;--surface:#ffffff;--ink:#0d1724;--mute:#4f5d6e;--line:#d6e0ea;--accent:#0369a1;--soft:#e5f3fc;--code:#e9f0f6;--rec:#0a7a55;--recbg:#e3f5ee;--bad:#b42318;--f-display:"Inter Tight",system-ui,-apple-system,sans-serif;--f-mono:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--soft:#10294a;--code:#12233b;--rec:#4cd9a0;--recbg:#0d2e25;--bad:#ff8a80;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--soft:#10294a;--code:#12233b;--rec:#4cd9a0;--recbg:#0d2e25;--bad:#ff8a80;color-scheme:dark}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 var(--f-display);overflow-x:hidden}
+code,.mono{font-family:var(--f-mono);font-size:13px;background:var(--code);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+a{color:var(--accent)}
+a:focus-visible,button:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;padding-block:40px 80px}
+.kicker{font:500 12px var(--f-mono);color:var(--accent);margin:0}
+h1{font-size:clamp(28px,5vw,40px);line-height:1.1;margin:.3em 0 .4em;text-wrap:balance}
+h2{font-size:24px;margin:64px 0 8px;padding-top:20px;border-top:1px solid var(--line);text-wrap:balance}
+h2 .n{font:500 13px var(--f-mono);color:var(--accent);margin-right:10px}
+.lede{font-size:17px;color:var(--mute);max-width:780px}
+p{max-width:78ch}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 0;padding:0;list-style:none}
+.toc a{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:99px;color:var(--ink);text-decoration:none;font-size:13px;background:var(--surface)}
+.toc a:hover{border-color:var(--accent);color:var(--accent)}
+.themebar{display:inline-flex;gap:2px;border:1px solid var(--line);border-radius:99px;padding:2px;background:var(--surface);margin-top:14px}
+.themebar button{border:0;background:none;color:var(--mute);font:500 13px var(--f-display);padding:4px 12px;border-radius:99px;cursor:pointer}
+.themebar button[aria-pressed="true"]{background:var(--soft);color:var(--accent);font-weight:600}
+.vh{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:64px 0 8px;padding-top:20px;border-top:1px solid var(--line)}
+.vh h2{margin:0;padding:0;border:0}
+.vh .themebar{margin:0 0 0 auto}
+.fr{margin:14px 0 0;min-width:0}
+.fr figcaption{font-size:13px;color:var(--mute);margin-top:6px;max-width:100ch}
+.fr figcaption b{color:var(--ink)}
+.scroller{overflow:auto;border-radius:12px;border:1px solid var(--line);max-width:100%}
+.pair{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
+.pair>figure{max-width:100%;overflow-x:auto}
+.idea{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:16px;margin-top:16px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.idea h3{margin:0 0 4px;font:600 13px var(--f-mono);color:var(--accent)}
+.idea p,.idea ul{margin:0;font-size:14px}.idea ul{padding-left:18px}.idea li{margin:4px 0}
+.cap{font-size:14px;color:var(--mute)}
+
+/* ======== frame tokens: .fx follows the page theme; data-ftheme pins one frame or one frame group ======== */
+.fx{--f-bg:#f3f6f9;--f-sf:#ffffff;--f-ink:#0d1724;--f-mu:#56657a;--f-ln:#dde5ee;--f-hv:#eef4fa;--f-ac:#0369a1;--f-acs:#e5f3fc;--f-acl:#b6daf2;--s-live:#0a7a55;--s-liveb:#e3f5ee;--s-park:#6b46c1;--s-parkb:#efeafc;--s-bad:#b42318;--s-badb:#fdecea;--s-warn:#8a5a00;--s-warnb:#fdf3dc;--s-neu:#5b6878;--s-neub:#eef1f5;--f-bd:#7d8ea3;--f-sh:0 10px 30px rgba(11,58,122,.16);--hive:url(#g-hive-l);color-scheme:light;
+  --series-1:#3f86d8;--series-2:#1f948a;--series-3:#8a6ad6;--series-4:#9c7620;--series-5:#788492}
+:root[data-theme="dark"] .fx:not([data-ftheme="light"]),.fx[data-ftheme="dark"]{--f-bg:#06101e;--f-sf:#0b1829;--f-ink:#eef4fa;--f-mu:#9fb0c4;--f-ln:#1d3049;--f-hv:#11233b;--f-ac:#7cc8f8;--f-acs:#10294a;--f-acl:#1f4a7a;--s-live:#4cd9a0;--s-liveb:#0d2e25;--s-park:#b69cf5;--s-parkb:#251a45;--s-bad:#ff8a80;--s-badb:#3a1512;--s-warn:#f5c451;--s-warnb:#3a2a0c;--s-neu:#9aa8b8;--s-neub:#16263b;--f-bd:#5f7087;--f-sh:0 10px 30px rgba(0,0,0,.55);--hive:url(#g-hive-d);color-scheme:dark}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .fx:not([data-ftheme="light"]){--f-bg:#06101e;--f-sf:#0b1829;--f-ink:#eef4fa;--f-mu:#9fb0c4;--f-ln:#1d3049;--f-hv:#11233b;--f-ac:#7cc8f8;--f-acs:#10294a;--f-acl:#1f4a7a;--s-live:#4cd9a0;--s-liveb:#0d2e25;--s-park:#b69cf5;--s-parkb:#251a45;--s-bad:#ff8a80;--s-badb:#3a1512;--s-warn:#f5c451;--s-warnb:#3a2a0c;--s-neu:#9aa8b8;--s-neub:#16263b;--f-bd:#5f7087;--f-sh:0 10px 30px rgba(0,0,0,.55);--hive:url(#g-hive-d);color-scheme:dark}}
+
+/* ======== shell: Sky spine + panel (navigation.html V2, as built) ======== */
+.app{display:flex;background:var(--f-bg);color:var(--f-ink);width:1440px;min-width:1440px;min-height:900px;font-size:13px;position:relative;text-align:left;font-family:var(--f-display);line-height:1.45}
+.app button,.phone button{font:inherit;color:inherit;cursor:pointer}
+.ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.pill{font:600 12px/1 var(--f-mono);padding:4px 8px;border-radius:99px;white-space:nowrap;flex:none}
+.pill.dev{color:var(--f-ac);border:1px solid var(--f-acl);background:var(--f-acs)}
+.av{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#38bdf8,#0b3a7a);color:#fff;font:600 12px/30px var(--f-display);text-align:center;flex:none}
+.ibtn{border:0;background:none;color:var(--f-mu);padding:4px;border-radius:6px;display:inline-flex}
+.ibtn.on{background:var(--f-acs);color:var(--f-ac)}
+.side{flex:none;display:flex;min-height:0;align-self:stretch}
+.rail{width:84px;background:linear-gradient(180deg,#0b3a7a,#06101e);display:flex;flex-direction:column;align-items:center;padding:16px 0 12px;gap:2px;color:#bcd6ee;--hive:url(#g-hive-b);flex:none}
+.rbrand{padding:2px 0 14px;display:flex}
+.ri{width:72px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;border-radius:10px;color:#bcd6ee;position:relative}
+.ri small{font-size:12px;text-align:center;line-height:1.15}
+.ri.on{background:rgba(124,200,248,.2);color:#fff}
+.ri.on::before{content:"";position:absolute;left:-6px;top:10px;bottom:10px;width:3px;border-radius:2px;background:#7cc8f8}
+.ri.rcta{background:#38bdf8;color:#06101e;width:56px;border-radius:12px;font-weight:600}
+.rsep{width:32px;height:1px;background:rgba(255,255,255,.16);margin:6px 0}
+.rgrow{flex:1}
+.rail .av{margin-top:8px;box-shadow:0 0 0 2px rgba(255,255,255,.18)}
+.panel{width:236px;background:var(--f-sf);border-right:1px solid var(--f-ln);display:flex;flex-direction:column;padding:14px 0;flex:none;min-height:0}
+.ph{display:flex;align-items:center;gap:8px;padding:2px 16px 12px}.ph .pill{margin-left:auto}
+.wm{font-weight:650;font-size:16.5px;white-space:nowrap}.wm span{color:var(--f-ac)}
+.pt{font:500 12px var(--f-mono);color:var(--f-mu);padding:8px 18px 6px}
+.pk{display:flex;align-items:center;gap:9px;padding:7px 9px;margin:0 10px;border-radius:8px;color:var(--f-mu);white-space:nowrap;position:relative}
+.pk .pl1{color:var(--f-ink);opacity:.86;flex:1}
+.pk.on{background:var(--f-acs);color:var(--f-ac)}.pk.on .pl1{color:var(--f-ac);opacity:1;font-weight:600}
+.pk.on::before{content:"";position:absolute;left:-10px;top:7px;bottom:7px;width:3px;border-radius:2px;background:var(--f-ac)}
+.pscroll{flex:1;overflow-y:auto;min-height:0}
+.pfoot{border-top:1px solid var(--f-ln);padding:10px 16px 0;display:flex;flex-direction:column;line-height:1.3;gap:2px}
+.pfoot b{font-size:13px}.pfoot small{font-size:12px;color:var(--f-mu)}
+.pfoot .pfrow{display:flex;align-items:center;gap:4px}.pfoot .pfrow .seg{margin-left:auto}
+.seg{display:inline-flex;border:1px solid var(--f-ln);border-radius:99px;padding:1px}
+.stamp{font:12px var(--f-mono);color:var(--f-mu);opacity:.85}
+.adm{font:500 12px var(--f-mono);color:var(--f-mu);border:1px solid var(--f-ln);border-radius:4px;padding:0 4px}
+.ct{flex:1;min-width:0;padding:16px 20px 24px;display:flex;flex-direction:column;gap:12px}
+.crumb{font-size:12px;color:var(--f-mu)}.crumb b{color:var(--f-ink);font-weight:600}
+.phead{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.phead h3{margin:0;font-size:20px}
+.phead .r{margin-left:auto;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.prov{font:12px var(--f-mono);color:var(--f-mu)}
+.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--f-bd);background:var(--f-sf);border-radius:8px;height:30px;padding:0 11px;font-size:13px;font-weight:550;white-space:nowrap;color:var(--f-ink)}
+.btn.pri{background:var(--f-ac);border-color:var(--f-ac);color:var(--f-sf)}
+.btn .cost{font:500 12px var(--f-mono);opacity:.9;border-left:1px solid currentColor;padding-left:8px;margin-left:2px}
+.btn.sm{height:26px;padding:0 8px;font-size:12.5px}
+.segb{display:inline-flex;border:1px solid var(--f-bd);border-radius:8px;overflow:hidden;flex:none;max-width:100%}
+.segb button{border:0;border-right:1px solid var(--f-ln);background:var(--f-sf);min-height:26px;padding:0 9px;font-size:12.5px;color:var(--f-mu);white-space:nowrap}
+.segb button:last-child{border-right:0}
+.segb button[aria-pressed="true"]{background:var(--f-acs);color:var(--f-ac);font-weight:600}
+.segb em{font:normal 500 12px var(--f-mono);opacity:.85;margin-left:4px}
+.card{background:var(--f-sf);border:1px solid var(--f-ln);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:8px;min-width:0;position:relative}
+.ch{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.ch b{font-size:14px;font-weight:600}.ch .r{margin-left:auto;display:flex;gap:8px;align-items:center}
+.app code,.phone code{font-family:var(--f-mono);font-size:12px;background:var(--f-hv);color:var(--f-ink);padding:1px 5px;border-radius:4px}
+.q{display:inline-flex;width:18px;height:18px;border-radius:50%;border:1px solid var(--f-bd);font:600 12px/16px var(--f-display);justify-content:center;color:var(--f-mu);flex:none}
+
+/* ======== phone ======== */
+.phone{width:390px;min-width:390px;height:780px;border-radius:30px;border:10px solid #0b1626;background:var(--f-bg);color:var(--f-ink);overflow:hidden;display:flex;flex-direction:column;font:13px/1.45 var(--f-display);position:relative;text-align:left}
+.phone.tall{height:auto}
+.phd{background:linear-gradient(90deg,#0b3a7a,#06101e);color:#fff;display:flex;align-items:center;gap:8px;padding:0 10px;height:44px;flex:none;--hive:url(#g-hive-b)}
+.phd .t{font-weight:600;font-size:14px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.phd .ibtn{color:#bcd6ee}
+.phd .tn{font-size:12px;color:#bcd6ee;white-space:nowrap}
+.phd .pill.dev{background:rgba(124,200,248,.18);color:#cfe9fb;border-color:rgba(124,200,248,.45)}
+.phd .adm{color:#bcd6ee;border-color:rgba(188,214,238,.4)}
+.pbody{flex:1;min-height:0;overflow-y:auto;overflow-x:auto;display:flex;flex-direction:column;gap:10px;padding:10px}
+.phone.tall .pbody{overflow:visible}
+.phone .phead h3{font-size:18px}
+.phone .btn{height:44px;justify-content:center}
+.phone .btn.pri{width:100%}
+.phone .segb button{min-height:44px;padding:0 10px}
+
+/* ======== this page: Platform counts, proposal E ======== */
+.sec{font-size:16px;font-weight:650;margin:6px 0 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.sec small{font-size:12px;font-weight:400;color:var(--f-mu)}
+.tb{display:flex;align-items:center;gap:8px 14px;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--f-ln);border-radius:10px;background:var(--f-sf)}
+.tb .lb{font-size:12px;color:var(--f-mu)}
+.tb .grp{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
+.tb .tz{margin-left:auto;font-size:12px;color:var(--f-mu)}
+.dd{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--f-bd);background:var(--f-sf);border-radius:8px;min-height:26px;padding:0 8px 0 10px;font-size:12.5px;white-space:nowrap}
+.dd b{font-weight:600}.dd svg{width:12px;height:12px}
+.phone .dd{min-height:44px}
+.lead{font-size:16px;line-height:1.45;margin:0;max-width:none;text-wrap:pretty}
+.lead b{font-weight:650}
+.phone .lead{font-size:15px}
+.keyline{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:12px;color:var(--f-mu);align-items:center}
+.keyline span{display:inline-flex;align-items:center;gap:6px}
+.k-now{width:20px;height:0;border-top:2.5px solid var(--series-1);display:inline-block}
+.k-was{width:20px;height:0;border-top:2px dashed var(--f-mu);display:inline-block;opacity:.85}
+.k-ret{width:8px;height:12px;background:var(--series-5);display:inline-block;border-radius:1px}
+.k-retw{width:12px;height:0;border-top:2px solid var(--f-mu);display:inline-block}
+.k-zero{width:9px;height:9px;border-radius:50%;border:1.5px solid var(--f-mu);display:inline-block}
+.k-open{width:10px;height:10px;border-radius:50%;border:1.5px dashed var(--series-1);display:inline-block}
+.k-hatch{width:14px;height:12px;display:inline-block;border:1px solid var(--f-ln);background:repeating-linear-gradient(135deg,transparent 0 3px,var(--f-mu) 3px 4px);opacity:.7}
+.cols{display:grid;grid-template-columns:680px minmax(0,1fr);gap:16px;align-items:start}
+.colL,.colR{display:flex;flex-direction:column;gap:12px;min-width:0;position:relative}
+.phone .cols{display:flex;flex-direction:column;gap:10px}
+.mh{display:flex;align-items:baseline;gap:6px 10px;flex-wrap:wrap}
+.mh .t{font-size:14px;font-weight:600;flex-basis:100%}
+.fig{font-size:24px;font-weight:650;font-variant-numeric:tabular-nums;line-height:1.1}
+.fig2{font-size:15px;font-weight:650;font-variant-numeric:tabular-nums}
+.al{font-size:13px;color:var(--f-mu);font-weight:500}
+.unit{font-size:13px;color:var(--f-mu)}
+.was{font-size:12.5px;color:var(--f-mu);font-variant-numeric:tabular-nums}
+.dl{display:inline-flex;align-items:center;gap:3px;font:600 12.5px var(--f-mono);padding:1px 7px;border-radius:99px;border:1px solid var(--f-bd);color:var(--f-ink);white-space:nowrap}
+.dl.flat{font-weight:500;color:var(--f-mu)}
+.nd{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--f-mu);border-bottom:1px dotted var(--f-mu)}
+.cov{font-size:12px;color:var(--f-mu);margin:0;display:flex;flex-wrap:wrap;gap:2px 10px}
+.cov b{color:var(--f-ink);font-weight:600}
+.mk{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.mk i{display:inline-block;width:10px;height:10px;border-radius:50%;flex:none}
+.mk.partial i{background:linear-gradient(90deg,var(--f-mu) 50%,transparent 50%);border:1.5px solid var(--f-mu)}
+.mk.unread i{border:1.5px dashed var(--s-warn)}
+.mk.zero i{border:1.5px solid var(--f-mu)}
+.cc{container-type:inline-size;width:100%}
+.cc svg{display:block;width:100%;height:auto;overflow:visible}
+.cc .d640{display:none}
+.cc .d300{min-width:300px}
+@container (min-width:640px){.cc .d640{display:block}.cc .d300{display:none}}
+svg .tk{font:12px var(--f-display);fill:var(--f-mu)}
+svg .tl{font:12px var(--f-display);fill:var(--f-ink)}
+svg .g0{stroke:var(--f-bd);stroke-width:1}
+svg .g1{stroke:var(--f-ln);stroke-width:1;stroke-dasharray:2 3}
+svg .ghost{fill:none;stroke:var(--f-mu);stroke-width:1.6;stroke-dasharray:4 3;opacity:.8}
+svg .cur{fill:none;stroke-width:2.2;stroke-linejoin:round;stroke-linecap:round}
+svg .cur.open{stroke-dasharray:3 3}
+svg .hz{stroke:var(--f-mu);stroke-width:1.2;opacity:.45}
+svg .xh{stroke:var(--f-ink);stroke-width:1;stroke-dasharray:3 2}
+svg .rw{stroke:var(--f-mu);stroke-width:2}
+.tks{display:flex;flex-direction:column;gap:0;border-top:1px solid var(--f-ln);margin-top:2px}
+.tkr{display:grid;grid-template-columns:96px 72px minmax(0,1fr) auto;gap:4px 10px;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--f-ln);font-size:12.5px;font-variant-numeric:tabular-nums}
+.tkr:last-child{border-bottom:0}
+.tkr .c{font-size:12px;color:var(--f-mu);text-align:right}
+.phone .tkr{grid-template-columns:minmax(0,1fr) auto;}
+.phone .tkr .w{grid-column:1/-1;order:3}
+.phone .tkr .c{grid-column:1/-1;text-align:left;order:4}
+.tkr .w{color:var(--f-mu)}
+.mvh{font-size:12px;color:var(--f-mu);margin-top:4px}
+.mv{display:grid;grid-template-columns:minmax(0,1fr) 96px 70px;gap:2px 10px;align-items:center;padding:5px 0;border-bottom:1px solid var(--f-ln)}
+.mv:last-child{border-bottom:0}
+.mv .nm{font-size:13px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mv .sub{font-size:12px;color:var(--f-mu);grid-column:1;font-variant-numeric:tabular-nums;min-width:0}
+.mv .ch2{grid-column:3;grid-row:1/3;text-align:right;font:600 12.5px var(--f-mono);font-variant-numeric:tabular-nums;line-height:1.35}
+.mv .ch2 small{display:block;font-weight:400;font-size:12px;color:var(--f-mu)}
+.dv{grid-column:2;grid-row:1/3;height:14px;position:relative;border-left:0}
+.dv::before{content:"";position:absolute;left:50%;top:-3px;bottom:-3px;border-left:1px solid var(--f-bd)}
+.dv i{position:absolute;top:2px;height:10px;border-radius:2px}
+.dv i.up{left:50%;background:var(--f-ac)}
+.dv i.dn{right:50%;background:var(--f-hv);border:1.5px solid var(--f-ac)}
+.note{font-size:12px;color:var(--f-mu);margin:0}
+.shr{display:grid;grid-template-columns:minmax(0,1fr) 46px;gap:2px 8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--f-ln)}
+.shr:last-child{border-bottom:0}
+.shr .nm{font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;min-width:0;grid-column:1/-1}
+.shr .nm span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.shr .bt{height:10px;border-radius:2px;background:var(--f-hv);position:relative;overflow:hidden}
+.shr .bt i{position:absolute;left:0;top:0;bottom:0;border-radius:2px}
+.shr .bt.was i{background:transparent;border:1.5px solid}
+.shr .v{font:500 12px var(--f-mono);text-align:right;font-variant-numeric:tabular-nums}
+.shr .v.was{color:var(--f-mu)}
+.sw{width:10px;height:10px;border-radius:2px;display:inline-block;flex:none}
+.k-sh{width:14px;height:10px;border-radius:2px;display:inline-block}
+.k-shw{width:14px;height:10px;border-radius:2px;display:inline-block;border:1.5px solid var(--f-mu)}
+.empty{font-size:13px;color:var(--f-mu);display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.empty .row{display:flex;gap:6px;flex-wrap:wrap}
+.pn{display:flex;flex-direction:column;gap:4px;padding:8px 0 6px;border-top:1px solid var(--f-ln)}
+.pn:first-of-type{border-top:0}
+.pnh{display:flex;align-items:baseline;gap:4px 10px;flex-wrap:wrap}
+.pnh .nm{font-size:13px;font-weight:600;display:inline-flex;align-items:center;gap:6px}
+.notrun{padding:18px 18px 16px;gap:10px}
+.notrun h4{margin:0;font-size:15px}
+.notrun p{margin:0;font-size:13px;color:var(--f-mu);max-width:72ch}
+.notrun ul{margin:0;padding-left:18px;font-size:13px;columns:2;column-gap:28px}
+.phone .notrun ul{columns:1}
+.nowg{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.phone .nowg{grid-template-columns:1fr}
+.srw{display:grid;grid-template-columns:96px minmax(0,1fr) 48px;gap:8px;align-items:center;font-size:12.5px;padding:1px 0}
+.srw .bar{height:6px;border-radius:3px;background:var(--f-hv);overflow:hidden}
+.srw .bar i{display:block;height:100%;background:var(--f-ac);min-width:0}
+.srw .n{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--f-mono);font-size:12px}
+.srw .nm{font-family:var(--f-mono);font-size:12px;color:var(--f-mu)}
+.tot{display:flex;align-items:baseline;gap:6px}
+.tot b{font-size:20px;font-weight:650}
+.foot{font-size:12px;color:var(--f-mu);margin:0}
+.ticks{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--f-ln);border-radius:10px;background:var(--f-sf);font-size:13px}
+.ticks span{color:var(--f-mu);font-size:12px}
+.notrun-c{font-size:13px;color:var(--f-mu)}
+.dim{opacity:.45}
+.banner{display:flex;gap:8px;align-items:flex-start;padding:10px 12px;border-radius:10px;border:1px solid var(--f-acl);background:var(--f-acs);font-size:13px;color:var(--f-ink)}
+.banner .btn{margin-left:auto}
+.phone .banner{flex-wrap:wrap}
+.phone .banner .btn{margin-left:0;width:100%}
+.readout{position:absolute;z-index:4;width:330px;background:var(--f-sf);border:1px solid var(--f-bd);border-radius:10px;box-shadow:var(--f-sh);padding:10px 12px;display:flex;flex-direction:column;gap:6px;font-size:12.5px}
+.readout h5{margin:0;font-size:13px}
+.readout .sub{font-size:12px;color:var(--f-mu)}
+.readout table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums;color:inherit;font:inherit}
+.readout th{font-weight:500;font-size:12px;color:var(--f-mu);text-align:right;padding:2px 0 4px}
+.readout th:first-child{text-align:left}
+.readout td{padding:3px 0;text-align:right;border-top:1px solid var(--f-ln);white-space:nowrap}
+.readout td:first-child{text-align:left;white-space:normal}
+.readout td small{font-size:12px;color:var(--f-mu)}
+.readout tr.tt td{font-weight:650}
+.menu{position:absolute;z-index:5;width:300px;background:var(--f-sf);border:1px solid var(--f-bd);border-radius:10px;box-shadow:var(--f-sh);padding:6px;display:flex;flex-direction:column;gap:2px}
+.menu .it{display:grid;grid-template-columns:18px minmax(0,1fr);gap:2px 8px;padding:7px 8px;border-radius:7px;align-items:baseline}
+.menu .it.on{background:var(--f-acs)}
+.menu .it.hv{outline:2px solid var(--f-ac);outline-offset:-2px}
+.menu .it b{font-weight:600;font-size:13px}
+.menu .it small{grid-column:2;font-size:12px;color:var(--f-mu)}
+.menu .rd{width:14px;height:14px;border-radius:50%;border:1.5px solid var(--f-bd);align-self:center}
+.menu .it.on .rd{border:4px solid var(--f-ac)}
+.menu .ft{font-size:12px;color:var(--f-mu);padding:6px 8px 4px;border-top:1px solid var(--f-ln);margin-top:2px}
+.sheet{position:absolute;left:0;right:0;bottom:0;z-index:6;background:var(--f-sf);border-top:1px solid var(--f-bd);border-radius:16px 16px 0 0;box-shadow:var(--f-sh);padding:8px 12px 14px;display:flex;flex-direction:column;gap:8px}
+.sheet .grab{width:40px;height:4px;border-radius:2px;background:var(--f-ln);align-self:center}
+.sheet .nav{display:flex;align-items:center;gap:8px}
+.sheet .nav .btn{width:44px;padding:0;justify-content:center}
+.sheet .nav b{flex:1;text-align:center;font-size:13px}
+.scrim{position:absolute;inset:0;background:rgba(6,16,30,.28);z-index:5}
+.hl{outline:2px solid var(--f-ac);outline-offset:3px;border-radius:6px}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><linearGradient id="g-hive-l" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1a96d4"/><stop offset="1" stop-color="#0b3a7a"/></linearGradient><linearGradient id="g-hive-d" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7dd3fc"/><stop offset="1" stop-color="#2b7fd9"/></linearGradient><linearGradient id="g-hive-b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#7dd3fc"/></linearGradient><symbol id="i-overview" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5"/><rect x="13.5" y="11" width="7" height="9.5" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/></symbol><symbol id="i-agents" viewBox="0 0 24 24"><rect x="5" y="7.5" width="14" height="11" rx="3"/><path d="M12 4v3.5M9 12.5v1M15 12.5v1M2.5 12v3M21.5 12v3"/></symbol><symbol id="i-timeline" viewBox="0 0 24 24"><path d="M4 19.5h16"/><path d="M6.5 16v-4M10.5 16V8M14.5 16v-6M18.5 16V5"/></symbol><symbol id="i-submit" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="i-pools" viewBox="0 0 24 24"><path d="M12 3.5 3.5 8 12 12.5 20.5 8Z"/><path d="m3.5 12 8.5 4.5 8.5-4.5"/><path d="m3.5 16 8.5 4.5 8.5-4.5"/></symbol><symbol id="i-limits" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol><symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 0 1 4.8 1c0 1.7-2.4 2-2.4 3.5"/><path d="M12 17.2v.1"/></symbol><symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol><symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10Z"/></symbol><symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol><symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol><symbol id="i-right" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol><symbol id="i-left" viewBox="0 0 24 24"><path d="m15 6-6 6 6 6"/></symbol><symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5Z"/></symbol><symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.8"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/></symbol><symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="11.5" rx="2"/><path d="M9 20h6M12 16v4"/></symbol><symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0M15.5 5.6a3.2 3.2 0 0 1 0 5.8M17.5 14.2a5.5 5.5 0 0 1 3 4.8"/></symbol><symbol id="i-hash" viewBox="0 0 24 24"><path d="M5 9h14M5 15h14M10 4 8 20M16 4l-2 16"/></symbol><symbol id="i-box" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16"/></symbol><symbol id="i-auto" viewBox="0 0 24 24"><path d="M12 4a8 8 0 1 0 8 8"/><path d="M20 4v5h-5"/></symbol></defs></svg>
+
+<div class="wrap">
+<p class="kicker">Admin › Platform counts · over time · proposal E of five · drawn 2026-10-23</p>
+<h1>Proposal E: Period comparison</h1>
+<p class="lede">One of five mock-up proposals for the charts on Admin › Platform counts (#2149), drawn in parallel so the owner can pick one. Proposal E reads every figure against the period just before it: it leads with one sentence that says what changed, draws this period's line over a ghosted line of the period before, names the top movers, and sets each group's share of the total beside its share last time.</p>
+<p class="cap">All data is <b>example data</b>: the user is "Operator", the workspaces are <code>eng</code>, <code>smoke</code> and <code>u-operator</code>, and the host is <code>swarm.example.com</code>. Desktop frames are 1440 wide and scroll sideways inside their own box; phone frames are 390. The page theme is below; each frame group has its own Light / Dark switch, and the sun / moon / screen buttons in a desktop frame's panel footer pin that one frame, so one state can be read in both themes side by side.</p>
+<div class="themebar" role="group" aria-label="Page theme"><button data-set-theme="light" aria-pressed="false">Light</button><button data-set-theme="dark" aria-pressed="false">Dark</button><button data-set-theme="system" aria-pressed="true">System</button></div>
+<ul class="toc"><li><a href="#idea">Idea, pros, risks</a></li><li><a href="#f1">F1 Before Run</a></li><li><a href="#f2">F2 Week, no breakdown</a></li><li><a href="#f3">F3 By agent type</a></li><li><a href="#f4">F4 Month, by pool account</a></li><li><a href="#f5">F5 Partial data</a></li><li><a href="#f6">F6 Readout and breakdown picker</a></li><li><a href="#f7">F7 Phone reflow</a></li></ul>
+
+<section id="idea">
+<h2><span class="n">E</span>Period comparison</h2>
+<div class="idea">
+<div><h3>Idea</h3><p>Every figure is shown against the period just before it, bucket against bucket: week 1 of these 26 weeks against week 1 of the 26 before. The section opens with <b>one sentence</b> that says what changed and what drove it. Four charts follow (agents with retries apart, run hours, tokens, estimated cost), each with this period's line over a <b>ghosted dashed line</b> of the period before. <b>Top movers</b> names the agent type, model, workspace or pool account that grew or shrank most. <b>Share of total</b> sets each group's slice this period beside its slice last time. Picking a breakdown turns the four charts into one small chart per group, each over its own ghost. The live state counts stay, below the charts, and one priced Run reads both.</p></div>
+<div><h3>Pros</h3><ul>
+<li>Answers the question a counts page is opened for, "is it growing, and what is driving it", in one read and one sentence.</li>
+<li>A change is a direction glyph (▲ ▼) and a number, never green or red: more cost is not good or bad on its own, and the glyph survives greyscale.</li>
+<li>Honest by construction: a change is shown only between two like figures (closed weeks against closed weeks, complete against complete). Anything else withholds the change and says why.</li>
+<li>Movers are ranked by the change itself, not the percent, so a group that went from 3 to 9 does not lead the list.</li>
+<li>Builds on what the Timeline already has: <code>compare=previous</code>, its bucket edges in the viewer's zone, and its read budget.</li>
+</ul></div>
+<div><h3>Risks</h3><ul>
+<li><b>It reads twice the days.</b> A warm platform read costs about one stored day per workspace per day, plus the 24 live counts (docs/outcomes.md, "The read budget"). With three workspaces, 26 weeks against 26 is 364 days, about 1,120 reads, against about 570 for the period alone. A month view is two years of days, about 2,220. A cold first Run past the 5,000-read budget leaves buckets unread (F5), and the count grows with every workspace.</li>
+<li><b>The route needs work.</b> The <code>previous</code> section of <code>GET /v1/outcomes</code> carries outcome totals only (succeeded, failed, rate). This proposal needs the <code>usage</code> block per bucket and per group for the previous span too: an <code>apps/swarm-api</code> change, no frozen-contract change.</li>
+<li><b>A young platform has little "before".</b> On dev, the period before a 12-month view is mostly days with no agents. Those are measured zeros, so the ghost lies on the zero rule and every group reads "new", which is true but says little.</li>
+<li>Two lines per chart double the ink; at 300 wide they cross often. Holidays break the week-1-against-week-1 alignment.</li>
+<li>With a bucket unread, E compares over the buckets read in both periods (F5). The Timeline instead drops the change. The two rules would differ until one is chosen for both.</li>
+</ul></div>
+</div>
+</section>
+
+<div id="frames"></div>
+</div>
+
+<script>
+/* Page theme: light / dark / system, remembered for this page only (as graph-overlays.html). */
+(function(){
+  const root=document.documentElement;
+  const KEY='swarm-mockup-theme';
+  function apply(mode){
+    if(mode==='light'||mode==='dark'){root.dataset.theme=mode}else{delete root.dataset.theme;mode='system'}
+    document.querySelectorAll('[data-set-theme]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.setTheme===mode)));
+  }
+  let saved='system';try{saved=localStorage.getItem(KEY)||'system'}catch(e){}
+  apply(saved);
+  document.querySelectorAll('[data-set-theme]').forEach(b=>b.addEventListener('click',()=>{const m=b.dataset.setTheme;try{localStorage.setItem(KEY,m)}catch(e){}apply(m)}));
+})();
+
+/* ================= helpers ================= */
+const I=id=>`<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#${id}"/></svg>`;
+const HIVE=(s)=>`<svg width="${s}" height="${s}" viewBox="0 0 32 32" aria-hidden="true" style="fill:var(--hive);stroke:var(--hive)"><polygon points="16,4 26.39,10 26.39,22 16,28 5.61,22 5.61,10" fill="none" stroke-width="1.6" opacity=".5"/><path d="M16 16 16 4M16 16 26.39 22M16 16 5.61 22" fill="none" stroke-width="1.6"/><circle cx="16" cy="16" r="3.2"/><circle cx="16" cy="4" r="2.2"/><circle cx="26.39" cy="22" r="2.2"/><circle cx="5.61" cy="22" r="2.2"/></svg>`;
+const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const n0=x=>Math.round(x).toLocaleString('en-US');
+const money=x=>'$'+n0(x);
+const hrs=x=>n0(x)+' h';
+const tok=m=>m>=1000?(m/1000).toFixed(m>=10000?0:1)+' B':m>=10?n0(m)+' M':m>0?m.toFixed(1)+' M':'0';
+const sum=a=>a.reduce((s,v)=>s+v,0);
+const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const dAdd=(t,days)=>new Date(t+days*864e5);
+const dm=d=>`${d.getUTCDate()} ${MON[d.getUTCMonth()]}`;
+const dmy=d=>`${dm(d)} ${d.getUTCFullYear()}`;
+
+/* deterministic example data (a seeded generator, so every frame draws the same numbers) */
+let S=20261023;const R=()=>{S=(S*16807)%2147483647;return (S-1)/2147483646};
+const jit=a=>1+(R()*2-1)*a;
+
+/* ================= the example data ================= */
+/* Week: these 26 weeks start Mon 27 Apr 2026; the 26 before start Mon 27 Oct 2025. The last week is
+   "so far" (Mon 19 to Fri 23 Oct), and its ghost is the same five days 26 weeks earlier.
+   Month: Nov 2025 to Oct 2026 (Oct so far, 23 days), against Nov 2024 to Oct 2025 (Oct, the same 23 days). */
+const W0=Date.UTC(2026,3,27),P0=Date.UTC(2025,9,27);
+/* The token mix: cache reads grew as a share between the two periods. */
+const TOKSPLIT={in:.061,out:.016,cr:.858,cw:.065},TOKPREV={in:.068,out:.018,cr:.845,cw:.069};
+function totals(n,a0,a1,rr,hpa,tpa,cpa,last,noise){
+  return Array.from({length:n},(_,i)=>{
+    let a=(a0+(a1-a0)*i/(n-1))*jit(noise);if(i===n-1)a*=last;a=Math.round(a);
+    return {agents:a,retries:Math.round(a*rr*jit(.25)),hours:a*hpa*jit(.06),tokM:a*tpa*jit(.07),cost:a*cpa*jit(.08)};
+  });
+}
+const DS={
+  week:{n:26,unit:'week',units:'weeks',per:'a week',cur:totals(26,196,282,.088,.39,1.42,1.62,.78,.07),prev:totals(26,158,205,.112,.34,1.21,1.38,.78,.07),
+    lab:i=>dm(dAdd(W0,7*i)),plab:i=>dm(dAdd(P0,7*i)),long:i=>`week of ${dmy(dAdd(W0,7*i))}`,plong:i=>`week of ${dmy(dAdd(P0,7*i))}`,
+    span:'27 Apr – 25 Oct 2026',pspan:'27 Oct 2025 – 26 Apr 2026',reads:1120,running:33,est:[41,96]},
+  month:{n:12,unit:'month',units:'months',per:'a month',cur:totals(12,700,1230,.09,.39,1.42,1.62,23/31,.05),prev:totals(12,500,760,.115,.33,1.18,1.35,23/31,.06),
+    lab:i=>MON[(10+i)%12],plab:i=>MON[(10+i)%12],long:i=>`${MON[(10+i)%12]} ${i<2?2025:2026}`,plong:i=>`${MON[(10+i)%12]} ${i<2?2024:2025}`,
+    span:'Nov 2025 – Oct 2026',pspan:'Nov 2024 – Oct 2025',reads:2220,running:33,est:[88,212]},
+};
+/* The breakdowns. a = [share of agents in the period before, share now]; f = per-agent weight of hours,
+   tokens and cost against the platform's mean. mock spends nothing on purpose: its tokens and cost are
+   measured zeros (it reports 0), never absences. */
+const DIMS={
+  type:{label:'Agent type',kind:'agent type',groups:[
+    {k:'claude-code',a:[.46,.56],f:{hours:1.2,tokM:1.3,cost:1.35}},
+    {k:'codex',a:[.36,.17],f:{hours:1,tokM:.9,cost:.8}},
+    {k:'claude-code-review',a:[.12,.13],f:{hours:.45,tokM:.6,cost:.55}},
+    {k:'live-browser',a:[0,.08],f:{hours:1.6,tokM:.7,cost:.6},from:.25},
+    {k:'mock',a:[.06,.04],f:{hours:.2,tokM:0,cost:0}}]},
+  model:{label:'Model',kind:'model',groups:[
+    {k:'claude-opus',a:[.18,.38],f:{hours:1.25,tokM:1.15,cost:2.3}},
+    {k:'claude-sonnet',a:[.44,.40],f:{hours:1,tokM:1.1,cost:.8}},
+    {k:'gpt-codex',a:[.32,.18],f:{hours:1,tokM:.9,cost:.7}},
+    {k:'no model (mock)',a:[.06,.04],f:{hours:.2,tokM:0,cost:0},same:'mock'}]},
+  ws:{label:'Workspace',kind:'workspace',groups:[
+    {k:'eng',a:[.66,.68],f:{hours:1.1,tokM:1.1,cost:1.1}},
+    {k:'smoke',a:[.30,.14],f:{hours:.3,tokM:.3,cost:.35}},
+    {k:'u-operator',a:[.04,.18],f:{hours:1.2,tokM:1.2,cost:1.3}}]},
+  acct:{label:'Pool account',kind:'pool account',groups:[
+    {k:'acct-claude-a',a:[.52,.38],f:{hours:1.15,tokM:1.2,cost:1.3}},
+    {k:'acct-claude-b',a:[0,.26],f:{hours:1.15,tokM:1.2,cost:1.3},from:0},
+    {k:'acct-codex-a',a:[.34,.16],f:{hours:1,tokM:.9,cost:.75}},
+    {k:'holds no account',a:[.13,.14],f:{hours:.4,tokM:.35,cost:.3}},
+    {k:'not recorded',a:[.05,.04],f:{hours:1,tokM:1,cost:1}}]},
+};
+const METS=['agents','hours','tokM','cost'];
+function splitInt(total,w){const s=sum(w)||1;const raw=w.map(x=>total*x/s);const fl=raw.map(Math.floor);let left=total-sum(fl);
+  raw.map((x,i)=>[x-fl[i],i]).sort((a,b)=>b[0]-a[0]).forEach(([,i])=>{if(left>0){fl[i]++;left--}});return fl}
+function groupsFor(ds,dimKey,period){
+  const G=DIMS[dimKey].groups,n=ds.n,tot=ds[period];
+  return tot.map((b,i)=>{
+    const p=period==='prev'?i/(2*n-1):(n+i)/(2*n-1);
+    const s=G.map(g=>{if(g.from!==undefined&&(period==='prev'||i/(n-1)<g.from))return 0;
+      const fr=g.from!==undefined?(i/(n-1)-g.from)/(1-g.from):p;return Math.max(0,(g.a[0]+(g.a[1]-g.a[0])*fr)*jit(.06))});
+    const agents=splitInt(b.agents,s),retries=splitInt(b.retries,s);
+    const out=G.map((g,j)=>({agents:agents[j],retries:retries[j]}));
+    ['hours','tokM','cost'].forEach(m=>{const w=G.map((g,j)=>s[j]*g.f[m]);const W=sum(w)||1;G.forEach((g,j)=>{out[j][m]=b[m]*w[j]/W})});
+    return out;
+  });
+}
+const GD={};['week','month'].forEach(b=>{GD[b]={};Object.keys(DIMS).forEach(d=>{GD[b][d]={cur:groupsFor(DS[b],d,'cur'),prev:groupsFor(DS[b],d,'prev')}})});
+
+/* ================= the read: what one Run returns, per state ================= */
+/* closed = the buckets a change compares (every bucket but the open one, and none unread in either period). */
+function view(st){
+  const ds=DS[st.bucket],n=ds.n;
+  const unread=new Set(st.partial?[15]:[]);
+  const closed=[...Array(n-1).keys()].filter(i=>!unread.has(i));
+  const read=[...Array(n).keys()].filter(i=>!unread.has(i));
+  const T=(arr,m,idx)=>sum(idx.map(i=>arr[i][m]));
+  const tot={},prev={},cc={},cp={};
+  METS.concat('retries').forEach(m=>{tot[m]=T(ds.cur,m,read);prev[m]=T(ds.prev,m,[...Array(n).keys()]);cc[m]=T(ds.cur,m,closed);cp[m]=T(ds.prev,m,closed)});
+  const attempts=tot.agents+tot.retries,run=ds.running,runAtt=run+1;
+  const notMeasured=st.partial?71:0,noCost=st.partial?286:0;
+  const est=st.partial?[37,88]:ds.est;
+  const cov={
+    attempts,agents:tot.agents,
+    hours:{k:attempts-runAtt-notMeasured,n:attempts,floor:true,closedFloor:notMeasured>0,why:notMeasured?`${notMeasured} ended without a run time (the worker never wrote one)`:''},
+    tok:{k:attempts-runAtt,n:attempts,floor:true,closedFloor:false},
+    cost:{k:tot.agents-run-noCost,n:tot.agents,floor:true,closedFloor:noCost>0,noCost,est},
+  };
+  return {ds,n,unread,closed,read,tot,prev,cc,cp,cov,run};
+}
+const pctCh=(a,b)=>b===0?null:Math.round((a-b)/b*100);
+function chip(a,b){const p=pctCh(a,b);if(p===null)return `<span class="dl" aria-label="new: none in the period before">new</span>`;
+  if(p===0)return `<span class="dl flat" aria-label="no change">± 0%</span>`;
+  return `<span class="dl" aria-label="${p>0?'up':'down'} ${Math.abs(p)} percent on the period before">${p>0?'▲':'▼'} ${Math.abs(p)}%</span>`}
+function withheld(why){return `<span class="nd" title="${esc(why)}"><span class="mk partial"><i></i></span>change not shown</span>`}
+
+/* ================= the chart: this period over a ghost of the one before ================= */
+/* Drawn twice, never scaled down: a 640-unit and a 300-unit SVG, the card shows the one its width holds.
+   No .nice(): the top tick is the largest value measured. A null or unread bucket has no point and breaks
+   the line; it is a hatched band. A measured zero is a hollow dot on the zero rule. */
+let PID=0;
+function path(arr,X,Y,skip,upto){let d='',pen=false;for(let i=0;i<upto;i++){const v=arr[i];if(v==null||skip.has(i)){pen=false;continue}d+=(pen?'L':'M')+X(i).toFixed(1)+' '+Y(v).toFixed(1);pen=true}return d}
+function svg1(o,W){
+  const L=58,Rm=14,T=12,ph=o.ph?o.ph[W]:(W===640?120:104),lane=o.retries?32:0,B=22,H=T+ph+lane+B;
+  const n=o.cur.length,step=(W-L-Rm)/n,X=i=>L+(i+.5)*step;
+  const vals=o.cur.concat(o.prev).filter((v,i)=>v!=null&&!(i<n&&o.unread.has(i)));
+  const mx=Math.max(0,...vals),top=mx||1,Y=v=>T+ph-(v/top)*ph;
+  const id='hz'+(++PID);
+  let s=`<svg class="d${W}" viewBox="0 0 ${W} ${H}" role="group" aria-label="${esc(o.aria)}"><defs><pattern id="${id}" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path class="hz" d="M0 0V5"/></pattern></defs>`;
+  o.unread.forEach(i=>{s+=`<rect x="${(X(i)-step/2).toFixed(1)}" y="${T}" width="${step.toFixed(1)}" height="${ph+lane}" fill="url(#${id})"><title>${esc(o.unreadWhy)}</title></rect>`});
+  s+=`<line class="g0" x1="${L}" x2="${W-Rm}" y1="${Y(0)}" y2="${Y(0)}"/>`;
+  if(mx>0)s+=`<line class="g1" x1="${L}" x2="${W-Rm}" y1="${T}" y2="${T}"/><text class="tk" x="${L-6}" y="${T+4}" text-anchor="end">${esc(o.ax(mx))}</text>`;
+  s+=`<text class="tk" x="${L-6}" y="${Y(0)+4}" text-anchor="end">0</text>`;
+  if(o.hover!=null)s+=`<line class="xh" x1="${X(o.hover).toFixed(1)}" x2="${X(o.hover).toFixed(1)}" y1="${T-4}" y2="${T+ph+lane}"/>`;
+  s+=`<path class="ghost" d="${path(o.prev,X,Y,new Set(),n)}"/>`;
+  s+=`<path class="cur" style="stroke:${o.color}" d="${path(o.cur,X,Y,o.unread,n-1)}"/>`;
+  const a=n-2,b=n-1;
+  if(o.cur[a]!=null&&!o.unread.has(a))s+=`<path class="cur open" style="stroke:${o.color}" d="M${X(a).toFixed(1)} ${Y(o.cur[a]).toFixed(1)}L${X(b).toFixed(1)} ${Y(o.cur[b]).toFixed(1)}"/>`;
+  o.cur.forEach((v,i)=>{if(v==null||o.unread.has(i)||i===b)return;
+    if(v===0)s+=`<circle cx="${X(i).toFixed(1)}" cy="${Y(0)}" r="2.6" fill="var(--f-sf)" stroke="${o.color}" stroke-width="1.4"/>`;
+    else if(W===640)s+=`<circle cx="${X(i).toFixed(1)}" cy="${Y(v).toFixed(1)}" r="2.1" fill="${o.color}"/>`});
+  s+=`<circle cx="${X(b).toFixed(1)}" cy="${Y(o.cur[b]).toFixed(1)}" r="3.4" fill="var(--f-sf)" stroke="${o.color}" stroke-width="1.6" stroke-dasharray="2 1.5"/>`;
+  s+=`<text class="tk" x="${(W-Rm).toFixed(1)}" y="${(Math.min(Y(o.cur[b]),Y(o.prev[b]))-8).toFixed(1)}" text-anchor="end">so far</text>`;
+  if(o.hover!=null){const h=o.hover;if(o.cur[h]!=null)s+=`<circle cx="${X(h).toFixed(1)}" cy="${Y(o.cur[h]).toFixed(1)}" r="4.6" fill="${o.color}" stroke="var(--f-sf)" stroke-width="1.5"/>`;
+    s+=`<circle cx="${X(h).toFixed(1)}" cy="${Y(o.prev[h]).toFixed(1)}" r="4" fill="var(--f-sf)" stroke="var(--f-mu)" stroke-width="1.6"/>`}
+  if(o.retries){
+    const rc=o.retries.cur,rp=o.retries.prev,rmx=Math.max(1,...rc.filter((v,i)=>v!=null&&!o.unread.has(i)),...rp),y0=T+ph+lane-4,rh=lane-10;
+    s+=`<line class="g0" x1="${L}" x2="${W-Rm}" y1="${y0}" y2="${y0}"/><text class="tk" x="${L-6}" y="${y0-6}" text-anchor="end">retries</text>`;
+    rc.forEach((v,i)=>{if(v==null||o.unread.has(i))return;const h=v/rmx*rh,w=Math.max(2,step*.5);s+=`<rect x="${(X(i)-w/2).toFixed(1)}" y="${(y0-h).toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" fill="var(--series-5)" rx="1"/>`});
+    rp.forEach((v,i)=>{const h=v/rmx*rh,w=Math.max(4,step*.72);s+=`<line class="rw" x1="${(X(i)-w/2).toFixed(1)}" x2="${(X(i)+w/2).toFixed(1)}" y1="${(y0-h).toFixed(1)}" y2="${(y0-h).toFixed(1)}"/>`});
+  }
+  const stride=o.stride[W];
+  for(let i=0;i<n;i+=stride)s+=`<text class="tk" x="${X(i).toFixed(1)}" y="${H-5}" text-anchor="middle">${esc(o.lab(i))}</text>`;
+  return s+'</svg>';
+}
+const chart=o=>`<div class="cc">${svg1(o,640)}${svg1(o,300)}</div>`;
+const STRIDE={week:{640:4,300:8},month:{640:1,300:3}};
+
+/* ================= page parts ================= */
+const AXF={agents:n0,hours:x=>n0(x)+' h',tokM:tok,cost:money};
+const MT={agents:'Agents',hours:'Run hours',tokM:'Tokens',cost:'Estimated cost'};
+const COSTL='Estimated cost (list price, not a bill)';
+function shell(){
+  const rail=`<nav class="rail" aria-label="Sections"><div class="rbrand">${HIVE(44)}</div><span class="ri rcta">${I('i-submit')}<small>Submit</small></span><div class="rsep"></div><span class="ri">${I('i-overview')}<small>Overview</small></span><span class="ri">${I('i-agents')}<small>Work</small></span><span class="ri">${I('i-auto')}<small>Automate</small></span><span class="ri">${I('i-pools')}<small>Capacity</small></span><span class="ri on">${I('i-limits')}<small>Admin</small></span><div class="rgrow"></div><span class="ri">${I('i-help')}<small>Help</small></span><span class="av">OP</span></nav>`;
+  const pg=(on,icon,label)=>`<span class="pk${on?' on':''}">${I(icon)}<span class="pl1">${label}</span></span>`;
+  const panel=`<nav class="panel" aria-label="Pages"><div class="ph"><span class="wm">Swarm<span>Cloud</span></span><span class="pill dev">dev</span></div><div class="pscroll"><div class="pt">Admin</div>${pg(false,'i-limits','Pool limits')}${pg(false,'i-box','Runner sizes')}${pg(false,'i-users','Tenants')}${pg(true,'i-hash','Platform counts')}${pg(false,'i-users','People')}${pg(false,'i-box','Workspaces you admin')}</div><div class="pfoot"><span class="pfrow"><b>Operator</b> <span class="adm">admin</span><span class="seg" role="group" aria-label="Theme for this frame"><button class="ibtn" data-ft="light" aria-label="Light">${I('i-sun')}</button><button class="ibtn" data-ft="dark" aria-label="Dark">${I('i-moon')}</button><button class="ibtn on" data-ft="page" aria-label="System">${I('i-monitor')}</button></span></span><small>operator@swarm.example.com</small><span class="stamp">swarm.example.com</span></div></nav>`;
+  return `<div class="side">${rail}${panel}</div>`;
+}
+function head(st,ph){
+  const ds=DS[st.bucket];
+  const prov=st.run?`read ${st.partial?'1 min':'4 min'} ago · ${n0(ds.reads)} reads`:'not run';
+  const label=st.run?'Run it again':'Run';
+  return `<div class="crumb">Admin › <b>Platform counts</b></div>
+<div class="phead"><h3>Platform counts</h3><span class="q">?</span><div class="r"><span class="prov">${prov}</span>${ph?'':`<button class="btn pri">${I('i-play')}${label}<span class="cost">~${n0(ds.reads)} reads</span></button>`}</div></div>${ph?`<button class="btn pri">${I('i-play')}${label}<span class="cost">~${n0(ds.reads)} reads</span></button>`:''}`;
+}
+function toolbar(st,ph){
+  const ds=DS[st.bucket];
+  const b=(k,t,e)=>`<button aria-pressed="${st.bucket===k}">${t}<em>${e}</em></button>`;
+  const byL=st.pick?DIMS[st.pick].label:st.by?DIMS[st.by].label:'None';
+  return `<div class="tb"><span class="grp"><span class="lb">Buckets</span><span class="segb" role="group" aria-label="Buckets">${b('day','Day','30')}${b('week','Week','26')}${b('month','Month','12')}</span></span>
+<span class="grp" style="position:relative"><span class="lb">Breakdown</span><button class="dd${st.menu?' hl':''}" aria-haspopup="listbox" aria-expanded="${!!st.menu}"><b>${esc(byL)}</b>${I('i-down')}</button>${st.menu?menu(st):''}</span>
+<span class="grp"><span class="lb">Against</span><span>the ${ds.n} ${ds.units} before</span></span>
+<span class="tz">${ph?'':'in your time zone, '}Europe/London</span></div>`;
+}
+function menu(st){
+  const it=(k,t,s)=>`<div class="it${(st.by||null)===k?' on':''}${st.menuHover===k?' hv':''}" role="option" aria-selected="${(st.by||null)===k}"><span class="rd"></span><b>${t}</b><small>${s}</small></div>`;
+  return `<div class="menu" role="listbox" aria-label="Breakdown" style="left:0;top:34px">${it(null,'None','the platform as one line per chart')}${it('type','Agent type','runner profile, e.g. claude-code')}${it('model','Model','the model each agent ran')}${it('ws','Workspace','eng, smoke, u-operator')}${it('acct','Pool account','the account each agent leased')}<div class="ft">Picking does not read. Run reads it, ~${n0(DS[st.bucket].reads)} reads: a breakdown costs no more than none.</div></div>`;
+}
+function keyline(st,v){
+  return `<div class="keyline"><span><i class="k-now"></i>this period, ${v.ds.span}</span><span><i class="k-was"></i>the period before, ${v.ds.pspan}</span><span>${v.ds.unit} against ${v.ds.unit}; a change compares the ${v.closed.length} closed ${v.ds.units}${st.partial?' read in both':''}, not the ${v.ds.unit} so far</span></div>`;
+}
+function sentence(st,v){
+  const top=movers(st,v,'agents',null).up[0];
+  const pa=pctCh(v.cc.agents,v.cp.agents),pc=pctCh(v.cc.cost,v.cp.cost);
+  if(st.partial){
+    return `<p class="lead">In the ${v.closed.length} closed ${v.ds.units} read in both periods, the platform ran <b>${pa}% more agents</b> than in the ${v.ds.units} before, led by <b>${esc(top.k)}</b> (${top.d>0?'+':''}${n0(top.d)}). Cost and run hours are not compared: <b>${n0(v.cov.cost.noCost)} agents reported no cost</b> and one ${v.ds.unit} was not read, so this period's figures are floors.</p>`;
+  }
+  const m=st.by?(st.metric||'agents'):'agents',t=st.by?movers(st,v,m,st.by).all[0]:top;
+  const amt=m==='agents'?`${n0(Math.abs(t.d))} agents`:m==='cost'?`${money(Math.abs(t.d))} in estimated cost`:m==='hours'?`${hrs(Math.abs(t.d))} of run time`:`${tok(Math.abs(t.d))} tokens`;
+  const where=st.by?`the biggest change among ${DIMS[st.by].kind}s was`:'the biggest single change was';
+  return `<p class="lead">Over the ${v.ds.n} ${v.ds.units} to 23 Oct, the platform ran <b>${pa}% more agents</b> than in the ${v.ds.n} before, and estimated cost grew faster, <b>${pc}%</b>; ${where} <b>${esc(t.k)}</b>, ${t.d>0?'up':'down'} ${amt}.</p>`;
+}
+function series(v,m,idx){return v.ds.cur.map((b,i)=>v.unread.has(i)?null:b[m])}
+function metricCard(st,v,m){
+  const ds=v.ds,cur=series(v,m),prev=ds.prev.map(b=>b[m]);
+  const isCost=m==='cost',c=m==='hours'?v.cov.hours:m==='tokM'?v.cov.tok:isCost?v.cov.cost:null;
+  const floor=c&&c.k<c.n;
+  let fig=`${floor?'<span class="al">at least</span> ':''}<span class="fig">${m==='agents'?n0(v.tot.agents):m==='hours'?hrs(v.tot.hours):m==='tokM'?tok(v.tot.tokM):money(v.tot.cost)}</span>`;
+  /* An unread bucket leaves the agents and retries totals summed over the buckets read: a floor, not a whole. */
+  const short=m==='agents'&&v.unread.size>0;
+  if(short)fig=`<span class="al">at least</span> `+fig;
+  if(m==='agents')fig+=` <span class="unit">agents</span> ${short?'<span class="al">at least</span> ':''}<span class="fig2">${n0(v.tot.retries)}</span> <span class="unit">retries</span>`;
+  else if(m==='tokM')fig+=` <span class="unit">tokens</span>`;
+  const was=`<span class="was">before: ${m==='agents'?n0(v.prev.agents)+' agents, '+n0(v.prev.retries)+' retries':AXF[m](v.prev[m])}</span>`;
+  const ch=c&&c.closedFloor?withheld(isCost?`${n0(c.noCost)} agents in closed ${ds.units} reported no cost, so this period's cost is a floor and the period before's is not: the two are not like figures.`:`${c.why}, so this period's run hours are a floor and the period before's are not.`):chip(v.cc[m],v.cp[m]);
+  let covL='';
+  if(m==='agents')covL=`<p class="cov">${short?`<span class="mk partial"><i></i></span><span><b>${v.unread.size} of ${n0(v.n)}</b> ${ds.units} not read, so agents and retries are floors</span>`:''}<span>counted by submission day</span><span>retries are attempts after an agent's first, in its submission ${ds.unit}</span></p>`;
+  if(m==='hours')covL=`<p class="cov">${floor?'<span class="mk partial"><i></i></span>':''}<span><b>${n0(c.k)} of ${n0(c.n)}</b> attempts measured</span><span>${v.run} agents still running, counted when they end</span>${c.why?`<span>${c.why}</span>`:''}</p>`;
+  if(m==='tokM')covL=`<p class="cov">${floor?'<span class="mk partial"><i></i></span>':''}<span>each kind below says how many attempts reported it</span></p>`;
+  if(isCost)covL=`<p class="cov">${floor?'<span class="mk partial"><i></i></span>':''}<span><b>${n0(c.k)} of ${n0(c.n)}</b> agents reported</span><span>${v.run} still running</span>${c.noCost?`<span>${n0(c.noCost)} reported nothing (not $0)</span>`:''}<span><b>${c.est[0]}</b> estimated from a stopped run (${money(c.est[1])}, included)</span></p>`;
+  const o={cur,prev,unread:v.unread,unreadWhy:`${ds.long(15)}: not read. The derive budget (5,000 reads) ran out; Run again continues where this one stopped. Nothing here is a zero.`,
+    color:'var(--series-1)',ax:AXF[m],stride:STRIDE[st.bucket],lab:ds.lab,hover:st.hover,
+    aria:`${isCost?COSTL:MT[m]} ${ds.per}, this period against the period before`,
+    retries:m==='agents'?{cur:v.ds.cur.map((b,i)=>v.unread.has(i)?null:b.retries),prev:ds.prev.map(b=>b.retries)}:null};
+  let extra='';
+  if(m==='tokM'){
+    const rows=[['input','in'],['output','out'],['cache read','cr'],['cache write','cw']].map(([nm,k])=>{const a=v.tot.tokM*TOKSPLIT[k],b=v.prev.tokM*TOKPREV[k];
+      return `<div class="tkr"><b>${nm}</b><span>${floor?'≥ ':''}${tok(a)}</span><span class="w">before ${tok(b)} ${chip(v.cc.tokM*TOKSPLIT[k],v.cp.tokM*TOKPREV[k])}</span><span class="c">${n0(c.k)} of ${n0(c.n)} attempts reported</span></div>`}).join('');
+    extra=`<div class="tks">${rows}</div>`;
+  }
+  const leg=`<div class="keyline"><span><i class="k-now"></i>this period</span><span><i class="k-was"></i>before</span>${m==='agents'?'<span><i class="k-ret"></i>retries</span><span><i class="k-retw"></i>retries before</span>':''}<span><i class="k-open"></i>so far</span>${v.unread.size?'<span><i class="k-hatch"></i>not read</span>':''}<span>${m==='agents'?'agents':m==='hours'?'hours':m==='tokM'?'tokens':'US dollars'} ${ds.per}</span></div>`;
+  return `<div class="card mc" data-m="${m}"><div class="mh"><span class="t">${isCost?COSTL:MT[m]}</span>${fig}${ch}${was}</div>${covL}${chart(o)}${leg}${extra}</div>`;
+}
+function movers(st,v,m,dimKey){
+  const rows=[];
+  (dimKey?[dimKey]:Object.keys(DIMS)).forEach(d=>{const gd=GD[st.bucket][d];DIMS[d].groups.forEach((g,j)=>{if(!dimKey&&g.same)return;
+    const c=sum(v.closed.map(i=>gd.cur[i][j][m])),p=sum(v.closed.map(i=>gd.prev[i][j][m]));rows.push({k:g.k,kind:DIMS[d].kind,c,p,d:c-p})})});
+  const seen=new Set(),uniq=rows.filter(r=>{if(seen.has(r.k))return false;seen.add(r.k);return true});
+  const up=uniq.filter(r=>r.d>0).sort((a,b)=>b.d-a.d),dn=uniq.filter(r=>r.d<0).sort((a,b)=>a.d-b.d);
+  return {up,dn,all:uniq.slice().sort((a,b)=>b.d-a.d)};
+}
+function moversCard(st,v){
+  const m=st.mm||'agents',dk=st.by||null,mv=movers(st,v,m,dk);
+  const blocked=st.partial&&(m==='cost'||m==='hours');
+  const f=AXF[m];
+  const mx=Math.max(1,...mv.all.map(r=>Math.abs(r.d)));
+  const row=r=>{const p=pctCh(r.c,r.p),w=Math.abs(r.d)/mx*50;
+    return `<div class="mv"><span class="nm" title="${esc(r.k)}">${esc(r.k)}</span><span class="dv" aria-hidden="true"><i class="${r.d>=0?'up':'dn'}" style="width:${w.toFixed(1)}%"></i></span><span class="ch2">${r.d>=0?'+':'−'}${f(Math.abs(r.d))}<small>${p===null?'new':(p>0?'▲ ':'▼ ')+Math.abs(p)+'%'}</small></span><span class="sub">${dk?'':esc(r.kind)+' · '}${f(r.p)} → ${f(r.c)}</span></div>`};
+  const seg=`<span class="segb" role="group" aria-label="Movers by">${['agents','hours','tokM','cost'].map(k=>`<button aria-pressed="${k===m}">${k==='tokM'?'Tokens':k==='cost'?'Cost':k==='hours'?'Hours':'Agents'}</button>`).join('')}</span>`;
+  let body;
+  if(blocked)body=`<p class="note">${withheld('')} Not ranked by ${m==='cost'?'cost':'run hours'}: this period's figure is a floor and the period before's is not.</p>`;
+  else if(dk)body=`<div>${mv.all.map(row).join('')}</div>`;
+  else body=`<div class="mvh">Grew most</div><div>${mv.up.slice(0,3).map(row).join('')}</div><div class="mvh">Shrank most</div><div>${mv.dn.length?mv.dn.slice(0,3).map(row).join(''):'<p class="note">Nothing shrank: every group grew.</p>'}</div>`;
+  return `<div class="card"><div class="ch"><b>Top movers</b><span class="r">${seg}</span></div><p class="note">${dk?`Each ${DIMS[dk].kind}`:'The agent types, models, workspaces and pool accounts'} that changed most in ${m==='tokM'?'tokens':m==='cost'?'estimated cost':m==='hours'?'run hours':'agents'}, over the ${v.closed.length} closed ${v.ds.units}${st.partial?' read in both':''}. Ranked by the change, not the percent.</p>${body}<div class="keyline"><span><i class="k-sh" style="background:var(--f-ac)"></i>grew</span><span><i class="k-shw" style="border-color:var(--f-ac)"></i>shrank</span><span>bar: the change, against the largest here</span></div></div>`;
+}
+function shareCard(st,v){
+  if(!st.by)return `<div class="card"><div class="ch"><b>Share of total</b></div><div class="empty"><span>No breakdown picked. Pick one to see each group's share, this period beside the period before.</span><span class="row">${Object.keys(DIMS).map(d=>`<button class="btn sm">${DIMS[d].label}</button>`).join('')}</span><span class="note">Picking does not read; Run does.</span></div></div>`;
+  const m=st.sm||st.metric||'agents',gd=GD[st.bucket][st.by],G=DIMS[st.by].groups;
+  const c=G.map((g,j)=>sum(v.read.map(i=>gd.cur[i][j][m]))),p=G.map((g,j)=>sum(gd.prev.map(b=>b[j][m])));
+  const C=sum(c)||1,P=sum(p)||1;
+  const order=G.map((g,j)=>j).sort((a,b)=>c[b]-c[a]);
+  const seg=`<span class="segb" role="group" aria-label="Share of">${['agents','hours','tokM','cost'].map(k=>`<button aria-pressed="${k===m}">${k==='tokM'?'Tokens':k==='cost'?'Cost':k==='hours'?'Hours':'Agents'}</button>`).join('')}</span>`;
+  const rows=order.map(j=>{const col=`var(--series-${(j%5)+1})`,a=c[j]/C*100,b=p[j]/P*100;
+    return `<div class="shr"><span class="nm"><i class="sw" style="background:${col}"></i><span>${esc(G[j].k)}</span></span><span class="bt" aria-hidden="true">${a>0?`<i style="width:${a.toFixed(1)}%;background:${col}"></i>`:''}</span><span class="v">${a.toFixed(0)}%</span><span class="bt was" aria-hidden="true">${b>0?`<i style="width:${b.toFixed(1)}%;border-color:${col}"></i>`:''}</span><span class="v was">${b.toFixed(0)}%</span></div>`}).join('');
+  const costNote=m==='cost'?`<p class="note">Shares of the cost reported: ${n0(v.cov.cost.k)} of ${n0(v.cov.cost.n)} agents. ${G.some(g=>g.f.cost===0)?'A 0% here is a measured zero: mock reports $0 on purpose.':''}</p>`:'';
+  return `<div class="card"><div class="ch"><b>Share of total, by ${DIMS[st.by].kind}</b><span class="r">${seg}</span></div>${costNote}<div>${rows}</div><div class="keyline"><span><i class="k-sh" style="background:var(--f-mu)"></i>this period</span><span><i class="k-shw"></i>the period before</span><span>each row's colour is its line in the charts</span></div></div>`;
+}
+function groupCard(st,v){
+  const m=st.metric||'agents',ds=v.ds,gd=GD[st.bucket][st.by],G=DIMS[st.by].groups;
+  const seg=`<span class="segb" role="group" aria-label="Measure">${METS.map(k=>`<button aria-pressed="${k===m}">${k==='cost'?'Cost':k==='hours'?'Hours':MT[k]}</button>`).join('')}</span>`;
+  const sub=m==='cost'?`${COSTL}, US dollars ${ds.per}`:m==='agents'?`agents ${ds.per}, by submission day; retries apart`:m==='hours'?`run hours ${ds.per}`:`tokens ${ds.per}, all four kinds`;
+  const runShare=splitInt(v.run,G.map((g,j)=>gd.cur[ds.n-1][j].agents));
+  const panels=G.map((g,j)=>{
+    const col=`var(--series-${(j%5)+1})`,cur=gd.cur.map((b,i)=>v.unread.has(i)?null:b[j][m]),prev=gd.prev.map(b=>b[j][m]);
+    const tc=sum(v.read.map(i=>gd.cur[i][j][m])),tp=sum(gd.prev.map(b=>b[j][m]));
+    const cc=sum(v.closed.map(i=>gd.cur[i][j][m])),cp=sum(v.closed.map(i=>gd.prev[i][j][m]));
+    const floor=m!=='agents'&&runShare[j]>0;
+    const ret=m==='agents'?` <span class="unit">· ${n0(sum(v.read.map(i=>gd.cur[i][j].retries)))} retries</span>`:'';
+    let cov='';
+    if(m==='cost'){const na=sum(v.read.map(i=>gd.cur[i][j].agents));cov=`<p class="cov">${floor?'<span class="mk partial"><i></i></span>':''}<span><b>${n0(na-runShare[j])} of ${n0(na)}</b> agents reported</span>${runShare[j]?`<span>${runShare[j]} still running</span>`:''}${g.f.cost===0?'<span>reports $0 on purpose: a measured zero</span>':''}</p>`}
+    if(m==='hours'&&runShare[j])cov=`<p class="cov"><span class="mk partial"><i></i></span><span>${runShare[j]} still running</span></p>`;
+    const zeroWhole=tp===0&&tc===0;
+    return `<div class="pn"><div class="pnh"><span class="nm"><i class="sw" style="background:${col}"></i>${esc(g.k)}</span><span>${floor&&tc>0?'<span class="al">at least</span> ':''}<span class="fig2">${AXF[m](tc)}</span>${ret}</span>${zeroWhole?'<span class="dl flat">0 in both</span>':chip(cc,cp)}<span class="was">before: ${AXF[m](tp)}</span></div>${cov}${chart({cur,prev,unread:v.unread,unreadWhy:'not read',color:col,ax:AXF[m],stride:STRIDE[st.bucket],lab:ds.lab,hover:st.hover,ph:{640:78,300:72},
+      aria:`${g.k}: ${MT[m]} ${ds.per}, this period against the period before`,retries:null})}</div>`;
+  }).join('');
+  return `<div class="card"><div class="ch"><b>By ${DIMS[st.by].kind}</b><span class="r">${seg}</span></div><p class="note">${sub}. One chart per ${DIMS[st.by].kind}, each over its own ghost; every chart has its own scale, so compare shapes here and sizes in Share of total.</p>${panels}<div class="keyline"><span><i class="k-now" style="border-color:var(--f-ink)"></i>this period, in the row's colour</span><span><i class="k-was"></i>the period before</span><span><i class="k-zero"></i>a measured zero</span><span><i class="k-open"></i>so far</span></div></div>`;
+}
+function nowCards(st){
+  const tenant={READY:3,PARKED:1,LEASED:2,DISPATCHED:0,STARTING:1,RUNNING:9,SUCCEEDED:4812,FAILED:391,CANCELLED:264};
+  const all={READY:5,PARKED:2,LEASED:4,DISPATCHED:1,STARTING:2,RUNNING:17,SUCCEEDED:6390,FAILED:512,CANCELLED:347};
+  const mx=Math.max(...Object.values(all));
+  const card=(t,sub,c)=>{
+    if(!st.run)return `<div class="card"><div class="ch"><b>${t}</b><span class="r note">${sub}</span></div><p class="notrun-c"><b>—</b> not run yet. One exact count per state, 12 reads.</p></div>`;
+    const tot=sum(Object.values(c));
+    return `<div class="card"><div class="ch"><b>${t}</b><span class="r note">${sub}</span></div><div class="tot"><b>${n0(tot)}</b><span class="unit">agents</span></div>${Object.entries(c).map(([k,n])=>`<div class="srw"><span class="nm">${k}</span><span class="bar"><i style="width:${(n/mx*100).toFixed(2)}%"></i></span><span class="n">${n0(n)}</span></div>`).join('')}<p class="foot"><span class="q">?</span> never written: SUBMITTED · QUEUED · DEAD_LETTERED</p></div>`};
+  return `<div class="sec">Agents in each state now <small>${st.run?'read with the same Run':'counted by Run'}</small></div><div class="nowg">${card('This tenant','eng',tenant)}${card('Every tenant','all tenants',all)}</div><div class="ticks">${I('i-right')}<b>Platform ticks</b><span>13 Cloud Scheduler jobs, unchanged from today</span></div>`;
+}
+function notRun(st){
+  const ds=DS[st.bucket];
+  return `<div class="card notrun"><h4>Not run yet</h4><p>Nothing on this page reads on its own. Run reads ${ds.unit} buckets over ${ds.n} ${ds.units} and the ${ds.n} ${ds.units} before (${ds.span}, against ${ds.pspan}), and the live state counts for both scopes: about ${n0(ds.reads)} reads, shown on the button. A breakdown costs no more.</p><p>After a Run, this section shows:</p><ul><li>one sentence: what changed, and what drove it</li><li>agents per ${ds.unit}, retries apart</li><li>run hours, with how many were measured</li><li>tokens: input, output, cache read, cache write</li><li>${COSTL}</li><li>top movers, and each group's share of the total</li></ul></div>`;
+}
+function overTime(st,v,ph){
+  if(!st.run)return `<div class="sec">Over time</div>${notRun(st)}`;
+  const banner=st.pick&&!st.menu?`<div class="banner">${I('i-clock')}<span>You picked <b>${DIMS[st.pick].label}</b>. The figures below are still ${st.bucket} buckets, no breakdown, as last read.</span><button class="btn pri sm">Run<span class="cost">~${n0(v.ds.reads)} reads</span></button></div>`:'';
+  const dim=st.pick&&!st.menu?' dim':'';
+  const left=st.by?groupCard(st,v):METS.map(m=>metricCard(st,v,m)).join('');
+  const right=moversCard(st,v)+shareCard(st,v);
+  return `<div class="sec">Over time <small>${v.ds.unit} by ${v.ds.unit}, against the ${v.ds.n} ${v.ds.units} before</small></div>${banner}<div class="${dim}" style="display:flex;flex-direction:column;gap:12px">${sentence(st,v)}${keyline(st,v)}<div class="cols"><div class="colL">${left}${st.hover!=null&&!ph?readout(st,v):''}</div><div class="colR">${right}</div></div></div>`;
+}
+function readout(st,v,sheet){
+  const h=st.hover,ds=v.ds,m=st.metric||'agents',dk=st.by;
+  const f=AXF[m];
+  let rows='';
+  if(dk){const gd=GD[st.bucket][dk];rows=DIMS[dk].groups.map((g,j)=>{const a=gd.cur[h][j],b=gd.prev[h][j];
+    return `<tr><td><span class="sw" style="background:var(--series-${(j%5)+1})"></span> ${esc(g.k)}</td><td>${f(a[m])}${m==='agents'?` <small>+${a.retries} r</small>`:''}</td><td>${f(b[m])}</td><td>${b[m]===0?(a[m]===0?'± 0%':'new'):pctCh(a[m],b[m])===0?'± 0%':((a[m]>b[m]?'▲ ':'▼ ')+Math.abs(pctCh(a[m],b[m]))+'%')}</td></tr>`}).join('')}
+  const A=ds.cur[h],B=ds.prev[h];
+  rows+=`<tr class="tt"><td>all</td><td>${f(A[m])}${m==='agents'?` <small>+${A.retries} r</small>`:''}</td><td>${f(B[m])}</td><td>${(A[m]>=B[m]?'▲ ':'▼ ')+Math.abs(pctCh(A[m],B[m]))}%</td></tr>`;
+  const extra=`<div class="sub">That ${ds.unit}: ${hrs(A.hours)} run · ${tok(A.tokM)} tokens · ${money(A.cost)} estimated · every attempt measured and reported</div>`;
+  const body=`<h5>${esc(ds.long(h))}</h5><div class="sub">against the ${esc(ds.plong(h))}, ${ds.n} ${ds.units} earlier</div><table><thead><tr><th>${dk?DIMS[dk].label:''}</th><th>${MT[m]}</th><th>before</th><th>change</th></tr></thead><tbody>${rows}</tbody></table>${m==='agents'?'<div class="sub">r: retries, counted apart</div>':''}${extra}`;
+  if(sheet)return `<div class="sheet" role="dialog" aria-label="One ${ds.unit}"><span class="grab"></span><div class="nav"><button class="btn" aria-label="Previous ${ds.unit}">${I('i-left')}</button><b>${esc(ds.long(h))}</b><button class="btn" aria-label="Next ${ds.unit}">${I('i-right')}</button></div><div class="readout" style="position:static;width:auto;box-shadow:none;border:0;padding:0">${body.replace(/<h5>.*?<\/h5>/,'')}</div><button class="btn">Close</button></div>`;
+  return `<div class="readout" role="status" style="left:${st.rx||150}px;top:${st.ry||90}px">${body}</div>`;
+}
+function desktop(st){
+  const v=view(st);
+  return `<div class="app fx">${shell()}<main class="ct">${head(st)}${toolbar(st)}${overTime(st,v)}${nowCards(st)}</main></div>`;
+}
+function phone(st){
+  const v=view(st);
+  const ph={...st,menu:false};
+  return `<div class="phone fx${st.tall?' tall':''}"><div class="phd"><button class="ibtn" aria-label="Menu">${I('i-menu')}</button>${HIVE(22)}<span class="t">Platform counts</span><span class="tn">eng</span><span class="pill dev">dev</span><span class="adm">admin</span></div><div class="pbody">${head(ph,true)}${toolbar(ph,true)}${overTime({...ph,hover:null},v,true)}${nowCards(ph)}</div>${st.hover!=null?`<div class="scrim"></div>${readout(st,v,true)}`:''}</div>`;
+}
+
+/* ================= the frames ================= */
+const F=[
+ {id:'f1',t:'F1 · The page before Run',
+  d:{run:false,bucket:'week'},p:{run:false,bucket:'week'},
+  cap:`<b>Before Run, nothing is drawn that a read did not fill.</b> No empty axes and no zeros: the section says it has not run, what one Run reads (the ${DS.week.n} weeks and the ${DS.week.n} before, plus the live counts), and what it will show. The cost is on the button, <code>Run · ~1,120 reads</code>, and changes with the buckets (Day ~200, Week ~1,120, Month ~2,220 with three workspaces), never with the breakdown. The live state cards keep today's "not run yet" wording. The page never auto-refreshes.`},
+ {id:'f2',t:'F2 · After Run: week buckets, no breakdown',
+  d:{run:true,bucket:'week'},p:{run:true,bucket:'week'},
+  cap:`<b>One sentence first, then four charts, each against its ghost.</b> The solid line is these 26 weeks; the dashed line is the 26 before, laid week over week. Agents carry retries apart, as bars under the line with the period before's retries as ticks. Run hours, tokens and cost read <b>at least</b>, because 33 agents submitted this week are still running and are counted when they end. Tokens list all four kinds, each with how many attempts reported it. A change (▲ 32% on agents) compares the 25 closed weeks with the 25 before; this week so far is drawn against the same five days 26 weeks earlier, hollow and dashed, and kept out of every change. With no breakdown, Top movers ranks across every agent type, model, workspace and pool account, and Share of total asks for a breakdown.`},
+ {id:'f3',t:'F3 · The same, broken down by agent type',
+  d:{run:true,bucket:'week',by:'type',metric:'agents'},p:{run:true,bucket:'week',by:'type',metric:'agents'},
+  cap:`<b>A breakdown turns the four charts into one small chart per group, each over its own ghost.</b> A measure switch (Agents · Run hours · Tokens · Estimated cost) picks what the small charts draw; each has its own scale, so shapes are compared here and sizes in Share of total, which sets each type's slice now (filled) beside its slice before (outlined). <code>live-browser</code> did not exist in the period before: its ghost lies on the zero rule, because that zero was measured, and its change reads <b>new</b>, not a percent. Top movers narrows to agent types and lists all five.`},
+ {id:'f4',t:'F4 · Month buckets, broken down by pool account',
+  d:{run:true,bucket:'month',by:'acct',metric:'cost',sm:'cost',mm:'cost'},p:{run:true,bucket:'month',by:'acct',metric:'cost',sm:'cost',mm:'cost'},
+  cap:`<b>Twelve months against the twelve before, by pool account, drawn in estimated cost.</b> The button prices the longer read (~2,220 reads). Each account's cost carries its own coverage; <code>holds no account</code> is mock and API-key agents, and <code>not recorded</code> is agents whose events name no account (docs/outcomes.md), both named rather than folded into "other". <code>acct-claude-b</code> joined the pool in this period, so it reads new. October is so far (23 days), drawn against the same 23 days a year earlier.`},
+ {id:'f5',t:'F5 · Partial data, with the honesty marks',
+  d:{run:true,bucket:'week',partial:true},p:{run:true,bucket:'week',partial:true},
+  cap:`<b>What is missing is drawn as missing, and a change is shown only between like figures.</b> The week of 10 Aug was not read (a cold first Run spent the 5,000-read budget): it is a hatched band across every chart, the line breaks there and nothing is plotted as 0; Run again continues the read. Cost reads <b>at least</b> with "5,566 of 5,885 agents reported", "286 reported nothing (not $0)" and "37 estimated from a stopped run ($88, included)". Run hours read "k of n measured", with the 71 attempts that ended without a run time named. Cost and run hours are floors in closed weeks while the period before is whole, so their change is <b>not shown</b> and says why, and Top movers will not rank by them. The unread week makes this period's agents and retries totals floors too: the Agents card reads <b>at least</b> on both, with "1 of 26 weeks not read". Agents and tokens are still like figures within the closed weeks, so their change is shown, compared over the 24 closed weeks read in both.`},
+];
+const F6={id:'f6',t:'F6 · Interaction: the readout on one bucket, and picking a breakdown'};
+const F7={id:'f7',t:'F7 · Phone: how the charts reflow at 390'};
+
+function frameGroup(f,inner){
+  return `<section id="${f.id}" class="fgroup"><div class="vh"><h2>${f.t}</h2><div class="themebar" role="group" aria-label="Theme for ${esc(f.t)}"><button data-vtheme="page" aria-pressed="true">Page theme</button><button data-vtheme="light" aria-pressed="false">Light</button><button data-vtheme="dark" aria-pressed="false">Dark</button></div></div>${inner}</section>`;
+}
+let html='';
+F.forEach(f=>{
+  html+=frameGroup(f,`<figure class="fr"><div class="scroller">${desktop(f.d)}</div><figcaption><b>Desktop, 1440.</b> ${f.cap}</figcaption></figure><figure class="fr"><div class="pair"><div>${phone(f.p)}</div><figcaption style="flex:1;min-width:260px;max-width:60ch"><b>Phone, 390.</b> The same state in one column, scrolled inside the frame: the head, then the Run button full width with its price, the toolbar wrapped, the sentence, the charts at their 300-wide drawing, movers, shares, the live counts. ${f.id==='f1'?'The not-run card lists what a Run will show; no chart is drawn.':f.id==='f5'?'The hatched week, the floors and the withheld changes read the same at 390.':'Scroll the frame to see the rest; F7 shows the whole length.'}</figcaption></div></figure>`);
+});
+html+=frameGroup(F6,
+ `<figure class="fr"><div class="scroller">${desktop({run:true,bucket:'week',by:'type',metric:'agents',hover:20,rx:96,ry:120})}</div><figcaption><b>Desktop, hover.</b> Pointing at the week of 14 Sep draws one crosshair through all five small charts, a filled dot on each line and a hollow one on each ghost, and opens a readout beside it: that week against the week 26 weeks earlier, per agent type, with retries apart, the change, and a total row. The readout is a <code>role="status"</code> card, not a live region; keyboard focus on the chart steps bucket by bucket (one tab stop, arrow keys), and Escape closes it.</figcaption></figure>
+ <figure class="fr"><div class="scroller">${desktop({run:true,bucket:'week',menu:true,menuHover:'type'})}</div><figcaption><b>Desktop, picking a breakdown.</b> Breakdown is one menu: None, Agent type, Model, Workspace, Pool account, each with what it groups by. Picking does not read, so the page cannot spend reads by surprise; the menu says the price is unchanged, and the page then dims the old figures under a line that says what they still are, with the Run button beside it (as on the phone frame).</figcaption></figure>
+ <figure class="fr"><div class="pair"><div>${phone({run:true,bucket:'week',by:'type',metric:'agents',hover:20})}</div><div>${phone({run:true,bucket:'week',pick:'type'})}</div><figcaption style="flex:1;min-width:260px;max-width:60ch"><b>Phone, tap and pick.</b> Left: there is no hover on a phone, so a tap on a bucket opens the same readout as a bottom sheet, with 44px ‹ › buttons to step week by week and a Close. Right: after picking Agent type, the figures still on screen are dimmed under a banner that says they are week buckets with no breakdown, as last read, and the full-width Run button there carries the price.</figcaption></div></figure>`);
+html+=frameGroup(F7,
+ `<figure class="fr"><div class="pair"><div>${phone({run:true,bucket:'week',by:'type',metric:'agents',tall:true})}</div><figcaption style="flex:1;min-width:260px;max-width:62ch"><b>The whole page at 390, by agent type, unscrolled.</b> Nothing here is wider than the phone, so the page never scrolls sideways:
+ <ul>
+ <li>The Run button takes the full width and keeps its price; the toolbar's three groups wrap onto their own lines, and the time zone drops its label words.</li>
+ <li>Every chart switches to its 300-wide drawing, which asks for fewer x labels (every 8th week, every 3rd month) and drops the per-point dots but keeps the hollow "so far" point and the hatched band. Nothing is scaled below the width it was drawn at, so no tick falls under 12px.</li>
+ <li>The measure switch and the movers and share switches are 44px touch targets and wrap under their card title.</li>
+ <li>Movers stay one row each: name, the change bar, the change; the "from → to" line wraps under the name.</li>
+ <li>Share of total keeps a bar pair per group at full card width.</li>
+ <li>The token table, on the Agents-only view, folds each kind into two lines (F2's phone).</li>
+ <li>The live state cards stack, and Platform ticks stays one folded row.</li>
+ </ul></figcaption></div></figure>`);
+document.getElementById('frames').innerHTML=html;
+
+/* Frame themes: a group's switch pins every frame in it; a desktop frame's footer pins that frame. */
+document.querySelectorAll('[data-vtheme]').forEach(b=>b.addEventListener('click',()=>{
+  const sec=b.closest('.fgroup');const m=b.dataset.vtheme;
+  sec.querySelectorAll('.fx').forEach(x=>{if(m==='page')delete x.dataset.ftheme;else x.dataset.ftheme=m});
+  sec.querySelectorAll('[data-vtheme]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));
+}));
+document.querySelectorAll('[data-ft]').forEach(b=>b.addEventListener('click',()=>{
+  const fx=b.closest('.fx');const m=b.dataset.ft;
+  if(m==='page')delete fx.dataset.ftheme;else fx.dataset.ftheme=m;
+  b.parentElement.querySelectorAll('[data-ft]').forEach(x=>x.classList.toggle('on',x===b));
+}));
+</script>
+</body>
+</html>
