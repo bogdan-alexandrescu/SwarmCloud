@@ -44,6 +44,16 @@ from test_prepublish_graph_gate import MOD_TEST, _fixture_repo
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
+
+@pytest.fixture(autouse=True)
+def _cache_volume(tmp_path, monkeypatch):
+    """The gate starts a service with the process's environment
+    (`testservices.start`), which refuses without a cache volume
+    (`NO_CACHE_VOLUME`, TS-CLOUDRUN-REFUSE) before the stand-in runner is
+    called. Set here, so these tests do not depend on the machine running
+    them: unset, three of them failed in a SwarmCloud container."""
+    monkeypatch.setenv(testservices.CACHE_ROOT_ENV, str(tmp_path / "cache-root"))
+
 DECLARATION = '[postgres]\nversion = 16\ndatabases = ["app_test", "other_test"]\n'
 #: §5.1's variables: what the stand-in uv reports it saw.
 SERVICE_VARS = ("PGHOST", "PGPORT", "PGUSER", "PGDATABASE", "DATABASE_URL",
