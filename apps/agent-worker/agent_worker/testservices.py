@@ -356,6 +356,9 @@ POSTGRES_SETTINGS: tuple[tuple[str, str], ...] = (
 #: creating it again would be.
 INITDB_DATABASES = frozenset({"postgres", "template0", "template1"})
 
+#: The database `initdb` makes that single-user mode and the probe connect to.
+MAINTENANCE_DATABASE = "postgres"
+
 
 def bin_dir(version: int) -> Path:
     """Where `agent-runtime-base` installs the major's binaries (TS-IMAGE):
@@ -390,7 +393,7 @@ def initdb_argv(version: int, data: Path) -> list[str]:
 
 def create_databases_argv(version: int, data: Path) -> list[str]:
     """Single-user mode: the databases exist before the server listens."""
-    return [str(bin_dir(version) / "postgres"), "--single", "-D", str(data), SERVICE_USER]
+    return [str(bin_dir(version) / "postgres"), "--single", "-D", str(data), MAINTENANCE_DATABASE]
 
 
 def create_databases_input(databases: tuple[str, ...]) -> str:
@@ -423,7 +426,7 @@ def ready_argv(version: int, socket_dir: Path) -> list[str]:
         "-U",
         SERVICE_USER,
         "-d",
-        "postgres",
+        MAINTENANCE_DATABASE,
         "-t",
         "1",
     ]
