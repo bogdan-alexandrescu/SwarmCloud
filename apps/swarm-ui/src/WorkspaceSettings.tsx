@@ -1,10 +1,10 @@
-import { useState, type MouseEvent, type ReactNode } from 'react'
+import { useContext, useState, type MouseEvent, type ReactNode } from 'react'
 import { loadProfile } from './api'
 import { CodeIntelligenceCard } from './CodeIntelligence'
 import { Button, ButtonLink, Card, Tabs, routedClick } from './components'
-import { useSetupSteps } from './ConfigSetup'
+import { SetupContext } from './ConfigSetup'
 import { NewWorkspaceDialog } from './NewWorkspace'
-import { OnboardingScreen } from './Onboarding'
+import { ACCESS as GITHUB_ACCESS_ADDRESS, OnboardingScreen, STEP_LABEL, countLabel } from './Onboarding'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
@@ -35,9 +35,8 @@ import './styles/workspace-settings.css'
  * would be refused there, so hiding the part is for clarity, not security.
  *
  * Each part is led by one sentence and one button (proposal E): Settings and
- * Workspace setup by the setup strip's next step, from the same read, so the
- * lead and the strip cannot disagree; a step nothing measures is never
- * called done.
+ * Workspace setup by the checklist's next step, from the read the strip and
+ * the checklist draw, so the lead cannot disagree with either.
  */
 
 export type WorkspacePart = 'settings' | 'setup' | 'new'
@@ -50,14 +49,6 @@ export const WORKSPACE_NEW_ADDRESS = 'config/workspace?part=new'
 export function workspacePartOf(view: string | null): WorkspacePart {
   const part = new URLSearchParams(view ?? '').get('part')
   return part === 'setup' || part === 'new' ? part : 'settings'
-}
-
-/** The Config page each strip step is done on, by its address, for the lead's button. */
-const PAGE_NAME: Readonly<Record<string, string>> = {
-  'config/github': 'GitHub access',
-  'config/repositories': 'Repositories',
-  'config/secrets': 'Secrets',
-  'config/people': 'People and roles',
 }
 
 function routed(to: string, go?: (to: string) => void) {
@@ -82,33 +73,55 @@ function Lead({ kicker, title, body, tone = 'next', action }: { kicker: string; 
   )
 }
 
-/** The setup strip's next step as a lead, or that every measured step is done. */
+/** The checklist steps whose next action is on GitHub access (Onboarding.tsx links each there). */
+const ON_GITHUB_ACCESS: ReadonlySet<string> = new Set(['github_connected', 'orgs_enabled', 'repos_chosen', 'access_verified'])
+
+const STATE_WORD: Readonly<Record<string, string>> = { done: 'done', in_progress: 'in progress', failed: 'failed', stale: 'needs a re-check', todo: 'to do' }
+
+/**
+ * The checklist's next step as a lead, from the shell's onboarding read (the
+ * one the strip and Workspace setup draw), so the lead can never call setup
+ * finished while the checklist under it shows a failed step. Nothing until
+ * the read lands: a lead is never a guess.
+ */
 function SetupLead({ part, go }: { part: 'settings' | 'setup'; go?: (to: string) => void }) {
-  const steps = useSetupSteps()
-  const at = steps.findIndex((s) => s.state !== 'done' && s.state !== 'unknown')
-  const unknown = steps.filter((s) => s.state === 'unknown').length
-  if (at === -1) {
-    const measured = steps.length - unknown
+  const { doc } = useContext(SetupContext)
+  if (doc.status !== 'ok' && doc.status !== 'stale') return null
+  const d = doc.data
+  if (!Array.isArray(d.steps) || d.steps.length === 0) return null
+  if (d.complete) {
+    return <Lead tone="ok" kicker={part === 'settings' ? 'Nothing here needs you' : 'Setup is complete'} title={`Every step is done: ${countLabel(d)}`} />
+  }
+  const at = d.steps.findIndex((s) => s.step === d.next_step)
+  const next = at === -1 ? null : d.steps[at]!
+  if (next === null) return null
+  const label = STEP_LABEL[next.step] ?? next.step
+  const title = `${label}: ${STATE_WORD[next.state] ?? next.state}`
+  if (part === 'settings') {
     return (
       <Lead
-        tone="ok"
-        kicker={part === 'settings' ? 'Nothing here needs you' : 'No measured step is left'}
-        title={measured === 0 ? 'Setup has not been read yet' : `${measured} of ${steps.length} setup steps measured done`}
-        body={unknown > 0 ? `${unknown} ${unknown === 1 ? 'step has' : 'steps have'} no read yet, so ${unknown === 1 ? 'it is' : 'they are'} not counted as done.` : undefined}
+        kicker="Setup’s next step"
+        title={title}
+        body={countLabel(d)}
+        action={
+          <ButtonLink kind="primary" size="sm" href={addressToPath(WORKSPACE_SETUP_ADDRESS)} onClick={routed(WORKSPACE_SETUP_ADDRESS, go)}>
+            Open Workspace setup
+          </ButtonLink>
+        }
       />
     )
   }
-  const next = steps[at]!
-  const page = PAGE_NAME[next.to] ?? next.label
   return (
     <Lead
-      kicker={part === 'settings' ? 'Setup’s next step' : `Step ${at + 1} of ${steps.length} · next`}
-      title={`${next.label}: ${next.line}`}
-      body={part === 'setup' ? 'The strip above is this checklist, summarised.' : undefined}
+      kicker={`Step ${at + 1} of ${d.steps.length} · next`}
+      title={title}
+      body="The strip above summarises this checklist."
       action={
-        <ButtonLink kind="primary" size="sm" href={addressToPath(next.to)} onClick={routed(next.to, go)}>
-          Open {page}
-        </ButtonLink>
+        ON_GITHUB_ACCESS.has(next.step) ? (
+          <ButtonLink kind="primary" size="sm" href={addressToPath(GITHUB_ACCESS_ADDRESS)} onClick={routed(GITHUB_ACCESS_ADDRESS, go)}>
+            Open GitHub access
+          </ButtonLink>
+        ) : undefined
       }
     />
   )

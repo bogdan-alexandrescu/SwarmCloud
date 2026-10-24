@@ -25,3 +25,11 @@
 .ws-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
 .ws-kv dt { color: var(--text-dim); }
 .ws-kv dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+
+/* The parts stay one row on a phone (S6d-S6f). Three parts at the shared
+   12px padding came to 380px with the bold current one, past a 390 phone's
+   358px column, and the shared phone rule wrapped them onto two rows. */
+@media (max-width: 560px) {
+  .ws-page .c-tabs.cfg-parts { flex-wrap: nowrap; }
+  .ws-page .c-tabs.cfg-parts > a { padding-left: 8px; padding-right: 8px; box-shadow: none; }
+}

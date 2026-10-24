@@ -142,6 +142,40 @@ describe('Config › Workspace Settings: its settings and its Workspace setup pa
   })
 })
 
+describe('each part\'s lead agrees with the checklist under it', () => {
+  // Rendered review, dark-phone and light-desktop Workspace setup: the lead
+  // read only the strip's two measured steps and said "No measured step is
+  // left" over a checklist whose Enable orgs had failed.
+  const FAILED: Json = { ...ONBOARDING, steps: [step('signed_in', 'done'), step('github_connected', 'done'), step('repos_chosen', 'done'), step('orgs_enabled', 'failed')], next_step: 'orgs_enabled' }
+
+  async function withRead(part: 'settings' | 'setup') {
+    api(false)
+    const [{ WorkspaceSettingsScreen }, { SetupContext }] = await Promise.all([load(), import('../ConfigSetup')])
+    render(
+      <SetupContext.Provider value={{ doc: { status: 'ok', fetchedAt: Date.now(), data: FAILED as never }, personal: false }}>
+        <WorkspaceSettingsScreen part={part} />
+      </SetupContext.Provider>,
+    )
+  }
+
+  it('leads Workspace setup with the checklist\'s next step, and sends it to GitHub access', async () => {
+    await withRead('setup')
+    // MUTATION: lead from the strip's measured steps alone -> "No measured step is left", fails.
+    const lead = await screen.findByRole('region', { name: 'Step 4 of 4 · next' })
+    expect(visible(lead)).toContain('Enable orgs: failed')
+    expect(within(lead).getByRole('link', { name: 'Open GitHub access' }).getAttribute('href')).toBe('/config/github')
+  })
+
+  it('leads Settings with the same next step, never "Nothing here needs you" while a step has failed', async () => {
+    await withRead('settings')
+    const lead = await screen.findByRole('region', { name: 'Setup’s next step' })
+    // MUTATION: call setup done while the checklist has a failed step -> fails.
+    expect(visible(lead)).toContain('Enable orgs: failed')
+    expect(screen.queryByText('Nothing here needs you')).toBeNull()
+    expect(within(lead).getByRole('link', { name: 'Open Workspace setup' }).getAttribute('href')).toBe('/config/workspace/setup')
+  })
+})
+
 describe('Workspace setup\'s GitHub steps link to Config › GitHub access', () => {
   it('Connect GitHub, Enable orgs and Choose repositories each link to /config/github', async () => {
     api(false)
