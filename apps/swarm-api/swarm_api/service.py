@@ -47,7 +47,7 @@ from swarm_common.models import (
 from swarm_common.profiles import RUNNER_PROFILES, effective_size, resolve_backend
 from swarm_common.states import ParkReason, TaskState, assert_transition
 
-from . import gitidentity, runnersizes
+from . import gitidentity, publishtopr, runnersizes
 from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
 from .cifix import stamp as stamp_ci_fix
@@ -958,14 +958,17 @@ class SubmissionService:
                     tenant=tenant,
                     ctx=ctx,
                     now=now,
-                    dispatch=resolve_dispatch_options(
-                        strategy=spec.strategy,
-                        carrier=spec.carrier,
-                        # A batch is N INDEPENDENT tasks -- nothing in it
-                        # depends on anything else in it -- so every task in a
-                        # batch is at task scale, not workflow scale.
-                        scale="task",
-                        repository_url=spec.repository_url,
+                    dispatch=self._with_publish_target(
+                        resolve_dispatch_options(
+                            strategy=spec.strategy,
+                            carrier=spec.carrier,
+                            # A batch is N INDEPENDENT tasks -- nothing in it
+                            # depends on anything else in it -- so every task in a
+                            # batch is at task scale, not workflow scale.
+                            scale="task",
+                            repository_url=spec.repository_url,
+                        ),
+                        tenant, spec, person=ctx.email,
                     ),
                 )
                 for spec in specs
@@ -1066,6 +1069,9 @@ class SubmissionService:
             # naming two) and before the dispatch options, because it
             # supplies the repository they require. A continuation-scoped
             # caller was refused above: `merge_pr` carries no continues_task.
+            # `publish_to_pr` (#2183) beside either of them names two pull
+            # requests: refused before either is read.
+            publishtopr.refuse_another_pull_request(spec)
             named_pull = (self._named_pull(tenant, spec, person=ctx.email)
                           if spec.merge_pr else None)
             # A merge workflow its caller left nameless is stored as "Merge PR
@@ -1167,6 +1173,22 @@ class SubmissionService:
                 )
                 if block is not None:
                     await_inputs[step.step_id] = block
+            # `publish_to_pr` (#2183): the shape first, then the pull request
+            # read from GitHub once, after every other refusal that needs no
+            # read -- the merge step appended above included -- so a refused
+            # spec costs no forge call. Every step's block carries it.
+            publish_target = self._publish_target(
+                tenant, spec, repository_url, person=ctx.email,
+                agent_steps=[
+                    step.step_id for step in spec.steps
+                    if step.step_id not in control_plane_steps
+                    and validate_runner_profile(step.runner_profile).worker_action is None
+                ],
+            )
+            if publish_target is not None:
+                dispatch = replace(
+                    dispatch, publish_to_pr=tuple(publish_target.to_metadata().items())
+                )
             single_pr = validate_step_routing(
                 step_specs,
                 strategy=dispatch.strategy,
@@ -1566,6 +1588,12 @@ class SubmissionService:
         if not explicit:
             if not is_mergeable_forge(repository_url):
                 return spec, None
+            # A lane that publishes onto an existing pull request opens none
+            # for a merge step to merge (#2183): a repository's policy or the
+            # platform default does not apply to it, and an explicit merge
+            # beside it is refused (`publishtopr.check_workflow_shape`).
+            if spec.publish_to_pr is not None:
+                return spec, None
             policy = self._registered_merge_policy(tenant_id, repository_url)
             if policy is not None:
                 choice = policy
@@ -1651,6 +1679,45 @@ class SubmissionService:
         return with_rereview.model_copy(
             update={"steps": [*with_rereview.steps, WorkflowStepCreate.model_validate(appended)]}
         ), rereview["step_id"]
+
+    def _with_publish_target(
+        self, dispatch: DispatchOptions, tenant: Tenant, spec: TaskCreate, *,
+        person: str | None,
+    ) -> DispatchOptions:
+        """A single task's dispatch with its `publish_to_pr` (#2183), if any."""
+        target = self._publish_target(tenant, spec, spec.repository_url, person=person)
+        if target is None:
+            return dispatch
+        return replace(dispatch, publish_to_pr=tuple(target.to_metadata().items()))
+
+    def _publish_target(
+        self, tenant: Tenant, spec: WorkflowCreate | TaskCreate,
+        repository_url: str | None, *, person: str | None,
+        agent_steps: Sequence[str] | None = None,
+    ) -> publishtopr.Target | None:
+        """`spec.publish_to_pr`, checked and read from GitHub
+        (`publishtopr`), or None when the spec names none. `agent_steps` is
+        given for a workflow, None for a single task."""
+        number = publishtopr.parse_number(spec.publish_to_pr, repository_url)
+        if number is None:
+            return None
+        if agent_steps is None:
+            publishtopr.check_task_shape(spec, number)
+        else:
+            publishtopr.check_workflow_shape(
+                spec, number, repository_url=repository_url, agent_steps=agent_steps,
+            )
+        if self._forge_tokens is None or self._forge_writer is None:
+            raise DispatchOptionError(
+                "publish_to_pr reads the pull request from GitHub at submission, and this "
+                "deployment has no forge reader configured.",
+                detail={"publish_to_pr": number},
+            )
+        return publishtopr.resolve(
+            number, store=self._store, tenant=tenant,
+            repository_url=str(repository_url), tokens=self._forge_tokens,
+            writer=self._forge_writer, person=person,
+        )
 
     def _named_pull(self, tenant: Tenant, spec: WorkflowCreate, *,
                     person: str | None = None) -> NamedPull | None:

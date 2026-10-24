@@ -279,6 +279,10 @@ const ATTACHED = {
           depends_on: { type: 'array', items: { type: 'string' } },
           state: { type: ['string', 'null'] },
           console: { type: ['string', 'null'] },
+          // The profile it runs on, which a submit's read-back compares with
+          // the spec's (#2206). Not required: a relay that drops it is not
+          // a different workflow, and an attach never reads it.
+          runner_profile: { type: ['string', 'null'] },
         },
         required: ['step_id', 'task_id', 'depends_on', 'state', 'console'],
       },
@@ -1326,6 +1330,13 @@ function mismatches(spec, submitted, digest) {
     )
   }
   if (submitted.error) problems.push('the reply names a workflow and also an error: ' + clip(submitted.error, 160))
+  return problems.concat(stepMismatches(spec, submitted, 'the reply'))
+}
+
+// Every way the steps `submitted` names -- the Submit reply's, or a read-back's
+// (readBack) -- differ from the spec's. `where` names which, in each problem.
+function stepMismatches(spec, submitted, where) {
+  const problems = []
   const given = {}
   for (const step of spec.steps) given[step.step_id] = step
   // The steps SwarmCloud added (serverAdded); any other step the spec does
@@ -1342,16 +1353,16 @@ function mismatches(spec, submitted, digest) {
     }
     seen[id] = true
     if (refused[id]) {
-      problems.push('the reply names a step the spec does not have: ' + id)
+      problems.push(where + ' names a step the spec does not have: ' + id)
       continue
     }
     // A spec step's dependencies are the spec's; an added step's are the
     // server's, and the rows follow them as served.
     if (given[id] && !sameSet(step.depends_on, given[id].depends_on)) {
-      problems.push('step ' + id + ' depends on [' + (step.depends_on || []).join(', ') + '] in the reply and on [' + (given[id].depends_on || []).join(', ') + '] in the spec')
+      problems.push('step ' + id + ' depends on [' + (step.depends_on || []).join(', ') + '] in ' + where + ' and on [' + (given[id].depends_on || []).join(', ') + '] in the spec')
     }
     if (typeof step.task_id !== 'string' || !step.task_id) {
-      problems.push('the reply names no task for step ' + id)
+      problems.push(where + ' names no task for step ' + id)
     } else if (owner[step.task_id]) {
       problems.push('task ' + step.task_id + ' is named for both ' + owner[step.task_id] + ' and ' + id)
     } else {
@@ -1359,7 +1370,7 @@ function mismatches(spec, submitted, digest) {
     }
   }
   for (const step of spec.steps) {
-    if (!seen[step.step_id]) problems.push('step ' + step.step_id + ' is in the spec and missing from the reply')
+    if (!seen[step.step_id]) problems.push('step ' + step.step_id + ' is in the spec and missing from ' + where)
   }
   // The spec's own merge choice ("on", "on_merge_verdict") makes SwarmCloud
   // append steps or refuse the spec, so a reply naming NO step beyond the spec
@@ -1368,9 +1379,72 @@ function mismatches(spec, submitted, digest) {
   const shapes = appendable(spec)
   const added = serverAdded(spec, submitted).added
   if (added.length === 0 && shapes.length === 1 && shapes[0].length > 0) {
-    problems.push('the reply names no step beyond the spec, and SwarmCloud appends ' + shapes[0].map((step) => step.step_id).join(', ') + ' for ' + shapes[0][0].why)
+    problems.push(where + ' names no step beyond the spec, and SwarmCloud appends ' + shapes[0].map((step) => step.step_id).join(', ') + ' for ' + shapes[0][0].why)
   }
   return problems
+}
+
+// A REPLY TOO THIN TO JUDGE (#2206). Measured 2026-10-24 on
+// wf_effa3d00346b40d1a1d3: a one-step spec's relayed reply came back with its
+// workflow id and neither the digest nor the step, so it ended
+// SUBMITTED_UNVERIFIED with no row while `build` RAN and SUCCEEDED -- one
+// launch in seven of the same shape. Neither source dropped them: swarm-api's
+// create reply names every step, and swarm_workflow adds the digest to every
+// spec it submits. The relay copying the reply into its answer did. A missing
+// digest or spec step is therefore not evidence of a different workflow, only
+// of a thin copy, and it is settled by reading the workflow back (readBack);
+// a digest that DIFFERS, a changed dependency or an invented step is evidence,
+// and is judged from the reply as before -- even when the reply also misses a
+// spec step: a read of step ids and profiles cannot clear a reworded prompt.
+function thinReply(spec, submitted, digest) {
+  if (!submitted.spec_digest) return true
+  if (submitted.spec_digest !== digest) return false
+  const named = {}
+  for (const step of submitted.steps || []) if (step) named[step.step_id] = true
+  return spec.steps.some((step) => !named[step.step_id])
+}
+
+// The profile each spec step names that the read-back shows another for. A
+// spec step naming none runs on the server's default, which this script does
+// not restate, and a read-back step whose relay carried none is not compared:
+// neither is a difference.
+function profileMismatches(spec, steps) {
+  const shown = {}
+  for (const step of steps) if (step) shown[step.step_id] = step
+  const problems = []
+  for (const step of spec.steps) {
+    const meant = flatText(step.runner_profile)
+    const served = shown[step.step_id] ? flatText(shown[step.step_id].runner_profile) : null
+    if (meant && served && meant !== served) {
+      problems.push('step ' + step.step_id + ' runs on ' + served + ' in the read-back and on ' + meant + ' in the spec')
+    }
+  }
+  return problems
+}
+
+// ONE read of the workflow a thin reply named: the ATTACH job, which is
+// swarm_workflow_status and the probe a row's follow needs. Never retried.
+// Returns {back} -- the read, its steps unquoted -- or {failure}: the read's
+// error, verbatim, or why there was none.
+async function readBack(workflowId, name) {
+  let back = null
+  let failure = null
+  try {
+    back = await agent('ATTACH\nworkflow_id: ' + workflowId, {
+      label: setupLabel(name, [workflowId], 'read back'),
+      phase: 'Submit',
+      agentType: 'sc:workflow',
+      schema: ATTACHED,
+    })
+  } catch (error) {
+    failure = 'the row reading it back failed: ' + failureText(error)
+  }
+  if (back && back.error) return { failure: 'reading it back answered: ' + back.error }
+  if (!back || !Array.isArray(back.steps)) {
+    return { failure: failure || 'the row reading it back stopped before it answered' }
+  }
+  back.steps = relayedSteps(back.steps)
+  return { back: back }
 }
 
 // By reference when there is one -- the bridge reads the file, or submits the
@@ -2307,6 +2381,33 @@ async function attachAll(cap) {
   }
 }
 
+// A READ-BACK THAT DIFFERS FROM THE SPEC (#2206): SUBMITTED_UNVERIFIED, and
+// still a row for every unfinished step it shows with a task, so nothing the
+// workflow runs goes unwatched. The state SwarmCloud derived is handed back as
+// `workflow_state`; `state` stays the verdict on the submission.
+async function unverifiedWithRows(submitted, back, differs, workflowConsole) {
+  const id = submitted.workflow_id
+  const wf = workflowView(id, titleName([back.title, back.label, id]), back.steps,
+    flatText(submitted.workspace) || flatText(back.workspace), given.details)
+  const finished = (step) => TERMINAL.indexOf(step.state) >= 0
+  const open = back.steps.filter((step) => step.task_id && !finished(step))
+  const known = {}
+  for (const step of back.steps) known[step.step_id] = step
+  log(id + ' · the read-back differs from the spec · following its ' + open.length + ' unfinished step(s) anyway' + workspaceNote(wf.workspace) + consoleSuffix(workflowConsole))
+  const result = given.rows === 'summary'
+    ? await summarizeWorkflow(wf, back.steps.map((step) => Object.assign({}, step, { finished_before_attach: finished(step) })), workflowConsole)
+    : await finish(wf, await followSteps(wf, open, (step) =>
+      (step.depends_on || [])
+        .filter((parent) => known[parent] && !finished(known[parent]) && known[parent].task_id)
+        .map((parent) => known[parent].task_id),
+    ), workflowConsole)
+  result.workflow_state = result.state
+  result.state = 'SUBMITTED_UNVERIFIED'
+  result.error = 'SwarmCloud accepted workflow ' + id + ', but its steps as read back do not match the spec given: ' + differs.join('; ') + '. A row was started for each unfinished step it shows, so nothing runs unwatched. The workflow runs regardless: cancel it with swarm_workflow_cancel if it is not what was meant.'
+  result.arm_watch = ARM_ANYWAY
+  return result
+}
+
 const given = readSpec(args)
 
 // THE FALLBACK SAYS WHY (SC-TITLES, #1511). Every launch from the bridge
@@ -2423,16 +2524,57 @@ if (!submitted.workflow_id) {
 
 if (Array.isArray(submitted.steps)) submitted.steps = relayedSteps(submitted.steps)
 const problems = mismatches(spec, submitted, digest)
-if (problems.length > 0) {
+const RUNS_REGARDLESS = ' The workflow runs regardless: read it with swarm_workflow_status, or cancel it with swarm_workflow_cancel if it is not what was meant.'
+// How a thin reply was settled (thinReply), handed back on the result.
+let verifyNote = null
+if (problems.length > 0 && thinReply(spec, submitted, digest)) {
+  // ONE read-back decides (#2206): the server's steps, not the relay's copy.
+  const read = await readBack(submitted.workflow_id, titleName([spec.title, spec.label, submitted.workflow_id]))
+  if (read.failure) {
+    for (const problem of problems) log(submitted.workflow_id + ' · ' + clip(problem, 200))
+    log(submitted.workflow_id + ' · not read back · ' + clip(read.failure, 200))
+    return withConsole({
+      workflow_id: submitted.workflow_id,
+      state: 'SUBMITTED_UNVERIFIED',
+      error: 'SwarmCloud accepted workflow ' + submitted.workflow_id + ', but the reply relayed back does not match the spec given (' + problems.join('; ') + '), and reading the workflow back did not settle it -- ' + read.failure + ' -- so no row was started.' + RUNS_REGARDLESS,
+      steps: [],
+      arm_watch: ARM_ANYWAY,
+    }, submitted.console)
+  }
+  const back = read.back
+  const backConsole = submitted.console || back.console
+  if (back.follow_error) return followRefused(submitted.workflow_id, back.bridge_version || submitted.bridge_version, back.follow_error, backConsole)
+  const differs = (submitted.error ? ['the reply names a workflow and also an error: ' + clip(submitted.error, 160)] : [])
+    .concat(stepMismatches(spec, back, 'the read-back'), profileMismatches(spec, back.steps))
+  if (differs.length > 0) {
+    for (const problem of differs) log(submitted.workflow_id + ' · ' + clip(problem, 200))
+    return await unverifiedWithRows(submitted, back, differs, backConsole)
+  }
+  const thin = []
+  if (!submitted.spec_digest) thin.push('the reply carried no spec digest')
+  const named = (submitted.steps || []).filter((step) => step && specStepsById(spec)[step.step_id]).length
+  if (named < spec.steps.length) thin.push('it named ' + named + ' of the spec\'s ' + spec.steps.length + ' step(s)')
+  // thinReply reads a served digest that differs as a mismatch, so one served here matched.
+  verifyNote = thin.join(' and ') + '; SwarmCloud\'s read of the workflow shows every spec step, with its dependencies and the profile the spec names, so it is reported submitted. ' +
+    (submitted.spec_digest ? 'The digest served matches the spec\'s.' : 'The digest was not served, so it is not checked here.')
+  log(submitted.workflow_id + ' · ' + verifyNote)
+  submitted = Object.assign({}, submitted, {
+    steps: back.steps,
+    workspace: flatText(submitted.workspace) || flatText(back.workspace),
+    console: backConsole,
+  })
+} else if (problems.length > 0) {
   for (const problem of problems) log(submitted.workflow_id + ' · ' + clip(problem, 200))
   return withConsole({
     workflow_id: submitted.workflow_id,
     state: 'SUBMITTED_UNVERIFIED',
-    error: 'SwarmCloud accepted workflow ' + submitted.workflow_id + ', but the reply relayed back does not match the spec given, so no row was started: ' + problems.join('; ') + '. The workflow runs regardless: read it with swarm_workflow_status, or cancel it with swarm_workflow_cancel if it is not what was meant.',
+    error: 'SwarmCloud accepted workflow ' + submitted.workflow_id + ', but the reply relayed back does not match the spec given, so no row was started: ' + problems.join('; ') + '.' + RUNS_REGARDLESS,
     steps: [],
     arm_watch: ARM_ANYWAY,
   }, submitted.console)
 }
+// The result says the read-back verified it, when one did.
+const verified = (result) => (verifyNote ? Object.assign(result, { verified_by: 'read_back', verify_note: verifyNote }) : result)
 
 if (submitted.follow_error) return followRefused(submitted.workflow_id, submitted.bridge_version, submitted.follow_error, submitted.console)
 
@@ -2470,7 +2612,7 @@ if (knownShape && knownShape.length > 0) {
 // ONE summary row for the whole workflow (PLUGIN-ROW-SPLIT): nothing has
 // finished yet, so every step is counted queued until the row reads it.
 if (given.rows === 'summary') {
-  return await summarizeWorkflow(wf, wf.all, submitted.console)
+  return verified(await summarizeWorkflow(wf, wf.all, submitted.console))
 }
 
 // Just submitted, so no parent has finished: every row is handed all of its
@@ -2480,4 +2622,4 @@ for (const step of submitted.steps) taskOf[step.step_id] = step.task_id
 const rows = await followSteps(wf, wf.all, (step) =>
   (step.depends_on || []).map((parent) => taskOf[parent]).filter((id) => typeof id === 'string' && id),
 )
-return await finish(wf, rows, submitted.console)
+return verified(await finish(wf, rows, submitted.console))

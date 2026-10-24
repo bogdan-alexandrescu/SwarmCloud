@@ -235,6 +235,43 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
 # main build and release), so the upgrade below is never an older build's
 # (owner decision 2026-10-14).
+#
+# PostgreSQL 16's server, for the test services a repository declares in
+# .swarm/test-services.toml (docs/design/test-services.md §3.1, §4.1; owner
+# decision 2026-10-23: option A, 16 only). The worker -- never the agent,
+# never the repository -- runs `initdb` and `postgres` as its own child at
+# runtime; THIS BUILD STARTS NOTHING AND CREATES NO DATA DIRECTORY:
+# create_main_cluster is turned off before the server's postinst runs, and
+# the build fails if a cluster appears anyway.
+#
+# From PGDG, the PostgreSQL project's own apt archive, because bookworm's
+# carries only 15. Its signing key (ACCC4CF8) is fetched over HTTPS and must
+# hold exactly one primary key, whose FULL fingerprint is
+# PGDG_KEY_FINGERPRINT, before it becomes the keyring apt checks the archive
+# against; any other key, a second one, or none fails the build before apt
+# trusts anything. (`--show-keys`, not `--import`: an import starts
+# gpg-agent, which `gpg` without its recommends does not carry.) The fingerprint
+# is the one https://www.postgresql.org/download/linux/debian/ publishes, and
+# https://www.postgresql.org/media/keys/ACCC4CF8.asc hashed to it on
+# 2026-10-24. gpg is installed for that check alone and purged in this RUN.
+#
+# The server sits in THIS layer so that APT_REFRESH brings every 16.x minor
+# on the next build, exactly as it brings Debian's fixes. The archive floats,
+# so the build refuses anything older than POSTGRES_MIN_VERSION, the release
+# measured when this went in (16.15-1.pgdg12+2, 2026-10-24). The PGDG source
+# and keyring are removed once the server is in: the derived images run their
+# own `apt-get update` and must not start depending on apt.postgresql.org.
+#
+# The scan (scripts/lib/image-scan.sh): trivy matches Debian packages against
+# Debian's tracker, which does not track PGDG's postgresql-16, so findings on
+# the server itself are under-reported, not over-reported (design §4.1). Its
+# libraries (libllvm19, libicu72, libxml2, libxslt1.1, locales) are Debian's
+# and are tracked. ssl-cert's postinst generates a snakeoil key pair, the same
+# in every pull of the image; the service listens on loopback without TLS, so
+# the pair is deleted.
+ARG PGDG_KEY_FINGERPRINT=B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
+ARG POSTGRES_MAJOR=16
+ARG POSTGRES_MIN_VERSION=16.15
 ARG APT_REFRESH=unset
 RUN echo "apt layer of ${APT_REFRESH}" \
  && apt-get update \
@@ -255,6 +292,31 @@ RUN echo "apt layer of ${APT_REFRESH}" \
       unzip \
       wget \
  && ln -sf "$(command -v fdfind)" /usr/local/bin/fd \
+ && apt-get install --no-install-recommends -y gpg \
+ && GNUPGHOME="$(mktemp -d)" && export GNUPGHOME \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/pgdg-key.asc \
+      "https://www.postgresql.org/media/keys/ACCC4CF8.asc" \
+ && test "$(gpg --batch --with-colons --show-keys /tmp/pgdg-key.asc \
+      | awk -F: '$1 == "fpr" && prev == "pub" { print $10 } { prev = $1 }')" = "${PGDG_KEY_FINGERPRINT}" \
+ && gpg --batch --dearmor --output /usr/share/keyrings/pgdg.gpg /tmp/pgdg-key.asc \
+ && echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update \
+ && apt-get install --no-install-recommends -y postgresql-common \
+ && sed -ri 's/^#?create_main_cluster = .*/create_main_cluster = false/' /etc/postgresql-common/createcluster.conf \
+ && grep -qx 'create_main_cluster = false' /etc/postgresql-common/createcluster.conf \
+ && apt-get install --no-install-recommends -y "postgresql-${POSTGRES_MAJOR}" \
+ && if ! dpkg --compare-versions "$(dpkg-query -W -f='${Version}' "postgresql-${POSTGRES_MAJOR}")" ge "${POSTGRES_MIN_VERSION}"; then \
+      echo "postgresql-${POSTGRES_MAJOR} is older than POSTGRES_MIN_VERSION=${POSTGRES_MIN_VERSION}" >&2; exit 1; \
+    fi \
+ && test ! -e "/var/lib/postgresql/${POSTGRES_MAJOR}" \
+ && test ! -e "/etc/postgresql/${POSTGRES_MAJOR}" \
+ && for t in postgres initdb pg_ctl pg_isready; do \
+      ln -s "/usr/lib/postgresql/${POSTGRES_MAJOR}/bin/$t" "/usr/local/bin/$t"; \
+    done \
+ && rm -f /etc/ssl/private/ssl-cert-snakeoil.key /etc/ssl/certs/ssl-cert-snakeoil.pem \
+ && rm -rf "${GNUPGHOME}" /tmp/pgdg-key.asc \
+ && apt-get purge -y --auto-remove gpg \
+ && rm -f /etc/apt/sources.list.d/pgdg.list /usr/share/keyrings/pgdg.gpg \
  && rm -rf /var/lib/apt/lists/*
 
 # Node LTS, copied from the pinned official image rather than from a script.
@@ -376,8 +438,12 @@ RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # the last release.
 ARG BRACE_EXPANSION_VERSION=5.0.12
 ARG BRACE_EXPANSION_SHA512=628bd0debce168b308ac38cd0cc90d4b4d6d79af77aa11211b9c72f1febe47497e770dca8bee6c0a822823de368ae2d94c75a881692d830543854d3d88d12299
-ARG UNDICI_VERSION=6.29.0
-ARG UNDICI_SHA512=47e44e0c1aa9ea2da93df94676afb120e52497e44d7c6807c288a779c2aefc90ae7f6b8ed3a70e2a80db2363fb0e7e8a72cc1d2b0adccdb53a21827a2bc5fec2
+# 6.29.1 (2026-10-24): trivy flagged CVE-2026-109869 (HIGH) in 6.29.0, fixed in
+# 6.29.1 / 7.30.1 / 8.12.2; every release and image build failed on it from
+# 2026-10-24 ~01:17Z. Still major 6 for node-gyp's "^6.25.0", still zero
+# dependencies (registry package.json), same index.js exports.
+ARG UNDICI_VERSION=6.29.1
+ARG UNDICI_SHA512=12f46552dfd0a8012f5dd41e44c6147f0390b1fce90f3b7292b1b6a3018413fac1381a18bfdb85dfd673b0d0e1e254c51e14ebd973998ca91882e783d7666618
 ARG TAR_VERSION=7.5.22
 ARG TAR_SHA512=3053bf433bed00e9896e484e6824ef6c670537d2fd6fe26e9c8b03c1a2a58d239d70b31e6b7349d64f54b33feb8dd7d25d3ab875fcdf792ed6e29e1838000778
 ARG IP_ADDRESS_VERSION=10.7.2
@@ -953,7 +1019,10 @@ print({c.name: _resolve_program(c.argv[0]) for c in GENERIC_COMMANDS.values()})"
 # will run it. A missing or unrunnable tool fails the build and is named; the
 # count is printed so a list that collapsed to one word cannot read as a pass.
 # HOME is a throwaway so `gcloud --version` leaves no config in the image.
-RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov trivy shellcheck make docker" \
+# The PostgreSQL binaries must also say POSTGRES_MAJOR: the test-service
+# catalogue offers 16 alone (docs/design/test-services.md §3.1), and a server
+# of another major on the PATH is a broken tool, not a working one.
+RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov trivy shellcheck make docker postgres initdb pg_ctl pg_isready" \
  && if [ "${INSTALL_TOFU}" = "1" ]; then tools="$tools tofu"; fi \
  && if [ "${INSTALL_TFLINT}" = "1" ]; then tools="$tools tflint"; fi \
  && HOME="$(mktemp -d)" && export HOME \
@@ -961,6 +1030,11 @@ RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov trivy shel
  && for t in $tools; do \
       case "$t" in kubectl) set -- version --client ;; *) set -- --version ;; esac; \
       if command -v "$t" >/dev/null 2>&1 && out="$("$t" "$@" 2>&1)"; then \
+        case "$t" in postgres|initdb|pg_ctl|pg_isready) \
+          case "$out" in *"(PostgreSQL) ${POSTGRES_MAJOR}."*) ;; \
+            *) missing="$missing $t (not PostgreSQL ${POSTGRES_MAJOR})"; continue ;; \
+          esac ;; \
+        esac; \
         n=$((n + 1)); echo "$t: $(printf '%s\n' "$out" | head -n 1)"; \
       else \
         missing="$missing $t"; \

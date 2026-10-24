@@ -287,12 +287,25 @@ SWITCHES: dict[str, Switch] = {
     # own console session authorises it, and the admin and personal-workspace
     # checks run before it whatever this switch says. Off, a bad link is
     # logged and the write goes through on that session, as a direct visit to
-    # the settings page does.
+    # the settings page does. The runner-key link (`POST /v1/tenants/me/
+    # credentials/links`, lane SSC-LINKS) is refused under the same code: it
+    # fires only on a token that was presented, so no form needs to exist first.
     "KEY_LINK_INVALID": Switch(
         code="KEY_LINK_INVALID",
         why="a key write that presents a one-time link refuses one that is unknown, used, "
         "expired, minted by someone else or for another scope. On once the console's "
         "settings/keys form (the swarm-ui lane) sends the link token it was opened with",
+    ),
+    # Lane SSC-LINKS (docs/design/secrets-scopes.md §6.2, §11 Q8): a QA
+    # target's challenge bypass value written without a one-time link. Off,
+    # the write goes through on the admin's own session, as the console's
+    # target form sends it today, and is logged without the value.
+    "qa_bypass_link_required": Switch(
+        code="qa_bypass_link_required",
+        why="PUT /v1/qa-targets/{id}/challenge-bypass refuses a value sent without the token "
+        "of a credential link minted with field challenge_bypass. On once the console's "
+        "bypass form (lane SSC-UI) opens from such a link and sends its token, and the log "
+        "shows no 'challenge bypass set without a link' line",
     ),
     # Lane TRAIN-WS (docs/merge-trains.md §3.2): a member of a workspace who
     # is neither its owner nor a platform admin changing its merge settings.

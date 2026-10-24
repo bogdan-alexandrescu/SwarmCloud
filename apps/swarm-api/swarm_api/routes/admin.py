@@ -22,7 +22,7 @@ import json
 import logging
 from typing import Any, Mapping
 
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query, Request
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.identity import Principal
@@ -48,6 +48,7 @@ from ..errors import Forbidden, NotFound, RoleUnavailable, ValidationFailed
 from ..heartbeats import heartbeat_grace_seconds
 from ..judgment import settings_keys
 from ..people import add_names, name_lookup
+from ..platform_secrets import SecretManagerMetadata, platform_secret_status
 from ..mergewake import wake_tenant
 from ..prgate import wake_tenant as wake_after_prs
 from ..mergetrain import tick_tenant as tick_merge_trains
@@ -212,6 +213,37 @@ def put_platform_settings(
     settings = ctx.store.set_platform_settings(changes, by=auth.email)
     ctx.metrics.admin_actions.labels(action="platform_settings").inc()
     return settings
+
+
+# -- platform secrets (status only) -----------------------------------------
+#
+# docs/design/secrets-scopes.md §5 and §11 Q7 (SSC-PLATFORM-STATUS, part of
+# #2158). Secret Manager METADATA under swarmSecretStatusViewer
+# (terraform/bootstrap/platform_secret_status.tf): no value, no length, and no
+# route that writes one. `admin_auth` like every route here, and not on
+# `auth.POOL_ADMIN_ROUTES`, so a pool admin is refused as a member is.
+
+
+def secret_metadata(request: Request, ctx: AppContext = Depends(get_context)) -> Any:
+    """The metadata reader, built on first use and kept on the app: building
+    the app builds no client, and a test sets `app.state.secret_metadata`."""
+    meta = getattr(request.app.state, "secret_metadata", None)
+    if meta is None:
+        meta = SecretManagerMetadata(ctx.settings.project_id)
+        request.app.state.secret_metadata = meta
+    return meta
+
+
+@router.get("/platform-secrets")
+def get_platform_secrets(
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+    meta: Any = Depends(secret_metadata),
+) -> dict:
+    """Each platform secret's status: set, enabled versions, the newest one's
+    age, who declares it and what writes it; then the quota broker's account
+    secrets, two rows each. A secret that cannot be read is a row saying so."""
+    return platform_secret_status(meta, ctx.db, now=ctx.now)
 
 
 # -- runner sizes -----------------------------------------------------------
@@ -1394,7 +1426,9 @@ def task_finished_push(
     the pull request itself and ends the step (`verdictpublish`); every other
     dependant is left to the scheduler, which receives the same message. A QA
     target's discovery step stores what it found on the target
-    (`QaTargets.settle_discovery`, lane QA-DISCOVER).
+    (`QaTargets.settle_discovery`, lane QA-DISCOVER), and a QA run's capture
+    steps' found routes are merged into their leg (`QaTargets.settle_run`,
+    lane QAENV-SETTLE).
 
     ALWAYS 200 to a well-formed push. A wake is a doorbell: this route reads
     everything again, and anything it cannot do is the worker's, after the
@@ -1415,6 +1449,13 @@ def task_finished_push(
             task_id, ctx.inspection, tenant_id=fields.get("tenant_id"))
     except Exception:  # noqa: BLE001 -- a doorbell: the target's next read settles it
         log.exception("qa target discovery settle failed task=%s", task_id)
+    # A step of a leg's QA run ended: once its capture steps all have, merge
+    # what their crawls found into that leg's `discovered` (qa-environments.md
+    # §5, lane QAENV-SETTLE). Never raises: the run's next step to end rings again.
+    try:
+        QaTargets(ctx.db, now=ctx.now).settle_run(task_id, ctx.inspection, tenant_id=fields.get("tenant_id"))
+    except Exception:  # noqa: BLE001 -- a doorbell: the run's next ended step settles it
+        log.exception("qa run settle failed task=%s", task_id)
     # A personal workflow that this step ended loses its browser session
     # carry now (docs/design/live-browser.md §5.5.1, lane LB-L9b). Never
     # raises; the carry sweep and the 24-hour TTL are behind it.

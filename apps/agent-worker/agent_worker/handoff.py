@@ -254,6 +254,55 @@ GATE_UNAVAILABLE = "gate_unavailable"
 NO_ATTEMPT_KEY = "no_attempt_key"
 NO_LIVE_SESSION = "no_live_session"
 
+#: GATE-STAYS-UP (#2205): why a `swarm-handoff device` or `theme` answered
+#: `gate_unavailable` -- the answer's `reason`, the worker's log line, and what
+#: `swarm-handoff` prints. MEASURED 2026-10-24: two review steps got a bare
+#: exit 5 for minutes and could not tell a browser coming back from one that
+#: never would. The gate's own refusal codes (livegate.ctl.DOWN_CODES) plus the
+#: two the worker sees itself:
+#:
+#: * `starting` / `restarting` -- Chromium is not up yet, or is being started
+#:   again after it exited (BROWSER-RELAUNCH): waited for, GATE_WAIT_SECONDS;
+#: * `crashed` -- the relaunch budget is spent, or the gate process itself
+#:   restarted (its channel closed; a restarted gate never takes this worker
+#:   back, ctl.py): it will not come back this attempt;
+#: * `wiped` -- the attempt's browser was wiped as it ended;
+#: * `unresponsive` -- the gate answered that the browser did not finish the
+#:   switch in time (ctl.OP_SECONDS), or did not answer the worker at all;
+#: * `not_enabled` -- this attempt never had the gate (no SWARM_GATE_CTL, a
+#:   refused registration, not a live-browser profile).
+GATE_STARTING = "starting"
+GATE_RESTARTING = "restarting"
+GATE_CRASHED = "crashed"
+GATE_WIPED = "wiped"
+GATE_UNRESPONSIVE = "unresponsive"
+GATE_NOT_ENABLED = "not_enabled"
+GATE_DOWN_REASONS = frozenset({GATE_STARTING, GATE_RESTARTING, GATE_CRASHED, GATE_WIPED,
+                               GATE_UNRESPONSIVE})
+#: The reasons worth waiting out: the browser is on its way.
+GATE_WAIT_REASONS = frozenset({GATE_STARTING, GATE_RESTARTING})
+#: How long one poll waits, in all, for a gate that is starting or restarting
+#: before answering the agent with the reason. WHY 15 s: `swarm-handoff device`
+#: and `theme` read the answer for 30 s (DEVICE_WAIT_SECONDS in
+#: images/agent-runtime-browser/swarm-handoff), and the request sits up to one
+#: control poll (10 s) before the worker reads it; 15 s is what is left with
+#: margin, so the agent reads the reason rather than `no_answer`. A first
+#: relaunch (livegate RELAUNCH_DELAYS 1 s, then the launch) fits inside it.
+#: The task allows up to 60 s; more needs the command's own wait raised.
+GATE_WAIT_SECONDS = 15.0
+#: Between two tries while waiting.
+GATE_WAIT_STEP_SECONDS = 1.0
+#: The sentence each reason is told to the agent with.
+GATE_REASON_TEXT = {
+    GATE_STARTING: "the live browser is still starting; try again in a minute",
+    GATE_RESTARTING: "the live browser is restarting after Chromium exited; try again in a minute",
+    GATE_CRASHED: "the live browser is gone for this attempt (Chromium could not be started again, "
+                  "or the gate restarted); carry on without it",
+    GATE_WIPED: "the live browser was wiped as this attempt ended",
+    GATE_UNRESPONSIVE: "the live browser did not answer in time; try again",
+    GATE_NOT_ENABLED: "this attempt has no live browser path",
+}
+
 #: NOLIVE-GUARD (part of #1366): why the HUMAN's view has not opened, while the
 #: agent's browser runs. The gate refused `tunnel_ticket`: its relay did not
 #: answer (`tunnel_refused {"cause": "relay unreachable: gaierror"}` in the
@@ -411,6 +460,11 @@ preset by name (desktop, iphone-15, phone-390, pixel-8, iphone-se, ipad-7).
 `swarm-handoff theme dark|light|system` sets the colour scheme every page is
 told to prefer (prefers-color-scheme); it holds across navigation and new
 tabs, and `system` lifts it. browser_resize is refused: the size is a preset's.
+A refused call changes nothing else: the next device, theme or CDP connection
+works. If either answers `gate_unavailable`, its `reason` says why: `starting`
+or `restarting` (the worker already waited, and says how long; try again in a
+minute), `unresponsive` (try again), `crashed` or `not_enabled` (carry on
+without the live browser, and say so).
 
 A flow as a GIF, and a mockup beside the app (one line each):
 
@@ -594,11 +648,35 @@ class NoTunnelTicket(Exception):
 
 
 class GateLost(Exception):
-    """ctl.sock failed: closed, timed out, or answered by something that is not the gate."""
+    """ctl.sock failed: closed, timed out, or answered by something that is not the gate.
+
+    `reason` is GATE_UNRESPONSIVE for a call the gate did not answer in time
+    (the channel stays open) and GATE_CRASHED otherwise (it does not)."""
+
+    def __init__(self, message: str = "", reason: str = GATE_CRASHED) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class GateRefused(GateLost):
-    """The gate answered and refused the operation."""
+    """The gate answered and refused the operation.
+
+    `code` is the gate's refusal word (`restarting`, `qa_identity_host`, ...)
+    when it gave one, else None. A word from the gate's fixed list, never
+    anything the request carried."""
+
+    def __init__(self, message: str = "", code: str | None = None) -> None:
+        super().__init__(message, GATE_UNRESPONSIVE if code == GATE_UNRESPONSIVE else GATE_CRASHED)
+        self.code = code
+
+
+class _GateDown(Exception):
+    """A device or theme the browser was not there for: why, and how long the worker waited."""
+
+    def __init__(self, reason: str, waited: float) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.waited = waited
 
 
 def _is(exc: BaseException, name: str) -> bool:
@@ -643,10 +721,20 @@ class Gate:
 
     @staticmethod
     def _translate(exc: Exception) -> GateLost:
-        # The exception's TYPE only: a message could quote what was sent.
+        # The exception's TYPE only: a message could quote what was sent. The
+        # gate's error word is its own (`refused:<code>`, ctl.OpRefused).
         if _is(exc, "CtlRefused"):
-            return GateRefused(type(exc).__name__)
+            error = getattr(exc, "error", None)
+            code = None
+            if isinstance(error, str) and error.startswith("refused:") and _REFUSAL_CODE.fullmatch(error[8:]):
+                code = error[8:]
+            return GateRefused(type(exc).__name__, code)
+        if _is(exc, "CtlTimeout"):
+            return GateLost(type(exc).__name__, GATE_UNRESPONSIVE)
         return GateLost(type(exc).__name__)
+
+
+_REFUSAL_CODE = re.compile(r"[a-z0-9_]{1,64}")
 
 
 def _resolve_relay(host: str, port: int) -> Any:
@@ -791,8 +879,13 @@ class HandoffPath:
         rand: Callable[[], float] = random.random,
         vault: Callable[[], Any] | None = None,
         resolve: Callable[[str, int], Any] | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self.cfg = cfg
+        self._monotonic = monotonic
+        #: When this poll stops waiting for a starting or restarting gate
+        #: (GATE_WAIT_SECONDS, one budget per poll); None until it first waits.
+        self._gate_wait_until: float | None = None
         #: Why the agent's browser is not ready although the gate took the
         #: registration (NO_CDP_ENDPOINT, CDP_UNREACHABLE); None while it is.
         self._cdp_missing: str | None = None
@@ -1557,6 +1650,7 @@ class HandoffPath:
         if not self.spooled:
             return None
         root = self.spool(work)
+        self._gate_wait_until = None
         try:
             self._keep_egress(root)
         except Exception as exc:  # egress upkeep never crashes the attempt
@@ -1920,22 +2014,22 @@ class HandoffPath:
             if not REQUEST_ID.fullmatch(request_id):
                 continue
             preset = data.get("preset") if isinstance(data, dict) else None
-            if not self.offered or self.gate is None:
-                self._refusal(root, request_id, self.unavailable or NO_LIVE_SESSION,
-                              "this attempt has no live browser path")
+            if not self._gate_open():
+                self._not_enabled(root, request_id)
                 continue
             if not isinstance(preset, str) or not _PRESET.fullmatch(preset):
                 self._refusal(root, request_id, "preset_invalid", "a preset is named, never sized")
                 continue
             try:
-                self.gate.call("device", {"preset": preset})
+                waited = self._gate_op("device", {"preset": preset})
             except GateRefused:
                 self._refusal(root, request_id, "preset_refused", f"the gate refused {preset!r}")
                 continue
-            except GateLost:
-                self._refusal(root, request_id, GATE_UNAVAILABLE, "the live browser is unavailable")
+            except _GateDown as down:
+                self._gate_down(root, request_id, "device", down)
                 continue
-            self._respond(root, request_id, {"outcome": "applied", "exit": 0, "preset": preset})
+            self._respond(root, request_id, {"outcome": "applied", "exit": 0, "preset": preset,
+                                             **self._waited(waited)})
 
     def _answer_themes(self, root: Path) -> None:
         """`swarm-handoff theme <name>` (QA-KIT): the gate's `theme` operation, as
@@ -1950,24 +2044,91 @@ class HandoffPath:
             path.unlink(missing_ok=True)
             if not REQUEST_ID.fullmatch(request_id):
                 continue
-            if not self.offered or self.gate is None:
-                self._refusal(root, request_id, self.unavailable or NO_LIVE_SESSION,
-                              "this attempt has no live browser path")
+            if not self._gate_open():
+                self._not_enabled(root, request_id)
                 continue
             theme = data.get("theme") if isinstance(data, dict) else None
             if not isinstance(data, dict) or set(data) != {"theme"} or theme not in THEMES:
                 self._refusal(root, request_id, "theme_invalid", "a theme is dark, light or system")
                 continue
             try:
-                self.gate.call("theme", {"theme": theme})
+                waited = self._gate_op("theme", {"theme": theme})
             except GateRefused:
                 self._refusal(root, request_id, "theme_refused", f"the gate refused {theme!r}")
                 continue
-            except GateLost:
-                self._refusal(root, request_id, GATE_UNAVAILABLE, "the live browser is unavailable")
+            except _GateDown as down:
+                self._gate_down(root, request_id, "theme", down)
                 continue
             self.log.info("browser theme set", theme=theme)
-            self._respond(root, request_id, {"outcome": "applied", "exit": 0, "theme": theme})
+            self._respond(root, request_id, {"outcome": "applied", "exit": 0, "theme": theme,
+                                             **self._waited(waited)})
+
+    # -- the gate's browser operations: refused, down, or waited for (GATE-STAYS-UP) --
+
+    def _gate_open(self) -> bool:
+        """Whether a device or theme can be asked of the gate: this worker holds
+        its registration. NOT `offered`, which is the HAND-OFF's: an attempt
+        whose human view or hand-off is missing (an unprotected heap, no live
+        session, one `pause` the gate did not confirm) still has the gate and
+        the agent's browser (NOLIVE-GUARD), and a device switch needs no more."""
+        return self.gate is not None and self.gate.registered and not self._wiped
+
+    def _not_enabled(self, root: Path, request_id: str) -> None:
+        reason = GATE_WIPED if self._wiped else GATE_NOT_ENABLED
+        self._respond(root, request_id, {
+            "outcome": "refused", "exit": EXIT_REFUSED,
+            "code": GATE_UNAVAILABLE if self._wiped else (self.unavailable or NO_LIVE_SESSION),
+            "reason": reason, "message": GATE_REASON_TEXT[reason]})
+        self.log.info("hand-off request refused", code=GATE_UNAVAILABLE, reason=reason,
+                      task_id=self.cfg.task_id)
+
+    def _gate_op(self, op: str, args: Mapping[str, Any]) -> float:
+        """`op` through the gate, waiting out a gate that is starting or
+        restarting until this poll's GATE_WAIT_SECONDS are spent. Returns the
+        seconds waited. `GateRefused` for a refusal of the request itself;
+        `_GateDown` (reason, seconds waited) when the browser is not there."""
+        assert self.gate is not None
+        started = self._monotonic()
+        waited = False
+        while True:
+            try:
+                self.gate.call(op, args)
+                # Only a gate that was waited for is said to have been: a
+                # switch that is merely slow is not a restart.
+                return self._monotonic() - started if waited else 0.0
+            except GateRefused as exc:
+                if exc.code not in GATE_DOWN_REASONS:
+                    raise
+                reason = exc.code
+            except GateLost as exc:
+                reason = exc.reason
+            now = self._monotonic()
+            if self._gate_wait_until is None:
+                self._gate_wait_until = now + GATE_WAIT_SECONDS
+            if reason not in GATE_WAIT_REASONS or now + GATE_WAIT_STEP_SECONDS > self._gate_wait_until:
+                raise _GateDown(reason, now - started if waited else 0.0)
+            self._sleep(GATE_WAIT_STEP_SECONDS)
+            waited = True
+
+    def _gate_down(self, root: Path, request_id: str, op: str, down: "_GateDown") -> None:
+        waited = int(round(down.waited))
+        message = GATE_REASON_TEXT.get(down.reason, GATE_REASON_TEXT[GATE_CRASHED])
+        if waited:
+            message += f" (waited {waited} s for it)"
+        self._respond(root, request_id, {
+            "outcome": "refused", "exit": EXIT_REFUSED, "code": GATE_UNAVAILABLE,
+            "reason": down.reason, "message": message, "waited_seconds": waited})
+        self.log.warning("the live browser is unavailable", op=op, code=GATE_UNAVAILABLE,
+                         reason=down.reason, waited_seconds=waited, task_id=self.cfg.task_id)
+
+    def _waited(self, seconds: float) -> dict[str, Any]:
+        """What an applied answer adds when the gate was waited for: the seconds, said."""
+        waited = int(round(seconds))
+        if waited <= 0:
+            return {}
+        self.log.info("the live browser came back", waited_seconds=waited, task_id=self.cfg.task_id)
+        return {"waited_seconds": waited,
+                "message": f"the live browser was starting or restarting; waited {waited} s for it"}
 
     # -- the ends ----------------------------------------------------------------
 

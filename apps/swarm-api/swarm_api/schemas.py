@@ -19,6 +19,7 @@ from pydantic import (
     Field,
     StrictBool,
     StrictInt,
+    StrictStr,
     field_validator,
     model_validator,
 )
@@ -172,6 +173,13 @@ class TaskCreate(StrictModel):
     #: `ApiSettings.additional_repositories_enabled` (off by default).
     additional_repositories: list[AdditionalRepositoryCreate] | None = (
         _additional_repositories_field())
+
+    #: An existing pull request of `repository_url` this task's commits are
+    #: pushed onto, as a fast-forward, instead of opening one (#2183): a
+    #: positive integer, or `owner/repo#N` of that same repository. The rules
+    #: -- `direct-pr`, open, not from a fork, on a `swarm/task_*` branch a
+    #: lane of this tenant published -- are in `publishtopr`.
+    publish_to_pr: StrictInt | StrictStr | None = None
 
     @field_validator("repository_url")
     @classmethod
@@ -347,6 +355,14 @@ class WorkflowCreate(StrictModel):
     #: step, `direct-pr`, the tenant's registered repository, open, not from
     #: a fork, at that head now -- are in `continuation.resolve_merge_pr`.
     merge_pr: MergePullRequest | None = None
+    #: An existing pull request of this workflow's repository that the lane's
+    #: commits are pushed onto, as a fast-forward, instead of opening a
+    #: replacement (#2183, owner approval 2026-10-24): a positive integer, or
+    #: `owner/repo#N` of that same repository. The rules -- `direct-pr` of one
+    #: agent step or `integrate`, open, not from a fork, on a `swarm/task_*`
+    #: branch a lane of this tenant published, no merge step -- are in
+    #: `publishtopr`.
+    publish_to_pr: StrictInt | StrictStr | None = None
     #: The pull requests of this workflow's own repository that must MERGE
     #: before any of its steps starts (lane SPEED-D3, `prgate`): one
     #: `{"pr": N}` or a list of them, stored as the list. Until then every

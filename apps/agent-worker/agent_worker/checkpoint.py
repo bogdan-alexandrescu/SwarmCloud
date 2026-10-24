@@ -516,6 +516,12 @@ class CheckpointRecord:
     #: asks whether HEAD left this branch, and a resumed attempt must not
     #: take the answer from a tree the agent wrote.
     start_branch: str | None = None
+    #: The head of the pull request a `publish_to_pr` step started from
+    #: (`agent_worker.publishpr`, #2183), read by the worker before any agent
+    #: process existed; None for every other step, or a manifest that
+    #: predates this field. Here so a resumed attempt refuses a head that
+    #: moved since its FIRST attempt started, not since it resumed.
+    pr_start_head: str | None = None
     #: The checkpoint this one's archive holds the changes since, and that
     #: archive's digest; None for a full archive (#637). For the reader only:
     #: a restore takes the base from the archive's own header (`PAX_BASE`),
@@ -965,6 +971,8 @@ class CheckpointManager:
         self.clone_base: str | None = None
         #: Written beside `clone_base`, set and carried forward the same way.
         self.start_branch: str | None = None
+        #: Written beside `clone_base` too: a `publish_to_pr` step's start head.
+        self.pr_start_head: str | None = None
         #: Directories of `work/`, by exact relative path, left out of every
         #: checkpoint this manager writes from now on, through the build
         #: directory filter (`_BuildDirFilter`). Empty unless the lifecycle
@@ -1213,6 +1221,7 @@ class CheckpointManager:
                 uri=self._store.uri(f"{prefix}/"),
                 clone_base=self.clone_base,
                 start_branch=self.start_branch,
+                pr_start_head=self.pr_start_head,
                 base_checkpoint_id=base[0] if base is not None else None,
                 base_archive_sha256=base[1] if base is not None else None,
             )
@@ -1954,6 +1963,7 @@ class CheckpointManager:
             uri=self._store.uri(f"{prefix}/"),
             clone_base=restored.clone_base,
             start_branch=restored.start_branch,
+            pr_start_head=restored.pr_start_head,
             base_checkpoint_id=base[0] if base is not None else None,
             base_archive_sha256=base[1] if base is not None else None,
         )

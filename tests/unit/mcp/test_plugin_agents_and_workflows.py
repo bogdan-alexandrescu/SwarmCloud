@@ -901,10 +901,14 @@ def test_run_js_reports_a_submission_it_cannot_see_as_unknown_not_as_not_submitt
     assert got["logs"][0].startswith("submission outcome unknown · ")
 
 
-def _unverified(tmp_path, submitted) -> dict:
+def _unverified(tmp_path, submitted, *, read_back: bool) -> dict:
     got = _run(tmp_path, _SPEC, {**_ANSWERS, "SUBMIT": submitted})
     assert "error" not in got, got.get("error")
-    assert [c["agentType"] for c in got["calls"]] == ["sc:workflow"], "a row started on an unverified reply"
+    # The submit, and -- for a reply missing its digest or a spec step, and
+    # only then -- the one read-back that settles it (#2206), which these
+    # fixtures leave unanswered: a failed read-back starts no row either.
+    assert [c["agentType"] for c in got["calls"]] == ["sc:workflow"] * (2 if read_back else 1), "a row started on an unverified reply"
+    assert [c["prompt"].split("\n")[0] for c in got["calls"]][1:] == (["ATTACH"] if read_back else [])
     assert got["result"]["state"] == "SUBMITTED_UNVERIFIED"
     assert got["result"]["workflow_id"] == "wf_1", "the workflow exists; its id must be handed back"
     assert "swarm_workflow_cancel" in got["result"]["error"]
@@ -914,7 +918,7 @@ def _unverified(tmp_path, submitted) -> dict:
 def test_run_js_starts_no_row_when_the_reply_drops_a_step(tmp_path):
     """The relay retyped the reply and lost a step. Its task still runs."""
     dropped = {**_SUBMITTED, "steps": [s for s in _SUBMITTED["steps"] if s["step_id"] != "scan-02"]}
-    got = _unverified(tmp_path, dropped)
+    got = _unverified(tmp_path, dropped, read_back=True)
     assert "wf_1 · step scan-02 is in the spec and missing from the reply" in got["logs"], got["logs"]
 
 
@@ -923,7 +927,7 @@ def test_run_js_starts_no_row_when_the_reply_changes_a_dependency_or_reuses_a_ta
     by_id = {s["step_id"]: s for s in steps}
     by_id["join"]["depends_on"] = ["scan-01"]
     by_id["scan-02"]["task_id"] = "task_1"
-    got = _unverified(tmp_path, {**_SUBMITTED, "steps": steps})
+    got = _unverified(tmp_path, {**_SUBMITTED, "steps": steps}, read_back=False)
     error = got["result"]["error"]
     assert "step join depends on [scan-01] in the reply and on [scan-01, scan-02] in the spec" in error, error
     assert "task task_1 is named for both" in error, error
@@ -932,10 +936,10 @@ def test_run_js_starts_no_row_when_the_reply_changes_a_dependency_or_reuses_a_ta
 def test_run_js_starts_no_row_when_the_digest_is_not_the_specs(tmp_path):
     """The spec SwarmCloud received is not the spec given: a dropped or
     reworded step would run under this workflow's name."""
-    got = _unverified(tmp_path, {**_SUBMITTED, "spec_digest": "fnv1a32:00000000"})
+    got = _unverified(tmp_path, {**_SUBMITTED, "spec_digest": "fnv1a32:00000000"}, read_back=False)
     assert "the relay changed it on the way" in got["result"]["error"]
 
-    missing = _unverified(tmp_path, {**_SUBMITTED, "spec_digest": None})
+    missing = _unverified(tmp_path, {**_SUBMITTED, "spec_digest": None}, read_back=True)
     assert "carries no spec digest" in missing["result"]["error"]
 
 
