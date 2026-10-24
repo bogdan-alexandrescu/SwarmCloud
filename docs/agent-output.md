@@ -448,6 +448,32 @@ the repair turns, while the session can still be continued
    when terraform is not on PATH. ruff is configured here (lint only, [docs/ci.md](ci.md#ruff-lint-is-the-house-python-linter-and-formatting-is-not-adopted)),
    and formatting excludes every file, so `ruff format --check` passes
    whatever a lane touched and `ruff check` is the one that can fail.
+
+   **A service the tests need** (#1605, #1627). A `graph-pytest` run in which
+   every selected test errored at setup on a refused connection to a local
+   address, and none passed or failed on its own, is `skipped`: "a service
+   the tests need is unreachable (127.0.0.1:5432); every selected test errored
+   at setup connecting to it; CI runs it"
+   (`apps/agent-worker/agent_worker/prepublish.py::unreachable_services`). A
+   repository that checks in `.swarm/test-services.toml` gets those tests run
+   for real ([test-services.md](test-services.md); design and what each lane
+   built: [design/test-services.md](design/test-services.md) §11). The worker
+   starts the declared PostgreSQL 16 after the clone and keeps it for the
+   whole attempt; each round, when `graph-pytest` or the guards script will
+   run, the gate finds it answering on `127.0.0.1:5432` or starts one for
+   that round, and the checks' environment, never the agent's, gains
+   `PGHOST`, `PGPORT`, `PGUSER`, `PGDATABASE`, `DATABASE_URL` and
+   `SWARM_TEST_SERVICES` (`apps/agent-worker/agent_worker/prepublish.py::service_env`).
+   Then a failing database test is `failed` and gets the fix turn; every
+   test refused at the declared address while the server answered is
+   `failed` too (the tests connect wrongly); refused at an address no
+   declared service owns stays `skipped`, adding "and not declared in
+   .swarm/test-services.toml"; and a server that stopped during the run makes
+   the check `error`, with no fix turn. A `test-services` check reports the
+   declaration itself: `failed`, with a fix turn, when this change made the
+   file invalid; `error`, advisory only and never sent to the agent, when the
+   base branch's file is invalid or a declared service did not start, and
+   the tests then run as if nothing were declared.
 4. **One fix turn**, with each failing check's output, then the set runs
    again.
 5. **What still fails is published anyway.** No work is dropped. The runner
