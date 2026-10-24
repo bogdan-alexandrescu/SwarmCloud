@@ -19,6 +19,9 @@ import { cleanup, render, waitFor } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 
 const WAIT = { timeout: 4000 }
+// The fixture build's catalogue read, behind the workflow form, is slower than one live answer.
+const FORM_WAIT = { timeout: 12000 }
+const realFetch = globalThis.fetch
 const GROUP = 'qrg_' + '5e'.repeat(8)
 const TARGET = 'qat_' + '2c'.repeat(8)
 const WF_STAGING = 'wf_' + 'a1'.repeat(10)
@@ -84,6 +87,7 @@ const legOf = (env: string) => document.querySelector<HTMLElement>(`.qa-leg[data
 
 afterEach(() => {
   cleanup()
+  globalThis.fetch = realFetch
   vi.unstubAllEnvs()
   window.localStorage.clear()
   window.sessionStorage.clear()
@@ -176,15 +180,78 @@ describe('QA run page: one column per leg (QAENV-UI-RUNPAGE, §7)', () => {
   })
 })
 
+function content(taskId: string, name: string, doc: unknown): Json {
+  return {
+    task_id: taskId, tenant_id: 'eng', attempt_id: 'att_1', artifact: { name, bytes: null, uri: null }, status: 'ok', detail: null,
+    key: null, uri: null, content: JSON.stringify(doc), total_bytes: null, offset: 0, returned_bytes: 0, next_offset: null,
+    truncated: false, redacted: false, redaction_count: 0, redaction: { applied_at_read_time: true, rules: 6 },
+  }
+}
+
+describe('QA run page: a leg\'s figures come from its own steps\' files (§3.5)', () => {
+  it('sums screens, coverage, findings by severity, issues filed and gate refusals; a running leg says when', async () => {
+    const steps: [string, string][] = [['capture-g1', 'SUCCEEDED'], ['capture-g2', 'SUCCEEDED'], ['report', 'SUCCEEDED'], ['file', 'SUCCEEDED']]
+    const t = (s: string) => `task_${WF_STAGING}_${s}`
+    const files: Record<string, unknown> = {
+      [`${t('capture-g1')}|capture-g1/manifest.json`]: { routes: [{ id: 'home' }, { id: 'home' }, { id: 'settings' }, { id: 'beta-reports' }], gate_refusals: { read: true, count: 2 } },
+      [`${t('capture-g2')}|capture-g2/manifest.json`]: { routes: [{ id: 'billing' }], gate_refusals: { read: true, count: 1 } },
+      [`${t('capture-g1')}|capture-g1/found.json`]: { format: 1, captured_new: [{ id: 'beta-reports', path: '/beta/reports' }], not_owned: [{ path: '/labs', owner: 2 }], over_cap: [], crawl: { stopped_by: 'done' } },
+      [`${t('capture-g2')}|capture-g2/found.json`]: { format: 1, captured_new: [], not_owned: [], over_cap: [{ path: '/x' }], crawl: { stopped_by: 'time' } },
+      [`${t('report')}|findings.json`]: { format: 1, findings: [{ severity: 'major' }, { severity: 'minor' }, { severity: 'minor' }], about_run: [] },
+      [`${t('file')}|filed.json`]: [{ finding: 'g1-1', issue: 41 }, { finding: 'g1-2', issue: '#42' }, { finding: 'g1-3', issue: 42 }],
+    }
+    serve((m, url) => {
+      const [path, query] = url.split('?')
+      if (path === `/v1/qa-runs/${GROUP}`) return { status: 200, body: group([leg('staging', { workflow_id: WF_STAGING, workflow_state: 'SUCCEEDED' }), leg('production', { workflow_id: WF_PRODUCTION, workflow_state: 'RUNNING' })]) }
+      if (path === `/v1/workflows/${WF_STAGING}`) return { status: 200, body: workflow(WF_STAGING, 'SUCCEEDED', steps) }
+      if (path === `/v1/workflows/${WF_PRODUCTION}`) return { status: 200, body: workflow(WF_PRODUCTION, 'RUNNING', [['capture-g1', 'RUNNING'], ['report', 'READY']]) }
+      if (path === `/v1/qa-targets/${TARGET}`) return { status: 200, body: target({ staging: [], production: [] }) }
+      const m2 = /^\/v1\/tasks\/([^/]+)\/artifacts\/content$/.exec(path ?? '')
+      if (m === 'GET' && m2 !== null) {
+        const name = new URLSearchParams(query).get('name') ?? ''
+        const doc = files[`${decodeURIComponent(m2[1]!)}|${name}`]
+        return doc === undefined ? { status: 404, body: { detail: 'Not Found' } } : { status: 200, body: content(m2[1]!, name, doc) }
+      }
+      return null
+    })
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    await mountRun()
+    await waitFor(() => expect(legs().length).toBe(2), WAIT)
+    const staging = legOf('staging')!
+    const fig = (el: HTMLElement, f: string) => visible(el.querySelector(`[data-figure="${f}"]`))
+    // MUTATION: count a route once per width and theme, or count new routes as stored.
+    await waitFor(() => expect(fig(staging, 'screens')).toBe('3 stored · 1 new'), WAIT)
+    // MUTATION: drop the new route's path, or call a crawl stopped by its time bound complete.
+    expect(fig(staging, 'coverage')).toContain('/beta/reports')
+    expect(fig(staging, 'coverage')).toContain('1 route found past the step’s cap')
+    expect(fig(staging, 'coverage')).toContain('1 route found, not reached by the step that owns it')
+    expect(fig(staging, 'coverage')).toContain('time bound')
+    // MUTATION: draw findings as one total, or in another order than most severe first.
+    expect(fig(staging, 'findings')).toBe('1 major · 2 minor')
+    // MUTATION: count filed.json's rows instead of the distinct issues they name.
+    expect(fig(staging, 'issues')).toBe('2')
+    // MUTATION: drop a capture step's refusals from the sum.
+    expect(fig(staging, 'refusals')).toBe('3')
+    const production = legOf('production')!
+    // MUTATION: draw 0 for a figure not read yet: a running leg says when it fills in.
+    await waitFor(() => expect(fig(production, 'findings')).toContain('When the report step ends'), WAIT)
+    expect(production.querySelector('[data-figure="findings"] .c-dash')).not.toBeNull()
+    expect(fig(production, 'screens')).toContain('When a capture step ends')
+  })
+})
+
 describe('Work › Submit a workflow: "Visual QA of a registered app" (§7, one form)', () => {
   it('leads to the QA targets card’s form, and draws no second form', async () => {
+    // The fixture build's catalogue: the cases above left the API module live.
+    vi.resetModules()
     const { SubmitWorkflowScreen } = await import('../SubmitWorkflow')
     render(<SubmitWorkflowScreen />)
     const entry = await waitFor(() => {
       const el = document.querySelector<HTMLElement>('[data-entry="visual-qa"]')
       expect(el).not.toBeNull()
       return el!
-    }, WAIT)
+    }, FORM_WAIT)
     // MUTATION: drop the entry, and a member looking for visual QA on Submit finds nothing.
     expect(visible(entry)).toContain('Visual QA of a registered app')
     const link = entry.querySelector<HTMLAnchorElement>('a')
@@ -192,7 +259,7 @@ describe('Work › Submit a workflow: "Visual QA of a registered app" (§7, one 
     expect(link?.getAttribute('href')).toBe('/config/repositories?page=qa-targets')
     // MUTATION: draw a second QA form here (a target picker, environment boxes, a URL field).
     expect(entry.querySelectorAll('input, select, textarea').length).toBe(0)
-  })
+  }, 20000)
 })
 
 describe('/qa-runs/<group_id> (paths.ts)', () => {
