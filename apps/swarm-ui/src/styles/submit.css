@@ -113,9 +113,9 @@ input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: ins
    card in dark and 1.34:1 in light, and it is the only mark an enabled,
    unchosen option carries: the card's own edge is the hairline too. WCAG 2.1
    SC 1.4.11 asks 3:1 of it; `--ctl-bd` is 3.45:1 on `--surface` in dark and
-   3.35:1 in light. Chosen is the accent's 4px ring; DISABLED keeps the
-   hairline, which is what tells a refused runner's radio from a live one
-   (an inactive control is outside 1.4.11). */
+   3.35:1 in light. Chosen is the accent's 4px ring; DISABLED shares the
+   live ring's `--ctl-bd` but is dashed and on `--surface-2`, which is what
+   tells a refused runner's radio from a live one (QA-046, below). */
 .sbf-runners.is-cards .sbf-runner > input[type='radio'],
 .dsp-option > input[type='radio'] {
   appearance: none;
@@ -128,8 +128,13 @@ input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: ins
 }
 .sbf-runners.is-cards .sbf-runner > input[type='radio']:checked,
 .dsp-option > input[type='radio']:checked { border: 4px solid var(--sk-ac); }
+/* A REFUSED RUNNER'S RADIO STILL HAS AN EDGE (visual QA run 5b, QA-046).
+   On `--line` it measured 1.15:1 against its card in light and 1.13:1 in
+   dark, so codex read as a card with no control. It takes the live ring's
+   3:1 `--ctl-bd`, DASHED and on `--surface-2`, which is what still tells it
+   from a radio that can be chosen. */
 .sbf-runners.is-cards .sbf-runner > input[type='radio']:disabled,
-.dsp-option > input[type='radio']:disabled { border: 1.5px solid var(--line); }
+.dsp-option > input[type='radio']:disabled { border: 1.5px dashed var(--ctl-bd); background: var(--surface-2); }
 .sbf-runners.is-cards .sbf-runner > input[type='radio']:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
 
 /* EVERY CARD FILLS ITS ROW (visual QA QA-068). The grid stretches each `li`
@@ -138,6 +143,11 @@ input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: ins
    list. The cell is a flex box and the card grows into it (`flex: 1 1 auto`
    on `.sbf-runner` above). */
 .sbf-runners.is-cards > li { display: flex; }
+/* NO RUNNER, AND A SUBMIT WAS ATTEMPTED (visual QA run 6, QA-103): the group
+   carries `aria-invalid` and its error line under it, and every card it can
+   still choose from takes the warn edge the field editor's invalid state
+   draws (`.sbf-field [aria-invalid]`). A refused runner keeps its hairline. */
+.sbf-runners.is-cards[aria-invalid='true'] .sbf-runner:not(.is-off) { border-color: var(--warn); }
 .sb-runner-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 /* THE PLATFORM'S OWN RUNNER (QA G4-33): a quiet pill under its name, in the
    muted token at full strength -- a fact about who submits it, not a state,
@@ -205,6 +215,38 @@ input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: ins
 .sbf-runner-miss { color: var(--warn-ink); }
 
 /* ---- the send panel (F1, G1) -------------------------------------------- */
+/* A DISABLED PRIMARY ACTION LOOKS DISABLED (visual QA run 5b, QA-045).
+   "Start one agent", "Submit this workflow" and "Plan this issue" drew the
+   pale accent components.css gives every disabled primary, and in a send
+   panel that read as a light-blue button that would work. Here it is no
+   fill, a dashed 3:1 edge and the dim ink, with the not-allowed pointer:
+   the label still says what the click would do, and the line under it why
+   it will not. (0,4,0), over components.css's (0,3,0). */
+.sbf-send .c-btn.is-primary:disabled {
+  background: transparent;
+  border-color: var(--ctl-bd);
+  border-style: dashed;
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+/* THE PRESS STILL COUNTS (visual QA run 6, QA-103). A disabled button takes
+   no click, so the task form's lets the pointer through to this strip, whose
+   click is the submit attempt that marks each missing field; the strip
+   carries the not-allowed pointer the button can no longer show. */
+.sbf-go { display: block; min-width: 0; }
+.sbf-go.is-off { cursor: not-allowed; }
+.sbf-go > .c-btn:disabled { pointer-events: none; }
+.sbf-go > .c-btn.is-full { max-width: 100%; box-sizing: border-box; }
+/* HINTS, PLACEHOLDERS AND THE FIXED CARRIER ARE WORDS, NOT CODE (visual QA
+   run 5b, QA-047): "one PR for several steps →", "checkpoints (fixed)", "not
+   acted on yet" and every placeholder were in the code face beside sans
+   labels. `.ctl-panel-note` is mono everywhere else; on the submit forms it
+   is the sans face. (0,2,0) and up, over styles.css's `.ctl-panel-note` and
+   `.mono`, which load after this sheet. */
+.sbf .ctl-panel-note,
+.sbf .dsp-fixed { font-family: var(--font); }
+.sbf input::placeholder,
+.sbf textarea::placeholder { font-family: var(--font); }
 /* THE PRIMARY ACTION IS THE ACCENT, and disabled it is the pale accent the
    frame draws (`.btn.pri.dis`), not a grey bar (#503). */
 .sb-note { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
@@ -218,12 +260,6 @@ input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: ins
    From 1080 the panel is sticky beside the steps (the rule below), so the
    step's copy is not drawn there. */
 .sbf-why-at { margin-top: var(--ctl-s2); }
-/* THE EMPTY REQUIRED FIELD SAYS SO AT ITSELF, AT EVERY WIDTH (visual QA
-   QA-103, run 5b). `.sb-note`'s dim ink, never the warning ink: TS-15 keeps a
-   field the reader has not reached yet unpainted, and `.sbf-miss` takes over
-   once it has been left empty. */
-.sbf-field > .sb-note.sbf-unfilled { color: var(--text-dim); }
-.sbf-unfilled code { font-size: var(--t-micro); }
 /* THE REASON START IS DISABLED, KEPT IN VIEW BELOW 1080 (visual QA
    r4:flow-submit-form-phone-390-02, run 5b). The send panel is the last block
    at 390; this line is the steps column's last child and sticks to the foot

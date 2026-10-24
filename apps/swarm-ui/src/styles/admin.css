@@ -224,11 +224,19 @@
      and its padding. The Ceiling slot is 6ch + 7ch + `edit`, ~175px, and its
      24% left ~70px empty in every row; Last changed -- `ops@… · 20 → 10 ·
      3h ago` -- takes the room, and wrapped `3h / ago` in its 20%. */
-  table.adm-limits > colgroup > col.adm-col-pool { width: 25%; }
+  /* AND THE POOL COLUMN HOLDS THE LONGEST KEY ON ONE LINE (visual QA run
+     5b, Providers, part of #1680). At 25% (255px of the 1022px families)
+     `provider:anthropic:tenant:u-bogdan` -- 34 characters of 12px DM Mono,
+     245px, and the cell's 20px of padding -- wrapped between its pairs and
+     made one row of Providers taller than the rest. 27% is 276px. The 2% is
+     Set by's slack (`AIMD back-off` is 122px, 12% is 123px) and Last
+     changed's 1%. The `<wbr>` between pairs (`keyBreaks`) stays the wrap
+     point beside the open editor. */
+  table.adm-limits > colgroup > col.adm-col-pool { width: 27%; }
   table.adm-limits > colgroup > col.adm-col-use { width: 15%; }
   table.adm-limits > colgroup > col.adm-col-ceiling { width: 21%; }
-  table.adm-limits > colgroup > col.adm-col-by { width: 13%; }
-  table.adm-limits > colgroup > col.adm-col-changed { width: 26%; }
+  table.adm-limits > colgroup > col.adm-col-by { width: 12%; }
+  table.adm-limits > colgroup > col.adm-col-changed { width: 25%; }
   /* SET BY IS A TERM, ON ONE LINE (VQA V024): `AIMD back-off` broke at its
      hyphen. Where the column is too narrow it is cut, whole on the cell's
      title, which carries the sentence why. */
@@ -337,7 +345,44 @@
 .adm-price-in.is-day { width: calc(10ch + 20px); }
 .adm-price-table thead th { white-space: normal; }
 .adm-price-tiers { margin: 0; padding: 0; list-style: none; }
+/* AND IT NO LONGER SCROLLS, AS ADMIN OR AS MEMBER (visual QA run 6,
+   6:admin-006 and 5b:QA-052, part of #1680). Sized fields were not enough:
+   laid out by its content, every cell `nowrap`, the table still took the
+   model's name and both tier lines, `pricing-page` and the whole address on
+   one line each, and at 1440 the member's read-only table cut Set by to
+   `ops@example.c` behind a scrollbar. Now it is laid out FIXED, so it is the
+   card's width: each figure column is its 7ch + 20px field and the cell's
+   10px a side (99px at 14px DM Mono), As of its 10ch field (124px), Set by
+   `ops@example.com` whole (138px in Inter Tight at 14px, an upper bound),
+   Currency its head (78px) and Source `pricing-page` (114px); the Model
+   column takes what is left, 126px at 1440, and its name and tier lines wrap
+   at their hyphens and spaces. Set by breaks after its `@` only
+   (`addressBreaks`, AdminSettings.tsx). The min-width is those columns and
+   `demo-model-` (112px): narrower than that the table scrolls inside
+   `.ctl-table` rather than squeezing a column under its text. Above the
+   phone only; at 560px and under the table is a stacked record. */
+@media (min-width: 561px) {
+  table.adm-price-table { table-layout: fixed; width: 100%; min-width: 976px; }
+  table.adm-price-table > thead > tr > th.adm-pc-fig { width: 100px; }
+  table.adm-price-table > thead > tr > th.adm-pc-cur { width: 80px; }
+  table.adm-price-table > thead > tr > th.adm-pc-src { width: 116px; }
+  table.adm-price-table > thead > tr > th.adm-pc-day { width: 126px; }
+  table.adm-price-table > thead > tr > th.adm-pc-by { width: 140px; }
+  table.adm-price-table > tbody > tr > th,
+  table.adm-price-table > tbody > tr > td { white-space: normal; }
+}
+.adm-addr-seg { white-space: nowrap; }
+/* ONE ALIGNMENT PER PRICE COLUMN (visual QA run 6, 6:admin-014). A
+   read-only figure is `td.is-num`, right-aligned in tabular figures; a field
+   in the same column drew its figure at its own left edge, since a form
+   control does not inherit the cell's alignment. Its figure is right-aligned
+   and tabular too, as in the member view. */
+.adm-price-table td.is-num > .adm-price-in { text-align: right; font-variant-numeric: tabular-nums; }
 .adm-token-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+/* A LABEL IS 8px FROM ITS FIELD (visual QA run 6, 6:admin-010). Additional
+   repositories wraps each field in its label, as inline text: `Size budget
+   per step, GiB` ended where the input's edge began. */
+.adm-repo-limits .adm-token-form > label { display: inline-flex; align-items: center; gap: 8px; }
 /* THE SAME CONTROL EDGE (visual QA run 4, admin-008): on `--line` the
    fallback token's owner and token fields measured 1.37:1 on the dark card
    and 1.34:1 on the white one, their `--bg` fill 1.08-1.09:1 off it.
@@ -411,6 +456,23 @@
     min-width: 44px;
     min-height: 44px;
   }
+  /* AN ADDRESS BREAKS AFTER `@` AND `.` ONLY (visual QA run 6, 6:admin-008,
+     part of #1680). The phone record let the identity break anywhere:
+     `alice@example` / `.com`, `bogdan@exampl` / `e-`. It is drawn as runs
+     that end at an `@` or a `.`, a `<wbr>` between two (`addressBreaks`,
+     Activity.tsx `TenantIdent`); each run is an inline block that never
+     breaks inside, and one wider than the value column is cut with an
+     ellipsis -- the whole value is on the identity's title and its copy
+     control -- never broken mid-word. */
+  .ten-ident { overflow-wrap: normal; word-break: normal; }
+  .ten-seg {
+    display: inline-block;
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: top;
+  }
 }
 /* THE BUDGET NOTE IS A PLAIN FACT, IN PLAIN INK (AH-21). AG-5 defines a plain
    fact as no mark and no dimming. `.ctl-panel-note` is `--text-faint`, the
@@ -460,14 +522,22 @@
      two lines, a normal Principal is whole, and the Identity keeps its key
      (`…u-bogdan@…`) whole. A long tenant id still breaks at its hyphens
      only, in three lines at 148px. */
-  table.ten-table > colgroup > col.ten-col-tenant { width: 14%; }
+  /* AND A PRINCIPAL IS WHOLE (visual QA run 6, 6:admin-009, part of
+     #1680). At 19% (200px of 1054) `alice@example.com` -- 17 characters of
+     14px DM Mono, 143px, with the 8px gap, its 47px copy control and the
+     cell's 20px of padding, 218px -- was cut `alice@example…` while Tenant
+     held `u-bogdan` in 148px. Tenant gives 2% (126px: a long id still breaks
+     at its hyphens) and Credentials 0.5% (179px still holds `anthropic` and
+     `openai` on one line, 174px); Principal is 21% (221px) and Identity
+     20% (211px). */
+  table.ten-table > colgroup > col.ten-col-tenant { width: 12%; }
   table.ten-table > colgroup > col.ten-col-status { width: 7%; }
   table.ten-table > colgroup > col.ten-col-kind { width: 6%; }
-  table.ten-table > colgroup > col.ten-col-principal { width: 19%; }
+  table.ten-table > colgroup > col.ten-col-principal { width: 21%; }
   table.ten-table > colgroup > col.ten-col-enforced { width: 8%; }
   table.ten-table > colgroup > col.ten-col-configured { width: 9%; }
-  table.ten-table > colgroup > col.ten-col-credentials { width: 17.5%; }
-  table.ten-table > colgroup > col.ten-col-identity { width: 19.5%; }
+  table.ten-table > colgroup > col.ten-col-credentials { width: 17%; }
+  table.ten-table > colgroup > col.ten-col-identity { width: 20%; }
   /* A tenant id breaks at its hyphens only, never mid-word. */
   table.ten-table > tbody > tr > th[scope='row'] { overflow-wrap: break-word; }
   .ten-ident-row { display: flex; flex-wrap: wrap; }
@@ -509,14 +579,23 @@
     overflow: hidden;
     white-space: nowrap;
   }
+  /* EVERY ROW CUT BY ONE RULE (visual QA run 6, 6:admin-009). Weighted
+     1000 and 4000 from their own widths, the two pieces gave up the
+     overflow in proportion to their length, so each row cut its domain at a
+     different letter: `swa…u-bogdan@e…` in one, more of the domain in the
+     next. Now they share what the key leaves EQUALLY (a zero basis and the
+     same factors), each capped at its own text: a short head hands its
+     unused share to the domain, and two rows with the same room show the
+     same number of letters of each. The copy control beside it carries the
+     whole value, on its name and its title. */
   .ten-ident > .ten-ident-head,
   .ten-ident > .ten-ident-tail {
-    flex: 0 1000 auto;
+    flex: 1 1 0;
     min-width: 2ch;
+    max-width: max-content;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .ten-ident > .ten-ident-tail { flex-shrink: 4000; }
   .ten-ident > .ten-ident-key {
     flex: 0 0 auto;
     min-width: 0;
@@ -668,15 +747,30 @@ table.adm-limits th.pool-name > .ctl-sub > .adm-key-seg {
   .adm-family .is-stacked > table > tbody > tr.is-editing > th[scope="row"],
   .adm-family .is-stacked > table > tbody > tr.is-editing > td { background: none; }
 }
+/* `6 /10` IS ONE RUN ON A PHONE TOO, AND `full` STAYS AFTER `edit` (visual
+   QA run 6, 6:admin-016 and 6:admin-017, part of #1680). As two grid tracks
+   of 6ch and 7ch, with the field's 12px gap between them, the eng ceiling's
+   `6` and its AIMD target `/10` stood about 60px apart, and the two slots
+   and three gaps left `edit` some 53px of the record, so the 'full' tag
+   (owner pick c04) dropped to a line of its own. The run is one grid item
+   here, as `.adm-fig` is at 1440: the figure and its target side by side,
+   `nowrap`, in a track of a fixed 8ch -- `100 /200` and anything shorter --
+   so `edit` still starts at one x down the page (admin-009). That leaves
+   `edit` and `full` about 110px. */
 @media (max-width: 560px) {
   .is-stacked > table > tbody > tr > td.adm-ceiling-cell {
-    grid-template-columns: minmax(0, var(--stack-key, calc(var(--t-micro) * 10.5))) auto auto minmax(0, 1fr);
+    grid-template-columns: minmax(0, var(--stack-key, calc(var(--t-micro) * 10.5))) auto minmax(0, 1fr);
   }
-  /* The run is no box here, so its two slots are the grid's columns 2 and 3. */
-  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .adm-fig { display: contents; }
-  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .adm-fig > .adm-ceiling { grid-column: 2; margin: 0; text-align: left; }
-  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .adm-fig > .adm-was { grid-column: 3; margin: 0; }
-  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .limit-edit { grid-column: 4; }
+  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .adm-fig {
+    display: inline-block;
+    grid-column: 2;
+    min-width: 8ch;
+    font-family: var(--mono);
+    white-space: nowrap;
+  }
+  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .adm-fig > .adm-ceiling { width: auto; margin: 0 var(--ctl-s1) 0 0; text-align: left; }
+  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .adm-fig > .adm-was { width: auto; margin: 0; }
+  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .limit-edit { grid-column: 3; }
   /* In use's figure starts at the value column too (QA-045), like Ceiling's. */
   .is-stacked > table > tbody > tr > td > .adm-inuse { width: auto; text-align: left; }
   /* LAST CHANGED, ONE PART A LINE, NO SEPARATORS (visual QA QA-043,
@@ -688,13 +782,15 @@ table.adm-limits th.pool-name > .ctl-sub > .adm-key-seg {
   .is-stacked .adm-changed > .adm-changed-part { display: block; }
   .is-stacked .adm-changed > .adm-changed-part > .adm-changed-sep { display: none; }
 }
-
 /* -- Runner sizes --------------------------------------------------------- */
 /* SIZES-UI (part of #1689; docs/design/runner-sizes.md §4.6): one card per
    class, its three numbers side by side with the bound under each, then the
    units, the dollars, who follows a resize and the 7-day readings. The cards
    wrap to one column on a phone; nothing here is wider than its field. */
-.rs-classes { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ctl-gutter); margin: var(--ctl-s2) 0; }
+/* EACH CARD AS TALL AS ITS CONTENT (visual QA run 6, 6:admin-012): the
+   grid's default `stretch` drew standard and large as tall as browser, with
+   its Live browser split, 540-680px of empty card under them. */
+.rs-classes { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: var(--ctl-gutter); margin: var(--ctl-s2) 0; }
 .rs-class {
   display: flex; flex-direction: column; gap: 8px; min-width: 0;
   padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
@@ -706,6 +802,9 @@ table.adm-limits th.pool-name > .ctl-sub > .adm-key-seg {
 .rs-bound, .rs-note, .rs-disk, .rs-follows, .rs-fixed, .rs-version-line, .rs-hints-few, .rs-none {
   margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
 }
+/* A class its pool admits none of: the figures, the mark, then the line why
+   on a line of its own, in the notes' face (6:admin-013). */
+.rs-admits-none { display: block; margin: 2px 0 0; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); white-space: normal; }
 .rs-refusal { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--bad-ink); }
 .rs-class-refusals { margin: 0; padding-left: 1.1rem; }
 .rs-split { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px solid var(--line-soft); }

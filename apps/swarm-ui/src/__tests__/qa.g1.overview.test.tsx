@@ -219,7 +219,11 @@ describe('G1-09: a row leads with its task title, then its step', () => {
     const el = await mount([run, fail], { tsk_g9_run: full(run, { title: TITLE, unit: 'c5h' }), tsk_g9_fail: full(fail, { title: TITLE, unit: 'c5h' }) })
     expect(text(el.querySelector('#ov-running .ov-rows .ov-name'))).toBe(`${TITLE} · review`)
     expect(text(el.querySelector('#ov-running .ov-prun-n'))).toBe(`${TITLE} · review`)
-    expect(text(el.querySelector('#ov-failures .ov-name'))).toBe(`${TITLE} · fix`)
+    // A FAILED STEP'S LINK ENDS IN ITS SHORT TASK ID (#1680 box 6343791868,
+    // BGD's decision of 2026-10-23), as a lone agent's name already does.
+    // Running now's rows keep the title and step.
+    // MUTATION: draw the failure row's link as `rowLabel` alone, the id on a line of its own.
+    expect(text(el.querySelector('#ov-failures .ov-name'))).toBe(`${TITLE} · fix · g9_fail`)
     // Two steps of one workflow: one read names both.
     expect(api.loadTask).toHaveBeenCalledTimes(1)
   })
@@ -230,7 +234,13 @@ describe('G1-09: a row leads with its task title, then its step', () => {
     const c = task({ id: 'tsk_g9_c', state: 'CANCELLED', step_id: 'fix', workflow_id: 'wf_g9c', completed_at: ago(4), metadata: null })
     const el = await mount([a, b, c], { tsk_g9_a: full(a, { unit: 'c5h' }), tsk_g9_b: full(b, { title: '   ' }) })
     // AN UNTITLED STEP NAMES ITS WORKFLOW (live QA OV-16, 2026-10-11).
-    expect([...el.querySelectorAll('#ov-failures .ov-name')].map(text)).toEqual(['c5h · review', 'implement · wf_g9b', 'fix · wf_g9c'])
+    // Each ends in its short task id (BGD, 2026-10-23, box 6343791868).
+    // MUTATION: leave the short task id out of an untitled step's link.
+    expect([...el.querySelectorAll('#ov-failures .ov-name')].map(text)).toEqual([
+      'c5h · review · g9_a',
+      'implement · wf_g9b · g9_b',
+      'fix · wf_g9c · g9_c',
+    ])
   })
 
   // MUTATION: put `text-decoration: none` back on `.ov-name`.

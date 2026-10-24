@@ -84,28 +84,44 @@
 .ov-att-t small.ov-att-ids { display: block; white-space: nowrap; text-overflow: ellipsis; }
 .ov-att-go { font-size: var(--t-micro); color: var(--sk-ac); white-space: nowrap; }
 /* A CARD THAT NAMES WORKFLOWS LINKS EACH ONE (visual QA N11, 2026-10-21).
-   A link cannot hold a link, so such a card is a box: `Agents · FAILED →` is
-   its own link, and that link's `::after` covers the box, so a click anywhere
-   but an id still opens the list. The ids sit above the cover. */
+   A link cannot hold a link, so such a card is a box, and one of its links
+   carries a `::after` that covers the box, so a click anywhere but another
+   link still goes somewhere. Every other link sits above the cover.
+
+   THE COVER OPENS THE FAILED WORKFLOW (#1680 box 6343766999, BGD's decision
+   of 2026-10-23). It was `Agents · FAILED →`'s, so a click on the card's
+   empty space opened the list while the card's prominent link was the
+   workflow: the card said one thing and did another. The first named
+   workflow's link (`is-cover`) carries it now, static so its cover is
+   positioned against the card; the list's link is a plain link above it. */
 .ov-att.is-split { position: relative; }
-.ov-att.is-split .ov-att-go { text-decoration: none; }
-.ov-att.is-split .ov-att-go::after { content: ''; position: absolute; inset: 0; border-radius: inherit; }
-.ov-att.is-split .ov-att-go:focus-visible { outline: none; }
-.ov-att.is-split .ov-att-go:focus-visible::after { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.ov-att.is-split .ov-att-go { position: relative; z-index: 1; text-decoration: none; }
+.ov-att.is-split .ov-att-go:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.ov-att.is-split .ov-att-go.is-cover { position: static; z-index: auto; }
+.ov-att.is-split .ov-att-go.is-cover::after { content: ''; position: absolute; inset: 0; border-radius: inherit; }
+.ov-att.is-split .ov-att-go.is-cover:focus-visible { outline: none; }
+.ov-att.is-split .ov-att-go.is-cover:focus-visible::after { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
 /* THE WORKFLOW IS A WAY OUT AS PLAIN AS THE LIST (visual QA 5b:wg-dark-D1,
    2026-10-22). The only way to the failed workflow was its id in the ids
    line, under a prominent link to the Agents list. Each named workflow now
    has `Workflow <id> →` above `Agents · FAILED →`, in a column that does not
-   shrink: drawn by `.ov-att-go`, the list link's own rule, but above the
-   cover rather than carrying one, so a click elsewhere still opens the list.
-   The id gives way with an ellipsis, the arrow never; its title is whole. */
+   shrink: drawn by `.ov-att-go`, the list link's own rule. The first of them
+   carries the card's cover (above). The id gives way with an ellipsis, the
+   arrow never; its title is whole. */
 .ov-att-acts { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; max-width: 45%; min-width: 0; }
-.ov-att.is-split .ov-att-wf { position: relative; z-index: 1; display: inline-flex; gap: 0.3em; max-width: 100%; min-width: 0; }
-.ov-att.is-split .ov-att-wf::after { content: none; }
-.ov-att.is-split .ov-att-wf:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.ov-att.is-split .ov-att-wf { display: inline-flex; gap: 0.3em; max-width: 100%; min-width: 0; font-weight: 600; }
 .ov-att-wf:hover .ov-att-wf-t { text-decoration: underline; text-underline-offset: 2px; }
 .ov-att-wf-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ov-att-ids a { position: relative; z-index: 1; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+/* THE WORKFLOW IS THE PROMINENT WAY OUT, THE LIST THE SECONDARY (#1680 box
+   6343766999, 5b:wg-dark-D1, routed to a fix lane 2026-10-23). Drawn alike,
+   `Agents · FAILED →` still read as the card's link: the failed workflow is
+   where a reader goes to see what broke, the list is where they go next. The
+   workflow links take the accent at the card title's weight (`font-weight`
+   in `.ov-att-wf`'s rule above); the list link steps down to the sentence's
+   dim ink at the regular weight. The card's cover is the first workflow's
+   (BGD, 2026-10-23; the N11 block above). */
+.ov-att.is-split .ov-att-go:not(.ov-att-wf) { color: var(--text-dim); font-weight: 400; }
 .ov-att-ids a:hover { color: var(--sk-ac); }
 /* The skeleton of a check card, while the checks read: the card's own box
    and rhythm, its lines as the canonical skeleton bars (walkthrough F). */
@@ -299,15 +315,21 @@
 /* A FULL POOL'S FIGURE CARRIES THE VERDICT (visual QA V057, owner decision
    Q3 2026-10-11). The phone block hides every utilisation track at 560px and
    below, and the track's tone was the only place "this pool is full" was
-   drawn, so a phone read `5/5` as plainly as `0/5`. The track stays hidden;
-   the figure takes the over-ceiling vocabulary instead -- the bad ink, with
-   the weight above as the greyscale channel -- at every width, so the two
-   widths agree. */
+   drawn, so a phone read `5/5` as plainly as `0/5`. The figure takes the
+   over-ceiling vocabulary -- the bad ink, with the weight above as the
+   greyscale channel -- at every width, so the two widths agree. Q3 also kept
+   the track hidden on a phone; BGD reversed that on 2026-10-23 (the 560px
+   block's `.ov-pools .ov-pl > .ctl-util-track`), and the toned figure stays. */
 .ov-pl b.is-full { color: var(--bad); }
 /* NEARLY FULL, ON THE FIGURE (visual QA V057, owner decision Q4
    2026-10-16): the hidden track turns warn at 80%, so the figure does too, at
    every width -- the warn ink, as the full figure takes the bad. */
 .ov-pl b.is-near { color: var(--warn); }
+/* A paused pool's name and its `paused` mark share the name's cell; the name
+   still gives way first, cut with its title (run 6, overview-automate-013). */
+.ov-pl-n { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ov-pl-n > .ov-idc { flex: 0 1 auto; }
+.ov-pl-n > :not(.ov-idc) { flex: none; }
 .ov-acc { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: var(--t-micro); }
 .ov-acc .sk-st-w { font-size: var(--t-micro); }
 .ov-acc-proj { color: var(--text-dim); }
@@ -422,6 +444,21 @@
   .ov-fails td:first-child { grid-row: 1; }
   .ov-fails td.is-num { grid-row: 2; grid-column: 2; text-align: left; }
   .ov-prun, .ov-prun-more { display: block; }
+  /* THE POOLS LIST KEEPS ITS BARS (visual QA run 6, overview-automate-011,
+     #1680 box 6343776209; BGD's decision of 2026-10-23, which reverses BGD's Q3
+     of 2026-10-11, "the bar stays hidden on a phone"). styles.css's phone
+     block hides every `.ctl-util-track`; here that left a full pool's hatch,
+     a lowered pool's short fill and a paused pool's tone nowhere at 390, only
+     the figure. The row already lays its track across the whole card under
+     the name and figure, so the phone draws it as 1440 does, as Capacity ›
+     Pools' phone records do (capacity.css). Q3's toned figure stays. */
+  .ov-pools .ov-pl > .ctl-util-track { display: flex; }
+  /* RUNNING NOW'S ROWS ARE RULED APART (visual QA run 6, overview-automate-012,
+     2026-10-23): with no separator, each title sat about 4px under the
+     previous row's state line and two rows read as one. The rule and padding
+     Recent failures' phone rows use, so the two lists on the page agree. */
+  .ov-prun li { padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+  .ov-prun li:last-child { border-bottom: 0; }
   /* A DISABLED REASON WHOLE ON A PHONE (live QA OV-13, 2026-10-11): past two
      lines the reason was only in the tile's `title`, which a touch screen
      cannot open. Whole, the sentence costs the tile a line or two of

@@ -163,6 +163,7 @@ from . import mcp_attach as mcp_attach_mod
 from . import secretrelease as secretrelease_mod
 from . import territory as territory_mod
 from . import typesafe_shim as typesafe_shim_mod
+from . import owner_questions as owner_questions_mod
 from . import questions as questions_mod
 from . import qa_identity as qa_identity_mod
 from . import redact as redact_mod
@@ -229,6 +230,7 @@ from . import specverify
 from .forge import ForgeError, PullRequest, RepoAccess, probe_repository, open_pull_request
 from .gitops import (
     ATTRIBUTION_MARKERS,
+    DETACHED_HEAD,
     EMPTY_CLONE_BASE,
     CloneResult,
     GitError,
@@ -243,12 +245,17 @@ from .gitops import (
     fetch_branch_tip,
     fold_agent_commits,
     hide_from_git,
+    is_branch_ref_name,
     merge_branches,
     mirror_worktree,
+    origin_tips_as_data,
     own_branch_tip,
     prepare_publish_repo,
     push_branch,
     read_agent_excludes,
+    read_head_as_data,
+    read_head_branch_as_data,
+    read_origin_ref_as_data,
     retry_clone,
     shallow_clone,
     summarize_work,
@@ -929,6 +936,14 @@ class Worker:
         # in this process, or the base a previous attempt's worker recorded in
         # the checkpoint manifest. `EMPTY_CLONE_BASE` for an empty repository.
         self._publish_base: str | None = None
+        # The branch this attempt's clone left HEAD on (`refs/heads/<name>`, or
+        # `DETACHED_HEAD` for a clone at a commit), read by the worker before
+        # any agent process existed: the branch the step was given (#2094).
+        # A resumed attempt reads it back from the checkpoint manifest the
+        # worker wrote (`CheckpointRecord.start_branch`). None when it is not
+        # known -- a manifest from before it was recorded -- and then only the
+        # start sha decides whether HEAD moved (`_head_moved`).
+        self._start_branch: str | None = None
         # The base BRANCH the runner rebases the lane onto before it publishes
         # (SPEED-D1, `agent_worker.prepublish`), when that is safe for this
         # step (`_prepublish_rebase_ref`); None, and no rebase, otherwise.
@@ -2403,8 +2418,46 @@ class Worker:
             return self._park_credential_missing(outcome.credential_missing)
         if outcome.ci_wait is not None:
             return self._park_ci_pending(action, outcome.ci_wait)
+        if outcome.owner_wait is not None:
+            return self._park_for_owner_questions(action, outcome)
         with self._metrics_after_the_record():
             return self._record_worker_action_end(action, outcome)
+
+    def _park_for_owner_questions(
+        self, action: WorkerAction, outcome: "post_verdict_mod.ActionOutcome"
+    ) -> Outcome:
+        """The merge's owner-question hold: PARKED(HUMAN_REQUIRED), release, exit 75 (#2070).
+
+        The hand-off's park exactly (`handoff_mod.park_human_required`, as
+        `_park_for_answers`): one fenced transaction, no lease, the attempt
+        refunded within `max_human_resumes`. The answer that clears every
+        question the hold names returns it to READY (swarm-api's answer
+        route, QUESTION-WAKE, PR 2151), as a person's `human-ready` does --
+        whereupon the merge reads every answer again. A review re-running
+        does not wake it, and the scheduler's human-wait expiry spares it as
+        it spares `question_wait` / `release_wait` parks: see `merge`. The
+        questions ride in the park's `blocked_by` entry
+        under `owner_questions`, NOT `question_wait`: they are not this
+        task's own, and swarm-api's answer route reads `question_wait` as
+        questions asked by the parked task. No checkpoint: a worker action
+        keeps no workspace.
+        """
+        wait = dict(outcome.owner_wait or {})
+        uploaded = self._upload_outputs().get("artifacts")
+        self.log.info("the merge waits on the owner's questions; parking for a person",
+                      action=action.value, questions=len(wait.get("questions") or []),
+                      unreadable=wait.get("unreadable"))
+        with self._metrics_after_the_record():
+            park = handoff_mod.park_human_required(
+                self.control,
+                max_resumes=self.handoff.max_resumes,
+                detail={"park_phase": "owner_questions",
+                        "owner_questions": self._scrub(wait)},
+                uploads=uploaded if isinstance(uploaded, list) else None,
+            )
+        if park.returned_by is not None:
+            return Outcome(exit_code=ExitCode.PARKED, state=TaskState.READY)
+        return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _record_worker_action_end(
         self, action: WorkerAction, outcome: "post_verdict_mod.ActionOutcome"
@@ -3237,6 +3290,23 @@ class Worker:
         # block between nonce lines, as data. Nothing for a task that never
         # waited on one.
         questions_mod.resume_with_answers(ws.work, payload, task)
+        # A review's owner questions (#2070, option (c)): every earlier step
+        # of its workflow's validated questions, with the answers so far, in
+        # `work/owner-questions.json`, and the verdict instructions closing
+        # the prompt. `input_from` stages one file per parent, so they never
+        # reached a review before. Nothing for any other step, or a workflow
+        # that asked nothing.
+        owner_questions_mod.stage(ws.work, payload, owner_questions_mod.collect(
+            task,
+            fetch=lambda upstream: inputs_mod.fetch_upstream_task(
+                self.db,
+                upstream_task_id=upstream,
+                tenant_id=cfg.tenant_id,
+                call_options=self.control.call_options(),
+            ),
+            store=self.store,
+            tenant_id=cfg.tenant_id,
+        ))
         ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
 
         # ---- STEP 6: tenant credentials ---------------------------------
@@ -5269,6 +5339,13 @@ class Worker:
             self._clone_commit = (
                 recorded if isinstance(recorded, str) and _FULL_SHA_RE.fullmatch(recorded) else None
             )
+            # The branch the first attempt's clone landed on, from the same
+            # manifest (#2094). An older manifest records none: the branch
+            # check is then skipped, and the start sha still decides.
+            self._start_branch = _recorded_start_branch(
+                self._restored_from.start_branch if self._restored_from else None
+            )
+            self.checkpoints.start_branch = self._start_branch
             return {
                 "path": REPO_DIR_NAME,
                 "from_checkpoint": True,
@@ -5512,6 +5589,13 @@ class Worker:
         # manifest from here on, so a resumed attempt can trust it too.
         self._publish_base = clone.commit or (EMPTY_CLONE_BASE if clone.empty else None)
         self.checkpoints.clone_base = self._publish_base
+        try:
+            self._start_branch = read_head_branch_as_data(Path(destination))
+        except GitError as exc:
+            # Unknown, not refused: the start sha still decides (`_head_moved`).
+            self.log.warning("could not read the branch the clone landed on", error=str(exc))
+        # Into every manifest from here on, so a resumed attempt knows it too.
+        self.checkpoints.start_branch = self._start_branch
         self._prepublish_rebase = self._prepublish_rebase_ref(
             ref=ref,
             checkout=Path(destination),
@@ -5632,6 +5716,191 @@ class Worker:
                       "where it landed", onto=onto, base=base)
         return onto
 
+    def _head_moved(self, repo: Path, publish_repo: Path, floor: str | None) -> str | None:
+        """Where HEAD went when it left this step's work, or None when it did not (#2094).
+
+        MEASURED 2026-10-23 (product-oracle PRs #456 and #465): two review
+        steps checked out the branch they reviewed and committed nothing; the
+        harvest counted that branch's commits since the clone base as theirs
+        and published them. HEAD has moved when, at the end:
+
+        * it is on another branch than the one the clone left it on
+          (`_start_branch`, read before any agent process existed, or read
+          back from the checkpoint manifest on a resume) AND that branch is
+          one the agent FETCHED rather than made (`_fetched_line`) -- the
+          branch's name is returned; or
+        * it is DETACHED exactly on a `refs/remotes/origin/*` tip, whatever
+          the start was -- a branch, or detached itself (a by-sha
+          `repository_ref`, a resumed index run) -- unless that commit is
+          `floor` itself or the tip of this step's own branch -- the head's
+          short sha is returned (BGD, 2026-10-23 ~18:39Z, recorded on
+          task_bf208a4d46f04764869d q1: "Yes, close it." A review cloned by
+          sha that ran `git checkout --detach origin/<reviewed>` changed no
+          branch, and its line descends from the start); or
+        * it does not descend from `floor`, the commit the step started on
+          (the start sha, or where the runner's pre-publish rebase landed,
+          `_adopt_rebase_base`), nor from the tip this attempt's own
+          `git_push_branch` left on the task's branch (`_adopt_tool_pushed_tip`,
+          #1188) -- the branch's name is returned when HEAD changed branch
+          (detached counts as a branch of its own),
+          the head's short sha otherwise.
+
+        RELAXED FOR A NEW LOCAL BRANCH (BGD, 2026-10-23 16:47Z, recorded on
+        task_306e3aa8dee141a5a390 q0). All five implement agents sampled that
+        day ran `git checkout -b <name>` from their start and committed there,
+        and PR 2107's rule -- any other branch is a move -- refused them all. A
+        branch change is therefore NOT a move when the end branch has no
+        `refs/remotes/origin/<name>` in the clone (the clone tracks every
+        branch, `gitops.TRACK_EVERY_BRANCH`, so a branch fetched by name has
+        one) and HEAD descends from the start, the last rule above. A
+        detached HEAD, from any start, therefore publishes in exactly two
+        cases: it is the start sha (`floor`) itself, whether or not an origin
+        tip sits on that commit; or it descends from the start and equals no
+        `refs/remotes/origin/*` tip but this step's own branch's -- a by-sha
+        step's own commits on top of its start.
+
+        THE KNOWN LIMIT BGD ACCEPTED. A line fetched without a tracking ref
+        reads as the agent's own: a reviewed pull request fetched BY SHA (or
+        into FETCH_HEAD) and checked out, detached or onto a fresh local
+        branch, a branch made with `checkout -b mine origin/<reviewed>`, a
+        detached HEAD with a commit on top of a fetched tip, or a tracking ref
+        the agent deleted. Each descends from the start sha, so each publishes
+        the reviewed commits as this step's. Nothing in the clone tells those
+        apart from an agent's own work, and the clone is the agent's to write.
+
+        Every fact about the clone is read from its files as data
+        (`read_head_branch_as_data`, `read_origin_ref_as_data`,
+        `origin_tips_as_data`): no git runs there, so none of the agent's
+        config or hooks does. The ancestry is asked in the worker's own
+        `publish_repo`. An empty repository's clone has no start sha, and a
+        resume from a manifest without `start_branch` knows no start branch:
+        each check runs only where its fact is known. Raises `GitError` when
+        a fact cannot be read, and the harvest then publishes nothing.
+        """
+        ws = self.ws
+        assert ws is not None
+
+        def git(argv: list[str], slug: str) -> tuple[int, str]:
+            return _git_text(
+                ["git", *_NO_HOOKS, *argv], repo=Path(publish_repo), private_dir=ws.private,
+                logs_dir=ws.logs, slug=slug,
+                timeout_seconds=self.cfg.git_harvest_timeout_seconds, logger=self.log,
+            )
+
+        def short_head() -> str:
+            code, head = git(["rev-parse", "--verify", "--quiet", "HEAD"], "harvest-moved-head")
+            return head.strip()[:12] if code == 0 and head.strip() else "an unborn HEAD"
+
+        def where() -> str:
+            return short_head() if end == DETACHED_HEAD else end.removeprefix("refs/heads/")
+
+        end = read_head_branch_as_data(repo)
+        start = self._start_branch
+        left_branch = start is not None and end != start
+        if end == DETACHED_HEAD:
+            # Whatever the start was: a clone by sha starts detached, so
+            # detaching onto a fetched tip changes no branch (BGD, 2026-10-23).
+            head = read_head_as_data(repo)
+            own = self._publish_branch_name()
+            fetched = (
+                head is not None
+                and head != floor
+                and not (own and read_origin_ref_as_data(repo, f"refs/heads/{own}") == head)
+                and self._fetched_line(repo, end)
+            )
+        else:
+            fetched = left_branch and self._fetched_line(repo, end)
+        if fetched:
+            self.log.warning(
+                "HEAD left the line this step was given for one it fetched; nothing "
+                "of it is harvested", start=start, end=end,
+            )
+            return where()
+        if not floor or not _FULL_SHA_RE.fullmatch(floor):
+            return None
+        code, _ = git(["merge-base", "--is-ancestor", floor, "HEAD"], "harvest-moved-start")
+        if code == 0:
+            return None
+        if code != 1:
+            raise GitError("could not tell whether HEAD descends from the commit the step started on")
+        branch = self._publish_branch_name()
+        read = getattr(self.children, "pushed_tip", None)
+        tip = read(branch) if branch and callable(read) else None
+        if isinstance(tip, str) and _FULL_SHA_RE.fullmatch(tip):
+            code, _ = git(["merge-base", "--is-ancestor", tip, "HEAD"], "harvest-moved-tip")
+            if code == 0:
+                return None
+        moved = where() if left_branch else short_head()
+        self.log.warning(
+            "HEAD does not descend from the commit this step started on; nothing of "
+            "it is harvested", start=floor, head=moved,
+        )
+        return moved
+
+    def _fetched_line(self, repo: Path, end: str) -> bool:
+        """True when the branch HEAD ended on is one the agent fetched, not one
+        it made (#2094): a branch with a `refs/remotes/origin/<name>` in the
+        clone, or a detached HEAD standing exactly on a `refs/remotes/origin/*`
+        tip. Read from the clone's files as data (`gitops`), never by git.
+
+        The branch this step itself publishes (`_publish_branch_name`) is never
+        a fetched line: a `git_fetch` of it writes its tracking ref, and its
+        commits are this task's own, which the descent check (from the start
+        or from this attempt's tool-pushed tip) still bounds."""
+        own = self._publish_branch_name()
+        if own and end == f"refs/heads/{own}":
+            return False
+        if end == DETACHED_HEAD:
+            head = read_head_as_data(repo)
+            return head is not None and head in origin_tips_as_data(repo)
+        return read_origin_ref_as_data(repo, end) is not None
+
+    @staticmethod
+    def _moved_reason(moved: str) -> str:
+        """What a step whose HEAD moved is told, by the harvest and the carrier alike."""
+        return (
+            f"HEAD moved off this task's branch (to {moved}); "
+            "nothing of this task's was published"
+        )
+
+    def _moved_head_result(self, out: dict[str, Any], moved: str) -> dict[str, Any]:
+        """The harvest's record of a HEAD that left this step's work (#2094).
+
+        Nothing on it is this step's, so it counts no commit and no
+        uncommitted path, writes no patch and publishes nothing; and it is not
+        a publish failure. A step allowed an empty diff therefore ends exactly
+        as if its agent had stayed put (`expected_mod.changed_nothing`), a
+        review's verdict standing, and one owed a pull request is told why it
+        has none (`_published_nothing`).
+        """
+        moved = str(self._scrub(moved))
+        out.update(
+            {
+                "head_moved": moved,
+                "commits": [],
+                "commit_count": 0,
+                "insertions": 0,
+                "deletions": 0,
+                "dirty": [],
+                "dirty_count": 0,
+                "published": False,
+                "publish_reason": self._moved_reason(moved),
+            }
+        )
+        return out
+
+    def _publish_branch_name(self) -> str | None:
+        """The branch `_publish_git` would push, or None when it would refuse to
+        name one. Read only to ask for this attempt's own tool-pushed tip."""
+        try:
+            if self._pr_role() == "amender":
+                return self._pr_author_branch()
+            return continuation_mod.publish_branch(
+                (self._task or {}).get("metadata"), self.cfg.git_branch_prefix, self.cfg.task_id
+            )
+        except WorkerError:
+            return None
+
     def _adopt_tool_pushed_tip(self, publish_repo: Path, branch: str) -> str | None:
         """The tip this attempt's own `git_push_branch` left on `branch`, when
         HEAD stands on it; the publish diffs from it and leases on it. Else None.
@@ -5645,7 +5914,7 @@ class Worker:
         the branch.
 
         The tip is the `new_sha` swarm-api answered this attempt's push with
-        (`GitTools.pushed_tip`), the tip it recorded for the task and branch:
+        (`ChildPath.pushed_tip`, from `GitTools.pushed_tip`), the tip it recorded for the task and branch:
         never a ref in the agent's clone, never a fetched tip, and only for a
         branch this task may push. HEAD must descend from it in the worker's
         own repository, so a head the agent moved off its push publishes as
@@ -5653,8 +5922,7 @@ class Worker:
         tip -- are the agent's new work, and the push is `--force-with-lease`
         to exactly the tip: a branch somebody else moved since is refused.
         """
-        relay = getattr(self.children, "_git", None)
-        read = getattr(relay, "pushed_tip", None)
+        read = getattr(self.children, "pushed_tip", None)
         tip = read(branch) if callable(read) else None
         if not isinstance(tip, str) or not _FULL_SHA_RE.fullmatch(tip):
             return None
@@ -5994,7 +6262,9 @@ class Worker:
             reserved=frozenset({REPO_DIR_NAME, WORKER_STATE_DIR})
             | ws.control_file_names()
             # `issue.md`, when the task asks for an issue (#265).
-            | issue_mod.reserved_names(task.get("input"), self.cfg.profile),
+            | issue_mod.reserved_names(task.get("input"), self.cfg.profile)
+            # A review's owner questions, written after staging (#2070).
+            | {owner_questions_mod.NAME},
         )
         self._staged_inputs = staged
         self.log.info(
@@ -7524,6 +7794,10 @@ class Worker:
         refused = git.get("pull_request_refused")
         if refused:
             return f"published_nothing: {refused}"
+        if git.get("head_moved"):
+            # Its own words (#2094): the step's agent left its branch, which
+            # is not "no commits beyond the base".
+            return f"published_nothing: {git.get('publish_reason')}"
         unopened = git.get(PULL_REQUEST_NOT_OPENED_FIELD)
         if unopened:
             # Its own words, not "published_nothing": the branch IS pushed,
@@ -10506,10 +10780,23 @@ class Worker:
         protected: tuple[str, ...],
         message: str,
     ) -> None:
-        """Scan, commit onto the tip, check authorship, push. Raises GitError."""
+        """Scan, commit onto the tip, check authorship, push. Raises GitError.
+
+        A HEAD that moved off this step's work (`_head_moved`, #2094) is not
+        carried: the fold would put the tree of a branch the agent fetched on
+        `swarm/<task>` as this step's checkpoint, exactly what the harvest
+        refuses to publish. That push is skipped with the harvest's reason.
+        """
         ws = self.ws
         assert ws is not None
         cfg = self.cfg
+        moved = self._head_moved(ws.work / REPO_DIR_NAME, publish_repo, self._publish_base)
+        if moved is not None:
+            self.log.info(
+                "carrier: the step's branch was not pushed",
+                reason=self._moved_reason(str(self._scrub(moved))),
+            )
+            return
         leak = final_tree_leak(
             repo=publish_repo,
             base=self._publish_base,
@@ -11558,6 +11845,15 @@ class Worker:
                 self._publish_base = rebased
                 self.checkpoints.clone_base = rebased
                 fetched_base = rebased
+            # ONLY WHAT THIS STEP MADE ON TOP OF ITS START IS ITS WORK (#2094).
+            # A review that checked out the branch it reviewed used to have
+            # that branch's commits counted here and published as its own
+            # pull request (product-oracle #456, #465). A HEAD that left the
+            # step's branch, or no longer descends from where it started, is
+            # described as moved and nothing on it is harvested or published.
+            moved = self._head_moved(repo, publish_repo, fetched_base)
+            if moved is not None:
+                return self._moved_head_result(out, moved)
             work = summarize_work(
                 repo=publish_repo,
                 base=fetched_base,
@@ -12533,9 +12829,10 @@ class Worker:
         # pull request still opens, its body STARTING with the paths and
         # carrying the label (owner decision, 2026-10-19). The territory is
         # the task's stored input, never anything the agent wrote.
-        outside_header, labels = self._territory_warning(
+        outside, labels = self._territory_warning(
             publish_repo, head=str(pushed or work_head or ""), out=out
         )
+        outside_header = territory_mod.warning_header(outside) if outside else ""
         if outside_header:
             body = f"{outside_header}\n\n---\n\n{body}"
         # The generated block quotes the step's prompt, which is anyone's
@@ -12565,7 +12862,11 @@ class Worker:
                     agent_body=agent_body, branch=branch, head=str(pushed or work_head or "")
                 )
                 + (f"\n\n{prepublish}" if prepublish else "")
-                + (f"\n\n{outside_header}" if outside_header else "")
+                # A push onto an open pull request says WHERE its warning is,
+                # not the warning: that is one comment, posted below once the
+                # pull request is adopted, since a section at the bottom of a
+                # long body is easy to miss (CIFIX-TERRITORY-2, part of #1499).
+                + (f"\n\n{territory_mod.COMMENTED_NOTE}" if outside else "")
             ),
             origin=cfg.console_url,
             task_id=cfg.task_id,
@@ -12593,7 +12894,13 @@ class Worker:
             )
             self.log.warning("no pull request opened: no usable agent title", refused=refused)
             return out
+        # The token the pull request was last asked with: after a 401 re-read
+        # (`_open_pull_request_reading_again`) the first one is dead, and the
+        # territory comment below goes with the one that worked.
+        asked_with = [token]
+
         def open_with(with_token: str) -> PullRequest:
+            asked_with[0] = with_token
             # Retried on an outage: a POST that timed out after GitHub made
             # the pull request is answered 422 on the next try, which
             # `open_pull_request` resolves by adopting the open one.
@@ -12663,6 +12970,11 @@ class Worker:
             if label_error:
                 out["out_of_territory"]["label_error"] = str(self._scrub(label_error[:300]))
                 self.log.warning("the out-of-territory label was not set", error=label_error[:300])
+            if pr.number and not pr.created:
+                self._post_territory_comment(
+                    access=access, token=asked_with[0], number=pr.number,
+                    outside=outside, out=out,
+                )
         updated = bool(getattr(pr, "updated", False))
         retitled = bool(getattr(pr, "retitled", False))
         appended = bool(getattr(pr, "appended", False))
@@ -12958,14 +13270,15 @@ class Worker:
 
     def _territory_warning(
         self, publish_repo: Path | None, *, head: str, out: dict[str, Any]
-    ) -> tuple[str, list[str]]:
-        """`(header, labels)` for a pull request whose diff leaves the step's
-        declared territory, or `("", [])` (TERRITORY-WARN, part of #1468).
+    ) -> tuple[list[str], list[str]]:
+        """`(paths, labels)` for a pull request whose diff leaves the step's
+        declared territory -- the paths outside it, sorted -- or `([], [])`
+        (TERRITORY-WARN, part of #1468).
 
         The territory is `inputs.territory` in the task document as stored:
         submitted by the caller, refused at submit when malformed, and covered
         by the spec signature -- never a file in the workspace. A step that
-        declares none returns `("", [])` before git is asked anything, so its
+        declares none returns `([], [])` before git is asked anything, so its
         publish is exactly what it was.
 
         Records `out["out_of_territory"]` (the paths) when there are any, and
@@ -12979,9 +13292,9 @@ class Worker:
         except territory_mod.TerritoryError as exc:
             out["territory_unchecked"] = f"the declared territory is malformed: {exc}"[:400]
             self.log.warning("the declared territory could not be read", error=str(exc)[:300])
-            return "", []
+            return [], []
         if territory is None:
-            return "", []
+            return [], []
         ws = self.ws
         paths = None
         if publish_repo is not None and ws is not None:
@@ -13003,14 +13316,67 @@ class Worker:
                 "compared with the declared territory"
             )
             self.log.warning("the declared territory was not compared")
-            return "", []
+            return [], []
         outside = territory_mod.outside(paths, territory)
         if not outside:
-            return "", []
+            return [], []
         out["out_of_territory"] = {"paths": outside[: territory_mod.MAX_LISTED],
                                    "count": len(outside)}
         self.log.warning("the diff leaves the declared territory", paths=len(outside))
-        return territory_mod.warning_header(outside), [territory_mod.OUT_OF_TERRITORY_LABEL]
+        return outside, [territory_mod.OUT_OF_TERRITORY_LABEL]
+
+    def _post_territory_comment(
+        self, *, access: RepoAccess, token: str, number: int, outside: list[str],
+        out: dict[str, Any],
+    ) -> None:
+        """ONE comment on the adopted pull request `number` saying which of this
+        push's paths left the territory (CIFIX-TERRITORY-2, part of #1499).
+
+        CLD, 2026-10-23: the label alone, plus a section appended at the bottom
+        of a long body, is easy to miss. The comment starts with the header in
+        its continuation form and ends with a hidden marker naming this task
+        and attempt, so a publish of the same attempt again finds it and posts
+        nothing. Still a warning, never a refusal (#1468): a comment the forge
+        refuses is recorded in `out["out_of_territory"]` and logged, as a
+        refused label is, and the publish stands.
+
+        Reached only from `_publish_git`, after the push: a fenced attempt
+        never gets here (invariant 5), so a stale worker posts nothing.
+        """
+        record = out.setdefault("out_of_territory", {})
+        marker = (
+            f"<!-- swarm:out-of-territory task={self.cfg.task_id} "
+            f"attempt={self.cfg.attempt_id} -->"
+        )
+        ref = access.ref
+        try:
+            # A read is retried on an outage; the POST is not, since one whose
+            # answer was lost may have made the comment (the marker finds it).
+            existing = forge_mod.retry_transient(
+                lambda: forge_mod.list_issue_comments(ref=ref, token=token, number=number),
+                policy=self._forge_retry(),
+                what="the pull request's comments",
+            )
+        except ForgeError as exc:
+            # Unread is not "none there": posting anyway risks a second copy of
+            # a warning, which is better than the warning not being made.
+            existing = []
+            self.log.warning("the pull request's comments could not be read",
+                             error=str(self._scrub(str(exc)[:300])))
+        if any(marker in body for body in existing):
+            record["comment"] = "already posted"
+            return
+        body = _neutralise_mentions(
+            territory_mod.warning_header(outside, continuation=True)
+        ) + f"\n\n{marker}"
+        try:
+            record["comment"] = forge_mod.create_issue_comment(
+                ref=ref, token=token, number=number, body=body
+            )
+        except ForgeError as exc:
+            error = str(self._scrub(str(exc)[:300]))
+            record["comment_error"] = error
+            self.log.warning("the out-of-territory comment was not posted", error=error)
 
     def _pull_request_body(
         self,
@@ -16370,6 +16736,15 @@ def _reason_path(path: str) -> str:
     return shown
 
 
+def _recorded_start_branch(value: Any) -> str | None:
+    """A checkpoint manifest's `start_branch` when it is one the worker could
+    have written there -- `DETACHED_HEAD` or a `refs/heads/` name -- else None,
+    which skips the branch check exactly as a manifest without it does (#2094)."""
+    if value == DETACHED_HEAD or is_branch_ref_name(value):
+        return str(value)
+    return None
+
+
 def replay_agent_commits(
     *,
     repo: Path,
@@ -16396,7 +16771,9 @@ def replay_agent_commits(
     folds it as before (`gitops.fold_agent_commits`):
 
     * HEAD does not descend from `base` (the agent reset or checked out
-      another line): nothing tells its commits from the repository's;
+      another line): nothing tells its commits from the repository's. Since
+      #2094 the harvest publishes nothing for such a HEAD before this runs
+      (`Worker._head_moved`), so this is the fold's last line of defence;
     * more than `MAX_KEPT_COMMITS` of them;
     * `leaks` finds a credential in the text any agent commit ADDS to a file
       (#259 review), read whole in windows overlapping by `overlap`. A kept commit keeps its TREE, so a key the agent added

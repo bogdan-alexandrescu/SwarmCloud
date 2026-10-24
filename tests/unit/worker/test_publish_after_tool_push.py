@@ -201,3 +201,52 @@ def test_a_tip_the_head_does_not_descend_from_is_not_adopted(
     # carries a lease that replaces the tool's push with an unrelated line.
     assert [call.get("lease") for call in pushes] == [None]
     assert out["published"] is False and refs(origin)[RED] == tip
+
+
+def test_the_publish_reads_the_tip_through_child_path_pushed_tip(
+    worker_factory, monkeypatch, origin, local_urls, forge, pushes, tmp_path
+):
+    """`_adopt_tool_pushed_tip` asks ChildPath's public read, not the relay
+    behind it (GITTOOLS-FOLLOW): the relay here has no `pushed_tip` at all,
+    and the stubbed `ChildPath.pushed_tip` is the only place the tip lives."""
+    worker, _, repo, tip = _rebased_and_tool_pushed(worker_factory, monkeypatch, origin, tmp_path)
+    worker.children._git = SimpleNamespace(rebased_onto=worker.children._git.rebased_onto)
+    asked: list[str] = []
+
+    def pushed_tip(branch: str) -> str | None:
+        asked.append(branch)
+        return tip if branch == RED else None
+
+    # raising=False: before GITTOOLS-FOLLOW there was no such read, and the
+    # red run fails on the assertion below rather than on this line.
+    monkeypatch.setattr(worker.children, "pushed_tip", pushed_tip, raising=False)
+
+    # MUTATION: read `getattr(self.children, "_git", None).pushed_tip` again
+    # and this relay has none: the tip is not adopted and this reads None.
+    assert worker._adopt_tool_pushed_tip(repo, RED) == tip
+    # MUTATION: read the tip for any branch but the one being published and
+    # this list names another branch, or is empty.
+    assert asked == [RED]
+
+
+def test_a_tool_pushed_head_off_the_start_sha_is_not_a_moved_head(
+    worker_factory, monkeypatch, origin, local_urls, forge, pushes, tmp_path
+):
+    """#2094's guard and this path, together: the rebased head no longer
+    descends from the commit the step started on, but it stands on the tip
+    this attempt's own tool push left on the task's branch. That is this
+    task's work, already published, and not a HEAD that moved off it."""
+    worker, _, repo, tip = _rebased_and_tool_pushed(worker_factory, monkeypatch, origin, tmp_path)
+    start = worker._publish_base
+    assert subprocess.run(
+        ["git", "merge-base", "--is-ancestor", start, "HEAD"], cwd=str(repo),
+    ).returncode == 1, "the scenario needs a head off the start sha"
+
+    out = worker._harvest_git(publish=True)
+
+    # MUTATION: anchor the moved-HEAD check on the start sha alone and this
+    # publishes nothing with "HEAD moved off this task's branch".
+    assert "head_moved" not in out, out.get("publish_reason")
+    assert out["published"] is True, out.get("publish_reason")
+    assert out["tool_pushed_tip"] == tip and refs(origin)[RED] == tip
+    assert [pull["head"] for pull in forge.pulls] == [RED]

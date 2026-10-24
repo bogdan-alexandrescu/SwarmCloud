@@ -5,6 +5,9 @@ diff touches paths outside its declared territory is PUBLISHED WITH A LOUD
 WARNING, not refused. The pull request still opens; its body starts with
 `OUTSIDE_HEADER` and the list of paths, and it carries the label
 `OUT_OF_TERRITORY_LABEL`. Merging still needs the review verdict and green CI.
+A push onto a pull request already open (a CI-fix round) gets the label too,
+and the header, in its continuation form, as ONE comment on the pull request;
+the body section the push appends only points at it (CIFIX-TERRITORY-2).
 
 WHERE THE TERRITORY COMES FROM. `inputs.territory` on the step, a list of
 repo-relative paths and globs, written by whoever submitted the task and
@@ -47,6 +50,13 @@ OUTSIDE_HEADER = "⚠ Outside this lane's territory:"
 #: a generated one and still a body the API stores without thinking about it.
 MAX_ENTRIES = 200
 MAX_ENTRY_CHARS = 400
+
+#: What a continuation's appended body section says instead of repeating the
+#: header, which goes in a comment of its own (CIFIX-TERRITORY-2).
+COMMENTED_NOTE = (
+    "⚠ This push leaves the lane's territory: the out-of-territory warning was "
+    "posted as a comment on this pull request."
+)
 
 #: The most paths the header lists by name; the rest are counted. GitHub caps
 #: a body at 65,536 characters and the agent's own text has to fit after it.
@@ -181,8 +191,15 @@ def outside(paths: Iterable[str], territory: Sequence[re.Pattern[str]]) -> list[
     return sorted({p for p in paths if not any(rule.fullmatch(p) for rule in territory)})
 
 
-def warning_header(paths: Sequence[str]) -> str:
-    """The block a pull request's body starts with when `paths` left the territory."""
+def warning_header(paths: Sequence[str], *, continuation: bool = False) -> str:
+    """The block a pull request's body starts with when `paths` left the territory.
+
+    `continuation` is the form for a push onto a pull request that was already
+    open -- a CI-fix round, or a later attempt -- which the worker posts as a
+    comment on it (CIFIX-TERRITORY-2, part of #1499). That push opened nothing,
+    so "the pull request opened anyway" would be false there; the default form
+    is word for word what a newly opened pull request has always said.
+    """
     shown = list(paths[:MAX_LISTED])
     lines = [OUTSIDE_HEADER, ""]
     # A backtick would end the code span early; a path rarely has one.
@@ -190,10 +207,15 @@ def warning_header(paths: Sequence[str]) -> str:
     if len(paths) > len(shown):
         lines.append(f"- ... and {len(paths) - len(shown)} more")
     which = "the path above matches" if len(paths) == 1 else f"the {len(paths)} paths above match"
+    published = (
+        "This push onto an open pull request was published anyway"
+        if continuation
+        else "The pull request opened anyway"
+    )
     lines += [
         "",
         f"This step declared its territory in `inputs.{TERRITORY_INPUT_KEY}`, and {which} "
-        "none of its entries. The pull request opened anyway (owner decision, "
+        f"none of its entries. {published} (owner decision, "
         "2026-10-19); merging still needs the review verdict and green CI.",
     ]
     return "\n".join(lines)

@@ -39,7 +39,7 @@ every row including the ones marked Yes.
 | `dispatch_paused` | Firestore `control/dispatch`, read at `apps/swarm-api/swarm_api/store.py:707-714` | Yes — `GET /v1/stats` → `.dispatch_paused` (any caller); `GET /v1/admin/dispatch` adds `.updated_by`, `.reason`, `.updated_at` (admin only, `routes/admin.py:70-75`) |
 | Pool `name / hard_limit / adaptive_target / quota_derived_limit / effective_limit / active / available / enabled / updated_at` | Firestore `pools/{name}`; model `apps/common/swarm_common/models.py:44-79`; serialised `apps/swarm-api/swarm_api/codec.py:215-226` | Yes — `GET /v1/capacity` (tenant-filtered, `service.py:290-332`), `GET /v1/admin/pools` (unfiltered, `routes/admin.py:296-302`) |
 | Runner-profile catalogue: `resource_class, backend, provider, units, pools[]` | `apps/common/swarm_common/profiles.py:118-176`, `RESOURCE_CLASSES` at `:77-81`, `pool_names_for` at `models.py:82-107` | Yes — embedded in `GET /v1/capacity`. **Its `pools[]` is computed for the caller's own tenant, admin or not** — Trap D |
-| Agent counts by state (12 states) | `store.count_tasks_by_state` at `store.py:524-533` | Yes — `GET /v1/stats` → `.tasks_by_state`, **scoped to the caller's tenant**; admin also gets `.platform_tasks_by_state` (`service.py:287`) |
+| Agent counts by state (12 states) | `store.count_tasks_by_state` at `store.py:524-533` | Yes — `GET /v1/stats` → `.tasks_by_state`, **scoped to the caller's tenant**; an admin who asks with `?scope=platform` also gets `.platform_tasks_by_state`; a plain read never carries it (PR 2152) |
 | Which states cost capacity | `apps/common/swarm_common/states.py:35-42` (`CONCURRENCY_STATES`), `:56-63` (`PENDING_STATES`) | Constant, compiled into the UI |
 | Live leases (`lease_id, task_id, attempt_id, tenant_id, generation, pools[], units, state, created_at, dispatch_deadline, expires_at, heartbeat_at, released_at, release_reason`) | Firestore `leases`; model `models.py:114-146`; index `leases-released-expires` at `terraform/modules/firestore/indexes.tf:144-151` | **No.** `LEASES = "leases"` is declared at `store.py:80` and **never used anywhere else in swarm-api**. There is no `lease_to_api` in `codec.py` and no route. → **P1** |
 | Provider/quota health per `(provider, tenant)` | Firestore `quota/{provider}:{tenant_id}`; model `models.py:268-300` | Own tenant only — `GET /v1/providers` (`service.py:334-350`, the sole caller of `list_quota`, at `service.py:336`). `store.list_quota(None)` exists at `store.py:663-668` but **nothing calls it with `None`**. → **P2** |
@@ -99,7 +99,7 @@ per tenant.
 
 **Trap E — `/v1/stats` counts are tenant-scoped while the `global` pool is
 platform-wide.** `stats()` calls `count_tasks_by_state(ctx.tenant_id)`
-(`service.py:276`) and only adds `platform_tasks_by_state` for admins (`:287`), whereas
+(`service.py:276`) and only adds `platform_tasks_by_state` for an admin's `?scope=platform` read, whereas
 the `global` pool in `/v1/capacity` is visible to everyone and is a platform number
 (`service.py:296-310` filters only other tenants' `tenant:*` and `*:tenant:*` pools).
 Putting "4 agents" (this tenant) next to "7 units" (whole platform) in one tile is a
@@ -360,7 +360,7 @@ the `stale` state, with the same amber band and the same dimmed numbers as a fai
 | Call | Cost | Interval |
 |---|---|---|
 | `GET /v1/capacity` | one unindexed stream of `pools` — 13 + 3T docs (≈73 at 20 tenants), sub-100 ms | **10 s** visible, paused when the tab is hidden (Page Visibility API), **60 s** on a phone |
-| `GET /v1/stats` | **12 serial Firestore COUNT aggregations** (24 for an admin, because `service.py:287` calls `count_tasks_by_state` a second time for the platform view) — `store.py:524-533` | **30 s** minimum, **60 s** on a phone. Never bind it to a live tick. |
+| `GET /v1/stats` | **12 serial Firestore COUNT aggregations** (24 for an admin's `?scope=platform` read, which calls `count_tasks_by_state` a second time for the platform view; a plain read is 12 for everyone) — `store.py:524-533` | **30 s** minimum, **60 s** on a phone. Never bind it to a live tick. |
 | `GET /v1/admin/dispatch` | one document read | **30 s**, or piggyback on the `stats` tick |
 
 **What breaks at 100× — and this one costs real money.** Firestore COUNT bills one read

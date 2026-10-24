@@ -2370,7 +2370,9 @@ describe('#105: a failure’s cause is on the canvas, not only in the inspector'
     const cause = band!.querySelector<HTMLElement>('.wf-band-cause')
     expect(cause, 'a band holding failures says nothing about why').toBeTruthy()
     // The commonest cause, as its first failure wrote it, and a count of the rest.
-    expect(cause!.textContent).toBe('input collision: scan-0.md is staged by two parents (+1 other cause)')
+    // Led by that failure's step since QAFIX6 (run 6, F1): clipped, the bare
+    // line named no step.
+    expect(cause!.textContent).toBe('scan-0: input collision: scan-0.md is staged by two parents (+1 other cause)')
     expect(cause!.getAttribute('title')).toContain(COLLISION('scan-0.md'))
     expect(cause!.getAttribute('title')).toContain('scan-4: exit 1: the agent crashed')
     expect(band!.querySelector('.wf-band-toggle')!.getAttribute('aria-label')).toContain('input collision: scan-0.md is staged by two parents')

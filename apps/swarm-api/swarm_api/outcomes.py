@@ -21,8 +21,9 @@ all rather than a partial sum.
 THE SHAPE IS rollup.py's: DERIVE, WRITE, DRIFT CHECK.
 
   * DERIVE (`Outcomes.derive_day`) reads one tenant's tasks that ended in one UTC
-    day, their attempts and their workflow parents, plus the tasks that ARRIVED
-    that day, and turns each into a small tuple (`tuple_from_docs`). It is the
+    day, their attempts, their workflow parents and their account events (the
+    pool account, #2149), plus the tasks that ARRIVED that day, and turns each
+    into a small tuple (`tuple_from_docs`). It is the
     only implementation: no copy in the scheduler, the worker or the UI.
   * WRITE persists those tuples as `outcome_days/{tenant}_{YYYY-MM-DD}`, so a
     30-day view reads ~31 documents instead of every task and attempt in the
@@ -91,6 +92,7 @@ from swarm_common.models import EndCause, utcnow
 from swarm_common.profiles import RUNNER_PROFILES, step_model_class
 from swarm_common.states import TERMINAL_STATES, TaskState
 
+from . import task_accounts
 from .codec import as_datetime
 from .errors import NotFound, UpstreamUnavailable, ValidationFailed
 from .rollup import UNKNOWN, effective_state
@@ -127,6 +129,17 @@ OUTCOMES_LIVE_REWRITE_S = 60
 #: a cold 90-day view takes the admin backfill route or several views.
 OUTCOMES_DERIVE_READ_BUDGET = 5_000
 OUTCOMES_DERIVE_SECONDS = 20.0
+
+#: How many ended UTC days, yesterday and back, `Outcomes.seal_recent` looks at
+#: on each call of the workflow-rollup job (COUNTS-SEAL, #2149). Yesterday is
+#: the day each night makes sealable; the two before it are there so that a
+#: night the job missed (a failed tick, a paused job, an outage) is sealed by
+#: the next one rather than left to a reader's derive budget. A day already
+#: sealed costs its one stored-doc read and nothing more, so the job's
+#: fifteen-minute ticks cost 3 reads per tenant each once a night is sealed.
+#: Inside the backfill's 31-day cap by construction; older days are the admin
+#: backfill's (`POST /v1/admin/outcomes/rollup`).
+OUTCOMES_SEAL_LOOKBACK_DAYS = 3
 
 #: A fold (every section of one query) is served from memory for this long. The cache key carries the
 #: minute, so an entry never outlives the minute it was built in.
@@ -172,7 +185,14 @@ _CACHE_MAX_ENTRIES = 256
 #: `model_spend` and `model_class`, and an arrival `model_class`, for the
 #: `model` and `model_class` groups. A stored day counted under 7 has none of
 #: those columns, so `_decode_rows` refuses it and it is re-derived.
-DERIVE_VERSION = 8
+#: 9 (2026-10-23, #2149 COUNTS-ROLLUP): an ended tuple carries the four token
+#: sums and how many attempts reported each, its attempt count, its summed
+#: run seconds and how many attempts were measured, whether its cost was a
+#: stopped run's estimate, its provider and the pool account its own events
+#: name; an arrival carries its provider. A stored day counted under 8 has
+#: none of those columns, so `_decode_rows` refuses it and it is re-derived
+#: once, by the read that next needs it or by the rollup job.
+DERIVE_VERSION = 9
 CLASSIFIER_VERSION = 3
 
 #: Firestore caps a document at 1 MiB. A day whose tuples pass this many bytes
@@ -926,7 +946,15 @@ DEFAULT_SPAN = "14d"
 BUCKETS = ("hour", "day", "week", "month")
 SCOPES = ("tenant", "platform")
 KINDS = ("all", "standalone", "steps")
+#: The Timeline's group picker, held to `outcomes.ts` GROUPS by
+#: test_outcomes_ui_field_contract.py.
 GROUPS = ("runner_profile", "submitted_by", "tenant_id", "model", "model_class")
+#: Groups the route accepts beyond the Timeline's (#2149): Admin > Platform
+#: counts breaks its agents down by pool account and provider. Kept apart from
+#: GROUPS so the Timeline's picker is not handed two choices it does not draw;
+#: when it offers them, they move into GROUPS and outcomes.ts with them.
+COUNT_GROUPS = ("pool_account", "provider")
+ACCEPTED_GROUPS = GROUPS + COUNT_GROUPS
 
 #: The `model` group's keys that are not a model ID (docs/design/model-per-step.md
 #: §4.4). A model ID never contains a space, so neither can collide with one.
@@ -938,6 +966,22 @@ NOT_STARTED = "not started"
 #: The `model_class` group's key for a task on a profile with no classes
 #: (codex, mock, ...), which `step_model_class` resolves to None.
 NO_MODEL_CLASS = "no class"
+#: The `provider` group's key for a profile that calls no model provider
+#: (mock, generic, ...): `RunnerProfile.provider` is None. A profile the
+#: catalogue does not know is NOT_RECORDED instead.
+NO_PROVIDER = "no provider"
+#: Under `usage=submitted`, the key of an agent that has not ended (or ended
+#: after the span) in a group only an ended agent can name: its model and its
+#: pool account are read off its attempts and events once it ends.
+NOT_ENDED = "not ended"
+#: `usage` (#2149): which instant places an agent in the usage figures. The
+#: agent's submission (`created_at`, BGD's unit for Platform counts) or its end
+#: (`completed_at`, the basis of every outcome figure). No default: without
+#: `usage` the response carries no usage block, exactly as before it existed.
+USAGE_BASES = {"submitted": "created_at", "ended": "completed_at"}
+#: BGD's label, 2026-10-23: the figure is list price times reported tokens, or
+#: a stopped run's list-price estimate. It is never a bill.
+COST_LABEL = "Estimated cost (list price, not a bill)"
 COMPARES = ("none", "previous")
 #: The keys of the response a caller may ask for alone, with `section` (#377),
 #: in the order the response carries them. Everything else -- the resolved
@@ -1001,6 +1045,9 @@ class Params:
     rows: str | None = None
     rows_bucket: int | None = None
     rows_key: str | None = None
+    #: A key of USAGE_BASES, or None (#2149). Not in `canonical`: the usage
+    #: figures are a projection of the same fold, so they never cost a scan.
+    usage: str | None = None
 
     def filters(self) -> dict[str, Any]:
         return {
@@ -1254,8 +1301,8 @@ def parse_params(raw: Mapping[str, Any], *, now: datetime) -> Params:
     compare = _one(raw, "compare") or "none"
     if scope_raw is not None and scope_raw not in SCOPES:
         raise _refuse("scope", f"unknown scope {scope_raw!r}", value=scope_raw, allowed=list(SCOPES))
-    if group not in GROUPS:
-        raise _refuse("group", f"unknown group {group!r}", value=group, allowed=list(GROUPS))
+    if group not in ACCEPTED_GROUPS:
+        raise _refuse("group", f"unknown group {group!r}", value=group, allowed=list(ACCEPTED_GROUPS))
     if kind not in KINDS:
         raise _refuse("kind", f"unknown kind {kind!r}", value=kind, allowed=list(KINDS))
     if compare not in COMPARES:
@@ -1328,6 +1375,10 @@ def parse_params(raw: Mapping[str, Any], *, now: datetime) -> Params:
             )
         rows_bucket = starts.index(moment)
 
+    usage = _one(raw, "usage")
+    if usage is not None and usage not in USAGE_BASES:
+        raise _refuse("usage", f"unknown usage basis {usage!r}", value=usage, allowed=list(USAGE_BASES))
+
     previous: tuple[datetime, ...] | None = None
     if compare == "previous":
         back = [since]
@@ -1362,6 +1413,7 @@ def parse_params(raw: Mapping[str, Any], *, now: datetime) -> Params:
         rows=rows,
         rows_bucket=rows_bucket,
         rows_key=rows_key,
+        usage=usage,
     )
 
 
@@ -1405,8 +1457,44 @@ ENDED_COLS: tuple[str, ...] = (
     # The task's RESOLVED class, `step_model_class` at derive time; see
     # `_model_class_of`.
     "model_class",
+    # #2149 (DERIVE_VERSION 9). Each token count summed over the STARTED
+    # attempts that reported it, None when none did -- never 0, because a 0
+    # is a report -- and `token_reporting` how many reported each, in TOKEN_
+    # FIELDS order, so a reader can say "1 of 2 attempts".
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+    "token_reporting",
+    # Every attempt document, started or not. The agent's retries are
+    # `attempts - 1`, its attempts beyond the first.
+    "attempts",
+    # Seconds from `started_at` to `completed_at`, summed over the attempts
+    # that have both, None when none has; `run_measured` counts them. A started
+    # attempt with no `completed_at` is not measured, never 0 s.
+    "run_s",
+    "run_measured",
+    # The task's `result_summary.cost_estimated`: its cost includes the
+    # worker's list-price estimate for a run stopped before it reported (#627).
+    "cost_estimated",
+    # `RunnerProfile.provider` at derive time (`_provider_of`).
+    "provider",
+    # The account the task last ran on, from its own events
+    # (`task_accounts.last_account_id`), NOT_RECORDED when they name none.
+    "pool_account",
 )
-ARRIVED_COLS: tuple[str, ...] = ("id", "created", "profile", "submitted_by", "step", "model_class")
+ARRIVED_COLS: tuple[str, ...] = (
+    "id", "created", "profile", "submitted_by", "step", "model_class", "provider",
+)
+
+#: The token counts an attempt reports (`Attempt` spend fields, contract
+#: request 2), in the order `token_reporting` holds them.
+TOKEN_FIELDS: tuple[str, ...] = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
 
 
 def _int(value: Any, default: int = 0) -> int:
@@ -1452,6 +1540,49 @@ def _model_spend(attempts: Sequence[Mapping[str, Any]]) -> tuple[Any, list[list[
     return started[-1].get("model") or None, spend
 
 
+def _count(value: Any) -> int | None:
+    """A reported token count, or None. A bool or a negative number is not a
+    count (the rule `model_prices_check` reads attempts by)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _tokens(started: Sequence[Mapping[str, Any]]) -> tuple[dict[str, int | None], list[int]]:
+    """Each token count summed over the attempts that reported it, and how many did."""
+    sums: dict[str, int | None] = {}
+    reporting: list[int] = []
+    for name in TOKEN_FIELDS:
+        values = [v for a in started if (v := _count(a.get(name))) is not None]
+        sums[name] = sum(values) if values else None
+        reporting.append(len(values))
+    return sums, reporting
+
+
+def _run(started: Sequence[Mapping[str, Any]]) -> tuple[float | None, int]:
+    """(seconds summed over the attempts that ended, how many those are)."""
+    spans = []
+    for a in started:
+        begun, ended = _ms(a.get("started_at")), _ms(a.get("completed_at"))
+        if begun is None or ended is None:
+            continue
+        spans.append(max(0, ended - begun) / 1000.0)
+    return (round(sum(spans), 3) if spans else None), len(spans)
+
+
+def _provider_of(profile_name: Any) -> str:
+    profile = RUNNER_PROFILES.get(str(profile_name))
+    if profile is None:
+        return NOT_RECORDED
+    return profile.provider or NO_PROVIDER
+
+
+def _cost_estimated(task: Mapping[str, Any]) -> bool:
+    """The worker's flag (`lifecycle`, #627), read the way model_prices_check reads it."""
+    summary = task.get("result_summary")
+    return isinstance(summary, Mapping) and summary.get("cost_estimated") is True
+
+
 def _model_class_of(task: Mapping[str, Any]) -> str:
     """The class the task ran: `step_model_class`, the rule the API, the
     scheduler and the worker all apply, so a step that named none is its
@@ -1477,6 +1608,8 @@ def tuple_from_docs(
     task: Mapping[str, Any],
     attempts: Sequence[Mapping[str, Any]],
     parents: Mapping[str, Mapping[str, Any] | None],
+    *,
+    pool_account: str | None = None,
 ) -> dict[str, Any]:
     """One ENDED task, reduced to what the fold needs. Pure.
 
@@ -1492,6 +1625,9 @@ def tuple_from_docs(
 
     first_start is min(Attempt.started_at). Task.started_at is never used: every
     STARTING transition overwrites it (agent_worker/control.py).
+
+    `pool_account` is the account `Outcomes._tuples` read off the task's own
+    events, None when they name none (NOT_RECORDED).
     """
     created = _ms(task.get("created_at"))
     ordered = sorted(attempts, key=_attempt_order)
@@ -1530,6 +1666,9 @@ def tuple_from_docs(
     submitted_by = task.get("submitted_by")
     timeout = task.get("timeout_seconds")
     model, model_spend = _model_spend(ordered)
+    started_docs = [a for a in ordered if a.get("started_at") is not None]
+    tokens, token_reporting = _tokens(started_docs)
+    run_s, run_measured = _run(started_docs)
     return {
         "id": task.get("id"),
         "state": state,
@@ -1567,6 +1706,14 @@ def tuple_from_docs(
         "model": model,
         "model_spend": model_spend,
         "model_class": _model_class_of(task),
+        **tokens,
+        "token_reporting": token_reporting,
+        "attempts": len(ordered),
+        "run_s": run_s,
+        "run_measured": run_measured,
+        "cost_estimated": _cost_estimated(task),
+        "provider": _provider_of(task.get("runner_profile")),
+        "pool_account": pool_account or NOT_RECORDED,
     }
 
 
@@ -1579,6 +1726,7 @@ def arrival_from_doc(task: Mapping[str, Any]) -> dict[str, Any]:
         "submitted_by": str(submitted_by).strip().lower() if submitted_by else "",
         "step": task.get("workflow_id") is not None,
         "model_class": _model_class_of(task),
+        "provider": _provider_of(task.get("runner_profile")),
     }
 
 
@@ -2108,7 +2256,17 @@ def _group_key(t: Mapping[str, Any], by: str) -> str:
         return str(t.get("model") or NOT_RECORDED)
     if by == "model_class":
         return str(t.get("model_class") or NO_MODEL_CLASS)
+    if by == "pool_account":
+        return str(t.get("pool_account") or NOT_RECORDED)
+    if by == "provider":
+        return str(t.get("provider") or NOT_RECORDED)
     return str(t.get("profile"))
+
+
+#: Groups an arrival cannot name: a task's model and its pool account are read
+#: off its attempts and events, which exist only once it has run. Their rows'
+#: `submitted` is null -- unknown -- rather than a zero.
+_ENDED_ONLY_GROUPS = frozenset({"model", "pool_account"})
 
 
 def _groups(
@@ -2124,8 +2282,9 @@ def _groups(
         return rows.setdefault(key, {"tally": _Tally(), "k": [0] * buckets, "n": [0] * buckets})
 
     # A task's model is known only once an attempt of it starts, so an arrival
-    # is in no model's row and the `model` group's `submitted` is null.
-    if by != "model":
+    # is in no model's row and the `model` group's `submitted` is null; the
+    # same holds for its pool account (#2149).
+    if by not in _ENDED_ONLY_GROUPS:
         for _, t in placed_arrived:
             row_for(_group_key(t, by))["tally"].submitted += 1
     for i, t in placed_ended:
@@ -2161,7 +2320,7 @@ def _groups(
         out.append(
             {
                 "key": key,
-                "submitted": None if by == "model" else tally.submitted,
+                "submitted": None if by in _ENDED_ONLY_GROUPS else tally.submitted,
                 "ended": tally.ended,
                 "succeeded": tally.succeeded,
                 "failed": tally.failed,
@@ -2175,6 +2334,169 @@ def _groups(
         )
     out.sort(key=lambda r: (-(r["failed"] + r["dead_lettered"]), -r["ended"], r["key"]))
     return {"by": by, "rows_total": len(out), "rows": out[:GROUP_ROWS_MAX]}
+
+
+class _Usage:
+    """What a set of agents used (#2149): agents, retries, run time, tokens and
+    estimated cost, each sum beside how much of it was measured.
+
+    NULL IS NOT 0. A sum nothing reported is null; `reporting`, `measured`
+    and `agents_ended` say how much of each figure was measured, so a partial
+    one is drawn "at least $X, k of n agents reported". An agent with no ended
+    tuple -- still open, or its end not in the span's read days -- is counted
+    as an agent and in no measured figure.
+    """
+
+    __slots__ = (
+        "agents", "agents_ended", "retries", "attempts", "started",
+        "run_sum", "run_measured", "tokens", "token_reporting",
+        "cost_sum", "cost_reporting", "estimated_sum",
+    )
+
+    def __init__(self) -> None:
+        self.agents = 0
+        self.agents_ended = 0
+        self.retries = 0
+        self.attempts = 0
+        self.started = 0
+        self.run_sum: float | None = None
+        self.run_measured = 0
+        self.tokens: list[int | None] = [None] * len(TOKEN_FIELDS)
+        self.token_reporting = [0] * len(TOKEN_FIELDS)
+        self.cost_sum: float | None = None
+        self.cost_reporting = 0
+        self.estimated_sum: float | None = None
+
+    def add(self, t: Mapping[str, Any] | None) -> None:
+        """One agent, with its ended tuple or None when it has none."""
+        self.agents += 1
+        if t is None:
+            return
+        self.agents_ended += 1
+        attempts = max(0, _int(t.get("attempts")))
+        self.attempts += attempts
+        self.retries += max(0, attempts - 1)
+        self.started += max(0, _int(t.get("att_started")))
+        if t.get("run_s") is not None:
+            self.run_sum = (self.run_sum or 0.0) + float(t["run_s"])
+        self.run_measured += _int(t.get("run_measured"))
+        reporting = t.get("token_reporting") or [0] * len(TOKEN_FIELDS)
+        for k, name in enumerate(TOKEN_FIELDS):
+            value = t.get(name)
+            if value is not None:
+                self.tokens[k] = (self.tokens[k] or 0) + int(value)
+            self.token_reporting[k] += _int(reporting[k] if k < len(reporting) else 0)
+        cost = t.get("cost_usd")
+        if cost is not None:
+            self.cost_reporting += 1
+            self.cost_sum = (self.cost_sum or 0.0) + float(cost)
+            if t.get("cost_estimated"):
+                self.estimated_sum = (self.estimated_sum or 0.0) + float(cost)
+
+    def merge(self, other: "_Usage") -> None:
+        def plus(a: Any, b: Any) -> Any:
+            return a if b is None else (b if a is None else a + b)
+
+        self.agents += other.agents
+        self.agents_ended += other.agents_ended
+        self.retries += other.retries
+        self.attempts += other.attempts
+        self.started += other.started
+        self.run_sum = plus(self.run_sum, other.run_sum)
+        self.run_measured += other.run_measured
+        self.tokens = [plus(a, b) for a, b in zip(self.tokens, other.tokens)]
+        self.token_reporting = [a + b for a, b in zip(self.token_reporting, other.token_reporting)]
+        self.cost_sum = plus(self.cost_sum, other.cost_sum)
+        self.cost_reporting += other.cost_reporting
+        self.estimated_sum = plus(self.estimated_sum, other.estimated_sum)
+
+    def to_api(self) -> dict[str, Any]:
+        return {
+            "agents": self.agents,
+            "agents_ended": self.agents_ended,
+            "retries": self.retries,
+            "attempts": self.attempts,
+            # Over the STARTED attempts: one that never started ran no time
+            # and spent no token.
+            "run_s": {
+                "sum": None if self.run_sum is None else round(self.run_sum, 1),
+                "measured": self.run_measured,
+                "attempts": self.started,
+            },
+            "tokens": {
+                name: {"sum": self.tokens[k], "reporting": self.token_reporting[k], "attempts": self.started}
+                for k, name in enumerate(TOKEN_FIELDS)
+            },
+            "cost": {
+                "sum_usd": _money(self.cost_sum),
+                "estimated_usd": _money(self.estimated_sum),
+                "agents": self.agents,
+                "reporting": self.cost_reporting,
+            },
+        }
+
+
+#: An unread bucket's usage: every figure null, never a partial sum.
+_UNREAD_USAGE: dict[str, Any] = {
+    "agents": None,
+    "agents_ended": None,
+    "retries": None,
+    "attempts": None,
+    "run_s": None,
+    "tokens": None,
+    "cost": None,
+}
+
+
+def _usage(
+    basis: str,
+    by: str,
+    placed_ended: Sequence[tuple[int, dict[str, Any]]],
+    placed_arrived: Sequence[tuple[int, dict[str, Any]]],
+    ended_by_id: Mapping[Any, Mapping[str, Any]],
+    buckets: Sequence[Mapping[str, Any]],
+    reasons: Sequence[str | None],
+) -> dict[str, Any]:
+    """The `usage` block (#2149): agents per bucket and per `by` row, placed by
+    `basis` -- `submitted` by each agent's `created_at` (BGD's unit), joined to
+    its ended tuple by id; `ended` by its `completed_at`, like every outcome.
+
+    Only read buckets are counted, as everywhere in the fold (TS-9): `_place`
+    leaves an unread bucket's agents out, and its row carries no numbers.
+    """
+    if basis == "submitted":
+        agents = [(i, a, ended_by_id.get(a["id"])) for i, a in placed_arrived]
+    else:
+        agents = [(i, t, t) for i, t in placed_ended]
+    per_bucket = [_Usage() for _ in reasons]
+    rows: dict[str, _Usage] = {}
+    for i, placed, measured in agents:
+        per_bucket[i].add(measured)
+        if measured is None and by in _ENDED_ONLY_GROUPS:
+            key = NOT_ENDED
+        else:
+            key = _group_key(measured if by in _ENDED_ONLY_GROUPS else placed, by)
+        rows.setdefault(key, _Usage()).add(measured)
+
+    total = _Usage()
+    out_buckets = []
+    for i, bucket in enumerate(buckets):
+        row = {k: bucket[k] for k in ("start", "end", "state", "in_progress", "unread_reason")}
+        if reasons[i]:
+            row.update(_UNREAD_USAGE)
+        else:
+            row.update(per_bucket[i].to_api())
+            total.merge(per_bucket[i])
+        out_buckets.append(row)
+    group_rows = [{"key": key, **usage.to_api()} for key, usage in rows.items()]
+    group_rows.sort(key=lambda r: (-r["agents"], r["key"]))
+    return {
+        "basis": USAGE_BASES[basis],
+        "cost_label": COST_LABEL,
+        "buckets": out_buckets,
+        "totals": {"complete": not any(reasons), **total.to_api()},
+        "groups": {"by": by, "rows_total": len(group_rows), "rows": group_rows[:GROUP_ROWS_MAX]},
+    }
 
 
 def _workflows_failed(kept: Sequence[Mapping[str, Any]], params: Params) -> dict[str, Any]:
@@ -2368,6 +2690,7 @@ class _Fold:
             "cost": _cost_totals(kept),
         }
         self.reopened = reopened
+        self._ended_by_id = {t["id"]: t for t in ended}
         self._kept = kept
         self._placed_ended = placed_ended
         self._placed_arrived = placed_arrived
@@ -2394,6 +2717,23 @@ class _Fold:
                 self._blocks[name] = _workflows_failed(self._kept, self.params)
             else:
                 raise KeyError(name)
+        return self._blocks[name]
+
+    def usage(self, basis: str) -> dict[str, Any]:
+        """The `usage` block under `basis` (#2149), made once per basis. Not a
+        section: it is asked for with `usage`, beside them, so a response
+        without that parameter is exactly what it was before it existed."""
+        name = f"usage:{basis}"
+        if name not in self._blocks:
+            self._blocks[name] = _usage(
+                basis,
+                self.params.group,
+                self._placed_ended,
+                self._placed_arrived,
+                self._ended_by_id,
+                self._blocks["buckets"],
+                self._reasons,
+            )
         return self._blocks[name]
 
     @property
@@ -2486,6 +2826,8 @@ def fold(
         out["wait_excluded"] = made.wait_excluded
     if "previous" in sections:
         out["previous"] = _previous(params, tenants, days, previous_days)
+    if params.usage is not None:
+        out["usage"] = made.usage(params.usage)
     return out
 
 
@@ -2694,6 +3036,39 @@ class Outcomes:
                 if (doc := known.get(parent)) is not None and _is_untyped_cascade(doc)
             ]
 
+    def _pool_accounts(
+        self, tenant_id: str, ended_docs: Sequence[dict[str, Any]], meter: _Meter
+    ) -> dict[str, str | None]:
+        """The account each ended task last ran on, from ITS OWN events (#2149).
+
+        `task_accounts` is the one reader of that fact: the same query, one per
+        30 tasks, the same `events-tenant-task-cause` index and the same tenant
+        check on every row. A task that cannot hold an account (no provider, no
+        subscription token, never admitted) costs no read and is NOT_RECORDED.
+        The read is STRICT: a failed query fails this derive, which leaves the
+        day `read_failed` and retried, because a sealed day is never read
+        again and an account it missed would be missing for good. A task past
+        the reader's per-task cap is `unread`, never a guess.
+        """
+        pooled = [
+            str(doc["id"]) for doc in ended_docs if task_accounts.could_hold_account(doc)
+        ]
+        if not pooled:
+            return {}
+        events, complete = task_accounts.read_account_events(
+            self._db, tenant_id, pooled, strict=True, meter=meter.add
+        )
+        out: dict[str, str | None] = {}
+        for doc in ended_docs:
+            task_id = str(doc["id"])
+            if task_id not in events:
+                continue
+            if task_id not in complete:
+                out[task_id] = task_accounts.STATUS_UNREAD
+                continue
+            out[task_id] = task_accounts.last_account_id(doc, events[task_id])
+        return out
+
     def _tuples(
         self,
         tenant_id: str,
@@ -2727,8 +3102,12 @@ class Outcomes:
         if wanted:
             known.update(self._get_tasks(tenant_id, wanted, meter))
         self._read_cascade_ancestors(tenant_id, mine_ended, known, meter)
+        accounts = self._pool_accounts(tenant_id, mine_ended, meter)
         ended = [
-            tuple_from_docs(doc, attempts.get(str(doc["id"]), []), known) for doc in mine_ended
+            tuple_from_docs(
+                doc, attempts.get(str(doc["id"]), []), known, pool_account=accounts.get(str(doc["id"]))
+            )
+            for doc in mine_ended
         ]
         ended.sort(key=lambda t: (t["completed"], str(t["id"])))
         arrived = sorted(
@@ -3213,6 +3592,8 @@ class Outcomes:
         blocks = {name: self._section(entry, name, meter) for name in want}
         if params.rows is not None:
             blocks["ended_rows"] = entry.fold.ended_rows(params)
+        if params.usage is not None:
+            blocks["usage"] = entry.fold.usage(params.usage)
         made = entry.params
         assert made is not None and entry.now is not None
         payload = {
@@ -3289,6 +3670,82 @@ class Outcomes:
         return _previous(params, entry.tenants, got, previous_days)
 
     # -- POST /v1/admin/outcomes/rollup ----------------------------------------
+
+    def seal_recent(
+        self, *, tenant_id: str, lookback_days: int = OUTCOMES_SEAL_LOOKBACK_DAYS
+    ) -> dict[str, Any]:
+        """SEAL one tenant's ended UTC days, yesterday and back (COUNTS-SEAL, #2149).
+
+        The workflow-rollup job calls this for each registered tenant, so a
+        12-month view of Admin › Platform counts reads sealed days instead of
+        spending a reader's derive budget on them.
+
+        * Never today: the live day is not in the window, so it is neither
+          written nor rewritten. A day still inside its 15-minute grace is
+          `not_yet` and left as it is.
+        * Idempotent: a day already sealed at this module's versions is
+          `already_sealed` and costs no derive and no write. A missing day, a
+          live one past its grace, or one on another derive or classifier
+          version is sealed by a FULL derive, exactly what the next read
+          would do.
+        * Bounded: at most `lookback_days` days (<= 31, the backfill's cap),
+          newest first, and no derive starts once this call has spent the
+          derive read budget or seconds. What it did not reach is `deferred`
+          and is sealed by the next call; it is never written as a zero.
+        * Unlike `maintain`, a sealed day is not re-derived: the drift check
+          stays the admin route's, so a tick does not re-read history.
+        """
+        if not 1 <= lookback_days <= 31:
+            raise _refuse("lookback_days", "between 1 and 31 days", value=lookback_days, max=31)
+        now = self._utcnow()
+        days = [now.date() - timedelta(days=i) for i in range(1, lookback_days + 1)]
+        meter = _Meter()
+        stored = self._read_stored([(tenant_id, day) for day in days], meter)
+        report = {
+            "examined": 0, "sealed": 0, "already_sealed": 0, "not_yet": 0,
+            "deferred": 0, "unknown": 0, "reads": 0,
+        }
+        derive_reads = 0
+        started = self._clock()
+        for day in days:
+            report["examined"] += 1
+            entry = stored[(tenant_id, day)]
+            if entry.failed:
+                report["unknown"] += 1
+                continue
+            if now < _seal_at(day):
+                report["not_yet"] += 1
+                continue
+            if entry.doc is not None and entry.doc.sealed:
+                report["already_sealed"] += 1
+                continue
+            if derive_reads >= self._budget or (self._clock() - started) >= self._derive_seconds:
+                report["deferred"] += 1
+                continue
+            before = meter.reads
+            try:
+                data = self.derive_day(tenant_id, day, meter)
+                self._write(tenant_id, day, data, sealed=True, now=now, prior_shards=entry.shards)
+                report["sealed"] += 1
+            except _TooLarge:
+                log.warning("outcome day %s %s is too large to store", tenant_id, day)
+                report["unknown"] += 1
+            except Exception:
+                log.warning("outcome day %s %s could not be sealed", tenant_id, day, exc_info=True)
+                report["unknown"] += 1
+            derive_reads += meter.reads - before
+        report["reads"] = meter.reads
+        log.info(
+            "outcome seal tenant=%s sealed=%d already_sealed=%d not_yet=%d deferred=%d unknown=%d reads=%d",
+            tenant_id, report["sealed"], report["already_sealed"], report["not_yet"],
+            report["deferred"], report["unknown"], report["reads"],
+        )
+        return {
+            "tenant_id": tenant_id,
+            "since": days[-1].isoformat(),
+            "until": now.date().isoformat(),
+            "report": report,
+        }
 
     def maintain(
         self,

@@ -1,5 +1,5 @@
 import { useCallback } from 'react'
-import { AttemptModel, Em, Mark, attemptLabel, isParked, parkedOutcome, type ChipTone } from './AgentDetail'
+import { AttemptModel, Em, GEN_TITLE, Mark, attemptLabel, isParked, parkedOutcome, type ChipTone } from './AgentDetail'
 import { ToneMark } from './components'
 import { loadAgentDetail, loadAttempts } from './api'
 import { attemptEnd, instant, spanText } from './duration'
@@ -324,7 +324,15 @@ function Body({ t }: { t: AttemptTimeline }) {
                 <Mark
                   kind="partial"
                   say={`${blind.length} attempt${blind.length === 1 ? ' has' : 's have'} no events on this page. Past one page the newest events — everything belonging to those attempts — are not fetched by this screen.`}
-                />{' '}
+                />
+                {/* A GAP AND A DOT AFTER THE CHIP (6:task-004, box comment
+                    6343768697): the plain space sat against the chip's edge
+                    and `partial` touched `2 attempts without events`. The dot
+                    and its gap are drawn by details.css, so the text a screen
+                    reader and the copy carry is unchanged. */}
+                <span className="att-mark-sep" aria-hidden>
+                  {' '}
+                </span>
                 {pluralise(blind.length, 'attempt')} without events
               </>
             )}
@@ -402,7 +410,9 @@ function AttemptCard({
             state two panes away. */}
         <h2 className="ctl-card-title">
           {/* One name, kept whole: at 390 it broke `gen` / `2` (QA-113). */}
-          <span className={a === null ? undefined : 'att-label'}>{g.label}</span>
+          <span className={a === null ? undefined : 'att-label'} title={a === null ? undefined : GEN_TITLE}>
+            {g.label}
+          </span>
           {out && <ToneMark tone={out.tone}>{out.label}</ToneMark>}
           {a?.oom_near_miss && <ToneMark tone="bad">OOM near miss</ToneMark>}
         </h2>

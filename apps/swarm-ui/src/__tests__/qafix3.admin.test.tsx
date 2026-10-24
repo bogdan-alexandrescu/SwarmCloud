@@ -16,9 +16,11 @@
 //                 although it fits the line whole
 //   a11y-keyboard-003  the family tables had no accessible name
 //
-// capacity-011 (ragged Runtimes card heights) is the deliberate `align-items:
-// start` of VQA V088, in styles/capacity.css, and is asked in the PR rather
-// than changed here.
+// capacity-011 (ragged Runtimes card heights) was left to VQA V088's
+// `align-items: start` when this lane ran. QAFIX6-CAPACITY-2 has since
+// retired that rule: styles/capacity.css sets `align-items: stretch` on
+// `.rt-cards > .ctl-cards`, so the cards of one row share its height, and
+// qafix6.capacity.test.tsx holds that, not this file.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
@@ -207,10 +209,14 @@ describe('admin-009: edit starts at one x in every phone record', () => {
       expect(cell.closest('.ctl-table')!.classList.contains('is-stacked')).toBe(true)
       const figure = cell.querySelector(':scope > .adm-fig > .adm-ceiling')!
       const was = cell.querySelector(':scope > .adm-fig > .adm-was')!
-      // MUTATION: put `width: auto` back on either slot at 560px and under:
-      // `8`, `50 /100` and `—` each push `edit` to a different x.
-      expect(painted(figure, 'width', PHONE), id).toBe('6ch')
-      expect(painted(was, 'width', PHONE), id).toBe('7ch')
+      // THE FIXED WIDTH IS THE RUN'S NOW (run 6, 6:admin-017,
+      // qafix6.admin.test.tsx): `6` and `/10` sit side by side in one 8ch
+      // track rather than in 6ch and 7ch tracks 60px apart.
+      // MUTATION: drop the run's `min-width` at 560px and under: `8`,
+      // `50 /100` and `—` each push `edit` to a different x.
+      expect(painted(figure.parentElement!, 'min-width', PHONE), id).toBe('8ch')
+      expect(painted(figure, 'width', PHONE), id).toBe('auto')
+      expect(painted(was, 'width', PHONE), id).toBe('auto')
       expect(painted(figure, 'text-align', PHONE), id).toBe('left')
     }
   })

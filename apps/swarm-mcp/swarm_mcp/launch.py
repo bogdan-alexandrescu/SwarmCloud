@@ -125,6 +125,22 @@ each told its steps in `row_share`; the first reports the finished steps.
 (PLUGIN-ROW-SPLIT-2); an attach value is one workflow id, and a
 `--per-step` or `--summary` after it is refused with a pointer to `rows`
 (SC-ATTACH-SUFFIX-DROP).
+
+THE SPEC TRAVELS BY HANDLE (SC-LAUNCH-SPEC, #2034). Measured 2026-10-23
+~01:35Z, lane SCAN-FP (wf_053776f6-dcb): the spec embedded in a launch's
+args reached `swarm_workflow` retyped by the `sc:workflow` agent, ~23 KB of
+JSON, and a brief holding JavaScript template-literal text (backticks around
+`${...}`) arrived altered and was refused by the digest check
+(NOT_SUBMITTED). The check worked; the retyping was the defect. So
+`for_spec` also writes the exact bytes it embeds to `spec-<digest hex>-<12
+hex>.json` beside the titled copy (`write_spec`) and hands back `args` with
+that file's handle -- `{path, digest}` -- beside the spec. run.js gives the
+submitting agent only the handle; `swarm_workflow {spec_handle, spec_digest}`
+reads the bytes back (`handle_target`: only such a file in a folder this
+bridge writes its copies to) and checks them against the digest as it checks
+`spec_path`, so a changed file still submits nothing. A spec given to
+/sc:swarmcloud only as text, with no launch behind it, keeps the by-value
+path and its digest check.
 """
 
 from __future__ import annotations
@@ -472,11 +488,13 @@ def run_folder() -> Path:
 
 def _prune(folder: Path) -> None:
     """Remove this bridge's own run copies older than RUN_COPY_MAX_AGE_S. Only
-    `SC-*-<12 hex>.js` and the older `swarmcloud-*.js` in its own folder --
+    `SC-*-<12 hex>.js`, the spec handles `spec-<8 hex>-<12 hex>.json` and the
+    older `swarmcloud-*.js` in its own folder --
     never the record or the `.gitignore`; a file that vanishes or cannot be
     removed meanwhile is left alone, never an error for the launch."""
     cutoff = time.time() - RUN_COPY_MAX_AGE_S
     copies = [p for p in folder.glob(f"{COPY_PREFIX}*.js") if _COPY_NAME.match(p.name)]
+    copies += [p for p in folder.glob(f"{SPEC_PREFIX}*.json") if _SPEC_NAME.match(p.name)]
     for old in copies + list(folder.glob(OLD_COPY_GLOB)):
         try:
             if old.is_file() and old.stat().st_mtime < cutoff:
@@ -487,6 +505,65 @@ def _prune(folder: Path) -> None:
 
 #: A copy's name as `write_script` writes it.
 _COPY_NAME = re.compile(r"^SC-[A-Za-z0-9-]*-[0-9a-f]{12}\.js$")
+#: A spec handle's file as `write_spec` writes it: the digest's eight hex
+#: digits, then 12 random ones, so two launches never share a file.
+_SPEC_NAME = re.compile(r"^spec-[0-9a-f]{8}-[0-9a-f]{12}\.json$")
+SPEC_PREFIX = "spec-"
+#: A lone surrogate, which `write_spec` escapes: JSON leaves it raw.
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def write_spec(document: dict[str, Any], folder: Path | None = None) -> dict[str, str]:
+    """Store `document` -- the spec a launch embeds in its args -- beside the
+    titled copy, and return its handle `{path, digest}` (SC-LAUNCH-SPEC).
+
+    The file holds `json.dumps(document, indent=2, ensure_ascii=False)`, the
+    same object the args carry, so its bytes parse back to exactly what was
+    embedded; `digest` is `workflows.spec_digest` of it, the digest run.js
+    computes over the embedded object. A lone surrogate -- which a title can
+    arrive as through JSON, and which UTF-8 cannot hold -- is written as its
+    `\\uXXXX` escape, which parses back to the same character. Nothing in it
+    is a credential: a spec never carries `mcp_credentials`
+    (`workflows.SPEC_KEYS`)."""
+    folder = run_folder() if folder is None else folder
+    digest = workflows.spec_digest(document)
+    target = folder / f"{SPEC_PREFIX}{digest.split(':', 1)[1]}-{secrets.token_hex(6)}.json"
+    text = _SURROGATE.sub(lambda m: "\\u%04x" % ord(m.group()), json.dumps(document, indent=2, ensure_ascii=False))
+    target.write_text(text, encoding="utf-8")
+    return {"path": str(target), "digest": digest}
+
+
+def _handle_folders() -> list[Path]:
+    """Every folder `run_folder` may write to, resolved: the project's
+    REPO_RUN_DIR when a project is known, and the temp fallback."""
+    folders = [Path(tempfile.gettempdir()) / RUN_DIR]
+    found = _project()
+    if found is not None:
+        folders.insert(0, found[0] / REPO_RUN_DIR)
+    return [f.expanduser().resolve() for f in folders]
+
+
+def handle_target(path: str) -> Path:
+    """The file a spec handle names, resolved, or a refusal.
+
+    ONLY A HANDLE THIS BRIDGE COULD HAVE WRITTEN IS READ. The path arrives
+    through a relay, as `spec_path` does, so it is resolved (symlinks too)
+    before anything about it is looked at, and it must be a `spec-<8 hex>-<12
+    hex>.json` directly in one of the run folders (`_handle_folders`). A
+    refusal names the path, never what any file holds."""
+    target = Path(str(path).strip()).expanduser().resolve()
+    if not _SPEC_NAME.match(target.name) or target.parent not in _handle_folders():
+        raise SwarmError(
+            f"{path} is not a spec handle: a handle is the `spec-<digest>-<hex>.json` file "
+            f"swarm_workflow_launch wrote beside its titled copy, in {RUN_DIR} folders only. "
+            "Pass the handle the launch's args carry, exactly. Nothing was sent"
+        )
+    if not target.is_file():
+        raise SwarmError(
+            f"the spec handle {path} names no file: it was removed (copies older than a week "
+            "are), or comes from another machine. Launch the spec again. Nothing was sent"
+        )
+    return target
 
 
 # --------------------------------------------------------------------------
@@ -651,12 +728,23 @@ def _submitting_workspace(client: SwarmClient | None) -> str | None:
     return _submitting(client)[0]
 
 
-def for_spec(document: dict[str, Any], client: SwarmClient | None = None) -> dict[str, Any]:
+def for_spec(
+    document: dict[str, Any],
+    client: SwarmClient | None = None,
+    *,
+    embedded: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """The titled copy for a spec about to be submitted. The workflow id is not
     known yet, so the title has none; the run's first row and its Result row
     carry it once SwarmCloud has answered. The workspace, at the head of the
     description, is the tenant the API says `client` acts as, which is where
-    the workflow will be stored."""
+    the workflow will be stored.
+
+    `embedded` is the spec as it is submitted -- `document` is the same spec
+    with what a title does not need already taken out (its model classes) --
+    and defaults to `document`. It is written to the spec handle
+    (`write_spec`) and embedded in the reply's `args` beside that handle, so
+    the run submits by reference (SC-LAUNCH-SPEC, #2034)."""
     spec = workflows.read_spec(document, where="the spec")
     steps = len(spec["steps"])
     name = workflows.title_name(title=spec["title"], label=spec["label"])
@@ -683,10 +771,22 @@ def for_spec(document: dict[str, Any], client: SwarmClient | None = None) -> dic
     }}
     # The row mode reaches run.js in the args the session builds: `rows`.
     out["rows"] = mode
+    # THE HANDLE, beside the copy: the bytes the args embed, which the submit
+    # row hands swarm_workflow by path and digest instead of retyping them.
+    embedded = document if embedded is None else embedded
+    handle = write_spec(embedded, Path(out["script_path"]).parent)
+    out["spec_handle"] = handle
+    out["args"] = {
+        "spec": embedded,
+        "spec_handle": handle,
+        "details": out["row_details"],
+        "rows": mode,
+        "titled_copy": out["script_path"],
+    }
     out["launch_with"] = (
-        "the Workflow tool with {scriptPath: <script_path>, args: <the same args /sc:swarmcloud "
-        "takes -- {spec, spec_path} or {spec}> plus `details`: this reply's `row_details`, so "
-        "each step's row shows its own details when expanded, and `rows`: this reply's `rows`>}"
+        "the Workflow tool with {scriptPath: <script_path>, args: <this reply's `args`, as given>}. "
+        "`args.spec_handle` is the file this bridge wrote the spec to: the run submits from it, "
+        "checked against its digest, so no agent retypes the spec; keep it beside `spec`"
     )
     return out
 

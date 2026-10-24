@@ -26,11 +26,27 @@ import { cpuSummary, type UtilisationAttempt, type UtilisationRead } from './uti
  * class's guaranteed size the head prints -- so the line says which it is.
  * The words are added once, after the mean's `of N cores`, and only when the
  * route served a limit: `limit not reported` already says there is none.
+ *
+ * ONE NUMBER PER NAME (6:task-001). The CPU tile and Resources divide by the
+ * attempt record's `cpu_limit_cores`; the series carries its own. When the two
+ * differ, only the record's is called `cgroup limit`, and the series' is named
+ * by its source -- never two numbers both called the cgroup's.
  */
-function namedLimit(attempt: UtilisationAttempt | null, text: string): string {
+function namedLimit(attempt: UtilisationAttempt | null, text: string, recordLimit: number | null): string {
   const sampled = namedMean(text)
-  if (attempt === null || cpuSummary(attempt).limit === null) return sampled
-  return sampled.replace(/^(CPU, 5 s samples: mean \S+ of \S+ cores)/, '$1 (cgroup limit)')
+  if (attempt === null) return sampled
+  const s = cpuSummary(attempt)
+  if (s.limit === null) return sampled
+  const words =
+    recordLimit === null || Math.abs(recordLimit - s.limit) < 0.05
+      ? ' (cgroup limit)'
+      : ` (the limit the 5 s samples carry; the attempt's cgroup limit is ${Number(recordLimit.toFixed(1))} cores)`
+  const named = sampled.replace(/^(CPU, 5 s samples: mean \S+ of \S+ cores)/, `$1${words}`)
+  // TWO MEASURES, SAID SO: `at the limit` counts 5 s samples at the limit's
+  // edge, `throttled` the kernel's CFS periods held back. 0% beside 6% is not
+  // a contradiction, and the line says why rather than leaving it to look like one.
+  if (s.atLimit === null || s.throttled === null) return named
+  return `${named} (near-limit samples vs throttled CFS periods)`
 }
 
 /**
@@ -53,7 +69,16 @@ function namedMean(text: string): string {
  */
 export const UTILISATION_POLL_MS = 10_000
 
-export function UtilisationPanel({ taskId, live }: { taskId: string; live: boolean }) {
+export function UtilisationPanel({
+  taskId,
+  live,
+  limitCores = null,
+}: {
+  taskId: string
+  live: boolean
+  /** The newest attempt record's `cpu_limit_cores`: the one the CPU tile and Resources divide by. */
+  limitCores?: number | null
+}) {
   const [got, setGot] = useState<Result<UtilisationRead> | null>(null)
   const inFlight = useRef(false)
 
@@ -98,7 +123,7 @@ export function UtilisationPanel({ taskId, live }: { taskId: string; live: boole
   }
   const attempt = got.status === 'empty' ? null : (got.data.attempts[0] ?? null)
   const head = utilisationHeadline(attempt, live)
-  const headline = head.measured ? namedLimit(attempt, head.text) : head.text
+  const headline = head.measured ? namedLimit(attempt, head.text, limitCores) : head.text
   // THE SUMMARY ON THE GLASS, THE CHART ONE CLICK AWAY. Details keeps every
   // chart behind a disclosure so its first 900px stay Now, the strip and the
   // column heads (details.v3.test.tsx). The one line the owner asked for --

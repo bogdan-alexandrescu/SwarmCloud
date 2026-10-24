@@ -1149,8 +1149,13 @@ const FACT_LABEL: Readonly<Record<string, string>> = {
   // the head's workflow total read as a second figure for the same thing.
   gen: 'lease generation',
   exit: 'exit code',
-  ckpts: 'checkpoints',
+  // SAVED CHECKPOINTS, NOT `checkpoints` (visual QA run 6, F2, #1680): the
+  // fixture's failed step is CALLED checkpoints, and 'checkpoints 2' beside
+  // its name read as the step rather than a count of what it saved.
+  ckpts: 'saved checkpoints',
   cost: 'this attempt’s cost',
+  // A failed step's clean exit, said as what it is (`unsaid`).
+  process: 'agent process',
 }
 
 /**
@@ -1162,6 +1167,43 @@ const FACT_LABEL: Readonly<Record<string, string>> = {
  */
 const FACT_HINT: Readonly<Record<string, string>> = {
   gen: 'raised by every new lease; a worker holding an older one exits without running',
+  // THE STEP'S OWN (box 6343767840): the panel's '$0.253' beside the head's
+  // '$1.21' read as a second figure for the workflow.
+  cost: 'this step’s own, not the workflow’s total',
+}
+
+/** `exit status 2: …`, the way a worker writes a non-zero exit into `error`. */
+const EXIT_STATUS = /^exit status (\d+):?\s*/
+
+/**
+ * WHAT THE CARD ALREADY SAYS IS NOT SAID AGAIN (visual QA run 6, F2, and
+ * box 6298221306, #1680). Given the step's failure (`cause`, the text 'Why it
+ * failed' prints, or null for a step that did not fail):
+ *
+ *  * an `error` fact that is the failure itself goes: the card printed it
+ *    twice, once under 'Why it failed' and once as 'error exit status 2: …';
+ *  * an `error` that only opens with the exit the `exit code` fact states
+ *    loses that opening, so the exit is said once;
+ *  * an `exit code` of 0 on a failed step is not drawn as 'exit code 0' beside
+ *    'Why it failed', where it read as the step having succeeded. It is said
+ *    for what it is: the process ended cleanly, and the failure is the step's.
+ */
+function unsaid(facts: readonly Fact[], cause: string | null): Fact[] {
+  const exit = facts.find((f) => f.key === 'exit')
+  const code = exit !== undefined && exit.cell.kind !== 'absent' ? exit.cell.text : null
+  return facts.flatMap((f): Fact[] => {
+    if (f.key === 'exit' && cause !== null && code === '0') {
+      return [{ key: 'process', cell: { ...f.cell, text: 'ended cleanly · the step failed on what it reported, not on the process' } }]
+    }
+    if (f.key !== 'error' || f.cell.kind === 'absent') return [f]
+    const whole = f.cell.note || f.cell.text
+    const first = whole.split('\n')[0] ?? ''
+    if (cause !== null && (whole === cause || cause.startsWith(first))) return []
+    const m = EXIT_STATUS.exec(f.cell.text)
+    if (m === null || m[1] !== code) return [f]
+    const rest = f.cell.text.slice(m[0].length)
+    return rest === '' ? [] : [{ ...f, cell: { ...f.cell, text: rest } }]
+  })
 }
 
 /**
@@ -1173,10 +1215,10 @@ export function shapeWords(shape: Pick<DagShape, 'steps' | 'levels' | 'text'>): 
   return `${shape.steps} step${shape.steps === 1 ? '' : 's'}${shape.levels > 1 ? ` in ${shape.levels} stages (${shape.text})` : ''}`
 }
 
-function FactList({ facts }: { facts: readonly Fact[] }) {
+function FactList({ facts, cause = null }: { facts: readonly Fact[]; cause?: string | null }) {
   return (
     <ul className="ctl-facts wf-inspect-facts">
-      {facts.map((f) =>
+      {unsaid(facts, cause).map((f) =>
         f.cell.kind === 'absent' ? (
           <li key={f.key} className="ctl-fact is-absent">
             <b>{FACT_LABEL[f.key] ?? f.key}</b>
@@ -1543,10 +1585,15 @@ export function StepInspector({
                 filtered to this one step. AND WHERE IT OPENS (run 5b, L5):
                 beside the Changes page's `Agent’s changes ›`, which is the
                 agent's own patch, 'This step’s changes' did not say it is the
-                workflow's tab, one column of it. */}
+                workflow's tab, one column of it. AND WHICH STEP (run 6, F4,
+                #1680 box 6298221770): 'This step’s' named none, beside the
+                tab's 'Changes' and the banner's 'agent, logs, changes', so
+                no control said it led to this step's changes. The name comes
+                after the scope: "<step>’s" reads 'checkpoints’s' (F5), and a
+                link opening 'Changes' reads as the tab (WG-7). */}
             {changes.count === null
-              ? 'This step’s changes in this workflow ›'
-              : `This step’s changes in this workflow · ${changes.count} ${changes.count === 1 ? 'file' : 'files'} ›`}
+              ? `This step’s changes in this workflow: ${row.step.step_id} ›`
+              : `This step’s changes in this workflow: ${row.step.step_id} · ${changes.count} ${changes.count === 1 ? 'file' : 'files'} ›`}
           </a>
         )}
       </div>
@@ -1627,6 +1674,7 @@ export function StepInspector({
                 // finished task is the run the Graph and the Table time.
                 at === ready.length - 1 && taskState !== null && TERMINAL_STATES.has(taskState) ? row.times.ranMs : null,
               )}
+              cause={row.why !== null && row.why.kind === 'cause' ? row.why.full : null}
             />
           </>
         )}

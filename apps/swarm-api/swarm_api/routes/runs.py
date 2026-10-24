@@ -81,12 +81,14 @@ from ..issueruns import (
     compile_plan,
     failure_text,
     issue_read_from_preview,
+    owner_refusal,
     parse_edited_plan,
     parse_planner_output,
     plan_digest,
     plan_files,
     plan_hold,
     planner_task,
+    sign_owner,
     auto_merge_default,
     refuse_auto_merge,
     refuse_planner_model_class,
@@ -339,6 +341,12 @@ def _approve(
     not stepped round.
     """
     runs = _runs(ctx)
+    # #1569: a run whose owner fields a worker rewrote submits nothing, on
+    # every approval path -- a person's, the inbox's, a GitHub comment's and
+    # the tick's -- and resolves no forge credential. Before the hold, the
+    # compile and the gate; and again inside the claim, against the document
+    # the claim read, so a rewrite between the two is not stepped round.
+    verify_run_owner(ctx, run)
     is_owner = bool(getattr(auth, "is_owner", False)) and by != AUTO_APPROVER
     approvals.check_hold(ctx, run, email=by, is_owner=is_owner, confirm=confirm)
     # §4.6: a scheduled run's named / owner_only approvers hold on EVERY
@@ -362,6 +370,7 @@ def _approve(
     # refusal below. Off (WORKSPACE_GATE), it returns at once.
     ctx.submissions.workspace_gate(auth, ctx.submissions.tenant_for(auth))
     def claim(current: IssueRun) -> dict:
+        verify_run_owner(ctx, current)
         if current.approval_hold != run.approval_hold:
             approvals.check_hold(ctx, current, email=by, is_owner=is_owner, confirm=confirm)
         return {
@@ -413,6 +422,51 @@ class RunOwnerRoleNarrowed(RunOwnerNotMember):
     code = RoleMemberRequired.code
 
 
+class RunOwnerUnverified(Forbidden):
+    """The run's owner fields do not verify against the signature swarm-api
+    made when it created the run (#1569): rewritten, copied from another run,
+    deleted, or never signed (a run created before the signature). Nothing is
+    submitted and no forge credential is resolved; the tick FAILS the run."""
+
+    code = "run_owner_unverified"
+
+
+def verify_run_owner(ctx: AppContext, run: IssueRun) -> None:
+    """Refuse `run` unless its owner fields verify (`issueruns.owner_refusal`).
+
+    The one check, asked by `_approve` (every approval) and `run_owner_auth`
+    (the tick's auto-approval, every CI fix round and the merge), before any
+    submission and so before `SubmissionService._resolve_forge`.
+
+    Enforced wherever runs are signed: wherever swarm-api has a step-spec
+    signer, which every deployed environment must (`signer_from_settings`).
+    The switch is the same one that decides whether `start_run` signs, so
+    the signer and the verifier can never disagree, and nothing a worker
+    writes moves it. Only with no signer -- local development and tests --
+    does a run go unverified, and the log says so every time.
+
+    The log line names the run, its tenant and the FIELD that failed; never
+    a value, the signature or a token.
+    """
+    if ctx.submissions.signer is None:
+        log.warning("issue run %s tenant=%s: owner fields NOT verified: no "
+                    "SPEC_SIGNING_KEY_VERSION in this environment", run.id, run.tenant_id)
+        return
+    failed = owner_refusal(run, ctx.settings)
+    if failed is None:
+        return
+    log.warning(
+        "issue run %s tenant=%s: owner fields do not verify (field=%s); nothing submitted, "
+        "no forge credential resolved (%s)", run.id, run.tenant_id, failed,
+        RunOwnerUnverified.code,
+    )
+    raise RunOwnerUnverified(
+        f"issue run {run.id}'s owner fields do not verify against the signature made when "
+        f"it was created ({failed}), so nothing is submitted for it; create the run again",
+        detail={"run_id": run.id, "field": failed},
+    )
+
+
 #: `platform_admin_acted`'s `route` for an auto step submitted as a creator who
 #: acts in the run's workspace only as a platform admin (workspace-roles.md
 #: §4.2.4): a template no HTTP route has, as a schedule's firing has its own.
@@ -455,6 +509,12 @@ def run_owner_auth(ctx: AppContext, run: IssueRun) -> AuthContext:
     submitted unaudited. The context returned is never wider than an
     ordinary member's: `is_admin` stays False.
     """
+    if isinstance(run, IssueRun):
+        # #1569: the fields read below are a worker-writable document's, so
+        # they are believed only when they verify. A child's `_Submitter`
+        # (`swarm_api.children`) is built from its parent's signed task, not
+        # read from a run document, and is not one.
+        verify_run_owner(ctx, run)
     tenant = ctx.store.get_tenant(run.tenant_id)
     if tenant is None:
         raise NotFound(f"tenant {run.tenant_id!r} not found")
@@ -654,7 +714,7 @@ def _advance_state(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
                     ctx, run_owner_auth(ctx, run), tenant_id, run,
                     digest=run.plan_digest, by=AUTO_APPROVER,
                 )
-            except RunOwnerNotMember as gone:
+            except (RunOwnerNotMember, RunOwnerUnverified) as gone:
                 return _runs(ctx).transition(
                     tenant_id, run.id, RunState.FAILED, by=SYSTEM,
                     from_states=_PLANNED_ONLY, patch={"error": failure_text(gone.message)},
@@ -907,6 +967,30 @@ def start_run(
     # missing or unreadable index is today's prompt with `index_context`
     # saying why.
     tenant_id = ctx.submissions.tenant_for(auth).tenant_id
+    # The run as it will be stored, less what only the planner's submission
+    # knows. Its owner fields are signed FIRST (#1569): a KMS failure is a 503
+    # with no planner submitted and no run stored. `tenant_id` is the
+    # resolution `submit_tasks` repeats; were the planner's ever another, the
+    # signature would not verify and the run would submit nothing.
+    now = ctx.now()
+    draft = IssueRun(
+        id=run_id,
+        tenant_id=tenant_id,
+        created_by=created_by or auth.email,
+        created_at=now,
+        updated_at=now,
+        state=RunState.PLANNING,
+        issue=ref,
+        plan_approval=plan_approval,
+        auto_merge=auto_merge,
+        fix_rounds=fix_rounds,
+        planner_task_id="",
+        on_behalf_of=auth.email if created_by else None,
+        schedule=dict(schedule) if schedule else None,
+        merge_approval=merge_approval,
+        claude_session=claude_session,
+    )
+    draft.owner_signature = sign_owner(ctx.submissions.signer, draft)
     issue_read, issue_read_error = _read_issue(ctx, auth, tenant_id, ref)
     context = read_plan_context(ctx, tenant_id, ref, run_id=run_id, issue=issue_read,
                                 open_work=open_work)
@@ -920,17 +1004,11 @@ def start_run(
     planner = submission.tasks[0]
     now = ctx.now()
     run = _runs(ctx).create(
-        IssueRun(
-            id=run_id,
+        replace(
+            draft,
             tenant_id=planner.tenant_id,
-            created_by=created_by or auth.email,
             created_at=now,
             updated_at=now,
-            state=RunState.PLANNING,
-            issue=ref,
-            plan_approval=plan_approval,
-            auto_merge=auto_merge,
-            fix_rounds=fix_rounds,
             planner_task_id=planner.id,
             open_work=open_work,
             index_sha=context.index_sha,
@@ -938,10 +1016,6 @@ def start_run(
             index_context=context.record,
             issue_read=issue_read,
             issue_read_error=issue_read_error,
-            on_behalf_of=auth.email if created_by else None,
-            schedule=dict(schedule) if schedule else None,
-            merge_approval=merge_approval,
-            claude_session=claude_session,
         )
     )
     return sync_issue(ctx, run)

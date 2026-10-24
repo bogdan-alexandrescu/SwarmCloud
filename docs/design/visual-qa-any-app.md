@@ -71,14 +71,15 @@ not one):
 | `credential` | `{set: bool, set_at, set_by, version}`, never a value | a **reference**: the value is in Secret Manager (§2.1) |
 | `challenge_bypass` | `{kind: "header" \| "cookie", name}`, optional; its value served only as `challenge_bypass_value: {set, set_at, set_by, version}` | §2.5: the app owner's own way past their CAPTCHA, added by the gate on the approved origins only |
 | `screens` | a list `{id, path, ready?, segments?}`, or `discover: {max_pages ≤ 60, max_depth ≤ 3}` | the capture's route list; discovery is bounded and same-origin (§4.1) |
-| `flows` | `{id, goal, start_path, mutating: false}` each | goal-driven flows for jev or Playwright; `mutating: true` is refused unless `environment` is `non_production` (§3) |
+| `flows` | `{id, goal, start_path, mutating: false}` each | goal-driven flows; `mutating: true` is refused unless `environment` is `non_production` (§3). `start_path` is relative to **`base_url`**, path included: under `https://h/app/`, `/` opens `https://h/app/` and `/settings` opens `https://h/app/settings`. Screen paths, exclusions and `login_path` are origin-relative instead, because discovery writes routes as the origin's paths (QA-ORIGIN); a flow says where it starts in the app, so it is read from the app's base, through the one join `qaspec.screen_url`, and its start is refused when either reading is excluded (QA-TARGET-FILE, #2062) |
+| `flows_browser_tool` | `playwright` (default, when unset) or `jev` | the tool the flows drive the live browser with (§4.1, step 4); anything else is refused at registration |
 | `widths` | presets by name, default `["desktop", "phone-390"]` (1440 and 390) | the gate's presets, never a viewport override (the gate refuses one) |
 | `themes` | default `["light", "dark"]`, through emulated media | as the console's capture sets them |
 | `exclusions` | path globs never visited, element texts or selectors never clicked | always merged with the defaults: `/logout`, `/signout`, and controls whose text names delete, remove, pay, buy, purchase, send, invite, unsubscribe or cancel subscription |
 | `environment` | `production` (default) or `non_production` | §3: only a non-production target can run a mutating flow |
 | `read_posts` | target-origin paths whose `POST` is a read (a GraphQL endpoint) | §3's method rule would otherwise refuse them |
 | `design_docs` | path globs in the repository, default `DESIGN.md`, `docs/design*/**`, `**/style-guide*` | §4.3: the review reads the app's own design where it has one |
-| `file` | `{min_severity: "minor", max_issues: 20, labels: ["visual-qa"], evidence: "console_link"}` | §5 |
+| `file` | `{min_severity: "minor", max_issues: 20, labels: ["visual-qa"], label_rules: [], evidence: "console_link"}` | §5 |
 | `rate` | `{navigation_ms: 2000, requests_per_s: 10}` | §3; a registrant may make it slower, never faster than 1 navigation a second |
 | `authorized_by`, `attested_at` | the registrant's statement that the tenant may test this application | someone else's app: the platform does not decide whose it is, but it records who said it may be tested |
 | `host_state` | `pending`, `approved` (with `approved_by`, `approved_at`) or `revoked` | §1.2 |
@@ -119,6 +120,18 @@ is the allowlist, made where it can be enforced:
   on Repositories › QA targets (`apps/swarm-ui/src/QaTargets.tsx`), drawn to
   a platform admin only, which sends the route above once the admin has
   typed the host, and the login's `extra_origin` when one is declared.
+* **The IdP token path is approved in the same place, and nowhere else**
+  (QA-IDP-POST, BGD decided 2026-10-23, #2067). With the `extra_origin`, the
+  platform admin may name one exact path on it, `idp_token_path` (`/...`; no
+  query, fragment, `%`-encoding, glob, empty, `.` or `..` segment), stored as
+  `approved_idp_token_path` and audited in the approval's row. It is refused
+  without the `extra_origin` named, it is not a registration field (a
+  workspace admin's change cannot set it), and a change of host or
+  `extra_origin`, or an approval that does not name it, clears it. The
+  console's approve form carries it as an optional field, filled with the
+  approved one, and draws **Approve again** on an approved target that
+  declares an `extra_origin`, so an admin can set or clear it later. §3 says
+  what the gate does with it.
 * **The live gate enforces it** (§3): the attempt's top frame never commits a
   document outside the approved origins, and nothing but a `GET` leaves for
   any other origin.
@@ -403,6 +416,34 @@ prompt says the same so the agent does not fight its own gate.
     own sign-in submission and the paths in `read_posts`;
   * **any** request but `GET` and `HEAD` to every other origin, so a
     third-party payment, mail or analytics frame cannot be made to send.
+  **One exception: the IdP token refresh** (QA-IDP-POST; BGD decided
+  2026-10-23, "allow the token path only", #2067). On 2026-10-23 AI Studio's
+  run signed in, and then the app's own Keycloak token exchange (a browser
+  `POST` from `studio.saga.xyz` to its `extra_origin`'s
+  `/protocol/openid-connect/token`) was answered by the gate's 403 with no
+  CORS header: every screen stayed on "Checking your session…" and the run
+  filed the gate's refusal as the app's CORS blocker. So a target whose
+  platform admin approved an `idp_token_path` (§1.2) has exactly
+  `POST <extra_origin><idp_token_path>` continued, and nothing else:
+  * the gate compares the **whole URL** as a string, so a query (even an
+    empty `?`), a fragment, a trailing slash, a double slash, another port
+    (or the default one spelled out), userinfo, upper case or a
+    percent-encoded variant is another URL and refused;
+  * only `POST`: a `PUT`, `PATCH` or `DELETE` to the same path is refused;
+  * only once **the gate's own sign-in has completed** (`signed_in`) and
+    holds: never before it, never after a sign-in that failed or met a
+    challenge (a later failed sign-in takes it back), never after the wipe,
+    and never on a target that does not sign in. During the sign-in the
+    gate's own submission rule already applies;
+  * a top frame posted there is still a navigation off the target and gets
+    the left page; a redirect of the `POST` is a pause of its own, judged by
+    its own URL;
+  * every other write to the `extra_origin`, and every non-`GET` to any other
+    origin, is refused exactly as before.
+  The gate records each request it let through apart from its refusals
+  (`allowed`, code `idp_token_refresh`, "allowed: IdP token refresh"); the
+  capture's manifest names them as `gate_refusals.allowed` and the report
+  names them on a line of their own, never counted as refused.
   A declared flow with `mutating: true`, on a target whose `environment` is
   `non_production`, lifts the first rule for that flow's step only. Nothing
   lifts the second. swarm-api's attempt route decides it: its answer carries
@@ -496,12 +537,33 @@ finding) carries over.
    at most 8 groups (60 screens a run, the discovery cap).
 3. **review-<group>**: `claude-code`, opus, `input_from` its capture tar,
    against the checklist (§4.3).
-4. **flow-<id>**: `claude-code-browser`, sonnet, jev for goals or Playwright,
-   recorded with `swarm-handoff record`, one per declared flow, at each width.
+4. **flow-<id>**: `claude-code-browser`, sonnet, with the target's
+   `flows_browser_tool` (Playwright unless it says `jev`), or the one run's
+   `browser_tool` when `:run` names one; recorded with `swarm-handoff record`,
+   one per declared flow, at each width. The prompt names the tool's own
+   tools: Playwright MCP's `browser_*`, or the jev tools.
 5. **report**: `claude-code`, opus, every capture and review tar staged; the
    console report's checks (reviewed against listed; a missing tar is a
    finding about the run), writing `report.md` and `findings.json` (§4.4).
 6. **file**: `claude-code`, sonnet, `input_from` the report; §5.
+
+**Why flows default to Playwright, not Jev** (lane VQ9-TOOL; BGD,
+2026-10-23). Flows were first rendered with Jev on every target. The
+browser benchmark's batch `bench3-2026-10-23` ([browser-bench.md](../browser-bench.md):
+10 prompts x 3 tools x 3 repeats, 83 runs measured) passed Playwright MCP on
+8 of 10 prompts at a median $0.14 and 44.5 s a run, dev-browser on 7, and Jev
+on 6 at $0.17 and 51.3 s: Playwright was the more reliable, the cheaper and
+the faster. So a target's `flows_browser_tool` defaults to `playwright`; a
+target may set `jev`, and one run may choose either with `:run`'s
+`browser_tool`, which applies to that run alone and is recorded on its
+`qa_target_runs` row (`browser_tool`, the override or null, and
+`flows_browser_tool`, the tool its flows ran with); it never changes the
+target. Choosing Jev keeps Jev's requirements: where the workspace's
+judgment backend is TypeSafe, a flow step is refused at submission
+(`browser_tool_unavailable`, reason `no_key`) unless the submitter or the
+tenant has a TypeSafe key, exactly as any agent submitted with `browser_tool: jev` is. The
+capture and discovery steps are not affected: they run the fixed capture
+tool (`swarm_qa capture` and `discover` on Playwright) whatever the flows use.
 
 Workflow-level: `repository_url` the target's repository at its default
 branch (read for `design_docs`; `allow_empty_diff` on every step, nothing is
@@ -538,6 +600,28 @@ size, because a page with no viewport meta tag is correctly laid out at
 (QA-DEVICE, Chrome 153): what was wrong were the later shots, after each
 clipped capture lifted the gate's device, which the gate now puts back
 (`DeviceController.reassert`, QA-REASSERT).
+
+The gate's refusals are the run's, never the app's (QA-GATE-REFUSALS, part
+of #2067). A 403 the gate makes for a request to another origin carries no
+`Access-Control-Allow-Origin`, so Chrome reports it as a CORS block and a
+failed request, exactly as if the app's own server had misconfigured CORS. On
+2026-10-23 the AI Studio run met that on every route (its OIDC token
+exchange, a `POST` to its identity provider) and filed the gate's refusal into
+the app's repository as a blocker. So the gate keeps a record of every
+request it answered itself (`QaTarget.refusals`: time, method, origin, path
+and code, never a query or a body), the capture writes the refusals made while
+each screen loaded into that screen's `errors.json` as `gate_refused`, marks
+the failed request they caused as the gate's, and counts them in the
+manifest's `gate_refusals`; the review puts such a screen in `about_run`, the
+report opens with "the gate refused N requests, so these screens show the app
+without them", and the file step never files a finding whose evidence is a
+refusal. The rules of §3 do not change for this: whether a target may let its
+identity provider's token endpoint through is the owner's decision, held. The
+capture reads the record at `GET /json/swarm/qa-refusals` on the gate's CDP
+endpoint, which it already connects to (the gate's agent endpoint answers it
+from `CdpProxy.qa_refusals`); a gate holding no QA target answers 404, and
+whenever the record cannot be read the capture writes `gate_refused: null` and
+the manifest says so, never an empty list.
 
 ### 4.3 The review checklist
 
@@ -619,14 +703,34 @@ holds unchanged:
 * **Labels**: `bug` (or the form's), the target's `labels` (default
   `visual-qa`), and `severity:<s>` when the repository has such a label;
   only labels that already exist are applied (§3.2's rule), never created.
+* **Labels by route** (`file.label_rules`, #2062): `[{paths: ["/agents/"],
+  labels: ["agent-page-rework"]}]`. A finding whose `path`, without its
+  query, starts with one of a rule's prefixes also gets that rule's labels,
+  on top of `labels`; every matching rule adds its own, and a finding no rule
+  matches is filed with `labels` alone. AI Studio asked for it on 2026-10-23:
+  their `/agents/{id}` page was being replaced, and they re-check those
+  findings against the new build instead of fixing the old one, which until
+  then meant labelling them by hand after the file step. The prefixes are
+  origin-relative like the finding's `path`, and each is refused at
+  registration, with the field named (`file.label_rules[i].paths`), unless it
+  starts with one `/` and carries no scheme, host or query, because a
+  prefix that can never equal a route's start is a rule that silently never
+  fires. At most 20 rules, 1..10 prefixes and 1..10 labels each, the labels
+  held to `labels`' own name rule. The file step's prompt states each rule,
+  numbered, and `filed.json` records for each issue the rules that labelled
+  it, so the run's report shows which rule labelled which issue. The step is
+  an agent, so `qaspec.finding_labels` is the rule written once in code, the
+  one its tests hold.
 
 ---
 
 ## 6. Triggers
 
 * **On demand**: the console (Repositories → a repository's QA targets →
-  Run), the API `POST /v1/qa-targets/{id}:run` (body: optional `screens`
-  subset, `file: "issues" | "none"`), and the plugin's `swarm_qa_run`. A
+  Run, with "Flows with" for one run's flow browser), the API
+  `POST /v1/qa-targets/{id}:run` (body: optional `screens` subset,
+  `file: "issues" | "none"`, optional `browser_tool: "playwright" | "jev"`
+  for this run's flows, §4.1), and the plugin's `swarm_qa_run`. A
   member may run; the run is that member's submission in the tenant.
 * **A schedule type `visual-qa`** (optional): tenant-scoped, created by a
   workspace admin, parameter `target` (a target of the same tenant), minimum

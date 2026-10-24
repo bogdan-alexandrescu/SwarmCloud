@@ -340,7 +340,7 @@ describe('QA-111: the sort button says the order the list is in', () => {
 })
 
 describe('QA-116: More says what it holds', () => {
-  it('reads `2 more tabs` and names the tabs behind it', async () => {
+  it('reads `2 more: Artifacts, Checkpoints` and names the tabs behind it', async () => {
     const t = row(1, 'FAILED')
     serve([t])
     const proto = HTMLElement.prototype
@@ -370,10 +370,10 @@ describe('QA-116: More says what it holds', () => {
       const more = document.querySelector<HTMLElement>('.ag-tabs-more')!
       // MUTATION: draw `More 2` again -- a bare figure that reads as two
       // checkpoints as easily as two hidden tabs.
-      expect(flat(more)).toBe('2 more tabs ▾')
+      expect(flat(more)).toBe('2 more: Artifacts, Checkpoints ▾')
       // MUTATION: drop the names from the button's name and tooltip -- a
       // reader cannot tell Checkpoints is behind it without opening it.
-      expect(screen.getByRole('button', { name: '2 more tabs: Artifacts, Checkpoints' })).toBe(more)
+      expect(screen.getByRole('button', { name: '2 more: Artifacts, Checkpoints' })).toBe(more)
       expect(more.getAttribute('title')).toBe('Artifacts, Checkpoints')
     } finally {
       for (const [k, d] of [['clientWidth', had.client], ['offsetWidth', had.offset]] as const) {

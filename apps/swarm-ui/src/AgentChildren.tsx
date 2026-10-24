@@ -118,9 +118,14 @@ export function AgParentLink({ task, parent }: { task: Task; parent?: Task | nul
   )
 }
 
-/** The Children tab's count, or null while it is unknown. */
-export function useChildCount(task: Task | null, readKey: string): number | null {
-  const id = task !== null && offersChildren(task) ? task.id : ''
+/**
+ * The Children tab's count, or null while it is unknown. Read for an agent
+ * that offers children, and on `/children` for any agent (visual QA run 6,
+ * task-002): the pane reads there whatever the agent is, so the tab counts
+ * the same read and never draws `—` over the pane's `none`.
+ */
+export function useChildCount(task: Task | null, readKey: string, pane?: string): number | null {
+  const id = task !== null && (offersChildren(task) || pane === 'children') ? task.id : ''
   const held = useRead<TaskPage>(
     () => (id === '' ? Promise.resolve<Result<TaskPage>>({ status: 'loading', since: Date.now() }) : loadChildren(id)),
     id,

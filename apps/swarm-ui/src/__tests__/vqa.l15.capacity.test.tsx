@@ -12,7 +12,7 @@
 //   V085  The key column holds `Ceiling (units)` (and every capacity key).
 //   V086  One key width in a mono cell and a sans cell; Use is the track and its % (run 3).
 //   V087  The disabled runtime's reason is spaced from its facts.
-//   V088  The image fact spans the facts grid, after the short facts; cards don't stretch.
+//   V088  The image fact spans the facts grid, after the short facts; a row's cards share its height.
 //   V089  Set by is wide enough for `AIMD back-off`.
 //   V090  The binding outline is on a box of one minimum width, not the cell.
 //   V091  Pools' and the matrix's column heads stick above 900px.
@@ -31,7 +31,7 @@ import CAPACITY_CSS from '../styles/capacity.css?raw'
 import type { RuntimeTopology } from '../api'
 import type { Result } from '../fetch'
 import type { Capacity, LeasePage, Pool, Runtime, RunnerProfile } from '../types'
-import type { CascadeEnv } from './cssgate'
+import { declarations, flatRules, type CascadeEnv } from './cssgate'
 import { TABLES, build, painted } from './marks'
 
 const api = vi.hoisted(() => ({
@@ -187,7 +187,11 @@ function keyPx(td: Element): number {
   return Number(m![1]) * parseFloat(TABLES.dark.get('--t-micro')!)
 }
 
-/** The width a key needs: DM Mono advances 0.6em, the key is `--t-micro`. */
+/**
+ * The width a key needs: DM Mono advances 0.6em, the key is `--t-micro`. The
+ * key is sans since QA-044 (BGD, 2026-10-23) and its column kept the mono
+ * measure, which is an upper bound for the same key in DM Sans.
+ */
 function keyNeeds(label: string): number {
   return label.length * 0.6 * parseFloat(TABLES.dark.get('--t-micro')!)
 }
@@ -437,7 +441,7 @@ describe('V087: the disabled runtime\'s reason is spaced from its facts', () => 
   })
 })
 
-describe('V088: the image has a full line of its own, and no card grows to its neighbour', () => {
+describe('V088: the image has a full line of its own, and the cards of a row share its height', () => {
   it('puts the image after the short facts, spanning the grid', async () => {
     await renderRuntimes()
     const facts = document.querySelector('.ctl-cards .ctl-facts.is-rows')!
@@ -445,7 +449,42 @@ describe('V088: the image has a full line of its own, and no card grows to its n
     expect(keys.indexOf('image'), 'the image sits among the short facts').toBe(keys.indexOf('weight') + 1)
     const image = [...facts.children].find((li) => li.querySelector('b')?.textContent === 'image')!
     expect(painted(image, 'grid-column', WIDE)).toBe('1 / -1')
-    expect(painted(document.querySelector('.rt-cards > .ctl-cards')!, 'align-items', WIDE)).toBe('start')
+  })
+
+  it('stretches every card to its row, at every width, and no card opts out', async () => {
+    await renderRuntimes()
+    const grid = document.querySelector('.rt-cards > .ctl-cards')!
+    const cards = [...grid.children]
+    expect(cards.length, 'one card is no row to share').toBeGreaterThan(1)
+    // MUTATION: put `align-items: start` back on `.rt-cards > .ctl-cards` and
+    // each card is as tall as its own facts again, three bottoms at three
+    // heights (6:capacity-010); delete the rule and the row's height rests on
+    // the grid's unstated `normal` default, which this pins as a stated rule.
+    for (const env of [PHONE, WIDE]) {
+      expect(painted(grid, 'align-items', env)).toBe('stretch')
+      // MUTATION: give `.ctl-card` (or a Runtimes card) an `align-self` other
+      // than stretch and that card leaves the row's height on its own.
+      for (const card of cards) expect(painted(card, 'align-self', env) ?? 'auto').toMatch(/^(auto|stretch)$/)
+    }
+  })
+
+  it('declares no `align-items: start` that reaches the Runtimes grid', async () => {
+    await renderRuntimes()
+    const grid = document.querySelector('.rt-cards > .ctl-cards')!
+    const reaches = (selector: string): boolean => {
+      try {
+        return grid.matches(selector)
+      } catch {
+        return false
+      }
+    }
+    // MUTATION: put `.rt-cards > .ctl-cards { align-items: start; }` back in
+    // styles/capacity.css -- even beaten by a later rule, it is the rule no
+    // card follows that 6:capacity-010 retired, and this names its line.
+    const start = flatRules(CAPACITY_CSS).filter(
+      (r) => reaches(r.selector) && declarations(r.body).some((d) => d.property === 'align-items' && d.value.trim() === 'start'),
+    )
+    expect(start.map((r) => `capacity.css:${r.line} ${r.selector}`)).toEqual([])
   })
 })
 

@@ -94,6 +94,21 @@ by the repository and the pull request's number, never by a workflow; the
 merge step (`agent_worker.merge._recorded_fix_heads`) reads it there and
 holds every task it names to its signed spec before its head counts. The
 record is an index, never the proof.
+
+A FIX ROUND RUNS WITH ITS LANE'S TERRITORY (CIFIX-TERRITORY, part of #1499).
+Measured 2026-10-17 on PR 1485: a PR-side round edited
+`apps/swarm-mcp/swarm_mcp/sc.py`, outside lane ISO-WORKER-CORE, and turned a
+key refusal into exit 0; CI caught it, and nothing had told the fixer where
+the lane ended. `stamp` copies `inputs.territory` from the task whose branch
+the pull request is on -- its stored record, read by id under the tenant,
+never the failing log or an agent's output -- onto each pushing step of a
+`ci_fix` or `merge_fix_round` workflow, replacing any the caller sent, and
+appends `laneterritory.round_brief` to its prompt. The worker's publish then
+labels a push that leaves it, as it does a lane's. A warning, never a
+refusal: BGD's decision for lanes (#1468, 2026-10-19). A lane that declares
+none gives a round as before. A conflict round is left out: it merges the
+base into the branch, so its push changes every path the base changed since,
+and the lane's territory would flag main's own work.
 """
 
 from __future__ import annotations
@@ -116,6 +131,7 @@ from swarm_common.states import TERMINAL_STATES
 from .codec import agent_console_url
 from .continuation import TASK_ID_RE, Continuation
 from .errors import ApiError, Conflict, NotFound
+from . import laneterritory
 from .forgewrite import GitHubWriter
 from .issueci import NO_CHANGE_MARKER
 from .issuecomments import bounded, neutral
@@ -126,6 +142,7 @@ from .schemas import WorkflowCreate
 from .validation import (
     CONFLICT_ROUND_METADATA_KEY,
     DISPATCH_METADATA_KEY,
+    PROMPT_INPUT_KEY,
     DispatchOptionError,
     IssueRef,
     is_merge_step,
@@ -565,10 +582,63 @@ def _refuse_if_lane_owns(store: Any, tenant_id: str, continuation: Continuation,
     ))
 
 
+#: The fix rounds that run with their lane's territory (module docstring):
+#: the PR-side fixer's and the merge step's CI-fix round, never a conflict round.
+TERRITORY_ROUND_KINDS = (CI_FIX_METADATA_FIELD, "merge_fix_round")
+
+
+def lane_territory(db: Any, tenant_id: str, continuation: Continuation) -> list[str] | None:
+    """The entries the lane's own task record declares in `inputs.territory`
+    -- the continuation's root, the task whose `swarm/<id>` branch the pull
+    request is on -- or None when it declares none, is another tenant's, or
+    is malformed (the API has refused a malformed one at submit since
+    TERRITORY-WARN; a record from before is read as none, and logged)."""
+    snap = db.collection(TASKS).document(continuation.root_task_id).get()
+    doc = (snap.to_dict() or {}) if snap.exists else {}
+    if doc.get("tenant_id") != tenant_id:
+        return None
+    task_input = doc.get("input")
+    if not isinstance(task_input, Mapping) or laneterritory.TERRITORY_INPUT_KEY not in task_input:
+        return None
+    raw = task_input[laneterritory.TERRITORY_INPUT_KEY]
+    try:
+        laneterritory.parse(raw)
+    except laneterritory.TerritoryError as exc:
+        log.warning("lane %s declares a malformed territory; its fix round runs without one: %s",
+                    continuation.root_task_id, str(exc)[:200])
+        return None
+    return list(raw)
+
+
+def _with_lane_territory(store: Any, tenant_id: str, spec: WorkflowCreate,
+                         continuation: Continuation | None) -> WorkflowCreate:
+    """`spec` with its lane's territory on every pushing step and named in its
+    prompt, for a `TERRITORY_ROUND_KINDS` round; else unchanged."""
+    if continuation is None or not any(kind in spec.metadata for kind in TERRITORY_ROUND_KINDS):
+        return spec
+    entries = lane_territory(store.db, tenant_id, continuation)
+    if entries is None:
+        return spec
+    brief = laneterritory.round_brief(entries)
+    steps = []
+    for step in spec.steps:
+        if is_merge_step(step.runner_profile):
+            steps.append(step)
+            continue
+        # The lane's, over any the caller sent: a round never widens it.
+        given = {**step.input, laneterritory.TERRITORY_INPUT_KEY: list(entries)}
+        prompt = given.get(PROMPT_INPUT_KEY)
+        if isinstance(prompt, str):
+            given[PROMPT_INPUT_KEY] = f"{prompt.rstrip()}\n\n{brief}\n"
+        steps.append(step.model_copy(update={"input": given}))
+    return spec.model_copy(update={"steps": steps})
+
+
 def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
           continuation: Continuation | None) -> WorkflowCreate:
     """`spec` with `metadata.ci_fix` checked, counted, claimed and stamped `pending`,
-    and any fix round marked for the head record (`FIX_HEAD_FIELD`).
+    any fix round marked for the head record (`FIX_HEAD_FIELD`), and a CI-fix
+    round given its lane's territory (`_with_lane_territory`).
 
     Unchanged when there is neither. Raises `DispatchOptionError` (422
     `invalid_dispatch`) for every refusal, before anything is written,
@@ -588,6 +658,7 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
         marker = _fix_head_marker(spec.metadata, continuation)
         if marker is None:
             return spec
+        spec = _with_lane_territory(store, tenant_id, spec, continuation)
         return spec.model_copy(update={"metadata": {**spec.metadata, FIX_HEAD_FIELD: marker}})
     if continuation is None:
         raise _refuse(
@@ -616,6 +687,7 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
     marker = _fix_head_marker(metadata, continuation, record["pull_request"])
     if marker is not None:
         metadata[FIX_HEAD_FIELD] = marker
+    spec = _with_lane_territory(store, tenant_id, spec, continuation)
     return spec.model_copy(update={"metadata": metadata})
 
 

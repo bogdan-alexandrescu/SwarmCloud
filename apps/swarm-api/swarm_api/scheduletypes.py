@@ -1,4 +1,4 @@
-"""The schedule job-type catalogue: sixteen types, picked BY NAME (docs/schedules.md §3).
+"""The schedule job-type catalogue: seventeen types, picked BY NAME (docs/schedules.md §3).
 
 A schedule names a type from this catalogue and nothing else: no image, no
 command, no profile, no resource class, no backend parameter (invariant 10).
@@ -240,6 +240,24 @@ class DependencyCveRefreshParams(Params):
         return _repo_paths(values)
 
 
+#: The image tools `image-tool-rescan` may re-scan (#442): the two the
+#: agent-runtime-base image holds back until a release scans clean. A name
+#: here is a row of `schedtypes.image_tool_rescan.TOOLS`, never a caller's
+#: URL or command (invariant 10).
+IMAGE_RESCAN_TOOLS = ("tofu", "tflint")
+
+
+class ImageToolRescanParams(Params):
+    tools: list[Literal["tofu", "tflint"]] = Field(
+        default_factory=lambda: list(IMAGE_RESCAN_TOOLS), min_length=1, max_length=len(IMAGE_RESCAN_TOOLS)
+    )
+
+    @field_validator("tools")
+    @classmethod
+    def _tools(cls, values: list[str]) -> list[str]:
+        return _unique(values, "tools")
+
+
 class ReleaseHealthParams(Params):
     workflow: str = Field(default="release.yml", pattern=r"^[A-Za-z0-9._-]{1,100}\.ya?ml$")
     #: None is the repository's default branch, read at firing time.
@@ -302,6 +320,21 @@ class VisualQaParams(Params):
     #: shape). Checked against the tenant at create and edit
     #: (`schedtypes.visual_qa.check_target`) and again at every firing.
     target: str = Field(pattern=r"^qat_[0-9a-f]{16}$")
+    #: The target's legs to run, by name (docs/design/qa-environments.md §7;
+    #: lane QAENV-RUN): `qaspec.ENVIRONMENT_NAME`'s shape, at most
+    #: `qaspec.MAX_ENVIRONMENTS`, each once; unset is every entry. A name, never
+    #: an entry: the URL, sign-in and credential are the target's. Checked
+    #: against the target at create, edit and every firing (`visual_qa`).
+    environments: list[str] | None = Field(default=None, min_length=1, max_length=8)
+
+    @field_validator("environments")
+    @classmethod
+    def _environment_names(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        if not all(re.fullmatch(r"[a-z0-9-]{1,20}", name) for name in value):
+            raise ValueError("an environment's name is 1 to 20 lower-case letters, digits or hyphens")
+        return _unique(value, "environments")
 
 
 class CustomPromptParams(Params):
@@ -704,6 +737,30 @@ TYPES: tuple[ScheduleType, ...] = (
         phase=3,
         forge_permissions=("contents:read", "issues:write"),
         gate_notes="created by a workspace admin of the tenant; a pending host refuses the firing",
+    ),
+    # #442, owner decision 2026-10-09: "a weekly 'image-tool-rescan' schedule
+    # re-scans the newest tofu and tflint releases with the promote gate's
+    # filter and adds each one that scans clean (no waiver, as decided
+    # 2026-10-01)". Weekly is the schedule's cron
+    # (`image_tool_rescan.DEFAULT_CRON`); the floor is dependency-cve-refresh's
+    # day, so a release day can be re-scanned by hand. Caps in its module.
+    ScheduleType(
+        name="image-tool-rescan",
+        description="Weekly: re-scan the newest release of each image tool still held back with the promote gate's filter, and open one pull request switching on each that scans clean; never a waiver.",
+        executor="task",
+        params_model=ImageToolRescanParams,
+        min_interval=timedelta(hours=24),
+        default_gate=GateSpec(run="auto", plan="auto", merge="approve"),
+        floor_gate=GateSpec(run="auto", plan="auto", merge="approve"),
+        budget=None,
+        catch_up="skip",
+        risk=_fixed("R2"),
+        pushes=_always,
+        creators={"repos": "member", "all": "member"},
+        profile="claude-code",
+        lane="IMAGE-TOOL-RESCAN",
+        phase=2,
+        forge_permissions=("contents:read", *_PR_PUSH),
     ),
 )
 

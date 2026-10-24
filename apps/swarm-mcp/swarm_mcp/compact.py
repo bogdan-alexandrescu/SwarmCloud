@@ -487,6 +487,15 @@ def step_result(row: dict[str, Any]) -> dict[str, Any]:
     # The agent's questions for the owner (2026-10-05), with "" for a text it
     # left out, so this object still holds no null. `[]` when it asked none.
     result["questions"] = [_no_null_question(q) for q in found.get("questions") or [] if isinstance(q, dict)]
+    # And which of them the owner has answered (ANSWERS-429, part of #1904):
+    # the follow payload carried `owner_answers` (TASK-ANSWERS) and this
+    # result did not, so a step row could not tell an answered question from
+    # an open one and the session asked it again. The index, choice and text
+    # recorded on the task, never more; no key when nothing is answered, as
+    # `run.js`'s `answered` has none.
+    answers = [_no_null_answer(a) for a in found.get("owner_answers") or [] if _answer_index(a) is not None]
+    if answers:
+        result["owner_answers"] = answers
     return result
 
 
@@ -547,6 +556,25 @@ def _no_null_question(question: dict[str, Any]) -> dict[str, Any]:
         ],
         "recommended": _text(question.get("recommended")),
         "context": _text(question.get("context")),
+    }
+
+
+def _answer_index(answer: Any) -> int | None:
+    """An owner's answer's `question_index`, or None when it names no question."""
+    if not isinstance(answer, dict):
+        return None
+    index = answer.get("question_index")
+    if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+        return None
+    return index
+
+
+def _no_null_answer(answer: dict[str, Any]) -> dict[str, Any]:
+    """One of `progress.owner_answers`' answers as `step_result` serves it: no null."""
+    return {
+        "question_index": _answer_index(answer),
+        "choice": _text(answer.get("choice")),
+        "text": _text(answer.get("text")),
     }
 
 

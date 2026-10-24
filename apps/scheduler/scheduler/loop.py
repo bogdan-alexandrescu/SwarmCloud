@@ -2101,6 +2101,13 @@ class Scheduler:
         as the moment it parked (as the child await's does), with `updated_at`
         standing in for a park that carries none. Returns how many it ended past
         the maximum; the last-attempt ends are counted by `_end_exhausted_retry`.
+
+        Two human parks are not this sweep's to expire: an agent's blocking
+        question (`question_wait`, swarm-api ends it at 72 hours), and a merge
+        held by its review's blocking owner questions (`owner_questions`,
+        #2070), which swarm-api's answer route returns to READY once none is
+        open and which never expires (owner decision 2026-10-23, "Resume on
+        answer, no expiry"). Neither holds a lease while it waits (invariant 1).
         """
         ended = 0
         now = self._now()
@@ -2125,6 +2132,13 @@ class Scheduler:
             if owner_wait(task, "question_wait"):
                 # A blocking question (AU-7, §3.9) is held for 72 hours and
                 # ended by swarm-api with "owner question unanswered".
+                continue
+            if owner_wait(task, "owner_questions"):
+                # A merge held by its review's blocking owner questions
+                # (#2070) is woken by swarm-api's answer route once none is
+                # open, and never expires (owner decision 2026-10-23,
+                # "Resume on answer, no expiry"). It holds no lease while
+                # it waits (invariant 1).
                 continue
             parked_at = task.next_eligible_at or task.updated_at
             if parked_at + timedelta(seconds=limit) > now:

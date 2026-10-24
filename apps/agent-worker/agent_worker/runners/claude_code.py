@@ -302,6 +302,11 @@ _BACKGROUND_TOOLS = "Bash|Task|Agent"
 #: runs, and it is the file the tests run.
 STDIN_HOOK_NAME = "stdin_hook.py"
 STDIN_HOOK = Path(__file__).resolve().parent / STDIN_HOOK_NAME
+#: The PostToolUse hook that puts the gate's CAPTCHA hand-off into the agent's
+#: next tool result (CAPTCHA-HANDOFF-2; the why is in its docstring). Shipped
+#: and named by absolute path, as the stdin hook is.
+GATE_WAIT_HOOK_NAME = "gate_wait_hook.py"
+GATE_WAIT_HOOK = Path(__file__).resolve().parent / GATE_WAIT_HOOK_NAME
 
 #: Where agent-runtime-browser installed Chromium (its Dockerfile's ENV). Set
 #: only in that image; the lifecycle passes it to this runner by name.
@@ -391,7 +396,23 @@ LIVE_BROWSER_NOTE = (
     "`from swarm_browser import live; playwright, browser, context = live()` "
     "connects over CDP to $SWARM_CDP_ENDPOINT; call `playwright.stop()` when "
     "done, never `browser.close()`. Open each new page in its own tab so the "
-    "person sees it. When a site shows a CAPTCHA, a bot check, a consent wall "
+    "person sees it. "
+    # CAPTCHA-AVOID (BGD, 2026-10-23; part of #2058): do not provoke the
+    # challenges below. The 2026-10-15 benchmark met 11 to 21 Google 429s a
+    # batch from searches typed into google.com in this browser. WebSearch is
+    # the CLI's built-in tool and this runner restricts none: SPEC passes no
+    # --allowedTools and the generated settings deny nothing, so the tool
+    # named here is one the agent has (test_captcha_avoid_note.py holds it).
+    "For a web search, use the WebSearch tool, never a search engine's page in "
+    "the browser. When a site has an official API for what is asked, prefer it "
+    "to scraping its pages. And on any one site, keep to about one navigation a "
+    "second. "
+    # CAPTCHA-HANDOFF (BGD, 2026-10-23; part of #2058): the gate raises the
+    # hand-off itself when it sees a challenge on the agent's page.
+    "Never try to solve or get around a CAPTCHA yourself: the platform asks a "
+    "person to solve it, so when the browser stops answering on one, run "
+    "`swarm-handoff wait` and carry on once it returns. "
+    "When a site shows a CAPTCHA, a bot check, a consent wall "
     "or a sign-in, do not try to get around it and do not switch to a "
     "different site than the one asked for: run `swarm-handoff request "
     "--reason \"<what the person should do>\" --expect <domain>`, then "
@@ -671,7 +692,15 @@ def resume_summary(spool: str) -> str | None:
 
 
 def write_headless_settings(directory: Path) -> Path:
-    """Write the CLI's `--settings` file and its hook into `directory`; return the file."""
+    """Write the CLI's `--settings` file and its hook into `directory`; return the file.
+
+    On a live-browser attempt -- the one kind the lifecycle sets SWARM_HANDOFF
+    for, read here from the same environment `body` passes it on from -- the
+    file also registers `gate_wait_hook.py` after every tool, so the agent's
+    next tool result says when the gate has asked a person to solve a CAPTCHA
+    (CAPTCHA-HANDOFF-2, BGD 2026-10-23; part of #2058). Any other attempt has
+    no spool for it to read, and gets no hook.
+    """
     if directory.is_symlink():
         directory.unlink()
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -725,6 +754,24 @@ def write_headless_settings(directory: Path) -> Path:
             ]
         },
     }
+    spool = os.environ.get(HANDOFF_ENV, "").strip()
+    if spool:
+        settings["hooks"]["PostToolUse"] = [
+            {
+                # Every tool: the call the pause blocks is a browser_* tool,
+                # a Bash `swarm_browser` script or anything else. Two small
+                # reads, so a short timeout; it fails open on any error.
+                "matcher": "*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": f"{shlex.quote(sys.executable)} -I {shlex.quote(str(GATE_WAIT_HOOK))} "
+                                   f"{shlex.quote(spool)}",
+                        "timeout": 10,
+                    }
+                ],
+            }
+        ]
     path = directory / "settings.json"
     _write_private(path, json.dumps(settings, indent=2) + "\n")
     return path

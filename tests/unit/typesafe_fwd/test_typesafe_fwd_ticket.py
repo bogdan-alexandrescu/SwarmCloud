@@ -42,6 +42,14 @@ def _mint(key: str, **overrides) -> str:
     return reference.mint_typesafe_ticket(key, **claims)
 
 
+def _forge(ticket: str) -> str:
+    # Change the MAC's first character, which carries six whole bits: its last
+    # carries bits base64url decoding ignores, so overwriting the tail with "AA"
+    # left about one ticket in a thousand verifying as itself (#2137's red run).
+    payload, mac = ticket.split(".")
+    return f"{payload}.{'B' if mac[0] == 'A' else 'A'}{mac[1:]}"
+
+
 def test_the_wire_constants_are_the_references():
     assert fwd.TICKET_DOMAIN == reference.TICKET_DOMAIN
     assert fwd.TICKET_FIELDS == reference.TICKET_FIELDS
@@ -70,7 +78,7 @@ def test_what_the_reference_refuses_is_refused_here(case):
     key = _key()
     now = time.time()
     ticket = {
-        "forged": _mint(key)[:-2] + "AA",
+        "forged": _forge(_mint(key)),
         "other_key": _mint(_key()),
         "expired": _mint(key, exp=int(now) - 1),
         "too_long": _mint(key, exp=int(now) + 3600),

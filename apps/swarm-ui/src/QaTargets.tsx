@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { loadRepositories } from './api'
 import { Banner, Button, Card, EmptyState } from './components'
 import { repoName } from './RepositoriesData'
@@ -24,6 +24,7 @@ import {
   qaCredentialLinkFrom,
   repoSlug,
   runQaTarget,
+  type FlowBrowserTool,
   type QaCredentialStatus,
   type QaLink,
   type QaScreen,
@@ -92,6 +93,16 @@ import './styles/repositories.css'
  * only in the PUT to `/challenge-bypass` once the target is saved. No link:
  * the admin is signed in here, and the value is a key the owner made for
  * these runs rather than a person's own password.
+ *
+ * THE FLOW BROWSER (lane VQ9-TOOL; BGD, 2026-10-23: "flows default to
+ * Playwright; a target, or one run, may choose Jev", after batch
+ * bench3-2026-10-23, docs/browser-bench.md). The form's Flow browser is the
+ * target's `flows_browser_tool`, Playwright unless Jev is chosen, sent on a
+ * registration and on an edit that changes it, and never dropped by an edit
+ * of anything else: an edit sends only what changed, and the API keeps the
+ * rest. Beside Run, "Flows with" picks the tool for that one run alone
+ * (`browser_tool`); left on the target's, nothing is sent and the target's
+ * applies. Capture stays the fixed capture tool either way.
  */
 
 /** This page's address under Repositories (`RepositoriesScreen` mounts it on `page`). */
@@ -258,6 +269,10 @@ export function QaTargetsScreen({ go, link }: { go: (to: string) => void; link?:
   )
 }
 
+function toolName(tool: FlowBrowserTool): string {
+  return tool === 'jev' ? 'Jev' : 'Playwright'
+}
+
 function hostWords(t: QaTarget): string {
   if (t.host_state === 'approved') {
     return t.approved_by === null ? 'approved' : `approved by ${t.approved_by}${t.approved_at === null ? '' : ` ${timeAgo(t.approved_at)}`}`
@@ -273,6 +288,17 @@ function credentialWords(t: QaTarget): string | null {
   if (c.set_at !== null) parts.push(timeAgo(c.set_at))
   if (c.set_by !== null) parts.push(`by ${c.set_by}`)
   return parts.join(' ')
+}
+
+/**
+ * `Start clicks: Staging → Sign in`, each control's text exactly as stored and
+ * in the order the gate clicks them (§2.2); null when the sign-in has none, so
+ * a card says so only when the gate clicks something before the form.
+ */
+function startClickWords(t: QaTarget): string | null {
+  const clicks = t.sign_in.start_clicks
+  if (clicks.length === 0) return null
+  return `Start clicks: ${clicks.map((c) => c.text).join(' → ')}`
 }
 
 /** `Challenge bypass · header X-QA-Bypass · value set 2h ago by …`: never the value. */
@@ -319,12 +345,15 @@ function TargetCard({
 }) {
   const why = cannotRunBecause(t)
   const [reportOnly, setReportOnly] = useState(false)
+  /** This one run's flow browser; null runs the target's own. */
+  const [runTool, setRunTool] = useState<FlowBrowserTool | null>(null)
   const [busy, setBusy] = useState(false)
   const [started, setStarted] = useState<string | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [approving, setApproving] = useState(false)
-  const canApprove = platformAdmin && t.host !== null && t.host_state !== 'approved'
+  // An approved target with a login's extra origin can be approved again, to set or clear its IdP token path (QA-IDP-POST).
+  const canApprove = platformAdmin && t.host !== null && (t.host_state !== 'approved' || t.sign_in.extra_origin !== null)
   const cannotBrowse = cannotBrowseBecause(t)
   const [discoveryBusy, setDiscoveryBusy] = useState(false)
 
@@ -343,7 +372,7 @@ function TargetCard({
     setBusy(true)
     setFailed(null)
     setStarted(null)
-    const r = await runQaTarget(t.id, reportOnly ? 'none' : 'issues')
+    const r = await runQaTarget(t.id, reportOnly ? 'none' : 'issues', runTool)
     setBusy(false)
     if (r.status === 'error') setFailed(writeFailure(r.error))
     else if (r.status === 'ok') setStarted(r.data.workflow_id)
@@ -362,6 +391,7 @@ function TargetCard({
   const slug = repoSlug(t.repository)
   const login = credentialWords(t)
   const bypass = bypassWords(t)
+  const clicks = startClickWords(t)
   return (
     <div className="qa-target" data-target-id={t.id} data-host-state={t.host_state ?? undefined}>
     <Card className="ur-card" title={t.name}>
@@ -382,6 +412,11 @@ function TargetCard({
       </div>
       {t.discovers && <DiscoveryLine t={t} go={go} />}
       {login !== null && <div className="ur-cmeta">{login}</div>}
+      {clicks !== null && (
+        <div className="ur-cmeta" data-start-clicks="">
+          {clicks}
+        </div>
+      )}
       {bypass !== null && (
         <div className="ur-cmeta" data-challenge-bypass="">
           {bypass}
@@ -415,6 +450,18 @@ function TargetCard({
           <input type="checkbox" checked={reportOnly} onChange={(e) => setReportOnly(e.target.checked)} data-report-only="" /> report
           only, file no issues
         </label>
+        <label className="ur-small">
+          Flows with{' '}
+          <select
+            data-run-browser=""
+            value={runTool ?? ''}
+            onChange={(e) => setRunTool(e.target.value === 'playwright' || e.target.value === 'jev' ? e.target.value : null)}
+          >
+            <option value="">the target&rsquo;s ({toolName(t.flows_browser_tool)})</option>
+            <option value="playwright">Playwright, this run</option>
+            <option value="jev">Jev, this run</option>
+          </select>
+        </label>
         {admin && (
           <>
             <Button size="sm" onClick={onEdit}>
@@ -432,7 +479,7 @@ function TargetCard({
         )}
         {canApprove && !approving && (
           <Button size="sm" onClick={() => setApproving(true)}>
-            Approve host
+            {t.host_state === 'approved' ? 'Approve again' : 'Approve host'}
           </Button>
         )}
       </div>
@@ -521,14 +568,20 @@ function typedHost(text: string): string {
  * A platform admin's confirmation of the host, and of the login's extra
  * origin when one is declared (§1.2). Nothing is sent until what is typed is
  * the target's own; the API checks the same again and says its refusal.
+ * With an extra origin, the admin may name its IdP token path: the one path
+ * there the gate lets a POST through to after its sign-in (QA-IDP-POST, BGD
+ * 2026-10-23, #2067). It starts as the approved one, and an approval sent
+ * without it clears it.
  */
 function ApproveHostForm({ t, onClose, onApproved }: { t: QaTarget; onClose: () => void; onApproved: (doc: QaTarget) => void }) {
   const host = t.host ?? ''
   const origin = t.sign_in.extra_origin
   const [typed, setTyped] = useState('')
   const [typedOrigin, setTypedOrigin] = useState('')
+  const [tokenPath, setTokenPath] = useState(t.approved_idp_token_path ?? '')
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
+  const fid = useId()
   const matches = host !== '' && typedHost(typed) === host && (origin === null || typedOrigin.trim() === origin)
 
   async function submit(e: FormEvent) {
@@ -536,7 +589,8 @@ function ApproveHostForm({ t, onClose, onApproved }: { t: QaTarget; onClose: () 
     if (!matches || busy) return
     setBusy(true)
     setFailed(null)
-    const r = await approveQaTargetHost(t.id, host, origin)
+    const path = tokenPath.trim()
+    const r = await approveQaTargetHost(t.id, host, origin, path === '' ? null : path)
     setBusy(false)
     if (r.status === 'error') {
       setFailed(writeFailure(r.error))
@@ -552,24 +606,62 @@ function ApproveHostForm({ t, onClose, onApproved }: { t: QaTarget; onClose: () 
         {`Approving ${host} lets this workspace's visual-QA runs open it. The approval is recorded under your name.`}
         {origin !== null && ` The login also signs in through ${origin}, approved with it.`}
       </p>
-      <label>
-        Type the host to confirm{' '}
-        <input name="confirm_host" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={host} spellCheck={false} />
-      </label>
-      {origin !== null && (
-        <label>
-          Type the login&rsquo;s extra origin{' '}
-          <input name="confirm_extra_origin" value={typedOrigin} onChange={(e) => setTypedOrigin(e.target.value)} placeholder={origin} spellCheck={false} />
+      <div className="ur-fgrid">
+        <label className="ur-fl" htmlFor={`${fid}-host`}>
+          Type the host to confirm
         </label>
-      )}
-      <span className="ur-cacts">
+        <div>
+          <input
+            id={`${fid}-host`}
+            name="confirm_host"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            placeholder={host}
+            spellCheck={false}
+          />
+        </div>
+        {origin !== null && (
+          <>
+            <label className="ur-fl" htmlFor={`${fid}-origin`}>
+              Type the login&rsquo;s extra origin
+            </label>
+            <div>
+              <input
+                id={`${fid}-origin`}
+                name="confirm_extra_origin"
+                value={typedOrigin}
+                onChange={(e) => setTypedOrigin(e.target.value)}
+                placeholder={origin}
+                spellCheck={false}
+              />
+            </div>
+            <label className="ur-fl" htmlFor={`${fid}-token`}>
+              IdP token path (optional)
+            </label>
+            <div>
+              <input
+                id={`${fid}-token`}
+                name="idp_token_path"
+                value={tokenPath}
+                onChange={(e) => setTokenPath(e.target.value)}
+                placeholder="/realms/<realm>/protocol/openid-connect/token"
+                spellCheck={false}
+              />
+              <p className="ur-small">
+                {`The gate lets exactly a POST to ${origin} at this path through, after its own sign-in, so the app can refresh its token. Every other write there stays refused.`}
+              </p>
+            </div>
+          </>
+        )}
+      </div>
+      <div className="ur-formacts">
         <Button type="submit" kind="primary" size="sm" busy={busy} disabled={!matches}>
           {`Approve ${host}`}
         </Button>
         <Button size="sm" onClick={onClose}>
           Cancel
         </Button>
-      </span>
+      </div>
       {failed !== null && (
         <p className="ur-small ur-bad" role="alert">
           {failed}
@@ -599,6 +691,7 @@ function CredentialForm({
 }) {
   const user = useRef<HTMLInputElement>(null)
   const pass = useRef<HTMLInputElement>(null)
+  const fid = useId()
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
 
@@ -630,27 +723,35 @@ function CredentialForm({
   }
 
   return (
-    <Card title={`Test credential for ${name}`}>
+    <Card className="ur-form" title={`Test credential for ${name}`}>
       <p className="ur-small">
         Type the test account&rsquo;s username and password. They go from this page to the workspace&rsquo;s secret store and
         nowhere else: Claude, the plugin and this page&rsquo;s address never see them, and the live browser types them into
         the app&rsquo;s login without the agent holding them. Use a test account with no MFA or CAPTCHA. The link works once.
       </p>
       <form className="qa-cred" data-target-id={link.targetId} onSubmit={(e) => void submit(e)} autoComplete="off">
-        <label>
-          Username <input name="username" type="text" ref={user} autoComplete="off" spellCheck={false} />
-        </label>
-        <label>
-          Password <input name="password" type="password" ref={pass} autoComplete="new-password" />
-        </label>
-        <span className="ur-cacts">
+        <div className="ur-fgrid">
+          <label className="ur-fl" htmlFor={`${fid}-username`}>
+            Username
+          </label>
+          <div>
+            <input id={`${fid}-username`} name="username" type="text" ref={user} autoComplete="off" spellCheck={false} />
+          </div>
+          <label className="ur-fl" htmlFor={`${fid}-password`}>
+            Password
+          </label>
+          <div>
+            <input id={`${fid}-password`} name="password" type="password" ref={pass} autoComplete="new-password" />
+          </div>
+        </div>
+        <div className="ur-formacts">
           <Button type="submit" kind="primary" size="sm" busy={busy}>
             Save credential
           </Button>
           <Button size="sm" onClick={onClose}>
             Cancel
           </Button>
-        </span>
+        </div>
       </form>
       {failed !== null && (
         <p className="ur-small ur-bad" role="alert">
@@ -684,6 +785,7 @@ interface Draft {
   repository: string
   authorized_by: string
   environment: 'production' | 'non_production'
+  flows_browser_tool: FlowBrowserTool
   kind: 'none' | 'own_login'
   login_path: string
   signed_in_selector: string
@@ -712,6 +814,7 @@ function draftOf(t: QaTarget | null): Draft {
     repository: repoSlug(t?.repository ?? null) ?? '',
     authorized_by: t?.authorized_by ?? '',
     environment: t?.environment ?? 'production',
+    flows_browser_tool: t?.flows_browser_tool ?? 'playwright',
     kind: t?.sign_in.kind ?? 'none',
     login_path: t?.sign_in.login_path ?? '',
     signed_in_selector: t?.sign_in.signed_in_selector ?? '',
@@ -771,6 +874,7 @@ function bodyOf(d: Draft, was: Draft | null): QaTargetSend | string {
     screens,
     environment: d.environment,
     ...more,
+    flows_browser_tool: d.flows_browser_tool,
   }
   if (d.bypass_kind !== 'none') full.challenge_bypass = { kind: d.bypass_kind, name: d.bypass_name.trim() }
   if (was === null) return full
@@ -803,6 +907,8 @@ function TargetForm({
   const [failed, setFailed] = useState<string | null>(null)
   // The bypass's value: UNCONTROLLED, in the DOM input alone until a save reads and empties it.
   const bypassValue = useRef<HTMLInputElement>(null)
+  // Each label cell names its control by id (`ur-fl` beside it, not around it).
+  const fid = useId()
   const set = (k: keyof Draft) => (e: { target: { value: string } }) => setD((was) => ({ ...was, [k]: e.target.value }))
   const setClick = (i: number, k: 'text' | 'css') => (e: { target: { value: string } }) =>
     setD((was) => ({ ...was, start_clicks: was.start_clicks.map((c, j) => (j === i ? { ...c, [k]: e.target.value } : c)) }))
@@ -849,137 +955,221 @@ function TargetForm({
   }
 
   return (
-    <Card title={target === null ? 'Register a QA target' : `Change ${target.name}`}>
+    <Card className="ur-form" title={target === null ? 'Register a QA target' : `Change ${target.name}`}>
       <form className="qa-edit" onSubmit={(e) => void submit(e)}>
-        <label>
-          Name <input name="name" value={d.name} onChange={set('name')} maxLength={100} />
-        </label>
-        <label>
-          Address (https only) <input name="base_url" value={d.base_url} onChange={set('base_url')} placeholder="https://app.example.com/" />
-        </label>
-        <label>
-          Files findings in{' '}
-          <select name="repository" value={d.repository} onChange={set('repository')}>
-            <option value="">Pick a registered repository</option>
-            {slugs.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Who said this application may be tested{' '}
-          <input name="authorized_by" value={d.authorized_by} onChange={set('authorized_by')} maxLength={200} />
-        </label>
-        <label>
-          Environment{' '}
-          <select name="environment" value={d.environment} onChange={set('environment')}>
-            <option value="production">Production (read-only flows)</option>
-            <option value="non_production">Non-production</option>
-          </select>
-        </label>
-        <label>
-          Sign-in{' '}
-          <select name="kind" value={d.kind} onChange={set('kind')}>
-            <option value="none">Public pages, no sign-in</option>
-            <option value="own_login">The app&rsquo;s own login</option>
-          </select>
-        </label>
-        {d.kind === 'own_login' && (
-          <fieldset>
-            <label>
-              Login path <input name="login_path" value={d.login_path} onChange={set('login_path')} placeholder="/login" />
-            </label>
-            <label>
-              Signed-in selector (required){' '}
-              <input name="signed_in_selector" value={d.signed_in_selector} onChange={set('signed_in_selector')} />
-            </label>
-            <label>
-              Username selector <input name="username_selector" value={d.username_selector} onChange={set('username_selector')} />
-            </label>
-            <label>
-              Password selector <input name="password_selector" value={d.password_selector} onChange={set('password_selector')} />
-            </label>
-            <label>
-              Submit selector <input name="submit_selector" value={d.submit_selector} onChange={set('submit_selector')} />
-            </label>
-            <p className="ur-small">
-              Start clicks: what the gate clicks, in order, before the form (a chooser, or a &ldquo;Sign in&rdquo; button before the identity
-              provider). Text is the control&rsquo;s exact visible text; CSS, optional, narrows the candidates (for example button).
-            </p>
-            {d.start_clicks.map((c, i) => (
-              <span key={i} className="qa-start-click">
-                <label>
-                  Click {i + 1} text <input name={`start_click_text_${i}`} value={c.text} onChange={setClick(i, 'text')} maxLength={60} />
-                </label>
-                <label>
-                  CSS <input name={`start_click_css_${i}`} value={c.css} onChange={setClick(i, 'css')} maxLength={200} />
-                </label>
-                <Button
-                  size="sm"
-                  name="remove_start_click"
-                  onClick={() => setD((was) => ({ ...was, start_clicks: was.start_clicks.filter((_, j) => j !== i) }))}
-                >
-                  Remove
-                </Button>
-              </span>
-            ))}
-            {d.start_clicks.length < MAX_START_CLICKS && (
-              <Button size="sm" onClick={() => setD((was) => ({ ...was, start_clicks: [...was.start_clicks, { text: '', css: '' }] }))}>
-                Add start click
-              </Button>
+        <div className="ur-fgrid">
+          <label className="ur-fl" htmlFor={`${fid}-name`}>
+            Name
+          </label>
+          <div>
+            <input id={`${fid}-name`} name="name" value={d.name} onChange={set('name')} maxLength={100} />
+          </div>
+          <label className="ur-fl" htmlFor={`${fid}-base_url`}>
+            Address<small>https only</small>
+          </label>
+          <div>
+            <input id={`${fid}-base_url`} name="base_url" value={d.base_url} onChange={set('base_url')} placeholder="https://app.example.com/" />
+            {target !== null && target.host !== null && (
+              <p className="ur-hint">{`Changing the address's host sets ${target.host}'s approval back to pending.`}</p>
             )}
-          </fieldset>
-        )}
-        <label>
-          Challenge bypass{' '}
-          <select name="bypass_kind" value={d.bypass_kind} onChange={set('bypass_kind')}>
-            <option value="none">None</option>
-            <option value="header">A header the app&rsquo;s owner set up</option>
-            <option value="cookie">A cookie the app&rsquo;s owner set up</option>
-          </select>
-        </label>
-        {d.bypass_kind !== 'none' && (
-          <fieldset className="qa-bypass">
-            <p className="ur-small">
-              Only for an app your workspace owns: the header or cookie its CAPTCHA test keys or WAF skip rule accept. The live
-              browser adds it on this target&rsquo;s approved origins and nowhere else, and the agent never sees its value.
-            </p>
-            <label>
-              {d.bypass_kind === 'header' ? 'Header name' : 'Cookie name'}{' '}
-              <input name="bypass_name" value={d.bypass_name} onChange={set('bypass_name')} maxLength={64} spellCheck={false} placeholder="X-QA-Bypass" />
-            </label>
-            <label>
-              Value (write-only){' '}
-              <input name="bypass_value" type="password" ref={bypassValue} autoComplete="new-password" spellCheck={false} />
-            </label>
-            <span className="ur-small" data-bypass-value="">
-              {target === null || target.challenge_bypass === null
-                ? 'value not set'
-                : `${valueWords(target.challenge_bypass_value)}; type a value to replace it`}
-            </span>
-          </fieldset>
-        )}
-        <label>
-          Screens, one &ldquo;id path&rdquo; a line{' '}
-          <textarea name="screens" value={d.screens} onChange={set('screens')} rows={4} placeholder={'home /\npricing /pricing'} />
-        </label>
-        <label>
-          More settings (JSON: {MORE_FIELDS.join(', ')}){' '}
-          <textarea name="more" value={d.more} onChange={set('more')} rows={4} placeholder={'{"widths": ["desktop", "phone-390"]}'} />
-        </label>
-        {target !== null && target.host !== null && (
-          <p className="ur-small">{`Changing the address's host sets ${target.host}'s approval back to pending.`}</p>
-        )}
-        <span className="ur-cacts">
+          </div>
+          <label className="ur-fl" htmlFor={`${fid}-repository`}>
+            Files findings in
+          </label>
+          <div>
+            <select id={`${fid}-repository`} name="repository" value={d.repository} onChange={set('repository')}>
+              <option value="">Pick a registered repository</option>
+              {slugs.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </div>
+          <label className="ur-fl" htmlFor={`${fid}-authorized_by`}>
+            Who said this application may be tested
+          </label>
+          <div>
+            <input id={`${fid}-authorized_by`} name="authorized_by" value={d.authorized_by} onChange={set('authorized_by')} maxLength={200} />
+          </div>
+          <label className="ur-fl" htmlFor={`${fid}-environment`}>
+            Environment
+          </label>
+          <div>
+            <select id={`${fid}-environment`} name="environment" value={d.environment} onChange={set('environment')}>
+              <option value="production">Production (read-only flows)</option>
+              <option value="non_production">Non-production</option>
+            </select>
+          </div>
+          <label className="ur-fl" htmlFor={`${fid}-flows_browser_tool`}>
+            Flow browser
+          </label>
+          <div>
+            <select id={`${fid}-flows_browser_tool`} name="flows_browser_tool" value={d.flows_browser_tool} onChange={set('flows_browser_tool')}>
+              <option value="playwright">Playwright (the default)</option>
+              <option value="jev">Jev</option>
+            </select>
+          </div>
+          <label className="ur-fl" htmlFor={`${fid}-kind`}>
+            Sign-in
+          </label>
+          <div>
+            <select id={`${fid}-kind`} name="kind" value={d.kind} onChange={set('kind')}>
+              <option value="none">Public pages, no sign-in</option>
+              <option value="own_login">The app&rsquo;s own login</option>
+            </select>
+          </div>
+          {d.kind === 'own_login' && (
+            <>
+              <label className="ur-fl" htmlFor={`${fid}-login_path`}>
+                Login path
+              </label>
+              <div>
+                <input id={`${fid}-login_path`} name="login_path" value={d.login_path} onChange={set('login_path')} placeholder="/login" />
+              </div>
+              <label className="ur-fl" htmlFor={`${fid}-signed_in_selector`}>
+                Signed-in selector<small>required</small>
+              </label>
+              <div>
+                <input id={`${fid}-signed_in_selector`} name="signed_in_selector" value={d.signed_in_selector} onChange={set('signed_in_selector')} />
+              </div>
+              <label className="ur-fl" htmlFor={`${fid}-username_selector`}>
+                Username selector
+              </label>
+              <div>
+                <input id={`${fid}-username_selector`} name="username_selector" value={d.username_selector} onChange={set('username_selector')} />
+              </div>
+              <label className="ur-fl" htmlFor={`${fid}-password_selector`}>
+                Password selector
+              </label>
+              <div>
+                <input id={`${fid}-password_selector`} name="password_selector" value={d.password_selector} onChange={set('password_selector')} />
+              </div>
+              <label className="ur-fl" htmlFor={`${fid}-submit_selector`}>
+                Submit selector
+              </label>
+              <div>
+                <input id={`${fid}-submit_selector`} name="submit_selector" value={d.submit_selector} onChange={set('submit_selector')} />
+              </div>
+              <div className="ur-fl">
+                Start clicks
+                <small>
+                  What the gate clicks, in order, before the form (a chooser, or a &ldquo;Sign in&rdquo; button before the identity provider).
+                  Text is the control&rsquo;s exact visible text; CSS, optional, narrows the candidates (for example button).
+                </small>
+              </div>
+              <div>
+                {d.start_clicks.map((c, i) => (
+                  <div key={i} className="qa-start-click" role="group" aria-label={`Start click ${i + 1}`}>
+                    <b>Click {i + 1}</b>
+                    <label>
+                      Text{' '}
+                      <input
+                        name={`start_click_text_${i}`}
+                        value={c.text}
+                        onChange={setClick(i, 'text')}
+                        maxLength={60}
+                        aria-label={`Click ${i + 1} text`}
+                      />
+                    </label>
+                    <label>
+                      CSS{' '}
+                      <input
+                        name={`start_click_css_${i}`}
+                        value={c.css}
+                        onChange={setClick(i, 'css')}
+                        maxLength={200}
+                        aria-label={`Click ${i + 1} CSS`}
+                      />
+                    </label>
+                    <Button
+                      size="sm"
+                      name="remove_start_click"
+                      onClick={() => setD((was) => ({ ...was, start_clicks: was.start_clicks.filter((_, j) => j !== i) }))}
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                ))}
+                {d.start_clicks.length < MAX_START_CLICKS && (
+                  <Button size="sm" onClick={() => setD((was) => ({ ...was, start_clicks: [...was.start_clicks, { text: '', css: '' }] }))}>
+                    Add start click
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+          <label className="ur-fl" htmlFor={`${fid}-bypass_kind`}>
+            Challenge bypass
+          </label>
+          <div>
+            <select id={`${fid}-bypass_kind`} name="bypass_kind" value={d.bypass_kind} onChange={set('bypass_kind')}>
+              <option value="none">None</option>
+              <option value="header">A header the app&rsquo;s owner set up</option>
+              <option value="cookie">A cookie the app&rsquo;s owner set up</option>
+            </select>
+            {d.bypass_kind !== 'none' && (
+              <p className="ur-hint">
+                Only for an app your workspace owns: the header or cookie its CAPTCHA test keys or WAF skip rule accept. The live
+                browser adds it on this target&rsquo;s approved origins and nowhere else, and the agent never sees its value.
+              </p>
+            )}
+          </div>
+          {d.bypass_kind !== 'none' && (
+            <>
+              <label className="ur-fl" htmlFor={`${fid}-bypass_name`}>
+                {d.bypass_kind === 'header' ? 'Header name' : 'Cookie name'}
+              </label>
+              <div>
+                <input
+                  id={`${fid}-bypass_name`}
+                  name="bypass_name"
+                  value={d.bypass_name}
+                  onChange={set('bypass_name')}
+                  maxLength={64}
+                  spellCheck={false}
+                  placeholder="X-QA-Bypass"
+                />
+              </div>
+              <label className="ur-fl" htmlFor={`${fid}-bypass_value`}>
+                Value<small>write-only</small>
+              </label>
+              <div>
+                <input id={`${fid}-bypass_value`} name="bypass_value" type="password" ref={bypassValue} autoComplete="new-password" spellCheck={false} />
+                <p className="ur-hint" data-bypass-value="">
+                  {target === null || target.challenge_bypass === null
+                    ? 'value not set'
+                    : `${valueWords(target.challenge_bypass_value)}; type a value to replace it`}
+                </p>
+              </div>
+            </>
+          )}
+          <label className="ur-fl" htmlFor={`${fid}-screens`}>
+            Screens<small>one &ldquo;id path&rdquo; a line</small>
+          </label>
+          <div>
+            <textarea id={`${fid}-screens`} name="screens" value={d.screens} onChange={set('screens')} rows={6} placeholder={'home /\npricing /pricing'} />
+          </div>
+          <label className="ur-fl" htmlFor={`${fid}-more`}>
+            More settings
+            <small>
+              JSON: {MORE_FIELDS.join(', ')}. <code>file.label_rules</code>, e.g.{' '}
+              <code>{'[{"paths": ["/agents/"], "labels": ["agent-page-rework"]}]'}</code>, adds a rule&rsquo;s labels to the
+              findings on routes starting with one of its paths
+            </small>
+          </label>
+          <div>
+            <textarea id={`${fid}-more`} name="more" value={d.more} onChange={set('more')} rows={6} placeholder={'{"widths": ["desktop", "phone-390"]}'} />
+          </div>
+        </div>
+        <div className="ur-formacts">
           <Button type="submit" kind="primary" size="sm" busy={busy}>
             {target === null ? 'Register' : 'Save changes'}
           </Button>
           <Button size="sm" onClick={onClose}>
             Cancel
           </Button>
-        </span>
+        </div>
       </form>
       {failed !== null && (
         <p className="ur-small ur-bad" role="alert">

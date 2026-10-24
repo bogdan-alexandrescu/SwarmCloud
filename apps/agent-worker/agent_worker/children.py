@@ -579,6 +579,14 @@ class ChildPath:
         onto = getattr(self._git, "rebased_onto", None) if self._git is not None else None
         return onto if isinstance(onto, str) and onto else None
 
+    def pushed_tip(self, branch: str) -> str | None:
+        """The sha swarm-api answered this attempt's last `git_push_branch` to
+        `branch` with, or None: no relay, no push to that branch, or no sha
+        (`gittools.GitTools.pushed_tip`; read by the publish, #1188)."""
+        read = getattr(self._git, "pushed_tip", None) if self._git is not None else None
+        tip = read(branch) if callable(read) else None
+        return tip if isinstance(tip, str) and tip else None
+
     @property
     def search_offered(self) -> bool:
         """Whether this attempt has the search tool: `$SWARM_SEARCH` and its relay."""

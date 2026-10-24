@@ -30,6 +30,14 @@ THE RULES, each the failure it prevents:
   histogram, whose 200 ms bound is the target, so the target is read exactly.
 * NO DATA IS NOT A PASS. A target with nothing to judge reads NO DATA, and the
   exit status says so; reading nothing at all exits 2.
+* UNRECORDED IS NOT ZERO. Beside `blank_s`, each task's unavailable time is
+  split by the reason its frames gave (`unavailable_ms_by_reason`, summed over
+  its viewer connections) with the longest single stretch per reason
+  (`unavailable_longest_ms_by_reason`, the longest any one connection logged),
+  keyed as rfb.UNAVAILABLE_REASON_KEYS keys them. A line from before the gate
+  logged those keys reads "not recorded", never 0: a zero would say the page
+  was always available, which nobody measured. A task only some of whose
+  connections carry them says on how many (FOLLOWUPS-1023, part of #2150).
 
 Exit codes: 0 every target PASS, 1 any FAIL, 3 no FAIL but some NO DATA,
 2 nothing read or bad input.
@@ -245,6 +253,37 @@ def pooled_fps(lines: list[dict[str, Any]]) -> float | None:
     return round(_sum(lines, "updates_while_changing") / changing, 2) if changing else None
 
 
+def _reason_map(line: dict[str, Any], key: str) -> dict[str, float] | None:
+    """A line's `{reason: ms}` map; None when the line does not carry it."""
+    value = line.get(key)
+    if not isinstance(value, dict):
+        return None
+    return {str(k): float(v) for k, v in value.items()
+            if isinstance(v, (int, float)) and not isinstance(v, bool)}
+
+
+def unavailable_by_reason(lines: list[dict[str, Any]]
+                          ) -> tuple[dict[str, float] | None, dict[str, float] | None, int]:
+    """Seconds per reason summed, the longest stretch per reason, and how many
+    lines carried them. Both maps are None when no line did: not recorded."""
+    total: dict[str, float] = {}
+    longest: dict[str, float] = {}
+    recorded = 0
+    for line in lines:
+        spent = _reason_map(line, "unavailable_ms_by_reason")
+        if spent is None:
+            continue
+        recorded += 1
+        for reason, ms in spent.items():
+            total[reason] = total.get(reason, 0.0) + ms
+        for reason, ms in (_reason_map(line, "unavailable_longest_ms_by_reason") or {}).items():
+            longest[reason] = max(longest.get(reason, 0.0), ms)
+    if not recorded:
+        return None, None, 0
+    return ({k: round(v / 1000, 1) for k, v in sorted(total.items())},
+            {k: round(v / 1000, 1) for k, v in sorted(longest.items())}, recorded)
+
+
 def pooled_hist(lines: list[dict[str, Any]]) -> tuple[list[int], list[int]]:
     """The input-to-frame histograms added. Lines with other bounds are skipped."""
     bounds: list[int] = []
@@ -301,6 +340,7 @@ def build(gate: list[dict[str, Any]], funnels: list[dict[str, Any]], readies: li
         bounds, hist = pooled_hist(mine)
         handoffs = [f for f in funnels if f.get("task_id") == task]
         ready = [r.get("seconds") for r in readies if r.get("task_id") == task]
+        by_reason, longest_by_reason, recorded = unavailable_by_reason(mine)
         rows.append({
             "task_id": task,
             **{k: starts[task][k] for k in ("class", "startup_s", "node_s", "pull_s")},
@@ -309,6 +349,9 @@ def build(gate: list[dict[str, Any]], funnels: list[dict[str, Any]], readies: li
             "fps_while_changing": pooled_fps(mine),
             "longest_gap_ms": max((v.get("longest_gap_ms") or 0 for v in mine), default=None),
             "blank_s": round(_sum(mine, "blank_ms") / 1000, 1) if mine else None,
+            "unavailable_s_by_reason": by_reason,
+            "unavailable_longest_s_by_reason": longest_by_reason,
+            "unavailable_reasons_recorded": recorded,
             "input_p95": hist_p95_bound(bounds, hist),
             "keys": int(_sum(mine, "keys")),
             "keys_read": int(_sum(mine, "keys_read")),
@@ -407,6 +450,22 @@ def _cell(value: Any) -> str:
     return str(value)
 
 
+def _reasons_cell(row: dict[str, Any]) -> str:
+    """One task's reasons: `no_page 18s (longest 18s), ...`, `none`, or `not recorded`."""
+    if not row.get("viewers"):
+        return "-"
+    spent = row.get("unavailable_s_by_reason")
+    if spent is None:
+        return "not recorded"
+    longest = row.get("unavailable_longest_s_by_reason") or {}
+    cell = ", ".join(f"{reason} {_cell(s)}s (longest {_cell(longest.get(reason))}s)"
+                     for reason, s in spent.items()) or "none"
+    if row.get("unavailable_reasons_recorded", 0) < row["viewers"]:
+        cell += (f" (recorded on {row['unavailable_reasons_recorded']} of "
+                 f"{row['viewers']} connections)")
+    return cell
+
+
 def render(report: dict[str, Any], hours: float) -> str:
     out = [f"Live browser, last {hours:g} h: {report['read']['tasks']} task(s), "
            f"{report['read']['viewer_connections']} viewer and "
@@ -425,6 +484,9 @@ def render(report: dict[str, Any], hours: float) -> str:
     widths = [max(len(r[i]) for r in table) for i in range(len(columns))]
     for r in table:
         out.append("  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
+    out += ["", "Unavailable time by reason, per task (seconds; longest single stretch):"]
+    for row in report["tasks"]:
+        out.append(f"  {row['task_id']}  {_reasons_cell(row)}")
     f = report["funnel"]
     out += ["", "Hand-off funnel (seconds from the request):",
             f"  requested       {f['requested']}"]

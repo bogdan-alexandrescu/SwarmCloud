@@ -40,7 +40,11 @@ encodings (standard and URL-safe, padded or not, and the core of each of
 the three byte alignments a longer base64 text could carry it at) replaced
 with `PLACEHOLDER`; a `base64Encoded` body and a `postDataEntries` chunk are
 decoded, scrubbed and re-encoded. A base64 body the gate cannot decode is
-refused while a password is held (`undecodable_body`). The scrub's needles
+refused while a password is held (`undecodable_body`). THE SCRUB FAILS CLOSED
+(#2116): a dict or list nested past `MAX_SCRUB_DEPTH` becomes `SCRUB_TOO_DEEP`,
+a value that is not JSON `SCRUB_NOT_JSON`, a number is read as its JSON text,
+and a scrub that raises refuses the whole message (`SCRUB_REFUSED`); what
+the scrub did not read is never passed on. The scrub's needles
 outlive the wipe, as the QA identity's do: a frame in flight when Chromium
 closes is still scrubbed. KNOWN LIMIT: a password under
 `MIN_ALIGNED_BYTES` bytes is not matched at the shifted base64 alignments
@@ -58,6 +62,18 @@ by `QaTarget.judge`:
   worker marked `mutating` on a `non_production` target;
 * anything but `GET` and `HEAD` to any other origin is refused the same way,
   ALWAYS: nothing lifts it, a mutating flow included;
+* ONE EXCEPTION, the IdP token refresh (QA-IDP-POST; BGD decided
+  2026-10-23, part of #2067): a target whose platform admin approved an
+  `idp_token_path` with its `extra_origin` has exactly `POST
+  <extra_origin><idp_token_path>` continued, compared as the whole URL
+  (`idp_token_url`: no query, no fragment, no other port, case or encoding),
+  and only while the gate's own sign-in has completed (`signed_in`, not
+  wiped): never before it, never after one that failed or met a challenge,
+  never on a target that does not sign in. An app that refreshes its SSO
+  token after sign-in (Keycloak's `/protocol/openid-connect/token`) would
+  otherwise render signed out. Every other method or path to that origin
+  is refused as above, a top frame posted there still leaves the target, and
+  a redirect of the POST is a pause of its own, judged by its own URL;
 * a top-frame navigation outside the approved origins, or to an excluded
   path, gets the gate's page instead (`left_page`, `qa_target_left`). The
   login's other origin (`extra_origin`, approved with the host) is a
@@ -106,6 +122,35 @@ hosts would be sent and their origins' storage.
 
 `wipe` drops the credential and refuses the verb from then on (§2.3).
 
+ONE LEG AN ATTEMPT (docs/design/qa-environments.md §1.5; QAENV-GATE, part of
+#2136). A target carries several environments (legs: `staging`,
+`production`), each with its own origins, credential and write rule, and an
+attempt is one leg's. The hand-off names the leg in `environment_name` (the
+entry's `name`); the first hand-off fixes `(target_id, environment_name)` and
+a later one naming anything else is refused `target_changed` before any of
+its fields is taken. A hand-off without the name is an old mark, from before
+the target was migrated to `environments[]`, and is accepted; an absent name
+is itself the value compared, so a named attempt cannot switch legs by
+dropping the name, nor an unnamed one by adding one.
+
+THE GATE'S REFUSALS ARE KNOWN TO THE RUN (QA-GATE-REFUSALS, part of #2067).
+Every request the guard answers itself, a refused write (`qa_write_refused`)
+or a top frame sent to the gate's page (`qa_target_left`), is kept in
+`refusals()`: its wall-clock time, method, origin, path (never the query,
+never the body, and scrubbed like anything bound for the agent) and the
+gate's code, numbered, the last `MAX_REFUSALS` of them. The visual-QA capture
+reads it at `REFUSALS_PATH` on the gate's CDP endpoint and writes each
+screen's share into that screen's `errors.json` as `gate_refused`: a 403 the
+gate sends to another origin carries no CORS header, so Chrome logs it as a
+CORS block, and on 2026-10-23 a run filed exactly that against the app. This
+records refusals; it changes none of the rules above. `undecodable_body` is
+not among them: it withholds a CDP response from the agent, and the page's
+own request went through, so the app saw nothing the gate answered. An IdP
+token refresh the gate let through is kept apart, in `allowed`
+(`note_allowed`, code `IDP_TOKEN_ALLOWED`, labelled "allowed: IdP token
+refresh"), bounded the same way: a run shows what was let through, and never
+counts it as refused.
+
 NOTHING HERE LOGS OR RECORDS A CREDENTIAL, A USERNAME OR A SELECTOR'S MATCH.
 Records carry the target id, causes, origins, methods and counts.
 """
@@ -121,6 +166,7 @@ import json
 import logging
 import re
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -132,6 +178,16 @@ log = logging.getLogger(__name__)
 OP = "qa_sign_in"
 #: What the password reads as in anything the agent receives.
 PLACEHOLDER = "[qa-credential]"
+#: How deep the scrub walks (#2116). A dict or list nested deeper, or a value
+#: that is not JSON, becomes `SCRUB_TOO_DEEP` or `SCRUB_NOT_JSON`: the scrub
+#: fails closed and never passes on what it did not read. 64 is far past any
+#: CDP message's own nesting (a capture's rows sit about 10 levels deep).
+MAX_SCRUB_DEPTH = 64
+SCRUB_TOO_DEEP = "[qa-scrub: nesting too deep]"
+SCRUB_NOT_JSON = "[qa-scrub: not JSON]"
+#: A message whose scrub raised: the agent gets this in its place, never the original.
+SCRUB_REFUSED = ("refused by the live gate: this message could not be scrubbed of the QA target's "
+                 "credential, so it was withheld")
 
 #: §2.3: at most three sign-ins an attempt, then `qa_sign_in_exhausted`.
 MAX_SIGN_INS = 3
@@ -189,6 +245,8 @@ _TARGET_ID = re.compile(r"qat_[0-9a-f]{16}")
 _ORIGIN = re.compile(r"https://[a-z0-9.-]{1,253}(?::[0-9]{1,5})?")
 _PATH = re.compile(r"/[^\s#]{0,511}")
 _CAUSE = re.compile(r"[a-z0-9_]{1,64}")
+#: An `environments[]` entry's `name` (qa-environments.md §1.1).
+_ENVIRONMENT_NAME = re.compile(r"[a-z0-9-]{1,20}")
 _SELECTOR_KEYS = ("username_selector", "password_selector", "submit_selector")
 MAX_SELECTOR = 512
 MAX_USERNAME = 256
@@ -208,6 +266,26 @@ RESERVED_BYPASS_HEADERS = frozenset({
 RESERVED_BYPASS_HEADER_PREFIXES = ("proxy-", "sec-")
 _BYPASS_NAME = re.compile(r"[A-Za-z0-9!#$%&'*+.^_|~-]{1,64}")
 _BYPASS_VALUE = re.compile(r"[!#-+\--:<-\[\]-~]{16,1024}")
+
+#: QA-GATE-REFUSALS: the refusal record (module docstring). Where the capture
+#: reads it on the gate's CDP endpoint, its format, and how many it keeps: a
+#: capture of 57 routes at four widths and themes that refused one token
+#: exchange per load is 228; past this the oldest go, counted in `dropped`.
+REFUSALS_PATH = "/json/swarm/qa-refusals"
+REFUSALS_FORMAT = 1
+MAX_REFUSALS = 1000
+#: The gate's codes for a request it answered itself.
+WRITE_REFUSED = "qa_write_refused"
+TARGET_LEFT = "qa_target_left"
+#: QA-IDP-POST: the code and the report's words for a token refresh let through.
+IDP_TOKEN_ALLOWED = "idp_token_refresh"
+IDP_TOKEN_LABEL = "allowed: IdP token refresh"
+#: swarm-api's `qatargets._IDP_TOKEN_PATH`, restated: one plain path, segments
+#: of unreserved and sub-delim characters less the glob characters, no `%`
+#: (so no encoded variant), no empty segment (no `//`, no trailing slash).
+#: `.` and `..` segments are refused apart.
+_IDP_TOKEN_PATH = re.compile(r"(?:/[A-Za-z0-9._~!$&'()+,;=:@-]+)+")
+MAX_IDP_TOKEN_PATH = 512
 
 Record = Callable[[str, Mapping[str, Any]], None]
 Sleep = Callable[[float], Awaitable[None]]
@@ -299,6 +377,8 @@ class Verdict:
     action: str                # "continue", "refuse" (a write) or "leave" (a navigation)
     origin: str | None = None
     method: str | None = None
+    #: A write continued under an exception the run is told of (`IDP_TOKEN_ALLOWED`).
+    allowed: str | None = None
 
 
 CONTINUE = Verdict("continue")
@@ -312,10 +392,23 @@ class QaTarget:
     guard over the same target. `clock` is monotonic seconds.
     """
 
-    def __init__(self, record: Record, *, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, record: Record, *, clock: Callable[[], float] = time.monotonic,
+                 wall: Callable[[], float] = time.time) -> None:
         self._record = record
         self._clock = clock
+        #: Epoch seconds for the refusal record: the capture, in the agent's
+        #: container on the same node, compares it with its own `time.time()`.
+        self._wall = wall
+        self._refusals: deque[dict[str, Any]] = deque(maxlen=MAX_REFUSALS)
+        self._refused = 0
+        #: QA-IDP-POST: the token refreshes let through, kept apart from the refusals.
+        self._allowed: deque[dict[str, Any]] = deque(maxlen=MAX_REFUSALS)
+        self._allowed_count = 0
+        #: Messages the scrub refused whole (`_refuse_whole`), for the record's count.
+        self._scrub_refusals = 0
         self.target_id: str | None = None
+        #: The leg's `environments[]` name, None for an old mark (module docstring).
+        self.environment_name: str | None = None
         self.base_url: str | None = None
         self.base_origin: str | None = None
         self.origins: tuple[str, ...] = ()
@@ -324,6 +417,9 @@ class QaTarget:
         self.request_spacing = 0.1
         self.read_posts: tuple[str, ...] = ()
         self.excluded_paths: tuple[str, ...] = ()
+        #: QA-IDP-POST: the approved token path, and the one URL it allows.
+        self.idp_token_path: str | None = None
+        self.idp_token_url: str | None = None
         self.sign_in: dict[str, Any] = {}
         #: Why the last sign-in ended, in a sentence, when its cause alone does
         #: not say (a start click's text). Public settings only, never a credential.
@@ -423,7 +519,8 @@ class QaTarget:
         except QaTargetRefused as exc:
             self._record("qa_sign_in_refused", {"cause": exc.code})
             raise
-        if self.target_id is not None and parsed["target_id"] != self.target_id:
+        if self.target_id is not None and (parsed["target_id"], parsed["environment_name"]) \
+                != (self.target_id, self.environment_name):
             self._refuse("target_changed")
         if self.signing_in or self.state == STATE_SIGNING_IN:
             self._refuse(BUSY)
@@ -433,6 +530,7 @@ class QaTarget:
             self._record("qa_sign_in_refused", {"cause": EXHAUSTED, "target_id": parsed["target_id"]})
             raise QaTargetRefused(EXHAUSTED)
         self.target_id = parsed["target_id"]
+        self.environment_name = parsed["environment_name"]
         self.base_url = parsed["base_url"]
         self.base_origin = origin_of(parsed["base_url"])
         self.origins = tuple(parsed["origins"])
@@ -441,6 +539,8 @@ class QaTarget:
         self.request_spacing = 1.0 / parsed["requests_per_s"]
         self.read_posts = tuple(parsed["read_posts"])
         self.excluded_paths = tuple(parsed["excluded_paths"])
+        self.idp_token_path = parsed["idp_token_path"]
+        self.idp_token_url = parsed["idp_token_url"]
         self.sign_in = parsed["sign_in"]
         self.mutating = parsed["mutating"] and self.environment == "non_production"
         self.cause = None
@@ -459,9 +559,11 @@ class QaTarget:
             self.state = STATE_SIGNING_IN
         else:
             self.state = STATE_READY
-        self._record("qa_target_set", {"target_id": self.target_id, "sign_in": parsed["sign_in"]["kind"],
+        self._record("qa_target_set", {"target_id": self.target_id, "environment_name": self.environment_name,
+                                       "sign_in": parsed["sign_in"]["kind"],
                                        "sign_ins": self.sign_ins, "mutating": self.mutating,
-                                       "challenge_bypass": self.bypass_kind})
+                                       "challenge_bypass": self.bypass_kind,
+                                       "idp_token_path": self.idp_token_path is not None})
         return self.status()
 
     def _refuse(self, code: str) -> None:
@@ -495,44 +597,97 @@ class QaTarget:
     # ------------------------------------------------------------- scrub
 
     def scrub(self, message: dict[str, Any]) -> dict[str, Any]:
-        """`message` as an agent may receive it. Unchanged when nothing matched."""
+        """`message` as an agent may receive it. Unchanged when nothing matched.
+
+        Fails closed (#2116): a container past `MAX_SCRUB_DEPTH` or a value
+        that is not JSON is replaced by a marker, and a scrub that raises
+        refuses the whole message (`_refuse_whole`). Neither record carries the
+        value, its length or the exception's text."""
         if not self._needles:
             return message
-        counter = [0]
-        out = self._walk(message, counter, 0)
-        result = out.get("result") if isinstance(out, dict) else None
-        if isinstance(result, dict) and result.get("base64Encoded") is True:
-            out = {**out, "result": self._scrub_bodies(result, counter)}
+        counter, marked = [0], [0]
+        try:
+            out = self._walk(message, counter, 0, marked)
+            result = out.get("result") if isinstance(out, dict) else None
+            if isinstance(result, dict) and result.get("base64Encoded") is True:
+                out = {**out, "result": self._scrub_bodies(result, counter)}
+        except Exception as exc:  # noqa: BLE001 - any failure refuses; none forwards the original
+            return self._refuse_whole(message, exc)
+        route = self._route(message)
+        if marked[0]:
+            self._record("qa_target_scrub_marked", {"route": route, "count": marked[0]})
         if counter[0]:
             fields: dict[str, Any] = {"count": counter[0]}
-            method = message.get("method")
-            if isinstance(method, str):
-                fields["method"] = method
+            if route != "response":
+                fields["method"] = route
             self._record("qa_target_scrubbed", fields)
-            return out
-        return message
+        return out if counter[0] or marked[0] else message
 
-    def _walk(self, value: Any, counter: list[int], depth: int) -> Any:
+    def _route(self, message: Mapping[str, Any]) -> str:
+        """The record's name for `message`: its CDP method, or "response". A
+        method carrying a needle is named "event", never echoed."""
+        method = message.get("method")
+        if not isinstance(method, str):
+            return "response"
+        return "event" if any(n in method for n in self._needles) else method[:128]
+
+    def _refuse_whole(self, message: Mapping[str, Any], exc: BaseException) -> dict[str, Any]:
+        """What the agent gets for a message the scrub could not finish: an
+        error answer to its command, or the event's method with no params."""
+        self._scrub_refusals += 1
+        try:
+            route = self._route(message)
+        except Exception:  # noqa: BLE001 - the record still goes, unnamed
+            route = "unknown"
+        self._record("qa_target_scrub_refused", {"route": route, "count": self._scrub_refusals,
+                                                 "error": type(exc).__name__})
+        msg_id = message.get("id") if isinstance(message, Mapping) else None
+        if isinstance(msg_id, int) and not isinstance(msg_id, bool):
+            return {"id": msg_id, "error": {"code": -32000, "message": SCRUB_REFUSED}}
+        out: dict[str, Any] = {"params": {"qaScrub": SCRUB_REFUSED}}
+        if route not in ("response", "event", "unknown"):
+            out["method"] = route
+        return out
+
+    def _walk(self, value: Any, counter: list[int], depth: int, marked: list[int]) -> Any:
         if isinstance(value, str):
             return self._replace(value, counter)
-        if depth > 64:
+        if value is None or isinstance(value, bool):
             return value
+        if isinstance(value, (int, float)):
+            # A number reads as its JSON text: an all-digit password returned
+            # as a number would otherwise pass as one.
+            text = json.dumps(value)
+            cleaned = self._replace(text, counter)
+            return value if cleaned == text else cleaned
+        if not isinstance(value, (dict, list)):
+            marked[0] += 1
+            return SCRUB_NOT_JSON
+        if depth > MAX_SCRUB_DEPTH:
+            marked[0] += 1
+            return SCRUB_TOO_DEEP
         if isinstance(value, dict):
             changed = False
             out: dict[Any, Any] = {}
             for key, item in value.items():
-                new_key = self._replace(key, counter) if isinstance(key, str) else key
-                if key == "postDataEntries" and isinstance(item, list):
-                    new_item: Any = [self._scrub_entry(e, counter) for e in item]
+                if isinstance(key, str):
+                    new_key: Any = self._replace(key, counter)
                 else:
-                    new_item = self._walk(item, counter, depth + 1)
-                changed = changed or new_key != key or new_item is not item
+                    # JSON has string keys only; anything else is read as the text it serialises to.
+                    new_key = self._walk(key, counter, depth + 1, marked)
+                if key == "postDataEntries" and isinstance(item, list):
+                    if depth + 1 > MAX_SCRUB_DEPTH:
+                        marked[0] += 1
+                        new_item: Any = SCRUB_TOO_DEEP
+                    else:
+                        new_item = [self._scrub_entry(e, counter, depth + 2, marked) for e in item]
+                else:
+                    new_item = self._walk(item, counter, depth + 1, marked)
+                changed = changed or new_key is not key or new_item is not item
                 out[new_key] = new_item
             return out if changed else value
-        if isinstance(value, list):
-            items = [self._walk(item, counter, depth + 1) for item in value]
-            return items if any(a is not b for a, b in zip(items, value)) else value
-        return value
+        items = [self._walk(item, counter, depth + 1, marked) for item in value]
+        return items if any(a is not b for a, b in zip(items, value)) else value
 
     def _replace(self, text: str, counter: list[int]) -> str:
         hits = 0
@@ -550,19 +705,20 @@ class QaTarget:
                 raw = raw.replace(needle, PLACEHOLDER.encode())
         return raw
 
-    def _scrub_entry(self, entry: Any, counter: list[int]) -> Any:
-        """A `postDataEntries` item: `{bytes: <base64>}`."""
+    def _scrub_entry(self, entry: Any, counter: list[int], depth: int, marked: list[int]) -> Any:
+        """A `postDataEntries` item: `{bytes: <base64>}`, at `depth` in the message."""
         if not isinstance(entry, dict) or not isinstance(entry.get("bytes"), str):
-            return self._walk(entry, counter, 1)
+            return self._walk(entry, counter, depth, marked)
         try:
             raw = base64.b64decode(entry["bytes"], validate=True)
         except (binascii.Error, ValueError):
-            return self._walk(entry, counter, 1)
+            return self._walk(entry, counter, depth, marked)
         before = counter[0]
         cleaned = self._replace_bytes(raw, counter)
         if counter[0] == before:
-            return self._walk(entry, counter, 1)
-        return {**entry, "bytes": base64.b64encode(cleaned).decode("ascii")}
+            return self._walk(entry, counter, depth, marked)
+        rest = self._walk({k: v for k, v in entry.items() if k != "bytes"}, counter, depth, marked)
+        return {**rest, "bytes": base64.b64encode(cleaned).decode("ascii")}
 
     def _scrub_bodies(self, result: dict[str, Any], counter: list[int]) -> dict[str, Any]:
         out = result
@@ -605,6 +761,38 @@ class QaTarget:
                     "continued as it was, never rewritten")
         return None
 
+    # --------------------------------------------------------- refusals
+
+    def note_refusal(self, code: str, method: Any, url: Any) -> None:
+        """Keep one request the guard answered itself (module docstring): its
+        origin and path alone, the path scrubbed of the held secrets."""
+        origin = origin_of(url) or "unknown"
+        path = _path_of(str(url)) if isinstance(url, str) else "/"
+        self._refused += 1
+        self._refusals.append({
+            "n": self._refused, "at": float(self._wall()), "method": str(method or "GET").upper()[:16],
+            "origin": origin, "path": self._replace(path, [0])[:512], "code": code,
+        })
+
+    def note_allowed(self, code: str, method: Any, url: Any) -> None:
+        """Keep one write the guard let through under an exception (QA-IDP-POST),
+        apart from the refusals, in the same shape."""
+        origin = origin_of(url) or "unknown"
+        path = _path_of(str(url)) if isinstance(url, str) else "/"
+        self._allowed_count += 1
+        self._allowed.append({
+            "n": self._allowed_count, "at": float(self._wall()), "method": str(method or "GET").upper()[:16],
+            "origin": origin, "path": self._replace(path, [0])[:512], "code": code, "label": IDP_TOKEN_LABEL,
+        })
+
+    def refusals(self) -> dict[str, Any]:
+        """What `REFUSALS_PATH` answers: the kept refusals, oldest first, and
+        apart from them the token refreshes let through (`allowed`)."""
+        return {"format": REFUSALS_FORMAT, "armed": self.armed, "refusals": [dict(r) for r in self._refusals],
+                "dropped": self._refused - len(self._refusals),
+                "allowed": [dict(r) for r in self._allowed],
+                "allowed_dropped": self._allowed_count - len(self._allowed)}
+
     # ------------------------------------------------------------- rules
 
     def judge(self, method: Any, url: Any, *, top_document: bool) -> Verdict:
@@ -631,7 +819,17 @@ class QaTarget:
             return CONTINUE
         if verb == "POST" and origin == self.base_origin and self._read_post(str(url)):
             return CONTINUE
+        if verb == "POST" and self._idp_token(url):
+            return Verdict("continue", origin, verb, allowed=IDP_TOKEN_ALLOWED)
         return Verdict("refuse", origin, verb)
+
+    def _idp_token(self, url: Any) -> bool:
+        """QA-IDP-POST: `url` is exactly the approved token URL, and the gate's
+        own sign-in has completed and holds (module docstring). The whole URL
+        is compared as a string: a query, a fragment, a port, userinfo, case
+        or an encoding is another URL."""
+        return (self.idp_token_url is not None and isinstance(url, str) and url == self.idp_token_url
+                and self.state == STATE_SIGNED_IN and not self.signing_in and not self.wiped)
 
     def _excluded(self, url: str) -> bool:
         path = _path_of(url)
@@ -661,6 +859,10 @@ def _parse(args: Mapping[str, Any]) -> dict[str, Any]:
     target_id = args.get("target_id")
     if not isinstance(target_id, str) or not _TARGET_ID.fullmatch(target_id):
         raise QaTargetRefused("target_id")
+    environment_name = args.get("environment_name")
+    if "environment_name" in args and not (isinstance(environment_name, str)
+                                           and _ENVIRONMENT_NAME.fullmatch(environment_name)):
+        raise QaTargetRefused("environment_name")
     origins = args.get("origins")
     if (not isinstance(origins, list) or not 1 <= len(origins) <= MAX_ORIGINS
             or not all(isinstance(o, str) and _ORIGIN.fullmatch(o) for o in origins)):
@@ -692,6 +894,8 @@ def _parse(args: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(mutating, bool):
         raise QaTargetRefused("mutating")
     sign_in = _parse_sign_in(args.get("sign_in"), origins)
+    token_path, token_url = _parse_idp_token_path(args.get("idp_token_path"), origins,
+                                                  origin_of(base_url), sign_in["kind"])
     credential = None
     if sign_in["kind"] == "own_login":
         raw = args.get("credential")
@@ -703,11 +907,30 @@ def _parse(args: Mapping[str, Any]) -> dict[str, Any]:
         credential = (username, password)
     elif "credential" in args:
         raise QaTargetRefused("credential")
-    return {"target_id": target_id, "origins": origins, "base_url": base_url,
+    return {"target_id": target_id, "environment_name": environment_name, "origins": origins, "base_url": base_url,
             "environment": environment, "navigation_ms": nav, "requests_per_s": rps,
             "read_posts": read_posts, "excluded_paths": paths, "mutating": mutating,
+            "idp_token_path": token_path, "idp_token_url": token_url,
             "sign_in": sign_in, "credential": credential,
             "challenge_bypass": _parse_bypass(args.get("challenge_bypass"))}
+
+
+def _parse_idp_token_path(raw: Any, origins: list[str], base_origin: str | None,
+                          sign_in_kind: str) -> tuple[str | None, str | None]:
+    """(path, the one URL it allows), checked again (QA-IDP-POST): swarm-api
+    took it only from a platform admin's approval with the extra origin, and
+    the hand-off crossed the worker. The extra origin is the one approved
+    origin that is not the base's; with none, or more than one, or a target
+    that never signs in, there is nothing to bound it, and it is refused."""
+    if raw is None:
+        return None, None
+    if (not isinstance(raw, str) or len(raw) > MAX_IDP_TOKEN_PATH or not _IDP_TOKEN_PATH.fullmatch(raw)
+            or any(segment in (".", "..") for segment in raw.split("/"))):
+        raise QaTargetRefused("idp_token_path")
+    extra = [o for o in origins if o != base_origin]
+    if sign_in_kind != "own_login" or len(extra) != 1:
+        raise QaTargetRefused("idp_token_path")
+    return raw, f"{extra[0]}{raw}"
 
 
 def _parse_bypass(raw: Any) -> tuple[str, str, str] | None:
@@ -921,13 +1144,19 @@ class QaTargetGuard:
         url = request.get("url")
         top = self._top_document(session, params)
         verdict = self._target.judge(request.get("method"), url, top_document=top)
+        if verdict.allowed is not None:
+            # QA-IDP-POST: let through, and the run is told so, apart from the refusals.
+            self._record(verdict.allowed, {"method": verdict.method, "origin": verdict.origin})
+            self._target.note_allowed(verdict.allowed, verdict.method, url)
         if verdict.action == "refuse":
-            self._record("qa_write_refused", {"method": verdict.method, "origin": verdict.origin})
+            self._record(WRITE_REFUSED, {"method": verdict.method, "origin": verdict.origin})
+            self._target.note_refusal(WRITE_REFUSED, verdict.method, url)
             await self._answer(session, request_id, 403, "text/plain; charset=utf-8",
                                b"refused by the live gate: this QA run is read-only here")
             return
         if verdict.action == "leave":
-            self._record("qa_target_left", {"origin": verdict.origin})
+            self._record(TARGET_LEFT, {"origin": verdict.origin})
+            self._target.note_refusal(TARGET_LEFT, verdict.method, url)
             await self._answer(session, request_id, 200, "text/html; charset=utf-8",
                                left_page(verdict.origin or "unknown").encode())
             return

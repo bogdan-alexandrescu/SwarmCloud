@@ -37,6 +37,8 @@ import {
   edgePath,
   finishedResultOf,
   foldMix,
+  MIX_NAMED_MAX,
+  monoW,
   hasTokenKind,
   inputsByStep,
   layoutOf,
@@ -1399,18 +1401,27 @@ export function WorkflowCard({
   const arrivalStep = page && view === 'graph' && arrival && picked !== null ? workflow.steps.find((s) => s.step_id === picked) : undefined
   const arrivalWhy =
     arrivalStep === undefined ? null : stepWhy(arrivalStep, stepState(arrivalStep, taskById), workflow.steps, taskById, null)
+  // WHETHER THE BANNER IS ON SCREEN, so the step card does not print the same
+  // sentence beside it (visual QA run 6, F2, #1680: banner, card and node
+  // said it three times). Unknown is NOT in view (`useSeen`): without an
+  // observer the card keeps the sentence, which repeats it rather than lose it.
+  const [leadRef, leadSeen] = useSeen<HTMLElement>()
   const failLead =
     arrivalStep !== undefined && arrivalWhy !== null && arrivalWhy.kind === 'cause' ? (
-      <section className="wfp-fail-lead" aria-label={`Why step ${arrivalStep.step_id} failed`}>
+      <section ref={leadRef} className="wfp-fail-lead" aria-label={`Why step ${arrivalStep.step_id} failed`}>
         <b className="wfp-fail-lead-head">{arrivalStep.step_id} failed</b>
         <span className="wfp-fail-lead-text">{arrivalWhy.full}</span>
         <button type="button" className="ctl-link wfp-fail-lead-go" onClick={() => pickStep(arrivalStep.step_id)}>
           {/* NOT "BELOW" (QA-120, run 5b): from 1280 the card is beside the
-              graph, and below that under it; the control brings it either way. */}
-          Open the step’s card: agent, logs, changes
+              graph, and below that under it; the control brings it either way.
+              NOT ", CHANGES" (run 6, F4): the card is open whenever this
+              banner is, and its link to the step's changes is the one route
+              there, named by the step. */}
+          Open the step’s card: agent, logs
         </button>
       </section>
     ) : null
+  const leadInView = failLead !== null && leadSeen
 
   const inspector = (stepId: string, onClose: () => void) => (
     <InspectorSlot
@@ -1429,6 +1440,7 @@ export function WorkflowCard({
       loadAttempts={loadAttempts}
       page={page}
       reload={reload}
+      leadInView={leadInView && arrivalStep?.step_id === stepId}
     />
   )
 
@@ -1772,6 +1784,9 @@ function Shape({ shape }: { shape: DagShape }) {
  * progress. The full per-step profile stays on every expanded node; this never
  * replaces it.
  */
+/** What '· N steps' adds to a chip over the `×N` that `mixChipW` measures: 7 characters of the chip's 12px mono. */
+const STEPS_WORD_W = monoW(7, 12)
+
 function Mix({ steps }: { steps: WorkflowStep[] }) {
   const mix = profileMix(steps)
   // THE COLUMN'S WIDTH, MEASURED, so whole chips fold into `+N` instead of the
@@ -1794,14 +1809,21 @@ function Mix({ steps }: { steps: WorkflowStep[] }) {
     return () => watch.disconnect()
   }, [])
   if (mix.length === 0) return <span className="wf-mix" ref={ref} />
-  const { shown, rest } = foldMix(mix, room)
+  // THE CHIP SAYS WHAT IT COUNTS (visual QA run 6, F3, #1680): 'claude-code
+  // ×6' did not say whether the 6 were steps, agents or attempts. `foldMix`
+  // measures the `×6` form (dag.ts `mixChipW`), so the room it is handed is
+  // less the seven characters ' steps' and the '· ' add to each chip it may
+  // name -- folded one chip early rather than cut one mid-word.
+  const { shown, rest } = foldMix(mix, room === null ? null : room - STEPS_WORD_W * Math.min(MIX_NAMED_MAX, mix.length))
   const all = mix.map((m) => `${m.profile} ×${m.count}`).join(', ')
   return (
     <span className="wf-mix" ref={ref} title={`Runner profiles: ${all}`}>
       {shown.map((m) => (
         <Chip key={m.profile}>
-          {m.profile}
-          <span className="wf-mix-n">×{m.count}</span>
+          {m.profile}{' '}
+          <span className="wf-mix-n">
+            · {m.count} step{m.count === 1 ? '' : 's'}
+          </span>
         </Chip>
       ))}
       {rest > 0 && <Chip faint>+{rest}</Chip>}
@@ -2321,6 +2343,29 @@ function WorkflowSteps({
 }
 
 /**
+ * Whether the element the callback ref is attached to is on screen now --
+ * `useInView`'s question with its opposite default. That hook answers "in
+ * view" where there is no IntersectionObserver, because a card it gates must
+ * still read; this one gates a sentence being LEFT OUT (the step card's
+ * failure, while the banner says it), and a sentence left out because nobody
+ * could look is lost. So unknown is "not in view".
+ */
+function useSeen<T extends Element>(): [(node: T | null) => void, boolean] {
+  const [node, setNode] = useState<T | null>(null)
+  const [seen, setSeen] = useState(false)
+  useEffect(() => {
+    setSeen(false)
+    if (node === null || typeof globalThis.IntersectionObserver !== 'function') return
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) if (e.target === node) setSeen(e.isIntersecting)
+    })
+    io.observe(node)
+    return () => io.disconnect()
+  }, [node])
+  return [setNode, seen]
+}
+
+/**
  * The inspector for the picked step, with its own clock.
  *
  * KEYED BY WORKFLOW AND STEP where it is mounted, so picking a different step
@@ -2342,6 +2387,7 @@ function InspectorSlot({
   loadAttempts,
   page = false,
   reload,
+  leadInView = false,
 }: {
   workflow: Workflow
   /** The spec's label, or null: the inspector's head names the workflow by it (#330). */
@@ -2359,6 +2405,8 @@ function InspectorSlot({
   /** On a workflow's page the card carries the step's Stop and its review or merge card. */
   page?: boolean
   reload: () => void
+  /** The page's failure banner for this step is on screen, saying why already. */
+  leadInView?: boolean
 }) {
   const now = useNow()
   const row = stepRows(workflow, taskById, usage, now, classes).find((r) => r.step.step_id === stepId)
@@ -2419,7 +2467,14 @@ function InspectorSlot({
           {/* A HEADING, NOT A CAPTION (visual QA run 2 WG-4, run 5b L4): it
               was a grey micro `<b>`, the quietest words on the card. */}
           <h4 className="wf-inspect-cause-h">Why it failed</h4>
-          <span className="wf-inspect-cause-text">{row.why.full}</span>
+          {/* ONCE PER VIEW (visual QA run 6, F2): while the banner above the
+              graph is on screen it is the statement, and the card points at
+              it; scrolled away, the card prints the sentence whole. */}
+          {leadInView ? (
+            <span className="wf-inspect-cause-ref">Said in the banner above the graph.</span>
+          ) : (
+            <span className="wf-inspect-cause-text">{row.why.full}</span>
+          )}
         </div>
       )}
       {page ? <StepCardExtras workflow={workflow} step={row.step} state={state} taskById={taskById} reload={reload} now={now} /> : null}
@@ -3458,8 +3513,18 @@ function WorkflowGraph({
     bringIntoView.current = null
     const pickedNode = wantPicked ? layout.nodes.find((n) => n.step.step_id === picked) : undefined
     let span: readonly [number, number] | null = null
+    // THE PICKED CARD'S WHOLE STAGE, NOT THE CARD ALONE (visual QA run 6,
+    // F1, #1680). Centring the card at 1440, with the step card docked
+    // beside the graph, scrolled `checkpoints`' stage ~230px right: its
+    // first two cards slid under the sticky rail and the band's red line
+    // lost its start. So the stage is the span; when it is wider than the
+    // view, the view opens on its first card and moves only as far as the
+    // picked card needs to be whole (`keep`).
+    let keep: readonly [number, number] | null = null
     if (pickedNode !== undefined) {
-      span = [pickedNode.x, pickedNode.x + layout.nodeW]
+      const stage = layout.nodes.filter((n) => n.level === pickedNode.level)
+      span = [Math.min(...stage.map((n) => n.x)), Math.max(...stage.map((n) => n.x)) + layout.nodeW]
+      keep = [pickedNode.x, pickedNode.x + layout.nodeW]
     } else if (layout.wide[0] === true) {
       const band = layout.bands.find((b) => b.level === 0)
       if (band !== undefined) span = [band.x, band.x + band.w]
@@ -3479,10 +3544,15 @@ function WorkflowGraph({
     const canvasLeft = railW + gap
     const visible = el.clientWidth - railW
     const [from, to] = span
-    const left =
+    let left =
       to - from <= visible
         ? canvasLeft + (from + to) / 2 - railW - visible / 2
         : canvasLeft + from - railW - PAD
+    if (keep !== null) {
+      // The least scroll that shows the picked card whole from there.
+      const past = canvasLeft + keep[1] + PAD - (left + el.clientWidth)
+      if (past > 0) left += past
+    }
     el.scrollLeft = Math.max(0, Math.min(left, el.scrollWidth - el.clientWidth))
     syncView()
     // On mount and when a stage opens, and on nothing else: the 1Hz clock
@@ -4069,13 +4139,13 @@ function stageCause(steps: readonly WorkflowStep[], notes: ReadonlyMap<string, S
     return n !== undefined && n.kind === 'cause' ? [{ stepId: s.step_id, note: n }] : []
   })
   if (failed.length === 0) return null
-  const groups = new Map<string, { first: StepWhy; n: number }>()
+  const groups = new Map<string, { first: StepWhy; stepId: string; n: number }>()
   for (const f of failed) {
     // `text` is the error's first line, or `no error recorded` for a failure
     // that wrote none -- which then groups as its own cause.
     const key = failureCause(f.note.text) ?? f.note.text
     const g = groups.get(key)
-    if (g === undefined) groups.set(key, { first: f.note, n: 1 })
+    if (g === undefined) groups.set(key, { first: f.note, stepId: f.stepId, n: 1 })
     else g.n += 1
   }
   // `Map` keeps insertion order, so a stable sort on the count leaves ties in
@@ -4083,11 +4153,16 @@ function stageCause(steps: readonly WorkflowStep[], notes: ReadonlyMap<string, S
   const ordered = [...groups.values()].sort((a, b) => b.n - a.n)
   const lead = ordered[0]!
   const others = ordered.length - 1
-  const text = `${lead.first.text}${others > 0 ? ` (+${others} other cause${others === 1 ? '' : 's'})` : ''}`
+  // THE LINE STARTS WITH THE STEP IT CAME FROM (visual QA run 6, F1, #1680).
+  // Bare, it read 'exit status 2: pytest was interrupted: …' -- and scrolled
+  // or clipped, only its tail showed, a red line belonging to no step. The
+  // name goes first because the counts row clips from the right.
+  const said = `${lead.stepId}: ${lead.first.text}`
+  const text = `${said}${others > 0 ? ` (+${others} other cause${others === 1 ? '' : 's'})` : ''}`
   return {
     text,
     full: failed.map((f) => `${f.stepId}: ${f.note.full}`).join('\n\n'),
-    said: `It failed with: ${lead.first.text}${others > 0 ? `, and ${others} other cause${others === 1 ? '' : 's'}` : ''}.`,
+    said: `It failed with: ${said}${others > 0 ? `, and ${others} other cause${others === 1 ? '' : 's'}` : ''}.`,
   }
 }
 
@@ -5901,13 +5976,39 @@ function StepsDone({ workflow, roll }: { workflow: Workflow; roll: Rollup }) {
       </span>
     )
   }
+  // WHAT BECAME OF THE STEPS THAT ARE NOT DONE, on a workflow that has ended
+  // (visual QA run 6, F3, #1680): 'Steps done 4/6' on a failed row did not
+  // say the other two failed and were cancelled. The fraction keeps its short
+  // form (QA-119); the outcomes are a line under it, in the census's words.
+  const counts = workflow.rollup?.counts
+  const ends =
+    counts !== undefined && s !== null && TERMINAL_STATES.has(s)
+      ? (
+          [
+            ['failed', counts.FAILED ?? 0],
+            ['dead_lettered', counts.DEAD_LETTERED ?? 0],
+            ['cancelled', counts.CANCELLED ?? 0],
+          ] as const
+        ).flatMap(([word, n]) => (n > 0 ? [`${n} ${word}`] : []))
+      : []
   return (
-    <span className="wfl-done" title={roll.why}>
-      <ProgressBar done={roll.done} total={roll.total} tone={hue} label={roll.why} />
-      <small>
-        {roll.done}/{roll.total}
-      </small>
-    </span>
+    <>
+      <span className="wfl-done" title={roll.why}>
+        <ProgressBar done={roll.done} total={roll.total} tone={hue} label={roll.why} />
+        <small>
+          {roll.done}/{roll.total}
+        </small>
+      </span>
+      {ends.length > 0 && (
+        <small className="wfl-done-ends" title={roll.why}>
+          {/* The separator joins the two lines into one reading of the cell
+              ('4/6 · 1 failed · 1 cancelled'); the sheet hides it where the
+              outcomes start a line of their own. */}
+          <span className="wfl-done-sep"> · </span>
+          {ends.join(' · ')}
+        </small>
+      )}
+    </>
   )
 }
 
@@ -6204,7 +6305,16 @@ function WorkflowHead({
       <div className="wfp-chips">
         <WorkflowStateMark workflow={workflow} />
         {pr !== null && <PullRequestLink pr={pr} className="c-chip is-link" />}
-        <Chip>on failure: {workflow.on_step_failure.toLowerCase() === 'continue' ? 'continue' : 'fail the workflow'}</Chip>
+        {/* CONFIGURATION, LABELLED AND SET APART (visual QA 5b:wg-light-L2,
+            #1680 box 6343794378): 'on failure: fail the workflow' sat beside
+            the state 'failed' as its sibling and read as what happened. It is
+            the policy the workflow was submitted with, so it says so, in a
+            group of its own behind a rule. Before the cost still, which keeps
+            the phone head two lines in both states (V103). */}
+        <span className="wfp-policy" title="What this workflow was submitted to do when a step fails. Configuration, not an outcome.">
+          <span className="wfp-policy-k">Policy</span>
+          <Chip>on failure: {workflow.on_step_failure.toLowerCase() === 'continue' ? 'continue' : 'fail the workflow'}</Chip>
+        </span>
         <span className="wfp-cost">
           <Chip>
             {usage.kind === 'reading' ? (

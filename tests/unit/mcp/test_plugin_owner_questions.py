@@ -112,6 +112,39 @@ def test_the_nested_shape_plugin_row_nest_unwraps_keeps_its_questions(tmp_path):
     assert [entry["step_id"] for entry in got["result"]["owner_questions"]] == ["join"]
 
 
+def test_a_step_rows_owner_answers_are_kept_as_answered_beside_its_questions(tmp_path):
+    """ANSWERS-429 (part of #1904): the bridge's `step_result` carries the
+    owner's answers as `owner_answers`; stepAnswer keeps their indexes as
+    `answered`, as the summary mode does, so an answered question is not
+    put to the person again."""
+    asked = [_question(1), _question(2)]
+    answered_one = {**_fields("SUCCEEDED", asked), "owner_answers": [{"question_index": 0, "choice": "wake", "text": ""}]}
+    got = _per_step(tmp_path, {
+        "step:scan-01": {"state": "SUCCEEDED", "result": answered_one},
+        "step:scan-02": {"state": "SUCCEEDED", "result": _fields("SUCCEEDED", [_question(3)])},
+        "step:join": {"result": {"state": "SUCCEEDED", "result": {**answered_one, "questions": [_question(4)]}}},
+    })
+    rows = {row["step_id"]: row for row in got["result"]["steps"]}
+
+    # MUTATION: stepAnswer() dropping `owner_answers` (the #1904 follow-up)
+    # leaves no `answered` here.
+    assert rows["scan-01"]["answered"] == [0], rows["scan-01"]
+    # MUTATION: removing an answered question from `questions`: both stay.
+    assert rows["scan-01"]["questions"] == [_expected(asked[0], 0), _expected(asked[1], 1)]
+    # MUTATION: setting `answered: []` on every row puts it on a step with no
+    # answer; it stays absent, as `questions` does on a step that asked none.
+    assert "answered" not in rows["scan-02"], rows["scan-02"]
+    # MUTATION: reading `owner_answers` from the middle object of the nested
+    # shape loses it there.
+    assert rows["join"]["answered"] == [0], rows["join"]
+
+    # MUTATION: rowAsker() not handing `answered` on re-asks question 0.
+    entries = {entry["step_id"]: entry for entry in got["result"]["owner_questions"]}
+    assert entries["scan-01"]["questions"] == [_expected(asked[1], 1)], entries["scan-01"]
+    assert "join" not in entries, entries
+    assert [q["index"] for q in entries["scan-02"]["questions"]] == [0]
+
+
 def test_a_run_whose_step_asked_logs_one_line_for_it(tmp_path):
     asked = [_question(1), _question(2)]
     got = _per_step(tmp_path, {"step:scan-01": {"state": "SUCCEEDED", "result": _fields("SUCCEEDED", asked)}})

@@ -541,10 +541,12 @@ def test_head_is_resolved_from_the_files_the_way_git_would_or_refused(
     worker_factory, monkeypatch, origin, local_urls, forge, how
 ):
     """A detached HEAD and a branch that lives only in `packed-refs` publish
-    the agent's commit as before. A HEAD that is a symbolic ref to anything
-    outside `refs/heads/` is refused, with a reason naming HEAD, and nothing
-    is pushed: the worker reads the ref files itself now, and it follows no
-    ref it would have to trust the agent about."""
+    the agent's commit as before. The detached one descends from the start
+    sha and stands on no `refs/remotes/origin/*` tip, so #2094's rule, as BGD
+    relaxed it on 2026-10-23, does not call it a move. A HEAD that
+    is a symbolic ref to anything outside `refs/heads/` is refused, with a
+    reason naming HEAD, and nothing is pushed: the worker reads the ref files
+    itself now, and it follows no ref it would have to trust the agent about."""
     def edit(repo: Path) -> None:
         (repo / "committed.txt").write_text("the agent's commit\n")
         _commit(repo, "Add committed")
@@ -570,6 +572,12 @@ def test_head_is_resolved_from_the_files_the_way_git_would_or_refused(
         reason = f"{out.get('publish_reason', '')} {out.get('error', '')}"
         assert "HEAD" in reason and "refs/heads/" in reason, out
         assert branch not in tree_at_refs(origin), "a branch was pushed"
+    elif how == "detached":
+        # MUTATION: call every detached HEAD a move (PR 2107's strict rule)
+        # and the agent's own commit on its start is not published.
+        assert "head_moved" not in out, out.get("publish_reason")
+        assert out["published"] is True, out.get("publish_reason")
+        assert {"committed.txt", "uncommitted.txt"} <= tree_at(origin, branch)
     else:
         assert out["published"] is True, out.get("publish_reason")
         assert {"committed.txt", "uncommitted.txt"} <= tree_at(origin, branch)

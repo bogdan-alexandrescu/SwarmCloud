@@ -23,6 +23,14 @@ live-browser success), and a hand-off prompt must show the hand-off come back
 (`human_control_returned`). "Not reported" is never 0: a figure the API did not
 serve is None here and "not measured" in the TSV.
 
+CHALLENGES ARE COUNTED FROM THE RECORD (CAPTCHA-AVOID, BGD 2026-10-23; part
+of #2058). `challenges` is the number of challenge pages a run met: each
+hand-off the gate raised itself because it saw a challenge on the agent's page
+(`human_handoff_requested` with `detail.origin` "gate", handoff.GATE_ORIGIN),
+plus each challenge page in the action log's visited URLs (Google `/sorry`, by
+live_report's one rule). Never the agent's own words: the transcript is not
+read for it. Without the events document it is unknown (None), not 0.
+
 JEV IS A THIRD ARM, OPT-IN (JEV-RUNNER, owner decision 2026-10-14). The
 `jev` arm is chosen by its own sentence like the other two; it is not in a
 default plan, because its tools exist only for a submitter or tenant with a
@@ -342,6 +350,33 @@ def _turns(task: dict[str, Any], answer: Any) -> int | None:
     return int(turns) if turns is not None else None
 
 
+def task_document(saved: Any) -> dict[str, Any]:
+    """The task itself: `GET /v1/tasks/{id}` answers `{"task": {...}}`, and a
+    document saved before that, or unwrapped by hand, is the task bare. On
+    2026-10-23 every run read as unfinished until CLD unwrapped them with
+    `jq '.task // .'`; this is that, once."""
+    if not isinstance(saved, dict):
+        return {}
+    inner = saved.get("task")
+    return inner if isinstance(inner, dict) else saved
+
+
+#: A hand-off the gate raised itself, for a challenge it saw (handoff.GATE_ORIGIN).
+GATE_ORIGIN = "gate"
+
+
+def challenges(events: Any, actions: Any) -> int | None:
+    """Challenge pages the run met (module docstring). None when the events
+    or the action log were not read: a source not read found nothing, which is
+    not the same as there being nothing."""
+    if not isinstance(events, dict) or actions is None:
+        return None
+    raised = sum(1 for e in events.get("events") or []
+                 if isinstance(e, dict) and e.get("type") == "human_handoff_requested"
+                 and isinstance(e.get("detail"), dict) and e["detail"].get("origin") == GATE_ORIGIN)
+    return raised + sorry_hits(actions)[0]
+
+
 def _transcript_sorry(windows: list[Any]) -> int | None:
     """Transcript steps naming a Google /sorry page or a 429. None when no
     window was parsed into steps (a `text` transcript, or none read)."""
@@ -355,9 +390,10 @@ def _transcript_sorry(windows: list[Any]) -> int | None:
 def measure(tasks_dir: Path, run: dict[str, Any]) -> dict[str, Any]:
     task_id = run["task_id"]
     prompt = PROMPTS_BY_ID.get(run["prompt"])
-    task = _json(tasks_dir / f"{task_id}.task.json") or {}
+    task = task_document(_json(tasks_dir / f"{task_id}.task.json"))
     attempts = _json(tasks_dir / f"{task_id}.attempts.json")
-    events = _json(tasks_dir / f"{task_id}.events.json") or {}
+    saved_events = _json(tasks_dir / f"{task_id}.events.json")
+    events = saved_events or {}
     actions = _json(tasks_dir / f"{task_id}.actions.json")
     answer = _json(tasks_dir / f"{task_id}.answer.json")
     windows = [_json(p) for p in sorted(tasks_dir.glob(f"{task_id}.transcript.*.json"),
@@ -394,6 +430,7 @@ def measure(tasks_dir: Path, run: dict[str, Any]) -> dict[str, Any]:
                                if actions is not None else None),
         "google_sorry": _transcript_sorry(windows),
         "google_sorry_live": sorry_hits(actions)[0] if actions is not None else None,
+        "challenges": challenges(saved_events, actions),
     }
     if not finished:
         row["success"] = None
@@ -474,6 +511,8 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             "cdp_method_refused": sum(refused) if refused else None,
             "cdp_method_refused_measured": len(refused),
             "google_sorry": _total(r["google_sorry"] for r in done),
+            "challenges": _total(r["challenges"] for r in done),
+            "challenges_measured": sum(1 for r in done if r["challenges"] is not None),
         }
     return out
 
@@ -518,7 +557,7 @@ TSV_COLUMNS = ("label", "tool", "prompt", "rep", "task_id", "state", "success", 
                "live_browser", "result", "cost_usd", "duration_s", "turns", "input_tokens",
                "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
                "handoffs_requested", "handoffs_returned", "cdp_method_refused",
-               "google_sorry", "google_sorry_live")
+               "google_sorry", "google_sorry_live", "challenges")
 
 
 def _cell(value: Any) -> str:
@@ -541,6 +580,8 @@ def render_tsv(rows: list[dict[str, Any]]) -> str:
                 cells.append("unfinished")
             elif column == "state" and value is None:
                 cells.append("unread")
+            elif column == "challenges" and value is None:
+                cells.append("unknown")
             else:
                 cells.append(_cell(value))
         lines.append("\t".join(cells))
@@ -551,13 +592,22 @@ def _usd(value: Any) -> str:
     return "not measured" if value is None else f"${value:.2f}"
 
 
+def _challenges_cell(s: dict[str, Any]) -> str:
+    """The total, and how many runs it was read from when that is not all of them."""
+    if s["challenges"] is None:
+        return "unknown"
+    if s["challenges_measured"] < s["runs"]:
+        return f"{_cell(s['challenges'])} ({s['challenges_measured']} run(s) measured)"
+    return _cell(s["challenges"])
+
+
 def render_markdown(summary: dict[str, dict[str, Any]], rows: list[dict[str, Any]]) -> str:
     out = ["# Browser benchmark: Playwright MCP vs " + " and ".join(challengers(summary)), "",
            "| tool | runs | unfinished | successes | prompts passed | live-browser runs "
            "| median $/task | total $ | median turns | median duration s | input tok "
            "| output tok | cache read tok | cache write tok | hand-offs requested "
-           "| hand-offs returned | cdp_method_refused | Google 429/sorry |",
-           "|" + "---|" * 18]
+           "| hand-offs returned | cdp_method_refused | Google 429/sorry | challenges |",
+           "|" + "---|" * 19]
     for tool, s in summary.items():
         refused = (f"{s['cdp_method_refused']} ({s['cdp_method_refused_measured']} run(s) "
                    "measured)" if s["cdp_method_refused"] is not None else "not measured")
@@ -568,7 +618,7 @@ def render_markdown(summary: dict[str, dict[str, Any]], rows: list[dict[str, Any
             _cell(s["median_duration_s"]), _cell(s["input_tokens"]), _cell(s["output_tokens"]),
             _cell(s["cache_read_input_tokens"]), _cell(s["cache_creation_input_tokens"]),
             _cell(s["handoffs_requested"]), _cell(s["handoffs_returned"]), refused,
-            _cell(s["google_sorry"])]) + " |")
+            _cell(s["google_sorry"]), _challenges_cell(s)]) + " |")
     out.append("")
     for challenger in challengers(summary):
         label_ = "" if challenger == "dev-browser" else f" ({challenger})"

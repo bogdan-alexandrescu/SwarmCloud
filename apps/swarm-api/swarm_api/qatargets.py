@@ -24,6 +24,20 @@ platform admin, audited"), naming the host they approve, so an approval can
 never land on a host that changed under the approver. Changing the host or
 the login's `extra_origin` sets it back to `pending`.
 
+THE IdP TOKEN PATH (QA-IDP-POST; BGD decided 2026-10-23, part of #2067:
+"allow the token path only"). The live gate refuses every write to the
+login's other origin, so an app that refreshes its SSO token after sign-in
+renders signed out. The platform admin who approves the extra origin may
+name, IN THE SAME APPROVAL, one exact path on it (`idp_token_path`: `/...`,
+no query, no fragment, no `%`, no glob, no empty, `.` or `..` segment;
+`_IDP_TOKEN_PATH`), stored as `approved_idp_token_path`. The gate then lets
+exactly `POST <extra_origin><path>` through once its own sign-in has
+completed (livegate/qatarget.py). It is refused without the extra origin
+named. It is NOT a registration field: a workspace admin's change cannot set
+it, a change of host or extra origin clears it with the approval, and an
+approval that does not name it clears it, so the admin takes it back by
+approving again. The audit row names it.
+
 THE CREDENTIAL (§2.1, VQ-Q2). One Secret Manager secret per tenant,
 `swarm-tenant-<tenant>-qa`, declared empty by Terraform (lane VQ-3) and its
 value a JSON map keyed by target id. swarm-api adds a version (IAM V-1) and
@@ -106,6 +120,64 @@ target settles a discovery whose task has ended too (`settle_running`).
 Storing the list never bumps `revision`: the mark a run already carries
 stays the target's, and nothing a caller sends ever writes `discovered`.
 
+ONE APP, SEVERAL ENVIRONMENTS (docs/design/qa-environments.md §1; lane
+QAENV-MODEL, BGD's Q1 (a), 2026-10-23, part of #2136). A target is an APP: its
+name, repository, screens, discovery settings, flows, exclusions and filing
+rules are stored once. WHERE it is served is a list, `environments: [{name,
+base_url, environment, sign_in, credential, challenge_bypass, host_state,
+approved_origins, read_posts, rate, discovered, discovering, ...}]`
+(`qaspec.LEG_FIELDS`), because the sign-in, credential, host and write rule
+are exactly what must never cross from one leg to another. `name` is
+`[a-z0-9-]{1,20}`, unique in the target. Every rule above applies PER ENTRY:
+an entry's host is approved on its own (`:approve-host` names it, required
+when there are several); a credential link is bound to its entry, so a link
+minted for staging can never set production's password; a run, a discovery
+and the worker's answer are one leg's (`qaspec.leg`), and the mark names it
+(`{id, revision, environment}`).
+
+A document stored before this lane has no `environments`. Every read
+(`QaTargets.find`, `get`, `list`, `any_tenant`) presents it as a one-entry
+list (`_normal`), named `production` when its old mark was and `staging`
+otherwise, and every write keeps it in the shape it was stored in
+(`_stored`), so it answers the API, renders its prompts and is marked
+exactly as before until the migration (`POST /v1/qa-targets:migrate`, a
+platform admin's; `QaTargets.migrate`) rewrites it: one transaction per
+document, `revision` bumped, one `qa_target_migrated` row.
+
+THE SECRET'S KEYS (§1.4): still one secret per tenant and no IAM change; an
+entry's values are `values["<target_id>/<name>"]` (`map_key`). An unmigrated
+target, and the entry the migration made (`legacy_map_key`), read the bare
+target id until that entry's next credential or bypass write, which writes
+its own key and removes the old one in the same version: nothing rewrites
+the secret in bulk. The map is held under 56 KiB (`SECRET_MAP_MAX_BYTES`):
+a new entry that may hold values, counted at its maxima, or a value, that
+would pass it is refused with a sentence before anything is written.
+Deleting a target removes every `<target_id>/` key and the legacy one.
+
+ONE DISPATCH, SEVERAL LEGS (qa-environments.md §2.1; lane QAENV-RUN, BGD's
+Q2 (a), 2026-10-23). `:run` names legs (`environments`, every entry when
+unset). Every named leg is checked (`runnable_legs`: `runnable` and the
+render, per leg) BEFORE ANY submission, so a pending host or a missing
+credential on one leg refuses the whole dispatch, naming the leg in
+`detail.environment`, and nothing spends. Then the run group,
+`qa_run_groups/{group_id}` (`qrg_` + 16 hex), is written with every leg
+`pending`, and one workflow per leg is submitted, each inside its own
+`qa_target_mark_allowed` with that leg's one mark, each recorded in
+`qa_target_runs` with `environment` and `group_id`. The single-mark rule, the
+worker's route and the gate are unchanged: each leg is a run as a one-leg run
+always was. A submission refused after an earlier one started leaves that
+leg `not_started` with its code and sentence, and the route answers 207; a
+leg still `pending` after its neighbour started is the crash window between
+two submissions, which the run page says. `GET /v1/qa-runs/{group_id}` reads
+the group in its own tenant only (`run_group`).
+
+TWO LEGS ON ONE ORIGIN (§1.5). When a `non_production` entry shares any
+origin with a `production` entry (AI Studio's case: both legs on
+`https://studio.saga.xyz`, a page toggle choosing the backend, F-1), the
+worker's answer holds it as production: `mutating` is false for every step,
+and `qaspec.leg` renders it no mutating flow. This only ever turns a write
+permission off.
+
 EVERY REFUSAL is a fixed code and a fixed sentence: nothing from the request,
 and nothing from the target's own text, is interpolated into a message.
 """
@@ -120,6 +192,7 @@ import re
 import secrets
 import socket
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Mapping, Protocol, Sequence
 from urllib.parse import urlsplit
@@ -148,7 +221,7 @@ from .repositories import (
     repo_id_for,
     repository_url,
 )
-from .store import LEASES, TASKS
+from .store import LEASES, TASKS, WORKFLOWS
 
 log = logging.getLogger(__name__)
 
@@ -156,6 +229,18 @@ COLLECTION = "qa_targets"
 #: One document per QA run, keyed by its workflow id: which step tasks this
 #: module stamped with which target. The worker's route reads it.
 RUNS_COLLECTION = "qa_target_runs"
+#: One dispatch over a target's legs (qa-environments.md §2.1, QAENV-RUN).
+GROUPS_COLLECTION = "qa_run_groups"
+_GROUP_ID = re.compile(r"^qrg_[0-9a-f]{16}$")
+#: A leg of a group: written `pending` before any submission, `submitted`
+#: with its workflow once it is, `not_started` with why when it was refused.
+LEG_PENDING = "pending"
+LEG_SUBMITTED = "submitted"
+LEG_NOT_STARTED = "not_started"
+GROUP_NOT_FOUND_MESSAGE = "no such QA run"
+ENVIRONMENTS_RUN_MESSAGE = (
+    f"environments names 1 to {qaspec.MAX_ENVIRONMENTS} of the target's entries, each once"
+)
 #: One document per minted credential link, keyed by sha256(token). Never the token.
 LINKS_COLLECTION = "qa_target_credential_links"
 
@@ -180,6 +265,8 @@ AUDIT_DELETED = "qa_target_deleted"
 AUDIT_HOST_APPROVED = "qa_target_host_approved"
 AUDIT_CREDENTIAL_SET = "qa_target_credential_set"
 AUDIT_BYPASS_SET = "qa_target_challenge_bypass_set"
+#: §1.2: a document rewritten from one origin's fields into `environments[]`.
+AUDIT_MIGRATED = "qa_target_migrated"
 #: The `live_audit` entry each answer with a target appends (§2.2).
 AUDIT_ISSUED = "qa_target_issued"
 
@@ -238,16 +325,49 @@ BYPASS_KEY = "challenge_bypass"
 SPEC_FIELDS = (
     "name", "base_url", "repository", "sign_in", "screens", "discover", "flows",
     "widths", "themes", "exclusions", "environment", "read_posts", "design_docs",
-    "file", "rate", "clock", "challenge_bypass",
+    "file", "rate", "clock", "challenge_bypass", "flows_browser_tool", "environments",
 )
 REQUIRED_FIELDS = ("name", "base_url", "repository", "authorized_by")
+#: The registration fields of one leg (qa-environments.md §1.1): in a body,
+#: either beside the app's fields (a target of one environment, stored as
+#: before) or in each entry of `environments`, never both.
+LEG_SPEC_FIELDS = ("base_url", "sign_in", "environment", "read_posts", "rate", "challenge_bypass")
+#: The app's: stored on the target once, shared by every entry.
+APP_SPEC_FIELDS = tuple(k for k in SPEC_FIELDS if k not in LEG_SPEC_FIELDS and k != "environments")
+_ENTRY_KEYS = frozenset({"name", *LEG_SPEC_FIELDS})
+#: What swarm-api, never a body, writes on an entry.
+_STATUS_FIELDS = (
+    "host_state", "approved_by", "approved_at", "approved_origins", "approved_idp_token_path",
+    "credential", "challenge_bypass_value", "discovered", "discovered_at", "discovered_by",
+    "discovered_workflow", "discovery_error", "discovering", "legacy_map_key",
+)
 
 _SELECTOR_KEYS = ("username_selector", "password_selector", "submit_selector")
 _SIGN_IN_KEYS = frozenset({"kind", "login_path", "signed_in_selector", "extra_origin", "start_clicks",
                            *_SELECTOR_KEYS})
 _FORBIDDEN_TEXT = re.compile(r"[\x00-\x1f\x7f`]")
 _PATH = re.compile(r"/(?!/)[A-Za-z0-9._~%!$&()*+,;=:@/-]{0,511}")
+#: QA-IDP-POST: one plain path, compared by the gate as the whole URL. Segments
+#: of unreserved and sub-delim characters less the glob ones, no `%` (so no
+#: encoded variant to compare), no empty segment (no `//`, no trailing slash);
+#: `.` and `..` segments are refused apart. livegate/qatarget.py restates it.
+_IDP_TOKEN_PATH = re.compile(r"(?:/[A-Za-z0-9._~!$&'()+,;=:@-]+)+")
+IDP_TOKEN_PATH_MAX = 512
+#: Where the approval stores it: beside `approved_origins`, never in the spec.
+IDP_TOKEN_FIELD = "approved_idp_token_path"
 _TARGET_ID = re.compile(r"^qat_[0-9a-f]{16}$")
+
+#: §1.4: a Secret Manager payload is at most 64 KiB; the tenant's one QA map
+#: is held under 56 KiB, an 8 KiB margin, and refused with a sentence rather
+#: than failing at write.
+SECRET_MAP_MAX_BYTES = 56 * 1024
+#: One entry at today's maxima (a 256-character username, a 1,024-character
+#: password and bypass value) under the longest key, as the store writes it:
+#: what the registration counts for each new entry that will hold a value.
+_MAXIMAL_ENTRY = dict(zip(("username", "password", BYPASS_KEY),
+                          ("x" * USERNAME_MAX, "x" * PASSWORD_MAX, "x" * BYPASS_VALUE_MAX)))
+MAX_ENTRY_BYTES = len(json.dumps({f"qat_{'0' * 16}/{'x' * 20}": _MAXIMAL_ENTRY},
+                                 sort_keys=True).encode("utf-8"))
 
 
 # --------------------------------------------------------------------------
@@ -302,12 +422,29 @@ BYPASS_VALUE_MESSAGE = (
     "cookie can both carry: no space, quote, comma, semicolon, backslash or line break"
 )
 NO_SCREENS_MESSAGE = (
-    "the target lists no screens and none were discovered; press Run discovery on the QA "
-    "targets page (or call POST /v1/qa-targets/{id}:discover), then run it"
+    "the target lists no screens and does not ask to discover them; a workspace admin sets "
+    "`discover` on it (its run then crawls from the base) or lists its screens, then run it"
 )
 #: The 409's `detail.reason` while a discovery holds the target.
 DISCOVERY_RUNNING = "qa_discovery_running"
 NOT_DISCOVERING_MESSAGE = "this QA target lists its screens and does not ask to discover them"
+SECRET_FULL_MESSAGE = (
+    f"the workspace's QA secret would pass {SECRET_MAP_MAX_BYTES // 1024} KiB with this; delete a QA "
+    "target or an environment it no longer needs, or shorten a value"
+)
+#: The refusal's `detail.reason`.
+SECRET_FULL = "qa_secret_full"
+LEG_BESIDE_ENVIRONMENTS_MESSAGE = (
+    "a QA target with environments carries base_url, sign_in, environment, read_posts, rate and "
+    "challenge_bypass in each entry, not beside them"
+)
+ENVIRONMENTS_MESSAGE = (
+    f"environments must list 1 to {qaspec.MAX_ENVIRONMENTS} entries, each {{name, base_url, "
+    "environment?, sign_in?, read_posts?, rate?, challenge_bypass?}"
+)
+ENVIRONMENT_NAME_MESSAGE = (
+    "an environment's name is 1 to 20 lower-case letters, digits or hyphens, unique in its target"
+)
 
 
 def _invalid(message: str, *, field: str | None = None) -> ValidationFailed:
@@ -448,6 +585,14 @@ def _sign_in(raw: Any, resolve: Resolver, *, exclusions: Any = None) -> dict[str
     return out
 
 
+def _idp_token_path(raw: Any) -> str:
+    if (not isinstance(raw, str) or len(raw) > IDP_TOKEN_PATH_MAX or not _IDP_TOKEN_PATH.fullmatch(raw)
+            or any(segment in (".", "..") for segment in raw.split("/"))):
+        raise _invalid("idp_token_path must be one exact path on the extra origin: /..., with no query, "
+                       "fragment, %-encoding, glob, empty segment, '.' or '..'", field="idp_token_path")
+    return raw
+
+
 def _rate(raw: Any) -> dict[str, int] | None:
     if raw is None:
         return None
@@ -483,6 +628,7 @@ def check_spec(doc: Mapping[str, Any]) -> None:
         qaspec._names(doc.get("widths"), qaspec.PRESETS, qaspec.DEFAULT_WIDTHS, "widths")
         qaspec._names(doc.get("themes"), qaspec.THEMES, qaspec.DEFAULT_THEMES, "themes")
         qaspec._flows(doc)
+        qaspec.flows_browser_tool(doc)
         qaspec._file_settings(doc)
         qaspec._design_docs(doc)
         qaspec._clock(doc)
@@ -645,7 +791,9 @@ def bypass_status(doc: Mapping[str, Any]) -> dict[str, Any]:
 _UNSET = {"set": False, "set_at": None, "set_by": None, "version": None}
 
 
-def to_api(doc: Mapping[str, Any]) -> dict[str, Any]:
+def _flat_api(doc: Mapping[str, Any]) -> dict[str, Any]:
+    """The answer of one leg's view: the shape every target had before
+    `environments[]`, kept byte for byte for a target of one environment."""
     body = {
         "id": doc.get("id"),
         "tenant_id": doc.get("tenant_id"),
@@ -655,6 +803,7 @@ def to_api(doc: Mapping[str, Any]) -> dict[str, Any]:
         "approved_by": doc.get("approved_by"),
         "approved_at": _iso(doc.get("approved_at")),
         "approved_origins": list(doc.get("approved_origins") or []),
+        IDP_TOKEN_FIELD: doc.get(IDP_TOKEN_FIELD),
         "repo_id": doc.get("repo_id"),
         "credential": credential_status(doc),
         BYPASS_FIELD: bypass_status(doc),
@@ -670,6 +819,56 @@ def to_api(doc: Mapping[str, Any]) -> dict[str, Any]:
         if key in doc:
             body[key] = doc[key]
     body.update(discovery_status(doc))
+    return body
+
+
+#: The per-leg keys of `_flat_api`, left out beside a list of several entries.
+_LEG_API_KEYS = frozenset({
+    "host", "host_state", "approved_by", "approved_at", "approved_origins", IDP_TOKEN_FIELD, "credential",
+    BYPASS_FIELD, "discovered", "discovered_at", "discovered_by", "discovered_workflow", "discovery_error",
+    "discovering",
+})
+
+
+def _entry_api(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """One entry's answer: its settings and the status of its values, never
+    a value, a length or its map key."""
+    body: dict[str, Any] = {
+        "name": entry.get("name"),
+        "base_url": entry.get("base_url"),
+        "host": entry.get("host"),
+        "environment": entry.get("environment") or "production",
+        "sign_in": entry.get("sign_in"),
+        "host_state": entry.get("host_state"),
+        "approved_by": entry.get("approved_by"),
+        "approved_at": _iso(entry.get("approved_at")),
+        "approved_origins": list(entry.get("approved_origins") or []),
+        IDP_TOKEN_FIELD: entry.get(IDP_TOKEN_FIELD),
+        "credential": credential_status(entry),
+        BYPASS_FIELD: bypass_status(entry),
+    }
+    for key in ("read_posts", "rate", "challenge_bypass"):
+        if key in entry:
+            body[key] = entry[key]
+    body.update(discovery_status(entry))
+    return body
+
+
+def to_api(doc: Mapping[str, Any]) -> dict[str, Any]:
+    """A target's answer. One stored before `environments[]` answers exactly
+    as it did. One stored with them answers `environments`, and, when it has
+    one entry, that entry's fields where they always were, so a reader that
+    knows one origin keeps reading it."""
+    normal = _normal(doc)
+    entries = normal["environments"]
+    if not normal[qaspec.MIGRATED]:
+        return _flat_api(qaspec.leg(normal))
+    if len(entries) == 1:
+        body = _flat_api(qaspec.leg(normal, entries[0]["name"]))
+    else:
+        app = {k: v for k, v in normal.items() if k not in ("environments", qaspec.MIGRATED)}
+        body = {k: v for k, v in _flat_api(app).items() if k not in _LEG_API_KEYS}
+    body["environments"] = [_entry_api(e) for e in entries]
     return body
 
 
@@ -689,6 +888,123 @@ def discovery_status(doc: Mapping[str, Any]) -> dict[str, Any]:
             "at": _iso(running.get("at")),
         },
     }
+
+
+# --------------------------------------------------------------------------
+# One target, several environments (docs/design/qa-environments.md §1)
+# --------------------------------------------------------------------------
+
+
+def _normal(doc: Mapping[str, Any]) -> dict[str, Any]:
+    """A stored target as everything past `QaTargets.find` reads it: the
+    app's fields, `environments` (a one-entry list for a document stored
+    before this lane, §1.2), and `qaspec.MIGRATED`, so nothing past the read
+    reads two shapes."""
+    if qaspec.MIGRATED in doc and isinstance(doc.get("environments"), list):
+        return {**doc, "environments": [dict(e) for e in doc["environments"]]}
+    out = {k: v for k, v in doc.items() if k not in qaspec.LEG_FIELDS and k != "environments"}
+    out["environments"] = qaspec.environments(doc)
+    out[qaspec.MIGRATED] = qaspec.is_migrated(doc)
+    return out
+
+
+def _stored(normal: Mapping[str, Any]) -> dict[str, Any]:
+    """The document to write for `normal`: `environments` once migrated, and
+    otherwise the one entry's fields where they always were, so a write to
+    an unmigrated target never migrates it behind its revision's back."""
+    app = {k: v for k, v in normal.items()
+           if k not in ("environments", qaspec.MIGRATED, qaspec.LEG_NAME) and k not in qaspec.LEG_FIELDS}
+    entries = [dict(e) for e in normal["environments"]]
+    if normal.get(qaspec.MIGRATED):
+        return {**app, "environments": entries}
+    (entry,) = entries
+    return {**app, **{k: v for k, v in entry.items() if k in qaspec.LEG_FIELDS and k != "legacy_map_key"}}
+
+
+def _replace_entry(normal: Mapping[str, Any], name: str, change: Mapping[str, Any]) -> dict[str, Any]:
+    entries = [({**e, **change} if e.get("name") == name else dict(e)) for e in normal["environments"]]
+    return {**normal, "environments": entries}
+
+
+def _entry_of(normal: Mapping[str, Any], name: Any) -> dict[str, Any]:
+    """The entry `name` names, or the only one; 422 otherwise (a target of
+    several entries needs the name). Never another entry."""
+    if name is not None and (not isinstance(name, str) or not qaspec.ENVIRONMENT_NAME.fullmatch(name)):
+        raise _invalid(ENVIRONMENT_NAME_MESSAGE, field="environment")
+    try:
+        return qaspec.entry_named(normal, name)
+    except qaspec.QaSpecError as exc:
+        raise _spec_refusal(exc) from None
+
+
+def _view(normal: Mapping[str, Any], name: Any) -> dict[str, Any]:
+    """`qaspec.leg` of the entry `_entry_of` finds."""
+    return qaspec.leg(normal, _entry_of(normal, name)["name"])
+
+
+def map_key(target: Mapping[str, Any], entry: Mapping[str, Any]) -> str:
+    """The entry's key in the tenant's QA map (§1.4): `"<target_id>/<name>"`.
+    An unmigrated target's one entry, and the entry the migration made until
+    its next write (`legacy_map_key`), read the bare target id it always had."""
+    target_id = str(target.get("id"))
+    if not qaspec.is_migrated(target) or entry.get("legacy_map_key") is True:
+        return target_id
+    return f"{target_id}/{entry['name']}"
+
+
+def _holds_values(entry: Mapping[str, Any]) -> bool:
+    """Whether the entry may ever hold a value in the secret."""
+    return (entry.get("sign_in") or {}).get("kind") == "own_login" or entry.get("challenge_bypass") is not None
+
+
+def _secret_full() -> ValidationFailed:
+    return ValidationFailed(SECRET_FULL_MESSAGE, detail={"reason": SECRET_FULL})
+
+
+def _map_bytes(values: Mapping[str, Any]) -> int:
+    return len(json.dumps(dict(values), sort_keys=True).encode("utf-8"))
+
+
+def _write_values(credentials: QaCredentialStore, tenant_id: str, values: Mapping[str, Any]) -> str:
+    """The map's new version, refused before the write when it would pass
+    `SECRET_MAP_MAX_BYTES`. The refusal names no value and no length."""
+    if _map_bytes(values) > SECRET_MAP_MAX_BYTES:
+        raise _secret_full()
+    return credentials.write(tenant_id, values)
+
+
+def _fresh_status(migrated: bool) -> dict[str, Any]:
+    status: dict[str, Any] = {
+        "host_state": HOST_PENDING, "approved_by": None, "approved_at": None, "approved_origins": [],
+        IDP_TOKEN_FIELD: None, "credential": dict(_UNSET), BYPASS_FIELD: dict(_UNSET),
+    }
+    if migrated:
+        status["legacy_map_key"] = False
+    return status
+
+
+def _spec_of(normal: Mapping[str, Any]) -> dict[str, Any]:
+    """The registration fields of `normal`, as a body would carry them: what
+    a change is compared over."""
+    spec = {k: normal[k] for k in APP_SPEC_FIELDS if k in normal}
+    if normal.get(qaspec.MIGRATED):
+        spec["environments"] = [{k: e[k] for k in sorted(_ENTRY_KEYS) if k in e} for e in normal["environments"]]
+    else:
+        (entry,) = normal["environments"]
+        spec.update({k: entry[k] for k in LEG_SPEC_FIELDS if k in entry})
+    return spec
+
+
+def _hosts_detail(normal: Mapping[str, Any]) -> dict[str, Any]:
+    """An audit row's host: the one, or each entry's by name."""
+    if not normal.get(qaspec.MIGRATED):
+        return {"host": normal["environments"][0].get("host")}
+    return {"hosts": {str(e.get("name")): e.get("host") for e in normal["environments"]}}
+
+
+def _named(normal: Mapping[str, Any], name: str) -> dict[str, Any]:
+    """An audit row's or a log line's leg, for a migrated target only."""
+    return {"environment": name} if normal.get(qaspec.MIGRATED) else {}
 
 
 # --------------------------------------------------------------------------
@@ -717,7 +1033,7 @@ def _link_digest(token: str) -> str:
 class QaTargets:
     """`qa_targets/`, `qa_target_credential_links/` and `qa_target_runs/`.
     Every read is checked against the caller's tenant: another tenant's
-    target answers as a missing one."""
+    target answers as a missing one. Every read answers `_normal`'s shape."""
 
     def __init__(self, db: Any, *, now: Callable[[], datetime] = utcnow,
                  resolve: Resolver = resolve_host) -> None:
@@ -731,13 +1047,15 @@ class QaTargets:
     # -- reads ---------------------------------------------------------------
 
     def find(self, tenant_id: str, target_id: str) -> dict[str, Any] | None:
+        """The target, with `environments` whatever shape it was stored in:
+        an unmigrated document is presented as a one-entry list (§1.2)."""
         if not _TARGET_ID.match(target_id or ""):
             return None
         snap = self._ref(target_id).get()
         data = (snap.to_dict() or {}) if snap.exists else None
         if data is None or data.get("tenant_id") != tenant_id:
             return None
-        return data
+        return _normal(data)
 
     def get(self, tenant_id: str, target_id: str) -> dict[str, Any]:
         data = self.find(tenant_id, target_id)
@@ -752,7 +1070,7 @@ class QaTargets:
         snap = self._ref(target_id).get()
         if not snap.exists:
             raise NotFound(NOT_FOUND_MESSAGE)
-        return snap.to_dict() or {}
+        return _normal(snap.to_dict() or {})
 
     def list(self, tenant_id: str) -> list[dict[str, Any]]:
         from google.cloud.firestore_v1.base_query import FieldFilter
@@ -760,7 +1078,7 @@ class QaTargets:
         rows = self._db.collection(COLLECTION).where(
             filter=FieldFilter("tenant_id", "==", tenant_id)).stream()
         docs = [snap.to_dict() or {} for snap in rows]
-        return sorted((d for d in docs if d.get("tenant_id") == tenant_id),
+        return sorted((_normal(d) for d in docs if d.get("tenant_id") == tenant_id),
                       key=lambda d: str(d.get("name") or "").lower())
 
     def _name_taken(self, tenant_id: str, name: str, *, besides: str | None = None) -> bool:
@@ -769,58 +1087,108 @@ class QaTargets:
 
     # -- the document a body makes ----------------------------------------------
 
-    def _build(self, tenant_id: str, values: Mapping[str, Any]) -> dict[str, Any]:
-        """The checked spec fields of a registration, normalised. Raises 422."""
-        doc: dict[str, Any] = {}
-        for key in SPEC_FIELDS:
-            if values.get(key) is not None:
-                doc[key] = values[key]
-        doc["name"] = _one_line(values.get("name"), "name", limit=NAME_MAX, field="name")
+    def _leg_spec(self, values: Mapping[str, Any], *, exclusions: Any) -> dict[str, Any]:
+        """One leg's checked registration fields, normalised. Raises 422."""
+        leg: dict[str, Any] = {}
+        if values.get("environment") is not None:
+            leg["environment"] = values["environment"]
         try:
-            doc["base_url"] = qaspec.base_url(values)
+            leg["base_url"] = qaspec.base_url(values)
         except qaspec.QaSpecError as exc:
             raise _invalid(exc.message, field="base_url") from None
-        origin, host = _origin_of(doc["base_url"])
-        doc["host"] = check_public_host(host, self._resolve)
-        doc["origin"] = origin
-        doc["repository"], doc["repo_id"] = _repository(self._db, tenant_id, values.get("repository"),
-                                                        now=self._now)
-        doc["sign_in"] = _sign_in(values.get("sign_in"), self._resolve, exclusions=values.get("exclusions"))
+        origin, host = _origin_of(leg["base_url"])
+        leg["host"] = check_public_host(host, self._resolve)
+        leg["origin"] = origin
+        leg["sign_in"] = _sign_in(values.get("sign_in"), self._resolve, exclusions=exclusions)
         rate = _rate(values.get("rate"))
         if rate is not None:
-            doc["rate"] = rate
+            leg["rate"] = rate
         posts = _read_posts(values.get("read_posts"))
         if posts is not None:
-            doc["read_posts"] = posts
+            leg["read_posts"] = posts
         try:
-            bypass = qaspec.challenge_bypass(doc)
+            bypass = qaspec.challenge_bypass({**leg, "challenge_bypass": values.get("challenge_bypass")})
         except qaspec.QaSpecError as exc:
             raise _invalid(exc.message, field="challenge_bypass") from None
         if bypass is not None:
-            doc["challenge_bypass"] = bypass
-        check_spec(doc)
-        return doc
+            leg["challenge_bypass"] = bypass
+        return leg
 
-    # -- create, change, delete --------------------------------------------------
+    def _legs(self, raw: Any, *, exclusions: Any) -> list[dict[str, Any]]:
+        if not isinstance(raw, list) or not 1 <= len(raw) <= qaspec.MAX_ENVIRONMENTS:
+            raise _invalid(ENVIRONMENTS_MESSAGE, field="environments")
+        legs: list[dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, Mapping) or set(item) - _ENTRY_KEYS:
+                raise _invalid(ENVIRONMENTS_MESSAGE, field="environments")
+            name = item.get("name")
+            if not isinstance(name, str) or not qaspec.ENVIRONMENT_NAME.fullmatch(name) \
+                    or any(leg["name"] == name for leg in legs):
+                raise _invalid(ENVIRONMENT_NAME_MESSAGE, field="environments")
+            legs.append({**self._leg_spec(item, exclusions=exclusions), "name": name})
+        return legs
 
-    def create(self, tenant_id: str, values: Mapping[str, Any], *, by: str) -> dict[str, Any]:
+    def _build(self, tenant_id: str, values: Mapping[str, Any]) -> dict[str, Any]:
+        """The checked spec fields of a registration, normalised, in
+        `_normal`'s shape with no status yet. A body with `environments` makes
+        a migrated target; one without makes a one-leg target stored as
+        before. Raises 422."""
+        doc: dict[str, Any] = {}
+        for key in APP_SPEC_FIELDS:
+            if values.get(key) is not None:
+                doc[key] = values[key]
+        doc["name"] = _one_line(values.get("name"), "name", limit=NAME_MAX, field="name")
+        migrated = values.get("environments") is not None
+        if migrated:
+            if any(values.get(key) is not None for key in LEG_SPEC_FIELDS):
+                raise _invalid(LEG_BESIDE_ENVIRONMENTS_MESSAGE, field="environments")
+            legs = self._legs(values["environments"], exclusions=values.get("exclusions"))
+        else:
+            legs = [{**self._leg_spec(values, exclusions=values.get("exclusions")),
+                     "name": qaspec.legacy_environment_name(values)}]
+        doc["repository"], doc["repo_id"] = _repository(self._db, tenant_id, values.get("repository"),
+                                                        now=self._now)
+        normal = {**doc, "environments": legs, qaspec.MIGRATED: migrated}
+        flows = doc.get("flows")
+        if len(legs) > 1 and isinstance(flows, list) and all(
+                (leg.get("environment") or "production") == "production" for leg in legs) and any(
+                isinstance(f, Mapping) and f.get("mutating") is True for f in flows):
+            # §3, per leg: a mutating flow needs a non-production leg to run on.
+            raise _spec_refusal(qaspec.QaSpecError(
+                "qa_mutating_flow_on_production", "a flow is mutating and every environment of the target "
+                "is production"))
+        for leg in legs:
+            check_spec(qaspec.leg(normal, leg["name"]))
+        return normal
+
+    def _check_room(self, tenant_id: str, count: int, credentials: QaCredentialStore | None) -> None:
+        """§1.4: refuse `count` new entries that will hold values when the
+        map, at their maxima, would pass `SECRET_MAP_MAX_BYTES`."""
+        if count <= 0:
+            return
+        if credentials is None:
+            raise QaCredentialUnavailable(UNAVAILABLE_MESSAGE)
+        if _map_bytes(credentials.read(tenant_id)) + count * MAX_ENTRY_BYTES > SECRET_MAP_MAX_BYTES:
+            raise _secret_full()
+
+    # -- create, change, delete, migrate --------------------------------------------
+
+    def create(self, tenant_id: str, values: Mapping[str, Any], *, by: str,
+               credentials: QaCredentialStore | None = None) -> dict[str, Any]:
         authorized_by = _one_line(values.get("authorized_by"), "authorized_by",
                                   limit=AUTHORIZED_BY_MAX, field="authorized_by")
         doc = self._build(tenant_id, values)
         if self._name_taken(tenant_id, doc["name"]):
             raise Conflict("a QA target of this workspace already has this name")
+        migrated = bool(doc[qaspec.MIGRATED])
+        if migrated:
+            self._check_room(tenant_id, sum(_holds_values(leg) for leg in doc["environments"]), credentials)
         now = self._now()
         target_id = "qat_" + secrets.token_hex(8)
         doc.update({
             "id": target_id,
             "tenant_id": tenant_id,
             "revision": 1,
-            "host_state": HOST_PENDING,
-            "approved_by": None,
-            "approved_at": None,
-            "approved_origins": [],
-            "credential": dict(_UNSET),
-            BYPASS_FIELD: dict(_UNSET),
             "authorized_by": authorized_by,
             "attested_by": by,
             "attested_at": now,
@@ -829,27 +1197,38 @@ class QaTargets:
             "updated_by": by,
             "updated_at": now,
         })
+        doc["environments"] = [{**leg, **_fresh_status(migrated)} for leg in doc["environments"]]
         ref = self._ref(target_id)
+        stored = _stored(doc)
         transaction = self._db.transaction()
 
         @firestore.transactional
         def _apply(txn: Any) -> None:
-            txn.set(ref, doc)
+            txn.set(ref, stored)
             _audit(txn, self._db, action=AUDIT_CREATED, tenant_id=tenant_id, target_id=target_id,
-                   by=by, now=now, detail={"host": doc["host"], "repo_id": doc["repo_id"]})
+                   by=by, now=now, detail={**_hosts_detail(doc), "repo_id": doc["repo_id"]})
 
         _apply(transaction)
-        log.info("qa target created tenant=%s target=%s", tenant_id, target_id)
+        log.info("qa target created tenant=%s target=%s environments=%d", tenant_id, target_id,
+                 len(doc["environments"]))
         return doc
 
     def patch(self, tenant_id: str, target_id: str, changes: Mapping[str, Any], *,
               by: str, credentials: QaCredentialStore | None = None) -> dict[str, Any]:
         """`changes` holds only the fields the caller sent; a None clears an
-        optional one. A change of host or `extra_origin` resets the approval.
+        optional one. A change of an entry's host or `extra_origin` resets
+        THAT entry's approval (§1.3).
 
-        A change that removes the challenge bypass, or moves the host or the
-        login's `extra_origin`, removes the bypass's value from the secret
-        FIRST (§2.5): a value its owner made for one host never reaches another,
+        A target stored with `environments` takes its legs' fields in
+        `environments` alone, each entry matched to the stored one by name:
+        an entry kept keeps its approval, credential and discovery; a new one
+        is pending; a removed one's values leave the secret. A one-leg target
+        stored before takes them where they always were, or `environments`,
+        which migrates it.
+
+        A change that removes an entry's challenge bypass, or moves its host
+        or `extra_origin`, removes the bypass's value from the secret FIRST
+        (§2.5): a value its owner made for one host never reaches another,
         and a change whose value cannot be removed is not written."""
         if not changes:
             raise _invalid("a change names at least one field")
@@ -857,7 +1236,17 @@ class QaTargets:
             if key in changes and changes[key] is None:
                 raise _invalid(f"{key} cannot be cleared", field=key)
         current = self.get(tenant_id, target_id)
-        merged = {k: current[k] for k in SPEC_FIELDS if k in current}
+        was_migrated = bool(current[qaspec.MIGRATED])
+        if was_migrated:
+            if "environments" in changes and changes["environments"] is None:
+                raise _invalid("environments cannot be cleared", field="environments")
+            for key in LEG_SPEC_FIELDS:
+                if key in changes:
+                    raise _invalid(LEG_BESIDE_ENVIRONMENTS_MESSAGE, field=key)
+        merged = _spec_of(current)
+        if not was_migrated and changes.get("environments") is not None:
+            # The body's entries replace the one leg's fields.
+            merged = {k: v for k, v in merged.items() if k not in LEG_SPEC_FIELDS}
         for key, value in changes.items():
             if key == "authorized_by":
                 continue
@@ -870,28 +1259,67 @@ class QaTargets:
         if doc["name"].lower() != str(current.get("name") or "").lower() \
                 and self._name_taken(tenant_id, doc["name"], besides=target_id):
             raise Conflict("a QA target of this workspace already has this name")
+        migrated = bool(doc[qaspec.MIGRATED])
         now = self._now()
-        origins_before = (current.get("host"), (current.get("sign_in") or {}).get("extra_origin"))
-        origins_after = (doc["host"], doc["sign_in"].get("extra_origin"))
-        host_reset = origins_before != origins_after
-        changed = sorted(k for k in SPEC_FIELDS if current.get(k) != doc.get(k))
-        kept = {k: current[k] for k in current if k not in SPEC_FIELDS and k not in ("host", "origin",
-                                                                                       "repo_id")}
-        new = {**kept, **doc, "revision": int(current.get("revision") or 0) + 1,
-               "updated_by": by, "updated_at": now}
+        before = {str(e.get("name")): e for e in current["environments"]}
+        entries: list[dict[str, Any]] = []
+        legs: list[dict[str, Any]] = []
+        forget: list[str] = []
+        drop: list[str] = []
+        added = 0
+        for leg in doc["environments"]:
+            # A one-leg target stored as before keeps its one leg whatever its
+            # mark becomes; entries are matched by name.
+            old = before.get(leg["name"]) if migrated else current["environments"][0]
+            if old is None:
+                entries.append({**leg, **_fresh_status(migrated)})
+                added += _holds_values(leg)
+                continue
+            status = {k: old[k] for k in _STATUS_FIELDS if k in old}
+            host_reset = (old.get("host"), (old.get("sign_in") or {}).get("extra_origin")) != \
+                (leg["host"], leg["sign_in"].get("extra_origin"))
+            if host_reset:
+                status.update(host_state=HOST_PENDING, approved_by=None, approved_at=None,
+                              approved_origins=[], **{IDP_TOKEN_FIELD: None})
+            cleared = bypass_status(old)["set"] and (host_reset or leg.get("challenge_bypass") is None)
+            if cleared:
+                forget.append(map_key(current, old))
+                status[BYPASS_FIELD] = dict(_UNSET)
+            if migrated and "legacy_map_key" not in status:
+                status["legacy_map_key"] = False
+            entries.append({**leg, **status})
+            legs.append({"name": leg["name"], "host": leg["host"], "host_reset": host_reset,
+                         "bypass_value_cleared": cleared})
+        names = {leg["name"] for leg in doc["environments"]}
+        removed = sorted(name for name in before if name not in names) if migrated else []
+        for name in removed:
+            old = before[name]
+            if credential_status(old)["set"] or bypass_status(old)["set"]:
+                drop.append(map_key(current, old))
+        if migrated:
+            self._check_room(tenant_id, added, credentials)
+        if forget or drop:
+            self._edit_secret(tenant_id, credentials, forget=forget, drop=drop)
+        kept = {k: current[k] for k in current
+                if k not in SPEC_FIELDS and k not in ("repo_id", "environments", qaspec.MIGRATED)}
+        new = {**kept, **{k: v for k, v in doc.items() if k != "environments"}, "environments": entries,
+               "revision": int(current.get("revision") or 0) + 1, "updated_by": by, "updated_at": now}
+        spec_before, spec_after = _spec_of(current), _spec_of(new)
+        changed = sorted(k for k in SPEC_FIELDS if spec_before.get(k) != spec_after.get(k))
         if "authorized_by" in changes:
             new["authorized_by"] = _one_line(changes["authorized_by"], "authorized_by",
                                              limit=AUTHORIZED_BY_MAX, field="authorized_by")
             new["attested_by"], new["attested_at"] = by, now
             changed.append("authorized_by")
-        if host_reset:
-            new.update(host_state=HOST_PENDING, approved_by=None, approved_at=None,
-                       approved_origins=[])
-        bypass_cleared = bypass_status(current)["set"] and (host_reset or doc.get("challenge_bypass") is None)
-        if bypass_cleared:
-            self._forget_bypass(tenant_id, target_id, credentials)
-            new[BYPASS_FIELD] = dict(_UNSET)
+        if migrated:
+            detail: dict[str, Any] = {"fields": changed, "environments": legs, "removed": removed,
+                                      "revision": new["revision"]}
+        else:
+            (leg,) = legs
+            detail = {"fields": changed, "host": leg["host"], "host_reset": leg["host_reset"],
+                      "bypass_value_cleared": leg["bypass_value_cleared"], "revision": new["revision"]}
         ref = self._ref(target_id)
+        stored = _stored(new)
         transaction = self._db.transaction()
 
         @firestore.transactional
@@ -899,32 +1327,62 @@ class QaTargets:
             snap = _snapshot(txn.get(ref))
             if not snap.exists or (snap.to_dict() or {}).get("revision") != current.get("revision"):
                 raise Conflict("this QA target changed while it was being changed; read it again")
-            txn.set(ref, new)
+            txn.set(ref, stored)
             _audit(txn, self._db, action=AUDIT_CHANGED, tenant_id=tenant_id, target_id=target_id,
-                   by=by, now=now, detail={"fields": changed, "host": new["host"],
-                                           "host_reset": host_reset,
-                                           "bypass_value_cleared": bypass_cleared,
-                                           "revision": new["revision"]})
+                   by=by, now=now, detail=detail)
+            if migrated and not was_migrated:
+                _audit(txn, self._db, action=AUDIT_MIGRATED, tenant_id=tenant_id, target_id=target_id,
+                       by=by, now=now, detail={"environments": sorted(names), "revision": new["revision"]})
 
         _apply(transaction)
         log.info("qa target changed tenant=%s target=%s revision=%d host_reset=%s",
-                 tenant_id, target_id, new["revision"], host_reset)
+                 tenant_id, target_id, new["revision"], any(leg["host_reset"] for leg in legs))
         return new
+
+    def _edit_secret(self, tenant_id: str, credentials: QaCredentialStore | None, *,
+                     forget: Sequence[str] = (), drop: Sequence[str] = ()) -> None:
+        """Out of the tenant's map: the bypass value of each key in `forget`
+        (its other values kept), and every value of each key in `drop`. One
+        read, and one write when anything was there."""
+        if credentials is None:
+            raise QaCredentialUnavailable(UNAVAILABLE_MESSAGE)
+        values = credentials.read(tenant_id)
+        changed = False
+        for key in drop:
+            if key in values:
+                values = {k: v for k, v in values.items() if k != key}
+                changed = True
+        for key in forget:
+            entry = values.get(key)
+            if isinstance(entry, dict) and BYPASS_KEY in entry:
+                rest = {k: v for k, v in entry.items() if k != BYPASS_KEY}
+                values = {k: v for k, v in values.items() if k != key}
+                if rest:
+                    values[key] = rest
+                changed = True
+        if changed:
+            credentials.write(tenant_id, values)
+        values = {}
+        log.info("qa target secret values removed tenant=%s keys=%d bypass_values=%d",
+                 tenant_id, len(drop), len(forget))
 
     def delete(self, tenant_id: str, target_id: str, *, by: str,
                credentials: QaCredentialStore | None) -> None:
-        """The document, its audit row, and its entry in the tenant's QA
-        secret. The secret first: a target whose credential cannot be removed
-        is not deleted, so the password (or the challenge bypass's value)
-        never outlives its registration."""
+        """The document, its audit row, and EVERY key of it in the tenant's
+        QA secret: each entry's `<target_id>/<name>` and the legacy
+        `<target_id>` (§1.4). The secret first: a target whose credential
+        cannot be removed is not deleted, so a password (or a challenge
+        bypass's value) never outlives its registration."""
         current = self.get(tenant_id, target_id)
-        if credential_status(current)["set"] or bypass_status(current)["set"]:
+        if any(credential_status(e)["set"] or bypass_status(e)["set"] for e in current["environments"]):
             if credentials is None:
                 raise QaCredentialUnavailable(UNAVAILABLE_MESSAGE)
             values = credentials.read(tenant_id)
-            if target_id in values:
-                values = {k: v for k, v in values.items() if k != target_id}
-                credentials.write(tenant_id, values)
+            prefix = f"{target_id}/"
+            rest = {k: v for k, v in values.items() if k != target_id and not k.startswith(prefix)}
+            if len(rest) != len(values):
+                credentials.write(tenant_id, rest)
+            values = rest = {}
         now = self._now()
         ref = self._ref(target_id)
         transaction = self._db.transaction()
@@ -933,23 +1391,82 @@ class QaTargets:
         def _apply(txn: Any) -> None:
             txn.delete(ref)
             _audit(txn, self._db, action=AUDIT_DELETED, tenant_id=tenant_id, target_id=target_id,
-                   by=by, now=now, detail={"host": current.get("host")})
+                   by=by, now=now, detail=_hosts_detail(current))
 
         _apply(transaction)
         log.info("qa target deleted tenant=%s target=%s", tenant_id, target_id)
 
-    # -- the host approval (§1.2, VQ-Q1) -----------------------------------------
+    def migrate(self, target_id: str, *, by: str) -> bool:
+        """§1.2, one document in one transaction: its one leg's fields move
+        into `environments: [{name, ...}]` (`production` when its old mark
+        was, `staging` otherwise), `revision` is bumped, so a run started
+        before is refused by the worker's route as after any change, and an
+        `admin_audit` row `qa_target_migrated` is appended. The entry reads
+        its credential from the bare target id until its next write
+        (`legacy_map_key`, §1.4): nothing rewrites the secret. False when the
+        document is gone or already migrated."""
+        ref = self._ref(target_id)
+        now = self._now()
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> bool:
+            snap = _snapshot(txn.get(ref))
+            stored = (snap.to_dict() or {}) if snap.exists else None
+            if stored is None or qaspec.is_migrated(stored):
+                return False
+            normal = _normal(stored)
+            revision = int(normal.get("revision") or 0) + 1
+            new = {**normal, qaspec.MIGRATED: True, "revision": revision, "migrated_by": by, "migrated_at": now}
+            txn.set(ref, _stored(new))
+            _audit(txn, self._db, action=AUDIT_MIGRATED, tenant_id=str(normal.get("tenant_id") or ""),
+                   target_id=target_id, by=by, now=now,
+                   detail={"environments": [e["name"] for e in normal["environments"]], "revision": revision})
+            return True
+
+        migrated = bool(_apply(transaction))
+        if migrated:
+            log.info("qa target migrated target=%s", target_id)
+        return migrated
+
+    def migrate_all(self, *, by: str) -> dict[str, Any]:
+        """Every unmigrated `qa_targets` document, each in its own
+        transaction, so a crash part way leaves each one whole, and a second
+        call finishes the rest. Safe to run again: a migrated one is skipped."""
+        done: list[str] = []
+        unchanged = 0
+        for snap in self._db.collection(COLLECTION).stream():
+            target_id = str((snap.to_dict() or {}).get("id") or snap.id)
+            if _TARGET_ID.match(target_id) and self.migrate(target_id, by=by):
+                done.append(target_id)
+            else:
+                unchanged += 1
+        return {"migrated": sorted(done), "unchanged": unchanged}
+
+    # -- the host approval (§1.2, VQ-Q1; per entry, qa-environments.md §1.3) ------
 
     def approve_host(self, target_id: str, *, host: Any, extra_origin: Any,
-                     by: str) -> dict[str, Any]:
-        """A platform admin's approval of the host they NAME, which must be the
-        target's host now. The declared `extra_origin` is covered only when it
-        is named too (§1.2)."""
+                     by: str, idp_token_path: Any = None, environment: Any = None) -> dict[str, Any]:
+        """A platform admin's approval of the host they NAME, which must be
+        the entry's host now. The entry is `environment`'s, required when the
+        target has several: two entries on one host are two approvals, of a
+        leg and not of a hostname (§1.3). The declared `extra_origin` is
+        covered only when it is named too (§1.2), and its `idp_token_path`
+        only when that is named with it (QA-IDP-POST): an approval that does
+        not name it clears it."""
+        token_path = None
+        if idp_token_path is not None:
+            token_path = _idp_token_path(idp_token_path)
+            if extra_origin is None:
+                raise _invalid("idp_token_path is approved only with the extra origin it is on: name "
+                               "extra_origin too", field="idp_token_path")
         current = self.any_tenant(target_id)
-        if not isinstance(host, str) or host.strip().lower().rstrip(".") != current.get("host"):
+        entry = _entry_of(current, environment)
+        name = entry["name"]
+        if not isinstance(host, str) or host.strip().lower().rstrip(".") != entry.get("host"):
             raise Conflict("the host named is not this QA target's host now; read it again")
-        origin = current.get("origin") or f"https://{current.get('host')}"
-        declared = (current.get("sign_in") or {}).get("extra_origin")
+        origin = entry.get("origin") or f"https://{entry.get('host')}"
+        declared = (entry.get("sign_in") or {}).get("extra_origin")
         approved = [origin]
         if extra_origin is not None:
             if not declared or extra_origin != declared:
@@ -957,9 +1474,10 @@ class QaTargets:
             approved.append(declared)
         now = self._now()
         tenant_id = str(current.get("tenant_id") or "")
-        new = {**current, "host_state": HOST_APPROVED, "approved_by": by, "approved_at": now,
-               "approved_origins": approved}
+        new = _replace_entry(current, name, {"host_state": HOST_APPROVED, "approved_by": by, "approved_at": now,
+                                             "approved_origins": approved, IDP_TOKEN_FIELD: token_path})
         ref = self._ref(target_id)
+        stored = _stored(new)
         transaction = self._db.transaction()
 
         @firestore.transactional
@@ -967,40 +1485,50 @@ class QaTargets:
             snap = _snapshot(txn.get(ref))
             if not snap.exists or (snap.to_dict() or {}).get("revision") != current.get("revision"):
                 raise Conflict("this QA target changed while it was being approved; read it again")
-            txn.set(ref, new)
+            txn.set(ref, stored)
             _audit(txn, self._db, action=AUDIT_HOST_APPROVED, tenant_id=tenant_id,
                    target_id=target_id, by=by, now=now,
-                   detail={"host": current.get("host"), "origins": approved,
-                           "registrant": current.get("created_by")})
+                   detail={"host": entry.get("host"), "origins": approved,
+                           "idp_token_path": token_path,
+                           "registrant": current.get("created_by"), **_named(current, name)})
 
         _apply(transaction)
-        log.info("qa target host approved tenant=%s target=%s", tenant_id, target_id)
+        log.info("qa target host approved tenant=%s target=%s environment=%s", tenant_id, target_id, name)
         return new
 
-    # -- the credential (§2.1) -----------------------------------------------------
+    # -- the credential (§2.1; its key and its link per entry, qa-environments.md §1.4) --
 
     def mint_link(self, tenant_id: str, target_id: str, *, email: str,
-                  console: str | None) -> dict[str, Any]:
-        self.get(tenant_id, target_id)
+                  console: str | None, environment: Any = None) -> dict[str, Any]:
+        """A one-time link bound to the email, the tenant, the target AND the
+        entry (`environment`, required when the target has several), so a
+        link minted for staging can never set production's password."""
+        current = self.get(tenant_id, target_id)
+        name = _entry_of(current, environment)["name"]
         token = secrets.token_urlsafe(32)
         now = self._now()
         expires_at = now + LINK_TTL
         self._db.collection(LINKS_COLLECTION).document(_link_digest(token)).set({
-            "email": email, "tenant_id": tenant_id, "target_id": target_id,
+            "email": email, "tenant_id": tenant_id, "target_id": target_id, "environment": name,
             "created_at": now, "expires_at": expires_at, "used_at": None,
         })
         path = f"/qa-targets/{target_id}/credential?t={token}"
+        if current[qaspec.MIGRATED]:
+            # The console's form sends it back on the PUT.
+            path += f"&environment={name}"
         base = console_origin(console)
-        log.info("minted a qa credential link tenant=%s target=%s", tenant_id, target_id)
+        log.info("minted a qa credential link tenant=%s target=%s environment=%s", tenant_id, target_id, name)
         # The URL and its expiry, and the path for the console's own use when
         # no console URL is configured: never the link document.
         return {"url": f"{base}{path}" if base else None, "path": path,
                 "expires_at": expires_at.isoformat()}
 
-    def consume_link(self, token: Any, *, email: str, tenant_id: str, target_id: str) -> None:
-        """Mark the link used when it is this person's, for this tenant and
-        target, unused and unexpired. Otherwise 403 and nothing is written:
-        someone else presenting a leaked link does not burn it."""
+    def consume_link(self, token: Any, *, email: str, tenant_id: str, target_id: str,
+                     environment: str | None = None) -> None:
+        """Mark the link used when it is this person's, for this tenant,
+        target and entry, unused and unexpired. Otherwise 403 and nothing is
+        written: someone else presenting a leaked link, or the link presented
+        for another entry, does not burn it."""
         if not isinstance(token, str) or not token or len(token) > 256:
             raise QaCredentialLinkInvalid(LINK_INVALID_MESSAGE)
         ref = self._db.collection(LINKS_COLLECTION).document(_link_digest(token))
@@ -1016,8 +1544,8 @@ class QaTargets:
             expires_at = link.get("expires_at")
             if not isinstance(expires_at, datetime) or expires_at <= now:
                 return False
-            if (link.get("email"), link.get("tenant_id"), link.get("target_id")) != \
-                    (email, tenant_id, target_id):
+            if (link.get("email"), link.get("tenant_id"), link.get("target_id"), link.get("environment")) != \
+                    (email, tenant_id, target_id, environment):
                 return False
             txn.update(ref, {"used_at": now})
             return True
@@ -1025,29 +1553,12 @@ class QaTargets:
         if not _consume(transaction):
             raise QaCredentialLinkInvalid(LINK_INVALID_MESSAGE)
 
-    def set_credential(self, tenant_id: str, target_id: str, *, username: str, password: str,
-                       link_token: Any, by: str, credentials: QaCredentialStore) -> dict[str, Any]:
-        """§2.1 steps 2 and 3: the link, then the secret's new version, then
-        the record on the target with its audit row. The value is a local
-        here and in the store, and nothing else."""
-        current = self.get(tenant_id, target_id)
-        if (current.get("sign_in") or {}).get("kind") != "own_login":
-            raise _invalid("only a target with sign_in.kind own_login takes a credential",
-                           field="sign_in")
-        self.consume_link(link_token, email=by, tenant_id=tenant_id, target_id=target_id)
-        values = credentials.read(tenant_id)
-        # The entry's other keys (the challenge bypass's value, §2.5) are kept.
-        entry = values.get(target_id)
-        values[target_id] = {**(entry if isinstance(entry, dict) else {}),
-                             "username": username, "password": password}
-        try:
-            version = credentials.write(tenant_id, values)
-        finally:
-            values = {}
-            username = password = ""
+    def _write_entry(self, tenant_id: str, target_id: str, name: str, *, field: str,
+                     record: Mapping[str, Any], moved: bool, action: str,
+                     detail: Mapping[str, Any]) -> dict[str, Any]:
+        """The entry's record of a value just written, with its audit row."""
         now = self._now()
         ref = self._ref(target_id)
-        record = {"set": True, "set_at": now, "set_by": by, "version": version}
         transaction = self._db.transaction()
 
         @firestore.transactional
@@ -1055,92 +1566,144 @@ class QaTargets:
             snap = _snapshot(txn.get(ref))
             if not snap.exists:
                 raise NotFound(NOT_FOUND_MESSAGE)
-            doc = {**(snap.to_dict() or {}), "credential": record}
-            txn.set(ref, doc)
-            _audit(txn, self._db, action=AUDIT_CREDENTIAL_SET, tenant_id=tenant_id,
-                   target_id=target_id, by=by, now=now, detail={"version": version})
-            return doc
+            normal = _normal(snap.to_dict() or {})
+            if not any(e.get("name") == name for e in normal["environments"]):
+                raise NotFound(NOT_FOUND_MESSAGE)
+            change: dict[str, Any] = {field: dict(record)}
+            if moved:
+                change["legacy_map_key"] = False
+            new = _replace_entry(normal, name, change)
+            txn.set(ref, _stored(new))
+            _audit(txn, self._db, action=action, tenant_id=tenant_id, target_id=target_id, by=str(record["set_by"]),
+                   now=now, detail={**detail, **_named(normal, name)})
+            return next(e for e in new["environments"] if e.get("name") == name)
 
-        doc = _apply(transaction)
-        log.info("qa target credential set tenant=%s target=%s", tenant_id, target_id)
-        return credential_status(doc)
+        return _apply(transaction)
+
+    @staticmethod
+    def _held(values: dict[str, Any], target: Mapping[str, Any],
+              entry: Mapping[str, Any]) -> tuple[str, dict[str, Any], bool]:
+        """(the key to write, the entry's values now, whether the legacy key
+        moved). An entry still on the legacy key moves to its own in this
+        same version, the legacy key removed (§1.4)."""
+        key = map_key(target, entry)
+        if qaspec.is_migrated(target) and entry.get("legacy_map_key") is True:
+            held = values.pop(key, None)
+            return f"{target.get('id')}/{entry['name']}", dict(held) if isinstance(held, dict) else {}, True
+        held = values.get(key)
+        return key, dict(held) if isinstance(held, dict) else {}, False
+
+    def set_credential(self, tenant_id: str, target_id: str, *, username: str, password: str,
+                       link_token: Any, by: str, credentials: QaCredentialStore,
+                       environment: Any = None) -> dict[str, Any]:
+        """§2.1 steps 2 and 3: the link, then the secret's new version, then
+        the record on the entry with its audit row. The value is a local
+        here and in the store, and nothing else."""
+        current = self.get(tenant_id, target_id)
+        entry = _entry_of(current, environment)
+        name = entry["name"]
+        if (entry.get("sign_in") or {}).get("kind") != "own_login":
+            raise _invalid("only a target with sign_in.kind own_login takes a credential",
+                           field="sign_in")
+        self.consume_link(link_token, email=by, tenant_id=tenant_id, target_id=target_id, environment=name)
+        values = credentials.read(tenant_id)
+        key, held, moved = self._held(values, current, entry)
+        # The entry's other keys (the challenge bypass's value, §2.5) are kept.
+        values[key] = {**held, "username": username, "password": password}
+        try:
+            version = _write_values(credentials, tenant_id, values)
+        finally:
+            values = held = {}
+            username = password = ""
+        record = {"set": True, "set_at": self._now(), "set_by": by, "version": version}
+        written = self._write_entry(tenant_id, target_id, name, field="credential", record=record, moved=moved,
+                                    action=AUDIT_CREDENTIAL_SET, detail={"version": version})
+        log.info("qa target credential set tenant=%s target=%s environment=%s", tenant_id, target_id, name)
+        return credential_status(written)
 
     # -- the challenge bypass's value (§2.5) -----------------------------------------
 
     def set_challenge_bypass(self, tenant_id: str, target_id: str, *, value: str, by: str,
-                             credentials: QaCredentialStore) -> dict[str, Any]:
-        """A workspace admin's write of the bypass's value: the secret's new
-        version, then the record on the target with its audit row, as the
+                             credentials: QaCredentialStore, environment: Any = None) -> dict[str, Any]:
+        """A workspace admin's write of the entry's bypass value: the secret's
+        new version, then the record on the entry with its audit row, as the
         credential's. The value is a local here and in the store, and nothing else."""
         current = self.get(tenant_id, target_id)
-        spec = current.get("challenge_bypass")
+        entry = _entry_of(current, environment)
+        name = entry["name"]
+        spec = entry.get("challenge_bypass")
         if not isinstance(spec, Mapping):
             raise _invalid("this QA target has no challenge_bypass; set its kind and name first",
                            field="challenge_bypass")
         if not isinstance(value, str) or not _BYPASS_VALUE.fullmatch(value):
             raise _invalid(BYPASS_VALUE_MESSAGE, field="challenge_bypass")
         values = credentials.read(tenant_id)
-        entry = values.get(target_id)
-        values[target_id] = {**(entry if isinstance(entry, dict) else {}), BYPASS_KEY: value}
+        key, held, moved = self._held(values, current, entry)
+        values[key] = {**held, BYPASS_KEY: value}
         try:
-            version = credentials.write(tenant_id, values)
+            version = _write_values(credentials, tenant_id, values)
         finally:
-            values = {}
-            entry = None
+            values = held = {}
             value = ""
-        now = self._now()
-        ref = self._ref(target_id)
-        record = {"set": True, "set_at": now, "set_by": by, "version": version}
+        record = {"set": True, "set_at": self._now(), "set_by": by, "version": version}
         detail = {"version": version, "kind": spec.get("kind"), "name": spec.get("name")}
-        transaction = self._db.transaction()
-
-        @firestore.transactional
-        def _apply(txn: Any) -> dict[str, Any]:
-            snap = _snapshot(txn.get(ref))
-            if not snap.exists:
-                raise NotFound(NOT_FOUND_MESSAGE)
-            doc = {**(snap.to_dict() or {}), BYPASS_FIELD: record}
-            txn.set(ref, doc)
-            _audit(txn, self._db, action=AUDIT_BYPASS_SET, tenant_id=tenant_id,
-                   target_id=target_id, by=by, now=now, detail=detail)
-            return doc
-
-        doc = _apply(transaction)
-        log.info("qa target challenge bypass set tenant=%s target=%s", tenant_id, target_id)
-        return bypass_status(doc)
-
-    def _forget_bypass(self, tenant_id: str, target_id: str,
-                       credentials: QaCredentialStore | None) -> None:
-        """The bypass's value out of the target's entry, its other keys kept."""
-        if credentials is None:
-            raise QaCredentialUnavailable(UNAVAILABLE_MESSAGE)
-        values = credentials.read(tenant_id)
-        entry = values.get(target_id)
-        if isinstance(entry, dict) and BYPASS_KEY in entry:
-            rest = {k: v for k, v in entry.items() if k != BYPASS_KEY}
-            values = {k: v for k, v in values.items() if k != target_id}
-            if rest:
-                values[target_id] = rest
-            credentials.write(tenant_id, values)
-        log.info("qa target challenge bypass value removed tenant=%s target=%s", tenant_id, target_id)
+        written = self._write_entry(tenant_id, target_id, name, field=BYPASS_FIELD, record=record, moved=moved,
+                                    action=AUDIT_BYPASS_SET, detail=detail)
+        log.info("qa target challenge bypass set tenant=%s target=%s environment=%s", tenant_id, target_id, name)
+        return bypass_status(written)
 
     # -- the run (§6) ------------------------------------------------------------
 
-    def runnable(self, tenant_id: str, target_id: str, *, file: str) -> dict[str, Any]:
-        """The target, when a run may start against it now; the refusal
+    def runnable(self, tenant_id: str, target_id: str, *, file: str,
+                 environment: Any = None) -> dict[str, Any]:
+        """The leg `environment` names (`qaspec.leg`; the only one when it
+        names none), when a run may start against it now; the refusal
         otherwise, before anything spends."""
-        target = self._startable(self.get(tenant_id, target_id), tenant_id, file=file)
-        if target.get("screens") is None and not target.get("discovered"):
-            # The discovery is the console's button (lane QA-DISCOVER); the
-            # code is the renderer's, which said "run its discovery first"
-            # when nothing could.
+        return self._runnable_view(self.get(tenant_id, target_id), tenant_id, file=file, environment=environment)
+
+    def _runnable_view(self, normal: Mapping[str, Any], tenant_id: str, *, file: str,
+                       environment: Any) -> dict[str, Any]:
+        target = self._startable(_view(normal, environment), tenant_id, file=file)
+        if target.get("screens") is None and not target.get("discovered") and target.get("discover") is None:
+            # A target that asks to discover runs from its base alone, its
+            # capture steps crawling (qa-environments.md §3.1, QAENV-RUN).
+            # The code is the renderer's.
             raise ValidationFailed(NO_SCREENS_MESSAGE, detail={"reason": "qa_target_no_screens"})
         return target
 
+    def runnable_legs(self, tenant_id: str, target_id: str, *, file: str, environments: Any,
+                      screens: Sequence[str] | None = None,
+                      browser_tool: str | None = None) -> list[LegRun]:
+        """Every leg `environments` names (every entry when None), each
+        runnable now and rendered, BEFORE anything is submitted (§2.1): the
+        first refusal is raised with the leg's name in `detail.environment`,
+        so one leg that cannot run refuses the dispatch and nothing spends."""
+        normal = self.get(tenant_id, target_id)
+        if environments is None:
+            names = [str(e.get("name")) for e in normal["environments"]]
+        elif (not isinstance(environments, list) or not 1 <= len(environments) <= qaspec.MAX_ENVIRONMENTS
+              or len(set(environments)) != len(environments)
+              or not all(isinstance(n, str) and qaspec.ENVIRONMENT_NAME.fullmatch(n) for n in environments)):
+            raise _invalid(ENVIRONMENTS_RUN_MESSAGE, field="environments")
+        else:
+            names = list(environments)
+        legs: list[LegRun] = []
+        for name in names:
+            try:
+                view = self._runnable_view(normal, tenant_id, file=file, environment=name)
+                workflow, mark, browser = render_run(view, screens=screens, file=file, browser_tool=browser_tool)
+            except ApiError as exc:
+                # The name is the target's own or a checked `[a-z0-9-]` one,
+                # carried beside the fixed sentence, never inside it.
+                exc.detail = {**exc.detail, "environment": name}
+                raise
+            legs.append(LegRun(name=name, target=view, workflow=workflow, mark=mark, browser=browser))
+        return legs
+
     def _startable(self, target: dict[str, Any], tenant_id: str, *, file: str) -> dict[str, Any]:
-        """`target` when anything may browse it now: its host approved, its
-        repository registered (and filing allowed, for `file="issues"`), its
-        own login's credential set. The refusal otherwise."""
+        """`target`, one leg's view, when anything may browse it now: its host
+        approved, its repository registered (and filing allowed, for
+        `file="issues"`), its own login's credential set. The refusal otherwise."""
         if target.get("host_state") != HOST_APPROVED:
             raise QaTargetHostPending(HOST_PENDING_MESSAGE)
         record = Repositories(self._db, now=self._now).find(tenant_id, str(target.get("repo_id") or ""))
@@ -1155,34 +1718,106 @@ class QaTargets:
         return target
 
     def record_run(self, *, tenant_id: str, target: Mapping[str, Any], workflow_id: str,
-                   task_ids: Sequence[str], file: str, by: str, kind: str = "run") -> None:
+                   task_ids: Sequence[str], file: str, by: str, kind: str = "run",
+                   browser_tool: str | None = None, group_id: str | None = None) -> None:
+        """The run's record, of one leg (`target` is its view): the worker's
+        route serves a task only the leg the record names. `browser_tool` is
+        the run's own override, None when it named none; `flows_browser_tool`
+        is the tool its flows ran with, the override's or the target's (lane VQ9-TOOL)."""
         self._db.collection(RUNS_COLLECTION).document(workflow_id).set({
             "workflow_id": workflow_id,
             "tenant_id": tenant_id,
             "target_id": target.get("id"),
+            "environment": target.get(qaspec.LEG_NAME),
             "revision": target.get("revision"),
             "task_ids": list(task_ids),
             "file": file,
             "kind": kind,
+            "browser_tool": browser_tool,
+            "flows_browser_tool": qaspec.flows_browser_tool(target, browser_tool),
+            # The dispatch this leg is one of (§2.1); None for a discovery.
+            "group_id": group_id,
             "by": by,
             "at": self._now(),
         })
 
-    # -- discovery (§4.1, lane QA-DISCOVER) ------------------------------------------
+    # -- the run group (qa-environments.md §2.1, QAENV-RUN) -----------------------
 
-    def discoverable(self, tenant_id: str, target_id: str, *, inspection: Any) -> dict[str, Any]:
-        """The target, when a discovery may start against it now: it asks to
-        discover, and it may be browsed (`_startable`, with nothing filed).
-        A discovery whose task has already ended is settled first, so a lost
-        wake never holds the target."""
+    def open_group(self, *, tenant_id: str, legs: Sequence[LegRun], file: str, by: str,
+                   browser_tool: str | None = None, schedule_id: str | None = None) -> str:
+        """`qa_run_groups/{group_id}`, written BEFORE the first submission with
+        every leg `pending`, so a crash between two submissions leaves a group
+        that says which leg never started."""
+        group_id = "qrg_" + secrets.token_hex(8)
+        first = legs[0].target
+        self._db.collection(GROUPS_COLLECTION).document(group_id).set({
+            "group_id": group_id,
+            "tenant_id": tenant_id,
+            "target_id": first.get("id"),
+            "revision": first.get("revision"),
+            "file": file,
+            "browser_tool": browser_tool,
+            "schedule_id": schedule_id,
+            "by": by,
+            "at": self._now(),
+            "legs": [{"environment": leg.name, "state": LEG_PENDING, "workflow_id": None,
+                      "browser_steps": list(leg.browser), "reason": None} for leg in legs],
+        })
+        return group_id
+
+    def _set_leg(self, group_id: str, name: str, change: Mapping[str, Any]) -> None:
+        ref = self._db.collection(GROUPS_COLLECTION).document(group_id)
+        doc = ref.get().to_dict() or {}
+        doc["legs"] = [({**leg, **change} if leg.get("environment") == name else leg)
+                       for leg in doc.get("legs") or []]
+        ref.set(doc)
+
+    def leg_submitted(self, group_id: str, name: str, *, workflow_id: str) -> None:
+        self._set_leg(group_id, name, {"state": LEG_SUBMITTED, "workflow_id": workflow_id})
+
+    def leg_not_started(self, group_id: str, name: str, *, code: str, message: str) -> None:
+        """The leg was never submitted, and why: a refusal's own code and
+        sentence, or the caller's fixed one."""
+        self._set_leg(group_id, name, {"state": LEG_NOT_STARTED, "reason": {"code": code, "message": message}})
+
+    def group(self, tenant_id: str, group_id: str) -> dict[str, Any]:
+        """The group, in its own tenant; another tenant's answers exactly as a
+        missing one (404). Each leg carries its workflow's state, read in the
+        same tenant."""
+        if not isinstance(group_id, str) or not _GROUP_ID.fullmatch(group_id):
+            raise NotFound(GROUP_NOT_FOUND_MESSAGE)
+        snap = self._db.collection(GROUPS_COLLECTION).document(group_id).get()
+        doc = snap.to_dict() if snap.exists else None
+        if not doc or doc.get("tenant_id") != tenant_id:
+            raise NotFound(GROUP_NOT_FOUND_MESSAGE)
+        legs = []
+        for leg in doc.get("legs") or []:
+            state = None
+            if leg.get("workflow_id"):
+                wf = self._db.collection(WORKFLOWS).document(str(leg["workflow_id"])).get()
+                wf_doc = wf.to_dict() if wf.exists else None
+                if wf_doc and wf_doc.get("tenant_id") == tenant_id:
+                    state = wf_doc.get("state")
+            legs.append({**leg, "workflow_state": state})
+        return {**{k: v for k, v in doc.items() if k != "legs"}, "at": _iso(doc.get("at")), "legs": legs}
+
+    # -- discovery (§4.1, lane QA-DISCOVER; per entry, qa-environments.md §1.1) -------
+
+    def discoverable(self, tenant_id: str, target_id: str, *, inspection: Any,
+                     environment: Any = None) -> dict[str, Any]:
+        """The leg's view, when a discovery may start against it now: the
+        target asks to discover, and the leg may be browsed (`_startable`,
+        with nothing filed). A discovery whose task has already ended is
+        settled first, so a lost wake never holds the leg."""
         [target] = self.settle_running(tenant_id, [self.get(tenant_id, target_id)], inspection)
-        if target.get("discover") is None:
+        view = _view(target, environment)
+        if view.get("discover") is None:
             raise _invalid(NOT_DISCOVERING_MESSAGE, field="discover")
-        return self._startable(target, tenant_id, file="none")
+        return self._startable(view, tenant_id, file="none")
 
     @staticmethod
     def _running(doc: Mapping[str, Any], now: datetime) -> Mapping[str, Any] | None:
-        """The discovery that holds the target, or None. A claim that never
+        """The discovery that holds the entry, or None. A claim that never
         recorded its workflow holds it for `DISCOVERY_CLAIM_TTL` only."""
         running = doc.get("discovering")
         if not isinstance(running, Mapping):
@@ -1194,9 +1829,11 @@ class QaTargets:
         return running
 
     def claim_discovery(self, tenant_id: str, target: Mapping[str, Any], *, by: str) -> str:
-        """Hold the target for one discovery, in a transaction: two calls at
-        once cannot both pass. 409 (`qa_discovery_running`) when one holds it."""
+        """Hold the leg (`target` is its view) for one discovery, in a
+        transaction: two calls at once cannot both pass. 409
+        (`qa_discovery_running`) when one holds it."""
         target_id = str(target.get("id"))
+        name = target.get(qaspec.LEG_NAME)
         ref = self._ref(target_id)
         now = self._now()
         claim = secrets.token_hex(8)
@@ -1208,7 +1845,11 @@ class QaTargets:
             doc = (snap.to_dict() or {}) if snap.exists else None
             if doc is None or doc.get("tenant_id") != tenant_id:
                 raise NotFound(NOT_FOUND_MESSAGE)
-            running = self._running(doc, now)
+            normal = _normal(doc)
+            entry = next((e for e in normal["environments"] if e.get("name") == name), None)
+            if entry is None:
+                raise NotFound(NOT_FOUND_MESSAGE)
+            running = self._running(entry, now)
             if running is not None:
                 workflow_id = running.get("workflow_id")
                 # `conflict`, an established code, with the reason as the
@@ -1219,23 +1860,28 @@ class QaTargets:
                     raise Conflict(f"a discovery of this QA target is running (workflow {workflow_id}); "
                                    "wait for it to end", detail=detail)
                 raise Conflict("a discovery of this QA target is starting; wait for it", detail=detail)
-            txn.update(ref, {"discovering": {"claim": claim, "workflow_id": None, "task_id": None,
-                                             "by": by, "at": now}})
+            txn.set(ref, _stored(_replace_entry(normal, str(name), {"discovering": {
+                "claim": claim, "workflow_id": None, "task_id": None, "by": by, "at": now}})))
 
         _apply(transaction)
         return claim
 
     def _claimed(self, target_id: str, claim: str, change: Callable[[Mapping[str, Any]], dict[str, Any]]) -> None:
-        """Apply `change(discovering)` to the target while `claim` holds it."""
+        """Apply `change(discovering)` to the entry `claim` holds."""
         ref = self._ref(target_id)
         transaction = self._db.transaction()
 
         @firestore.transactional
         def _apply(txn: Any) -> None:
             snap = _snapshot(txn.get(ref))
-            running = ((snap.to_dict() or {}) if snap.exists else {}).get("discovering")
-            if isinstance(running, Mapping) and running.get("claim") == claim:
-                txn.update(ref, change(running))
+            if not snap.exists:
+                return
+            normal = _normal(snap.to_dict() or {})
+            for entry in normal["environments"]:
+                running = entry.get("discovering")
+                if isinstance(running, Mapping) and running.get("claim") == claim:
+                    txn.set(ref, _stored(_replace_entry(normal, str(entry["name"]), change(running))))
+                    return
 
         _apply(transaction)
 
@@ -1245,29 +1891,34 @@ class QaTargets:
         log.info("qa target discovery started target=%s workflow=%s", target_id, workflow_id)
 
     def release_discovery(self, target_id: str, claim: str) -> None:
-        """The submission failed: free the target at once."""
+        """The submission failed: free the entry at once."""
         self._claimed(target_id, claim, lambda running: {"discovering": None})
 
     def settle_running(self, tenant_id: str, docs: Sequence[dict[str, Any]],
                        inspection: Any) -> list[dict[str, Any]]:
-        """`docs`, each running discovery whose task has ended settled and
-        read again. One task read per running discovery, none otherwise."""
+        """`docs`, each running discovery of any entry whose task has ended
+        settled and the target read again. One task read per running
+        discovery, none otherwise."""
         out: list[dict[str, Any]] = []
         for doc in docs:
-            running = doc.get("discovering")
-            task_id = running.get("task_id") if isinstance(running, Mapping) else None
-            if isinstance(task_id, str) and task_id and self.settle_discovery(
-                    task_id, inspection, tenant_id=tenant_id):
+            written = False
+            for entry in _normal(doc)["environments"]:
+                running = entry.get("discovering")
+                task_id = running.get("task_id") if isinstance(running, Mapping) else None
+                if isinstance(task_id, str) and task_id and self.settle_discovery(
+                        task_id, inspection, tenant_id=tenant_id):
+                    written = True
+            if written:
                 doc = self.find(tenant_id, str(doc.get("id"))) or doc
             out.append(doc)
         return out
 
     def settle_discovery(self, task_id: str, inspection: Any, *, tenant_id: str | None = None) -> bool:
-        """The discovery `task_id` ran has ended: store what it found, or why
-        nothing. True when the target was written. A doorbell, as
-        `verdictpublish.on_task_finished` is: everything is read again, and a
-        task that is not a running discovery's, not ended, or of another
-        tenant than the wake said is a no-op."""
+        """The discovery `task_id` ran has ended: store what it found on the
+        entry it ran for, or why nothing. True when the target was written. A
+        doorbell, as `verdictpublish.on_task_finished` is: everything is read
+        again, and a task that is not a running discovery's, not ended, or of
+        another tenant than the wake said is a no-op."""
         snap = self._db.collection(TASKS).document(task_id).get()
         task = (snap.to_dict() or {}) if snap.exists else None
         mark = ((task or {}).get("metadata") or {}).get(METADATA_KEY)
@@ -1283,9 +1934,15 @@ class QaTargets:
         if state not in TERMINAL_STATES:
             return False
         target = self.find(owner, mark["id"])
-        running = (target or {}).get("discovering")
-        if not isinstance(running, Mapping) or running.get("task_id") != task_id:
+
+        def holding(normal: Mapping[str, Any]) -> dict[str, Any] | None:
+            return next((e for e in normal["environments"] if isinstance(e.get("discovering"), Mapping)
+                         and e["discovering"].get("task_id") == task_id), None)
+
+        entry = holding(target) if target is not None else None
+        if target is None or entry is None:
             return False
+        running = entry["discovering"]
         workflow_id = str(running.get("workflow_id") or "")
         found: list[dict[str, str]] | None = None
         error: str | None = None
@@ -1294,7 +1951,8 @@ class QaTargets:
                      f"workflow {workflow_id} says why")
         else:
             try:
-                found = qaspec.discovered_screens(target, self._artifact(inspection, owner, task_id))
+                found = qaspec.discovered_screens(qaspec.leg(target, entry["name"]),
+                                                  self._artifact(inspection, owner, task_id))
             except qaspec.QaSpecError as exc:
                 error = f"the discovery's {DISCOVERY_ARTIFACT} was not stored: {exc.message}"
         now = self._now()
@@ -1311,10 +1969,13 @@ class QaTargets:
         @firestore.transactional
         def _apply(txn: Any) -> bool:
             snap = _snapshot(txn.get(ref))
-            current = (snap.to_dict() or {}).get("discovering") if snap.exists else None
-            if not isinstance(current, Mapping) or current.get("task_id") != task_id:
+            if not snap.exists:
                 return False
-            txn.update(ref, change)
+            normal = _normal(snap.to_dict() or {})
+            current = holding(normal)
+            if current is None:
+                return False
+            txn.set(ref, _stored(_replace_entry(normal, str(current["name"]), change)))
             return True
 
         written = _apply(transaction)
@@ -1351,14 +2012,28 @@ class QaTargets:
             raise refused("it is not JSON") from None
 
 
+@dataclass(frozen=True)
+class LegRun:
+    """One leg of a dispatch, checked and rendered (`runnable_legs`): its
+    name, its view (`qaspec.leg`), the `WorkflowCreate` body, its one mark
+    and its browser step ids."""
+
+    name: str
+    target: dict[str, Any]
+    workflow: dict[str, Any]
+    mark: dict[str, Any]
+    browser: list[str]
+
+
 def render_run(target: Mapping[str, Any], *, screens: Sequence[str] | None,
-               file: str) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+               file: str, browser_tool: str | None = None) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     """(the `WorkflowCreate` body, the mark, the browser step ids) for a run
     of `target`. The body is `qaspec.render`'s spec in the API's shape, with
     `metadata.qa_target` on each browser step: written here, never accepted
-    from a caller (§1.1). Raises 422 for anything the spec cannot hold."""
+    from a caller (§1.1). `browser_tool` is the run's own choice of the flows'
+    tool, by name (lane VQ9-TOOL). Raises 422 for anything the spec cannot hold."""
     try:
-        spec = qaspec.render(target, screens=screens, file=file)
+        spec = qaspec.render(target, screens=screens, file=file, browser_tool=browser_tool)
         mark = qaspec.qa_target_metadata(target)
     except qaspec.QaSpecError as exc:
         raise _spec_refusal(exc) from None
@@ -1480,18 +2155,28 @@ class QaTargetIssuer:
         return task, dict(lease or {})
 
     def _run_names(self, tenant_id: str, task: Mapping[str, Any], target_id: str,
-                   task_id: str) -> bool:
+                   task_id: str, *, environment: str, single: bool) -> bool:
+        """The run record names this task, for this target, in this tenant,
+        and for this leg. A record written before `environments[]` names no
+        leg, and is read only for a target of one entry."""
         workflow_id = task.get("workflow_id")
         if not isinstance(workflow_id, str) or not workflow_id:
             return False
         snap = self._db.collection(RUNS_COLLECTION).document(workflow_id).get()
         run = (snap.to_dict() or {}) if snap.exists else None
-        return bool(run) and run.get("tenant_id") == tenant_id and run.get("target_id") == target_id \
-            and task_id in (run.get("task_ids") or [])
+        if not run or run.get("tenant_id") != tenant_id or run.get("target_id") != target_id \
+                or task_id not in (run.get("task_ids") or []):
+            return False
+        recorded = run.get("environment")
+        return single if recorded is None else recorded == environment
 
     def issue(self, authorization: str | None, attempt_id: str, raw: bytes, *, path: str,
               proof: str | None, timestamp: str | None) -> dict[str, Any] | None:
-        """The attempt's target, or None (204) when its agent has none."""
+        """The attempt's leg of its target, or None (204) when its agent has
+        none. ONE LEG, ALWAYS (qa-environments.md §1.5): the entry the mark
+        names (the only one, for a mark that names none), and nothing of any
+        other entry: its origins, sign-in, credential and bypass are in no
+        answer."""
         if len(raw) > MAX_REQUEST_BYTES:
             raise ValidationFailed(f"a QA target request is at most {MAX_REQUEST_BYTES} bytes")
         body: QaTargetRequest = parse_body(QaTargetRequest, raw)
@@ -1509,23 +2194,40 @@ class QaTargetIssuer:
         missing = NotFound(NOT_FOUND_MESSAGE)
         if not isinstance(mark, Mapping) or not isinstance(mark.get("id"), str):
             raise missing
+        name = mark.get("environment")
+        if name is not None and not isinstance(name, str):
+            raise missing
         target_id = mark["id"]
         target = QaTargets(self._db, now=self._now).find(tenant_id, target_id)
-        if target is None or not self._run_names(tenant_id, task, target_id, attempt.task_id):
+        if target is None:
             raise missing
-        if target.get("host_state") != HOST_APPROVED:
+        try:
+            # A nameless mark on a target of several entries, or a name it
+            # lacks, is a mark this service did not write for it: missing.
+            leg_entry = qaspec.entry_named(target, name)
+        except qaspec.QaSpecError:
+            raise missing from None
+        leg_name = str(leg_entry["name"])
+        if not self._run_names(tenant_id, task, target_id, attempt.task_id, environment=leg_name,
+                               single=len(target["environments"]) == 1):
+            raise missing
+        view = qaspec.leg(target, leg_name)
+        if view.get("host_state") != HOST_APPROVED:
             raise QaTargetHostPending(HOST_PENDING_MESSAGE)
         if target.get("revision") != mark.get("revision"):
             raise Conflict("the QA target changed since this run started; start a new run")
-        answer = self._answer(target)
-        answer["mutating"] = self._mutating(target, task)
-        sign_in = target.get("sign_in") or {"kind": "none"}
+        answer = self._answer(view)
+        if target[qaspec.MIGRATED]:
+            # The gate holds one leg per attempt by (target_id, this name).
+            answer["environment_name"] = leg_name
+        answer["mutating"] = self._mutating(target, view, task)
+        sign_in = view.get("sign_in") or {"kind": "none"}
         own_login = sign_in.get("kind") == "own_login"
-        if own_login and not credential_status(target)["set"]:
+        if own_login and not credential_status(view)["set"]:
             raise Conflict("the QA target signs in with its own login and no credential is set")
         if own_login or "challenge_bypass" in answer:
-            # One read of the target's entry serves both (§2.2, §2.5).
-            entry = self._entry(tenant_id, target)
+            # One read of the leg's entry of the secret serves both (§2.2, §2.5).
+            entry = self._entry(tenant_id, map_key(target, leg_entry))
             if own_login:
                 answer["sign_in"].update(self._credential(entry))
             if "challenge_bypass" in answer:
@@ -1546,10 +2248,11 @@ class QaTargetIssuer:
             "detail": {"target_id": target_id, "revision": target.get("revision"),
                        "sign_in": sign_in.get("kind"),
                        # The bypass's kind, never its value.
-                       "challenge_bypass": (answer.get("challenge_bypass") or {}).get("kind")},
+                       "challenge_bypass": (answer.get("challenge_bypass") or {}).get("kind"),
+                       **_named(target, leg_name)},
         })
-        log.info("qa target issued tenant=%s task=%s attempt=%s generation=%d target=%s",
-                 tenant_id, attempt.task_id, attempt.attempt_id, attempt.generation, target_id)
+        log.info("qa target issued tenant=%s task=%s attempt=%s generation=%d target=%s environment=%s",
+                 tenant_id, attempt.task_id, attempt.attempt_id, attempt.generation, target_id, leg_name)
         return answer
 
     @staticmethod
@@ -1573,6 +2276,11 @@ class QaTargetIssuer:
         if isinstance(bypass, Mapping) and bypass_status(target)["set"]:
             # §2.5: the gate adds it on `origins` alone. Its value is added by `issue`.
             served["challenge_bypass"] = {"kind": bypass.get("kind"), "name": bypass.get("name")}
+        approved_origins = list(target.get("approved_origins") or [origin])
+        token_path = target.get(IDP_TOKEN_FIELD)
+        if isinstance(token_path, str) and len(approved_origins) == 2:
+            # QA-IDP-POST: only with the extra origin it was approved on.
+            served["idp_token_path"] = token_path
         return {
             **served,
             "target_id": target.get("id"),
@@ -1580,7 +2288,7 @@ class QaTargetIssuer:
             "base_url": target.get("base_url"),
             # Only what a platform admin approved: the base origin, and the
             # login's other origin when it was named in the approval.
-            "origins": list(target.get("approved_origins") or [origin]),
+            "origins": approved_origins,
             "environment": target.get("environment") or "production",
             "rate": dict(target.get("rate") or DEFAULT_RATE),
             "read_posts": list(target.get("read_posts") or []),
@@ -1589,7 +2297,7 @@ class QaTargetIssuer:
         }
 
     @staticmethod
-    def _mutating(target: Mapping[str, Any], task: Mapping[str, Any]) -> bool:
+    def _mutating(target: Mapping[str, Any], view: Mapping[str, Any], task: Mapping[str, Any]) -> bool:
         """True only for a flow step of this run whose flow the stored target
         declares `mutating: true`, on a `non_production` target (§3; BGD,
         2026-10-22, lane VQ4-MUTATING). The flow is the task's own `step_id`,
@@ -1598,24 +2306,32 @@ class QaTargetIssuer:
         admits only that value), and only a rendered run carries the mark, so
         the step id beside it was written by this service too. Nothing in the
         request is read. A capture or discovery step, an undeclared flow, a
-        production target, and anything unreadable answer False."""
-        if target.get("environment") != "non_production":
+        production target, and anything unreadable answer False.
+
+        `view` is the attempt's leg (qa-environments.md §1.5): a
+        `non_production` entry that shares any origin with a `production`
+        entry of the target is held as production, because the page's toggle,
+        not the origin, chooses which backend a write would reach. This only
+        ever turns a write permission off."""
+        if view.get("environment") != "non_production":
+            return False
+        if qaspec.shares_production_origin(target, str(view.get(qaspec.LEG_NAME))):
             return False
         step_id = task.get("step_id")
         if not isinstance(step_id, str) or not step_id.startswith(FLOW_STEP_PREFIX):
             return False
         flow_id = step_id[len(FLOW_STEP_PREFIX):]
-        flows = target.get("flows")
+        flows = view.get("flows")
         if not flow_id or not isinstance(flows, list):
             return False
         return any(isinstance(flow, Mapping) and flow.get("id") == flow_id
                    and flow.get("mutating") is True for flow in flows)
 
-    def _entry(self, tenant_id: str, target: Mapping[str, Any]) -> Mapping[str, Any]:
-        """The target's entry of the tenant's QA secret, read at this moment."""
+    def _entry(self, tenant_id: str, key: str) -> Mapping[str, Any]:
+        """The leg's entry of the tenant's QA secret (`map_key`), read at this moment."""
         if self._credentials is None:
             raise QaCredentialUnavailable(UNAVAILABLE_MESSAGE)
-        entry = self._credentials.read(tenant_id).get(str(target.get("id")))
+        entry = self._credentials.read(tenant_id).get(key)
         if not isinstance(entry, Mapping):
             raise QaCredentialUnavailable(UNAVAILABLE_MESSAGE)
         return entry
@@ -1645,6 +2361,7 @@ __all__ = [
     "SecretManagerQaCredentials",
     "bypass_status",
     "check_public_host",
+    "map_key",
     "qa_target_message",
     "render_run",
     "resolve_host",

@@ -67,7 +67,7 @@ from urllib.parse import parse_qsl, urlsplit
 
 from swarm_redaction import redact as redact_text
 
-from .mask import SHOWN_IN_CONTROL
+from .mask import is_challenge_host
 
 EXPORT_OP = "tabs_export"
 RESTORE_OP = "tabs_restore"
@@ -103,14 +103,9 @@ class TabsRefused(Exception):
 
 
 def _challenge_host(host: str) -> bool:
-    for allowed, _ in SHOWN_IN_CONTROL:
-        if allowed.startswith("*."):
-            suffix = allowed[1:]
-            if host.endswith(suffix) and len(host) > len(suffix):
-                return True
-        elif host == allowed:
-            return True
-    return False
+    # The mask's match, which also tells the gate of a challenge on the
+    # agent's page (CAPTCHA-HANDOFF): one list, read one way.
+    return is_challenge_host(host)
 
 
 def _names(text: str) -> list[str]:

@@ -115,8 +115,61 @@ function bucketOf(d: Day, generatedAt: number): OutcomeBucket {
   }
 }
 
-/** The payload the Timeline reads, as the dev deployment would serve it for `tz=Europe/Bucharest&span=14d`. */
-export function ledgerFixture(): Outcomes {
+/**
+ * The payload the Timeline reads, as the dev deployment would serve it for
+ * `tz=Europe/Bucharest&span=14d`: canned at 25 Sep with no argument, which is
+ * what the component tests assert; with `at`, the same fourteen days moved to
+ * end at that instant (QAFIX6-FIXTURE e, run 5b QA-014 and run 6 work-a-003,
+ * box 6343760837). The fixture build passes its capture clock: canned, the
+ * Timeline said 'Decided counts cover Sep 12, 00:00 → now, 14d' with the page
+ * at 19 Oct, a start the stated fourteen days could not reach.
+ */
+export function ledgerFixture(at?: string): Outcomes {
+  const canned = cannedLedger()
+  return at === undefined ? canned : movedTo(canned, at)
+}
+
+/** Bucharest's offset while the fixture's windows are in it: summer time, to 25 Oct 2026. */
+const BUCHAREST_MS = 3 * 3_600_000
+const STAMP = /^(\d{4})-(\d\d)-(\d\d)(T\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d))$/
+
+/** The calendar day an instant falls on in Bucharest, as epoch ms of that date at UTC midnight. */
+function bucharestDay(ms: number): number {
+  const d = new Date(ms + BUCHAREST_MS)
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+}
+
+/** Every timestamp moved by whole days, keeping its time of day and its offset, so buckets stay day-aligned. */
+function shiftDays<T>(value: T, days: number): T {
+  if (typeof value === 'string') {
+    const m = STAMP.exec(value)
+    if (m === null) return value
+    const day = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + days)).toISOString().slice(0, 10)
+    return `${day}${m[4]}` as T
+  }
+  if (Array.isArray(value)) return value.map((v) => shiftDays(v, days)) as T
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, shiftDays(v, days)])) as T
+  }
+  return value
+}
+
+/**
+ * The canned ledger with its last day on `at`'s day and its read ending at
+ * `at`: every bucket, the previous window and every workflow time move by the
+ * same whole days, so each bucket keeps its seal, and `until` and
+ * `generated_at` are `at` itself -- the window ends at the clock and reads
+ * 'now', as the route's does.
+ */
+function movedTo(canned: Outcomes, at: string): Outcomes {
+  const atMs = Date.parse(at)
+  const days = Math.round((bucharestDay(atMs) - bucharestDay(Date.parse(canned.generated_at))) / 86_400_000)
+  const moved = shiftDays(canned, days)
+  const local = new Date(atMs + BUCHAREST_MS).toISOString().slice(0, 19)
+  return { ...moved, until: `${local}+03:00`, generated_at: new Date(atMs).toISOString() }
+}
+
+function cannedLedger(): Outcomes {
   const generated_at = '2026-09-25T11:10:02Z'
   const gen = Date.parse(generated_at)
   const buckets = DEV_DAYS.map((d) => bucketOf(d, gen))

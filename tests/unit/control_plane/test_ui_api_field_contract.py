@@ -527,8 +527,10 @@ def test_the_thresholds_arrive_with_the_leases_rather_than_being_restated(seeded
 def test_an_admin_sees_the_platform_counts_and_a_non_admin_gets_no_key_at_all(seeded):
     """An ABSENT field is not a count of nothing, and the client must be able
     to tell them apart -- which needs the field to be optional in the type."""
-    admin = _get(seeded["client"], "/v1/stats")
-    member = _get(seeded["client"], "/v1/stats", "alice")
+    # Both ask for the platform half (`?scope=platform`, #2149): without it
+    # nobody is served the key, so the member's absence would prove nothing.
+    admin = _get(seeded["client"], "/v1/stats?scope=platform")
+    member = _get(seeded["client"], "/v1/stats?scope=platform", "alice")
     assert "platform_tasks_by_state" in admin
     assert "platform_tasks_by_state" not in member, (
         "a non-admin received the platform counts key; an empty dict here would "

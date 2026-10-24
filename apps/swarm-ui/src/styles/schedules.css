@@ -45,6 +45,14 @@
 .sc-table.is-schedules td[data-label='When'] > .sc-cut { white-space: normal; overflow-wrap: break-word; }
 .sc-table.is-schedules .sc-zone { overflow-wrap: break-word; }
 .sc-part { display: inline-block; max-width: 100%; overflow-wrap: break-word; }
+/* A PAUSE NOTE AND A BUILT-IN REPOSITORY ARE READ WHOLE (visual QA run 6,
+   overview-automate-006 and -007): cut with `.sc-cut`, 'Paused by
+   alice@example.com: holiday week' read 'Paused by alic…' and a long
+   repository 'example-org/example-paym…', with nothing a touch screen could
+   open. The note wraps under the state; the repository breaks after its `/`
+   (`slashBreaks`) and only a single word wider than its column inside. */
+.sc-why { overflow-wrap: break-word; }
+.sc-built { display: block; min-width: 0; overflow-wrap: break-word; }
 .sc-row > td {
   padding: 4px 8px; vertical-align: top;
   border-bottom: 1px solid var(--line);
@@ -242,7 +250,8 @@ ol.sc-pobj { padding-left: 18px; }
   }
   .sc-row a { display: inline-flex; align-items: center; min-height: 44px; }
   /* THE SCHEDULES LIST IS TWO LINES A ROW (§6.2, owner decision 2026-10-11),
-     not a record: name, state and the row's actions on line 1; type ·
+     not a record: name and state on line 1 (the actions moved to a line
+     of their own under line 2 in run 6, below); type ·
      repository · when, then last · next · spend · waiting on line 2, cut with
      an ellipsis and whole in its title. The name cell gives its children to
      the row's grid; the cells line 2 repeats are not drawn. The built-in rows
@@ -258,12 +267,28 @@ ol.sc-pobj { padding-left: 18px; }
   .sc-table.is-schedules .sc-row > td::before { content: none; }
   .sc-table.is-schedules .sc-row > td.sc-c-name { display: contents; }
   .sc-table.is-schedules .sc-row > td.sc-c-more { display: none; }
-  .sc-table.is-schedules .sc-row > td.sc-c-state { grid-area: state; width: auto; }
-  .sc-table.is-schedules .sc-row > td.sc-c-acts { grid-area: acts; width: auto; }
+  /* THE STATE STARTS AT ONE x ON EVERY ROW (visual QA run 6,
+     overview-automate-008): an auto column sized to each row's own word put
+     'paused' and 'enabled' at different places. A fixed width holds the
+     column; a dry-run chip wraps under the word. */
+  .sc-table.is-schedules .sc-row > td.sc-c-state { grid-area: state; width: 112px; }
+  /* The actions cell is `contents` (below): its `acts` area and column stay
+     declared but hold nothing, so the third column is empty and 0px wide. */
+  .sc-table.is-schedules .sc-row > td.sc-c-acts { grid-area: acts; width: auto; display: contents; }
   .sc-table.is-schedules .sc-c-name > .sc-name { grid-area: name; display: block; min-height: 44px; padding: 12px 0; }
   .sc-table.is-schedules .sc-c-name > .sc-type { display: none; }
   .sc-table.is-schedules .sc-c-state > .sc-why { display: none; }
-  .sc-table.is-schedules .sc-row-acts .c-btn-wrap { flex-direction: column; align-items: flex-end; text-align: right; }
+  /* RUN NOW AND RESUME ARE ONE ROW UNDER THE SUMMARY (visual QA run 6,
+     overview-automate-008): beside the state they stacked into two ~68x44px
+     boxes and pushed the row tall. The actions cell gives its row of buttons
+     to the row's grid, the way the name cell does, and that row takes a line
+     of its own under line 2, left-aligned; a button keeps its 44px target and
+     a disabled one's reason still wraps under it. */
+  .sc-table.is-schedules .sc-c-acts > .sc-row-acts {
+    grid-row: 3; grid-column: 1 / -1;
+    flex-direction: row; flex-wrap: wrap; justify-content: flex-start; gap: 8px; padding-top: 4px;
+  }
+  .sc-table.is-schedules .sc-row-acts .c-btn-wrap { flex-direction: column; align-items: flex-start; text-align: left; }
   /* Line 2 WRAPS (visual QA V173): cut to one line, the next run, the
      outcome, the spend and what waits sat past the screen's edge, in a title
      a touch screen cannot open. */
@@ -271,6 +296,9 @@ ol.sc-pobj { padding-left: 18px; }
     grid-area: line; display: block; min-width: 0; white-space: normal; overflow-wrap: anywhere;
     font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
   }
+  /* The pause note leads line 2, in the text's ink: it is why the row is
+     not running (visual QA run 6, overview-automate-005). */
+  .sc-table.is-schedules .sc-line2-why { display: block; color: var(--text); }
   .sc-row-acts .c-btn, .sc-head-row .c-btn { min-height: 44px; }
   .sc-waiting-list > li { grid-template-columns: minmax(0, 1fr); gap: 0; }
   /* The detail's facts and the form's fields: one column, said rather than

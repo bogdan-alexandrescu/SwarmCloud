@@ -35,6 +35,30 @@ plain https origin. No value from the target's `sign_in` or `credential` is
 ever rendered but its start clicks' visible text, public by nature (§2.2):
 the sign-in is the gate's, and the agent is told only what to click on the
 chooser and what to run when it sees the login form again.
+
+ONE LEG AT A TIME (docs/design/qa-environments.md §1.1, §1.5, §6; lane
+QAENV-MODEL). A target may list its legs in `environments[]`. Every function
+here reads ONE leg's view, `leg(target, name)`: the app's fields and that
+entry's fields where a one-origin target keeps them, so each rule above
+holds per leg unchanged, and a prompt names that leg's base URL and start
+clicks only. A target with no `environments` is its own one leg and renders
+byte for byte as before. Of a target with several, a `production` leg, and a
+`non_production` leg sharing an origin with a `production` one, render no
+mutating flow: a production leg reads only.
+
+EVERY CAPTURE STEP DISCOVERS WHILE IT CAPTURES (docs/design/qa-environments.md
+§3.1, §3.5; lane QAENV-RUN; BGD's Q3 (a), 2026-10-23). A capture step runs
+`swarm_qa capture --crawl` (lane QAENV-CRAWL): its prompt carries the WHOLE
+run's stored list, the same in every step, and its share is `--group`,
+`--step` and `--steps`; after its own routes the tool walks the leg from its
+base path and every stored route, and captures the new routes it owns by a
+hash of the path, at most `found_per_step` (8, BGD's §10 answer), cut so the
+leg's stored plus `G x found_per_step` stays within `MAX_SCREENS`. No path a
+crawl found ever reaches a prompt: what a step finds goes to its own capture
+and its `found.json`. A target that asks to `discover` and has nothing stored
+renders `discover.slots` crawling steps (4 by default, at most 8) from the
+base alone, instead of being refused; one with neither is still refused. The
+report gains the leg's Coverage section (§3.5).
 """
 
 from __future__ import annotations
@@ -43,6 +67,7 @@ import fnmatch
 import ipaddress
 import json
 import re
+import shlex
 from dataclasses import dataclass, field
 from typing import Any, Collection, Mapping, Sequence
 from urllib.parse import urlsplit
@@ -62,6 +87,20 @@ MAX_GROUPS = 8
 MAX_SCREENS = 60
 MAX_DISCOVER_PAGES = 60
 MAX_DISCOVER_DEPTH = 3
+#: A crawling capture step (§3.1; QAENV-RUN). New routes a step captures by
+#: default: BGD answered 8 on 2026-10-23 (qa-environments.md §10), not the
+#: design's 4, and 8 is also the ceiling (`swarm_qa.FOUND_PER_STEP`,
+#: `MAX_FOUND_PER_STEP`). A target may set fewer in `discover.found_per_step`.
+FOUND_PER_STEP = 8
+MAX_FOUND_PER_STEP = 8
+#: The crawling steps of a run with nothing stored (`discover.slots`, §3.1):
+#: 4 by default, at most `MAX_GROUPS`, one capture agent each.
+DEFAULT_SLOTS = 4
+#: The crawl's own bound (`swarm_qa --crawl-seconds`, its default), and the
+#: crawling step's timeout: 1,800 s grows to 2,700 s (§3.1), which holds the
+#: tool's 900 s crawl ceiling beside the step's own captures.
+CRAWL_SECONDS = 600
+CRAWL_CAPTURE_TIMEOUT = 2700
 #: `swarm_qa`'s own bounds (`MAX_SEGMENTS`, `NAME`), which the capture tool
 #: refuses past; restated so a target is refused at registration, not at run.
 MAX_SEGMENTS = 12
@@ -83,6 +122,22 @@ ENVIRONMENTS = ("production", "non_production")
 #: private is the target registration's check (lane VQ-2), not this module's.
 EVIDENCE_MODES = ("console_link", "branch")
 FILE_MODES = ("issues", "none")
+#: The browser tool a goal-driven flow drives the live browser with
+#: (`flows_browser_tool`, or one run's `browser_tool`; lane VQ9-TOOL). BGD,
+#: 2026-10-23, after batch bench3-2026-10-23 (docs/browser-bench.md): Playwright
+#: MCP passed 8 of 10 prompts at $0.14 and 44.5 s a run (medians), Jev 6 of 10
+#: at $0.17 and 51.3 s, so flows default to Playwright and a target, or one
+#: run, may choose Jev. Capture and discovery stay on Playwright whatever this
+#: says: they run the fixed capture tool. Both are `claude-code-browser`'s
+#: `browser_tool` choices; a jev flow without the TypeSafe key its workspace
+#: needs is refused at submission (`_refuse_unavailable_browser_tool`).
+FLOW_BROWSER_TOOLS = ("playwright", "jev")
+DEFAULT_FLOW_BROWSER_TOOL = "playwright"
+#: What each tool's flow prompt says to drive the browser with.
+_FLOW_TOOL_SENTENCE = {
+    "playwright": "Using the Playwright MCP browser_* tools (browser_navigate, browser_snapshot, browser_click)",
+    "jev": "Using the jev browser tools",
+}
 
 #: Never visited, never clicked, whatever the target says (§1): the target's
 #: own lists are MERGED with these, never replace them.
@@ -155,6 +210,13 @@ _GLOB = re.compile(r"/[A-Za-z0-9._~%!$&()*+,;=:@/?\[\]-]{0,255}")
 _HOST = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?)+")
 _BASE_PATH = re.compile(r"(?:/[A-Za-z0-9._~%-]*)*")
 _LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._:/-]{0,49}")
+#: A label rule's route prefix: origin-relative like a finding's `path`, and
+#: with no query, so a scheme, a host (`//h/...`) or `?` never reads as a route.
+_PREFIX = re.compile(r"/(?!/)[A-Za-z0-9._~%!$&()*+,;=:@/-]{0,255}")
+#: `file.label_rules` (#2062): at most this many rules, each at most
+#: `MAX_LABELS` labels and `MAX_RULE_PATHS` prefixes, as `file.labels` is held
+#: to `MAX_LABELS`: GitHub applies what it is given, so the bound is ours.
+MAX_LABELS, MAX_LABEL_RULES, MAX_RULE_PATHS = 10, 20, 10
 _EVIDENCE = re.compile(r"(?!/)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}\.(?:png|gif|jpe?g|webp)")
 #: Free text a target supplies and a prompt quotes: one line, no backtick.
 _FORBIDDEN_TEXT = re.compile(r"[\x00-\x1f\x7f`]")
@@ -209,6 +271,14 @@ def base_url(target: Mapping[str, Any]) -> str:
         raise _invalid("base_url's port is not a port") from None
     origin = f"https://{host.lower()}" + (f":{port}" if port else "")
     return (origin + parts.path).rstrip("/")
+
+
+def screen_url(base: str, path: str) -> str:
+    """The URL a base-relative `path` opens under `base` (as `base_url`
+    returns it, with no trailing slash): `/` is the base itself, with its
+    slash, and `/settings` is `<base>/settings`. The one join of a path to the
+    base, so a sub-path base never opens `//` or its path twice (§1)."""
+    return f"{base}/{path[1:]}"
 
 
 def _origin(url: str) -> str:
@@ -266,12 +336,19 @@ def _screen(raw: Any, excluded: Sequence[str]) -> dict[str, Any]:
 
 
 def _screens(target: Mapping[str, Any], subset: Sequence[str] | None) -> list[dict[str, Any]]:
+    """The run's stored routes: the target's `screens`, else its stored
+    `discovered`. [] for a target that asks to `discover` and has neither
+    (§3.1, a run from nothing but the base): its steps crawl from the base."""
     raw = target.get("screens")
     if raw is None:
         raw = target.get("discovered")
+    if (raw is None or raw == []) and target.get("discover") is not None:
+        if subset is not None:
+            raise _invalid("a run's screens must name screens the target lists")
+        return []
     if not isinstance(raw, list) or not raw:
         raise QaSpecError("qa_target_no_screens",
-                          "the target lists no screens and none were discovered; run its discovery first")
+                          "the target lists no screens and does not ask to discover them")
     excluded, _ = _exclusions(target)
     screens = [_screen(s, excluded) for s in raw]
     ids = [s["id"] for s in screens]
@@ -298,6 +375,33 @@ def _names(value: Any, allowed: Sequence[str], default: Sequence[str], what: str
     return list(value)
 
 
+def _bounded(raw: Mapping[str, Any], key: str, low: int, high: int, default: int | None) -> int:
+    """`raw[key]`, an int in low..high; `default` when absent, required when None."""
+    value = raw.get(key, default)
+    if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
+        raise _invalid(f"discover.{key} must be {low}..{high}")
+    return value
+
+
+def _discover(target: Mapping[str, Any]) -> dict[str, int]:
+    """The target's `discover`, checked: `{max_pages, max_depth}` (both
+    required when it is set, §4.1), `slots` (1..8, 4) and `found_per_step`
+    (0..8, 8; §3.1, §10). A target that does not ask to discover crawls at
+    the tool's bounds, its found routes at the default cap."""
+    raw = target.get("discover")
+    if raw is None:
+        return {"max_pages": MAX_DISCOVER_PAGES, "max_depth": MAX_DISCOVER_DEPTH, "slots": DEFAULT_SLOTS,
+                "found_per_step": FOUND_PER_STEP}
+    if not isinstance(raw, Mapping):
+        raise _invalid("discover must be {max_pages, max_depth, slots?, found_per_step?}")
+    return {
+        "max_pages": _bounded(raw, "max_pages", 1, MAX_DISCOVER_PAGES, None),
+        "max_depth": _bounded(raw, "max_depth", 0, MAX_DISCOVER_DEPTH, None),
+        "slots": _bounded(raw, "slots", 1, MAX_GROUPS, DEFAULT_SLOTS),
+        "found_per_step": _bounded(raw, "found_per_step", 0, MAX_FOUND_PER_STEP, FOUND_PER_STEP),
+    }
+
+
 def _environment(target: Mapping[str, Any]) -> str:
     # Absent is production: the safe reading of someone else's application.
     env = target.get("environment") or "production"
@@ -306,12 +410,130 @@ def _environment(target: Mapping[str, Any]) -> str:
     return env
 
 
+# --------------------------------------------------------------------------
+# One leg of a target (docs/design/qa-environments.md §1.1, §1.5, §6;
+# lane QAENV-MODEL, BGD's Q1 (a), 2026-10-23)
+# --------------------------------------------------------------------------
+
+#: An entry's name: a short label, unique in its target (§1.1).
+ENVIRONMENT_NAME = re.compile(r"[a-z0-9-]{1,20}")
+#: More legs than any app serves (dev, staging, production, a preview or
+#: two), and a third of the ~25 maximal legs one tenant's QA map holds
+#: (§1.4), so one target cannot fill the workspace's secret.
+MAX_ENVIRONMENTS = 8
+#: What a leg holds, and so what moves into an entry of `environments[]`:
+#: WHERE the app is served and every rule that must never cross from one leg
+#: to another. The routes, flows, exclusions and filing rules describe the
+#: app and stay on the target once, because two copies drift (§1.1).
+LEG_FIELDS = (
+    "base_url", "host", "origin", "environment", "sign_in", "credential", "challenge_bypass",
+    "challenge_bypass_value", "host_state", "approved_origins", "approved_by", "approved_at",
+    "approved_idp_token_path", "read_posts", "rate", "discovered", "discovered_at", "discovered_by",
+    "discovered_workflow", "discovery_error", "discovering", "legacy_map_key",
+)
+#: The leg's name in a view `leg` makes; never stored.
+LEG_NAME = "environment_name"
+#: Set (True) in a view of, and a read of, a target stored with
+#: `environments`; never stored. The mark names its leg only then, so a
+#: one-entry target stored before this lane is marked, rendered and answered
+#: byte for byte as before.
+MIGRATED = "environments_migrated"
+
+
+def legacy_environment_name(target: Mapping[str, Any]) -> str:
+    """The name §1.2's migration gives a target's one leg: `production` when
+    its old mark was (absent is production, `_environment`'s reading), and
+    `staging` otherwise."""
+    return "production" if (target.get("environment") or "production") == "production" else "staging"
+
+
+def is_migrated(target: Mapping[str, Any]) -> bool:
+    flag = target.get(MIGRATED)
+    return flag if isinstance(flag, bool) else isinstance(target.get("environments"), list)
+
+
+def environments(target: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The target's entries. A target stored before this lane is presented
+    as a one-entry list (§1.2), its legacy name, its map key the bare target
+    id (`legacy_map_key`, §1.4)."""
+    raw = target.get("environments")
+    if isinstance(raw, list):
+        return [dict(e) for e in raw if isinstance(e, Mapping)]
+    entry = {k: target[k] for k in LEG_FIELDS if k in target}
+    entry["name"] = legacy_environment_name(target)
+    entry["legacy_map_key"] = True
+    return [entry]
+
+
+def entry_named(target: Mapping[str, Any], name: str | None) -> dict[str, Any]:
+    """The entry `name`, or the target's only one when `name` is None.
+    Raises `QaSpecError`: a target of several entries needs a name, and the
+    name must be one of them. Nothing ever falls back to another entry."""
+    entries = environments(target)
+    if name is None:
+        if len(entries) != 1:
+            raise QaSpecError("qa_target_environment_required",
+                              "this QA target has several environments; name the one to use")
+        return entries[0]
+    for entry in entries:
+        if entry.get("name") == name:
+            return entry
+    raise QaSpecError("qa_target_environment_unknown", "this QA target has no environment of that name")
+
+
+def _leg_origins(entry: Mapping[str, Any]) -> set[str]:
+    """Every origin a leg may reach: what was approved, and what is declared,
+    so a pending approval never narrows the comparison below. An explicit
+    `:443` is https's own port, so `https://h:443` and `https://h` are one
+    origin here: read as two, they would let a write permission through."""
+    origins: set[str] = set()
+    for raw in (*(entry.get("approved_origins") or []), entry.get("origin"), entry.get("base_url"),
+                (entry.get("sign_in") or {}).get("extra_origin")):
+        if isinstance(raw, str) and raw.lower().startswith("https://"):
+            origin = _origin(raw).lower()
+            origins.add(origin[:-len(":443")] if origin.endswith(":443") else origin)
+    return origins
+
+
+def shares_production_origin(target: Mapping[str, Any], name: str) -> bool:
+    """True when the entry `name` shares any origin with ANOTHER entry whose
+    mark is `production` (§1.5). Such a leg is held as production for every
+    write: the page, not the origin, chooses which backend a write reaches."""
+    mine = _leg_origins(entry_named(target, name))
+    return any(e.get("name") != name and (e.get("environment") or "production") == "production"
+               and mine & _leg_origins(e) for e in environments(target))
+
+
+def leg(target: Mapping[str, Any], name: str | None = None) -> dict[str, Any]:
+    """The target as its leg `name` sees it: the app's fields, and that
+    entry's per-leg fields where a target of one origin keeps them, so every
+    rule here applies to a leg unchanged. Nothing of another entry is in it.
+
+    A target with no `environments` is its own one leg: the view is the
+    target itself, with `LEG_NAME`. Of a target with several entries, a leg
+    that is `production`, or shares an origin with a `production` entry, is
+    rendered with no mutating flow (§1.5, §6: a production leg reads only)."""
+    entry = entry_named(target, name)
+    migrated = is_migrated(target)
+    view = {k: v for k, v in target.items() if k not in LEG_FIELDS and k not in ("environments", MIGRATED)}
+    view.update({k: v for k, v in entry.items() if k in LEG_FIELDS and k != "legacy_map_key"})
+    view[LEG_NAME] = entry["name"]
+    if migrated:
+        view[MIGRATED] = True
+    if len(environments(target)) > 1 and isinstance(view.get("flows"), list) and (
+            (entry.get("environment") or "production") == "production"
+            or shares_production_origin(target, entry["name"])):
+        view["flows"] = [f for f in view["flows"] if not (isinstance(f, Mapping) and f.get("mutating") is True)]
+    return view
+
+
 def _flows(target: Mapping[str, Any]) -> list[dict[str, Any]]:
     raw = target.get("flows") or []
     if not isinstance(raw, list) or len(raw) > MAX_FLOWS:
         raise _invalid(f"flows must be a list of at most {MAX_FLOWS}")
     production = _environment(target) == "production"
     excluded, _ = _exclusions(target)
+    base_path = urlsplit(base_url(target)).path if raw else ""
     flows: list[dict[str, Any]] = []
     for item in raw:
         if not isinstance(item, Mapping):
@@ -328,7 +550,10 @@ def _flows(target: Mapping[str, Any]) -> list[dict[str, Any]]:
             raise QaSpecError("qa_mutating_flow_on_production",
                               f"flow {fid} is mutating and the target's environment is production")
         start = _path(item.get("start_path", "/"), f"flow {fid}'s start_path")
-        if _excluded(start, excluded):
+        # `start_path` is relative to the base and exclusions to the origin,
+        # so both readings are checked: `/logout` under `/app` is `/app/logout`.
+        opened = screen_url(base_path, start)
+        if _excluded(start, excluded) or _excluded(opened, excluded):
             raise QaSpecError("qa_screen_excluded", f"flow {fid} starts on an excluded path")
         flows.append({"id": fid, "goal": _text(item.get("goal"), f"flow {fid}'s goal", limit=500),
                       "start_path": start, "mutating": mutating})
@@ -337,10 +562,22 @@ def _flows(target: Mapping[str, Any]) -> list[dict[str, Any]]:
     return flows
 
 
+def flows_browser_tool(target: Mapping[str, Any], override: Any = None) -> str:
+    """The tool this render's flows run with: one run's `override` when it
+    names one, else the target's `flows_browser_tool`, else Playwright."""
+    for value, what in ((override, "browser_tool"), (target.get("flows_browser_tool"), "flows_browser_tool")):
+        if value is None:
+            continue
+        if not isinstance(value, str) or value not in FLOW_BROWSER_TOOLS:
+            raise _invalid(f"{what} must be one of {', '.join(FLOW_BROWSER_TOOLS)}")
+        return value
+    return DEFAULT_FLOW_BROWSER_TOOL
+
+
 def _file_settings(target: Mapping[str, Any]) -> dict[str, Any]:
     raw = target.get("file") or {}
     if not isinstance(raw, Mapping):
-        raise _invalid("file must be {min_severity, max_issues, labels, evidence}")
+        raise _invalid("file must be {min_severity, max_issues, labels, label_rules, evidence}")
     out = {**DEFAULT_FILE, **raw}
     if out["min_severity"] not in SEVERITIES:
         raise _invalid(f"file.min_severity must be one of {', '.join(SEVERITIES)}")
@@ -348,14 +585,56 @@ def _file_settings(target: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= MAX_ISSUES:
         raise _invalid(f"file.max_issues must be 1..{MAX_ISSUES}")
     labels = out["labels"]
-    if not isinstance(labels, (list, tuple)) or len(labels) > 10 or not all(
+    if not isinstance(labels, (list, tuple)) or len(labels) > MAX_LABELS or not all(
         isinstance(x, str) and _LABEL.fullmatch(x) for x in labels
     ):
-        raise _invalid("file.labels must be at most 10 label names")
+        raise _invalid(f"file.labels must be at most {MAX_LABELS} label names")
     if out["evidence"] not in EVIDENCE_MODES:
         raise _invalid(f"file.evidence must be one of {', '.join(EVIDENCE_MODES)}")
     out["labels"] = list(labels)
+    out["label_rules"] = _label_rules(out.get("label_rules"))
     return out
+
+
+def _label_rules(raw: Any) -> list[dict[str, list[str]]]:
+    """`file.label_rules` (#2062): `[{paths, labels}]`, each refusal naming
+    the field it is about and quoting no value."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > MAX_LABEL_RULES:
+        raise _invalid(f"file.label_rules must be a list of at most {MAX_LABEL_RULES} rules {{paths, labels}}")
+    rules: list[dict[str, list[str]]] = []
+    for index, rule in enumerate(raw):
+        what = f"file.label_rules[{index}]"
+        if not isinstance(rule, Mapping) or set(rule) != {"paths", "labels"}:
+            raise _invalid(f"{what} must be {{paths, labels}} and nothing else")
+        paths, labels = rule["paths"], rule["labels"]
+        if not isinstance(paths, list) or not 1 <= len(paths) <= MAX_RULE_PATHS or not all(
+            isinstance(p, str) and _PREFIX.fullmatch(p) for p in paths
+        ):
+            raise _invalid(f"{what}.paths must be 1..{MAX_RULE_PATHS} origin-relative route prefixes, each "
+                           f"starting with one / and with no scheme, host or query")
+        if not isinstance(labels, list) or not 1 <= len(labels) <= MAX_LABELS or not all(
+            isinstance(x, str) and _LABEL.fullmatch(x) for x in labels
+        ):
+            raise _invalid(f"{what}.labels must be 1..{MAX_LABELS} label names")
+        rules.append({"paths": list(paths), "labels": list(labels)})
+    return rules
+
+
+def finding_labels(settings: Mapping[str, Any], path: str) -> tuple[list[str], list[int]]:
+    """The labels a finding on `path` (its origin-relative route) is filed
+    with, `file.labels` first and each matching rule's after, each once, and
+    the indexes of the rules that matched. A rule matches when the route,
+    without its query, starts with one of its prefixes (#2062)."""
+    route = path.split("?", 1)[0].split("#", 1)[0]
+    labels = list(settings["labels"])
+    matched: list[int] = []
+    for index, rule in enumerate(settings.get("label_rules") or ()):
+        if any(route.startswith(prefix) for prefix in rule["paths"]):
+            matched.append(index)
+            labels.extend(x for x in rule["labels"] if x not in labels)
+    return labels, matched
 
 
 def _design_docs(target: Mapping[str, Any]) -> list[str]:
@@ -534,6 +813,44 @@ CHECKLIST = (
 
 NO_CHANGE = "Change no file in the repository."
 
+#: QA-GATE-REFUSALS (part of #2067). The live gate answers some requests
+#: itself (a write, anything but GET and HEAD to another origin), and its 403
+#: to another origin carries no CORS header, so Chrome logs a CORS block: on
+#: 2026-10-23 a run filed exactly that, an app's OIDC token exchange the gate
+#: refused, into the app's repository as a blocker. The capture writes each
+#: screen's refusals into its errors file as `gate_refused`, and these
+#: sentences keep them the run's, from the review to the filing.
+GATE_CAPTURE = (
+    "The tool also writes, into each screen's errors file as `gate_refused`, the requests the live browser "
+    "refused itself while that screen loaded: those are the run's limits, not the app's defects, so do not "
+    "retry or work around them."
+)
+GATE_REVIEW = (
+    "The live browser refuses some requests itself (a write, or anything but GET and HEAD to another "
+    "origin), and "
+    "each screen's errors file lists them as `gate_refused`, with a failed request it refused marked as the "
+    "gate's. A screen whose `gate_refused` is non-empty, together with a console error naming the same URL "
+    "(a CORS block, net::ERR_FAILED or a 403), or a loading or error state such a refused request explains, "
+    "is a finding about the run: put it in `about_run` ({id, title, actual}, naming the method, origin and "
+    "code the gate refused), never in `findings`, and never call it the app's defect. A `gate_refused` of "
+    "null means the gate's record could not be read: say so in `about_run`."
+)
+
+
+def _gate_report_line() -> str:
+    return (
+        "Open report.md with the gate's refusals: add up `gate_refusals` across the capture manifests and "
+        "write first \"the gate refused N requests (<count> <method> to <origin>, ...), so these screens "
+        "show the app without them:\", by method and origin, then list every screen whose errors file has "
+        "a non-empty `gate_refused`; when N is 0 say the gate refused none, and when a manifest's "
+        "`gate_refusals` was not read say so. Then, on a line of its own, name what the gate let through: "
+        "for each entry of the manifests' `gate_refusals.allowed`, write its label (\"allowed: IdP token "
+        "refresh\") with its count, method, origin and path; these are not refusals and never count toward "
+        "N. Carry every review's `about_run` into findings.json's "
+        "`about_run`, and move there any finding whose evidence is a request in a screen's `gate_refused` "
+        "or a console error naming one of its URLs: a gate refusal is never the app's defect."
+    )
+
 
 def _safety(target: Mapping[str, Any], origin: str, *, mutating: bool = False) -> str:
     paths, controls = _exclusions(target)
@@ -572,8 +889,40 @@ def _sign_in_note(own_login: bool, clicks: Sequence[Mapping[str, str]] = ()) -> 
     return note
 
 
+def _leg_name(target: Mapping[str, Any]) -> str:
+    """The leg a prompt reports on: the view's name (`leg`), else the name
+    §1.2 gives a target of one origin."""
+    name = target.get(LEG_NAME)
+    if isinstance(name, str) and ENVIRONMENT_NAME.fullmatch(name):
+        return name
+    return legacy_environment_name(target)
+
+
+def _crawl_flags(target: Mapping[str, Any], base: str, *, step: int, steps: int, found_per_step: int,
+                 bounds: Mapping[str, int]) -> str:
+    """`capture --crawl`'s arguments (§3.1, swarm_qa's QAENV-CRAWL): this
+    step's number of the leg's `steps`, its cap of new routes, the walk's
+    start (the base's path) and bounds, the target's exclusions, and the
+    leg's navigation spacing when it sets one. Every value is the target's
+    or this module's, each shell-quoted."""
+    paths, controls = _exclusions(target)
+    flags = [
+        "--crawl", f"--step {step}", f"--steps {steps}", f"--found-per-step {found_per_step}",
+        f"--crawl-seconds {CRAWL_SECONDS}", f"--start-path {shlex.quote(urlsplit(base).path + '/')}",
+        f"--max-pages {bounds['max_pages']}", f"--max-depth {bounds['max_depth']}",
+        *(f"--exclude {shlex.quote(glob)}" for glob in paths),
+        *(f"--exclude-control {shlex.quote(word)}" for word in controls),
+    ]
+    rate = target.get("rate")
+    navigation = rate.get("navigation_ms") if isinstance(rate, Mapping) else None
+    if isinstance(navigation, int) and not isinstance(navigation, bool):
+        flags.append(f"--navigation-ms {navigation}")
+    return " ".join(flags)
+
+
 def _capture_prompt(target: Mapping[str, Any], base: str, group: str, routes: Mapping[str, Any], *,
-                    widths: Sequence[str], themes: Sequence[str], own_login: bool) -> str:
+                    crawl: str, found_per_step: int, widths: Sequence[str], themes: Sequence[str],
+                    own_login: bool) -> str:
     flags = ["--settle generic", "--axe"]
     if own_login:
         flags.append("--keep-storage")
@@ -588,12 +937,16 @@ def _capture_prompt(target: Mapping[str, Any], base: str, group: str, routes: Ma
         f"Capture, do not review. Visual QA of {target['name']} at {base}.{_sign_in_note(own_login, start_clicks(target))} "
         f"Write this route list, exactly as given, to /tmp/swarm-qa/routes-{group}.json with the Write "
         f"tool:\n\n```json\n{json.dumps(routes, indent=2, sort_keys=True)}\n```\n\n"
+        f"It is the whole run's stored list, the same in every capture step; `--group {group}` is this "
+        f"step's share of it. Never add a route to it yourself: after this step's routes the tool walks the "
+        f"app from the base and every stored route, and captures at most {found_per_step} new routes this "
+        f"step owns, writing what it found to found.json in the tarball. "
         f"Then run `python -m swarm_qa capture --routes /tmp/swarm-qa/routes-{group}.json --group {group} "
         f"--base {_origin(base)} --presets {','.join(widths)} --themes {','.join(themes)} {' '.join(flags)} "
-        f"--out {out} --bundle {out}.tar`. It writes the tarball whatever happens: a route that failed is "
+        f"{crawl} --out {out} --bundle {out}.tar`. It writes the tarball whatever happens: a route that failed is "
         f"listed in its manifest's `failed`, not a reason to stop. If it exits non-zero, put its last 40 "
         f"lines in your answer and still make sure capture-{group}.tar exists under $SWARM_ARTIFACTS_DIR. "
-        f"{_safety(target, _origin(base))} {NO_CHANGE}"
+        f"{GATE_CAPTURE} {_safety(target, _origin(base))} {NO_CHANGE}"
     )
 
 
@@ -604,19 +957,19 @@ def _review_prompt(target: Mapping[str, Any], base: str, group: str, design_docs
         f"capture-{group}.tar. For every PNG its manifest.json lists, open the image with the Read tool and "
         f"look at it, against this checklist: {CHECKLIST}. One finding per defect. For each, write a crop "
         f"PNG named <id>.png showing it (ids start `{group}-`), and an entry in findings-{group}.json, an "
-        f'object {{"format": 1, "group": "{group}", "findings": [...], "reviewed": <the number of images '
-        f"you opened>}}, each finding in exactly this shape:\n\n```json\n"
+        f'object {{"format": 1, "group": "{group}", "findings": [...], "about_run": [...], "reviewed": <the '
+        f"number of images you opened>}}, each finding in exactly this shape:\n\n```json\n"
         f"{json.dumps(FINDING_EXAMPLE, indent=2)}\n```\n\n"
         f"`severity` is one of {', '.join(SEVERITIES)}; `width` is a preset name; `evidence` lists the "
         f"crop and the capture image it came from, by their paths in the tars, and a finding without "
         f"evidence is refused. Quote no more of the page's text than the few words that name the defect. "
-        f"Bundle findings-{group}.json and the crops into review-{group}.tar under $SWARM_ARTIFACTS_DIR. "
+        f"{GATE_REVIEW} Bundle findings-{group}.json and the crops into review-{group}.tar under $SWARM_ARTIFACTS_DIR. "
         f"{NO_CHANGE}"
     )
 
 
 def _flow_prompt(target: Mapping[str, Any], base: str, flow: Mapping[str, Any], widths: Sequence[str],
-                 own_login: bool) -> str:
+                 own_login: bool, tool: str) -> str:
     fid = flow["id"]
     runs = []
     for width in widths:
@@ -625,8 +978,8 @@ def _flow_prompt(target: Mapping[str, Any], base: str, flow: Mapping[str, Any], 
             f"flow-{fid}-{width}`, reach the goal, then `swarm-handoff record stop`"
         )
     return (
-        f"Goal-driven flow test of {target['name']}. Open {base}{flow['start_path']} in the live "
-        f"browser.{_sign_in_note(own_login, start_clicks(target))} Using the jev browser tools, reach this goal as a person "
+        f"Goal-driven flow test of {target['name']}. Open {screen_url(base, flow['start_path'])} in the live "
+        f"browser.{_sign_in_note(own_login, start_clicks(target))} {_FLOW_TOOL_SENTENCE[tool]}, reach this goal as a person "
         f"would, without typing addresses: {flow['goal']}. Do it once per width, recorded: "
         f"{'; '.join(runs)}. For each run write in flow-{fid}.json whether the goal was reached, the steps "
         f"taken, and every point where a label was missing, ambiguous or misleading, each with a "
@@ -647,17 +1000,31 @@ def _report_prompt(target: Mapping[str, Any], groups: Sequence[tuple[str, Sequen
         f"{', '.join(names)}. For each group, count the images its capture's manifest.json lists and check "
         f"the review's `reviewed` against that number; a shortfall is a finding about the run, naming both "
         f"numbers. A staged tar that is missing is a finding about the run, naming the tar; when a capture "
-        f"tar is missing, the group's expected count is its routes x {len(widths)} widths x {len(themes)} "
-        f"themes x each route's segments (4 when unset), and say which count you used. Merge every finding "
+        f"tar is missing, the group's expected count is its stored routes x {len(widths)} widths x "
+        f"{len(themes)} themes x each route's segments (4 when unset), and say which count you used and that "
+        f"the found routes' count is unknown. Merge every finding "
         f"into findings.json, {{\"format\": 1, \"findings\": [...], \"about_run\": [...]}}, de-duplicating the "
         f"same defect seen at several widths or themes into one finding whose `also_seen` lists the others. "
         f"A finding is kept only when every file its `evidence` names is in a staged tar; one that names "
         f"none, or one no tar holds, moves to `about_run` with what was missing. `about_run` entries are "
         f"{{id, title, actual}} and are never filed in the application's repository. Copy every evidence "
         f"file to $SWARM_ARTIFACTS_DIR next to findings.json, keeping its path, so the console shows it. "
-        f"Write report.md: one line first saying the flows are reported apart, in flow-report's flows.md; "
-        f"then a table of findings by severity and by screen, then each finding, severity first, with its "
-        f"crop embedded by relative link. {NO_CHANGE}"
+        f"{_gate_report_line()} Then, in report.md, one line saying the flows are reported apart, in "
+        f"flow-report's flows.md; then a table of findings by severity and by screen, then each finding, severity first, with its "
+        f"crop embedded by relative link. {_coverage_line(_leg_name(target))} {NO_CHANGE}"
+    )
+
+
+def _coverage_line(leg_name: str) -> str:
+    """§3.5: the leg's Coverage section, from every capture's found.json."""
+    return (
+        f"End report.md with a section headed \"Coverage ({leg_name})\", read from every capture tar's "
+        f"found.json: the stored routes captured; the new routes captured, with their paths "
+        f"(`captured_new`); the routes found but over the cap (`over_cap`); the routes found but not reached "
+        f"by their owner (in a step's `not_owned` and in no step's `captured_new` or `over_cap`); and for "
+        f"each step why its crawl stopped (`crawl.stopped_by`). When a crawl stopped by `time` or `pages`, "
+        f"say so plainly: a route missing then is no evidence that it is gone. A capture tar with no "
+        f"found.json is said so, by name."
     )
 
 
@@ -692,18 +1059,42 @@ def _file_prompt(target: Mapping[str, Any], settings: Mapping[str, Any]) -> str:
         f"findings whose severity is one of {', '.join(order)}, most severe first, at most "
         f"{settings['max_issues']} issues; list the rest, one line each, in one roll-up issue titled "
         f"\"Visual QA of {target['name']}, <today's date>: <n> further findings\", so nothing is silently "
-        f"dropped. Never file `about_run`. For each finding, first call `issue_list` for an open issue on "
+        f"dropped. Never file `about_run`. Never file a finding whose evidence is a gate refusal: one whose "
+        f"evidence or text names a request a screen's `gate_refused` lists, a request the live gate refused, "
+        f"or a CORS block or failed request to such a URL is the run's limit, not the app's defect; list it "
+        f"in filed.json as not filed, with that reason. For each finding, first call `issue_list` for an open issue on "
         f"the same path naming the same defect; if one exists, comment on it with `issue_comment` instead "
         f"and say so in your answer. Otherwise call `issue_create` with `dedupe_key` "
         f"\"visual-qa:{tid}:<screen>:<the title, lower-cased, spaces collapsed>\"; an answer "
         f"{{existing: N}} means it is filed already: comment on N with this run and the new evidence. Use "
         f"the repository's bug form when it has one, else `form: \"plain\"` with the sections Summary, "
         f"Where (path, width, theme), Actual, Expected, Steps to reproduce and Evidence, ending \"Found by "
-        f"SwarmCloud visual QA\". Labels: {labels} and severity:<s>; the broker applies only labels that "
-        f"exist. Before any write, remove from the text every e-mail address, phone number and anything "
+        f"SwarmCloud visual QA\". Labels: {labels} and severity:<s>{_label_rules_sentence(settings)}; the "
+        f"broker applies only labels that exist. Before any write, remove from the text every e-mail address, phone number and anything "
         f"credential-shaped the page showed: quote no more than the words that name the defect. {evidence} "
-        f"Write filed.json listing each finding id with the issue number filed or commented on. {NO_CHANGE}"
+        f"Write filed.json listing each finding id with the issue number filed or commented on"
+        f"{_label_rules_report(settings)}. {NO_CHANGE}"
     )
+
+
+def _label_rules_sentence(settings: Mapping[str, Any]) -> str:
+    rules = settings["label_rules"]
+    if not rules:
+        return ""
+    stated = "; ".join(
+        f"rule {n}: a finding whose `path` starts with {' or '.join(json.dumps(p) for p in rule['paths'])} "
+        f"also gets {json.dumps(rule['labels'])}"
+        for n, rule in enumerate(rules, 1)
+    )
+    return (f". Then the label rules, matched against the finding's `path` without its query, every rule that "
+            f"matches adding its labels and a finding no rule matches getting none of them: {stated}")
+
+
+def _label_rules_report(settings: Mapping[str, Any]) -> str:
+    if not settings["label_rules"]:
+        return ""
+    return (", and for each the `label_rules` that labelled it, by rule number (an empty list when none "
+            "did); end your answer with one line per rule naming the issues it labelled")
 
 
 # --------------------------------------------------------------------------
@@ -743,11 +1134,12 @@ def _workflow(target: Mapping[str, Any], title: str, steps: list[dict[str, Any]]
 
 
 def render(target: Mapping[str, Any], *, screens: Sequence[str] | None = None,
-           file: str = "issues") -> dict[str, Any]:
+           file: str = "issues", browser_tool: str | None = None) -> dict[str, Any]:
     """The QA run's workflow spec for `target`, as `read_spec` reads it.
 
     `screens` narrows the run to those screen ids; `file="none"` renders the
-    report without the filing step (§6). Raises `QaSpecError` for anything
+    report without the filing step (§6); `browser_tool` runs this render's
+    flows with that tool instead of the target's (`flows_browser_tool`). Raises `QaSpecError` for anything
     the spec cannot hold; never returns a partial spec."""
     if file not in FILE_MODES:
         raise _invalid(f"file must be one of {', '.join(FILE_MODES)}")
@@ -757,8 +1149,16 @@ def render(target: Mapping[str, Any], *, screens: Sequence[str] | None = None,
     own_login = _own_login(target)
     widths = _names(target.get("widths"), PRESETS, DEFAULT_WIDTHS, "widths")
     themes = _names(target.get("themes"), THEMES, DEFAULT_THEMES, "themes")
-    groups = group_screens(_screens(target, screens))
+    stored = _screens(target, screens)
+    bounds = _discover(target)
+    # §3.1: the stored routes grouped as before, or, from nothing but the
+    # base, `discover.slots` steps with no stored route of their own.
+    groups = group_screens(stored) if stored else [(f"g{k}", []) for k in range(1, bounds["slots"] + 1)]
+    # Cut so that stored plus every step at its cap stays within MAX_SCREENS
+    # (swarm_qa cuts the same way; the prompt says the figure it will use).
+    found_per_step = min(bounds["found_per_step"], max(0, (MAX_SCREENS - len(stored)) // len(groups)))
     flows = _flows(target)
+    flow_tool = flows_browser_tool(target, browser_tool)
     design_docs = _design_docs(target)
     settings = _file_settings(target)
     clock = _clock(target)
@@ -767,12 +1167,17 @@ def render(target: Mapping[str, Any], *, screens: Sequence[str] | None = None,
         _target_id(target)
 
     steps: list[dict[str, Any]] = []
-    for group, members in groups:
+    # The whole run's stored list, the same in every step (§3.1): an empty
+    # group is no group, so a run from the base writes `groups: {}`.
+    run_routes = route_list([(g, m) for g, m in groups if m], clock=clock)
+    for k, (group, _members) in enumerate(groups, 1):
+        crawl = _crawl_flags(target, base, step=k, steps=len(groups), found_per_step=found_per_step,
+                             bounds=bounds)
         steps.append(_step(
             f"capture-{group}", CAPTURE_PROFILE, CAPTURE_MODEL,
-            _capture_prompt(target, base, group, route_list([(group, members)], clock=clock),
+            _capture_prompt(target, base, group, run_routes, crawl=crawl, found_per_step=found_per_step,
                             widths=widths, themes=themes, own_login=own_login),
-            timeout=1800, browser_tool="playwright"))
+            timeout=CRAWL_CAPTURE_TIMEOUT, browser_tool="playwright"))
     for group, _members in groups:
         steps.append(_step(
             f"review-{group}", REVIEW_PROFILE, REVIEW_MODEL, _review_prompt(target, base, group, design_docs),
@@ -781,7 +1186,8 @@ def render(target: Mapping[str, Any], *, screens: Sequence[str] | None = None,
     for flow in flows:
         steps.append(_step(
             f"flow-{flow['id']}", CAPTURE_PROFILE, FLOW_MODEL,
-            _flow_prompt(target, base, flow, widths, own_login), timeout=2700, browser_tool="jev"))
+            _flow_prompt(target, base, flow, widths, own_login, flow_tool), timeout=2700,
+            browser_tool=flow_tool))
     staged = {f"{kind}-{g}": f"{kind}-{g}.tar" for kind in ("capture", "review") for g, _ in groups}
     steps.append(_step("report", REVIEW_PROFILE, REPORT_MODEL, _report_prompt(target, groups, widths, themes),
                        timeout=3600, depends_on=list(staged), input_from=staged))
@@ -804,14 +1210,10 @@ def render_discovery(target: Mapping[str, Any]) -> dict[str, Any]:
     target = {**target, "name": name}
     base = base_url(target)
     own_login = _own_login(target)
-    raw = target.get("discover")
-    if not isinstance(raw, Mapping):
-        raise _invalid("discover must be {max_pages, max_depth}")
-    pages, depth = raw.get("max_pages"), raw.get("max_depth")
-    if not isinstance(pages, int) or isinstance(pages, bool) or not 1 <= pages <= MAX_DISCOVER_PAGES:
-        raise _invalid(f"discover.max_pages must be 1..{MAX_DISCOVER_PAGES}")
-    if not isinstance(depth, int) or isinstance(depth, bool) or not 0 <= depth <= MAX_DISCOVER_DEPTH:
-        raise _invalid(f"discover.max_depth must be 0..{MAX_DISCOVER_DEPTH}")
+    if not isinstance(target.get("discover"), Mapping):
+        raise _invalid("discover must be {max_pages, max_depth, slots?, found_per_step?}")
+    bounds = _discover(target)
+    pages, depth = bounds["max_pages"], bounds["max_depth"]
     paths, _ = _exclusions(target)
     excludes = " ".join(f"--exclude '{p}'" for p in paths)
     prompt = (
@@ -882,11 +1284,19 @@ def _target_id(target: Mapping[str, Any]) -> str:
 def qa_target_metadata(target: Mapping[str, Any]) -> dict[str, Any]:
     """`metadata.qa_target` for each agent of `browser_steps` (§1.1): written by
     swarm-api at submission, never accepted from a caller, and what the
-    worker's attempt route resolves the target from."""
+    worker's attempt route resolves the target from. A leg of a target stored
+    with `environments` adds its name (§1.5), so the route serves that entry
+    and no other; an unmigrated target's mark is `{id, revision}` as before."""
     revision = target.get("revision")
     if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
         raise _invalid("the target has no revision")
-    return {"id": _target_id(target), "revision": revision}
+    mark: dict[str, Any] = {"id": _target_id(target), "revision": revision}
+    if target.get(MIGRATED) is True:
+        name = target.get(LEG_NAME)
+        if not isinstance(name, str) or not ENVIRONMENT_NAME.fullmatch(name):
+            raise _invalid("the target's environment has no name")
+        mark["environment"] = name
+    return mark
 
 
 def browser_steps(spec: Mapping[str, Any]) -> list[str]:

@@ -13,11 +13,13 @@
 //                    value column and `← AUTO` wraps inside it, under
 //                    CLOUD_RUN_JOB.
 //
-// Not held here, because nothing changed for them (the PR body and
-// questions.json say why): r3:capacity-011 (ragged card heights, the
-// deliberate `align-items: start` of V088), r3:capacity-014 ('too small'
-// shares the paused glyph; the owner's question) and r3:capacity-006 ('0
-// holders' with no drift mark; the owner's question).
+// Not held here, because nothing changed for them in this lane (the PR body
+// and questions.json say why): r3:capacity-011 (ragged card heights, then
+// V088's `align-items: start`, which QAFIX6-CAPACITY-2 has since retired for
+// `align-items: stretch` on `.rt-cards > .ctl-cards` in styles/capacity.css),
+// r3:capacity-014 ('too small' shares the paused glyph; the owner's
+// question) and r3:capacity-006 ('0 holders' with no drift mark; the owner's
+// question).
 
 import { render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'

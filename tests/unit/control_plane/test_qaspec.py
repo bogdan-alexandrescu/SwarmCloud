@@ -26,6 +26,7 @@ from typing import Any
 
 import pytest
 
+from swarm_common.profiles import RUNNER_PROFILES
 from swarm_mcp.profiles import check_spec_model_classes, spec_without_model_classes
 from swarm_mcp.workflows import read_spec
 
@@ -144,7 +145,8 @@ def test_the_steps_are_the_designs_shapes() -> None:
     assert steps["review-g1"]["depends_on"] == ["capture-g1"]
     assert steps["flow-find-docs"]["runner_profile"] == "claude-code-browser"
     assert steps["flow-find-docs"]["model_class"] == "sonnet"
-    assert steps["flow-find-docs"]["inputs"] == {"browser_tool": "jev"}
+    # MUTATION: hard-code `browser_tool="jev"` on the flow steps again and this fails.
+    assert steps["flow-find-docs"]["inputs"] == {"browser_tool": "playwright"}
     # MUTATION: stage fewer than every capture and review tar into the report.
     assert steps["report"]["input_from"] == {
         "capture-g1": "capture-g1.tar",
@@ -156,6 +158,76 @@ def test_the_steps_are_the_designs_shapes() -> None:
     assert steps["flow-report"]["input_from"] == {"flow-find-docs": "flow-find-docs.tar"}
     assert steps["file"]["input_from"] == {"report": "findings.json"}
     assert steps["file"]["model_class"] == "sonnet"
+
+
+# --------------------------------------------------------------------------
+# The flows' browser tool (lane VQ9-TOOL; BGD, 2026-10-23: Playwright by
+# default, after batch bench3-2026-10-23; a target, or one run, may choose Jev)
+# --------------------------------------------------------------------------
+
+_FLOW = {"id": "find-docs", "goal": "find the API reference", "start_path": "/"}
+
+
+def _flow_steps(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    return [s for s in spec["steps"] if s["step_id"].startswith("flow-") and s["step_id"] != "flow-report"]
+
+
+def test_a_target_without_the_field_renders_its_flows_with_playwright() -> None:
+    spec = qaspec.render(_target(flows=[_FLOW]))
+    (flow,) = _flow_steps(spec)
+    # MUTATION: default `flows_browser_tool` to "jev" and this fails.
+    assert flow["inputs"] == {"browser_tool": "playwright"}
+    # MUTATION: keep the jev sentence in the flow prompt whatever the tool and these fail.
+    assert "Playwright MCP" in flow["prompt"]
+    assert "jev" not in flow["prompt"].lower()
+    # The capture steps stay on the fixed capture tool, whatever the flows use.
+    assert _steps(spec)["capture-g1"]["inputs"] == {"browser_tool": "playwright"}
+
+
+def test_a_target_that_chooses_jev_renders_its_flows_with_jev() -> None:
+    spec = qaspec.render(_target(flows=[_FLOW], flows_browser_tool="jev"))
+    (flow,) = _flow_steps(spec)
+    # MUTATION: ignore the target's field in `render` and this is playwright.
+    assert flow["inputs"] == {"browser_tool": "jev"}
+    # MUTATION: render the Playwright sentence for a jev flow and these fail.
+    assert "Using the jev browser tools" in flow["prompt"]
+    assert "Playwright MCP" not in flow["prompt"]
+    # MUTATION: let the flows' tool reach the capture step and this is jev.
+    assert _steps(spec)["capture-g1"]["inputs"] == {"browser_tool": "playwright"}
+
+
+def test_one_runs_browser_tool_overrides_the_targets_for_that_render_only() -> None:
+    target = _target(flows=[_FLOW], flows_browser_tool="jev")
+    before = copy.deepcopy(target)
+    (flow,) = _flow_steps(qaspec.render(target, browser_tool="playwright"))
+    # MUTATION: let the target's field win over the run's override and this is jev.
+    assert flow["inputs"] == {"browser_tool": "playwright"}
+    assert "Playwright MCP" in flow["prompt"]
+    # MUTATION: write the override back onto the target and the next render is playwright.
+    assert target == before
+    (again,) = _flow_steps(qaspec.render(target))
+    assert again["inputs"] == {"browser_tool": "jev"}
+    (chosen,) = _flow_steps(qaspec.render(_target(flows=[_FLOW]), browser_tool="jev"))
+    assert chosen["inputs"] == {"browser_tool": "jev"}
+
+
+@pytest.mark.parametrize("tool", ["dev-browser", "auto", "JEV", "", 1, ["jev"]])
+def test_an_unknown_flows_browser_tool_is_refused(tool: Any) -> None:
+    # MUTATION: accept any string as `flows_browser_tool` and this renders.
+    with pytest.raises(qaspec.QaSpecError) as err:
+        qaspec.render(_target(flows=[_FLOW], flows_browser_tool=tool))
+    assert err.value.code == "qa_target_invalid"
+    assert "flows_browser_tool" in err.value.message
+    # MUTATION: skip the override's check in `render` and this renders.
+    with pytest.raises(qaspec.QaSpecError):
+        qaspec.render(_target(flows=[_FLOW]), browser_tool=tool)
+
+
+def test_the_flow_tools_are_the_profiles_choices() -> None:
+    # MUTATION: add a tool the browser profile does not offer and this fails.
+    choices = RUNNER_PROFILES["claude-code-browser"].inputs["browser_tool"].choices
+    assert set(qaspec.FLOW_BROWSER_TOOLS) <= set(choices)
+    assert qaspec.DEFAULT_FLOW_BROWSER_TOOL == "playwright"
 
 
 def test_report_only_renders_no_file_step() -> None:
@@ -672,3 +744,114 @@ def test_the_capture_flow_and_discovery_prompts_name_the_start_clicks_in_order_o
     # MUTATION: write the chooser sentence for every own-login target and this fails.
     assert all("chooser" not in s["prompt"] for s in plain["steps"])
     assert all("chooser" not in s["prompt"] for s in qaspec.render(_target())["steps"])
+
+
+# --------------------------------------------------------------------------
+# Route-based label rules (QA-TARGET-FILE, #2062; AI Studio, 2026-10-23)
+# --------------------------------------------------------------------------
+
+_AGENT_RULE = {"paths": ["/agents/"], "labels": ["agent-page-rework"]}
+
+
+def test_a_label_rule_labels_a_finding_on_its_route_and_not_one_elsewhere() -> None:
+    settings = qaspec._file_settings(_target(file={"labels": ["visual-qa"], "label_rules": [_AGENT_RULE]}))
+    # MUTATION: drop the rule's labels from `finding_labels` and the /agents/ finding is filed plainly.
+    assert qaspec.finding_labels(settings, "/agents/x") == (["visual-qa", "agent-page-rework"], [0])
+    # MUTATION: match a rule anywhere in the path (`in`, not `startswith`) or always, and /ship is labelled.
+    assert qaspec.finding_labels(settings, "/ship") == (["visual-qa"], [])
+    assert qaspec.finding_labels(settings, "/ship/agents/x") == (["visual-qa"], [])
+    # A query never decides the route.
+    assert qaspec.finding_labels(settings, "/ship?next=/agents/x") == (["visual-qa"], [])
+    # MUTATION: repeat a label two rules share and it is listed twice.
+    twice = qaspec._file_settings(_target(file={"label_rules": [
+        _AGENT_RULE, {"paths": ["/agents/x"], "labels": ["agent-page-rework", "tab"]}]}))
+    assert qaspec.finding_labels(twice, "/agents/x/tab") == (["visual-qa", "agent-page-rework", "tab"], [0, 1])
+
+
+def test_a_target_without_label_rules_files_every_finding_with_its_labels() -> None:
+    settings = qaspec._file_settings(_target())
+    # MUTATION: default `label_rules` to anything but empty and this changes.
+    assert settings["label_rules"] == []
+    assert qaspec.finding_labels(settings, "/agents/x") == (["visual-qa"], [])
+
+
+def test_the_file_step_states_each_label_rule_and_reports_which_labelled_what() -> None:
+    spec = qaspec.render(_target(file={"label_rules": [_AGENT_RULE, {"paths": ["/ship", "/dock/"],
+                                                                     "labels": ["ship"]}]}))
+    prompt = _steps(spec)["file"]["prompt"]
+    # MUTATION: leave the rules out of `_file_prompt` and the step files every finding alike.
+    assert 'rule 1: a finding whose `path` starts with "/agents/" also gets ["agent-page-rework"]' in prompt
+    assert 'rule 2: a finding whose `path` starts with "/ship" or "/dock/" also gets ["ship"]' in prompt
+    # MUTATION: drop the report line and filed.json no longer says which rule labelled which issue.
+    assert "`label_rules`" in prompt and "filed.json" in prompt
+    plain = _steps(qaspec.render(_target()))["file"]["prompt"]
+    assert "rule 1" not in plain
+
+
+@pytest.mark.parametrize(
+    ("rules", "field"),
+    [
+        # MUTATION: drop the per-rule 10-label bound and an 11-label rule is stored.
+        ([{"paths": ["/agents/"], "labels": [f"l{i}" for i in range(11)]}], "file.label_rules[0].labels"),
+        # MUTATION: accept any string as a prefix and a host-qualified one is stored.
+        ([{"paths": ["https://h.example.com/agents/"], "labels": ["a"]}], "file.label_rules[0].paths"),
+        ([_AGENT_RULE, {"paths": ["//h.example.com/agents/"], "labels": ["a"]}], "file.label_rules[1].paths"),
+        ([{"paths": ["/agents/?tab=1"], "labels": ["a"]}], "file.label_rules[0].paths"),
+        ([{"paths": ["agents/"], "labels": ["a"]}], "file.label_rules[0].paths"),
+        ([{"paths": [], "labels": ["a"]}], "file.label_rules[0].paths"),
+        ([{"paths": ["/agents/"], "labels": []}], "file.label_rules[0].labels"),
+        ([{"paths": ["/agents/"], "labels": ["-bad"]}], "file.label_rules[0].labels"),
+        ([{"paths": ["/agents/"], "labels": ["a"], "image": "x"}], "file.label_rules[0]"),
+        # MUTATION: drop the 20-rule bound and a 21-rule list is stored.
+        ([_AGENT_RULE] * 21, "file.label_rules"),
+        ({"paths": ["/agents/"]}, "file.label_rules"),
+    ],
+)
+def test_an_ill_formed_label_rule_is_refused_with_the_field_named(rules: Any, field: str) -> None:
+    with pytest.raises(qaspec.QaSpecError) as refused:
+        qaspec._file_settings(_target(file={"label_rules": rules}))
+    assert refused.value.code == "qa_target_invalid"
+    assert refused.value.message.startswith(field + " ")
+
+
+def test_twenty_rules_of_ten_labels_are_accepted() -> None:
+    rules = [{"paths": [f"/r{i}/"], "labels": [f"l{j}" for j in range(10)]} for i in range(20)]
+    assert len(qaspec._file_settings(_target(file={"label_rules": rules}))["label_rules"]) == 20
+
+
+# --------------------------------------------------------------------------
+# A flow's start_path is relative to the base (QA-TARGET-FILE, §1)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("base", "start", "opens"),
+    [
+        ("https://h.example.com/app/", "/", "https://h.example.com/app/"),
+        ("https://h.example.com/app/", "/settings", "https://h.example.com/app/settings"),
+        ("https://h.example.com/app", "/settings?tab=2", "https://h.example.com/app/settings?tab=2"),
+        ("https://h.example.com", "/", "https://h.example.com/"),
+        ("https://h.example.com/", "/pricing", "https://h.example.com/pricing"),
+    ],
+)
+def test_a_flow_opens_its_start_path_under_the_base(base: str, start: str, opens: str) -> None:
+    spec = qaspec.render(_target(base_url=base, flows=[{"id": "f", "goal": "g", "start_path": start}]))
+    prompt = _steps(spec)["flow-f"]["prompt"]
+    # MUTATION: join as f"{base}{start_path}" without one shared helper and a trailing-slash base opens `//`.
+    assert f"Open {opens} in the live browser" in prompt
+    # MUTATION: join the start_path to the base's path twice and `/app/app/` is opened.
+    assert "/app/app" not in prompt
+    assert "//" not in prompt.split("Open https://", 1)[1].split(" ", 1)[0]
+    # MUTATION: make `screen_url` anything but the one join `_flow_prompt` uses and this differs.
+    assert qaspec.screen_url(qaspec.base_url({"base_url": base}), start) == opens
+
+
+def test_a_flow_starting_on_an_excluded_path_under_the_base_is_refused() -> None:
+    # The start path is base-relative and exclusions are origin-relative, so
+    # `/logout` under `/app` is `/app/logout`, which the exclusion names.
+    target = _target(base_url="https://h.example.com/app", exclusions={"paths": ["/app/logout"]},
+                     flows=[{"id": "f", "goal": "g", "start_path": "/logout"}])
+    # MUTATION: check exclusions against the bare start_path only and this renders.
+    with pytest.raises(qaspec.QaSpecError) as refused:
+        qaspec.render(target)
+    assert refused.value.code == "qa_screen_excluded"

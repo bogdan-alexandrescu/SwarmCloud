@@ -250,7 +250,16 @@ from .. import browser_tools
 from . import cdppolicy
 from .cdppolicy import PolicyPaths
 from .qaidentity import ConsoleRequests, QaIdentity
-from .qatarget import BROWSER_GONE, BUSY, SIGN_IN_FAILED, STATE_FAILED, QaTarget, QaTargetGuard, SignIn
+from .qatarget import (
+    BROWSER_GONE,
+    BUSY,
+    REFUSALS_PATH,
+    SIGN_IN_FAILED,
+    STATE_FAILED,
+    QaTarget,
+    QaTargetGuard,
+    SignIn,
+)
 from .scripts import ADD_BINDING, ADD_SCRIPT, REMOVE_BINDING, REMOVE_SCRIPT, ScriptRegistry
 
 log = logging.getLogger(__name__)
@@ -675,6 +684,11 @@ class CdpProxy:
             return await self.call(method, params, session_id)
         except CdpError:
             return None
+
+    def qa_refusals(self) -> dict[str, Any] | None:
+        """The QA target's refusal record (`QaTarget.refusals`), or None when
+        no target is held: the visual-QA capture reads it at `REFUSALS_PATH`."""
+        return self._qa_target.refusals() if self._qa_target is not None else None
 
     # ------------------------------------------------------ agent connections
 
@@ -1577,7 +1591,8 @@ class PipeTransport:
 
 
 # --------------------------------------------------------------------------- #
-# The agent's side: 127.0.0.1:9222, /json/version and one websocket path      #
+# The agent's side: 127.0.0.1:9222, /json/version, the QA refusal record    #
+# (`REFUSALS_PATH`) and one websocket path                                    #
 # --------------------------------------------------------------------------- #
 
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -1716,6 +1731,17 @@ async def _serve_one(proxy: CdpProxy, reader: asyncio.StreamReader, writer: asyn
              "webSocketDebuggerUrl": f"ws://{host}{browser_path}{tagged}"}
         ).encode()
         _respond(writer, "200 OK", body, "application/json")
+        return
+    if path == REFUSALS_PATH:
+        # QA-GATE-REFUSALS (part of #2067): the requests the QA target's guard
+        # answered itself, for the visual-QA capture. No target, no record: a
+        # 404, so the capture writes `gate_refused: null`, never an empty list
+        # that would read as "the gate refused nothing".
+        document = proxy.qa_refusals()
+        if document is None:
+            _respond(writer, "404 Not Found")
+        else:
+            _respond(writer, "200 OK", json.dumps(document).encode(), "application/json")
         return
     if path != browser_path or headers.get("upgrade", "").lower() != "websocket" or "sec-websocket-key" not in headers:
         _respond(writer, "404 Not Found")

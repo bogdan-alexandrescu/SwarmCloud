@@ -99,7 +99,9 @@ export function paneTabs({
             // child agent drew the tab (c04) with the split's count, which is
             // never read for an agent that does not offer children, so `—`
             // sat over the pane's `none`. Children are one level deep, so a
-            // child's count is 0 without a read.
+            // child's count is 0 without a read. On `/children` the split now
+            // reads it too (`useChildCount`, the pane's own read), so the 0
+            // stands only until that read answers.
             count: childCount ?? (isChild(task) ? 0 : null),
             say:
               childCount === null && !isChild(task)
@@ -403,7 +405,6 @@ export function AgTabsEdge({
 function MoreTabs({ tabs, onSelect }: { tabs: readonly TabDef[]; onSelect: (key: string) => void }) {
   const [open, setOpen] = useState(false)
   const host = useRef<HTMLSpanElement>(null)
-  const hidden = `${tabs.length} more ${tabs.length === 1 ? 'tab' : 'tabs'}`
   const names = tabs.map((t) => t.label).join(', ')
   useEffect(() => {
     if (!open) return
@@ -429,16 +430,14 @@ function MoreTabs({ tabs, onSelect }: { tabs: readonly TabDef[]; onSelect: (key:
       {/* IT SAYS WHAT IT HOLDS (visual QA QA-116, run 2): `More 2 ▾` at 390
           read as two hidden tabs or as two checkpoints, and nothing said
           Checkpoints was behind it. It reads `2 more tabs`, and its name and
-          its title list them. */}
-      <button
-        type="button"
-        className="ag-tabs-more"
-        aria-expanded={open}
-        aria-label={`${hidden}: ${names}`}
-        title={names}
-        onClick={() => setOpen((v) => !v)}
-      >
-        {hidden} <span aria-hidden="true">▾</span>
+          its title list them.
+          AND THE GLASS NAMES THEM (visual QA run 6, flow-find-failure-phone-05,
+          box 6343793416): on a phone no one hovers, so a name and a title
+          were all that said what `2 more tabs` hid. It reads
+          `2 more: Artifacts, Checkpoints ▾`, keeping the count (c02/c20), and
+          it is named by that text, with no aria-label to drift from it. */}
+      <button type="button" className="ag-tabs-more" aria-expanded={open} title={names} onClick={() => setOpen((v) => !v)}>
+        {tabs.length} more: {names} <span aria-hidden="true">▾</span>
       </button>
       {open && (
         <div className="c-menu ag-tabs-menu" role="group" aria-label="More agent panes">

@@ -1204,7 +1204,8 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     const i = inspector(container as HTMLElement)
     const link = i.querySelector<HTMLAnchorElement>('a.wf-inspect-changes')!
     expect(link.getAttribute('href')).toBe('/workflows/wf_one/changes?step=work')
-    expect(link.textContent).toBe('This step’s changes in this workflow · 2 files ›')
+    // Named by the step since QAFIX6 (run 6, F4).
+    expect(link.textContent).toBe('This step’s changes in this workflow: work · 2 files ›')
     const scrub = i.querySelector<HTMLElement>('[data-scrub="attempt"]')!
     await waitFor(() => expect(scrub.textContent).not.toContain('reading'))
   })
@@ -1215,7 +1216,7 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     pick(container as HTMLElement, 'work')
     const i = inspector(container as HTMLElement)
     const link = i.querySelector<HTMLAnchorElement>('a.wf-inspect-changes')!
-    expect(link.textContent).toBe('This step’s changes in this workflow ›')
+    expect(link.textContent).toBe('This step’s changes in this workflow: work ›')
     expect(link.textContent).not.toMatch(/[—\d]/)
     expect(link.getAttribute('title')).toMatch(/written nothing yet/)
     const scrub = i.querySelector<HTMLElement>('[data-scrub="attempt"]')!

@@ -1,12 +1,36 @@
 # Runner git tools: the platform does the git work a runner asks for mid-run, and the runner never holds a token
 
-**Status: DESIGN, for the owner's approval (#1225). Nothing described here is
-built.** The owner decided on 2026-10-13 at about 02:05 PDT, on #1225: "design
-first, then build". This document is that design. Build lanes start only after
-the owner approves it, and the credential-path lanes get one security review
-([§7](#7-the-build-plan)). The choices the owner still has to make are in
-[§8](#8-open-questions-for-the-owner). Every one of them has a recommended
-answer, so the plan can go ahead as written once the owner has answered them.
+**Status: BUILT, except the fallback token (#1225).** The owner decided on
+2026-10-13 at about 02:05 PDT, on #1225: "design first, then build"; this
+document was that design, the owner answered §8 the same day (every
+recommendation taken, [Decisions](#decisions-owner-2026-10-13-1545-pdt)), and
+lanes G1-G7 and G9 of [§7](#7-the-build-plan) are on main, as are
+GITTOOLS-REBASE-PUBLISH (PR 2078) and GITTOOLS-FOLLOW (PR 2093). What exists,
+read on main at `a7ea44b`:
+
+* **The five tools of §1.1**, `git_fetch`, `git_rebase_onto`,
+  `git_push_branch` (a rebased branch replaced only under
+  `--force-with-lease` on the tip swarm-api recorded, audited
+  `rewrite: true`, Q1 = A), `read_private` and `pr_checks`, in the `swarm-git`
+  MCP server (`agent_worker.gitmcp`), with the worker's half in
+  `agent_worker.gittools.GitTools` and swarm-api's in `swarm_api.gittools`,
+  `swarm_api.routes.gittools` and `swarm_api.gitexec` (G3-G5), named in the
+  claude-code and codex runners' configuration (G6).
+* **The eight tools of §1.5**, `pr_view`, `run_list`, `run_view`,
+  `issue_view`, `issue_list`, `release_status`, `issue_create` and
+  `issue_comment`, relayed on the same route
+  (`agent_worker.gittools.RELAYED_TOOLS`).
+* **The rest of the plan**: the deliverable-branch publish check (G1), an
+  attempt key for every attempt offered the tools, children included (G2),
+  the acceptance group (`tests/acceptance/test_runner_git_tools.py`, G7) and
+  `workflow_not_in_tenant` (G9), and the end-of-agent publish following a
+  tool push (§8 Q1, "What the end-of-agent publish does after a tool push").
+
+**Not built:** the per-agent App installation token of §3 (G8; Q2 = A, do
+not build it); pushes to branches outside `swarm/` (Q5 = A, not now); and
+moving the end-of-agent publish onto the same platform path (Q7 = A, later,
+as its own design). §0 and §6 describe the platform as it was before the
+build, and stay as the record of why it was built.
 
 Code is cited as `path::Symbol`, never by line number. The 2026-10-02 merge
 wave moved `lifecycle.py` by hundreds of lines and broke every line citation
@@ -850,6 +874,22 @@ and "rebase its PR branch onto main … push".
   conflicts more often under a merge.
 * **C. Refuse.** A rebase can be pushed only to a new branch, and the PR is
   retargeted by hand.
+
+**What the end-of-agent publish does after a tool push.** Once the agent has
+pushed its branch through `git_push_branch`, the publish diffs from the tip
+that push answered with (`ChildPath.pushed_tip`, the `new_sha` swarm-api
+recorded for this agent and branch; `Worker._adopt_tool_pushed_tip`), not from
+the clone base, and pushes with `--force-with-lease` to exactly that tip. A
+head equal to it adds nothing and the step counts as published; commits the
+agent made after the push land over it. A branch someone else moved since is
+refused by the lease, and nothing is pushed. This is what the 2026-10-23
+acceptance failure needed (#1188, run 39926360548, agent
+`task_32f2c6b021444aa6a495`): a continuation rebased the lane's branch onto
+main and pushed it through the tools, then the publish diffed from the clone
+base (the old tip the rebased head no longer stood on), pushed a never-forced
+fold onto it, was refused as behind its remote, and ended `publish_failed`
+with its work already on the branch. The head must descend from the tool's
+tip; an agent that reset away from its own push publishes as before.
 
 ### Q2. The fallback token
 

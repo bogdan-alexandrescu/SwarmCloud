@@ -921,7 +921,9 @@ pieces do it, and none of them submits anything.
   `withheld`. Each row's prompt ends with ITS OWN `details:` line, which is
   what Claude Code shows when the row is expanded: `swarm_workflow_launch`
   writes them into an attach's args (`details.steps`) and an `attach_tasks`
-  entry (`details`), and hands a spec's back as `row_details` for the args;
+  entry (`details`), and hands a spec's back as `row_details` for the args,
+  which also carry `spec_handle` (`{path, digest}`, the file the spec was
+  written to, so the submit row passes the handle and never retypes the spec);
   a run launched without them says what run.js knows and `not reported` for
   the rest. A run started before its account was assigned says `LLM: not
   assigned yet`, and each of its rows says `LLM: <account>` once, on the first

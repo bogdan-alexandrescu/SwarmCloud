@@ -316,8 +316,11 @@ describe('the Browser tab follows Details for a running browser agent', () => {
     api.mintLiveTicket.mockReturnValue(new Promise(() => {}))
     const went: string[] = []
     render(<Routed onGo={(to) => went.push(to)} />)
-    await waitFor(() => expect(label(tabs()[1]!)).toBe('Browser'))
-    await waitFor(() => expect(tabs()[1]!.getAttribute('aria-selected')).toBe('true'))
+    // The file's first render pays the split's cold start: 1.5 s here, and
+    // past waitFor's 1 s default on a loaded CI shard (PR #2098's red run read
+    // `Logs` at tabs()[1] before the live-session read had answered).
+    await waitFor(() => expect(label(tabs()[1]!)).toBe('Browser'), { timeout: 10_000 })
+    await waitFor(() => expect(tabs()[1]!.getAttribute('aria-selected')).toBe('true'), { timeout: 10_000 })
     expect(went.filter((to) => to.endsWith('/logs'))).toEqual([])
     expect(document.querySelector('.live-strip')).not.toBeNull()
   })

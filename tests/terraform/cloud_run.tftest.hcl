@@ -206,12 +206,16 @@ run "each_service_runs_as_its_own_identity_with_requests_equal_to_limits" {
   # CPU to near zero between requests, so the guaranteed allocation is the limit
   # only while a request happens to be in flight -- and the scheduler's drain
   # loop and the reconciler's sweep both run for minutes inside one request.
+  #
+  # None of the file-level services sets startup_cpu_boost, so every one of
+  # them must come out false: the one exception, swarm-api's (BGD, 2026-10-23,
+  # #1816 option (a)), is held by the two runs at the end of this file.
   assert {
     condition = alltrue([
       for name, svc in google_cloud_run_v2_service.this :
       svc.template[0].containers[0].resources[0].startup_cpu_boost == false
     ])
-    error_message = "startup_cpu_boost allocates CPU above the declared limit during startup: that is bursting, which invariant 7 forbids"
+    error_message = "startup_cpu_boost allocates CPU above the declared limit during startup: that is bursting, which invariant 7 forbids for every service that does not set it"
   }
 
   assert {
@@ -376,5 +380,84 @@ run "the_infra_root_sets_36_for_swarm_api_and_nothing_else" {
   assert {
     condition     = contains(keys(google_cloud_run_v2_service.this), "swarm-api") && length(regexall("(?m)^\\s*startup_failure_threshold\\s*=", file("../../terraform/infra/main.tf"))) == 1
     error_message = "only swarm-api sets startup_failure_threshold in terraform/infra/main.tf; every other service keeps the module's 12"
+  }
+}
+
+# STARTUP CPU BOOST ON SWARM-API AND NOWHERE ELSE (BGD's decision, 2026-10-23,
+# #1816 option (a)): the one recorded exception to invariant 7 among the Cloud
+# Run services. Boost bursts past the declared limit while an instance starts;
+# swarm-api's Python start on 1 vCPU sometimes outlasted its startup probe.
+run "a_service_that_sets_startup_cpu_boost_gets_it_and_no_other_does" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  variables {
+    services = {
+      "swarm-api" = {
+        service_account_email = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api:test"
+        max_instances         = 20
+        startup_cpu_boost     = true
+      }
+      "swarm-scheduler" = {
+        service_account_email = "swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler:test"
+        max_instances         = 3
+        concurrency           = 1
+      }
+    }
+  }
+
+  # MUTATION: keep the module's fixed `startup_cpu_boost = false` (ignore
+  # each.value.startup_cpu_boost) and this fails.
+  assert {
+    condition     = google_cloud_run_v2_service.this["swarm-api"].template[0].containers[0].resources[0].startup_cpu_boost == true
+    error_message = "swarm-api's startup_cpu_boost must reach the revision (BGD, 2026-10-23, #1816 option (a))"
+  }
+
+  # MUTATION: change the attribute's default from false to true and this fails.
+  assert {
+    condition     = google_cloud_run_v2_service.this["swarm-scheduler"].template[0].containers[0].resources[0].startup_cpu_boost == false
+    error_message = "a service that sets no startup_cpu_boost must keep it off: boost bursts past the declared limit (invariant 7)"
+  }
+
+  # The boost is the exception; CPU always allocated is not relaxed with it.
+  assert {
+    condition = alltrue([
+      for name, svc in google_cloud_run_v2_service.this :
+      svc.template[0].containers[0].resources[0].cpu_idle == false
+    ])
+    error_message = "cpu_idle stays false on every service, swarm-api included: the boost exception does not extend to it"
+  }
+}
+
+# The root turns the boost on for swarm-api and for no other service. Read from
+# the root's text, as the startup_failure_threshold run above does, because a
+# test cannot address a child module's resources from terraform/infra.
+run "the_infra_root_boosts_swarm_api_and_nothing_else" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  # MUTATION: drop `startup_cpu_boost = true` from swarm-api's block in
+  # terraform/infra/main.tf, or set it false, and this fails.
+  assert {
+    condition = contains(keys(google_cloud_run_v2_service.this), "swarm-api") && length(regexall(
+      "(?s)\n    \"swarm-api\" = \\{\n.*?\n      startup_cpu_boost = true\n.*?\n    \"swarm-scheduler\" = \\{",
+      file("../../terraform/infra/main.tf"),
+    )) == 1
+    error_message = "terraform/infra/main.tf must set startup_cpu_boost = true in swarm-api's block of module \"cloud_run\" (BGD, 2026-10-23, #1816)"
+  }
+
+  # MUTATION: set startup_cpu_boost on any other service's block (true or
+  # false) and this fails.
+  assert {
+    condition     = contains(keys(google_cloud_run_v2_service.this), "swarm-api") && length(regexall("(?m)^\\s*startup_cpu_boost\\s*=", file("../../terraform/infra/main.tf"))) == 1
+    error_message = "only swarm-api sets startup_cpu_boost in terraform/infra/main.tf; every other service keeps the module's false"
   }
 }

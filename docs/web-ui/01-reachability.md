@@ -660,7 +660,8 @@ which is the whole reason the polling lives here and not in F2.
 **WHAT IT CANNOT SHOW YET:**
 
 - **`platform_tasks_by_state`** — the cross-tenant counts — is added to `/v1/stats` only
-  when `ctx.is_admin` (`service.py:286-287`). Absent for everyone today (P5). The tile
+  when the caller asks with `?scope=platform` **and** `ctx.is_admin`
+  (`SubmissionService.stats`, PR 2152); a plain read never carries it, admin or not. Absent for everyone today (P5). The tile
   must render *"platform totals need an admin group"*, not a zero and not a blank.
 - **Another tenant's pool is filtered out by design** (`service.py:295-311`): its `active`
   count is a usage signal about that tenant. A non-admin sees shared pools plus their own.
@@ -676,8 +677,8 @@ which is the whole reason the polling lives here and not in F2.
 
 **REFRESH AND COST.** `/v1/capacity` is cheap — one collection read, capped at 500 pools —
 and may refresh at **15s**. `/v1/stats` is **not** cheap: twelve Firestore aggregation
-COUNT queries per call (`store.py:524-533`), doubled to twenty-four for an admin once P5
-lands. It refreshes at **30s**, pauses entirely when the tab is hidden, and backs off to
+COUNT queries per call (`store.py:524-533`), doubled to twenty-four only for an admin's
+`?scope=platform` read. It refreshes at **30s**, pauses entirely when the tab is hidden, and backs off to
 120s after any `rate_limited` or `upstream_degraded` result. `/readyz` at 60s. All three
 render through F3, so a failed poll shows the last value as `stale`, dimmed, with its age
 — never a zero.

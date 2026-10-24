@@ -992,8 +992,80 @@ hand-off resolves, and its id carries the request id, so a second hand-off in
 the same attempt is unread again. The parking-fast rule below depends on this
 bell: a person who is coming now hears about it within a feed poll.
 
-There is still no outbound channel (no mail or chat integration in
-`apps/swarm-api` or `apps/reconciler`); Q8 asks whether one is wanted.
+**Console bell only (BGD, 2026-10-23; Q8 answered, part of #2058).** The bell
+is the one channel a hand-off is told on: no Slack, no email, no other
+outbound integration (there is none in `apps/swarm-api` or `apps/reconciler`,
+and none is to be added for this).
+
+**The gate raises the hand-off itself for a CAPTCHA (CAPTCHA-HANDOFF, BGD
+2026-10-23, part of #2058).** An agent had to notice a CAPTCHA and run
+`swarm-handoff request`, and many did not. Now, when a frame on the page the
+gate follows -- the agent's tab -- is a challenge, the gate asks for the
+person on the agent's behalf:
+
+* **Detection uses the lists the gate already has, not a new one:** a child
+  frame on `SHOWN_IN_CONTROL` (`apps/agent-worker/agent_worker/livegate/mask.py`,
+  `challenge_host`, host and path), or a top frame on one of its hosts at any
+  path (`is_challenge_host`, which tabs.py reads too; `qatarget.py`
+  `CHALLENGE_FRAMES` restates the same list). The mask tells the gate
+  (`MaskState.on_challenge`) **once per page load**: a second challenge frame
+  on the same page, a same-document navigation, or the agent switching tabs
+  and back raises nothing more; a new load of the top frame may raise again.
+* **The request** is `{request_id: "gate-<hex>", reason: "CAPTCHA on <host>",
+  expect: <host>}`, where `<host>` is the page's host -- the site the person
+  acts on; never a path or a query (the challenge's own host only when the
+  page has none). ctl.sock is the worker's to call, so the gate holds it in
+  `status` (`challenge`) for the worker's next read, and the worker's `pause`
+  takes it off.
+* **The worker raises it through exactly the agent's path** (`HandoffPath._open`,
+  `apps/agent-worker/agent_worker/handoff.py`): the validation and redaction of
+  step 1, `max_handoffs_per_attempt`, the pause of step 2 and the route of
+  step 3, with `origin: "gate"` on the request, stored on `human_wait` and on
+  the `human_handoff_requested` event so the event log and the console tell it
+  from an agent's own (an agent's request names no origin; swarm-api's default
+  is `"agent"`). Past the per-attempt maximum the agent gets the existing
+  `handoff_limit` refusal.
+* **The agent** is held exactly as for its own request, and the worker points
+  `.last` at the gate's request, so `swarm-handoff wait` with no argument waits
+  on it; its answer says a person has been asked to solve a CAPTCHA and that
+  it should wait and not retry (`GATE_WAITING`). An agent that asks on its own
+  while the gate's hand-off is open is answered by that hand-off (`joined`),
+  not queued behind it for a challenge a person will have solved. After the
+  return it carries on; an unanswered hold parks and times out under §4.3,
+  unchanged. The claude-code browser runner's note says, in one sentence,
+  never to try to solve or get around a CAPTCHA: the platform asks a person.
+* **Not raised** while the gate signs in on its own QA tab (`qa_target.signing_in`):
+  a challenge there still ends the sign-in with `qa_sign_in_challenge`
+  (visual-qa-any-app.md §2.4); nor while the agent is already held for a
+  person or a person is in control -- they are looking at it.
+
+Solving or evading a challenge stays out of scope: a CAPTCHA is a site owner
+saying no to automated access, and a person answers it or nobody does.
+
+**The agent's next tool result says so (CAPTCHA-HANDOFF-2, CLD 2026-10-23 on
+lane CAPTCHA-HANDOFF's question; part of #2058).** claude-code tells an agent
+nothing between its tool calls except through a hook, so an agent whose
+browser call simply blocked on the pause would otherwise learn of the
+hand-off only from `swarm-handoff wait` or `status`. On a live-browser
+attempt -- the one kind the lifecycle sets `SWARM_HANDOFF` for, which is how
+the runner tells a browser profile from any other claude-code agent -- the
+runner's headless settings (`write_headless_settings`,
+`apps/agent-worker/agent_worker/runners/claude_code.py`) register a
+`PostToolUse` hook on every tool,
+`apps/agent-worker/agent_worker/runners/gate_wait_hook.py`, run as `python -I
+<hook> $SWARM_HANDOFF` from the package (named by absolute path, so the agent
+cannot edit the copy that runs). After each call it reads `.last` and the
+answer it names, `responses/<id>.json`; while that answer is `origin: "gate"`
+and `outcome: "waiting"` -- the gate's own request, or an agent's that joined
+it -- it returns the answer's `message`, the `GATE_WAITING` sentence, as
+`hookSpecificOutput.additionalContext`, which the CLI adds to that tool's
+result. Any other answer prints nothing, so the note stops on the call after
+the person returns control. It is standard library only and **fails open**,
+as the stdin hook does: no spool, a missing or symlinked file, a `.last` that
+is not a request id, an answer over 64 KiB or not JSON, or any error, and it
+prints nothing and exits 0. Two bounded reads inside `$SWARM_HANDOFF` and no
+wait; its timeout is 10 seconds. Only the claude-code runner registers it:
+an agent under any other runner learns of it from `swarm-handoff wait`.
 
 ### 4.2 Take control, sign in, return control
 
@@ -2733,7 +2805,7 @@ routes these lanes introduced. `claude-code-browser` already names
 recommendation below: Q1 the submitter, with a per-agent "open to the tenant"
 toggle; Q2 the field; Q3 10 minutes (superseded 2026-10-13 by HANDOFF-POLICY:
 one minute unwatched, extended while watched up to 30, section 4.3); Q4 24 hours; Q5 no; Q6 yes, the submitter
-only; Q7 sign in again; Q8 console only in phase 1; Q9 R2; Q10 on; Q11 yes, at
+only; Q7 sign in again; Q8 console only in phase 1 (confirmed by BGD 2026-10-23 for CAPTCHA-HANDOFF: the console bell only, §4.1); Q9 R2; Q10 on; Q11 yes, at
 1 fps; Q12 accept; Q13 the agent and the person in control. The owner also
 approved the mockup of §6 as drawn.
 

@@ -123,6 +123,26 @@ UNCAPTURED_ROUTES = frozenset({
     # §2.2): the one route that takes it, and the worker's that serves it.
     qatargets.CREDENTIAL_ROUTE,
     qatargets.ISSUE_ROUTE,
+    # A QA target's challenge bypass value (§2.5, lane CAPTCHA-BYPASS): the
+    # PUT's body is the value itself (BGD, 2026-10-23).
+    qatargets.BYPASS_ROUTE,
+    # The rest take a credential in their body and were missing until
+    # test_uncaptured_routes_cover_credential_bodies.py read the routes
+    # instead of this list (lane BYPASS-UNCAPTURED, part of #2058):
+    # a workspace secret's value, on its creation and its replacement;
+    "/v1/workspace/secrets",
+    "/v1/workspace/secrets/{name}/value",
+    # a provider API key, a person's or the workspace's, and the tenant's;
+    "/v1/provider-keys/{provider}/user",
+    "/v1/provider-keys/{provider}/tenant",
+    "/v1/tenants/me/credentials",
+    # a Claude subscription's OAuth credential, and the authorization code
+    # that redeems for one;
+    "/v1/accounts",
+    "/v1/accounts/exchange",
+    # a GitHub personal access token, and the GitHub App's authorization code.
+    "/v1/onboarding/github/token",
+    "/v1/onboarding/github/exchange",
 })
 
 # --------------------------------------------------------------------------

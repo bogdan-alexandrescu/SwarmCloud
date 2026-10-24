@@ -720,6 +720,86 @@ tool. What `swarm_qa.py` does now:
   cannot be scrolled clear of it: no segment can show them, and the review
   should know that the last ~45 px of a phone agent pane sit under the bar.
 
+#### 4.2.3 Amendment, 2026-10-23: what run 6 missed (QAFIX6-CAPTURE, epic #1680)
+
+Visual QA run 6 again found rows in no image, and one capture that called
+itself complete over two identical shots. QAFIX6-CAPTURE (PR 2073) changed
+`swarm_qa.py` in five ways:
+
+* **`reached` is where the scroller actually stopped.** A scroller clamps
+  an offset past its end, and the capture recorded the offset it had asked
+  for: 6:capacity-005 said "reached 4527 of 4527" beside two identical
+  shots. `SCROLL_JS` now answers, after every scroll, with the scroller's
+  own `scrollTop` and `scrollHeight` as they are two frames later, and the
+  next segment, the next step and the entry's `reached` and `total` are
+  computed from that read-back, never from the offset asked for. A
+  measurement of where the page went is what the review is told; an
+  intention is not a measurement.
+* **A scroller that did not move on is a `duplicate`, not another
+  segment.** When the read-back position is not past the last segment's,
+  the next shot would be the same frame again. The capture stops there,
+  writes `duplicate: {"segment", "at"}` (the segment that would have
+  repeated and the px the scroller sat at), and when that left it short of
+  the end the route is listed in `failed` with "the scroller stopped at N px
+  after K segments: reached R of T px (the rest is in no image)", the same
+  form as a capture cut at its budget. Every entry carries the key,
+  `duplicate: null` when the scroller kept moving. Two identical images
+  recorded as two segments are a page reviewed once and counted twice.
+* **Each segment says what was measured around it, in `geometry`.** One
+  object per segment: `segment`, `at` (the scroller's read-back position),
+  `view` (what the screen showed of it), `scroller` and `dock` (the
+  scroller's box and `.ctl-dock`'s, the console's Reads bar, as `[top,
+  bottom]`, `dock` null where there is none) and `inner` (`innerHeight`).
+  Run 6's misses could only be explained by re-deriving those boxes from the
+  images; a review that has them in the manifest can tell a row hidden by
+  the bar from a row the page never drew, and the next tool fault is
+  diagnosed from the run that found it.
+  Since QA-SHOT-MASK (PR 2114) each object also carries `masked`: how many
+  places the credential mask covered in that segment's image, "a count,
+  never the value or its length" (`swarm_qa.py`, module docstring), and the
+  entry's own `masked` sums them. A review reading a nonzero `masked` knows
+  the black box in that image is the mask, not a defect of the page.
+* **The foot is taken at the window's edge.** `STUCK_JS` took the
+  scroller's foot as `top + clientHeight`. At 390 that edge was below the
+  window, so the Reads bar, fixed at the window's foot, spanned no edge the
+  capture looked at, and the rows under it were in no image (6:capacity-001
+  to -004, 6:admin-005). The foot is now `min(top + clientHeight,
+  innerHeight)`, and a segment's `view` is what the screen shows of the
+  scroller between its top and that foot, measured again after every scroll
+  (the phone bar compacts from 44 to 36 px once scrolled). Two narrower
+  covers came with it: a `sticky` element resting on the scroller's foot by
+  its `bottom` inset covers the foot too (/submit's "Not ready" strip,
+  6:work-b-001), and a top cover counts only when it is at least half the
+  scroller's width (the 1440 Submit forms' 300 px sticky side panel was
+  counted as a 371 px cover, 6:work-b-002).
+* **An off-size shot gets a device reset before it is kept.** A shot whose
+  size is not the page's layout viewport (`VIEWPORT_JS`) was taken again up
+  to `SHOT_RETRIES` (2) times and then kept under a `captured` status: in
+  run 5b every admin-persona phone-390 segment came back 394x852 against a
+  layout viewport of 394x853 or 398x862 (box 6343795935), and the retries
+  alone never brought it back. `_shot` now takes it once more after
+  `swarm-handoff device <preset>` puts the gate's device back, recording
+  `device_reset` in that `reshot` record; a shot still off after the reset is
+  kept, its line goes in the entry's `off_viewport` and in `failed`, and the
+  route's status is `unsettled`. The reset is the one thing left to try, and
+  a shot of the wrong size is no capture of the route as it stands.
+
+**A shot whose mask could not be drawn is not stored** (QA-SHOT-MASK, PR
+2114). Finding #2055: on 2026-10-23 a login demo printed its own password on
+its home page, and while the capture's text and accessibility files carried
+the gate's redaction marker in its place, every stored screenshot showed it
+readable, because "a screenshot is pixels, which no scrub can match"
+(`swarm_qa.py`, module docstring). So before every shot, each retake
+included, the capture finds where the page draws that marker and covers it
+with an opaque box, and it "FAILS CLOSED: a sweep, a draw or a take-down
+that throws or answers malformed, or a mask the page removed or changed
+before the take-down, drops that shot unread, and the route fails at that
+segment saying why" (`_masked_screenshot`). The route has no manifest entry
+and is listed in `failed` with "segment N: _MaskFailed: …". A shot kept
+without its mask would put the credential back in the run's stored images,
+the defect the mask exists to remove; a route missing from the review is a
+finding someone sees, and a password in an artifact is not.
+
 These reach a capture only once the `agent-runtime-browser` image is rebuilt
 and released.
 
@@ -1025,6 +1105,47 @@ Why the choices in it:
   That is the run-time half of QA-KIT's "the model receives the screenshot as
   an image": the report quotes it, so a run where the model got no image says
   so in the report.
+* **Amendment, 2026-10-23 (QAFIX6-QATEMPLATE, epic #1680): the flows' error
+  and evidence rules.** The committed template, not the JSON above, is what
+  runs; these rules are now in all three flow prompts, and
+  `tests/unit/mcp/test_qa_workflow_template.py` holds each.
+  * *A stale ref is not a refusal.* Playwright MCP answers a ref from an old
+    snapshot with "Ref … not found in the current page snapshot". Run 6 read
+    two of those as refusals, and the rule that a second refusal ends the run
+    ended `flow-submit-form` before three runner profiles and the submit
+    (6:flow-submit-form-run-01; run 5b had retried one against the rule then
+    in force). The page had not failed: the ref was old. A flow now takes a
+    new `browser_snapshot` and uses its ref, and only three stale refs in a
+    row on one step count as a refusal. A malformed call is still retried
+    once and a second refusal still ends the run.
+  * *A stop ends the run, not the step.* In run 6 the desktop preset's stop
+    ended the step, so nothing was recorded at 390
+    (6:flow-submit-form-run-02). A stop the agent's own calls caused ends that
+    preset or theme, and the next one runs. A page or browser failure (a
+    timeout, a navigation error, a closed page) still ends the whole step:
+    that is the run 2 rule, and a hung tool call still costs up to 1800 s.
+  * *Cite only what is bundled.* Run 6's json cited a console log its tar did
+    not hold and called a state reached over a screenshot that showed
+    otherwise (-03, -04); run 5b's ff-desktop-08 was read from a page
+    snapshot alone. Each flow cites only files it bundles and lists a
+    screenshot for every state it calls reached, and `flow-report` checks
+    both against the tar.
+  * *Read the console log, and give it a time base.* Run 6's workflow-graph
+    log recorded the dev server lost at +67.7 s, and the json never said so;
+    the log carried no start time, so the report could not place the loss
+    against the screenshots (6:flow-workflow-graph-run-01). Each flow writes
+    `date +%s` into the log when it starts and reads it before writing its
+    json.
+  * *Run 5b's flow boxes.* A tie in "most recent" is broken by the failed agent's own
+    end time and the choice is stated; both find-failure runs go through
+    Agents › Recent; the workflow-graph goal includes the step's `Agent’s
+    changes ›` and `Logs ›`, since its Changes page can show no change; the
+    dark run's switch reading "System" is stated as expected (dark is set
+    through `prefers-color-scheme`); `flow-submit-form.json` states its goal
+    and per-preset steps, with elapsed minutes computed from the same
+    `date +%s` start and end; a page that scrolls inside its main region is
+    shot in segments, since `fullPage` returns only the viewport there; and
+    findings are filed per preset or theme.
 * **No `resource_class`**: each profile's own class is the right one.
 * **The authenticated arm is not in the template.** Once QA-IDENTITY's option
   is built, it is one more group of steps on `claude-code-browser` against the

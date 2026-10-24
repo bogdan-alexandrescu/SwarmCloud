@@ -115,7 +115,7 @@ preserves them:
 5. Every attempt carries a fencing generation; a stale worker exits **without**
    running the agent and without touching the lease.
 6. Spot is disabled platform-wide.
-7. `requests == limits`. No bursting.
+7. Memory and ephemeral storage: request equals limit. CPU: request ≤ limit ≤ `CPU_BURST_MAX_RATIO` × request, on GKE only (Cloud Run renders the request as its one limit), so the pod's QoS class is Burstable (amended 2026-10-20, contract request 108, #1689).
 8. Checkpointing is mandatory and periodic.
 9. Per-tenant isolation: own GSA, own secrets, own GCS prefix, own namespace.
 10. API callers pick a `runner_profile` **by name**. Never accept images,

@@ -167,6 +167,36 @@ export function runWhyLine(run: IssueRunSummary): string | null {
   return null
 }
 
+/** The states a run reaches only through an approved plan. */
+const PAST_APPROVAL: ReadonlySet<IssueRunState> = new Set(['APPROVED', 'RUNNING', 'CHECKING', 'FIXING', 'DONE'])
+
+/**
+ * THE PLAN APPROVAL CELL SAYS PENDING OR GIVEN (visual QA run 6, work-a-010,
+ * part of #1680). It printed `plan_approval` as served, so a Planned run with
+ * no workflow and a Running one built from its approved plan both read
+ * "required": the column could not tell a plan waiting for a person from one
+ * already approved. A workflow, an approval time or a state past Planned is
+ * an approval given; an automatic approval needs none, and says so in the
+ * cell's title.
+ *
+ * EVERY WORD FITS THE COLUMN ON ONE LINE (QAFIX6-WORKPAGES-2, part of #1680).
+ * The column is 86px (intake.css), 74px of content, and the row's cells are
+ * drawn at --t-meta (13px) and never wrap. 'awaiting approval' (~124px at
+ * the tests' conservative 0.56em) ran over Workflow, so it was drawn small
+ * and wrapped; the words are now ones that fit at the body size. 'not
+ * required' (~87px) and 'none needed' (~80px) do not, so an automatic
+ * approval is a dash, and 'awaiting a plan' (~109px) is 'no plan'.
+ * qafix6.workpages.test.tsx measures every word against the column.
+ */
+export function planApprovalWord(run: IssueRunSummary): string {
+  if (run.plan_approval === 'auto') return '\u2014'
+  if (run.state === 'REJECTED') return 'rejected'
+  if (run.workflow_id !== null || run.approved_at !== null || PAST_APPROVAL.has(run.state)) return 'approved'
+  if (run.state === 'PLANNED') return 'awaiting'
+  if (run.state === 'PLANNING') return 'no plan'
+  return 'not given'
+}
+
 /** A run's state in words: sentence case, never the API's capitals (PICKS.md, no all-caps). */
 export function runStateWord(state: IssueRunState): string {
   return (state.charAt(0) + state.slice(1).toLowerCase()).replace(/_/g, ' ')
@@ -634,7 +664,7 @@ function RunList({ first, go, view = null }: { first: IssueRunSummaryPage; go: (
                         <span className="sb-note rn-cut rn-why" data-why={r.state} title={runWhyLine(r) ?? ''}>{runWhyLine(r)}</span>
                       )}
                     </td>
-                    <td data-label="Plan approval">{r.plan_approval}</td>
+                    <td data-label="Plan approval" title={r.plan_approval === 'auto' ? 'This run\'s plan is approved automatically.' : 'This run\'s plan needs a person\'s approval.'}>{planApprovalWord(r)}</td>
                     {r.workflow_id === null ? (
                       <td data-label="Workflow"><i className="ctl-em">{noWorkflowWord(r)}</i></td>
                     ) : (

@@ -114,6 +114,12 @@ export type Result<T> =
   | { status: 'stale'; data: T; fetchedAt: number; error: ApiError }
   | { status: 'error'; error: ApiError }
 
+/** The code swarm-api's own rate limiter refuses with (`RateLimited.code`). */
+export const API_RATE_LIMITED = 'rate_limited'
+
+/** What a 429 without that code says: Cloud Run's front end, not the API (#1816). */
+export const NO_INSTANCE_FREE = "SwarmCloud's API had no instance free (Cloud Run); retried when the pause ends."
+
 /** The server's error envelope, errors.py:15-28. `detail` is optional. */
 export interface ErrorEnvelope {
   code?: unknown
@@ -172,6 +178,16 @@ export function classifyFailure(status: number, env: ErrorEnvelope | null, retry
   if (status === 404) return { ...base, kind: 'not_found' }
   if (status === 409) return { ...base, kind: 'conflict' }
   if (status === 422) return { ...base, kind: 'invalid' }
+  // WHOSE 429 (ANSWERS-429, part of #1816). Cloud Run's front end answers
+  // 429 too when the service has no instance free, and both read as "you are
+  // polling too much". Told apart by the body, as the bridge does
+  // (`swarm_mcp.client.ApiRateLimited`): the API's own refusal carries its
+  // `rate_limited` code (`RateLimited.code`, swarm_api/errors.py) and keeps
+  // its message; anything else is Cloud Run's. Both stay `rate_limited`, so
+  // the pause and its countdown are unchanged.
+  if (status === 429 && code !== API_RATE_LIMITED) {
+    return { ...base, kind: 'rate_limited', message: NO_INSTANCE_FREE, retryAfterSeconds: retryAfter }
+  }
   if (status === 429) return { ...base, kind: 'rate_limited', retryAfterSeconds: retryAfter }
   if (status === 503) {
     // A 503 was previously ALWAYS reported as "we could not confirm which team

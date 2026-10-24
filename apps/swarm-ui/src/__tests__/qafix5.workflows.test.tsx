@@ -292,7 +292,9 @@ describe('WG-7: each Changes scope says what it covers', () => {
     changes('checkpoints')
     const note = await screen.findByRole('note', { name: 'What this page shows' })
     // MUTATION: word the note the same whatever the filter.
-    expect(note.textContent).toMatch(/only checkpoints’s files/i)
+    // 'the files of checkpoints', not 'checkpoints’s files', since QAFIX6
+    // (run 6, F5): the possessive of a step id read awkwardly.
+    expect(note.textContent).toMatch(/only the files of checkpoints/i)
     expect(note.textContent).toMatch(/All steps/)
   })
 
@@ -335,7 +337,9 @@ describe('L6: the Changes page narrows to a selected step and says what was not 
     changes(null)
     const state = await waitFor(() => {
       const el = document.querySelector<HTMLElement>('.chg-mx-card')
-      expect(el?.textContent).toMatch(/no file known yet/)
+      // 'file list not recorded', not 'no file known yet', since QAFIX6 (run
+      // 6, F5): every step here has ended, and 'yet' said the list was coming.
+      expect(el?.textContent).toMatch(/file list not recorded/)
       return el!
     })
     const text = (state.textContent ?? '').replace(/\s+/g, ' ')

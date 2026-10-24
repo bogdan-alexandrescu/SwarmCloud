@@ -249,6 +249,13 @@ excerpt() {
 # names contain `/` ("swarm-ui component tests (2/4)", "(4/4)", "swarm-ui
 # typecheck / component tests"). The job's name travels through the
 # environment, never as awk program text or a -v escape.
+#
+# `--allow-escape-sequences` (CIFIX-ANSI, part of #2109): gh 2.102 refuses a
+# response that holds a terminal escape unless told to allow it, and vitest's
+# log is coloured. On ci-fix run 39970278298 (PR 2098) every vitest job was
+# refused that way, 0 logs were read, and the PR was told the run "returned no
+# log". The escapes go no further than this file: `excerpt` removes them
+# before its rules run.
 failed_jobs() {
   local repo="$1" run_id="$2" id name read=0
   gh api --paginate "repos/${repo}/actions/runs/${run_id}/jobs?per_page=100" \
@@ -258,7 +265,7 @@ failed_jobs() {
     >"${WORK}/jobs.tsv"
   while IFS=$'\t' read -r id name; do
     [[ "${id}" =~ ^[0-9]+$ ]] || continue
-    if ! gh api "repos/${repo}/actions/jobs/${id}/logs" >"${WORK}/job.log"; then
+    if ! gh api --allow-escape-sequences "repos/${repo}/actions/jobs/${id}/logs" >"${WORK}/job.log"; then
       warn "the log of job ${id} (${name}) could not be read; the excerpt goes without it"
       continue
     fi

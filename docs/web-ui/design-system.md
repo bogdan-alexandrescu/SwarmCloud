@@ -1990,10 +1990,10 @@ and what a rewritten test pins.
 
 | Kind of absence | The visible encoding | Where the words live | What the test pins |
 |---|---|---|---|
-| **A real zero** | the figure `0`, plus the track's **axis tick** at the origin; `.ctl-mark.is-zero` (solid border, 3px left axis, the word `real zero`) | `?` topic | `.ctl-util-zero` present, `.ctl-util-track.is-zero`, the mark's word and its `aria-label` |
+| **A real zero** | the figure `0`, plus the track's **axis tick** at the origin; `.ctl-mark.is-zero` (one even 1px solid border in the text tone, the word `none`; the axis tick stays on the track, not the mark) | `?` topic | `.ctl-util-zero` present, `.ctl-util-track.is-zero`, the mark's word and its `aria-label` |
 | **Nothing was ever recorded** | `.ctl-em` (`—`, dimmed, non-tabular, `user-select:none`) in the figure slot; `.ctl-mark.is-absent` (**hatched**, `not measured`) | `?` topic + `docs/` | `.ctl-em` in the cell, **no digit**, `.ctl-mark.is-absent`, `aria-label` |
 | **The read failed** | `.ctl-mark.is-unread` (**dashed** border, `--warn`, `not read`); the panel takes `.ctl-empty.is-failed`; **no number appears anywhere** | `?` topic; the error text in the empty state's one sentence | `.is-unread` present, `.ctl-util-fill` **absent**, no digit in the figure |
-| **A partial total** | `.ctl-dial.is-partial` — measured filled, **unmeasured hatched**; `.ctl-mark.is-partial` (one dashed edge, `partial`); coverage as `.ctl-card-note` `4 of 7 pools` | `?` topic; the full sentence in `aria-label` | `data-partial="yes"`, the hatched arc, the note's text, `aria-label` |
+| **A partial total** | `.ctl-dial.is-partial` — measured filled, **unmeasured hatched**; `.ctl-mark.is-partial` (one even 1px solid border in the warning tone, the word `partial`; on Accounts only, `.acct-page` / `.quota-page`, a squared dashed right side, owner decision, box 6287748161); coverage as `.ctl-card-note` `4 of 7 pools` | `?` topic; the full sentence in `aria-label` | `data-partial="yes"`, the hatched arc, the note's text, `aria-label` |
 | **No ceiling / no scale** | `.ctl-track.is-unknown` — **hatched, no fill, and no axis**: there is no scale to start | `?` topic | exactly one hatched track, `.ctl-util-fill` absent |
 | **Measured and impossible** (over ceiling) | `.ctl-util-over` — `--ctl-hatch-bad`, the overflow drawn rather than clipped | `?` topic | the over segment present, the fill not pinned at 100% |
 | **A state nobody derived** | `.ctl-dot.is-underived` — a ring with a bar through it. **Never coerced into a known state.** | `?` topic; `measure.ts`'s `word` | the modifier class, the word from `measure.ts` |
@@ -2747,11 +2747,13 @@ rather than inventing a metric that would have moved.
    > amber band, and no over segment because the percentage is clamped. The
    > track is a fixed 40px inline beside the figure (`.acct-window >
    > .ctl-util-track`), and at 560px and below the phone block hides it as it
-   > hides every track but a pool tile's; there the figure, the `~` and the em
-   > dash carry every state. Unmeasured cells are unchanged: the em dash, `not
-   > measured`, no track. **What remains of the `cs status` parity is the
-   > figure, the `~` and the window labels.** One disagreement is left open for
-   > its own box: Overview colours the same reading warn above 75% and bad
+   > hides every track but a pool tile's and the Overview Pools list's (the
+   > latter, `.ov-pools .ov-pl > .ctl-util-track`, drawn since BGD's
+   > 2026-10-23 reversal of Q3 of 2026-10-11, PR 2137); there the figure, the
+   > `~` and the em dash carry every state. Unmeasured cells are unchanged:
+   > the em dash, `not measured`, no track. **What remains of the `cs status`
+   > parity is the figure, the `~` and the window labels.** One disagreement
+   > is left open for its own box: Overview colours the same reading warn above 75% and bad
    > above 90%, while Accounts draws bad only at 100%.
 
 3. **The metric tile lost its box on Pools too, and gained a line** (§6.2

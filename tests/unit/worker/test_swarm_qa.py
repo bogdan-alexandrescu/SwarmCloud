@@ -390,6 +390,12 @@ class FakePage:
             return list(self.links.get(self._path(), []))
         if expression == self.qa.FONTS_READY_JS:
             return True
+        # QA-SHOT-MASK: a page whose text the gate scrubbed of nothing, so
+        # nothing is masked (test_swarm_qa_shot_mask drives the mask).
+        if expression == getattr(self.qa, "MASK_FIND_JS", None):
+            return []
+        if expression == getattr(self.qa, "MASK_CLEAR_JS", None):
+            return [True, 0]
         if expression == getattr(self.qa, "VIEWPORT_JS", None):
             return [3, 2, 1]
         if expression == self.qa.MEASURE_JS:
@@ -538,6 +544,9 @@ def world(tmp_path, monkeypatch, qa):
     w.page = FakePage(qa)
     w.playwright = FakePlaywright()
     monkeypatch.setattr(qa, "_connect", lambda: (w.playwright, FakeBrowser(), FakeContext(w.page)))
+    # The gate's refusal record (QA-GATE-REFUSALS): a gate holding no QA
+    # target, read without a socket; test_swarm_qa_gate_refusals drives it.
+    monkeypatch.setattr(qa, "_gate_document", lambda: {"format": 1, "armed": False, "refusals": [], "dropped": 0})
 
     def handoff_calls():
         return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
@@ -1638,6 +1647,15 @@ def site(world, qa, monkeypatch):
         return world.robots
 
     monkeypatch.setattr(qa, "_fetch_robots", fetch)
+    # The walk spaces its navigations (QAENV-CRAWL, qa-environments.md §4):
+    # on a clock of its own here, so these tests never sleep.
+    clock = [0.0]
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    monkeypatch.setattr(qa, "_now", lambda: clock[0], raising=False)
+    monkeypatch.setattr(qa, "_sleep", sleep, raising=False)
     return world
 
 
@@ -2014,6 +2032,10 @@ class _ShotPage:
         return _PNG_HEADER + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", width, height) + bytes(5)
 
     def evaluate(self, expression, arg=None):
+        if expression == getattr(self.qa, "MASK_FIND_JS", None):
+            return []
+        if expression == getattr(self.qa, "MASK_CLEAR_JS", None):
+            return [True, 0]
         assert expression == self.qa.VIEWPORT_JS, expression
         return list(self.reading)
 
@@ -2037,7 +2059,7 @@ def test_a_faithful_980_wide_first_shot_of_a_page_without_a_viewport_meta_is_kep
     this lane compared it with innerWidth x innerHeight (390x844), retook
     it, and kept the unfaithful dpr-1 shot that followed."""
     page = _ShotPage(qa, [(980, 2121), (390, 844)], _NO_META_PHONE)
-    png, reshot, off = qa._shot(page, 1)
+    png, reshot, off, _masked = qa._shot(page, 1)
     # MUTATION: compare with innerWidth x innerHeight (no scale) and the
     # 980x2121 shot is retaken and the 390x844 one kept.
     assert qa.png_size(png) == (980, 2121)
@@ -2050,7 +2072,7 @@ def test_a_shot_that_disagrees_with_the_layout_viewport_reading_is_retaken(qa):
     # reasserted the device: 390x844 at dpr 1, while the page still reads
     # 980 x 2121 as its layout viewport.
     page = _ShotPage(qa, [(390, 844), (980, 2121)], _NO_META_PHONE)
-    png, reshot, off = qa._shot(page, 2)
+    png, reshot, off, _masked = qa._shot(page, 2)
     # MUTATION: accept any shot (drop the check) and the 390x844 one is kept.
     assert qa.png_size(png) == (980, 2121)
     assert reshot == [{"segment": 2, "size": [390, 844], "viewport": [980, 2121]}]
@@ -2062,10 +2084,10 @@ def test_a_shot_at_a_scale_of_one_is_still_checked_against_the_viewport(qa):
     # window's own size, at one screen pixel per CSS pixel or at the dpr.
     for size in ((390, 844), (1170, 2532)):
         page = _ShotPage(qa, [size], (390, 844, 3, 1))
-        _, reshot, off = qa._shot(page, 1)
+        _, reshot, off, _masked = qa._shot(page, 1)
         assert reshot == [] and off is None, size
     page = _ShotPage(qa, [(980, 2121)], (390, 844, 3, 1))
-    _, reshot, off = qa._shot(page, 1)
+    _, reshot, off, _masked = qa._shot(page, 1)
     # MUTATION: keep a shot that matches neither size of the reading and
     # this 980x2121 one at scale 1 is neither retaken nor listed.
     assert len(reshot) == qa.SHOT_RETRIES and off is not None and "980x2121" in off and "390x844" in off

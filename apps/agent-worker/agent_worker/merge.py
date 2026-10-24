@@ -83,6 +83,35 @@ SUBMISSION (`validation.MERGE_FORGE_HOSTS`, held equal to
 `MERGEABLE_HOSTS` by tests/unit/worker/test_merge_action.py), so the
 `forge_unsupported` refusal below is a second line, not the first.
 
+THE OWNER QUESTIONS THE REVIEW SAID HOLD IT (#2070, owner decision
+2026-10-23, option (c)). The review is given every earlier step's owner
+questions (`owner_questions`) and names, in `verdict.needs_owner`, the
+unanswered ones that must hold the merge. Before any credential, this step
+re-reads each one's task -- a step of THIS workflow, through the same
+tenant-gated upstream read -- and counts it answered when that task's
+`metadata.owner_answers` holds its index, so a question answered after the
+review counts as answered. While any is still open, or an entry cannot be
+read, it parks for a person (`owner_wait`, `handoff.park_human_required`),
+naming each question's step and index: no lease, nothing counted, the
+attempt refunded within the hand-off's bound. The answer that clears the
+hold brings it back (owner decision 2026-10-23, "Resume on answer, no
+expiry"; QUESTION-WAKE, PR 2151): answering through `swarm_task_answer`
+writes `owner_answers` on the ASKING task, and in the same transaction
+swarm-api's answer route (`swarm_api.agent_questions.answer_question`)
+returns this park to READY, reason `owner_questions_answered`, once every
+question its `owner_questions` hold names is answered. An answer while
+another named question is still open leaves it parked, and a hold the route
+cannot read -- `unreadable` entries, a malformed or out-of-workflow entry --
+waits for a person's `human-ready`, as before. A review re-running wakes
+nothing. Either way the next attempt reads every answer again. The
+scheduler's human-wait expiry (`_expire_human_waits`) spares this park, as
+it spares a `question_wait` or `release_wait` one, so it never dead-letters
+at `human_park_max_seconds`. The review's `open_questions`, the ones it
+judged need not hold, never stop the merge; those still unanswered are
+listed, in the asking task's own words, in the comment that records the
+merge -- so a merge made by `auto-merge.yml` rather than this step lists
+none.
+
 THE RULES `auto-merge.yml` ALSO STATES are the module-level functions
 `title_is_placeholder`, `other_check_blocks` and `required_check_state`, so
 tests/unit/scripts/test_auto_merge_workflow.py holds them to the gate's shell
@@ -103,6 +132,8 @@ from swarm_common.states import TERMINAL_STATES, TaskState
 from . import forge as forge_mod
 from . import mergeslot
 from . import mergetrain
+from . import owner_questions as owner_questions_mod
+from . import questions as questions_mod
 from . import verdict as verdict_mod
 from .errors import ExitCode, FencedError, InputUnavailable
 from .post_verdict import (
@@ -124,6 +155,12 @@ from .specverify import UpstreamSpecUnverified
 #: `validation.MERGE_TARGET_FIELD`, restated because the worker image carries no
 #: control plane; tests/unit/worker/test_merge_action.py holds the two equal.
 MERGE_TARGET_FIELD = "merge_target"
+
+#: The code an owner-question hold parks with (#2070).
+OWNER_QUESTIONS_OPEN = "owner_questions_open"
+#: `metadata.owner_answers`, swarm-api's record of each answer
+#: (`questions.OWNER_ANSWERS_KEY`).
+OWNER_ANSWERS_KEY = questions_mod.OWNER_ANSWERS_KEY
 
 #: The worker's own placeholder title, compared case- and leading-whitespace-
 #: insensitively: auto-merge.yml gate 1's rule.
@@ -1210,6 +1247,28 @@ class _Run:
     def refuse(self, code: str, message: str) -> ActionOutcome:
         return refusal(self.summary, EndCause.MERGE_REFUSED, code, message)
 
+    def wait_for_owner(self, held: list[dict[str, Any]], *, unreadable: int) -> ActionOutcome:
+        """The owner's questions are a hold no tick can clear: park for a person.
+
+        `held` is each still-unanswered `needs_owner` question, `unreadable`
+        how many entries could not be read. The lifecycle writes the park in
+        one fenced transaction (`handoff.park_human_required`), releases the
+        lease and exits 75.
+        """
+        named = [f"step {q.get('step_id') or q.get('task_id')} question {q.get('question_index')}"
+                 for q in held]
+        if unreadable:
+            named.append(f"{unreadable} needs_owner entr{'y' if unreadable == 1 else 'ies'} "
+                         "the merge cannot read")
+        message = ("the review said these owner questions hold the merge, and they are "
+                   "unanswered: " + "; ".join(named))
+        wait = {"code": OWNER_QUESTIONS_OPEN, "questions": held, "unreadable": unreadable}
+        self.summary["wait"] = {"code": OWNER_QUESTIONS_OPEN, "message": message}
+        return _outcome(
+            TaskState.PARKED, None, self.summary, f"{OWNER_QUESTIONS_OPEN}: {message}",
+            exit_code=ExitCode.PARKED, owner_wait=wait,
+        )
+
     def wait(self, code: str, message: str, *, head: str, pull_request: int,
              pending: list[str]) -> ActionOutcome:
         """A fact that may change by itself: park CI_PENDING, holding nothing.
@@ -1296,6 +1355,14 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
                 f"the review's verdict is {verdict.verdict}, not MERGE"
                 + (f" ({len(verdict.findings)} finding(s))" if verdict.findings else ""),
             )
+        # #2070: the owner questions the review said hold the merge, each
+        # answer re-read; then the ones it said need not, listed if open.
+        held = _unanswered(ctx, verdict.needs_owner)
+        if held or verdict.needs_owner_unreadable:
+            return run.wait_for_owner(held, unreadable=verdict.needs_owner_unreadable)
+        still_open = _unanswered(ctx, verdict.open_questions, asked_text=True)
+        if still_open:
+            summary["open_questions"] = still_open
 
     number = pull_request_number(opener)
     if number is None:
@@ -1318,6 +1385,90 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         branch=f"{ctx.branch_prefix}{_branch_task(opener, target.pull_request)}",
         own=own, fix_heads=fix_heads,
     )
+
+
+def _answered(doc: Mapping[str, Any], index: int) -> bool:
+    """Whether the task's `metadata.owner_answers` holds an answer to question `index`."""
+    for entry in _mapping(doc.get("metadata")).get(OWNER_ANSWERS_KEY) or ():
+        if isinstance(entry, Mapping) and type(entry.get("question_index")) is int \
+                and entry.get("question_index") == index:
+            return True
+    return False
+
+
+def _unanswered(ctx: ActionContext,
+                refs: tuple[verdict_mod.OwnerQuestionRef, ...], *,
+                asked_text: bool = False) -> list[dict[str, Any]]:
+    """The `refs` still unanswered, read again from each one's task now.
+
+    FAIL CLOSED: a task that cannot be read, or is not a step of this
+    workflow, answers nothing -- an answer on another workflow's task is not
+    an answer to this one's question. The step id is the task's own when it
+    records one, not the verdict's word for it.
+
+    `asked_text` (the listing on the pull request) puts the question's text
+    as the asking task's own validated `questions.json` holds it
+    (`owner_questions.questions_of`) in place of the review's copy, so a
+    review that paraphrased a question does not put the paraphrase on the
+    pull request. Where that file cannot be read, or holds no such index, the
+    review's copy stays: the listing informs, it gates nothing.
+    """
+    out: list[dict[str, Any]] = []
+    docs: dict[str, Mapping[str, Any] | None] = {}
+    asked: dict[str, dict[int, Any]] = {}
+    for ref in refs:
+        if ref.task_id not in docs:
+            try:
+                docs[ref.task_id] = ctx.fetch_upstream(ref.task_id)
+            except InputUnavailable:
+                docs[ref.task_id] = None
+        doc = docs[ref.task_id]
+        ours = (doc is not None and ctx.workflow_id is not None
+                and doc.get("workflow_id") == ctx.workflow_id)
+        if ours and doc is not None and _answered(doc, ref.question_index):
+            continue
+        row = ref.as_dict()
+        if ours and doc is not None and isinstance(doc.get("step_id"), str) and doc["step_id"]:
+            row["step_id"] = doc["step_id"]
+        if asked_text and ours and doc is not None:
+            if ref.task_id not in asked:
+                asked[ref.task_id] = _asked_questions(ctx, ref.task_id, doc)
+            text = asked[ref.task_id].get(ref.question_index)
+            if isinstance(text, str) and text.strip():
+                row["question"] = text
+        out.append(row)
+    return out
+
+
+def _asked_questions(ctx: ActionContext, task_id: str,
+                     doc: Mapping[str, Any]) -> dict[int, Any]:
+    """`{question_index: question text}` as task `task_id` asked them; {} unreadable."""
+    try:
+        rows = owner_questions_mod.questions_of(
+            task_id, doc, store=ctx.store, tenant_id=ctx.tenant_id)
+    except InputUnavailable:
+        return {}
+    return {row["question_index"]: row.get("question") for row in rows}
+
+
+def open_questions_lines(rows: list[Mapping[str, Any]]) -> list[str]:
+    """The comment's section listing the open questions that did not hold the merge.
+
+    The question text is an agent's, UNTRUSTED, on a page anyone with read
+    access sees: inside one fenced block with every run of three backticks
+    broken, as `verdict.pull_request_lines` renders findings.
+    """
+    if not rows:
+        return []
+    lines = ["", "", "Open owner questions the review judged need not hold this merge "
+             "(answer them on their task):", "", "```text"]
+    for row in rows:
+        text = " ".join(str(row.get("question") or "").split()).replace("```", "ʼʼʼ")
+        where = row.get("step_id") or row.get("task_id")
+        lines.append(f"- step {where} question {row.get('question_index')} "
+                     f"(task {row.get('task_id')}): {text}".replace("```", "ʼʼʼ"))
+    lines.append("```")
+    return lines
 
 
 def _verify_opener(ctx: ActionContext, target: MergeTarget, opener: Mapping[str, Any]) -> None:
@@ -1778,7 +1929,11 @@ def train_provenance(ctx: ActionContext, merger: ForgeMerger, *, number: int, he
 
 
 def _record(summary: dict[str, Any], merger: ForgeMerger, number: int, message: str) -> None:
-    """The comment naming the task that merged the pull request; a failure is recorded."""
+    """The comment naming the task that merged the pull request, and the owner
+    questions still open (#2070); a failure is recorded."""
+    rows = summary.get("open_questions")
+    if isinstance(rows, list) and rows:
+        message = message + "\n".join(open_questions_lines(rows))
     try:
         summary["recorded_on_pull_request"] = merger.comment(number, message)
     except forge_mod.ForgeError as exc:

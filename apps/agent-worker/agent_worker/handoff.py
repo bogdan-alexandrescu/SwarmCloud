@@ -118,6 +118,21 @@ from .livegate.tunnel import (
     resolver_class,
 )
 
+#: CAPTCHA-HANDOFF (BGD, 2026-10-23; docs/design/live-browser.md §4.1, part
+#: of #2058): a hand-off the gate raised itself, because it saw a challenge on
+#: the agent's page (livegate `LiveGate._on_challenge`), is `origin: "gate"`
+#: at swarm-api. An agent's own request names no origin: swarm-api's default
+#: is "agent", and one from before the field would refuse it mid-rollout.
+GATE_ORIGIN = "gate"
+AGENT_ORIGIN = "agent"
+#: What the agent reads in the answer to a gate-raised hand-off, and in the
+#: answer to its own request while one is open (`joined`).
+GATE_WAITING = (
+    "A person has been asked to solve a CAPTCHA on {host}: the platform asked for you. "
+    "Wait: run `swarm-handoff wait` in the foreground, and do not retry the page, poll "
+    "the browser or try to solve or get around the CAPTCHA. Carry on once it returns."
+)
+
 #: The spool's directory under `work/`. `Workspace.handoff_dir` is the one
 #: path; this is its name.
 SPOOL_DIR_NAME = ".swarm-handoff"
@@ -380,6 +395,12 @@ minutes).
   4   the task is being cancelled: stop.
   5   refused (no live path, the limit of 3 requests, or an invalid request):
       carry on without help, or fail with that reason.
+
+THE PLATFORM ASKS FOR A CAPTCHA ITSELF. When the browser shows a CAPTCHA,
+the platform asks a person for you: your browser is paused, and
+`swarm-handoff wait` with no argument waits on that hand-off. Never try to
+solve or get around a CAPTCHA. A request of your own while that hand-off is
+open is answered by it.
 
 Keep $SWARM_HANDOFF/notes.md current as you go, and always before you ask:
 it is what you continue from if this attempt is parked.
@@ -818,6 +839,9 @@ class HandoffPath:
         #: The open hand-off: request id, when it was opened, its deadline.
         self.active: dict[str, Any] | None = None
         self.requests_made = 0
+        #: The gate's requests already raised (or refused) this attempt: its
+        #: `status` carries one until a `pause` takes it off.
+        self._gate_raised: set[str] = set()
         self.max_handoffs = int(getattr(cfg, "max_handoffs_per_attempt", MAX_HANDOFFS_PER_ATTEMPT))
         self.max_resumes = int(getattr(cfg, "max_human_resumes", MAX_HUMAN_RESUMES))
         self._wiped = False
@@ -1549,10 +1573,12 @@ class HandoffPath:
             self._forward_browser_tools(root)
             if self.active is None:
                 self._answer_requests(root)
+            elif self.active.get("origin") == GATE_ORIGIN:
+                self._join_requests(root)
             if self.active is not None:
                 return self._watch(root, fetch_task)
             if self.offered:
-                self._note_last_episode(root)
+                self._raise_for_gate(root, self._note_last_episode(root))
             else:
                 self._poll_startup()
         except Exception as exc:  # the hand-off never crashes the attempt
@@ -1585,7 +1611,63 @@ class HandoffPath:
                 # once that one ends, on a later poll.
                 break
 
-    def _open(self, root: Path, request_id: str, data: Any) -> None:
+    def _raise_for_gate(self, root: Path, status: Mapping[str, Any]) -> None:
+        """CAPTCHA-HANDOFF: the gate's request in its `status`, raised as the agent's would be.
+
+        The same `_open` -- validation, the redaction filter, the per-attempt
+        cap, the pause, the route -- with `origin: "gate"`. `.last` names it,
+        so the agent's `swarm-handoff wait` waits on it, and a refusal (the
+        cap) is answered there like any other. Each request once.
+        """
+        challenge = status.get("challenge")
+        if not isinstance(challenge, Mapping):
+            return
+        request_id = challenge.get("request_id")
+        if not isinstance(request_id, str) or not REQUEST_ID.fullmatch(request_id) \
+                or request_id in self._gate_raised:
+            return
+        self._gate_raised.add(request_id)
+        root.mkdir(parents=True, exist_ok=True)
+        last = root / ".last"
+        tmp = root / ".last.tmp"
+        tmp.unlink(missing_ok=True)
+        tmp.write_text(request_id, encoding="utf-8")
+        os.replace(tmp, last)
+        self.log.info("the gate saw a challenge on the agent's page; asking a person")
+        self._open(root, request_id, {"reason": challenge.get("reason"), "expect": challenge.get("expect")},
+                   origin=GATE_ORIGIN)
+
+    def _join_requests(self, root: Path) -> None:
+        """The agent's own requests while the gate's hand-off is open: answered by it.
+
+        The runner's note still tells an agent to ask on a CAPTCHA; one that
+        does, after the gate already asked, waits on the same person rather
+        than queueing a second hand-off for a challenge they will have solved.
+        """
+        active = self.active
+        assert active is not None
+        requests = root / "requests"
+        if not requests.is_dir():
+            return
+        for path in sorted(requests.glob("*.json")):
+            request_id = path.stem
+            path.unlink(missing_ok=True)
+            if not REQUEST_ID.fullmatch(request_id) or request_id == active["request_id"]:
+                continue
+            active.setdefault("joined", []).append(request_id)
+            deadline = active.get("deadline")
+            self._respond(root, request_id, {
+                "outcome": "waiting", "origin": GATE_ORIGIN, "joined": active["request_id"],
+                "message": active.get("message"),
+                "deadline": deadline.isoformat() if isinstance(deadline, datetime) else None})
+            self.log.info("the agent's request joins the gate's open hand-off")
+
+    def _answer_all(self, root: Path, active: Mapping[str, Any], document: Mapping[str, Any]) -> None:
+        """Answer the open hand-off's request and every request that joined it."""
+        for request_id in [active["request_id"], *active.get("joined", [])]:
+            self._respond(root, request_id, document)
+
+    def _open(self, root: Path, request_id: str, data: Any, *, origin: str = AGENT_ORIGIN) -> None:
         if not self.offered:
             return self._refusal(
                 root, request_id, self.unavailable or NO_LIVE_SESSION,
@@ -1629,11 +1711,11 @@ class HandoffPath:
             self.log.warning("the gate did not pause the agent", error=type(exc).__name__)
             return self._refusal(root, request_id, GATE_UNAVAILABLE, "the live browser is unavailable")
         self.requests_made += 1
+        fields: dict[str, Any] = {"request_id": request_id, "reason": reason, "expect": expect}
+        if origin == GATE_ORIGIN:
+            fields["origin"] = GATE_ORIGIN
         try:
-            _, payload = self._route(
-                f"/v1/tasks/{quote(self.cfg.task_id, safe='')}/handoff",
-                {"request_id": request_id, "reason": reason, "expect": expect},
-            )
+            _, payload = self._route(f"/v1/tasks/{quote(self.cfg.task_id, safe='')}/handoff", fields)
         except Exception as exc:
             code = str(getattr(exc, "code", None) or type(exc).__name__)
             self._resume_quietly()
@@ -1646,14 +1728,17 @@ class HandoffPath:
             "opened_at": now,
             "opened_wall": self._wall(),
             "deadline": deadline,
+            "origin": origin,
         }
-        self._respond(
-            root, request_id,
-            {"outcome": "waiting", "deadline": deadline.isoformat() if deadline else None},
-        )
+        answer: dict[str, Any] = {"outcome": "waiting", "deadline": deadline.isoformat() if deadline else None}
+        if origin == GATE_ORIGIN:
+            self.active["message"] = GATE_WAITING.format(host=expect or "this page")
+            answer.update(origin=GATE_ORIGIN, message=self.active["message"])
+        self._respond(root, request_id, answer)
         self._record(
             root, request_id,
-            {"reason": reason, "expect": expect, "requested_at": now, "outcome": "waiting"},
+            {"reason": reason, "expect": expect, "requested_at": now, "outcome": "waiting",
+             "origin": origin},
         )
         self.log.info("hand-off opened; the agent's browser is paused for a person")
 
@@ -1723,27 +1808,30 @@ class HandoffPath:
             "url": public_url(result.get("url")),
             "title": redact_text(str(result.get("title") or "")[:200]).text,
         }
-        self._respond(root, active["request_id"], summary)
+        self._answer_all(root, active, summary)
         _write_atomic(root / "status.json", summary)
         self._record(root, active["request_id"], {**summary, "ended_at": self._now()})
         self.active = None
         self.log.info("hand-off returned; the agent's browser is resumed",
                       held_seconds=summary["held_seconds"])
 
-    def _note_last_episode(self, root: Path) -> None:
+    def _note_last_episode(self, root: Path) -> Mapping[str, Any]:
         """§4.2 (Q6): a person may take control unasked. `status` reports the
-        last episode the gate knows of, in `wait`'s shape."""
+        last episode the gate knows of, in `wait`'s shape. Returns the status
+        read ({} with none), for the gate's own request (`_raise_for_gate`)."""
         if not self.offered or self.gate is None:
-            return
+            return {}
         try:
             result = self.gate.call("status", {})
         except GateLost:
-            return
+            return {}
+        if not isinstance(result, Mapping):
+            return {}
         self.note_startup(result)
         self._keep_tunnel(result)
         episode = result.get("last_episode")
         if not isinstance(episode, dict):
-            return
+            return result
         _write_atomic(
             root / "status.json",
             {
@@ -1753,6 +1841,7 @@ class HandoffPath:
                 "title": redact_text(str(episode.get("title") or "")[:200]).text,
             },
         )
+        return result
 
     # -- the browser's start-up steps (STARTUP-API) -----------------------------
 
@@ -1935,7 +2024,7 @@ class HandoffPath:
                 try:
                     root = self.spool(work)
                     document = {"outcome": outcome, "exit": code, "cause": cause}
-                    self._respond(root, active["request_id"], document)
+                    self._answer_all(root, active, document)
                     _write_atomic(root / "status.json", document)
                     self._record(root, active["request_id"], {**document, "ended_at": self._now()})
                 except OSError as exc:

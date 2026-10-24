@@ -7,7 +7,10 @@
 //   * a workspace admin sees Register, Edit and Set credential; a member sees
 //     Run and not Edit;
 //   * a pending host shows why it cannot run, and Run sends nothing;
-//   * Run POSTs `{file}` alone to the target's own `:run`;
+//   * Run POSTs `{file}` alone to the target's own `:run`, and the flow
+//     browser chosen for that one run beside it (lane VQ9-TOOL);
+//   * the form shows "Flow browser", Playwright by default or Jev, sends it,
+//     and an edit never drops it (lane VQ9-TOOL; BGD, 2026-10-23);
 //   * the credential form reads its link token from the URL and removes it
 //     from the address bar, as ProviderKeys.tsx does, and sends it once as
 //     `link_token` with the username and password, which never stay in the DOM;
@@ -18,7 +21,11 @@
 //     sees Approve host on a pending target, types the host (and a login's
 //     extra origin) to confirm, and only then POSTs `:approve-host`; anyone
 //     else never sees it, and the API's refusal is said in its own words
-//     (lane VQ6-APPROVE, §1.2, VQ-Q1).
+//     (lane VQ6-APPROVE, §1.2, VQ-Q1);
+//   * the register/edit, credential and approve forms are laid out with the
+//     repository form's classes, a label cell beside each control, each
+//     start click a row of its own, and a card names its start clicks
+//     (lane QA-TARGETS-FORM; CLD at 1512x806, 2026-10-23).
 //
 // The bodies are routes/qatargets.py's and routes/repositories.py's shapes.
 // Every token-shaped value is built at runtime; nothing here is a credential.
@@ -26,6 +33,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { repo, serve, visible } from './repofixture'
+import type { CascadeEnv } from './cssgate'
+import { painted } from './marks'
 
 const WAIT = { timeout: 4000 }
 const APPROVED = 'qat_' + 'a1'.repeat(8)
@@ -75,10 +84,14 @@ function target(id: string, name: string, over: Json = {}): Json {
   }
 }
 
-function targets(pendingOver: Json = {}, loginSignIn: Json = { kind: 'own_login', login_path: '/login', signed_in_selector: '#me' }): Json {
+function targets(
+  pendingOver: Json = {},
+  loginSignIn: Json = { kind: 'own_login', login_path: '/login', signed_in_selector: '#me' },
+  shopOver: Json = {},
+): Json {
   return {
     qa_targets: [
-      target(APPROVED, 'shop', { themes: ['light'] }),
+      target(APPROVED, 'shop', { themes: ['light'], ...shopOver }),
       target(PENDING, 'blog', { host_state: 'pending', ...pendingOver }),
       target(LOGIN, 'portal', { sign_in: loginSignIn }),
     ],
@@ -87,12 +100,12 @@ function targets(pendingOver: Json = {}, loginSignIn: Json = { kind: 'own_login'
 
 function live(
   role: string,
-  opts: { run?: Reply; link?: Reply; put?: Reply; create?: Reply; platformAdmin?: boolean; approve?: Reply; pending?: Json; login?: Json } = {},
+  opts: { run?: Reply; link?: Reply; put?: Reply; create?: Reply; platformAdmin?: boolean; approve?: Reply; pending?: Json; login?: Json; shop?: Json } = {},
 ) {
   const calls = serve((m, url) => {
     const path = url.split('?')[0] ?? ''
     if (m === 'GET' && path === '/v1/tenants/me') return { status: 200, body: me(role, opts.platformAdmin === true) }
-    if (m === 'GET' && path === '/v1/qa-targets') return { status: 200, body: targets(opts.pending, opts.login) }
+    if (m === 'GET' && path === '/v1/qa-targets') return { status: 200, body: targets(opts.pending, opts.login, opts.shop) }
     if (m === 'POST' && path.endsWith(':approve-host')) {
       return opts.approve ?? { status: 200, body: { qa_target: target(PENDING, 'blog', { approved_by: 'root@example.com', ...opts.pending, host_state: 'approved' }) } }
     }
@@ -205,6 +218,21 @@ describe('QA targets: the page and who sees what', () => {
     // MUTATION: send anything besides `file` (an image, a command, the target's spec).
     expect(sent.body).toEqual({ file: 'issues' })
     await waitFor(() => expect(visible(card(APPROVED))).toContain('wf_' + 'd4'.repeat(8)), WAIT)
+  })
+
+  it('Run sends the flow browser chosen for that one run, and nothing when none is chosen', async () => {
+    const calls = live('member')
+    await mountPage()
+    const choice = card(APPROVED).querySelector<HTMLSelectElement>('select[data-run-browser]')
+    // MUTATION: draw no per-run choice beside Run and this is null.
+    expect(choice).not.toBeNull()
+    expect(choice!.value).toBe('')
+    expect(Array.from(choice!.options).map((o) => o.value)).toEqual(['', 'playwright', 'jev'])
+    fireEvent.change(choice!, { target: { value: 'jev' } })
+    fireEvent.click(button(card(APPROVED), 'Run')!)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST').length).toBe(1), WAIT)
+    // MUTATION: drop `browser_tool` from `runQaTarget`'s body and the run uses the target's tool.
+    expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ file: 'issues', browser_tool: 'jev' })
   })
 
   it('a refused run is said with the API’s own words', async () => {
@@ -369,6 +397,8 @@ describe('QA targets: registration', () => {
         { id: 'pricing', path: '/pricing' },
       ],
       environment: 'production',
+      // MUTATION: leave the Flow browser out of `bodyOf` and a registration never says it.
+      flows_browser_tool: 'playwright',
     })
     // MUTATION: never say a new host waits for approval.
     await waitFor(() => expect(visible(document.body)).toContain('waits for a platform admin'), WAIT)
@@ -407,6 +437,36 @@ describe('QA targets: registration', () => {
     expect(body.rate).toEqual({ navigation_ms: 3000 })
     expect(body.file).toEqual({ max_issues: 5 })
   })
+  it('More settings help names file.label_rules, and a rule reaches the API as written (QA-TARGET-FILE, #2062)', async () => {
+    const calls = live('admin')
+    await mountPage()
+    await waitFor(() => expect(button(document, 'Register QA target')).not.toBeNull(), WAIT)
+    fireEvent.click(button(document, 'Register QA target')!)
+    const form = await waitFor(() => {
+      const f = document.querySelector<HTMLFormElement>('form.qa-edit')
+      if (f === null) throw new Error('no registration form')
+      return f
+    }, WAIT)
+    const help = form.querySelector<HTMLLabelElement>('label[for$="-more"]')!
+    // MUTATION: leave the field out of the More settings help and nobody finds it.
+    expect(help.textContent).toContain('file.label_rules')
+    expect(help.textContent).toContain('"paths"')
+    await waitFor(() => expect(form.querySelectorAll('select[name="repository"] option').length).toBeGreaterThan(1), WAIT)
+    const set = (name: string, value: string) => {
+      const el = form.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(`[name="${name}"]`)!
+      fireEvent.change(el, { target: { value } })
+    }
+    set('name', 'new')
+    set('base_url', 'https://new.example.test/')
+    set('repository', 'example-org/example-api')
+    set('authorized_by', "the app's owner")
+    set('screens', 'home /')
+    set('more', '{"file": {"label_rules": [{"paths": ["/agents/"], "labels": ["agent-page-rework"]}]}}')
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST').length).toBe(1), WAIT)
+    const body = calls.find((c) => c.method === 'POST')!.body as Json
+    expect(body.file).toEqual({ label_rules: [{ paths: ['/agents/'], labels: ['agent-page-rework'] }] })
+  })
 
   it('an edit sends only what changed, and clears a More setting that was removed', async () => {
     const calls = live('admin')
@@ -430,6 +490,71 @@ describe('QA targets: registration', () => {
     expect(sent.url).toBe(`/v1/qa-targets/${APPROVED}`)
     // MUTATION: send the whole form on an edit, or leave a removed setting out instead of null.
     expect(sent.body).toEqual({ name: 'shop-2', themes: null })
+  })
+})
+
+describe('QA targets: the flow browser (VQ9-TOOL; BGD, 2026-10-23)', () => {
+  async function openForm(label: string, root: ParentNode = document): Promise<HTMLFormElement> {
+    await waitFor(() => expect(button(root, label)).not.toBeNull(), WAIT)
+    fireEvent.click(button(root, label)!)
+    return waitFor(() => {
+      const f = document.querySelector<HTMLFormElement>('form.qa-edit')
+      if (f === null) throw new Error('no form')
+      return f
+    }, WAIT)
+  }
+
+  it('the form shows Flow browser, Playwright by default, and a registration choosing Jev sends it', async () => {
+    const calls = live('admin')
+    await mountPage()
+    const form = await openForm('Register QA target')
+    await waitFor(() => expect(form.querySelectorAll('select[name="repository"] option').length).toBeGreaterThan(1), WAIT)
+    const tool = form.querySelector<HTMLSelectElement>('select[name="flows_browser_tool"]')
+    // MUTATION: draw no Flow browser select and this is null.
+    expect(tool).not.toBeNull()
+    // The label that names the select (its own `ur-fl` cell since QA-TARGETS-FORM, no longer a wrapper).
+    expect(visible(tool!.labels![0]!)).toContain('Flow browser')
+    // MUTATION: default the select to Jev and this fails.
+    expect(tool!.value).toBe('playwright')
+    expect(Array.from(tool!.options).map((o) => o.value)).toEqual(['playwright', 'jev'])
+    const set = (name: string, value: string) => {
+      fireEvent.change(form.querySelector(`[name="${name}"]`)!, { target: { value } })
+    }
+    set('name', 'new')
+    set('base_url', 'https://new.example.test/')
+    set('repository', 'example-org/example-api')
+    set('authorized_by', "the app's owner")
+    set('screens', 'home /')
+    set('flows_browser_tool', 'jev')
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST').length).toBe(1), WAIT)
+    // MUTATION: send the draft's default instead of the choice and this is playwright.
+    expect((calls.find((c) => c.method === 'POST')!.body as Json).flows_browser_tool).toBe('jev')
+  })
+
+  it('an edit opens on the target’s tool and a save of anything else never drops it', async () => {
+    const calls = live('admin', { shop: { flows_browser_tool: 'jev' } })
+    await mountPage()
+    const form = await openForm('Edit', card(APPROVED))
+    // MUTATION: leave `flows_browser_tool` out of `normQaTarget` and this opens on playwright.
+    expect(form.querySelector<HTMLSelectElement>('select[name="flows_browser_tool"]')!.value).toBe('jev')
+    fireEvent.change(form.querySelector('[name="name"]')!, { target: { value: 'shop-2' } })
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'PATCH').length).toBe(1), WAIT)
+    // MUTATION: draft every target as playwright and the save sends `flows_browser_tool: "playwright"`.
+    expect(calls.find((c) => c.method === 'PATCH')!.body).toEqual({ name: 'shop-2' })
+  })
+
+  it('an edit that changes the tool sends it', async () => {
+    const calls = live('admin')
+    await mountPage()
+    const form = await openForm('Edit', card(APPROVED))
+    expect(form.querySelector<HTMLSelectElement>('select[name="flows_browser_tool"]')!.value).toBe('playwright')
+    fireEvent.change(form.querySelector('[name="flows_browser_tool"]')!, { target: { value: 'jev' } })
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'PATCH').length).toBe(1), WAIT)
+    // MUTATION: leave the field out of the edit's diff and the change is never sent.
+    expect(calls.find((c) => c.method === 'PATCH')!.body).toEqual({ flows_browser_tool: 'jev' })
   })
 })
 
@@ -567,6 +692,85 @@ describe('QA targets: a platform admin approves a pending host (VQ6-APPROVE, §1
     expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ host: 'blog.example.test', extra_origin: origin })
   })
 
+  it('the IdP token path is sent with the extra origin when typed, and only then (QA-IDP-POST, #2067)', async () => {
+    const origin = 'https://login.example.test'
+    const tokenPath = '/realms/apps/protocol/openid-connect/token'
+    const calls = live('member', {
+      platformAdmin: true,
+      pending: { sign_in: { kind: 'own_login', login_path: '/login', signed_in_selector: '#me', extra_origin: origin } },
+    })
+    await mountPage()
+    await waitFor(() => expect(button(card(PENDING), 'Approve host')).not.toBeNull(), WAIT)
+    fireEvent.click(button(card(PENDING), 'Approve host')!)
+    const form = approveForm(card(PENDING))
+    // MUTATION: drop the field from ApproveHostForm and there is nothing to type it into.
+    typeInto(form, 'idp_token_path', ` ${tokenPath} `)
+    typeInto(form, 'confirm_host', 'blog.example.test')
+    typeInto(form, 'confirm_extra_origin', origin)
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST').length).toBe(1), WAIT)
+    // MUTATION: leave `idp_token_path` out of approveQaTargetHost's body and the API never stores it.
+    expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ host: 'blog.example.test', extra_origin: origin, idp_token_path: tokenPath })
+  })
+
+  it('a target with no extra origin draws no token path field', async () => {
+    live('member', { platformAdmin: true })
+    await mountPage()
+    await waitFor(() => expect(button(card(PENDING), 'Approve host')).not.toBeNull(), WAIT)
+    fireEvent.click(button(card(PENDING), 'Approve host')!)
+    // MUTATION: draw the field whatever the sign-in and an admin is offered a path the API refuses.
+    expect(approveForm(card(PENDING)).querySelector('input[name="idp_token_path"]')).toBeNull()
+  })
+
+  it('an approved target with an extra origin can be approved again, its token path filled in (QA-IDP-POST)', async () => {
+    const origin = 'https://login.example.test'
+    const tokenPath = '/realms/apps/protocol/openid-connect/token'
+    const calls = live('member', {
+      platformAdmin: true,
+      login: { kind: 'own_login', login_path: '/login', signed_in_selector: '#me', extra_origin: origin },
+    })
+    await mountPage()
+    // The approved target with no extra origin offers nothing (the case above holds it).
+    expect(button(card(APPROVED), 'Approve again')).toBeNull()
+    // MUTATION: draw the approve form for pending targets alone and an approved target's token path can never be set.
+    await waitFor(() => expect(button(card(LOGIN), 'Approve again')).not.toBeNull(), WAIT)
+    fireEvent.click(button(card(LOGIN), 'Approve again')!)
+    const form = approveForm(card(LOGIN))
+    typeInto(form, 'idp_token_path', tokenPath)
+    typeInto(form, 'confirm_host', 'portal.example.test')
+    typeInto(form, 'confirm_extra_origin', origin)
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST').length).toBe(1), WAIT)
+    const sent = calls.find((c) => c.method === 'POST')!
+    expect(sent.url).toBe(`/v1/qa-targets/${LOGIN}:approve-host`)
+    expect(sent.body).toEqual({ host: 'portal.example.test', extra_origin: origin, idp_token_path: tokenPath })
+  })
+
+  it('the stored token path is filled in, and emptying it sends none', async () => {
+    const origin = 'https://login.example.test'
+    const tokenPath = '/realms/apps/protocol/openid-connect/token'
+    const calls = live('member', {
+      platformAdmin: true,
+      pending: {
+        sign_in: { kind: 'own_login', login_path: '/login', signed_in_selector: '#me', extra_origin: origin },
+        approved_idp_token_path: tokenPath,
+      },
+    })
+    await mountPage()
+    await waitFor(() => expect(button(card(PENDING), 'Approve host')).not.toBeNull(), WAIT)
+    fireEvent.click(button(card(PENDING), 'Approve host')!)
+    const form = approveForm(card(PENDING))
+    // MUTATION: start the field empty and re-approving silently takes the token path away.
+    expect(form.querySelector<HTMLInputElement>('input[name="idp_token_path"]')!.value).toBe(tokenPath)
+    typeInto(form, 'idp_token_path', '')
+    typeInto(form, 'confirm_host', 'blog.example.test')
+    typeInto(form, 'confirm_extra_origin', origin)
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST').length).toBe(1), WAIT)
+    // MUTATION: send `idp_token_path: ''` and the API refuses the approval.
+    expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ host: 'blog.example.test', extra_origin: origin })
+  })
+
   it.each([
     [403, 'forbidden', 'platform admin group membership is needed to approve a host'],
     [409, 'conflict', "the host named is not this QA target's host now; read it again"],
@@ -689,5 +893,165 @@ describe('QA targets: the credential link, opened in the console (VQ6-ROUTE)', (
     for (const spy of logs) expect(spy.mock.calls.filter((c) => c.some((a) => JSON.stringify(a ?? null)?.includes(token)))).toEqual([])
     // MUTATION: put the token in a read's address and this sees it.
     expect(calls.filter((c) => c.url.includes(token))).toEqual([])
+  })
+})
+
+describe('QA targets: the forms are laid out as the repository form is (QA-TARGETS-FORM; CLD, 2026-10-23)', () => {
+  const WIDE: CascadeEnv = { width: 1512 }
+  const PHONE: CascadeEnv = { width: 390 }
+  const CHOOSER = [{ text: 'Staging', css: 'button' }, { text: 'Sign in' }]
+  const login = { kind: 'own_login', login_path: '/', signed_in_selector: '#me', start_clicks: CHOOSER }
+
+  async function edit(id: string) {
+    const { RepositoriesScreen } = await import('../Repositories')
+    render(<RepositoriesScreen view="page=qa-targets" go={vi.fn()} />)
+    await waitFor(() => expect(button(card(id), 'Edit')).not.toBeNull(), WAIT)
+    fireEvent.click(button(card(id), 'Edit')!)
+    return waitFor(() => {
+      const f = document.querySelector<HTMLFormElement>('form.qa-edit')
+      if (f === null) throw new Error('no edit form')
+      return f
+    }, WAIT)
+  }
+
+  /** The `ur-fgrid` cell a control sits in, and the label cell before it. */
+  function cellOf(form: HTMLElement, name: string): { grid: Element; label: Element | null; cell: Element } {
+    const control = form.querySelector(`[name="${name}"]`)
+    if (control === null) throw new Error(`no control named ${name}`)
+    let cell: Element = control
+    while (cell.parentElement !== null && !cell.parentElement.classList.contains('ur-fgrid')) cell = cell.parentElement
+    if (cell.parentElement === null) throw new Error(`${name} is in no ur-fgrid`)
+    return { grid: cell.parentElement, label: cell.previousElementSibling, cell }
+  }
+
+  function expectLaidOut(form: HTMLElement, fields: [string, string][]) {
+    for (const [name, words] of fields) {
+      const { grid, label, cell } = cellOf(form, name)
+      // MUTATION: wrap a control in its own <label> again (no ur-fl cell before it) and the label flows inline with it: red.
+      expect(label?.classList.contains('ur-fl'), name).toBe(true)
+      expect(visible(label!).startsWith(words), name).toBe(true)
+      // MUTATION: drop htmlFor/id and the label cell names no control: red.
+      const control = form.querySelector<HTMLInputElement>(`[name="${name}"]`)!
+      expect(Array.from(control.labels ?? []), name).toContain(label)
+      expect(cell.classList.contains('ur-fl'), name).toBe(false)
+      // MUTATION: drop the 200 px label column from `.ur-fgrid` and the label sits over its box at full width: red.
+      expect(painted(grid, 'grid-template-columns', WIDE)).toBe('200px minmax(0, 1fr)')
+      // MUTATION: drop the 719 px media rule and the 200 px column squeezes the field to 150 px on a phone: red.
+      expect(painted(grid, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
+    }
+  }
+
+  it('the edit form puts each label in an ur-fl cell beside its control inside an ur-fgrid, Save and Cancel in ur-formacts', async () => {
+    live('admin', { login })
+    const form = await edit(LOGIN)
+    // MUTATION: drop `ur-form` from the form's card and it spans the page: red.
+    expect(form.closest('.ur-form')).not.toBeNull()
+    expectLaidOut(form, [
+      ['name', 'Name'],
+      ['base_url', 'Address'],
+      ['repository', 'Files findings in'],
+      ['authorized_by', 'Who said this application may be tested'],
+      ['environment', 'Environment'],
+      ['flows_browser_tool', 'Flow browser'],
+      ['kind', 'Sign-in'],
+      ['login_path', 'Login path'],
+      ['signed_in_selector', 'Signed-in selector'],
+      ['username_selector', 'Username selector'],
+      ['password_selector', 'Password selector'],
+      ['submit_selector', 'Submit selector'],
+      ['bypass_kind', 'Challenge bypass'],
+      ['screens', 'Screens'],
+      ['more', 'More settings'],
+    ])
+    for (const name of ['screens', 'more']) {
+      const box = form.querySelector<HTMLTextAreaElement>(`textarea[name="${name}"]`)!
+      // MUTATION: leave rows at 4 and the box holds four lines: red.
+      expect(box.rows, name).toBeGreaterThanOrEqual(6)
+      // MUTATION: drop `.ur-fgrid textarea` and the box is about 100 px wide: red.
+      expect(painted(box, 'width', WIDE), name).toBe('100%')
+      // MUTATION: put the help after the box again and the label cell has no <small>: red.
+      expect(cellOf(form, name).label!.querySelector('small'), name).not.toBeNull()
+      expect(box.nextSibling, name).toBeNull()
+    }
+    // MUTATION: keep Save and Cancel in a `ur-cacts` span and they sit left under the last field: red.
+    expect(button(form, 'Save changes')!.closest('.ur-formacts')).not.toBeNull()
+    expect(button(form, 'Cancel')!.closest('.ur-formacts')).not.toBeNull()
+  })
+
+  it('the approve form is laid out the same way', async () => {
+    live('admin', { login, platformAdmin: true })
+    const { RepositoriesScreen } = await import('../Repositories')
+    render(<RepositoriesScreen view="page=qa-targets" go={vi.fn()} />)
+    await waitFor(() => expect(button(card(PENDING), 'Approve host')).not.toBeNull(), WAIT)
+    fireEvent.click(button(card(PENDING), 'Approve host')!)
+    const approve = await waitFor(() => {
+      const f = document.querySelector<HTMLFormElement>('form.qa-approve')
+      if (f === null) throw new Error('no approve form')
+      return f
+    }, WAIT)
+    // MUTATION: leave the approve form's label wrapping its input and it flows inline: red.
+    expectLaidOut(approve, [['confirm_host', 'Type the host to confirm']])
+    expect(button(approve, 'Approve blog.example.test')!.closest('.ur-formacts')).not.toBeNull()
+  })
+
+  it('the credential form puts Username and Password in an ur-fgrid', async () => {
+    const token = runtimeValue()
+    window.history.replaceState(null, '', `/qa-targets/${LOGIN}/credential?t=${token}`)
+    live('admin', { login })
+    const { QaTargetsScreen } = await import('../QaTargets')
+    render(<QaTargetsScreen go={vi.fn()} />)
+    const form = await waitFor(() => {
+      const f = document.querySelector<HTMLFormElement>('form.qa-cred')
+      if (f === null) throw new Error('no credential form')
+      return f
+    }, WAIT)
+    // MUTATION: leave the credential form's labels wrapping their inputs and the two flow as one line: red.
+    expectLaidOut(form, [
+      ['username', 'Username'],
+      ['password', 'Password'],
+    ])
+    expect(form.closest('.ur-form')).not.toBeNull()
+    expect(button(form, 'Save credential')!.closest('.ur-formacts')).not.toBeNull()
+  })
+
+  it('two start clicks render as two rows, each Click N, its text, its CSS and Remove, Add start click under the last', async () => {
+    live('admin', { login })
+    const form = await edit(LOGIN)
+    const rows = Array.from(form.querySelectorAll<HTMLElement>('.qa-start-click'))
+    expect(rows).toHaveLength(2)
+    rows.forEach((row, i) => {
+      // MUTATION: drop the `.qa-start-click` rule and each row is an inline span, both on one line: red.
+      expect(painted(row, 'display', WIDE)).toBe('flex')
+      expect(visible(row).startsWith(`Click ${i + 1}`)).toBe(true)
+      // MUTATION: put a row's fields anywhere but its own row and this fails.
+      expect(row.querySelector(`[name="start_click_text_${i}"]`)).not.toBeNull()
+      expect(row.querySelector(`[name="start_click_css_${i}"]`)).not.toBeNull()
+      expect(button(row, 'Remove')).not.toBeNull()
+    })
+    const add = button(form, 'Add start click')!
+    // MUTATION: draw Add start click before the rows (or inside one) and it is not under the last: red.
+    expect(add.closest('.qa-start-click')).toBeNull()
+    expect(rows[1]!.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('a card says its start clicks in order, as stored, and says nothing of them without any', async () => {
+    live('admin', { login })
+    await mountPage()
+    // MUTATION: drop the card's start-clicks line and the list never says the gate clicks first: red.
+    expect(card(LOGIN).querySelector('[data-start-clicks]')?.textContent).toBe('Start clicks: Staging \u2192 Sign in')
+    // MUTATION: draw the line on every target and a target with no clicks says "Start clicks:": red.
+    expect(visible(card(APPROVED))).not.toContain('Start clicks')
+    expect(card(APPROVED).querySelector('[data-start-clicks]')).toBeNull()
+  })
+
+  it('saving after editing the first click\u2019s text sends both clicks in order', async () => {
+    const calls = live('admin', { login })
+    const form = await edit(LOGIN)
+    fireEvent.change(form.querySelector('[name="start_click_text_0"]')!, { target: { value: 'Production' } })
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'PATCH').length).toBe(1), WAIT)
+    const sent = calls.find((c) => c.method === 'PATCH')!.body as Json
+    // MUTATION: rename a row's input (or drop a row on re-layout) and the second click is lost or unchanged: red.
+    expect(sent).toEqual({ sign_in: { ...login, start_clicks: [{ text: 'Production', css: 'button' }, { text: 'Sign in' }] } })
   })
 })

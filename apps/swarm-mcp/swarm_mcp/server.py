@@ -993,9 +993,10 @@ TOOLS: list[dict[str, Any]] = [
             "`repository_ref`, `on_step_failure`, `priority`, `label`, "
             "`additional_repositories`), nothing "
             "else beside it but `infer` and `mcp_credentials` -- or, so no model has to retype a long "
-            "spec, as `spec_path` (a JSON spec file this bridge reads itself) or "
+            "spec, as `spec_path` (a JSON spec file this bridge reads itself), "
             "`spec_ref` (the id `swarm_workflow_spec` handed back for a file it "
-            "read). `spec_digest` checks all three. With no repository named and no `infer`, "
+            "read) or `spec_handle` (the file swarm_workflow_launch wrote the spec "
+            "it embedded to). `spec_digest` checks all four. With no repository named and no `infer`, "
             "no step clones a repository. `infer: true` clones the repository and "
             "pushed branch of the checkout this bridge runs in for EVERY step, "
             "pinned at its current commit, under the same rules as swarm_dispatch.\n"
@@ -1055,10 +1056,21 @@ TOOLS: list[dict[str, Any]] = [
                         "bridge is refused, and nothing is sent."
                     ),
                 },
+                "spec_handle": {
+                    "type": "string",
+                    "description": (
+                        "In place of `spec`: the path of the spec handle "
+                        "swarm_workflow_launch wrote beside its titled copy "
+                        "(`spec-<digest>-<hex>.json` in a sc-swarmcloud-runs folder; any "
+                        "other path is refused). The bridge reads the bytes the launch "
+                        "embedded and checks them against `spec_digest`, which this "
+                        "takes as required, so /sc:swarmcloud's submit never retypes a spec."
+                    ),
+                },
                 "spec_digest": {
                     "type": "string",
                     "description": (
-                        "With `spec`, `spec_path` or `spec_ref`: the digest the caller computed of the spec "
+                        "With `spec`, `spec_path`, `spec_ref` or `spec_handle`: the digest the caller computed of the spec "
                         "it meant to send (`fnv1a32:` and eight hex digits, over the "
                         "spec as sorted-key compact JSON). When it differs from the "
                         "digest of the spec received, NOTHING is submitted: the spec "
@@ -1331,8 +1343,11 @@ TOOLS: list[dict[str, Any]] = [
             "API serves none (`Workspace: not reported` included), so clipping the "
             "description never drops the workspace; the reply's `details` is that line. "
             "Each step or task row shows its own details line when expanded: an attach's "
-            "`args` carry them, and a spec's reply carries `row_details` to pass as "
-            "`args.details`. Nothing credential-shaped is ever shown. A workflow "
+            "`args` carry them, and a spec's reply carries its whole `args`: the spec, "
+            "its `spec_handle` -- the file this writes the spec to beside the copy, "
+            "`{path, digest}`, which the run submits from so no agent retypes the "
+            "spec (SC-LAUNCH-SPEC) --, `details` and `rows`; launch with those `args` "
+            "as given. Nothing credential-shaped is ever shown. A workflow "
             "script's name is fixed when it is launched, so "
             "this writes a copy of the plugin's run.js with that name and returns "
             "its `script_path`: launch it with the Workflow tool, "
@@ -1835,9 +1850,9 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_schedule_create",
         "description": (
             "Create a recurring schedule on your tenant's repositories. `type` is "
-            "one of the catalogue's sixteen: `issue-sweep`, `issue-plan-only`, "
+            "one of the catalogue's seventeen: `issue-sweep`, `issue-plan-only`, "
             "`repo-index-refresh`, `observer`, `epic-triage`, `pr-shepherd`, "
-            "`ci-flake-hunter`, `dependency-cve-refresh`, `release-health`, "
+            "`ci-flake-hunter`, `dependency-cve-refresh`, `image-tool-rescan`, `release-health`, "
             "`docs-drift`, `cost-report`, `custom-prompt`, `visual-qa` (a workspace "
             "admin's, scope `all`, naming one of the workspace's QA targets), and the admin-only "
             "platform types `model-prices-refresh` and `model-prices-check`, and the owner-only "
@@ -2253,12 +2268,14 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_qa_targets",
         "description": (
             "The QA targets your selected workspace registered: the web apps its "
-            "visual-QA runs test, each with its base URL, the repository its findings "
-            "are filed in, its host's approval (`pending` until a platform admin "
-            "approves it), whether it signs in with its own login and whether that "
-            "test credential is set (status only: never a username or password), and "
-            "`can_run` with `cannot_run_because`. Optional `repository` (owner/repo or "
-            "a repo_ id) narrows it to one. Read-only; `text` is what to show."
+            "visual-QA runs test, each with the repository its findings are filed in "
+            "and its `environments` (one app's legs, e.g. staging and production), each "
+            "entry with its name, its mark (`production` or `non_production`), its base "
+            "URL, its host's approval (`pending` until a platform admin approves it), "
+            "whether it signs in with its own login, `credential_set` (yes or no: never "
+            "a username, a password or a bypass value), and `can_run` with "
+            "`cannot_run_because`. Optional `repository` (owner/repo or a repo_ id) "
+            "narrows it to one. Read-only; `text` is what to show."
         ),
         "inputSchema": {
             "type": "object",
@@ -2275,8 +2292,15 @@ TOOLS: list[dict[str, Any]] = [
             "platform renders the workflow from the registration: you choose only "
             "`file` (`issues`, the default, files findings in the target's "
             "repository; `none` reports only) and optionally a subset of its "
-            "`screens` ids. A pending host is refused (`qa_target_host_pending`). "
-            "Answers the `workflow_id`; follow it with swarm_workflow_status."
+            "`screens` ids, and optionally `browser_tool` (`playwright` or `jev`), "
+            "the browser tool this one run's flows use. Left out, the target's own "
+            "`flows_browser_tool` decides, and that defaults to `playwright`. "
+            "`environments` names the legs to run, by the entry names swarm_qa_targets "
+            "lists (default: every entry); never a URL, a sign-in or a credential. Each "
+            "leg is its own workflow; if any named leg cannot run (a pending host is "
+            "`qa_target_host_pending`) nothing starts. Answers the run's `group_id` and "
+            "`legs`, each with its `environment` and `workflow_id`; follow each with "
+            "swarm_workflow_status."
         ),
         "inputSchema": {
             "type": "object",
@@ -2286,6 +2310,11 @@ TOOLS: list[dict[str, Any]] = [
                 "file": {"type": "string", "enum": list(qatargets.FILES), "default": "issues"},
                 "screens": {"type": "array", "maxItems": qatargets.MAX_SCREENS,
                             "items": {"type": "string", "maxLength": 100}},
+                "browser_tool": {"type": "string", "enum": list(qatargets.BROWSER_TOOLS)},
+                "environments": {"type": "array", "minItems": 1,
+                                 "maxItems": qatargets.MAX_ENVIRONMENTS, "uniqueItems": True,
+                                 "items": {"type": "string",
+                                           "pattern": qatargets.ENVIRONMENT_NAME.pattern}},
             },
             "required": ["target"],
         },
@@ -2298,12 +2327,17 @@ TOOLS: list[dict[str, Any]] = [
             "`expires_at` (fifteen minutes, one use, bound to the admin's own "
             "console session and this target). There is deliberately no argument for "
             "the credential: never ask for it, never accept it in chat. Give the "
-            "person the url and tell them to open it."
+            "person the url and tell them to open it. Each environment has its own "
+            "test account, so `environment` names the entry the link is for (required "
+            "when the target has several)."
         ),
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
-            "properties": {"target": {"type": "string", "maxLength": 100}},
+            "properties": {
+                "target": {"type": "string", "maxLength": 100},
+                "environment": {"type": "string", "pattern": qatargets.ENVIRONMENT_NAME.pattern},
+            },
             "required": ["target"],
         },
     },
@@ -4818,7 +4852,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
     if name == "swarm_qa_run":
         return json.dumps(
             qatargets.qa_run(client, args.get("target"), screens=args.get("screens"),
-                             file=args.get("file", "issues")),
+                             file=args.get("file", "issues"),
+                             browser_tool=args.get("browser_tool"),
+                             environments=args.get("environments")),
             indent=2,
         )
 
@@ -4826,7 +4862,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # The url and its expiry, nothing else: `qatargets.credential_link`
         # copies those two fields, so not even the API's `path` (which holds
         # the link's token) reaches a transcript.
-        return json.dumps(qatargets.credential_link(client, args.get("target")), indent=2)
+        return json.dumps(qatargets.credential_link(client, args.get("target"),
+                                                    args.get("environment")), indent=2)
 
     if name == "swarm_roles":
         # One GET. A refusal (a deployment predating roles, a 403 for a tenant
@@ -4933,7 +4970,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # `model_class` key, and the titled copy needs none.
         catalogue.check_spec_model_classes(document)
         return json.dumps({
-            **launch.for_spec(catalogue.spec_without_model_classes(document), client),
+            **launch.for_spec(catalogue.spec_without_model_classes(document), client, embedded=document),
             **watch.arm_fields(True),
         }, indent=2)
 
@@ -4977,14 +5014,27 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # altered three times in one evening. `spec_path` and `spec_ref` put
         # the bytes the bridge read in `spec`'s place, so from here on there is
         # one spec and no model ever carried it; `spec_digest` still checks it.
-        sources = sorted(k for k in ("spec", "spec_path", "spec_ref", "steps") if args.get(k) is not None)
+        # `spec_handle` (SC-LAUNCH-SPEC, #2034) is the file swarm_workflow_launch
+        # wrote the embedded spec to: read back from the run folder only, and
+        # never without the digest it was written with.
+        sources = sorted(k for k in ("spec", "spec_path", "spec_ref", "spec_handle", "steps") if args.get(k) is not None)
         if len(sources) > 1:
             raise SwarmError(
                 f"swarm_workflow was given {sources}; pass exactly one of `spec`, "
-                "`spec_path`, `spec_ref` or `steps`. Nothing was sent"
+                "`spec_path`, `spec_ref`, `spec_handle` or `steps`. Nothing was sent"
             )
         if args.get("spec_path") is not None:
             args = {**args, "spec": _read_spec_file(str(args["spec_path"]), base=checkout.directory())["spec"]}
+        elif args.get("spec_handle") is not None:
+            if args.get("spec_digest") in (None, ""):
+                raise SwarmError(
+                    "`spec_handle` is submitted only with the `spec_digest` the launch wrote beside "
+                    "it: pass both, exactly as the prompt gives them. Nothing was sent"
+                )
+            from . import launch
+
+            target = launch.handle_target(str(args["spec_handle"]))
+            args = {**args, "spec": _read_spec_file(str(target), base=target.parent)["spec"]}
         elif args.get("spec_ref") is not None:
             args = {**args, "spec": _held_spec(str(args["spec_ref"]))}
         # WHERE IT GOES first (S8): a workflow under `local`, or under `hybrid`
@@ -5030,7 +5080,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                     "pass the spec it was computed over, or no `spec_digest`"
                 )
             if args.get("steps") is None:
-                raise SwarmError("swarm_workflow needs `steps`, or a whole `spec` (inline, `spec_path` or `spec_ref`)")
+                raise SwarmError("swarm_workflow needs `steps`, or a whole `spec` (inline, `spec_path`, `spec_ref` or `spec_handle`)")
             fields = {
                 "steps": catalogue.with_model_classes(
                     workflows.build_steps(_without_files(args.get("steps"))), args.get("steps")),

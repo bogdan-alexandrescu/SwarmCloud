@@ -14,9 +14,16 @@ WHAT EACH CASE HOLDS:
   * no tool returns one: every answer is copied field by field, so a value the
     API (wrongly) sent back is not forwarded;
   * `swarm_qa_target_credential_link` answers ONLY `url` and `expires_at`;
-  * `swarm_qa_run` sends only `file` and the screens subset, to the target's
-    own `:run`, and a name is resolved to its id first;
-  * a pending host is said as the reason a target cannot run.
+  * `swarm_qa_run` sends only `file`, the screens subset and an optional
+    `browser_tool` (`playwright` or `jev`, anything else refused unsent), to
+    the target's own `:run`, and a name is resolved to its id first;
+  * a pending host is said as the reason a target cannot run;
+  * (QAENV-SC, docs/design/qa-environments.md §7, §8, part of #2136) the list
+    names each target's entries -- name, mark, host state, credential set yes
+    or no, whether it can run -- with no credential field and no bypass value
+    anywhere in it, and `swarm_qa_run` sends `environments` as entry names
+    only, refusing anything else (a URL among it) before a request, and
+    answers the run group's id and each leg's workflow.
 
 Every fake credential is built at runtime (CLAUDE.md). Offline: no
 credentials, no emulator.
@@ -40,6 +47,7 @@ QA_TOOLS = ("swarm_qa_targets", "swarm_qa_run", "swarm_qa_target_credential_link
 CONSOLE = "https://console.example.test"
 APPROVED_ID = "qat_" + "a1" * 8
 PENDING_ID = "qat_" + "b2" * 8
+STUDIO_ID = "qat_" + "d4" * 8
 
 
 def _target(target_id: str, name: str, *, host_state: str, **over) -> dict:
@@ -59,6 +67,40 @@ def _target(target_id: str, name: str, *, host_state: str, **over) -> dict:
         "created_by": "vera@example.test", "updated_by": "vera@example.test",
         "screens": [{"id": "home", "path": "/"}],
         **over,
+    }
+
+
+def _studio(planted: str | None) -> dict:
+    """A target of two environments as QAENV-MODEL's `to_api` serves it: the
+    per-leg fields only inside `environments`, each with its own credential
+    and bypass status. `planted` (wrongly) rides in every status and spec."""
+    extra = {"value": planted, "password": planted} if planted else {}
+
+    def entry(name: str, mark: str, *, host_state: str, credential_set: bool) -> dict:
+        return {
+            "name": name, "base_url": "https://studio.example.test/", "host": "studio.example.test",
+            "environment": mark, "sign_in": {"kind": "own_login", **extra},
+            "host_state": host_state, "approved_by": "ops@example.test",
+            "approved_at": "2026-10-23T09:00:00+00:00",
+            "approved_origins": ["https://studio.example.test"], "idp_token_path": None,
+            "credential": {"set": credential_set, "set_at": None, "set_by": None,
+                           "version": "3" if credential_set else None, **extra},
+            "challenge_bypass_value": {"set": True, "set_at": None, "set_by": None,
+                                       "version": "1", **extra},
+            "challenge_bypass": {"kind": "header", "name": "x-qa-pass", **extra},
+            "discovered": None, **extra,
+        }
+
+    return {
+        "id": STUDIO_ID, "tenant_id": "eng", "revision": 4, "name": "studio",
+        "repo_id": "repo_" + "0" * 16,
+        "repository": "https://github.com/example-org/example-app",
+        "created_by": "vera@example.test", "updated_at": "2026-10-23T09:00:00+00:00",
+        "screens": [{"id": "home", "path": "/"}],
+        "environments": [
+            entry("staging", "non_production", host_state="approved", credential_set=True),
+            entry("production", "production", host_state="pending", credential_set=False),
+        ],
     }
 
 
@@ -84,12 +126,24 @@ class FakeApi:
             if self.planted:
                 approved["credential"] = {**approved["credential"], "value": self.planted}
                 approved["sign_in"] = {**approved["sign_in"], **extra}
-            return {"qa_targets": [{**approved, **extra}, pending], **extra}
+            studio = _studio(self.planted)
+            return {"qa_targets": [{**approved, **extra}, pending, studio], **extra}
         if self.error is not None:
             raise self.error
         if method == "POST" and path.endswith(":run"):
             target_id = path[len(LIST_PATH) + 1:-len(":run")]
-            return {"workflow_id": "wf_" + "c3" * 8,
+            names = (payload or {}).get("environments")
+            if names is not None and len(names) != 1:
+                legs = [{"environment": n, "state": "submitted", "workflow_id": f"wf_{n}",
+                         "qa_target": {"id": target_id, "revision": 4, "environment": n},
+                         "browser_steps": ["capture-1"], "reason": None, **extra}
+                        for n in names]
+                return {"group_id": "qag_" + "e5" * 8, "file": (payload or {}).get("file"),
+                        "legs": legs, **extra}
+            one = {"environment": (names or ["production"])[0], "state": "submitted",
+                   "workflow_id": "wf_" + "c3" * 8, "qa_target": {"id": target_id, "revision": 2},
+                   "browser_steps": ["capture-1"], "reason": None, **extra}
+            return {"group_id": "qag_" + "f6" * 8, "legs": [one], "workflow_id": "wf_" + "c3" * 8,
                     "qa_target": {"id": target_id, "revision": 2},
                     "file": (payload or {}).get("file"),
                     "browser_steps": ["capture-1"], **extra}
@@ -128,7 +182,10 @@ def test_each_qa_tool_is_advertised_with_no_field_a_credential_fits_in(name):
     properties = schema.get("properties") or {}
     # MUTATION: add a `password` (or `username`) property to any of the three schemas.
     assert [p for p in properties if _CREDENTIALISH.search(p)] == []
-    assert set(properties) <= {"target", "repository", "screens", "file"}, sorted(properties)
+    # `browser_tool` is an enum of two tool names (lane QA-RUN-TOOL), and
+    # `environments`/`environment` are entry names (QAENV-SC): no credential fits.
+    assert set(properties) <= {"target", "repository", "screens", "file", "browser_tool",
+                               "environments", "environment"}, sorted(properties)
 
 
 def test_an_undeclared_credential_argument_is_refused_with_nothing_sent():
@@ -163,9 +220,12 @@ def test_the_list_copies_status_fields_only_and_forwards_no_credential():
     body = json.loads(raw)
     shop = next(t for t in body["qa_targets"] if t["id"] == APPROVED_ID)
     # MUTATION: copy `credential` whole and `value` rides along.
-    assert set(shop["credential"]) == {"set", "set_at", "set_by", "version"}
+    assert "credential" not in shop
     assert "password" not in shop and "username" not in shop
-    assert shop["can_run"] is True and shop["host_state"] == "approved"
+    # MUTATION: list a target stored with one origin as no entries at all.
+    (entry,) = shop["environments"]
+    assert entry["credential_set"] is False and entry["host_state"] == "approved"
+    assert shop["can_run"] is True
 
 
 def test_a_pending_host_is_said_as_the_reason_the_target_cannot_run():
@@ -173,6 +233,7 @@ def test_a_pending_host_is_said_as_the_reason_the_target_cannot_run():
     blog = next(t for t in body["qa_targets"] if t["id"] == PENDING_ID)
     # MUTATION: treat any host_state as runnable and this is True.
     assert blog["can_run"] is False
+    assert blog["environments"][0]["can_run"] is False
     # MUTATION: drop the pending reason and the person is not told why.
     assert "platform admin" in blog["cannot_run_because"]
     assert "blog.example.test" in blog["cannot_run_because"]
@@ -185,7 +246,7 @@ def test_the_list_narrows_to_one_repository():
     # MUTATION: ignore `repository` and both targets are listed.
     assert body["qa_targets"] == []
     body = _call(api, "swarm_qa_targets", {"repository": "example-org/example-app"})
-    assert {t["id"] for t in body["qa_targets"]} == {APPROVED_ID, PENDING_ID}
+    assert {t["id"] for t in body["qa_targets"]} == {APPROVED_ID, PENDING_ID, STUDIO_ID}
 
 
 # -- swarm_qa_run -------------------------------------------------------------------
@@ -234,6 +295,160 @@ def test_the_apis_pending_host_refusal_reaches_the_caller_as_its_own_words():
         server._call(api, "swarm_qa_run", {"target": PENDING_ID})
     # MUTATION: swallow the API's refusal and answer a workflow id of None.
     assert "qa_target_host_pending" in str(caught.value)
+
+
+# -- swarm_qa_run's browser_tool (lane QA-RUN-TOOL, part of #1649) ------------------
+
+
+def test_a_run_that_names_jev_sends_it_in_the_run_body():
+    api = FakeApi()
+    _call(api, "swarm_qa_run", {"target": APPROVED_ID, "browser_tool": "jev"})
+    # MUTATION: drop `browser_tool` from the payload, or send it under another key.
+    assert api.sent == [("POST", f"{LIST_PATH}/{APPROVED_ID}:run",
+                         {"file": "issues", "browser_tool": "jev"})]
+
+
+def test_a_run_that_names_no_browser_tool_sends_no_such_key():
+    api = FakeApi()
+    _call(api, "swarm_qa_run", {"target": APPROVED_ID})
+    # MUTATION: default `browser_tool` to "playwright" (or send null) and the
+    # target's own `flows_browser_tool` no longer decides.
+    assert "browser_tool" not in api.sent[-1][2]
+
+
+def test_an_unknown_browser_tool_is_refused_before_any_request():
+    api = FakeApi()
+    with pytest.raises(SwarmError) as caught:
+        server._call(api, "swarm_qa_run", {"target": APPROVED_ID, "browser_tool": "chrome"})
+    # MUTATION: check the value after resolving the target (a GET is sent), or not at all.
+    assert api.sent == []
+    # MUTATION: a refusal that does not name the field and both values.
+    assert "browser_tool" in str(caught.value)
+    assert "playwright" in str(caught.value) and "jev" in str(caught.value)
+
+
+def test_the_run_schema_lists_exactly_playwright_and_jev():
+    tool = _tool("swarm_qa_run")
+    field = tool["inputSchema"]["properties"]["browser_tool"]
+    # MUTATION: add a third value, drop one, or leave the field without an enum.
+    assert field["type"] == "string"
+    assert sorted(field["enum"]) == ["jev", "playwright"]
+    # MUTATION: give the field a default, which the platform would read as a choice.
+    assert "default" not in field
+    assert "browser_tool" not in tool["inputSchema"].get("required", [])
+    # MUTATION: a description that does not say what the field does or its default.
+    assert "browser_tool" in tool["description"]
+    assert "flows_browser_tool" in tool["description"]
+
+
+# -- environments (QAENV-SC, docs/design/qa-environments.md §7, §8; part of #2136) --
+
+
+#: What a listed entry carries (§7's checkbox: its host state, its credential
+#: state, why it cannot run) and nothing else.
+ENTRY_FIELDS = {"name", "environment", "base_url", "host", "host_state", "sign_in",
+                "credential_set", "can_run", "cannot_run_because"}
+
+
+def _keys(value) -> set[str]:
+    if isinstance(value, dict):
+        return set(value) | {k for v in value.values() for k in _keys(v)}
+    if isinstance(value, list):
+        return {k for v in value for k in _keys(v)}
+    return set()
+
+
+def test_the_list_names_each_entry_with_its_host_and_credential_state_and_mark():
+    body = _call(FakeApi(), "swarm_qa_targets", {})
+    studio = next(t for t in body["qa_targets"] if t["id"] == STUDIO_ID)
+    # MUTATION: list the target's top-level fields only and its entries are lost.
+    staging, production = studio["environments"]
+    # MUTATION: copy an entry whole, or drop one of its status fields.
+    assert set(staging) == ENTRY_FIELDS and set(production) == ENTRY_FIELDS
+    assert (staging["name"], staging["environment"]) == ("staging", "non_production")
+    assert (production["name"], production["environment"]) == ("production", "production")
+    # MUTATION: read `credential.set` from the target, not the entry, and both are False.
+    assert staging["credential_set"] is True and production["credential_set"] is False
+    assert staging["host_state"] == "approved" and production["host_state"] == "pending"
+    # MUTATION: judge the target, not each leg, and a pending production stops staging.
+    assert staging["can_run"] is True and staging["cannot_run_because"] is None
+    assert production["can_run"] is False and "pending" in production["cannot_run_because"]
+    assert studio["can_run"] is True
+    # MUTATION: a text line per target only, and the person cannot see which leg is pending.
+    assert "staging" in body["text"] and "production" in body["text"]
+
+
+def test_the_list_carries_no_credential_field_and_no_bypass_value():
+    planted = secrets.token_hex(16)
+    raw = server._call(FakeApi(planted=planted), "swarm_qa_targets", {})
+    # MUTATION: forward an entry (or its credential, sign_in or bypass) whole and the
+    # runtime-built fake value reaches the reply.
+    assert planted not in raw
+    keys = _keys(json.loads(raw))
+    # MUTATION: keep the credential's status object, or the bypass's spec or status.
+    assert not keys & {"credential", "challenge_bypass", "challenge_bypass_value",
+                       "password", "username", "value"}, sorted(keys)
+
+
+def test_a_run_sends_the_named_environments_and_nothing_else():
+    api = FakeApi()
+    body = _call(api, "swarm_qa_run", {"target": "studio",
+                                       "environments": ["staging", "production"]})
+    # MUTATION: drop `environments` from the payload, rename it, or add any other key.
+    assert api.sent[-1] == ("POST", f"{LIST_PATH}/{STUDIO_ID}:run",
+                            {"file": "issues", "environments": ["staging", "production"]})
+    # MUTATION: answer the one-leg fields only and the group and its legs are lost.
+    assert body["group_id"] == "qag_" + "e5" * 8
+    assert [(leg["environment"], leg["workflow_id"]) for leg in body["legs"]] == [
+        ("staging", "wf_staging"), ("production", "wf_production")]
+
+
+def test_a_run_naming_no_environment_sends_no_such_key_so_every_entry_runs():
+    api = FakeApi()
+    _call(api, "swarm_qa_run", {"target": STUDIO_ID})
+    # MUTATION: default `environments` to [] or to a fixed name and the API's
+    # "every entry" default no longer decides.
+    assert "environments" not in api.sent[-1][2]
+
+
+@pytest.mark.parametrize("environments", [
+    ["https://studio.example.test/"],
+    ["Staging"],
+    [],
+    ["staging", "staging"],
+    "staging",
+    ["a" * 21],
+])
+def test_a_run_refuses_anything_but_entry_names_before_any_request(environments):
+    api = FakeApi()
+    with pytest.raises(SwarmError) as caught:
+        server._call(api, "swarm_qa_run", {"target": STUDIO_ID, "environments": environments})
+    # MUTATION: send whatever was given (a URL among it) and let the API sort it out.
+    assert api.sent == []
+    assert "environments" in str(caught.value)
+    # MUTATION: echo the argument in the refusal.
+    assert "studio.example.test" not in str(caught.value)
+
+
+def test_the_run_schema_takes_environment_names_and_no_url():
+    tool = _tool("swarm_qa_run")
+    properties = tool["inputSchema"]["properties"]
+    field = properties["environments"]
+    # MUTATION: let `environments` hold objects (a URL, a sign-in) instead of names.
+    assert field["type"] == "array" and field["items"]["type"] == "string"
+    assert field["items"]["pattern"] == "^[a-z0-9-]{1,20}$"
+    assert "default" not in field
+    # MUTATION: add a `base_url`, `url` or `origin` argument.
+    assert not [p for p in properties if re.search(r"url|origin|host|sign_in", p, re.I)]
+    assert "environments" in tool["description"] and "group_id" in tool["description"]
+
+
+def test_a_credential_link_names_its_entry():
+    api = FakeApi()
+    _call(api, "swarm_qa_target_credential_link", {"target": STUDIO_ID, "environment": "staging"})
+    # MUTATION: drop the entry's name and a target of several entries is refused by the API.
+    assert api.sent[-1] == ("POST", f"{LIST_PATH}/{STUDIO_ID}/credential-links",
+                            {"environment": "staging"})
 
 
 # -- swarm_qa_target_credential_link ------------------------------------------------

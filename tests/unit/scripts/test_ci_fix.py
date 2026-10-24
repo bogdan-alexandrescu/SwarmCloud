@@ -155,6 +155,13 @@ case "$1 $2" in
       */actions/runs/*/jobs*) cat "${FAKE_DIR}/jobs.json" ;;
       */actions/jobs/*/logs)
         id="${path%/logs}"; id="${id##*/}"
+        # gh 2.102 refuses a response holding a terminal escape unless it
+        # is told to allow them; ci-fix run 39970278298 (CIFIX-ANSI, #2109).
+        if grep -q "$(printf '\033')" "${FAKE_DIR}/job-${id}.log" \
+          && ! printf '%s\n' "$@" | grep -qx -- '--allow-escape-sequences'; then
+          echo "the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway" >&2
+          exit 1
+        fi
         cat "${FAKE_DIR}/job-${id}.log" ;;
       *) cat "${FAKE_DIR}/comments.json" ;;
     esac
@@ -434,6 +441,100 @@ def test_the_excerpt_from_the_api_is_redacted_and_capped(fake):
     # MUTATION: drop the byte cap in `excerpt` -> red.
     assert len(excerpt.encode()) <= _constant("LOG_EXCERPT_MAX_BYTES")
     assert "assert 1 == 2" in excerpt and "SC2086" in excerpt
+
+
+# --------------------------------------------------------------------------
+# A coloured vitest log reaches the fixer (CIFIX-ANSI, part of #2109)
+# --------------------------------------------------------------------------
+#
+# Measured 2026-10-23 on ci-fix run 39970278298 (PR 2098): `gh api` 2.102
+# refused every vitest job's log with "the response contains terminal escape
+# sequences; pass --allow-escape-sequences to output it anyway", so 0 logs
+# were read and the PR was told the run "returned no log". The fake `gh`
+# above refuses the same way. The escape bytes are built here, never written
+# into this file.
+
+ESC = chr(0x1B)
+
+
+def _sgr(*codes: int) -> str:
+    return "".join(f"{ESC}[{code}m" for code in codes)
+
+
+def _coloured_vitest_lines(colour: bool) -> list[str]:
+    """vitest's coloured summary as CI prints it, or the same text without colour."""
+    c = _sgr if colour else (lambda *codes: "")
+    return [
+        f"{c(41, 1)} FAIL {c(22, 49)} src/__tests__/x.test.tsx > a > b",
+        "AssertionError: expected 'on' to be 'off'",
+        f"{c(2)}      Tests {c(22)} {c(1, 31)}1 failed{c(39, 22)}",
+        "##[error]Process completed with exit code 1.",
+    ]
+
+
+def _as_run_view(job: str, lines: list[str]) -> str:
+    return "".join(f"{job}\tlog\t{line}" for line in _stamped(lines).splitlines(keepends=True))
+
+
+def test_a_coloured_vitest_job_log_is_read_and_reaches_the_fixer(fake):
+    _, state = fake
+    jobs = [{"id": 7, "name": "swarm-ui component tests (3/4)", "conclusion": "failure"}]
+    _serve_jobs(state, jobs, {7: _stamped(_coloured_vitest_lines(colour=True))})
+    out = _run(fake, "run")
+
+    # MUTATION: drop `--allow-escape-sequences` from the job-log read in `failed_jobs` -> red.
+    assert out.returncode == 0, out.stderr
+    assert any(
+        "--allow-escape-sequences" in call and call.endswith("/actions/jobs/7/logs")
+        for call in _calls(state, "gh")
+    )
+    excerpt = _prompt(state).split("----- failed jobs, log excerpt -----\n", 1)[1].split(
+        "----- end of excerpt -----", 1)[0]
+    # MUTATION: drop the ANSI strip (the `sed` before `redact`) in `excerpt` -> red.
+    assert "FAIL  src/__tests__/x.test.tsx > a > b" in excerpt
+    assert "AssertionError: expected 'on' to be 'off'" in excerpt
+    assert "1 failed" in excerpt
+    assert ESC not in excerpt
+
+
+def test_a_coloured_vitest_log_gives_a_plain_non_empty_excerpt(fake):
+    out = _run(fake, "excerpt", stdin=_as_run_view("vitest", _coloured_vitest_lines(colour=True)))
+    assert out.returncode == 0, out.stderr
+
+    # MUTATION: drop the ANSI strip (the `sed` before `redact`) in `excerpt` -> red.
+    assert "FAIL  src/__tests__/x.test.tsx > a > b" in out.stdout
+    assert "AssertionError: expected 'on' to be 'off'" in out.stdout
+    assert "1 failed" in out.stdout
+    # MUTATION: strip colour only for matching and keep the line as read in `excerpt` -> red.
+    assert ESC not in out.stdout
+
+
+def test_a_coloured_vitest_log_gives_the_same_excerpt_as_the_plain_one(fake):
+    coloured = _run(fake, "excerpt", stdin=_as_run_view("vitest", _coloured_vitest_lines(colour=True)))
+    plain = _run(fake, "excerpt", stdin=_as_run_view("vitest", _coloured_vitest_lines(colour=False)))
+    assert coloured.returncode == 0 and plain.returncode == 0, coloured.stderr + plain.stderr
+
+    # MUTATION: strip colour after the awk rules run instead of before them in `excerpt` -> red.
+    assert coloured.stdout == plain.stdout
+    assert "FAIL  src/__tests__/x.test.tsx > a > b" in plain.stdout
+
+
+def test_a_pytest_log_excerpt_is_unchanged(fake):
+    lines = [
+        "tests/unit/x/test_y.py F.  [100%]",
+        "E       assert 1 == 2",
+        "tests/unit/x/test_y.py:9: AssertionError",
+        "=" * 27 + " short test summary info " + "=" * 28,
+        "FAILED tests/unit/x/test_y.py::test_z - assert 1 == 2",
+        "=" * 25 + " 1 failed, 3 passed in 0.12s " + "=" * 26,
+        "##[error]Process completed with exit code 1.",
+    ]
+    out = _run(fake, "excerpt", stdin=_as_run_view("python", lines))
+    assert out.returncode == 0, out.stderr
+
+    # The excerpt `excerpt` printed for this log on main at a7ea44b.
+    # MUTATION: widen `names_failure` to keep pytest's progress line in `excerpt` -> red.
+    assert out.stdout == "\n".join(["=== failed job: python ==="] + lines[1:]) + "\n"
 
 
 # --------------------------------------------------------------------------
