@@ -578,6 +578,16 @@ CONFLICT_ROUND_FIELD = "conflict_round"
 #: kept as `result_summary.no_change_reason`.
 VERIFICATION_FILE = "verification.md"
 NO_CHANGE_REASON_SUMMARY_KEY = "no_change_reason"
+#: A check-only `publish_to_pr` step's other evidence (CHECKONLY-VERDICT, part
+#: of #2241): a review's `verdict.json` beside a diff that is empty is the
+#: `no_change` result too, so a rendered review that found nothing to fix
+#: becomes a verdict instead of failing `empty_diff`. Only for a step that
+#: publishes onto an existing pull request: there the verdict has a pull
+#: request to land on (`_post_no_change_evidence`).
+CHECK_VERDICT_FILE = "verdict.json"
+#: Where the comment that carries a `publish_to_pr` step's no-change evidence
+#: is recorded, in `result_summary` (`_post_no_change_evidence`).
+NO_CHANGE_COMMENT_SUMMARY_KEY = "no_change_comment"
 #: At most this many bytes of `verification.md` are kept in the summary; the
 #: file itself is uploaded whole with the other artifacts.
 NO_CHANGE_REASON_MAX_BYTES = 4000
@@ -4244,7 +4254,8 @@ class Worker:
             summary[expected_mod.NO_CHANGE_SUMMARY_KEY] = True
             summary[NO_CHANGE_REASON_SUMMARY_KEY] = verified
             self.log.info(
-                f"nothing to change: the diff is empty and the agent wrote {VERIFICATION_FILE}",
+                "nothing to change: the diff is empty and the agent wrote "
+                f"{VERIFICATION_FILE} (or, publishing onto a pull request, {CHECK_VERDICT_FILE})",
                 allow_empty_diff=self._allows_empty_diff(),
             )
         # Before the check, which counts what is carried as present (#166).
@@ -4253,10 +4264,16 @@ class Worker:
         # and crash paths: a parked attempt resumes later and may still write
         # the file.
         missing = self._report_missing_outputs(summary, fails_the_attempt=ran_clean)
-        self._publish_checked(
-            summary,
-            self._publish_withheld(ran_clean, missing=missing, title_refused=title_refused),
-        )
+        withheld = self._publish_withheld(ran_clean, missing=missing, title_refused=title_refused)
+        self._publish_checked(summary, withheld)
+        if (
+            ran_clean
+            and withheld is None
+            and summary.get(expected_mod.NO_CHANGE_SUMMARY_KEY) is True
+        ):
+            # A `publish_to_pr` step that checked and changed nothing (#2241):
+            # its evidence goes onto the pull request as a comment, not a commit.
+            self._post_no_change_evidence(summary)
         if self._pushed_branch is not None:
             # The branch this attempt actually pushed, read from git after the
             # push (#667, observer P11): a step summary can be checked against
@@ -6459,12 +6476,162 @@ class Worker:
             return None
         text = self._read_agent_text(VERIFICATION_FILE, [])
         if text is None or not text.strip():
+            text = self._check_verdict_text()
+        if text is None or not text.strip():
             return None
         reason = str(self._scrub(text.strip()))
         encoded = reason.encode("utf-8")
         if len(encoded) > NO_CHANGE_REASON_MAX_BYTES:
             reason = encoded[:NO_CHANGE_REASON_MAX_BYTES].decode("utf-8", "ignore").rstrip() + "..."
         return reason
+
+    def _onto_pr_target(self) -> "publishpr_mod.Target | None":
+        """The pull request this step's no-change evidence lands on, or None.
+
+        Only the step that would publish onto it -- the one that opens a pull
+        request, with no `single-pr` role -- as in `_publish_git`. A value
+        swarm-api could not have signed is None here: the start already
+        refused it, so this attempt never reached its finish with one.
+        """
+        if self._pr_role() or not self._opens_pull_request():
+            return None
+        try:
+            return self._publish_to_pr()
+        except WorkerError:
+            return None
+
+    def _check_verdict_text(self) -> str | None:
+        """A `publish_to_pr` step's `verdict.json`, as the reason its empty
+        diff is a result (CHECKONLY-VERDICT, part of #2241); else None.
+
+        On 2026-10-24 PR 2235's render lane rendered every frame, found no
+        defect, changed nothing, and failed `empty_diff`, so its review never
+        became a verdict. A verdict the reader cannot read -- not JSON, no
+        MERGE or NOT_YET -- is no evidence, and the step fails as before.
+        """
+        if self._onto_pr_target() is None:
+            return None
+        raw = self._read_agent_text(CHECK_VERDICT_FILE, [])
+        if raw is None:
+            return None
+        try:
+            document = json.loads(raw)
+        except ValueError:
+            return None
+        if not isinstance(document, dict):
+            return None
+        read = verdict_mod.verdict_of_document(document)
+        if read is None:
+            return None
+        lines = [f"Review verdict ({CHECK_VERDICT_FILE}): {read.verdict}"]
+        if read.findings:
+            lines.append("")
+            lines += [f"- {finding}" for finding in read.findings]
+        if read.findings_dropped:
+            lines.append(f"- ... and {read.findings_dropped} more")
+        return "\n".join(lines)
+
+    def _post_no_change_evidence(self, summary: dict[str, Any]) -> None:
+        """Post a `publish_to_pr` step's no-change evidence as ONE comment on
+        its pull request (CHECKONLY-VERDICT, part of #2241).
+
+        A step that checked and changed nothing has no commit to push onto
+        the pull request, so its evidence -- `no_change_reason`, from
+        `verification.md` or its `verdict.json` -- goes there as a comment
+        instead, where the pull request's reader and its merge step see it.
+        The comment ends with a hidden marker naming this task and attempt,
+        so a finish of the same attempt again finds it and posts nothing.
+
+        The same gates as a push: publishing enabled, the forge grant, the
+        git token, a token that can push, and the pull request read again and
+        held to `publishpr.refusal` (open, ours, not a fork). Never a refusal
+        of the step: the evidence is the step's result either way, so a
+        comment not posted is recorded in `result_summary` and logged, as the
+        out-of-territory comment is (#1468). Reached only from
+        `_record_finalised`, beside the publish it stands in for.
+        """
+        target = self._onto_pr_target()
+        reason = summary.get(NO_CHANGE_REASON_SUMMARY_KEY)
+        if target is None or not isinstance(reason, str) or not reason.strip():
+            return
+        record: dict[str, Any] = {"number": target.number}
+        summary[NO_CHANGE_COMMENT_SUMMARY_KEY] = record
+
+        def skipped(why: str) -> None:
+            record["posted"] = False
+            record["reason"] = str(self._scrub(why[:400]))
+            self.log.warning("the no-change evidence was not posted on the pull request",
+                             number=target.number, reason=record["reason"])
+
+        if not self.cfg.git_publish_enabled:
+            return skipped("publishing is disabled for this worker")
+        refused = self._forge_write_refusal()
+        if refused is not None:
+            return skipped(f"{refused[0]}: {refused[1]}")
+        token_refusal = self._git_token_refusal()
+        if token_refusal:
+            return skipped(f"the tenant git token is refused: {token_refusal}")
+        url = self._repo_url or self.cfg.repository_url
+        if not url:
+            return skipped("the repository URL is unknown")
+        token = self._git_token()
+        try:
+            token, access = self._probe_reading_again(url, token, "the no-change comment probe")
+            if access is None:
+                return skipped("this repository is not on a forge this worker can publish to")
+            if not access.can_push or not token:
+                return skipped(access.reason or "no credential that can write")
+            pull = self._read_pull(access, token, target.number)
+            why = publishpr_mod.refusal(
+                pull, target=target, repository=access.ref.full_name,
+                branch_prefix=self.cfg.git_branch_prefix,
+            )
+            if why:
+                return skipped(why)
+            marker = (
+                f"<!-- swarm:no-change task={self.cfg.task_id} "
+                f"attempt={self.cfg.attempt_id} -->"
+            )
+            try:
+                # A read is retried on an outage; the POST is not, since one
+                # whose answer was lost may have made the comment (the marker
+                # finds it on the next finish).
+                existing = forge_mod.retry_transient(
+                    lambda: forge_mod.list_issue_comments(
+                        ref=access.ref, token=token, number=target.number
+                    ),
+                    policy=self._forge_retry(),
+                    what="the pull request's comments",
+                )
+            except ForgeError as exc:
+                existing = []
+                self.log.warning("the pull request's comments could not be read",
+                                 error=str(self._scrub(str(exc)[:300])))
+            if any(marker in body for body in existing):
+                record["posted"] = True
+                record["comment"] = "already posted"
+                return None
+            checked = self._pr_start_head or pull.head_sha
+            body = "\n".join([
+                f"SwarmCloud checked this pull request at `{checked}` and changed nothing.",
+                "",
+                f"- task: `{self.cfg.task_id}`",
+                f"- attempt: `{self.cfg.attempt_id}`",
+                "",
+                _neutralise_mentions(reason.strip()),
+                "",
+                marker,
+            ])
+            record["comment"] = forge_mod.create_issue_comment(
+                ref=access.ref, token=token, number=target.number, body=body
+            )
+            record["posted"] = True
+            record["head"] = checked
+            self.log.info("the no-change evidence is posted on the pull request",
+                          number=target.number)
+        except ForgeError as exc:
+            return skipped(f"the forge refused it: {exc}")
+        return None
 
     def _upstream_left(self, task_id: str) -> str | None:
         """`expected_mod.left_nothing` of one upstream, read through the
