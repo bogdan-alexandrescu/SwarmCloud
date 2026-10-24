@@ -29,7 +29,7 @@ and held to swarm-api's function by tests/unit/control_plane/
 test_secret_slot_admission.py over every profile and every `browser_tool`.
 
 A GRANT IS PRESENT WHEN IT IS ENABLED (§2.2). Admission reads no secret
-record of the workspace's own, and no `attestation` (lane SEC-GRANT-ATTEST).
+record of a workspace secret's own, and no `attestation` (lane SEC-GRANT-ATTEST).
 The release is where a grant is proven: a forged grant can at worst admit a
 task whose worker then parks it. A grant that names no slot fills its
 consumer's only slot, as swarm-api's `Consumer.slot(None)` does.
@@ -43,6 +43,32 @@ tenant's own, `scope: personal`, `active`, opted in to this workspace
 document must name them as its principal. A person who has since left the
 group is admitted and parked by the worker.
 
+A REPOSITORY'S SECRET (docs/design/secrets-scopes.md §2.2, §2.3; lane
+SSC-ADMIT-REPO, part of #2158). swarm-api's record of `scope: repository`
+carries the registration's `repo_id`, and so does every grant on it; the
+release hands it only to an attempt that clones that repository
+(`swarm_api.workspace_secrets.attempt_repositories`, restated here as
+`credentials.attempt_repositories`). So a repository grant counts only when
+its `repo_id` is in that set, the record is this workspace's, `active`, of
+`scope: repository` and bound to the same `repo_id`, its secret id carries the
+repository mark (`is_repository_secret_id`), and the registration
+`repositories/{repo_id}` still names this workspace: the release's own
+checks, less the "v2" attestation, which only swarm-api can verify (a forged
+grant can at worst admit a task the worker then parks). A grant on a marked
+id, or one carrying a `repo_id`, never counts as the workspace's own, so a
+required slot filled only by ANOTHER repository's secret parks
+CREDENTIAL_MISSING, before any lease and holding no capacity (invariant 1).
+The attempt's `additional_repositories` are read from the task's own
+document, by id, once per pass: the scheduler's codec does not decode them.
+
+Q1'S ORDER (§2.4, §11): the person's, then the repository's, then the
+workspace's. `missing` asks the scopes in that order, each only for what the
+ones before it left empty. The order decides which scope's item the release
+delivers into a slot and never whether the slot is filled: shadowing keeps
+exactly one item per `(slot, name)`, the winner, and the worker counts a slot
+filled by any item in it (`agent_worker.secretrelease`). So the answer is the
+release's whichever scope wins.
+
 READ ONCE PER PASS. One query of every enabled grant, made lazily: only a task
 whose profile or launched tool declares a REQUIRED slot reads anything, and no
 catalogue slot is required yet (contract request 80), so today a pass reads
@@ -52,6 +78,7 @@ pass, so a grant ticked between two passes is seen by the second.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Callable, Collection, Iterable, Mapping
 
@@ -66,6 +93,29 @@ GRANTS_COLLECTION = "workspace_secret_grants"
 SECRETS_COLLECTION = "workspace_secrets"
 SCOPE_PERSONAL = "personal"
 ACTIVE = "active"
+#: SSC-REPO-SCOPE's spellings (swarm_api/workspace_secrets.py:
+#: SCOPE_REPOSITORY; grant_attest.REPO_ID_FIELD; repositories.COLLECTION),
+#: held to their source by the same test.
+SCOPE_REPOSITORY = "repository"
+REPO_ID_FIELD = "repo_id"
+REPOSITORIES_COLLECTION = "repositories"
+TASKS_COLLECTION = "tasks"
+#: `swarm_api.workspace_secrets._REPOSITORY_MARK`: a repository secret's 16
+#: hex are 8 random hex and the first 8 hex of sha256 over this tag and them.
+_REPOSITORY_MARK = b"swarm-repository-secret:"
+_HEX = frozenset("0123456789abcdef")
+
+
+def is_repository_secret_id(secret_id: Any) -> bool:
+    """`swarm_api.workspace_secrets.is_repository_secret_id`: was `secret_id`
+    made for a repository secret? Its id says so, whatever its record says."""
+    if not isinstance(secret_id, str) or "-wsec-" not in secret_id:
+        return False
+    tail = secret_id.rsplit("-wsec-", 1)[1]
+    if len(tail) != 16:
+        return False
+    head = tail[:8]
+    return tail[8:] == hashlib.sha256(_REPOSITORY_MARK + head.encode("utf-8")).hexdigest()[:8]
 
 
 @dataclass(frozen=True)
@@ -142,15 +192,18 @@ class WorkspaceGrants:
 
     def __init__(self, db: Any) -> None:
         self._db = db
-        self._by_tenant: dict[str, list[tuple[str, Granted]]] | None = None
+        self._by_tenant: dict[str, list[tuple[str, Granted, Any]]] | None = None
         self._records: dict[str, dict[str, Any] | None] = {}
+        self._docs: dict[tuple[str, str], dict[str, Any] | None] = {}
 
     def forget(self) -> None:
         self._by_tenant = None
         self._records = {}
+        self._docs = {}
 
-    def _grants(self, tenant_id: str) -> list[tuple[str, Granted]]:
-        """(secret_id, (consumer, slot)) of each enabled grant of `tenant_id`."""
+    def _grants(self, tenant_id: str) -> list[tuple[str, Granted, Any]]:
+        """(secret_id, (consumer, slot), repo_id) of each enabled grant of
+        `tenant_id`; `repo_id` is the grant's own field, None when absent."""
         if self._by_tenant is None:
             # Imported here, not at module top: kubernetes/render.py imports
             # dispatch -> credentials -> this module, and the CI jobs that
@@ -158,7 +211,7 @@ class WorkspaceGrants:
             # google-cloud-firestore.
             from google.cloud.firestore_v1.base_query import FieldFilter
 
-            by_tenant: dict[str, list[tuple[str, Granted]]] = {}
+            by_tenant: dict[str, list[tuple[str, Granted, Any]]] = {}
             query = self._db.collection(GRANTS_COLLECTION).where(
                 filter=FieldFilter("enabled", "==", True)
             )
@@ -170,7 +223,7 @@ class WorkspaceGrants:
                     continue
                 slot = doc.get("slot") if isinstance(doc.get("slot"), str) else None
                 by_tenant.setdefault(tenant, []).append(
-                    (str(doc.get("secret_id") or ""), (consumer, slot))
+                    (str(doc.get("secret_id") or ""), (consumer, slot), doc.get(REPO_ID_FIELD))
                 )
             self._by_tenant = by_tenant
         return self._by_tenant.get(tenant_id, [])
@@ -180,6 +233,67 @@ class WorkspaceGrants:
             snap = self._db.collection(SECRETS_COLLECTION).document(secret_id).get()
             self._records[secret_id] = (snap.to_dict() or None) if snap.exists else None
         return self._records[secret_id]
+
+    def _doc(self, collection: str, doc_id: str) -> dict[str, Any] | None:
+        key = (collection, doc_id)
+        if key not in self._docs:
+            snap = self._db.collection(collection).document(doc_id).get()
+            self._docs[key] = (snap.to_dict() or None) if snap.exists else None
+        return self._docs[key]
+
+    def _own(self, task: Task) -> list[Granted]:
+        """The workspace's own grants: neither carrying a `repo_id` nor on a
+        repository secret's id. Read from the grants alone, as before."""
+        return [granted for secret_id, granted, repo_id in self._grants(task.tenant_id)
+                if repo_id is None and not is_repository_secret_id(secret_id)]
+
+    def repositories(self, task: Task) -> tuple[str, ...] | None:
+        """The `repo_id`s the task clones, the release's way
+        (`credentials.attempt_repositories`); None on a binding mismatch."""
+        # Imported here: credentials imports this module at its top.
+        from .credentials import attempt_repositories
+
+        extras = task.additional_repositories
+        if extras is None and task.id:
+            doc = self._doc(TASKS_COLLECTION, task.id)
+            if doc is not None and doc.get("tenant_id") == task.tenant_id:
+                extras = doc.get("additional_repositories")
+        return attempt_repositories({"tenant_id": task.tenant_id,
+                                     "repository_url": task.repository_url,
+                                     "additional_repositories": extras})
+
+    def _repository(self, task: Task) -> list[Granted]:
+        """§2.2: the grants on this workspace's repository secrets whose
+        repository the task clones. Reads a record and a registration only
+        for a repository-bound grant of the task's own workspace."""
+        bound = [(secret_id, granted, repo_id)
+                 for secret_id, granted, repo_id in self._grants(task.tenant_id)
+                 if repo_id is not None or is_repository_secret_id(secret_id)]
+        if not bound:
+            return []
+        cloned = self.repositories(task)
+        if not cloned:
+            return []
+        out: list[Granted] = []
+        for secret_id, granted, repo_id in bound:
+            if not isinstance(repo_id, str) or repo_id not in cloned \
+                    or not is_repository_secret_id(secret_id) \
+                    or not secret_id.startswith(f"swarm-tenant-{task.tenant_id}-wsec-"):
+                continue
+            record = self._record(secret_id)
+            registration = self._doc(REPOSITORIES_COLLECTION, repo_id)
+            if (
+                record is not None
+                and record.get("secret_id") == secret_id
+                and record.get("tenant_id") == task.tenant_id
+                and record.get("state") == ACTIVE
+                and record.get("scope") == SCOPE_REPOSITORY
+                and record.get(REPO_ID_FIELD) == repo_id
+                and registration is not None
+                and registration.get("tenant_id") == task.tenant_id
+            ):
+                out.append(granted)
+        return out
 
     def _personal(
         self, task: Task, tenant: Tenant, tenant_of: Callable[[str], Tenant | None]
@@ -195,7 +309,10 @@ class WorkspaceGrants:
         if owner is None or owner.kind != "user" or owner.principal.strip().lower() != email:
             return ()
         out: list[Granted] = []
-        for secret_id, granted in self._grants(personal):
+        for secret_id, granted, repo_id in self._grants(personal):
+            # The release drops a repository-bound grant on a personal record.
+            if repo_id is not None or is_repository_secret_id(secret_id):
+                continue
             record = self._record(secret_id) if secret_id else None
             if (
                 record is not None
@@ -218,21 +335,31 @@ class WorkspaceGrants:
     ) -> tuple[MissingSlot, ...] | None:
         """The task's required slots that no grant it may use fills, empty
         when every one is filled. None, reading nothing, when the task
-        requires no slot."""
+        requires no slot. The scopes are asked in Q1's order, each only
+        while a slot is still empty (module docstring)."""
         if not required_slots(profile, task.input):
             return None
-        own = [granted for _, granted in self._grants(task.tenant_id)]
-        missing = missing_required_slots(profile, task.input, own)
-        if missing:
-            mine = list(self._personal(task, tenant, tenant_of))
-            if mine:
-                missing = missing_required_slots(profile, task.input, own + mine)
+        scopes: tuple[Callable[[], Iterable[Granted]], ...] = (
+            lambda: self._personal(task, tenant, tenant_of),
+            lambda: self._repository(task),
+            lambda: self._own(task),
+        )
+        counted: list[Granted] = []
+        missing = missing_required_slots(profile, task.input, counted)
+        for scope in scopes:
+            if not missing:
+                break
+            found = list(scope())
+            if found:
+                counted.extend(found)
+                missing = missing_required_slots(profile, task.input, counted)
         return missing
 
 
 __all__ = [
     "MissingSlot",
     "WorkspaceGrants",
+    "is_repository_secret_id",
     "missing_required_slots",
     "required_slots",
     "slot_consumers",

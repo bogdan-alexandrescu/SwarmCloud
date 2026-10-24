@@ -19,20 +19,24 @@ collection names, to swarm-api's own release.
 from __future__ import annotations
 
 from dataclasses import replace
+from secrets import token_hex
 from types import MappingProxyType
 
 import pytest
 
+from swarm_api import repositories as api_repositories
 from swarm_api import workspace_secrets as api_secrets
-from swarm_api.grant_attest import GrantKeys, GrantPolicy
+from swarm_api.grant_attest import REPO_ID_FIELD, GrantKeys, GrantPolicy
 from swarm_common import profiles as profiles_mod
 from swarm_common.identity import tenant_id_for_user
 from swarm_common.models import Tenant
 from swarm_common.profiles import RUNNER_PROFILES, RUNTIME_TOOLS, SecretSlot
 
+from scheduler import credentials
 from scheduler import dispatch as dispatch_mod
 from scheduler import loop as loop_mod
 from scheduler import secret_slots
+from scheduler.codec import task_from_dict
 from scheduler.secret_slots import MissingSlot, missing_required_slots, required_slots
 
 from .conftest import seed_pool, seed_task, seed_tenant
@@ -314,7 +318,6 @@ def test_the_q3_rule_matches_swarm_apis_release(db, opted_in):
     tenants = {t: Tenant(**{k: v for k, v in db.docs[f"tenants/{t}"].items()})
                for t in (TENANT, PERSONAL)}
     task_doc = task(db, "task_q3", profile="claude-code", submitted_by=PERSON)
-    from scheduler.codec import task_from_dict
     counted = list(grants._personal(task_from_dict(task_doc), tenants[TENANT], tenants.get))
 
     assert released == (["my-key"] if opted_in else [])
@@ -488,3 +491,252 @@ def test_the_consumers_are_the_releases_slot_declaring_ones(profile):
         released = api_secrets.attempt_consumers({"runner_profile": profile, "input": inputs})
         ours = [c for c, _ in secret_slots.slot_consumers(RUNNER_PROFILES[profile], inputs)]
         assert ours == [c for c in released if c in declared], (profile, choice)
+
+
+# --------------------------------------------------------------------------
+# A repository's secret (SSC-ADMIT-REPO, secrets-scopes.md §2.2, §2.3)
+# --------------------------------------------------------------------------
+
+WIDGETS = "example-org/widgets"
+GADGETS = "example-org/gadgets"
+GIZMOS = "example-org/gizmos"
+
+
+def repo_id(repository: str, tenant_id: str = TENANT) -> str:
+    return api_repositories.repo_id_for(tenant_id, *repository.split("/"))
+
+
+def register(db, repository: str, *, tenant_id: str = TENANT) -> str:
+    owner, repo = repository.split("/")
+    rid = repo_id(repository, tenant_id)
+    db.docs[f"repositories/{rid}"] = {"repo_id": rid, "tenant_id": tenant_id,
+                                      "owner": owner, "repo": repo}
+    return rid
+
+
+def repository_secret(db, repository: str, consumer: str = f"profile:{REQUIRED}", *,
+                      name: str = "db-password", key: str | None = None,
+                      grant_repo_id: str | None = "record", marked: bool = True) -> str:
+    """A repository secret as SSC-REPO-SCOPE writes it: its registration, a
+    marked `-wsec-` id, a record of `scope: repository` bound to the
+    registration's `repo_id`, and a grant carrying the same `repo_id`, signed
+    "v2" when `key` is given. The keyword arguments rewrite one field."""
+    rid = register(db, repository)
+    tail = api_secrets.repository_hex() if marked else api_secrets.workspace_hex()
+    sid = api_secrets.wsec_prefix(TENANT) + tail
+    db.docs[f"workspace_secrets/{sid}"] = {
+        "secret_id": sid, "tenant_id": TENANT, "name": name, "provider": "other",
+        "kind": "api_key", "scope": "repository", "state": "active",
+        "repo_id": rid, "repository": repository,
+        "current_version": f"projects/123/secrets/{sid}/versions/1",
+    }
+    doc = {"secret_id": sid, "tenant_id": TENANT, "consumer": consumer, "enabled": True,
+           "slot": None, "changed_by": "admin@example.com"}
+    if grant_repo_id is not None:
+        doc["repo_id"] = rid if grant_repo_id == "record" else grant_repo_id
+    if key is not None:
+        doc["attestation"] = GrantKeys(key).sign(doc)
+    db.docs[f"workspace_secret_grants/{sid}~{consumer}"] = doc
+    return sid
+
+
+def extra(repository: str, *, rid: str | None = None) -> dict:
+    """One `additional_repositories` entry, as swarm-api writes it."""
+    return {
+        "name": repository.split("/")[1], "repo_id": rid or repo_id(repository),
+        "repository": repository, "repository_url": f"https://github.com/{repository}",
+        "ref": "main", "commit": token_hex(20), "forge_credential": "git",
+        "forge_credential_source": "tenant", "size_kib": 0,
+    }
+
+
+def on(db, task_id: str, repository: str | None, *extras: dict, **kwargs) -> dict:
+    doc = task(db, task_id, **kwargs)
+    doc["repository_url"] = None if repository is None else f"https://github.com/{repository}"
+    doc["additional_repositories"] = list(extras) if extras else None
+    return doc
+
+
+def test_a_slot_filled_only_by_another_repositorys_secret_parks(db, make_scheduler, dispatcher):
+    world(db)
+    repository_secret(db, GADGETS)
+    on(db, "task_other_repo", WIDGETS)
+
+    make_scheduler().drain()
+
+    doc = db.docs["tasks/task_other_repo"]
+    assert doc["state"] == "PARKED" and doc["park_reason"] == "CREDENTIAL_MISSING", doc
+    assert parked_detail(db, "task_other_repo")["workspace_secrets"] == [
+        {"consumer": f"profile:{REQUIRED}", "slot": "files"}]
+    # Invariant 1: CREDENTIAL_MISSING holds no lease and no capacity.
+    assert_reserved_nothing(db, dispatcher)
+
+
+def test_a_slot_filled_by_this_repositorys_secret_admits(db, make_scheduler, dispatcher):
+    world(db)
+    repository_secret(db, WIDGETS)
+    on(db, "task_this_repo", WIDGETS)
+
+    make_scheduler().drain()
+
+    assert db.docs["tasks/task_this_repo"]["state"] == "DISPATCHED"
+
+
+def test_a_slot_filled_by_an_additional_repositorys_secret_admits(
+    db, make_scheduler, dispatcher
+):
+    world(db)
+    repository_secret(db, GADGETS)
+    on(db, "task_extra_repo", WIDGETS, extra(GADGETS))
+
+    make_scheduler().drain()
+
+    assert db.docs["tasks/task_extra_repo"]["state"] == "DISPATCHED"
+
+
+@pytest.mark.parametrize("why, secret, clones", [
+    ("an attempt that clones nothing is released no repository secret",
+     {}, (None,)),
+    ("an additional entry whose repo_id is not its repository's withholds them all",
+     {}, (WIDGETS, "mismatch")),
+    ("a grant bound to another repository than its record",
+     {"grant_repo_id": "repo_" + "0" * 16}, (WIDGETS,)),
+    ("a record rewritten to this repository, its grant still the other's",
+     {"rewrite": True}, (WIDGETS,)),
+    ("a grant on a repository secret that carries no repo_id",
+     {"grant_repo_id": None}, (WIDGETS,)),
+    ("a repository-bound grant on a workspace secret's id",
+     {"marked": False}, (WIDGETS,)),
+])
+def test_a_repository_grant_the_release_would_drop_parks(
+    db, make_scheduler, dispatcher, why, secret, clones
+):
+    world(db)
+    if secret.get("rewrite"):
+        sid = repository_secret(db, GADGETS)
+        db.docs[f"workspace_secrets/{sid}"]["repo_id"] = repo_id(WIDGETS)
+        register(db, WIDGETS)
+    else:
+        repository_secret(db, WIDGETS, **secret)
+    primary, *rest = clones
+    extras = [extra(GIZMOS, rid=repo_id(GADGETS))] if rest == ["mismatch"] else []
+    on(db, "task_dropped", primary, *extras)
+
+    make_scheduler().drain()
+
+    assert db.docs["tasks/task_dropped"]["state"] == "PARKED", why
+    assert_reserved_nothing(db, dispatcher)
+
+
+def test_a_removed_registration_no_longer_fills_the_slot(db, make_scheduler, dispatcher):
+    world(db)
+    repository_secret(db, WIDGETS)
+    del db.docs[f"repositories/{repo_id(WIDGETS)}"]
+    on(db, "task_unregistered", WIDGETS)
+
+    make_scheduler().drain()
+
+    assert db.docs["tasks/task_unregistered"]["state"] == "PARKED"
+    assert_reserved_nothing(db, dispatcher)
+
+
+def test_q1_one_slot_offered_by_every_scope_admits(db, make_scheduler, dispatcher):
+    """The person's, the repository's and the workspace's item of one name:
+    the release keeps the person's and withholds the rest as shadowed, and
+    the slot is filled once. So admission admits, whichever scope wins."""
+    world(db)
+    personal_world(db)
+    repository_secret(db, WIDGETS, name="my-key")
+    grant(db)
+    on(db, "task_every_scope", WIDGETS, submitted_by=PERSON)
+
+    make_scheduler().drain()
+
+    assert db.docs["tasks/task_every_scope"]["state"] == "DISPATCHED"
+
+
+def test_q1_asks_the_repository_before_the_workspace(db):
+    """The order of §11 Q1: once the repository's grant fills the slot, the
+    workspace's own grants are not asked for it."""
+    world(db)
+    repository_secret(db, WIDGETS)
+    grant(db)
+    doc = on(db, "task_order", WIDGETS)
+    grants = secret_slots.WorkspaceGrants(db)
+    asked: list[str] = []
+    real_repository, real_own = grants._repository, grants._own
+    grants._repository = lambda t: asked.append("repository") or real_repository(t)
+    grants._own = lambda t: asked.append("workspace") or real_own(t)
+
+    missing = grants.missing(task_from_dict(doc), _profiles()[REQUIRED],
+                             Tenant(**db.docs[f"tenants/{TENANT}"]), lambda _t: None)
+
+    assert missing == ()
+    assert asked == ["repository"]
+
+
+@pytest.mark.parametrize("why, primary, extras", [
+    ("its own repository", WIDGETS, ()),
+    ("another repository", GADGETS, ()),
+    ("an additional repository", GADGETS, (WIDGETS,)),
+    ("an additional entry that does not match", WIDGETS, ("mismatch",)),
+    ("no repository", None, ()),
+])
+def test_the_repository_rule_matches_swarm_apis_release(db, why, primary, extras):
+    """The same repository seed, signed "v2", is released by swarm-api's own
+    `release_plan` exactly when admission counts it."""
+    key = token_hex(32)
+    consumer = "profile:claude-code"
+    seed_tenant(db, TENANT)
+    repository_secret(db, WIDGETS, consumer, key=key)
+    entries = [extra(GIZMOS, rid=repo_id(GADGETS)) if e == "mismatch" else extra(e)
+               for e in extras]
+    doc = on(db, "task_parity", primary, *entries, profile="claude-code")
+
+    plan = api_secrets.release_plan(
+        db, tenant_id=TENANT, consumers=(consumer,), project_id="p",
+        grants=GrantPolicy(keys=GrantKeys(key), required=False),
+        repositories=api_secrets.attempt_repositories(doc),
+    )
+    counted = secret_slots.WorkspaceGrants(db)._repository(task_from_dict(doc))
+
+    assert bool([d.name for d in plan.due]) == bool(counted), why
+    assert counted in ([], [(consumer, None)])
+
+
+@pytest.mark.parametrize("doc", [
+    {"tenant_id": TENANT, "repository_url": "https://github.com/Example-Org/Widgets"},
+    {"tenant_id": TENANT, "repository_url": "https://github.com/example-org/widgets.git/"},
+    {"tenant_id": TENANT, "repository_url": " https://github.com/example-org/widgets "},
+    {"tenant_id": TENANT, "repository_url": "git@github.com:example-org/widgets.git"},
+    {"tenant_id": TENANT, "repository_url": "https://www.github.com/example-org/widgets"},
+    {"tenant_id": TENANT, "repository_url": "https://github.com/example-org/.hidden"},
+    {"tenant_id": TENANT, "repository_url": "https://github.com/-bad/widgets"},
+    {"tenant_id": TENANT, "repository_url": "https://github.com/a/b/c"},
+    {"tenant_id": TENANT, "repository_url": None},
+    {"tenant_id": "", "repository_url": "https://github.com/example-org/widgets"},
+    {"tenant_id": TENANT, "additional_repositories": [extra(GADGETS)]},
+    {"tenant_id": TENANT, "repository_url": "https://github.com/example-org/gadgets",
+     "additional_repositories": [extra(GADGETS), extra(WIDGETS)]},
+    {"tenant_id": TENANT, "additional_repositories": [extra(GIZMOS, rid=repo_id(GADGETS))]},
+    {"tenant_id": TENANT, "additional_repositories": [{**extra(GADGETS), "repository": "x"}]},
+    {"tenant_id": TENANT, "additional_repositories": [extra(GADGETS, rid=repo_id(GADGETS, OTHER))]},
+    {"tenant_id": TENANT, "additional_repositories": ["example-org/gadgets"]},
+    {"tenant_id": TENANT, "additional_repositories": {"a": 1}},
+    {"tenant_id": TENANT, "additional_repositories": []},
+])
+def test_the_attempts_repositories_are_swarm_apis(doc):
+    assert credentials.attempt_repositories(doc) == api_secrets.attempt_repositories(doc)
+
+
+def test_the_repository_mark_and_names_are_swarm_apis():
+    assert secret_slots.SCOPE_REPOSITORY == api_secrets.SCOPE_REPOSITORY
+    assert secret_slots.REPO_ID_FIELD == REPO_ID_FIELD
+    assert secret_slots.REPOSITORIES_COLLECTION == api_repositories.COLLECTION
+    prefix = api_secrets.wsec_prefix(TENANT)
+    ids = [prefix + api_secrets.repository_hex() for _ in range(50)] + \
+          [prefix + api_secrets.workspace_hex() for _ in range(50)] + \
+          [secret_id(TENANT), prefix + "abc", "no-mark-here", None, 7]
+    for sid in ids:
+        assert secret_slots.is_repository_secret_id(sid) == \
+            api_secrets.is_repository_secret_id(sid), sid

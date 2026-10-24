@@ -860,7 +860,7 @@ required slot has an enabled grant. Held by
 * **A grant counts when it is enabled** and its own document names the agent's
   workspace. A grant naming no slot fills its consumer's only slot. **The
   release, not admission, is where a grant is proven:** admission reads no
-  secret record of the workspace's own and no `attestation`, so a forged
+  record of a workspace secret and no `attestation`, so a forged
   grant can at worst admit an agent that the worker's backstop then parks.
 * **Q3 at admission.** A group agent counts the submitter's personal secret
   under the release's rule: the personal tenant names them, and the record is
@@ -1144,6 +1144,43 @@ beside it: `apps/swarm-api/swarm_api/workspace_secrets.py`,
   writing itself an unattested grant (released for a workspace secret while
   `grant_attestation_required` is off) releases nothing: `owned_by` keeps a
   marked id off the workspace path, the person's opt-in and `mcp:attach`.
+
+### What SSC-ADMIT-REPO built (2026-10-24, part of #2158)
+
+The admission half of [secrets-scopes.md](secrets-scopes.md) §2.3:
+SEC-ADMIT-PARK's pre-lease park counts a repository secret only for an agent
+that clones its repository, so a required slot filled only by another
+repository's secret parks `CREDENTIAL_MISSING` before any lease, holding no
+capacity (invariant 1). Built in `apps/scheduler/scheduler/secret_slots.py`
+and `credentials.py`, held by
+`tests/unit/control_plane/test_secret_slot_admission.py`.
+
+* **The repository set is the release's.** `credentials.attempt_repositories`
+  restates swarm-api's `attempt_repositories` (the scheduler's image does not
+  carry swarm-api): the https `repository_url`'s registration id, then each
+  `additional_repositories` entry's, its `repo_id` recomputed from
+  `repository` and the tenant, and one mismatch counts no repository secret
+  at all. A test holds the two equal over the same task documents. The
+  scheduler's codec does not decode `additional_repositories`, so
+  `WorkspaceGrants` reads them from the agent's own document, by id, once per
+  pass, and only for an agent whose workspace has a repository-bound grant.
+* **A repository grant counts when the release would take it, less the
+  MAC.** The grant carries a `repo_id` in that set; its secret id carries the
+  repository mark (`is_repository_secret_id`, restated and held to
+  swarm-api's); the record is this workspace's, `active`, `scope: repository`
+  and bound to the same `repo_id`; and `repositories/{repo_id}` still names
+  this workspace. The `"v2"` attestation is still the release's alone. A grant
+  carrying a `repo_id`, or on a marked id, never counts as the workspace's
+  own or as a person's opt-in, so admission now reads a secret record for a
+  repository grant (and its registration), never for a workspace one.
+* **Q1's order** (§11): the person's, then the repository's, then the
+  workspace's. `WorkspaceGrants.missing` asks each scope only while a required
+  slot is still empty. The order decides which scope the release delivers
+  into the slot, never whether the slot is filled: shadowing keeps one item
+  per `(slot, name)` and the worker counts a slot filled by any item in it.
+* No catalogue slot is required yet (request 80), so this changes no
+  admission today; it is built so the first required slot does not admit
+  wrongly.
 
 ---
 
