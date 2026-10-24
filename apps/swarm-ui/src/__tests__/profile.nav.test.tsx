@@ -72,10 +72,10 @@ describe('Settings › Profile', () => {
     expect(addressToPath(canonical(r))).toBe(PATH)
   })
 
-  it('leaves API keys, Workspace, MCP servers and the old hashes where they were', () => {
+  it('leaves API keys and the old hashes where they were; Workspace and MCP servers are Config\'s (CONFIG-NAV)', () => {
     expect(fromAddress('settings/keys')).toMatchObject({ sectionId: 'settings', tab: 'keys' })
-    expect(fromAddress('settings/workspace')).toMatchObject({ sectionId: 'settings', tab: 'workspace' })
-    expect(fromAddress('settings/mcp-servers')).toMatchObject({ sectionId: 'settings', tab: 'mcp-servers' })
+    expect(fromAddress('settings/workspace')).toMatchObject({ sectionId: 'config', tab: 'workspace' })
+    expect(fromAddress('settings/mcp-servers')).toMatchObject({ sectionId: 'config', tab: 'mcp-servers' })
     expect(fromAddress('settings/anything-else')).toMatchObject({ sectionId: 'admin', tab: 'limits' })
   })
 

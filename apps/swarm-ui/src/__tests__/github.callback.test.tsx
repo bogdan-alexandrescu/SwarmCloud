@@ -151,7 +151,7 @@ describe('the callback finishes the connection', () => {
     // person enables an org on Work › Access, so the line says so and links there.
     expect(await screen.findByText(/then enable the ones SwarmCloud may work in on Work › Access/)).toBeTruthy()
     expect(screen.queryByText(/appear here once it has/)).toBeNull()
-    expect(screen.getByRole('link', { name: 'Choose orgs in Access' }).getAttribute('href')).toBe('/access')
+    expect(screen.getByRole('link', { name: 'Choose orgs in Access' }).getAttribute('href')).toBe('/config/github')
     expect(screen.queryByRole('list', { name: 'Accounts and orgs this connection reaches' })).toBeNull()
   })
 })

@@ -69,7 +69,7 @@ agent's attempt history, because of four missing lines of routing.
 
 ## 2. The new architecture
 
-Four sections and a landing screen. Each section is a question someone arrives
+Five sections and a landing screen. Each section is a question someone arrives
 with, not a route. The id in the first column is the first hash segment, so it
 is also the address people paste — the two are given together because they have
 drifted apart twice, and both times the drift routed a saved link somewhere the
@@ -81,6 +81,7 @@ label did not name.
 | **Work** | `work` | What is running, what has already run, what did it produce — and why has mine not moved? | Agents · Workflows · Timeline · Submit an agent · Submit a workflow |
 | **Automate** | `automate` | What runs here by itself, on a schedule, and what is waiting on me to approve? | Schedules · Approvals |
 | **Capacity** | `capacity` | What kinds of agent can run here, is there room for another, which ceiling is the binding one, and what is holding what there is? | Pools · Runtimes · Profile headroom · Holders · Accounts · Provider quota |
+| **Config** | `config` | What may SwarmCloud reach on GitHub as you, which repositories, secrets and MCP servers does this workspace hold, who has which role in it, and how far is its setup? | GitHub access · Repositories · Secrets · MCP servers · People and roles · Workspace Settings |
 | **Admin** | `admin` | What is each ceiling set to, who is registered to use this platform, how many agents are in each state, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer? | Pool limits · Tenants · Platform counts · People · Workspaces you admin |
 
 **Automate** was added on 2026-10-08 by the owner's decision SD1

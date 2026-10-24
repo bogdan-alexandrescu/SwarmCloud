@@ -94,7 +94,7 @@ auth mode (`dispatch` means a dispatch must bring that server's
 `mcp_credentials` entry), allowed profiles and tools, and the egress addresses
 its operator allowlists. It only reads. There is no `sc` command and no MCP tool
 that registers a server or stores its credential: an admin registers one in the
-console (Settings › Workspace › MCP servers). If the operator wants a server
+console (Config › MCP servers). If the operator wants a server
 registered, tell them that; never ask them for a credential to store.
 
 `uv run sc roles` (or `uv run sc roles list`) shows the roles of the workspace
@@ -111,7 +111,7 @@ no MCP tool does it either. Tell the operator the command to run in their own
 terminal -- `sc roles set <email> <role>`, `sc roles clear <email>` or
 `sc roles default <viewer|member>` -- which asks them to type the email and the
 role back at the terminal and sends nothing otherwise; or point them at the
-console (Settings › People). A refusal (`role_admin_required`,
+console (Config › People and roles). A refusal (`role_admin_required`,
 `role_unchanged`, ...) is printed with the server's code and sentence; report
 it as it came.
 
