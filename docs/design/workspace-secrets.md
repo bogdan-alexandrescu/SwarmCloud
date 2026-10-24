@@ -1162,7 +1162,7 @@ and `credentials.py`, held by
   `repository` and the tenant, and one mismatch counts no repository secret
   at all. A test holds the two equal over the same task documents. The
   scheduler's codec does not decode `additional_repositories`, so
-  `WorkspaceGrants` reads them from the task's own document, by id, once per
+  `WorkspaceGrants` reads them from the agent's own document, by id, once per
   pass, and only for an agent whose workspace has a repository-bound grant.
 * **A repository grant counts when the release would take it, less the
   MAC.** The grant carries a `repo_id` in that set; its secret id carries the
