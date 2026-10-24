@@ -1,0 +1,1103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>SwarmCloud Config, proposal E: Guided setup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;650;700&display=swap" rel="stylesheet">
+<style>
+/*
+ * Proposal E, "Guided setup" (CONFIG-MOCKUPS-E, part of #2157).
+ * The tokens are the console's own (apps/swarm-ui/src/styles.css): --bg, --surface,
+ * --surface-2, --line, --line-soft, --text, --text-dim, --text-faint, the five state
+ * colours and their -ink variants, --ctl-bd and --ctl-onac, light and dark. The page
+ * and every frame read them, so the theme toggle repaints the frames too.
+ * PICKS.md rules: 12px type floor, no all-caps, no letter-spacing.
+ */
+:root{--bg:#f3f6f9;--surface:#ffffff;--surface-2:#eef4fa;--line:#d6e0ea;--line-soft:#dde5ee;--text:#0d1724;--text-dim:#4f5d6e;--text-faint:#606a77;--ok:#1a7f37;--warn:#6e4a00;--bad:#681117;--info:#0369a1;--paused:#7139db;--ok-ink:#15662c;--warn-ink:#805500;--bad-ink:#a71b25;--info-ink:#075985;--paused-ink:#6629d8;--ctl-bd:#7d8ea3;--ctl-onac:#ffffff;--warn-dot:#b7791f;--s1:#3f86d8;--s2:#9c7620;--s3:#8a6ad6;--s4:#1f948a;--font:"Inter Tight",system-ui,-apple-system,sans-serif;--mono:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#06101e;--surface:#0c1a2e;--surface-2:#11233b;--line:#1e3350;--line-soft:#1d3049;--text:#eef4fa;--text-dim:#9fb0c4;--text-faint:#828d9b;--ok:#58c668;--warn:#ffd60a;--bad:#f85149;--info:#7cc8f8;--paused:#b288f8;--ok-ink:#42bf53;--warn-ink:#d29922;--bad-ink:#fa7872;--info-ink:#b9e3fc;--paused-ink:#b892f9;--ctl-bd:#5f7087;--ctl-onac:#06101e;--warn-dot:#f5c451;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#06101e;--surface:#0c1a2e;--surface-2:#11233b;--line:#1e3350;--line-soft:#1d3049;--text:#eef4fa;--text-dim:#9fb0c4;--text-faint:#828d9b;--ok:#58c668;--warn:#ffd60a;--bad:#f85149;--info:#7cc8f8;--paused:#b288f8;--ok-ink:#42bf53;--warn-ink:#d29922;--bad-ink:#fa7872;--info-ink:#b9e3fc;--paused-ink:#b892f9;--ctl-bd:#5f7087;--ctl-onac:#06101e;--warn-dot:#f5c451;color-scheme:dark}
+:root{--t-ok:color-mix(in srgb,var(--ok) 13%,var(--surface));--t-warn:color-mix(in srgb,var(--warn-ink) 14%,var(--surface));--t-bad:color-mix(in srgb,var(--bad-ink) 12%,var(--surface));--t-info:color-mix(in srgb,var(--info) 11%,var(--surface));--t-pa:color-mix(in srgb,var(--paused) 12%,var(--surface));--l-info:color-mix(in srgb,var(--info) 40%,var(--line))}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 var(--font);overflow-x:hidden}
+a{color:var(--info)}
+code,.mono{font-family:var(--mono);font-size:13px;background:var(--surface-2);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--info);outline-offset:2px}
+
+/* ---------- the document around the frames ---------- */
+.topbar{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(6px);border-bottom:1px solid var(--line)}
+.topbar .in{max-width:1520px;margin:0 auto;padding:8px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.topbar b{font-size:14px;font-weight:650}
+.topbar .sp0{flex:1}
+.doc{max-width:1520px;margin:0 auto;padding:28px 16px 80px}
+.doc .kick{font:500 13px var(--mono);color:var(--info);margin:0}
+.doc h1{font-size:clamp(26px,4vw,38px);line-height:1.15;margin:8px 0 12px;font-weight:650}
+.doc h2{font-size:24px;margin:64px 0 6px;font-weight:650;scroll-margin-top:60px}
+.doc h2 .n{font:500 14px var(--mono);color:var(--info);margin-right:10px}
+.doc h3.fh{font-size:17px;margin:28px 0 8px;font-weight:600}
+.doc p,.doc li{max-width:82ch}
+.doc .lede{font-size:17px;color:var(--text-dim)}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 0;padding:0;list-style:none}
+.toc a{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:99px;color:var(--text);text-decoration:none;font-size:13px;background:var(--surface)}
+.toc a:hover{border-color:var(--info);color:var(--info)}
+.idea{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px;margin-top:20px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.idea h4{margin:0 0 6px;font-size:15px;color:var(--info)}
+.idea p,.idea ul{margin:0;font-size:14px}.idea ul{padding-left:18px}.idea li{margin:3px 0}
+.rules{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 18px;margin-top:16px;font-size:14px}
+.rules ul{margin:6px 0 0;padding-left:18px}
+.fr{margin:18px 0 0;min-width:0}
+.fr figcaption{font-size:13.5px;color:var(--text-dim);margin-top:8px;max-width:110ch}
+.fr figcaption b{color:var(--text)}
+.scroller{overflow-x:auto;border-radius:12px;border:1px solid var(--line);max-width:100%;background:var(--bg)}
+.pair{display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start;margin-top:18px}
+.pair>.fr{margin:0;flex:0 1 auto;max-width:100%}
+.dt{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin-top:14px}
+table.doct{border-collapse:collapse;width:100%;min-width:640px;font-size:14px}
+table.doct th,table.doct td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+table.doct th{font-size:13px;color:var(--text-dim);font-weight:600}
+table.doct tr:last-child td{border-bottom:0}
+table.doct th:last-child,table.doct td:last-child{white-space:nowrap}
+.yes{color:var(--ok-ink);font-weight:600}.no{color:var(--text-dim)}
+
+/* the page's theme control, the same control the frames' panel foot draws */
+.tseg{display:inline-flex;border:1px solid var(--ctl-bd);border-radius:8px;overflow:hidden;background:var(--surface)}
+.tseg button{border:0;background:none;padding:4px 10px;font-size:13px;cursor:pointer;color:var(--text-dim);display:inline-flex;gap:5px;align-items:center;border-right:1px solid var(--line)}
+.tseg button:last-child{border-right:0}
+.tseg button[aria-pressed="true"]{background:var(--t-info);color:var(--info-ink);font-weight:600}
+
+/* ---------- frames: shared ---------- */
+.ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.F{font:14px/1.45 var(--font);color:var(--text);text-align:left}
+.F a{color:var(--info);text-decoration:none}
+/* 1440 wide, or the page's own width when the window is narrower, so no frame is cut at its right edge */
+.app{display:flex;width:clamp(1180px,100%,1440px);min-height:760px;background:var(--bg)}
+.app.crop{width:320px;min-height:640px}
+.app.crop .ct{display:none}
+.scroller:has(>.crop){width:max-content;max-width:100%}
+
+/* spine: deep blue in both themes, like the built Spine.tsx */
+.sp{width:84px;flex:none;background:linear-gradient(180deg,#0b3a7a,#06101e);display:flex;flex-direction:column;align-items:center;padding:14px 0 12px;gap:2px;color:#bcd6ee}
+.sp .hv{margin:0 0 12px}
+.sp .si{width:74px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;border-radius:10px;font-size:12px;line-height:1.15;color:#bcd6ee;position:relative;text-align:center}
+.sp .si .ic{width:20px;height:20px}
+.sp .si.on{background:rgba(124,200,248,.2);color:#fff}
+.sp .si.on::before{content:"";position:absolute;left:-5px;top:10px;bottom:10px;width:3px;border-radius:2px;background:#7cc8f8}
+.sp .si.go{background:#38bdf8;color:#06101e;width:56px;border-radius:12px;font-weight:600;margin-bottom:8px}
+.sp .si .dt0{position:absolute;top:4px;right:14px;width:8px;height:8px;border-radius:50%;background:#f5c451;box-shadow:0 0 0 2px #0b3a7a}
+.sp .gr{flex:1}
+.sp .av{margin-top:6px}
+.av{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#38bdf8,#0b3a7a);color:#fff;font:600 12px/30px var(--font);text-align:center;flex:none}
+
+/* panel */
+.pn{width:236px;flex:none;background:var(--surface);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:14px 0 0}
+.pn .wm{display:flex;align-items:center;gap:8px;padding:0 16px 10px;font-weight:650;font-size:16px}
+.pn .wm span{color:var(--info)}
+.pill{font:500 12px/1 var(--mono);padding:4px 7px;border-radius:99px;color:var(--info-ink);background:var(--t-info);border:1px solid var(--l-info);margin-left:auto}
+.wsb{margin:0 12px 10px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;display:flex;gap:9px;align-items:center}
+.wsb .tg{width:26px;height:26px;border-radius:7px;background:var(--t-info);color:var(--info-ink);font:650 12px/26px var(--font);text-align:center;flex:none}
+.wsb .tt{display:flex;flex-direction:column;line-height:1.25;min-width:0;flex:1}
+.wsb .tt b{font-size:13px}.wsb .tt small{font-size:12px;color:var(--text-dim)}
+.pn .sec{font-size:15px;font-weight:650;padding:4px 20px 6px}
+.pg{font-size:12px;color:var(--text-dim);font-weight:600;padding:12px 20px 4px}
+.pi{display:flex;align-items:center;gap:9px;min-height:34px;padding:0 10px;margin:1px 10px;border-radius:8px;color:var(--text-dim);position:relative;font-size:13.5px}
+.pi .lb{flex:1;color:var(--text)}
+.pi.on{background:var(--t-info);color:var(--info)}.pi.on .lb{color:var(--info-ink);font-weight:600}
+.pi.on::before{content:"";position:absolute;left:-10px;top:7px;bottom:7px;width:3px;border-radius:2px;background:var(--info)}
+.pi.kid{min-height:30px;margin-left:36px;padding-left:10px;font-size:13px}
+.pnote{font-size:12px;color:var(--text-dim);padding:6px 20px 0;line-height:1.4}
+.pmeter{margin:4px 12px 8px;padding:9px 10px;border-radius:10px;background:var(--surface-2);font-size:12px;color:var(--text-dim)}
+.pmeter .row{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.pmeter b{color:var(--text)}
+.segs{display:flex;gap:3px}.segs i{flex:1;height:6px;border-radius:3px;background:var(--line)}
+.segs i.d{background:var(--ok)}.segs i.n{background:var(--info)}
+.pgrow{flex:1}
+.pf{border-top:1px solid var(--line);padding:10px 14px 12px;display:flex;flex-direction:column;gap:8px}
+.pf .who{display:flex;gap:9px;align-items:center}
+.pf .who span:not(.av){display:flex;flex-direction:column;line-height:1.25}.pf .who b{font-size:13px}.pf .who small{font-size:12px;color:var(--text-dim)}
+.pf .tseg button{padding:3px 8px;font-size:12px;flex:1;justify-content:center}
+
+/* content */
+.ct{flex:1;min-width:0;padding:18px 28px 32px;display:flex;flex-direction:column;gap:14px}
+.hd{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.hd .tl{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}
+.hd .cr{font-size:12px;color:var(--text-dim)}
+.hd .h{font-size:22px;font-weight:650;line-height:1.2}
+.hd .age{font:12px var(--mono);color:var(--text-dim)}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.tabs span{padding:7px 12px;font-size:13.5px;color:var(--text-dim);border-bottom:2px solid transparent;margin-bottom:-1px;display:inline-flex;gap:6px;align-items:center}
+.tabs span.on{color:var(--info-ink);border-color:var(--info);font-weight:600}
+
+/* the setup strip: the proposal's spine of meaning */
+.ss{display:flex;border:1px solid var(--line);border-radius:12px;background:var(--surface);overflow:hidden}
+.ss .st0{flex:1;min-width:0;display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-right:1px solid var(--line-soft);position:relative}
+.ss .st0 .tx{display:flex;flex-direction:column;min-width:0;line-height:1.3}
+.ss .st0 b{font-size:13.5px;font-weight:600}
+.ss .st0 small{font-size:12px;color:var(--text-dim)}
+.ss .st0.nx{background:var(--t-info);box-shadow:inset 0 -3px 0 var(--info)}
+.ss .st0.nx small{color:var(--info-ink)}
+.ss .st0.off b{color:var(--text-dim);font-weight:500}
+.ss .end{display:flex;flex-direction:column;justify-content:center;align-items:flex-end;padding:8px 14px;gap:2px;font-size:12px;color:var(--text-dim);flex:none}
+.ss .end b{font-size:13px;color:var(--text)}
+.ss.done{align-items:center;padding:8px 14px;gap:10px;font-size:13px}
+.sm{width:22px;height:22px;border-radius:50%;flex:none;display:inline-flex;align-items:center;justify-content:center;border:2px solid var(--ctl-bd);color:var(--text-dim);font:600 12px var(--font)}
+.sm.d{background:var(--ok);border-color:var(--ok);color:var(--surface)}
+.sm.n{border-color:var(--info);color:var(--info)}
+.sm.n::after{content:"";width:8px;height:8px;border-radius:50%;background:var(--info)}
+.sm.u{border-style:dashed}
+.sm .ic{width:13px;height:13px;stroke-width:2.6}
+
+/* the lead: every page opens with its next action */
+.lead{display:flex;gap:16px;align-items:center;padding:14px 18px;border-radius:12px;background:var(--t-info);border:1px solid var(--l-info);flex-wrap:wrap}
+.lead .lt{flex:1;min-width:240px;display:flex;flex-direction:column;gap:2px}
+.lead .lt .k{font-size:12px;color:var(--info-ink);font-weight:600}
+.lead .lt b{font-size:16px;font-weight:600}
+.lead .lt span{font-size:13px;color:var(--text-dim)}
+.lead.ok{background:var(--t-ok);border-color:color-mix(in srgb,var(--ok) 35%,var(--line))}
+.lead.ok .lt .k{color:var(--ok-ink)}
+.lead.wn{background:var(--t-warn);border-color:color-mix(in srgb,var(--warn-ink) 40%,var(--line))}
+.lead.wn .lt .k{color:var(--warn-ink)}
+.acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+.cd{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;min-width:0}
+.cd .ch{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.cd .ch b{font-size:15px;font-weight:600}
+.cd .ch .r{margin-left:auto}
+.cd p{margin:0 0 8px;font-size:13.5px;color:var(--text-dim)}
+.cd.dash{border-style:dashed;background:transparent}
+.g2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.g3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.g21{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:14px}
+.col{display:flex;flex-direction:column;gap:14px;min-width:0}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;font-size:13.5px}
+.kv dt{color:var(--text-dim)}.kv dd{margin:0}
+.dim{color:var(--text-dim)}.faint{color:var(--text-faint)}
+.sm12{font-size:12px}
+.mn{font-family:var(--mono);font-size:12.5px}
+
+.b{height:32px;padding:0 12px;border-radius:8px;border:1px solid var(--ctl-bd);background:var(--surface);color:var(--text);font:600 13px var(--font);display:inline-flex;align-items:center;gap:6px;white-space:nowrap;cursor:default}
+.b.p{background:var(--info);color:var(--ctl-onac);border-color:var(--info)}
+.b.q{border-color:transparent;background:none;color:var(--info);padding:0 6px}
+.b.d{color:var(--bad-ink)}
+.b.s{height:28px;font-size:12.5px;padding:0 10px}
+.b[aria-disabled="true"]{opacity:.55}
+.c{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--surface-2);color:var(--text-dim);white-space:nowrap;display:inline-flex;gap:4px;align-items:center;line-height:1.5}
+.c.ok{background:var(--t-ok);color:var(--ok-ink)}
+.c.wn{background:var(--t-warn);color:var(--warn-ink)}
+.c.bd{background:var(--t-bad);color:var(--bad-ink)}
+.c.in{background:var(--t-info);color:var(--info-ink)}
+.c.pa{background:var(--t-pa);color:var(--paused-ink)}
+.c.ln{background:none;border:1px solid var(--line)}
+.c .ic{width:12px;height:12px}
+.st{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.st .ic{width:14px;height:14px}
+.st.ok{color:var(--ok-ink)}.st.wn{color:var(--warn-ink)}.st.bd{color:var(--bad-ink)}.st.in{color:var(--info-ink)}.st.nu{color:var(--text-dim)}
+.sg{display:inline-flex;border:1px solid var(--ctl-bd);border-radius:8px;overflow:hidden;background:var(--surface);flex:none}
+.sg span{padding:5px 11px;font-size:13px;color:var(--text-dim);border-right:1px solid var(--line);white-space:nowrap;display:inline-flex;gap:5px;align-items:center}
+.sg span:last-child{border-right:0}
+.sg span.on{background:var(--t-info);color:var(--info-ink);font-weight:600}
+.sg span.x{opacity:.5}
+.fld{display:flex;flex-direction:column;gap:4px;font-size:13px;min-width:0}
+.fld>span{color:var(--text-dim);font-weight:600;font-size:12.5px}
+.inp{height:34px;border:1px solid var(--ctl-bd);border-radius:8px;background:var(--surface);display:flex;align-items:center;padding:0 10px;font-size:13.5px;color:var(--text-faint);gap:8px;min-width:0}
+.inp.v{color:var(--text)}
+.inp .ic{color:var(--text-dim)}
+.chk{display:inline-flex;align-items:center;gap:8px;font-size:13.5px}
+.chk i{width:16px;height:16px;border-radius:4px;border:1.5px solid var(--ctl-bd);flex:none;display:inline-flex;align-items:center;justify-content:center}
+.chk i.y{background:var(--info);border-color:var(--info);color:var(--ctl-onac)}
+.chk i .ic{width:11px;height:11px;stroke-width:3}
+.chk.x{opacity:.55}
+.hint{font-size:12.5px;color:var(--text-dim)}
+.bn{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-radius:10px;font-size:13px;border:1px solid var(--line);background:var(--surface-2)}
+.bn.in{background:var(--t-info);border-color:var(--l-info)}
+.bn.wn{background:var(--t-warn);border-color:color-mix(in srgb,var(--warn-ink) 40%,var(--line))}
+.bn b{display:block}
+.bn .ic{margin-top:2px}
+
+/* tables; .rs turns rows into cards on the phone */
+.tw{border:1px solid var(--line);border-radius:10px;overflow-x:auto;background:var(--surface)}
+table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
+.t th{font-size:12px;font-weight:600;color:var(--text-dim);text-align:left;padding:8px 10px;background:var(--surface-2);border-bottom:1px solid var(--line);white-space:nowrap}
+.t td{padding:8px 10px;border-bottom:1px solid var(--line-soft);vertical-align:middle}
+.t tr:last-child td{border-bottom:0}
+.t .n{text-align:right}
+.t tr.need td{background:color-mix(in srgb,var(--warn-ink) 6%,var(--surface))}
+.t tr.tot td{font-weight:600;background:var(--surface-2)}
+.t td small{display:block;font-size:12px;color:var(--text-dim)}
+
+/* wizard */
+.wz{display:flex;gap:6px;flex-wrap:wrap}
+.wz span{display:inline-flex;gap:6px;align-items:center;font-size:12.5px;color:var(--text-dim);padding:3px 10px 3px 4px;border-radius:99px;border:1px solid var(--line)}
+.wz span i{width:20px;height:20px;border-radius:50%;background:var(--surface-2);font:600 12px/20px var(--font);text-align:center;font-style:normal}
+.wz span.d i{background:var(--ok);color:var(--surface)}
+.wz span.on{border-color:var(--info);color:var(--info-ink);font-weight:600}
+.wz span.on i{background:var(--info);color:var(--ctl-onac)}
+.opt{border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;gap:10px;align-items:flex-start;font-size:13.5px;background:var(--surface)}
+.opt.on{border-color:var(--info);background:var(--t-info)}
+.opt.x{opacity:.6}
+.opt .rd{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--ctl-bd);flex:none;margin-top:2px}
+.opt.on .rd{border:5px solid var(--info)}
+.opt b{display:block;font-size:13.5px}
+.opt small{font-size:12.5px;color:var(--text-dim);display:block}
+.sheet{border:1px solid var(--line);border-radius:14px;background:var(--surface);box-shadow:0 12px 32px rgba(11,58,122,.16);padding:16px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.sheet .sh{display:flex;align-items:center;gap:8px}.sheet .sh b{font-size:16px;flex:1}
+
+/* charts */
+.chart svg{display:block;width:100%;height:auto}
+.chart text{font:12px var(--font);fill:var(--text-dim)}
+.chart .gl{stroke:var(--line-soft);stroke-width:1}
+.chart .lab{fill:var(--text);font-weight:600}
+.lg{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12.5px;color:var(--text-dim)}
+.lg i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.sent{font-size:20px;font-weight:600;line-height:1.35}
+.sent em{font-style:normal;color:var(--info-ink)}
+
+/* run group columns */
+.cols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.mtr{display:flex;gap:8px;align-items:center;font-size:13px}
+.bar{flex:1;height:6px;border-radius:3px;background:var(--line);overflow:hidden;display:flex}
+.bar i{display:block;height:100%;background:var(--info)}
+
+/* ---------- phone ---------- */
+.ph{width:390px;max-width:100%;border:1px solid var(--line);border-radius:28px;overflow:hidden;background:var(--bg);position:relative}
+.phd{height:52px;background:#0b3a7a;color:#eef4fa;display:flex;align-items:center;gap:10px;padding:0 14px}
+.phd b{font-size:15px;font-weight:650;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.phd .wsc{font-size:12px;padding:3px 8px;border-radius:99px;background:rgba(124,200,248,.18);color:#cfe9fb;border:1px solid rgba(124,200,248,.45);white-space:nowrap}
+.pss{display:flex;flex-direction:column;gap:6px;padding:10px 14px;background:var(--surface);border-bottom:1px solid var(--line);font-size:12.5px}
+.pss .row{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.pss b{font-size:13px}
+.pss a{font-weight:600}
+.pb{padding:14px;display:flex;flex-direction:column;gap:12px}
+.ph .ct{padding:0;gap:12px}
+.ph .hd .h{font-size:20px}
+.ph .g2,.ph .g3,.ph .g21,.ph .cols{grid-template-columns:minmax(0,1fr)}
+.ph .ss{display:none}
+.ph .lead{padding:12px 14px}
+.ph .lead .lt{min-width:0}
+.ph .lead .acts{width:100%}
+.ph .cd{padding:12px}
+/* a long count chip in a card's head wraps inside the card on a phone rather than running into its edge (S6b phone) */
+.ph .cd .ch .r{min-width:0;max-width:100%}
+.ph .cd .ch .r .c{white-space:normal;border-radius:10px}
+.ph .tw{border:0;background:none;overflow:visible}
+.ph .rs thead{display:none}
+.ph .rs,.ph .rs tbody,.ph .rs tr,.ph .rs td{display:block;width:100%}
+.ph .rs tr{border:1px solid var(--line);border-radius:10px;background:var(--surface);margin-bottom:8px;padding:6px 0}
+/* label left, everything else grouped right; a cell's small second line gets its own line, right-aligned */
+.ph .rs td{display:flex;justify-content:flex-end;gap:4px 12px;border:0;padding:4px 12px;text-align:right;align-items:flex-start;flex-wrap:wrap}
+.ph .rs td>*{text-align:right}
+.ph .rs td::before{content:attr(data-l);color:var(--text-dim);font-size:12px;text-align:left;flex:none;margin-right:auto}
+.ph .rs td:first-child{font-weight:600;justify-content:flex-start;text-align:left}
+.ph .rs td:first-child::before{display:none}
+.ph .rs td:empty{display:none}
+.ph .rs td small{text-align:right;flex-basis:100%}
+.ph .rs td:first-child small{flex-basis:auto;text-align:left}
+/* a dash with its reason on one line (S3b's read-grant cells) */
+.t td .nw{white-space:nowrap}.t td .nw small{display:inline;flex-basis:auto}
+.ph .hd:has(.acts) .tl{flex-basis:100%}
+.ph .tabs{flex-wrap:nowrap;overflow:hidden}
+.ph .tabs span{padding:7px 7px;font-size:13px;white-space:nowrap}
+.ph .sg{flex-wrap:wrap}
+.ph .kv{grid-template-columns:1fr}
+.ph .kv dd{margin-bottom:6px}
+.ph .hide-ph{display:none}
+.show-ph{display:none}
+.ph .show-ph{display:revert}
+.ph.dr{height:760px}
+.scrim{position:absolute;inset:52px 0 0 0;background:rgba(6,16,30,.5)}
+.drw{position:absolute;left:0;top:0;bottom:0;width:330px;display:flex;background:var(--surface);box-shadow:0 10px 30px rgba(0,0,0,.35);z-index:2}
+.drw .sp{width:74px}.drw .sp .si{width:66px}
+.drw .pn{flex:1;width:auto;border-right:0}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<linearGradient id="g-hive-b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#7dd3fc"/></linearGradient>
+<symbol id="hive" viewBox="0 0 44 44"><g fill="url(#g-hive-b)"><path d="M22 4l6.5 3.75v7.5L22 19l-6.5-3.75v-7.5z"/><path d="M11 22.5l6.5 3.75v7.5L11 37.5l-6.5-3.75v-7.5z" opacity=".85"/><path d="M33 22.5l6.5 3.75v7.5L33 37.5l-6.5-3.75v-7.5z" opacity=".85"/><path d="M22 22.5l5 2.9v5.8l-5 2.9-5-2.9v-5.8z" opacity=".7"/><path d="M11 6.5l4.5 2.6v5.2L11 16.9l-4.5-2.6V9.1z" opacity=".55"/><path d="M33 6.5l4.5 2.6v5.2L33 16.9l-4.5-2.6V9.1z" opacity=".55"/><path d="M22 36l3.5 2v4L22 44l-3.5-2v-4z" opacity=".45"/></g></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-overview" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5"/><rect x="13.5" y="11" width="7" height="9.5" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
+<symbol id="i-work" viewBox="0 0 24 24"><rect x="5" y="7.5" width="14" height="11" rx="3"/><path d="M12 4v3.5M9 12.5v1M15 12.5v1"/></symbol>
+<symbol id="i-automate" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+<symbol id="i-capacity" viewBox="0 0 24 24"><path d="M12 3.5 3.5 8 12 12.5 20.5 8Z"/><path d="m3.5 12 8.5 4.5 8.5-4.5"/><path d="m3.5 16 8.5 4.5 8.5-4.5"/></symbol>
+<symbol id="i-config" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+<symbol id="i-admin" viewBox="0 0 24 24"><path d="M12 3.5 19.5 6v5.5c0 4.5-3.2 8-7.5 9-4.3-1-7.5-4.5-7.5-9V6Z"/><path d="m9 12 2.2 2.2L15.5 10"/></symbol>
+<symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 0 1 4.8 1c0 1.7-2.4 2-2.4 3.5"/><path d="M12 17.2v.1"/></symbol>
+<symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></symbol>
+<symbol id="i-repo" viewBox="0 0 24 24"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5Z"/><path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3"/></symbol>
+<symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 8.5-8.5M16 7l2.5 2.5M14 9l2 2"/></symbol>
+<symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0Z"/><path d="M12 17v4"/></symbol>
+<symbol id="i-people" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5a5.5 5.5 0 0 1 11 0"/><path d="M16 5.5a3 3 0 0 1 0 6M18.5 19.5a5 5 0 0 0-2.5-4.3"/></symbol>
+<symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+<symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4 21 19.5H3Z"/><path d="M12 10v4.5M12 17v.1"/></symbol>
+<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.1"/></symbol>
+<symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol>
+<symbol id="i-ext" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+<symbol id="i-chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+<symbol id="i-chevd" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></symbol>
+<symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10Z"/></symbol>
+<symbol id="i-sys" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="12" rx="2"/><path d="M9 20h6M12 16.5V20"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol>
+<symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18M10.6 6.1A9.8 9.8 0 0 1 12 6c5 0 8.5 4.5 9.5 6-.5.8-1.5 2.1-2.9 3.3M6.6 6.6C4.6 7.9 3.2 9.8 2.5 12c1 1.5 4.5 6 9.5 6a9.6 9.6 0 0 0 4.4-1.1M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
+<symbol id="i-play" viewBox="0 0 24 24"><path d="M7 5v14l11-7Z"/></symbol>
+<symbol id="i-env" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M3.5 9h17M7 7h.1M9.5 7h.1"/></symbol>
+<symbol id="i-person" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/></symbol>
+<symbol id="i-building" viewBox="0 0 24 24"><path d="M4 20V6.5L12 3.5l8 3V20"/><path d="M9 20v-4.5h6V20M8.5 9.5h1M14.5 9.5h1M8.5 12.5h1M14.5 12.5h1"/></symbol>
+<symbol id="i-counts" viewBox="0 0 24 24"><path d="M4 19.5h16"/><path d="M6.5 16v-4M10.5 16V8M14.5 16v-6M18.5 16V5"/></symbol>
+<symbol id="i-sizes" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2.5"/><path d="M9 4v16M4 9h5M4 14h5"/></symbol>
+<symbol id="i-cal" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M8.5 3v4M15.5 3v4"/></symbol>
+<symbol id="i-qa" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="12" rx="2"/><path d="m9 10.5 2 2 4-4M9 20h6"/></symbol>
+</defs></svg>
+
+<div class="topbar"><div class="in">
+  <b>Config proposal E · Guided setup</b>
+  <span class="sp0"></span>
+  <span class="sm12 dim">Theme for the page and every frame</span>
+  <div class="tseg" role="group" aria-label="Theme" data-tseg>
+    <button type="button" data-theme-set="light"><svg class="ic"><use href="#i-sun"/></svg>Light</button><button type="button" data-theme-set="dark"><svg class="ic"><use href="#i-moon"/></svg>Dark</button><button type="button" data-theme-set="system" aria-pressed="true"><svg class="ic"><use href="#i-sys"/></svg>System</button>
+  </div>
+</div></div>
+
+<main class="doc">
+<p class="kick">CONFIG-MOCKUPS-E · part of #2157 · drawn 2026-10-23 · not picked</p>
+<h1>Config, Secrets, Admin counts and QA environments: proposal E, Guided setup</h1>
+<p class="lede">One of five competing proposals (A to E) for BGD's new Config section, the Secrets scopes, Admin's role-gated pages, Platform counts over time and QA targets with environments. BGD picks one. Every frame below is drawn at desktop width (1440, or this page's width when the window is narrower) and at 390 wide, and the theme control at the top repaints all of them light, dark or as the system says.</p>
+
+<div class="rules">
+  <b>What every frame obeys</b>
+  <ul>
+    <li>PICKS.md: nothing below 12px, no all-caps, no letter-spacing, a light / dark / system toggle in the panel's user foot, and honesty: an unknown figure is a dash with its reason, never 0.</li>
+    <li>The V2 Sky spine (navigation.html): an 84px spine of sections, a 236px panel of the section's pages, Submit as the sky button, a phone header in the spine colour. The tokens are the console's own (<code>styles.css</code>), light and dark.</li>
+    <li>Example data only. The user is Operator; hosts are <code>swarm.example.com</code> and <code>app.example.com</code>. A stored value is never drawn: it is <code>••••</code>, and the frames never show one.</li>
+  </ul>
+</div>
+
+<section class="idea" aria-label="Proposal E: idea, pros and risks">
+  <div><h4>Idea</h4><p>Config is led by what is missing. A setup strip runs across the top of every Config page, <b>GitHub connected → Repositories chosen → Secrets set → People invited</b>, each step measured from a live read, and every page opens with one sentence and one button: its next action. Adding a secret is a four-step wizard (scope → destination → consumer or grant → one-time form). Empty and half-done states are drawn first, because that is where a new workspace spends its first hour. Admin pages borrow the same lead: each opens with what needs an admin now. Platform counts' Over time opens on a sentence, then the chart, then the table.</p></div>
+  <div><h4>Pros</h4><ul>
+    <li>A new workspace admin never has to know the order: the strip and the lead say it, and a "needed, not set" row names who needs the secret.</li>
+    <li>The wizard asks the questions in the order the design resolves them (scope, then destination, then who reads it), so a GitHub Actions secret cannot be set in the wrong place.</li>
+    <li>Half-done states are explicit: a member is told which step is an admin's, rather than finding a disabled button.</li>
+    <li>One sentence above every chart and table means the answer is readable before the figure.</li>
+  </ul></div>
+  <div><h4>Risks</h4><ul>
+    <li>The strip costs about 56px on every Config page, even when finished. It folds to a one-line "Setup complete" bar, but it is still there.</li>
+    <li>"Secrets set" needs a definition of "needed": this proposal counts a secret that something registered names (an MCP server, a QA target sign-in, the TypeSafe slot) and is not stored. That read does not exist yet.</li>
+    <li>A wizard is slower for an admin who sets ten secrets in a row; the one-time form keeps a "Set another in this place" shortcut to soften it.</li>
+    <li>"People invited" is a softer step than the other three; in a personal workspace it is absent, and the strip has three steps.</li>
+  </ul></div>
+</section>
+
+<ul class="toc">
+  <li><a href="#s1">S1 Navigation</a></li><li><a href="#s2">S2 GitHub access</a></li><li><a href="#s3">S3 Repositories</a></li><li><a href="#s4">S4 Secrets</a></li><li><a href="#s5">S5 MCP servers, People and roles</a></li><li><a href="#s6">S6 Workspace Settings</a></li><li><a href="#s7">S7 Platform secrets</a></li><li><a href="#s8">S8 Platform counts</a></li><li><a href="#s9">S9 QA environments</a></li><li><a href="#s10">S10 Every Admin page</a></li>
+</ul>
+
+<!-- ==================== S1 ==================== -->
+<h2 id="s1"><span class="n">S1</span>Navigation: Config in the spine, the panel and the phone menu</h2>
+<p>Config sits between Capacity and Admin. While setup is unfinished the spine item carries an amber dot and the panel carries the setup meter; each page in the panel shows its own state (done, a count, or what is missing). Settings is reached from the avatar at the spine's foot and now holds only Profile.</p>
+<div class="pair">
+  <figure class="fr"><div class="scroller" data-f="nav-platform"></div><figcaption><b>S1a · Platform admin, group workspace.</b> Config open. All six pages; Secrets shows "3 to set". Admin is in the spine.</figcaption></figure>
+  <figure class="fr"><div class="scroller" data-f="nav-admin-platform"></div><figcaption><b>S1b · Platform admin, Admin open.</b> Two groups: the workspaces they administer, then the platform's own pages. Under them, "In Automate" only links to Automate › Schedules and Approvals; Admin draws neither.</figcaption></figure>
+  <figure class="fr"><div class="scroller" data-f="nav-admin-ws"></div><figcaption><b>S1c · Workspace admin, Admin open.</b> Only People and roles and Workspaces you admin, scoped to the workspaces they admin, plus the two links into Automate. No platform page, no lock, no disabled row.</figcaption></figure>
+  <figure class="fr"><div class="scroller" data-f="nav-member"></div><figcaption><b>S1d · Member.</b> No Admin in the spine. Config lists People and roles: every member reads it, only admins change it (BGD, 2026-10-24 00:31Z; S5g, S5h). Here someone else holds admin, so the strip's step 4, People invited, is done: 3 of 4, where S1a's lone admin reads 2 of 4. S4h shows how a member meets an admin's step.</figcaption></figure>
+  <figure class="fr"><div class="scroller" data-f="nav-personal"></div><figcaption><b>S1e · Personal workspace.</b> No People and roles, and the strip has three steps: there is nobody to invite. Drawn for the platform admin in their own workspace, so Admin stays in the spine; a member's personal workspace has no Admin, as in S1d.</figcaption></figure>
+</div>
+<div class="pair">
+  <figure class="fr"><div data-f="nav-phone-platform"></div><figcaption><b>S1f · Phone menu, platform admin.</b> The header in the spine colour opens a drawer that holds both columns; the setup meter rides along.</figcaption></figure>
+  <figure class="fr"><div data-f="nav-phone-member"></div><figcaption><b>S1g · Phone menu, member.</b> No Admin item; People and roles is listed, as in S1d.</figcaption></figure>
+</div>
+
+<!-- ==================== S2 ==================== -->
+<h2 id="s2"><span class="n">S2</span>Config › GitHub access</h2>
+<p>The page from Work › Access, moved. Not connected is the page's first state, not an error: the lead is the one button that starts setup.</p>
+<figure class="fr"><div class="scroller" data-f="gh-none-d"></div><figcaption><b>S2a · Not connected, desktop.</b> Step 1 of the strip is the next step; steps 2 to 4 wait for it, and say so rather than looking broken.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="gh-conn-d"></div><figcaption><b>S2b · Connected, desktop.</b> The connection (from Access.tsx: "@operator · GitHub App · user token · active", renewal line, Disconnect GitHub), where the App is installed, and the three rules of what SwarmCloud may do as you. The lead moves on to step 2.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="gh-choose-d"></div><figcaption><b>S2c · Choose repositories, desktop.</b> Owners on the left, the selected owner's repositories on the right with Not chosen / Read / Write and push ability shown before Write (the onboarding pick 3A). A foot bar counts what changed; the lead offers the next page.</figcaption></figure>
+<div class="pair">
+  <figure class="fr"><div data-f="gh-none-p"></div><figcaption><b>S2d · Not connected, phone.</b></figcaption></figure>
+  <figure class="fr"><div data-f="gh-conn-p"></div><figcaption><b>S2e · Connected, phone.</b></figcaption></figure>
+  <figure class="fr"><div data-f="gh-choose-p"></div><figcaption><b>S2f · Choose repositories, phone.</b> One owner at a time, picked from a list.</figcaption></figure>
+</div>
+
+<!-- ==================== S3 ==================== -->
+<h2 id="s3"><span class="n">S3</span>Config › Repositories</h2>
+<p>"Repositories SwarmCloud may reach as you" leads, because it is what the strip's step 2 measures. <b>Add new repository</b> goes to GitHub access › Choose repositories. Below it, repository management: the registered repositories as cards (the picked card layout), with QA targets as the page's second tab.</p>
+<figure class="fr"><div class="scroller" data-f="repos-d"></div><figcaption><b>S3a · Repositories, desktop.</b> A chosen repository that is not registered yet is a dashed card with Register: a half-done state drawn in place.</figcaption></figure>
+<div class="pair">
+  <figure class="fr"><div data-f="repos-p"></div><figcaption><b>S3b · Repositories, phone.</b> Rows become cards.</figcaption></figure>
+  <figure class="fr"><div data-f="repos-empty-p"></div><figcaption><b>S3c · No repository yet, phone.</b> The empty state names the step it waits for. Its lead carries Add new repository, so the header does not repeat it.</figcaption></figure>
+</div>
+
+<!-- ==================== S4 ==================== -->
+<h2 id="s4"><span class="n">S4</span>Config › Secrets</h2>
+<p>The scope picker is <b>Workspace · Yours · Repository</b>. When one name exists in several scopes, yours wins, then the repository's, then the workspace's, and the row shows the override. Each list carries "needed, not set" rows for secrets something registered names, which is what the strip's step 3 counts. Every Set opens a one-time form; no value is ever shown again.</p>
+<figure class="fr"><div class="scroller" data-f="sec-ws-d"></div><figcaption><b>S4a · Workspace scope, desktop.</b> For agents (the store and who it is granted to, with an override shown), Keys for agents and MCP, and GitHub token status, top to bottom. Two rows are needed and not set here; the strip's third is a repository's QA sign-in (S4b).</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="sec-repo-d"></div><figcaption><b>S4b · One repository, Agents, desktop.</b> The Repository scope with its destination switch on Agents: secrets released only to agents that clone it, Sign-in for QA, its GitHub token. Who may set each is shown where the button would be.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="sec-repo-actions-d"></div><figcaption><b>S4b2 · The same repository, GitHub Actions, desktop.</b> The switch on GitHub Actions: repository secrets and the <code>repo-secrets</code> environment (main only), "Create on GitHub ↗" and Check rule.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="sec-wiz-d"></div><figcaption><b>S4c · Add a secret, desktop.</b> The wizard opens as one side sheet over the page: scope → destination (with environment) → consumer or grant → one-time form. Drawn at step 2, the destination; its other three steps follow on their own.</figcaption></figure>
+<div class="pair">
+  <figure class="fr"><div data-f="sec-wiz-1"></div><figcaption><b>S4c1 · Step 1, scope.</b></figcaption></figure>
+  <figure class="fr"><div data-f="sec-wiz-3"></div><figcaption><b>S4c3 · Step 3, who reads it.</b> On the GitHub Actions path the environment's rule decides who reads it, so this step is the name; on the Agents path it is where the agents are ticked, named here in one line rather than drawn.</figcaption></figure>
+  <figure class="fr"><div data-f="sec-wiz-4"></div><figcaption><b>S4c4 · Step 4, the one-time form.</b></figcaption></figure>
+</div>
+<figure class="fr"><div class="scroller" data-f="sec-form-d"></div><figcaption><b>S4d · The one-time set form, desktop.</b> Opened from a link a tool minted (or the wizard's last step). Ten minutes, one use, the token already out of the address bar, never prefilled.</figcaption></figure>
+<div class="pair">
+  <figure class="fr"><div data-f="sec-yours-p"></div><figcaption><b>S4e · Yours, phone.</b> Personal secrets and browser sessions; the override reads "overrides the workspace's".</figcaption></figure>
+  <figure class="fr"><div data-f="sec-actions-p"></div><figcaption><b>S4f · A repository's GitHub Actions secrets, phone.</b> The same switch as S4b2.</figcaption></figure>
+  <figure class="fr"><div data-f="sec-form-p"></div><figcaption><b>S4g · One-time form, phone.</b></figcaption></figure>
+  <figure class="fr"><div data-f="sec-member-p"></div><figcaption><b>S4h · A member's Secrets, phone.</b> The strip's step 3 is an admin's: the lead says so and points to what the member can do, rather than drawing disabled buttons.</figcaption></figure>
+  <figure class="fr"><div data-f="sec-empty-p"></div><figcaption><b>S4i · Empty state, phone.</b> A new workspace: nothing stored, nothing needed yet, and the three things people usually set first.</figcaption></figure>
+</div>
+<p class="hint">The keys for agents and MCP and GitHub token status are sections of S4a; they are not drawn a second time. On the phone they stack under the list the same way.</p>
+
+<!-- ==================== S5 ==================== -->
+<h2 id="s5"><span class="n">S5</span>Config › MCP servers, Config › People and roles, Admin › People and roles</h2>
+<p>MCP servers and People and roles move from Settings unchanged in body; only the lead and the strip are new. Config's People and roles is this workspace's, in a group workspace only: every member and viewer reads it, and only a workspace admin or platform admin changes it (BGD, 2026-10-24 00:31Z). Admin's People and roles is the cross-workspace view.</p>
+<figure class="fr"><div class="scroller" data-f="mcp-d"></div><figcaption><b>S5a · Config › MCP servers, desktop.</b> As built (registered servers, credential column, Register an MCP server); the lead names the server whose credential is missing.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="cpeople-d"></div><figcaption><b>S5b · Config › People and roles, workspace or platform admin, desktop.</b> As built (roles in this workspace, own roles, set the default, role events), led by the strip's step 4. An admin sees the change controls.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="apeople-d"></div><figcaption><b>S5c · Admin › People and roles, platform admin, desktop.</b> Every person against every workspace; the lead is who is waiting for an admin.</figcaption></figure>
+<div class="pair">
+  <figure class="fr"><div data-f="mcp-p"></div><figcaption><b>S5d · MCP servers, phone.</b></figcaption></figure>
+  <figure class="fr"><div data-f="cpeople-p"></div><figcaption><b>S5e · Config › People and roles, admin, phone.</b></figcaption></figure>
+  <figure class="fr"><div data-f="apeople-ws-p"></div><figcaption><b>S5f · Admin › People and roles, workspace admin, phone.</b> Only the two workspaces they administer: of S5c's two requests, only lee's (to join Example Labs) is theirs to answer.</figcaption></figure>
+</div>
+<figure class="fr"><div class="scroller" data-f="cpeople-member-d"></div><figcaption><b>S5g · Config › People and roles, member, desktop.</b> S5b with its controls taken off: the roster and each person's role, read only, as built ("Only this workspace's admins change roles"). No Give a person a role, no role switch, no Remove. A viewer sees the same. The workspace is S1d's, where 6 people hold a role.</figcaption></figure>
+<div class="pair">
+  <figure class="fr"><div data-f="cpeople-member-p"></div><figcaption><b>S5h · Config › People and roles, member, phone.</b></figcaption></figure>
+</div>
+
+<!-- ==================== S6 ==================== -->
+<h2 id="s6"><span class="n">S6</span>Config › Workspace Settings</h2>
+<p>Settings and Workspace setup (today's Work › Setup, the full checklist behind the strip) on one page, and for a platform admin only a third part, Add a new workspace (BGD, 2026-10-23: the rule of today's Admin › Tenants › New workspace). A workspace admin sees their own workspaces' settings with no such tab or button. A member asks for a workspace as today, through the setup checklist's Request your workspace step.</p>
+<figure class="fr"><div class="scroller" data-f="wss-d"></div><figcaption><b>S6a · Settings, desktop.</b> Today's Settings › Workspace (code intelligence, off by default) and the workspace's identity.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="wsetup-d"></div><figcaption><b>S6b · Workspace setup, desktop.</b> The checklist the strip summarises: every step id the API serves, its status word and the failing step's copy inline. Show on Overview stays.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="wsnew-d"></div><figcaption><b>S6c · Add a new workspace, desktop.</b> A platform admin's tab only: the same form as Admin › Tenants › New workspace; the progress steps are NewWorkspace.tsx's.</figcaption></figure>
+<div class="pair">
+  <figure class="fr"><div data-f="wss-p"></div><figcaption><b>S6d · Settings, phone, workspace admin.</b> Two tabs: no Add a new workspace.</figcaption></figure>
+  <figure class="fr"><div data-f="wsetup-p"></div><figcaption><b>S6e · Workspace setup, phone.</b></figcaption></figure>
+  <figure class="fr"><div data-f="wsnew-p"></div><figcaption><b>S6f · Add a new workspace, phone.</b></figcaption></figure>
+</div>
+
+<!-- ==================== S7 ==================== -->
+<h2 id="s7"><span class="n">S7</span>Admin › Platform secrets (platform admins only, status only)</h2>
+<p>Live status from Secret Manager metadata: set or not, enabled versions, age of the newest, and what manages it. There is no Set, no value, no length. A name in the catalogue that does not exist reads "not declared".</p>
+<figure class="fr"><div class="scroller" data-f="psec-d"></div><figcaption><b>S7a · Platform secrets, desktop.</b> The lead names the one that needs a look; two versions means a rotation is in its grace.</figcaption></figure>
+<div class="pair"><figure class="fr"><div data-f="psec-p"></div><figcaption><b>S7b · Platform secrets, phone.</b></figcaption></figure></div>
+
+<!-- ==================== S8 ==================== -->
+<h2 id="s8"><span class="n">S8</span>Admin › Platform counts, with Over time</h2>
+<p>The count stays a priced button that never refreshes itself. Over time opens on one sentence, then the chart, then the table. Agents are counted by submission day, retries apart; cost is "Estimated cost (list price, not a bill)", an "at least" figure with how many agents reported.</p>
+<figure class="fr"><div class="scroller" data-f="counts-d"></div><figcaption><b>S8a · Platform counts, desktop.</b> Today's per-state count on top (unchanged), Over time below. The chart uses the console's series colours with a legend, direct labels and the table under it, so no series is told by colour alone; retries are a chart of their own, not a stack segment.</figcaption></figure>
+<div class="pair"><figure class="fr"><div data-f="counts-p"></div><figcaption><b>S8b · Platform counts, phone.</b> The sentence leads; the table's rows become cards.</figcaption></figure>
+<figure class="fr"><div data-f="counts-unread-p"></div><figcaption><b>S8c · Not counted yet, phone.</b> Nothing is counted until a button is pressed, and each says what pressing it costs: the per-state count and Over time are read apart.</figcaption></figure></div>
+
+<!-- ==================== S9 ==================== -->
+<h2 id="s9"><span class="n">S9</span>QA targets with environments (Config › Repositories › QA targets)</h2>
+<figure class="fr"><div class="scroller" data-f="qa-d"></div><figcaption><b>S9a · A target with environments, desktop.</b> Each environment has its host, host approval and credential state, ticked for the run unless it cannot run, in which case it says why. Run sends the ticked names and nothing else. The lead is the environment that still needs something.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="qarun-d"></div><figcaption><b>S9b · A QA run group, desktop.</b> One column per environment: workflow state, coverage, new routes found this run, findings, issues filed and gate refusals. Above them, routes seen on one environment only; below, "new since last run" with Promote for an admin. Drawn after S9a's lead is done (Studio production's credential set), so both environments ran and the strip counts two secrets still needed.</figcaption></figure>
+<div class="pair">
+  <figure class="fr"><div data-f="qa-p"></div><figcaption><b>S9c · Target card, phone.</b></figcaption></figure>
+  <figure class="fr"><div data-f="qarun-p"></div><figcaption><b>S9d · Run group, phone.</b> The environments become a switch instead of columns; the one-environment-only routes stay above it.</figcaption></figure>
+</div>
+
+<!-- ==================== S10 ==================== -->
+<h2 id="s10"><span class="n">S10</span>Every Admin page, in this proposal's style</h2>
+<p>Every Admin page opens with what needs an admin now, in one sentence with one button, and a green "nothing waiting" lead when that is the truth. Which admin sees which page:</p>
+<div class="dt"><table class="doct">
+<thead><tr><th>Admin page</th><th>Platform admin</th><th>Workspace admin</th><th>Member or viewer</th><th>Drawn in</th></tr></thead>
+<tbody>
+<tr><td>People and roles</td><td class="yes">every person, every workspace</td><td class="yes">only the workspaces they admin</td><td class="no">no Admin at all</td><td>S5c, S5f</td></tr>
+<tr><td>Workspaces you admin</td><td class="yes">yes</td><td class="yes">yes</td><td class="no">no</td><td>S10a</td></tr>
+<tr><td>Pool limits (with Additional repositories, Model prices, GitHub fallback token, as today)</td><td class="yes">yes</td><td class="no">no</td><td class="no">no</td><td>S10b</td></tr>
+<tr><td>Runner sizes</td><td class="yes">yes</td><td class="no">no</td><td class="no">no</td><td>S10c</td></tr>
+<tr><td>Tenants</td><td class="yes">yes</td><td class="no">no</td><td class="no">no</td><td>S10d</td></tr>
+<tr><td>Platform counts</td><td class="yes">yes</td><td class="no">no</td><td class="no">no</td><td>S8</td></tr>
+<tr><td>Platform secrets</td><td class="yes">yes</td><td class="no">no</td><td class="no">no</td><td>S7</td></tr>
+<tr><td>Schedules and Approvals: links into Automate, not Admin tabs (Automate › Schedules keeps its "All workspaces" switch)</td><td class="yes">links</td><td class="yes">links</td><td class="no">no Admin at all</td><td>S1b, S1c</td></tr>
+</tbody></table></div>
+<p class="hint">Today's <code>SECTIONS</code> Admin tabs are Pool limits, Runner sizes, Tenants, Platform counts, People and Workspaces you admin. People becomes People and roles; Platform secrets is new (secrets-scopes.md §5). Every-workspace schedules and approvals stay in Automate: Automate › Schedules keeps its "All workspaces" switch (SCHED-ONE-PAGE, 2026-10-13), and Admin's panel only links to Schedules and Approvals (BGD, 2026-10-23). No Admin tab draws them a second time.</p>
+<figure class="fr"><div class="scroller" data-f="wya-d"></div><figcaption><b>S10a · Workspaces you admin, desktop (drawn for a workspace admin).</b> Each workspace with its own setup progress, so an admin of several sees which one is behind.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="limits-d"></div><figcaption><b>S10b · Pool limits, desktop.</b> The table as built, led by the pool closest to its ceiling. The cards below it (Additional repositories, Model prices, GitHub fallback token) are unchanged and folded here.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="sizes-d"></div><figcaption><b>S10c · Runner sizes, desktop.</b></figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="tenants-d"></div><figcaption><b>S10d · Tenants, desktop.</b> Led by the workspace waiting to be created.</figcaption></figure>
+<div class="pair">
+  <figure class="fr"><div data-f="wya-p"></div><figcaption><b>S10f · Workspaces you admin, phone.</b></figcaption></figure>
+  <figure class="fr"><div data-f="limits-p"></div><figcaption><b>S10g · Pool limits, phone.</b></figcaption></figure>
+  <figure class="fr"><div data-f="sizes-p"></div><figcaption><b>S10h · Runner sizes, phone.</b></figcaption></figure>
+  <figure class="fr"><div data-f="tenants-p"></div><figcaption><b>S10i · Tenants, phone.</b></figcaption></figure>
+</div>
+
+<h2 id="notes">What the brief left open, and what BGD has since decided</h2>
+<ul>
+  <li><b>Decided (BGD, 2026-10-23T23:55Z): Settings › API keys</b> moves to Config › Secrets › Keys for agents and MCP, with person and workspace scopes, set through the one-time link as today (S4a, S4d). Settings keeps only Profile; the old addresses redirect.</li>
+  <li><b>This proposal's call: "needed, not set"</b> is a new read: a secret that something registered names and that is not stored. Until it exists, the strip's step 3 would read "—, not measured yet" rather than a count.</li>
+  <li><b>Decided (BGD, 2026-10-23T23:55Z): Add a new workspace</b> in Workspace Settings is for platform admins only (S6c). A workspace admin sees their own workspaces' settings with no such tab (S6d); members keep Request your workspace in the setup checklist.</li>
+  <li><b>Decided (BGD, 2026-10-23T23:55Z): schedules and approvals</b> for every workspace stay in Automate; Admin only links to them (S1b, S1c).</li>
+  <li><b>Decided (BGD, 2026-10-24T00:31Z): Config › People and roles</b> in a group workspace is readable by every member and viewer, and changeable only by a workspace admin or platform admin (S1d, S1g, S5g, S5h; admin S5b, S5e). A personal workspace has none (S1e). Admin › People and roles stays admin-only and cross-workspace.</li>
+</ul>
+</main>
+<style>
+/* rows used by the chooser and the cards; the phone wraps them */
+.rr{display:flex;gap:12px;align-items:center;padding:9px 12px;border-bottom:1px solid var(--line-soft);flex-wrap:wrap}
+.rr:last-child{border-bottom:0}
+.rr .nm{flex:1;min-width:180px;display:flex;flex-direction:column;line-height:1.3}
+.rr .nm b{font-size:13.5px;font-weight:600}.rr .nm small{font-size:12px;color:var(--text-dim)}
+.lst{border:1px solid var(--line);border-radius:10px;background:var(--surface);overflow:hidden}
+.own{display:flex;flex-direction:column;gap:6px}
+.own .o{border:1px solid var(--line);border-radius:10px;padding:9px 12px;background:var(--surface);display:flex;flex-direction:column;gap:2px;font-size:13px}
+.own .o.on{border-color:var(--info);background:var(--t-info)}
+.own .o b{font-size:13.5px}.own .o small{font-size:12px;color:var(--text-dim)}
+.foot{display:flex;gap:12px;align-items:center;justify-content:flex-end;padding:10px 14px;border:1px solid var(--line);border-radius:12px;background:var(--surface);flex-wrap:wrap;font-size:13px}
+.foot .dim{margin-right:auto}
+.scope{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.scope>.lbl{font-size:12.5px;font-weight:600;color:var(--text-dim)}
+.scope .r{margin-left:auto}
+.ph .scope .r{margin-left:0}
+.stp{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line-soft);font-size:13.5px}
+.stp:last-child{border-bottom:0}
+.stp .tx{flex:1;display:flex;flex-direction:column}
+.stp .tx small{font-size:12.5px;color:var(--text-dim)}
+.fold{display:flex;gap:10px;align-items:center;padding:10px 14px;border:1px solid var(--line);border-radius:10px;background:var(--surface);font-size:13.5px}
+.fold b{flex:1 0 auto}
+.fold>.dim{text-align:right;min-width:0}
+/* a filter's label travels with its control when the row wraps */
+.fgrp{display:flex;gap:6px 8px;align-items:center;flex-wrap:wrap}
+/* the wizard: one side sheet over the page, and its other steps drawn on their own */
+.wzwrap{position:relative}
+.wzwrap>.wzsheet{position:absolute;top:0;right:0;width:500px;z-index:2}
+.sheetfig{width:440px;max-width:100%}
+.envh{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 8px}
+.envh b{font-size:14px}
+.repc{display:flex;flex-direction:column;gap:6px;font-size:13px}
+.repc .top{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.repc .top b{font-size:14.5px;flex:1;min-width:0}
+.dimbox{opacity:.45;pointer-events:none}
+</style>
+<script>
+(function(){
+'use strict';
+/* ---------- tiny helpers ---------- */
+const I=(n,c)=>`<svg class="ic ${c||''}" aria-hidden="true"><use href="#i-${n}"/></svg>`;
+const B=(t,c,ic)=>`<span class="b ${c||''}" role="button">${ic?I(ic):''}${t}</span>`;
+const C=(t,c,ic)=>`<span class="c ${c||''}">${ic?I(ic):''}${t}</span>`;
+const SI={ok:'check',wn:'warn',bd:'x',in:'info',nu:'info'};
+const S=(k,t)=>`<span class="st ${k}">${I(SI[k])}<span>${t}</span></span>`;
+const DASH=(why)=>`<span class="dim">— <small class="sm12">${why}</small></span>`;
+const NW=(h)=>`<span class="nw">${h}</span>`;
+const strip=s=>s.replace(/<[^>]+>/g,'');
+const SG=(opts,on,x)=>`<span class="sg">${opts.map((o,i)=>`<span class="${i===on?'on':''}${x&&x.includes(i)?' x':''}">${o}</span>`).join('')}</span>`;
+const CHK=(t,y,x)=>`<span class="chk${x?' x':''}"><i class="${y?'y':''}">${y?I('check'):''}</i>${t}</span>`;
+const F=(l,v,cls)=>`<label class="fld"><span>${l}</span><span class="inp ${cls||''}">${v}</span></label>`;
+const FG=(l,ctl)=>`<span class="fgrp"><span class="lbl">${l}</span>${ctl}</span>`;
+function T(cols,rows){
+  const h=cols.map(c=>{const n=c.startsWith('#');return `<th class="${n?'n':''}">${n?c.slice(1):c}</th>`}).join('');
+  const b=rows.map(r=>{const cells=Array.isArray(r)?r:r.c;const cls=Array.isArray(r)?'':(r.cls||'');
+    return `<tr class="${cls}">${cells.map((v,i)=>{const c=cols[i]||'';const n=c.startsWith('#');return `<td data-l="${strip(n?c.slice(1):c)}" class="${n?'n':''}">${v}</td>`}).join('')}</tr>`}).join('');
+  return `<div class="tw"><table class="t rs"><thead><tr>${h}</tr></thead><tbody>${b}</tbody></table></div>`;
+}
+const CARD=(title,right,body,cls)=>`<section class="cd ${cls||''}"><div class="ch"><b>${title}</b>${right?`<span class="r acts">${right}</span>`:''}</div>${body}</section>`;
+const LEAD=(k,t,s,acts,cls)=>`<section class="lead ${cls||''}"><div class="lt"><span class="k">${k}</span><b>${t}</b>${s?`<span>${s}</span>`:''}</div>${acts?`<div class="acts">${acts}</div>`:''}</section>`;
+const segs=(arr)=>`<span class="segs">${arr.map(m=>`<i class="${m==='d'?'d':m==='n'?'n':''}"></i>`).join('')}</span>`;
+
+/* ---------- setup states: each step is read, never ticked by hand ---------- */
+const SETUP={
+  none:[['n','GitHub connected','Next: connect GitHub'],['t','Repositories chosen','waits for GitHub'],['t','Secrets set','waits for repositories'],['t','People invited','any time after GitHub']],
+  repos:[['d','GitHub connected','@operator · checked 2 min ago'],['n','Repositories chosen','Next: choose at least one'],['t','Secrets set','none needed yet'],['t','People invited','only you so far']],
+  choosing:[['d','GitHub connected','@operator · checked 2 min ago'],['n','Repositories chosen','3 chosen · none registered yet'],['t','Secrets set','none needed yet'],['t','People invited','only you so far']],
+  part:[['d','GitHub connected','@operator · checked 2 min ago'],['d','Repositories chosen','4 chosen · 3 registered'],['n','Secrets set','Next: 3 needed, not set'],['t','People invited','only you so far']],
+  part2:[['d','GitHub connected','@operator · checked 2 min ago'],['d','Repositories chosen','4 chosen · 3 registered'],['n','Secrets set','Next: 2 needed, not set'],['t','People invited','only you so far']],
+  fresh:[['d','GitHub connected','@operator · checked 2 min ago'],['d','Repositories chosen','2 chosen · 2 registered'],['n','Secrets set','Next: add the first one'],['t','People invited','only you so far']],
+  member:[['d','GitHub connected','@operator · checked 2 min ago'],['d','Repositories chosen','4 chosen · 3 registered'],['n','Secrets set','3 needed: 2 are an admin’s step'],['d','People invited','6 people hold a role']],
+  personal:[['d','GitHub connected','@operator · checked 2 min ago'],['d','Repositories chosen','2 chosen · 2 registered'],['n','Secrets set','Next: 1 needed, not set']],
+  done:[['d','GitHub connected','@operator'],['d','Repositories chosen','4 chosen'],['d','Secrets set','nothing missing'],['d','People invited','6 people']]
+};
+function stripD(k){
+  const s=SETUP[k];const d=s.filter(x=>x[0]==='d').length;
+  if(d===s.length) return `<div class="ss done"><span class="sm d">${I('check')}</span><b>Setup complete</b><span class="dim">${d} of ${s.length} · checked 2 min ago</span><a style="margin-left:auto">Show steps</a></div>`;
+  return `<div class="ss" role="list" aria-label="Setup progress">${s.map((x,i)=>`<div class="st0 ${x[0]==='n'?'nx':''} ${x[0]==='t'?'off':''}" role="listitem"><span class="sm ${x[0]==='d'?'d':x[0]==='n'?'n':''}">${x[0]==='d'?I('check'):''}</span><span class="tx"><b>${i+1}. ${x[1]}</b><small>${x[2]}</small></span></div>`).join('')}<div class="end"><b>${d} of ${s.length} done</b><a>Workspace setup</a></div></div>`;
+}
+function stripP(k){
+  const s=SETUP[k];const d=s.filter(x=>x[0]==='d').length;const n=s.find(x=>x[0]==='n');
+  return `<div class="pss"><div class="row"><b>Setup ${d} of ${s.length}</b>${n?`<a>${n[1]} ›</a>`:'<span class="dim">complete</span>'}</div>${segs(s.map(x=>x[0]))}${n?`<span class="dim">${n[2]}</span>`:''}</div>`;
+}
+
+/* ---------- spine and panel ---------- */
+function spine(x){
+  const it=(id,lb,ic,dot)=>`<span class="si ${x.sec===id?'on':''}">${I(ic)}${lb}${dot?'<i class="dt0" title="setup unfinished"></i>':''}</span>`;
+  const unfinished=x.setup&&SETUP[x.setup].some(s=>s[0]!=='d');
+  return `<nav class="sp" aria-label="Sections"><svg class="hv" width="44" height="44" aria-label="SwarmCloud"><use href="#hive"/></svg>`+
+    `<span class="si go">${I('plus')}Submit</span>`+it('overview','Overview','overview')+it('work','Work','work')+it('automate','Automate','automate')+it('capacity','Capacity','capacity')+
+    it('config','Config','config',unfinished)+(x.role!=='member'?it('admin','Admin','admin'):'')+
+    `<span class="gr"></span>`+it('help','Help','help')+`<span class="si ${x.sec==='settings'?'on':''}"><span class="av">OP</span></span></nav>`;
+}
+const ROLE={platform:'Platform admin',wsadmin:'Admin of 2 workspaces',member:'Member of Example Team'};
+function pfoot(x){
+  return `<div class="pf"><div class="who"><span class="av">OP</span><span><b>Operator</b><small>${x.ws==='personal'?'Personal workspace':ROLE[x.role]}</small></span></div>`+
+  `<div class="tseg" role="group" aria-label="Theme"><button type="button" data-theme-set="light">Light</button><button type="button" data-theme-set="dark">Dark</button><button type="button" data-theme-set="system">System</button></div></div>`;
+}
+function wsblock(x){
+  if(x.ws==='personal') return `<div class="wsb"><span class="tg">OP</span><span class="tt"><b>Operator</b><small>personal workspace</small></span>${I('chevd')}</div>`;
+  return `<div class="wsb"><span class="tg">ET</span><span class="tt"><b>Example Team</b><small>group · ${x.role==='member'?'you are a member':'you are admin'}</small></span>${I('chevd')}</div>`;
+}
+const PI=(on,ic,lb,badge,cls)=>`<span class="pi ${on?'on':''} ${cls||''}">${ic?I(ic):''}<span class="lb">${lb}</span>${badge||''}</span>`;
+function badges(k){
+  const tick=`<span class="st ok">${I('check')}</span>`;
+  if(k==='none') return {gh:C('Start here','in'),repos:'',sto:'',mcp:'',people:''};
+  if(k==='repos'||k==='choosing') return {gh:tick,repos:C('Next','in'),sto:'',mcp:'<span class="sm12 dim">0</span>',people:'<span class="sm12 dim">1</span>'};
+  if(k==='fresh') return {gh:tick,repos:'<span class="sm12 dim">2</span>',sto:C('Next','in'),mcp:'<span class="sm12 dim">0</span>',people:'<span class="sm12 dim">1</span>'};
+  if(k==='personal') return {gh:tick,repos:'<span class="sm12 dim">2</span>',sto:C('1 to set','wn'),mcp:'<span class="sm12 dim">1</span>',people:''};
+  return {gh:tick,repos:'<span class="sm12 dim">4</span>',sto:C(k==='part2'?'2 to set':'3 to set','wn'),mcp:C('1 to set','wn'),people:'<span class="sm12 dim">'+(k==='member'?'6':'1')+'</span>'};
+}
+function panel(x){
+  let h=`<aside class="pn" aria-label="Pages"><div class="wm"><span style="color:var(--text)">Swarm</span><span>Cloud</span><span class="pill">dev</span></div>`;
+  if(x.sec==='config'){
+    const s=SETUP[x.setup];const d=s.filter(q=>q[0]==='d').length;const bd=badges(x.setup);
+    h+=wsblock(x)+`<div class="sec">Config</div>`;
+    h+=`<div class="pmeter"><div class="row"><span>Setup</span><b>${d} of ${s.length}</b></div>${segs(s.map(q=>q[0]))}</div>`;
+    h+=PI(x.page==='gh','github','GitHub access',bd.gh)+PI(x.page==='repos','repo','Repositories',bd.repos)+PI(x.page==='secrets','key','Secrets',bd.sto)+PI(x.page==='mcp','plug','MCP servers',bd.mcp);
+    if(x.ws!=='personal') h+=PI(x.page==='people','people','People and roles',bd.people);
+    /* Workspace Settings' three parts are the page's tabs; the panel does not list them a second time */
+    h+=PI(String(x.page).startsWith('ws'),'gear','Workspace Settings','');
+    if(x.ws==='personal') h+=`<p class="pnote">A personal workspace has no People and roles: nobody else is in it.</p>`;
+  } else if(x.sec==='admin'){
+    h+=`<div class="sec">Admin</div>`;
+    h+=`<div class="pg">${x.role==='platform'?'People and workspaces':'Your workspaces'}</div>`;
+    h+=PI(x.page==='apeople','people','People and roles',C(x.role==='platform'?'2':'1','wn'))+PI(x.page==='wya','building','Workspaces you admin','<span class="sm12 dim">2</span>');
+    if(x.role==='platform'){
+      h+=`<div class="pg">Platform</div>`+PI(x.page==='limits','config','Pool limits',C('1 near ceiling','wn'))+PI(x.page==='sizes','sizes','Runner sizes','')+PI(x.page==='tenants','building','Tenants',C('1 waiting','wn'))+
+      PI(x.page==='counts','counts','Platform counts','')+PI(x.page==='psec','lock','Platform secrets',C('1','wn'));
+    } else h+=`<p class="pnote">Showing Example Team and Example Labs, the workspaces you administer. The platform’s own pages are shown to platform admins only.</p>`;
+    /* schedules and approvals stay in Automate (BGD, 2026-10-23T23:55Z): Admin only links there */
+    h+=`<div class="pg">In Automate</div>`+PI(false,'cal','Schedules ↗',x.role==='platform'?'<span class="sm12 dim">all workspaces</span>':'')+PI(false,'check','Approvals ↗',x.role==='platform'?C('3 waiting','wn'):'');
+  } else if(x.sec==='settings'){
+    h+=`<div class="sec">Settings</div>`+PI(true,'person','Profile','');
+  }
+  return h+`<span class="pgrow"></span>${pfoot(x)}</aside>`;
+}
+function head(hd,ph){
+  return `<div class="hd"><div class="tl"><span class="cr">${hd.cr}</span><span class="h">${hd.h}</span></div>${hd.right?`<div class="acts">${hd.right}</div>`:''}${hd.age?`<span class="age">${hd.age}</span>`:''}</div>${hd.tabs?`<div class="tabs">${hd.tabs.map((t,i)=>`<span class="${i===hd.on?'on':''}">${t}</span>`).join('')}</div>`:''}`;
+}
+function desk(x,hd,body){return `<div class="F app">${spine(x)}${panel(x)}<main class="ct">${head(hd)}${x.sec==='config'?stripD(x.setup):''}${body(false)}</main></div>`}
+function phone(x,hd,body){
+  const ws=x.ws==='personal'?'Operator':'Example Team';
+  return `<div class="F ph"><div class="phd">${I('menu')}<svg width="26" height="26" aria-hidden="true"><use href="#hive"/></svg><b>${hd.ph||hd.h}</b><span class="wsc">${ws}</span></div>${x.sec==='config'?stripP(x.setup):''}<div class="pb"><div class="ct">${head(hd,true)}${body(true)}</div></div></div>`;
+}
+function crop(x){return `<div class="F app crop">${spine(x)}${panel(x)}</div>`}
+function drawer(x,hd,body){
+  return `<div class="F ph dr"><div class="phd">${I('menu')}<b>${hd.h}</b></div><div class="pb dimbox"><div class="ct">${body(true)}</div></div><div class="scrim" style="inset:0"></div><div class="drw">${spine(x)}${panel(x)}</div></div>`;
+}
+
+/* ---------- context presets ---------- */
+const X=(o)=>Object.assign({role:'platform',ws:'group',sec:'config',setup:'part'},o);
+
+/* ================= S2 GitHub access ================= */
+const RULES=CARD('What SwarmCloud may do as you','',`<div class="stp">${I('check')}<span class="tx"><b>Read means read, and SwarmCloud enforces it.</b><small>A read grant never pushes, whatever GitHub would allow.</small></span></div><div class="stp">${I('check')}<span class="tx"><b>No workflow changes.</b><small>SwarmCloud never asks for the workflows permission.</small></span></div><div class="stp">${I('check')}<span class="tx"><b>Verifying only reads.</b><small>Push test is opt-in, per repository.</small></span></div>`);
+const GHHD=(on)=>({cr:'Config',h:'GitHub access',age:'read 2 min ago',tabs:['Connection','Choose repositories'],on});
+function ghNone(ph){
+  return LEAD('Step 1 of 4 · start here','Connect GitHub to start','SwarmCloud lists the orgs and repositories you reach, and clones, pushes and opens pull requests as you. Repositories, Secrets and People wait for this one step.',B('Connect GitHub','p','github'))+
+  `<div class="g21"><div class="col">`+CARD('GitHub',C('acts as you','ln'),`<p>${S('nu','not connected')}</p><p>Once connected, this card shows the GitHub login, the token’s renewal and Disconnect GitHub.</p>`)+
+  CARD('What comes after','',`<div class="stp"><span class="sm"></span><span class="tx"><b>2. Choose repositories</b><small>Waits for GitHub: there is nothing to list until you connect and install the App.</small></span></div><div class="stp"><span class="sm"></span><span class="tx"><b>3. Set secrets</b><small>Waits for repositories: what is needed depends on what you register.</small></span></div><div class="stp"><span class="sm"></span><span class="tx"><b>4. Invite people</b><small>Any time after GitHub.</small></span></div>`,'dash')+
+  `</div>${RULES}</div>`;
+}
+function ghConn(ph){
+  return LEAD('Step 2 of 4 · next','Choose the repositories SwarmCloud may reach','GitHub is connected as @operator and the App is installed on 2 owners. Pick Read or Write for each repository.',B('Choose repositories','p'))+
+  `<div class="g21"><div class="col">`+CARD('GitHub',C('acts as you','ln'),`<div class="col" style="gap:6px"><span>${S('ok','@operator · GitHub App · user token · active')}</span><span class="dim sm12">Token expires in 7 h · renewed automatically · last renewed 52 min ago</span><div class="acts" style="margin-top:6px">${B('Disconnect GitHub','d s')}</div></div>`)+
+  CARD('Where the App is installed',B('Install on an organisation…','s'),T(['Owner','Install','Chosen',''],[
+    ['operator<small>your account</small>','all repositories','0','' ],
+    ['example-org<small>organisation</small>','selected repositories','0',B('Choose','s')],
+    ['example-labs<small>organisation</small>',S('wn','not installed'),DASH('nothing to list until it is'),B('Request install','s')]]))+
+  `</div>${RULES}</div>`;
+}
+function repoRow(n,sub,push,on,x){return `<div class="rr"><span class="nm"><b>${n}</b><small>default branch main · ${push}</small></span>${SG(['Not chosen','Read','Write'],on,x)}</div>`}
+function ghChoose(ph){
+  const owners=`<div class="own"><span class="o"><b>operator</b><small>your account · all repositories</small></span><span class="o on"><b>example-org</b><small>organisation · selected repositories</small></span><span class="o"><b>example-labs</b><small>organisation · install requested</small><span class="acts" style="margin-top:4px">${B('Re-check','s')}${B('Withdraw request','s q')}</span></span></div>`;
+  const repos=`<div class="col" style="gap:10px"><div class="scope"><span class="inp" style="flex:1;min-width:180px">${I('search')}Search example-org</span>${SG(['All','Chosen'],0)}</div><div class="lst">`+
+    repoRow('example-api','','can push',2)+repoRow('example-web','','read only',1,[2])+repoRow('docs-site','','can push',2)+repoRow('infra-live','','push unknown',0)+repoRow('design-tokens','','read only',0,[2])+
+    `</div><span class="hint">Write is offered only where you can push. Not listed? Type it as owner/repo, for example example-org/example-api.</span><div class="scope"><span class="inp" style="flex:1;min-width:160px">owner/repo</span>${SG(['Read','Write'],0)}${B('Grant','s')}</div></div>`;
+  const body=ph?`<label class="fld"><span>Owner</span><span class="inp v" style="justify-content:space-between">example-org · selected repositories ${I('chevd')}</span></label>${repos}`
+    :`<p class="hint" style="margin:0">Connecting and installing are two steps. Connect lets SwarmCloud act as you (GitHub › Authorized GitHub Apps); installing it on an account or org lets it reach that owner’s repositories (Installed GitHub Apps).</p><div style="display:grid;grid-template-columns:280px minmax(0,1fr);gap:14px">${owners}${repos}</div>`;
+  return LEAD('Step 2 of 4 · in progress','3 chosen under example-org; nothing chosen under operator yet','Choices save as you make them. When you are done, Repositories registers them for indexing.',B('Next: Repositories','p'))+body+
+  `<div class="foot"><span class="dim">2 changes saved · 1 min ago</span>${B('Refresh','s')}</div>`;
+}
+
+/* ================= S3 Repositories ================= */
+const REPHD={cr:'Config',h:'Repositories',age:'read 3 min ago',tabs:['Repositories','QA targets'],on:0,right:B('Add new repository','p','plus')};
+/* the empty state's lead carries Add new repository, so its header does not draw it again */
+const REPHD0=Object.assign({},REPHD,{right:''});
+function reachTable(){
+  return T(['Repository','Access','Clone','Push','Pull request','Push test','Registered'],[
+    ['example-org/example-api',SG(['Read','Write'],1),S('ok','ok'),S('ok','ok'),S('ok','ok'),'<span class="dim">Not run: it is opt-in</span>',S('ok','yes')],
+    ['example-org/example-web',SG(['Read','Write'],0,[1]),S('ok','ok'),NW(DASH('read grant')),NW(DASH('read grant')),NW(DASH('read grant')),S('ok','yes')],
+    ['example-org/docs-site',SG(['Read','Write'],1),S('ok','ok'),S('ok','ok'),S('ok','ok'),S('ok','passed 2 d ago'),S('ok','yes')],
+    {cls:'need',c:['example-labs/console',SG(['Read','Write'],0),S('ok','ok'),NW(DASH('read grant')),NW(DASH('read grant')),NW(DASH('read grant')),C('not registered','wn')]}]);
+}
+function repCard(n,pill,lines,acts,dash){return `<section class="cd ${dash?'dash':''}"><div class="repc"><div class="top"><b>${n}</b>${pill}</div>${lines.map(l=>`<span class="dim">${l}</span>`).join('')}<div class="acts" style="margin-top:6px">${acts}</div></div></section>`}
+function repos(ph){
+  return LEAD('Repositories · one thing left','example-labs/console is chosen but not registered','Register it so it is indexed on a schedule and agents start from its map.',B('Register','p'))+
+  CARD('Repositories SwarmCloud may reach as you',B('Re-check all','s'),reachTable()+`<p class="hint" style="margin:8px 0 0">Last verified 3 min ago. An agent for a repository not on this list is refused at submission. Add new repository opens GitHub access › Choose repositories.</p>`)+
+  `<div class="g3">`+
+  repCard('example-org/example-api',C('fresh','ok'),['Default branch <b>main</b> · head <span class="mn">4f2c1a9</span>','Tests mapped 412 · indexed 2 h ago','Schedule <b>nightly</b>','Secrets: 2 for agents · 3 for Actions','QA targets: 1'],B('Open','s')+B('Index now','s'))+
+  repCard('example-org/example-web',C('1 day behind','wn'),['Default branch <b>main</b> · head <span class="mn">b81d03e</span>','Tests mapped 188 · indexed 26 h ago','Schedule <b>nightly</b>','Secrets: none','QA targets: none'],B('Open','s')+B('Index now','s'))+
+  repCard('example-org/docs-site',C('indexing now','in'),['Default branch <b>main</b>','Tests mapped: — not indexed yet','Schedule <b>on change</b>','Secrets: none','QA targets: 1'],B('Open','s'))+
+  repCard('example-labs/console',C('chosen, not registered','wn'),['Read grant · default branch main','Not indexed: registering starts it'],B('Register','p s'),true)+`</div>`;
+}
+function reposEmpty(ph){
+  return LEAD('Step 2 of 4 · next','No repository chosen yet','Choose repositories from an owner on GitHub access, or type owner/repo there.',B('Add new repository','p','plus'))+
+  CARD('Repositories SwarmCloud may reach as you','',`<p><b style="color:var(--text)">No repository chosen yet.</b> Choose repositories from an enabled owner on GitHub access, or type owner/repo.</p>`,'dash')+
+  CARD('Registered repositories','',`<p>None yet. A repository is registered after it is chosen; registering starts its index.</p>`,'dash');
+}
+
+/* ================= S4 Secrets ================= */
+const SECHD={cr:'Config',h:'Secrets',age:'read 1 min ago',right:B('Add a secret','p','plus')};
+/* the empty state's lead carries Add a secret, so its header does not draw it again */
+const SECHD0=Object.assign({},SECHD,{right:''});
+const PREC=`<span class="hint">Same name in several scopes: yours wins, then the repository’s, then the workspace’s.</span>`;
+function scopeBar(on,extra,ph){return `<div class="scope"><span class="lbl">Scope</span>${SG([ph?'Workspace':'Workspace · Example Team','Yours','Repository'],on)}${extra||''}</div>${PREC}`}
+function secWs(ph){
+  return scopeBar(0,'',ph)+
+  LEAD('Step 3 of 4 · next','2 workspace secrets are needed and not set','kb-token: MCP server kb sends it on every call. TypeSafe key for the workspace: Jev and browser agents read it. The strip’s third is a QA sign-in on example-org/example-api.',B('Set kb-token','p')+B('Set TypeSafe key'),'wn')+
+  CARD('For agents',`<a class="sm12">Open the grant matrix</a>`,`<p>Released to the profiles, tools and components in Granted to. A value is stored write-only: no page and no API route shows it, its length or any of its characters again.</p>`+
+   T(['Name','Kind','Provider','Set','#Version','Last used','Granted to',''],[
+    ['search-api<small>'+C('shadowed on agents of Operator: Yours › search-api','pa')+'</small>','API key','brave','12 d ago','2','1 h ago','claude-code',B('Rotate','s')+' '+B('Delete','s d')],
+    ['docs-bearer','Bearer token','other','4 d ago','1','never','claude-code-browser',B('Rotate','s')+' '+B('Delete','s d')],
+    {cls:'need',c:['kb-token',DASH('not stored'),'',C('needed, not set','wn'),'','','MCP server kb',B('Set','p s')]}]))+
+  `<div class="g2">`+
+  CARD('Keys for agents and MCP','',T(['Key','Read by','State',''],[
+    {cls:'need',c:['TypeSafe key<small>workspace</small>','Jev, browser agents',C('needed, not set','wn'),B('Set','p s')]},
+    ['TypeSafe key<small>yours</small>','your own submissions',S('ok','set 6 d ago'),B('Replace','s')],
+    {cls:'need',c:['MCP server kb','every profile that takes MCP servers',C('needs kb-token','wn'),B('Set','p s')]},
+    ['MCP server docs-search','claude-code','per-run credential, not stored','']])+`<p class="hint" style="margin:8px 0 0">Was Settings › API keys. Set and Replace open the one-time form (S4d); no value is shown again.</p>`)+
+  CARD('GitHub token','',`<dl class="kv"><dt>Kind</dt><dd>Workspace token (GitHub App user token)</dd><dt>State</dt><dd>${S('ok','active')}</dd><dt>GitHub login</dt><dd>@operator</dd><dt>Verified</dt><dd>3 min ago</dd><dt>Expires</dt><dd>in 7 h · renewed automatically</dd></dl><p class="hint" style="margin-top:8px">Status only: no part of a token is ever shown. Connect or disconnect on <a>GitHub access</a>.</p>`)+`</div>`;
+}
+/* one destination switch; each destination is its own state of the page (S4b, S4b2) */
+function secRepo(ph,dest){
+  const sw=`<div class="envh">${SG(['Agents','GitHub Actions'],dest)}<span class="hint">${dest?'Written into the repository on GitHub. SwarmCloud reads names and update times, never values.':'Released only to agents that clone example-org/example-api.'}</span></div>`;
+  const agents=`<div class="col">`+
+   CARD('For agents','',T(['Name','Kind','Set','Granted to',''],[
+     ['test-db-password','Opaque','5 d ago','claude-code',B('Rotate','s')],
+     ['search-api<small>'+C('overrides the workspace’s','in')+' '+C('Yours wins for Operator','pa')+'</small>','API key','1 d ago','claude-code',B('Rotate','s')]])+`<p class="hint" style="margin:8px 0 0">You may set these as a workspace admin. A member whom GitHub calls admin of this repository may too.</p>`)+
+   `<div class="g2">`+CARD('Sign-in for QA','',T(['Target · environment','Credential',''],[
+     ['Studio · staging',S('ok','test credential set 2 d ago'),B('Replace','s')],
+     {cls:'need',c:['Studio · production',C('needed, not set','wn'),B('Set','p s')]},
+     ['Studio · staging<small>challenge bypass</small>',S('ok','set 2 d ago'),B('Replace','s')]]))+
+   CARD('GitHub token','',`<p>No repository token. Agents for this repository use the workspace’s token (repository first, then workspace).</p>`)+`</div></div>`;
+  const actions=`<div class="col">`+
+   `<div class="bn in">${I('info')}<span>You may write here: workspace admin, and GitHub calls you admin of example-org/example-api (checked 1 min ago).</span></div>`+
+   `<div class="g2">`+CARD('Repository secrets',B('Set a secret','p s'),T(['Name','Updated','Set by',''],[
+     ['TEST_DB_PASSWORD','5 d ago','SwarmCloud',B('Set','s')+' '+B('Delete','s d')],
+     ['SENTRY_DSN','40 d ago','on GitHub',B('Set','s')+' '+B('Delete','s d')]]))+
+   CARD('Environments',B('Create on GitHub','s','ext')+B('Check rule','s'),
+     `<div class="envh">${I('env')}<b>repo-secrets</b>${C('main only','ok')}<span class="r acts" style="margin-left:auto">${B('Set a secret here','s')}</span></div>`+
+     T(['Name','Updated','Set by',''],[['MERGE_APP_PRIVATE_KEY','2 d ago','SwarmCloud',B('Set','s')+' '+B('Delete','s d')]])+
+     `<div class="envh" style="margin-top:12px">${I('env')}<b>staging</b>${C('any branch','wn')}<span class="r acts" style="margin-left:auto">${B('Set a secret here','s')}</span></div><p>No secret in staging yet. Writing here asks you to type <b>staging</b>: a workflow on any branch can read it.</p>`+
+     `<p class="hint" style="margin:0">SwarmCloud does not create environments yet: create one on GitHub, then Check rule reads its branch rule.</p>`)+`</div></div>`;
+  return scopeBar(2,`<span class="inp v">${I('repo')}example-org/example-api ${I('chevd')}</span>`,ph)+
+   LEAD('This repository · 1 missing','The QA sign-in for Studio production is not set','QA runs on production stay off until it is. Everything else this repository uses is set.',B('Set it','p'),'wn')+
+   sw+(dest?actions:agents);
+}
+function sheet(n,title,body,foot){
+  const names=['Scope','Destination','Who reads it','One-time form'];
+  return `<div class="sheet"><div class="sh"><b>Add a secret</b>${I('x')}</div><div class="wz">${names.map((s,i)=>`<span class="${i+1<n?'d':i+1===n?'on':''}"><i>${i+1<n?'✓':i+1}</i>${s}</span>`).join('')}</div><div style="font-size:15px;font-weight:600">${title}</div>${body}<div class="acts" style="justify-content:flex-end">${foot}</div></div>`;
+}
+const OPT=(t,s,on,x)=>`<div class="opt ${on?'on':''} ${x?'x':''}"><span class="rd"></span><span><b>${t}</b><small>${s}</small></span></div>`;
+function wizSheets(){
+  const s1=sheet(1,'Where does it live?',OPT('Workspace · Example Team','Any member’s agents may be granted it. Set by a workspace admin.')+OPT('Yours','Only your own submissions read it, and it wins over the others.')+OPT('Repository','Only for one repository, and released only to agents that clone it.',true)+F('Repository',`example-org/example-api ${I('chevd')}`,'v'),B('Cancel','q')+B('Next','p'));
+  const s2=sheet(2,'Who is it for?',`<div class="g2">${OPT('Agents','Agents that clone example-org/example-api.')}${OPT('GitHub Actions','Workflows in the repository, on GitHub.',true)}</div><span class="hint">GitHub Actions needs GitHub admin of the repository: checked, you are.</span>`+
+     `<div class="fld"><span>Environment</span>${OPT('Repository level','Every workflow in the repository can read it.')}${OPT('repo-secrets · main only','Only workflows on main.',true)}${OPT('staging · any branch','You will type staging to confirm.')}<div class="acts">${B('Create on GitHub','s','ext')}${B('Check rule','s')}</div></div>`,B('Back','q')+B('Next','p'));
+  const s3=sheet(3,'Who reads it, and its name',`<p class="hint" style="margin:0">Read by workflows that run in <b>repo-secrets</b>, on main only. SwarmCloud grants nothing further.</p>`+F('Name','MERGE_APP_PRIVATE_KEY','v')+`<span class="hint">Letters, digits and _; not starting with a digit or GITHUB_.</span>`+
+     `<p class="hint" style="margin:0">On the Agents path this step is where you tick which agents are granted it.</p>`,B('Back','q')+B('Next','p'));
+  const s4=sheet(4,'Set the value in a one-time form',`<p class="hint" style="margin:0">Opens a form for <b>MERGE_APP_PRIVATE_KEY</b> in example-org/example-api › repo-secrets. It works once, for ten minutes. The value is sealed in SwarmCloud, written to GitHub and never shown again.</p><div class="bn">${I('info')}<span>From a terminal instead:<br><span class="mn">/sc secrets link repository MERGE_APP_PRIVATE_KEY --repo example-org/example-api --actions --env repo-secrets</span></span></div>`,B('Back','q')+B('Open the one-time form','p'));
+  return [s1,s2,s3,s4];
+}
+/* the page behind, dimmed, is the repository the sheet's step 2 is on (Repository · example-api, GitHub Actions), with one sheet open at step 2 */
+function secWiz(ph){return `<div class="wzwrap"><div class="dimbox">${secRepo(ph,1)}</div><div class="wzsheet">${wizSheets()[1]}</div></div>`}
+const wizStep=n=>`<div class="F sheetfig">${wizSheets()[n-1]}</div>`;
+const SFHD={cr:'Config › Secrets',h:'Set a secret',ph:'Set a secret'};
+function secForm(ph){
+  const form=CARD('MERGE_APP_PRIVATE_KEY','',`<dl class="kv"><dt>Where</dt><dd>example-org/example-api › GitHub Actions › environment <b>repo-secrets</b> ${C('main only','ok')}</dd><dt>Name</dt><dd>MERGE_APP_PRIVATE_KEY <span class="hint">(fixed by the link)</span></dd></dl><div style="margin:12px 0 6px">${F('Value',`Paste the value <span style="margin-left:auto">${I('eye-off')}</span>`)}</div><p class="hint">8 bytes to 8 KiB. The form is cleared whatever the answer.</p><div class="acts">${B('Set secret','p')}${B('Cancel','q')}</div>`);
+  const after=CARD('After you press Set','',`<div class="stp">${I('check')}<span class="tx"><b>Version 2 written · 23:04</b><small>The link is used up. The value is not shown again, here or anywhere.</small></span></div><a class="sm12">Set another in this place</a>`)+
+   `<div class="bn">${I('warn')}<span><b>If the link was used or is older than ten minutes</b>The form says so and offers Add a secret; nothing is written.</span></div>`;
+  return `<div class="bn in">${I('info')}<span><b>Opened from a one-time link</b>Paste the value into the form below: the /sc command and this page’s address never see it. The link works once, for ten minutes.</span></div>`+
+   (ph?form+after:`<div class="g21">${form}<div class="col">${after}</div></div>`);
+}
+function secYours(ph){
+  return scopeBar(1,'',ph)+LEAD('Yours','Your secrets win over the workspace’s and a repository’s, for your own agents','Nothing you set here is read by anyone else’s agents.','','ok')+
+  CARD('For your agents',B('Add','s','plus'),T(['Name','Kind','Set','Used in',''],[
+    ['search-api<small>'+C('overrides the workspace’s','in')+'</small>','API key','2 d ago','Example Team',B('Rotate','s')],
+    ['openai-personal','API key','9 d ago','Example Team, Operator',B('Rotate','s')]]))+
+  CARD('Browser sessions','',T(['Session','Saved','Expires',''],[['studio-staging','by a browser agent, 2 d ago','in 5 d',B('Remove','s d')]])+`<p class="hint" style="margin:8px 0 0">Saved when a browser agent asks you to sign in. Only your agents reuse it.</p>`)+
+  CARD('Keys','',T(['Key','State',''],[['TypeSafe key',S('ok','set 6 d ago'),B('Replace','s')]]));
+}
+function secActions(ph){return secRepo(true,1)}
+function secMember(ph){
+  return scopeBar(0,'',ph)+LEAD('Step 3 of 4 · an admin\u2019s step','2 workspace secrets are needed: a workspace admin sets them','kb-token (MCP server kb) and the workspace TypeSafe key. You can set your own under Yours; yours win for your agents.',B('Go to Yours','p')+B('Copy a note for an admin'))+
+  CARD('For agents',C('read only for members','ln'),T(['Name','Kind','Set','Granted to'],[
+    ['search-api','API key','12 d ago','claude-code'],['docs-bearer','Bearer token','4 d ago','claude-code-browser'],
+    {cls:'need',c:['kb-token',DASH('not stored'),C('needed, not set','wn'),'MCP server kb']}]));
+}
+function secEmpty(ph){
+  return scopeBar(0,'',ph)+LEAD('Step 3 of 4 · next','Add your first secret','Nothing is stored for Example Team yet, and nothing registered needs one yet either.',B('Add a secret','p','plus'))+
+  CARD('For agents','',`<p><b style="color:var(--text)">No secret is stored for Example Team yet.</b></p><p>Usually first:</p><div class="stp">${I('key')}<span class="tx"><b>The TypeSafe key</b><small>Jev and browser agents read it.</small></span></div><div class="stp">${I('key')}<span class="tx"><b>A search API key</b><small>For agents that search the web.</small></span></div><div class="stp">${I('qa')}<span class="tx"><b>A QA sign-in</b><small>Set on a repository, once a QA target is registered.</small></span></div>`,'dash')+
+  CARD('GitHub token','',`<dl class="kv"><dt>State</dt><dd>${S('ok','active · verified 3 min ago')}</dd></dl>`);
+}
+
+/* ================= S5 MCP and People ================= */
+function mcp(ph){
+  return LEAD('Secrets set · 1 of the 3 missing is here','MCP server kb has no credential stored','It is registered to read workspace secret kb-token, which is not set, so every call to kb fails until it is.',B('Set kb-token','p'),'wn')+
+  CARD('Registered MCP servers',B('Register an MCP server','s','plus'),T(['Name','URL','Credential','Profiles','Tools','State','Last used',''],[
+    {cls:'need',c:['kb','https://kb.app.example.com/mcp','Workspace secret kb-token<small>'+C('needed, not set','wn')+'</small>','every profile that takes MCP servers','every tool it lists',S('ok','enabled'),'never',B('Edit','s')]},
+    ['<span style="white-space:nowrap">docs-search</span>','https://docs.app.example.com/mcp','Per-run credential','claude-code','search, fetch',S('ok','enabled'),'2 h ago',B('Edit','s')]]))+
+  `<div class="fold">${I('chev')}<b>Addresses to allowlist</b><span class="dim sm12">2 hosts</span></div>`;
+}
+/* a member or viewer reads the same page with every change control taken off (BGD, 2026-10-24T00:31Z) */
+const ROSTER=[['dana@example.com','admin','a platform admin','9 d ago','workspace owner'],['Operator<small>you</small>','member','dana@example.com','6 d ago','runs agents'],['ali@example.com','member','dana@example.com','6 d ago','runs agents'],['mo@example.com','member','dana@example.com','4 d ago',''],['pat@example.com','viewer','dana@example.com','2 d ago','reads results'],['tess@example.com','viewer','dana@example.com','1 d ago','']];
+function cpeopleMember(ph){
+  return LEAD('Step 4 of 4 · done','6 people hold a role in Example Team','You hold member, given by dana@example.com 6 d ago. Everyone else signed in to Example Team holds viewer, the default.','','ok')+
+  CARD('Roles in this workspace',C('read only for members','ln'),T(['Person','Role','Given by','When','Reason'],ROSTER)+`<p class="hint" style="margin:8px 0 0">Only this workspace’s admins change roles. You can read them here.</p>`)+
+  CARD('Role events','',`<div class="stp"><span class="tx"><b>dana@example.com gave tess@example.com viewer</b><small>1 d ago</small></span></div><div class="stp"><span class="tx"><b>dana@example.com gave pat@example.com viewer</b><small>2 d ago · reads results</small></span></div>`);
+}
+function cpeople(ph){
+  return LEAD('Step 4 of 4 · this page','Only you hold a role in Example Team so far','Give each person who will run agents their own role. Everyone else signed in to Example Team holds viewer, the default.',B('Give a person a role','p'))+
+  CARD('Roles in this workspace','',`<p>You hold <b style="color:var(--text)">admin</b> in Example Team. Everyone else in Example Team holds <b style="color:var(--text)">viewer</b>, the workspace’s default.</p>`+T(['Person','Role','Given by','When','Reason',''],[['Operator','admin','a platform admin','3 d ago','workspace owner','']]))+
+  `<div class="g2">`+CARD('Give a person their own role','',`<div class="col" style="gap:10px">${F('Email','name@your-domain')}<div class="fld"><span>Role</span>${SG(['viewer','member','admin'],1)}</div>${F('Reason (optional, shown in the events)','')}<div class="acts">${B('Set role','p')}</div></div>`)+
+  CARD('Role events','',`<div class="stp"><span class="tx"><b>a platform admin gave Operator admin</b><small>3 d ago · workspace owner</small></span></div><div class="stp"><span class="tx"><b>Operator set the default to viewer (was member)</b><small>2 d ago</small></span></div>`)+`</div>`;
+}
+const PEOPLE=[
+  ['Operator<small>operator@example.com</small>','platform admin','admin','admin','—','own','now'],
+  ['riley@example.com','—','—','viewer','—','own','12 min ago'],
+  ['sam@example.com','—','—','—','admin','own','1 h ago'],
+  ['kai@example.com','—','—','member','—','own','3 d ago'],
+  ['noor@example.com','—','—','—','member','own','6 d ago']];
+function apeople(ph,ws){
+  const cols=ws?['Person','Example Team','Example Labs','Last active']:['Person','Platform role','Example Team','Example Labs','Research Pod','Personal','Last active'];
+  const rows=PEOPLE.map(r=>ws?[r[0],r[2],r[3],r[6]]:r).filter(r=>!ws||r[1]!=='—'||r[2]!=='—');
+  return LEAD(ws?'Your workspaces':'Needs an admin',ws?'1 person is waiting to join Example Labs':'2 people are waiting for a workspace',ws?'Showing Example Team and Example Labs, the workspaces you administer. A request for a personal workspace is a platform admin’s.':'Approve or deny each; a denial says why to the person.',B(ws?'Review it':'Review the 2','p'),'wn')+
+  `<div class="scope"><span class="lbl">Workspace</span>${ws?SG(['Both','Example Team','Example Labs'],0):SG(['Every workspace','Example Team','Example Labs','Research Pod'],0)}<span class="inp" style="min-width:200px">${I('search')}Find a person</span></div>`+
+  CARD('Waiting for you','',T(['Person','Asked for','When',''],(ws?[]:[['jo@example.com','a personal workspace','40 min ago',B('Approve','p s')+' '+B('Deny','s')]]).concat([['lee@example.com','to join Example Labs','2 h ago',B('Approve','p s')+' '+B('Deny','s')]])))+
+  CARD('People and their roles',ws?'':B('Grant admin','s'),T(cols,rows))+
+  (ws?'':`<div class="fold">${I('chev')}<b>Recent admin actions</b><span class="dim sm12">12 this week</span></div>`);
+}
+
+/* ================= S6 Workspace Settings ================= */
+/* Add a new workspace is a platform admin's tab only (BGD, 2026-10-23T23:55Z), the rule of Admin › Tenants › New workspace */
+const WSHD=(on,plat=true)=>({cr:'Config',h:'Workspace Settings',age:'read 2 min ago',tabs:plat?['Settings','Workspace setup','Add a new workspace']:['Settings','Workspace setup'],on});
+function wss(ph){
+  return LEAD('Nothing here needs you','This page is set. Setup’s next step is on Secrets.','',B('Go to Secrets','p'),'ok')+
+  `<div class="g2">`+CARD('This workspace',B('Rename','s'),`<dl class="kv"><dt>Name</dt><dd>Example Team</dd><dt>Id</dt><dd><span class="mn">example-team</span></dd><dt>Kind</dt><dd>group</dd><dt>Your role</dt><dd>admin</dd><dt>Default role</dt><dd>viewer · <a>People and roles</a></dd></dl>`)+
+  CARD('Code intelligence',C('off','ln'),`<p>Off by default. When on, Jev reads the repository index for this workspace’s agents, and the files it indexes leave the platform to the code-intelligence service.</p><div class="acts">${B('Turn on')}</div>`)+`</div>`;
+}
+function wsetup(ph){
+  const st=(m,t,s,w)=>`<div class="stp"><span class="sm ${m}">${m==='d'?I('check'):''}</span><span class="tx"><b>${t}</b><small>${s}</small></span>${w||''}</div>`;
+  return LEAD('Step 3 of 4 · next','Set the 3 secrets that are needed','The strip above is this checklist, summarised. Each step is checked again on every read; nothing here is marked done by hand.',B('Open Secrets','p'))+
+  `<div class="g2">`+CARD('Set up SwarmCloud',C('6 of 8 required done · 1 optional (Request your workspace)','in'),
+   st('d','Sign in','done')+st('d','Request your workspace','done · optional')+st('d','Add a Claude account','done')+st('d','Connect GitHub','done · @operator')+st('d','Install the App','done · 2 owners')+st('d','Enable orgs','done')+st('d','Choose repositories','done · 4 chosen')+
+   st('',`Verify access ${C('stale','wn')}`,'checked 3 d ago; example-labs/console was chosen since',B('Re-check','s'))+st('','Ready','to do · follows Verify access')+`<p class="hint" style="margin:8px 0 0">Derived 2 min ago for Operator in tenant example-team.</p>`)+
+  `<div class="col">`+CARD('After the checklist','',st('n','Secrets set','3 needed, not set: kb-token, the workspace TypeSafe key, Studio production’s QA sign-in',B('Set','p s'))+st('','People invited','only you hold a role so far',B('Invite','s')))+
+  CARD('On Overview','',`<p>The setup card is hidden on Overview for you.</p><div class="acts">${B('Show on Overview','s')}</div>`)+`</div></div>`;
+}
+function wsnew(ph){
+  return LEAD('Platform admins only','Add a new workspace','It opens on Config with the setup strip at step 1, for whoever will run it.','','')+
+  `<div class="g21">`+CARD('New workspace','',`<div class="col" style="gap:12px"><div class="fld"><span>Kind</span>${SG(['Personal','Group','Service'],1)}</div>${F('Display name','Example Research','v')}${F('Group email address','group@your-domain')}${F('First admin’s email address','name@your-domain')}<div class="acts">${B('Create workspace','p')}${B('Close','q')}</div></div>`)+
+  CARD('What creating it does','',['Approved and claimed','Checking the service account','Checking the name is free','Worker account','Its own IAM','Storage prefix','Forge slot','Namespace','Tenant and pool','Admitted at the front door','Final check'].map(s=>`<div class="stp"><span class="sm"></span><span class="tx"><b>${s}</b></span></div>`).join('')+`<p class="hint" style="margin:8px 0 0">Each line ticks as it is checked, after Create.</p>`)+`</div>`;
+}
+
+/* ================= S7 Platform secrets ================= */
+function psec(ph){
+  return LEAD('Needs a look','swarm-live-key is not declared','Its name is in the catalogue but no secret exists. One other is mid-rotation, which is expected for 24 h.',B('What manages it','p'),'wn')+
+  `<div class="bn">${I('lock')}<span><b>Status only</b>Read from Secret Manager metadata. No value, length or version content is read, and nothing on this page can set one.</span></div>`+
+  T(['Name','Set','#Enabled versions','Age of newest','Managed by'],[
+    ['swarm-github-app-private-key',S('ok','set'),'1','41 d','Terraform declares · create-secrets.sh --stdin'],
+    ['swarm-github-app-webhook-secret',S('ok','set'),'1','41 d','Terraform declares · create-secrets.sh --stdin'],
+    ['swarm-search-api-key',S('ok','set'),'2<small>rotation in its grace</small>','6 h','create-secrets.sh --stdin'],
+    ['swarm-egress-key',S('ok','set'),'1','12 d','Terraform declares'],
+    {cls:'need',c:['swarm-live-key',S('wn','not declared'),DASH('no secret'),DASH('no secret'),'catalogue only']},
+    ['swarm-typesafe-fwd-key',S('ok','set'),'1','30 d','create-secrets.sh --stdin'],
+    ['swarm-workspace-grant-key',S('ok','set'),'1','23 d','Terraform declares'],
+    ['swarm-tailscale-oauth',S('ok','set'),'1','60 d','create-secrets.sh --stdin'],
+    ['swarm-account-&lt;t&gt;--&lt;label&gt;<small>14 accounts</small>',S('ok','all 14 set'),'14','newest 2 d','the quota broker']]);
+}
+
+/* ================= S8 Platform counts ================= */
+const DAYS=['17 Oct','18 Oct','19 Oct','20 Oct','21 Oct','22 Oct','23 Oct'];
+/* the codex profile is disabled (2026-09-23), so it ran none of these */
+const TOT=[103,115,133,75,69,167,168], RET=[7,9,12,5,4,15,16];
+const TYPES=[['claude-code',.743,'--s1'],['claude-code-browser',.154,'--s3'],['indexer',.103,'--s4']];
+function split(t){let left=t;return TYPES.map((x,i)=>{if(i===TYPES.length-1)return left;const v=Math.round(t*x[1]);left-=v;return v})}
+function chart(ph){
+  const W=ph?290:1000,H=ph?200:260,L=ph?30:40,R=8,Tp=24,Bt=28,max=250,bw=(W-L-R)/7;
+  let s=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Agents per day by agent type, 17 to 23 October">`;
+  [0,50,100,150,200,250].forEach(v=>{const y=Tp+(H-Tp-Bt)*(1-v/max);s+=`<line class="gl" x1="${L}" x2="${W-R}" y1="${y}" y2="${y}"/><text x="${L-6}" y="${y+4}" text-anchor="end">${v}</text>`});
+  TOT.forEach((t,d)=>{const parts=split(t);let y=H-Bt;const x=L+d*bw+bw*.2,w=bw*.6;
+    parts.forEach((v,i)=>{const h=(H-Tp-Bt)*v/max;y-=h;s+=`<rect x="${x}" y="${y+1}" width="${w}" height="${Math.max(h-2,1)}" rx="${i===parts.length-1?4:0}" fill="var(${TYPES[i][2]})"><title>${DAYS[d]} · ${TYPES[i][0]}: ${v} agents</title></rect>`});
+    s+=`<text class="lab" x="${x+w/2}" y="${y-6}" text-anchor="middle">${t.toLocaleString('en')}</text><text x="${x+w/2}" y="${H-8}" text-anchor="middle">${ph?DAYS[d].split(' ')[0]:DAYS[d]}</text>`});
+  return s+'</svg>';
+}
+function rchart(ph){
+  const W=ph?290:1000,H=80,L=ph?30:40,R=8,bw=(W-L-R)/7,max=25;
+  let s=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Retries per day">`;
+  RET.forEach((t,d)=>{const x=L+d*bw+bw*.3,w=bw*.4,h=(H-28)*t/max;s+=`<rect x="${x}" y="${H-20-h}" width="${w}" height="${h}" rx="3" fill="none" stroke="var(--text-dim)" stroke-width="1.5"><title>${DAYS[d]}: ${t} retries</title></rect><text x="${x+w/2}" y="${H-20-h-4}" text-anchor="middle">${t}</text>`});
+  return s+`<line class="gl" x1="${L}" x2="${W-R}" y1="${H-20}" y2="${H-20}"/></svg>`;
+}
+function counts(ph){
+  const st=(n,v)=>`<div class="stp"><span class="tx"><b>${n}</b></span><span class="mn">${v}</span></div>`;
+  const now=`<div class="g2">`+CARD('This tenant',C('read 12 min ago','ln'),st('Queued','4')+st('Leased, dispatched, starting','3')+st('Running','11')+st('Parked','2')+st('Ready','1')+`<p class="hint" style="margin:6px 0 0">21 agents · one exact count per state.</p>`)+
+    CARD('Every tenant',C('read 12 min ago','ln'),st('Queued','17')+st('Leased, dispatched, starting','9')+st('Running','46')+st('Parked','6')+st('Ready','3')+`<p class="hint" style="margin:6px 0 0">81 agents.</p>`)+`</div>`;
+  const tbl=T(['Agent type','#Agents','#Retries','#Run hours','#Tokens in','#Out','#Cache read','#Cache write','#Estimated cost','#Reported'],[
+    ['claude-code','617','51','23.8','1,102 M','18.4 M','6,210 M','412 M','at least $318','571 of 617'],
+    ['claude-code-browser','128','11','5.6','214 M','3.1 M','940 M','66 M','$58','128 of 128'],
+    ['indexer','85','6','2.5','41 M','0.6 M',DASH('not reported by indexer'),DASH('not reported by indexer'),'at least $15','53 of 85'],
+    {cls:'tot',c:['All types','830','68','31.9','1,357 M','22.1 M','at least 7,150 M','at least 478 M','at least $391','752 of 830']}]);
+  const over=CARD('Over time',`<span class="age mn sm12">read 4 min ago · never refreshed on its own</span>${B('Read again · 7 reads','s')}`,
+    `<div class="scope" style="margin-bottom:12px">${FG('Range',SG(['This week','4 weeks','12 months'],0))}${FG('Per',SG(['Day','Week','Month'],0))}${FG('Group by',SG(['Agent type','Model','Workspace','Pool account'],0))}</div>`+
+    `<div class="sent">This week <em>830 agents</em>, <em>32 h</em> of run time, <em>at least $391</em> estimated.</div>`+
+    `<p style="margin:4px 0 14px">17 to 23 October, by submission day. 68 retries are counted apart, not in the 830. Estimated cost (list price, not a bill): at least $391, from 752 of 830 agents that reported tokens.</p>`+
+    `<div class="lg">${TYPES.map(t=>`<span><i style="background:var(${t[2]})"></i>${t[0]}</span>`).join('')}</div><div class="chart" style="margin-top:6px">${chart(ph)}</div>`+
+    `<div style="margin-top:10px"><span class="sm12 dim">Retries per day, shown apart</span><div class="chart">${rchart(ph)}</div></div><div style="margin-top:12px">${tbl}</div>`);
+  return LEAD('Counts are run by hand','Counted 12 min ago; nothing here refreshes on its own','Each count costs reads, and the button prints how many before you press it.',B('Run it again · 24 reads','p'))+now+over+
+  `<div class="fold">${I('chev')}<b>Platform ticks</b><span class="dim sm12">the Cloud Scheduler jobs the platform runs on its own</span></div>`;
+}
+function countsUnread(ph){
+  return LEAD('Counts are run by hand','Not counted yet','Each count costs reads, and the button prints how many before you press it.',B('Count now · 24 reads','p'))+
+  CARD('Over time','',`<div class="scope" style="margin-bottom:12px">${FG('Range',SG(['This week','4 weeks','12 months'],0))}${FG('Per',SG(['Day','Week','Month'],0))}</div><div class="sent dim">—, not read yet</div><p>Not counted until you ask. This week costs one read a day: 7 reads.</p><div class="acts">${B('Read over time · 7 reads','p')}</div>`,'dash');
+}
+
+/* ================= S9 QA ================= */
+const QAHD={cr:'Config › Repositories',h:'QA targets',age:'read 2 min ago',tabs:['Repositories','QA targets'],on:1,right:B('Register QA target','p','plus')};
+function qa(ph){
+  const envs=T(['','Environment','Host','Host approval','Credential','Screens'],[
+    [CHK('',true),'staging','https://staging.app.example.com',S('ok','approved 3 d ago'),S('ok','own login · test credential set'),'20'],
+    {cls:'need',c:[CHK('',false,true),'production<small>Cannot run: no test credential</small>','https://app.example.com',S('ok','approved 3 d ago'),C('not set','wn'),'20']}]);
+  return LEAD('QA targets · 1 missing','Studio production has no test credential','Its leg cannot run until it is set. Staging runs now.',B('Set production’s credential','p'),'wn')+
+  CARD('Studio',B('Edit','s')+B('Set credential','s'),`<dl class="kv"><dt>Files in</dt><dd>example-org/example-api</dd><dt>Sign-in</dt><dd>The app’s own login</dd></dl><div style="margin:12px 0">${envs}</div>`+
+   `<div class="acts">${B('Run 1 environment','p','play')}${CHK('report only, file no issues')}<span class="sm12 dim">Flows with</span>${SG(['the target’s (Playwright)','Jev, this run'],0)}${B('Run discovery','s')}</div>`)+
+  CARD('Docs site',B('Edit','s'),`<dl class="kv"><dt>Files in</dt><dd>example-org/docs-site</dd><dt>Sign-in</dt><dd>Public pages, no sign-in</dd></dl><div style="margin:12px 0">`+T(['','Environment','Host','Host approval','Credential','Screens'],[[CHK('',true),'production','https://docs.app.example.com',S('ok','approved 9 d ago'),'none needed','Discovers its screens']])+`</div><div class="acts">${B('Run 1 environment','p','play')}</div>`);
+}
+const QRHD={cr:'Config › Repositories › QA targets › Studio',h:'Run group · 23 Oct 21:12',ph:'QA run group',age:'read 30 s ago'};
+function leg(n,host,state,body){return CARD(`${n}`,state,`<p class="mn" style="margin:-6px 0 10px">${host}</p>`+body)}
+function qarun(ph){
+  const kv=(rows)=>`<dl class="kv">${rows.map(r=>`<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join('')}</dl>`;
+  const stg=leg('staging','https://staging.app.example.com',S('ok','succeeded'),kv([['Workflow','4 of 4 steps · 38 min'],['Screens captured','18 of 20 stored · 2 new'],['Coverage',`<span class="mtr"><span class="bar"><i style="width:90%"></i></span>18 of 20 stored routes</span>`],['New routes this run','/beta/reports, /settings/labs'],['Findings','1 high · 2 medium'],['Issues filed','3'],['Gate refusals','0']]));
+  const prd=leg('production','https://app.example.com',S('in','running, step 2 of 4'),kv([['Workflow','2 of 4 steps · 21 min so far'],['Screens captured','11 stored so far'],['Coverage',DASH('still running')],['New routes this run','/legal/imprint'],['Findings',DASH('when the leg ends')],['Issues filed','0 so far'],['Gate refusals','0']]));
+  return LEAD('New since last run','3 routes were found that are not stored yet','Promote adds a route to the target’s stored screens; admins only.',B('Review below','p'))+
+  CARD('Seen on one environment only','',`<div class="stp"><span class="tx"><b>On staging, not on production</b><small>/beta/reports · /settings/labs</small></span></div><div class="stp"><span class="tx"><b>On production, not on staging</b><small>/legal/imprint</small></span></div>`)+
+  (ph?`<div class="scope">${SG(['staging','production'],0)}</div>${stg}`:`<div class="cols">${stg}${prd}</div>`)+
+  CARD('New since last run','',T(['Route','Found on','First seen',''],[['/beta/reports','staging','this run',B('Promote','p s')+' '+B('Remove','s')],['/settings/labs','staging','this run',B('Promote','p s')+' '+B('Remove','s')],['/legal/imprint','production','this run',B('Promote','p s')+' '+B('Remove','s')]]));
+}
+
+/* ================= S10 Admin pages ================= */
+function wya(ph){
+  const ws=(n,id,k,acts)=>{const s=SETUP[k];const d=s.filter(q=>q[0]==='d').length;const nx=s.find(q=>q[0]==='n');return CARD(n,C(`setup ${d} of ${s.length}`,d===s.length?'ok':'in'),`<p class="mn">${id}</p>${segs(s.map(q=>q[0]))}<p style="margin-top:8px">${nx?'Next: '+nx[2].replace(/^Next: /,''):'Setup complete'}</p><div class="acts">${acts}</div>`)};
+  return LEAD('Your workspaces','Example Labs is behind: it has not chosen a repository','Each group workspace whose stored role for you is admin. A link selects that workspace, then opens the page.',B('Open Example Labs’ Config','p'))+
+  `<div class="g2">`+ws('Example Team','example-team','part',['Workspace Settings','MCP servers','People and roles','Secrets'].map(t=>`<a class="sm12">${t}</a>`).join(' · '))+ws('Example Labs','example-labs','repos',['Workspace Settings','MCP servers','People and roles','Secrets'].map(t=>`<a class="sm12">${t}</a>`).join(' · '))+`</div>`;
+}
+function limits(ph){
+  return LEAD('Needs a look','Pool global is at 92% of its ceiling','46 of 50 units in use. A cut of half or more, or a ceiling of 0, asks you to type its name.',B('Open global','p'),'wn')+
+  CARD('Pools',`<span class="sm12 dim">4 of 9 pools shown · 6 profiles</span>`,T(['Pool','#In use (units)','#Ceiling (units)','Set by','Last changed'],[
+    {cls:'need',c:['global<small>Global</small>','46','50','Operator','4 d ago']},
+    ['tenant:example-team<small>Tenants</small>','18','30','Operator','9 d ago'],
+    ['tenant:example-labs<small>Tenants</small>','0','20','Operator','9 d ago'],
+    ['resource:browser<small>Resource classes</small>','7','12','Terraform','30 d ago']]))+
+  ['Additional repositories','Model prices','GitHub fallback token'].map(t=>`<div class="fold">${I('chev')}<b>${t}</b><span class="dim sm12">as today</span></div>`).join('');
+}
+function sizes(ph){
+  return LEAD('Nothing waiting','In effect: version 7, set 5 d ago','A change shows what the pools would admit before you save it.','', 'ok')+
+  CARD('Classes','',T(['Class','#CPU request','#CPU limit','#Memory (GiB)','#Units','#Per agent, an hour'],[['standard','1','2','4','1','$0.11'],['large','2','4','8','2','$0.22'],['browser','2','3','6','2','$0.19']])+`<p class="hint" style="margin:8px 0 0">Memory: request equals limit. CPU: the limit stays within the platform’s burst ratio of the request.</p>`)+
+  CARD('What the pools admit','',T(['Pool','#Ceiling (units)','Class','Agents admitted, before → after'],[['global','50','standard','50 → 50'],['resource:browser','12','browser','6 → 6']]))+
+  `<div class="scope">${F('Reason','why this change','')}${B('Save','p')}${B('Restore the code defaults','s')}</div>`;
+}
+function tenants(ph){
+  return LEAD('Being created','Example Research is being created: step 6 of 11','Storage prefix is next. Nothing needs you unless a step fails.',B('Open its progress','p'),'')+
+  CARD('Being created',B('New workspace','p s','plus'),T(['Workspace','Kind','Asked by','Step'],[['Example Research','group','Operator','6 of 11 · Storage prefix']]))+
+  CARD('Tenants',`<span class="sm12 dim">4 of 8 tenants shown</span>`,T(['Tenant','Status','Kind','Principal','Enforced','Configured','Credentials','Identity'],[
+    ['example-team','enabled','group','group@your-domain',S('ok','yes'),S('ok','yes'),S('ok','2 accounts'),S('ok','own GSA')],
+    ['example-labs','enabled','group','group@your-domain',S('ok','yes'),S('ok','yes'),S('wn','none yet'),S('ok','own GSA')],
+    ['research-pod',S('nu','disabled'),'group','group@your-domain',S('ok','yes'),S('ok','yes'),S('ok','1 account'),S('ok','own GSA')],
+    ['operator','enabled','personal','operator@example.com',S('ok','yes'),S('ok','yes'),S('ok','1 account'),S('ok','own GSA')]])+`<p class="hint" style="margin:8px 0 0">4 more not drawn: the personal workspaces of riley, sam, kai and noor.</p>`);
+}
+
+/* ================= the frame registry ================= */
+const FR={
+  'nav-platform':()=>crop(X({page:'secrets'})),
+  'nav-admin-platform':()=>crop(X({sec:'admin',page:'apeople'})),
+  'nav-admin-ws':()=>crop(X({sec:'admin',role:'wsadmin',page:'wya'})),
+  'nav-member':()=>crop(X({role:'member',setup:'member',page:'secrets'})),
+  'nav-personal':()=>crop(X({ws:'personal',setup:'personal',page:'secrets'})),
+  'nav-phone-platform':()=>drawer(X({page:'secrets'}),SECHD,secWs),
+  'nav-phone-member':()=>drawer(X({role:'member',setup:'member',page:'secrets'}),SECHD,secMember),
+  'gh-none-d':()=>desk(X({setup:'none',page:'gh'}),GHHD(0),ghNone),
+  'gh-conn-d':()=>desk(X({setup:'repos',page:'gh'}),GHHD(0),ghConn),
+  'gh-choose-d':()=>desk(X({setup:'choosing',page:'gh'}),GHHD(1),ghChoose),
+  'gh-none-p':()=>phone(X({setup:'none',page:'gh'}),GHHD(0),ghNone),
+  'gh-conn-p':()=>phone(X({setup:'repos',page:'gh'}),GHHD(0),ghConn),
+  'gh-choose-p':()=>phone(X({setup:'choosing',page:'gh'}),GHHD(1),ghChoose),
+  'repos-d':()=>desk(X({page:'repos'}),REPHD,repos),
+  'repos-p':()=>phone(X({page:'repos'}),REPHD,repos),
+  'repos-empty-p':()=>phone(X({setup:'repos',page:'repos'}),REPHD0,reposEmpty),
+  'sec-ws-d':()=>desk(X({page:'secrets'}),SECHD,secWs),
+  'sec-repo-d':()=>desk(X({page:'secrets'}),SECHD,ph=>secRepo(ph,0)),
+  'sec-repo-actions-d':()=>desk(X({page:'secrets'}),SECHD,ph=>secRepo(ph,1)),
+  'sec-wiz-d':()=>desk(X({page:'secrets'}),SECHD,secWiz),
+  'sec-wiz-1':()=>wizStep(1),
+  'sec-wiz-3':()=>wizStep(3),
+  'sec-wiz-4':()=>wizStep(4),
+  'sec-form-d':()=>desk(X({page:'secrets'}),SFHD,secForm),
+  'sec-yours-p':()=>phone(X({page:'secrets'}),SECHD,secYours),
+  'sec-actions-p':()=>phone(X({page:'secrets'}),SECHD,secActions),
+  'sec-form-p':()=>phone(X({page:'secrets'}),SFHD,secForm),
+  'sec-member-p':()=>phone(X({role:'member',setup:'member',page:'secrets'}),SECHD,secMember),
+  'sec-empty-p':()=>phone(X({setup:'fresh',page:'secrets'}),SECHD0,secEmpty),
+  'mcp-d':()=>desk(X({page:'mcp'}),{cr:'Config',h:'MCP servers',age:'read 2 min ago'},mcp),
+  'mcp-p':()=>phone(X({page:'mcp'}),{cr:'Config',h:'MCP servers',age:'read 2 min ago'},mcp),
+  'cpeople-d':()=>desk(X({page:'people'}),{cr:'Config',h:'People and roles',age:'read 2 min ago'},cpeople),
+  'cpeople-p':()=>phone(X({page:'people'}),{cr:'Config',h:'People and roles',age:'read 2 min ago'},cpeople),
+  'cpeople-member-d':()=>desk(X({role:'member',setup:'member',page:'people'}),{cr:'Config',h:'People and roles',age:'read 2 min ago'},cpeopleMember),
+  'cpeople-member-p':()=>phone(X({role:'member',setup:'member',page:'people'}),{cr:'Config',h:'People and roles',age:'read 2 min ago'},cpeopleMember),
+  'apeople-d':()=>desk(X({sec:'admin',page:'apeople'}),{cr:'Admin',h:'People and roles',age:'read 1 min ago'},ph=>apeople(ph,false)),
+  'apeople-ws-p':()=>phone(X({sec:'admin',role:'wsadmin',page:'apeople'}),{cr:'Admin',h:'People and roles',age:'read 1 min ago'},ph=>apeople(ph,true)),
+  'wss-d':()=>desk(X({page:'wss'}),WSHD(0),wss),
+  'wss-p':()=>phone(X({page:'wss',role:'wsadmin'}),WSHD(0,false),wss),
+  'wsetup-d':()=>desk(X({page:'wsetup'}),WSHD(1),wsetup),
+  'wsetup-p':()=>phone(X({page:'wsetup'}),WSHD(1),wsetup),
+  'wsnew-d':()=>desk(X({page:'wsnew'}),WSHD(2),wsnew),
+  'wsnew-p':()=>phone(X({page:'wsnew'}),WSHD(2),wsnew),
+  'psec-d':()=>desk(X({sec:'admin',page:'psec'}),{cr:'Admin',h:'Platform secrets',age:'read 40 s ago'},psec),
+  'psec-p':()=>phone(X({sec:'admin',page:'psec'}),{cr:'Admin',h:'Platform secrets',age:'read 40 s ago'},psec),
+  'counts-d':()=>desk(X({sec:'admin',page:'counts'}),{cr:'Admin',h:'Platform counts',age:'counted 12 min ago'},counts),
+  'counts-p':()=>phone(X({sec:'admin',page:'counts'}),{cr:'Admin',h:'Platform counts',age:'counted 12 min ago'},counts),
+  'counts-unread-p':()=>phone(X({sec:'admin',page:'counts'}),{cr:'Admin',h:'Platform counts',age:'not counted yet'},countsUnread),
+  'qa-d':()=>desk(X({page:'repos'}),QAHD,qa),
+  'qa-p':()=>phone(X({page:'repos'}),QAHD,qa),
+  'qarun-d':()=>desk(X({page:'repos',setup:'part2'}),QRHD,qarun),
+  'qarun-p':()=>phone(X({page:'repos',setup:'part2'}),QRHD,qarun),
+  'wya-d':()=>desk(X({sec:'admin',role:'wsadmin',page:'wya'}),{cr:'Admin',h:'Workspaces you admin',age:'read 1 min ago'},wya),
+  'wya-p':()=>phone(X({sec:'admin',role:'wsadmin',page:'wya'}),{cr:'Admin',h:'Workspaces you admin',age:'read 1 min ago'},wya),
+  'limits-d':()=>desk(X({sec:'admin',page:'limits'}),{cr:'Admin',h:'Pool limits',age:'read 20 s ago'},limits),
+  'limits-p':()=>phone(X({sec:'admin',page:'limits'}),{cr:'Admin',h:'Pool limits',age:'read 20 s ago'},limits),
+  'sizes-d':()=>desk(X({sec:'admin',page:'sizes'}),{cr:'Admin',h:'Runner sizes',age:'read 1 min ago'},sizes),
+  'sizes-p':()=>phone(X({sec:'admin',page:'sizes'}),{cr:'Admin',h:'Runner sizes',age:'read 1 min ago'},sizes),
+  'tenants-d':()=>desk(X({sec:'admin',page:'tenants'}),{cr:'Admin',h:'Tenants',age:'read 1 min ago'},tenants),
+  'tenants-p':()=>phone(X({sec:'admin',page:'tenants'}),{cr:'Admin',h:'Tenants',age:'read 1 min ago'},tenants),
+
+};
+let drawn=0;
+document.querySelectorAll('[data-f]').forEach(el=>{const f=FR[el.dataset.f];if(!f){el.textContent='Missing frame: '+el.dataset.f;return}el.innerHTML=f();drawn++});
+document.documentElement.dataset.frames=String(drawn);
+
+/* ---------- the theme toggle: the page's and every frame's panel foot ---------- */
+const root=document.documentElement;
+function apply(t){
+  if(t==='system')delete root.dataset.theme;else root.dataset.theme=t;
+  document.querySelectorAll('[data-theme-set]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.themeSet===t)));
+  try{localStorage.setItem('config-e-theme',t)}catch(e){}
+}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-theme-set]');if(b)apply(b.dataset.themeSet)});
+let saved='system';try{saved=localStorage.getItem('config-e-theme')||'system'}catch(e){}
+apply(saved);
+})();
+</script>
+</body>
+</html>

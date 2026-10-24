@@ -1001,7 +1001,11 @@ jobs:
         run: |
           set -euo pipefail
           "${RUNNER_TEMP}/actionlint-bin/actionlint" -version
+          # `environment: {deployment: false}` is valid GitHub syntax (jobs that read
+          # repo-secrets without creating a deployment, REPO-SECRETS-ENV) that
+          # actionlint 1.7.7 does not know yet; ignore exactly that one message.
           "${RUNNER_TEMP}/actionlint-bin/actionlint" -shellcheck= -pyflakes= \
+            -ignore 'unexpected key "deployment" for "environment" section' \
             .github/workflows/release.yml .github/workflows/hotfix.yml \
             .github/workflows/accept.yml .github/workflows/application.yml \
             .github/workflows/iam-refusal-probe.yml .github/workflows/ci-fix.yml \

@@ -16,9 +16,11 @@ lane VQ-2 TARGETS, part of #1933).
     GET    /v1/qa-runs/{group_id}                  a run group, in its own tenant (any role)
     POST   /v1/qa-targets/{id}:discover            a member starts its discovery (§4.1): {environment?}
     POST   /v1/qa-targets/{id}/credential-links    a one-time link to the console's form (an admin),
-                                                   bound to one entry: {environment?}
+                                                   bound to one entry and one field:
+                                                   {environment?, field?: credential | challenge_bypass}
     PUT    /v1/qa-targets/{id}/credential          the form's write, with the link's token
-    PUT    /v1/qa-targets/{id}/challenge-bypass    its challenge bypass's value (a workspace admin, §2.5)
+    PUT    /v1/qa-targets/{id}/challenge-bypass    its challenge bypass's value (a workspace admin, §2.5),
+                                                   with a challenge_bypass link's token
     POST   /v1/attempts/{attempt_id}/qa-target     WORKER ONLY: its attempt's target
 
 Four kinds of caller. A WORKSPACE ADMIN registers, changes and deletes a
@@ -40,13 +42,17 @@ worker's route are in `main.UNCAPTURED_ROUTES`.
 THE CHALLENGE BYPASS'S VALUE (§2.5; lane CAPTCHA-BYPASS) is write-only in the
 same way: accepted on its PUT alone, from a workspace admin, in a body that is
 not a `StrictModel`, and answered as `{set, set_at, set_by, version}`. Its
-kind and name are registration fields (`TargetBody.challenge_bypass`). The
-PUT takes no one-time link: the value is a key the app's owner made for this
-platform's runs, typed in the console's target form by the admin who is
-signed in, rather than a person's own password reaching the form by a link a
-chat could carry. `BYPASS_ROUTE` is the route `main.UNCAPTURED_ROUTES` should
-name beside `CREDENTIAL_ROUTE` (a request in this lane's PR: main.py is
-outside its territory, and nothing captures a body today).
+kind and name are registration fields (`TargetBody.challenge_bypass`).
+`BYPASS_ROUTE` is in `main.UNCAPTURED_ROUTES` beside `CREDENTIAL_ROUTE`.
+
+ITS VALUE ARRIVES THROUGH A LINK TOO (docs/design/secrets-scopes.md §6.2,
+§11 Q8: a value arrives only through the console form a one-time link opens,
+or a terminal's --stdin; lane SSC-LINKS). `POST .../credential-links` takes
+`field: "challenge_bypass"` and mints a link to that form; the PUT takes its
+token as `link_token`. A PUT without one is refused 403
+`qa_bypass_link_required` through its switch, which ships off: off, the write
+goes through, as the console's target form sends it today, and the log names
+who wrote which entry, never the value.
 """
 
 from __future__ import annotations
@@ -161,6 +167,13 @@ class LegBody(StrictModel):
     environment: str | None = EnvironmentName
 
 
+class LinkBody(LegBody):
+    #: What the link's form sets (SSC-LINKS): the sign-in's username and
+    #: password (unset, as every link before the field), or the challenge
+    #: bypass's value. Checked by `QaTargets.mint_link`.
+    field: Literal["credential", "challenge_bypass"] = "credential"
+
+
 class CredentialWrite(BaseModel):
     #: Write-only. Not stripped: a password's spaces are its own.
     model_config = ConfigDict(extra="forbid")
@@ -181,6 +194,9 @@ class BypassWrite(BaseModel):
 
     value: str = Field(min_length=1, max_length=BYPASS_VALUE_MAX)
     environment: str | None = EnvironmentName
+    #: The `t` of a `field: "challenge_bypass"` link (SSC-LINKS). Unset is
+    #: refused through the `qa_bypass_link_required` switch.
+    link_token: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 def _resolver(request: Request) -> Any:
@@ -433,18 +449,20 @@ def discover_target(
 def mint_credential_link(
     target_id: str,
     request: Request,
-    body: LegBody | None = None,
+    body: LinkBody | None = None,
     auth: AuthContext = Depends(current_auth),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """The link's URL (and path) and its expiry, and nothing else: the
     plugin's `swarm_qa_target_credential_link` passes on only the URL and the
-    expiry, as `keys.key_set_link` does (§2.1)."""
+    expiry, as `keys.key_set_link` does (§2.1). `field` picks the form: the
+    credential's (unset) or the challenge bypass's."""
     by = require_workspace_admin(ctx, auth, tenant_id)
+    body = body if body is not None else LinkBody()
     return _targets(request, ctx).mint_link(tenant_id, target_id, email=by,
                                             console=ctx.settings.console_url,
-                                            environment=body.environment if body is not None else None)
+                                            environment=body.environment, field=body.field)
 
 
 @router.put("/qa-targets/{target_id}/credential")
@@ -476,7 +494,7 @@ def put_challenge_bypass(
     by = require_workspace_admin(ctx, auth, tenant_id)
     status_ = _targets(request, ctx).set_challenge_bypass(
         tenant_id, target_id, value=body.value, by=by, credentials=_credentials(request, ctx),
-        environment=body.environment)
+        environment=body.environment, link_token=body.link_token)
     return {"challenge_bypass_value": status_}
 
 
