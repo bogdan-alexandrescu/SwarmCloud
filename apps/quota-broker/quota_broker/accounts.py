@@ -100,6 +100,28 @@ DEFAULT_STALE_AFTER = timedelta(minutes=30)
 #: more expensive than simply not starting it there.
 DEFAULT_ASSIGN_FLOOR = 0.15
 
+#: A window's own floor, where it differs from DEFAULT_ASSIGN_FLOOR (BGD,
+#: 2026-10-24, #2222). One 15% floor on every window stranded six accounts
+#: with 2-14% of their WEEK left for one to four days, while 28 agents waited
+#: on the one account whose 5-hour window would clear first. Five per cent of
+#: a week is still hours of agent work, and an agent that does reach the limit
+#: mid-run is swapped or parked like any other. The 5-hour window, and any
+#: window this map does not name, keeps the default.
+WINDOW_FLOORS: dict[str, float] = {"seven_day": 0.05}
+
+
+def window_floor(window: str, floor: float | None = None) -> float:
+    """The floor `window` is held to before a NEW agent is handed its account.
+
+    `floor`, when a caller names one, is one floor for every window: the rule
+    before #2222, kept so a caller (and every test written against it) that
+    passes `assign_floor` gets exactly what it asked for. None, the default
+    everywhere in the broker and the scheduler, is each window's own floor.
+    """
+    if floor is not None:
+        return floor
+    return WINDOW_FLOORS.get(window, DEFAULT_ASSIGN_FLOOR)
+
 #: How long a hold survives without being released.
 #:
 #: Longer than the longest runner profile's timeout (7200s) plus the setup and
@@ -564,6 +586,41 @@ class Account:
             (1.0 if w.is_reset(now) else w.remaining()) for w in self.windows.values()
         )
 
+    def blocking_windows(
+        self,
+        now: datetime,
+        *,
+        floor: float | None = None,
+        stale_after: timedelta = DEFAULT_STALE_AFTER,
+    ) -> dict[str, WindowReading]:
+        """The windows that keep this account from a NEW agent, by name.
+
+        A window blocks while it has not reset and its remaining share is under
+        its floor (`window_floor`). An aged reading counts at half, exactly as
+        `headroom()` halves it, so with one `floor` for every window this is
+        `headroom() < floor` window by window. A never-observed account has no
+        reading to block on, and is assignable for the reason `headroom()`
+        gives.
+        """
+        if not self.windows or self.observed_at is None:
+            return {}
+        factor = 0.5 if now - self.observed_at > stale_after else 1.0
+        return {
+            name: w
+            for name, w in self.windows.items()
+            if not w.is_reset(now) and w.remaining() * factor < window_floor(name, floor)
+        }
+
+    def assignable(
+        self,
+        now: datetime,
+        *,
+        floor: float | None = None,
+        stale_after: timedelta = DEFAULT_STALE_AFTER,
+    ) -> bool:
+        """Whether a NEW agent may be handed this account: no window blocks it."""
+        return not self.blocking_windows(now, floor=floor, stale_after=stale_after)
+
     def is_stale(
         self,
         now: datetime,
@@ -584,7 +641,7 @@ class Account:
         self,
         now: datetime,
         *,
-        floor: float = DEFAULT_ASSIGN_FLOOR,
+        floor: float | None = None,
         stale_after: timedelta = DEFAULT_STALE_AFTER,
     ) -> datetime | None:
         """When this account becomes assignable again, or None if nothing is a clock.
@@ -595,9 +652,11 @@ class Account:
         which reads, to whoever is looking at it, as though the account had been
         exhausted.
 
-        THE ELIGIBILITY RULE HERE IS THE ONE `headroom()` USES, staleness
-        included, which it did not used to be. `choose()` rejects on
-        `headroom()`, which HALVES an aged reading; this compared the raw
+        THE ELIGIBILITY RULE HERE IS THE ONE `choose()` USES (`assignable()`,
+        each window against its own floor since #2222), staleness included,
+        which it did not used to be. `choose()` rejects on a window's remaining
+        share, which `headroom()` and `blocking_windows()` HALVE for an aged
+        reading; this compared the raw
         remaining against the floor and applied no staleness at all. So an
         account blocked only by the halving -- raw remaining between the floor
         and twice it, last observed over `stale_after` ago -- was rejected by
@@ -613,12 +672,12 @@ class Account:
         one -- see `eligibility()`, which says so in words the caller can act
         on.
         """
-        if self.headroom(now, stale_after=stale_after) >= floor:
+        if self.assignable(now, floor=floor, stale_after=stale_after):
             return None
         blocking = [
             w.resets_at
-            for w in self.windows.values()
-            if not w.is_reset(now) and w.remaining() < floor
+            for name, w in self.windows.items()
+            if not w.is_reset(now) and w.remaining() < window_floor(name, floor)
         ]
         return min(blocking) if blocking else None
 
@@ -1069,7 +1128,7 @@ def choose(
     tenant_id: str,
     now: datetime,
     *,
-    assign_floor: float = DEFAULT_ASSIGN_FLOOR,
+    assign_floor: float | None = None,
     stale_after: timedelta = DEFAULT_STALE_AFTER,
     exclude: Iterable[str] = (),
     model_class: str | None = "",
@@ -1110,7 +1169,7 @@ def choose(
         and (model_class == "" or a.serves_class(model_class))
         and a.account_id not in skip
         and not a.is_unreadable_for(tenant_id, now, unreadable_after=stale_after)
-        and a.headroom(now, stale_after=stale_after) >= assign_floor
+        and a.assignable(now, floor=assign_floor, stale_after=stale_after)
     ]
     if not candidates:
         return None
@@ -1130,7 +1189,7 @@ def eligibility(
     tenant_id: str,
     now: datetime,
     *,
-    assign_floor: float = DEFAULT_ASSIGN_FLOOR,
+    assign_floor: float | None = None,
     stale_after: timedelta = DEFAULT_STALE_AFTER,
     exclude: Iterable[str] = (),
     model_class: str | None = "",
@@ -1287,6 +1346,8 @@ __all__ = [
     "ASSIGNABLE_STATES",
     "USABLE_STATES",
     "DEFAULT_ASSIGN_FLOOR",
+    "WINDOW_FLOORS",
+    "window_floor",
     "DEFAULT_HOLD_TTL",
     "DEFAULT_STALE_AFTER",
     "HOLD_END_ACCOUNT_REMOVED",
