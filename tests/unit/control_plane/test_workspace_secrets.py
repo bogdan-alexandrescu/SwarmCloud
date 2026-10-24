@@ -841,7 +841,8 @@ def test_disable_grants_turns_a_repositorys_grants_off_for_a_manager_only(client
 #
 # secrets-scopes.md §2.1: "A removed registration disables every grant on its
 # secrets in the transaction that removes it." `DELETE /v1/repositories/{id}`
-# calls `disable_repository_grants` before it deletes, and fails closed.
+# disables them and deletes in one transaction (`delete_repository`, lane
+# SSC-REPO-DELETE-TXN below), and fails closed.
 
 from swarm_api.grant_attest import GrantKeys  # noqa: E402
 from swarm_api.workspace_secrets import AUDIT_REPOSITORY_GRANTS_DISABLED, WorkspaceSecrets  # noqa: E402
@@ -916,7 +917,7 @@ def test_a_disable_that_raises_leaves_the_registration_and_answers_an_error(
     def broken(self, **kwargs):
         raise RuntimeError("firestore unavailable")
 
-    monkeypatch.setattr(WorkspaceSecrets, "disable_repository_grants", broken)
+    monkeypatch.setattr(WorkspaceSecrets, "delete_repository", broken)
     response = keyed.delete(f"/v1/repositories/{WIDGETS}", headers=as_("dave", "eng"))
     assert response.status_code >= 500, response.text
     assert f"repositories/{WIDGETS}" in seeded.docs
@@ -1073,4 +1074,18 @@ def test_a_removal_that_cannot_commit_leaves_the_grants_and_the_registration(
     assert f"repositories/{WIDGETS}" in removal.docs
     [grant] = _grants(removal)
     assert grant["enabled"] is True
+    assert removal.docs == before
+
+
+def test_a_removal_over_firestores_write_cap_refuses_whole(keyed, removal, sm, monkeypatch):
+    """One grant, its audit row and the delete are three writes: under a cap
+    of two the removal is a 409 naming the count, and nothing is written."""
+    import swarm_api.workspace_secrets as module
+
+    _granted(keyed, removal)
+    before = {p: dict(d) for p, d in removal.docs.items()}
+    monkeypatch.setattr(module, "MAX_TRANSACTION_WRITES", 2)
+    response = keyed.delete(f"/v1/repositories/{WIDGETS}", headers=as_("dave", "eng"))
+    assert response.status_code == 409, response.text
+    assert "3 documents" in response.text and "disable-grants" in response.text
     assert removal.docs == before
