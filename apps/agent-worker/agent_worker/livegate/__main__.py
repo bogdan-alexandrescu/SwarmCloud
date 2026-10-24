@@ -2253,15 +2253,20 @@ class LiveGate:
         if not decision.granted:
             return await self._refused(decision.cause or "refused")
         await control.grant(conn_id)
-        self.control_changed()
-        touch.begin(target)
-        await self._bring_to_front(target)
+        # The episode opens with the controller, no await between them. This
+        # runs on the tunnel task, and the tunnel's cleanup ends control only
+        # when there is an episode: opened after `_bring_to_front`'s CDP round,
+        # a cancel during it left the controller named with nothing to end it
+        # (FLAKE-LIVEGATE, #2230; runs 40086650895 and 40090460194).
         if self._episode is None:
             self._episode = _Episode(target=target, since=time.monotonic(), conn_id=conn_id)
         else:
             self._episode.conn_id = conn_id
         self._had_control = True
         self._renew_lease()
+        self.control_changed()
+        touch.begin(target)
+        await self._bring_to_front(target)
         await self._action({"kind": "control", "event": "granted"})
 
     async def _bring_to_front(self, target: str) -> None:
