@@ -21,6 +21,13 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
+// AS A PLATFORM ADMIN. Since CONFIG-NAV (part of #2157) an Admin address
+// sends someone who administers nothing to Overview once `me` and
+// `/v1/tenants/mine` have answered, and the fixture's default caller is that
+// member. api.ts reads the persona cookie once, when it loads, so it is set
+// before the import below.
+document.cookie = 'swarm_qa_persona=platform-admin; path=/'
+
 const { App, canonical, fromHash } = await import('../App')
 
 const WAIT = { timeout: 5000 } as const
