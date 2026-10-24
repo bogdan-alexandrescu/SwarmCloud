@@ -182,11 +182,14 @@ def untick(db, sm, tenant_id: str, name: str, consumer: str) -> None:
 
 
 def running(client, db, attempt: Attempt | None = None, *, profile: str = "claude-code",
-            task_input: dict[str, Any] | None = None, submitted_by: str = ALICE) -> Attempt:
-    """A task registered while STARTING, signed as submission signs it, then RUNNING."""
+            task_input: dict[str, Any] | None = None, submitted_by: str = ALICE,
+            **extra: Any) -> Attempt:
+    """A task registered while STARTING, signed as submission signs it, then RUNNING.
+    `extra` is more signed task fields (`repository_url`, `additional_repositories`)."""
     attempt = attempt or Attempt()
     doc = seed_parent(db, attempt, state="STARTING", runner_profile=profile,
-                      input=dict(task_input or {"prompt": "do it"}), submitted_by=submitted_by)
+                      input=dict(task_input or {"prompt": "do it"}), submitted_by=submitted_by,
+                      **extra)
     response = register(client, db, attempt)
     assert response.status_code == 201, response.text
     SIGNER.sign_document(doc, attempt.tuple.task_id)
@@ -690,3 +693,235 @@ def test_a_group_task_is_known_by_configuration_not_by_its_tenant_document(clien
     attempt = running(client, db, submitted_by=ALICE)
     assert names(release(client, attempt)) == ["alice-key"]
     assert ENG_GROUP.split("@")[0] == "eng"
+
+
+# --------------------------------------------------------------------------
+# SSC-REPO-SCOPE (docs/design/secrets-scopes.md §2.2, §2.4; owner decisions
+# Q1 and Q9 of §11): a repository's secret reaches only an attempt whose
+# SIGNED spec clones that repository, through a grant bound to it and signed
+# "v2"; one (slot, name) offered by several scopes is released once.
+# --------------------------------------------------------------------------
+
+from swarm_api.grant_attest import GrantKeys, GrantPolicy  # noqa: E402
+from swarm_api.repositories import repo_id_for  # noqa: E402
+
+
+@pytest.fixture
+def grant_key() -> str:
+    return secrets.token_urlsafe(32)
+
+
+@pytest.fixture
+def keyed(db, worker_tokens, group_map, objects, sm, grant_key) -> TestClient:  # noqa: F811
+    """The release with a grant key, as a deployment that signs grants has."""
+    seed_tenant(db, "eng")
+    seed_tenant(db, "research")
+    _personal(db, "u-alice", ALICE)
+    ctx = build_context(
+        settings=_settings(workspace_grant_key=grant_key), db=db,
+        verifier=StaticTokenVerifier(worker_tokens), groups=StaticGroups(group_map),
+        credentials=InMemoryCredentials(), waker=NullWaker(), metrics=ApiMetrics(),
+        objects=objects,
+    )
+    application = create_app(ctx)
+    application.state.workspace_secret_reader = sm
+    return TestClient(application, raise_server_exceptions=False)
+
+
+def register_repo(db, tenant_id: str, owner: str, repo: str) -> dict[str, Any]:
+    """A registration as `repositories.Repositories.create` stores one."""
+    repo_id = repo_id_for(tenant_id, owner, repo)
+    doc = {"repo_id": repo_id, "tenant_id": tenant_id, "forge": "github", "owner": owner,
+           "repo": repo, "repository_url": f"https://github.com/{owner}/{repo}"}
+    db.docs[f"repositories/{repo_id}"] = doc
+    return doc
+
+
+def add_repo_secret(db, sm, key: str, tenant_id: str, registration: dict[str, Any], name: str,
+                    value: str, *, grants: tuple[str, ...] = ("profile:claude-code",),
+                    by: str = ROOT) -> dict[str, Any]:
+    store = WorkspaceSecrets(db, sm, now=lambda: datetime.now(timezone.utc),
+                             grants=GrantPolicy(GrantKeys(key), False))
+    store.create(tenant=_tenant(db, tenant_id), name=name, provider="other", kind="api_key",
+                 payload=value.encode(), by=by, via_link=False, repository=registration)
+    for consumer in grants:
+        store.set_grant(tenant_id=tenant_id, name=name, consumer=consumer, slot=None,
+                        enabled=True, by=by, repo_id=registration["repo_id"])
+    return store.find(tenant_id, name, registration["repo_id"])
+
+
+def extra_repo(registration: dict[str, Any], *, repo_id: str | None = None) -> dict[str, Any]:
+    """One `additional_repositories` entry, shaped as swarm-api writes it."""
+    owner_repo = f"{registration['owner']}/{registration['repo']}"
+    return {"name": registration["repo"], "repo_id": repo_id or registration["repo_id"],
+            "repository": owner_repo, "repository_url": f"https://github.com/{owner_repo}",
+            "ref": "main", "commit": "a" * 40, "forge_credential": "git",
+            "forge_credential_source": "tenant", "size_kib": 10}
+
+
+def withheld(response) -> list[tuple[str, str]]:
+    assert response.status_code == 200, response.text
+    return sorted((w["name"], w["reason"]) for w in response.json()["withheld"])
+
+
+def test_a_repository_secret_reaches_an_attempt_that_clones_its_repository(keyed, db, sm,
+                                                                           grant_key):
+    widgets = register_repo(db, "eng", "acme", "widgets")
+    value = fake_value("r")
+    add_repo_secret(db, sm, grant_key, "eng", widgets, "widgets-db", value)
+    attempt = running(keyed, db, repository_url="https://github.com/acme/widgets.git")
+    answer = release(keyed, attempt)
+    assert names(answer) == ["widgets-db"]
+    assert answer.json()["secrets"][0]["value"] == value
+
+
+def test_a_repository_secret_is_not_released_to_an_attempt_on_another_repository(
+        keyed, db, sm, grant_key):
+    widgets = register_repo(db, "eng", "acme", "widgets")
+    register_repo(db, "eng", "acme", "gadgets")
+    add_repo_secret(db, sm, grant_key, "eng", widgets, "widgets-db", fake_value("r"))
+    attempt = running(keyed, db, repository_url="https://github.com/acme/gadgets")
+    answer = release(keyed, attempt)
+    assert names(answer) == [] and withheld(answer) == []
+    assert sm.reads == []
+
+
+def test_an_attempt_that_clones_nothing_is_released_no_repository_secret(keyed, db, sm,
+                                                                         grant_key):
+    widgets = register_repo(db, "eng", "acme", "widgets")
+    add_repo_secret(db, sm, grant_key, "eng", widgets, "widgets-db", fake_value("r"))
+    attempt = running(keyed, db, repository_url=None)
+    assert names(release(keyed, attempt)) == []
+
+
+def test_a_repository_secret_is_released_through_a_matching_additional_repository(
+        keyed, db, sm, grant_key):
+    widgets = register_repo(db, "eng", "acme", "widgets")
+    lib = register_repo(db, "eng", "acme", "lib")
+    add_repo_secret(db, sm, grant_key, "eng", lib, "lib-token", fake_value("l"))
+    attempt = running(keyed, db, repository_url=widgets["repository_url"],
+                      additional_repositories=[extra_repo(lib)])
+    assert names(release(keyed, attempt)) == ["lib-token"]
+
+
+def test_an_additional_repository_whose_repo_id_is_not_its_repositorys_withholds_them_all(
+        keyed, db, sm, grant_key):
+    """The entry's repo_id is recomputed: one that names another registration
+    (here the attempt's own primary's sibling) releases no repository secret,
+    not even the primary repository's own."""
+    widgets = register_repo(db, "eng", "acme", "widgets")
+    lib = register_repo(db, "eng", "acme", "lib")
+    secret = register_repo(db, "eng", "acme", "secret-vault")
+    add_repo_secret(db, sm, grant_key, "eng", widgets, "widgets-db", fake_value("w"))
+    add_repo_secret(db, sm, grant_key, "eng", secret, "vault-key", fake_value("v"))
+    attempt = running(keyed, db, repository_url=widgets["repository_url"],
+                      additional_repositories=[extra_repo(lib, repo_id=secret["repo_id"])])
+    assert names(release(keyed, attempt)) == []
+    assert sm.reads == []
+
+
+def test_another_workspaces_registration_of_the_same_repository_is_not_this_ones(
+        keyed, db, sm, grant_key):
+    """repo_id_for covers the tenant: research's acme/widgets secret is not
+    released to eng's attempt on acme/widgets, and the other way round."""
+    theirs = register_repo(db, "research", "acme", "widgets")
+    add_repo_secret(db, sm, grant_key, "research", theirs, "widgets-db", fake_value("x"))
+    attempt = running(keyed, db, repository_url="https://github.com/acme/widgets")
+    assert names(release(keyed, attempt)) == []
+
+
+def test_a_repository_secret_whose_registration_was_removed_is_withheld(keyed, db, sm,
+                                                                        grant_key):
+    widgets = register_repo(db, "eng", "acme", "widgets")
+    add_repo_secret(db, sm, grant_key, "eng", widgets, "widgets-db", fake_value("r"))
+    del db.docs[f"repositories/{widgets['repo_id']}"]
+    attempt = running(keyed, db, repository_url=widgets["repository_url"])
+    assert names(release(keyed, attempt)) == []
+
+
+def test_removing_a_registration_disables_its_secrets_grants(keyed, db, sm, grant_key):
+    """`disable_repository_grants` turns every grant off, re-signed off, so a
+    re-registration (the same repo_id) revives nothing."""
+    widgets = register_repo(db, "eng", "acme", "widgets")
+    record = add_repo_secret(db, sm, grant_key, "eng", widgets, "widgets-db", fake_value("r"),
+                             grants=("profile:claude-code",))
+    store = WorkspaceSecrets(db, sm, now=lambda: datetime.now(timezone.utc),
+                             grants=GrantPolicy(GrantKeys(grant_key), False))
+    answer = store.disable_repository_grants(tenant_id="eng", repo_id=widgets["repo_id"],
+                                             by=ROOT)
+    assert answer["grants_disabled"] == {"widgets-db": ["profile:claude-code"]}
+    grants = [d for p, d in db.docs.items() if p.startswith(f"{GRANTS_COLLECTION}/")
+              and d["secret_id"] == record["secret_id"]]
+    assert grants and all(g["enabled"] is False and g["repo_id"] == widgets["repo_id"]
+                          for g in grants)
+    assert all(GrantKeys(grant_key).check(g) == "valid" for g in grants)
+    attempt = running(keyed, db, repository_url=widgets["repository_url"])
+    assert names(release(keyed, attempt)) == []
+
+
+# -- Q1: the person's, then the repository's, then the workspace's ------------
+
+
+def _three_scopes(db, sm, key: str, scopes: tuple[str, ...]) -> dict[str, str]:
+    """`shared` in each of `scopes`, each a different value, granted to the
+    profile's one slot; answers the values by scope."""
+    values = {}
+    widgets = register_repo(db, "eng", "acme", "widgets")
+    if "workspace" in scopes:
+        values["workspace"] = fake_value("w")
+        add_secret(db, sm, "eng", "shared", values["workspace"], grants=("profile:claude-code",))
+    if "repository" in scopes:
+        values["repository"] = fake_value("r")
+        add_repo_secret(db, sm, key, "eng", widgets, "shared", values["repository"])
+    if "personal" in scopes:
+        values["personal"] = fake_value("p")
+        add_secret(db, sm, "u-alice", "shared", values["personal"],
+                   grants=("profile:claude-code",), by=ALICE, use_in=("eng",))
+    return values
+
+
+@pytest.mark.parametrize("scopes, winner, reason", [
+    (("personal", "repository"), "personal", "shadowed_by_personal"),
+    (("repository", "workspace"), "repository", "shadowed_by_repository"),
+    (("personal", "workspace"), "personal", "shadowed_by_personal"),
+    (("personal", "repository", "workspace"), "personal", "shadowed_by_personal"),
+])
+def test_one_slot_and_name_in_several_scopes_is_released_once_by_q1s_order(
+        keyed, db, sm, grant_key, scopes, winner, reason):
+    values = _three_scopes(db, sm, grant_key, scopes)
+    attempt = running(keyed, db, repository_url="https://github.com/acme/widgets",
+                      submitted_by=ALICE)
+    answer = release(keyed, attempt)
+    assert names(answer) == ["shared"]
+    assert answer.json()["secrets"][0]["value"] == values[winner]
+    # Every other scope's item is withheld, by name, with the scope that won.
+    assert withheld(answer) == [("shared", reason)] * (len(scopes) - 1)
+    for scope, value in values.items():
+        if scope != winner:
+            assert value not in answer.text
+    [row] = rows(db)
+    assert row["name"] == "shared"
+
+
+def test_a_personal_secret_shadows_only_its_own_persons_submissions(keyed, db, sm, grant_key):
+    """Another member's agent on the same repository gets the repository's."""
+    values = _three_scopes(db, sm, grant_key, ("personal", "repository"))
+    attempt = running(keyed, db, repository_url="https://github.com/acme/widgets",
+                      submitted_by=ROOT)
+    answer = release(keyed, attempt)
+    assert answer.json()["secrets"][0]["value"] == values["repository"]
+    assert withheld(answer) == []
+
+
+def test_the_primary_repositorys_secret_wins_over_an_additional_ones(keyed, db, sm,
+                                                                    grant_key):
+    widgets = register_repo(db, "eng", "acme", "widgets")
+    lib = register_repo(db, "eng", "acme", "lib")
+    primary = fake_value("a")
+    add_repo_secret(db, sm, grant_key, "eng", widgets, "shared", primary)
+    add_repo_secret(db, sm, grant_key, "eng", lib, "shared", fake_value("b"))
+    attempt = running(keyed, db, repository_url=widgets["repository_url"],
+                      additional_repositories=[extra_repo(lib)])
+    answer = release(keyed, attempt)
+    assert [s["value"] for s in answer.json()["secrets"]] == [primary]
+    assert withheld(answer) == [("shared", "shadowed_by_repository")]

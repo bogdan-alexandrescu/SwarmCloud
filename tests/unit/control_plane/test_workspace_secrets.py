@@ -645,3 +645,193 @@ def test_a_form_link_is_single_use_and_bound_to_its_minter(client, seeded):
     first = create(client, "root", "eng", "x-key", fake_value(), link_token=token)
     assert first.status_code == 201 and first.json()["via_link"] is True
     assert create(client, "root", "eng", "y-key", fake_value(), link_token=token).status_code == 403
+
+
+# -- SSC-REPO-SCOPE: a registered repository's secrets for agents -------------------
+#
+# docs/design/secrets-scopes.md §2.1, §2.5 and §6.2 (owner decisions Q2 and Q9
+# of its §11). The GitHub-admin half of Q2 is test_github_repo_admin.py's.
+
+from swarm_api.grant_attest import attested_form  # noqa: E402
+from swarm_api.repositories import repo_id_for  # noqa: E402
+
+WIDGETS = repo_id_for("eng", "acme", "widgets")
+REPO_BASE = f"/v1/repositories/{WIDGETS}/secrets"
+
+
+def register(db: FakeFirestore, tenant_id: str = "eng", owner: str = "acme",
+             repo: str = "widgets") -> str:
+    repo_id = repo_id_for(tenant_id, owner, repo)
+    db.docs[f"repositories/{repo_id}"] = {
+        "repo_id": repo_id, "tenant_id": tenant_id, "forge": "github", "owner": owner,
+        "repo": repo, "repository_url": f"https://github.com/{owner}/{repo}"}
+    return repo_id
+
+
+def repo_create(client, who: str, tenant: str, name: str, value: str, *,
+                base: str = REPO_BASE, **extra):
+    return client.post(base, headers=as_(who, tenant),
+                       json={"name": name, "provider": "other", "kind": "api_key",
+                             "value": value, **extra})
+
+
+def test_a_repository_secret_is_bound_to_its_registration_and_kept_off_the_workspace_list(
+        client, seeded, sm):
+    register(seeded)
+    value = fake_value()
+    response = repo_create(client, "root", "eng", "test-db-password", value)
+    assert response.status_code == 201, response.text
+    body = response.json()["secret"]
+    assert (body["scope"], body["repo_id"], body["repository"]) == \
+        ("repository", WIDGETS, "acme/widgets")
+    assert body["secret_id"].startswith("swarm-tenant-eng-wsec-")
+    assert value not in response.text
+    # The same name may exist once for the workspace and once per repository.
+    assert create(client, "root", "eng", "test-db-password", fake_value("w")).status_code == 201
+    assert [s["name"] for s in listing(client, "root", "eng")["secrets"]] == ["test-db-password"]
+    assert listing(client, "root", "eng")["secrets"][0]["scope"] == "workspace"
+    repo_list = client.get(REPO_BASE, headers=as_("dave", "eng"))
+    assert repo_list.status_code == 200, repo_list.text
+    assert [(s["name"], s["repo_id"]) for s in repo_list.json()["secrets"]] == \
+        [("test-db-password", WIDGETS)]
+    assert repo_list.json()["can_manage"] is False
+    # A second of the same name for the repository is a conflict.
+    again = repo_create(client, "root", "eng", "test-db-password", fake_value("x"))
+    assert again.status_code == 409, again.text
+
+
+def test_another_workspaces_repo_id_is_404_on_every_route(client, seeded, sm):
+    register(seeded)
+    theirs = register(seeded, "research", "acme", "widgets")
+    assert theirs != WIDGETS
+    assert repo_create(client, "root", "eng", "x-key", fake_value()).status_code == 201
+    # bob is research's: eng's registration is not his workspace's, whatever it names.
+    for method, path, body in (
+            ("GET", REPO_BASE, None),
+            ("POST", REPO_BASE, {"name": "y-key", "provider": "other", "kind": "api_key",
+                                 "value": fake_value()}),
+            ("PUT", f"{REPO_BASE}/x-key/value", {"value": fake_value()}),
+            ("PUT", f"{REPO_BASE}/x-key/grants/profile:claude-code", {"enabled": True}),
+            ("DELETE", f"{REPO_BASE}/x-key", {"name": "x-key"}),
+            ("POST", f"{REPO_BASE}/links", {"action": "add"})):
+        response = client.request(method, path, headers=as_("bob", "research"), json=body)
+        assert response.status_code == 404, (method, path, response.text)
+    # And a repo_id that is no registration at all.
+    unknown = client.get(f"/v1/repositories/{repo_id_for('eng', 'acme', 'nope')}/secrets",
+                         headers=as_("root", "eng"))
+    assert unknown.status_code == 404
+
+
+def test_a_member_is_403_and_their_value_never_reaches_secret_manager(client, seeded, sm):
+    """dave is an eng member with no GitHub connection: neither half of Q2."""
+    register(seeded)
+    response = repo_create(client, "dave", "eng", "x-key", fake_value())
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"]["reason"] == "github_not_connected"
+    assert sm.payloads == {}
+    assert repo_create(client, "root", "eng", "x-key", fake_value()).status_code == 201
+    for method, path, body in (
+            ("PUT", f"{REPO_BASE}/x-key/value", {"value": fake_value("z")}),
+            ("PUT", f"{REPO_BASE}/x-key/grants/profile:claude-code", {"enabled": True}),
+            ("DELETE", f"{REPO_BASE}/x-key", {"name": "x-key"}),
+            ("POST", f"{REPO_BASE}/links", {"action": "add"})):
+        refused = client.request(method, path, headers=as_("dave", "eng"), json=body)
+        assert refused.status_code == 403, (method, path, refused.text)
+
+
+def test_a_repository_grant_is_signed_v2_with_its_repository(db, tokens, group_map, objects,
+                                                             clock, sm, pool):
+    key = __import__("secrets").token_urlsafe(32)
+    ctx = build_context(
+        settings=api_settings(console_url=CONSOLE, workspace_grant_key=key), db=db,
+        verifier=StaticTokenVerifier(tokens), groups=StaticGroups(group_map),
+        credentials=InMemoryCredentials(), waker=NullWaker(), metrics=ApiMetrics(),
+        objects=objects, forge_tokens=NoForgeTokens(), now=clock,
+    )
+    app = create_app(ctx)
+    app.state.workspace_secret_writer = sm
+    app.state.account_pool = pool
+    keyed = TestClient(app, raise_server_exceptions=False)
+    seed_tenant(db, "eng")
+    register(db)
+    assert repo_create(keyed, "root", "eng", "x-key", fake_value()).status_code == 201
+    response = keyed.put(f"{REPO_BASE}/x-key/grants/profile:claude-code",
+                         headers=as_("root", "eng"), json={"enabled": True})
+    assert response.status_code == 200, response.text
+    [grant] = [d for p, d in db.docs.items() if p.startswith(f"{GRANTS_COLLECTION}/")]
+    assert grant["repo_id"] == WIDGETS and attested_form(grant) == "v2"
+
+
+def test_an_mcp_server_is_never_granted_a_repository_secret(client, seeded, sm):
+    register(seeded)
+    assert repo_create(client, "root", "eng", "x-key", fake_value()).status_code == 201
+    response = client.put(f"{REPO_BASE}/x-key/grants/mcp:docs", headers=as_("root", "eng"),
+                          json={"enabled": True, "slot": "auth"})
+    assert response.status_code == 422, response.text
+    assert not [p for p in seeded.docs if p.startswith(f"{GRANTS_COLLECTION}/")]
+
+
+def test_enabling_a_repository_grant_without_a_grant_key_is_switched(client, seeded, sm,
+                                                                     monkeypatch):
+    """Off (the default): written, unattested, and inert (the release drops
+    it: test_grant_attest.py). On: 422 grant_key_required, nothing written."""
+    register(seeded)
+    assert repo_create(client, "root", "eng", "x-key", fake_value()).status_code == 201
+    path = f"{REPO_BASE}/x-key/grants/profile:claude-code"
+    monkeypatch.setenv("REFUSAL_GRANT_KEY_REQUIRED", "on")
+    refused = client.put(path, headers=as_("root", "eng"), json={"enabled": True})
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["code"] == "grant_key_required"
+    assert not [p for p in seeded.docs if p.startswith(f"{GRANTS_COLLECTION}/")]
+    monkeypatch.delenv("REFUSAL_GRANT_KEY_REQUIRED")
+    written = client.put(path, headers=as_("root", "eng"), json={"enabled": True})
+    assert written.status_code == 200, written.text
+    [grant] = [d for p, d in seeded.docs.items() if p.startswith(f"{GRANTS_COLLECTION}/")]
+    assert grant["attestation"] is None and grant["repo_id"] == WIDGETS
+
+
+def test_a_repository_secret_is_rotated_and_deleted_on_its_own_path(client, seeded, sm):
+    register(seeded)
+    assert repo_create(client, "root", "eng", "x-key", fake_value()).status_code == 201
+    assert create(client, "root", "eng", "x-key", fake_value("w")).status_code == 201
+    rotated = client.put(f"{REPO_BASE}/x-key/value", headers=as_("root", "eng"),
+                         json={"value": fake_value("r")})
+    assert rotated.status_code == 200, rotated.text
+    assert rotated.json()["secret"]["repo_id"] == WIDGETS
+    gone = client.request("DELETE", f"{REPO_BASE}/x-key", headers=as_("root", "eng"),
+                          json={"name": "x-key"})
+    assert gone.status_code == 200, gone.text
+    # The workspace's own x-key is untouched.
+    assert [s["name"] for s in listing(client, "root", "eng")["secrets"]] == ["x-key"]
+    assert client.get(REPO_BASE, headers=as_("root", "eng")).json()["secrets"] == []
+
+
+def test_a_repository_form_link_is_bound_to_its_repository(client, seeded, sm):
+    register(seeded)
+    minted = client.post(f"{REPO_BASE}/links", headers=as_("root", "eng"),
+                         json={"action": "add"})
+    assert minted.status_code == 201, minted.text
+    assert minted.json()["path"].startswith(f"/config/secrets?scope=repository&repo={WIDGETS}")
+    token = minted.json()["path"].rsplit("t=", 1)[1]
+    # Not for the workspace's own form ...
+    wrong = create(client, "root", "eng", "x-key", fake_value(), link_token=token)
+    assert wrong.status_code == 403, wrong.text
+    # ... and once for the repository's.
+    used = repo_create(client, "root", "eng", "x-key", fake_value(), link_token=token)
+    assert used.status_code == 201 and used.json()["via_link"] is True
+    again = repo_create(client, "root", "eng", "y-key", fake_value(), link_token=token)
+    assert again.status_code == 403
+
+
+def test_disable_grants_turns_a_repositorys_grants_off_for_a_manager_only(client, seeded, sm):
+    register(seeded)
+    assert repo_create(client, "root", "eng", "x-key", fake_value()).status_code == 201
+    assert client.put(f"{REPO_BASE}/x-key/grants/profile:claude-code",
+                      headers=as_("root", "eng"), json={"enabled": True}).status_code == 200
+    path = f"{REPO_BASE}:disable-grants"
+    assert client.post(path, headers=as_("dave", "eng")).status_code == 403
+    answer = client.post(path, headers=as_("root", "eng"))
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["grants_disabled"] == {"x-key": ["profile:claude-code"]}
+    [grant] = [d for p, d in seeded.docs.items() if p.startswith(f"{GRANTS_COLLECTION}/")]
+    assert grant["enabled"] is False

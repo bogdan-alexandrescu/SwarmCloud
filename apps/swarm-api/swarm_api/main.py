@@ -87,6 +87,7 @@ from .routes import (
     workspace_secrets,
     workspaces,
 )
+from .routes import repository_secrets
 from .qa_identity import QaIdentityOrigin
 from .validation import FORBIDDEN_CALLER_FIELDS
 
@@ -132,6 +133,9 @@ UNCAPTURED_ROUTES = frozenset({
     # a workspace secret's value, on its creation and its replacement;
     "/v1/workspace/secrets",
     "/v1/workspace/secrets/{name}/value",
+    # A repository's secrets (SSC-REPO-SCOPE): the same add and rotate bodies.
+    "/v1/repositories/{repo_id}/secrets",
+    "/v1/repositories/{repo_id}/secrets/{name}/value",
     # a provider API key, a person's or the workspace's, and the tenant's;
     "/v1/provider-keys/{provider}/user",
     "/v1/provider-keys/{provider}/tenant",
@@ -404,6 +408,7 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # write-only values, each write audited in its own transaction. The
     # release is SEC-RELEASE's, `attempts_secrets` below.
     app.include_router(workspace_secrets.router)
+    app.include_router(repository_secrets.router)  # SSC-REPO-SCOPE, secrets-scopes.md §6.2
     # Each workspace's Jev judgment backend -- Internal Jev (the default),
     # Internal Laya or TypeSafe -- its owner's or an admin's to choose,
     # audited (swarm_api.judgment, lane JUDGE-SELECT).
