@@ -95,9 +95,13 @@ def _rows(got: dict) -> list[str]:
     return [c["label"].rsplit(" · ", 1)[-1] for c in got["calls"] if c["agentType"] == "sc:step"]
 
 
-def _refused(got: dict) -> str:
+def _refused(got: dict, *, read_back: bool) -> str:
     assert "error" not in got, got.get("error")
-    assert [c["agentType"] for c in got["calls"]] == ["sc:workflow"], "a row started on an unverified reply"
+    # The submit, and -- for a reply missing its digest or a spec step, and
+    # only then -- the one read-back that settles it (#2206), which these
+    # fixtures leave unanswered: a failed read-back starts no row either.
+    assert [c["agentType"] for c in got["calls"]] == ["sc:workflow"] * (2 if read_back else 1), "a row started on an unverified reply"
+    assert [c["prompt"].split("\n")[0] for c in got["calls"]][1:] == (["ATTACH"] if read_back else [])
     assert got["result"]["state"] == "SUBMITTED_UNVERIFIED"
     return got["result"]["error"]
 
@@ -175,18 +179,18 @@ def test_a_marked_step_whose_dependencies_the_script_did_not_predict_is_accepted
 
 
 def test_a_reply_that_drops_a_spec_step_is_still_refused(tmp_path):
-    error = _refused(_run(tmp_path, _THREE, _answers(_reply(_THREE, _ADDED, drop="review"))))
+    error = _refused(_run(tmp_path, _THREE, _answers(_reply(_THREE, _ADDED, drop="review"))), read_back=True)
     assert "step review is in the spec and missing from the reply" in error, error
 
 
 def test_a_reply_that_renames_a_spec_step_is_still_refused_even_marked_added(tmp_path):
-    error = _refused(_run(tmp_path, _THREE, _answers(_reply(_THREE, _ADDED, rename=("review", "reviewed")))))
+    error = _refused(_run(tmp_path, _THREE, _answers(_reply(_THREE, _ADDED, rename=("review", "reviewed")))), read_back=True)
     assert "step review is in the spec and missing from the reply" in error, error
 
 
 def test_an_unmarked_extra_step_tied_to_no_spec_step_is_refused(tmp_path):
     loose = [{"step_id": "deploy", "depends_on": []}, {"step_id": "after", "depends_on": ["nowhere"]}]
-    error = _refused(_run(tmp_path, _THREE, _answers(_reply(_THREE, loose, mark=None))))
+    error = _refused(_run(tmp_path, _THREE, _answers(_reply(_THREE, loose, mark=None))), read_back=False)
     assert "the reply names a step the spec does not have: deploy" in error, error
     assert "the reply names a step the spec does not have: after" in error, error
 
@@ -194,7 +198,7 @@ def test_an_unmarked_extra_step_tied_to_no_spec_step_is_refused(tmp_path):
 def test_an_extra_step_the_bridge_marked_not_added_is_refused(tmp_path):
     """`added: false` on a step the spec does not have is the relay and the
     bridge disagreeing: the bridge compared against the spec it submitted."""
-    error = _refused(_run(tmp_path, _THREE, _answers(_reply(_THREE, _ADDED, mark=False))))
+    error = _refused(_run(tmp_path, _THREE, _answers(_reply(_THREE, _ADDED, mark=False))), read_back=False)
     assert "the reply names a step the spec does not have: re-review" in error, error
 
 
