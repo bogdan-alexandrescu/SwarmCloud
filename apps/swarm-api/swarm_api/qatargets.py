@@ -68,6 +68,19 @@ change is written: a value an owner made for one host is never sent to
 another. The worker's route answers it beside the sign-in, for a public
 target too.
 
+A VALUE ARRIVES ONLY THROUGH A ONE-TIME LINK'S FORM (docs/design/secrets-scopes.md
+§6.2 and §11 Q8; lane SSC-LINKS, part of #2158). A credential link names its
+`field`, `credential` (the default, and every link minted before the field
+existed) or `challenge_bypass`, and is consumed only for that field: a link
+minted for the password never sets the bypass. The bypass PUT takes the
+link's token as the credential's does. Without one it is refused 403
+`qa_bypass_link_required` through its switch (`refusals.SWITCHES`), which
+ships off: off, the write goes through and a log line names the tenant,
+target, entry and caller, never the value. A token that is presented and
+not this caller's live link for this entry and field is 403
+`qa_credential_link_invalid`, as on the credential's PUT, whatever the switch
+says: no caller sent a token before this field existed.
+
 THE RUN (§1.1, §5, §6). A member names a target; swarm-api renders the
 workflow from it (`qaspec.render`) and stamps each browser step's agent with
 `metadata.qa_target = {id, revision}`. A caller never sends the target, its
@@ -223,7 +236,7 @@ from swarm_common.admission import _snapshot
 from swarm_common.models import new_id, utcnow
 from swarm_common.states import TERMINAL_STATES, TaskState
 
-from . import qaspec
+from . import qaspec, refusals
 from .admins import AUDIT_COLLECTION
 from .childkey import AttemptTuple, verify_proof
 from .children import ChildService, _AttemptFields, _lease_is_live, parse_body
@@ -349,6 +362,13 @@ BYPASS_FIELD = "challenge_bypass_value"
 #: The value's key in the target's entry of the tenant's QA secret.
 BYPASS_KEY = "challenge_bypass"
 
+#: What a credential link sets (SSC-LINKS): the sign-in's username and
+#: password, or the challenge bypass's value. A link document without the
+#: key was minted before it existed, for the credential.
+LINK_CREDENTIAL = "credential"
+LINK_BYPASS = "challenge_bypass"
+LINK_FIELDS = (LINK_CREDENTIAL, LINK_BYPASS)
+
 #: The fields a registration body carries, besides `authorized_by`. Each is
 #: stored only when given, so `qaspec`'s defaults apply to the rest.
 SPEC_FIELDS = (
@@ -416,6 +436,15 @@ class QaCredentialLinkInvalid(Forbidden):
     code = "qa_credential_link_invalid"
 
 
+class QaBypassLinkRequired(Forbidden):
+    """A challenge bypass value written without a one-time link (SSC-LINKS,
+    §11 Q8). A new refusal on an existing route: raised only through
+    `refusals.refuse`, behind its switch, off at ship. Off, the write goes
+    through and is logged without the value."""
+
+    code = "qa_bypass_link_required"
+
+
 class QaCredentialUnavailable(ApiError):
     """503: the tenant's QA secret cannot be read or written by swarm-api --
     until lane VQ-3 declares it and binds IAM V-1 and V-2, every time."""
@@ -441,11 +470,18 @@ LINK_INVALID_MESSAGE = (
     "this credential link is unknown, already used, expired, or was minted for someone "
     "else or another target; ask for a new one"
 )
+BYPASS_LINK_REQUIRED_MESSAGE = (
+    "a challenge bypass value is set only from the form a one-time link opens: ask for one "
+    'with POST /v1/qa-targets/{id}/credential-links {"field": "challenge_bypass"} and '
+    "send its token as link_token"
+)
+LINK_FIELD_MESSAGE = 'field is "credential" or "challenge_bypass"'
 UNAVAILABLE_MESSAGE = (
     "the workspace's QA secret (swarm-tenant-<tenant>-qa) cannot be reached by swarm-api; "
     "it is declared, with swarm-api's adder and accessor bindings, by lane VQ-3"
 )
 NOT_FOUND_MESSAGE = "no such QA target"
+NO_BYPASS_MESSAGE = "this QA target has no challenge_bypass; set its kind and name first"
 BYPASS_VALUE_MESSAGE = (
     f"a challenge bypass value is {BYPASS_VALUE_MIN} to {BYPASS_VALUE_MAX} characters a header and a "
     "cookie can both carry: no space, quote, comma, semicolon, backslash or line break"
@@ -1536,36 +1572,47 @@ class QaTargets:
     # -- the credential (§2.1; its key and its link per entry, qa-environments.md §1.4) --
 
     def mint_link(self, tenant_id: str, target_id: str, *, email: str,
-                  console: str | None, environment: Any = None) -> dict[str, Any]:
-        """A one-time link bound to the email, the tenant, the target AND the
-        entry (`environment`, required when the target has several), so a
-        link minted for staging can never set production's password."""
+                  console: str | None, environment: Any = None,
+                  field: Any = LINK_CREDENTIAL) -> dict[str, Any]:
+        """A one-time link bound to the email, the tenant, the target, the
+        entry (`environment`, required when the target has several) AND the
+        `field` it sets, so a link minted for staging can never set
+        production's password, nor a password link the bypass. A bypass link
+        is minted only for an entry whose `challenge_bypass` names its kind
+        and name, the PUT's own precondition."""
+        if field not in LINK_FIELDS:
+            raise _invalid(LINK_FIELD_MESSAGE, field="field")
         current = self.get(tenant_id, target_id)
-        name = _entry_of(current, environment)["name"]
+        entry = _entry_of(current, environment)
+        name = entry["name"]
+        if field == LINK_BYPASS and not isinstance(entry.get("challenge_bypass"), Mapping):
+            raise _invalid(NO_BYPASS_MESSAGE, field="challenge_bypass")
         token = secrets.token_urlsafe(32)
         now = self._now()
         expires_at = now + LINK_TTL
         self._db.collection(LINKS_COLLECTION).document(_link_digest(token)).set({
             "email": email, "tenant_id": tenant_id, "target_id": target_id, "environment": name,
-            "created_at": now, "expires_at": expires_at, "used_at": None,
+            "field": field, "created_at": now, "expires_at": expires_at, "used_at": None,
         })
-        path = f"/qa-targets/{target_id}/credential?t={token}"
+        form = "credential" if field == LINK_CREDENTIAL else "challenge-bypass"
+        path = f"/qa-targets/{target_id}/{form}?t={token}"
         if current[qaspec.MIGRATED]:
             # The console's form sends it back on the PUT.
             path += f"&environment={name}"
         base = console_origin(console)
-        log.info("minted a qa credential link tenant=%s target=%s environment=%s", tenant_id, target_id, name)
+        log.info("minted a qa credential link tenant=%s target=%s environment=%s field=%s",
+                 tenant_id, target_id, name, field)
         # The URL and its expiry, and the path for the console's own use when
         # no console URL is configured: never the link document.
         return {"url": f"{base}{path}" if base else None, "path": path,
                 "expires_at": expires_at.isoformat()}
 
     def consume_link(self, token: Any, *, email: str, tenant_id: str, target_id: str,
-                     environment: str | None = None) -> None:
+                     environment: str | None = None, field: str = LINK_CREDENTIAL) -> None:
         """Mark the link used when it is this person's, for this tenant,
-        target and entry, unused and unexpired. Otherwise 403 and nothing is
-        written: someone else presenting a leaked link, or the link presented
-        for another entry, does not burn it."""
+        target, entry and field, unused and unexpired. Otherwise 403 and
+        nothing is written: someone else presenting a leaked link, or the link
+        presented for another entry or field, does not burn it."""
         if not isinstance(token, str) or not token or len(token) > 256:
             raise QaCredentialLinkInvalid(LINK_INVALID_MESSAGE)
         ref = self._db.collection(LINKS_COLLECTION).document(_link_digest(token))
@@ -1581,8 +1628,8 @@ class QaTargets:
             expires_at = link.get("expires_at")
             if not isinstance(expires_at, datetime) or expires_at <= now:
                 return False
-            if (link.get("email"), link.get("tenant_id"), link.get("target_id"), link.get("environment")) != \
-                    (email, tenant_id, target_id, environment):
+            if (link.get("email"), link.get("tenant_id"), link.get("target_id"), link.get("environment"),
+                    link.get("field", LINK_CREDENTIAL)) != (email, tenant_id, target_id, environment, field):
                 return False
             txn.update(ref, {"used_at": now})
             return True
@@ -1661,19 +1708,32 @@ class QaTargets:
     # -- the challenge bypass's value (§2.5) -----------------------------------------
 
     def set_challenge_bypass(self, tenant_id: str, target_id: str, *, value: str, by: str,
-                             credentials: QaCredentialStore, environment: Any = None) -> dict[str, Any]:
-        """A workspace admin's write of the entry's bypass value: the secret's
-        new version, then the record on the entry with its audit row, as the
-        credential's. The value is a local here and in the store, and nothing else."""
+                             credentials: QaCredentialStore, environment: Any = None,
+                             link_token: Any = None) -> dict[str, Any]:
+        """A workspace admin's write of the entry's bypass value: the link
+        (SSC-LINKS), then the secret's new version, then the record on the
+        entry with its audit row, as the credential's. The value is a local
+        here and in the store, and nothing else.
+
+        The link is checked after the value's shape, so a mistyped value does
+        not burn it. Without one, `qa_bypass_link_required` goes through its
+        switch; off, the write goes on and is logged without the value."""
         current = self.get(tenant_id, target_id)
         entry = _entry_of(current, environment)
         name = entry["name"]
         spec = entry.get("challenge_bypass")
         if not isinstance(spec, Mapping):
-            raise _invalid("this QA target has no challenge_bypass; set its kind and name first",
-                           field="challenge_bypass")
+            raise _invalid(NO_BYPASS_MESSAGE, field="challenge_bypass")
         if not isinstance(value, str) or not _BYPASS_VALUE.fullmatch(value):
             raise _invalid(BYPASS_VALUE_MESSAGE, field="challenge_bypass")
+        if link_token is None:
+            refusals.refuse(QaBypassLinkRequired(BYPASS_LINK_REQUIRED_MESSAGE))
+            # Off: the write goes through. Who and where, never the value.
+            log.warning("qa target challenge bypass set without a link tenant=%s target=%s "
+                        "environment=%s by=%s", tenant_id, target_id, name, by)
+        else:
+            self.consume_link(link_token, email=by, tenant_id=tenant_id, target_id=target_id,
+                              environment=name, field=LINK_BYPASS)
         values = credentials.read(tenant_id)
         key, held, moved = self._held(values, current, entry)
         values[key] = {**held, BYPASS_KEY: value}
@@ -1683,7 +1743,8 @@ class QaTargets:
             values = held = {}
             value = ""
         record = {"set": True, "set_at": self._now(), "set_by": by, "version": version}
-        detail = {"version": version, "kind": spec.get("kind"), "name": spec.get("name")}
+        detail = {"version": version, "kind": spec.get("kind"), "name": spec.get("name"),
+                  "via_link": link_token is not None}
         written = self._write_entry(tenant_id, target_id, name, field=BYPASS_FIELD, record=record, moved=moved,
                                     action=AUDIT_BYPASS_SET, detail=detail)
         log.info("qa target challenge bypass set tenant=%s target=%s environment=%s", tenant_id, target_id, name)
@@ -2581,6 +2642,7 @@ class QaTargetIssuer:
 __all__ = [
     "COLLECTION",
     "INTERNAL_SUFFIXES",
+    "LINK_FIELDS",
     "LINK_TTL",
     "QA_TARGET_PURPOSE",
     "QaCredentialUnavailable",
