@@ -185,7 +185,7 @@ export function WorkspaceSecretsScreen({ link }: { link: SecretsLink | null }) {
 
   return (
     <div className="pk-page">
-      <PageHead title="Workspace secrets">
+      <PageHead title="Secrets">
         <UrRefresh reads={[list, catalogue]} ageOf={[list]} />
       </PageHead>
       {link !== null && link.action === 'add' && (

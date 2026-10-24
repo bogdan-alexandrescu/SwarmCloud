@@ -84,10 +84,20 @@ export function keyLinkToken(pathname: string, search: string): string | null {
  */
 export const SECRETS_ADDRESS = 'settings/workspace/secrets'
 export const SECRETS_LINK_PATH = '/settings/workspace/secrets'
+/**
+ * CONFIG › SECRETS (CONFIG-NAV; part of #2157, BGD 2026-10-23): where the
+ * page lives now. THE LINK KEEPS ITS PATH: the API still mints
+ * SECRETS_LINK_PATH (swarm_api `WorkspaceSecrets.mint_link`), App reads its
+ * token there before the bar is rewritten to this path, and the route keeps
+ * the link's action and name and never its token, exactly as it did.
+ */
+export const CONFIG_SECRETS_ADDRESS = 'config/secrets'
+export const CONFIG_SECRETS_PATH = '/config/secrets'
 
-/** The link's token, read off a location: only on SECRETS_LINK_PATH, as `keyLinkToken`. */
+/** The link's token, read off a location: only on the secrets page's two paths, as `keyLinkToken`. */
 export function secretsLinkToken(pathname: string, search: string): string | null {
-  if (pathname.replace(/\/+$/, '') !== SECRETS_LINK_PATH) return null
+  const path = pathname.replace(/\/+$/, '')
+  if (path !== SECRETS_LINK_PATH && path !== CONFIG_SECRETS_PATH) return null
   const t = new URLSearchParams(search).get('t')
   return t === null || t === '' ? null : t
 }
@@ -112,13 +122,13 @@ export function secretsLinkView(query: string): string {
  * #1933; docs/design/visual-qa-any-app.md §5): the plugin's
  * `swarm_qa_target_credential_link` hands a workspace admin
  * `/qa-targets/<id>/credential?t=<token>` (swarm_api `qatargets.mint_link`).
- * It lands on Work › Repositories › QA targets (QaTargets.tsx
+ * It lands on Config › Repositories › QA targets (QaTargets.tsx
  * `QA_TARGETS_PAGE`). Not in FIXED, for the key link's reasons, and ITS
  * TOKEN IS NEVER PART OF THE ADDRESS: neither the target id nor `t` enters the
  * route. App reads both off the bar once (qaTargetsApi.ts
  * `qaCredentialLinkFrom`) before its normalise effect rewrites it.
  */
-export const QA_LINK_ADDRESS = 'work/repositories?page=qa-targets'
+export const QA_LINK_ADDRESS = 'config/repositories?page=qa-targets'
 const QA_LINK_PATH = /^\/qa-targets\/[^/]+\/credential$/
 
 /** The scopes a key link may name; anything else is dropped, not guessed at. */
@@ -142,10 +152,6 @@ export const FIXED: Readonly<Record<string, string>> = {
   // `/runs/<id>`, below).
   'work/new-issue': '/submit/issue',
   'work/runs': '/runs',
-  'work/repositories': '/repositories',
-  // #780 OB8: the onboarding checklist and the steady-state Access page.
-  'work/setup': '/setup',
-  'work/access': '/access',
   // docs/schedules.md §6.1 (SD1): Automate › Schedules. One schedule is
   // `/automate/schedules/<id>`, below.
   'automate/schedules': '/automate/schedules',
@@ -172,36 +178,91 @@ export const FIXED: Readonly<Record<string, string>> = {
   // NAV-ADMIN-ROLE (part of #1633): Admin › Workspaces you admin, the group
   // workspaces whose stored role for the caller is admin.
   'admin/workspaces': '/admin/workspaces',
+  // CONFIG (CONFIG-NAV; part of #2157, BGD 2026-10-23): everything about
+  // setting up and running a workspace, in BGD's order. Each page was
+  // somewhere else until then -- Work › Access, Work › Repositories, Work ›
+  // Setup and three Settings pages -- and its old path and its old address
+  // still land here (OLD_CONFIG_PATHS, MOVED_TO_CONFIG, below). A
+  // repository's pages are `/config/repositories/<id>/<tab>`, Secrets' link
+  // view is CONFIG_SECRETS_PATH, and Workspace setup is
+  // `/config/workspace/setup`, all below.
+  'config/github': '/config/github',
+  'config/repositories': '/config/repositories',
+  // A literal, as every row here is: the issue-form test reads this table as text. It is CONFIG_SECRETS_PATH.
+  'config/secrets': '/config/secrets',
+  'config/mcp-servers': '/config/mcp-servers',
+  'config/people': '/config/people',
+  'config/workspace': '/config/workspace',
   // KEYS-UI: Settings › API keys, the person's own provider keys and, for an
   // admin, the tenant's. Not a section: reached from the panel's foot by the
   // person's name. Its one-time link is KEY_LINK_PATH, above.
   'settings/keys': '/settings/keys',
-  // CTXQ-UI: Settings › Workspace, the selected workspace's own settings
-  // (Code intelligence). Beside API keys at the panel's foot, for the same
-  // reason: set once, not worked in.
-  'settings/workspace': '/settings/workspace',
-  // SEC-UI-LIST: Settings › Workspace › Secrets, a pane of Workspace (the
-  // workspace secrets store, docs/design/workspace-secrets.md §5). Its
-  // one-time link's token never enters the address: SECRETS_LINK_PATH, above.
-  [SECRETS_ADDRESS]: SECRETS_LINK_PATH,
-  // MCP-UI: Settings › MCP servers, the workspace's registered MCP servers
-  // (docs/design/registered-mcp-servers.md §4.11). A sibling of Workspace, for
-  // the same reason: registered once, then named by tasks.
-  'settings/mcp-servers': '/settings/mcp-servers',
   // PROFILE-NAV: Settings › Profile, the person's own identity, workspaces,
   // connections, bell and Claude accounts (docs/design/user-profile.md). About
   // the person rather than a workspace, so beside API keys, for the same reason.
+  // Settings keeps these two and nothing else since CONFIG-NAV.
   'settings/profile': '/settings/profile',
-  // ROLES-UI-PEOPLE: Settings › People and roles, the selected workspace's
-  // default role, its people's own roles and its role events
-  // (docs/design/workspace-roles.md §4.8). Beside Workspace, for the same reason.
-  'settings/people': '/settings/people',
   [HELP_ROUTE]: '/help',
 }
 
 const FIXED_BACK: Readonly<Record<string, string>> = Object.fromEntries(
   Object.entries(FIXED).map(([a, p]) => [p, a]),
 )
+
+/** Config › Workspace Settings' Workspace setup part: today's Work › Setup, unchanged. */
+export const WORKSPACE_SETUP_ADDRESS = 'config/workspace?part=setup'
+const WORKSPACE_SETUP_PATH = '/config/workspace/setup'
+
+/**
+ * THE ADDRESSES THE CONFIG PAGES HAD BEFORE CONFIG-NAV (part of #2157), old
+ * spelling to new. The pages themselves still name some of these (their own
+ * constants, which later lanes move), and so do saved `#...` links: App's
+ * `fromAddress` and this file's `addressToPath` both rewrite through here, so
+ * an old address opens the new page and is written as its new path. The
+ * query an old address carries goes with it -- a repository, a page of the
+ * registry, the Access view -- except the secrets link's, which keeps its
+ * action and name and nothing else (`secretsLinkView`), and Setup's, which
+ * read none.
+ */
+const MOVED_TO_CONFIG: Readonly<Record<string, string>> = {
+  'work/access': 'config/github',
+  'work/repositories': 'config/repositories',
+  'work/setup': WORKSPACE_SETUP_ADDRESS,
+  'settings/workspace': 'config/workspace',
+  [SECRETS_ADDRESS]: CONFIG_SECRETS_ADDRESS,
+  'settings/mcp-servers': 'config/mcp-servers',
+  'settings/people': 'config/people',
+}
+
+/** An old Config page's address, rewritten to its new one; null for any other address. */
+export function movedToConfig(address: string): string | null {
+  const q = address.indexOf('?')
+  const bare = q === -1 ? address : address.slice(0, q)
+  const query = q === -1 ? '' : address.slice(q + 1)
+  const to = MOVED_TO_CONFIG[bare]
+  if (to === undefined) return null
+  if (bare === SECRETS_ADDRESS) {
+    const view = secretsLinkView(query)
+    return view === '' ? to : `${to}?${view}`
+  }
+  return query === '' || to.includes('?') ? to : `${to}?${query}`
+}
+
+/**
+ * THE PATHS THE CONFIG PAGES HAD, each landing on its new address, the bar
+ * rewritten once by App's normalise (CONFIG-NAV). Bookmarks, issue links,
+ * the plugin's console links and the API's notification links
+ * (`/access`, `/setup#workspace`) name these. `/repositories/<id>/...` and the
+ * secrets link's path are read below, with their tails.
+ */
+const OLD_CONFIG_PATHS: Readonly<Record<string, string>> = {
+  '/access': 'config/github',
+  '/repositories': 'config/repositories',
+  '/setup': WORKSPACE_SETUP_ADDRESS,
+  '/settings/workspace': 'config/workspace',
+  '/settings/mcp-servers': 'config/mcp-servers',
+  '/settings/people': 'config/people',
+}
 
 /**
  * A SECTION'S ROOT OPENS ITS FIRST PAGE (owner QA R14, 2026-10-04): `/capacity`
@@ -215,6 +276,7 @@ export const SECTION_ROOTS: Readonly<Record<string, string>> = {
   '/automate': 'automate/schedules',
   '/capacity': 'capacity/pools',
   '/admin': 'admin/limits',
+  '/config': 'config/github',
   // Not a section, but `/settings` is the head of its two paths, and a person
   // trimming the link back to it should land on the page rather than a 404.
   '/settings': 'settings/keys',
@@ -284,7 +346,10 @@ export const RUN_PANES: readonly string[] = ['changes']
  */
 const RUN_PANE_QUERY: readonly string[] = ['step', 'file']
 
-/** A repository's tabs that are a path segment: `/repositories/<id>/<tab>`; Overview is the bare id. */
+/** Config › Repositories' path (CONFIG-NAV); it was `/repositories`, which still lands here. */
+const REPOSITORIES_PATH = '/config/repositories'
+
+/** A repository's tabs that are a path segment: `/config/repositories/<id>/<tab>`; Overview is the bare id. */
 export const REPO_TABS: readonly string[] = ['graph', 'impact', 'test-map', 'hot-spots', 'index-runs', 'settings', 'used-by']
 /**
  * The query a repository tab carries in the bar: the pull request the Impact
@@ -303,6 +368,9 @@ const REPO_TAB_QUERY: readonly string[] = ['pr', 'view', 'q']
  * `swarm_api.codec.agent_console_url` is held to.
  */
 export function addressToPath(address: string, agentTab: AgentTab = 'live'): string {
+  // An old Config page's address is written as its new path, never its old one.
+  const moved = movedToConfig(address)
+  if (moved !== null) return addressToPath(moved, agentTab)
   const q = address.indexOf('?')
   const bare = q === -1 ? address : address.slice(0, q)
   const query = q === -1 ? '' : address.slice(q + 1)
@@ -377,16 +445,16 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
       return kind === null || kind === '' ? base : `${base}?${new URLSearchParams({ kind }).toString()}`
     }
   }
-  // Work › Repositories (repositories.html): the page rides on the tab's query.
-  if (bare === 'work/repositories' && query !== '') {
+  // Config › Repositories (repositories.html): the page rides on the tab's query.
+  if (bare === 'config/repositories' && query !== '') {
     const q = new URLSearchParams(query)
     const page = q.get('page')
     const repo = q.get('repo')
-    if (page === 'register' || page === 'tokens') return `/repositories/${page}`
-    if (page === 'permissions') return '/repositories/tokens/permissions'
+    if (page === 'register' || page === 'tokens') return `${REPOSITORIES_PATH}/${page}`
+    if (page === 'permissions') return `${REPOSITORIES_PATH}/tokens/permissions`
     if (repo !== null && repo !== '') {
       const tab = q.get('tab')
-      const base = `/repositories/${encodeURIComponent(repo)}`
+      const base = `${REPOSITORIES_PATH}/${encodeURIComponent(repo)}`
       if (tab === null || !REPO_TABS.includes(tab)) return base
       const rest = new URLSearchParams()
       for (const k of REPO_TAB_QUERY) {
@@ -412,10 +480,12 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
   }
   // The secrets page keeps its action and name and nothing else, so an
   // address that carries a `t` by hand still writes no token into the bar.
-  if (bare === SECRETS_ADDRESS) {
+  if (bare === CONFIG_SECRETS_ADDRESS) {
     const view = secretsLinkView(query)
-    return view === '' ? SECRETS_LINK_PATH : `${SECRETS_LINK_PATH}?${view}`
+    return view === '' ? CONFIG_SECRETS_PATH : `${CONFIG_SECRETS_PATH}?${view}`
   }
+  // Workspace Settings' Workspace setup part is a path of its own.
+  if (bare === 'config/workspace' && new URLSearchParams(query).get('part') === 'setup') return WORKSPACE_SETUP_PATH
   const fixed = FIXED[bare]
   if (fixed !== undefined) return query === '' ? fixed : `${fixed}?${query}`
   return '/overview'
@@ -516,12 +586,15 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
     return plain(`automate/approvals?${q.toString()}`)
   }
 
-  if (seg[0] === 'repositories' && seg.length >= 2) {
-    const at = (q: Record<string, string>) => plain(`work/repositories?${new URLSearchParams(q).toString()}`)
-    if (seg[1] === 'register' && seg.length === 2) return at({ page: 'register' })
-    if (seg[1] === 'tokens') return seg[2] === 'permissions' ? at({ page: 'permissions' }) : at({ page: 'tokens' })
-    const repo = decodeURIComponent(seg[1] ?? '')
-    const tab = seg[2]
+  // A repository's pages: `/config/repositories/<id>/...`, and the same tail
+  // under `/repositories`, where they were until CONFIG-NAV.
+  const repoTail = seg[0] === 'repositories' ? seg.slice(1) : seg[0] === 'config' && seg[1] === 'repositories' ? seg.slice(2) : []
+  if (repoTail.length >= 1) {
+    const at = (q: Record<string, string>) => plain(`config/repositories?${new URLSearchParams(q).toString()}`)
+    if (repoTail[0] === 'register' && repoTail.length === 1) return at({ page: 'register' })
+    if (repoTail[0] === 'tokens') return repoTail[1] === 'permissions' ? at({ page: 'permissions' }) : at({ page: 'tokens' })
+    const repo = decodeURIComponent(repoTail[0] ?? '')
+    const tab = repoTail[1]
     if (tab === undefined || !REPO_TABS.includes(tab)) return at({ repo })
     const extra: Record<string, string> = {}
     const given = new URLSearchParams(query)
@@ -548,11 +621,17 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
     return plain(scope === null ? KEY_LINK_ADDRESS : `${KEY_LINK_ADDRESS}?scope=${scope}`)
   }
 
-  // THE SECRETS LINK'S TOKEN (`t`) IS DROPPED HERE, for the key link's reason.
-  if (path === SECRETS_LINK_PATH) {
+  // THE SECRETS LINK'S TOKEN (`t`) IS DROPPED HERE, for the key link's reason,
+  // on the path the API mints and on the page's own.
+  if (path === SECRETS_LINK_PATH || path === CONFIG_SECRETS_PATH) {
     const view = secretsLinkView(query)
-    return plain(view === '' ? SECRETS_ADDRESS : `${SECRETS_ADDRESS}?${view}`)
+    return plain(view === '' ? CONFIG_SECRETS_ADDRESS : `${CONFIG_SECRETS_ADDRESS}?${view}`)
   }
+  if (path === WORKSPACE_SETUP_PATH) return plain(WORKSPACE_SETUP_ADDRESS)
+  // The Config pages' old paths (CONFIG-NAV). Setup read no query; the others
+  // keep theirs, as the new path would.
+  const oldConfig = OLD_CONFIG_PATHS[path]
+  if (oldConfig !== undefined) return plain(query === '' || oldConfig.includes('?') ? oldConfig : `${oldConfig}?${query}`)
 
   // THE QA CREDENTIAL LINK'S TOKEN (`t`) AND TARGET ARE DROPPED HERE: the route
   // is the QA targets page alone, so no address the router writes carries them.

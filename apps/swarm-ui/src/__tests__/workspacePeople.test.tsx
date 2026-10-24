@@ -107,11 +107,11 @@ afterEach(() => {
   window.history.replaceState(null, '', '/')
 })
 
-describe('Settings › People and roles: its address', () => {
-  it('is settings/people, a Settings route and not a section tab', () => {
+describe('People and roles: its address', () => {
+  it('is config/people, a Config tab since CONFIG-NAV (part of #2157), and settings/people lands there', () => {
     const r = fromAddress('settings/people')
-    expect(r).toMatchObject({ sectionId: 'settings', tab: 'people' })
-    expect(canonical(r)).toBe('settings/people')
+    expect(r).toMatchObject({ sectionId: 'config', tab: 'people' })
+    expect(canonical(r)).toBe('config/people')
   })
 
   it('leaves the other Settings pages and the old hashes where they were', () => {

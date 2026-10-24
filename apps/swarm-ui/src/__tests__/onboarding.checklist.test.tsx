@@ -155,15 +155,15 @@ describe('the Setup page draws the server-derived checklist', () => {
     expect(within(orgs).getByRole('link', { name: 'Open on GitHub' }).getAttribute('href')).toBe('https://github.com/orgs/example-org/sso')
     expect(visible(orgs)).toContain('example-org (sso required)')
     // The fix is on Access, and Re-check is a fresh read.
-    expect(within(orgs).getByRole('link', { name: 'Enable orgs' }).getAttribute('href')).toBe('/access')
+    expect(within(orgs).getByRole('link', { name: 'Enable orgs' }).getAttribute('href')).toBe('/config/github')
     expect(within(orgs).getByRole('button', { name: 'Re-check' })).toBeTruthy()
     // An in-progress step later on also points at Access.
-    expect(within(stepEl('access_verified')).getByRole('link', { name: 'Verify access' }).getAttribute('href')).toBe('/access')
+    expect(within(stepEl('access_verified')).getByRole('link', { name: 'Verify access' }).getAttribute('href')).toBe('/config/github')
     expect(visible(stepEl('repos_chosen'))).toContain('1 granted: octo-dev/example-api (write)')
     expect(visible(stepEl('access_verified'))).toContain('0 passed · 1 not checked yet')
     // The pending grant is named, with the page its Verify is on (#896).
     expect(visible(stepEl('access_verified'))).toContain('octo-dev/example-api: press Verify on Access')
-    expect(within(stepEl('access_verified')).getByRole('link', { name: 'Access' }).getAttribute('href')).toBe('/access')
+    expect(within(stepEl('access_verified')).getByRole('link', { name: 'Access' }).getAttribute('href')).toBe('/config/github')
   })
 
   it('re-reads the checklist on Re-check', async () => {
@@ -271,7 +271,7 @@ describe('the Setup card on Overview (Entry A)', () => {
     render(<SetupCard />)
     expect(await screen.findByText('Set up SwarmCloud')).toBeTruthy()
     expect(screen.getByText('4 of 7 done')).toBeTruthy()
-    expect(screen.getByRole('link', { name: 'Open setup' }).getAttribute('href')).toBe('/setup')
+    expect(screen.getByRole('link', { name: 'Open setup' }).getAttribute('href')).toBe('/config/workspace/setup')
   })
 
   it('draws nothing once setup is complete', async () => {

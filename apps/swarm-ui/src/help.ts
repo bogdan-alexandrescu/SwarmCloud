@@ -1664,11 +1664,11 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'the-platform',
     title: 'A fallback token is your own access, for one owner',
     short:
-      'For an org that will not install the SwarmCloud App: a personal access token of yours, for one owner. SwarmCloud reaches that owner with it, as you, for the repositories you choose on Access; removing the owner there revokes it. Make a fine-grained token whose resource owner is the org. The same from a terminal:',
+      'For an org that will not install the SwarmCloud App: a personal access token of yours, for one owner. SwarmCloud reaches that owner with it, as you, for the repositories you choose on Config › GitHub access; removing the owner there revokes it. Make a fine-grained token whose resource owner is the org. The same from a terminal:',
     long: [
       'The SwarmCloud GitHub App is the first choice wherever the org allows it. The fallback token is for an org that will not install it, and it reaches GitHub as the person who stored it rather than as the platform.',
       'A classic personal access token is refused, as is a token the org has not authorised for single sign-on; the refusal says which, in GitHub’s own terms. Make a fine-grained token whose resource owner is the org.',
-      'The token’s value goes to Secret Manager and is never shown again; the console prints the owner and the GitHub login it acts as, never the value. Which repositories it may reach is chosen on Access, and removing the owner there revokes it.',
+      'The token’s value goes to Secret Manager and is never shown again; the console prints the owner and the GitHub login it acts as, never the value. Which repositories it may reach is chosen on Config › GitHub access, and removing the owner there revokes it.',
     ],
     values: () => [{ term: 'uv run sc setup token --owner <org>', note: 'the same as the Store token form, from a terminal' }],
   },

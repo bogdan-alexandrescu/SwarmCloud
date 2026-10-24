@@ -403,11 +403,14 @@ describe('keyboard traversal', () => {
       const stopSet = new Set<Element>(r.stopElements)
       // NO LOCKED ADMIN PANEL (NAV-ADMIN-ROLE; part of #1633): the fixture
       // person administers nothing, so an Admin route draws no Admin item and
-      // no panel pages -- the page's own refusal, not a list they cannot use.
+      // no Admin page in the panel. Since CONFIG-NAV (part of #2157) the route
+      // also sends them to Overview once both reads say so, whose panel is its
+      // jumps: what must never be drawn is a link to an Admin page.
       const noAdmin = route.startsWith('admin/') && container.querySelector('.sk-spine a[data-sec="admin"]') === null
       for (const [what, group] of Object.entries(shellControls(container))) {
         if (noAdmin && what === 'panel page') {
-          expect(group.all, `${route}: a locked Admin panel was drawn for someone who administers nothing`).toEqual([])
+          const adminRows = group.all.filter((el) => (el.getAttribute('href') ?? '').startsWith('/admin'))
+          expect(adminRows, `${route}: a locked Admin panel was drawn for someone who administers nothing`).toEqual([])
           continue
         }
         shellRendered.push({ route, what, count: group.all.length })

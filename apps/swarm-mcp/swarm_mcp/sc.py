@@ -2843,7 +2843,7 @@ def run_setup(
     _emit(setup_checklist(view), out)
     if view.get("next_step") is None:
         out.write(
-            f"Change this any time with `{terminal_command('sc access')}` or Work › Access.\n"
+            f"Change this any time with `{terminal_command('sc access')}` or Config › GitHub access.\n"
         )
         return EXIT_OK
     out.write(f"Setup paused at {view.get('next_step')}. Run "
@@ -4345,7 +4345,7 @@ def roles_change() -> str:
                       "sc roles default <viewer|member>")
     )
     return (
-        "a workspace admin changes roles in the console (Settings › People) or in "
+        "a workspace admin changes roles in the console (Config › People and roles) or in "
         f"their own terminal: {commands}, each typed back to confirm. No MCP tool "
         "changes a role"
     )

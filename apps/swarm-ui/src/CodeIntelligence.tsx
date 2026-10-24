@@ -49,7 +49,7 @@ const NEVER: readonly string[] = [
 export function WorkspaceSettingsScreen() {
   return (
     <div className="pk-page">
-      <PageHead title="Workspace" />
+      <PageHead title="Workspace Settings" />
       <CodeIntelligenceCard />
     </div>
   )
