@@ -338,6 +338,9 @@ def merge_mode(
     # Either direction is a decision (workspace-roles §4.1): `member` first.
     approvals.require_decider(ctx, auth)
     stored = schedule_routes._read(ctx, tenant_id, schedule_id)
+    # A platform-scope schedule is a platform admin's to change, either
+    # direction (BGD, 2026-10-24; `schedule_routes._platform_only`).
+    schedule_routes._platform_only(auth, stored, "merge_mode")
     entry = scheduletypes.get(str(stored.get("type")))
     if entry is None:
         raise ScheduleInvalid("unknown_type", f"{stored.get('type')!r} is no longer a schedule type")
@@ -384,6 +387,7 @@ def merge_mode(
     @firestore.transactional
     def _apply(txn: Any) -> dict[str, Any]:
         before = schedule_routes._owned(_snapshot(txn.get(ref)), tenant_id, schedule_id)
+        schedule_routes._platform_only(auth, before, "merge_mode")
         if verb.revision != before.get("revision"):
             raise ScheduleConflict("schedule_changed", "the schedule was changed since it was read; read it again",
                                    revision=before.get("revision"))
