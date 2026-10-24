@@ -1,9 +1,12 @@
 # Test services: a repository names the services its tests need, and the pre-publish check runs them
 
-**Status: designed 2026-10-23 (lane TEST-SERVICES-DESIGN, part of #1627).
-Nothing is built.** Recorded by the owner as an approved follow-up of #1605 on
-2026-10-19, not scheduled. The owner's answers to §9 decide the build; until
-they are given, nothing below is a commitment.
+**Status: designed 2026-10-23 (lane TEST-SERVICES-DESIGN, part of #1627),
+decided the same day (§10), and built by TS-IMAGE, TS-CATALOGUE, TS-RUN,
+TS-CLOUDRUN-REFUSE and TS-GATE. §11 records what each lane built and where
+the code departs from this design; TS-ACCEPT and TS-SIGNAL are not built.**
+Recorded by the owner as an approved follow-up of #1605 on 2026-10-19. The
+repository-facing page on writing the declaration is
+[../test-services.md](../test-services.md).
 
 The request (#1627), as its author wrote it:
 
@@ -633,3 +636,222 @@ questions 0-5), so the console shows them as answered.
 
 The build follows §7's table as written: TS-IMAGE and TS-CATALOGUE, then
 TS-RUN, then TS-GATE, then TS-ACCEPT and TS-DOCS. TS-SIGNAL comes later.
+
+---
+
+## 11. What was built
+
+Read on 2026-10-24 from `main` at `5f5d511`, by TS-DOCS. Each entry names the
+code that holds the lane's rule and the tests that hold it there, and says
+where the code departs from §2-§5. Where the two disagree, the code is what
+runs; the departures are listed in §11.8 so nobody "fixes" the code back to
+the design.
+
+### 11.1 What TS-IMAGE built
+
+`agent-runtime-base` carries the PostgreSQL 16 server from PGDG, in the
+`apt-get upgrade` layer, so `APT_REFRESH` brings every 16.x minor
+(`images/agent-runtime-base/Dockerfile` (`ARG POSTGRES_MAJOR=16`)):
+
+* the signing key is fetched over HTTPS and must hold exactly one primary
+  key whose full fingerprint is `PGDG_KEY_FINGERPRINT` before apt trusts it;
+  gpg is installed for that check alone and purged in the same `RUN`;
+* the build starts nothing and creates no data directory:
+  `create_main_cluster` is turned off before the server's postinst runs, and
+  the build fails if `/var/lib/postgresql/16` or `/etc/postgresql/16`
+  appears anyway;
+* the archive floats, so the build refuses a server older than
+  `images/agent-runtime-base/Dockerfile` (`ARG POSTGRES_MIN_VERSION=16.15`),
+  the release measured when the lane went in;
+* `postgres`, `initdb`, `pg_ctl` and `pg_isready` are linked into
+  `/usr/local/bin`, and the toolbox smoke step fails the build on any of them
+  that does not say `(PostgreSQL) 16.`;
+* the PGDG source and keyring are removed once the server is in
+  (`images/agent-runtime-base/Dockerfile` (`rm -f /etc/apt/sources.list.d/pgdg.list /usr/share/keyrings/pgdg.gpg`)),
+  so the derived images' own `apt-get update` never depends on
+  apt.postgresql.org; and ssl-cert's snakeoil pair, identical in every pull,
+  is deleted, since the service listens on loopback without TLS.
+
+The scan gap of §4.1 is recorded beside the layer: trivy does not track
+PGDG's `postgresql-16`, so findings on the server are under-reported; its
+libraries are Debian's and are tracked. The image growth and trivy's reading
+were measured in the lane's pull request, not in the code, and are not
+quoted here. Tests: the PGDG, fingerprint, layer and smoke-step tests in
+`tests/unit/scripts/test_agent_toolbox_image.py`.
+
+### 11.2 What TS-CATALOGUE built
+
+`apps/agent-worker/agent_worker/testservices.py` reads
+`apps/agent-worker/agent_worker/testservices.py::DECLARATION_PATH` from the
+clone and holds it to
+`apps/agent-worker/agent_worker/testservices.py::CATALOGUE`, one entry:
+`postgres`, versions `(16,)`. A table may carry only
+`apps/agent-worker/agent_worker/testservices.py::ALLOWED_KEYS` (`version`,
+`databases`); the keys a repository is most likely to try are refused with a
+reason of their own
+(`apps/agent-worker/agent_worker/testservices.py::_REFUSED_BECAUSE`), and any
+other key is refused as "not a declaration key".
+`apps/agent-worker/agent_worker/testservices.py::validate` collects every
+refusal, not the first: an unknown table, a table that is not a table, a
+missing or unoffered `version` (a boolean is refused, not read as 1), a
+`databases` that is not a list of 1 to
+`apps/agent-worker/agent_worker/testservices.py::MAX_DATABASES` names each
+matching `apps/agent-worker/agent_worker/testservices.py::DATABASE_NAME`, and
+a duplicated name. `apps/agent-worker/agent_worker/testservices.py::parse_declaration`
+adds the file over
+`apps/agent-worker/agent_worker/testservices.py::MAX_DECLARATION_BYTES`,
+bytes that are not UTF-8, and a TOML syntax error.
+`apps/agent-worker/agent_worker/testservices.py::read_declaration` adds two
+the design did not name: a declaration that resolves outside the clone (a
+symlinked file or `.swarm`) and one that is not a regular file are refused
+unread. A declaration with any refusal declares no service. Tests:
+`tests/unit/worker/test_testservices_declaration.py`.
+
+### 11.3 What TS-RUN built
+
+`apps/agent-worker/agent_worker/testservices.py::start` runs a valid
+declaration's services; `apps/agent-worker/agent_worker/testservices.py::_start_postgres`
+is the one starter:
+
+1. `initdb` (`apps/agent-worker/agent_worker/testservices.py::initdb_argv`:
+   `--username=postgres`, `--auth=trust`, `--locale=C`, `--no-sync`) into
+   `<cache>/services/postgres/data`, where `<cache>` is the attempt's cache
+   directory, `<SWARM_CACHE_ROOT>/<attempt>`
+   (`apps/agent-worker/agent_worker/workspace.py::create`), with the
+   directory and its socket directory mode 0700;
+2. the declared databases, created in single-user mode **before** the server
+   listens, so no test sees the server without them; the three `initdb`
+   makes itself are not created again
+   (`apps/agent-worker/agent_worker/testservices.py::INITDB_DATABASES`);
+3. `postgres` with `listen_addresses=127.0.0.1` and
+   `apps/agent-worker/agent_worker/testservices.py::POSTGRES_SETTINGS`, §3.1's
+   settings exactly, plus a 0700 socket and no logging collector;
+   `apps/agent-worker/agent_worker/testservices.py::_loopback_only` refuses to
+   start anything if the listen address were not loopback;
+4. `oom_score_adj` set to
+   `apps/agent-worker/agent_worker/testservices.py::OOM_SCORE_ADJ` (1000) on the
+   server **before** readiness is awaited; a server whose rank cannot be set is
+   not run, because the kernel would rank it beside the agent;
+5. readiness by `pg_isready` on the socket every 0.1 s, up to
+   `apps/agent-worker/agent_worker/testservices.py::READY_TIMEOUT_SECONDS`.
+
+The child's environment is built from nothing
+(`apps/agent-worker/agent_worker/testservices.py::child_env`): no worker
+secret and no `PG*` variable reaches it. A step that fails is an error on that
+service, never an exception: the service is stopped, its directory removed,
+and the error carries the server's last 20 log lines through the worker's
+scrub. `apps/agent-worker/agent_worker/testservices.py::ServiceProcess.stop`
+sends SIGINT (PostgreSQL's fast shutdown), kills after 10 s, and removes the
+directory.
+
+The worker calls it once, right after the clone, from
+`apps/agent-worker/agent_worker/lifecycle.py::Worker._start_test_services`,
+with the lease heartbeated meanwhile, and stops it from
+`apps/agent-worker/agent_worker/lifecycle.py::Worker._cleanup`, which every
+exit reaches. Nothing there ends the attempt: no file starts nothing, an
+invalid file is logged and starts nothing (the gate reports it), and a service
+that does not come up is logged with its scrubbed error while the agent runs
+without it. Tests: `tests/unit/worker/test_testservices_process.py`.
+
+### 11.4 What TS-CLOUDRUN-REFUSE built
+
+BGD's decision of 2026-10-24 (§4.1, "refuse on Cloud Run"). With no
+`SWARM_CACHE_ROOT` in the environment `start` runs no `initdb` and gives each
+declared service the error
+`apps/agent-worker/agent_worker/testservices.py::NO_CACHE_VOLUME`, which
+`apps/agent-worker/agent_worker/testservices.py::RunningServices.report`
+shows as `postgres: service not started: test services need SWARM_CACHE_ROOT
+on its own volume; this runner keeps its workspace in memory`. It is read
+from the environment, not a profile name, so any runner without its own cache
+volume refuses. The 256 MiB tmpfs cap §4.1 described is therefore not built:
+there is no in-memory Postgres at all. Tests: the cache-volume tests in
+`tests/unit/worker/test_testservices_process.py`.
+
+### 11.5 What TS-GATE built
+
+`apps/agent-worker/agent_worker/prepublish.py::Gate._services` runs §5.2's
+steps 1-2 each round, and `apps/agent-worker/agent_worker/prepublish.py::Gate._round`
+the rest:
+
+* the declaration is read from the tree being checked. Invalid: a
+  `test-services` check
+  (`apps/agent-worker/agent_worker/prepublish.py::TEST_SERVICES_CHECK`),
+  `failed` when the diff touched `.swarm/test-services.toml`, else `error`;
+  nothing is started.
+* only when a check in
+  `apps/agent-worker/agent_worker/prepublish.py::SERVICE_CHECKS` (`graph-pytest`
+  and the guards script) will run, each declared service is probed at its
+  address (`apps/agent-worker/agent_worker/prepublish.py::probe_argv`:
+  `pg_isready` over TCP on `127.0.0.1:5432`). One that answers is the
+  worker's and is used as it is; one that does not is started by the gate for
+  this round, under a `pp-svc-` directory in the checks' TMPDIR
+  (`apps/agent-worker/agent_worker/prepublish.py::_outside`). One that does not
+  start is `test-services: error`, and the tests run without it.
+* the checks' environment, never the gate's own, gains
+  `apps/agent-worker/agent_worker/prepublish.py::service_env`: `PGHOST`,
+  `PGPORT`, `PGUSER`, `PGDATABASE`, `DATABASE_URL` and `SWARM_TEST_SERVICES`.
+  When no service is ready, `SWARM_TEST_SERVICES` is removed from the checks'
+  environment, so an agent cannot claim a service the gate did not find.
+* each pytest check is wrapped by
+  `apps/agent-worker/agent_worker/prepublish.py::watched`: a service that
+  stopped during the run
+  (`apps/agent-worker/agent_worker/prepublish.py::_RoundServices.stopped`)
+  makes the check `error`, naming signal 9 as the OOM killer when the gate
+  started the server.
+* `apps/agent-worker/agent_worker/prepublish.py::_pytest_project` matches the
+  refused addresses `unreachable_services` returns against the ports of the
+  services named in `SWARM_TEST_SERVICES`
+  (`apps/agent-worker/agent_worker/prepublish.py::declared_services`): one a
+  running declared service owns is `failed` ("the tests connect to it
+  wrongly"); any other is `skipped`, adding "and not declared in
+  .swarm/test-services.toml".
+* a `test-services` error is the base's or the platform's, not the branch's:
+  `apps/agent-worker/agent_worker/prepublish.py::pr_section` leaves it out of
+  **Pre-publish checks failed**, and
+  `apps/agent-worker/agent_worker/prepublish.py::advisory_section` shows it as
+  "test-services (error, not the change's)". The fix turn gets `failed`
+  checks only, so an `error` is never sent to the agent.
+
+Every row of §5.3 holds as written. Tests:
+`tests/unit/worker/test_prepublish_test_services.py`, one test per row and the
+issue's acceptance pair.
+
+### 11.6 What TS-DOCS built
+
+This section; the pre-publish part of
+[../agent-output.md](../agent-output.md#before-the-worker-publishes-a-rebase-and-the-repositorys-own-checks-speed-d1);
+and [../test-services.md](../test-services.md), the page a repository reads
+to write its declaration.
+
+### 11.7 Not built
+
+* **TS-ACCEPT (not built).** No fixture under `tests/acceptance/` declares a
+  service, so the deployed proof that a lane breaking a database test reports
+  `graph-pytest: failed` before its pull request opens has not run. The
+  offline acceptance pair in `tests/unit/worker/test_prepublish_test_services.py`
+  is the only proof today.
+* **TS-SIGNAL (not built).** Nothing counts skipped addresses by port yet;
+  §3.2's rule for adding a second service has no data behind it.
+
+### 11.8 Where the code departs from §2-§5
+
+1. **The agent's turn gets the server, not the variables.** The worker starts
+   the service before the agent (Q4), so the agent's own test runs reach
+   `127.0.0.1:5432`; but `PGHOST`, `DATABASE_URL` and the rest are set only in
+   the gate's checks' environment (§5.1 said so, §5.4 did not). A test that
+   reads only `DATABASE_URL` and has no default finds it during the gate, not
+   during the turn.
+2. **The fix round does not always start afresh.** §5.2 step 5 said every
+   round's services stop and the fix round never sees the first round's data.
+   The gate stops only what it started; the worker's service is probed, never
+   started or stopped by the gate, and keeps its data across the agent's turn,
+   both gate rounds and the fix turn between them. A test that depends on an
+   empty database must create its own state, as §5.5 already asks.
+3. **The gate starts a service only when none answers** (a declaration the
+   agent's change added, or a worker service that died), and its data
+   directory is under the checks' TMPDIR, not `<cache>/services`.
+4. **No in-memory fallback.** §4.1's 256 MiB tmpfs cap was replaced by
+   TS-CLOUDRUN-REFUSE (§11.4).
+5. **Two more refusals and one more stop.** The declaration is refused unread
+   when it resolves outside the clone or is not a regular file (§11.2), and a
+   server whose `oom_score_adj` cannot be set is not run (§11.3).
