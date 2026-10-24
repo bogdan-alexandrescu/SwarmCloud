@@ -122,6 +122,26 @@ def window_floor(window: str, floor: float | None = None) -> float:
         return floor
     return WINDOW_FLOORS.get(window, DEFAULT_ASSIGN_FLOOR)
 
+
+#: How many agents one account may hold at once, unless its owner sets
+#: another number (BGD, 2026-10-24, #2222: "Per-account cap, staggered wake").
+#:
+#: `choose()` hands a new agent the account with the MOST headroom, and an
+#: account's headroom does not move until its next reading arrives, minutes
+#: later. With nothing capping that, every new agent went to the same account:
+#: at 10:38Z on 2026-10-24, four of the six agents eng was allowed went to
+#: aieng-claude1 the moment its 5-hour window reset, and the cap on the
+#: tenant's provider pool (cut from 100 to 6 that morning) was the only thing
+#: stopping the rest. Six is that same number per account: enough to keep a
+#: subscription busy, few enough that a burst cannot spend a 5-hour window
+#: before the next reading shows it.
+DEFAULT_MAX_AGENTS = 6
+
+#: The most an owner may set `max_agents` to. Only a bound on what the route
+#: accepts -- no subscription runs fifty agents at once -- so a typo of a
+#: thousand cannot quietly turn the cap off.
+MAX_AGENTS_LIMIT = 50
+
 #: How long a hold survives without being released.
 #:
 #: Longer than the longest runner profile's timeout (7200s) plus the setup and
@@ -232,6 +252,12 @@ class Unavailable(str, Enum):
     #: another account carries, because the poll is the sooner of the two
     #: (#1885); an instant still travels with it when a window clears sooner.
     NO_RECENT_READING = "no_recent_reading"
+    #: Accounts have room by their windows, and every one of them already
+    #: holds its `max_agents` agents (#2222). NOT a clock: a slot frees when
+    #: an agent on it finishes, which no instant predicts, so the worker
+    #: re-asks within minutes, as for a stale reading. An instant still
+    #: travels with it when another account's window clears sooner.
+    ACCOUNTS_FULL = "accounts_full"
 
 
 class AccountState(str, Enum):
@@ -489,6 +515,13 @@ class Account:
     #: `validate_display_name` is the one statement of what it may hold.
     display_name: str | None = None
 
+    #: How many agents may hold this account at once (#2222). DEFAULT_MAX_AGENTS
+    #: on every document written before this field, and on every account its
+    #: owner has not set. Counted against LIVE holds (`is_full`), never the
+    #: `assigned` projection, so a killed worker's expired hold frees its slot
+    #: without anyone releasing it.
+    max_agents: int = DEFAULT_MAX_AGENTS
+
     def serves_class(self, model_class: str | None) -> bool:
         """Whether a step of `model_class` may run on this account.
 
@@ -504,6 +537,16 @@ class Account:
 
     def live_holds(self, now: datetime) -> tuple[Hold, ...]:
         return tuple(h for h in self.holds if not h.is_expired(now))
+
+    def is_full(self, now: datetime) -> bool:
+        """Whether this account already holds as many agents as it may (#2222).
+
+        LIVE holds, not `assigned`: the projection is maintained by the same
+        transactions, but a hold whose worker was killed only stops counting
+        once it expires, and that is the rule the hold transactions apply when
+        they re-check the cap (`quota_broker.main.acquire_hold`).
+        """
+        return len(self.live_holds(now)) >= self.max_agents
 
     def is_unreadable_for(
         self,
@@ -769,6 +812,7 @@ class Account:
             "last_refresh_reason": self.last_refresh_reason,
             "model_classes": list(self.model_classes),
             "display_name": self.display_name,
+            "max_agents": self.max_agents,
         }
 
     @classmethod
@@ -823,6 +867,11 @@ class Account:
             # no Name -- the label shows -- rather than taking the account out
             # of the pool over a piece of display text.
             display_name=_display_name_from_firestore(data.get("display_name")),
+            # NOT descriptive, like `model_classes`: it limits how many agents
+            # the account takes, so a malformed value raises and the document
+            # is unreadable -- out of the pool -- rather than read as some
+            # number nobody chose.
+            max_agents=max_agents_from_firestore(data.get("max_agents")),
         )
 
 
@@ -894,6 +943,39 @@ def _display_name_from_firestore(raw: Any) -> str | None:
         return validate_display_name(raw)
     except AccountError:
         return None
+
+
+def validate_max_agents(value: Any) -> int:
+    """`value` as an account stores it: a whole number from 1 to MAX_AGENTS_LIMIT.
+
+    Raises AccountError, in words the owner setting it can act on, for anything
+    else. Zero is refused rather than read as "take no agents": that is what
+    pausing the account says (`AccountState.PAUSED`), and one switch for it is
+    enough.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise AccountError("an account's max_agents is a whole number")
+    if not 1 <= value <= MAX_AGENTS_LIMIT:
+        raise AccountError(
+            f"an account's max_agents is 1 to {MAX_AGENTS_LIMIT}, and this is {value}; "
+            "pause the account to stop it taking new agents"
+        )
+    return value
+
+
+def max_agents_from_firestore(raw: Any) -> int:
+    """A stored `max_agents`, DEFAULT_MAX_AGENTS when absent.
+
+    Raises ValueError on a malformed value, which `accountstore._decode` turns
+    into a malformed document. Public because the hold transactions in
+    `quota_broker.main` read the raw document and must apply the same number.
+    """
+    if raw is None:
+        return DEFAULT_MAX_AGENTS
+    try:
+        return validate_max_agents(raw)
+    except AccountError as exc:
+        raise ValueError(str(exc)) from None
 
 
 def _model_classes_from_firestore(raw: Any) -> tuple[str, ...]:
@@ -1142,6 +1224,11 @@ def choose(
       3. fewest agents already on it, to spread load rather than stack it;
       4. label, so the choice is deterministic and a test can assert it.
 
+    AN ACCOUNT ALREADY HOLDING ITS `max_agents` IS NO CANDIDATE (#2222).
+    Headroom does not move until the next reading, so "most headroom first"
+    alone stacked every new agent on one account; the cap is what makes the
+    ordering spread them.
+
     Returns None when nothing is eligible, which is not an error: the caller
     parks the task, which costs nothing and resumes by itself once an account
     frees up. Handing back an exhausted account instead would trade a free park
@@ -1170,6 +1257,7 @@ def choose(
         and a.account_id not in skip
         and not a.is_unreadable_for(tenant_id, now, unreadable_after=stale_after)
         and a.assignable(now, floor=assign_floor, stale_after=stale_after)
+        and not a.is_full(now)
     ]
     if not candidates:
         return None
@@ -1231,10 +1319,13 @@ def eligibility(
         with no instant at all -- when somebody acts is not a time the broker
         can know -- so it shortens nothing here.
 
-    Holds do not appear: `choose()` caps no account by how many agents are on
-    it, so an assignment released changes nothing here. The scheduler re-asks
-    at that moment anyway (`scheduler.loop.Scheduler.release_dependants`),
-    because the finishing agent's readings are the freshest the pool has.
+      * every slot taken (`Account.is_full`, #2222), with its windows clear:
+        an agent on it finishing. Undated -- no instant predicts a finish --
+        so the reason becomes `ACCOUNTS_FULL`, which the worker re-asks within
+        minutes; the earliest dated instant still travels with it. The
+        scheduler re-asks the moment an agent finishes anyway
+        (`scheduler.loop.Scheduler.release_dependants`), because a finishing
+        agent frees a slot and brings the freshest readings the pool has.
 
     `exclude` is this ATTEMPT's list and dies with it, so an account it names
     is no candidate for this answer: the worker parks such an attempt as
@@ -1294,6 +1385,7 @@ def eligibility(
 
     instants = list(marks)
     waiting_on_poll = False
+    full = False
     for a in assignable:
         clear = window_clear(a)
         if clear is not None:
@@ -1303,10 +1395,16 @@ def eligibility(
             # exhaustion: the broker's own usage poll refreshes this reading
             # on its next sweep, which is sooner than any window but undated.
             waiting_on_poll = True
+        elif a.is_full(now):
+            # Room by every window, and every slot taken: it frees when an
+            # agent on it finishes, sooner than any window but undated.
+            full = True
     earliest = min(instants) if instants else None
 
     if waiting_on_poll:
         return Unavailable.NO_RECENT_READING, earliest
+    if full:
+        return Unavailable.ACCOUNTS_FULL, earliest
 
     # Every candidate is spent by a window or held off by a mark, and
     # `earliest` is the first of them to clear. None only for an account
@@ -1346,6 +1444,8 @@ __all__ = [
     "ASSIGNABLE_STATES",
     "USABLE_STATES",
     "DEFAULT_ASSIGN_FLOOR",
+    "DEFAULT_MAX_AGENTS",
+    "MAX_AGENTS_LIMIT",
     "WINDOW_FLOORS",
     "window_floor",
     "DEFAULT_HOLD_TTL",
@@ -1371,7 +1471,9 @@ __all__ = [
     "holds_from_firestore",
     "holds_to_firestore",
     "hold_log_entry",
+    "max_agents_from_firestore",
     "secret_name",
     "validate_label",
+    "validate_max_agents",
     "windows_to_firestore",
 ]

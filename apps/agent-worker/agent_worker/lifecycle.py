@@ -174,6 +174,7 @@ from . import standalone_outputs as standalone_mod
 from . import verdict as verdict_mod
 from . import workspace as workspace_mod
 from .accountlease import (
+    ACCOUNTS_FULL,
     ACCOUNT_TOKEN_ENV,
     ACCOUNT_UNREADABLE,
     BROKER_REFUSED,
@@ -9849,6 +9850,10 @@ class Worker:
             that nobody has looked lately, and the broker's usage poll looks
             every sweep. Minutes, not a quarter of an hour -- or the broker's
             instant, when a window clears sooner than that;
+          * `accounts_full` -- every account with room already holds its cap
+            of agents (#2222). A slot frees when one of them finishes, which
+            no clock says, so the same minutes as a stale reading -- or a
+            window instant, when one clears sooner;
           * `pool_paused` -- waiting on a PERSON. There is no instant to wake
             at, so the long fallback;
           * `broker_refused` / `account_unreadable` -- a configuration error.
@@ -9858,14 +9863,17 @@ class Worker:
         """
         reason = exc.decision.reason
         configuration_error = reason in (BROKER_REFUSED, ACCOUNT_UNREADABLE)
+        # Both undated waits that clear in minutes: a usage poll, or an agent
+        # on a full account finishing.
+        undated_soon = reason in (NO_RECENT_READING, ACCOUNTS_FULL)
         fallback_seconds = (
             STALE_READING_RETRY_SECONDS
-            if reason == NO_RECENT_READING
+            if undated_soon
             else NO_ACCOUNT_RETRY_SECONDS
         )
         fallback = utcnow() + timedelta(seconds=fallback_seconds)
         reset = _parse_iso(exc.decision.next_reset_at)
-        if reason == NO_RECENT_READING:
+        if undated_soon:
             # THE SOONER OF THE TWO (#1885). The broker answers
             # `no_recent_reading` when ANY candidate waits on its next usage
             # poll, and still sends the earliest window instant it knows.
@@ -9883,6 +9891,7 @@ class Worker:
                 "an administrator" if configuration_error
                 else "a person" if reason == POOL_PAUSED
                 else "the broker's next usage poll" if reason == NO_RECENT_READING
+                else "an agent on a full account to finish" if reason == ACCOUNTS_FULL
                 else "a quota window"
             ),
             next_eligible_at=next_eligible.isoformat(),
