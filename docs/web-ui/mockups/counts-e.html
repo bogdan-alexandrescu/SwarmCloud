@@ -121,6 +121,7 @@ p{max-width:78ch}
 .phd .adm{color:#bcd6ee;border-color:rgba(188,214,238,.4)}
 .pbody{flex:1;min-height:0;overflow-y:auto;overflow-x:auto;display:flex;flex-direction:column;gap:10px;padding:10px}
 .phone.tall .pbody{overflow:visible}
+.pbody>*{flex-shrink:0}
 .phone .phead h3{font-size:18px}
 .phone .btn{height:44px;justify-content:center}
 .phone .btn.pri{width:100%}
@@ -457,7 +458,15 @@ function svg1(o,W){
     if(v===0)s+=`<circle cx="${X(i).toFixed(1)}" cy="${Y(0)}" r="2.6" fill="var(--f-sf)" stroke="${o.color}" stroke-width="1.4"/>`;
     else if(W===640)s+=`<circle cx="${X(i).toFixed(1)}" cy="${Y(v).toFixed(1)}" r="2.1" fill="${o.color}"/>`});
   s+=`<circle cx="${X(b).toFixed(1)}" cy="${Y(o.cur[b]).toFixed(1)}" r="3.4" fill="var(--f-sf)" stroke="${o.color}" stroke-width="1.6" stroke-dasharray="2 1.5"/>`;
-  s+=`<text class="tk" x="${(W-Rm).toFixed(1)}" y="${(Math.min(Y(o.cur[b]),Y(o.prev[b]))-8).toFixed(1)}" text-anchor="end">so far</text>`;
+  /* "so far" sits clear of both lines: above every segment under its width (and the one running in from the
+     left), below them, or in the widest gap between the two lines when neither the top nor the zero rule leaves room. */
+  const lw=36,sp=[];[o.cur,o.prev].forEach((arr,k)=>{let py=null;for(let i=0;i<n;i++){const v=arr[i];if(v==null||(k===0&&o.unread.has(i))){py=null;continue}
+    const y=Y(v);if(X(i)+step>=W-Rm-lw-2)sp.push([Math.min(y,py??y),Math.max(y,py??y)]);py=y}});
+  sp.sort((p,q)=>p[0]-q[0]);let gap=[T-12,sp[0][0]],end=sp[0][1];
+  for(const [a0,a1] of sp.slice(1)){if(a0-end>gap[1]-gap[0])gap=[end,a0];end=Math.max(end,a1)}
+  if(T+ph-end>gap[1]-gap[0]&&T+ph-end>=17)gap=[end,T+ph];
+  const sfY=gap[0]===T-12?gap[1]-8:gap[1]===T+ph?gap[0]+14:(gap[0]+gap[1])/2+4;
+  s+=`<text class="tk" x="${(W-Rm).toFixed(1)}" y="${sfY.toFixed(1)}" text-anchor="end">so far</text>`;
   if(o.hover!=null){const h=o.hover;if(o.cur[h]!=null)s+=`<circle cx="${X(h).toFixed(1)}" cy="${Y(o.cur[h]).toFixed(1)}" r="4.6" fill="${o.color}" stroke="var(--f-sf)" stroke-width="1.5"/>`;
     s+=`<circle cx="${X(h).toFixed(1)}" cy="${Y(o.prev[h]).toFixed(1)}" r="4" fill="var(--f-sf)" stroke="var(--f-mu)" stroke-width="1.6"/>`}
   if(o.retries){
