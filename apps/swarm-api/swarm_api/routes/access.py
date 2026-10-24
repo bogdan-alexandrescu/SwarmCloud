@@ -53,6 +53,9 @@ from ..access import CHECKS, MAX_PAGES, MAX_QUERY_CHARS, OPT_IN_CHECKS, AccessSe
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..forgeapp import CONNECTIONS, ORGS, Caller, connection_id_for
+from ..grant_attest import GrantPolicy
+from ..workspace_secrets import WorkspaceSecrets
+from .workspace_secrets import SecretWriter, secret_writer
 
 router = APIRouter(prefix="/v1/access", tags=["access"])
 
@@ -64,6 +67,21 @@ def get_access(request: Request) -> AccessService:
 
 def _caller(auth: AuthContext, tenant_id: str) -> Caller:
     return Caller(email=auth.email, tenant_id=tenant_id)
+
+
+#: The `authority` the grants-disabled audit row records when the last access
+#: grant on a registration a grant made goes, and the registration with it:
+#: the member rule (`_member`) let the revoke or the owner's disable through.
+ACCESS_UNREGISTER = "access_unregister"
+
+
+def _secret_store(ctx: AppContext, writer: SecretWriter) -> WorkspaceSecrets:
+    """The store whose one transaction removes a registration and disables
+    every grant on its secrets (secrets-scopes.md §2.1), signing them with the
+    deployment's grant key, as `DELETE /v1/repositories/{repo_id}` builds it."""
+    return WorkspaceSecrets(ctx.db, writer, now=ctx.now,
+                            grants=GrantPolicy.from_settings(ctx.settings),
+                            authority=ACCESS_UNREGISTER)
 
 
 def _member(ctx: AppContext, auth: AuthContext) -> None:
@@ -195,9 +213,12 @@ def disable_owner(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
     service: AccessService = Depends(get_access),
+    writer: SecretWriter = Depends(secret_writer),
 ) -> dict:
     _member(ctx, auth)
-    return {**service.disable(_caller(auth, tenant_id), owner), "tenant_id": tenant_id}
+    return {**service.disable(_caller(auth, tenant_id), owner,
+                              secret_store=_secret_store(ctx, writer)),
+            "tenant_id": tenant_id}
 
 
 @router.post("/orgs/{owner}/install-request")
@@ -249,9 +270,12 @@ def delete_grant(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
     service: AccessService = Depends(get_access),
+    writer: SecretWriter = Depends(secret_writer),
 ) -> dict:
     _member(ctx, auth)
-    return {**service.revoke(_caller(auth, tenant_id), repo_id), "tenant_id": tenant_id}
+    return {**service.revoke(_caller(auth, tenant_id), repo_id,
+                             secret_store=_secret_store(ctx, writer)),
+            "tenant_id": tenant_id}
 
 
 @router.post("/grants/{repo_id}/verify")

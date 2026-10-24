@@ -117,7 +117,7 @@ import uuid
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Callable, Iterator
+from typing import TYPE_CHECKING, Any, Callable, Iterator
 from urllib.parse import quote, urlencode
 
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -173,6 +173,9 @@ from .repositories import (
     tenant_credential,
 )
 from .validation import _ISSUE_OWNER
+
+if TYPE_CHECKING:
+    from .workspace_secrets import WorkspaceSecrets
 
 log = logging.getLogger(__name__)
 
@@ -1153,9 +1156,12 @@ class AccessService:
         if len(people) > MAX_RECHECKS_PER_SWEEP:
             report.out_of_time = True
 
-    def disable(self, caller: Caller, owner: str) -> dict[str, Any]:
+    def disable(self, caller: Caller, owner: str, *,
+                secret_store: WorkspaceSecrets) -> dict[str, Any]:
         """§2.4: delete the owner and every grant under it, in one write. For
-        a requested owner, that withdraws the request."""
+        a requested owner, that withdraws the request. A registration a grant
+        made goes with its last grant, through `secret_store`
+        (`_unregister_if_last`)."""
         check_owner(owner)
         doc = self._org(caller, owner)
         if doc is None:
@@ -1175,7 +1181,7 @@ class AccessService:
                 grant_id_for(caller.tenant_id, caller.key, str(grant["repo_id"]))))
         batch.commit()
         unregistered = [g["repo_id"] for g in grants
-                        if self._unregister_if_last(caller.tenant_id, str(g["repo_id"]))]
+                        if self._unregister_if_last(caller, str(g["repo_id"]), secret_store)]
         log.info("access owner disabled tenant=%s user_hash=%s owner=%s grants_deleted=%d",
                  caller.tenant_id, user_hash(caller.key), owner.lower(), len(grants))
         return {"owner": owner.lower(), "grants_deleted": len(grants),
@@ -1417,20 +1423,40 @@ class AccessService:
         return {"grant": grant_to_api(doc), "registered": created,
                 "registration_repo_id": registration.get("repo_id")}
 
-    def revoke(self, caller: Caller, repo_id: str) -> dict[str, Any]:
+    def revoke(self, caller: Caller, repo_id: str, *,
+               secret_store: WorkspaceSecrets) -> dict[str, Any]:
         """§2.4 "Remove a repository": the grant goes; the registration goes
-        with the last grant, and only if a grant made it."""
+        with the last grant, and only if a grant made it (`_unregister_if_last`,
+        through `secret_store`)."""
         doc = self._grant(caller, repo_id)
         if doc is None:
             raise NotFound(f"you hold no grant on {repo_id[:64]!r} in this tenant")
         self._db.collection(GRANTS).document(
             grant_id_for(caller.tenant_id, caller.key, repo_id)).delete()
-        unregistered = self._unregister_if_last(caller.tenant_id, repo_id)
+        unregistered = self._unregister_if_last(caller, repo_id, secret_store)
         log.info("access grant revoked tenant=%s user_hash=%s repo_id=%s unregistered=%s",
                  caller.tenant_id, user_hash(caller.key), repo_id, unregistered)
         return {"repo_id": repo_id, "revoked": True, "unregistered": unregistered}
 
-    def _unregister_if_last(self, tenant_id: str, repo_id: str) -> bool:
+    def _unregister_if_last(self, caller: Caller, repo_id: str,
+                            secret_store: WorkspaceSecrets) -> bool:
+        """Remove `repo_id`'s registration when a grant made it and no grant
+        on it is left in the tenant. Through `secret_store.delete_repository`:
+        every enabled grant on the repository's secrets is disabled in the
+        transaction that removes it (secrets-scopes.md §2.1), so a later
+        re-registration of the same repository revives none of them.
+
+        Runs after the access grant is deleted, and a failure of that one
+        transaction does not undo it: the registration and its secret grants
+        stay exactly as they were (nothing commits half), the answer says
+        `unregistered: false`, and a warning names the tenant, the repository
+        and the reason. Kept rather than raised because the caller's grant is
+        already gone (a retried revoke would be a 404), and an owner's disable
+        has already revoked its token and deleted every grant: an error there
+        would hide what did happen. The registration left is one any member's
+        `DELETE /v1/repositories/{repo_id}` removes, or the next grant's
+        revoke retries. Never removed without the grants disabled."""
+        tenant_id = caller.tenant_id
         holders = self._db.collection(GRANTS).where(
             filter=FieldFilter("tenant_id", "==", tenant_id)).where(
             filter=FieldFilter("repo_id", "==", repo_id)).limit(1)
@@ -1440,7 +1466,17 @@ class AccessService:
         record = store.find(tenant_id, repo_id)
         if record is None or record.get("registered_via") != "grant":
             return False
-        store.delete(tenant_id, repo_id)
+        try:
+            secret_store.delete_repository(tenant_id=tenant_id, repo_id=repo_id, by=caller.email)
+        except NotFound:
+            # Gone meanwhile, through `DELETE /v1/repositories`, which
+            # disabled the grants in its own transaction.
+            return False
+        except Exception as exc:
+            log.warning("access unregister failed tenant=%s repo_id=%s reason=%s: %s; the "
+                        "registration and its secrets' grants are kept as they were",
+                        tenant_id, repo_id, type(exc).__name__, str(exc)[:300])
+            return False
         return True
 
     # -- verify ------------------------------------------------------------------
