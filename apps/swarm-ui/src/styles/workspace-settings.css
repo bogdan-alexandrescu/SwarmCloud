@@ -11,7 +11,7 @@
 .ws-lead-t { flex: 1 1 240px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .ws-lead-k { font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--sk-ac, var(--text)); }
 .ws-lead.is-ok .ws-lead-k { color: var(--s-live); }
-.ws-lead-t b { font: 600 var(--t-lead)/1.35 var(--font); color: var(--text); overflow-wrap: anywhere; }
+.ws-lead-t b { font: 600 var(--t-lead)/var(--lh-lead) var(--font); color: var(--text); overflow-wrap: anywhere; }
 .ws-lead-s { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
 .ws-lead-a { display: flex; flex-wrap: wrap; gap: 8px; }
 
