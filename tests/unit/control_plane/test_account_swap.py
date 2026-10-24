@@ -34,7 +34,7 @@ from quota_broker.main import create_app
 from quota_broker.service import QuotaBroker
 from quota_broker.settings import BrokerSettings
 
-from .conftest import core_settings
+from .conftest import core_settings, measure
 from .fakes import FakeFirestore, FakeTransaction
 
 ENG = "eng"
@@ -79,6 +79,7 @@ def client(db):
     store = AccountStore(broker.db)
     store.register(ENG, "first")
     store.register(ENG, "second")
+    measure(store, f"{ENG}:first", f"{ENG}:second")  # one agent until measured (#2222)
     identity = _Identity()
     app = create_app(broker, identity=identity, account_store=store)
     c = TestClient(app, raise_server_exceptions=False)

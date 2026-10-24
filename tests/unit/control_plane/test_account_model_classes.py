@@ -32,7 +32,7 @@ from quota_broker.accountstore import AccountStore, MalformedAccountError
 from quota_broker.main import create_app
 from swarm_common.profiles import RUNNER_PROFILES
 
-from .conftest import scheduler_settings, seed_pool, seed_task, seed_tenant
+from .conftest import measure, scheduler_settings, seed_pool, seed_task, seed_tenant
 
 ENG = "eng"
 RESEARCH = "research"
@@ -243,6 +243,7 @@ def test_a_fable_step_goes_to_the_account_that_serves_fable(client, accounts, br
 
 def test_an_account_with_no_list_is_assigned_every_class(client, accounts, broker):
     accounts.register(ENG, "every")
+    measure(accounts, f"{ENG}:every")  # one agent until measured (#2222)
     for cls in ("opus", "fable", "sonnet", "haiku"):
         _task(broker.db, f"task_{cls}", model_class=cls)
         assert _assign(client, f"task_{cls}").json()["account_id"] == f"{ENG}:every"
@@ -356,6 +357,7 @@ def test_the_same_tenants_opus_step_runs_on_that_account(db, make_scheduler, dis
     _world(db)
     AccountStore(db).register(ENG, "opus-only")
     db.document(f"accounts/{ENG}:opus-only").update({"model_classes": ["opus"]})
+    measure(AccountStore(db), f"{ENG}:opus-only")  # one agent until measured (#2222)
     _task(db, "task_default")
     _task(db, "task_opus", model_class="opus")
 

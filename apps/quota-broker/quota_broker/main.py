@@ -39,11 +39,13 @@ from .oauth import (
     OAUTH_REDIRECT_URI,
     Credential,
     CredentialError,
+    Organisation,
     build_authorize_url,
     challenge_for,
     new_state,
     new_verifier,
     parse_credential,
+    read_organisation,
     split_pasted_code,
 )
 from .usagepoll import UsagePoller
@@ -59,6 +61,7 @@ from .accounts import (
     HOLD_ENDS,
     HOLD_LOG_COLLECTION,
     HOLD_LOG_RETENTION,
+    MAX_AGENTS_BEFORE_READING,
     SWAP_DRAIN,
     SWAP_REASONS,
     SWAP_UNUSABLE,
@@ -70,6 +73,7 @@ from .accounts import (
     accounts_serving,
     choose,
     due_for_refresh,
+    duplicates,
     eligibility,
     holds_from_firestore,
     holds_to_firestore,
@@ -682,6 +686,21 @@ def account_to_api(account: Any, *, now: datetime | None = None) -> dict[str, An
         holding = len(live_holds(now))
         if holding >= max_agents:
             blocked_by.append({"cap": holding, "max_agents": max_agents})
+    # ONE AGENT UNTIL MEASURED (#2222): `choose()` skips a never-observed
+    # account holding one, and the page says it is waiting on that reading,
+    # not that it is full or spent.
+    awaits = getattr(account, "awaits_first_reading", None)
+    if callable(awaits) and awaits(now):
+        blocked_by.append({
+            "first_reading": "pending",
+            "assigned": len(live_holds(now)) if callable(live_holds) else account.assigned,
+            "max_before_reading": MAX_AGENTS_BEFORE_READING,
+        })
+    # A LATER REGISTRATION OF AN ORGANISATION ANOTHER ACCOUNT HOLDS (#2222):
+    # one subscription, handed out once, through the older registration.
+    duplicate_of = getattr(account, "duplicate_of", None)
+    if getattr(account, "duplicate_withheld", False) is True:
+        blocked_by.append({"duplicate_of": duplicate_of})
     next_reset = getattr(account, "next_reset", None)
     next_eligible = next_reset(now) if callable(next_reset) else None
     return {
@@ -699,6 +718,13 @@ def account_to_api(account: Any, *, now: datetime | None = None) -> dict[str, An
         #: its place, so a reader can tell a named account from an unnamed one.
         #: Display text only. `getattr` for the same reason as `model_classes`.
         "display_name": getattr(account, "display_name", None),
+        #: Which organisation -- which SUBSCRIPTION -- the credential runs on
+        #: (#2222): its display name and plan as the provider gave them, or
+        #: null when the provider has not said. NEVER the identity itself.
+        "organisation": _organisation_to_api(account),
+        #: The other account registered on the same organisation, or null.
+        #: Both of a pair carry it; the newer one is also in `blocked_by`.
+        "duplicate_of": duplicate_of,
         "assigned": account.assigned,
         #: How many agents may hold it at once (#2222).
         "max_agents": max_agents,
@@ -757,6 +783,108 @@ def account_to_api(account: Any, *, now: datetime | None = None) -> dict[str, An
             else None
         ),
     }
+
+
+def _organisation_to_api(account: Any) -> dict[str, Any] | None:
+    """An account's organisation for a reader: name and plan, never the id."""
+    if not getattr(account, "organisation_id", None):
+        return None
+    return {
+        "name": getattr(account, "organisation_name", None),
+        "plan": getattr(account, "organisation_plan", None),
+    }
+
+
+def organisation_line(account_id: str, organisation: Organisation | None) -> str:
+    """What an add or replace answer says it registered (#2222).
+
+    "registered eng:saga-team: organisation Personal (Max)" -- so a sign-in
+    that authorised the wrong organisation shows at once, in the answer, not
+    two days later in the week's figures.
+    """
+    if organisation is None:
+        return (
+            f"registered {account_id}: the provider did not say which "
+            "organisation this credential runs on"
+        )
+    name = organisation.name or "(unnamed)"
+    plan = organisation.plan or "plan not reported"
+    return f"registered {account_id}: organisation {name} ({plan})"
+
+
+def refuse_duplicate_organisation(
+    accounts: Any, organisation: Organisation | None, account_id: str
+) -> None:
+    """Refuse an add whose organisation another account already runs on (#2222).
+
+    ANY LABEL AND ANY OWNER: one organisation is one subscription, and two
+    pool accounts on it count its quota twice and could hand it twice the
+    agents the cap allows. The account being REPLACED is not "another": a
+    re-sign-in of the same organisation onto the same account is the normal
+    way to replace a credential. Raised before any secret is written.
+    """
+    if organisation is None:
+        return
+    for other in accounts:
+        if other.account_id == account_id:
+            continue
+        if other.organisation_id == organisation.identity:
+            raise BrokerValidationError(
+                f"this sign-in authorised organisation "
+                f"{organisation.name or '(unnamed)'} "
+                f"({organisation.plan or 'plan not reported'}), which is "
+                f"already registered as {other.label}. One organisation is one "
+                "subscription, so it was not registered twice. If you meant "
+                "another organisation, select it on claude.ai and sign in "
+                "again. Nothing was registered."
+            )
+
+
+def mark_duplicates(store: Any) -> list[str]:
+    """Write `duplicate_of` on every account that shares an organisation, and
+    clear it on every account that no longer does. Returns the ids marked.
+
+    Run after every refresh sweep and every add, so a pair registered before
+    #2222 is found at its next exchange, and an account re-signed into its
+    own organisation is released the moment it is. Never raises: a listing
+    or a write that fails leaves the marks as they were, for the next pass.
+    Logs account ids only, never an identity.
+    """
+    try:
+        accounts = store.list()
+    except Exception as exc:
+        log.error("could not list accounts to find duplicates",
+                  extra={"error": type(exc).__name__})
+        return []
+    found = duplicates(accounts)
+    marked: list[str] = []
+    for account in accounts:
+        other, withheld = found.get(account.account_id, (None, False))
+        current = (
+            getattr(account, "duplicate_of", None),
+            getattr(account, "duplicate_withheld", False),
+        )
+        if current == (other, withheld):
+            if other is not None:
+                marked.append(account.account_id)
+            continue
+        try:
+            store.set_duplicate(account.account_id, other, withheld)
+        except Exception as exc:
+            log.error(
+                "could not record an account's duplicate mark",
+                extra={"account_id": account.account_id, "error": type(exc).__name__},
+            )
+            continue
+        if other is not None:
+            marked.append(account.account_id)
+            log.warning(
+                "two pool accounts run on one organisation; only the older "
+                "registration is handed out",
+                extra={"account_id": account.account_id, "duplicate_of": other,
+                       "withheld": withheld},
+            )
+    return marked
 
 
 #: One DocumentSnapshot out of a Firestore transactional get -- see
@@ -1296,8 +1424,12 @@ def _attempt_hold(
 
 def _raw_assignable(data: dict[str, Any], tenant_id: str) -> bool:
     """Whether a raw document may take a NEW agent for this tenant right now."""
-    return data.get("state", AccountState.AVAILABLE.value) == AccountState.AVAILABLE.value and (
-        _raw_may_serve(data, tenant_id)
+    return (
+        data.get("state", AccountState.AVAILABLE.value) == AccountState.AVAILABLE.value
+        and _raw_may_serve(data, tenant_id)
+        # A later registration of an organisation another account holds
+        # (#2222): never handed out, re-checked where the hold commits.
+        and data.get("duplicate_withheld") is not True
     )
 
 
@@ -1314,6 +1446,10 @@ def _raw_has_room(data: dict[str, Any], live: list[Hold]) -> bool:
         cap = max_agents_from_firestore(data.get("max_agents"))
     except ValueError:
         return False
+    if data.get("observed_at") is None:
+        # ONE UNTIL MEASURED (#2222), re-checked here for the reason the cap
+        # is: two assigns racing for a never-observed account's one slot.
+        cap = min(cap, MAX_AGENTS_BEFORE_READING)
     return len(live) < cap
 
 
@@ -1931,6 +2067,9 @@ def _sweep_account_pool(
     # is the ACCOUNT ID because that is what the sweep hands the refresher
     # above -- never the label, which two tenants may share.
     recorded = _record_refreshes(store, outcomes, now)
+    # AND WHICH ACCOUNTS NOW SHARE AN ORGANISATION (#2222), from what the
+    # exchanges above just recorded.
+    duplicate_accounts = mark_duplicates(store)
 
     needs_human = [
         (o.tenant_id, o.reason)
@@ -2036,6 +2175,8 @@ def _sweep_account_pool(
         ],
         #: ACCOUNT IDS a running agent held, left unrefreshed this tick (#626).
         "held_deferred": [o.tenant_id for o in outcomes if o.reason == "held_deferred"],
+        #: ACCOUNT IDS on an organisation another account is also on (#2222).
+        "duplicates": duplicate_accounts,
     }
 
 
@@ -2053,6 +2194,7 @@ def _record_refreshes(store: Any, outcomes: Any, now: datetime) -> int:
                 at=now,
                 reason=outcome.reason,
                 expires_at=outcome.expires_at,
+                organisation=getattr(outcome, "organisation", None),
             ):
                 written += 1
         except Exception as exc:
@@ -2780,6 +2922,7 @@ def create_app(
         lend_to: list[str],
         credential_payload: str,
         access_token: str,
+        organisation: Organisation | None = None,
     ) -> Any:
         """Create both secrets, bind their readers, then publish the account.
 
@@ -2802,6 +2945,11 @@ def create_app(
             base = secret_name(owner_tenant, label)
         except AccountError as exc:
             raise BrokerValidationError(str(exc)) from None
+        # ONE ORGANISATION, ONE ACCOUNT (#2222), refused before any secret is
+        # written, so a refusal leaves nothing behind.
+        refuse_duplicate_organisation(
+            store.list(), organisation, f"{owner_tenant}:{label}"
+        )
         labels = {
             "managed-by": "swarm-secrets",
             "component": "swarm-account",
@@ -2905,7 +3053,13 @@ def create_app(
         # direction to be wrong in.
         if account.state is AccountState.REAUTH_REQUIRED:
             account = store.clear_reauth_required(account.account_id) or account
-        return account
+        # WHICH ORGANISATION THIS CREDENTIAL RUNS ON (#2222), recorded with the
+        # account; a replaced credential records its own, which is how a
+        # re-sign-in into the right organisation clears a duplicate mark.
+        if organisation is not None:
+            account = store.record_organisation(account.account_id, organisation) or account
+        mark_duplicates(store)
+        return store.get(account.account_id) or account
 
     # ------------------------------------------------------------------
     # Adding an account from a browser
@@ -3096,6 +3250,11 @@ def create_app(
             credential = credential_from_token_response(payload)
         except CredentialError as exc:
             raise BrokerValidationError(str(exc)) from None
+        # The organisation the person's sign-in AUTHORISED -- which is the one
+        # selected on claude.ai, not necessarily the one they meant (#2222).
+        organisation = read_organisation(
+            payload, request.app.state.token_endpoint, credential.access_token
+        )
         account = _provision_and_register(
             request,
             store=store,
@@ -3112,6 +3271,7 @@ def create_app(
                 }
             ),
             access_token=credential.access_token,
+            organisation=organisation,
         )
         # Single-use, and deleted only once the account exists: a failure above
         # leaves the pending record so the person can paste again rather than
@@ -3119,6 +3279,9 @@ def create_app(
         ref.delete()
         return {
             "account": account_to_api(account),
+            #: What was registered, in words and as fields (#2222).
+            "registered": organisation_line(account.account_id, organisation),
+            "organisation": _organisation_to_api(account),
             "expires_at": credential.expires_at.isoformat(),
             "note": "stored write-only; no route in this service returns key material",
         }
@@ -3145,6 +3308,14 @@ def create_app(
         except CredentialError as exc:
             raise BrokerValidationError(str(exc)) from None
 
+        # A pasted credential carries no token response, so its organisation
+        # is the profile's to say (#2222); a deployment without the endpoint
+        # registers it with none.
+        organisation = read_organisation(
+            None,
+            getattr(request.app.state, "token_endpoint", None),
+            credential.access_token,
+        )
         account = _provision_and_register(
             request,
             store=store,
@@ -3155,10 +3326,13 @@ def create_app(
             lend_to=body.lend_to,
             credential_payload=body.credential,
             access_token=credential.access_token,
+            organisation=organisation,
         )
 
         return {
             "account": account_to_api(account),
+            "registered": organisation_line(account.account_id, organisation),
+            "organisation": _organisation_to_api(account),
             "expires_at": credential.expires_at.isoformat(),
             "note": "stored write-only; no route in this service returns key material",
         }
@@ -3394,6 +3568,7 @@ def create_app(
                 at=datetime.now(timezone.utc),
                 reason=str(result.get("reason") or ""),
                 expires_at=getattr(outcome, "expires_at", None),
+                organisation=getattr(outcome, "organisation", None),
             )
         except Exception as exc:
             log.error(
@@ -3421,6 +3596,7 @@ def create_app(
             # ACCESS token has hours left; it never presents the refresh token,
             # so it is silent about the half that died.
             store.clear_reauth_required(account_id)
+        mark_duplicates(store)
         return {"refresh": result, "account": account_to_api(store.get(account_id))}
 
     @app.delete("/v1/accounts/{account_id}")

@@ -1916,6 +1916,11 @@ def cmd_account_add(client: SwarmClient, args, out) -> int:
     out.write(f"label       {account.get('label') or '(not reported)'}\n")
     out.write(f"account     {account.get('account_id') or '(not reported)'}\n")
     out.write(f"state       {account.get('state') or '(not reported)'}\n")
+    # WHICH ORGANISATION THE SIGN-IN AUTHORISED (#2222): the selected one on
+    # claude.ai, which may not be the one meant. Said here so a wrong pick
+    # shows at once rather than in the week's figures two days later.
+    registered = created.get("registered") if isinstance(created, dict) else None
+    out.write(f"{registered or 'registered: (organisation not reported)'}\n")
     if isinstance(created, dict) and created.get("note"):
         out.write(f"note        {created['note']}\n")
     return EXIT_OK

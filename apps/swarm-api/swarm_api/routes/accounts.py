@@ -295,6 +295,7 @@ def register_account(
     )
     return {
         "account": result.get("account"),
+        **_registered(result),
         "expires_at": result.get("expires_at"),
         "note": (
             "stored write-only; no read path in this API can return key material"
@@ -364,8 +365,33 @@ def finish_sign_in(
     )
     return {
         "account": result.get("account"),
+        **_registered(result),
         "expires_at": result.get("expires_at"),
         "note": "stored write-only; no read path in this API can return key material",
+    }
+
+
+def _registered(result: dict) -> dict[str, Any]:
+    """WHICH ORGANISATION THE ADD REGISTERED (#2222), by allow-list.
+
+    A sign-in authorises whichever organisation is selected on claude.ai, so
+    an answer that says only "registered eng:saga-team" hid that it was the
+    Personal subscription a second time. The broker's sentence and the
+    organisation's name and plan -- never its identity -- pass through; an
+    older broker that sends neither reads as not reported.
+    """
+    line = result.get("registered")
+    org = result.get("organisation")
+    return {
+        "registered": line if isinstance(line, str) and line else None,
+        "organisation": (
+            {
+                "name": org.get("name") if isinstance(org.get("name"), str) else None,
+                "plan": org.get("plan") if isinstance(org.get("plan"), str) else None,
+            }
+            if isinstance(org, dict)
+            else None
+        ),
     }
 
 

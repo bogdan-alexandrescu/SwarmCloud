@@ -290,6 +290,16 @@ class AccountStore:
                 # CARRIED OVER, for the reason the classes are: re-registering
                 # must not lift a cap its owner lowered (#2222).
                 max_agents=current.max_agents,
+                # CARRIED OVER, for the reason the holds are (#2222): changing
+                # who an account is lent to must not forget which organisation
+                # it runs on, or a duplicate would go unseen until the next
+                # refresh. A new sign-in records its own right after this.
+                organisation_id=current.organisation_id,
+                organisation_name=current.organisation_name,
+                organisation_plan=current.organisation_plan,
+                registered_at=current.registered_at,
+                duplicate_of=current.duplicate_of,
+                duplicate_withheld=current.duplicate_withheld,
                 # PRESERVED, never re-derived. An account registered before the
                 # naming rule changed keeps pointing at the secret that holds
                 # its credential; re-deriving here would orphan it on the next
@@ -306,6 +316,9 @@ class AccountStore:
             provider=provider,
             lend_to=lend,
             secret_ref=secret_name(owner_tenant, label),
+            # Which of two registrations of one organisation is the older
+            # (`accounts.duplicates`, #2222).
+            registered_at=self._now(),
         )
         ref.set(account.to_firestore())
         return account
@@ -516,6 +529,7 @@ class AccountStore:
         at: datetime,
         reason: str,
         expires_at: datetime | None,
+        organisation: Any = None,
     ) -> bool:
         """Write what the refresh sweep did with this account. False if it is gone.
 
@@ -525,7 +539,9 @@ class AccountStore:
         `token_expires_at` is written only when the outcome carries one. A
         failed exchange says nothing about when the stored token expires, and
         blanking a known expiry on every failure would hide exactly the figure
-        an operator needs while it is failing.
+        an operator needs while it is failing. `organisation` likewise (#2222):
+        written only when the exchange named one, so a refresh that could not
+        say never erases what an earlier one recorded.
         """
         ref = self._db.collection(COLLECTION).document(account_id)
         snap = ref.get()
@@ -535,7 +551,42 @@ class AccountStore:
         payload: dict[str, Any] = {"last_refresh_at": at, "last_refresh_reason": reason}
         if expires_at is not None:
             payload["token_expires_at"] = expires_at
+        if organisation is not None:
+            payload["organisation_id"] = organisation.identity
+            payload["organisation_name"] = organisation.name
+            payload["organisation_plan"] = organisation.plan
         ref.update(payload)
+        return True
+
+    def record_organisation(self, account_id: str, organisation: Any) -> Account | None:
+        """Write which organisation this account's credential runs on (#2222).
+
+        `organisation` is an `oauth.Organisation`: an opaque identity, never
+        the provider's id, and its display name and plan. None for an account
+        that is gone.
+        """
+        ref = self._db.collection(COLLECTION).document(account_id)
+        if not getattr(ref.get(), "exists", False):
+            return None
+        ref.update(
+            {
+                "organisation_id": organisation.identity,
+                "organisation_name": organisation.name,
+                "organisation_plan": organisation.plan,
+            }
+        )
+        return self.get(account_id)
+
+    def set_duplicate(self, account_id: str, duplicate_of: str | None, withheld: bool) -> bool:
+        """Mark (or clear) this account as one of a pair on one organisation.
+
+        False when the account is gone. Written by the broker from
+        `accounts.duplicates`, never by a caller.
+        """
+        ref = self._db.collection(COLLECTION).document(account_id)
+        if not getattr(ref.get(), "exists", False):
+            return False
+        ref.update({"duplicate_of": duplicate_of, "duplicate_withheld": bool(withheld)})
         return True
 
     def secret_for(self, account: Account) -> str:
