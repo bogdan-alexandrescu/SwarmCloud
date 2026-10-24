@@ -312,7 +312,7 @@ table.t.fx .tn{white-space:normal}
 <div class="idea">
 <div><h3>Idea</h3><p>Config reads like a settings application. The panel lists the pages. Each page is one column, at most 860px wide, of titled groups: lists and small tables, quiet and dense, with each row's actions at its right edge. Secrets is one page. A scope tab bar (Workspace · Yours · Repository) sits at the top. The Repository scope adds a repository picker and an Agents | GitHub Actions switch, and under them sit the grouped tables (For agents · QA sign-ins · GitHub). Every value is set in a side sheet, the one-time form. Platform counts' Over time is a compact chart over its table. Admin uses the same page grammar, so an admin learns one layout.</p></div>
 <div><h3>Pros</h3><ul><li>One grammar for every page (head, then groups, then rows with actions at the right), so the new pages and the moved ones look like one product.</li><li>The single column keeps long pages readable and lets them collapse to a phone without a second design. Rows wrap and tables become label and value pairs.</li><li>A side sheet keeps the page in view while a value is typed, and it is the only place a value is ever entered.</li><li>Scope tabs make the override order visible: one name, three scopes, and the row says which value wins.</li></ul></div>
-<div><h3>Risks</h3><ul><li>Dense and quiet means little hierarchy. A broken state (an expired token, an "any branch" environment) must earn its place with a mark and a callout, and the frames do that.</li><li>The Secrets page grows long in the Workspace scope. Groups help, but there is no in-page index.</li><li>The column leaves the right half of a 1440 screen empty on most pages. That is deliberate (reading width), but a wide Platform counts table may want more.</li><li>BGD's rule shows Config › People and roles to admins only. Today every member can read roles (workspace-roles.md Q7), so members lose a read they have now.</li></ul></div>
+<div><h3>Risks</h3><ul><li>Dense and quiet means little hierarchy. A broken state (an expired token, an "any branch" environment) must earn its place with a mark and a callout, and the frames do that.</li><li>The Secrets page grows long in the Workspace scope. Groups help, but there is no in-page index.</li><li>The column leaves the right half of a 1440 screen empty on most pages. That is deliberate (reading width), but a wide Platform counts table may want more.</li><li>Config › People and roles is read by every member of a group workspace and changed only by its admins (BGD, 2026-10-24 00:31Z), so the page is drawn twice, with and without its controls, and the two must not drift apart.</li></ul></div>
 </div>
 
 <ul class="toc">
@@ -322,12 +322,12 @@ table.t.fx .tn{white-space:normal}
 <h2 class="s" id="s1"><span class="n">S1</span>Navigation: Config in the spine and panel, by role</h2>
 <p>The spine gains <b>Config</b> between Capacity and Admin. <b>Admin</b> is drawn only for an admin. <b>Settings</b> keeps only Profile, reached from the avatar at the foot of the spine and the Settings link in the panel foot. The panel foot also carries the light / dark / system toggle (PICKS.md). Config lists its six pages. Repositories has QA targets beneath it, and Workspace Settings has Workspace setup beneath it.</p>
 <div class="frames">
-<figure><div class="scroller"><div data-f="s1-navs"></div></div><figcaption><b>S1 · desktop.</b> Four roles side by side, spine and panel only (the page bodies are S2 to S10). <b>1. Platform admin, Admin open:</b> the Workspaces group (People and roles, Workspaces you admin) and the Platform group (Pool limits, Runner sizes, Tenants, Platform counts, Platform secrets). Under <b>In Automate</b> are two links out, Schedules, all workspaces and Approvals: they open Automate's own pages, and no Admin tab draws them (BGD, 2026-10-23 23:57Z). <b>2. Workspace admin, Admin open:</b> only People and roles and Workspaces you admin, for the workspaces they admin, and the same two links to Automate. <b>3. Member of the group workspace eng, Config open:</b> no Admin in the spine, and no People and roles in Config. <b>4. Personal workspace, Config open:</b> no People and roles, and a line under the list says why.</figcaption></figure>
+<figure><div class="scroller"><div data-f="s1-navs"></div></div><figcaption><b>S1 · desktop.</b> Four roles side by side, spine and panel only (the page bodies are S2 to S10). <b>1. Platform admin, Admin open:</b> the Workspaces group (People and roles, Workspaces you admin) and the Platform group (Pool limits, Runner sizes, Tenants, Platform counts, Platform secrets). Under <b>In Automate</b> are two links out, Schedules, all workspaces and Approvals: they open Automate's own pages, and no Admin tab draws them (BGD, 2026-10-23 23:57Z). <b>2. Workspace admin, Admin open:</b> only People and roles and Workspaces you admin, for the workspaces they admin, and the same two links to Automate. <b>3. Member of the group workspace eng, Config open:</b> no Admin in the spine. People and roles is listed: a member (and a viewer) reads it, without its change controls (S5). <b>4. Personal workspace, Config open:</b> no People and roles, and a line under the list says why.</figcaption></figure>
 </div>
 <div class="phones">
 <figure><div data-f="s1-ph-platform"></div><figcaption><b>S1 · phone, platform admin.</b> The header is in the spine colour, and the menu opens the spine and panel as a drawer. Shown here: Config in the group workspace eng, all six pages.</figcaption></figure>
 <figure><div data-f="s1-ph-wsadmin"></div><figcaption><b>S1 · phone, workspace admin.</b> Admin is open, with only the two pages for the workspaces they admin.</figcaption></figure>
-<figure><div data-f="s1-ph-member"></div><figcaption><b>S1 · phone, member.</b> No Admin in the spine, and five Config pages.</figcaption></figure>
+<figure><div data-f="s1-ph-member"></div><figcaption><b>S1 · phone, member.</b> No Admin in the spine, and all six Config pages, People and roles among them (read only).</figcaption></figure>
 </div>
 
 <h2 class="s" id="s2"><span class="n">S2</span>Config › GitHub access</h2>
@@ -372,13 +372,15 @@ table.t.fx .tn{white-space:normal}
 <p>MCP servers and this workspace's People and roles move from Settings into Config. Their bodies are today's, drawn briefly in this proposal's style. Admin › People and roles is the cross-workspace view (today's Admin › People, renamed), scoped by the viewer's role.</p>
 <div class="frames">
 <figure><div class="scroller"><div data-f="s5-mcp"></div></div><figcaption><b>S5 · Config › MCP servers, desktop.</b> The registered servers. A stored credential links to its row in Secrets. "Last used" is a dash with its reason, because the API does not say.</figcaption></figure>
-<figure><div class="scroller"><div data-f="s5-people"></div></div><figcaption><b>S5 · Config › People and roles, desktop.</b> eng only: the default role, its people and their roles, and role events. Shown in a group workspace, to its admins. A personal workspace has no such page (S1, frame 4).</figcaption></figure>
+<figure><div class="scroller"><div data-f="s5-people"></div></div><figcaption><b>S5 · Config › People and roles, workspace admin or platform admin, desktop.</b> eng only: the default role, its people and their roles, and role events, with the change controls (Change the default role, Add a person, Change role, Remove). Every member of a group workspace reads this page; only its admins change it (BGD, 2026-10-24 00:31Z). A personal workspace has no such page (S1, frame 4).</figcaption></figure>
+<figure><div class="scroller"><div data-f="s5-people-member"></div></div><figcaption><b>S5 · Config › People and roles, member, desktop.</b> The same page, read only: the default role, the roster with each person's role, and role events. No Add a person, no Change role, no Remove. A viewer sees exactly this.</figcaption></figure>
 <figure><div class="scroller"><div data-f="s5-admin-platform"></div></div><figcaption><b>S5 · Admin › People and roles, platform admin, desktop.</b> Every person and every workspace. The page has workspace requests waiting for you, each person's workspaces and roles, their ceiling and Claude account, platform admins, and recent admin actions. A filter row narrows it to one workspace.</figcaption></figure>
 <figure><div class="scroller"><div data-f="s5-admin-ws"></div></div><figcaption><b>S5 · Admin › People and roles, workspace admin, desktop.</b> Only eng and qa-lab, the workspaces they admin. There are no ceilings, no platform admins and no workspace requests: those are a platform admin's.</figcaption></figure>
 </div>
 <div class="phones">
 <figure><div data-f="s5-mcp-ph"></div><figcaption><b>S5 · MCP servers, phone.</b></figcaption></figure>
-<figure><div data-f="s5-people-ph"></div><figcaption><b>S5 · Config › People and roles, phone.</b></figcaption></figure>
+<figure><div data-f="s5-people-ph"></div><figcaption><b>S5 · Config › People and roles, admin, phone.</b></figcaption></figure>
+<figure><div data-f="s5-people-member-ph"></div><figcaption><b>S5 · Config › People and roles, member, phone.</b> Read only.</figcaption></figure>
 <figure><div data-f="s5-admin-platform-ph"></div><figcaption><b>S5 · Admin › People and roles, platform admin, phone.</b></figcaption></figure>
 <figure><div data-f="s5-admin-ws-ph"></div><figcaption><b>S5 · Admin › People and roles, workspace admin, phone.</b></figcaption></figure>
 </div>
@@ -455,10 +457,10 @@ table.t.fx .tn{white-space:normal}
 <li><b>Decided</b> (2026-10-23 23:57Z): Add a new workspace in Config › Workspace Settings is for platform admins only. A workspace admin sees their own workspaces' settings without it, and members keep Request a workspace (S6).</li>
 <li><b>Decided</b> (2026-10-23 23:57Z): Settings › API keys moves to Config › Secrets › Keys for agents and MCP, in the Workspace and Yours scopes, each set through the one-time form (S4). Settings keeps only Profile, and <code>/settings/keys</code> redirects.</li>
 <li><b>Decided</b> (2026-10-23, ~21:40Z): the tab is named Workspace Settings, exactly as BGD wrote it.</li>
+<li><b>Decided</b> (BGD, 2026-10-24 00:31Z): Config › People and roles in a group workspace is readable by every member and changeable only by admins. A member or a viewer sees the roster and each role read only; a workspace admin or a platform admin also sees the change controls. A personal workspace has no People and roles. Admin › People and roles stays admin-only and cross-workspace (S1, S5).</li>
 </ul>
 <p>Still open:</p>
 <ul>
-<li>What a member sees of Config › People and roles. This proposal draws no such page for a member (S1, frame 3): the page is shown to a group workspace's admins only, as BGD's rule of ~21:40Z reads. Today every member can read roles, so a member would lose that read. BGD has not answered this yet.</li>
 <li>Old addresses (<code>/access</code>, <code>/setup</code>, <code>/settings/workspace</code>, <code>/settings/workspace/secrets</code>, <code>/settings/mcp-servers</code>, <code>/admin/people</code>) redirect to their Config or Admin page. That is CONFIG-NAV's work and the same in every proposal.</li>
 <li><b>Create environment</b> turns on only after user-scoped-secrets step 5 (BGD, Q4). Until then the frames draw "Create on GitHub ↗" and Check rule.</li>
 </ul>
@@ -530,7 +532,7 @@ function panel(c){var w=WS[c.ws||'group'],r=ROLE[c.role],h='';
     h+=pk('repo','Repositories',c.page==='repos',['QA targets'],c.page==='repos'?c.kid:null);
     h+=pk('key','Secrets',c.page==='secrets');
     h+=pk('plug','MCP servers',c.page==='mcp');
-    if(c.ws!=='personal'&&c.role!=='member')h+=pk('people','People and roles',c.page==='people');
+    if(c.ws!=='personal')h+=pk('people','People and roles',c.page==='people');
     h+=pk('ws','Workspace Settings',c.page==='ws',['Workspace setup'],c.page==='ws'?c.kid:null);
     if(c.ws==='personal')h+='<p class="pnote">People and roles is a page of group workspaces only. This one is yours alone.</p>';
   } else if(c.sec==='admin'){
@@ -616,18 +618,17 @@ var ORDER='When one name is set in several scopes, the person\'s value wins on t
 function setBtns(del){return b('Set new value')+(del===false?'':b('Delete','ghost dng'))}
 P.secWs=function(){
  /* a grid on a desktop; on a phone each secret is a block of label and value pairs, so no column is cut off */
- var matrix=tbl(['Secret','claude-code','codex','visual-qa','mcp: linear'],
-  [['SENTRY_DSN',1,1,0,0],['NPM_READ',1,1,1,0],['LINEAR_MCP',0,0,0,1]].map(function(r){return ['<span class="mono">'+r[0]+'</span>'].concat(r.slice(1).map(function(v){return v?tn('ok','yes'):'<span class="dash">no</span>'}))}));
+ var matrix=tbl(['Secret','claude-code','visual-qa','mcp: linear'],
+  [['SENTRY_DSN',1,0,0],['NPM_READ',1,1,0],['LINEAR_MCP',0,0,1]].map(function(r){return ['<span class="mono">'+r[0]+'</span>'].concat(r.slice(1).map(function(v){return v?tn('ok','yes'):'<span class="dash">no</span>'}))}));
  return secHead()+tabs(SCOPES,0)+'<p class="note">'+ORDER+'</p>'+
  grp('For agents','Released to an attempt only through a grant below.',tbl(['Name','Updated','Last released',''],[
    ['<span class="mono">SENTRY_DSN</span>'+chip(ic('info')+'Operator\'s own value wins on Operator\'s agents','ov')+' '+chip('acme/web-app has its own','ov'),'<span class="nw">3 days ago</span><small>Rin Okafor</small>',dash('the API does not say yet'),setBtns()],
    ['<span class="mono">NPM_READ</span>','<span class="nw">12 days ago</span><small>Operator</small>',dash('the API does not say yet'),setBtns()],
    ['<span class="mono">LINEAR_MCP</span><small>credential of the MCP server linear</small>','<span class="nw">20 days ago</span><small>Operator</small>',dash('the API does not say yet'),setBtns()]]),b('Add a secret','pri'))+
  grp('Grants','Which runner profiles and MCP servers receive each secret.',matrix,b('Edit grants'))+
- grp('Keys for agents and MCP','The workspace\'s keys: provider keys, TypeSafe and stored MCP credentials, moved here from Settings › API keys. Each Set opens the one-time form.',tbl(['Key','Used by','State',''],[
+ grp('Keys for agents and MCP','The workspace\'s keys: the provider key, TypeSafe and stored MCP credentials, moved here from Settings › API keys. Each Set opens the one-time form.',tbl(['Key','Used by','State',''],[
    ['TypeSafe key <small>workspace</small>','Every agent in eng, unless a person set their own',tn('ok','set')+'<small>5 days ago · Operator</small>',setBtns()],
    ['Anthropic API key <small>runner LLM</small>','Runners that bill to a key',tn('ok','set')+'<small>41 days ago · Rin Okafor</small>',setBtns()],
-   ['OpenAI API key <small>runner LLM</small>','The codex runner',tn('neu','not set'),b('Set','pri')],
    ['MCP server linear','Stored as LINEAR_MCP above',tn('ok','set')+'<small>20 days ago</small>',b('Open in For agents','ghost')],
    ['Claude subscription accounts','Pool accounts, held by the quota broker','<span>6 accounts</span>',b('Capacity › Accounts '+ic('chev'),'ghost')]]))+
  grp('GitHub','Status only. Connecting is on GitHub access.',list([row('Workspace token','GitHub App installation on acme · verified 1 h ago',tn('ok','active')+dash('no expiry: minted per use'),b('GitHub access '+ic('chev'),'ghost'))]))};
@@ -680,14 +681,16 @@ P.mcp=function(){return head(CR+'MCP servers','MCP servers','Servers a task can 
    ['linear','app.example.com/mcp/linear','stored · LINEAR_MCP in Secrets',dash('this API does not say'),b('Edit')+b('Remove','ghost dng')],
    ['docs-search','app.example.com/mcp/docs','none needed',dash('this API does not say'),b('Edit')+b('Remove','ghost dng')],
    ['sentry','swarm.example.com/mcp/sentry','set at submission, per agent',dash('this API does not say'),b('Edit')+b('Remove','ghost dng')]]))};
-P.people=function(){return head(CR+'People and roles','People and roles','eng\'s people and their roles. Shown to eng\'s admins.')+
- grp('Default role','',list([row('New members join as','Applies to people added after a change','<span>Member</span>',b('Change'))]))+
- grp('People','',tbl(['Person','Role','Since',''],[
-   ['Operator <small>operator@example.com</small>','Admin','2 Sep',b('Change role')],
-   ['Rin Okafor <small>rin@example.com</small>','Admin','4 Sep',b('Change role')+b('Remove','ghost dng')],
-   ['Sam Patel <small>sam@example.com</small>','Member','19 Sep',b('Change role')+b('Remove','ghost dng')],
-   ['Jo Lindqvist <small>jo@example.com</small>','Viewer','2 Oct',b('Change role')+b('Remove','ghost dng')]]),b('Add a person','pri'))+
- grp('Role events','',list([row('Operator made Jo Lindqvist a Viewer','2 Oct, 14:20'),row('Rin Okafor changed the default role to Member','28 Sep, 09:02')]))};
+P.people=function(role){var adm=role!=='member';var ch=function(x){return adm?x:''};
+ return head(CR+'People and roles','People and roles',adm?'eng\'s people and their roles. Every member of eng reads this page; only its admins change it.':'eng\'s people and their roles. You can read this; an admin of eng changes it.')+
+ grp('Default role','',list([row('New members join as','Applies to people added after a change','<span>Member</span>',ch(b('Change')))]))+
+ grp('People',adm?'':'4 people. Your role: Member.',tbl(['Person','Role','Since',''],[
+   /* the member frame's Operator is the member reading the page, as its panel foot and S6's member frame say */
+   ['Operator <small>'+(adm?'operator@example.com':'you · operator@example.com')+'</small>',adm?'Admin':'Member','2 Sep',ch(b('Change role'))],
+   ['Rin Okafor <small>rin@example.com</small>','Admin','4 Sep',ch(b('Change role')+b('Remove','ghost dng'))],
+   ['Sam Patel <small>sam@example.com</small>','Member','19 Sep',ch(b('Change role')+b('Remove','ghost dng'))],
+   ['Jo Lindqvist <small>jo@example.com</small>','Viewer','2 Oct',ch(b('Change role')+b('Remove','ghost dng'))]]),ch(b('Add a person','pri')))+
+ grp('Role events','',list([row((adm?'Operator':'Rin Okafor')+' made Jo Lindqvist a Viewer','2 Oct, 14:20'),row('Rin Okafor changed the default role to Member','28 Sep, 09:02')]))};
 P.adminPeoplePlatform=function(){return head('Admin › People and roles','People and roles','Every person and every workspace on this platform.')+
  '<div class="bar-row"><span class="inp">'+ic('search')+'Search people</span>'+sel('All workspaces')+'</div>'+
  grp('Waiting for you','Workspace requests.',list([row('Kai Moreau asks for a group workspace, data-lab','kai@example.com · asked 3 h ago','',b('Approve','pri')+b('Deny','ghost dng'))]))+
@@ -720,9 +723,9 @@ P.ws=function(role){role=role||'platform';var adm=role!=='member';
  return head(CR+'Workspace Settings','Workspace Settings','eng · group workspace')+
  grp('Settings',adm?'':'You can read these. An admin of eng changes them.',list([row('Name','eng','',adm?b('Rename'):''),row('Workspace id','<span class="mono">eng</span>','',b('Copy','ghost')),row('Kind','Group workspace'),row('Your role',adm?'Admin':'Member')]))+
  grp('Code intelligence','Off by default. When on, the repository index is used to choose context and tests; nothing leaves the platform until you turn it on.',list([row('Code intelligence','',tn('neu','off'),adm?b('Turn on'):'<span class="dash">an admin turns it on</span>')]))+
- grp('Workspace setup','The checklist Overview shows until every step is done. 6 of 7 done.',list([
-   st('Request your workspace',true),st('Add a Claude account',true),st('Connect GitHub',true,'@operator-gh'),st('Install the App',true,'on acme and operator-gh'),st('Enable orgs',true),st('Choose repositories',true,'4 chosen'),
-   st('Verify access','warn','operator-gh/notes has not been checked yet.',b('Verify','pri'))]),'<span class="dash">Hidden from Overview</span>'+b('Show on Overview'))+
+ grp('Workspace setup','The checklist Overview shows until every required step is done. 6 of 8 required done · 1 optional (Request your workspace).',list([
+   st('Sign in',true,'operator@example.com · tenant eng'),st('Request your workspace <small>optional</small>',true),st('Add a Claude account',true),st('Connect GitHub',true,'@operator-gh'),st('Install the App',true,'on acme and operator-gh'),st('Enable orgs',true),st('Choose repositories',true,'4 chosen'),
+   st('Verify access','warn','operator-gh/notes has not been checked yet.',b('Verify','pri')),st('Ready',false,'waits for Verify access')]),'<span class="dash">Hidden from Overview</span>'+b('Show on Overview'))+
  grp('Your workspaces',role==='platform'?'As a platform admin you may add a workspace, as on Admin › Tenants.':'Adding a workspace is a platform admin\'s. Request a workspace asks one.',list(mine),wsFoot)};
 var NEW_BODY='<div class="lbl">Kind</div>'+seg(['Personal','Group','Service'],1)+'<div class="lbl">Address</div><div class="inp">ml-research@example.com</div><div class="lbl">Display name (optional)</div><div class="inp">ML research</div>'+
  callout('A group gets its own namespace, service account, secrets prefix and default limits. As a platform admin you file it approved; a Service waits for the platform owner.')+
@@ -753,7 +756,9 @@ P.counts=function(ph){var tot={a:0,r:0,h:0,rep:0};DAYS.forEach(function(d){tot.a
   return [d.wd+' '+d.d,n(all),n(d.retry),n(d.hours),(all*1.41).toFixed(1)+' M',(all*0.22).toFixed(1)+' M',n(Math.round(all*9.8))+' M',(all*0.9).toFixed(1)+' M',(d.reported<all?'at least ':'')+'$'+n(c)+(d.reported<all?'<small>'+d.reported+' of '+all+' reported</small>':'')]});
  var TOTC=0;DAYS.forEach(function(d){TOTC+=cost(d)});
  rows.push({cls:'tot',c:['14 days',n(tot.a),n(tot.r),n(tot.h),(tot.a*1.41/1000).toFixed(2)+' B',(tot.a*0.22).toFixed(0)+' M',(tot.a*9.8/1000).toFixed(1)+' B',(tot.a*0.9/1000).toFixed(2)+' B','at least $'+n(TOTC)+'<small>'+n(tot.rep)+' of '+n(tot.a)+' reported</small>']});
- var types=[['claude-code',0.58],['codex',0.21],['visual-qa',0.13],['review',0.08]];
+ var types=[['claude-code',0.74],['visual-qa',0.16],['review',0.10]];
+ /* each figure rounded, the last row takes the remainder, so the rows add up to the totals above */
+ var share=function(total,i){if(i<types.length-1)return Math.round(total*types[i][1]);var s=0;for(var k=0;k<types.length-1;k++)s+=Math.round(total*types[k][1]);return total-s};
  return head('Admin › Platform counts','Platform counts','Counted when you press Run, never on a timer.')+
  grp('Agents by state now','Counted 4 min ago by Operator.',tbl(['State','This workspace (eng)','Every workspace'],[['Running','12','31'],['Waiting (queued, parked, ready)','37','88'],['Succeeded today','64','201'],['Failed today','3','11']],{num:[1,2]}),b('Run it again · 24 reads'))+
  grp('Over time','By submission day. Read only when you press Run; this read is from 3 min ago.',
@@ -762,7 +767,7 @@ P.counts=function(ph){var tot={a:0,r:0,h:0,rep:0};DAYS.forEach(function(d){tot.a
   '<div class="chart"><div class="legend"><span><i style="background:var(--s1)"></i>First attempts</span><span><i style="background:var(--s2)"></i>Retries</span><span>Hover a day for its figures</span></div>'+chartSvg(ph)+'</div>'+
   tbl(['Day','Agents','Retries','Run hours','Tokens in','Tokens out','Cache read','Cache write','Estimated cost'],rows,{num:[1,2,3,4,5,6,7,8]})+
   '<div class="grp-h" style="margin-top:16px"><div class="t"><h4>By agent type, these 14 days</h4></div></div>'+
-  tbl(['Agent type','Agents','Retries','Run hours','Estimated cost'],types.map(function(t){return [t[0],n(Math.round(tot.a*t[1])),n(Math.round(tot.r*t[1])),n(Math.round(tot.h*t[1])),'at least $'+n(Math.round(TOTC*t[1]))]}),{num:[1,2,3,4]}),
+  tbl(['Agent type','Agents','Retries','Run hours','Estimated cost'],types.map(function(t,i){return [t[0],n(share(tot.a,i)),n(share(tot.r,i)),n(share(tot.h,i)),'at least $'+n(share(TOTC,i))]}),{num:[1,2,3,4]}),
   b('Run · about 140 reads','pri'))+
  grp('Platform ticks','',list([row('Quota tick','Recomputes provider quota state and adaptive pool targets.',tn('ok','ran 1 min ago')),row('Issue-run advance','Advances each tenant\'s issue runs nobody is reading.',tn('ok','ran 4 min ago')),row('GitHub token refresh','Refreshes GitHub user access tokens before they expire.',tn('warn','last ran 26 min ago, due every 15 min'))]))};
 
@@ -789,7 +794,7 @@ P.qaRun=function(){var col=function(env,host,state,kv,note){return '<div class="
 
 /* S10 */
 P.limits=function(){return head('Admin › Pool limits','Pool limits','The ceilings each family admits. A change opens the side editor with its impact and history.')+
- grp('Ceilings by family','',tbl(['Pool','Ceiling','Leased now','Headroom',''],[['Global','40','31','9',b('Edit')],['claude-code','24','19','5',b('Edit')],['codex','8','8',tn('warn','0'),b('Edit')],['visual-qa','6','4','2',b('Edit')]],{num:[1,2,3]}))+
+ grp('Ceilings by family','',tbl(['Pool','Ceiling','Leased now','Headroom',''],[['Global','40','31','9',b('Edit')],['claude-code','32','27','5',b('Edit')],['visual-qa','6','4','2',b('Edit')]],{num:[1,2,3]}))+
  grp('GitHub fallback token','Your own token for one owner, used where the App is not installed.',list([row('acme-labs','stored 12 days ago by Operator',tn('ok','set'),b('Set new value')+b('Delete','ghost dng'))]),b('Add for another owner'))+
  grp('Additional repositories','Repositories outside the App\'s installations that agents may still clone.',list([row('acme-labs/shared-config','via the fallback token · Read','',b('Remove','ghost dng'))]),b('Add'))+
  grp('Model prices','List prices per million tokens. Platform counts\' estimate uses these.',tbl(['Model','In','Out','Cache read','Cache write',''],[['claude-sonnet-5','$3.00','$15.00','$0.30','$3.75',b('Edit')],['claude-opus-5-5','$15.00','$75.00','$1.50','$18.75',b('Edit')]],{num:[1,2,3,4]}))};
@@ -822,7 +827,8 @@ both('s4-actions',C('secrets'),P.secActions,'Secrets');
 both('s4-sheet',C('secrets'),function(){return placeholder(CR+'Secrets','Secrets')},'Secrets',{sheet:P.secSheet,phSheet:P.secSheet});
 both('s4-empty',C('secrets'),P.secEmpty,'Secrets');
 both('s5-mcp',C('mcp'),P.mcp,'MCP servers');
-both('s5-people',C('people'),P.people,'People and roles');
+both('s5-people',C('people'),function(){return P.people('platform')},'People and roles');
+both('s5-people-member',C('people',{role:'member'}),function(){return P.people('member')},'People and roles');
 both('s5-admin-platform',C('apeople',{sec:'admin'}),P.adminPeoplePlatform,'People and roles');
 both('s5-admin-ws',C('apeople',{sec:'admin',role:'wsadmin'}),P.adminPeopleWs,'People and roles');
 both('s6',C('ws'),function(){return P.ws('platform')},'Workspace Settings');
