@@ -328,3 +328,32 @@ def test_unreadable_account_documents_still_serve_the_catalogue(api_context, db)
     body = response.json()
     assert body["accounts_unread"] is True
     assert len(body["secrets"]) == len(PLATFORM_SECRETS)
+
+
+def test_a_reader_that_cannot_build_its_client_reads_every_row_as_unreadable(api_context, monkeypatch):
+    """PLATFORM-SECRETS-500: with no Google credentials, building the Secret
+    Manager client raises google.auth's DefaultCredentialsError. The route
+    built its real reader (no test reader on app.state) and answered 500 for a
+    full admin (main run 40072080657, test_pool_admin_is_narrow). It must
+    answer 200 with every catalogue row unreadable, reason read_failed."""
+    from google.auth import exceptions as gauth
+    from google.cloud import secretmanager
+
+    built = []
+
+    def no_credentials(*args: Any, **kwargs: Any) -> Any:
+        built.append(1)
+        raise gauth.DefaultCredentialsError("no credentials in this test")
+
+    monkeypatch.setattr(secretmanager, "SecretManagerServiceClient", no_credentials)
+    http = TestClient(create_app(api_context), raise_server_exceptions=False)
+
+    response = http.get("/v1/admin/platform-secrets", headers=auth_header("root"))
+
+    # MUTATION: build the client outside the try again and this is a 500.
+    assert response.status_code == 200, response.text
+    rows = response.json()["secrets"]
+    assert len(rows) == len(PLATFORM_SECRETS)
+    assert {(r["status"], r["reason"]) for r in rows} == {("unreadable", "read_failed")}
+    # The control: the real constructor was reached, so this is not a test reader.
+    assert built
