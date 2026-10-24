@@ -262,11 +262,22 @@ def test_a_second_add_on_the_same_organisation_is_refused_naming_the_existing_la
     assert broker_app.state.secret_store.created == secrets_before
 
 
-def test_another_owner_on_the_same_organisation_is_refused_too(broker_app, broker_client):
+def test_another_owner_on_the_same_organisation_is_refused_naming_nothing_of_theirs(
+    broker_app, broker_client
+):
+    """BGD, 2026-10-24 17:26Z (Q2): "Name it only within the same tenant"."""
     org_id = _org_id()
     assert _add(broker_client, broker_app, _token_payload(org_id), label="mine").status_code == 201
     other = _add(broker_client, broker_app, _token_payload(org_id), owner=RESEARCH, label="theirs")
-    assert other.status_code == 422 and "mine" in other.json()["message"]
+    assert other.status_code == 422, other.text
+    message = other.json()["message"]
+    assert "already registered in another workspace" in message
+    # MUTATION: naming `other.label` whatever its tenant tells research what eng's pool holds.
+    for foreign in ("mine", "eng:", "eng ", organisation_identity(org_id), org_id, "Personal"):
+        assert foreign not in other.text, foreign
+    # The same add inside eng names the label, as before.
+    same = _add(broker_client, broker_app, _token_payload(org_id), owner=ENG, label="again")
+    assert same.status_code == 422 and "mine" in same.json()["message"]
 
 
 def test_one_login_with_two_organisations_is_two_accounts_and_neither_is_flagged(
@@ -385,7 +396,9 @@ def test_two_accounts_on_one_organisation_are_both_flagged_on_refresh(broker):
     listed = {a["label"]: a for a in (account_to_api(a, now=NOW) for a in by_id.values())}
     assert listed["team"]["duplicate_of"] == "eng:saga-personal"
     assert listed["team"]["can_take_new_agent"] is False
-    assert {"duplicate_of": "eng:saga-personal"} in listed["team"]["blocked_by"]
+    assert {"duplicate_of": "eng:saga-personal",
+            "reason": "registered on the same organisation as eng:saga-personal"} in listed[
+        "team"]["blocked_by"]
     assert listed["saga-personal"]["duplicate_of"] == "eng:team"
 
     # choose() offers only the older registration, however the headroom reads.
@@ -552,3 +565,365 @@ def test_swarm_api_names_the_organisation_and_carries_the_refusal(
     assert second.status_code == 422, second.text
     assert "saga-personal" in second.text
     assert org_id not in second.text + first.text
+
+
+# --------------------------------------------------------------------------
+# Another workspace's account is never named (BGD, Q2)
+# --------------------------------------------------------------------------
+#
+# "Name it only within the same tenant": a refusal, the listing's
+# `duplicate_of`, `blocked_by` and `possible_duplicate`, and swarm-api's proxy
+# name the other side of a pair only when the reader's tenant owns it. A
+# platform reader of the platform-wide listing sees both sides.
+
+
+class _TenantIdentity:
+    """A caller that IS a tenant, not the platform speaking for one."""
+
+    def __init__(self, tenant):
+        self.tenant = tenant
+
+    def resolve(self, authorization):
+        return self.tenant, False
+
+
+def _cross_tenant_pair(broker):
+    """eng:mine (older) and research:theirs (newer) on one organisation, marked."""
+    from quota_broker.main import mark_duplicates
+
+    clock = [NOW - timedelta(days=3), NOW - timedelta(hours=2)]
+    store = AccountStore(broker.db, now=lambda: clock.pop(0) if clock else NOW)
+    store.register(ENG, "mine")
+    store.register(RESEARCH, "theirs")
+    org_id = _org_id()
+    shared = organisation_from_payload(_token_payload(org_id))
+    store.record_organisation("eng:mine", shared)
+    store.record_organisation("research:theirs", shared)
+    assert sorted(mark_duplicates(store)) == ["eng:mine", "research:theirs"]
+    return store, org_id
+
+
+def _foreign_free(text, *names):
+    for name in names:
+        assert name not in text, name
+
+
+def test_the_listing_names_a_duplicate_only_to_its_own_tenant(broker_app, broker_client, broker):
+    _store, org_id = _cross_tenant_pair(broker)
+
+    research = broker_client.get("/v1/accounts", params={"tenant_id": RESEARCH})
+    assert research.status_code == 200, research.text
+    (theirs,) = research.json()["accounts"]
+    # MUTATION: serving `duplicate_of` unredacted names eng's account to research.
+    assert theirs["duplicate_of"] is None
+    assert theirs["duplicate_reason"] == (
+        "this subscription is already registered in another workspace")
+    assert theirs["can_take_new_agent"] is False
+    assert {"duplicate_of": None,
+            "reason": "this subscription is already registered in another workspace"} in theirs[
+        "blocked_by"]
+    _foreign_free(research.text, "mine", "eng:", organisation_identity(org_id), org_id)
+
+    # And the other way round: eng learns nothing of research's account either.
+    eng = broker_client.get("/v1/accounts", params={"tenant_id": ENG})
+    (mine,) = eng.json()["accounts"]
+    assert mine["duplicate_of"] is None and "another workspace" in mine["duplicate_reason"]
+    _foreign_free(eng.text, "theirs", "research")
+
+    # The platform-wide listing is the platform's, and names both sides.
+    everything = {a["account_id"]: a for a in broker_client.get("/v1/accounts").json()["accounts"]}
+    assert everything["research:theirs"]["duplicate_of"] == "eng:mine"
+    assert everything["eng:mine"]["duplicate_of"] == "research:theirs"
+
+
+def test_a_tenant_caller_reads_its_own_view_whatever_it_asks_for(broker_app, broker_client, broker):
+    _cross_tenant_pair(broker)
+    broker_app.state.identity = _TenantIdentity(RESEARCH)
+    # A tenant cannot widen its view by naming the platform-wide scope or eng.
+    for params in ({}, {"tenant_id": ENG}):
+        r = broker_client.get("/v1/accounts", params=params)
+        assert r.status_code == 200, r.text
+        assert [a["account_id"] for a in r.json()["accounts"]] == ["research:theirs"]
+        _foreign_free(r.text, "mine", "eng:")
+
+
+def test_a_lent_account_names_its_pair_only_to_the_tenant_that_owns_the_pair(broker):
+    from quota_broker.main import mark_duplicates
+
+    store = AccountStore(broker.db)
+    store.register(ENG, "mine", lend_to=[RESEARCH])
+    store.register(ENG, "copy")
+    shared = organisation_from_payload(_token_payload(_org_id()))
+    store.record_organisation("eng:mine", shared)
+    store.record_organisation("eng:copy", shared)
+    mark_duplicates(store)
+    lent = store.get("eng:mine")
+    # Research may run on eng:mine and sees it; it does not learn of eng:copy.
+    shown = account_to_api(lent, now=NOW, viewer=RESEARCH)
+    assert shown["duplicate_of"] is None
+    assert "copy" not in json.dumps(shown)
+    # Its owner does.
+    assert account_to_api(lent, now=NOW)["duplicate_of"] == "eng:copy"
+    assert account_to_api(lent, now=NOW, viewer=ENG)["duplicate_of"] == "eng:copy"
+    assert account_to_api(lent, now=NOW, platform_wide=True)["duplicate_of"] == "eng:copy"
+
+
+def test_swarm_api_shows_another_tenants_caller_no_label_even_from_an_unredacted_broker(
+    api_context
+):
+    """swarm-api's proxy is a second line: an older broker that sends the
+    other side's id unredacted still reaches bob (research) without it."""
+    from swarm_api.main import create_app as create_api
+
+    class _Pool:
+        def list_accounts(self, tenant_id):
+            return {"accounts": [{
+                "account_id": "research:theirs", "owner_tenant": RESEARCH, "label": "theirs",
+                "duplicate_of": "eng:mine",
+                "duplicate_reason": "registered on the same organisation as eng:mine",
+                "possible_duplicate": {"of": "eng:other", "reason": "identical readings on two polls"},
+                "blocked_by": [
+                    {"duplicate_of": "eng:mine",
+                     "reason": "registered on the same organisation as eng:mine"},
+                    {"possible_duplicate": "eng:other", "advisory": True,
+                     "reason": "identical readings on two polls with eng:other"},
+                    {"cap": 6, "max_agents": 6},
+                ],
+            }, {
+                "account_id": "research:own", "owner_tenant": RESEARCH, "label": "own",
+                "duplicate_of": "research:theirs",
+                "duplicate_reason": "registered on the same organisation as research:theirs",
+                "possible_duplicate": None,
+                "blocked_by": [{"duplicate_of": "research:theirs",
+                                "reason": "registered on the same organisation as research:theirs"}],
+            }]}
+
+    app = create_api(api_context)
+    app.state.account_pool = _Pool()
+    r = TestClient(app, raise_server_exceptions=False).get(
+        "/v1/accounts", headers=auth_header("bob"))
+    assert r.status_code == 200, r.text
+    theirs, own = r.json()["accounts"]
+    # MUTATION: forwarding `accounts` verbatim hands bob eng's labels.
+    _foreign_free(r.text, "eng:", "mine", "eng:other")
+    assert theirs["duplicate_of"] is None
+    assert theirs["duplicate_reason"] == (
+        "this subscription is already registered in another workspace")
+    assert theirs["possible_duplicate"] == {
+        "of": None,
+        "reason": "identical readings on two polls with an account in another workspace"}
+    assert theirs["blocked_by"][0] == {
+        "duplicate_of": None,
+        "reason": "this subscription is already registered in another workspace"}
+    assert theirs["blocked_by"][1]["possible_duplicate"] is None
+    assert theirs["blocked_by"][2] == {"cap": 6, "max_agents": 6}
+    # Its own tenant's pair is named, untouched.
+    assert own["duplicate_of"] == "research:theirs"
+    assert own["blocked_by"][0]["duplicate_of"] == "research:theirs"
+
+
+def test_sc_never_prints_a_duplicate_field():
+    """`sc` shows accounts through an allow-list (`render.public_account`)
+    that carries none of these fields, so it cannot name another tenant's
+    account; this holds it there."""
+    from swarm_mcp.render import public_account
+
+    shown = public_account({"account_id": "research:theirs", "label": "theirs",
+                            "duplicate_of": "eng:mine",
+                            "possible_duplicate": {"of": "eng:mine"},
+                            "duplicate_reason": "registered on the same organisation as eng:mine",
+                            "blocked_by": [{"duplicate_of": "eng:mine"}]})
+    assert "eng:mine" not in json.dumps(shown)
+
+
+# --------------------------------------------------------------------------
+# Identical readings on two polls: a possible duplicate (BGD, Q1)
+# --------------------------------------------------------------------------
+#
+# "Build it as a safety net": nothing has yet confirmed the provider returns
+# an organisation id, and without it the organisation check is inert. This
+# morning's real pair read identical figures with resets one second apart.
+
+
+FIVE_RESET = NOW + timedelta(hours=2, minutes=13)
+WEEK_RESET = NOW + timedelta(days=2, hours=5)
+
+
+def _reading(store, account_id, at, *, five=0.42, week=0.61, skew=timedelta(0)):
+    store.record_reading(account_id, {
+        "five_hour": WindowReading(five, FIVE_RESET + skew),
+        "seven_day": WindowReading(week, WEEK_RESET + skew),
+    }, at)
+
+
+def _poll(store, at, *, a=None, b=None):
+    """One poll of both accounts at `at`, then the broker's pass over them."""
+    from quota_broker.main import mark_possible_duplicates
+
+    _reading(store, "eng:team", at, **(a or {}))
+    _reading(store, "eng:saga-personal", at + timedelta(seconds=20), **(b or {}))
+    return mark_possible_duplicates(store)
+
+
+def _two(broker):
+    store = AccountStore(broker.db)
+    store.register(ENG, "saga-personal")
+    store.register(ENG, "team")
+    return store
+
+
+def _flags(store):
+    return {a.account_id: a.possible_duplicate_of for a in store.list()}
+
+
+def test_identical_readings_on_two_polls_mark_a_possible_duplicate(broker):
+    store = _two(broker)
+    # Resets one second apart, as measured on 2026-10-24.
+    second = {"skew": timedelta(seconds=1)}
+    # MUTATION: flagging on the first match calls one coincidence a duplicate.
+    assert _poll(store, NOW, b=second) == []
+    assert _flags(store) == {"eng:saga-personal": None, "eng:team": None}
+
+    flagged = _poll(store, NOW + timedelta(minutes=5), b=second)
+
+    assert sorted(flagged) == ["eng:saga-personal", "eng:team"]
+    assert _flags(store) == {"eng:saga-personal": "eng:team", "eng:team": "eng:saga-personal"}
+    # A possible duplicate is not the organisation-proven kind.
+    assert {a.duplicate_of for a in store.list()} == {None}
+
+    shown = account_to_api(store.get("eng:team"), now=NOW + timedelta(minutes=6))
+    assert shown["possible_duplicate"] == {
+        "of": "eng:saga-personal", "reason": "identical readings on two polls"}
+    assert shown["duplicate_of"] is None
+    assert {"possible_duplicate": "eng:saga-personal", "advisory": True,
+            "reason": "identical readings on two polls with eng:saga-personal"} in shown[
+        "blocked_by"]
+    # FLAGGED, NOT WITHHELD: readings can coincide, and an inference must not
+    # take a real subscription out of the pool.
+    assert shown["can_take_new_agent"] is True
+    assert choose(store.list(), ENG, NOW + timedelta(minutes=6)) is not None
+    assert len({choose([a], ENG, NOW + timedelta(minutes=6)).account_id
+                for a in store.list()}) == 2
+
+
+def test_one_reading_counted_twice_is_still_one_poll(broker):
+    store = _two(broker)
+    _poll(store, NOW)
+    from quota_broker.main import mark_possible_duplicates
+
+    # MUTATION: counting passes rather than new readings flags on one poll.
+    assert mark_possible_duplicates(store) == []
+    assert mark_possible_duplicates(store) == []
+    # A new reading of ONE side is not a second poll of the pair either.
+    _reading(store, "eng:team", NOW + timedelta(minutes=5))
+    assert mark_possible_duplicates(store) == []
+    _reading(store, "eng:saga-personal", NOW + timedelta(minutes=6))
+    assert sorted(mark_possible_duplicates(store)) == ["eng:saga-personal", "eng:team"]
+
+
+@pytest.mark.parametrize("second", [
+    {"skew": timedelta(seconds=30)},     # resets apart: two subscriptions
+    {"five": 0.43},                      # one window's figure differs
+    {"week": 0.60},                      # the other's
+])
+def test_readings_that_differ_anywhere_are_never_a_possible_duplicate(broker, second):
+    store = _two(broker)
+    _poll(store, NOW, b=second)
+    # MUTATION: comparing one window, or resets without a tolerance, flags these.
+    assert _poll(store, NOW + timedelta(minutes=5), b=second) == []
+    assert _poll(store, NOW + timedelta(minutes=10), b=second) == []
+    assert _flags(store) == {"eng:saga-personal": None, "eng:team": None}
+
+
+def test_a_match_broken_by_a_differing_poll_starts_counting_again(broker):
+    store = _two(broker)
+    _poll(store, NOW)
+    _poll(store, NOW + timedelta(minutes=5), b={"five": 0.5})
+    assert _poll(store, NOW + timedelta(minutes=10)) == []
+    assert len(_poll(store, NOW + timedelta(minutes=15))) == 2
+    # And a later differing poll clears the flag.
+    _poll(store, NOW + timedelta(minutes=20), b={"five": 0.9})
+    assert _flags(store) == {"eng:saga-personal": None, "eng:team": None}
+
+
+def test_two_idle_accounts_are_not_a_pair(broker):
+    """Two unused accounts read 0% everywhere, and a provider that dates an
+    unused window from the poll would give them resets seconds apart."""
+    store = _two(broker)
+    idle = {"five": 0.0, "week": 0.0}
+    _poll(store, NOW, a=idle, b=idle)
+    assert _poll(store, NOW + timedelta(minutes=5), a=idle, b=idle) == []
+
+
+def test_one_recorded_organisation_does_not_stop_the_fallback(broker):
+    store = _two(broker)
+    store.record_organisation("eng:team", organisation_from_payload(_token_payload(_org_id())))
+    _poll(store, NOW)
+    assert len(_poll(store, NOW + timedelta(minutes=5))) == 2
+
+
+def test_a_differing_recorded_organisation_wins_over_identical_readings(broker):
+    store = _two(broker)
+    _poll(store, NOW)
+    assert len(_poll(store, NOW + timedelta(minutes=5))) == 2
+    store.record_organisation("eng:team", organisation_from_payload(_token_payload(_org_id())))
+    store.record_organisation("eng:saga-personal", organisation_from_payload(
+        _token_payload(_org_id(), name="Saga", kind="claude_team")))
+    # MUTATION: ignoring the organisations keeps two known subscriptions flagged.
+    assert _poll(store, NOW + timedelta(minutes=10)) == []
+    assert _flags(store) == {"eng:saga-personal": None, "eng:team": None}
+
+
+def test_a_possible_duplicate_in_another_workspace_is_not_named(broker):
+    store = AccountStore(broker.db)
+    store.register(ENG, "team")
+    store.register(RESEARCH, "theirs")
+    from quota_broker.main import mark_possible_duplicates
+
+    for minutes in (0, 5):
+        _reading(store, "eng:team", NOW + timedelta(minutes=minutes))
+        _reading(store, "research:theirs", NOW + timedelta(minutes=minutes, seconds=3))
+        mark_possible_duplicates(store)
+    theirs = store.get("research:theirs")
+    assert theirs.possible_duplicate_of == "eng:team"
+    shown = account_to_api(theirs, now=NOW + timedelta(minutes=6))
+    # MUTATION: naming `possible_duplicate_of` whatever its tenant.
+    assert shown["possible_duplicate"] == {
+        "of": None,
+        "reason": "identical readings on two polls with an account in another workspace"}
+    assert "eng" not in json.dumps(shown["blocked_by"])
+    _foreign_free(json.dumps(shown), "eng:team")
+    assert account_to_api(theirs, now=NOW, platform_wide=True)["possible_duplicate"]["of"] == (
+        "eng:team")
+
+
+def test_the_sweep_marks_possible_duplicates_after_its_usage_poll(broker):
+    """Wired into `/v1/quota/sweep`, after the poll, so the poll's readings
+    are the ones compared."""
+    from quota_broker.main import WorkerIdentity, create_app
+
+    store = _two(broker)
+    polls = [NOW, NOW + timedelta(minutes=5)]
+
+    class _Poller:
+        def poll_round(self, accounts, keep_going=None):
+            at = polls.pop(0)
+            _reading(store, "eng:team", at)
+            _reading(store, "eng:saga-personal", at + timedelta(seconds=4))
+            return []
+
+    class _Refresher(_NoRefresher):
+        def sweep(self, pairs, keep_going=None):
+            return []
+
+    app = create_app(broker, identity=WorkerIdentity(required=False),
+                     credential_refresher=_Refresher(),
+                     subscription_tenants=lambda: [], account_store=store)
+    app.state.usage_poller = _Poller()
+    client = TestClient(app, raise_server_exceptions=False)
+    first = client.post("/v1/quota/sweep")
+    assert first.status_code == 200, first.text
+    second = client.post("/v1/quota/sweep").json()
+    # MUTATION: not calling `mark_possible_duplicates` in the sweep leaves both unflagged.
+    assert sorted(second["possible_duplicates"]) == ["eng:saga-personal", "eng:team"]
+    assert _flags(store) == {"eng:saga-personal": "eng:team", "eng:team": "eng:saga-personal"}
