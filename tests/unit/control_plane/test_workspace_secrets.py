@@ -942,3 +942,135 @@ def test_another_workspaces_repo_id_is_still_404_and_touches_no_grant(keyed, see
     [grant] = [d for p, d in seeded.docs.items() if p.startswith(f"{GRANTS_COLLECTION}/")]
     assert grant["enabled"] is True
     assert not [a for a in audits(seeded) if a.get("action") == AUDIT_REPOSITORY_GRANTS_DISABLED]
+
+
+# -- SSC-REPO-DELETE-TXN: the disable and the removal are ONE transaction --------
+#
+# secrets-scopes.md §2.1 says "in the transaction that removes it". Two writes
+# left a window: a grant enabled between them survived the delete, and a
+# re-registration of the same repository revived it. Contention is modelled the
+# way `test_cancel_retries_contention.py` models it: the REAL
+# `firestore.transactional` drives a fake whose commit is aborted, and what the
+# other writer committed first is visible to the retry.
+
+from google.api_core import exceptions as gexc  # noqa: E402
+
+from swarm_api.grant_attest import GrantPolicy  # noqa: E402
+
+
+class _RemovalTransaction(RecordingTransaction):
+    """Calls `db.on_removal(self)` before committing any transaction that
+    deletes `repositories/{WIDGETS}`; the hook may raise to abort it."""
+
+    def _commit(self) -> list[Any]:
+        if any(op == "delete" and ref.path == f"repositories/{WIDGETS}"
+               for op, ref, _ in self._buffer):
+            self._db.on_removal(self)
+        return super()._commit()
+
+
+@pytest.fixture
+def removal(seeded, monkeypatch) -> RecordingFirestore:
+    seeded.on_removal = lambda txn: None
+    monkeypatch.setattr(seeded, "transaction", lambda **kw: _RemovalTransaction(seeded))
+    return seeded
+
+
+def _repo_grant(client, name: str, consumer: str) -> None:
+    response = client.put(f"{REPO_BASE}/{name}/grants/{consumer}",
+                          headers=as_("root", "eng"), json={"enabled": True})
+    assert response.status_code == 200, response.text
+
+
+def _grants(db: FakeFirestore) -> list[dict]:
+    return [d for p, d in db.docs.items() if p.startswith(f"{GRANTS_COLLECTION}/")]
+
+
+def test_a_grant_enabled_while_the_delete_commits_is_disabled_by_its_retry(
+        keyed, removal, sm, clock, grant_key):
+    _granted(keyed, removal)
+    store = WorkspaceSecrets(removal, sm, now=clock,
+                             grants=GrantPolicy(keys=GrantKeys(grant_key), required=False))
+    contended: list[int] = []
+
+    def another_manager_wins_the_lock(txn) -> None:
+        # The first commit loses to a manager who enabled a second consumer
+        # on the same secret: their write lands, this commit aborts unapplied.
+        if contended:
+            return
+        contended.append(1)
+        store.set_grant(tenant_id="eng", name="x-key", consumer="profile:codex",
+                        slot=None, enabled=True, by="root@example.com", repo_id=WIDGETS)
+        txn._buffer = []
+        raise gexc.Aborted("another transaction holds the lock")
+
+    removal.on_removal = another_manager_wins_the_lock
+    response = keyed.delete(f"/v1/repositories/{WIDGETS}", headers=as_("dave", "eng"))
+    assert response.status_code == 204, response.text
+    assert contended == [1]
+    assert f"repositories/{WIDGETS}" not in removal.docs
+    grants = _grants(removal)
+    assert sorted(g["consumer"] for g in grants) == ["profile:claude-code", "profile:codex"]
+    assert all(g["enabled"] is False for g in grants), grants
+    assert all(GrantKeys(grant_key).check(g) == "valid" for g in grants)
+    register(removal)  # the same repo_id: nothing comes back
+    assert all(g["enabled"] is False for g in _grants(removal))
+
+
+def test_a_grant_enabled_after_the_delete_committed_is_refused(
+        keyed, removal, sm, clock, grant_key, monkeypatch):
+    """The other order: the delete commits between `set_grant`'s read of the
+    secret and its transaction. The enable re-reads the registration in its
+    transaction, as `create` does, and finds it gone."""
+    _granted(keyed, removal)
+    found = WorkspaceSecrets.find
+    store = WorkspaceSecrets(removal, sm, now=clock,
+                             grants=GrantPolicy(keys=GrantKeys(grant_key), required=False))
+
+    def find_then_lose_the_race(self, tenant_id, name, repo_id=None):
+        doc = found(self, tenant_id, name, repo_id)
+        monkeypatch.setattr(WorkspaceSecrets, "find", found)
+        store.delete_repository(tenant_id="eng", repo_id=WIDGETS, by="dave@example.com")
+        return doc
+
+    monkeypatch.setattr(WorkspaceSecrets, "find", find_then_lose_the_race)
+    response = keyed.put(f"{REPO_BASE}/x-key/grants/profile:codex",
+                         headers=as_("root", "eng"), json={"enabled": True})
+    assert response.status_code == 404, response.text
+    assert f"repositories/{WIDGETS}" not in removal.docs
+    assert all(g["enabled"] is False for g in _grants(removal)), _grants(removal)
+
+
+def test_the_disable_and_the_removal_land_in_one_commit(keyed, removal, sm):
+    _granted(keyed, removal)
+    assert repo_create(keyed, "root", "eng", "y-key", fake_value("y")).status_code == 201
+    _repo_grant(keyed, "y-key", "profile:codex")
+    _repo_grant(keyed, "y-key", "profile:indexer")
+    before = len(removal.commits)
+    response = keyed.delete(f"/v1/repositories/{WIDGETS}", headers=as_("dave", "eng"))
+    assert response.status_code == 204, response.text
+    [commit] = removal.commits[before:]
+    assert f"repositories/{WIDGETS}" in commit
+    grant_paths = sorted(p for p in removal.docs if p.startswith(f"{GRANTS_COLLECTION}/"))
+    assert len(grant_paths) == 3 and set(grant_paths) <= set(commit)
+    assert sum(p.startswith(f"{AUDIT_COLLECTION}/") for p in commit) == 2
+    assert all(g["enabled"] is False for g in _grants(removal))
+    assert f"repositories/{WIDGETS}" not in removal.docs
+
+
+def test_a_removal_that_cannot_commit_leaves_the_grants_and_the_registration(
+        keyed, removal, sm):
+    _granted(keyed, removal)
+    before = {p: dict(d) for p, d in removal.docs.items()}
+
+    def always_contended(txn) -> None:
+        txn._buffer = []
+        raise gexc.Aborted("another transaction holds the lock")
+
+    removal.on_removal = always_contended
+    response = keyed.delete(f"/v1/repositories/{WIDGETS}", headers=as_("dave", "eng"))
+    assert response.status_code >= 500, response.text
+    assert f"repositories/{WIDGETS}" in removal.docs
+    [grant] = _grants(removal)
+    assert grant["enabled"] is True
+    assert removal.docs == before
