@@ -146,6 +146,26 @@ And on the browser image the CLI's PATH puts `VENV_BIN` first, so the agent's
 `python` is the one with Playwright and the helper. Without the endpoint the
 browser image behaves as before: the real browsers and the headless note.
 
+A TEST PROCESS MAY LAUNCH ITS OWN CHROMIUM (PW-TESTRUNNER, BGD 2026-10-24,
+"Test-runner exception on browser"; part of #2253). With the stub above, a
+repository's own `npx playwright test` could not launch the headless Chromium
+it needs, and the image's browsers directory is read-only, so the revision its
+`@playwright/test` pins had nowhere to go (task_2791f0996eab4f958252). So on
+the browser image, live browser or not, the runner makes a writable directory,
+`<XDG_CACHE_HOME>/swarm-test-browsers` (`prepare_test_browsers`), seeded with
+links to the image's revisions, and names it to the agent as
+`SWARM_TEST_BROWSERS_PATH`. The image's `swarm-test-browsers <command>` runs
+that ONE command with `PLAYWRIGHT_BROWSERS_PATH` pointed there; the agent's
+own default stays the stub, so its scripts, the browser_* tools and
+dev-browser are unchanged, and the note says the command is for test suites
+only. In the attempt's cache, not `work/`: a revision is ~170 MB, which a
+checkpoint (capped at 2 GiB) would carry and the 5 GiB GKE workspace volume
+would count; the cache is never checkpointed, is its own disk on GKE and
+counts in the workspace tmpfs on Cloud Run, and is emptied each attempt, so a
+resumed attempt downloads the revision again. Named so that Playwright never
+finds it by itself (its default is `ms-playwright`): only a process pointed
+at it launches from it. No size is refused.
+
 THE GIT TOOLS (docs/runner-git-tools.md §1.3, lane G6). When the worker
 offers the attempt the runner git tools it sets `SWARM_GIT`, the spool, and
 only then: this runner names the `swarm-git` shim (`agent_worker.gitmcp`) in
@@ -349,6 +369,25 @@ CDP_ENDPOINT_ENV = "SWARM_CDP_ENDPOINT"
 #: image's stub directory, where every Chromium Playwright could launch is
 #: `live-browser-only` (images/agent-runtime-browser/install-browser-stub.py).
 AGENT_BROWSERS_PATH = "/opt/swarm/live-browser-only"
+
+#: PW-TESTRUNNER (module docstring): the writable browsers directory a test
+#: process is pointed at, in the attempt's cache, by the variable the image's
+#: `swarm-test-browsers` reads. Never `ms-playwright`, Playwright's default
+#: name, so no process finds it unless it is pointed at it.
+TEST_BROWSERS_ENV = "SWARM_TEST_BROWSERS_PATH"
+TEST_BROWSERS_DIR_NAME = "swarm-test-browsers"
+CACHE_HOME_ENV = "XDG_CACHE_HOME"
+
+#: Appended to the browser note when the test directory exists.
+TEST_RUNNER_NOTE = (
+    "To run a repository's own Playwright suite, prefix each of its commands "
+    "with `swarm-test-browsers` (`swarm-test-browsers npx playwright install "
+    "chromium`, then `swarm-test-browsers npx playwright test`): that one test "
+    "process gets a writable browsers directory for the Chromium revision the "
+    "repository pins. Chromium's libraries and fonts are already installed, so "
+    "never pass `--with-deps`. Use it only for test suites, never for your own "
+    "browsing."
+)
 
 #: The Playwright MCP server the browser image pins (`@playwright/mcp`), by
 #: absolute path: the npm global prefix the base image installs CLIs into.
@@ -1112,6 +1151,33 @@ def _stream_screenshots(path: Path) -> dict[str, int]:
     return screenshot_images(events)
 
 
+def prepare_test_browsers(image_browsers: Path, cache_home: Path) -> Path | None:
+    """The writable browsers directory for test processes, seeded; None if it cannot be.
+
+    `cache_home/TEST_BROWSERS_DIR_NAME`, with a link to each of the image's
+    revisions (`image_browsers`, read-only) so the image's build is found
+    without a copy. Dot entries (Playwright's `.links`) are not linked: an
+    install writes its own here. An entry already present -- a link from an
+    earlier call, a revision a test run installed -- is kept. Never raises:
+    an attempt without the directory runs as it did before PW-TESTRUNNER.
+    """
+    target = cache_home / TEST_BROWSERS_DIR_NAME
+    try:
+        entries = sorted(image_browsers.iterdir())
+        target.mkdir(mode=0o700, parents=True, exist_ok=True)
+        for entry in entries:
+            if entry.name.startswith((".", "__")) or not entry.is_dir():
+                continue
+            link = target / entry.name
+            if not link.exists() and not link.is_symlink():
+                link.symlink_to(entry, target_is_directory=True)
+    except OSError as exc:
+        StructuredLogger(stream=sys.stderr, component="claude-code-runner").warning(
+            "test_browsers_unavailable", error_type=type(exc).__name__)
+        return None
+    return target
+
+
 def live_browser_refusal(env: dict[str, str], browsers: str, endpoint: str) -> str | None:
     """Why a live-browser attempt's agent must not start, or None (BROWSER-START).
 
@@ -1255,6 +1321,14 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
                 qa_identity=qa_identity_requested({"input": ctx.payload}))
         else:
             env[BROWSERS_PATH_ENV] = browsers
+        # PW-TESTRUNNER: a test process's own browsers directory, named to the
+        # agent but never its default (module docstring).
+        cache_home = os.environ.get(CACHE_HOME_ENV, "").strip()
+        test_browsers = prepare_test_browsers(
+            Path(browsers), Path(cache_home) if cache_home else Path(ctx.work_dir) / ".cache")
+        if test_browsers is not None:
+            env[TEST_BROWSERS_ENV] = str(test_browsers)
+            note = f"{note} {TEST_RUNNER_NOTE}"
         # A new dict on the same context: `run_runner` holds this object.
         if isinstance(prompt, str) and prompt.strip():
             ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{note}"}
