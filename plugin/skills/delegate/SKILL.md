@@ -606,7 +606,9 @@ ships both.
   Submit row stopped or failed, possibly after the workflow was created — look
   for it before running again, or it is submitted twice) or
   `SUBMITTED_UNVERIFIED` (created, but the relayed reply does not match the
-  spec — it runs regardless; read or cancel it by its `workflow_id`), or
+  spec — it runs regardless; read or cancel it by its `workflow_id`. A reply
+  missing only its digest or steps is read back once first: matching steps
+  are submitted with rows, and other steps still get rows), or
   `FOLLOW_REFUSED` (created, but this session's bridge refused the progress
   follow the rows make — usually a `SWARM_MCP_FROM` override; fix it, then
   attach).
