@@ -184,8 +184,21 @@ def get_approval(
             # head (`issueci.merge_gate`): what the hold says they matched.
             "files_checked_head": (run.pull_request or {}).get("files_checked_head"),
             "approval_hold": run.to_api()["approval_hold"],
+            # #2259: a hold the plan's prompt alone set, cleared there because
+            # the pull request's own files and patches matched none of it.
+            "hold_cleared": _hold_cleared((run.pull_request or {}).get("hold_cleared")),
         }
     return out
+
+
+def _hold_cleared(value: Any) -> dict[str, Any] | None:
+    """`issueci.merge_gate`'s record of a cleared hold, as served."""
+    if not isinstance(value, dict):
+        return None
+    at = value.get("at")
+    return {"why": value.get("why"), "head_sha": value.get("head_sha"),
+            "reasons": [str(r) for r in value.get("reasons") or []],
+            "at": at.isoformat() if hasattr(at, "isoformat") else at}
 
 
 # --------------------------------------------------------------------------
@@ -239,19 +252,25 @@ def approve(
     schedule = approvals.read_schedule(ctx.db, tenant_id, (doc.get("subject") or {}).get("schedule_id"))
     move = None
     run = None
+    # #2259: where only the owner may decide, the owner decides as the
+    # schedule's last editor too, and `decide` writes the waiver's audit row.
+    waiver = None
     if kind == approvals.RUN:
-        approvals.check_gate_approver(ctx, tenant_id, doc.get("approvers"), email=auth.email,
-                                      is_owner=auth.is_owner, schedule=schedule,
-                                      merge_tier=bool(doc.get("merge_tier")))
+        waiver = approvals.check_gate_approver(ctx, tenant_id, doc.get("approvers"), email=auth.email,
+                                               is_owner=auth.is_owner, schedule=schedule,
+                                               merge_tier=bool(doc.get("merge_tier")), owner_waiver=True)
         move = approvals.firing_move(ctx.db, now, approve=True, by=auth.email)
     elif kind == approvals.MERGE:
         run = IssueRuns(ctx.db, now=ctx.now).get(tenant_id, str((doc.get("subject") or {}).get("run_id")))
         if run.approval_hold:
             approvals.check_hold(ctx, run, email=auth.email, is_owner=auth.is_owner, confirm=verb.confirm)
         # A hold is checked above IN ADDITION to the schedule's approvers.
-        approvals.check_gate_approver(
+        # The run's CURRENT hold, as `issueci.merge_gate` last re-checked it
+        # on the pull request's files, decides who may; not the record's copy.
+        waiver = approvals.check_gate_approver(
             ctx, tenant_id, ((schedule or {}).get("gate") or {}).get("approvers"),
             email=auth.email, is_owner=auth.is_owner, schedule=schedule, merge_tier=True,
+            hold=run.approval_hold, owner_waiver=True,
         )
         move = approvals.merge_move(ctx.db, now, by=auth.email, resign=run_routes.owner_resigner(ctx))
     elif kind == approvals.SPEC:
@@ -259,11 +278,11 @@ def approve(
         if not (auth.is_admin or auth.is_owner):
             raise ScheduleForbidden("approver_not_allowed", "a custom-prompt spec is approved by a platform admin")
     else:
-        approvals.check_gate_approver(ctx, tenant_id, doc.get("approvers"), email=auth.email,
-                                      is_owner=auth.is_owner, schedule=schedule,
-                                      merge_tier=bool(doc.get("merge_tier")))
+        waiver = approvals.check_gate_approver(ctx, tenant_id, doc.get("approvers"), email=auth.email,
+                                               is_owner=auth.is_owner, schedule=schedule,
+                                               merge_tier=bool(doc.get("merge_tier")), owner_waiver=True)
     decided = approvals.decide(ctx.db, now, tenant_id, item_id, approve=True, by=auth.email,
-                               digest=verb.digest, move=move)
+                               digest=verb.digest, move=move, waiver=waiver)
     out: dict[str, Any] = {"approval": approvals.to_api(decided)}
     if run is not None:
         # The merge is submitted by the run's own loop, now rather than on
