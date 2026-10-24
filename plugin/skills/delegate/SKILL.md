@@ -259,7 +259,9 @@ file that was asked for, and "no code to apply" is not "it produced nothing".
 uploaded when the attempt ends), never that there are none. Read a file with
 `swarm_artifact`, by the name `swarm_result` lists: the API redacts it at read
 time, and one call is one window — when `truncated` is true, call again with
-`offset` set to `next_offset`.
+`offset` set to `next_offset`. To look at an image artifact (a lane's
+screenshot), pass `save_to` — a directory in your project or scratchpad — and
+open the returned `path` with the Read tool; only images are saved.
 
 `swarm_dispatch` takes `prompt`, `profile`, `repo`, `ref`, `infer`,
 `strategy`, `label`, `inputs`, `additional_repositories` (above) and

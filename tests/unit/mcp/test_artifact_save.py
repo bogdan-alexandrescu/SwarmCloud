@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import secrets
 import urllib.error
 from pathlib import Path
@@ -238,3 +239,23 @@ def test_the_tool_offers_save_to_and_says_the_saved_file_is_read_with_read():
     assert "save_to" in tool["inputSchema"]["properties"]
     assert set(tool["inputSchema"]["required"]) == {"task_id", "name"}
     assert "Read tool" in tool["description"], tool["description"]
+
+
+def test_a_save_to_in_the_claude_scratchpad_is_accepted(swarm, world, requests, here, tmp_path, monkeypatch):
+    """The session's scratchpad sits under `<tmp>/claude-<uid>`, outside the project."""
+    from swarm_mcp import artifacts
+
+    temp = tmp_path / "tmp"
+    monkeypatch.setattr(artifacts.tempfile, "gettempdir", lambda: str(temp))
+    scratchpad = temp / f"claude-{os.getuid()}" / "project" / "session" / "scratchpad"
+    task_id = "task_0000000000savepad0"
+    _finished(world, task_id, {"shot.gif": b"GIF89a" + b"\x01" * 64})
+
+    reply = _call(swarm, {"task_id": task_id, "name": "shot.gif", "save_to": str(scratchpad)})
+
+    assert reply["status"] == "saved", reply
+    assert Path(reply["path"]).read_bytes() == b"GIF89a" + b"\x01" * 64
+    # The control: another user's directory beside it is not the scratchpad.
+    with pytest.raises(SwarmError) as caught:
+        _call(swarm, {"task_id": task_id, "name": "shot.gif", "save_to": str(temp / "claude-0x" / "s")})
+    assert "outside" in str(caught.value), str(caught.value)
