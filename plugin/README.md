@@ -1631,6 +1631,36 @@ bootstrap role, storing a key answers 503 and `sc key set` says
 `keys can't be saved yet: <the API's reason>`. Nothing reads these keys yet.
 `tests/unit/mcp/test_provider_keys_bridge.py` holds all of this.
 
+## Config › Secrets: links and reads, never a value
+
+Every secret of a workspace, a person or a registered repository, and the
+GitHub Actions secrets SwarmCloud writes into a repository, is listed and set
+from Config › Secrets ([docs/design/secrets-scopes.md](../docs/design/secrets-scopes.md)
+§6.4; lane SSC-SC). **A value never passes through Claude** (BGD, Q8 of that
+design's §11): it is typed into the console form a one-time link opens. No
+tool's schema has a field a value fits in. Every string argument is an enum
+or a narrow pattern, checked by `swarm_mcp/secrets.py` before anything is sent
+and refused without being repeated. Every answer is copied field by field.
+
+| Surface | See what is set | Set it |
+|---|---|---|
+| `/sc` | `/sc secrets list [workspace\|personal\|repository] [--repo owner/repo]` | `/sc secrets link <scope> [name] [--repo owner/repo] [--actions [--env name]]`: a one-time console link (ten minutes, one use, only in your own console session) |
+| MCP | `swarm_secrets` (the overview's rows: names, status, who and when, grants, which scope wins a shared name; never a value, a length or `last4`); `swarm_platform_secrets` (Admin › Platform secrets, platform admins only: anyone else gets the API's 403, passed through unchanged) | `swarm_secret_set_link` (`scope`, `action` add or rotate, `name` for a rotate, `repository` for the repository scope) and `swarm_actions_secret_link` (`repository`, `name`, optional `environment`): each answers only `url` and `expires_at` |
+
+`swarm_qa_target_credential_link` gained `field`: `credential` (the default,
+as before) or `challenge_bypass`, the form for a QA target's challenge-bypass
+value.
+
+A personal secret's link is minted in the caller's own personal workspace.
+The overview names that workspace, and the mint is sent on a copy of the
+client that names it. A repository is named as `owner/repo` or its `repo_`
+id and must be registered in the selected workspace; anything else is refused
+before a link is minted. With no console origin configured (`SWARM_CONSOLE_URL`
+on swarm-api), a link tool answers `url: null` and a note, never the API's
+`path`, because the path carries the link's token. Who may set what stays the
+API's rule (§2.5). `tests/unit/mcp/test_secret_links.py` holds all of this,
+and checks that every route the module calls is one swarm-api serves.
+
 ## What keeps these honest
 
 Eight files, all in `make test`, all offline — bar one test, which CI runs:
