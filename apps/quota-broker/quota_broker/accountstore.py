@@ -40,6 +40,7 @@ from .accounts import (
     secret_name,
     validate_display_name,
     validate_label,
+    validate_max_agents,
     validate_model_classes,
     windows_to_firestore,
 )
@@ -286,6 +287,9 @@ class AccountStore:
                 # and changing who an account is lent to must not forget the
                 # Name its owner gave it (#1913).
                 display_name=current.display_name,
+                # CARRIED OVER, for the reason the classes are: re-registering
+                # must not lift a cap its owner lowered (#2222).
+                max_agents=current.max_agents,
                 # PRESERVED, never re-derived. An account registered before the
                 # naming rule changed keeps pointing at the secret that holds
                 # its credential; re-deriving here would orphan it on the next
@@ -427,6 +431,22 @@ class AccountStore:
         if not getattr(ref.get(), "exists", False):
             return None
         ref.update({"display_name": stored})
+        return self.get(account_id)
+
+    def set_max_agents(self, account_id: str, max_agents: int) -> Account | None:
+        """The owner's cap on how many agents this account holds at once (#2222).
+
+        Validated by `validate_max_agents`. An UPDATE of the one field, as
+        `set_model_classes` is, so the holds and readings moving under it in
+        other transactions are untouched. Lowering it moves no agent: the ones
+        already on the account keep it, and no new one is handed it until
+        enough of them finish. None when no such account exists.
+        """
+        stored = validate_max_agents(max_agents)
+        ref = self._db.collection(COLLECTION).document(account_id)
+        if not getattr(ref.get(), "exists", False):
+            return None
+        ref.update({"max_agents": stored})
         return self.get(account_id)
 
     def remove(self, account_id: str) -> None:

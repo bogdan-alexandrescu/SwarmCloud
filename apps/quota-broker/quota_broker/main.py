@@ -48,6 +48,7 @@ from .oauth import (
 )
 from .usagepoll import UsagePoller
 from .accounts import (
+    ASSIGNABLE_STATES,
     DEFAULT_HOLD_TTL,
     DEFAULT_STALE_AFTER,
     HOLD_END_ACCOUNT_REMOVED,
@@ -73,10 +74,13 @@ from .accounts import (
     holds_from_firestore,
     holds_to_firestore,
     hold_log_entry,
+    max_agents_from_firestore,
     secret_name,
     validate_label,
     validate_display_name,
+    validate_max_agents,
     validate_model_classes,
+    window_floor,
 )
 from .accountstore import COLLECTION as ACCOUNTS_COLLECTION
 from .accountstore import MALFORMED_ERRORS, AccountStore, MalformedAccountError
@@ -225,6 +229,17 @@ class AccountModelClasses(StrictModel):
     """
 
     model_classes: list[str] = Field(default_factory=list, max_length=8)
+
+
+class AccountMaxAgents(StrictModel):
+    """How many agents an account may hold at once (#2222).
+
+    REQUIRED, so an empty body is refused rather than read as the default.
+    Which numbers are accepted is `accounts.validate_max_agents`, the one check
+    of them; the type here only stops a body that is not a number at all.
+    """
+
+    max_agents: int
 
 
 class AccountName(StrictModel):
@@ -639,6 +654,36 @@ def account_to_api(account: Any, *, now: datetime | None = None) -> dict[str, An
         if callable(predicate)
         else list(unreadable_by)
     )
+
+    # WHETHER A NEW AGENT CAN BE HANDED THIS ACCOUNT, AND WHAT STOPS IT (#2222).
+    # On 2026-10-24 the listing said "7 accounts, 7 available" while every one
+    # of them was under its floor and 28 agents waited: "available" was the
+    # account's state, and nothing on the page said a window or a cap was
+    # refusing it. Asked of the same methods `choose()` asks, so the listing
+    # and the assignment cannot disagree; `unreadable_now` above stays the
+    # per-tenant half.
+    blocked_by: list[dict[str, Any]] = []
+    blocking = getattr(account, "blocking_windows", None)
+    if callable(blocking):
+        aged = bool(observed_at is not None and stale)
+        for name, reading in sorted(blocking(now).items()):
+            blocked_by.append({
+                "window": name,
+                "used": round(float(reading.utilization), 4),
+                "floor": window_floor(name),
+                "resets_at": reading.resets_at.isoformat(),
+                #: True when the window blocks only because an aged reading
+                #: counts at half (`Account.headroom`).
+                "aged_reading": aged,
+            })
+    max_agents = getattr(account, "max_agents", None)
+    live_holds = getattr(account, "live_holds", None)
+    if isinstance(max_agents, int) and callable(live_holds):
+        holding = len(live_holds(now))
+        if holding >= max_agents:
+            blocked_by.append({"cap": holding, "max_agents": max_agents})
+    next_reset = getattr(account, "next_reset", None)
+    next_eligible = next_reset(now) if callable(next_reset) else None
     return {
         "account_id": account.account_id,
         "owner_tenant": account.owner_tenant,
@@ -655,6 +700,20 @@ def account_to_api(account: Any, *, now: datetime | None = None) -> dict[str, An
         #: Display text only. `getattr` for the same reason as `model_classes`.
         "display_name": getattr(account, "display_name", None),
         "assigned": account.assigned,
+        #: How many agents may hold it at once (#2222).
+        "max_agents": max_agents,
+        #: Whether `choose()` would hand it a new agent now, for a tenant it
+        #: serves that has not reported it unreadable: AVAILABLE, no window
+        #: under its floor, and a free slot.
+        "can_take_new_agent": account.state in ASSIGNABLE_STATES and not blocked_by,
+        #: What refuses it: each window under its floor (`used`, the `floor`
+        #: it is held to, when it `resets_at`), or `{cap, max_agents}` when
+        #: every slot is taken. Empty when nothing does.
+        "blocked_by": blocked_by,
+        #: When a window that blocks it clears, or null when no window does --
+        #: a full account frees when an agent on it finishes, which no clock
+        #: says.
+        "next_eligible_at": _iso(next_eligible),
         "windows": windows,
         "observed_at": observed_at.isoformat() if observed_at else None,
         #: True when no reading has arrived recently enough to be trusted.
@@ -900,6 +959,10 @@ def acquire_hold(
         if not _raw_assignable(data, tenant_id):
             return None
         holds, expired = _split_holds(data, now)
+        if not _raw_has_room(data, holds):
+            # Full since the listing: nothing is counted, and the route
+            # answers as it does for an account paused in the same gap.
+            return None
         hold = Hold(
             assignment_id=assignment_id,
             tenant_id=tenant_id,
@@ -1238,6 +1301,22 @@ def _raw_assignable(data: dict[str, Any], tenant_id: str) -> bool:
     )
 
 
+def _raw_has_room(data: dict[str, Any], live: list[Hold]) -> bool:
+    """Whether a raw document's live holds leave room for one more (#2222).
+
+    The cap `choose()` applies, applied again where the hold commits:
+    `choose()` reads a listing taken before the transaction, so two assigns
+    racing for an account's last slot would both pass it and both commit. A
+    malformed `max_agents` is no room -- the listing could not have offered
+    the account anyway (`accountstore._decode`).
+    """
+    try:
+        cap = max_agents_from_firestore(data.get("max_agents"))
+    except ValueError:
+        return False
+    return len(live) < cap
+
+
 class HoldNotHeld(Exception):
     """The caller holds no live hold matching what it named. Answered 403."""
 
@@ -1309,6 +1388,8 @@ def swap_hold(
         if not _raw_assignable(to_data, tenant_id):
             return None
         to_live, to_expired = _split_holds(to_data, now)
+        if not _raw_has_room(to_data, to_live):
+            return None
         taken = Hold(
             assignment_id=new_id,
             tenant_id=tenant_id,
@@ -3168,6 +3249,37 @@ def create_app(
         log.info(
             "an account's served model classes changed",
             extra={"account_id": account_id, "model_classes": list(updated.model_classes)},
+        )
+        return {"account": account_to_api(updated)}
+
+    @app.put("/v1/accounts/{account_id}/max-agents")
+    def set_max_agents(
+        request: Request,
+        account_id: str,
+        body: AccountMaxAgents,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """How many agents this account may hold at once. Owner only (#2222).
+
+        DEFAULT_MAX_AGENTS until its owner sets another number. Takes effect at
+        the next assignment and swap: lowering it moves no agent already on the
+        account, and raising it hands out the new slots on the next ask.
+        """
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+        try:
+            validate_max_agents(body.max_agents)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        updated = store.set_max_agents(account_id, body.max_agents)
+        if updated is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        log.info(
+            "an account's agent cap changed",
+            extra={"account_id": account_id, "max_agents": updated.max_agents},
         )
         return {"account": account_to_api(updated)}
 
