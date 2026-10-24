@@ -196,10 +196,16 @@ class SecretManagerMetadata:
 
     def enabled_versions(self, secret_id: str) -> list[datetime | None]:
         from google.api_core import exceptions as gexc
+        from google.auth import exceptions as gauth
 
         name = _full_name(self._project_id, secret_id)
-        client = self._secret_client()
         try:
+            # The client is built inside the guard: with no Google credentials
+            # (CI's offline app, or a deployment that cannot reach them)
+            # building it raises google.auth's error, which is not an API call
+            # error. Outside the guard it was a 500 for the whole page; here
+            # it is one unreadable row (PLATFORM-SECRETS-500).
+            client = self._secret_client()
             # secrets.get first: a missing secret is NotFound here, which
             # tells "not declared" from "declared with no version".
             client.get_secret(request={"name": name})
@@ -211,7 +217,7 @@ class SecretManagerMetadata:
             raise NotDeclared(secret_id) from None
         except gexc.PermissionDenied:
             raise MetadataUnreadable(PERMISSION_DENIED) from None
-        except gexc.GoogleAPICallError:
+        except (gexc.GoogleAPICallError, gauth.GoogleAuthError):
             raise MetadataUnreadable(READ_FAILED) from None
 
 
