@@ -97,7 +97,11 @@ def _rows(got: dict) -> list[str]:
 
 def _refused(got: dict) -> str:
     assert "error" not in got, got.get("error")
-    assert [c["agentType"] for c in got["calls"]] == ["sc:workflow"], "a row started on an unverified reply"
+    # The submit, and -- for a reply missing its digest or a spec step -- the
+    # one read-back that settles it (#2206), which these fixtures leave
+    # unanswered: a failed read-back starts no row either.
+    assert [c["agentType"] for c in got["calls"]] in (["sc:workflow"], ["sc:workflow"] * 2), "a row started on an unverified reply"
+    assert [c["prompt"].split("\n")[0] for c in got["calls"]][1:] in ([], ["ATTACH"])
     assert got["result"]["state"] == "SUBMITTED_UNVERIFIED"
     return got["result"]["error"]
 

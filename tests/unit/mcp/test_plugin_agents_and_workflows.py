@@ -904,7 +904,11 @@ def test_run_js_reports_a_submission_it_cannot_see_as_unknown_not_as_not_submitt
 def _unverified(tmp_path, submitted) -> dict:
     got = _run(tmp_path, _SPEC, {**_ANSWERS, "SUBMIT": submitted})
     assert "error" not in got, got.get("error")
-    assert [c["agentType"] for c in got["calls"]] == ["sc:workflow"], "a row started on an unverified reply"
+    # The submit, and -- for a reply missing its digest or a spec step -- the
+    # one read-back that settles it (#2206), which these fixtures leave
+    # unanswered: a failed read-back starts no row either.
+    assert [c["agentType"] for c in got["calls"]] in (["sc:workflow"], ["sc:workflow"] * 2), "a row started on an unverified reply"
+    assert [c["prompt"].split("\n")[0] for c in got["calls"]][1:] in ([], ["ATTACH"])
     assert got["result"]["state"] == "SUBMITTED_UNVERIFIED"
     assert got["result"]["workflow_id"] == "wf_1", "the workflow exists; its id must be handed back"
     assert "swarm_workflow_cancel" in got["result"]["error"]
