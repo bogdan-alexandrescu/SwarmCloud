@@ -142,6 +142,9 @@ any lease, its event naming each `{consumer, slot}` under `workspace_secrets`
 and never a secret id. The sweep asks it of EVERY CREDENTIAL_MISSING park,
 the worker's backstop park (`workspace-secret:<slots>`) included, so a task
 is promoted only when its key, its connection and its grants all answer yes.
+A repository's secret fills a slot only for an attempt that clones that
+repository (`attempt_repositories`, the release's set, restated below with
+the id recipes; lane SSC-ADMIT-REPO, part of #2158).
 
 THE MCP SERVERS A TASK NAMES (docs/design/registered-mcp-servers.md §4.10;
 lane MCP-SCHED, part of #1433). The last half again, asked only by admission
@@ -164,7 +167,7 @@ import re
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from quota_broker.accounts import DEFAULT_HOLD_TTL, Account, Hold, Unavailable, accounts_serving
@@ -540,6 +543,63 @@ def github_repository(repository_url: str | None) -> tuple[str, str] | None:
     if repo.lower().endswith(".git"):
         repo = repo[:-4]
     return (owner, repo) if owner and repo else None
+
+
+#: `swarm_api.repositories.parse_repository`'s pattern: `validation`'s
+#: `_ISSUE_OWNER` / `_ISSUE_REPO`, as GitHub spells owner and repository.
+_OWNER_REPO = re.compile(r"^([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/([A-Za-z0-9._-]{1,100})$")
+#: `swarm_api.workspace_secrets._GITHUB_URL`: the release reads a task's
+#: primary repository from an https GitHub URL only.
+_RELEASE_GITHUB_URL = re.compile(r"^https://github\.com/([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
+
+
+def parse_repository(value: Any) -> tuple[str, str] | None:
+    """`swarm_api.repositories.parse_repository`, answering None where it
+    raises: `owner/repo`, `.git` dropped, never `.`, `..` or a dot-led name."""
+    matched = _OWNER_REPO.match(value) if isinstance(value, str) else None
+    if matched is None:
+        return None
+    owner, repo = matched.group(1), matched.group(2)
+    if repo.lower().endswith(".git"):
+        repo = repo[:-4]
+    if repo in ("", ".", "..") or repo.startswith("."):
+        return None
+    return owner, repo
+
+
+def attempt_repositories(task: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """`swarm_api.workspace_secrets.attempt_repositories`, restated (the
+    scheduler's image does not carry swarm-api; tests/unit/control_plane/
+    test_secret_slot_admission.py holds the two equal): the `repo_id`s an
+    attempt clones, its `repository_url`'s first, then each
+    `additional_repositories` entry's, its `repo_id` recomputed from its
+    `repository` and the task's tenant. None when an entry does not match,
+    which the release answers by withholding every repository secret; `()`
+    for an attempt that clones nothing (secrets-scopes.md §2.2)."""
+    tenant_id = task.get("tenant_id")
+    if not isinstance(tenant_id, str) or not tenant_id:
+        return ()
+    out: list[str] = []
+    url = task.get("repository_url")
+    matched = _RELEASE_GITHUB_URL.match(url.strip()) if isinstance(url, str) else None
+    primary = parse_repository(f"{matched.group(1)}/{matched.group(2)}") if matched else None
+    if primary is not None:
+        out.append(repo_id_for(tenant_id, *primary))
+    extras = task.get("additional_repositories")
+    if extras is None:
+        return tuple(out)
+    if not isinstance(extras, list):
+        return None
+    for entry in extras:
+        if not isinstance(entry, Mapping):
+            return None
+        named = parse_repository(entry.get("repository"))
+        repo_id = entry.get("repo_id")
+        if named is None or not isinstance(repo_id, str) \
+                or repo_id != repo_id_for(tenant_id, *named):
+            return None
+        out.append(repo_id)
+    return tuple(dict.fromkeys(out))
 
 
 def grant_id_for(tenant_id: str, email: str, repo_id: str) -> str:
