@@ -2,8 +2,8 @@
 
 **Status: designed 2026-10-23 (lane TEST-SERVICES-DESIGN, part of #1627),
 decided the same day (§10), and built by TS-IMAGE, TS-CATALOGUE, TS-RUN,
-TS-CLOUDRUN-REFUSE and TS-GATE. §11 records what each lane built and where
-the code departs from this design; TS-ACCEPT and TS-SIGNAL are not built.**
+TS-CLOUDRUN-REFUSE, TS-GATE and TS-ACCEPT. §11 records what each lane built
+and where the code departs from this design; TS-SIGNAL is not built.**
 Recorded by the owner as an approved follow-up of #1605 on 2026-10-19. The
 repository-facing page on writing the declaration is
 [../test-services.md](../test-services.md).
@@ -644,7 +644,7 @@ TS-RUN, then TS-GATE, then TS-ACCEPT and TS-DOCS. TS-SIGNAL comes later.
 Read on 2026-10-24 from `main` at `5f5d511`, by TS-DOCS. Each entry names the
 code that holds the lane's rule and the tests that hold it there, and says
 where the code departs from §2-§5. Where the two disagree, the code is what
-runs; the departures are listed in §11.8 so nobody "fixes" the code back to
+runs; the departures are listed in §11.9 so nobody "fixes" the code back to
 the design.
 
 ### 11.1 What TS-IMAGE built
@@ -823,17 +823,44 @@ This section; the pre-publish part of
 and [../test-services.md](../test-services.md), the page a repository reads
 to write its declaration.
 
-### 11.7 Not built
+### 11.7 What TS-ACCEPT built
 
-* **TS-ACCEPT (not built).** No fixture under `tests/acceptance/` declares a
-  service, so the deployed proof that a lane breaking a database test reports
-  `graph-pytest: failed` before its pull request opens has not run. The
-  offline acceptance pair in `tests/unit/worker/test_prepublish_test_services.py`
-  is the only proof today.
+The deployed half of #1627's acceptance pair, in the claude-code acceptance
+group (`scripts/acceptance/groups/claude-code.sh`). The fixture,
+`tests/acceptance/fixtures/test-services`, declares Postgres 16 with one
+database, `swarm_accept`, in
+`tests/acceptance/fixtures/test-services/.swarm/test-services.toml`, and
+`tests/acceptance/fixtures/test-services/test_store.py` writes a row and
+reads it back, connecting in its pytest fixture so a missing service is an
+error at setup, never a failure. The group asks an agent to break the
+assertion and submits the task twice as collect steps, so no pull request
+opens and the pre-publish record is read where the runner wrote it:
+
+* **declared**: the first round's `graph-pytest` is `failed`, with a fix
+  turn, and there is no `test-services` outcome because the worker's Postgres
+  answered;
+* **undeclared** (the same tree without `.swarm/`): `graph-pytest` is
+  `skipped`, with every test erroring at setup on `127.0.0.1:5432`.
+
+The gate reads the declaration only at the clone's root (§11.2), and the
+sandbox keeps fixtures under `tests/acceptance/fixtures/`. So the pair clones
+two branches whose root is the fixture, `CC_TS_DECLARED_REF` and
+`CC_TS_UNDECLARED_REF`, which `scripts/acceptance/sandbox-sync.sh` builds
+from the synced tree with git plumbing and force-updates only when the tree
+differs (BGD's answer of 2026-10-24, "Apply the patch"). Tests:
+`tests/unit/scripts/test_acceptance_test_services.py` holds the fixture to
+the catalogue's parser and the judge to the record a working gate leaves.
+
+### 11.8 Not built
+
+* **The deployed proof has not run yet.** TS-ACCEPT's pair runs in the
+  acceptance workflow after a release; until its first run, the offline
+  acceptance pair in `tests/unit/worker/test_prepublish_test_services.py`
+  is the only proof that has run.
 * **TS-SIGNAL (not built).** Nothing counts skipped addresses by port yet;
   §3.2's rule for adding a second service has no data behind it.
 
-### 11.8 Where the code departs from §2-§5
+### 11.9 Where the code departs from §2-§5
 
 1. **The agent's turn gets the server, not the variables.** The worker starts
    the service before the agent (Q4), so the agent's own test runs reach

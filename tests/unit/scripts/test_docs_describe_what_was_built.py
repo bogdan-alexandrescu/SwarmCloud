@@ -1689,7 +1689,7 @@ TS_PREPUBLISH_PY = "apps/agent-worker/agent_worker/prepublish.py"
 TS_DOCKERFILE = "images/agent-runtime-base/Dockerfile"
 TS_PLAN = "## 7. Cost and the build plan"
 TS_BUILT = "## 11. What was built"
-TS_NOT_BUILT = "### 11.7 Not built"
+TS_NOT_BUILT = "### 11.8 Not built"
 TS_ROWS = "### 5.3 `skipped`, `failed`, `error` once a service is declared"
 TS_AGENT_OUTPUT = "**A service the tests need**"
 #: Lanes §10 and §11 added after §7's table was written (BGD, 2026-10-24).
@@ -1755,11 +1755,11 @@ def _check_ts_lanes(text: str) -> None:
     for lane in built:
         assert any(h.endswith(f" What {lane} built") for h in subs), (
             f"{lane} is on this tree; §11 has no 'What {lane} built'")
-        assert f"**{lane} (not built" not in not_built, f"{lane} is on this tree; §11.7 says it is not"
+        assert f"**{lane} (not built" not in not_built, f"{lane} is on this tree; §11.8 says it is not"
         if lane != "TS-DOCS":
             assert lane in head, f"{lane} is on this tree; the status line does not name it"
     for lane in unbuilt:
-        assert f"**{lane} (not built" in not_built, f"{lane} is not on this tree; §11.7 must say so"
+        assert f"**{lane} (not built" in not_built, f"{lane} is not on this tree; §11.8 must say so"
         assert not any(h.endswith(f" What {lane} built") for h in subs), lane
     named = " and ".join(unbuilt)
     assert f"{named} are not built" in head or f"{named} is not built" in head, head[:400]
@@ -1967,8 +1967,8 @@ _TS_MUTATIONS = [
     ("lanes", TS_DESIGN, "### 11.3 What TS-RUN built", "### 11.3 What TS-RUN started"),
     ("lanes", TS_DESIGN, "* **TS-SIGNAL (not built).** Nothing counts skipped addresses by port yet;",
      "* **TS-SIGNAL.** Nothing counts skipped addresses by port yet;"),
-    ("lanes", TS_DESIGN, "the code departs from this design; TS-ACCEPT and TS-SIGNAL are not built.**",
-     "the code departs from this design; TS-ACCEPT is not built.**"),
+    ("lanes", TS_DESIGN, "and where the code departs from this design; TS-SIGNAL is not built.**",
+     "and where the code departs from this design.**"),
     ("exists", TS_DESIGN, "`tests/unit/worker/test_testservices_declaration.py`.",
      "`tests/unit/worker/test_testservices_declarations.py`."),
     ("exists", TS_DESIGN, "`apps/agent-worker/agent_worker/prepublish.py::declared_services`): one a",
