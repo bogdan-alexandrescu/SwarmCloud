@@ -5215,7 +5215,9 @@ class Worker:
         NEVER ENDS THE ATTEMPT. No file is the default and starts nothing;
         an invalid file starts nothing (the gate reports it, §2.2); a
         service that does not come up is logged with its scrubbed error and
-        the agent runs without it, as it did before. The lease is
+        the agent runs without it, as it did before; so is a worker with no
+        SWARM_CACHE_ROOT, whose services are refused before `initdb`
+        (`testservices.NO_CACHE_VOLUME`, BGD 2026-10-24). The lease is
         heartbeated meanwhile: the ready wait alone may take 30 s.
         Invariant 7: the server shares this container's fixed resources;
         nothing is requested or added to the pod.
@@ -5242,6 +5244,7 @@ class Worker:
                     declaration, ws.cache, scrub=lambda text: str(self._scrub(text))
                 )
             self._test_services = running
+            report = iter(running.report())
             for service in running.services:
                 if service.error is None:
                     self.log.info(
@@ -5256,6 +5259,7 @@ class Worker:
                         "test service did not start; the agent runs without it",
                         service=service.service.name,
                         error=service.error,
+                        report=next(report),
                     )
         except Exception as exc:  # noqa: BLE001 -- a test service never ends the attempt
             self.log.warning("test services did not start", error=type(exc).__name__)

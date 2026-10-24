@@ -320,6 +320,7 @@ when the gate ends or the attempt is torn down.
   cache PVC; on Cloud Run (no second disk) it would be in the tmpfs, so
   charged to memory: the worker uses a 256 MiB cap there and refuses (`error`)
   above it. No profile that runs the gate is on Cloud Run today (§1.3).
+  **Decided (BGD, 2026-10-24): refuse on Cloud Run.** With no `SWARM_CACHE_ROOT` the worker starts no declared service and reports each as "service not started: test services need SWARM_CACHE_ROOT on its own volume; this runner keeps its workspace in memory" (`testservices.NO_CACHE_VOLUME`, TS-CLOUDRUN-REFUSE).
 * **Isolation.** One attempt is one pod. The server listens on loopback
   and a 0700 socket directory; the pod's network namespace is its own and
   the tenant ingress policy admits nothing to it; the data is on a disk
