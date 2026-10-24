@@ -593,7 +593,7 @@ developer wants one changed, tell them the command to run in their own
 terminal — `sc roles set <email> <role>`, `sc roles clear <email>` (back to
 the default) or `sc roles default <viewer|member>` — which asks them to type
 the email and the role back at the terminal and sends nothing otherwise; or
-the console's Settings › People. It needs `admin` in that workspace
+the console's Config › People and roles. It needs `admin` in that workspace
 (`can_manage`). Never run it: it is not granted to this skill, and a
 confirmation it could read from you would not be the developer's.
 

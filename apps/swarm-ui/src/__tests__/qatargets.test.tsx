@@ -151,7 +151,7 @@ describe('QA targets: the page and who sees what', () => {
     const { RepositoriesScreen } = await import('../Repositories')
     render(<RepositoriesScreen view={null} go={vi.fn()} />)
     // MUTATION: drop the QA targets button from the list's head and this is null.
-    await waitFor(() => expect(document.querySelector('a[href="/repositories?page=qa-targets"]')).not.toBeNull(), WAIT)
+    await waitFor(() => expect(document.querySelector('a[href="/config/repositories?page=qa-targets"]')).not.toBeNull(), WAIT)
   })
 
   it('an admin sees Register, Run, Edit and Set credential', async () => {
@@ -307,7 +307,7 @@ describe('QA targets: the credential form', () => {
   it('the Repositories mount hands the shell\u2019s link to the form, so a link read before the bar was rewritten still opens it', async () => {
     const token = runtimeValue()
     // The shell has already rewritten the bar to the page's own address.
-    window.history.replaceState(null, '', '/repositories?page=qa-targets')
+    window.history.replaceState(null, '', '/config/repositories?page=qa-targets')
     const calls = live('admin')
     const { RepositoriesScreen } = await import('../Repositories')
     render(<RepositoriesScreen view="page=qa-targets" go={vi.fn()} qaLink={{ targetId: LOGIN, token }} />)
@@ -337,12 +337,12 @@ describe('QA targets: the credential form', () => {
     const route = pathToAddress(`/qa-targets/${LOGIN}/credential`, `?t=${token}`)
     // MUTATION: drop the `/qa-targets/<id>/credential` case from paths.ts `pathToAddress` and this is null.
     expect(route).not.toBeNull()
-    expect(route!.address).toBe('work/repositories?page=qa-targets')
+    expect(route!.address).toBe('config/repositories?page=qa-targets')
     // MUTATION: keep the link's query in the address (`?page=qa-targets&t=..`) and the token survives into it.
     expect(route!.address).not.toContain(token)
-    expect(addressToPath(route!.address, 'live')).toBe('/repositories?page=qa-targets')
+    expect(addressToPath(route!.address, 'live')).toBe('/config/repositories?page=qa-targets')
     // A trailing slash is the same link; anything else under `/qa-targets` is not served.
-    expect(pathToAddress(`/qa-targets/${LOGIN}/credential/`, `?t=${token}`)?.address).toBe('work/repositories?page=qa-targets')
+    expect(pathToAddress(`/qa-targets/${LOGIN}/credential/`, `?t=${token}`)?.address).toBe('config/repositories?page=qa-targets')
     // MUTATION: route any `/qa-targets/...` path and these are not null.
     expect(pathToAddress(`/qa-targets/${LOGIN}`, `?t=${token}`)).toBeNull()
     expect(pathToAddress(`/qa-targets/${LOGIN}/credential/more`, `?t=${token}`)).toBeNull()
@@ -820,7 +820,7 @@ describe('QA targets: the credential link, opened in the console (VQ6-ROUTE)', (
       return f
     }, WAIT)
     expect(form.getAttribute('data-target-id')).toBe(LOGIN)
-    expect(window.location.pathname).toBe('/repositories')
+    expect(window.location.pathname).toBe('/config/repositories')
     expect(new URLSearchParams(window.location.search).get('page')).toBe('qa-targets')
     form.querySelector<HTMLInputElement>('input[name="username"]')!.value = 'qa-bot@example.com'
     form.querySelector<HTMLInputElement>('input[name="password"]')!.value = runtimeValue(18)

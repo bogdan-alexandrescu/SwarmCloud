@@ -1624,7 +1624,7 @@ function accessLede(view: View, tenant: string | null): string {
   return `The orgs and repositories SwarmCloud may reach as you${inTenant}, each Read or Write, and whether it can.`
 }
 
-/** Work › Access. */
+/** Config › GitHub access (Work › Access until CONFIG-NAV). */
 export function AccessScreen() {
   const overview = useUrRead(loadAccess, 'access')
   const [view, setViewState] = useState<View>(viewFromUrl)
@@ -1635,7 +1635,7 @@ export function AccessScreen() {
   const tenant = dataOf(overview.state)?.tenant_id ?? null
   return (
     <div className="ur-page ac-page">
-      <PageHead title="Access">
+      <PageHead title="GitHub access">
         <UrRefresh reads={[overview]} />
         {/* THE SWITCH AND SETUP ARE ONE GROUP (visual QA run 4, work-b-001, part
             of #1680). As two items of the head's actions, Setup was the one

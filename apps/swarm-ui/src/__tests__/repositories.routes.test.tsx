@@ -1,16 +1,19 @@
-// WORK › REPOSITORIES IN THE NAV AND THE ROUTER (repositories.html §1: "Work ›
-// Repositories, after Runs, in the panel"; the mock-up's shell draws it as the
-// last Work page, after Timeline).
+// CONFIG › REPOSITORIES IN THE NAV AND THE ROUTER (repositories.html §1 put
+// it under Work, after Runs; CONFIG-NAV, part of #2157, moved it to Config,
+// second, after GitHub access, by BGD's decision of 2026-10-23).
 //
-// The pages are one tab, `work/repositories`, with the page on its query --
+// The pages are one tab, `config/repositories`, with the page on its query --
 // the way one run is `work/runs?run=<id>` -- and real paths in the bar:
 //
-//   /repositories                        the list
-//   /repositories/register               Register repository
-//   /repositories/tokens                 Git tokens
-//   /repositories/tokens/permissions     Permissions
-//   /repositories/<repo_id>              one repository, Overview
-//   /repositories/<repo_id>/<tab>        one of its tabs
+//   /config/repositories                        the list
+//   /config/repositories/register               Register repository
+//   /config/repositories/tokens                 Git tokens
+//   /config/repositories/tokens/permissions     Permissions
+//   /config/repositories/<repo_id>              one repository, Overview
+//   /config/repositories/<repo_id>/<tab>        one of its tabs
+//
+// The same tails under `/repositories`, and `work/repositories?...` addresses,
+// land on these (config.nav.test.tsx holds the landings).
 //
 // Without the Repositories branch in `fromAddress`, a query on the tab would
 // be dropped by the normalise effect and every sub-page would land on the list.
@@ -22,38 +25,34 @@ import { App, SECTIONS, canonical, fromAddress } from '../App'
 import { PANEL_PAGES } from '../Spine'
 import { addressToPath, pathToAddress } from '../paths'
 
-const work = () => SECTIONS.find((s) => s.id === 'work')!
+const config = () => SECTIONS.find((s) => s.id === 'config')!
 
 const PAIRS: readonly (readonly [string, string])[] = [
-  ['work/repositories', '/repositories'],
-  ['work/repositories?page=register', '/repositories/register'],
-  ['work/repositories?page=tokens', '/repositories/tokens'],
-  ['work/repositories?page=permissions', '/repositories/tokens/permissions'],
-  ['work/repositories?repo=repo_0a1b2c3d4e5f6071', '/repositories/repo_0a1b2c3d4e5f6071'],
-  ['work/repositories?repo=repo_0a1b2c3d4e5f6071&tab=settings', '/repositories/repo_0a1b2c3d4e5f6071/settings'],
-  ['work/repositories?repo=repo_0a1b2c3d4e5f6071&tab=test-map', '/repositories/repo_0a1b2c3d4e5f6071/test-map'],
+  ['config/repositories', '/config/repositories'],
+  ['config/repositories?page=register', '/config/repositories/register'],
+  ['config/repositories?page=tokens', '/config/repositories/tokens'],
+  ['config/repositories?page=permissions', '/config/repositories/tokens/permissions'],
+  ['config/repositories?repo=repo_0a1b2c3d4e5f6071', '/config/repositories/repo_0a1b2c3d4e5f6071'],
+  ['config/repositories?repo=repo_0a1b2c3d4e5f6071&tab=settings', '/config/repositories/repo_0a1b2c3d4e5f6071/settings'],
+  ['config/repositories?repo=repo_0a1b2c3d4e5f6071&tab=test-map', '/config/repositories/repo_0a1b2c3d4e5f6071/test-map'],
   // Screens 8 and 9; Impact carries the pull request a run's PR card opened it on.
-  ['work/repositories?repo=repo_0a1b2c3d4e5f6071&tab=graph', '/repositories/repo_0a1b2c3d4e5f6071/graph'],
-  ['work/repositories?repo=repo_0a1b2c3d4e5f6071&tab=impact', '/repositories/repo_0a1b2c3d4e5f6071/impact'],
-  ['work/repositories?repo=repo_0a1b2c3d4e5f6071&tab=impact&pr=57', '/repositories/repo_0a1b2c3d4e5f6071/impact?pr=57'],
+  ['config/repositories?repo=repo_0a1b2c3d4e5f6071&tab=graph', '/config/repositories/repo_0a1b2c3d4e5f6071/graph'],
+  ['config/repositories?repo=repo_0a1b2c3d4e5f6071&tab=impact', '/config/repositories/repo_0a1b2c3d4e5f6071/impact'],
+  ['config/repositories?repo=repo_0a1b2c3d4e5f6071&tab=impact&pr=57', '/config/repositories/repo_0a1b2c3d4e5f6071/impact?pr=57'],
 ]
 
-describe('the Work section carries Repositories', () => {
-  it('lists Repositories after Runs, as the last Work page before the submit forms', () => {
-    const ids = work().tabs.map((t) => t.id)
-    expect(ids).toContain('repositories')
-    expect(ids.indexOf('repositories')).toBeGreaterThan(ids.indexOf('runs'))
-    expect(ids.indexOf('repositories')).toBe(ids.indexOf('timeline') + 1)
-    expect(work().tabs.find((t) => t.id === 'repositories')!.label).toBe('Repositories')
+describe('the Config section carries Repositories', () => {
+  it('lists Repositories second, after GitHub access', () => {
+    const ids = config().tabs.map((t) => t.id)
+    expect(ids.indexOf('repositories')).toBe(ids.indexOf('github') + 1)
+    expect(config().tabs.find((t) => t.id === 'repositories')!.label).toBe('Repositories')
   })
 
-  it('draws a Repositories row in the Work panel, after Timeline', () => {
-    const keys = PANEL_PAGES.work.map((p) => p.key)
-    // Followed only by OB8's Setup and Access (#780).
-    expect(keys.indexOf('repositories')).toBe(keys.indexOf('timeline') + 1)
-    expect(keys.slice(keys.indexOf('repositories') + 1)).toEqual(['setup', 'access'])
-    const row = PANEL_PAGES.work.find((p) => p.key === 'repositories')!
-    expect([row.label, row.to, row.icon]).toEqual(['Repositories', 'work/repositories', 'repo'])
+  it('draws a Repositories row in the Config panel, after GitHub access', () => {
+    const keys = PANEL_PAGES.config.map((p) => p.key)
+    expect(keys.indexOf('repositories')).toBe(keys.indexOf('github') + 1)
+    const row = PANEL_PAGES.config.find((p) => p.key === 'repositories')!
+    expect([row.label, row.to, row.icon]).toEqual(['Repositories', 'config/repositories', 'repo'])
   })
 })
 
@@ -69,8 +68,8 @@ describe('paths', () => {
   })
 
   it('reads a trailing slash and an unknown tab as the repository itself', () => {
-    expect(pathToAddress('/repositories/')?.address).toBe('work/repositories')
-    expect(pathToAddress('/repositories/repo_0a1b2c3d4e5f6071/bogus')?.address).toBe('work/repositories?repo=repo_0a1b2c3d4e5f6071')
+    expect(pathToAddress('/config/repositories/')?.address).toBe('config/repositories')
+    expect(pathToAddress('/config/repositories/repo_0a1b2c3d4e5f6071/bogus')?.address).toBe('config/repositories?repo=repo_0a1b2c3d4e5f6071')
   })
 })
 
@@ -78,15 +77,15 @@ describe('the router keeps the page on the tab', () => {
   it('opens each page on the Repositories tab, never as an agent', () => {
     for (const [address] of PAIRS) {
       const r = fromAddress(address)
-      expect([r.sectionId, r.tab, r.taskId], address).toEqual(['work', 'repositories', null])
+      expect([r.sectionId, r.tab, r.taskId], address).toEqual(['config', 'repositories', null])
       expect(canonical(r), address).toBe(address)
     }
   })
 })
 
-describe('the app opens /repositories', () => {
+describe('the app opens /config/repositories', () => {
   it('heads the page Repositories and lights its panel row', async () => {
-    window.history.pushState(null, '', '/repositories')
+    window.history.pushState(null, '', '/config/repositories')
     render(<App />)
     await waitFor(() => expect(document.querySelector('main h1, .c-phead h1')?.textContent).toBe('Repositories'), { timeout: 4000 })
     const on = document.querySelector('.sk-panel .sk-pk.is-on .sk-pl')

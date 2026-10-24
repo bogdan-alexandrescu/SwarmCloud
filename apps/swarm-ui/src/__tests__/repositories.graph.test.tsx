@@ -142,8 +142,8 @@ describe('the repository tabs carry Graph and Impact (Detail A, screens 8 and 9)
     expect(tabs.map((t) => visible(t.querySelector('.c-tab-label')))).toEqual([
       'Overview', 'Graph', 'Impact', 'Test map', 'Hot-spots', 'Index runs', 'Settings', 'Used by',
     ])
-    expect(tabs[1]!.getAttribute('href')).toBe(`/repositories/${ID}/graph`)
-    expect(tabs[2]!.getAttribute('href')).toBe(`/repositories/${ID}/impact`)
+    expect(tabs[1]!.getAttribute('href')).toBe(`/config/repositories/${ID}/graph`)
+    expect(tabs[2]!.getAttribute('href')).toBe(`/config/repositories/${ID}/impact`)
   })
 })
 

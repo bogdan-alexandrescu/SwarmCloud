@@ -1596,7 +1596,7 @@ that names none.
   `swarm_workflow` and the map beside the spec, then given rows with
   `/sc attach`.
 * **Nothing here registers a server or stores a long-lived credential.** An admin
-  registers a server in the console (Settings › Workspace › MCP servers), and a
+  registers a server in the console (Config › MCP servers), and a
   `workspace_secret` server's key is a workspace secret granted to `mcp:<name>`.
   No tool's schema has a field either would fit in.
 * **No log of this plugin holds a credential:** not a reply, a refusal, the

@@ -175,7 +175,8 @@ describe('the page states what SwarmCloud may do as you', () => {
   it('says Read is enforced by SwarmCloud, there is no workflows write, and verifying only reads', async () => {
     api()
     await mount()
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Access')
+    // Config › GitHub access since CONFIG-NAV (part of #2157).
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('GitHub access')
     const d9 = visible(document.querySelector('[data-rule="D9"]'))
     expect(d9).toContain('SwarmCloud enforces it')
     expect(d9).toContain('GitHub itself would let the push through')

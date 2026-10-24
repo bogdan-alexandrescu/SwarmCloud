@@ -194,9 +194,9 @@ describe('the link is the API\'s, or this console\'s Setup page', () => {
   })
 
   it('falls back to the Setup page at the code\'s anchor for anything else', () => {
-    expect(workspaceRefusal(error({ setup_url: 'javascript:alert(1)' }))?.setupUrl).toBe('/setup#workspace')
-    expect(workspaceRefusal(error({ setup_url: '//elsewhere.example.com/x' }))?.setupUrl).toBe('/setup#workspace')
-    expect(workspaceRefusal(error(undefined, 'NO_CLAUDE_ACCOUNT'))?.setupUrl).toBe('/setup#claude-account')
+    expect(workspaceRefusal(error({ setup_url: 'javascript:alert(1)' }))?.setupUrl).toBe('/config/workspace/setup#workspace')
+    expect(workspaceRefusal(error({ setup_url: '//elsewhere.example.com/x' }))?.setupUrl).toBe('/config/workspace/setup#workspace')
+    expect(workspaceRefusal(error(undefined, 'NO_CLAUDE_ACCOUNT'))?.setupUrl).toBe('/config/workspace/setup#claude-account')
   })
 
   it('is no refusal of the gate\'s on another status or code', () => {

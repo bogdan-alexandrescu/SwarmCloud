@@ -239,7 +239,7 @@ describe('the list', () => {
     expect(visible(builtIn)).toContain('Index · example-org/example-api')
     expect(visible(builtIn)).toContain('24 h + on change')
     expect(visible(builtIn)).toContain('at most every 30 min')
-    expect(within(builtIn).getByRole('link', { name: /Settings/ }).getAttribute('href')).toBe('/repositories/repo_a/settings')
+    expect(within(builtIn).getByRole('link', { name: /Settings/ }).getAttribute('href')).toBe('/config/repositories/repo_a/settings')
   })
 
   it('says the built-in rows were not read when the repositories read fails', async () => {
