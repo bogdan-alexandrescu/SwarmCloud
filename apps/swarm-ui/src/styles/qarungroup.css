@@ -1,0 +1,45 @@
+/* ==========================================================================
+   ONE QA DISPATCH'S RUN PAGE, /qa-runs/<group_id> (QAENV-UI-RUNPAGE, part of
+   #2136; Config proposal E, S9b desktop and S9d phone). One column per leg;
+   on a phone the columns become a switch and one leg is drawn at a time.
+   Tokens only, so light and dark come from the theme. Classes are `qr-`;
+   `.qa-leg` is the column, the name the tests find it by.
+   ========================================================================== */
+
+.qr-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.qr-cols[data-legs="1"] { grid-template-columns: minmax(0, 1fr); }
+.qr-cols[data-legs="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.qa-leg { min-width: 0; }
+.qr-leg-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.qr-leg-h h2 { margin: 0; }
+.qr-host { margin: -4px 0 10px; font-family: var(--mono); font-size: var(--t-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+.qr-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.qr-kv dt { color: var(--text-dim); }
+.qr-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.qr-wf { font-family: var(--mono); color: var(--sk-ac); text-decoration: none; }
+.qr-wf:hover { text-decoration: underline; }
+.qr-lines { display: flex; flex-direction: column; gap: 2px; }
+.qr-paths { font-family: var(--mono); font-size: var(--t-micro); overflow-wrap: anywhere; }
+.qr-note, .qr-why, .qr-hint { color: var(--text-dim); font-size: var(--t-micro); }
+.qr-hint { margin: 0 0 8px; }
+.qr-page > .qr-hint { margin: 0; }
+.qr-warn { color: var(--s-warn); }
+.qr-absent { display: inline-flex; gap: 6px; align-items: baseline; flex-wrap: wrap; margin: 0; }
+.qr-reason { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.qr-notstarted { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--s-warn); color: var(--s-warn); font-size: var(--t-micro); }
+.qr-only { display: flex; flex-direction: column; gap: 2px; padding: 8px 0; border-bottom: 1px solid var(--line-soft); font-size: var(--t-meta); }
+.qr-only:last-child { border-bottom: 0; }
+.qr-switch { display: none; }
+
+@media (max-width: 1079px) {
+  .qr-cols[data-legs="3"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 719px) {
+  /* S9d: the environments are a switch, one leg drawn at a time. */
+  .qr-switch { display: inline-flex; align-self: flex-start; max-width: 100%; }
+  .qr-cols, .qr-cols[data-legs="3"] { grid-template-columns: minmax(0, 1fr); }
+  .qa-leg.is-off { display: none; }
+  .qr-kv { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .qr-kv dd { margin-bottom: 6px; }
+}
+.qr-note-line { display: block; margin-top: 2px; }

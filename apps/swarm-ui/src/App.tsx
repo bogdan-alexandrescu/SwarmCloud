@@ -62,6 +62,7 @@ import { CountNote, FrameAge, HeadAge, PageHead, RoutedPage, SectionHelp, timeAg
 import { SubmitScreen } from './Submit'
 import { SubmitChooser } from './SubmitChooser'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
+import { QaRunGroupScreen } from './QaRunGroup'
 import { IssueSubmitScreen } from './IssueSubmit'
 import { RunsScreen } from './Runs'
 import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard } from './Schedules'
@@ -2155,6 +2156,10 @@ function SectionBody({
   // to these cases. Nothing in it can move alone.
   // Timeline's second page, Outcomes (`/timeline/outcomes`): today's ledger, unchanged.
   if (`${sectionId}/${tab}` === 'work/timeline' && page === 'outcomes') return <ActivityScreen view={view} onView={onView} />
+  // One QA dispatch's run page (`/qa-runs/<group_id>`, QAENV-UI-RUNPAGE), under
+  // Config › Repositories › QA targets: its address is that tab's `qarun=<id>`.
+  const qarun = `${sectionId}/${tab}` === 'config/repositories' && view !== null ? new URLSearchParams(view).get('qarun') : null
+  if (qarun !== null && qarun !== '') return <QaRunGroupScreen groupId={qarun} go={go} />
   switch (`${sectionId}/${tab}`) {
     case 'overview/now':
       return <OverviewScreen setup={<SetupCard />} waitingOnYou={<WaitingOnYouCard go={go} />} />
