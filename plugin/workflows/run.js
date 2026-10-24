@@ -1394,9 +1394,11 @@ function stepMismatches(spec, submitted, where) {
 // digest or spec step is therefore not evidence of a different workflow, only
 // of a thin copy, and it is settled by reading the workflow back (readBack);
 // a digest that DIFFERS, a changed dependency or an invented step is evidence,
-// and is judged from the reply as before.
-function thinReply(spec, submitted) {
+// and is judged from the reply as before -- even when the reply also misses a
+// spec step: a read of step ids and profiles cannot clear a reworded prompt.
+function thinReply(spec, submitted, digest) {
   if (!submitted.spec_digest) return true
+  if (submitted.spec_digest !== digest) return false
   const named = {}
   for (const step of submitted.steps || []) if (step) named[step.step_id] = true
   return spec.steps.some((step) => !named[step.step_id])
@@ -2525,7 +2527,7 @@ const problems = mismatches(spec, submitted, digest)
 const RUNS_REGARDLESS = ' The workflow runs regardless: read it with swarm_workflow_status, or cancel it with swarm_workflow_cancel if it is not what was meant.'
 // How a thin reply was settled (thinReply), handed back on the result.
 let verifyNote = null
-if (problems.length > 0 && thinReply(spec, submitted)) {
+if (problems.length > 0 && thinReply(spec, submitted, digest)) {
   // ONE read-back decides (#2206): the server's steps, not the relay's copy.
   const read = await readBack(submitted.workflow_id, titleName([spec.title, spec.label, submitted.workflow_id]))
   if (read.failure) {
@@ -2552,7 +2554,9 @@ if (problems.length > 0 && thinReply(spec, submitted)) {
   if (!submitted.spec_digest) thin.push('the reply carried no spec digest')
   const named = (submitted.steps || []).filter((step) => step && specStepsById(spec)[step.step_id]).length
   if (named < spec.steps.length) thin.push('it named ' + named + ' of the spec\'s ' + spec.steps.length + ' step(s)')
-  verifyNote = thin.join(' and ') + '; SwarmCloud\'s read of the workflow shows every spec step, with its dependencies and the profile the spec names, so it is reported submitted. The digest was not served, so it is not checked here.'
+  // thinReply reads a served digest that differs as a mismatch, so one served here matched.
+  verifyNote = thin.join(' and ') + '; SwarmCloud\'s read of the workflow shows every spec step, with its dependencies and the profile the spec names, so it is reported submitted. ' +
+    (submitted.spec_digest ? 'The digest served matches the spec\'s.' : 'The digest was not served, so it is not checked here.')
   log(submitted.workflow_id + ' · ' + verifyNote)
   submitted = Object.assign({}, submitted, {
     steps: back.steps,
