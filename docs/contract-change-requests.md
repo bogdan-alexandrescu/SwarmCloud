@@ -14344,7 +14344,7 @@ ships without it.
 
 ### What is true today
 
-A workflow spec or a single task may name an existing pull request,
+A workflow spec or a single agent may name an existing pull request,
 `publish_to_pr: <N>` (BGD's approval of #2183, 2026-10-24). swarm-api checks
 it at submission (`swarm_api/publishtopr.py`) and stores what it checked in
 every step's `metadata.dispatch` as `publish_to_pr: {"number": N, "task_id":
@@ -14362,7 +14362,7 @@ and read by the worker from there instead of the dispatch block.
 ### What it would break if accepted
 
 Nothing at once: the dispatch block's key would be read as a fallback for
-tasks stored before the field, then retired. Every reader of the block
+agents stored before the field, then retired. Every reader of the block
 (`lifecycle._publish_to_pr`, `verdictpublish._dispatch_facts`) moves to the
 field in the same change.
 

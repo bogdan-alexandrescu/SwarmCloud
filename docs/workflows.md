@@ -1072,7 +1072,7 @@ the laptop. A spec now names the pull request instead:
            {"step_id": "fix", "depends_on": ["implement"], "builds_on": "implement", ...}]}
 ```
 
-A single task (`POST /v1/tasks`) takes the same field under `direct-pr`.
+A single agent (`POST /v1/tasks`) takes the same field under `direct-pr`.
 
 **What it does.** Every step that would clone the workflow's ref starts from
 the pull request's **head commit** instead, read before anything is cloned.
@@ -1097,7 +1097,7 @@ request N of another repository is a different pull request.
 swarm-api reads the pull request once from GitHub with the submitter's forge
 credential (`swarm_api/publishtopr.py`) and refuses one that does not exist,
 is closed or merged, comes from a fork, or whose head branch is not a
-`swarm/task_*` branch of a task **in the submitting tenant** -- another
+`swarm/task_*` branch of an agent **in the submitting tenant** -- another
 tenant's lane branch is refused in the same words as a branch no lane
 published. It also refuses the shapes that cannot publish onto one branch:
 any strategy but `direct-pr` and `integrate`; more than one agent step under
@@ -1107,22 +1107,22 @@ any strategy but `direct-pr` and `integrate`; more than one agent step under
 merge step or `metadata.merge` (the merge step merges a pull request its
 workflow opened, and this one opens none). A repository's `merge_policy` or
 the platform's `merge_by_default` simply does not apply to such a workflow.
-What it checked -- the number and the task whose branch is the head -- is
+What it checked -- the number and the agent whose branch is the head -- is
 signed into every step's dispatch block.
 
 **What the worker refuses** (`agent_worker/publishpr.py`). Before the agent
 starts it reads the pull request again: closed, merged, from a fork, or on
-another branch than the signed task's, and the step **fails with the reason
+another branch than the signed agent's, and the step **fails with the reason
 and runs nothing** -- no clone, no agent. Before the push it reads it once
 more and refuses a pull request that has since closed, and a head that
 **moved** since the step started (a person pushed, or another lane did):
 "head moved". The lane's HEAD must descend from that head, and the push is
 leased on it, so a head moved between that read and the push is refused by
-GitHub too. **Nothing is ever force-pushed.** A head moved while a task was
+GitHub too. **Nothing is ever force-pushed.** A head moved while an agent was
 parked is still refused: the head the first attempt started from is in the
 checkpoint manifest. A lane whose commits touch `.github/workflows/` is
 refused at the push, with the change left as `workflow-lines.patch`: the
-broker that pushes workflow files pushes only a task's own branch.
+broker that pushes workflow files pushes only an agent's own branch.
 
 **Without the field nothing changes**: every step clones the workflow's ref,
 pushes `swarm/<its task>` and opens its pull request exactly as before. A
