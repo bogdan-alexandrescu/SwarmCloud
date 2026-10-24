@@ -1,0 +1,968 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>SwarmCloud · Config proposal C: Repository-centric</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;550;600;650;700&display=swap" rel="stylesheet">
+<style>
+/* The console's own tokens (apps/swarm-ui/src/styles.css), light first, dark by the
+   same three-way rule the console uses: an explicit data-theme wins, otherwise the
+   system preference. Frames and the page share them, so the toggle flips everything.
+   Type floor 12px, no all-caps, no letter-spacing (PICKS.md). */
+:root{color-scheme:light;--bg:#f3f6f9;--surface:#ffffff;--surface-2:#eef4fa;--line:#d6e0ea;--line-soft:#dde5ee;--text:#0d1724;--text-dim:#4f5d6e;--text-faint:#606a77;--ok:#1a7f37;--warn:#6e4a00;--bad:#681117;--info:#0369a1;--paused:#7139db;--ok-ink:#15662c;--warn-ink:#805500;--bad-ink:#a71b25;--info-ink:#075985;--paused-ink:#6629d8;--ctl-bd:#7d8ea3;--ctl-onac:#ffffff;--shadow:0 12px 32px rgba(11,58,122,.16);--font:"Inter Tight",ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;--mono:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;--r-ctl:8px;--r-card:12px;--r-dlg:14px}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#06101e;--surface:#0c1a2e;--surface-2:#11233b;--line:#1e3350;--line-soft:#1d3049;--text:#eef4fa;--text-dim:#9fb0c4;--text-faint:#828d9b;--ok:#58c668;--warn:#ffd60a;--bad:#f85149;--info:#7cc8f8;--paused:#b288f8;--ok-ink:#42bf53;--warn-ink:#d29922;--bad-ink:#fa7872;--info-ink:#b9e3fc;--paused-ink:#b892f9;--ctl-bd:#5f7087;--ctl-onac:#06101e;--shadow:0 12px 32px rgba(0,0,0,.55)}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#06101e;--surface:#0c1a2e;--surface-2:#11233b;--line:#1e3350;--line-soft:#1d3049;--text:#eef4fa;--text-dim:#9fb0c4;--text-faint:#828d9b;--ok:#58c668;--warn:#ffd60a;--bad:#f85149;--info:#7cc8f8;--paused:#b288f8;--ok-ink:#42bf53;--warn-ink:#d29922;--bad-ink:#fa7872;--info-ink:#b9e3fc;--paused-ink:#b892f9;--ctl-bd:#5f7087;--ctl-onac:#06101e;--shadow:0 12px 32px rgba(0,0,0,.55)}
+:root{--tint:color-mix(in srgb,var(--info) 13%,var(--surface));--ok-bg:color-mix(in srgb,var(--ok) 13%,var(--surface));--warn-bg:color-mix(in srgb,var(--warn-ink) 15%,var(--surface));--bad-bg:color-mix(in srgb,var(--bad-ink) 13%,var(--surface));--paused-bg:color-mix(in srgb,var(--paused) 13%,var(--surface))}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 var(--font);overflow-x:clip}
+a{color:var(--info-ink)}
+code,.mono{font-family:var(--mono);font-size:13px;overflow-wrap:anywhere}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--info);outline-offset:2px}
+
+/* ---------- the document around the frames ---------- */
+.wrap{max-width:1488px;margin:0 auto;padding:32px 16px 96px}
+.kicker{font:500 13px var(--mono);color:var(--info-ink);margin:0}
+h1{font-size:clamp(28px,5vw,40px);line-height:1.12;margin:.3em 0 .4em;text-wrap:balance}
+h2{font-size:24px;line-height:1.25;margin:72px 0 6px;padding-top:20px;border-top:1px solid var(--line);text-wrap:balance}
+h2 .n{font:500 14px var(--mono);color:var(--info-ink);margin-right:10px}
+h3.sub{font-size:18px;margin:36px 0 4px}
+.lede{font-size:17px;color:var(--text-dim);max-width:820px}
+p{max-width:82ch}
+.toolbar{position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;padding:10px 16px;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(6px);border-bottom:1px solid var(--line)}
+.toolbar b{font-size:13px;font-weight:600}
+.toolbar .grp{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.tog{display:inline-flex;border:1px solid var(--ctl-bd);border-radius:var(--r-ctl);overflow:hidden;background:var(--surface)}
+.tog button{border:0;background:none;padding:5px 11px;font-size:13px;cursor:pointer;display:inline-flex;gap:6px;align-items:center;color:var(--text-dim)}
+.tog button+button{border-left:1px solid var(--line)}
+.tog button[aria-pressed="true"]{background:var(--tint);color:var(--info-ink);font-weight:600}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 0;padding:0;list-style:none}
+.toc a{display:inline-block;padding:5px 12px;border:1px solid var(--line);border-radius:99px;color:var(--text);text-decoration:none;font-size:13px;background:var(--surface)}
+.toc a:hover{border-color:var(--info);color:var(--info-ink)}
+.idea{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:18px;margin-top:18px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+.idea h4{margin:0 0 6px;font-size:15px;color:var(--info-ink)}
+.idea p,.idea ul{margin:0;font-size:14px}.idea ul{padding-left:18px}.idea li{margin:4px 0}
+.doc-tw{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin-top:14px}
+table.doc{border-collapse:collapse;width:100%;font-size:14px;min-width:640px}
+table.doc th,table.doc td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+table.doc th{font-size:13px;font-weight:600;color:var(--text-dim);background:var(--surface-2)}
+table.doc tr:last-child td{border-bottom:0}
+.frames{display:flex;flex-wrap:wrap;gap:22px;margin-top:16px;align-items:flex-start}
+.fig{margin:0;min-width:0;max-width:100%}
+.fig.d{flex:1 1 100%}
+.fig.p{flex:0 1 390px}
+.fig figcaption{font-size:13px;color:var(--text-dim);margin-top:8px;max-width:82ch}
+.fig figcaption b{color:var(--text)}
+.scroller{overflow:auto;border:1px solid var(--line);border-radius:12px;max-width:100%}
+.fit .scroller{overflow:hidden}
+.fit .scroller>.app{zoom:var(--z,1)}
+.exd{font-size:12px;color:var(--text-faint)}
+/* an identifier, path or flag never breaks at its own hyphens or slashes */
+table.doc code,.cs code,.recap code,.nw{white-space:nowrap}
+.phonly{display:none}
+
+/* ---------- frames: the console ---------- */
+.app{display:flex;width:1440px;min-height:760px;background:var(--bg);color:var(--text);font:14px/1.5 var(--font);text-align:left;position:relative}
+.app.short{min-height:560px}
+.app a,.phone a{text-decoration:none;cursor:default}
+.ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.mk{width:12px;height:12px;flex:none}
+/* the spine: #0b3a7a to #06101e in both themes (navigation.html V2) */
+.spine{width:84px;flex:none;background:linear-gradient(180deg,#0b3a7a,#06101e);display:flex;flex-direction:column;align-items:center;padding:14px 0 12px;gap:2px;color:#d3e6f7}
+.spine .sb{padding:0 0 12px;display:flex}
+.si{width:74px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;border-radius:10px;color:#d3e6f7;position:relative;font-size:12px;line-height:1.2;text-align:center}
+.si.on{background:rgba(124,200,248,.22);color:#fff;font-weight:600}
+.si.on::before{content:"";position:absolute;left:-5px;top:10px;bottom:10px;width:3px;border-radius:2px;background:#7cc8f8}
+.si.cta{background:#38bdf8;color:#06101e;width:56px;border-radius:12px;font-weight:600}
+.si .dot{position:absolute;top:5px;right:16px;width:8px;height:8px;border-radius:50%;background:#f5c451;box-shadow:0 0 0 2px #0b3a7a}
+.ssep{width:34px;height:1px;background:rgba(255,255,255,.18);margin:6px 0}
+.sgrow{flex:1}
+.av{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#38bdf8,#0b3a7a);color:#fff;font:600 12px/30px var(--font);text-align:center;flex:none;margin-top:8px;box-shadow:0 0 0 2px rgba(255,255,255,.2)}
+/* the panel: 236px of the section's pages */
+.panel{width:236px;flex:none;background:var(--surface);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:14px 0 12px;min-height:0}
+.ph{display:flex;align-items:center;gap:8px;padding:2px 16px 12px}
+.wm{font-weight:650;font-size:17px}.wm span{color:var(--info-ink)}
+.env{font:500 12px/1 var(--mono);padding:4px 7px;border-radius:99px;color:var(--info-ink);border:1px solid color-mix(in srgb,var(--info) 45%,transparent);background:var(--tint);margin-left:auto}
+.wsb{display:flex;align-items:center;gap:9px;margin:0 10px 10px;padding:8px 10px;border:1px solid var(--line);border-radius:10px}
+.wsb .tg{width:26px;height:26px;border-radius:7px;background:var(--tint);color:var(--info-ink);font:650 12px/26px var(--font);text-align:center;flex:none}
+.wsb .tt{display:flex;flex-direction:column;line-height:1.25;flex:1;min-width:0}
+.wsb .tt b{font-size:13px}.wsb .tt small{font-size:12px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pt{font-size:13px;font-weight:600;color:var(--text-dim);padding:8px 18px 6px;display:flex;align-items:center;gap:6px}
+.pg{display:flex;align-items:center;gap:9px;padding:6px 9px;margin:1px 10px;border-radius:8px;color:var(--text-dim);position:relative;font-size:13.5px}
+.pg .pl{color:var(--text);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pg.on{background:var(--tint);color:var(--info-ink)}.pg.on .pl{color:var(--info-ink);font-weight:600}
+.pg.on::before{content:"";position:absolute;left:-10px;top:7px;bottom:7px;width:3px;border-radius:2px;background:var(--info)}
+.pg.out .pl{color:var(--text-dim)}
+.cnt{font:500 12px var(--mono);color:var(--text-dim)}
+.kids{margin:2px 10px 6px 30px;border-left:1px solid var(--line);padding-left:8px;display:flex;flex-direction:column}
+.kids .kr{font:500 12px var(--mono);color:var(--text);padding:4px 8px 3px;overflow-wrap:anywhere}
+.kid{padding:4px 8px;border-radius:7px;color:var(--text-dim);font-size:13px}
+.kid.on{color:var(--info-ink);background:var(--tint);font-weight:600}
+.pnote{margin:6px 18px 0;font-size:12px;color:var(--text-dim);line-height:1.45}
+.pscroll{flex:1;min-height:0}
+.pf{border-top:1px solid var(--line);margin-top:10px;padding:10px 14px 0;display:flex;flex-direction:column;gap:6px}
+.pfr{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.pfr b{font-size:13px}
+.rb{font-size:12px;color:var(--text-dim);border:1px solid var(--line);border-radius:5px;padding:0 5px}
+.pf small{font-size:12px;color:var(--text-dim)}
+.pf .tog{align-self:flex-start}.pf .tog button{padding:4px 8px;font-size:12px}
+.pf .links{display:flex;gap:12px;font-size:12px}.pf .links a{color:var(--info-ink)}
+.stamp{font:12px var(--mono);color:var(--text-faint)}
+/* the content column */
+.mn{flex:1;min-width:0;padding:22px 28px 40px;display:flex;flex-direction:column;gap:14px;container-type:inline-size}
+.crumb{font-size:12.5px;color:var(--text-dim)}.crumb b{color:var(--text);font-weight:600}.crumb a{color:var(--info-ink)}
+.hd{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.hd h3{margin:0;font-size:22px;line-height:1.2;overflow-wrap:anywhere}
+.hd .acts{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.age{font:12px var(--mono);color:var(--text-dim)}
+.intro{margin:0;color:var(--text-dim);font-size:14px;max-width:96ch}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-card);padding:14px 16px;min-width:0}
+.ch{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.ch h4{margin:0;font-size:15.5px;font-weight:650}
+.ch .ca{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.cs{margin:-2px 0 10px;font-size:13px;color:var(--text-dim)}
+.cf{margin-top:10px;font-size:12.5px;color:var(--text-dim)}
+.g2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.g3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.g4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.side{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:14px;align-items:start}
+.b{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;border-radius:var(--r-ctl);border:1px solid var(--ctl-bd);background:var(--surface);font-size:13px;font-weight:550;white-space:nowrap;color:var(--text)}
+.b.sm{height:28px;padding:0 10px;font-size:12.5px}
+.b.p{background:var(--info);border-color:var(--info);color:var(--ctl-onac)}
+.b.q{border-color:transparent;background:none;color:var(--info-ink);padding:0 6px}
+.b.dg{color:var(--bad-ink)}
+.b[disabled]{opacity:.55}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:12px;line-height:1.4;padding:2px 8px;border-radius:99px;background:var(--surface-2);color:var(--text-dim);white-space:nowrap;border:1px solid var(--line-soft)}
+.chip.ok{background:var(--ok-bg);color:var(--ok-ink);border-color:transparent}
+.chip.warn{background:var(--warn-bg);color:var(--warn-ink);border-color:transparent}
+.chip.bad{background:var(--bad-bg);color:var(--bad-ink);border-color:transparent}
+.chip.info{background:var(--tint);color:var(--info-ink);border-color:transparent}
+.chip.pa{background:var(--paused-bg);color:var(--paused-ink);border-color:transparent}
+.seg{display:inline-flex;border:1px solid var(--ctl-bd);border-radius:var(--r-ctl);overflow:hidden;background:var(--surface);max-width:100%;flex-wrap:wrap}
+.seg>span{padding:5px 12px;font-size:13px;color:var(--text-dim);display:inline-flex;gap:6px;align-items:center;white-space:nowrap}
+.seg>span+span{border-left:1px solid var(--line)}
+.seg>span.on{background:var(--tint);color:var(--info-ink);font-weight:600}
+.seg>span.off{opacity:.55}
+.seg em{font:normal 12px var(--mono)}
+.st{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.st.ok{color:var(--ok-ink)}.st.warn{color:var(--warn-ink)}.st.bad{color:var(--bad-ink)}.st.neu{color:var(--text-dim)}.st.pa{color:var(--paused-ink)}.st.info{color:var(--info-ink)}
+.st>span{color:var(--text)}
+.dash{color:var(--text-dim);font-weight:600}
+.why{font-size:12px;color:var(--text-dim)}
+.mu{color:var(--text-dim)}.sm{font-size:12.5px}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+.tb{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
+.tb th{font-size:12px;font-weight:600;color:var(--text-dim);text-align:left;padding:8px 12px;background:var(--surface-2);border-bottom:1px solid var(--line);white-space:nowrap}
+.tb td{padding:8px 12px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+.tb tr:last-child td{border-bottom:0}
+.tb .r{text-align:right}
+.tb td .sub{display:block;font-size:12px;color:var(--text-dim)}
+.tb tr.hi td{background:color-mix(in srgb,var(--warn-ink) 7%,var(--surface))}
+.tb tr.grp td{background:var(--surface-2);font-weight:600;font-size:12.5px}
+.tb td.c,.tb th.c{text-align:center}
+.tb td.nm code{overflow-wrap:normal}
+.tb.brk td.nm code{white-space:nowrap}
+.box{display:inline-block;width:16px;height:16px;border:1.5px solid var(--ctl-bd);border-radius:4px;vertical-align:-3px;position:relative;background:var(--surface)}
+.box.on{background:var(--info);border-color:var(--info)}
+.box.on::after{content:"";position:absolute;left:4.5px;top:1px;width:4px;height:8px;border:solid var(--ctl-onac);border-width:0 2px 2px 0;transform:rotate(45deg)}
+.box.no{opacity:.45;background:repeating-linear-gradient(135deg,var(--line) 0 2px,transparent 2px 5px)}
+.ban{border:1px solid var(--line);border-left:3px solid var(--info);background:var(--tint);border-radius:10px;padding:10px 14px;font-size:13.5px}
+.ban.warn{border-left-color:var(--warn-ink);background:var(--warn-bg)}
+.ban.bad{border-left-color:var(--bad-ink);background:var(--bad-bg)}
+.ban.ok{border-left-color:var(--ok-ink);background:var(--ok-bg)}
+.ban b{display:block;margin-bottom:2px}
+.ban p{margin:0}
+.fld{display:flex;flex-direction:column;gap:5px;font-size:13px}
+.fld>span{font-weight:600}
+.fld small{font-size:12px;color:var(--text-dim)}
+.in{height:34px;border:1px solid var(--ctl-bd);border-radius:var(--r-ctl);background:var(--surface);padding:0 10px;display:flex;align-items:center;gap:8px;color:var(--text-faint);font-size:13px;min-width:0}
+.in.val{color:var(--text)}
+.in.mono{font-family:var(--mono)}
+.stack{display:flex;flex-direction:column;gap:12px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.tile{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:3px;min-width:0}
+.tile .tl{font-size:12.5px;color:var(--text-dim);display:flex;gap:6px;align-items:center}
+.tile .tv{font-size:20px;font-weight:650;font-variant-numeric:tabular-nums;line-height:1.25}
+.tile .ts{font-size:12.5px;color:var(--text-dim)}
+.tile a{color:var(--info-ink);font-size:12.5px}
+.rcards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.rc{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:9px;min-width:0}
+.rc.look{border-color:color-mix(in srgb,var(--warn-ink) 55%,var(--line))}
+.rc .rn{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.rc .rn b{font:500 14.5px var(--mono);overflow-wrap:anywhere}
+.rc dl{margin:0;display:grid;grid-template-columns:110px minmax(0,1fr);gap:5px 12px;font-size:13px}
+.rc dt{color:var(--text-dim)}.rc dd{margin:0;min-width:0}
+.rc .ra{display:flex;gap:8px;flex-wrap:wrap;margin-top:2px}
+.secnav{display:flex;gap:4px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.secnav span{padding:7px 12px;font-size:13.5px;color:var(--text-dim);border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap}
+.secnav span.on{color:var(--info-ink);border-bottom-color:var(--info);font-weight:600}
+.secnav em{font:normal 12px var(--mono);margin-left:4px}
+.anch{font:12px var(--mono);color:var(--text-faint)}
+.steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.steps li{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:10px;align-items:start;padding:8px 0;border-bottom:1px solid var(--line-soft);font-size:13.5px}
+.steps li:last-child{border-bottom:0}
+.steps .sn{width:22px;height:22px;border-radius:50%;border:1.5px solid var(--ctl-bd);font:600 12px/19px var(--font);text-align:center;color:var(--text-dim)}
+.steps .sn.ok{background:var(--ok-bg);border-color:var(--ok-ink);color:var(--ok-ink)}
+.steps .sn.warn{background:var(--warn-bg);border-color:var(--warn-ink);color:var(--warn-ink)}
+.steps small{display:block;color:var(--text-dim);font-size:12.5px}
+.owners{display:grid;grid-template-columns:260px minmax(0,1fr);gap:0;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface)}
+.olist{border-right:1px solid var(--line);display:flex;flex-direction:column}
+.oi{display:flex;gap:9px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line-soft);font-size:13.5px}
+.oi.on{background:var(--tint)}
+.oi .og{width:26px;height:26px;border-radius:7px;background:var(--surface-2);font:650 12px/26px var(--font);text-align:center;flex:none;color:var(--text-dim)}
+.oi .ot{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.3}
+.oi .ot small{font-size:12px;color:var(--text-dim)}
+.ophone{display:none}
+.rlist{display:flex;flex-direction:column}
+.rr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 14px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line-soft)}
+.rr b{font:500 13.5px var(--mono);overflow-wrap:anywhere}
+.rr small{display:block;font-size:12px;color:var(--text-dim)}
+.modal{position:relative;border-radius:var(--r-dlg);background:var(--surface);border:1px solid var(--line);box-shadow:var(--shadow);padding:18px 20px;display:flex;flex-direction:column;gap:12px;max-width:560px;width:100%}
+.modal h4{margin:0;font-size:17px;overflow-wrap:anywhere}
+.modal .mh{flex-wrap:nowrap;align-items:flex-start}.modal .mh h4{flex:1;min-width:0}
+.phone.sheet{height:844px}
+.overlay{position:absolute;inset:0;background:rgba(6,16,30,.45);display:flex;align-items:flex-start;justify-content:center;padding:70px 20px 20px;z-index:4}
+.recap{display:grid;grid-template-columns:110px minmax(0,1fr);gap:4px 12px;font-size:13px;background:var(--surface-2);border-radius:10px;padding:10px 12px}
+.recap dt{color:var(--text-dim)}.recap dd{margin:0;overflow-wrap:anywhere}
+.chart{display:grid;grid-template-columns:44px minmax(0,1fr);gap:0 8px}
+.yax{display:flex;flex-direction:column;justify-content:space-between;font:12px var(--mono);color:var(--text-dim);text-align:right;height:190px;padding-bottom:0}
+.plot{position:relative;height:190px;border-bottom:1px solid var(--ctl-bd)}
+.plot .gl{position:absolute;left:0;right:0;border-top:1px dashed var(--line)}
+.bars{position:absolute;inset:0;display:flex;align-items:flex-end;gap:2px}
+.bar{flex:1;display:flex;flex-direction:column-reverse;gap:2px;min-width:0;height:100%;justify-content:flex-start}
+.bar i{display:block;background:var(--info);border-radius:0}
+.bar i:first-child{border-radius:0 0 1px 1px}
+.bar i:last-child{border-radius:4px 4px 0 0}
+.bar i.rt{background:repeating-linear-gradient(135deg,var(--paused) 0 2px,color-mix(in srgb,var(--paused) 35%,var(--surface)) 2px 5px)}
+.bar.today i{opacity:.55}
+.xax{grid-column:2;display:flex;justify-content:space-between;font:12px var(--mono);color:var(--text-dim);padding-top:4px}
+.lg{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--text-dim)}
+.lg i{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:6px;background:var(--info)}
+.lg i.rt{background:repeating-linear-gradient(135deg,var(--paused) 0 2px,color-mix(in srgb,var(--paused) 35%,var(--surface)) 2px 5px)}
+.hb{display:flex;align-items:center;gap:8px}
+.hb .tr{flex:1;height:6px;border-radius:3px;background:var(--surface-2);overflow:hidden;min-width:40px}
+.hb .tr i{display:block;height:100%;background:var(--info);border-radius:3px}
+.cols2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.envh{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.envh b{font-size:15px}
+.kv{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 12px;font-size:13px}
+.kv dt{color:var(--text-dim)}.kv dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
+.envrow{display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:10px;align-items:start;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+.envrow.dis{background:var(--surface-2)}
+.envrow .mono{font-size:12.5px}
+.matrix th.c{font-family:var(--mono);font-weight:500}
+.vis td.c{font-weight:600}
+
+/* phone frames: 390 wide, the header in the spine colour */
+.phone{width:390px;max-width:100%;border:1px solid var(--line);border-radius:24px;overflow:hidden;background:var(--bg);color:var(--text);font:14px/1.5 var(--font);position:relative;box-shadow:var(--shadow)}
+.pbar{display:flex;align-items:center;gap:9px;padding:12px 14px;background:#0b3a7a;color:#eef4fa;min-height:54px}
+.pbar b{font-size:15px;flex:1;font-weight:650;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pbar .wsc{font:12px var(--mono);color:#cfe3f5;border:1px solid rgba(124,200,248,.45);border-radius:99px;padding:2px 8px}
+.pbar .env{background:rgba(124,200,248,.18);color:#d9eefc;border-color:rgba(124,200,248,.45);margin-left:0}
+.phone .mn{padding:14px 14px 26px;gap:12px}
+.phone.drw{height:760px}
+.phone .ghost{padding:14px;display:flex;flex-direction:column;gap:10px}
+.phone .ghost i{display:block;height:14px;border-radius:6px;background:var(--line)}
+.scrim{position:absolute;inset:0;background:rgba(6,16,30,.5)}
+.drawer{position:absolute;left:0;top:0;bottom:0;width:322px;max-width:88%;display:flex;background:var(--surface);box-shadow:var(--shadow)}
+.drawer .spine{width:76px}.drawer .si{width:68px}
+.drawer .panel{flex:1;width:auto;border-right:0;overflow:hidden}
+.drawer .ph{padding-right:12px}
+
+/* the console's narrow layout, by the content column's width, so one template
+   serves 1440 and 390 */
+@container (max-width:720px){
+  .g2,.g3,.cols2,.rcards,.side{grid-template-columns:minmax(0,1fr)}
+  .g4{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .hd .acts{margin-left:0;width:100%}
+  .tb.st2 thead{display:none}
+  .tb.st2,.tb.st2 tbody,.tb.st2 tr,.tb.st2 td{display:block;width:100%}
+  .tb.st2 tr{padding:8px 12px;border-bottom:1px solid var(--line)}
+  .tb.st2 tr:last-child{border-bottom:0}
+  .tb.st2 td{border:0;padding:3px 0;display:flex;gap:12px;justify-content:space-between;align-items:baseline;text-align:right}
+  .tb.st2 td::before{content:attr(data-l);color:var(--text-dim);font-size:12px;text-align:left;flex:none;max-width:45%}
+  .tb.st2 td.nm{display:block;text-align:left;font-weight:600;padding-bottom:4px}
+  .tb.st2 td.nm::before{content:none}
+  .tb.st2 td.nm .sub{font-weight:400}
+  .tb.st2 td.emp{display:none}
+  .tb.st2 td .cv{min-width:0}
+  .rr{grid-template-columns:minmax(0,1fr)}
+  .owners{grid-template-columns:minmax(0,1fr)}
+  .olist{display:none}.ophone{display:flex}
+  .rc dl{grid-template-columns:96px minmax(0,1fr)}
+  .secnav{flex-wrap:nowrap;overflow-x:auto;-webkit-mask-image:linear-gradient(90deg,#000 80%,transparent);mask-image:linear-gradient(90deg,#000 80%,transparent)}
+  .rr .seg>span{flex:1 1 0;justify-content:center}
+  .phonly{display:block}
+  .st{white-space:normal;align-items:flex-start}
+  .st .mk{margin-top:4px}
+  .tb.st2 td .chip{white-space:normal;text-align:left}
+  .envrow{grid-template-columns:22px minmax(0,1fr)}
+  .envrow>.mu{grid-column:2}
+  .envrow .sm .sep{display:none}
+  .envrow .sm>.st{display:flex}
+}
+/* the overlay sits outside the content column, so the phone rule is by frame */
+.phone .overlay{padding:0}
+.phone .overlay .modal{border-radius:0;max-width:none;min-height:100%;box-shadow:none;border:0}
+@media (max-width:600px){.wrap{padding-top:20px}h2{margin-top:52px}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<linearGradient id="g-hive-b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#7dd3fc"/></linearGradient>
+<symbol id="i-overview" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5"/><rect x="13.5" y="11" width="7" height="9.5" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
+<symbol id="i-work" viewBox="0 0 24 24"><rect x="5" y="7.5" width="14" height="11" rx="3"/><path d="M12 4v3.5M9 12.5v1M15 12.5v1M2.5 12v3M21.5 12v3"/></symbol>
+<symbol id="i-automate" viewBox="0 0 24 24"><circle cx="12" cy="12.5" r="8"/><path d="M12 8v4.5l3 2"/><path d="M9.5 2.5h5"/></symbol>
+<symbol id="i-capacity" viewBox="0 0 24 24"><path d="M12 3.5 3.5 8 12 12.5 20.5 8Z"/><path d="m3.5 12 8.5 4.5 8.5-4.5"/><path d="m3.5 16 8.5 4.5 8.5-4.5"/></symbol>
+<symbol id="i-config" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/></symbol>
+<symbol id="i-admin" viewBox="0 0 24 24"><path d="M12 3.5 19 6v5.5c0 4.2-3 7.6-7 9-4-1.4-7-4.8-7-9V6Z"/><path d="m9 12 2 2 4-4"/></symbol>
+<symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 0 1 4.8 1c0 1.7-2.4 2-2.4 3.5"/><path d="M12 17.2v.1"/></symbol>
+<symbol id="i-submit" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-github" viewBox="0 0 24 24"><circle cx="6.5" cy="5.5" r="2"/><circle cx="6.5" cy="18.5" r="2"/><circle cx="17.5" cy="8" r="2"/><path d="M6.5 7.5v9M17.5 10c0 4-5 3.5-11 6.5"/></symbol>
+<symbol id="i-repo" viewBox="0 0 24 24"><path d="M5 4.5h11a2 2 0 0 1 2 2v13H7a2 2 0 0 1-2-2Z"/><path d="M5 17.5a2 2 0 0 1 2-2h11"/></symbol>
+<symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="12" r="3.5"/><path d="M11.5 12H20M17 12v3M20 12v2.5"/></symbol>
+<symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3.5v4M15 3.5v4M6.5 7.5h11v3a5.5 5.5 0 0 1-11 0Z"/><path d="M12 16v4.5"/></symbol>
+<symbol id="i-people" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5a5.5 5.5 0 0 1 11 0"/><path d="M16 5.5a3 3 0 0 1 0 6M18.5 19.5a5 5 0 0 0-2.5-4.3"/></symbol>
+<symbol id="i-building" viewBox="0 0 24 24"><path d="M4 20V6.5L12 3.5l8 3V20"/><path d="M9 20v-4.5h6V20M8.5 9.5h1M14.5 9.5h1M8.5 12.5h1M14.5 12.5h1"/></symbol>
+<symbol id="i-limits" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+<symbol id="i-sizes" viewBox="0 0 24 24"><rect x="3.5" y="9" width="7" height="11" rx="1.5"/><rect x="13.5" y="4" width="7" height="16" rx="1.5"/></symbol>
+<symbol id="i-counts" viewBox="0 0 24 24"><path d="M4 19.5h16"/><path d="M6.5 16v-4M10.5 16V8M14.5 16v-6M18.5 16V5"/></symbol>
+<symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol>
+<symbol id="i-cal" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/></symbol>
+<symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></symbol>
+<symbol id="i-graph" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M7 7.8 11 16.2M17 7.8 13 16.2M8 6h8"/></symbol>
+<symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></symbol>
+<symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10Z"/></symbol>
+<symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="11.5" rx="2"/><path d="M9 20h6M12 16v4"/></symbol>
+<symbol id="i-ext" viewBox="0 0 24 24"><path d="M14 4.5h5.5V10M19.5 4.5 11 13M17 14v4.5a1 1 0 0 1-1 1H5.5a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1H10"/></symbol>
+<symbol id="i-chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+<symbol id="i-swap" viewBox="0 0 24 24"><path d="m7 9 5-5 5 5M7 15l5 5 5-5"/></symbol>
+<symbol id="i-more" viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18" cy="12" r="1.3"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+<symbol id="m-ok" viewBox="0 0 12 12"><path d="M2 6.4 4.8 9.1 10 3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="m-bad" viewBox="0 0 12 12"><path d="M6 .8 11.2 6 6 11.2.8 6Z" fill="currentColor"/></symbol>
+<symbol id="m-warn" viewBox="0 0 12 12"><path d="M6 1.2 11.2 10.4H.8Z" fill="currentColor"/></symbol>
+<symbol id="m-neu" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+<symbol id="m-pa" viewBox="0 0 12 12"><rect x="2.6" y="1.8" width="2.4" height="8.4" rx=".8" fill="currentColor"/><rect x="7" y="1.8" width="2.4" height="8.4" rx=".8" fill="currentColor"/></symbol>
+<symbol id="m-info" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5.2" fill="none" stroke="currentColor" stroke-width="1"/><circle cx="6" cy="6" r="3" fill="currentColor"/></symbol>
+</defs></svg>
+
+<div class="toolbar" role="region" aria-label="Page controls">
+  <span class="grp"><b>Theme</b><span class="tog" data-tog="theme"><button type="button" data-theme-set="light"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-sun"/></svg>Light</button><button type="button" data-theme-set="dark"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-moon"/></svg>Dark</button><button type="button" data-theme-set="system"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-monitor"/></svg>System</button></span></span>
+  <span class="grp"><b>Desktop frames</b><span class="tog" data-tog="fit"><button type="button" data-fit="0">Actual size, 1440</button><button type="button" data-fit="1">Fit to the page</button></span></span>
+</div>
+
+<div class="wrap">
+<p class="kicker">SwarmCloud · Config, Secrets, Admin counts, QA environments · proposal C of five · 2026-10-23 · #2157</p>
+<h1>Proposal C: the repository is the hub</h1>
+<p class="lede">BGD asked on 2026-10-23 for complete, competing mock-ups of every new and changed page before anything is built (#2157). This is proposal C, <b>Repository-centric</b>. Config › Repositories is a list, and opening a repository shows everything about it on one page: who and what can reach it, its secrets for agents, QA sign-ins and GitHub Actions, its QA targets with their environments, and its index. Workspace and personal things keep their own pages. Every frame is drawn once and shown at 1440 and 390; the Theme control above (and the one in each frame's panel footer) switches every frame between light and dark. All data is <span class="exd">example data</span>: the user is Operator, the hosts are <code>swarm.example.com</code> and <code>app.example.com</code>, and no value of any secret appears anywhere.</p>
+<ul class="toc" id="toc"></ul>
+
+<div class="idea" id="idea">
+  <div><h4>Idea</h4><p>Config holds six pages: GitHub access, Repositories, Secrets, MCP servers, People and roles (group workspaces, admins only) and Workspace Settings. <b>Repositories is the hub.</b> A repository's page has five sections on one scroll, each with its own address: Overview, Access, Secrets (Agents | GitHub Actions), QA targets, Index. When a repository is open, the panel nests those sections under Repositories, so the spine and panel always say where you are. Secrets' own page has the scopes Workspace · Yours · Repository; its Repository scope is an index across repositories whose rows open each repository's Secrets section. A QA run group page hangs off its repository. Settings keeps Profile; Admin is drawn only for admins.</p></div>
+  <div><h4>Pros</h4><ul>
+    <li>One page answers "can agents work on this repository?": a failing push check, a missing QA sign-in, an Actions environment's branch rule and a stale index sit side by side.</li>
+    <li>It mirrors GitHub's own layout (repository › secrets › environments), so the Actions destination and "Create on GitHub ↗" read naturally.</li>
+    <li>Who may set a repository's secrets depends on the repository (a member GitHub calls its admin may), so the page says once, at the top of the section, what you may do here.</li>
+    <li>Cross-repository questions still have one answer: the Secrets › Repository index, and the Repositories list's filters.</li>
+  </ul></div>
+  <div><h4>Risks</h4><ul>
+    <li>Two ways into a repository's secrets (the index and the repository page). The index only links; every Set happens on the repository page, so there is still one form.</li>
+    <li>A long page on a phone. Sections fold to their summary line, and the section strip scrolls sideways.</li>
+    <li>A name set for the workspace and for a repository lives on two pages; the override line has to be drawn on both, and is.</li>
+    <li>QA targets move under the repository their findings file in, so there is no single QA list; the Repositories list's "Has QA targets" filter stands in for it.</li>
+  </ul></div>
+</div>
+
+<h3 class="sub">Where every page goes</h3>
+<div class="doc-tw"><table class="doc"><thead><tr><th>Today</th><th>Proposal C</th><th>Address</th></tr></thead><tbody>
+<tr><td>Work › Access: GitHub connection, owners, Choose repositories</td><td>Config › GitHub access</td><td><code>/config/github</code>, <code>/config/github/choose</code></td></tr>
+<tr><td>Work › Access: "Repositories SwarmCloud may reach as you"; Work › Repositories</td><td>Config › Repositories (the list), and one page per repository</td><td><code>/config/repositories</code>, <code>/config/repositories/&lt;owner&gt;/&lt;repo&gt;</code> with <code>#access</code>, <code>#secrets</code>, <code>#qa</code>, <code>#index</code></td></tr>
+<tr><td>Repositories › QA targets</td><td>The QA targets section of the repository its findings file in; the run group page under it</td><td><code>…/&lt;repo&gt;#qa</code>, <code>…/&lt;repo&gt;/qa-runs/&lt;group_id&gt;</code> (<code>/qa-runs/&lt;group_id&gt;</code> redirects)</td></tr>
+<tr><td>Settings › Workspace › Workspace secrets</td><td>Config › Secrets, scopes Workspace · Yours · Repository</td><td><code>/config/secrets?scope=…</code></td></tr>
+<tr><td>Settings › API keys (the TypeSafe keys)</td><td>Config › Secrets › Keys for agents and MCP, with person and workspace scopes and the one-time set link (BGD, 2026-10-23 23:57Z)</td><td><code>/config/secrets?scope=…</code></td></tr>
+<tr><td>Settings › MCP servers; Settings › People and roles</td><td>Config › MCP servers; Config › People and roles</td><td><code>/config/mcp-servers</code>, <code>/config/people</code></td></tr>
+<tr><td>Settings › Workspace; Work › Setup</td><td>Config › Workspace Settings, with Workspace setup; Add a new workspace for platform admins only (BGD, 2026-10-23 23:57Z)</td><td><code>/config/workspace</code>, <code>#setup</code>, <code>/config/workspace/new</code></td></tr>
+<tr><td>Settings › Profile</td><td>Settings › Profile, the only page Settings keeps, opened from the avatar and the panel footer</td><td><code>/settings/profile</code></td></tr>
+<tr><td>Admin › People</td><td>Admin › People and roles, across workspaces</td><td><code>/admin/people</code></td></tr>
+<tr><td>(new)</td><td>Admin › Platform secrets; Admin › Platform counts › Over time</td><td><code>/admin/platform-secrets</code>, <code>/admin/counts#over-time</code></td></tr>
+<tr><td>Automate › Schedules (All workspaces switch); Automate › Approvals</td><td>Stay in Automate. Admin&rsquo;s panel only links to them; no Admin tab draws them (BGD, 2026-10-23 23:57Z)</td><td><code>/automate/schedules?all=1</code>, <code>/automate/approvals</code></td></tr>
+</tbody></table></div>
+<p class="exd">Every old address redirects to its new one, the one-time-link tokens included (secrets-scopes.md §4).</p>
+
+<noscript><p><b>This page draws its frames with JavaScript.</b> Open it in a browser with scripts on.</p></noscript>
+<div id="surfaces"></div>
+</div>
+
+<script>
+(function(){
+'use strict';
+/* ---------- primitives ---------- */
+var I=function(n){return '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-'+n+'"/></svg>';};
+var MK={ok:'ok',bad:'bad',warn:'warn',neu:'neu',pa:'pa',info:'info'};
+function st(tone,txt){return '<span class="st '+tone+'"><svg class="mk" viewBox="0 0 12 12" aria-hidden="true"><use href="#m-'+MK[tone]+'"/></svg><span>'+txt+'</span></span>';}
+function chip(t,tone){return '<span class="chip '+(tone||'')+'">'+t+'</span>';}
+var ICON_WORD={more:'More',x:'Close'};
+function btn(t,k,ic){return '<button class="b '+(k||'')+'" type="button"'+(t===''&&ICON_WORD[ic]?' aria-label="'+ICON_WORD[ic]+'"':'')+'>'+(ic?I(ic):'')+t+'</button>';}
+function seg(opts,on,cls){return '<span class="seg '+(cls||'')+'">'+opts.map(function(o,i){return '<span class="'+(i===on?'on':'')+'">'+o+'</span>';}).join('')+'</span>';}
+function dash(why){return '<span class="dash" aria-label="unknown">–</span> <span class="why">'+why+'</span>';}
+function box(s){return '<span class="box '+(s||'')+'" role="img" aria-label="'+(s==='on'?'granted':s==='no'?'cannot be granted':'not granted')+'"></span>';}
+function card(title,body,o){o=o||{};return '<section class="card '+(o.cls||'')+'"'+(o.id?' id="'+o.id+'"':'')+'><header class="ch"><h4>'+title+'</h4>'+(o.act?'<span class="ca">'+o.act+'</span>':'')+'</header>'+(o.sub?'<p class="cs">'+o.sub+'</p>':'')+body+(o.foot?'<footer class="cf">'+o.foot+'</footer>':'')+'</section>';}
+function tbl(cols,rows,o){o=o||{};
+  var h=cols.map(function(c){return '<th class="'+(c[1]||'')+'">'+c[0]+'</th>';}).join('');
+  var b=rows.map(function(r){var cells=r.c||r;return '<tr class="'+(r.cls||'')+'">'+cells.map(function(v,i){var c=cols[i]||['',''];return '<td class="'+(c[1]||'')+(v===''?' emp':'')+'" data-l="'+c[0].replace(/<[^>]+>/g,'')+'"><span class="cv">'+v+'</span></td>';}).join('')+'</tr>';}).join('');
+  return '<div class="tw"><table class="tb '+(o.stack===false?'':'st2 ')+(o.cls||'')+'"><thead><tr>'+h+'</tr></thead><tbody>'+b+'</tbody></table></div>';}
+function head(crumb,title,o){o=o||{};return '<div class="crumb">'+crumb+'</div><div class="hd"><h3>'+title+'</h3>'+(o.chips||'')+'<span class="acts">'+(o.age?'<span class="age">'+o.age+'</span>':'')+(o.acts||'')+'</span></div>'+(o.intro?'<p class="intro">'+o.intro+'</p>':'');}
+function hive(s){return '<svg width="'+s+'" height="'+s+'" viewBox="0 0 32 32" aria-hidden="true" style="fill:url(#g-hive-b)"><circle cx="16" cy="5.2" r="3.3"/><circle cx="25.35" cy="10.6" r="3.3"/><circle cx="25.35" cy="21.4" r="3.3"/><circle cx="16" cy="26.8" r="3.3"/><circle cx="6.65" cy="21.4" r="3.3"/><circle cx="6.65" cy="10.6" r="3.3"/><circle cx="16" cy="16" r="4.9"/></svg>';}
+function themeTog(){return '<span class="tog" data-tog="theme" aria-label="Theme"><button type="button" data-theme-set="light">'+I('sun')+'Light</button><button type="button" data-theme-set="dark">'+I('moon')+'Dark</button><button type="button" data-theme-set="system">'+I('monitor')+'System</button></span>';}
+/* a hex-looking commit id, built at run time rather than written as a literal */
+function sha(seed){var h='';var x=Math.imul(seed,2654435761)>>>0;for(var i=0;i<7;i++){x=(Math.imul(x,1103515245)+12345)>>>0;h+='0123456789abcdef'[(x>>>16)&15];}return h;}
+
+/* ---------- the chrome: spine, panel, phone ---------- */
+var ROLE_WORD={padmin:'platform admin',wadmin:'workspace admin',member:'member'};
+function spine(o){
+  function it(id,lab,ic,x){return '<a class="si '+(o.sec===id?'on':'')+'" title="'+lab+'">'+I(ic)+'<span>'+lab+'</span>'+(x||'')+'</a>';}
+  return '<nav class="spine" aria-label="Sections"><span class="sb">'+hive(40)+'</span><a class="si cta" title="Submit (N)">'+I('submit')+'<span>Submit</span></a><i class="ssep"></i>'+
+    it('overview','Overview','overview')+it('work','Work','work')+it('automate','Automate','automate')+it('capacity','Capacity','capacity','<i class="dot"></i>')+it('config','Config','config')+
+    (o.role==='member'?'':it('admin','Admin','admin'))+'<i class="sgrow"></i>'+it('help','Help','help')+'<span class="av" title="Operator: Settings › Profile">OP</span></nav>';
+}
+function pk(o,k,l,ic,x){return '<a class="pg '+(o.page===k?'on':'')+'">'+I(ic)+'<span class="pl">'+l+'</span>'+(x||'')+'</a>';}
+function configPages(o){
+  var personal=o.ws==='personal';
+  var h='<div class="pt">Config</div>'+pk(o,'github','GitHub access','github')+pk(o,'repos','Repositories','repo','<span class="cnt">'+(personal?2:4)+'</span>');
+  if(o.repo){h+='<div class="kids"><span class="kr">'+o.repo+'</span>'+['Overview','Access','Secrets','QA targets','Index'].map(function(k){return '<a class="kid '+(o.kid===k?'on':'')+'">'+k+'</a>';}).join('')+'</div>';}
+  h+=pk(o,'secrets','Secrets','key')+pk(o,'mcp','MCP servers','plug');
+  if(!personal&&o.role!=='member')h+=pk(o,'people','People and roles','people');
+  h+=pk(o,'wss','Workspace Settings','building');
+  if(personal)h+='<p class="pnote">A personal workspace has no People and roles: it has one person.</p>';
+  else if(o.role==='member')h+='<p class="pnote">People and roles is for this workspace&rsquo;s admins.</p>';
+  return h;
+}
+function adminPages(o){
+  if(o.role==='wadmin')return '<div class="pt">Admin</div>'+pk(o,'apeople','People and roles','people')+pk(o,'wya','Workspaces you admin','building','<span class="cnt">2</span>')+'<p class="pnote">You see the workspaces you administer. Pool limits, Runner sizes, Tenants, Platform counts and Platform secrets are a platform admin&rsquo;s.</p>';
+  return '<div class="pt">Admin</div>'+pk(o,'apeople','People and roles','people')+pk(o,'wya','Workspaces you admin','building','<span class="cnt">2</span>')+pk(o,'limits','Pool limits','limits')+pk(o,'sizes','Runner sizes','sizes')+pk(o,'tenants','Tenants','building')+pk(o,'counts','Platform counts','counts')+pk(o,'psecrets','Platform secrets','lock')+
+    '<div class="pt">Links to Automate, every workspace (not Admin tabs)</div>'+pk(o,'sched','Schedules','cal',I('ext'))+pk(o,'appr','Approvals','admin','<span class="cnt">2</span>'+I('ext'));
+}
+function workPages(o){return '<div class="pt">Work</div>'+pk(o,'agents','Agents','work')+pk(o,'workflows','Workflows','graph')+pk(o,'runs','Runs','submit')+pk(o,'timeline','Timeline','counts');}
+function automatePages(o){return '<div class="pt">Automate</div>'+pk(o,'sched','Schedules','cal')+pk(o,'appr','Approvals','admin','<span class="cnt">2</span>');}
+function panel(o){
+  var ws=o.ws==='personal'?{g:'O',n:'Operator',s:'personal · 3 of 3'}:o.ws==='design'?{g:'D',n:'design',s:'group workspace · 2 of 3'}:{g:'E',n:'eng',s:'group workspace · 1 of 3'};
+  var pages=o.sec==='admin'?adminPages(o):o.sec==='automate'?automatePages(o):o.sec==='work'?workPages(o):configPages(o);
+  return '<nav class="panel" aria-label="Pages"><div class="ph"><span class="wm">Swarm<span>Cloud</span></span><span class="env">dev</span></div>'+
+    '<div class="wsb"><span class="tg">'+ws.g+'</span><span class="tt"><b>'+ws.n+'</b><small>'+ws.s+'</small></span>'+I('swap')+'</div>'+
+    '<div class="pscroll">'+pages+'</div>'+
+    '<div class="pf"><span class="pfr"><b>Operator</b><span class="rb">'+ROLE_WORD[o.role||'padmin']+'</span></span><small>operator@example.com</small>'+themeTog()+'<span class="links"><a>Settings › Profile</a><a>Sign out</a></span><span class="stamp">ui '+sha(7)+' · api '+sha(11)+'</span></div></nav>';
+}
+function desk(o,body){return '<div class="scroller"><div class="app'+(o.short?' short':'')+'">'+spine(o)+panel(o)+'<main class="mn">'+body+'</main>'+(o.over||'')+'</div></div>';}
+function phone(o,body){var ws=o.ws==='personal'?'Operator':o.ws==='design'?'design':'eng';
+  return '<div class="phone'+(o.over?' sheet':'')+'">'+'<div class="pbar">'+I('menu')+hive(22)+'<b>'+o.title+'</b><span class="wsc">'+ws+'</span><span class="env">dev</span></div><main class="mn">'+body+'</main>'+(o.over||'')+'</div>';}
+function drawer(o){return '<div class="phone drw"><div class="pbar">'+I('menu')+hive(22)+'<b>'+o.title+'</b><span class="env">dev</span></div><div class="ghost"><i style="width:60%"></i><i style="width:85%"></i><i style="width:72%"></i><i style="width:90%"></i></div><div class="scrim"></div><div class="drawer">'+spine(o)+panel(o)+'</div></div>';}
+
+/* ---------- example data ---------- */
+var REPOS=[
+ {n:'example-org/web-app',mode:'Write',chk:['ok','ok','ok'],ver:'verified 3m ago',reg:'registered',idx:'fresh: indexed 2h ago, 3 commits behind main',sec:'3 for agents · 2 QA sign-ins · 4 Actions secrets',qa:'1 target · staging, production',look:null},
+ {n:'example-org/api',mode:'Write',chk:['ok','bad','ok'],ver:'verified 1h ago',reg:'registered',idx:'fresh: indexed 1d ago, at main',sec:'1 for agents · Actions: the App may not write here',qa:'no QA target',look:'Push missing: GitHub says you cannot push to example-org/api.'},
+ {n:'example-org/docs-site',mode:'Read',chk:['ok','na','na'],ver:'verified 5h ago',reg:'registered',idx:'stale: indexed 9d ago, 41 commits behind main',sec:'none yet',qa:'no QA target',look:null},
+ {n:'operator/notes',mode:'Read',chk:['ok','na','na'],ver:'verified 2d ago',reg:'no',idx:null,sec:null,qa:null,look:null}
+];
+function checks(c){var L=['Clone','Push','Pull request'];return c.map(function(s,i){return s==='ok'?st('ok',L[i]):s==='bad'?st('bad',L[i]+' missing'):st('neu',L[i]+': not asked, read grant');}).join(' ');}
+
+/* ---------- S1 navigation ---------- */
+function s1body(o){
+  var t={padmin:'A platform admin sees Config with every page and Admin with every tab.',wadmin:'A workspace admin of eng sees every Config page; Admin holds only People and roles and Workspaces you admin, for the workspaces they administer.',member:'A member of eng sees Config without People and roles, and no Admin at all: the spine has no Admin item, and the API refuses every Admin route for them.',personal:'In a personal workspace Config has no People and roles. Repositories, Secrets and Workspace Settings are the personal workspace&rsquo;s.'}[o.who];
+  return head('Config / <b>Repositories</b>','Repositories',{acts:btn('Add new repository','p','submit'),intro:t})+
+   '<div class="rcards">'+REPOS.filter(function(r){return o.ws==='personal'?r.n.indexOf('operator/')===0||r.n==='example-org/docs-site':true;}).slice(0,2).map(function(r){return '<div class="rc"><div class="rn">'+I('repo')+'<b>'+r.n+'</b>'+chip(r.mode)+'</div><div class="sm mu">'+r.ver+'</div></div>';}).join('')+'</div>';
+}
+
+/* ---------- S2 GitHub access ---------- */
+function ghConnected(){
+  return head('Config / <b>GitHub access</b>','GitHub access',{chips:chip('acts as you','info'),age:'read 6s ago',intro:'How SwarmCloud reaches GitHub as you. The repositories you choose here appear on <a>Config › Repositories</a>, where each has its own page.'})+
+  card('GitHub',
+    '<div class="row">'+st('ok','Connected as <b>@operator</b> through the SwarmCloud GitHub App')+'<span class="mu sm">connected 12 days ago · token checked 3m ago</span></div>',
+    {act:btn('Disconnect','dg sm')})+
+  card('Owners',
+    tbl([['Owner','nm'],['Kind'],['The App'],['Chosen'],['','r']],[
+      ['<b>example-org</b>','Org',st('ok','installed'),'3 repositories',btn('Choose repositories','sm')],
+      ['<b>operator</b>','Your account',st('ok','installed'),'1 repository',btn('Choose repositories','sm')],
+      {cls:'hi',c:['<b>partner-org</b><span class="sub">Not an owner of partner-org? GitHub lets you ask its owners to install the App.</span>','Org',st('warn','install requested 2d ago'),dash('nothing can be chosen until GitHub lists the installation'),'<span class="row">'+btn('Re-check','sm')+btn('Withdraw request','q sm')+'</span>']}
+    ]),{act:btn('Add an owner','sm')})+
+  card('What SwarmCloud may do as you',
+    '<ul class="sm" style="margin:0;padding-left:18px"><li><b>A read grant is enforced by SwarmCloud.</b> GitHub would let the App push; SwarmCloud refuses it for a repository you chose as Read.</li><li><b>No workflow files.</b> SwarmCloud never writes under <code>.github/workflows</code>.</li><li><b>Nothing is written to GitHub unless you ask.</b> Push test, on a write grant, creates one branch and deletes it again.</li></ul>');
+}
+function ghNotConnected(){
+  return head('Config / <b>GitHub access</b>','GitHub access',{intro:'SwarmCloud reaches nothing on GitHub until you connect it. Connecting signs you in through the SwarmCloud GitHub App; it never asks for a token.'})+
+  '<div class="ban warn"><b>GitHub was disconnected</b><p>You disconnected @operator 1h ago. Agents of yours that need GitHub park until you connect again; nothing else changed.</p></div>'+
+  card('Set up GitHub access',
+    '<ol class="steps"><li><span class="sn">1</span><div><b>Connect GitHub</b><small>Opens GitHub&rsquo;s sign-in page for the SwarmCloud App.</small></div>'+btn('Connect GitHub','p',"github")+'</li>'+
+    '<li><span class="sn">2</span><div><b>Install the App on an owner</b><small>After step 1: SwarmCloud reaches nothing until GitHub is connected.</small></div>'+chip('waiting')+'</li>'+
+    '<li><span class="sn">3</span><div><b>Choose repositories</b><small>Each one you choose gets its own page on Config › Repositories.</small></div>'+chip('waiting')+'</li></ol>',
+    {act:'<span class="mu sm">0 of 3 done</span>'});
+}
+function ghChoose(){
+  var reps=[['web-app','Write','You can push',''],['api','Write','Chosen as Write; GitHub now says you cannot push (Verify, 1h ago)',''],['docs-site','Read','You can push',''],['billing','Not chosen','GitHub does not let you push here','nw'],['infra-live','Not chosen','Archived on GitHub','nw']];
+  function radio(r){var opts=['Not chosen','Read','Write'];return '<span class="seg">'+opts.map(function(x){var off=(x==='Write'&&r[3]==='nw');return '<span class="'+(x===r[1]?'on':'')+(off?' off':'')+'"'+(off?' title="'+r[2]+'"':'')+'>'+x+'</span>';}).join('')+'</span>';}
+  return head('Config / <a>GitHub access</a> / <b>Choose repositories</b>','Choose repositories',{age:'read 4s ago',intro:'Pick an owner, then Read or Write for each repository. Write is offered only where GitHub lets you push. A repository you choose appears on Config › Repositories at once.'})+
+  '<div class="owners"><div class="olist">'+
+    '<div class="oi on"><span class="og">E</span><span class="ot"><b>example-org</b><small>Org · installed · 3 chosen</small></span>'+I('chev')+'</div>'+
+    '<div class="oi"><span class="og">O</span><span class="ot"><b>operator</b><small>Your account · installed · 1 chosen</small></span>'+I('chev')+'</div>'+
+    '<div class="oi"><span class="og">P</span><span class="ot"><b>partner-org</b><small>Org · install requested</small></span>'+I('chev')+'</div></div>'+
+  '<div><div class="row" style="padding:10px 14px;border-bottom:1px solid var(--line)"><span class="ophone fld" style="width:100%"><span>Owner</span><span class="in val">example-org · Org · 3 chosen <span style="margin-left:auto">'+I('chev')+'</span></span></span><span class="in" style="flex:1;min-width:180px">'+I('search')+'Search example-org</span>'+seg(['All <em>24</em>','Chosen <em>3</em>'],0)+'</div>'+
+  '<div class="rlist">'+reps.map(function(r){return '<div class="rr"><div><b>example-org/'+r[0]+'</b><small>'+r[2]+'</small></div>'+radio(r)+'</div>';}).join('')+'</div>'+
+  '<div class="row sm mu" style="padding:10px 14px">Page 1 of 5 · 5 of 24 shown '+btn('Next page','sm')+'</div>'+
+  '<div style="padding:10px 14px;border-top:1px solid var(--line)" class="sm">Not listed? Type <code>owner/repo</code>: <span class="in" style="display:inline-flex;width:220px;vertical-align:middle">owner/repo</span> '+btn('Grant','sm')+'<div class="mu" style="margin-top:4px">A repository the App cannot see is not listed; installing the App on its owner is the fix.</div></div></div></div>';
+}
+
+/* ---------- S3 Repositories ---------- */
+function reposList(o){
+  var personal=o&&o.personal;
+  var list=REPOS.filter(function(r){return r.look;}).concat(REPOS.filter(function(r){return !r.look;}));
+  return head('Config / <b>Repositories</b>','Repositories',{age:'read 5s ago · poll 60s',acts:btn('Re-check all','sm')+btn('Add new repository','p','submit'),intro:'Repositories SwarmCloud may reach as you, and what eng keeps about each. Open one for its access, secrets, QA targets and index on one page. <b>Add new repository</b> opens Config › GitHub access › Choose repositories.'})+
+  '<div class="row"><span class="in" style="flex:1;min-width:200px;max-width:360px">'+I('search')+'Filter repositories</span>'+seg(['All <em>4</em>','Needs a look <em>1</em>','Registered <em>3</em>','Has QA targets <em>1</em>'],0)+'</div>'+
+  '<div class="rcards">'+list.map(function(r){
+    if(r.reg==='no')return '<div class="rc"><div class="rn">'+I('repo')+'<b>'+r.n+'</b>'+chip(r.mode)+chip('not registered in eng','warn')+'</div><dl><dt>Your access</dt><dd>'+checks(r.chk)+'<span class="sub mu sm" style="display:block">'+r.ver+'</span></dd><dt>In eng</dt><dd>Not registered, so agents of eng are refused at submission. Registering starts its index.</dd></dl><div class="ra">'+btn('Register in eng','p sm')+btn('Remove from your list','q sm')+'</div></div>';
+    return '<div class="rc'+(r.look?' look':'')+'"><div class="rn">'+I('repo')+'<b>'+r.n+'</b>'+chip(r.mode)+(r.look?chip('needs a look','warn'):'')+'</div>'+
+      (r.look?'<div class="ban warn" style="padding:6px 10px">'+r.look+' <a>Fix on its Access section</a></div>':'')+
+      '<dl><dt>Your access</dt><dd>'+checks(r.chk)+'<span class="mu sm" style="display:block">'+r.ver+'</span></dd><dt>Secrets</dt><dd>'+r.sec+'</dd><dt>QA targets</dt><dd>'+r.qa+'</dd><dt>Index</dt><dd>'+(r.idx.indexOf('stale')===0?st('warn',r.idx):st('ok',r.idx))+'</dd></dl>'+
+      '<div class="ra">'+btn('Open','sm','chev')+btn('Re-check','q sm')+btn('','q sm','more')+'</div></div>';
+  }).join('')+'</div>'+
+  '<p class="exd">Last verified 3m ago. An agent for a repository not on this list is refused at submission.</p>';
+}
+function repoHub(){
+  return head('Config / <a>Repositories</a> / <b>example-org/web-app</b>','<span class="mono" style="font-size:21px">example-org/web-app</span>',{chips:chip('Write')+chip('registered in eng','ok')+chip('default branch main'),acts:btn('Open on GitHub','sm','ext')+btn('Re-check access','sm')+btn('','q sm','more')})+
+  '<nav class="secnav" aria-label="Sections of this repository"><span class="on">Overview</span><span>Access</span><span>Secrets <em>9</em></span><span>QA targets <em>1</em></span><span>Index</span></nav>'+
+  '<div class="g4">'+
+   '<div class="tile"><span class="tl">'+I('github')+'Access</span><span class="tv">3 of 3 checks</span><span class="ts">Write for you · verified 3m ago</span><a>Access ›</a></div>'+
+   '<div class="tile"><span class="tl">'+I('key')+'Secrets</span><span class="tv">3 · 2 · 4</span><span class="ts">for agents · QA sign-ins · GitHub Actions</span><a>Secrets ›</a></div>'+
+   '<div class="tile"><span class="tl">'+I('eye')+'QA targets</span><span class="tv">1 target</span><span class="ts">staging ready · production: credential deleted 20h ago</span><a>QA targets ›</a></div>'+
+   '<div class="tile"><span class="tl">'+I('graph')+'Index</span><span class="tv">fresh</span><span class="ts">indexed 2h ago at '+sha(3)+' · 3 commits behind</span><a>Index ›</a></div></div>'+
+  card('Access: who and what can reach it',
+   tbl([['Who or what','nm'],['Through'],['Access'],['Checks'],['','r']],[
+     ['<b>You (Operator)</b>','your GitHub App sign-in','Write',checks(['ok','ok','ok']),btn('Read only','q sm')],
+     ['<b>Rae</b>','their GitHub App sign-in','Read',checks(['ok','na','na']),''],
+     ['<b>Kim</b>','their GitHub App sign-in','Write',checks(['ok','ok','bad']),''],
+     ['<b>Agents of eng</b><span class="sub">clone as the submitting person, push only on a write grant</span>','the person who submitted','follows that person','',''],
+     ['<b>The SwarmCloud App</b>','installation on example-org',st('ok','installed'),'<span class="sm">Contents, Pull requests; Secrets and Environments read/write</span>',btn('Manage on GitHub','q sm','ext')]
+   ]),{act:'<span class="anch">#access</span>',sub:'Each person chooses their own access on Config › GitHub access. An agent is refused at submission when its submitter has no grant here.'})+
+  card('Index',
+   '<div class="row sm">'+st('ok','Fresh')+'<span>indexed 2h ago at '+sha(3)+' · head is 3 commits ahead · schedule nightly 02:00 UTC · on change: on</span></div><div class="row" style="margin-top:8px">'+btn('Test map','sm')+btn('Hot-spots','sm')+btn('Index runs','sm')+btn('Used by','sm')+btn('Index settings','sm')+btn('Index now','sm')+'</div>',
+   {act:'<span class="anch">#index</span>',sub:'The picked repository detail (repositories.html, 4 A) as this section; its tabs open as sub-pages.'})+
+  '<p class="exd">Secrets and QA targets are this same page, scrolled: S4 and S9 draw them.</p>';
+}
+
+/* ---------- S4 Secrets ---------- */
+var ORDER='When one name is set in several places, <b>yours wins, then the repository&rsquo;s, then the workspace&rsquo;s</b>. Every value is set through a one-time form and never shown again; nothing here shows a character of any value.';
+function secHead(scope,extra){
+  return head('Config / <b>Secrets</b>','Secrets',{acts:(extra||''),intro:ORDER})+'<div class="row">'+seg(['Workspace · eng','Yours','Repository <em>3</em>'],scope)+'</div>';
+}
+function secWorkspace(){
+  return secHead(0,btn('Add a secret','p','submit'))+
+  card('For agents',
+   tbl([['Name','nm'],['Kind'],['Set'],['Version','r'],['Last used'],['Granted to'],['Shadowed'],['','r']],[
+    ['<code>TEST_DB_PASSWORD</code>','Username and password','3d ago by Operator','2','<span class="dash">–</span> <span class="why">not served yet</span>','claude-code, playwright','on example-org/web-app, by its own value',btn('Rotate','q sm')+btn('Delete','q sm dg')],
+    ['<code>STAGING_SIGNIN</code>','Bearer token','12d ago by Rae','1','<span class="dash">–</span> <span class="why">not served yet</span>','playwright','on agents of Operator, by theirs',btn('Rotate','q sm')+btn('Delete','q sm dg')],
+    ['<code>SEARCH_INDEX</code>','Opaque','1d ago by Operator','1','<span class="dash">–</span> <span class="why">not served yet</span>','mcp:search','–',btn('Rotate','q sm')+btn('Delete','q sm dg')]
+   ]),{act:'<span class="mu sm">You may set these: workspace admin</span>',sub:'Released to the agents of eng whose runner, tool or MCP server is ticked below.'})+
+  card('Grants',
+   '<p class="cs" style="margin-top:0">Tick a box to let that runner profile, tool or platform component read the secret. A box that cannot be ticked says why.</p>'+
+   tbl([['Secret','nm'],['claude-code','c'],['codex','c'],['playwright','c'],['jev','c'],['mcp:search','c']],[
+     ['<code>TEST_DB_PASSWORD</code>',box('on'),box(''),box('on'),box(''),box('no')],
+     ['<code>STAGING_SIGNIN</code>',box(''),box(''),box('on'),box(''),box('no')],
+     ['<code>SEARCH_INDEX</code>',box('no'),box('no'),box('no'),box('no'),box('on')]
+   ],{stack:false,cls:'matrix'})+'<p class="exd phonly" style="margin:6px 0 0">On a phone the matrix scrolls sideways: playwright, jev and mcp:search are to the right.</p>',{foot:'A hatched box: that consumer reads another kind, or no secret yet. A change takes effect at the next attempt.'});
+}
+function secKeys(){
+  return card('Keys for agents and MCP',
+   tbl([['Key','nm'],['Scope'],['Status'],['Used by'],['','r']],[
+     ['<b>Anthropic</b><span class="sub">runner LLM provider key</span>','Workspace',st('ok','set 20d ago by Operator'),'claude-code',btn('Set','sm')],
+     ['<b>OpenAI</b><span class="sub">runner LLM provider key</span>','Workspace',st('neu','not set'),'codex',btn('Set','sm')],
+     ['<b>TypeSafe</b>','Workspace',st('ok','set 4d ago by Rae'),'every agent of eng, unless its submitter has their own',btn('Set','sm')+btn('Delete','q sm dg')],
+     ['<b>TypeSafe</b>','Yours',st('ok','set 2d ago'),'<span class="chip info">overrides the workspace&rsquo;s on your agents</span>',btn('Set','sm')+btn('Delete','q sm dg')],
+     ['<b>mcp:search</b><span class="sub">MCP server credential, stored</span>','Workspace',st('ok','SEARCH_INDEX, granted'),'agents that attach the search server','<a>MCP servers ›</a>']
+   ]),{sub:'Moved here from Settings › API keys, which is gone (BGD, 2026-10-23 23:57Z): each key has a workspace scope and a person scope (Yours), and Set opens the one-time set link, as today. Subscription accounts for the pools are on <a>Capacity › Accounts</a>. A credential an MCP server takes at dispatch is set in the submission and not listed.'});
+}
+function secGit(){
+  return card('GitHub token status',
+   tbl([['Token','nm'],['Scope'],['Kind'],['State'],['Verified'],['Expires'],['GitHub login']],[
+     ['Workspace token','Workspace','App installation, example-org',st('ok','active'),'1h ago','<span class="dash">–</span> <span class="why">minted per use, nothing to expire</span>','@swarmcloud-app'],
+     ['Your token','Yours','App sign-in',st('ok','active'),'3m ago','in 6h, renewed on use','@operator'],
+     ['example-org/api token','Repository','fine-grained token',st('warn','expires in 4d'),'2d ago','2026-10-27','@release-bot']
+   ]),{sub:'Status only: this page never shows any character of a token. Connect on <a>Config › GitHub access</a>; a repository&rsquo;s own token is registered with <code>scripts/create-secrets.sh --stdin</code>.'});
+}
+function secYours(){
+  return secHead(1,btn('Add a secret','p','submit'))+
+  card('Your secrets',
+   tbl([['Name','nm'],['Kind'],['Set'],['Used in eng'],['','r']],[
+     ['<code>STAGING_SIGNIN</code>','Bearer token','2d ago','<span class="row">'+box('on')+'<span class="chip info">overrides the workspace&rsquo;s on your agents</span></span>',btn('Rotate','q sm')+btn('Delete','q sm dg')],
+     ['<code>PERSONAL_NOTES_TOKEN</code>','Opaque','9d ago',box(''),btn('Rotate','q sm')+btn('Delete','q sm dg')]
+   ]),{sub:'Only your own agents receive these, and only in the workspaces you tick. They never reach another member&rsquo;s agents.'})+
+  card('Browser sessions',
+   tbl([['Name','nm'],['Saved'],['Expires'],['','r']],[
+     ['<b>app.example.com, staging</b>','2d ago from a live browser','in 5d',btn('Delete','q sm dg')],
+     ['<b>swarm.example.com</b>','6h ago from a live browser','<span class="dash">–</span> <span class="why">the site set no expiry</span>',btn('Delete','q sm dg')]
+   ]),{sub:'Browser agents ask for these by name. A session is saved from a live browser, never typed here.'});
+}
+function secRepoIndex(){
+  return secHead(2)+
+  '<div class="row">'+seg(['Agents','GitHub Actions'],0)+'<span class="mu sm">Every row opens that repository&rsquo;s Secrets section, where its values are set.</span></div>'+
+  tbl([['Repository','nm'],['For agents','r'],['Overrides'],['Sign-in for QA'],['Repository token'],['','r']],[
+    ['<code>example-org/web-app</code>','3','TEST_DB_PASSWORD over the workspace&rsquo;s',st('warn','2 of 3 set: production credential not set'),'uses the workspace token','<a>Open ›</a>'],
+    ['<code>example-org/api</code>','1','–','<span class="dash">–</span> <span class="why">no QA target</span>',st('warn','expires in 4d'),'<a>Open ›</a>'],
+    ['<code>example-org/docs-site</code>','0','–','<span class="dash">–</span> <span class="why">no QA target</span>','uses the workspace token','<a>Open ›</a>']
+  ])+'<p class="exd">GitHub Actions shows, per repository, its Actions secrets and environments with each branch rule, read live from GitHub.</p>';
+}
+function repoSecAgents(){
+  return head('Config / <a>Repositories</a> / <a>example-org/web-app</a> / <b>Secrets</b>','<span class="mono" style="font-size:21px">example-org/web-app</span>',{chips:chip('Write'),acts:btn('Open on GitHub','sm','ext')})+
+  '<nav class="secnav"><span>Overview</span><span>Access</span><span class="on">Secrets <em>9</em></span><span>QA targets <em>1</em></span><span>Index</span></nav>'+
+  '<div class="row">'+seg(['Agents','GitHub Actions'],0)+'<span class="mu sm">Set by a workspace admin, a platform admin, or a member whom GitHub calls admin of this repository. You may: workspace admin.</span><span style="margin-left:auto">'+btn('Add a secret','p','submit')+'</span></div>'+
+  card('For agents that clone example-org/web-app',
+   tbl([['Name','nm'],['Kind'],['Set'],['Granted to'],['Overrides'],['','r']],[
+     ['<code>TEST_DB_PASSWORD</code>','Username and password','1d ago by Operator','claude-code, playwright','<span class="chip info">overrides the workspace&rsquo;s TEST_DB_PASSWORD here</span>',btn('Rotate','q sm')+btn('Delete','q sm dg')],
+     ['<code>FIXTURE_BUCKET</code>','Opaque','6d ago by Kim','claude-code','–',btn('Rotate','q sm')+btn('Delete','q sm dg')],
+     ['<code>MAPS_KEY</code>','Opaque','6d ago by Kim','playwright','<span class="chip warn">shadowed on agents of Rae, by theirs</span>',btn('Rotate','q sm')+btn('Delete','q sm dg')]
+   ]),{sub:'Released only to attempts that clone this repository, and only to the consumers ticked in its grants.',act:btn('Grants','sm')})+
+  card('Sign-in for QA',
+   tbl([['Target and environment','nm'],['Test credential'],['Challenge bypass'],['','r']],[
+     ['<b>Console · staging</b><span class="sub mono">swarm.example.com</span>',st('ok','set 2d ago by Operator'),st('ok','header value set 2d ago'),btn('Set','sm')],
+     {cls:'hi',c:['<b>Console · production</b><span class="sub mono">app.example.com</span>',st('warn','not set'),'<span class="dash">–</span> <span class="why">this environment declares no bypass</span>',btn('Set','p sm')]}
+   ]),{sub:'Each QA target of this repository, per environment. A production environment signs in with an MFA-free, least-privilege QA account.'})+
+  card('GitHub','<div class="row sm">'+st('neu','No token of its own')+'<span class="mu">Agents use the workspace token for this repository.</span></div>');
+}
+function repoSecActions(){
+  return head('Config / <a>Repositories</a> / <a>example-org/web-app</a> / <b>Secrets</b>','<span class="mono" style="font-size:21px">example-org/web-app</span>',{chips:chip('Write'),acts:btn('Open on GitHub','sm','ext')})+
+  '<nav class="secnav"><span>Overview</span><span>Access</span><span class="on">Secrets <em>9</em></span><span>QA targets <em>1</em></span><span>Index</span></nav>'+
+  '<div class="row">'+seg(['Agents','GitHub Actions'],1)+'<span class="mu sm">You may write here: a workspace manager whom GitHub calls admin of this repository. GitHub is asked at every write.</span></div>'+
+  '<div class="ban"><b>Written by the SwarmCloud GitHub App; read live from GitHub</b><p>SwarmCloud keeps no value and no copy: the value is sealed in swarm-api and dropped after GitHub accepts it. GitHub lists names and dates only.</p></div>'+
+  card('Repository secrets',
+   tbl([['Name','nm'],['Updated'],['Written by'],['','r']],[
+     ['<code>DEPLOY_HOOK</code>','2d ago','SwarmCloud, for Operator',btn('Set','sm')+btn('Delete','q sm dg')],
+     ['<code>SENTRY_DSN</code>','40d ago','set on GitHub',btn('Set','sm')]
+   ]),{act:btn('Set a secret','sm')})+
+  card('Environments',
+   '<div class="stack">'+
+   '<div class="card" style="background:var(--surface-2)"><div class="envh"><b class="mono">repo-secrets</b>'+st('ok','main only')+'<span class="mu sm">branch rule checked 2m ago</span><span style="margin-left:auto" class="row">'+btn('Check rule','sm')+btn('Set a secret','sm')+'</span></div>'+
+     tbl([['Name','nm'],['Updated'],['Written by'],['','r']],[['<code>SMOKE_SIGNIN</code>','1d ago','SwarmCloud, for Operator',btn('Set','sm')+btn('Delete','q sm dg')],['<code>RELEASE_NOTES_KEY</code>','1d ago','SwarmCloud, for Operator',btn('Set','sm')+btn('Delete','q sm dg')]])+'</div>'+
+   '<div class="card" style="background:var(--surface-2)"><div class="envh"><b class="mono">preview</b>'+st('warn','any branch')+'<span class="mu sm">a secret here reaches the workflows of every branch anyone with push access creates</span><span style="margin-left:auto" class="row">'+btn('Check rule','sm')+btn('Set a secret','sm')+'</span></div><p class="sm mu" style="margin:6px 0 0">No secrets. Writing into it asks you to type <code>preview</code> first.</p></div>'+
+   '</div>',
+   {act:btn('Create on GitHub','sm','ext'),sub:'SwarmCloud does not create environments yet. Create one on GitHub with a "Selected branches" rule naming <code>main</code>, then press Check rule here; SwarmCloud never changes an environment&rsquo;s rule.'});
+}
+function setForm(dest){
+  var actions=dest==='actions';
+  return '<div class="overlay"><div class="modal" role="dialog" aria-label="Set a secret"><div class="row mh"><h4>'+(actions?'Set SMOKE_SIGNIN in environment repo-secrets':'Set TEST_DB_PASSWORD for agents')+'</h4><span style="margin-left:auto">'+btn('','q sm','x')+'</span></div>'+
+   '<dl class="recap"><dt>Scope</dt><dd>Repository · <code>example-org/web-app</code></dd><dt>Destination</dt><dd>'+(actions?'GitHub Actions · environment <code>repo-secrets</code> (main only)':'Agents that clone it')+'</dd><dt>Who</dt><dd>Operator, '+(actions?'GitHub admin of the repository, checked at the write':'workspace admin')+'</dd></dl>'+
+   '<div class="ban"><b>This form works once</b><p>It closes after one save or in 10 minutes (<span class="mono">9:41</span> left). It is never prefilled, and no page, route or log can show the value again.</p></div>'+
+   (actions?'':'<label class="fld"><span>Kind</span><span class="in val">Username and password '+'<span style="margin-left:auto">'+I('chev')+'</span></span></label><label class="fld"><span>Username</span><span class="in val">qa-reader</span><small>Shown: it names an identity.</small></label>')+
+   '<label class="fld"><span>'+(actions?'Value':'Password')+'</span><span class="in">Paste the value</span><small>Masked as you paste. Cleared whatever the answer.</small></label>'+
+   '<div class="row" style="justify-content:flex-end">'+btn('Cancel')+btn('Save once','p')+'</div></div></div>';
+}
+function secEmpty(){
+  return head('Config / <a>Repositories</a> / <a>example-org/docs-site</a> / <b>Secrets</b>','<span class="mono" style="font-size:21px">example-org/docs-site</span>',{chips:chip('Read')})+
+  '<nav class="secnav"><span>Overview</span><span>Access</span><span class="on">Secrets</span><span>QA targets</span><span>Index</span></nav>'+
+  '<div class="row">'+seg(['Agents','GitHub Actions'],0)+'</div>'+
+  '<div class="card" style="text-align:center;padding:28px 18px"><h4 style="margin:0 0 6px;font-size:16px">No secret for agents on <span class="nw">example-org/docs-site</span> yet</h4><p class="mu sm" style="margin:0 auto 12px;max-width:52ch">Agents that clone it receive the workspace&rsquo;s secrets and their submitter&rsquo;s own. Add one here only when this repository needs a value of its own.</p>'+btn('Add a secret','p','submit')+'</div>'+
+  card('GitHub Actions','<div class="ban warn"><b>The SwarmCloud App may not write Actions secrets here</b><p>Your grant on this repository is Read, and GitHub calls you a member, not an admin. A workspace manager whom GitHub calls admin of it can write here.</p></div>');
+}
+
+/* ---------- S5 MCP, People and roles ---------- */
+function mcpPage(){
+  return head('Config / <b>MCP servers</b>','MCP servers',{acts:btn('Register a server','p','submit'),intro:'As today (McpServers.tsx), moved from Settings. A server&rsquo;s stored credential is a workspace secret granted to <code class="nw">mcp:&lt;name&gt;</code>, listed on Secrets › Keys for agents and MCP.'})+
+  card('Registered MCP servers',tbl([['Name','nm'],['Address'],['Credential'],['Last used'],['','r']],[
+    ['<b>search</b>','<code>https://swarm.example.com/<wbr>mcp/search</code>','stored · SEARCH_INDEX','2h ago',btn('Edit','q sm')],
+    ['<b>tracker</b>','<code>https://app.example.com/mcp</code>','at dispatch','not recently',btn('Edit','q sm')]
+  ]));
+}
+function wsPeople(){
+  return head('Config / <b>People and roles</b>','People and roles',{chips:chip('eng · group workspace'),acts:btn('Add a person','p','submit'),intro:'This workspace&rsquo;s people and roles, as today (WorkspacePeople.tsx). Shown only in a group workspace, to its admins.'})+
+  card('Roles in this workspace',tbl([['Person','nm'],['Role'],['Since'],['','r']],[
+    ['<b>Operator</b><span class="sub">operator@example.com</span>',seg(['viewer','member','admin'],2),'90d',''],
+    ['<b>Rae</b>',seg(['viewer','member','admin'],1),'40d',btn('Remove','q sm dg')],
+    ['<b>Kim</b>',seg(['viewer','member','admin'],1),'12d',btn('Remove','q sm dg')],
+    ['<b>Sam</b>',seg(['viewer','member','admin'],0),'2d',btn('Remove','q sm dg')]
+  ]),{foot:'8 more not drawn: eng has 12 people.'});
+}
+function adminPeople(role){
+  var pa=role==='padmin';
+  var rows=pa?[
+    ['<b>Operator</b><span class="sub">operator@example.com</span>','eng admin · design admin · personal','<span class="chip info">platform admin</span>','40','1m ago'],
+    ['<b>Rae</b>','eng member · design admin · personal','–','20','3h ago'],
+    ['<b>Kim</b>','eng member · ops viewer · personal','–','20','1d ago'],
+    ['<b>Lee</b>','ops admin · personal','–','20','4d ago'],
+    ['<b>Sam</b>','eng viewer','–','<span class="dash">–</span> <span class="why">no personal workspace yet</span>','2d ago']
+  ]:[
+    ['<b>Operator</b>','eng admin · design admin'],
+    ['<b>Rae</b>','eng member · design admin'],
+    ['<b>Kim</b>','eng member'],
+    ['<b>Sam</b>','eng viewer']
+  ];
+  return head('Admin / <b>People and roles</b>','People and roles',{chips:pa?chip('every workspace · 17 people · 7 workspaces','info'):chip('your 2 workspaces: eng, design','info'),acts:'<span class="in" style="width:220px">'+I('search')+'Find a person</span>'+seg(pa?['All workspaces','eng','design','ops']:['eng and design','eng','design'],0),
+   intro:pa?'Every person who has signed in and every workspace, for a platform admin. Each person&rsquo;s ceiling, admins and the audit stay as on Admin › People today.':'Only the workspaces you administer. A person&rsquo;s other workspaces, ceilings and platform roles are a platform admin&rsquo;s and are not shown.'})+
+  (pa?card('Waiting for you',tbl([['Request','nm'],['From'],['Asked'],['','r']],[['<b>New group workspace "research"</b>','Lee','5h ago',btn('Approve','p sm')+btn('Deny','q sm dg')],['<b>Personal workspace</b>','Sam','2d ago',btn('Approve','p sm')+btn('Deny','q sm dg')]])):'')+
+  card(pa?'Everyone who has signed in':'People in eng and design',
+   pa?tbl([['Person','nm'],['Workspaces and roles'],['Platform'],['Ceiling','r'],['Last signed in']],rows):tbl([['Person','nm'],['Roles in your workspaces'],['','r']],rows.map(function(r){return r.concat([btn('Change role','q sm')]);})),
+   {foot:pa?'12 more not drawn: 17 people have signed in.':'11 more not drawn: eng and design have 15 people between them.'})+
+  (pa?card('Recent admin actions',tbl([['When','nm'],['Who'],['What']],[['20m ago','Operator','approved workspace "design" for Rae'],['1d ago','Operator','granted admin to Lee']])):'');
+}
+
+/* ---------- S6 Workspace Settings ---------- */
+function wsSettings(x){
+  var pa=!x||x.role==='padmin';
+  return head('Config / <b>Workspace Settings</b>','Workspace Settings',{chips:chip('eng · group workspace'),acts:pa?btn('Add a new workspace','sm','submit'):'',intro:'Settings › Workspace as today, with Work › Setup as its Workspace setup part.'+(pa?'':' A workspace admin sees the settings of the workspaces they administer and no Add a new workspace: that is a platform admin&rsquo;s, as on Admin › Tenants › New workspace today. A member asks for a workspace through the Request your workspace step below.')})+
+  '<div class="'+(pa?'side':'')+'"><div class="stack">'+
+  card('Settings',
+   '<div class="g2"><label class="fld"><span>Display name</span><span class="in val">Engineering</span></label><label class="fld"><span>Workspace id</span><span class="in val mono">eng</span><small>Fixed at creation.</small></label>'+
+   '<label class="fld"><span>Default runner profile</span><span class="in val">claude-code <span style="margin-left:auto">'+I('chev')+'</span></span></label><div class="fld"><span>Concurrency ceiling</span><span class="in val" style="background:var(--surface-2);border-style:dashed">12 agents · read only</span><small>Set by a platform admin on Admin › Pool limits, as pool tenant:eng.</small></div></div>'+
+   '<div class="row" style="margin-top:12px">'+btn('Save','p')+'<span class="mu sm">Workspace key, GitHub tokens and secrets are on <a>Config › Secrets</a>.</span></div>')+
+  card('Workspace setup',
+   '<ol class="steps">'+[['ok','Sign in','done'],['ok','Request your workspace','approved 90d ago'],['ok','Add a Claude account','2 accounts'],['ok','Connect GitHub','as @operator'],['ok','Install the App','on example-org, operator'],['ok','Enable orgs','2 enabled'],['ok','Choose repositories','4 chosen'],['warn','Verify access','example-org/api: Push missing'],['','Ready','after Verify access']].map(function(s,i){
+     return '<li><span class="sn '+s[0]+'">'+(s[0]==='ok'?'✓':i+1)+'</span><div><b>'+s[1]+'</b><small>'+s[2]+'</small></div>'+(s[0]==='warn'?btn('Fix on example-org/api','sm'):'<span></span>')+'</li>';}).join('')+'</ol>',
+   {act:'<span class="mu sm">6 of 8 required done · 1 optional (Request your workspace)</span>'+btn('Show on Overview','q sm'),id:'setup'})+
+  '</div>'+
+  (pa?card('Add a new workspace',
+   '<div class="stack"><label class="fld"><span>Name</span><span class="in">e.g. Research</span></label><label class="fld"><span>Id</span><span class="in mono">research</span><small>Lower case, digits and dashes; its secrets, GCS prefix and namespace take it.</small></label><label class="fld"><span>Admins</span><span class="in val">Operator (you) · add a person</span></label>'+
+   '<div class="ban"><p>Created at once. A workspace admin sees no such button; a member asks through Workspace setup › Request your workspace, which waits on Admin › People and roles › Waiting for you.</p></div>'+btn('Create workspace','p')+'</div>',
+   {sub:'Platform admins only. Each workspace gets its own service account, secrets, storage prefix and namespace.'}):'')+
+  '</div>';
+}
+
+/* ---------- S7 Platform secrets ---------- */
+function platformSecrets(){
+  var R=[
+   ['swarm-github-app-private-key','Terraform declares','create-secrets.sh --github-app private-key',st('ok','set'),'1','80d','swarm-api'],
+   ['swarm-github-app-client-secret','Terraform declares','create-secrets.sh --github-app client-secret',st('ok','set'),'1','80d','swarm-api'],
+   ['swarm-github-app-webhook-secret','Terraform declares','create-secrets.sh --github-app-webhook-secret',st('ok','set'),'2','3d · rotation in grace','swarm-api'],
+   ['swarm-github-secrets-app-private-key','Terraform declares','create-secrets.sh --github-secrets-app private-key',st('ok','set'),'1','2d','swarm-api'],
+   ['swarm-search-api-key','Terraform declares','create-secrets.sh --search-api-key',st('ok','set'),'1','41d','workers'],
+   ['swarm-egress-credential','Terraform declares','create-secrets.sh --egress-credential',st('ok','set'),'1','60d','egress proxy'],
+   ['swarm-egress-key','Terraform declares','create-secrets.sh --egress-key',st('ok','set'),'1','60d','egress proxy'],
+   ['swarm-live-key','Terraform declares','create-secrets.sh --live-key',st('ok','set'),'1','33d','swarm-api'],
+   ['swarm-child-key','Terraform declares','create-secrets.sh --child-key',st('ok','set'),'1','33d','swarm-api'],
+   ['swarm-graph-ticket-key','Terraform declares','create-secrets.sh --graph-ticket-key',st('ok','set'),'1','21d','swarm-api'],
+   ['swarm-settings-key','Terraform declares','create-secrets.sh --settings-mac-key',st('ok','set'),'1','21d','swarm-api'],
+   ['swarm-workspace-grant-key','Terraform declares','create-secrets.sh --workspace-grant-key',st('ok','set'),'1','9d','swarm-api'],
+   ['swarm-typesafe-fwd-key','Terraform, if the forwarder is on','create-secrets.sh --typesafe-fwd-key',st('neu','not declared'),'<span class="dash">–</span> <span class="why">not declared</span>','<span class="dash">–</span> <span class="why">this deployment does not enable the forwarder</span>','<span class="dash">–</span> <span class="why">nothing reads it here</span>'],
+   ['swarm-tailscale-oauth','Terraform declares','create-secrets.sh --tailscale-oauth',st('bad','no enabled version'),'0','<span class="dash">–</span> <span class="why">declared, never written</span>','workers'],
+   ['swarm-account-* (6)','the quota broker','the broker','6 of 6 set','<span class="dash">–</span> <span class="why">one row per account there</span>','newest 2h','pools · <a>Capacity › Accounts</a>']
+  ];
+  return head('Admin / <b>Platform secrets</b>','Platform secrets',{chips:chip('platform admins only','info'),age:'read live 20s ago · metadata only',acts:btn('Read again','sm'),
+   intro:'Status only: set or not, versions, age and what manages each. No value, no length and no last characters; there is no form here. A value is written only by its manager, on the operator&rsquo;s machine.'})+
+  tbl([['Secret','nm'],['Managed by'],['Value written by'],['Set'],['Versions','r'],['Age'],['Read by']],R.map(function(r,i){var c=r.slice();c[0]='<code>'+c[0]+'</code>';c[2]='<code>'+c[2].split(' ').map(function(t){return '<span class="nw">'+t+'</span>';}).join(' ')+'</code>';return r[0]==='swarm-tailscale-oauth'?{cls:'hi',c:c}:c;}))+
+  '<p class="exd">Two enabled versions means a rotation is in its grace. "Not declared" means Secret Manager has no such secret in this deployment.</p>';
+}
+
+/* ---------- S8 Platform counts ---------- */
+var DAYS=(function(){var out=[];var s=7;for(var i=0;i<30;i++){s=(s*9301+49297)%233280;var r=s/233280;var d=new Date(Date.UTC(2026,8,24+i));var wk=d.getUTCDay()===0||d.getUTCDay()===6;var a=Math.round((wk?14:42)+r*(wk?8:24)+i*0.6);var rt=Math.round(a*(0.05+r*0.06));if(i===29){a=Math.round(a*0.55);rt=Math.round(rt*0.5);}out.push({d:d,a:a,rt:rt});}return out;})();
+function countsOverTime(){
+  var tot=0,ret=0,mx=0;DAYS.forEach(function(x){tot+=x.a;ret+=x.rt;mx=Math.max(mx,x.a+x.rt);});
+  var top=Math.ceil(mx/20)*20;var reported=tot-83;var cost=Math.round(reported*1.52);
+  function fmt(n){return n.toLocaleString('en-US');}
+  var bars=DAYS.map(function(x,i){var lab=x.d.toISOString().slice(0,10)+': '+x.a+' agents, '+x.rt+' retries'+(i===29?' (today so far)':'');return '<div class="bar'+(i===29?' today':'')+'" title="'+lab+'" role="img" aria-label="'+lab+'"><i style="height:'+(x.a/top*100)+'%"></i><i class="rt" style="height:'+(x.rt/top*100)+'%"></i></div>';}).join('');
+  function brk(title,rows,note){var m=rows[0][1];return card(title,tbl([['Name','nm'],['Agents','r'],[''],['Run hours','r']],rows.map(function(r){return ['<code>'+r[0]+'</code>',fmt(r[1]),'<span class="hb"><span class="tr"><i style="width:'+(r[1]/m*100)+'%"></i></span></span>',r[2]];}),{cls:'brk'}),{foot:note||''});}
+  var share=function(p){return Math.round(tot*p);};
+  return head('Admin / <b>Platform counts</b>','Platform counts',{chips:chip('platform admins only','info'),acts:'<span class="mu sm">counted 4m ago · not refreshed on its own</span>'+btn('Run it again · 6 reads','sm')})+
+  card('Every workspace, now',tbl([['State','nm'],['Agents','r']],[['Running','27'],['Parked','6'],['Ready','9'],['Queued','22']],{stack:false}),{sub:'As today: the count of each state, This workspace and Every workspace.'})+
+  '<section class="card" id="over-time"><header class="ch"><h4>Over time</h4><span class="ca">'+seg(['Day','Week','Month'],0)+seg(['30 days','90 days','12 months'],0)+btn('Count over time · 31 reads','p sm')+'</span></header>'+
+  '<p class="cs">By submission day, UTC. Counted once when you press the button, never refreshed on its own; last counted 4m ago. A retry is a second or later attempt of the same agent, shown apart.</p>'+
+  '<div class="g4" style="margin-bottom:14px">'+
+   '<div class="tile"><span class="tl">Agents submitted</span><span class="tv">'+fmt(tot)+'</span><span class="ts">plus '+fmt(ret)+' retries, counted apart</span></div>'+
+   '<div class="tile"><span class="tl">Run hours</span><span class="tv">'+fmt(Math.round(tot*2.6))+' h</span><span class="ts">measured by the platform for every attempt, retries included; not from usage reports</span></div>'+
+   '<div class="tile"><span class="tl">Tokens</span><span class="tv">at least '+(reported*0.31).toFixed(0)+'M in · '+(reported*0.029).toFixed(1)+'M out</span><span class="ts">cache read '+(reported*2.2/1000).toFixed(2)+'B · cache write '+(reported*0.14).toFixed(0)+'M; '+fmt(reported)+' of '+fmt(tot)+' agents reported their usage</span></div>'+
+   '<div class="tile"><span class="tl">Estimated cost (list price, not a bill)</span><span class="tv">at least $'+fmt(cost)+'</span><span class="ts">'+fmt(reported)+' of '+fmt(tot)+' agents reported their usage</span></div></div>'+
+  '<div class="lg" style="margin-bottom:8px"><span><i></i>Agents, first attempt</span><span><i class="rt"></i>Retries</span><span>Today is part of a day and drawn fainter.</span></div>'+
+  '<div class="chart"><div class="yax"><span>'+top+'</span><span>'+top/2+'</span><span>0</span></div><div class="plot"><i class="gl" style="top:0"></i><i class="gl" style="top:50%"></i><div class="bars">'+bars+'</div></div><div class="xax"><span>Sep 24</span><span>Oct 1</span><span>Oct 8</span><span>Oct 15</span><span>Oct 23</span></div></div>'+
+  '<p class="exd" style="margin:8px 0 0">Hover a day for its figures. <a>Show as a table</a></p></section>'+
+  '<div class="g2">'+
+   brk('By agent type',[['claude-code',share(.62),fmt(Math.round(tot*1.7))+' h'],['codex',share(.21),fmt(Math.round(tot*.5))+' h'],['browser',share(.12),fmt(Math.round(tot*.3))+' h'],['visual-qa',share(.05),fmt(Math.round(tot*.1))+' h']])+
+   brk('By model',[['claude-opus-5-5',share(.48),fmt(Math.round(tot*1.4))+' h'],['claude-sonnet-5',share(.27),fmt(Math.round(tot*.7))+' h'],['claude-haiku-4-5',share(.04),'<span class="dash">–</span> <span class="why">ran only as a sub-model; its hours count under the agent&rsquo;s main model</span>'],['not reported',share(.21),fmt(Math.round(tot*.5))+' h']],'Codex agents do not report their model yet, so they are "not reported", not a model of their own.')+
+   brk('By workspace',[['eng',share(.58),fmt(Math.round(tot*1.5))+' h'],['design',share(.22),fmt(Math.round(tot*.6))+' h'],['ops',share(.14),fmt(Math.round(tot*.4))+' h'],['personal workspaces (4)',share(.06),fmt(Math.round(tot*.1))+' h']])+
+   brk('By pool account',[['claude-pool-a',share(.41),fmt(Math.round(tot*1.1))+' h'],['claude-pool-b',share(.38),fmt(Math.round(tot*1.0))+' h'],['openai-pool-a',share(.21),fmt(Math.round(tot*.5))+' h']])+
+  '</div>'+
+  card('What the platform runs on its own',tbl([['Tick','nm'],['Cloud Scheduler job'],['What it does']],[['workflow_rollup','<code class="nw">workflow-rollup-&lt;tenant&gt;</code>','Converges stored workflow state and seals each ended outcome day, so the counts over time read sealed days.'],['reconcile','<code>reconcile</code>','Reclaims stale generations and releases what they held.']]),{sub:'As today.'});
+}
+
+/* ---------- S9 QA ---------- */
+function qaCard(){
+  return head('Config / <a>Repositories</a> / <a>example-org/web-app</a> / <b>QA targets</b>','<span class="mono" style="font-size:21px">example-org/web-app</span>',{chips:chip('Write'),acts:btn('Register QA target','p sm','submit')})+
+  '<nav class="secnav"><span>Overview</span><span>Access</span><span>Secrets <em>9</em></span><span class="on">QA targets <em>1</em></span><span>Index</span></nav>'+
+  '<p class="intro">Web applications whose visual-QA findings are filed in this repository. A new or changed host waits for a platform admin&rsquo;s approval before any run.</p>'+
+  '<section class="card"><header class="ch"><h4>Console</h4>'+chip('2 environments')+chip('24 screens · 3 widths · light and dark')+'<span class="ca">'+btn('Edit','q sm')+btn('','q sm','more')+'</span></header>'+
+  '<div class="stack">'+
+   '<div class="envrow">'+box('on')+'<div><div class="envh"><b>staging</b>'+chip('non-production')+'</div><div class="mono">https://swarm.example.com</div><div class="sm">'+st('ok','host approved by Operator 3d ago')+'<span class="sep"> · </span>'+st('ok','test credential set 2d ago')+'<span class="sep"> · </span>'+st('ok','bypass value set')+'</div></div><span class="mu sm">last run 2h ago</span></div>'+
+   '<div class="envrow dis">'+box('no')+'<div><div class="envh"><b>production</b>'+chip('production · read only','warn')+'</div><div class="mono">https://app.example.com</div><div class="sm">'+st('ok','host approved by Operator 3d ago')+'<span class="sep"> · </span>'+st('warn','test credential not set: deleted 20h ago by Kim')+'</div><div class="sm" style="margin-top:4px;color:var(--warn-ink)">Cannot run: its test credential is not set. <a>Set it on Secrets › Sign-in for QA</a></div></div><span class="mu sm">last run 1d ago</span></div>'+
+  '</div>'+
+  '<div class="row" style="margin-top:12px">'+'<span class="row sm">'+box('')+' Report only, file no issues</span><span class="row sm">Flows with '+seg(['Playwright','Jev'],0)+'</span><span style="margin-left:auto" class="row"><span class="mu sm">up to $40 a leg</span>'+btn('Run staging','p')+'</span></div>'+
+  '<div class="ban" style="margin-top:12px"><b>New since the last run: 5 routes on staging</b><p><code>/billing/usage</code>, <code>/settings/alerts</code> and 3 more were found by the crawl. '+btn('Review and promote','sm')+'</p></div>'+
+  '<footer class="cf">Recent run groups: <a>2h ago · staging · 3 findings</a> · <a>1d ago · staging, production · 5 findings</a></footer></section>';
+}
+function qaRun(){
+  function col(env,o){
+    return '<section class="card"><header class="ch"><h4>'+env+'</h4>'+o.state+'<span class="ca"><a class="sm">Workflow ›</a></span></header><dl class="kv">'+
+     '<dt>Host</dt><dd class="mono">'+o.host+'</dd><dt>Steps</dt><dd>'+o.steps+'</dd><dt>Screens captured</dt><dd>'+o.screens+'</dd>'+
+     '<dt>Stored routes captured</dt><dd>'+o.stored+'</dd><dt>New routes captured</dt><dd>'+o.newr+'</dd><dt>Found, over the cap</dt><dd>'+o.cap+'</dd><dt>Found, not reached</dt><dd>'+o.nr+'</dd><dt>Crawl stopped by</dt><dd>'+o.stop+'</dd>'+
+     '<dt>Findings</dt><dd>'+o.find+'</dd><dt>Issues filed</dt><dd>'+o.iss+'</dd><dt>Gate refusals</dt><dd>'+o.gate+'</dd></dl>'+(o.note?'<p class="sm" style="margin:10px 0 0;color:var(--warn-ink)">'+o.note+'</p>':'')+'</section>';
+  }
+  return head('Config / <a>Repositories</a> / <a>example-org/web-app</a> / <a>QA targets</a> / <b>Run group</b>','QA run · Console · staging and production',{chips:chip('started 1d ago by Operator')+chip('ended','ok'),age:'read 8s ago',acts:btn('Run again','sm')})+
+  '<div class="cols2">'+
+   col('staging',{state:st('ok','succeeded'),host:'swarm.example.com',steps:'6 of 6',screens:'29 · 24 stored, 5 new',stored:'24 of 24',newr:'5',cap:'2',nr:'1',stop:'done',find:'1 high · 2 medium',iss:'3 filed as [staging]',gate:'0'})+
+   col('production',{state:st('ok','succeeded'),host:'app.example.com',steps:'6 of 6',screens:'22 · 22 stored, 0 new',stored:'22 of 24',newr:'0',cap:'0',nr:'0',stop:'time',find:'2 medium',iss:'2 filed as [production]',gate:'3 write attempts refused',note:'The crawl stopped by its time limit, so a route not seen here is not evidence it is gone.'})+
+  '</div>'+
+  card('Routes seen on one environment only',tbl([['Route','nm'],['Seen on'],['Not seen on'],['Means']],[['<code>/billing/usage</code>','staging','production','not shipped to production yet'],['<code>/settings/alerts</code>','staging','production','not shipped to production yet'],['<code>/legacy/report</code>','production','staging','removed on staging, still live']]),{sub:'Information, never a filed finding.',foot:'3 more not drawn: 6 routes in all, the 5 new on staging and <code>/legacy/report</code>.'})+
+  card('New since the last run',tbl([['Route','nm'],['Environment'],['First seen'],['','r']],[['<code>/billing/usage</code>','staging','this run',btn('Promote','sm')],['<code>/settings/alerts</code>','staging','this run',btn('Promote','sm')],['<code>/help/search</code>','staging','this run',btn('Promote','sm')]]),{foot:'2 more not drawn: 5 new on staging.',sub:'Every route a run finds is captured on the next run anyway. Promote adds it to the target&rsquo;s own screens list; only an admin sees Promote.',act:btn('Promote all 5','sm')});
+}
+
+/* ---------- S10 the other Admin pages ---------- */
+function wya(){
+  return head('Admin / <b>Workspaces you admin</b>','Workspaces you admin',{intro:'Each group workspace whose stored role for you is admin. In proposal C each opens that workspace&rsquo;s Config, switched to it.'})+
+  '<div class="rcards">'+[['eng','12 people · 3 repositories','1 needs a look: example-org/api push'],['design','5 people · 2 repositories','all set']].map(function(w){return '<div class="rc"><div class="rn">'+I('building')+'<b>'+w[0]+'</b>'+chip('admin','info')+'</div><div class="sm mu">'+w[1]+' · '+w[2]+'</div><div class="ra">'+btn('Repositories','sm')+btn('Secrets','sm')+btn('MCP servers','sm')+btn('People and roles','sm')+btn('Workspace Settings','sm')+'</div></div>';}).join('')+'</div>';
+}
+function poolLimits(){
+  return head('Admin / <b>Pool limits</b>','Pool limits',{chips:chip('platform admins only','info'),age:'read 12s ago',intro:'As built: the side editor with impact and history, and a typed confirmation for 0 or a cut of half or more. Its other cards (GitHub fallback token, Additional repositories, Model prices) stay.'})+
+  '<div class="side">'+tbl([['Pool','nm'],['Ceiling','r'],['Leased','r'],['Running','r'],['','r']],[['<b>global</b>','40','31','27',btn('Change','sm')],['<b>class:browser</b>','4','4','4',btn('Change','sm')],['<b>class:standard</b>','24','19','16',btn('Change','sm')],['<b>tenant:eng</b>','12','9','8',btn('Change','sm')]])+
+  card('Change class:browser','<label class="fld"><span>New ceiling</span><span class="in val">6</span></label><p class="sm" style="margin:8px 0">Admits up to 2 more of the 3 ready browser agents. Concurrency counts from LEASED.</p>'+btn('Save','p'),{sub:'History: 4 since 2026-10-02, by Operator.'})+'</div>';
+}
+function runnerSizes(){
+  return head('Admin / <b>Runner sizes</b>','Runner sizes',{chips:chip('platform admins only','info'),intro:'As built (RunnerSizes.tsx): each class&rsquo;s CPU request, CPU limit and memory, versioned and audited. Memory and ephemeral storage: request equals limit.'})+
+  tbl([['Class','nm'],['CPU request','r'],['CPU limit','r'],['Memory','r'],['Version','r'],['','r']],[['<b>standard</b>','1','2','4 GiB','3',btn('Edit','q sm')],['<b>browser</b>','2','3','8 GiB','2',btn('Edit','q sm')],['<b>large</b>','4','6','16 GiB','1',btn('Edit','q sm')]]);
+}
+function tenants(){
+  return head('Admin / <b>Tenants</b>','Tenants',{chips:chip('platform admins only','info'),intro:'As built: every workspace registered on the platform, its pools, and its QA identity grants.'})+
+  tbl([['Workspace','nm'],['Kind'],['People','r'],['Ceiling','r'],['Repositories','r'],['QA identity grants','r'],['','r']],[['<b>eng</b>','group','12','12','3','1',btn('Open','q sm')],['<b>design</b>','group','5','6','2','0',btn('Open','q sm')],['<b>ops</b>','group','3','4','1','0',btn('Open','q sm')],['<b>u-operator</b>','personal','1','2','2','0',btn('Open','q sm')]])+'<p class="exd">3 more not drawn: the personal workspaces of Rae, Kim and Lee. 7 workspaces in all, as Platform counts and People and roles say.</p>';
+}
+function schedAdmin(){
+  return head('Automate / <b>Schedules</b>','Schedules',{chips:chip('All workspaces','info'),acts:seg(['This workspace','All workspaces'],1),intro:'Kept in Automate (SCHED-ONE-PAGE, 2026-10-13): an admin&rsquo;s every-workspace view is this switch, not a second page. Admin&rsquo;s panel only links here and to Automate › Approvals; no Admin tab draws either (BGD, 2026-10-23 23:57Z).'})+
+  tbl([['Schedule','nm'],['Workspace'],['Type'],['Next'],['State']],[['<b>Nightly visual QA, Console</b>','eng','visual-qa · staging, production','02:00 UTC',st('ok','active')],['<b>Weekly dependency sweep</b>','design','agent','Mon 06:00',st('pa','paused')],['<b>Docs freshness</b>','ops','agent','<span class="dash">–</span> <span class="why">waits for approval</span>',st('warn','waiting for approval')]])+
+  '<p class="exd">2 approvals wait on Automate › Approvals, its own tab, which is not drawn here.</p>';
+}
+function visTable(){
+  var Y='<span class="st ok"><svg class="mk" viewBox="0 0 12 12" aria-hidden="true"><use href="#m-ok"/></svg><span>shown</span></span>';
+  var N='<span class="mu">not shown</span>';
+  return tbl([['Admin tab','nm'],['Platform admin','c'],['Workspace admin','c'],['Member or viewer','c']],[
+    ['People and roles',Y+'<span class="sub">every person and workspace</span>',Y+'<span class="sub">their workspaces only</span>',N],
+    ['Workspaces you admin',Y,Y,N],['Pool limits',Y,N,N],['Runner sizes',Y,N,N],['Tenants',Y,N,N],['Platform counts',Y,N,N],['Platform secrets',Y,N,N],
+    ['Links to Automate › Schedules (All workspaces) and Approvals: links, not Admin tabs',Y+'<span class="sub">a link</span>',N+'<span class="sub">their own workspace&rsquo;s, in Automate</span>',N]
+  ],{cls:'vis'});
+}
+
+/* ---------- the surfaces ---------- */
+var P={role:'padmin',ws:'eng'};
+function o(x){var r={};for(var k in P)r[k]=P[k];for(var j in x)r[j]=x[j];return r;}
+var S=[
+ {id:'s1',n:'S1',t:'Navigation: Config in the spine and panel, by role',lede:'Config sits between Capacity and Admin. Admin is drawn only for admins, and for a workspace admin it holds only their workspaces&rsquo; pages. Settings keeps Profile, reached from the avatar and the panel footer. When a repository is open, the panel nests its sections under Repositories (S3).',f:[
+   {k:'d',o:o({sec:'config',page:'repos',short:1,who:'padmin'}),b:function(x){return s1body(x);},c:'<b>Platform admin</b> in eng: Config with all six pages, and Admin on the spine.'},
+   {k:'d',o:o({sec:'admin',page:'counts',short:1}),b:function(){return head('Admin / <b>Platform counts</b>','Platform counts',{chips:chip('platform admins only','info'),intro:'A platform admin opens Admin and finds every tab: People and roles and Workspaces you admin, then the platform&rsquo;s own pages, and links (not tabs) to Automate › Schedules, All workspaces, and Automate › Approvals. S7, S8 and S10 draw these pages.'});},c:'<b>Platform admin</b> in Admin: every tab.'},
+   {k:'d',o:o({sec:'admin',page:'apeople',role:'wadmin',short:1}),b:function(){return head('Admin / <b>People and roles</b>','People and roles',{chips:chip('your 2 workspaces: eng, design','info'),intro:'A workspace admin opens Admin and finds only People and roles and Workspaces you admin; the panel says which tabs are a platform admin&rsquo;s. S5 draws this page in full.'});},c:'<b>Workspace admin</b>: Admin holds two tabs, scoped to the workspaces they administer.'},
+   {k:'d',o:o({sec:'config',page:'repos',role:'member',short:1,who:'member'}),b:function(x){return s1body(x);},c:'<b>Member</b>: no Admin on the spine; Config without People and roles.'},
+   {k:'d',o:o({sec:'config',page:'repos',ws:'personal',short:1,who:'personal'}),b:function(x){return s1body(x);},c:'<b>Personal workspace</b>: Config has five pages; there is no People and roles.'},
+   {k:'w',o:o({sec:'config',page:'repos',title:'Repositories'}),c:'Phone menu, <b>platform admin</b>: spine and panel in a drawer.'},
+   {k:'w',o:o({sec:'admin',page:'wya',role:'wadmin',title:'Workspaces you admin'}),c:'Phone menu, <b>workspace admin</b> in Admin.'},
+   {k:'w',o:o({sec:'config',page:'secrets',role:'member',title:'Secrets'}),c:'Phone menu, <b>member</b>: no Admin.'},
+   {k:'w',o:o({sec:'config',page:'wss',ws:'personal',title:'Workspace Settings'}),c:'Phone menu, <b>personal workspace</b>.'}
+ ]},
+ {id:'s2',n:'S2',t:'Config › GitHub access',lede:'Connecting and disconnecting through the GitHub App, the owners, and Choose repositories. In proposal C this page is only about the connection; what you chose is listed on Repositories.',f:[
+   {k:'d',o:o({sec:'config',page:'github'}),b:ghConnected,c:'<b>Connected.</b> Owners with the App installed or requested; the policy card as today.'},
+   {k:'p',o:o({title:'GitHub access'}),b:ghConnected,c:'Phone: the owners table stacks into records.'},
+   {k:'d',o:o({sec:'config',page:'github',short:1}),b:ghNotConnected,c:'<b>Not connected</b>, after a disconnect: the three steps, with the later two waiting.'},
+   {k:'p',o:o({title:'GitHub access'}),b:ghNotConnected,c:'Phone, not connected.'},
+   {k:'d',o:o({sec:'config',page:'github'}),b:ghChoose,c:'<b>Choose repositories.</b> Owners left, repositories right, paged and searched; Write disabled where GitHub does not let you push, with the reason on hover.'},
+   {k:'p',o:o({title:'Choose repositories'}),b:ghChoose,c:'Phone: the owner list becomes a picker above the repositories.'}
+ ]},
+ {id:'s3',n:'S3',t:'Config › Repositories, and one repository&rsquo;s page',lede:'The list is "Repositories SwarmCloud may reach as you", one card per repository with your access and what eng keeps about it; "Needs a look" first. <b>Add new repository</b> leads to GitHub access › Choose repositories. Opening a card is the hub page.',f:[
+   {k:'d',o:o({sec:'config',page:'repos'}),b:reposList,c:'<b>The list.</b> A failing check sorts first and links to that repository&rsquo;s Access section; a chosen repository that is not registered in eng offers Register.'},
+   {k:'p',o:o({title:'Repositories'}),b:reposList,c:'Phone: one card per row.'},
+   {k:'d',o:o({sec:'config',page:'repos',repo:'example-org/web-app',kid:'Overview'}),b:repoHub,c:'<b>One repository, Overview.</b> Four tiles, then the Access and Index sections. The panel nests this repository&rsquo;s sections under Repositories.'},
+   {k:'p',o:o({title:'example-org/web-app'}),b:repoHub,c:'Phone: the section strip scrolls sideways; tiles two by two.'}
+ ]},
+ {id:'s4',n:'S4',t:'Config › Secrets, and a repository&rsquo;s Secrets section',lede:'Secrets&rsquo; own page has the scopes Workspace · Yours · Repository. Workspace and Yours are edited here; the Repository scope is an index across repositories that opens each repository&rsquo;s Secrets section, which carries the destination switch Agents | GitHub Actions. Platform secrets are on Admin (S7).',f:[
+   {k:'d',o:o({sec:'config',page:'secrets'}),b:secWorkspace,c:'<b>Workspace scope.</b> The store list and grant matrix (today&rsquo;s SEC-UI-LIST and SEC-UI-GRANTS), with the Shadowed column saying where a more specific value overrides it.'},
+   {k:'p',o:o({title:'Secrets'}),b:secWorkspace,c:'Phone: secrets as records; the grant matrix scrolls inside its box.'},
+   {k:'d',o:o({sec:'config',page:'secrets',short:1}),b:function(){return secKeys()+secGit();},c:'<b>The same page, scrolled:</b> Keys for agents and MCP, then GitHub token status. Status only; no character of any token.'},
+   {k:'p',o:o({title:'Secrets'}),b:function(){return secKeys()+secGit();},c:'Phone: keys and tokens.'},
+   {k:'d',o:o({sec:'config',page:'secrets',short:1}),b:secYours,c:'<b>Yours.</b> Your secrets with "Used in eng", and Browser sessions saved from a live browser.'},
+   {k:'p',o:o({title:'Secrets'}),b:secYours,c:'Phone: Yours, your secrets and browser sessions as records.'},
+   {k:'d',o:o({sec:'config',page:'secrets',short:1}),b:secRepoIndex,c:'<b>Repository scope: the cross-repository index.</b> Counts and states per repository; each row opens that repository&rsquo;s Secrets section. Nothing is set from the index.'},
+   {k:'p',o:o({title:'Secrets'}),b:secRepoIndex,c:'Phone: the index.'},
+   {k:'d',o:o({sec:'config',page:'repos',repo:'example-org/web-app',kid:'Secrets'}),b:repoSecAgents,c:'<b>One repository&rsquo;s secrets, Agents.</b> Its own secrets with the override, Sign-in for QA per target and environment, and its GitHub token.'},
+   {k:'p',o:o({title:'example-org/web-app'}),b:repoSecAgents,c:'Phone: one repository&rsquo;s secrets, Agents.'},
+   {k:'d',o:o({sec:'config',page:'repos',repo:'example-org/web-app',kid:'Secrets'}),b:repoSecActions,c:'<b>GitHub Actions</b>, with environment <code>repo-secrets</code> (main only) and <code>preview</code> (any branch, typed confirmation). Create environment is "Create on GitHub ↗" plus Check rule.'},
+   {k:'p',o:o({title:'example-org/web-app'}),b:repoSecActions,c:'Phone: GitHub Actions.'},
+   {k:'d',o:o({sec:'config',page:'repos',repo:'example-org/web-app',kid:'Secrets',over:setForm('agents')}),b:repoSecAgents,c:'<b>The one-time set form</b>, opened by Set: the destination recapped, a 10-minute single use, never prefilled.'},
+   {k:'p',o:o({title:'Set a secret',over:setForm('actions')}),b:repoSecActions,c:'Phone: the form is a full-screen sheet, here for an Actions environment.'},
+   {k:'d',o:o({sec:'config',page:'repos',repo:'example-org/docs-site',kid:'Secrets',short:1}),b:secEmpty,c:'<b>Empty state</b>: no repository secrets yet, and an Actions pane that says why it cannot be written.'},
+   {k:'p',o:o({title:'example-org/docs-site'}),b:secEmpty,c:'Phone, empty.'}
+ ]},
+ {id:'s5',n:'S5',t:'Config › MCP servers, Config › People and roles, and Admin › People and roles',lede:'The two Config pages keep today&rsquo;s bodies and move from Settings. Admin › People and roles is the cross-workspace view.',f:[
+   {k:'d',o:o({sec:'config',page:'mcp',short:1}),b:mcpPage,c:'<b>Config › MCP servers</b>, as today.'},
+   {k:'p',o:o({title:'MCP servers'}),b:mcpPage,c:'Phone: Config › MCP servers.'},
+   {k:'d',o:o({sec:'config',page:'people',short:1}),b:wsPeople,c:'<b>Config › People and roles</b>, this workspace only; absent in a personal workspace and for members.'},
+   {k:'p',o:o({title:'People and roles'}),b:wsPeople,c:'Phone: Config › People and roles.'},
+   {k:'d',o:o({sec:'admin',page:'apeople'}),b:function(){return adminPeople('padmin');},c:'<b>Admin › People and roles, platform admin</b>: every person and every workspace, requests waiting, the audit.'},
+   {k:'d',o:o({sec:'admin',page:'apeople',role:'wadmin',short:1}),b:function(){return adminPeople('wadmin');},c:'<b>Admin › People and roles, workspace admin</b>: only eng and design, roles only.'},
+   {k:'p',o:o({title:'People and roles',role:'wadmin'}),b:function(){return adminPeople('wadmin');},c:'Phone, workspace admin.'},
+   {k:'p',o:o({title:'People and roles'}),b:function(){return adminPeople('padmin');},c:'Phone, platform admin.'}
+ ]},
+ {id:'s6',n:'S6',t:'Config › Workspace Settings',lede:'The workspace&rsquo;s settings, Workspace setup (today&rsquo;s Work › Setup checklist) as a part of it, and Add a new workspace for a platform admin only (BGD, 2026-10-23 23:57Z). A failing setup step links into the repository that fails.',f:[
+   {k:'d',o:o({sec:'config',page:'wss'}),b:wsSettings,c:'<b>Platform admin</b>: Workspace Settings and Workspace setup, with the form that Add a new workspace opens beside them (drawn open).'},
+   {k:'p',o:o({title:'Workspace Settings'}),b:wsSettings,c:'Phone, platform admin: settings, then setup, then the form Add a new workspace opens.'},
+   {k:'d',o:o({sec:'config',page:'wss',role:'wadmin',short:1}),b:wsSettings,c:'<b>Workspace admin</b>: their workspace&rsquo;s settings and setup, with no Add a new workspace.'},
+   {k:'p',o:o({title:'Workspace Settings',role:'wadmin'}),b:wsSettings,c:'Phone, workspace admin: no Add a new workspace.'}
+ ]},
+ {id:'s7',n:'S7',t:'Admin › Platform secrets',lede:'Status only, for platform admins: set or not, versions, age and what manages each, read live from Secret Manager metadata.',f:[
+   {k:'d',o:o({sec:'admin',page:'psecrets'}),b:platformSecrets,c:'<b>Platform secrets.</b> A secret declared but never written is drawn as a problem; one this deployment does not declare is a dash with its reason.'},
+   {k:'p',o:o({title:'Platform secrets'}),b:platformSecrets,c:'Phone: one record per secret.'}
+ ]},
+ {id:'s8',n:'S8',t:'Admin › Platform counts, with Over time',lede:'Agents per day, week or month by submission day with retries apart; breakdowns by agent type, model, workspace and pool account; run hours, tokens and an estimated cost that says what it is not. The Run button carries its price and nothing refreshes on its own.',f:[
+   {k:'d',o:o({sec:'admin',page:'counts'}),b:countsOverTime,c:'<b>Platform counts › Over time</b>. Totals are summed from the bars drawn, so the figures agree with the chart.'},
+   {k:'p',o:o({title:'Platform counts'}),b:countsOverTime,c:'Phone: tiles two by two, then the chart and the breakdowns.'}
+ ]},
+ {id:'s9',n:'S9',t:'QA targets with environments, and the run group page',lede:'A target lists its environments, each with its host and credential state; Run takes the ticked environments, and a leg that cannot run says why. The run group page hangs off the repository.',f:[
+   {k:'d',o:o({sec:'config',page:'repos',repo:'example-org/web-app',kid:'QA targets'}),b:qaCard,c:'<b>The target card</b> in the repository&rsquo;s QA targets section. Production cannot run until its credential is set, and links to the place that sets it.'},
+   {k:'p',o:o({title:'example-org/web-app'}),b:qaCard,c:'Phone: the target card.'},
+   {k:'d',o:o({sec:'config',page:'repos',repo:'example-org/web-app',kid:'QA targets'}),b:qaRun,c:'<b>The run group page</b>: one column per environment with coverage, new routes, routes seen on one environment only, and New since the last run with Promote for an admin.'},
+   {k:'p',o:o({title:'QA run'}),b:qaRun,c:'Phone: the two columns stack, staging first.'}
+ ]},
+ {id:'s10',n:'S10',t:'Every Admin page, in this proposal&rsquo;s style',lede:'The Admin tabs <code>SECTIONS</code> lists today (Pool limits, Runner sizes, Tenants, Platform counts, People, Workspaces you admin) plus Platform secrets. Every-workspace schedules and approvals stay in Automate; Admin only links to them. People and roles is S5, Platform counts S8, Platform secrets S7. Which tabs each role sees:',pre:visTable,f:[
+   {k:'d',o:o({sec:'admin',page:'wya',role:'wadmin',short:1}),b:wya,c:'<b>Workspaces you admin</b> (workspace admin shown): each opens that workspace&rsquo;s Config pages.'},
+   {k:'p',o:o({title:'Workspaces you admin',role:'wadmin'}),b:wya,c:'Phone: Workspaces you admin, one card each.'},
+   {k:'d',o:o({sec:'admin',page:'limits',short:1}),b:poolLimits,c:'<b>Pool limits</b>, as picked (admin-help.html L2).'},
+   {k:'p',o:o({title:'Pool limits'}),b:poolLimits,c:'Phone: Pool limits; the side editor follows the table.'},
+   {k:'d',o:o({sec:'admin',page:'sizes',short:1}),b:runnerSizes,c:'<b>Runner sizes.</b>'},
+   {k:'p',o:o({title:'Runner sizes'}),b:runnerSizes,c:'Phone: Runner sizes.'},
+   {k:'d',o:o({sec:'admin',page:'tenants',short:1}),b:tenants,c:'<b>Tenants.</b>'},
+   {k:'p',o:o({title:'Tenants'}),b:tenants,c:'Phone: Tenants.'},
+   {k:'d',o:o({sec:'automate',page:'sched',short:1}),b:schedAdmin,c:'<b>Not an Admin tab:</b> Automate › Schedules with its All workspaces switch, which Admin&rsquo;s panel links to.'},
+   {k:'p',o:o({title:'Schedules'}),b:schedAdmin,c:'Phone: Automate › Schedules, All workspaces.'},
+
+ ]}
+];
+
+/* ---------- render ---------- */
+var root=document.getElementById('surfaces');var toc=document.getElementById('toc');var out='';
+S.forEach(function(s){
+  toc.insertAdjacentHTML('beforeend','<li><a href="#'+s.id+'">'+s.n+' · '+s.t.replace(/&rsquo;/g,'’').split(',')[0]+'</a></li>');
+  out+='<h2 id="'+s.id+'"><span class="n">'+s.n+'</span>'+s.t+'</h2><p class="lede">'+s.lede+'</p>'+(s.pre?s.pre():'')+'<div class="frames">';
+  s.f.forEach(function(f){
+    var inner=f.k==='d'?desk(f.o,f.b(f.o)):f.k==='p'?phone(f.o,f.b(f.o)):drawer(f.o);
+    out+='<figure class="fig '+(f.k==='d'?'d':'p')+'">'+inner+'<figcaption>'+s.n+' · '+(f.k==='d'?'1440':'390')+' · '+f.c+'</figcaption></figure>';
+  });
+  out+='</div>';
+});
+root.innerHTML=out;
+
+/* ---------- theme and fit ---------- */
+var KEY='swarm-mockup-theme';
+function applyTheme(t){if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);else document.documentElement.removeAttribute('data-theme');
+  document.querySelectorAll('[data-theme-set]').forEach(function(b){b.setAttribute('aria-pressed',String(b.getAttribute('data-theme-set')===t));});
+  try{localStorage.setItem(KEY,t);}catch(e){}}
+var saved='system';try{saved=localStorage.getItem(KEY)||'system';}catch(e){}
+applyTheme(saved);
+function applyFit(on){document.body.classList.toggle('fit',on);document.querySelectorAll('[data-fit]').forEach(function(b){b.setAttribute('aria-pressed',String((b.getAttribute('data-fit')==='1')===on));});sizeFit();}
+function sizeFit(){if(!document.body.classList.contains('fit'))return;document.querySelectorAll('.scroller').forEach(function(sc){var z=Math.min(1,(sc.clientWidth-2)/1440);sc.style.setProperty('--z',z.toFixed(4));});}
+window.addEventListener('resize',sizeFit);
+document.addEventListener('click',function(e){var t=e.target.closest('[data-theme-set]');if(t){applyTheme(t.getAttribute('data-theme-set'));return;}var f=e.target.closest('[data-fit]');if(f)applyFit(f.getAttribute('data-fit')==='1');});
+applyFit(window.innerWidth>=900);
+})();
+</script>
+</body>
+</html>
