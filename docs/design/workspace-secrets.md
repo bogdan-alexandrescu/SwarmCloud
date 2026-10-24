@@ -1128,7 +1128,9 @@ beside it: `apps/swarm-api/swarm_api/workspace_secrets.py`,
   and so is a registration whose `owner/repo` no longer derives its id. An
   MCP server is never granted a repository secret (422): `mcp:attach` matches
   no repository, so such a grant would reach every repository's attempts.
-* **A removed registration.** The release withholds its secrets at once.
+* **A removed registration.** The release withholds its secrets while the
+  registration is gone. That stops an honest removal, not an agent, which can
+  write the registration document back.
   `POST /v1/repositories/{repo_id}/secrets:disable-grants` (a manager) turns
   every grant on them off, re-signed off, so re-registering the same
   repository revives nothing. `DELETE /v1/repositories/{repo_id}` does not
