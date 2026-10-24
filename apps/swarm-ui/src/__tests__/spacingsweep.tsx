@@ -374,7 +374,12 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   },
   // Automate › Schedules (docs/schedules.md §6.1) rides with Work's setup pages:
   // one route, and a slice is a file of its own (the slice test).
-  { name: 'setup', routes: ['work/repositories', 'work/setup', 'work/access', 'automate/schedules', 'automate/approvals'], floor: 90 },
+  // CONFIG-NAV (part of #2157): Repositories and Access left Work for Config;
+  // the first two Config pages keep their place in this walk, and the other
+  // four are the `config` slice. Workspace setup (Work › Setup until then) is
+  // a part of Workspace Settings with no tab of its own, so no slice reaches it.
+  { name: 'setup', routes: ['config/github', 'config/repositories', 'automate/schedules', 'automate/approvals'], floor: 90 },
+  { name: 'config', routes: ['config/secrets', 'config/mcp-servers', 'config/people', 'config/workspace'], floor: 60 },
   { name: 'capacity', routes: ['capacity/pools', 'capacity/catalogue', 'capacity/profiles'], floor: 140 },
   // API reads is Capacity's last page since NAV-FOOT (#1672), so it closes this walk.
   { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/quota', 'capacity/api-reads'], floor: 160 },

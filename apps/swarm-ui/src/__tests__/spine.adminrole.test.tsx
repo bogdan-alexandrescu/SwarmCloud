@@ -175,7 +175,7 @@ describe('Admin › Workspaces you admin (NAV-ADMIN-ROLE)', () => {
   }
   const rows = () => [...document.querySelectorAll<HTMLElement>('.wya-row')]
 
-  it('lists eng, and its People and roles link selects eng and lands on settings/people', async () => {
+  it('lists eng, and its People and roles link selects eng and lands on Config › People and roles', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin'), group('ops', 'member')])
     await app('/admin/workspaces')
     await waitFor(() => expect(rows()).toHaveLength(1))
@@ -184,16 +184,17 @@ describe('Admin › Workspaces you admin (NAV-ADMIN-ROLE)', () => {
     expect(eng.querySelector('.wya-name b')?.textContent).toBe('eng@example.com')
     const links = [...eng.querySelectorAll<HTMLAnchorElement>('.wya-links a')]
     expect(links.map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
-      ['Workspace', '/settings/workspace'],
-      ['MCP servers', '/settings/mcp-servers'],
-      ['People and roles', '/settings/people'],
+      // The pages' own addresses are still `settings/*`; they land on Config since CONFIG-NAV.
+      ['Workspace', '/config/workspace'],
+      ['MCP servers', '/config/mcp-servers'],
+      ['People and roles', '/config/people'],
       ['Workspace key', '/settings/keys'],
     ])
     const { chosenTenant } = await import('../fetch')
     expect(chosenTenant()).toBeNull()
     fireEvent.click(links.find((a) => a.textContent === 'People and roles')!)
     expect(chosenTenant(), 'the link did not select eng').toBe('eng')
-    await waitFor(() => expect(window.location.pathname).toBe('/settings/people'))
+    await waitFor(() => expect(window.location.pathname).toBe('/config/people'))
   })
 
   it('lists for a platform admin the workspaces where their stored role is admin, not every one they reach', async () => {
@@ -214,14 +215,16 @@ describe('Admin › Workspaces you admin (NAV-ADMIN-ROLE)', () => {
     expect(rows()).toHaveLength(0)
   })
 
-  it('renders the Pool limits refusal for a member on a direct /admin/limits', async () => {
-    // The fixture build: its caller is a member who administers nothing, and
-    // the admin read answers 403 admin_required, as the API does.
+  it('sends a member on a direct /admin/limits to Overview (CONFIG-NAV)', async () => {
+    // The fixture build: its caller is a member who administers nothing. The
+    // page's own refusal and the API's 403 admin_required are unchanged; since
+    // CONFIG-NAV (part of #2157, BGD 2026-10-23 "Admin is shown only to
+    // admins") the console sends them to Overview before either is met.
     vi.resetModules()
     const { App } = await import('../App')
     window.history.replaceState(null, '', '/admin/limits')
     render(<App />)
-    await waitFor(() => expect(document.querySelector('.adm-locked')?.textContent).toMatch(/^\s*Admins only\./))
+    await waitFor(() => expect(window.location.pathname).toBe('/overview'))
     expect(adminItem(), 'the member was drawn an Admin item').toBeNull()
   })
 })

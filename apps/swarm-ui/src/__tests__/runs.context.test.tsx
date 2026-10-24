@@ -131,7 +131,7 @@ describe('the Context card (screen 5, pick B)', () => {
     expect(line('index').querySelector('.c-pill')?.getAttribute('data-fresh')).toBe('current')
     const given = line('index').querySelector('.c-dash')!
     expect(given.getAttribute('title')).toMatch(/index_sha/)
-    expect(card().querySelector('a.rc-open')?.getAttribute('href')).toBe(`/repositories/${REPO_ID}`)
+    expect(card().querySelector('a.rc-open')?.getAttribute('href')).toBe(`/config/repositories/${REPO_ID}`)
     // No pull request yet: nothing to ask the impact of.
     expect(visible(line('impact'))).toContain('no pull request yet')
   })
@@ -166,7 +166,7 @@ describe('the selected-tests gate row on the PR card (screen 10, policy P3)', ()
     expect(visible(gate('full'))).toContain('Full suite')
     expect(visible(gate('full'))).toContain('not required for this change')
     expect(visible(document.querySelector('.rn-ci .rc-gate-h'))).toContain('policy P3')
-    expect(document.querySelector('.rn-ci .rc-gate-h a')?.getAttribute('href')).toBe(`/repositories/${REPO_ID}/impact?pr=57`)
+    expect(document.querySelector('.rn-ci .rc-gate-h a')?.getAttribute('href')).toBe(`/config/repositories/${REPO_ID}/impact?pr=57`)
     const posts = calls.filter((c) => c.method === 'POST')
     expect(posts.map((c) => c.body)).toEqual([{ pull_request: 57 }])
     // The Context card reads the same answer, not a second query.

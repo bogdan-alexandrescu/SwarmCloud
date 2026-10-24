@@ -165,6 +165,7 @@ describe('Settings › Workspace', () => {
     const { WorkspaceSettingsScreen } = await load()
     render(<WorkspaceSettingsScreen />)
     expect(await toggle()).toBeTruthy()
-    expect(visible(document.querySelector('h1'))).toBe('Workspace')
+    // Config › Workspace Settings since CONFIG-NAV (part of #2157).
+    expect(visible(document.querySelector('h1'))).toBe('Workspace Settings')
   })
 })

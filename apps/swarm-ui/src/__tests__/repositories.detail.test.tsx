@@ -184,14 +184,14 @@ describe('the repository page leads with what the index says about the head (Det
     // Graph and Impact (screens 8 and 9) sit after Overview, as their frames draw them.
     expect(tabs.map((t) => visible(t.querySelector('.c-tab-label')))).toEqual(['Overview', 'Graph', 'Impact', 'Test map', 'Hot-spots', 'Index runs', 'Settings', 'Used by'])
     expect(tabs.map((t) => t.getAttribute('href'))).toEqual([
-      `/repositories/${ID}`,
-      `/repositories/${ID}/graph`,
-      `/repositories/${ID}/impact`,
-      `/repositories/${ID}/test-map`,
-      `/repositories/${ID}/hot-spots`,
-      `/repositories/${ID}/index-runs`,
-      `/repositories/${ID}/settings`,
-      `/repositories/${ID}/used-by`,
+      `/config/repositories/${ID}`,
+      `/config/repositories/${ID}/graph`,
+      `/config/repositories/${ID}/impact`,
+      `/config/repositories/${ID}/test-map`,
+      `/config/repositories/${ID}/hot-spots`,
+      `/config/repositories/${ID}/index-runs`,
+      `/config/repositories/${ID}/settings`,
+      `/config/repositories/${ID}/used-by`,
     ])
     expect(visible(tabs[3]!.querySelector('em'))).toBe('310')
     expect(visible(tabs[5]!.querySelector('em'))).toBe('3')

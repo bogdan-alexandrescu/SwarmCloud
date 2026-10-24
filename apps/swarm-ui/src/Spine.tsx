@@ -4,7 +4,8 @@
  *
  *   SPINE   84px, deep blue (#0b3a7a -> #06101e), THE SAME IN BOTH THEMES. The
  *           Hive in its 44px full cut (white -> #7dd3fc), Submit (the sky
- *           button), Overview, Work, Automate, Capacity, Admin; at its foot
+ *           button), Overview, Work, Automate, Capacity, Config (CONFIG-NAV,
+ *           part of #2157), Admin; at its foot
  *           Help, then Profile (the person's avatar), the last item
  *           (NAV-FOOT, #1672). API reads is Capacity's last page.
  *   PANEL   236px. The wordmark and the environment pill, the tenant block,
@@ -24,15 +25,17 @@
  * drawn while either read is in flight. It reverses the rule written here
  * until then, "Admin is SHOWN to a non-admin, with a lock": a person who
  * administers nothing was shown four pages they could never use. The routes
- * stay, and a direct link still lands on the page's own "admins only"
- * refusal, so a saved link is answered rather than missing.
+ * stay, but since CONFIG-NAV (part of #2157, BGD 2026-10-23: "Admin is shown
+ * only to admins") a direct link from someone who administers nothing goes
+ * to Overview once both reads say so (`onNoAdmin`); the API's own refusal of
+ * every admin route is unchanged.
  *
  * Production draws a red pill and a 3px red bar across the top; the pill shows
  * only what was measured (`classifyEnvironment`), never a hardcoded word.
  */
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { AGENT_TABS, type AgentTab } from './agentlist'
-import { USE_FIXTURES, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadStats, type TenantChoice } from './api'
+import { USE_FIXTURES, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadOnboarding, loadStats, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
 import { Banner, Button, NamedMark, Toaster, acknowledge, routedClick } from './components'
 import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, preferencesUnavailableSnapshot, probeSnapshot, read, route, subscribePreferencesUnavailable, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
@@ -48,11 +51,12 @@ import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppState
 import { feedData, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
 import { firstName } from './PersonName'
 import { roleOf } from './roles'
+import { SetupContext, SetupMeter, setupSteps, setupUnfinished, type SetupRead } from './ConfigSetup'
 
-export type SpineSection = 'profile' | 'overview' | 'work' | 'automate' | 'capacity' | 'admin' | 'help' | null
+export type SpineSection = 'profile' | 'overview' | 'work' | 'automate' | 'capacity' | 'config' | 'admin' | 'help' | null
 
 /** The spine sections that draw a panel of pages. */
-type PanelSection = 'profile' | 'work' | 'automate' | 'capacity' | 'admin'
+type PanelSection = 'profile' | 'work' | 'automate' | 'capacity' | 'config' | 'admin'
 
 /** One page in the panel: its label, its icon, the address `go()` takes, and its children. */
 interface PanelPage {
@@ -88,13 +92,12 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
   // "Settings ›" links stacked in the panel foot, and People and roles had no
   // link at all. The person's own pages first, then the selected workspace's.
   // Not SECTIONS entries (App.tsx): the addresses stay `settings/*`, and the
-  // issue forms already name each page as Settings › <page>.
+  // issue forms already name each page as Settings › <page>. THE PERSON'S OWN
+  // PAGES ONLY since CONFIG-NAV (part of #2157, BGD 2026-10-23): Workspace,
+  // MCP servers and People and roles are Config's.
   profile: [
     { key: 'profile', label: 'Profile', icon: 'people', to: 'settings/profile' },
     { key: 'keys', label: 'API keys', icon: 'key', to: 'settings/keys' },
-    { key: 'workspace', label: 'Workspace', icon: 'tenants', to: 'settings/workspace' },
-    { key: 'mcp-servers', label: 'MCP servers', icon: 'plug', to: 'settings/mcp-servers' },
-    { key: 'people', label: 'People and roles', icon: 'accounts', to: 'settings/people' },
   ],
   work: [
     {
@@ -110,11 +113,7 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     // redirect (visual QA Q7, 2026-10-02).
     { key: 'runs', label: 'Runs', icon: 'runs', to: 'work/runs' },
     { key: 'timeline', label: 'Timeline', icon: 'timeline', to: 'work/timeline' },
-    // repositories.html's shell: the Work page after Timeline, with its own icon.
-    { key: 'repositories', label: 'Repositories', icon: 'repo', to: 'work/repositories' },
-    // #780 OB8 (onboarding.html): Setup until it is done, then Access.
-    { key: 'setup', label: 'Setup', icon: 'setup', to: 'work/setup' },
-    { key: 'access', label: 'Access', icon: 'access', to: 'work/access' },
+    // Repositories, Setup and Access are Config's since CONFIG-NAV.
   ],
   // docs/schedules.md §6.1 (SD1): the section's two pages. Approvals carries
   // the inbox count, as the section does on the spine.
@@ -149,6 +148,18 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     // be Capacity's last page. Its "Every read / Failures only" pair is drawn
     // under it while it is the open page (`PanelPages`).
     { key: API_READS_KEY, label: 'API reads', icon: 'api', to: `capacity/${API_READS_KEY}` },
+  ],
+  // CONFIG (CONFIG-NAV; part of #2157, proposal E S1a): App.tsx SECTIONS'
+  // six tabs in BGD's order. People and roles is left out of a personal
+  // workspace (S1e, `configPagesFor`). Workspace setup is a part of Workspace
+  // Settings, which lights for both its addresses.
+  config: [
+    { key: 'github', label: 'GitHub access', icon: 'github', to: 'config/github' },
+    { key: 'repositories', label: 'Repositories', icon: 'repo', to: 'config/repositories' },
+    { key: 'secrets', label: 'Secrets', icon: 'key', to: 'config/secrets' },
+    { key: 'mcp-servers', label: 'MCP servers', icon: 'plug', to: 'config/mcp-servers' },
+    { key: 'people', label: 'People and roles', icon: 'accounts', to: 'config/people' },
+    { key: 'workspace', label: 'Workspace Settings', icon: 'gear', to: 'config/workspace' },
   ],
   admin: [
     { key: 'limits', label: 'Pool limits', icon: 'admin', to: 'admin/limits' },
@@ -204,8 +215,17 @@ export function adminPagesFor(platformAdmin: boolean, workspaceAdmin: boolean): 
   return workspaceAdmin ? PANEL_PAGES.admin.filter((p) => p.key === WORKSPACES_YOU_ADMIN_TAB) : []
 }
 
+/**
+ * Config's pages for the workspace in hand: all six in a group workspace, and
+ * no People and roles in the person's own, which has nobody else in it (S1e).
+ * `personal` null is unread: all six, rather than a page that comes and goes.
+ */
+export function configPagesFor(personal: boolean | null): readonly PanelPage[] {
+  return personal === true ? PANEL_PAGES.config.filter((p) => p.key !== 'people') : PANEL_PAGES.config
+}
+
 /** Each panel's heading: its spine section's label. */
-export const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { profile: 'Profile', work: 'Work', automate: 'Automate', capacity: 'Capacity', admin: 'Admin' }
+export const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { profile: 'Profile', work: 'Work', automate: 'Automate', capacity: 'Capacity', config: 'Config', admin: 'Admin' }
 
 /** Which panel row a route's tab belongs to: a child's tab belongs to its parent. */
 function rowFor(section: PanelSection, tab: string): string {
@@ -750,6 +770,7 @@ export function signedInLabel(email: string, saved: { email: string; name: strin
 
 const loadFrameMe = () => loadMe({ frame: true })
 const loadFrameTenants = () => loadMyTenants()
+const loadFrameOnboarding = () => loadOnboarding()
 
 /**
  * WHAT SITS OVER THE PAGE AND OWNS THE KEYBOARD WHILE IT IS OPEN, for the N
@@ -978,11 +999,29 @@ const ICONS: Readonly<Record<string, ReactNode>> = {
       <path d="m3.5 16 8.5 4.5 8.5-4.5" />
     </>
   ),
-  admin: (
+  // CONFIG-NAV (S1): Config takes the sliders, and Admin a shield.
+  config: (
     <>
       <path d="M4 7h10M18 7h2M4 17h4M12 17h8" />
       <circle cx="16" cy="7" r="2" />
       <circle cx="10" cy="17" r="2" />
+    </>
+  ),
+  admin: (
+    <>
+      <path d="M12 3.5 5 6.2v5.3c0 4.3 2.9 7.6 7 9 4.1-1.4 7-4.7 7-9V6.2z" />
+      <path d="m9.2 12 2 2 3.8-3.8" />
+    </>
+  ),
+  github: (
+    <>
+      <path d="M9 19.5c-4 1.2-4-2-5.6-2.4M14.6 21v-3.1a2.7 2.7 0 0 0-.8-2.1c2.6-.3 5.3-1.3 5.3-5.8a4.5 4.5 0 0 0-1.2-3.1 4.2 4.2 0 0 0-.1-3.1s-1-.3-3.2 1.2a11 11 0 0 0-5.8 0C6.6 3.5 5.6 3.8 5.6 3.8a4.2 4.2 0 0 0-.1 3.1 4.5 4.5 0 0 0-1.2 3.1c0 4.5 2.7 5.5 5.3 5.8a2.7 2.7 0 0 0-.8 2.1V21" />
+    </>
+  ),
+  gear: (
+    <>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8" />
     </>
   ),
   help: (
@@ -1171,6 +1210,8 @@ const SPINE: readonly { key: Exclude<SpineSection, null>; label: string; to: str
   { key: 'work', label: 'Work', to: 'work/running' },
   { key: 'automate', label: 'Automate', to: 'automate/schedules' },
   { key: 'capacity', label: 'Capacity', to: 'capacity/pools' },
+  // CONFIG-NAV (part of #2157, S1): between Capacity and Admin.
+  { key: 'config', label: 'Config', to: 'config/github' },
   { key: 'admin', label: 'Admin', to: 'admin/limits' },
 ]
 
@@ -1224,6 +1265,12 @@ export interface ShellProps {
    * in the chrome (CH-15), and Back restores the scroll it was left at (CH-5).
    */
   place?: string
+  /**
+   * The open page is an Admin page and both reads say this person
+   * administers nothing (CONFIG-NAV): App sends them to Overview. Called once
+   * the reads have landed, never while either is in flight.
+   */
+  onNoAdmin?: () => void
   children: ReactNode
 }
 
@@ -1254,6 +1301,7 @@ export function SkyShell({
   dock,
   keepOnSwitch = false,
   place = '',
+  onNoAdmin,
   children,
 }: ShellProps) {
   // THE CHOSEN TENANT (fetch.ts), null for the default. Every read sends it;
@@ -1284,6 +1332,24 @@ export function SkyShell({
   // never a locked one that then disappears.
   const adminPages = adminPagesFor(admin, adminWorkspaces(dataOf(mine) ?? []).length > 0)
   const spineItems = SPINE.flatMap((s) => (s.key !== 'admin' ? [s] : adminPages.length === 0 ? [] : [{ ...s, to: adminPages[0]!.to }]))
+  // ADMIN'S ADDRESSES SEND A NON-ADMIN TO OVERVIEW (CONFIG-NAV), and only
+  // once both reads have answered: an unread session is not "not an admin".
+  const adminDecided = who !== null && (mine.status === 'ok' || mine.status === 'stale' || mine.status === 'empty')
+  const noAdmin = section === 'admin' && adminDecided && adminPages.length === 0
+  useEffect(() => {
+    if (noAdmin) onNoAdmin?.()
+  }, [noAdmin, onNoAdmin])
+  // THE WORKSPACE IN HAND IS THE PERSON'S OWN (S1e): no People and roles, and
+  // a three-step strip. Unread is null, which draws the group shape.
+  const myTenants = dataOf(mine)
+  const personal = who === null || myTenants === null ? null : myTenants.some((c) => c.kind === 'user' && c.tenant_id === who.tenant.tenant_id)
+  const configPages = configPagesFor(personal)
+  // THE SETUP READ (proposal E): `GET /v1/onboarding`, once per workspace and
+  // again on each Config page, so the strip a page draws is that visit's. The
+  // spine's dot on Config and the panel's meter read the same answer.
+  const [onboarding] = useFrameRead(loadFrameOnboarding, null, `${tenant ?? ''}:${section === 'config' ? place : ''}`)
+  const setupRead = useMemo<SetupRead>(() => ({ doc: onboarding, personal }), [onboarding, personal])
+  const setupLeft = setupUnfinished(setupSteps(dataOf(onboarding), personal === true))
   const savedName = useSyncExternalStore(subscribeOwnName, ownNameSnapshot, ownNameSnapshot)
   const whoEmail = who?.principal.email ?? null
   useEffect(() => {
@@ -1733,6 +1799,8 @@ export function SkyShell({
         )}
         <small>{s.label}</small>
         {s.key === 'capacity' && meter?.warn != null && <i className="sk-dot" title={meter.warn} />}
+        {/* S1: an amber dot while the setup read says a step is left. */}
+        {s.key === 'config' && setupLeft && <i className="sk-dot" title="Workspace setup has a step left" />}
         {s.key === 'automate' && waiting !== null && (
           <i className={waiting.n === null ? 'sk-badge is-unread' : 'sk-badge'} title={waiting.why} aria-label={waiting.why}>
             {waiting.n === null ? '—' : waiting.n}
@@ -1796,6 +1864,7 @@ export function SkyShell({
       tab={tab}
       agentTab={agentTab}
       adminPages={adminPages}
+      configPages={configPages}
       nav={nav}
       counts={counts}
       helpGroup={helpGroup}
@@ -1837,7 +1906,9 @@ export function SkyShell({
         }}
         prefsDown={prefsDown}
       />
-      <div className="sk-pscroll">{pages}</div>
+      <div className="sk-pscroll">
+        <SetupContext.Provider value={setupRead}>{pages}</SetupContext.Provider>
+      </div>
       <Meter meter={meter} read={cap.status === 'error' || fault !== null ? 'unread' : cap.status === 'loading' ? 'loading' : 'landed'} />
       <div className="sk-pfoot">
         <span className="sk-pfrow">
@@ -2031,6 +2102,7 @@ export function SkyShell({
           tab={section === fly ? tab : ''}
           agentTab={agentTab}
           adminPages={adminPages}
+          configPages={configPages}
           nav={nav}
           onExpand={() => {
             setFly(null)
@@ -2072,7 +2144,9 @@ export function SkyShell({
               {/* Keyed on the chosen tenant: a switch is a fresh screen, every
                   read of it made again with the new X-Swarm-Tenant -- except
                   a kept form, which re-reads in place. */}
-              <Fragment key={`${keepOnSwitch ? 'kept' : (tenant ?? '')}:${attempt}`}>{children}</Fragment>
+              <Fragment key={`${keepOnSwitch ? 'kept' : (tenant ?? '')}:${attempt}`}>
+                <SetupContext.Provider value={setupRead}>{children}</SetupContext.Provider>
+              </Fragment>
             </>
           )}
         </div>
@@ -2593,6 +2667,7 @@ function PanelPages({
   tab,
   agentTab,
   adminPages,
+  configPages,
   nav,
   counts,
   helpGroup,
@@ -2606,6 +2681,8 @@ function PanelPages({
   agentTab: AgentTab
   /** The Admin pages this person is shown (`adminPagesFor`); none draws no Admin panel. */
   adminPages: readonly PanelPage[]
+  /** Config's pages for the workspace in hand (`configPagesFor`). */
+  configPages: readonly PanelPage[]
   nav: (to: string) => void
   counts: Readonly<Record<string, PanelCount>>
   helpGroup: string | null
@@ -2684,7 +2761,7 @@ function PanelPages({
   // NO LOCKED ADMIN PANEL (NAV-ADMIN-ROLE): someone who administers nothing,
   // on a direct link to an Admin page, gets the page's own refusal and no
   // list of pages they cannot use.
-  const rows = sec === 'admin' ? adminPages : PANEL_PAGES[sec]
+  const rows = sec === 'admin' ? adminPages : sec === 'config' ? configPages : PANEL_PAGES[sec]
   if (rows.length === 0) return null
   const title = PANEL_TITLE[sec]
   // A 404 is on no page, though its section is drawn (CH-14).
@@ -2692,6 +2769,8 @@ function PanelPages({
   return (
     <>
       <div className="sk-pt">{title}</div>
+      {/* S1a: the setup strip's count, as a meter under Config's title. */}
+      {sec === 'config' && <SetupMeter />}
       {rows.map((p) => {
         const group = p.key === lit.row
         // THE PAGE ITSELF IS LIT (#503). A row with children is a group: it
@@ -2873,6 +2952,7 @@ function Flyout({
   tab,
   agentTab,
   adminPages,
+  configPages,
   nav,
   onExpand,
   onEnter,
@@ -2885,6 +2965,7 @@ function Flyout({
   tab: string
   agentTab: AgentTab
   adminPages: readonly PanelPage[]
+  configPages: readonly PanelPage[]
   nav: (to: string) => void
   /** Undo the collapse: the panel comes back and the flyout goes. */
   onExpand: () => void
@@ -2894,10 +2975,10 @@ function Flyout({
   onBlur: (e: ReactFocusEvent) => void
   onKeyDown: (e: ReactKeyboardEvent) => void
 }) {
-  if (section !== 'profile' && section !== 'work' && section !== 'automate' && section !== 'capacity' && section !== 'admin') return null
+  if (section !== 'profile' && section !== 'work' && section !== 'automate' && section !== 'capacity' && section !== 'config' && section !== 'admin') return null
   const lit = tab === '' ? { row: '', kid: null } : litPage(section, tab, agentTab)
   const name = PANEL_TITLE[section]
-  const rows = section === 'admin' ? adminPages : PANEL_PAGES[section]
+  const rows = section === 'admin' ? adminPages : section === 'config' ? configPages : PANEL_PAGES[section]
   if (rows.length === 0) return null
   // A plain labelled group of links, not role="menu": a menu promises arrow
   // keys and roving focus, which this does not have. Tab walks it.
