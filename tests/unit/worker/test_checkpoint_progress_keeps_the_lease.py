@@ -72,7 +72,8 @@ class _Clock:
     runner one beat landed at 7.01 s against a 7 s band (run 40089538773)
     with nothing wrong in `_heartbeat_meanwhile`. Here the thread's clock is
     `now`, and its wait moves `now` forward by the time it asked to wait,
-    running any action scheduled inside that span on the way. The block ends
+    running any action scheduled inside that span on the way (and 1 ms for a
+    wait of nothing, as a real clock would). The block ends
     at `ends_at`: the wait that reaches it returns as the real `stop` would.
     Every beat lands at the same instant on every run, so the assertions
     read the property itself, not a band around it.
@@ -94,12 +95,15 @@ class _Clock:
 
     def wait(self, event: threading.Event, seconds: float) -> bool:
         self._waits += 1
-        if self._waits > 10_000:
+        if self._waits > 100_000:
             # A thread that never asks for time would hang a real worker's
             # CPU; end it, and `_hold` fails the test on it.
             self.spun = True
             return True
-        target = self.now + seconds
+        # A real clock moves while a thread loops, even through a wait of
+        # nothing; 1 ms per such wait keeps a busy loop (the mutations below
+        # make several) going forward in time rather than standing still.
+        target = self.now + max(seconds, 0.001)
         while self._scheduled and self._scheduled[0][0] <= min(target, self.ends_at):
             when, action = self._scheduled.pop(0)
             self.now = when
@@ -127,7 +131,7 @@ def _hold(worker, clock: _Clock, progress=None, what="checkpoint (test)") -> lis
     real = worker._heartbeat
 
     def counted():
-        beats.append(clock.now)
+        beats.append(round(clock.now, 3))
         return real()
 
     worker._heartbeat = counted  # type: ignore[method-assign]
@@ -198,7 +202,7 @@ def test_a_checkpoint_that_stops_advancing_stops_beating_one_lease_timeout_later
     assert extended, f"no beat past the bound while the checkpoint still advanced: {beats}"
     assert max(_gaps(beats)) <= 1, beats
     # MUTATION: keep beating past the bound until the ceiling whether or not
-    # the counter moves, and beats land at 7, 8 and 9 s.
+    # the counter moves, and beats land at 6, 7, 8 and 9 s.
     assert not after_wedge, (
         f"beats more than a lease timeout after the checkpoint stopped advancing: {after_wedge}"
     )
@@ -250,7 +254,7 @@ def test_without_a_progress_counter_the_bound_is_as_it_was(db, worker_factory):
     # The control: it did beat, up to the bound.
     assert beats, "no beat at all before the bound"
     # MUTATION: extend without a counter (treat None as advancing) and beats
-    # land at 4 and 5 s.
+    # land at 3, 4 and 5 s.
     assert not past_bound, f"beats past the bound with no progress counter: {past_bound}"
 
 
