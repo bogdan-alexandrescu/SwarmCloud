@@ -1511,10 +1511,14 @@ def prompt_only_hold(
 
     Each of its reasons is one `plan_hold` finds over `plan` (its files and
     the paths and terms its prompts name), and none is one the plan's files
-    and the issue find without the prompt. A reason from anywhere else -- a
-    plan file an edit took out, an earlier head's real files, a registration
-    since narrowed -- is not the prompt's, and keeps the hold. A security-
-    class stop (the issue's label or S0) is never the prompt's.
+    and the issue find without the prompt. A reason `plan_hold` cannot find
+    over `plan` -- a plan file an edit took out, a registration since
+    narrowed -- is not the prompt's, and keeps the hold. A reason an earlier
+    head's real files gave is not told apart here: if the prompt names the
+    same category it counts as the prompt's, which is safe only because
+    `merge_hold` rescans the current head's real files and patches first and
+    keeps the hold on any match. A security-class stop (the issue's label or
+    S0) is never the prompt's.
 
     `plan` is the run's own, which its signed `plan_digest` covers, so the
     worker that can write the run document cannot make a real stop look
