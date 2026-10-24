@@ -1184,6 +1184,59 @@ and `credentials.py`, held by
   admission today; it is built so the first required slot does not admit
   wrongly.
 
+### What SSC-OVERVIEW built (2026-10-24, part of #2158)
+
+Config › Secrets' one read, [secrets-scopes.md](secrets-scopes.md) §4 and
+§6.2, with the owner's Q1 of its §11: `GET /v1/secrets/overview?scope=
+workspace|personal|repository[&repo_id=..]`, in
+`apps/swarm-api/swarm_api/secrets_overview.py` and
+`routes/secrets_overview.py`, held by
+`tests/unit/control_plane/test_secrets_overview.py`.
+
+* **A view, not a store.** No store migrates. Each row names its `store`,
+  its console `section`, and the API route that writes it (`writer`) or the
+  page it is still managed on (`page`). The route reads Firestore only: no
+  Secret Manager payload, no broker and no forge call.
+* **What each scope lists.** *Workspace*: this store's own secrets, the
+  TypeSafe tenant key read from `provider_keys` (the tenant's `credentials`
+  never lists it), the runner LLM keys the tenant document lists, each MCP
+  server in `workspace_secret` mode with the store secrets granted to it,
+  one "subscription accounts" line linking to Capacity › Accounts, and the
+  tenant's GitHub token. *Personal*: the caller's own store secrets
+  (`opted_in` to the selected workspace or not), their TypeSafe key, their
+  saved browser logins and their GitHub user slots. *Repository*: that
+  repository's secrets for agents, each of its QA targets' sign-in
+  credential (and challenge bypass, where one is configured) per
+  environment, its `-git-r-` token, and SwarmCloud's own record of the
+  Actions secrets it wrote there (`actions_secret_writes`; GitHub's live list
+  stays `GET /v1/repositories/{repo_id}/actions/secrets`). Not listed, as §4
+  says: `dispatch`-mode MCP credentials, QA identity grants and platform
+  secrets. The answer's `not_listed` names them.
+* **Never a value, a length or `last4`.** Every row is an allow-list of
+  fields. A git token row carries kind, state, login, verified and expiry
+  times, never `last4`. No row carries a Secret Manager version name.
+* **Personal rows are only the caller's.** The personal scope reads the
+  personal workspace derived from the caller's verified email and confirmed
+  by its tenant document (`own_personal_tenant`). A narrowed session
+  (`member_scope`) has none here. Another person appears only as the winner
+  on a workspace or repository row, for a secret they opted in to this
+  workspace.
+* **Shadowing (Q1).** Two secrets of one name shadow where an enabled grant
+  of each delivers into the same slot (the release's `_deliverable`, less the
+  attestation check). The order is the person's, then the repository's, then
+  the workspace's. The loser carries `shadowed_by`, the winner `shadows`, each
+  entry with its `slot` and `where` ("agents of <person>", "agents that clone
+  <owner/repo>"). Two repositories' secrets of one name are not compared,
+  because which one wins depends on the order the attempt clones them in.
+* **Who reads.** Every member of the workspace reads the workspace and
+  repository scopes (§2.5). `can_manage` is per row: the manager rule
+  (`can_manage`) for the workspace's and the repository's rows, true for
+  the caller's own personal rows, and false for the status-only rows (GitHub
+  tokens, subscription accounts). Each writer stays the gate. Another workspace's
+  `repo_id` is 404. A `repo_id` without `scope=repository`, or
+  `scope=repository` without one, is 422, and so is any query parameter
+  other than `scope` and `repo_id`.
+
 ---
 
 ## 6. Migration, without breaking today's readers
