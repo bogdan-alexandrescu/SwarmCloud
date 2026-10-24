@@ -974,6 +974,25 @@ NO_PROVIDER = "no provider"
 #: after the span) in a group only an ended agent can name: its model and its
 #: pool account are read off its attempts and events once it ends.
 NOT_ENDED = "not ended"
+#: The `pool_account` key of an agent that never takes a pool account
+#: (BGD, 2026-10-24 17:26Z, #2149 answer 4): its profile calls no provider or
+#: takes no subscription token (mock, browser, codex, ...), or it was never
+#: admitted. `task_accounts.could_hold_account`'s rule, applied at READ time
+#: to the tuple's `profile` and `attempt_count` -- columns every v9 day
+#: already stores, so no sealed day is re-derived for it. NOT_RECORDED stays
+#: for an agent that could have held one and whose events name none.
+HOLDS_NO_ACCOUNT = "holds no account"
+#: The four breakdowns Platform counts offers, served together in every
+#: `usage` block (BGD, 2026-10-24 17:26Z, answer 3) so picking one never
+#: costs a read: agent type, model, workspace and pool account.
+USAGE_BREAKDOWNS = ("runner_profile", "model", "tenant_id", "pool_account")
+#: How many keys a grouping's per-bucket `series` names (answer 1): the five
+#: with the most agents over the WHOLE span, the same five in every bucket,
+#: so a stacked area does not reshuffle its colours bucket by bucket.
+USAGE_SERIES_NAMED = 5
+#: The key of the one series holding every measured key past the five. It
+#: has a space, which no profile, model, tenant or account ID has.
+OTHER_KEYS = "all others"
 #: `usage` (#2149): which instant places an agent in the usage figures. The
 #: agent's submission (`created_at`, BGD's unit for Platform counts) or its end
 #: (`completed_at`, the basis of every outcome figure). No default: without
@@ -1063,7 +1082,12 @@ class Params:
         """The request as the cache sees it, with the span UNRESOLVED -- and
         WITHOUT `sections`: the cache holds the fold every section is a
         projection of, so cards asking for different sections of one query in
-        the same minute share one scan (owner decision 2026-09-30)."""
+        the same minute share one scan (owner decision 2026-09-30).
+
+        And WITHOUT `group` (BGD, 2026-10-24 17:26Z, #2149 answer 3): a group
+        is a projection of the same placed tuples, so picking a breakdown
+        never costs a read. `_Fold.groups` and `_Fold.usage` take the
+        request's group."""
         return (
             self.tz_name,
             tuple(sorted(self.requested.items())),
@@ -1073,7 +1097,6 @@ class Params:
             self.profile,
             self.submitted_by,
             self.kind,
-            self.group,
             self.compare,
         )
 
@@ -2247,6 +2270,22 @@ def _cost_totals(kept: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _could_hold_account(t: Mapping[str, Any]) -> bool:
+    """`task_accounts.could_hold_account` over a TUPLE (#2149 answer 4).
+
+    The rule reads the profile and whether the task was ever admitted
+    (`current_generation > 0`). A tuple stores the profile and
+    `attempt_count`, which the admission transaction raises in the same write
+    that sets the generation (`admission.acquire_lease_in_transaction`), so one is
+    > 0 exactly when the other is. An arrival has no `attempt_count`: it is
+    judged by its profile alone, the part that does not wait on its end.
+    """
+    admitted = _int(t["attempt_count"]) if "attempt_count" in t else 1
+    return task_accounts.could_hold_account(
+        {"runner_profile": t.get("profile"), "current_generation": admitted}
+    )
+
+
 def _group_key(t: Mapping[str, Any], by: str) -> str:
     if by == "tenant_id":
         return str(t.get("tenant"))
@@ -2257,7 +2296,10 @@ def _group_key(t: Mapping[str, Any], by: str) -> str:
     if by == "model_class":
         return str(t.get("model_class") or NO_MODEL_CLASS)
     if by == "pool_account":
-        return str(t.get("pool_account") or NOT_RECORDED)
+        account = t.get("pool_account")
+        if account and account != NOT_RECORDED:
+            return str(account)
+        return NOT_RECORDED if _could_hold_account(t) else HOLDS_NO_ACCOUNT
     if by == "provider":
         return str(t.get("provider") or NOT_RECORDED)
     return str(t.get("profile"))
@@ -2350,7 +2392,7 @@ class _Usage:
     __slots__ = (
         "agents", "agents_ended", "retries", "attempts", "started",
         "run_sum", "run_measured", "tokens", "token_reporting",
-        "cost_sum", "cost_reporting", "estimated_sum",
+        "cost_sum", "cost_reporting", "estimated_sum", "estimated",
     )
 
     def __init__(self) -> None:
@@ -2366,6 +2408,8 @@ class _Usage:
         self.cost_sum: float | None = None
         self.cost_reporting = 0
         self.estimated_sum: float | None = None
+        #: How many agents `estimated_sum` is over (#2149 answer 2).
+        self.estimated = 0
 
     def add(self, t: Mapping[str, Any] | None) -> None:
         """One agent, with its ended tuple or None when it has none."""
@@ -2391,6 +2435,7 @@ class _Usage:
             self.cost_reporting += 1
             self.cost_sum = (self.cost_sum or 0.0) + float(cost)
             if t.get("cost_estimated"):
+                self.estimated += 1
                 self.estimated_sum = (self.estimated_sum or 0.0) + float(cost)
 
     def merge(self, other: "_Usage") -> None:
@@ -2409,6 +2454,7 @@ class _Usage:
         self.cost_sum = plus(self.cost_sum, other.cost_sum)
         self.cost_reporting += other.cost_reporting
         self.estimated_sum = plus(self.estimated_sum, other.estimated_sum)
+        self.estimated += other.estimated
 
     def to_api(self) -> dict[str, Any]:
         return {
@@ -2430,6 +2476,10 @@ class _Usage:
             "cost": {
                 "sum_usd": _money(self.cost_sum),
                 "estimated_usd": _money(self.estimated_sum),
+                # The agents behind `estimated_usd`: "n estimated from a
+                # stopped run ($X)". 0 is a count here, not a missing
+                # report -- every v9 tuple carries `cost_estimated`.
+                "estimated": self.estimated,
                 "agents": self.agents,
                 "reporting": self.cost_reporting,
             },
@@ -2448,6 +2498,88 @@ _UNREAD_USAGE: dict[str, Any] = {
 }
 
 
+def _usage_key(by: str, placed: Mapping[str, Any], measured: Mapping[str, Any] | None) -> str:
+    """The key an agent of the usage block is grouped under for `by`.
+
+    A group only an ended agent can name (model, pool account) is NOT_ENDED
+    for an agent with no ended tuple -- except "holds no account", which its
+    profile alone decides, so an open mock agent is not left unknown.
+    """
+    if by not in _ENDED_ONLY_GROUPS:
+        return _group_key(placed, by)
+    if measured is not None:
+        return _group_key(measured, by)
+    if by == "pool_account" and not _could_hold_account(placed):
+        return HOLDS_NO_ACCOUNT
+    return NOT_ENDED
+
+
+def _measured_key(by: str, key: str) -> bool:
+    """False for a key that says the value was not measured (charts README:
+    an unknown segment is never stacked). "not started", "no class", "no
+    provider" and "holds no account" are facts and stack like any other key."""
+    if key in (NOT_RECORDED, NOT_ENDED):
+        return False
+    return not (by == "pool_account" and key == task_accounts.STATUS_UNREAD)
+
+
+def _usage_grouping(
+    by: str,
+    agents: Sequence[tuple[int, Mapping[str, Any], Mapping[str, Any] | None]],
+    reasons: Sequence[str | None],
+) -> dict[str, Any]:
+    """One grouping of the usage block: its span rows and its per-bucket
+    `series` (#2149 answer 1).
+
+    `series` is one entry per key the view may draw, each with `agents` and
+    `retries` per bucket (null in an unread bucket): the USAGE_SERIES_NAMED
+    measured keys with the most agents over the whole span (ties by key),
+    then OTHER_KEYS for every other measured key, then each key that is not a
+    measurement as its own series with `measured: false`. Every agent is in
+    exactly one series, so a read bucket's series sum to its `agents` and its
+    `retries`.
+    """
+    n = len(reasons)
+    rows: dict[str, _Usage] = {}
+    per: dict[str, tuple[list[int], list[int]]] = {}
+    for i, placed, measured in agents:
+        key = _usage_key(by, placed, measured)
+        rows.setdefault(key, _Usage()).add(measured)
+        counts, retries = per.setdefault(key, ([0] * n, [0] * n))
+        counts[i] += 1
+        if measured is not None:
+            retries[i] += max(0, _int(measured.get("attempts")) - 1)
+
+    def lanes(keys: Sequence[str]) -> tuple[list[int | None], list[int | None]]:
+        counts = [None if reasons[i] else sum(per[k][0][i] for k in keys) for i in range(n)]
+        retries = [None if reasons[i] else sum(per[k][1][i] for k in keys) for i in range(n)]
+        return counts, retries
+
+    ranked = sorted(rows, key=lambda k: (-rows[k].agents, k))
+    measured_keys = [k for k in ranked if _measured_key(by, k)]
+    named = measured_keys[:USAGE_SERIES_NAMED]
+    rest = measured_keys[USAGE_SERIES_NAMED:]
+    series = []
+    for keys, label, other, measured in (
+        *(([k], k, False, True) for k in named),
+        *(((rest, OTHER_KEYS, True, True),) if rest else ()),
+        *(([k], k, False, False) for k in ranked if not _measured_key(by, k)),
+    ):
+        counts, retries = lanes(keys)
+        series.append(
+            {
+                "key": label,
+                "measured": measured,
+                "other": other,
+                "keys": len(keys),
+                "agents": counts,
+                "retries": retries,
+            }
+        )
+    group_rows = [{"key": key, **rows[key].to_api()} for key in ranked]
+    return {"by": by, "rows_total": len(group_rows), "rows": group_rows[:GROUP_ROWS_MAX], "series": series}
+
+
 def _usage(
     basis: str,
     by: str,
@@ -2461,6 +2593,10 @@ def _usage(
     `basis` -- `submitted` by each agent's `created_at` (BGD's unit), joined to
     its ended tuple by id; `ended` by its `completed_at`, like every outcome.
 
+    `groups` is the request's `by`; `breakdowns` is every USAGE_BREAKDOWNS
+    grouping from the same placed agents (answer 3), so a caller switching
+    breakdown already holds the one it switches to.
+
     Only read buckets are counted, as everywhere in the fold (TS-9): `_place`
     leaves an unread bucket's agents out, and its row carries no numbers.
     """
@@ -2469,14 +2605,8 @@ def _usage(
     else:
         agents = [(i, t, t) for i, t in placed_ended]
     per_bucket = [_Usage() for _ in reasons]
-    rows: dict[str, _Usage] = {}
-    for i, placed, measured in agents:
+    for i, _placed, measured in agents:
         per_bucket[i].add(measured)
-        if measured is None and by in _ENDED_ONLY_GROUPS:
-            key = NOT_ENDED
-        else:
-            key = _group_key(measured if by in _ENDED_ONLY_GROUPS else placed, by)
-        rows.setdefault(key, _Usage()).add(measured)
 
     total = _Usage()
     out_buckets = []
@@ -2488,14 +2618,14 @@ def _usage(
             row.update(per_bucket[i].to_api())
             total.merge(per_bucket[i])
         out_buckets.append(row)
-    group_rows = [{"key": key, **usage.to_api()} for key, usage in rows.items()]
-    group_rows.sort(key=lambda r: (-r["agents"], r["key"]))
+    breakdowns = {name: _usage_grouping(name, agents, reasons) for name in USAGE_BREAKDOWNS}
     return {
         "basis": USAGE_BASES[basis],
         "cost_label": COST_LABEL,
         "buckets": out_buckets,
         "totals": {"complete": not any(reasons), **total.to_api()},
-        "groups": {"by": by, "rows_total": len(group_rows), "rows": group_rows[:GROUP_ROWS_MAX]},
+        "groups": breakdowns[by] if by in breakdowns else _usage_grouping(by, agents, reasons),
+        "breakdowns": breakdowns,
     }
 
 
@@ -2703,31 +2833,40 @@ class _Fold:
 
     def block(self, name: str) -> Any:
         """`buckets`, `totals`, `retries`, `latency`, `groups` or
-        `workflows_failed`, made once."""
+        `workflows_failed`, made once. `groups` is by the fold's own `group`;
+        a cached fold serves another request's with `groups(by)`."""
+        if name == "groups":
+            return self.groups(self.params.group)
         if name not in self._blocks:
             if name == "retries":
                 self._blocks[name] = _retries(self._kept)
             elif name == "latency":
                 self._blocks[name], _ = _latency(self._kept)
-            elif name == "groups":
-                self._blocks[name] = _groups(
-                    self._placed_ended, self._placed_arrived, self.params.group, self._reasons
-                )
             elif name == "workflows_failed":
                 self._blocks[name] = _workflows_failed(self._kept, self.params)
             else:
                 raise KeyError(name)
         return self._blocks[name]
 
-    def usage(self, basis: str) -> dict[str, Any]:
-        """The `usage` block under `basis` (#2149), made once per basis. Not a
-        section: it is asked for with `usage`, beside them, so a response
-        without that parameter is exactly what it was before it existed."""
-        name = f"usage:{basis}"
+    def groups(self, by: str) -> dict[str, Any]:
+        """The `groups` block by `by`, made once per group. `group` is not in
+        the cache key (#2149 answer 3), so one fold serves every group."""
+        name = f"groups:{by}"
+        if name not in self._blocks:
+            self._blocks[name] = _groups(self._placed_ended, self._placed_arrived, by, self._reasons)
+        return self._blocks[name]
+
+    def usage(self, basis: str, by: str | None = None) -> dict[str, Any]:
+        """The `usage` block under `basis` (#2149), made once per basis and
+        group (the fold's own when `by` is None). Not a section: it is asked
+        for with `usage`, beside them, so a response without that parameter
+        is exactly what it was before it existed."""
+        by = self.params.group if by is None else by
+        name = f"usage:{basis}:{by}"
         if name not in self._blocks:
             self._blocks[name] = _usage(
                 basis,
-                self.params.group,
+                by,
                 self._placed_ended,
                 self._placed_arrived,
                 self._ended_by_id,
@@ -3589,11 +3728,11 @@ class Outcomes:
                 main_days=entry.main_days,
                 generated_at=now,
             )
-        blocks = {name: self._section(entry, name, meter) for name in want}
+        blocks = {name: self._section(entry, name, params, meter) for name in want}
         if params.rows is not None:
             blocks["ended_rows"] = entry.fold.ended_rows(params)
         if params.usage is not None:
-            blocks["usage"] = entry.fold.usage(params.usage)
+            blocks["usage"] = entry.fold.usage(params.usage, params.group)
         made = entry.params
         assert made is not None and entry.now is not None
         payload = {
@@ -3605,7 +3744,9 @@ class Outcomes:
             "bucket": made.bucket,
             "bucket_chosen_by": made.bucket_chosen_by,
             "basis": {"outcomes": "completed_at", "submitted": "created_at"},
-            "filters": made.filters(),
+            # `group` is the request's own: it is not in the key, so the
+            # entry's params may carry another request's.
+            "filters": {**made.filters(), "group": params.group},
             "vocab": VOCAB,
             **blocks,
             "reads": meter.reads,
@@ -3625,12 +3766,16 @@ class Outcomes:
             self._cache_drop(key, entry)
         return payload
 
-    def _section(self, entry: _Entry, name: str, meter: _Meter) -> Any:
+    def _section(self, entry: _Entry, name: str, params: Params, meter: _Meter) -> Any:
         """One section's block, made once per entry: the same value whatever
-        else the request asked for, and whether the entry was cold or warm."""
+        else the request asked for, and whether the entry was cold or warm.
+        `params` is the REQUEST's: `groups` is by its own `group`, which is
+        not in the key (#2149 answer 3)."""
         made = entry.fold
         assert made is not None
-        if name in ("buckets", "totals", "retries", "latency", "groups"):
+        if name == "groups":
+            return made.groups(params.group)
+        if name in ("buckets", "totals", "retries", "latency"):
             return made.block(name)
         if name == "workflows_failed":
             if not entry.enriched:

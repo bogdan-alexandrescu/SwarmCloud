@@ -171,8 +171,11 @@ sealed only when somebody happened to read it after its grace.
 * What is cached is the FOLD, not a payload (owner decision 2026-09-30, the
   review of #391). The key is the query WITHOUT its `section` list -- scope,
   the caller's own tenant in tenant scope, the resolved tenant set, span,
-  bucket, tz, filters, kind, group, compare and the minute -- and every
-  section is a projection of the entry. The previous span, the terminal count
+  bucket, tz, filters, kind, compare and the minute -- and every
+  section is a projection of the entry. `group` is not in the key either
+  (BGD, 2026-10-24 17:26Z, #2149): `groups` and `usage` are made from the
+  same placed agents by the request's own group, so picking a breakdown
+  never costs a read, and `filters.group` echoes the request, not the entry. The previous span, the terminal count
   and the workflow lookups are made once per entry, the first time a section
   needs them. So the Timeline's headline and seven cards, each asking for its
   own sections, cost one full read between them, plus what every request pays
@@ -224,12 +227,49 @@ decisions, 2026-10-23 (~19:30Z), and how the route keeps them:
 * **Each bucket, each group row and the totals carry:** `agents`,
   `agents_ended`, `retries`, `attempts`; `run_s {sum, measured, attempts}`;
   the four token counts, each `{sum, reporting, attempts}`; and `cost {sum_usd,
-  estimated_usd, agents, reporting}` under `cost_label`, "Estimated cost (list
+  estimated_usd, estimated, agents, reporting}` under `cost_label`, "Estimated cost (list
   price, not a bill)".
+* **Every breakdown comes with every read.** `usage.breakdowns` carries
+  `runner_profile`, `model`, `tenant_id` and `pool_account`
+  (`USAGE_BREAKDOWNS`) from the one fold, whatever `group` asked for;
+  `usage.groups` stays the requested group, which may also be one of the
+  others (`submitted_by`, `model_class`, `provider`). BGD's answer 3,
+  2026-10-24 17:26Z: picking a breakdown must never cost a read. Each
+  grouping is `{by, rows_total, rows, series}`.
 * **Without `usage` the response is unchanged**, byte for byte. The Timeline
   does not send it, and `test_outcomes_counts_rollup.py` holds that. `usage`
   is not a section. It is a projection of the same fold, so it costs no read
   of its own and is not part of the cache key.
+
+### Per-bucket groups: `series` (#2149, BGD's answer 1)
+
+The view stacks agents by group per bucket (mock-up A, frames F3 and F4), so
+each grouping carries `series`, aligned with `usage.buckets`:
+`{key, measured, other, keys, agents: [...], retries: [...]}`.
+
+* **The same five in every bucket.** The 5 busiest measured keys over the
+  WHOLE span (`USAGE_SERIES_NAMED`, by agents, ties by key) are named. A
+  bucket's own top five would reshuffle the stack's colours bucket by bucket.
+* **The rest is one series**, `"all others"` (`OTHER_KEYS`, `other: true`,
+  `keys` says how many it folds), present only when there are more than
+  five measured keys. Its key has a space, which no profile, model, tenant
+  or account ID has.
+* **An unknown is never stacked** (charts README). A key that says a value
+  was not measured -- "not recorded", "not ended", and "unread" under
+  `pool_account` -- is a series of its own whose `measured` is false, never
+  named and never inside "all others". "not started", "no class", "no
+  provider" and "holds no account" are facts, and stack (`measured: true`).
+* **They add up.** Every agent is in exactly one series, so in a read bucket
+  the series' `agents` sum to the bucket's `agents` and their `retries` to its
+  `retries` (an agent's attempts beyond its first, as everywhere). An unread
+  bucket is null in every series, as it is in the bucket row.
+
+Payload, measured 2026-10-24 by `fold()` over a synthetic 26-week weekly read
+of 3 workspaces (11,299 agents; 12 profiles, 5 model keys, 3 workspaces, 7
+pool-account keys): the `usage` block grew from about 22 KB to 44 KB, and the
+whole response from about 56 KB to 77 KB, uncompressed. The growth follows
+the number of keys and buckets, not the number of agents: span rows are capped
+at `GROUP_ROWS_MAX` per grouping and each series is two integers per bucket.
 
 ### Why null is not 0, again
 
@@ -248,6 +288,12 @@ decisions, 2026-10-23 (~19:30Z), and how the route keeps them:
   list-price estimate for a run stopped before it reported (#627,
   `result_summary.cost_estimated`). It is **included** in `sum_usd` and also
   shown on its own, so a reader can see how much of the figure is an estimate.
+* `cost.estimated` (BGD's answer 2, 2026-10-24) counts the agents behind
+  `estimated_usd`, wherever it is served (span, bucket, group row), so the
+  view can print "55 estimated from a stopped run ($56)". It counts only
+  agents that reported a cost, the same agents `estimated_usd` sums, and in a
+  read bucket it is a count: 0 means none, because every v9 tuple stores
+  `cost_estimated`. An unread bucket's `cost` is null, as before.
 * Under `usage=submitted`, an agent whose ended tuple is not in the span's
   read days counts in `agents` and in no measured figure. That agent is still
   open, or it ended after an explicit `until`. `agents_ended` says how many
@@ -265,7 +311,19 @@ change to the frozen contract was needed.
 * **The label** is the account the agent's final attempt held, or, when that
   attempt held none, the latest earlier attempt that held one
   (`task_accounts.last_account_id`). An agent whose events name no account
-  is "not recorded".
+  is "not recorded" -- when it could have held one.
+* **"holds no account"** (BGD's answer 4, 2026-10-24) is the key of an agent
+  that never takes a pool account: a profile with no provider (mock), one
+  that takes no subscription token (browser, codex, merge), or an agent never
+  admitted. It is `task_accounts.could_hold_account` applied at READ time to
+  the tuple's `profile` and `attempt_count`. `attempt_count` is raised in the
+  same admission write that sets `current_generation`, so it is > 0 exactly
+  when the generation is. Every v9 day already stores both columns, so no
+  sealed day is re-derived and no agent is read again for it. An agent that has not
+  ended is judged by its profile alone: an open mock agent "holds no
+  account", an open claude-code agent is "not ended". The rule reads today's
+  profile catalogue, which is in the frozen contract. A profile that changed
+  whether it takes a token would re-key its past agents; none has.
 * **An agent that cannot hold an account costs no read.** That is a profile
   with no provider, one that takes no subscription token, or an agent never
   admitted (`task_accounts.could_hold_account`, `_static`'s rule).
