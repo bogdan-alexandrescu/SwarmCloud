@@ -1123,7 +1123,8 @@ beside it: `apps/swarm-api/swarm_api/workspace_secrets.py`,
   `repository_not_visible`, `github_not_admin`, `github_unavailable`); its
   code is `github_admin_required` with that switch on and `forbidden` while
   it is off. Every audit row names the rule that let the writer through
-  (`detail.authority`: `workspace_admin` or `github_repo_admin`).
+  (`detail.authority`: `workspace_admin` or `github_repo_admin`; a
+  registration's removal, `repository_delete`).
 * **What it refuses.** Another workspace's `repo_id` is 404 on every route,
   and so is a registration whose `owner/repo` no longer derives its id. An
   MCP server is never granted a repository secret (422): `mcp:attach` matches
@@ -1133,9 +1134,10 @@ beside it: `apps/swarm-api/swarm_api/workspace_secrets.py`,
   write the registration document back.
   `POST /v1/repositories/{repo_id}/secrets:disable-grants` (a manager) turns
   every grant on them off, re-signed off, so re-registering the same
-  repository revives nothing. `DELETE /v1/repositories/{repo_id}` does not
-  call it yet: that route is outside this lane, and the question is in its
-  pull request.
+  repository revives nothing. `DELETE /v1/repositories/{repo_id}` (a
+  member, as before) runs the same disable before it deletes, and keeps the
+  registration when the disable fails (SSC-REPO-DELETE); its audit rows say
+  `detail.authority: repository_delete`.
 * **What a repository secret IS does not rest on its record.** Its Secret
   Manager id is marked: of the 16 hex in `-wsec-<16 hex>`, the last 8 are
   sha256 over a fixed tag and the first 8 (`repository_hex`), and a workspace

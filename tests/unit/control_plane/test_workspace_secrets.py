@@ -835,3 +835,110 @@ def test_disable_grants_turns_a_repositorys_grants_off_for_a_manager_only(client
     assert answer.json()["grants_disabled"] == {"x-key": ["profile:claude-code"]}
     [grant] = [d for p, d in seeded.docs.items() if p.startswith(f"{GRANTS_COLLECTION}/")]
     assert grant["enabled"] is False
+
+
+# -- SSC-REPO-DELETE: removing a registration disables its secrets' grants ----------
+#
+# secrets-scopes.md §2.1: "A removed registration disables every grant on its
+# secrets in the transaction that removes it." `DELETE /v1/repositories/{id}`
+# calls `disable_repository_grants` before it deletes, and fails closed.
+
+from swarm_api.grant_attest import GrantKeys  # noqa: E402
+from swarm_api.workspace_secrets import AUDIT_REPOSITORY_GRANTS_DISABLED, WorkspaceSecrets  # noqa: E402
+
+
+@pytest.fixture
+def grant_key() -> str:
+    return __import__("secrets").token_urlsafe(32)
+
+
+@pytest.fixture
+def keyed(db, tokens, group_map, objects, clock, sm, pool, grant_key) -> TestClient:
+    ctx = build_context(
+        settings=api_settings(console_url=CONSOLE, workspace_grant_key=grant_key), db=db,
+        verifier=StaticTokenVerifier(tokens), groups=StaticGroups(group_map),
+        credentials=InMemoryCredentials(), waker=NullWaker(), metrics=ApiMetrics(),
+        objects=objects, forge_tokens=NoForgeTokens(), now=clock,
+    )
+    app = create_app(ctx)
+    app.state.workspace_secret_writer = sm
+    app.state.account_pool = pool
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def _granted(client, db: FakeFirestore) -> dict:
+    register(db)
+    assert repo_create(client, "root", "eng", "x-key", fake_value()).status_code == 201
+    response = client.put(f"{REPO_BASE}/x-key/grants/profile:claude-code",
+                          headers=as_("root", "eng"), json={"enabled": True})
+    assert response.status_code == 200, response.text
+    [grant] = [d for p, d in db.docs.items() if p.startswith(f"{GRANTS_COLLECTION}/")]
+    assert grant["enabled"] is True
+    return grant
+
+
+def test_deleting_a_registration_disables_its_secrets_grants_re_signed_and_audited(
+        keyed, seeded, sm, grant_key, caplog):
+    _granted(keyed, seeded)
+    with caplog.at_level(logging.INFO, logger="swarm_api.routes.repositories"):
+        response = keyed.delete(f"/v1/repositories/{WIDGETS}", headers=as_("dave", "eng"))
+    assert response.status_code == 204, response.text
+    assert f"repositories/{WIDGETS}" not in seeded.docs
+    [grant] = [d for p, d in seeded.docs.items() if p.startswith(f"{GRANTS_COLLECTION}/")]
+    assert grant["enabled"] is False and grant["repo_id"] == WIDGETS
+    assert grant["changed_by"] == "dave@example.com"
+    assert GrantKeys(grant_key).check(grant) == "valid"
+    [row] = [a for a in audits(seeded) if a.get("action") == AUDIT_REPOSITORY_GRANTS_DISABLED]
+    assert row["detail"]["repo_id"] == WIDGETS
+    assert row["detail"]["grants_disabled"] == ["profile:claude-code"]
+    [line] = [r.getMessage() for r in caplog.records if "repository delete" in r.getMessage()]
+    assert "grants_disabled=1" in line
+    assert not any(v in caplog.text for v in (sm.payloads[k].decode() for k in sm.payloads))
+
+
+def test_re_registering_a_deleted_repository_revives_no_grant(keyed, seeded, sm):
+    _granted(keyed, seeded)
+    assert keyed.delete(f"/v1/repositories/{WIDGETS}",
+                        headers=as_("dave", "eng")).status_code == 204
+    register(seeded)  # the same owner/repo, so the same repo_id
+    listed = keyed.get(REPO_BASE, headers=as_("root", "eng"))
+    assert listed.status_code == 200, listed.text
+    [secret] = listed.json()["secrets"]
+    assert all(g["enabled"] is False for g in secret["grants"]), secret["grants"]
+    assert all(d["enabled"] is False for p, d in seeded.docs.items()
+               if p.startswith(f"{GRANTS_COLLECTION}/"))
+
+
+def test_a_disable_that_raises_leaves_the_registration_and_answers_an_error(
+        keyed, seeded, sm, monkeypatch):
+    _granted(keyed, seeded)
+
+    def broken(self, **kwargs):
+        raise RuntimeError("firestore unavailable")
+
+    monkeypatch.setattr(WorkspaceSecrets, "disable_repository_grants", broken)
+    response = keyed.delete(f"/v1/repositories/{WIDGETS}", headers=as_("dave", "eng"))
+    assert response.status_code >= 500, response.text
+    assert f"repositories/{WIDGETS}" in seeded.docs
+    [grant] = [d for p, d in seeded.docs.items() if p.startswith(f"{GRANTS_COLLECTION}/")]
+    assert grant["enabled"] is True
+
+
+def test_deleting_a_registration_with_no_secrets_answers_204(client, seeded, sm, caplog):
+    register(seeded)
+    with caplog.at_level(logging.INFO, logger="swarm_api.routes.repositories"):
+        response = client.delete(f"/v1/repositories/{WIDGETS}", headers=as_("dave", "eng"))
+    assert response.status_code == 204, response.text
+    assert f"repositories/{WIDGETS}" not in seeded.docs
+    assert "grants_disabled=0" in caplog.text
+    assert not [a for a in audits(seeded) if a.get("action") == AUDIT_REPOSITORY_GRANTS_DISABLED]
+
+
+def test_another_workspaces_repo_id_is_still_404_and_touches_no_grant(keyed, seeded, sm):
+    _granted(keyed, seeded)
+    response = keyed.delete(f"/v1/repositories/{WIDGETS}", headers=as_("bob", "research"))
+    assert response.status_code == 404, response.text
+    assert f"repositories/{WIDGETS}" in seeded.docs
+    [grant] = [d for p, d in seeded.docs.items() if p.startswith(f"{GRANTS_COLLECTION}/")]
+    assert grant["enabled"] is True
+    assert not [a for a in audits(seeded) if a.get("action") == AUDIT_REPOSITORY_GRANTS_DISABLED]
