@@ -290,6 +290,8 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 .ph .rs td:empty{display:none}
 .ph .rs td small{text-align:right;flex-basis:100%}
 .ph .rs td:first-child small{flex-basis:auto;text-align:left}
+/* a dash with its reason on one line (S3b's read-grant cells) */
+.t td .nw{white-space:nowrap}.t td .nw small{display:inline;flex-basis:auto}
 .ph .hd:has(.acts) .tl{flex-basis:100%}
 .ph .tabs{flex-wrap:nowrap;overflow:hidden}
 .ph .tabs span{padding:7px 9px;font-size:13px;white-space:nowrap}
@@ -436,7 +438,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <figure class="fr"><div class="scroller" data-f="sec-wiz-d"></div><figcaption><b>S4c · Add a secret, desktop.</b> The wizard opens as one side sheet over the page: scope → destination (with environment) → consumer or grant → one-time form. Drawn at step 2, the destination; its other three steps follow on their own.</figcaption></figure>
 <div class="pair">
   <figure class="fr"><div data-f="sec-wiz-1"></div><figcaption><b>S4c1 · Step 1, scope.</b></figcaption></figure>
-  <figure class="fr"><div data-f="sec-wiz-3"></div><figcaption><b>S4c3 · Step 3, who reads it.</b> A choice the person may not make is drawn with its reason.</figcaption></figure>
+  <figure class="fr"><div data-f="sec-wiz-3"></div><figcaption><b>S4c3 · Step 3, who reads it.</b> On the GitHub Actions path the environment's rule decides who reads it, so this step is the name; on the Agents path it is where the agents are ticked, named here in one line rather than drawn.</figcaption></figure>
   <figure class="fr"><div data-f="sec-wiz-4"></div><figcaption><b>S4c4 · Step 4, the one-time form.</b></figcaption></figure>
 </div>
 <figure class="fr"><div class="scroller" data-f="sec-form-d"></div><figcaption><b>S4d · The one-time set form, desktop.</b> Opened from a link a tool minted (or the wizard's last step). Ten minutes, one use, the token already out of the address bar, never prefilled.</figcaption></figure>
@@ -524,10 +526,10 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 
 <h2 id="notes">What the brief left open, and what BGD has since decided</h2>
 <ul>
-  <li><b>Decided (BGD, 2026-10-23T23:57Z): Settings › API keys</b> moves to Config › Secrets › Keys for agents and MCP, with person and workspace scopes, set through the one-time link as today (S4a, S4d). Settings keeps only Profile; the old addresses redirect.</li>
+  <li><b>Decided (BGD, 2026-10-23T23:55Z): Settings › API keys</b> moves to Config › Secrets › Keys for agents and MCP, with person and workspace scopes, set through the one-time link as today (S4a, S4d). Settings keeps only Profile; the old addresses redirect.</li>
   <li><b>This proposal's call: "needed, not set"</b> is a new read: a secret that something registered names and that is not stored. Until it exists, the strip's step 3 would read "—, not measured yet" rather than a count.</li>
-  <li><b>Decided (BGD, 2026-10-23T23:57Z): Add a new workspace</b> in Workspace Settings is for platform admins only (S6c). A workspace admin sees their own workspaces' settings with no such tab (S6d); members keep Request your workspace in the setup checklist.</li>
-  <li><b>Decided (BGD, 2026-10-23T23:57Z): schedules and approvals</b> for every workspace stay in Automate; Admin only links to them (S1b, S1c).</li>
+  <li><b>Decided (BGD, 2026-10-23T23:55Z): Add a new workspace</b> in Workspace Settings is for platform admins only (S6c). A workspace admin sees their own workspaces' settings with no such tab (S6d); members keep Request your workspace in the setup checklist.</li>
+  <li><b>Decided (BGD, 2026-10-23T23:55Z): schedules and approvals</b> for every workspace stay in Automate; Admin only links to them (S1b, S1c).</li>
   <li><b>Still open for BGD: Config › People and roles for a member.</b> This proposal draws no People and roles in a member's Config panel, with a note that the page is shown to the workspace's admins (S1d, S1g).</li>
 </ul>
 </main>
@@ -578,6 +580,7 @@ const C=(t,c,ic)=>`<span class="c ${c||''}">${ic?I(ic):''}${t}</span>`;
 const SI={ok:'check',wn:'warn',bd:'x',in:'info',nu:'info'};
 const S=(k,t)=>`<span class="st ${k}">${I(SI[k])}<span>${t}</span></span>`;
 const DASH=(why)=>`<span class="dim">— <small class="sm12">${why}</small></span>`;
+const NW=(h)=>`<span class="nw">${h}</span>`;
 const strip=s=>s.replace(/<[^>]+>/g,'');
 const SG=(opts,on,x)=>`<span class="sg">${opts.map((o,i)=>`<span class="${i===on?'on':''}${x&&x.includes(i)?' x':''}">${o}</span>`).join('')}</span>`;
 const CHK=(t,y,x)=>`<span class="chk${x?' x':''}"><i class="${y?'y':''}">${y?I('check'):''}</i>${t}</span>`;
@@ -662,7 +665,7 @@ function panel(x){
       h+=`<div class="pg">Platform</div>`+PI(x.page==='limits','config','Pool limits',C('1 near ceiling','wn'))+PI(x.page==='sizes','sizes','Runner sizes','')+PI(x.page==='tenants','building','Tenants',C('1 waiting','wn'))+
       PI(x.page==='counts','counts','Platform counts','')+PI(x.page==='psec','lock','Platform secrets',C('1','wn'));
     } else h+=`<p class="pnote">Showing Example Team and Example Labs, the workspaces you administer. The platform’s own pages are shown to platform admins only.</p>`;
-    /* schedules and approvals stay in Automate (BGD, 2026-10-23T23:57Z): Admin only links there */
+    /* schedules and approvals stay in Automate (BGD, 2026-10-23T23:55Z): Admin only links there */
     h+=`<div class="pg">In Automate</div>`+PI(false,'cal','Schedules ↗',x.role==='platform'?'<span class="sm12 dim">all workspaces</span>':'')+PI(false,'check','Approvals ↗',x.role==='platform'?C('3 waiting','wn'):'');
   } else if(x.sec==='settings'){
     h+=`<div class="sec">Settings</div>`+PI(true,'person','Profile','');
@@ -722,9 +725,9 @@ const REPHD0=Object.assign({},REPHD,{right:''});
 function reachTable(){
   return T(['Repository','Access','Clone','Push','Pull request','Push test','Registered'],[
     ['example-org/example-api',SG(['Read','Write'],1),S('ok','ok'),S('ok','ok'),S('ok','ok'),'<span class="dim">Not run: it is opt-in</span>',S('ok','yes')],
-    ['example-org/example-web',SG(['Read','Write'],0,[1]),S('ok','ok'),DASH('read grant'),DASH('read grant'),DASH('read grant'),S('ok','yes')],
+    ['example-org/example-web',SG(['Read','Write'],0,[1]),S('ok','ok'),NW(DASH('read grant')),NW(DASH('read grant')),NW(DASH('read grant')),S('ok','yes')],
     ['example-org/docs-site',SG(['Read','Write'],1),S('ok','ok'),S('ok','ok'),S('ok','ok'),S('ok','passed 2 d ago'),S('ok','yes')],
-    {cls:'need',c:['example-labs/console',SG(['Read','Write'],0),S('ok','ok'),DASH('read grant'),DASH('read grant'),DASH('read grant'),C('not registered','wn')]}]);
+    {cls:'need',c:['example-labs/console',SG(['Read','Write'],0),S('ok','ok'),NW(DASH('read grant')),NW(DASH('read grant')),NW(DASH('read grant')),C('not registered','wn')]}]);
 }
 function repCard(n,pill,lines,acts,dash){return `<section class="cd ${dash?'dash':''}"><div class="repc"><div class="top"><b>${n}</b>${pill}</div>${lines.map(l=>`<span class="dim">${l}</span>`).join('')}<div class="acts" style="margin-top:6px">${acts}</div></div></section>`}
 function repos(ph){
@@ -802,17 +805,17 @@ function wizSheets(){
   const s2=sheet(2,'Who is it for?',`<div class="g2">${OPT('Agents','Agents that clone example-org/example-api.')}${OPT('GitHub Actions','Workflows in the repository, on GitHub.',true)}</div><span class="hint">GitHub Actions needs GitHub admin of the repository: checked, you are.</span>`+
      `<div class="fld"><span>Environment</span>${OPT('Repository level','Every workflow in the repository can read it.')}${OPT('repo-secrets · main only','Only workflows on main.',true)}${OPT('staging · any branch','You will type staging to confirm.')}<div class="acts">${B('Create on GitHub','s','ext')}${B('Check rule','s')}</div></div>`,B('Back','q')+B('Next','p'));
   const s3=sheet(3,'Who reads it, and its name',`<p class="hint" style="margin:0">Read by workflows that run in <b>repo-secrets</b>, on main only. SwarmCloud grants nothing further.</p>`+F('Name','MERGE_APP_PRIVATE_KEY','v')+`<span class="hint">Letters, digits and _; not starting with a digit or GITHUB_.</span>`+
-     `<div class="cd dash"><p style="margin:0 0 6px"><b style="color:var(--text)">On the Agents path</b> this step is the grant:</p><div class="acts">${CHK('claude-code',true)}${CHK('codex')}${CHK('playwright')}${CHK('MCP server kb')}${CHK('git',false,true)}</div><span class="hint">git reads forge tokens only.</span></div>`,B('Back','q')+B('Next','p'));
+     `<p class="hint" style="margin:0">On the Agents path this step is where you tick which agents are granted it.</p>`,B('Back','q')+B('Next','p'));
   const s4=sheet(4,'Set the value in a one-time form',`<p class="hint" style="margin:0">Opens a form for <b>MERGE_APP_PRIVATE_KEY</b> in example-org/example-api › repo-secrets. It works once, for ten minutes. The value is sealed in SwarmCloud, written to GitHub and never shown again.</p><div class="bn">${I('info')}<span>From a terminal instead:<br><span class="mn">/sc secrets link repository MERGE_APP_PRIVATE_KEY --repo example-org/example-api --actions --env repo-secrets</span></span></div>`,B('Back','q')+B('Open the one-time form','p'));
   return [s1,s2,s3,s4];
 }
-/* the page behind, dimmed, with one sheet open at step 2 */
-function secWiz(ph){return `<div class="wzwrap"><div class="dimbox">${secWs(ph)}</div><div class="wzsheet">${wizSheets()[1]}</div></div>`}
+/* the page behind, dimmed, is the repository the sheet's step 2 is on (Repository · example-api, GitHub Actions), with one sheet open at step 2 */
+function secWiz(ph){return `<div class="wzwrap"><div class="dimbox">${secRepo(ph,1)}</div><div class="wzsheet">${wizSheets()[1]}</div></div>`}
 const wizStep=n=>`<div class="F sheetfig">${wizSheets()[n-1]}</div>`;
 const SFHD={cr:'Config › Secrets',h:'Set a secret',ph:'Set a secret'};
 function secForm(ph){
   const form=CARD('MERGE_APP_PRIVATE_KEY','',`<dl class="kv"><dt>Where</dt><dd>example-org/example-api › GitHub Actions › environment <b>repo-secrets</b> ${C('main only','ok')}</dd><dt>Name</dt><dd>MERGE_APP_PRIVATE_KEY <span class="hint">(fixed by the link)</span></dd></dl><div style="margin:12px 0 6px">${F('Value',`Paste the value <span style="margin-left:auto">${I('eye-off')}</span>`)}</div><p class="hint">8 bytes to 8 KiB. The form is cleared whatever the answer.</p><div class="acts">${B('Set secret','p')}${B('Cancel','q')}</div>`);
-  const after=CARD('After you press Set','',`<div class="stp">${I('check')}<span class="tx"><b>Version 1 written · 23:04</b><small>The link is used up. The value is not shown again, here or anywhere.</small></span></div><a class="sm12">Set another in this place</a>`)+
+  const after=CARD('After you press Set','',`<div class="stp">${I('check')}<span class="tx"><b>Version 2 written · 23:04</b><small>The link is used up. The value is not shown again, here or anywhere.</small></span></div><a class="sm12">Set another in this place</a>`)+
    `<div class="bn">${I('warn')}<span><b>If the link was used or is older than ten minutes</b>The form says so and offers Add a secret; nothing is written.</span></div>`;
   return `<div class="bn in">${I('info')}<span><b>Opened from a one-time link</b>Paste the value into the form below: the /sc command and this page’s address never see it. The link works once, for ten minutes.</span></div>`+
    (ph?form+after:`<div class="g21">${form}<div class="col">${after}</div></div>`);
@@ -854,9 +857,9 @@ function cpeople(ph){
 }
 const PEOPLE=[
   ['Operator<small>operator@example.com</small>','platform admin','admin','admin','—','own','now'],
-  ['riley@example.com','—','member','viewer','—','own','12 min ago'],
-  ['sam@example.com','—','member','—','admin','own','1 h ago'],
-  ['kai@example.com','—','viewer','member','—','own','3 d ago'],
+  ['riley@example.com','—','—','viewer','—','own','12 min ago'],
+  ['sam@example.com','—','—','—','admin','own','1 h ago'],
+  ['kai@example.com','—','—','member','—','own','3 d ago'],
   ['noor@example.com','—','—','—','member','own','6 d ago']];
 function apeople(ph,ws){
   const cols=ws?['Person','Example Team','Example Labs','Last active']:['Person','Platform role','Example Team','Example Labs','Research Pod','Personal','Last active'];
@@ -869,7 +872,7 @@ function apeople(ph,ws){
 }
 
 /* ================= S6 Workspace Settings ================= */
-/* Add a new workspace is a platform admin's tab only (BGD, 2026-10-23T23:57Z), the rule of Admin › Tenants › New workspace */
+/* Add a new workspace is a platform admin's tab only (BGD, 2026-10-23T23:55Z), the rule of Admin › Tenants › New workspace */
 const WSHD=(on,plat=true)=>({cr:'Config',h:'Workspace Settings',age:'read 2 min ago',tabs:plat?['Settings','Workspace setup','Add a new workspace']:['Settings','Workspace setup'],on});
 function wss(ph){
   return LEAD('Nothing here needs you','This page is set. Setup’s next step is on Secrets.','',B('Go to Secrets','p'),'ok')+
@@ -985,7 +988,7 @@ function limits(ph){
   CARD('Pools',`<span class="sm12 dim">5 of 9 pools shown · 6 profiles</span>`,T(['Pool','#In use (units)','#Ceiling (units)','Set by','Last changed'],[
     {cls:'need',c:['global<small>Global</small>','46','50','Operator','4 d ago']},
     ['tenant:example-team<small>Tenants</small>','18','30','Operator','9 d ago'],
-    ['tenant:example-labs<small>Tenants</small>','3','20','Operator','9 d ago'],
+    ['tenant:example-labs<small>Tenants</small>','0','20','Operator','9 d ago'],
     ['resource:browser<small>Resource classes</small>','7','12','Terraform','30 d ago'],
     ['runner:codex<small>Runner profiles</small>','9','16','Operator','2 d ago']]))+
   ['Additional repositories','Model prices','GitHub fallback token'].map(t=>`<div class="fold">${I('chev')}<b>${t}</b><span class="dim sm12">as today</span></div>`).join('');
@@ -999,11 +1002,11 @@ function sizes(ph){
 function tenants(ph){
   return LEAD('Being created','Example Research is being created: step 6 of 11','Storage prefix is next. Nothing needs you unless a step fails.',B('Open its progress','p'),'')+
   CARD('Being created',B('New workspace','p s','plus'),T(['Workspace','Kind','Asked by','Step'],[['Example Research','group','Operator','6 of 11 · Storage prefix']]))+
-  CARD('Tenants','',T(['Tenant','Status','Kind','Principal','Enforced','Configured','Credentials','Identity'],[
+  CARD('Tenants',`<span class="sm12 dim">4 of 8 tenants shown</span>`,T(['Tenant','Status','Kind','Principal','Enforced','Configured','Credentials','Identity'],[
     ['example-team','enabled','group','group@your-domain',S('ok','yes'),S('ok','yes'),S('ok','2 accounts'),S('ok','own GSA')],
     ['example-labs','enabled','group','group@your-domain',S('ok','yes'),S('ok','yes'),S('wn','none yet'),S('ok','own GSA')],
     ['research-pod',S('nu','disabled'),'group','group@your-domain',S('ok','yes'),S('ok','yes'),S('ok','1 account'),S('ok','own GSA')],
-    ['operator','enabled','personal','operator@example.com',S('ok','yes'),S('ok','yes'),S('ok','1 account'),S('ok','own GSA')]]));
+    ['operator','enabled','personal','operator@example.com',S('ok','yes'),S('ok','yes'),S('ok','1 account'),S('ok','own GSA')]])+`<p class="hint" style="margin:8px 0 0">4 more not drawn: the personal workspaces of riley, sam, kai and noor.</p>`);
 }
 
 /* ================= the frame registry ================= */
