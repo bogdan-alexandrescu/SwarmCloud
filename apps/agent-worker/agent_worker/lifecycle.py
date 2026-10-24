@@ -163,6 +163,7 @@ from . import jevkey as jevkey_mod
 from . import mcp_attach as mcp_attach_mod
 from . import secretrelease as secretrelease_mod
 from . import territory as territory_mod
+from . import testservices as testservices_mod
 from . import typesafe_shim as typesafe_shim_mod
 from . import owner_questions as owner_questions_mod
 from . import questions as questions_mod
@@ -1031,6 +1032,9 @@ class Worker:
         #: attempt (`extrarepos.prepare`, MULTI-REPO #1434), in the task's
         #: order; empty for a task with none, which is every task before it.
         self._extra_checkouts: list[extrarepos_mod.Checkout] = []
+        #: The services the clone's `.swarm/test-services.toml` declares, up
+        #: for the whole attempt (TS-RUN, #1627); None when nothing runs.
+        self._test_services: testservices_mod.RunningServices | None = None
         self._restored_workdir: frozenset[str] = frozenset()
         self._workdir_baseline: frozenset[str] | None = None
         self._heartbeats = 0
@@ -3127,6 +3131,8 @@ class Worker:
         # A clone is the single slowest step before the agent starts, and the
         # one most likely to vary with repository size.
         self._heartbeat()
+        # The services the clone declares, up from here to `_cleanup` (TS-RUN).
+        self._start_test_services()
 
         # ---- STEP 5': the additional repositories (MULTI-REPO, #1434) ------
         # docs/design/multi-repository-steps.md §4.4: right after the primary
@@ -5180,6 +5186,69 @@ class Worker:
         """
         with self._heartbeat_meanwhile("clone"):
             return self._maybe_clone(task)
+
+    def _start_test_services(self) -> None:
+        """Run what the clone's `.swarm/test-services.toml` declares, for the
+        whole attempt (TS-RUN, #1627; docs/design/test-services.md §5.4, Q4).
+
+        After the clone, so the declaration read is the checkout's, and
+        before the agent, so its own test runs reach `127.0.0.1:5432`.
+        Stopped, its data removed, by `_stop_test_services` in `_cleanup`,
+        which every exit reaches: finish, park, cancel, fence (§5.5).
+
+        NEVER ENDS THE ATTEMPT. No file is the default and starts nothing;
+        an invalid file starts nothing (the gate reports it, §2.2); a
+        service that does not come up is logged with its scrubbed error and
+        the agent runs without it, as it did before. The lease is
+        heartbeated meanwhile: the ready wait alone may take 30 s.
+        Invariant 7: the server shares this container's fixed resources;
+        nothing is requested or added to the pod.
+        """
+        ws = self.ws
+        if ws is None or ws.cache is None:
+            return
+        repo = ws.work / REPO_DIR_NAME
+        try:
+            if not repo.is_dir():
+                return
+            declaration = testservices_mod.read_declaration(repo)
+            if not declaration.valid:
+                self.log.warning(
+                    "test services: the declaration is invalid; nothing started",
+                    refusals=len(declaration.refusals),
+                )
+                return
+            if not declaration.declared:
+                return
+            self.phases.enter("test_services")
+            with self._heartbeat_meanwhile("test_services"):
+                running = testservices_mod.start(
+                    declaration, ws.cache, scrub=lambda text: str(self._scrub(text))
+                )
+            self._test_services = running
+            for service in running.services:
+                if service.error is None:
+                    self.log.info(
+                        "test service ready",
+                        service=service.service.name,
+                        version=service.service.version,
+                        databases=len(service.service.databases),
+                        seconds=service.ready_seconds,
+                    )
+                else:
+                    self.log.warning(
+                        "test service did not start; the agent runs without it",
+                        service=service.service.name,
+                        error=service.error,
+                    )
+        except Exception as exc:  # noqa: BLE001 -- a test service never ends the attempt
+            self.log.warning("test services did not start", error=type(exc).__name__)
+
+    def _stop_test_services(self) -> None:
+        """Stop the declared services and remove their data (§5.5). Idempotent."""
+        running, self._test_services = self._test_services, None
+        if running is not None:
+            running.stop()
 
     def _clone_additional_keeping_lease(
         self, task: dict[str, Any]
@@ -15086,6 +15155,10 @@ class Worker:
 
         for step, action in (
             ("terminate_runner", terminate_runner),
+            # The declared test services (TS-RUN, §5.5): stopped and their
+            # data removed once the agent that used them is gone, on every
+            # exit, before the cache they write to is destroyed.
+            ("stop_test_services", self._stop_test_services),
             ("remove_released_secrets", remove_released_secrets),
             # The MCP relay closes, its file goes and every credential
             # reference is dropped once the runner is gone (MCP-WORKER,
