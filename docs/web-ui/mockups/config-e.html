@@ -277,6 +277,9 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 .ph .lead .lt{min-width:0}
 .ph .lead .acts{width:100%}
 .ph .cd{padding:12px}
+/* a long count chip in a card's head wraps inside the card on a phone rather than running into its edge (S6b phone) */
+.ph .cd .ch .r{min-width:0;max-width:100%}
+.ph .cd .ch .r .c{white-space:normal;border-radius:10px}
 .ph .tw{border:0;background:none;overflow:visible}
 .ph .rs thead{display:none}
 .ph .rs,.ph .rs tbody,.ph .rs tr,.ph .rs td{display:block;width:100%}
@@ -294,7 +297,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 .t td .nw{white-space:nowrap}.t td .nw small{display:inline;flex-basis:auto}
 .ph .hd:has(.acts) .tl{flex-basis:100%}
 .ph .tabs{flex-wrap:nowrap;overflow:hidden}
-.ph .tabs span{padding:7px 9px;font-size:13px;white-space:nowrap}
+.ph .tabs span{padding:7px 7px;font-size:13px;white-space:nowrap}
 .ph .sg{flex-wrap:wrap}
 .ph .kv{grid-template-columns:1fr}
 .ph .kv dd{margin-bottom:6px}
@@ -400,12 +403,12 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
   <figure class="fr"><div class="scroller" data-f="nav-platform"></div><figcaption><b>S1a · Platform admin, group workspace.</b> Config open. All six pages; Secrets shows "3 to set". Admin is in the spine.</figcaption></figure>
   <figure class="fr"><div class="scroller" data-f="nav-admin-platform"></div><figcaption><b>S1b · Platform admin, Admin open.</b> Two groups: the workspaces they administer, then the platform's own pages. Under them, "In Automate" only links to Automate › Schedules and Approvals; Admin draws neither.</figcaption></figure>
   <figure class="fr"><div class="scroller" data-f="nav-admin-ws"></div><figcaption><b>S1c · Workspace admin, Admin open.</b> Only People and roles and Workspaces you admin, scoped to the workspaces they admin, plus the two links into Automate. No platform page, no lock, no disabled row.</figcaption></figure>
-  <figure class="fr"><div class="scroller" data-f="nav-member"></div><figcaption><b>S1d · Member.</b> No Admin in the spine. Config has no People and roles (that page is for the workspace's admins), and the panel says so. Here someone else holds admin, so the strip's step 4, People invited, is done: 3 of 4, where S1a's lone admin reads 2 of 4. S4h shows how a member meets an admin's step.</figcaption></figure>
+  <figure class="fr"><div class="scroller" data-f="nav-member"></div><figcaption><b>S1d · Member.</b> No Admin in the spine. Config lists People and roles: every member reads it, only admins change it (BGD, 2026-10-24 00:31Z; S5g, S5h). Here someone else holds admin, so the strip's step 4, People invited, is done: 3 of 4, where S1a's lone admin reads 2 of 4. S4h shows how a member meets an admin's step.</figcaption></figure>
   <figure class="fr"><div class="scroller" data-f="nav-personal"></div><figcaption><b>S1e · Personal workspace.</b> No People and roles, and the strip has three steps: there is nobody to invite. Drawn for the platform admin in their own workspace, so Admin stays in the spine; a member's personal workspace has no Admin, as in S1d.</figcaption></figure>
 </div>
 <div class="pair">
   <figure class="fr"><div data-f="nav-phone-platform"></div><figcaption><b>S1f · Phone menu, platform admin.</b> The header in the spine colour opens a drawer that holds both columns; the setup meter rides along.</figcaption></figure>
-  <figure class="fr"><div data-f="nav-phone-member"></div><figcaption><b>S1g · Phone menu, member.</b> No Admin item.</figcaption></figure>
+  <figure class="fr"><div data-f="nav-phone-member"></div><figcaption><b>S1g · Phone menu, member.</b> No Admin item; People and roles is listed, as in S1d.</figcaption></figure>
 </div>
 
 <!-- ==================== S2 ==================== -->
@@ -453,14 +456,18 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 
 <!-- ==================== S5 ==================== -->
 <h2 id="s5"><span class="n">S5</span>Config › MCP servers, Config › People and roles, Admin › People and roles</h2>
-<p>MCP servers and People and roles move from Settings unchanged in body; only the lead and the strip are new. Config's People and roles is this workspace's, for its admins, in a group workspace only. Admin's People and roles is the cross-workspace view.</p>
+<p>MCP servers and People and roles move from Settings unchanged in body; only the lead and the strip are new. Config's People and roles is this workspace's, in a group workspace only: every member and viewer reads it, and only a workspace admin or platform admin changes it (BGD, 2026-10-24 00:31Z). Admin's People and roles is the cross-workspace view.</p>
 <figure class="fr"><div class="scroller" data-f="mcp-d"></div><figcaption><b>S5a · Config › MCP servers, desktop.</b> As built (registered servers, credential column, Register an MCP server); the lead names the server whose credential is missing.</figcaption></figure>
-<figure class="fr"><div class="scroller" data-f="cpeople-d"></div><figcaption><b>S5b · Config › People and roles, desktop.</b> As built (roles in this workspace, own roles, set the default, role events), led by the strip's step 4.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="cpeople-d"></div><figcaption><b>S5b · Config › People and roles, workspace or platform admin, desktop.</b> As built (roles in this workspace, own roles, set the default, role events), led by the strip's step 4. An admin sees the change controls.</figcaption></figure>
 <figure class="fr"><div class="scroller" data-f="apeople-d"></div><figcaption><b>S5c · Admin › People and roles, platform admin, desktop.</b> Every person against every workspace; the lead is who is waiting for an admin.</figcaption></figure>
 <div class="pair">
   <figure class="fr"><div data-f="mcp-p"></div><figcaption><b>S5d · MCP servers, phone.</b></figcaption></figure>
-  <figure class="fr"><div data-f="cpeople-p"></div><figcaption><b>S5e · Config › People and roles, phone.</b></figcaption></figure>
+  <figure class="fr"><div data-f="cpeople-p"></div><figcaption><b>S5e · Config › People and roles, admin, phone.</b></figcaption></figure>
   <figure class="fr"><div data-f="apeople-ws-p"></div><figcaption><b>S5f · Admin › People and roles, workspace admin, phone.</b> Only the two workspaces they administer: of S5c's two requests, only lee's (to join Example Labs) is theirs to answer.</figcaption></figure>
+</div>
+<figure class="fr"><div class="scroller" data-f="cpeople-member-d"></div><figcaption><b>S5g · Config › People and roles, member, desktop.</b> S5b with its controls taken off: the roster and each person's role, read only, as built ("Only this workspace's admins change roles"). No Give a person a role, no role switch, no Remove. A viewer sees the same. The workspace is S1d's, where 6 people hold a role.</figcaption></figure>
+<div class="pair">
+  <figure class="fr"><div data-f="cpeople-member-p"></div><figcaption><b>S5h · Config › People and roles, member, phone.</b></figcaption></figure>
 </div>
 
 <!-- ==================== S6 ==================== -->
@@ -530,7 +537,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
   <li><b>This proposal's call: "needed, not set"</b> is a new read: a secret that something registered names and that is not stored. Until it exists, the strip's step 3 would read "—, not measured yet" rather than a count.</li>
   <li><b>Decided (BGD, 2026-10-23T23:55Z): Add a new workspace</b> in Workspace Settings is for platform admins only (S6c). A workspace admin sees their own workspaces' settings with no such tab (S6d); members keep Request your workspace in the setup checklist.</li>
   <li><b>Decided (BGD, 2026-10-23T23:55Z): schedules and approvals</b> for every workspace stay in Automate; Admin only links to them (S1b, S1c).</li>
-  <li><b>Still open for BGD: Config › People and roles for a member.</b> This proposal draws no People and roles in a member's Config panel, with a note that the page is shown to the workspace's admins (S1d, S1g).</li>
+  <li><b>Decided (BGD, 2026-10-24T00:31Z): Config › People and roles</b> in a group workspace is readable by every member and viewer, and changeable only by a workspace admin or platform admin (S1d, S1g, S5g, S5h; admin S5b, S5e). A personal workspace has none (S1e). Admin › People and roles stays admin-only and cross-workspace.</li>
 </ul>
 </main>
 <style>
@@ -652,10 +659,9 @@ function panel(x){
     h+=wsblock(x)+`<div class="sec">Config</div>`;
     h+=`<div class="pmeter"><div class="row"><span>Setup</span><b>${d} of ${s.length}</b></div>${segs(s.map(q=>q[0]))}</div>`;
     h+=PI(x.page==='gh','github','GitHub access',bd.gh)+PI(x.page==='repos','repo','Repositories',bd.repos)+PI(x.page==='secrets','key','Secrets',bd.sto)+PI(x.page==='mcp','plug','MCP servers',bd.mcp);
-    if(x.ws!=='personal'&&x.role!=='member') h+=PI(x.page==='people','people','People and roles',bd.people);
+    if(x.ws!=='personal') h+=PI(x.page==='people','people','People and roles',bd.people);
     /* Workspace Settings' three parts are the page's tabs; the panel does not list them a second time */
     h+=PI(String(x.page).startsWith('ws'),'gear','Workspace Settings','');
-    if(x.role==='member') h+=`<p class="pnote">People and roles is shown to this workspace’s admins.</p>`;
     if(x.ws==='personal') h+=`<p class="pnote">A personal workspace has no People and roles: nobody else is in it.</p>`;
   } else if(x.sec==='admin'){
     h+=`<div class="sec">Admin</div>`;
@@ -756,15 +762,13 @@ function secWs(ph){
   LEAD('Step 3 of 4 · next','2 workspace secrets are needed and not set','kb-token: MCP server kb sends it on every call. TypeSafe key for the workspace: Jev and browser agents read it. The strip’s third is a QA sign-in on example-org/example-api.',B('Set kb-token','p')+B('Set TypeSafe key'),'wn')+
   CARD('For agents',`<a class="sm12">Open the grant matrix</a>`,`<p>Released to the profiles, tools and components in Granted to. A value is stored write-only: no page and no API route shows it, its length or any of its characters again.</p>`+
    T(['Name','Kind','Provider','Set','#Version','Last used','Granted to',''],[
-    ['search-api<small>'+C('shadowed on agents of Operator: Yours › search-api','pa')+'</small>','API key','brave','12 d ago','2','1 h ago','claude-code, codex',B('Rotate','s')+' '+B('Delete','s d')],
-    ['openai-codex','API key','openai','30 d ago','1','3 h ago','codex',B('Rotate','s')+' '+B('Delete','s d')],
+    ['search-api<small>'+C('shadowed on agents of Operator: Yours › search-api','pa')+'</small>','API key','brave','12 d ago','2','1 h ago','claude-code',B('Rotate','s')+' '+B('Delete','s d')],
     ['docs-bearer','Bearer token','other','4 d ago','1','never','claude-code-browser',B('Rotate','s')+' '+B('Delete','s d')],
     {cls:'need',c:['kb-token',DASH('not stored'),'',C('needed, not set','wn'),'','','MCP server kb',B('Set','p s')]}]))+
   `<div class="g2">`+
   CARD('Keys for agents and MCP','',T(['Key','Read by','State',''],[
     {cls:'need',c:['TypeSafe key<small>workspace</small>','Jev, browser agents',C('needed, not set','wn'),B('Set','p s')]},
     ['TypeSafe key<small>yours</small>','your own submissions',S('ok','set 6 d ago'),B('Replace','s')],
-    ['Codex provider key<small>runner LLM key</small>','codex runner','uses <b>openai-codex</b>',B('Change','s')],
     {cls:'need',c:['MCP server kb','every profile that takes MCP servers',C('needs kb-token','wn'),B('Set','p s')]},
     ['MCP server docs-search','claude-code','per-run credential, not stored','']])+`<p class="hint" style="margin:8px 0 0">Was Settings › API keys. Set and Replace open the one-time form (S4d); no value is shown again.</p>`)+
   CARD('GitHub token','',`<dl class="kv"><dt>Kind</dt><dd>Workspace token (GitHub App user token)</dd><dt>State</dt><dd>${S('ok','active')}</dd><dt>GitHub login</dt><dd>@operator</dd><dt>Verified</dt><dd>3 min ago</dd><dt>Expires</dt><dd>in 7 h · renewed automatically</dd></dl><p class="hint" style="margin-top:8px">Status only: no part of a token is ever shown. Connect or disconnect on <a>GitHub access</a>.</p>`)+`</div>`;
@@ -775,7 +779,7 @@ function secRepo(ph,dest){
   const agents=`<div class="col">`+
    CARD('For agents','',T(['Name','Kind','Set','Granted to',''],[
      ['test-db-password','Opaque','5 d ago','claude-code',B('Rotate','s')],
-     ['search-api<small>'+C('overrides the workspace’s','in')+' '+C('Yours wins for Operator','pa')+'</small>','API key','1 d ago','claude-code, codex',B('Rotate','s')]])+`<p class="hint" style="margin:8px 0 0">You may set these as a workspace admin. A member whom GitHub calls admin of this repository may too.</p>`)+
+     ['search-api<small>'+C('overrides the workspace’s','in')+' '+C('Yours wins for Operator','pa')+'</small>','API key','1 d ago','claude-code',B('Rotate','s')]])+`<p class="hint" style="margin:8px 0 0">You may set these as a workspace admin. A member whom GitHub calls admin of this repository may too.</p>`)+
    `<div class="g2">`+CARD('Sign-in for QA','',T(['Target · environment','Credential',''],[
      ['Studio · staging',S('ok','test credential set 2 d ago'),B('Replace','s')],
      {cls:'need',c:['Studio · production',C('needed, not set','wn'),B('Set','p s')]},
@@ -832,7 +836,7 @@ function secActions(ph){return secRepo(true,1)}
 function secMember(ph){
   return scopeBar(0,'',ph)+LEAD('Step 3 of 4 · an admin\u2019s step','2 workspace secrets are needed: a workspace admin sets them','kb-token (MCP server kb) and the workspace TypeSafe key. You can set your own under Yours; yours win for your agents.',B('Go to Yours','p')+B('Copy a note for an admin'))+
   CARD('For agents',C('read only for members','ln'),T(['Name','Kind','Set','Granted to'],[
-    ['search-api','API key','12 d ago','claude-code, codex'],['openai-codex','API key','30 d ago','codex'],['docs-bearer','Bearer token','4 d ago','claude-code-browser'],
+    ['search-api','API key','12 d ago','claude-code'],['docs-bearer','Bearer token','4 d ago','claude-code-browser'],
     {cls:'need',c:['kb-token',DASH('not stored'),C('needed, not set','wn'),'MCP server kb']}]));
 }
 function secEmpty(ph){
@@ -848,6 +852,13 @@ function mcp(ph){
     {cls:'need',c:['kb','https://kb.app.example.com/mcp','Workspace secret kb-token<small>'+C('needed, not set','wn')+'</small>','every profile that takes MCP servers','every tool it lists',S('ok','enabled'),'never',B('Edit','s')]},
     ['<span style="white-space:nowrap">docs-search</span>','https://docs.app.example.com/mcp','Per-run credential','claude-code','search, fetch',S('ok','enabled'),'2 h ago',B('Edit','s')]]))+
   `<div class="fold">${I('chev')}<b>Addresses to allowlist</b><span class="dim sm12">2 hosts</span></div>`;
+}
+/* a member or viewer reads the same page with every change control taken off (BGD, 2026-10-24T00:31Z) */
+const ROSTER=[['dana@example.com','admin','a platform admin','9 d ago','workspace owner'],['Operator<small>you</small>','member','dana@example.com','6 d ago','runs agents'],['ali@example.com','member','dana@example.com','6 d ago','runs agents'],['mo@example.com','member','dana@example.com','4 d ago',''],['pat@example.com','viewer','dana@example.com','2 d ago','reads results'],['tess@example.com','viewer','dana@example.com','1 d ago','']];
+function cpeopleMember(ph){
+  return LEAD('Step 4 of 4 · done','6 people hold a role in Example Team','You hold member, given by dana@example.com 6 d ago. Everyone else signed in to Example Team holds viewer, the default.','','ok')+
+  CARD('Roles in this workspace',C('read only for members','ln'),T(['Person','Role','Given by','When','Reason'],ROSTER)+`<p class="hint" style="margin:8px 0 0">Only this workspace’s admins change roles. You can read them here.</p>`)+
+  CARD('Role events','',`<div class="stp"><span class="tx"><b>dana@example.com gave tess@example.com viewer</b><small>1 d ago</small></span></div><div class="stp"><span class="tx"><b>dana@example.com gave pat@example.com viewer</b><small>2 d ago · reads results</small></span></div>`);
 }
 function cpeople(ph){
   return LEAD('Step 4 of 4 · this page','Only you hold a role in Example Team so far','Give each person who will run agents their own role. Everyone else signed in to Example Team holds viewer, the default.',B('Give a person a role','p'))+
@@ -912,8 +923,9 @@ function psec(ph){
 
 /* ================= S8 Platform counts ================= */
 const DAYS=['17 Oct','18 Oct','19 Oct','20 Oct','21 Oct','22 Oct','23 Oct'];
-const TOT=[132,148,171,96,88,214,215], RET=[9,12,15,6,5,19,21];
-const TYPES=[['claude-code',.58,'--s1'],['codex',.22,'--s2'],['claude-code-browser',.12,'--s3'],['indexer',.08,'--s4']];
+/* the codex profile is disabled (2026-09-23), so it ran none of these */
+const TOT=[103,115,133,75,69,167,168], RET=[7,9,12,5,4,15,16];
+const TYPES=[['claude-code',.743,'--s1'],['claude-code-browser',.154,'--s3'],['indexer',.103,'--s4']];
 function split(t){let left=t;return TYPES.map((x,i)=>{if(i===TYPES.length-1)return left;const v=Math.round(t*x[1]);left-=v;return v})}
 function chart(ph){
   const W=ph?290:1000,H=ph?200:260,L=ph?30:40,R=8,Tp=24,Bt=28,max=250,bw=(W-L-R)/7;
@@ -936,14 +948,13 @@ function counts(ph){
     CARD('Every tenant',C('read 12 min ago','ln'),st('Queued','17')+st('Leased, dispatched, starting','9')+st('Running','46')+st('Parked','6')+st('Ready','3')+`<p class="hint" style="margin:6px 0 0">81 agents.</p>`)+`</div>`;
   const tbl=T(['Agent type','#Agents','#Retries','#Run hours','#Tokens in','#Out','#Cache read','#Cache write','#Estimated cost','#Reported'],[
     ['claude-code','617','51','23.8','1,102 M','18.4 M','6,210 M','412 M','at least $318','571 of 617'],
-    ['codex','234','19','9.1','386 M','7.9 M','1,880 M','131 M','at least $121','230 of 234'],
     ['claude-code-browser','128','11','5.6','214 M','3.1 M','940 M','66 M','$58','128 of 128'],
     ['indexer','85','6','2.5','41 M','0.6 M',DASH('not reported by indexer'),DASH('not reported by indexer'),'at least $15','53 of 85'],
-    {cls:'tot',c:['All types','1,064','87','41.0','1,743 M','30.0 M','at least 9,030 M','at least 609 M','at least $512','982 of 1,064']}]);
+    {cls:'tot',c:['All types','830','68','31.9','1,357 M','22.1 M','at least 7,150 M','at least 478 M','at least $391','752 of 830']}]);
   const over=CARD('Over time',`<span class="age mn sm12">read 4 min ago · never refreshed on its own</span>${B('Read again · 7 reads','s')}`,
     `<div class="scope" style="margin-bottom:12px">${FG('Range',SG(['This week','4 weeks','12 months'],0))}${FG('Per',SG(['Day','Week','Month'],0))}${FG('Group by',SG(['Agent type','Model','Workspace','Pool account'],0))}</div>`+
-    `<div class="sent">This week <em>1,064 agents</em>, <em>41 h</em> of run time, <em>at least $512</em> estimated.</div>`+
-    `<p style="margin:4px 0 14px">17 to 23 October, by submission day. 87 retries are counted apart, not in the 1,064. Estimated cost (list price, not a bill): at least $512, from 982 of 1,064 agents that reported tokens.</p>`+
+    `<div class="sent">This week <em>830 agents</em>, <em>32 h</em> of run time, <em>at least $391</em> estimated.</div>`+
+    `<p style="margin:4px 0 14px">17 to 23 October, by submission day. 68 retries are counted apart, not in the 830. Estimated cost (list price, not a bill): at least $391, from 752 of 830 agents that reported tokens.</p>`+
     `<div class="lg">${TYPES.map(t=>`<span><i style="background:var(${t[2]})"></i>${t[0]}</span>`).join('')}</div><div class="chart" style="margin-top:6px">${chart(ph)}</div>`+
     `<div style="margin-top:10px"><span class="sm12 dim">Retries per day, shown apart</span><div class="chart">${rchart(ph)}</div></div><div style="margin-top:12px">${tbl}</div>`);
   return LEAD('Counts are run by hand','Counted 12 min ago; nothing here refreshes on its own','Each count costs reads, and the button prints how many before you press it.',B('Run it again · 24 reads','p'))+now+over+
@@ -985,12 +996,11 @@ function wya(ph){
 }
 function limits(ph){
   return LEAD('Needs a look','Pool global is at 92% of its ceiling','46 of 50 units in use. A cut of half or more, or a ceiling of 0, asks you to type its name.',B('Open global','p'),'wn')+
-  CARD('Pools',`<span class="sm12 dim">5 of 9 pools shown · 6 profiles</span>`,T(['Pool','#In use (units)','#Ceiling (units)','Set by','Last changed'],[
+  CARD('Pools',`<span class="sm12 dim">4 of 9 pools shown · 6 profiles</span>`,T(['Pool','#In use (units)','#Ceiling (units)','Set by','Last changed'],[
     {cls:'need',c:['global<small>Global</small>','46','50','Operator','4 d ago']},
     ['tenant:example-team<small>Tenants</small>','18','30','Operator','9 d ago'],
     ['tenant:example-labs<small>Tenants</small>','0','20','Operator','9 d ago'],
-    ['resource:browser<small>Resource classes</small>','7','12','Terraform','30 d ago'],
-    ['runner:codex<small>Runner profiles</small>','9','16','Operator','2 d ago']]))+
+    ['resource:browser<small>Resource classes</small>','7','12','Terraform','30 d ago']]))+
   ['Additional repositories','Model prices','GitHub fallback token'].map(t=>`<div class="fold">${I('chev')}<b>${t}</b><span class="dim sm12">as today</span></div>`).join('');
 }
 function sizes(ph){
@@ -1044,6 +1054,8 @@ const FR={
   'mcp-p':()=>phone(X({page:'mcp'}),{cr:'Config',h:'MCP servers',age:'read 2 min ago'},mcp),
   'cpeople-d':()=>desk(X({page:'people'}),{cr:'Config',h:'People and roles',age:'read 2 min ago'},cpeople),
   'cpeople-p':()=>phone(X({page:'people'}),{cr:'Config',h:'People and roles',age:'read 2 min ago'},cpeople),
+  'cpeople-member-d':()=>desk(X({role:'member',setup:'member',page:'people'}),{cr:'Config',h:'People and roles',age:'read 2 min ago'},cpeopleMember),
+  'cpeople-member-p':()=>phone(X({role:'member',setup:'member',page:'people'}),{cr:'Config',h:'People and roles',age:'read 2 min ago'},cpeopleMember),
   'apeople-d':()=>desk(X({sec:'admin',page:'apeople'}),{cr:'Admin',h:'People and roles',age:'read 1 min ago'},ph=>apeople(ph,false)),
   'apeople-ws-p':()=>phone(X({sec:'admin',role:'wsadmin',page:'apeople'}),{cr:'Admin',h:'People and roles',age:'read 1 min ago'},ph=>apeople(ph,true)),
   'wss-d':()=>desk(X({page:'wss'}),WSHD(0),wss),
