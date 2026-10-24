@@ -1355,6 +1355,13 @@ are the same value.
   than its merge dropped. The argument and a spec naming different pull
   requests are refused. The reply's `publish_to_pr` says what was sent and
   that no merge was.
+* `swarm_dispatch`'s single-task form takes `publish_to_pr` too (#2183,
+  PTP-DISPATCH), in the same forms, read by the same `check_publish_to_pr`,
+  and sends it top-level in the `POST /v1/tasks` body, only when given: a
+  dispatch without it sends exactly what it sent before. `tasks` refuses it —
+  beside the list or inside one of its tasks — before any request, because
+  one pull request takes one publishing task. The reply's `publish_to_pr`
+  says what was sent.
 * `swarm_workflow_spec` reads a spec file from the checkout, checks it, and
   returns it with its digest, submitting nothing — the half of `/sc:swarmcloud` that
   takes a path. A file that is not a spec is refused without its content being

@@ -275,6 +275,17 @@ a **name** from the frozen catalogue, and the image, command and resource
 class come from the name. There is no parameter for an image, a command or a
 model ID.
 
+**One task onto a pull request that already exists** (#2183): the single
+form also takes `publish_to_pr` — `41`, `"#41"`, `"owner/repo#41"` or the
+pull request's URL — with `strategy: "direct-pr"` and a `repo`. The task's
+commits are pushed onto that pull request's branch as a fast-forward and no
+new pull request is opened. It is sent top-level, only when given; the reply's
+`publish_to_pr` names what was sent. `tasks` refuses it, beside the list or in
+one of its tasks, before anything is sent: one pull request, one publishing
+task. The API refuses the rest with its reason — a `ref`, and a pull request
+that is not open, is from a fork, or is not on a `swarm/task_*` branch a lane
+of this tenant published.
+
 **A step picks its model class by name** (#1435). `model_class` — on
 `swarm_dispatch`, on each of its `tasks` and on each `swarm_workflow` step (an
 issue run's planner takes one through `/sc run --issue`) — is one of `opus`, `fable`, `sonnet` or
