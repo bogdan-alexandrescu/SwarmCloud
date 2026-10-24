@@ -1054,6 +1054,81 @@ agent that holds no capacity.
   HW-UI and HW-MCP. Until they land, `GET .../input` is what either reads, and
   an answer is posted to the route above.
 
+## Publishing onto an existing pull request: `publish_to_pr`
+
+**Why it exists** (#2183, approved by BGD on 2026-10-24). A follow-up lane --
+a re-review, a fix round, the owner's answers applied to a mock-up -- could
+only open a *replacement* pull request: a `repository_ref` of the old branch
+gave an empty diff and failed, so the lane started from main, merged the old
+branch, and opened a new pull request. On 2026-10-23 the ten CONFIG-FINAL and
+COUNTS-REVIEW lanes opened replacements for PRs 2164-2168 and 2170-2174, each
+then closed by hand. Fixing a pull request in place was only possible from
+the laptop. A spec now names the pull request instead:
+
+```json
+{"strategy": "integrate", "repository_url": "https://github.com/owner/repo",
+ "publish_to_pr": 2164,
+ "steps": [{"step_id": "implement", ...},
+           {"step_id": "fix", "depends_on": ["implement"], "builds_on": "implement", ...}]}
+```
+
+A single task (`POST /v1/tasks`) takes the same field under `direct-pr`.
+
+**What it does.** Every step that would clone the workflow's ref starts from
+the pull request's **head commit** instead, read before anything is cloned.
+A step that `builds_on` an upstream step still clones that step's branch,
+which stands on the same head. The step that would open the pull request --
+the one `direct-pr` step, or the `integrate` integrator (so the fix step of
+an implement -> review -> fix lane) -- pushes the lane's commits onto the pull
+request's branch as a **fast-forward** and opens **no** pull request. A
+contributor still pushes its own `swarm/<task>` branch for the integrator to
+merge, exactly as without the field. If the lane wrote `pr-title.txt`, the
+pull request is retitled; if it wrote `pr-body.md`, its body is replaced
+(never when that would drop a `Closes #N` or `part of #N` line the current
+body has, #807). A lane that wrote neither leaves both as they are, and is
+not asked for a title.
+
+**What the value may be.** A positive integer: a pull request of the spec's
+own repository. `owner/repo#N` or the pull request's URL are accepted only
+when they name that same repository; anything else is refused, because pull
+request N of another repository is a different pull request.
+
+**What is refused at submission** (422 `invalid_dispatch`, nothing written).
+swarm-api reads the pull request once from GitHub with the submitter's forge
+credential (`swarm_api/publishtopr.py`) and refuses one that does not exist,
+is closed or merged, comes from a fork, or whose head branch is not a
+`swarm/task_*` branch of a task **in the submitting tenant** -- another
+tenant's lane branch is refused in the same words as a branch no lane
+published. It also refuses the shapes that cannot publish onto one branch:
+any strategy but `direct-pr` and `integrate`; more than one agent step under
+`direct-pr` (each would push, and all but the first would meet a moved head);
+`carrier: branches`; a `repository_ref` (the head is the ref);
+`continues_task` or `merge_pr` beside it (two pull requests); and an explicit
+merge step or `metadata.merge` (the merge step merges a pull request its
+workflow opened, and this one opens none). A repository's `merge_policy` or
+the platform's `merge_by_default` simply does not apply to such a workflow.
+What it checked -- the number and the task whose branch is the head -- is
+signed into every step's dispatch block.
+
+**What the worker refuses** (`agent_worker/publishpr.py`). Before the agent
+starts it reads the pull request again: closed, merged, from a fork, or on
+another branch than the signed task's, and the step **fails with the reason
+and runs nothing** -- no clone, no agent. Before the push it reads it once
+more and refuses a pull request that has since closed, and a head that
+**moved** since the step started (a person pushed, or another lane did):
+"head moved". The lane's HEAD must descend from that head, and the push is
+leased on it, so a head moved between that read and the push is refused by
+GitHub too. **Nothing is ever force-pushed.** A head moved while a task was
+parked is still refused: the head the first attempt started from is in the
+checkpoint manifest. A lane whose commits touch `.github/workflows/` is
+refused at the push, with the change left as `workflow-lines.patch`: the
+broker that pushes workflow files pushes only a task's own branch.
+
+**Without the field nothing changes**: every step clones the workflow's ref,
+pushes `swarm/<its task>` and opens its pull request exactly as before. A
+MERGE verdict's pull request is never opened by swarm-api for such a lane
+(`verdictpublish` declines it); the worker pushes it instead.
+
 ## Waiting for a pull request: `after`
 
 **Why it exists.** On 2026-10-14 three lanes -- RELAY-ROLL, DEVB-GATE and

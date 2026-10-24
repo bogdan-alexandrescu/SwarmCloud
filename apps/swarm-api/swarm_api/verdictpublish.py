@@ -51,8 +51,9 @@ worker's way, unchanged:
 
   * its dispatch block is `integrate`'s integrator, gated on a review it
     depends on, `builds_on` the implementer, and integrates exactly that one
-    contributor, continuing nothing, with no `input.issue` (whose title the
-    worker makes);
+    contributor, continuing nothing and publishing onto no existing pull
+    request (`publish_to_pr`, #2183: the worker's fast-forward push), with
+    no `input.issue` (whose title the worker makes);
   * every step it depends on SUCCEEDED, in its own tenant and workflow;
   * the review's verdict file -- the `input_from` name the step stages from
     it -- reads as a verdict OUTSIDE the gate's `verdict_in`, and has no
@@ -646,6 +647,11 @@ def _dispatch_facts(doc: Mapping[str, Any]) -> tuple[str, tuple[str, ...], str]:
         )
     if block.get("continues"):
         raise Decline("continuation", "the step continues another task's branch")
+    if block.get("publish_to_pr"):
+        # #2183: its push goes onto an existing pull request's branch, as a
+        # fast-forward checked against that pull request's head, and it opens
+        # nothing; this module would open a new one from `swarm/<this step>`.
+        raise Decline("publish_to_pr", "the step publishes onto an existing pull request")
     if _mapping(doc.get("input")).get("issue") not in (None, ""):
         raise Decline("issue_input", "the step is titled from its issue input, which the worker reads")
     if doc.get("cancel_requested"):
