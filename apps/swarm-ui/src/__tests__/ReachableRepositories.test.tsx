@@ -60,8 +60,9 @@ describe('ReachableRepositories', () => {
     const docs = rowOf('example-org/example-docs')
     expect(docs.querySelector('[data-check="push"] .c-dash')?.getAttribute('aria-label')).toBe('Push is not needed for a read grant')
     // MUTATION: offer Push test on a read grant.
-    expect(within(svc).getAllByRole('button').map((b) => b.textContent)).toEqual(['Read', 'Write', 'Verify', 'Push test', 'Remove'])
-    expect(within(docs).getAllByRole('button').map((b) => b.textContent)).toEqual(['Read', 'Write', 'Verify', 'Remove'])
+    expect(within(svc).getAllByRole('button').map((b) => b.textContent)).toEqual(['Verify', 'Push test', 'Remove'])
+    expect(within(docs).getAllByRole('button').map((b) => b.textContent)).toEqual(['Verify', 'Remove'])
+    expect(within(svc).getAllByRole('radio').map((b) => [b.textContent, b.getAttribute('aria-checked')])).toEqual([['Read', 'false'], ['Write', 'true']])
     expect(screen.getByRole('button', { name: 'Re-check all' })).toBeTruthy()
     // MUTATION: drop the card's foot.
     expect(visible(document.querySelector('.ac-grants'))).toContain('An agent for a repository not on this list is refused at submission.')

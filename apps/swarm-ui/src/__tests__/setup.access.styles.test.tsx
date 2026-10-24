@@ -216,8 +216,9 @@ async function renderGrants(): Promise<HTMLElement> {
   })
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
-  const { AccessScreen } = await import('../Access')
-  const { container } = render(<AccessScreen />)
+  // The grid left GitHub access for ReachableRepositories.tsx (GITHUB-ACCESS-PAGE, part of #2157).
+  const { ReachableRepositoriesRead } = await import('../ReachableRepositories')
+  const { container } = render(<ReachableRepositoriesRead />)
   await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
   return container
 }
