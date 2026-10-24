@@ -192,6 +192,62 @@ def _owned(pool: AccountPool, tenant_id: str, account_id: str) -> dict[str, Any]
     raise NotFound(f"no account {account_id!r} in this tenant's pool")
 
 
+#: What a caller is told of the other side of a duplicate pair that another
+#: tenant owns (#2222; BGD, 2026-10-24 17:26Z, "Name it only within the same
+#: tenant"). The broker's own wording, so the two never read differently.
+ANOTHER_WORKSPACE = "this subscription is already registered in another workspace"
+_ANOTHER_WORKSPACE_READINGS = (
+    "identical readings on two polls with an account in another workspace"
+)
+
+
+def _foreign(other: Any, tenant_id: str) -> bool:
+    """Whether an account id names another tenant's account: an id is
+    `<owner_tenant>:<label>`, so anything not under `tenant_id:` is."""
+    return isinstance(other, str) and not other.startswith(f"{tenant_id}:")
+
+
+def _own_view(account: Any, tenant_id: str) -> Any:
+    """One broker account, with every name of ANOTHER tenant's account taken
+    out of its duplicate marks (#2222).
+
+    The broker already answers in the caller's view -- this service names the
+    tenant on every call -- so on a current broker this changes nothing. It
+    is the second line for the one field family that names an account other
+    than the one shown: a broker older or wrong about the rule must still not
+    hand one tenant another tenant's labels. Only the duplicate fields are
+    touched; whatever else the broker sends passes as served.
+    """
+    if not isinstance(account, dict):
+        return account
+    out = dict(account)
+    if _foreign(out.get("duplicate_of"), tenant_id):
+        out["duplicate_of"] = None
+        out["duplicate_reason"] = ANOTHER_WORKSPACE
+    possible = out.get("possible_duplicate")
+    if isinstance(possible, dict) and _foreign(possible.get("of"), tenant_id):
+        out["possible_duplicate"] = {"of": None, "reason": _ANOTHER_WORKSPACE_READINGS}
+    blocked = out.get("blocked_by")
+    if isinstance(blocked, list):
+        entries: list[Any] = []
+        for entry in blocked:
+            if isinstance(entry, dict) and _foreign(entry.get("duplicate_of"), tenant_id):
+                entry = {"duplicate_of": None, "reason": ANOTHER_WORKSPACE}
+            elif isinstance(entry, dict) and _foreign(entry.get("possible_duplicate"), tenant_id):
+                entry = {"possible_duplicate": None, "advisory": True,
+                         "reason": _ANOTHER_WORKSPACE_READINGS}
+            entries.append(entry)
+        out["blocked_by"] = entries
+    return out
+
+
+def _own_answer(result: Any, tenant_id: str) -> Any:
+    """A broker answer carrying one `account`, through `_own_view`."""
+    if isinstance(result, dict) and "account" in result:
+        return {**result, "account": _own_view(result.get("account"), tenant_id)}
+    return result
+
+
 @router.get("")
 def list_accounts(
     auth: AuthContext = Depends(current_auth),
@@ -213,7 +269,9 @@ def list_accounts(
     tenant_id = _tenant_id(ctx, auth)
     payload = pool.list_accounts(tenant_id)
     return {
-        "accounts": list(payload.get("accounts") or []),
+        # Each through `_own_view` (#2222): another tenant's account is never
+        # named by a duplicate mark, whatever the broker sent.
+        "accounts": [_own_view(a, tenant_id) for a in payload.get("accounts") or []],
         "tenant_id": tenant_id,
         # Forwarded as served. The broker has already narrowed the ids to what
         # this tenant may see -- it is the only component that knows both the
@@ -294,7 +352,8 @@ def register_account(
         credential=body.credential,
     )
     return {
-        "account": result.get("account"),
+        "account": _own_view(result.get("account"), tenant_id),
+        **_registered(result),
         "expires_at": result.get("expires_at"),
         "note": (
             "stored write-only; no read path in this API can return key material"
@@ -363,9 +422,34 @@ def finish_sign_in(
         state=body.state, code=body.code, expected_owner=tenant_id
     )
     return {
-        "account": result.get("account"),
+        "account": _own_view(result.get("account"), tenant_id),
+        **_registered(result),
         "expires_at": result.get("expires_at"),
         "note": "stored write-only; no read path in this API can return key material",
+    }
+
+
+def _registered(result: dict) -> dict[str, Any]:
+    """WHICH ORGANISATION THE ADD REGISTERED (#2222), by allow-list.
+
+    A sign-in authorises whichever organisation is selected on claude.ai, so
+    an answer that says only "registered eng:saga-team" hid that it was the
+    Personal subscription a second time. The broker's sentence and the
+    organisation's name and plan -- never its identity -- pass through; an
+    older broker that sends neither reads as not reported.
+    """
+    line = result.get("registered")
+    org = result.get("organisation")
+    return {
+        "registered": line if isinstance(line, str) and line else None,
+        "organisation": (
+            {
+                "name": org.get("name") if isinstance(org.get("name"), str) else None,
+                "plan": org.get("plan") if isinstance(org.get("plan"), str) else None,
+            }
+            if isinstance(org, dict)
+            else None
+        ),
     }
 
 
@@ -383,8 +467,9 @@ def refresh_account(
     without waiting an unknown number of minutes -- and it goes through the
     broker for the same reason everything else here does.
     """
-    _owned(pool, _writer_tenant_id(ctx, auth), account_id)
-    return pool.refresh(account_id)
+    tenant_id = _writer_tenant_id(ctx, auth)
+    _owned(pool, tenant_id, account_id)
+    return _own_answer(pool.refresh(account_id), tenant_id)
 
 
 @router.put("/{account_id}/lending")
@@ -396,8 +481,9 @@ def set_lending(
     pool: AccountPool = Depends(account_pool),
 ) -> dict:
     """Replace the list of tenants this account lends to. Owner only."""
-    _owned(pool, _writer_tenant_id(ctx, auth), account_id)
-    return pool.set_lending(account_id, lend_to=list(body.lend_to))
+    tenant_id = _writer_tenant_id(ctx, auth)
+    _owned(pool, tenant_id, account_id)
+    return _own_answer(pool.set_lending(account_id, lend_to=list(body.lend_to)), tenant_id)
 
 
 class AccountModelClasses(StrictModel):
@@ -426,8 +512,9 @@ def set_model_classes(
     and a step whose class no account serves waits rather than running on a
     plan that cannot run it.
     """
-    _owned(pool, _writer_tenant_id(ctx, auth), account_id)
-    return pool.set_model_classes(account_id, model_classes=list(body.model_classes))
+    tenant_id = _writer_tenant_id(ctx, auth)
+    _owned(pool, tenant_id, account_id)
+    return _own_answer(pool.set_model_classes(account_id, model_classes=list(body.model_classes)), tenant_id)
 
 
 class AccountName(StrictModel):
@@ -456,8 +543,9 @@ def set_account_name(
     The Name is display text: the id, the label, the credential secret, the
     holds and the lending do not change, and work on the account goes on.
     """
-    _owned(pool, _writer_tenant_id(ctx, auth), account_id)
-    return pool.set_display_name(account_id, display_name=body.display_name)
+    tenant_id = _writer_tenant_id(ctx, auth)
+    _owned(pool, tenant_id, account_id)
+    return _own_answer(pool.set_display_name(account_id, display_name=body.display_name), tenant_id)
 
 
 @router.put("/{account_id}/state")
@@ -474,8 +562,9 @@ def set_account_state(
     answers an unknown value with a 422 listing what it accepts. A second copy
     of that list in this service would be one more thing to drift.
     """
-    _owned(pool, _writer_tenant_id(ctx, auth), account_id)
-    return pool.set_state(account_id, state=body.state, reason=body.reason)
+    tenant_id = _writer_tenant_id(ctx, auth)
+    _owned(pool, tenant_id, account_id)
+    return _own_answer(pool.set_state(account_id, state=body.state, reason=body.reason), tenant_id)
 
 
 @router.delete("/{account_id}")

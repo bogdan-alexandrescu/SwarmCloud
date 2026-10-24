@@ -86,10 +86,149 @@ class ReauthRequired(CredentialError):
 
 
 @dataclass(frozen=True)
+class Organisation:
+    """Which SUBSCRIPTION a credential runs on: the provider's organisation (#2222).
+
+    THE IDENTITY OF A POOL ACCOUNT IS THE ORGANISATION, NEVER THE LOGIN. On
+    2026-10-24 one claude.ai login belonged to two organisations, "Saga"
+    (Team) and "Personal" (Max), and a sign-in authorises whichever one is
+    selected. It authorised Personal twice, so the pool held one subscription
+    under two labels and counted its quota twice. One login with two
+    organisations is two subscriptions and two legitimate accounts; two
+    accounts on one organisation is the duplicate.
+
+    `identity` is OPAQUE: a SHA-256 of the provider's organisation id under a
+    fixed prefix (`organisation_identity`), so equal ids compare equal and the
+    id itself is never stored, logged or returned. `name` and `plan` are the
+    provider's display text, not secret, and are what an answer shows so a
+    sign-in that authorised the wrong organisation is visible at once.
+    """
+
+    identity: str
+    name: str | None = None
+    plan: str | None = None
+
+
+#: Hashed in with the id, and carried on the digest, so an identity can never be
+#: mistaken for -- or confirmed against -- a bare SHA-256 of some id.
+ORGANISATION_IDENTITY_PREFIX = "anthropic-org"
+
+#: The profile endpoint Claude Code reads its own subscription type from. Read
+#: only when the token response did not already say which organisation and plan
+#: a credential runs on, and never relied on: an answer without it is accepted,
+#: and says the organisation is unknown.
+PROFILE_ENDPOINT = "https://api.anthropic.com/api/oauth/profile"
+_PROFILE_BETA = "oauth-2025-04-20"
+
+#: The provider's organisation types, as a person names the plan.
+_PLANS = {
+    "claude_max": "Max",
+    "claude_pro": "Pro",
+    "claude_team": "Team",
+    "claude_enterprise": "Enterprise",
+}
+
+#: Display text from the provider is bounded and stripped of control
+#: characters before it is stored or shown.
+_ORGANISATION_TEXT_MAX = 100
+
+
+def organisation_identity(organisation_id: str) -> str:
+    """The opaque identity of a provider organisation id."""
+    digest = hashlib.sha256(
+        f"{ORGANISATION_IDENTITY_PREFIX}:{organisation_id}".encode("utf-8")
+    ).hexdigest()
+    return f"{ORGANISATION_IDENTITY_PREFIX}-sha256:{digest}"
+
+
+def _organisation_text(raw: Any) -> str | None:
+    if not isinstance(raw, str):
+        return None
+    text = "".join(ch for ch in raw if ch.isprintable()).strip()
+    return text[:_ORGANISATION_TEXT_MAX] or None
+
+
+def _plan(organisation: dict[str, Any]) -> str | None:
+    kind = organisation.get("organization_type")
+    if not isinstance(kind, str) or not kind.strip():
+        return None
+    kind = kind.strip().lower()
+    if kind in _PLANS:
+        return _PLANS[kind]
+    return _organisation_text(kind.removeprefix("claude_").replace("_", " ").title())
+
+
+def organisation_from_payload(payload: Any) -> Organisation | None:
+    """The organisation a token or profile response names, or None.
+
+    Both answers carry it as `organization: {uuid, name, ...}`; the profile's
+    also carries `organization_type`, the plan. An answer with no organisation
+    uuid is None -- never an identity built from the login, which is exactly
+    the confusion this exists to remove. The login (`account`, with its email
+    address) is not read at all.
+    """
+    if not isinstance(payload, dict):
+        return None
+    organisation = payload.get("organization")
+    if not isinstance(organisation, dict):
+        return None
+    uuid = organisation.get("uuid")
+    if not isinstance(uuid, str) or not uuid.strip():
+        return None
+    return Organisation(
+        identity=organisation_identity(uuid.strip()),
+        name=_organisation_text(organisation.get("name")),
+        plan=_plan(organisation),
+    )
+
+
+def read_organisation(
+    payload: Any, endpoint: Any, access_token: str
+) -> Organisation | None:
+    """The organisation behind a credential, from the token response and, where
+    that leaves the identity or the plan unsaid, the profile endpoint.
+
+    NEVER RAISES. An add or a refresh must not fail because a descriptive
+    lookup did: the identity is how a duplicate is found, and an account with
+    none is an account whose duplicate goes unnoticed, which is what every
+    account was before #2222. The profile call is made only through an
+    endpoint that offers one (`HttpTokenEndpoint.profile`).
+    """
+    found = organisation_from_payload(payload)
+    if found is not None and found.plan is not None:
+        return found
+    profile = getattr(endpoint, "profile", None)
+    if not callable(profile) or not access_token:
+        return found
+    try:
+        profiled = organisation_from_payload(profile(access_token))
+    except Exception:
+        # The exception's text could quote a response; only absence is kept.
+        return found
+    if profiled is None:
+        return found
+    if found is None:
+        return profiled
+    if profiled.identity != found.identity:
+        # Two answers about two organisations: the token response is the one
+        # this credential was issued for.
+        return found
+    return Organisation(
+        identity=found.identity,
+        name=found.name or profiled.name,
+        plan=found.plan or profiled.plan,
+    )
+
+
+@dataclass(frozen=True)
 class Credential:
     access_token: str
     refresh_token: str
     expires_at: datetime
+    #: The organisation the token endpoint said this credential runs on, when
+    #: it said (#2222). Never serialised into the stored credential: it is
+    #: recorded on the account document, which is where a duplicate is found.
+    organisation: Organisation | None = None
 
     def needs_refresh(self, now: datetime, window: timedelta = DEFAULT_REFRESH_WINDOW) -> bool:
         return now + window >= self.expires_at
@@ -183,6 +322,33 @@ class HttpTokenEndpoint:
             ) from None
         except urllib.error.URLError as exc:
             raise CredentialError(f"could not reach the token endpoint: {exc.reason}") from None
+
+    def profile(self, access_token: str) -> dict[str, Any]:
+        """The signed-in organisation and plan, as Claude Code reads them.
+
+        Called only by `read_organisation`, which swallows every failure, so
+        this raises plainly and quotes nothing from the response.
+        """
+        import urllib.error
+        import urllib.request
+
+        request = urllib.request.Request(
+            PROFILE_ENDPOINT,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "anthropic-beta": _PROFILE_BETA,
+                "Accept": "application/json",
+                "User-Agent": CLIENT_USER_AGENT,
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise CredentialError(f"profile endpoint returned {exc.code}") from None
+        except urllib.error.URLError:
+            raise CredentialError("could not reach the profile endpoint") from None
 
     def exchange(self, refresh_token: str) -> dict[str, Any]:
         import urllib.error
@@ -314,6 +480,10 @@ def refresh(
         # Carry the old one forward when the endpoint does not rotate.
         refresh_token=result.get("refresh_token") or credential.refresh_token,
         expires_at=expires_at,
+        # AT EVERY REFRESH (#2222): the organisation a credential runs on is
+        # read again, so an account re-signed into another organisation is
+        # seen as that one from its next exchange.
+        organisation=read_organisation(result, endpoint, access),
     )
 
 

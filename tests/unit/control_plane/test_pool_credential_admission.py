@@ -49,6 +49,7 @@ from scheduler.metrics import SchedulerMetrics
 from scheduler.store import SchedulerStore
 
 from .conftest import (
+    measure,
     RecordingDispatcher,
     auth_header,
     scheduler_settings,
@@ -222,6 +223,7 @@ def test_the_pool_is_read_at_most_once_per_drain(
     world(db)
     seed_tenant(db, "keyed", credentials=("anthropic",))
     AccountStore(db).register(OWNER, "team", lend_to=[TENANT])
+    measure(AccountStore(db), f"{OWNER}:team")  # one agent until measured (#2222)
     task(db, "task_keyed", tenant_id="keyed")
     scheduler = make_scheduler(settings=pool_settings())
     reads = count_account_reads(db, monkeypatch)
