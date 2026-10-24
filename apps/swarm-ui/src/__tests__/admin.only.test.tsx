@@ -1,7 +1,7 @@
 /**
- * ADMIN IS SHOWN ONLY TO ADMINS (ADMIN-ONLY; part of #2157, BGD 2026-10-23;
- * docs/web-ui/mockups/config-e.html S1d, S1g: "Members and viewers see no
- * Admin").
+ * ADMIN IS SHOWN ONLY TO ADMINS (ADMIN-ONLY; part of #2157, BGD 2026-10-23:
+ * "Members and viewers see no Admin"; docs/web-ui/mockups/config-e.html S1b
+ * platform admin, S1c workspace admin, S1g member with no Admin item).
  *
  * spine.adminrole.test.tsx and config.nav.test.tsx pin a member, the admin of
  * only a personal workspace, and a member who is also a viewer elsewhere, and
