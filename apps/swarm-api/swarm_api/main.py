@@ -133,6 +133,9 @@ UNCAPTURED_ROUTES = frozenset({
     # a workspace secret's value, on its creation and its replacement;
     "/v1/workspace/secrets",
     "/v1/workspace/secrets/{name}/value",
+    # A repository's secrets (SSC-REPO-SCOPE): the same add and rotate bodies.
+    "/v1/repositories/{repo_id}/secrets",
+    "/v1/repositories/{repo_id}/secrets/{name}/value",
     # a provider API key, a person's or the workspace's, and the tenant's;
     "/v1/provider-keys/{provider}/user",
     "/v1/provider-keys/{provider}/tenant",

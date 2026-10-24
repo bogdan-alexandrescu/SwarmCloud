@@ -1104,7 +1104,7 @@ beside it: `apps/swarm-api/swarm_api/workspace_secrets.py`,
 * **Which repositories an attempt clones** is `attempt_repositories`, from
   the signed spec: `repository_url`'s registration id, then each
   `additional_repositories` entry's, whose `repo_id` is recomputed from its
-  `repository` and the task's tenant. One mismatch withholds every repository
+  `repository` and the attempt's tenant. One mismatch withholds every repository
   secret of that attempt (`repository_binding_mismatch`, logged). A
   repository secret whose registration is gone is withheld too.
 * **One `(slot, name)` in several scopes is released once (Q1)**: the
