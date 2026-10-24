@@ -775,11 +775,11 @@ function mcp(ph){
 }
 function cfgPeople(ph,role='pa'){
   const ro=role==='mem';
-  /* In the member frame the signed-in Operator is a member of eng, given by Rae, an admin listed here; Rae gives the roles Operator gives in the admin frame. */
+  /* In the member frame the signed-in Operator is a member of eng, given by Rae, an admin listed here; Rae gives the roles Operator gives in the admin frame, and Rae's own row is the oldest grant, as Operator's is there. */
   const by=ro?'Rae':'Operator';
   const rows=[
-    ['<b>Operator</b><span class="sub">operator@example.com</span>',ro?'member':'admin',by,'30d ago',dash('your own role')],
-    ['<b>Rae</b><span class="sub">rae@example.com</span>','admin',by,'12d ago',btn('Return to default','g sm')],
+    ['<b>Operator</b><span class="sub">operator@example.com</span>',ro?'member':'admin',by,ro?'12d ago':'30d ago',dash('your own role')],
+    ['<b>Rae</b><span class="sub">rae@example.com</span>','admin',by,ro?'30d ago':'12d ago',btn('Return to default','g sm')],
     ['<b>Kai</b><span class="sub">kai@example.com</span>','admin',by,'20d ago',btn('Return to default','g sm')],
     ['<b>Sam</b><span class="sub">sam@example.com</span>','member','Rae','3d ago',btn('Return to default','g sm')],
   ].map(r=>ro?r.slice(0,4):r);
