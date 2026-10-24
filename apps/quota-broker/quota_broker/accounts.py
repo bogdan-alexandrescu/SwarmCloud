@@ -151,6 +151,21 @@ MAX_AGENTS_LIMIT = 50
 #: usable at once; its first reading decides the rest, up to `max_agents`.
 MAX_AGENTS_BEFORE_READING = 1
 
+#: IDENTICAL READINGS, THE FALLBACK FOR A MISSING ORGANISATION (#2222; BGD,
+#: 2026-10-24 17:26Z, "Build it as a safety net"). Nothing has yet confirmed
+#: the provider returns an organisation id, and without one `duplicates` finds
+#: nothing. The real pair of that morning (eng:team and eng:saga-personal, one
+#: Personal Max subscription) read identical figures in every window with
+#: resets ONE SECOND apart. A reset is an absolute instant the provider keeps
+#: per subscription, so two subscriptions agree on it only by coincidence;
+#: five seconds allows for the provider's own rounding and nothing more.
+IDENTICAL_RESET_SKEW = timedelta(seconds=5)
+#: How many consecutive polls of BOTH accounts must agree before the pair is a
+#: `possible_duplicate`. One agreement can be a coincidence -- two accounts
+#: whose figures happen to round alike once; two independent pairs of
+#: readings, each new on both sides, are evidence.
+IDENTICAL_READINGS_POLLS = 2
+
 #: How long a hold survives without being released.
 #:
 #: Longer than the longest runner profile's timeout (7200s) plus the setup and
@@ -370,6 +385,43 @@ class WindowReading:
 
 
 @dataclass(frozen=True)
+class IdenticalReadings:
+    """How long this account has read the same as `with_account` (#2222).
+
+    `observed_at` and `other_observed_at` are the two readings the last count
+    was made on, so a pass that sees the same pair of readings again counts
+    nothing: only a NEW reading of BOTH sides is another poll.
+    """
+
+    with_account: str
+    polls: int
+    observed_at: datetime
+    other_observed_at: datetime
+
+    def to_firestore(self) -> dict[str, Any]:
+        return {
+            "with": self.with_account,
+            "polls": self.polls,
+            "observed_at": self.observed_at,
+            "other_observed_at": self.other_observed_at,
+        }
+
+    @classmethod
+    def from_firestore(cls, raw: Any) -> "IdenticalReadings | None":
+        """Descriptive: anything malformed reads as no record, which only
+        restarts the count -- it never flags anything."""
+        if not isinstance(raw, dict):
+            return None
+        other, polls = raw.get("with"), raw.get("polls")
+        mine, theirs = raw.get("observed_at"), raw.get("other_observed_at")
+        if not (isinstance(other, str) and other and isinstance(polls, int)
+                and not isinstance(polls, bool) and polls > 0
+                and isinstance(mine, datetime) and isinstance(theirs, datetime)):
+            return None
+        return cls(other, polls, _aware(mine), _aware(theirs))
+
+
+@dataclass(frozen=True)
 class Hold:
     """One agent's claim on an account, with a deadline.
 
@@ -555,6 +607,16 @@ class Account:
     #: has.
     duplicate_of: str | None = None
     duplicate_withheld: bool = False
+
+    #: Another account whose readings have been IDENTICAL on
+    #: `IDENTICAL_READINGS_POLLS` consecutive polls, while the two have no
+    #: pair of recorded organisations to tell them apart (#2222), or None.
+    #: A DIFFERENT flag from `duplicate_of`: that one is proven by the
+    #: provider's organisation and withholds the newer side; this one is
+    #: inferred, and is shown, never withheld (`identical_reading_pairs`).
+    possible_duplicate_of: str | None = None
+    #: The count behind it, kept between passes.
+    identical_readings: IdenticalReadings | None = None
 
     def serves_class(self, model_class: str | None) -> bool:
         """Whether a step of `model_class` may run on this account.
@@ -876,6 +938,10 @@ class Account:
             "registered_at": self.registered_at,
             "duplicate_of": self.duplicate_of,
             "duplicate_withheld": self.duplicate_withheld,
+            "possible_duplicate_of": self.possible_duplicate_of,
+            "identical_readings": (
+                self.identical_readings.to_firestore() if self.identical_readings else None
+            ),
         }
 
     @classmethod
@@ -944,6 +1010,10 @@ class Account:
             duplicate_of=_optional_text(data.get("duplicate_of")),
             # Only a stored True withholds: anything else is the default.
             duplicate_withheld=data.get("duplicate_withheld") is True,
+            # Descriptive: an inferred flag that never withholds anything.
+            possible_duplicate_of=_optional_text(data.get("possible_duplicate_of")),
+            identical_readings=IdenticalReadings.from_firestore(
+                data.get("identical_readings")),
         )
 
 
@@ -1320,6 +1390,83 @@ def _withheld(accounts: list[Account]) -> set[str]:
     return marked | {i for i, (_, held) in duplicates(accounts).items() if held}
 
 
+def readings_identical(a: Account, b: Account, *, skew: timedelta = IDENTICAL_RESET_SKEW) -> bool:
+    """Whether two accounts' latest readings could be one subscription's.
+
+    Every window the same: the same windows, the same utilisation, and resets
+    within `skew`. Never for two IDLE accounts -- 0% everywhere -- because a
+    provider that dates an unused window from the moment it is asked would
+    give two unrelated idle accounts resets seconds apart, and figures nobody
+    spent say nothing about whose quota they are.
+    """
+    if a.observed_at is None or b.observed_at is None:
+        return False
+    if not a.windows or set(a.windows) != set(b.windows):
+        return False
+    if all(round(r.utilization, 4) == 0 for r in a.windows.values()):
+        return False
+    for name, mine in a.windows.items():
+        theirs = b.windows[name]
+        if round(mine.utilization, 4) != round(theirs.utilization, 4):
+            return False
+        if abs(mine.resets_at - theirs.resets_at) > skew:
+            return False
+    return True
+
+
+def identical_reading_pairs(
+    accounts: Iterable[Account],
+) -> dict[str, tuple[IdenticalReadings | None, str | None]]:
+    """Every account's next identical-readings count and possible duplicate.
+
+    THE FALLBACK FOR A MISSING ORGANISATION (#2222, `IDENTICAL_RESET_SKEW`).
+    Two accounts of one provider are compared only when they do not BOTH
+    carry a recorded organisation: two recorded organisations either prove a
+    pair (`duplicates`) or prove two subscriptions, and a recorded
+    organisation that differs always wins over figures that coincide.
+
+    A count goes up only when BOTH sides carry a reading newer than the ones
+    it was last counted on, so a pass that sees the same readings again, or a
+    new reading of one side only, is not another poll. Readings that differ
+    anywhere end the count and clear the flag. Of several matching accounts
+    the one already being counted is kept, else the oldest registration.
+
+    Returns `(count, possible_duplicate_of)` for EVERY account, None/None for
+    one in no match, so a caller can clear what no longer holds.
+    """
+    accounts = sorted(accounts, key=_registration_order)
+    out: dict[str, tuple[IdenticalReadings | None, str | None]] = {}
+    for a in accounts:
+        partners = [
+            b
+            for b in accounts
+            if b.account_id != a.account_id
+            and b.provider == a.provider
+            and not (a.organisation_id and b.organisation_id)
+            and readings_identical(a, b)
+        ]
+        if not partners:
+            out[a.account_id] = (None, None)
+            continue
+        prev = a.identical_readings
+        b = next(
+            (p for p in partners if prev is not None and p.account_id == prev.with_account),
+            partners[0],
+        )
+        assert a.observed_at is not None and b.observed_at is not None
+        if prev is None or prev.with_account != b.account_id:
+            count = IdenticalReadings(b.account_id, 1, a.observed_at, b.observed_at)
+        elif a.observed_at > prev.observed_at and b.observed_at > prev.other_observed_at:
+            count = IdenticalReadings(b.account_id, prev.polls + 1, a.observed_at, b.observed_at)
+        else:
+            count = prev
+        out[a.account_id] = (
+            count,
+            b.account_id if count.polls >= IDENTICAL_READINGS_POLLS else None,
+        )
+    return out
+
+
 def choose(
     accounts: Iterable[Account],
     tenant_id: str,
@@ -1609,6 +1756,9 @@ __all__ = [
     "SWAP_UNUSABLE",
     "HOLD_LOG_COLLECTION",
     "HOLD_LOG_RETENTION",
+    "IDENTICAL_READINGS_POLLS",
+    "IDENTICAL_RESET_SKEW",
+    "IdenticalReadings",
     "account_id_for",
     "accounts_serving",
     "choose",
@@ -1616,6 +1766,8 @@ __all__ = [
     "duplicates",
     "eligibility",
     "holds_from_firestore",
+    "identical_reading_pairs",
+    "readings_identical",
     "holds_to_firestore",
     "hold_log_entry",
     "max_agents_from_firestore",

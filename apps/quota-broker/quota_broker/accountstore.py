@@ -300,6 +300,10 @@ class AccountStore:
                 registered_at=current.registered_at,
                 duplicate_of=current.duplicate_of,
                 duplicate_withheld=current.duplicate_withheld,
+                # The identical-readings count too: a re-registration is not
+                # a new reading, so it neither restarts nor clears it.
+                possible_duplicate_of=current.possible_duplicate_of,
+                identical_readings=current.identical_readings,
                 # PRESERVED, never re-derived. An account registered before the
                 # naming rule changed keeps pointing at the secret that holds
                 # its credential; re-deriving here would orphan it on the next
@@ -587,6 +591,27 @@ class AccountStore:
         if not getattr(ref.get(), "exists", False):
             return False
         ref.update({"duplicate_of": duplicate_of, "duplicate_withheld": bool(withheld)})
+        return True
+
+    def set_identical_readings(
+        self,
+        account_id: str,
+        count: Any,
+        possible_duplicate_of: str | None,
+    ) -> bool:
+        """Write (or clear) this account's identical-readings count and the
+        possible duplicate it implies (#2222). `count` is an
+        `accounts.IdenticalReadings` or None. False when the account is gone.
+        Written by the broker from `accounts.identical_reading_pairs`, never
+        by a caller.
+        """
+        ref = self._db.collection(COLLECTION).document(account_id)
+        if not getattr(ref.get(), "exists", False):
+            return False
+        ref.update({
+            "identical_readings": count.to_firestore() if count is not None else None,
+            "possible_duplicate_of": possible_duplicate_of,
+        })
         return True
 
     def secret_for(self, account: Account) -> str:

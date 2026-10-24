@@ -74,6 +74,7 @@ from .accounts import (
     choose,
     due_for_refresh,
     duplicates,
+    identical_reading_pairs,
     eligibility,
     holds_from_firestore,
     holds_to_firestore,
@@ -611,8 +612,39 @@ def credential_from_token_response(payload: dict[str, Any]) -> Credential:
     )
 
 
-def account_to_api(account: Any, *, now: datetime | None = None) -> dict[str, Any]:
+#: What a reader is told of the other side of a pair it does not own (#2222;
+#: BGD, 2026-10-24 17:26Z, "Name it only within the same tenant"): that there
+#: is one, and nothing about it -- no label, owner, account id or organisation.
+#: A tenant learns nothing about another tenant's pool.
+ANOTHER_WORKSPACE = "this subscription is already registered in another workspace"
+
+
+def _names(other: str | None, viewer: str, platform_wide: bool) -> bool:
+    """Whether a reader in `viewer` may be told the account id `other`.
+
+    An account id is `<owner_tenant>:<label>` (`accounts.account_id_for`), so
+    its owner is read off it -- the rule `list_accounts` already applies to
+    unreadable document ids. Only the platform-wide listing names every side.
+    """
+    if other is None:
+        return False
+    return platform_wide or other.split(":", 1)[0] == viewer
+
+
+def account_to_api(
+    account: Any,
+    *,
+    now: datetime | None = None,
+    viewer: str | None = None,
+    platform_wide: bool = False,
+) -> dict[str, Any]:
     """One account, shaped for a human to read.
+
+    `viewer` is the tenant reading it, which decides what the account's
+    duplicate marks may NAME (#2222): the other side of a pair is named only
+    to the tenant that owns it. None means the account's own owner, which is
+    who every owner-gated route answers. `platform_wide` is the platform's
+    unscoped listing, the one reader shown both sides of every pair.
 
     THE COLUMNS ARE `cs status`'s, deliberately. An operator who already reads
     that output on their laptop should not have to learn a second vocabulary
@@ -698,9 +730,46 @@ def account_to_api(account: Any, *, now: datetime | None = None) -> dict[str, An
         })
     # A LATER REGISTRATION OF AN ORGANISATION ANOTHER ACCOUNT HOLDS (#2222):
     # one subscription, handed out once, through the older registration.
-    duplicate_of = getattr(account, "duplicate_of", None)
+    # NAMED ONLY TO ITS OWN TENANT (BGD, Q2): another workspace's account
+    # reads as "already registered in another workspace", and nothing else.
+    reader = viewer if viewer is not None else account.owner_tenant
+    proven = getattr(account, "duplicate_of", None)
+    duplicate_of = proven if _names(proven, reader, platform_wide) else None
+    duplicate_reason = None
+    if proven is not None:
+        duplicate_reason = (
+            f"registered on the same organisation as {duplicate_of}"
+            if duplicate_of is not None
+            else ANOTHER_WORKSPACE
+        )
     if getattr(account, "duplicate_withheld", False) is True:
-        blocked_by.append({"duplicate_of": duplicate_of})
+        blocked_by.append({"duplicate_of": duplicate_of, "reason": duplicate_reason})
+    # IDENTICAL READINGS ON TWO POLLS (#2222, BGD Q1): an inferred pair,
+    # shown here and in `blocked_by` the way a proven one is, but ADVISORY --
+    # `choose()` still hands it out, so it does not make `can_take_new_agent`
+    # false. Readings can coincide; withholding on an inference would take a
+    # real subscription out of the pool with nothing to end it.
+    possible = getattr(account, "possible_duplicate_of", None)
+    possible_duplicate = None
+    if possible is not None:
+        named = possible if _names(possible, reader, platform_wide) else None
+        possible_duplicate = {
+            "of": named,
+            "reason": (
+                "identical readings on two polls"
+                if named is not None
+                else "identical readings on two polls with an account in another workspace"
+            ),
+        }
+        blocked_by.append({
+            "possible_duplicate": named,
+            "advisory": True,
+            "reason": (
+                f"identical readings on two polls with {named}"
+                if named is not None
+                else possible_duplicate["reason"]
+            ),
+        })
     next_reset = getattr(account, "next_reset", None)
     next_eligible = next_reset(now) if callable(next_reset) else None
     return {
@@ -724,14 +793,24 @@ def account_to_api(account: Any, *, now: datetime | None = None) -> dict[str, An
         "organisation": _organisation_to_api(account),
         #: The other account registered on the same organisation, or null.
         #: Both of a pair carry it; the newer one is also in `blocked_by`.
+        #: NULL ALSO WHEN THE OTHER SIDE IS ANOTHER TENANT'S, unless this is
+        #: the platform-wide listing: `duplicate_reason` then says so in words.
         "duplicate_of": duplicate_of,
+        #: Why this account is one of a pair, in words, or null for none.
+        "duplicate_reason": duplicate_reason,
+        #: `{of, reason}` when this account read identically to another on
+        #: two consecutive polls and no pair of organisations tells them
+        #: apart, else null. `of` is null for another tenant's account.
+        "possible_duplicate": possible_duplicate,
         "assigned": account.assigned,
         #: How many agents may hold it at once (#2222).
         "max_agents": max_agents,
         #: Whether `choose()` would hand it a new agent now, for a tenant it
         #: serves that has not reported it unreadable: AVAILABLE, no window
         #: under its floor, and a free slot.
-        "can_take_new_agent": account.state in ASSIGNABLE_STATES and not blocked_by,
+        #: An `advisory` entry (a possible duplicate) is shown, never refusing.
+        "can_take_new_agent": account.state in ASSIGNABLE_STATES
+        and not [b for b in blocked_by if not b.get("advisory")],
         #: What refuses it: each window under its floor (`used`, the `floor`
         #: it is held to, when it `resets_at`), or `{cap, max_agents}` when
         #: every slot is taken. Empty when nothing does.
@@ -813,7 +892,7 @@ def organisation_line(account_id: str, organisation: Organisation | None) -> str
 
 
 def refuse_duplicate_organisation(
-    accounts: Any, organisation: Organisation | None, account_id: str
+    accounts: Any, organisation: Organisation | None, account_id: str, owner_tenant: str
 ) -> None:
     """Refuse an add whose organisation another account already runs on (#2222).
 
@@ -822,22 +901,35 @@ def refuse_duplicate_organisation(
     agents the cap allows. The account being REPLACED is not "another": a
     re-sign-in of the same organisation onto the same account is the normal
     way to replace a credential. Raised before any secret is written.
+
+    THE EXISTING ACCOUNT IS NAMED ONLY WITHIN `owner_tenant` (BGD, 2026-10-24
+    17:26Z, "Name it only within the same tenant"). Another tenant's is
+    "already registered in another workspace": no label, owner, account id or
+    organisation, so an add cannot be used to probe another tenant's pool.
     """
     if organisation is None:
         return
     for other in accounts:
         if other.account_id == account_id:
             continue
-        if other.organisation_id == organisation.identity:
+        if other.organisation_id != organisation.identity:
+            continue
+        if other.owner_tenant != owner_tenant:
             raise BrokerValidationError(
-                f"this sign-in authorised organisation "
-                f"{organisation.name or '(unnamed)'} "
-                f"({organisation.plan or 'plan not reported'}), which is "
-                f"already registered as {other.label}. One organisation is one "
-                "subscription, so it was not registered twice. If you meant "
-                "another organisation, select it on claude.ai and sign in "
-                "again. Nothing was registered."
+                f"{ANOTHER_WORKSPACE}. One organisation is one subscription, so "
+                "it was not registered twice. If you meant another "
+                "organisation, select it on claude.ai and sign in again. "
+                "Nothing was registered."
             )
+        raise BrokerValidationError(
+            f"this sign-in authorised organisation "
+            f"{organisation.name or '(unnamed)'} "
+            f"({organisation.plan or 'plan not reported'}), which is "
+            f"already registered as {other.label}. One organisation is one "
+            "subscription, so it was not registered twice. If you meant "
+            "another organisation, select it on claude.ai and sign in "
+            "again. Nothing was registered."
+        )
 
 
 def mark_duplicates(store: Any) -> list[str]:
@@ -885,6 +977,45 @@ def mark_duplicates(store: Any) -> list[str]:
                        "withheld": withheld},
             )
     return marked
+
+
+def mark_possible_duplicates(store: Any) -> list[str]:
+    """Write each account's identical-readings count and `possible_duplicate_of`
+    (`accounts.identical_reading_pairs`, #2222), clearing what no longer
+    holds. Returns the ids flagged. Run after every usage poll.
+
+    Never raises, like `mark_duplicates`: a failed listing or write leaves the
+    marks as they were for the next pass. Logs account ids only.
+    """
+    try:
+        accounts = store.list()
+    except Exception as exc:
+        log.error("could not list accounts to compare their readings",
+                  extra={"error": type(exc).__name__})
+        return []
+    found = identical_reading_pairs(accounts)
+    flagged: list[str] = []
+    for account in accounts:
+        count, possible = found.get(account.account_id, (None, None))
+        before = getattr(account, "possible_duplicate_of", None)
+        if (getattr(account, "identical_readings", None), before) != (count, possible):
+            try:
+                store.set_identical_readings(account.account_id, count, possible)
+            except Exception as exc:
+                log.error(
+                    "could not record an account's identical-readings count",
+                    extra={"account_id": account.account_id, "error": type(exc).__name__},
+                )
+                continue
+            if possible is not None and before is None:
+                log.warning(
+                    "two pool accounts read identically on consecutive polls; "
+                    "flagged as a possible duplicate, still handed out",
+                    extra={"account_id": account.account_id, "possible_duplicate_of": possible},
+                )
+        if possible is not None:
+            flagged.append(account.account_id)
+    return flagged
 
 
 #: One DocumentSnapshot out of a Firestore transactional get -- see
@@ -2772,6 +2903,10 @@ def create_app(
         caller_tenant, is_platform = request.app.state.identity.resolve(authorization)
         store = _accounts(request)
         scope = tenant_id if is_platform else caller_tenant
+        # Only the platform's UNSCOPED listing names both sides of a pair
+        # that spans tenants (#2222); swarm-api always sends the tenant it
+        # resolved, so a person never reads this unscoped.
+        platform_wide = bool(is_platform and not scope)
         # `list_reporting` rather than `list`/`for_tenant`, because a listing is
         # READ BY A PERSON and a document the store could not parse is part of
         # the answer: without it the page shows four accounts where there are
@@ -2785,7 +2920,12 @@ def create_app(
         else:
             accounts = listing.accounts
         return {
-            "accounts": [account_to_api(a) for a in accounts],
+            "accounts": [
+                # `scope or ""`: a reader with no tenant is named nothing,
+                # never given the owner's view by default.
+                account_to_api(a, viewer=scope or "", platform_wide=platform_wide)
+                for a in accounts
+            ],
             "tenant_id": scope,
             #: WHICH documents could not be read, narrowed to the ones this
             #: caller is entitled to see. A document id is
@@ -2948,7 +3088,7 @@ def create_app(
         # ONE ORGANISATION, ONE ACCOUNT (#2222), refused before any secret is
         # written, so a refusal leaves nothing behind.
         refuse_duplicate_organisation(
-            store.list(), organisation, f"{owner_tenant}:{label}"
+            store.list(), organisation, f"{owner_tenant}:{label}", owner_tenant
         )
         labels = {
             "managed-by": "swarm-secrets",
@@ -3810,7 +3950,7 @@ def create_app(
             # path rather than through this response body, and this service
             # keeps the property that no route of its returns key material.
             "secret": store.secret_for(chosen),
-            "account": account_to_api(current, now=now),
+            "account": account_to_api(current, now=now, viewer=tenant_id),
             "reason": "",
             "next_reset_at": None,
         }
@@ -4095,7 +4235,7 @@ def create_app(
                 "account_id": chosen.account_id,
                 "assignment_id": assignment_id,
                 "secret": store.secret_for(chosen),
-                "account": account_to_api(current, now=now),
+                "account": account_to_api(current, now=now, viewer=tenant_id),
                 "reason": "",
                 "next_reset_at": None,
             }
@@ -4479,6 +4619,10 @@ def create_app(
                 lambda: poller.poll_round(store.list(), keep_going=fence),
                 "account usage poll failed",
             )
+        # IDENTICAL READINGS ON TWO POLLS (#2222): compared after the poll, so
+        # this round's readings are the ones counted. Every pass, poller or
+        # not, because a worker's reported reading is a reading too.
+        result["possible_duplicates"] = mark_possible_duplicates(store)
 
     return app
 
