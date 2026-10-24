@@ -1800,7 +1800,16 @@ carry them: `WorkflowStep` is frozen, so typing them there is contract request
   a gate on a non-integrator whose verdict the PR also carries, which is not
   built for a caller's own steps. The one exception is the re-review
   `"on_merge_verdict"` appends (below), gated on the same review as the
-  integrator.
+  integrator. An issue run's compiled workflow states that same re-review
+  itself after its fix (`issueruns._with_rereview`, #2217), under
+  `metadata.merge` `"off"` because its CI loop merges, and swarm-api accepts
+  it only when it is exactly the step `rereview_step_for` derives
+  (`SubmissionService._stated_rereview`); any other gated non-integrator is
+  still refused. Its `auto_merge` reads the re-review's verdict, the latest
+  (`issueci._review_task_id`), falling back to the review's for a workflow
+  compiled before it. Without it, wf_3cc4026eb34a43a885a4 (PR #2147) failed
+  "the review's verdict is NOT_YET, not MERGE" after its fix had resolved
+  the review's one finding.
 * **It does not check the verdict where it is written.** A malformed verdict
   is found by the gated step, after the review has SUCCEEDED, not by the
   review's own end-of-attempt check, which would retry it.
@@ -2216,6 +2225,14 @@ on a review, swarm-api appends two steps before signing
   the same step either way. Before this the re-review ran on MERGE too, one
   review agent per merged workflow, because a shut gate wrote no artifact
   and the merge refused `verdict_unreadable`.
+* **An issue run carries the same re-review** (#2217). Its compiled
+  implement -> review -> fix gains this `re-review` step, though its
+  `metadata.merge` is `"off"`: the run's merge is the CI loop's
+  continuation, submitted once CI is green, and it reads the re-review's
+  `verdict.json` -- on MERGE the first review's, passed on; after a fix the
+  re-review's own. Before it, the loop read the first review's verdict, so
+  every run whose fix resolved a NOT_YET review failed its merge on that
+  stale NOT_YET. A re-review that still says NOT_YET still fails the merge.
 * **Nothing the caller did not choose.** The re-review runs the profile and
   input the caller already chose for its review; no image, command, backend
   or resource spec is accepted from anyone (invariant 10).

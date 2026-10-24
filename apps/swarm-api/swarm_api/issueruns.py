@@ -107,15 +107,21 @@ the rule is read without it, so it still compiles and keeps its digest.
 WHAT IS COMPILED, AND THE FIX-ROUND CAP. The plan's steps become a chain of
 implementer steps, each building on the previous one's branch, followed by
 the review shape #264 built: a review that writes `verdict.json`, and a fix
-gated on `NOT_YET` that is the workflow's one publisher (`integrate`). The
-run's `fix_rounds` (1-5, default 3) is the cap on review-then-fix rounds and
-travels in the workflow's metadata; ONE round is what the platform can
-compile today, because under `integrate` only the integrator may be gated
-(and the re-review "on_merge_verdict" appends), and a second review needs a
-gated step that is not the publisher
-(docs/workflows.md, "What this does not do"). The same cap also bounds the
-CI loop's fix rounds after the pull request opens (`issueci`): one
-continuation per red reading, at most `fix_rounds` of them.
+gated on `NOT_YET` that is the workflow's one publisher (`integrate`), then
+the ONE re-review of the fix's pushed head that `metadata.merge`
+"on_merge_verdict" appends (`validation.rereview_step_for`, #2217): gated
+like the fix, so its agent runs only after a fix, and on MERGE the worker
+re-publishes the review's verdict as its own. Its `verdict.json` is the
+latest verdict, the one `auto_merge` merges on (`issueci._review_verdict`);
+without it a fix that resolved every finding still failed the merge on the
+first review's NOT_YET. The run's `fix_rounds` (1-5, default 3) is the cap
+on review-then-fix rounds and travels in the workflow's metadata; ONE fix
+round is what the platform compiles, because under `integrate` only the
+integrator and that one re-review may be gated, and a second fix needs a
+gated step that is neither (docs/workflows.md, "What this does not do"). A
+re-review that still says NOT_YET leaves the pull request to a person. The
+same cap also bounds the CI loop's fix rounds after the pull request opens
+(`issueci`): one continuation per red reading, at most `fix_rounds` of them.
 
 THE REVIEW ANSWERS EACH REQUIREMENT. Its prompt numbers the plan's
 `requirements` and asks for `requirements: [{index, met, note}]` in
@@ -211,7 +217,10 @@ from .validation import (
     MERGE_METADATA_KEY,
     MERGE_ON_VERDICT,
     MERGE_STEP_ID,
+    REREVIEW_STEP_ID,
     IssueRef,
+    StepSpec,
+    rereview_step_for,
 )
 
 log = logging.getLogger(__name__)
@@ -267,6 +276,10 @@ PATCH_FILE = "swarm-work.patch"
 VERDICT_FILE = "verdict.json"
 REVIEW_STEP = "review"
 FIX_STEP = "fix"
+#: The re-review of the fix's pushed head (#2217): `metadata.merge`
+#: "on_merge_verdict"'s own step, by its own id, so `issueci` reads the
+#: latest verdict from it and submission recognises it.
+REREVIEW_STEP = REREVIEW_STEP_ID
 IMPLEMENT_PREFIX = "impl-"
 
 #: How the compiled review is told to write a finding. Objects, each saying
@@ -286,7 +299,9 @@ FINDINGS_LOCATION_NOTE = (
     "line is still a blocker. "
 )
 
-#: The review rounds `compile_plan` emits, whatever the cap (module docstring).
+#: The review-then-fix rounds `compile_plan` emits, whatever the cap (module
+#: docstring): one review, one gated fix. The re-review after the fix judges
+#: that one round and starts no second fix, so it does not count (#2217).
 COMPILED_REVIEW_ROUNDS = 1
 
 #: The most of the review's `verdict.json` read for its requirements: the
@@ -533,10 +548,10 @@ class PlanStep(_PlanModel):
     @field_validator("step_id")
     @classmethod
     def _not_reserved(cls, value: str) -> str:
-        if value in (REVIEW_STEP, FIX_STEP):
+        if value in (REVIEW_STEP, FIX_STEP, REREVIEW_STEP):
             raise ValueError(
-                f"step_id {value!r} is reserved: the compiled workflow's {REVIEW_STEP!r} "
-                f"and {FIX_STEP!r} steps are added after the plan's own"
+                f"step_id {value!r} is reserved: the compiled workflow's {REVIEW_STEP!r}, "
+                f"{FIX_STEP!r} and {REREVIEW_STEP!r} steps are added after the plan's own"
             )
         return value
 
@@ -1756,7 +1771,7 @@ def planner_prompt(
         'do it as one step, "workflow" when it needs several. Each step names the files '
         "it touches and the tests it adds, and the tests are written before the change. "
         f"Between 1 and {MAX_PLAN_STEPS} steps. step_id is lowercase letters, digits and "
-        f"dashes, and may not be {REVIEW_STEP!r} or {FIX_STEP!r}.\n\n"
+        f"dashes, and may not be {REVIEW_STEP!r}, {FIX_STEP!r} or {REREVIEW_STEP!r}.\n\n"
         'Every overlap\'s "action" is mandatory: "none" when this plan does nothing about '
         'it, "required" when this plan or a person must act; its "note" says what '
         "overlaps and, when action is required, what must be done and by whom. A plan "
@@ -2172,7 +2187,7 @@ def verification_text(readings: list[tuple[str, str | None, str | None]]) -> str
 
 
 def compile_plan(run: "IssueRun", review_context: str | None = None) -> WorkflowCreate:
-    """The approved plan as a workflow: implementers, review, gated fix.
+    """The approved plan as a workflow: implementers, review, gated fix, re-review.
 
     A plan whose steps state no `depends_on` compiles to a chain; one that
     states them compiles to stages (`_compile_staged`). A `mode: single` plan
@@ -2261,7 +2276,41 @@ def compile_plan(run: "IssueRun", review_context: str | None = None) -> Workflow
             ),
         },
     })
-    return _workflow(run, steps)
+    return _workflow(run, _with_rereview(steps))
+
+
+def _with_rereview(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`steps`, then the re-review of the fix's pushed head (#2217).
+
+    Exactly the step `metadata.merge` "on_merge_verdict" appends
+    (`validation.rereview_step_for`): the review's profile and prompt behind
+    `REREVIEW_PREAMBLE`, building on the fix, staging the review's verdict by
+    parent, gated like the fix on the review's NOT_YET. After a fix its agent
+    judges the fixed head; on MERGE no fix ran and its agent does not run, and
+    the worker re-publishes the review's verdict as its own. Either way its
+    `verdict.json` is the latest verdict, the one `issueci` merges on.
+    Without it, a run whose fix resolved the review's findings failed its
+    `auto_merge` on the first review's NOT_YET (wf_3cc4026eb34a43a885a4).
+    """
+    dag = [
+        StepSpec(
+            step_id=s["step_id"],
+            depends_on=tuple(s.get("depends_on") or ()),
+            input_from=dict(s.get("input_from") or {}),
+            when_step=s["when"]["step"] if s.get("when") else None,
+            when_verdicts=tuple(s["when"]["verdict_in"]) if s.get("when") else (),
+            builds_on=s.get("builds_on"),
+            runner_profile=s.get("runner_profile"),
+        )
+        for s in steps
+    ]
+    review = next(s for s in steps if s["step_id"] == REVIEW_STEP)
+    rereview = rereview_step_for(dag, review, "integrate")
+    if rereview is None or rereview["step_id"] != REREVIEW_STEP:
+        # The fix is the integrator gated on the review, and the plan's ids
+        # are reserved away from the re-review's: unreachable.
+        raise InvalidPlan("the compiled review and fix admit no re-review")
+    return [*steps, rereview]
 
 
 def _step_class(step: Mapping[str, Any]) -> dict[str, Any]:
@@ -2322,7 +2371,8 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
 
     The review depends on EVERY implementer, so it starts only once all of
     them have ended, and sees each one's diff. It builds on the last step in
-    plan order, as the chain's does; the fix is the chain's, unchanged.
+    plan order, as the chain's does; the fix and the re-review are the
+    chain's, unchanged.
     """
     ref = run.issue
     order = [step["step_id"] for step in plan["steps"]]
@@ -2416,7 +2466,7 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
             ),
         },
     })
-    return steps
+    return _with_rereview(steps)
 
 
 #: The most characters a compiled workflow's `title` keeps. A list row and a

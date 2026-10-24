@@ -58,6 +58,17 @@ DECLARATION = '[postgres]\nversion = 16\ndatabases = ["app_test", "other_test"]\
 SERVICE_VARS = ("PGHOST", "PGPORT", "PGUSER", "PGDATABASE", "DATABASE_URL",
                 "SWARM_TEST_SERVICES")
 
+
+@pytest.fixture(autouse=True)
+def _cache_volume(tmp_path, monkeypatch):
+    """The GKE worker: its cache on a volume of its own. Without one
+    `testservices.start` refuses before `initdb` (NO_CACHE_VOLUME), so the
+    rows below that need the gate to start a service would never reach it."""
+    root = tmp_path / "cache-volume"
+    root.mkdir()
+    monkeypatch.setenv(testservices.CACHE_ROOT_ENV, str(root))
+    return root
+
 #: `uv run pytest ... --junitxml=<path>`: logs the §5.1 variables it saw and
 #: writes $FAKE_JUNIT_UP's report when DATABASE_URL reached it, else
 #: $FAKE_JUNIT's; exits 1 unless $FAKE_EXIT says otherwise.

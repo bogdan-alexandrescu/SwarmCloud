@@ -29,6 +29,7 @@ import pytest
 
 from swarm_api import issueci, issuecomments, issueruns
 from swarm_api.issueruns import compile_plan, requirements_finding
+from swarm_api.validation import REREVIEW_STEP_ID
 
 from .test_issue_run_ci import (  # noqa: F401  (fixtures, imported to be used)
     PR,
@@ -155,9 +156,24 @@ def test_a_plan_with_no_requirements_never_closes():
 # 2 and 3, through the run: the PR body
 # --------------------------------------------------------------------------
 
-def _review_writes(db, objects, workflow_id: str, content: str | None) -> None:
-    """The review task's verdict.json, exactly as a worker uploads it."""
-    review = _step_task(db, workflow_id, issueruns.REVIEW_STEP)
+#: `_review_writes`'s default for the re-review: the verdict the review wrote.
+SAME = object()
+
+
+def _review_writes(db, objects, workflow_id: str, content: str | None,
+                   *, rereview: object = SAME) -> None:
+    """The review task's verdict.json, exactly as a worker uploads it, and the
+    re-review's (#2217) when the workflow has one: by default the same file,
+    as its shut gate re-publishes it on MERGE; `rereview` writes another."""
+    steps = {s["step_id"] for s in db.docs[f"workflows/{workflow_id}"]["steps"]}
+    if REREVIEW_STEP_ID in steps:
+        _step_writes(db, objects, workflow_id, REREVIEW_STEP_ID,
+                     content if rereview is SAME else rereview)
+    _step_writes(db, objects, workflow_id, issueruns.REVIEW_STEP, content)
+
+
+def _step_writes(db, objects, workflow_id: str, step_id: str, content: str | None) -> None:
+    review = _step_task(db, workflow_id, step_id)
     if content is None:
         review["result_summary"] = {"artifacts": []}
         return
@@ -364,16 +380,26 @@ STAGED_FULL_PLAN = {
 def test_a_staged_plan_compiles_to_one_review_after_every_step_and_one_integrator():
     # `issueci` finds the review and the integrator by step id in the
     # compiled workflow; stages (#540) must keep exactly one of each, with the
-    # review waiting for every implementer and the fix gated on it.
+    # review waiting for every implementer and the fix gated on it -- and
+    # one re-review after the fix (#2217), the step whose verdict is read.
     workflow = compile_plan(_bare_run(
         plan=STAGED_FULL_PLAN, plan_digest=issueruns.plan_digest(STAGED_FULL_PLAN),
     ))
     by_id = {step.step_id: step for step in workflow.steps}
     assert [s.step_id for s in workflow.steps].count(issueruns.REVIEW_STEP) == 1
     assert [s.step_id for s in workflow.steps].count(issueruns.FIX_STEP) == 1
+    assert [s.step_id for s in workflow.steps].count(REREVIEW_STEP_ID) == 1
     impl = ["impl-sort-key", "impl-ui", "impl-wire"]
+    assert [s.step_id for s in workflow.steps] == [
+        *impl, issueruns.REVIEW_STEP, issueruns.FIX_STEP, REREVIEW_STEP_ID,
+    ]
     assert sorted(by_id[issueruns.REVIEW_STEP].depends_on) == sorted(impl)
     assert by_id[issueruns.FIX_STEP].depends_on == [issueruns.REVIEW_STEP]
+    # After the fix, and on everything it stages: the review's verdict and
+    # the review's own diffs (`rereview_step_for`).
+    assert by_id[REREVIEW_STEP_ID].depends_on == [
+        issueruns.FIX_STEP, *impl, issueruns.REVIEW_STEP,
+    ]
     assert issueruns.plan_stages(issueruns.parse_plan(STAGED_FULL_PLAN)) == [
         ["sort-key", "ui"], ["wire"],
     ]
