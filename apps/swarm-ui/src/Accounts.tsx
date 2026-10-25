@@ -361,12 +361,25 @@ function Body({
   const waiting = usePoolWaiting(board.readAt)
   const scope = board.page.tenant_id
   const pool = accounts as PoolAccount[]
+  // ON A PHONE THE OPENED ACCOUNT IS THE SCREEN (#2222, mock-up A P3): the
+  // list steps aside (capacity.css `.is-detail`), and so does the page's lead
+  // -- the verdict, the floors and the banners -- which sat above the sheet and
+  // pushed `‹ Accounts` a screen down. The account's own verdict and duplicate
+  // advice are in the sheet; Back brings the lead back. A desktop keeps it,
+  // because there the table is still the page beside the sheet.
+  const phone = usePhoneTables()
+  const opened = view.chosen !== null && accounts.some((a) => a.account_id === view.chosen)
+  const lead = !(phone && opened)
   return (
     <>
-      <Verdict accounts={pool} scope={scope} shortfall={shortfall(board)} now={Date.now()} waiting={waiting} />
-      {accounts.length > 0 && <RuleLine accounts={pool} />}
-      <DuplicateBanner accounts={pool} scope={scope} onOpen={choose} />
-      <Broken accounts={accounts} scope={board.page.tenant_id} onOpen={choose} />
+      {lead && (
+        <>
+          <Verdict accounts={pool} scope={scope} shortfall={shortfall(board)} now={Date.now()} waiting={waiting} />
+          {accounts.length > 0 && <RuleLine accounts={pool} />}
+          <DuplicateBanner accounts={pool} scope={scope} onOpen={choose} />
+          <Broken accounts={accounts} scope={board.page.tenant_id} onOpen={choose} />
+        </>
+      )}
       {/* A LINK TO AN ACCOUNT THIS READ DOES NOT HAVE IS SAID (live QA
           CAP-12): `?account=eng:nope` used to show another account under that
           address with nothing to say the link missed. Above the split, so a
@@ -388,7 +401,7 @@ function Body({
         choose={choose}
         addForm={<AddAccount board={board} accounts={accounts} ui={ui} patch={patch} reload={reload} />}
       />
-      <HelpLinks topics={ACCOUNT_TOPICS} />
+      {lead && <HelpLinks topics={ACCOUNT_TOPICS} />}
     </>
   )
 }
