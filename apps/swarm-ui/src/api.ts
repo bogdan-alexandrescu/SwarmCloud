@@ -7513,12 +7513,8 @@ export async function deleteRepository(repoId: string): Promise<Result<unknown>>
     fixtureRemoved.add(repoId)
     return { status: 'ok', fetchedAt: Date.now(), data: null }
   }
-  const r = await write(target, 'DELETE')
-  // THE API ANSWERS 204 WITH NO BODY AND NO CONTENT-TYPE, and `write` reads
-  // any success that is not JSON as an expired sign-in's page ("Your change
-  // was NOT saved"). A 204 is the removal itself, so it is the success it is.
-  if (r.status === 'error' && r.error.httpStatus === 204) return { status: 'ok', fetchedAt: Date.now(), data: null }
-  return r
+  // The API answers 204 with no body; `write` reads that as the success it is.
+  return write(target, 'DELETE')
 }
 
 /** One registration's counts: its repository secrets for agents and its QA targets. Never a name. */
@@ -7578,8 +7574,8 @@ export async function verifyGitToken(tokenId: string): Promise<Result<unknown>> 
 
 // ---------------------------------------------------------------------------
 // Provider keys a person or an admin sets: TypeSafe (KEYS-API, PR #1284;
-// docs/provider-keys.md). Settings › API keys (ProviderKeys.tsx) is the only
-// caller. THE KEY IS AN ARGUMENT OF `putProviderKey` AND NOTHING ELSE: it goes
+// docs/provider-keys.md). Config › Secrets' TypeSafe key form (Secrets.tsx)
+// is the only caller. THE KEY IS AN ARGUMENT OF `putProviderKey` AND NOTHING ELSE: it goes
 // into that one request's body and is not kept, logged or returned here, and
 // no response carries it back. The status is copied field by field
 // (`normKeyStatus`), so anything a response carried by mistake is never drawn.
