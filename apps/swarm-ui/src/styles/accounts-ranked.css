@@ -391,3 +391,78 @@
 .acct-sheet .acct-action > p.muted.small { margin-top: 0; }
 .acct-sheet .acct-detail > .acct-action.danger { border-top-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
 .acct-sheet .acct-detail > .acct-facts { font-size: var(--t-micro); line-height: var(--lh-micro); }
+
+/* ---------------------------------------------------------------------------
+   HEALTH, IN THE SHEET (#2302, ACCOUNT-HEALTH-SHEET; mock-up A's F2 and F4, D's
+   P2 at 390). The three families carry a shape as well as a colour (circle,
+   diamond, square), so the series reads in greyscale; the colours are the
+   series palette's first, fourth and second, fixed to the family and never to
+   rank. They are strokes and fills only, never text (styles.css §series).
+   --------------------------------------------------------------------------- */
+.acct-hs-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.acct-hs-head > h4 { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+.acct-hs-head > .acct-hs-refresh { margin-left: auto; }
+.acct-hs-st { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border: 1px solid transparent; border-radius: 99px; font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; white-space: nowrap; }
+.acct-hs-st.is-healthy { color: var(--ok-ink); background: color-mix(in srgb, var(--ok) 18%, transparent); }
+.acct-hs-st.is-limited { color: var(--warn-ink); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.acct-hs-st.is-erroring { color: var(--bad-ink); background: color-mix(in srgb, var(--bad) 18%, transparent); }
+.acct-hs-st.is-reauth_needed { color: var(--bad-ink); border-color: var(--bad-ink); }
+.acct-hs-st.is-unknown { color: var(--text-dim); border: 1px dashed var(--line); }
+.acct-hs-fm { width: 10px; height: 10px; flex: none; display: inline-block; vertical-align: -1px; margin-right: 6px; }
+.acct-hs-fm.is-err { fill: var(--series-1); }
+.acct-hs-fm.is-lim { fill: var(--series-4); }
+.acct-hs-fm.is-cred { fill: var(--series-2); }
+.acct-hs-callout { border: 1px solid var(--bad-ink); border-radius: 10px; padding: 10px 12px; background: color-mix(in srgb, var(--bad) 8%, var(--surface)); font-size: var(--t-meta); line-height: var(--lh-meta); }
+.acct-hs-callout > p { margin: 4px 0 0; }
+.acct-hs-zero { color: var(--ok-ink); font-weight: 600; }
+.acct-hs-sub { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-top: 6px; }
+.acct-hs-sub > h5 { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim); }
+
+.acct-hs-counts { width: 100%; border-collapse: collapse; font-size: var(--t-meta); line-height: var(--lh-meta); font-variant-numeric: tabular-nums; }
+.acct-hs-counts th, .acct-hs-counts td { padding: 4px 8px; border-bottom: 1px solid var(--line); text-align: right; font-weight: 400; }
+.acct-hs-counts thead th { font-size: var(--t-micro); font-weight: 600; color: var(--text-dim); }
+.acct-hs-counts th:first-child { text-align: left; }
+.acct-hs-counts tr.is-fam > * { font-weight: 600; background: var(--surface-2); font-size: var(--t-micro); }
+.acct-hs-counts tr.is-tot > * { font-weight: 650; border-bottom: 0; }
+.acct-hs-counts .is-z { color: var(--text-dim); }
+.acct-hs-counts .is-nz { font-weight: 600; }
+
+.acct-hs-series { margin: 0; min-width: 0; }
+.acct-hs-chart { display: block; width: 100%; height: auto; }
+.acct-hs-chart text { fill: var(--text-dim); font-size: var(--t-micro); }
+.acct-hs-chart .acct-hs-grid { stroke: var(--line); stroke-width: 1; }
+.acct-hs-chart .acct-hs-now { stroke: var(--text-dim); stroke-width: 1; stroke-dasharray: 3 3; }
+.acct-hs-chart .acct-hs-band > rect { fill: color-mix(in srgb, var(--warn) 14%, transparent); }
+.acct-hs-chart .acct-hs-band > line { stroke: var(--warn-ink); stroke-width: 1; }
+.acct-hs-chart .acct-hs-band-mark { fill: var(--warn-ink); }
+.acct-hs-chart .acct-hs-bar > .is-err { fill: var(--series-1); }
+.acct-hs-chart .acct-hs-bar > .is-lim { fill: var(--series-4); }
+.acct-hs-chart .acct-hs-bar > .is-cred { fill: var(--series-2); }
+.acct-hs-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.acct-hs-legend > span { display: inline-flex; align-items: center; }
+.acct-hs-bandkey { display: inline-block; width: 16px; height: 10px; margin-right: 6px; border: 1px solid var(--warn-ink); border-top-width: 3px; border-radius: 2px; background: color-mix(in srgb, var(--warn) 14%, transparent); }
+
+.acct-hs-evs { list-style: none; margin: 0; padding: 0; }
+.acct-hs-ev { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.acct-hs-ev:last-child { border-bottom: 0; }
+.acct-hs-ev-l1 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.acct-hs-ev-t { font-variant-numeric: tabular-nums; font-weight: 600; }
+.acct-hs-kd { display: inline-flex; align-items: center; }
+.acct-hs-msg { padding: 3px 7px; border-radius: 6px; background: var(--surface-2); font-family: var(--mono); font-size: var(--t-micro); line-height: var(--lh-micro); overflow-wrap: anywhere; }
+.acct-hs-ev-l3 { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+
+/* D's P2: the three counts stacked, then the series, then the incidents. */
+.acct-hs-stats { display: flex; flex-direction: column; gap: 8px; }
+.acct-hs-stat { display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 0 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.acct-hs-stat-k { grid-column: 1 / -1; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); font-weight: 600; }
+.acct-hs-stat-v { font-size: var(--t-figure); line-height: var(--lh-figure); font-weight: 650; font-variant-numeric: tabular-nums; }
+.acct-hs-stat > small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.acct-hs-inc { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--line); border-left-width: 3px; border-radius: 10px; }
+.acct-hs-inc.is-err { border-left-color: var(--series-1); }
+.acct-hs-inc.is-lim { border-left-color: var(--series-4); }
+.acct-hs-inc.is-cred { border-left-color: var(--series-2); }
+.acct-hs-inc-h { display: flex; align-items: center; gap: 0 6px; }
+.acct-hs-inc-h > h5 { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+.acct-hs-inc-chip { margin-left: auto; padding: 0 8px; border-radius: 99px; font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim); border: 1px solid var(--line); }
+.acct-hs-inc-chip.is-open { color: var(--bad-ink); border-color: transparent; background: color-mix(in srgb, var(--bad) 18%, transparent); }
+.acct-hs-inc > .c-link { align-self: flex-start; }
