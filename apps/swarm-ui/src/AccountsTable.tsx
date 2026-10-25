@@ -16,7 +16,7 @@
  * name is the same `acct-open` button the list was, so the account's detail
  * and every control on it are where they were.
  */
-import { useState, type ReactNode } from 'react'
+import { Fragment, useState, type ReactNode } from 'react'
 
 import { accountName } from './accountName'
 import { AcctState } from './AccountState'
@@ -293,7 +293,14 @@ function Tags({ a, names }: { a: PoolAccount; names: ReadonlyMap<string, string>
           className="acct-tag is-unk"
           title={`${extra.join(', ')}: ${extra.length === 1 ? 'a window' : 'windows'} this console does not know by name, held to the default floor`}
         >
-          {extra.length === 1 ? '1 window' : `${extra.length} windows`} not known by name: {extra.join(', ')}
+          {extra.length === 1 ? '1 window' : `${extra.length} windows`} not known by name:{' '}
+          {/* The provider's own key, drawn as an id: it is data, not a word we chose. */}
+          {extra.map((w, i) => (
+            <Fragment key={w}>
+              {i > 0 && ', '}
+              <span className="mono">{w}</span>
+            </Fragment>
+          ))}
         </span>
       )}
     </span>
