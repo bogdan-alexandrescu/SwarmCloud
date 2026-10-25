@@ -174,6 +174,10 @@ describe('SSC-ACTIONS-API-2: the list says who may write, and the pane follows i
     expect(screen.queryByRole('button', { name: /^set a secret/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /^set /i })).toBeNull()
     expect(screen.queryByRole('button', { name: /^delete /i })).toBeNull()
+    // The typed-name step is a writer's; a reader is told who reads, not how to write.
+    const envs = screen.getByRole('region', { name: /environments/i })
+    expect(visible(envs)).not.toContain('Writing here asks you to type')
+    expect(visible(envs)).toContain('A workflow on any branch can read it.')
     // The names are still read.
     expect(visible(screen.getByRole('table', { name: /repository secrets/i }))).toContain('TEST_DB_PASSWORD')
   })
