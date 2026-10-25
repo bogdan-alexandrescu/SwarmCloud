@@ -423,6 +423,19 @@ ol.sc-pobj { padding-left: 18px; }
 }
 .sht-none { margin: 0; padding: 10px 12px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
 .sht-skel { position: absolute; top: 50%; left: 10px; transform: translateY(-50%); }
+/* The list under the lanes is schedules.html's History frame (`.used`,
+   SCHED-HISTORY-CSS, BGD 2026-10-25): 12px under the last lane, the words in
+   one column and the cost right-aligned in its own, so the figures line up
+   down the page. It keeps the Audit list's type and rule (`.sc-audit`). A
+   cost never recorded is a dash whose reason is its title; the reason stays
+   in the text for a screen reader, clipped out of the column (24ch holds a
+   floor's "$2.00 · 1 attempt unreported" without crushing the words). */
+.sc-audit.sht-list { margin-top: 12px; }
+.sht-list > li { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 16px; align-items: baseline; }
+.sht-words { min-width: 0; overflow-wrap: anywhere; }
+.sht-list > li > .sht-cost { grid-column: 2; text-align: right; max-width: 24ch; }
+.sht-dash { cursor: help; border-bottom: 1px dotted var(--text-dim); }
+.sht-why { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .sht-retry { margin: 8px 0 0; }
 .sht-pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; margin-top: 10px; font-size: var(--t-meta); color: var(--text-dim); }
 @media (max-width: 640px) {
@@ -430,4 +443,11 @@ ol.sc-pobj { padding-left: 18px; }
      (timeline.css), and the gap's words wrap under a track two lines tall. */
   .sht-firing .tl-trk:has(> .sht-gap) { height: auto; min-height: 28px; }
   .sht-gap { position: static; padding: 4px 8px; }
+  /* At 390 a cost column would squeeze the words to a few per line, so the
+     cost stacks under them, as the Audit list draws it, and a dash shows its
+     reason: a phone has no hover to read a title by. */
+  .sht-list > li { grid-template-columns: minmax(0, 1fr); }
+  .sht-list > li > .sht-cost { grid-column: 1; text-align: left; max-width: none; }
+  .sht-dash { cursor: auto; border-bottom: 0; }
+  .sht-why { position: static; width: auto; height: auto; overflow: visible; clip-path: none; white-space: normal; }
 }
