@@ -1245,10 +1245,10 @@ function GitHubQuotaLines({ quota }: { quota: GitHubQuota[] }) {
 }
 
 /**
- * A lead, on the info tint as S2 draws it: `.ac-lead` in styles/config.css,
- * the one Config lead style, which also gives the lead's secondary buttons a
- * border that clears 3:1 on the tint (CONFIG-LEAD-TINT; measured in
- * contrast.config-lead.test.tsx).
+ * A lead, on the info tint as S2 draws it: `.ac-lead`, the one Config lead
+ * style (the tint in styles/config.css; its buttons' borders, which clear 3:1
+ * on the tint, in styles.css after the button floor). CONFIG-LEAD-TINT;
+ * measured in contrast.config-lead.test.tsx.
  */
 function Lead({ kicker, title, actions, children }: { kicker?: string; title: string; actions: ReactNode; children: ReactNode }) {
   return (

@@ -24,6 +24,11 @@
 //     the numbers printed;
 //   * the probe finds no divider under its floor anywhere in the lead.
 //
+// WHERE THE RULES LIVE. The tint is config.css's `.ac-lead > .c-card`; the
+// buttons' borders are in styles.css after the `:where(.app button)` floor,
+// because jsdom resolves the cascade by source order and every section sheet
+// loads before styles.css (the `.ob-step.is-next` precedent there).
+//
 // Fixtures only; no network.
 
 import STYLES from '../styles.css?raw'
@@ -107,7 +112,15 @@ async function mount(state: (typeof STATES)[number]) {
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
   const { AccessScreen } = await import('../Access')
-  render(<AccessScreen />)
+  // INSIDE `.app`, as the console mounts it: the `:where(.app button)` floor
+  // then matches, and jsdom's source-order cascade lets it out-rank any
+  // section sheet -- the tie the sweep meets, so a border rule moved back
+  // into config.css fails here as it would there.
+  render(
+    <div className="app">
+      <AccessScreen />
+    </div>,
+  )
   return (await screen.findByRole('region', { name: 'Next step' })) as HTMLElement
 }
 
@@ -149,7 +162,7 @@ describe('the Config lead keeps the info tint, and its buttons clear 3:1 on it',
         expect(card, 'the lead draws its card').not.toBeNull()
         expect(rgb(colour(getComputedStyle(card).backgroundColor)!), 'the lead is drawn on the info tint').toBe(rgb(tint!))
 
-        // EVERY BUTTON, MEASURED. MUTATION: drop the lead's border rule (2.89:1 dark, 2.96:1 light).
+        // EVERY BUTTON, MEASURED. MUTATION: drop styles.css's `.ac-lead .c-btn` border rules (2.89:1 dark, 2.96:1 light).
         const buttons = [...lead.querySelectorAll('.c-btn')] as HTMLElement[]
         expect(buttons.map((b) => b.textContent?.trim())).toEqual(state.buttons)
         const measured = buttons.map((b) => {
