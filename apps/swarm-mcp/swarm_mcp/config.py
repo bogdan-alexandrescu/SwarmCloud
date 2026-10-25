@@ -113,7 +113,13 @@ PLUGIN_MAX_LIVE_ROWS = "max_live_rows"
 #: shape of each copy `swarm_workflow_launch` writes and hands the mode to
 #: run.js in the copy's args as `rows`.
 PLUGIN_ROWS = "rows"
-PLUGIN_KEYS = (PLUGIN_URL, PLUGIN_CLIENT_ID, PLUGIN_CLIENT_SECRET, PLUGIN_TARGET, PLUGIN_MAX_LIVE_ROWS, PLUGIN_ROWS)
+#: How this project follows SwarmCloud work (SC-BROWSER-BUILD, #2318): `rows`,
+#: today's /workflows rows as `rows` says, or `pane`, the SwarmCloud pane beside
+#: the chat plus ONE quiet row per workflow. A choice saved with `/sc layout`
+#: (`layout.save`) outranks it, per project; `layout.current` reads both.
+PLUGIN_LAYOUT = "layout"
+PLUGIN_KEYS = (PLUGIN_URL, PLUGIN_CLIENT_ID, PLUGIN_CLIENT_SECRET, PLUGIN_TARGET, PLUGIN_MAX_LIVE_ROWS, PLUGIN_ROWS,
+               PLUGIN_LAYOUT)
 
 #: The two row modes, and the default. SUMMARY by default (owner, 2026-10-21):
 #: one agent per workflow instead of one per step, so a batch of any size is
@@ -122,6 +128,11 @@ PLUGIN_KEYS = (PLUGIN_URL, PLUGIN_CLIENT_ID, PLUGIN_CLIENT_SECRET, PLUGIN_TARGET
 ROWS_SUMMARY = "summary"
 ROWS_PER_STEP = "per-step"
 ROWS_MODES = (ROWS_SUMMARY, ROWS_PER_STEP)
+#: The row mode of the `pane` layout (`layout.row_mode`): ONE sc:finish row per
+#: workflow that notices its finish, holding each follow until the workflow's
+#: stage changes. Not a value of the `rows` setting -- the layout picks it --
+#: but `swarm_workflow_launch`'s `rows` argument takes it for one attach.
+ROWS_PANE = "pane"
 DEFAULT_ROWS = ROWS_SUMMARY
 
 #: The live-row cap when nothing sets one: 100, and the most it can be set to:

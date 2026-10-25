@@ -85,6 +85,7 @@ from .routes import (
     tenants,
     typesafe_ticket,
     workflows,
+    workspace_name,
     workspace_secrets,
     workspaces,
 )
@@ -381,6 +382,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # A workspace's merge settings, direct or merge train (TRAIN-WS,
     # docs/merge-trains.md §3): its owner or a platform admin, audited.
     app.include_router(merge_settings.router)
+    # Rename a workspace: its display name only, never its id (WORKSPACE-ADMIN-
+    # FIELDS, part of #2157): its admins or a platform admin, audited.
+    app.include_router(workspace_name.router)
     # A workspace's code-intelligence setting (CTXQ-SET,
     # docs/design/context-quality.md §4.7): its owner or a platform admin, audited.
     app.include_router(codeintel.router)

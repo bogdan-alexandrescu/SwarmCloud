@@ -8,13 +8,40 @@ caused the 429s, and you want the tenant back at a chosen concurrency now.
 
 **Who:** a platform admin. The route is not open to pool admins or tenants.
 
+## First: was it one account? (#2302)
+
+Since 2026-10-25 a 429 from **one pool account** no longer halves the tenant.
+The worker's report names the account it holds, the broker records the 429 on
+that account's health record, and the tenant's target is left alone — unless
+every account the tenant may draw from (its own and the ones lent to it) is
+limited at once, in which case the pool as a whole is spent and the tenant is
+halved as before. API-key traffic, which holds no account, is halved as
+before. ([quota-management.md §2](../quota-management.md#2-aimd).)
+
+So a target that fell on a subscription pool means one of: every account was
+limited at that moment; the 429 came from the tenant's own API key; or the
+report could not prove it held the account it named. Read the accounts'
+health before raising anything:
+
+```bash
+scripts/api.sh GET /accounts \
+  | jq '.accounts[] | {account_id, health_status, rate_limits_24h: .health_24h.rate_limit}'
+scripts/api.sh GET '/accounts/eng:saga-team/health?scope=platform' \
+  | jq '{status, limited_until, counts: .counts.last_24h, last: .events[:5]}'
+```
+
+If every account reads `limited`, the pool is genuinely spent: a raised target
+admits work that will only park. Lend or add an account, or wait for the
+windows; raise the target once there is somewhere for the work to run.
+
 ## Why the target is low, and why it stays low
 
 The quota broker runs AIMD per (provider, tenant)
 ([quota-management.md §2](../quota-management.md#2-aimd),
 `apps/quota-broker/quota_broker/aimd.py`):
 
-* **one 429 halves** `adaptive_target`, immediately;
+* **one tenant 429 halves** `adaptive_target`, immediately — a 429 with no
+  pool account, or with every account the tenant may use limited (above);
 * the target rises by **1 per 20 consecutive successes**, and any 429 restarts
   the run;
 * the per-tenant pool's effective limit is the minimum of its `hard_limit`,
@@ -100,7 +127,8 @@ make it explicitly or wait for the window to reopen.
 
 ## AIMD will halve it again on the next 429
 
-This is a reset, not a pin. The next 429 halves the new target (40 → 20), a
+This is a reset, not a pin. The next tenant 429 halves the new target
+(40 → 20) — one account's 429 does not, while another account has room — a
 run of `exhaustion_threshold` consecutive 429s makes the tenant `EXHAUSTED`,
 and additive increase resumes from wherever that leaves it. If the tenant
 keeps getting 429s after a reset, the reset was wrong: the cause is upstream

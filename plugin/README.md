@@ -889,9 +889,9 @@ becomes a row with that state, `state_from: "workflow status"` and the row's
 failure in `row_note`. A step still running, or not named, stays a
 `row_error`, which the Result step re-attaches while the workflow runs on.
 
-All six agents run on **haiku at low effort** (`model` and `effort` in their
+All seven agents run on **haiku at low effort** (`model` and `effort` in their
 frontmatter), load no `CLAUDE.md`, and can call only the SwarmCloud tools they
-need — `sc:remote` dispatch and follow, `sc:step`, `sc:task` and `sc:summary` follow,
+need — `sc:remote` dispatch and follow, `sc:step`, `sc:task`, `sc:summary` and `sc:finish` follow,
 `sc:workflow` read a spec file, submit and read — and only through the sc plugin's own server (above).
 `sc:wait` holds no SwarmCloud tool: it is the pause between two tries of a step
 row whose bridge was not connected or not responding, one `sleep 30` through
@@ -1265,6 +1265,64 @@ A row now follows `format: "progress"` instead:
 The full log is still there. `swarm_follow` with `format: "lines"` narrates
 it (`sc:remote` still uses that), and so do `swarm tail`, `swarm follow
 <task_id>` and the console.
+
+### Two layouts: rows, or the SwarmCloud pane (SC-BROWSER-BUILD)
+
+BGD asked on 2026-10-25 (#2318) to follow SwarmCloud work from Claude Code
+without spending model tokens on it by default, and picked proposal B, Two
+columns, for every frame of the mock-ups (PR 2328). So the plugin has two
+layouts and a toggle, remembered per project:
+
+* **`rows`**, the default, is everything above: one row per workflow
+  (`summary`) or per unfinished step (`per-step`), each a haiku agent that
+  polls for as long as its work runs, whether anyone looks or not.
+* **`pane`** is a Claude Code mod pane beside the chat (`plugin/hooks/pane.tsx`,
+  opened with `/sc-pane`), plus ONE quiet `sc:finish` row per workflow. The
+  pane reads SwarmCloud with ONE direct MCP call per click -- `swarm_browse`,
+  over the engine's own connection -- so browsing never reaches the model:
+  this session's workflows when it opens and on Refresh, a workflow's stages
+  when one is opened, a stage's agents when one is selected, an agent's
+  details when one is opened. No timer, and nothing while it is closed. The
+  stages are the console's, `levelsOf` in apps/swarm-ui/src/dag.ts, named
+  `Stage N`; a unit test runs dag.ts's own function and holds the pane to it.
+  The `sc:finish` row exists so the session still learns of a finish: it
+  follows `swarm_follow` `format: "stage"`, which holds each call until the
+  workflow's stage changes, and writes a line only then.
+
+`/sc layout rows|pane` (or the pane's `[Layout]`) saves the choice with
+`swarm_layout` in `<config_dir>/sc-layout/`, keyed by the project as `/sc
+watch` is; it outranks the plugin's `layout` option, and every launch reads
+it, so it switches without restarting the session. Rows already running keep
+going until they end: a plugin cannot stop a /workflows row. So a switch also
+re-attaches (BGD, 2026-10-25, SC-BROWSER-FOLLOWUP): after it saves, the same
+`/sc layout` run goes on as `/sc attach --all`, one chat turn, and rows in the
+new layout start beside the old ones. (The engine refuses `$.command.run`
+inside a `command.run` hook, so the run is rewritten rather than queued twice;
+the pane's `[Layout]` control, a press, queues it with `$.command.run`.)
+
+At session start the pane module makes ONE `swarm_layout` call (after the
+session has started; a reload asks nothing), and in the pane layout opens the
+pane drawing "not read yet" with Refresh: no list read until someone presses
+it. Claude Code seats a pane nobody asked for only from 144 terminal columns;
+below that it waits and a one-line toast says so.
+
+Session start also tracks THIS PROJECT's running work (BGD's note of the same
+day), at session start only: the SessionStart hook names, beside this
+session's own work, every workflow and single task still running that clones
+this checkout's origin repository, whichever session started it. In the rows
+layout it asks for `/sc attach --all --project` (`swarm_workflow_launch
+{attach: "all", project: true}`); in the pane layout the pane's Level 1 lists
+it once read (`swarm_browse {level: "workflows", project: true}`). Another
+repository's work from another session is left out, and `/sc check`, the watch
+and the plain `/sc attach --all` stay this session's (owner decision
+2026-10-14).
+
+What the pane needs and what was not measured: Claude Code's function hooks,
+early access in this build (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`); without
+them the module does not load and nothing else changes. `claude plugin test
+plugin` runs `plugin/hooks/pane.test.ts` against the engine. How a live
+session seats the pane, and the `sc:finish` row's real token cost against
+today's `sc:summary` row, are measured in a live session, not here.
 
 ### What differs from a local step — read before swapping one in
 

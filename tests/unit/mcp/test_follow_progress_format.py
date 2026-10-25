@@ -130,7 +130,7 @@ def test_the_lines_format_is_still_there_as_an_opt_in(swarm, world):
     reply = json.loads(server._call(swarm, "swarm_follow", {"task_ids": ["task_a"], "format": "lines"}))
     assert any("LOGMARKER" in line for line in reply["lines"]), "`lines` must still stream the log"
     (tool,) = [t for t in server.TOOLS if t["name"] == "swarm_follow"]
-    assert tool["inputSchema"]["properties"]["format"]["enum"] == ["json", "lines", "progress", "summary"]
+    assert tool["inputSchema"]["properties"]["format"]["enum"] == ["json", "lines", "progress", "summary", "stage"]
 
 
 # --------------------------------------------------------------------------
