@@ -232,7 +232,7 @@ describe('the Admin panel in groups (S1b, S1c)', () => {
     await waitFor(() => expect(groups().length).toBe(3))
     const [ws, platform, automate] = groups()
     // MUTATION: draw PANEL_PAGES.admin as one list -> no groups and this fails.
-    expect(ws).toMatchObject({ name: 'People and workspaces', rows: ['People', 'Workspaces you admin'] })
+    expect(ws).toMatchObject({ name: 'People and workspaces', rows: ['People and roles', 'Workspaces you admin'] })
     expect(platform).toMatchObject({ name: 'Platform', rows: ['Pool limits', 'Runner sizes', 'Tenants', 'Platform counts'] })
     // MUTATION: draw Schedules or Approvals as Admin pages -> their links leave Automate and this fails.
     expect(automate).toEqual({ name: 'In Automate', rows: ['Schedules', 'Approvals'], hrefs: ['/automate/schedules?scope=all', '/approvals'] })
@@ -246,7 +246,7 @@ describe('the Admin panel in groups (S1b, S1c)', () => {
     await waitFor(() => expect(groups().length).toBe(2))
     const [ws, automate] = groups()
     // MUTATION: hand a workspace admin the Platform group -> fails.
-    expect(ws).toMatchObject({ name: 'Your workspaces', rows: ['Workspaces you admin'] })
+    expect(ws).toMatchObject({ name: 'Your workspaces', rows: ['People and roles', 'Workspaces you admin'] })
     expect(automate).toEqual({ name: 'In Automate', rows: ['Schedules', 'Approvals'], hrefs: ['/automate/schedules', '/approvals'] })
     expect(document.querySelector('.sk-panel')?.textContent).not.toMatch(/Pool limits|Tenants|Platform counts/)
     expect(document.querySelector('.sk-pnote')?.textContent).toBe('Showing eng@example.com and ops@example.com, the workspaces you administer. The platform’s own pages are shown to platform admins only.')

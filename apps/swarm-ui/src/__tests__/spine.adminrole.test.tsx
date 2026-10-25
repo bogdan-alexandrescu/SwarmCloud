@@ -148,13 +148,15 @@ describe('who sees Admin (NAV-ADMIN-ROLE)', () => {
     expect(adminItem()).toBeNull()
   })
 
-  it('shows a workspace admin of eng only Workspaces you admin, and Admin opens it', async () => {
+  it('shows a workspace admin of eng only People and roles and Workspaces you admin, and Admin opens the second', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin'), group('ops', 'member')])
     await shell('admin', 'workspaces')
     await waitFor(() => expect(adminItem()).not.toBeNull())
     expect(adminItem()!.getAttribute('href')).toBe('/admin/workspaces')
     expect(adminItem()!.querySelector('.sk-lkd, .sk-ic.sk-lk')).toBeNull()
-    expect(panelRows()).toEqual(['Workspaces you admin'])
+    // ADMIN-PEOPLE-ROLES (part of #2157): People and roles is theirs too,
+    // scoped to the workspaces they administer.
+    expect(panelRows()).toEqual(['People and roles', 'Workspaces you admin'])
   })
 
   it('shows a platform admin the six Admin pages, their workspaces\' group first and Runner sizes beside Pool limits (SIZES-UI)', async () => {
@@ -163,7 +165,7 @@ describe('who sees Admin (NAV-ADMIN-ROLE)', () => {
     await waitFor(() => expect(adminItem()).not.toBeNull())
     expect(adminItem()!.getAttribute('href')).toBe('/admin/limits')
     // Their workspaces' group first, then the platform's (S1b, CONFIG-PANEL-E).
-    expect(panelRows()).toEqual(['People', 'Workspaces you admin', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts'])
+    expect(panelRows()).toEqual(['People and roles', 'Workspaces you admin', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts'])
   })
 })
 

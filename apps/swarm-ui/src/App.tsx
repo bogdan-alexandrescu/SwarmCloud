@@ -548,7 +548,10 @@ export const SECTIONS: SectionDef[] = [
       // #847 W8 (docs/workspaces.md §6.4): who has signed in, their workspace
       // requests to approve or deny, each person's ceiling and Claude account,
       // and who is an admin. Admin only, like the three before it.
-      { id: 'people', label: 'People', admin: true },
+      // "People and roles" since ADMIN-PEOPLE-ROLES (part of #2157, S5c):
+      // every person against every workspace, and for a workspace admin who
+      // is not a platform admin only the workspaces they administer.
+      { id: 'people', label: 'People and roles', admin: true },
       // NAV-ADMIN-ROLE: each group workspace whose stored role for the
       // caller is admin, with its four settings pages. Not marked `admin`:
       // it reads `/v1/tenants/mine`, which everyone may, and a workspace
@@ -2006,6 +2009,10 @@ function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: num
 const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
   'automate/schedules': 'schedules',
   'automate/approvals': 'approvals',
+  // Admin › People and roles answers differently by reader (ADMIN-PEOPLE-ROLES):
+  // its topic rides the section's `?` rather than a second glyph by the title,
+  // which the console's glyph ceiling (tests/help.test.ts) has no room for.
+  'admin/people': 'people-and-roles-scope',
 }
 
 function SectionQuestion({ section, topic = null }: { section: SectionQuestionDef; topic?: TopicId | null }) {
