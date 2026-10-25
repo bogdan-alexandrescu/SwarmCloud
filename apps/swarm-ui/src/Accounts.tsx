@@ -27,9 +27,12 @@ import { TaskRef } from './TaskRef'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { AccountsTable } from './AccountsTable'
 import { AcctState } from './AccountState'
-import { DuplicateBanner, Forecast, RuleLine, Verdict, usePoolWaiting } from './AccountsVerdict'
+import { DuplicateBanner, Forecast, RuleLine, Verdict, usePoolWaiting, type WaitRead } from './AccountsVerdict'
 import { agoPastDay, type PoolAccount } from './accountsPool'
 import { AgentCap, SheetAccount, SheetDuplicate, SheetForecast, SheetHealth, SheetVerdict, SheetWindows } from './AccountSheet'
+import { AccountsTimeline, ViewToggle } from './AccountsTimeline'
+import { VIEW_KEY, viewOf, type AccountsView } from './accountsLanes'
+import { safeStorage } from './panes'
 import {
   FIVE_HOUR,
   SEVEN_DAY,
@@ -351,9 +354,45 @@ function Body({
   // account can be linked to and a reload reopens it. The address wins over
   // the held choice, which is what a followed link means.
   const linked = useLinkedParam('account')
+  // TABLE OR TIMELINE (#2222, BGD "Table default, remembered"): the address
+  // wins (`?view=timeline`, a followed link), then this browser's last
+  // choice, then Table. Choosing writes both, and an account chosen after
+  // keeps the view in the address it writes -- the view SHOWN, not the
+  // address's: a Timeline restored from this browser's memory under a bare
+  // address (arriving from the sidebar) still writes `?view=timeline`, so the
+  // link the reader copies opens what they see.
+  const linkedView = useLinkedParam('view')
+  const [storedView, setStoredView] = useState<string | null>(() => {
+    try {
+      return safeStorage()?.getItem(VIEW_KEY) ?? null
+    } catch {
+      return null
+    }
+  })
+  const pageView = viewOf(linkedView, storedView)
+  const viewHref = (v: AccountsView) => paneHref('capacity/accounts', { account: linked, view: v })
+  const chooseView = (v: AccountsView) => {
+    try {
+      safeStorage()?.setItem(VIEW_KEY, v)
+    } catch {
+      /* Storage blocked: the address still carries the choice. */
+    }
+    setStoredView(v)
+    if (typeof window !== 'undefined') followHash(viewHref(v))
+  }
+  // A TIMELINE RESTORED FROM THIS BROWSER'S MEMORY IS WRITTEN TO THE ADDRESS
+  // (the review's minor, ACCOUNTS-TIMELINE-MERGE): arriving from the sidebar
+  // under a bare address drew the Timeline while the address still said
+  // nothing, so a link copied off the bar opened Table. Replaced, not pushed:
+  // it is the same visit, and Back must not land on the bare address first.
+  // A Table address stays bare, as it always was.
+  useEffect(() => {
+    if (typeof window === 'undefined' || linkedView !== null || pageView !== 'timeline') return
+    replaceHash(paneHref('capacity/accounts', { account: linked, view: 'timeline' }))
+  }, [linkedView, pageView, linked])
   const choose = (id: string | null) => {
     patch((p) => ({ ...p, chosen: id, adding: p.signin.kind === 'idle' ? false : p.adding }))
-    if (typeof window !== 'undefined') followHash(paneHref('capacity/accounts', { account: id }))
+    if (typeof window !== 'undefined') followHash(paneHref('capacity/accounts', { account: id, view: pageView === 'timeline' ? pageView : linkedView }))
   }
   const view = linked !== null ? { ...ui, chosen: linked } : ui
   // THE ANSWER FIRST (#2222, proposal A): can the pool take another agent,
@@ -374,7 +413,13 @@ function Body({
     <>
       {lead && (
         <>
-          <Verdict accounts={pool} scope={scope} shortfall={shortfall(board)} now={Date.now()} waiting={waiting} />
+          {/* THE TOGGLE BESIDE THE VERDICT (BGD): the answer is the same in
+              both views, so it stays above them and only what follows it
+              changes. */}
+          <div className="acct-verdict-row">
+            <Verdict accounts={pool} scope={scope} shortfall={shortfall(board)} now={Date.now()} waiting={waiting} />
+            <ViewToggle view={pageView} hrefOf={viewHref} onChange={chooseView} />
+          </div>
           {accounts.length > 0 && <RuleLine accounts={pool} />}
           <DuplicateBanner accounts={pool} scope={scope} onOpen={choose} />
           <Broken accounts={accounts} scope={board.page.tenant_id} onOpen={choose} />
@@ -399,6 +444,8 @@ function Body({
         patch={patch}
         reload={reload}
         choose={choose}
+        view={pageView}
+        waiting={waiting}
         addForm={<AddAccount board={board} accounts={accounts} ui={ui} patch={patch} reload={reload} />}
       />
       {lead && <HelpLinks topics={ACCOUNT_TOPICS} />}
@@ -603,6 +650,13 @@ function followHash(hash: string): void {
   window.dispatchEvent(new HashChangeEvent('hashchange', { oldURL, newURL: window.location.href }))
 }
 
+/** `followHash`, rewriting this entry rather than adding one: the address catching up with what is drawn. */
+function replaceHash(hash: string): void {
+  const oldURL = window.location.href
+  window.history.replaceState(window.history.state, '', hash)
+  window.dispatchEvent(new HashChangeEvent('hashchange', { oldURL, newURL: window.location.href }))
+}
+
 function Pool({
   board,
   accounts,
@@ -610,6 +664,8 @@ function Pool({
   patch,
   reload,
   choose,
+  view,
+  waiting,
   addForm,
 }: {
   board: AccountsBoard
@@ -618,6 +674,8 @@ function Pool({
   patch: Patch
   reload: () => void
   choose: (id: string | null) => void
+  view: AccountsView
+  waiting: WaitRead
   addForm: ReactNode
 }) {
   // One clock for the whole render. Reading Date.now() per item would let two
@@ -629,12 +687,13 @@ function Pool({
   // BACK RETURNS FOCUS TO THE ROW IT LEFT (live QA CAP-11): on a phone
   // `‹ Accounts` hides the pane and focus fell to <body>. The row is drawn
   // only after the render the click causes, so it is focused from an effect.
+  // A sheet opened from a Timeline lane returns to that lane's name.
   const backTo = useRef<string | null>(null)
   useEffect(() => {
     const id = backTo.current
     if (id === null) return
     backTo.current = null
-    const row = [...document.querySelectorAll<HTMLButtonElement>('.acct-open')].find((b) => b.dataset.account === id)
+    const row = [...document.querySelectorAll<HTMLButtonElement>('.acct-open, .acct-tl-open')].find((b) => b.dataset.account === id)
     row?.focus()
   })
   // A CHOSEN ACCOUNT OPENS AT ITS TITLE (visual QA V157, V158; 2026-10-16).
@@ -679,6 +738,30 @@ function Pool({
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [sheetOpen])
+
+  // THE TIMELINE (#2222, proposal B): every account on one axis. Pressing a
+  // lane opens THE SAME SIDE SHEET a Table row opens -- the whole screen on a
+  // phone -- not proposal B's detail under the lane (BGD, 2026-10-25 10:05Z).
+  // Only a CHOSEN account opens: the Table's default account is a desktop
+  // convenience, and the Timeline has no place to show it.
+  const timeline =
+    view === 'timeline' ? (
+      <AccountsTimeline
+        accounts={accounts as PoolAccount[]}
+        scope={board.page.tenant_id}
+        now={now}
+        waiting={waiting}
+        phone={phone}
+        openId={shown !== null && shown.explicit ? shown.account.account_id : null}
+        onChoose={choose}
+        addButton={shown === null ? null : <AddButton ui={ui} patch={patch} />}
+        // An empty pool draws the form with no click, in the lane the first
+        // account will take (B6): it is the one control that fixes the zero.
+        // With accounts, the form opens in the sheet, as the Table's does.
+        addForm={shown === null ? <div className="acct-tl-add">{addForm}</div> : null}
+      />
+    ) : null
+  if (timeline !== null && shown === null) return timeline
 
   if (shown === null) {
     const unread = shortfall(board)
@@ -766,6 +849,72 @@ function Pool({
       patch((p) => ({ ...p, adding: false }))
     }
   }
+  // THE OPENED ACCOUNT, AS A SIDE SHEET (#2222, mock-up A F4; a full screen
+  // on a phone, P3). It is drawn only when a row or a lane was opened or the
+  // add form is open: the table (or the timeline) is the page, and the sheet
+  // covers its right side over a scrim that closes it, as Escape and the
+  // close button do. The detail is the component the pane drew -- facts,
+  // controls, and PR #413's holds -- so nothing it guarded changed by moving.
+  const sheet = sheetOpen ? (
+      <>
+        <div className="acct-scrim" aria-hidden="true" onClick={() => closeRef.current()} />
+        <aside
+          className="acct-pane acct-sheet"
+          ref={paneRef}
+          aria-label={shown.explicit ? `Account ${accountName(a)}` : 'Add an account'}
+        >
+          <div className="acct-sheet-head">
+            <button type="button" className="acct-back" onClick={() => closeRef.current()}>
+              <span aria-hidden="true">‹</span> Accounts
+            </button>
+            <span className="acct-sheet-crumb">{shown.explicit ? 'Accounts ›' : 'Accounts › Add an account'}</span>
+            {closable && (
+              <Button
+                iconOnly
+                size="sm"
+                icon={<CIcon name="close" />}
+                className="acct-sheet-close"
+                onClick={() => closeRef.current()}
+              >
+                Close
+              </Button>
+            )}
+          </div>
+          {adding && addForm}
+          {/* ONE THING AT A TIME (live QA CAP-11): an add form nobody has
+              started stacked above the chosen account's detail, so the pane held
+              two. Cancel brings the account back. A sign-in under way keeps both,
+              so the pool can still be read while the provider's page is open. */}
+          {shown.explicit && !(adding && (ui.signin.kind === 'idle' || ui.signin.kind === 'start_failed')) && (
+            <section key={a.account_id} className="acct-pane-detail" aria-label={`Account ${accountName(a)}`}>
+              <Detail
+                account={a}
+                accounts={accounts as PoolAccount[]}
+                board={board}
+                now={now}
+                ui={ui}
+                patch={patch}
+                reload={reload}
+              />
+            </section>
+          )}
+        </aside>
+      </>
+    ) : null
+  // THE TIMELINE SHARES THE SPLIT'S FRAME CLASSES, NOT ITS FRAME: the sheet's
+  // placement, its scrim and the phone's "the account is the screen" are
+  // `.acct-split` rules (accounts-ranked.css, capacity.css), and so is the
+  // detail's layout inside it; `is-timeline` drops the card's own border so
+  // the Timeline's panel keeps its look (accounts-timeline.css).
+  if (timeline !== null)
+    return (
+      <div
+        className={`acct-split is-ranked is-timeline${shown.explicit ? ' is-detail' : ''}${adding ? ' is-adding' : ''}${sheetOpen ? ' has-sheet' : ''}`}
+      >
+        {timeline}
+        {sheet}
+      </div>
+    )
   return (
     /* `is-detail`: a reader chose an account, so on a phone the account is the
        page and the list steps aside (frame 10). With no choice the phone shows
@@ -841,59 +990,7 @@ function Pool({
         </p>
         <Forecast accounts={accounts as PoolAccount[]} scope={board.page.tenant_id} now={now} />
       </section>
-      {/* THE OPENED ACCOUNT, AS A SIDE SHEET (#2222, mock-up A F4; a full
-          screen on a phone, P3). It is drawn only when a row was opened or the
-          add form is open: the table is the page, and the sheet covers its
-          right side over a scrim that closes it, as Escape and the close
-          button do. The detail is the component the pane drew -- facts,
-          controls, and PR #413's holds -- so nothing it guarded changed by
-          moving. */}
-      {sheetOpen && (
-        <>
-          <div className="acct-scrim" aria-hidden="true" onClick={() => closeRef.current()} />
-          <aside
-            className="acct-pane acct-sheet"
-            ref={paneRef}
-            aria-label={shown.explicit ? `Account ${accountName(a)}` : 'Add an account'}
-          >
-            <div className="acct-sheet-head">
-              <button type="button" className="acct-back" onClick={() => closeRef.current()}>
-                <span aria-hidden="true">‹</span> Accounts
-              </button>
-              <span className="acct-sheet-crumb">{shown.explicit ? 'Accounts ›' : 'Accounts › Add an account'}</span>
-              {closable && (
-                <Button
-                  iconOnly
-                  size="sm"
-                  icon={<CIcon name="close" />}
-                  className="acct-sheet-close"
-                  onClick={() => closeRef.current()}
-                >
-                  Close
-                </Button>
-              )}
-            </div>
-            {adding && addForm}
-            {/* ONE THING AT A TIME (live QA CAP-11): an add form nobody has
-                started stacked above the chosen account's detail, so the pane held
-                two. Cancel brings the account back. A sign-in under way keeps both,
-                so the pool can still be read while the provider's page is open. */}
-            {shown.explicit && !(adding && (ui.signin.kind === 'idle' || ui.signin.kind === 'start_failed')) && (
-              <section key={a.account_id} className="acct-pane-detail" aria-label={`Account ${accountName(a)}`}>
-                <Detail
-                  account={a}
-                  accounts={accounts as PoolAccount[]}
-                  board={board}
-                  now={now}
-                  ui={ui}
-                  patch={patch}
-                  reload={reload}
-                />
-              </section>
-            )}
-          </aside>
-        </>
-      )}
+      {sheet}
     </div>
   )
 }

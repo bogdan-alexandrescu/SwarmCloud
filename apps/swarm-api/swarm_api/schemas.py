@@ -818,6 +818,12 @@ ACCOUNT_HEALTH_KINDS = (
 ACCOUNT_HEALTH_WINDOWS = ("five_hour", "seven_day", "other")
 #: The count windows the record serves.
 ACCOUNT_HEALTH_SPANS = ("last_1h", "last_24h", "last_7d")
+#: The listing row's latest hold deadline (#2222, the Timeline's B3/B4): the
+#: latest `expires_at` among the account's live holds, as the broker
+#: (`quota_broker.main.account_to_api`) serves it. Allowed only as an ISO
+#: instant with its zone; `routes/accounts.py` serves anything else as null,
+#: and keeps a row from an older broker without the key.
+ACCOUNT_HOLD_DEADLINE = "latest_hold_deadline"
 
 
 class AccountLending(StrictModel):

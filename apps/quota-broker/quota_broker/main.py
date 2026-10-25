@@ -831,6 +831,17 @@ def account_to_api(
         })
     next_reset = getattr(account, "next_reset", None)
     next_eligible = next_reset(now) if callable(next_reset) else None
+    # THE LATEST INSTANT ANY AGENT CAN STILL HOLD IT (#2222, the Timeline's
+    # frames B3/B4): each live hold's own deadline, `Hold.expires_at`, which
+    # is when the quota sweep stops counting a hold whose worker never
+    # released it. The latest, not the soonest: a full account frees when ONE
+    # agent finishes, which no clock says, so the page draws this as "latest",
+    # never as "expected". An expired hold has already stopped counting, so
+    # its deadline is not the account's.
+    latest_hold = None
+    if callable(live_holds):
+        deadlines = [h.expires_at for h in live_holds(now)]
+        latest_hold = max(deadlines) if deadlines else None
     return {
         "account_id": account.account_id,
         "owner_tenant": account.owner_tenant,
@@ -878,6 +889,10 @@ def account_to_api(
         #: a full account frees when an agent on it finishes, which no clock
         #: says.
         "next_eligible_at": _iso(next_eligible),
+        #: The latest deadline among the agents holding it now, or null when
+        #: none holds it. A deadline, not a forecast: the hold stops counting
+        #: then whether or not its agent is still running.
+        "latest_hold_deadline": _iso(latest_hold),
         "windows": windows,
         "observed_at": observed_at.isoformat() if observed_at else None,
         #: True when no reading has arrived recently enough to be trusted.
