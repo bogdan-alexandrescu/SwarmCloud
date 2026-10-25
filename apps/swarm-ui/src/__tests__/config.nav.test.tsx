@@ -381,16 +381,20 @@ describe('a workspace admin on a platform Admin page goes to Workspaces you admi
 })
 
 describe('the setup strip (proposal E)', () => {
-  it('runs across every Config page', async () => {
-    for (const path of ['/config/github', '/config/repositories', '/config/secrets', '/config/mcp-servers', '/config/people', '/config/workspace', '/config/workspace/setup']) {
+  // ONE CASE PER PAGE, NOT ONE LOOP (PR #2305's CI, 2026-10-25): seven full
+  // app mounts in one case overran the 30s test timeout on a slow runner, and
+  // the timed-out loop went on mounting pages into the next case, which then
+  // found two setup strips. Each page now has its own timeout and cleanup.
+  it.each(['/config/github', '/config/repositories', '/config/secrets', '/config/mcp-servers', '/config/people', '/config/workspace', '/config/workspace/setup'])(
+    'runs across every Config page: %s',
+    async (path) => {
       serve(ME(false), [PERSONAL, group('eng', 'admin')])
       await app(path)
       // MUTATION: mount the strip on GitHub access only -> every other row fails.
       const strip = await screen.findByRole('list', { name: 'Workspace setup steps' })
       expect(within(strip).getAllByRole('listitem').length, path).toBe(4)
-      cleanup()
-    }
-  })
+    },
+  )
 
   it('carries a compact form for the phone that names the next measured step (S2d)', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin')])
