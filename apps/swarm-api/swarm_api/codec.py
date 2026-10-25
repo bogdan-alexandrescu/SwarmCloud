@@ -690,6 +690,12 @@ def task_to_api(
         "result_summary": result_summary,
         "result_summary_redaction_count": result_summary_count,
         "latest_checkpoint": task.latest_checkpoint,
+        # BROWSER-USE-FLAG (part of #2322): whether a browser runtime was
+        # used, lifted out of `result_summary` where the worker records it,
+        # so the list row (which drops the summary) carries it too. Numbers,
+        # booleans and the worker's fixed reason words only; null on a task
+        # that is not a browser runtime, has not ended, or predates it.
+        **browser_use_to_api(task.result_summary),
         # Contract request 70 (LB-C): the live-browser hand-off a RUNNING task
         # is holding for, so the console can raise its banner (§4.1, §6).
         # In the summary view too: the list and the Overview read that view,
@@ -740,6 +746,42 @@ def task_to_api(
         for key in SUMMARY_DROPPED_KEYS:
             del row[key]
     return row
+
+
+#: The counts `browser_use_to_api` serves from `result_summary.browser_use`,
+#: each a non-negative integer or null.
+BROWSER_USE_COUNTS: tuple[str, ...] = ("tool_calls", "mcp_calls", "command_calls", "images")
+#: The worker's words for an unknown verdict (`lifecycle.browser_use_record`).
+BROWSER_USE_UNKNOWN_BECAUSE = frozenset({"not_reported", "stream_unread", "stream_cut"})
+
+
+def browser_use_to_api(result_summary: Any) -> dict[str, Any]:
+    """`browser_used` (true, false or null) and `browser_use` (its counts and
+    seconds, or null), read from the worker's `result_summary` keys
+    (BROWSER-USE-FLAG). Only whitelisted keys of the expected types are
+    served: the summary is the worker's, and nothing in it is passed through
+    unread."""
+    summary = result_summary if isinstance(result_summary, dict) else {}
+    used = summary.get("browser_used")
+    detail = summary.get("browser_use")
+    served: dict[str, Any] | None = None
+    if isinstance(detail, dict):
+        served = {}
+        for key in BROWSER_USE_COUNTS:
+            value = detail.get(key)
+            served[key] = (
+                value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+            )
+        seconds = detail.get("seconds")
+        served["seconds"] = (
+            float(seconds)
+            if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) and seconds >= 0
+            else None
+        )
+        served["complete"] = detail.get("complete") is True
+        because = detail.get("unknown_because")
+        served["unknown_because"] = because if because in BROWSER_USE_UNKNOWN_BECAUSE else None
+    return {"browser_used": used if isinstance(used, bool) else None, "browser_use": served}
 
 
 #: What `view=summary` leaves out of a task row (#168): the three fields a

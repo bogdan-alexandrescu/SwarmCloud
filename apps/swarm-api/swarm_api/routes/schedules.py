@@ -100,8 +100,10 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 from swarm_common.admission import _snapshot
+from swarm_common.states import TERMINAL_STATES
 
 from .. import cronexpr, roles, schedulefire, schedules, scheduletypes
+from ..attempt_totals import totals_for
 from ..auth import AuthContext
 from ..deps import AppContext, admin_auth, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import Conflict, NoClaudeAccount, NotFound, ValidationFailed, WorkspaceNotReady
@@ -1171,6 +1173,13 @@ def get_firing(
 _UNREAD_API_ACTION = "an API action runs no attempt: it ended when it was recorded"
 _UNREAD_CAP = f"more work than one page reads ({SPAN_TASKS} tasks): open the item to see it"
 
+#: Why an item's cost is a dash, never $0 (SCHED-HISTORY-FOLLOWUP, part of #1109).
+_COST_API_ACTION = "an API action runs no attempt, so it records no cost"
+_COST_NO_ATTEMPT = "no attempt has run yet"
+_COST_STILL_RUNNING = "its attempts are still running: a cost is written when an attempt ends"
+_COST_NONE_RECORDED = "no attempt recorded a cost"
+_COST_UNREAD = "its attempts could not be read"
+
 
 def _val(v: Any) -> Any:
     """An enum's value; a stored string or None as it is."""
@@ -1234,8 +1243,48 @@ def _item_tasks(ctx: AppContext, tenant_id: str, item: Mapping[str, Any]) -> tup
             for step in (wf.steps if wf is not None else []):
                 if step.task_id:
                     out.append((step.task_id, f"{prefix}{step.step_id}"))
-        return out, _json({"state": _val(run.state), "updated_at": run.updated_at})
+        # What the list under the lanes names the run by: its issue, and the
+        # title read when the run was created (None when that read failed).
+        issue = {"number": run.issue.number, "ref": run.issue.short, "url": run.issue.url,
+                 "title": (run.issue_read or {}).get("title")}
+        return out, _json({"state": _val(run.state), "updated_at": run.updated_at, "issue": issue})
     return [], {"unread": _UNREAD_API_ACTION if kind == "api_action" else f"a {kind} has no attempts to read"}
+
+
+def _item_cost(kind: str, task_ids: list[str], totals: Mapping[str, Mapping[str, Any]],
+               live: set[str], unread: str | None) -> dict[str, Any]:
+    """One item's cost as the tick sums a firing's (`Ticker._cost`, §4.3):
+    every recorded `cost_usd` of its tasks' attempts, each attempt that
+    recorded none counted in `unreported_attempts`, and a task whose attempts
+    could not be read counted as one. NULL IS NOT ZERO: with no recorded
+    figure `reported_usd` is null and `unread` says why. `unread` is also set
+    beside a figure that covers only part of the item (the page's task cap)."""
+    if kind == "api_action":
+        return {"reported_usd": None, "unreported_attempts": 0, "unread": _COST_API_ACTION}
+    reported, known, unreported, failed, attempts = 0.0, False, 0, 0, 0
+    for task_id in task_ids:
+        row = totals.get(task_id) or {}
+        if row.get("attempts_read") != "ok":
+            unreported += 1
+            failed += 1
+            continue
+        if row.get("cost_usd_total") is not None:
+            reported += float(row["cost_usd_total"])
+            known = True
+        attempts += int(row.get("attempts") or 0)
+        unreported += int(row.get("attempts") or 0) - int(row.get("attempts_with_cost") or 0)
+    if known:
+        return {"reported_usd": round(reported, 6), "unreported_attempts": unreported, "unread": unread}
+    if unread is None:
+        if failed:
+            unread = _COST_UNREAD
+        elif attempts == 0:
+            unread = _COST_NO_ATTEMPT
+        elif live.intersection(task_ids):
+            unread = _COST_STILL_RUNNING
+        else:
+            unread = _COST_NONE_RECORDED
+    return {"reported_usd": None, "unreported_attempts": unreported, "unread": unread}
 
 
 @router.get("/v1/schedules/{schedule_id}/spans")
@@ -1264,6 +1313,12 @@ def list_firing_spans(
     HONEST GAPS (redesign-v2.md): an item whose tasks or attempts could not be
     read carries `unread` (or a task its `attempts_unread`) with the reason,
     so the UI draws a dash and says why, never an empty lane.
+
+    WHAT THE LIST UNDER THE LANES NAMES (SCHED-HISTORY-FOLLOWUP): each item's
+    `cost` (`_item_cost`), from ONE batched attempts read for the page's
+    tasks (`attempt_totals.totals_for`, a query per 30 tasks, inside the same
+    `SPAN_TASKS` cap), and an issue run's `issue`: its number, reference, url
+    and title from the run record, read under the caller's tenant.
     """
     _read(ctx, tenant_id, schedule_id)
     wanted = list(dict.fromkeys(i for i in firing_id if i))
@@ -1283,6 +1338,9 @@ def list_firing_spans(
 
     budget = SPAN_TASKS
     out: list[dict[str, Any]] = []
+    # Each item's read tasks, for the one cost read after the page is walked.
+    costed: list[tuple[dict[str, Any], list[str]]] = []
+    live: set[str] = set()
     for fid in wanted:
         row = rows.get(fid)
         if row is None:
@@ -1291,9 +1349,10 @@ def list_firing_spans(
         for item in row.get("work") or []:
             kind, item_id = str(item.get("kind")), str(item.get("id"))
             shown: dict[str, Any] = {"kind": kind, "id": item_id, "state": None, "updated_at": None,
-                                     "tasks": [], "unread": None}
+                                     "issue": None, "tasks": [], "unread": None, "cost": None}
             if budget <= 0 and kind != "api_action":
                 shown["unread"] = _UNREAD_CAP
+                costed.append((shown, []))
                 items.append(shown)
                 continue
             pairs, facts = _item_tasks(ctx, tenant_id, item)
@@ -1303,6 +1362,8 @@ def list_firing_spans(
                 pairs = pairs[:budget]
             budget -= len(pairs)
             tasks = ctx.store.tasks_by_id(tenant_id, (t for t, _ in pairs))
+            costed.append((shown, [t for t, _ in pairs if t in tasks]))
+            live.update(t for t, task in tasks.items() if task.state not in TERMINAL_STATES)
             for task_id, label in pairs:
                 task = tasks.get(task_id)
                 if task is None:
@@ -1320,6 +1381,16 @@ def list_firing_spans(
                 shown["unread"] = "it ran no task yet"
             items.append(shown)
         out.append({"firing_id": fid, "items": items})
+    every = [t for _, ids in costed for t in ids]
+    totals = totals_for(ctx.db, tenant_id, every) if every else {}
+    for shown, ids in costed:
+        # A task named in the work but not found under this tenant is
+        # counted unread, as `Ticker._cost` counts a task it cannot read.
+        missing = [t["task_id"] for t in shown["tasks"] if t["task_id"] not in ids]
+        # The item's own reason stands for its cost when it ran nothing that
+        # could be summed, or when the page's cap cut its tasks short.
+        reason = shown["unread"] if shown["unread"] == _UNREAD_CAP or not (ids or missing) else None
+        shown["cost"] = _item_cost(shown["kind"], ids + missing, totals, live, reason)
     return {"firings": out, "not_found": [i for i in wanted if i not in rows]}
 
 
