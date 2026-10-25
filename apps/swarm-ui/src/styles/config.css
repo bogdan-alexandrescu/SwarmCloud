@@ -87,3 +87,31 @@
    fix: the sweep's cascade read `margin-inline` under `:where()` as nothing. */
 .cfg-page input[type='checkbox'],
 .cfg-page input[type='radio'] { margin-left: 0; margin-right: 0; }
+
+/* ---- the Config panel's row badges (S1a; CONFIG-PANEL-E) -------------------- */
+/* Each row's state from the strip's read: a tick when done, a dim count, what
+   is missing in the warning tone, or a dash for a source nobody could read. */
+.cfg-badge { flex: none; font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cfg-badge.is-done { color: var(--s-live); font-weight: 650; }
+.cfg-badge.is-count { font-family: var(--mono); }
+.cfg-badge.is-missing { color: var(--s-warn); font-weight: 600; }
+.cfg-badge.is-unknown { color: var(--ctl-absent, var(--text-dim)); cursor: help; }
+
+/* ---- the Admin panel's groups (S1b, S1c) ------------------------------------ */
+.sk-pgrp + .sk-pgrp { margin-top: 6px; }
+.sk-pg { font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); padding: 6px 19px 4px; }
+.sk-pnote { margin: 6px 19px 12px; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); white-space: normal; }
+.sk-pk-sub { flex: none; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+
+/* ---- one workspace's setup progress (S10a) ---------------------------------- */
+.cfg-progress { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.cfg-progress-h { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.cfg-progress-h b { font: 650 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
+.cfg-progress-h b.is-done { color: var(--s-live); }
+.cfg-progress-h small,
+.cfg-progress-next { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+.cfg-progress .cfg-meter-bar { max-width: 360px; }
+.wya-setup { flex: 1 0 100%; min-width: 0; }
+.wya-reading { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.wya-behind { margin: 0 0 var(--ctl-s2, 8px); font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
+.cfg-badge.is-note { color: var(--text-dim); }

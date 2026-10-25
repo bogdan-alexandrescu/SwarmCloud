@@ -16,12 +16,22 @@
  * banner) apply exactly as they do there. A link opened in a new tab carries
  * only the address; that tab acts in whatever workspace it selects.
  *
+ * EACH WORKSPACE CARRIES ITS OWN SETUP PROGRESS (CONFIG-PANEL-E; part of
+ * #2157, proposal E S10a): the setup strip's count, segments and next step,
+ * read for that workspace (`loadWorkspaceSetup`, which names it in
+ * `X-Swarm-Tenant` without switching the one in hand), so an admin of several
+ * sees which one is behind. A read that failed draws "not read", never done.
+ *
  * Personal workspaces are not listed: everyone administers their own, and its
  * settings are under Profile. Neither are a platform admin's reach entries,
  * which are workspaces they can reach, not ones they were made admin of.
  */
-import type { MouseEvent as ReactMouseEvent } from 'react'
+import { useEffect, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { loadMyTenants } from './api'
+import { SetupProgress, behindOf, setupSteps } from './ConfigSetup'
+import { loadWorkspaceSetup } from './configSetupApi'
+import type { Result } from './fetch'
+import type { OnboardingDoc } from './types'
 import { EmptyState, routedClick } from './components'
 import { chooseTenant } from './fetch'
 import { addressToPath } from './paths'
@@ -47,6 +57,71 @@ function NoneToAdmin() {
   )
 }
 
+/** Each listed workspace's setup read, by tenant id; absent while in flight. */
+function useWorkspaceSetups(ids: readonly string[]): Readonly<Record<string, Result<OnboardingDoc>>> {
+  const [reads, setReads] = useState<Record<string, Result<OnboardingDoc>>>({})
+  const key = ids.join('\n')
+  useEffect(() => {
+    const controller = new AbortController()
+    setReads({})
+    for (const id of key === '' ? [] : key.split('\n')) {
+      void loadWorkspaceSetup(id, controller.signal).then((r) => {
+        if (!controller.signal.aborted) setReads((was) => ({ ...was, [id]: r }))
+      })
+    }
+    return () => controller.abort()
+  }, [key])
+  return reads
+}
+
+const docOf = (r: Result<OnboardingDoc> | undefined): OnboardingDoc | null => (r !== undefined && (r.status === 'ok' || r.status === 'stale') ? r.data : null)
+
+function AdminList({ choices, open }: { choices: Parameters<typeof adminWorkspaces>[0]; open: (e: ReactMouseEvent, tenantId: string, to: string) => void }) {
+  const named = nameTenants(adminWorkspaces(choices), null)
+  const setups = useWorkspaceSetups(named.map((w) => w.tenant_id))
+  if (named.length === 0) return <NoneToAdmin />
+  // Every listed workspace is a group one, so each has four steps.
+  const rows = named.map((w) => ({ w, read: setups[w.tenant_id], steps: setupSteps(docOf(setups[w.tenant_id]), false) }))
+  const behind = behindOf(rows.filter((r) => docOf(r.read) !== null))
+  const behindNext = behind === null ? null : (behind.steps.find((s) => s.state !== 'done' && s.state !== 'unknown') ?? null)
+  return (
+    <>
+      {behind !== null && (
+        <p className="wya-behind" role="status">
+          <b>{behind.w.display_name} is behind</b>
+          {behindNext !== null ? `: next, ${behindNext.label.toLowerCase()} (${behindNext.line}).` : '.'}
+        </p>
+      )}
+      <ul className="wya-list">
+        {rows.map(({ w, read, steps }) => (
+          <li key={w.tenant_id} className="wya-row" data-tenant={w.tenant_id}>
+            <span className="wya-name">
+              <b>{w.display_name}</b>
+              <small>{w.tenant_id}</small>
+            </span>
+            <nav className="wya-links" aria-label={`${w.display_name} settings`}>
+              {WORKSPACE_ADMIN_LINKS.map((l) => (
+                <a key={l.to} href={addressToPath(l.to)} onClick={(e) => open(e, w.tenant_id, l.to)}>
+                  {l.label}
+                </a>
+              ))}
+            </nav>
+            <div className="wya-setup">
+              {read === undefined ? (
+                <small className="wya-reading">Reading setup…</small>
+              ) : read.status === 'error' ? (
+                <small className="wya-reading">Setup not read: {read.error.message}</small>
+              ) : (
+                <SetupProgress name={w.display_name} steps={steps} onNext={(s, e) => open(e, w.tenant_id, s.to)} />
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </>
+  )
+}
+
 export function WorkspacesYouAdminScreen({ go }: { go: (to: string) => void }) {
   const mine = useUrRead(loadMyTenants, 'mine')
   const open = (e: ReactMouseEvent, tenantId: string, to: string) => {
@@ -60,31 +135,9 @@ export function WorkspacesYouAdminScreen({ go }: { go: (to: string) => void }) {
       <PageHead title="Workspaces you admin">
         <UrRefresh reads={[mine]} />
       </PageHead>
-      <p className="ur-sub">Each group workspace whose stored role for you is admin. A link selects that workspace, then opens the page.</p>
+      <p className="ur-sub">Each group workspace whose stored role for you is admin, with its own setup progress. A link selects that workspace, then opens the page.</p>
       <UrRegion state={mine.state} route="GET /v1/tenants/mine" what="Your workspaces" plural onRetry={mine.reload} empty={<NoneToAdmin />}>
-        {(choices) => {
-          const named = nameTenants(adminWorkspaces(choices), null)
-          if (named.length === 0) return <NoneToAdmin />
-          return (
-            <ul className="wya-list">
-              {named.map((w) => (
-                <li key={w.tenant_id} className="wya-row" data-tenant={w.tenant_id}>
-                  <span className="wya-name">
-                    <b>{w.display_name}</b>
-                    <small>{w.tenant_id}</small>
-                  </span>
-                  <nav className="wya-links" aria-label={`${w.display_name} settings`}>
-                    {WORKSPACE_ADMIN_LINKS.map((l) => (
-                      <a key={l.to} href={addressToPath(l.to)} onClick={(e) => open(e, w.tenant_id, l.to)}>
-                        {l.label}
-                      </a>
-                    ))}
-                  </nav>
-                </li>
-              ))}
-            </ul>
-          )
-        }}
+        {(choices) => <AdminList choices={choices} open={open} />}
       </UrRegion>
     </div>
   )
