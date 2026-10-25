@@ -136,3 +136,19 @@ describe('Config › People and roles: the member’s lead (S5g, S5h)', () => {
     expect(within(lead).queryAllByRole('button')).toHaveLength(0)
   })
 })
+
+// THE ROSTER STACKS ON A PHONE. Rendered at 390 px (CONFIG-S5-LEADS review,
+// shot dark-phone-04) the roster table was 589 px wide inside the content
+// column's scroller: When, Reason and Return to default were off-screen. It
+// now uses keys.css's stacking table (`.mcp-servers`, #1680), whose cards
+// put each value under its column's name, so every cell carries a label.
+describe('Config › People and roles: the roster on a phone', () => {
+  it('is the stacking table, every cell labelled with its column', async () => {
+    await draw(roles(true, [person('dana@example.com', 'member'), person('lee@example.com', 'viewer')]), step4({}))
+    const table = screen.getByRole('table', { name: 'People with their own role' })
+    expect(table.classList.contains('mcp-servers')).toBe(true)
+    const cells = [...table.querySelectorAll('tbody th, tbody td')]
+    expect(cells.length).toBe(12)
+    for (const cell of cells) expect(cell.getAttribute('data-label'), cell.textContent ?? '').toMatch(/^(Person|Role|Given by|When|Reason|Actions)$/)
+  })
+})
