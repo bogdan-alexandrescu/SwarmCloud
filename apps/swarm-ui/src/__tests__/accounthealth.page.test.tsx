@@ -240,7 +240,7 @@ describe('F3: the swimlane', () => {
     const { container } = desktop(board(accounts, events))
 
     expect(container.querySelectorAll('[data-lane="eng:aieng-claude1"] [data-band="five_hour"]')).toHaveLength(1)
-    const mark = container.querySelector<SVGGElement>('[data-lane="eng:ai-eng-2"] [data-mark]')!
+    const mark = container.querySelector<HTMLButtonElement>('[data-mark][data-mark-of="eng:ai-eng-2"]')!
     fireEvent.click(mark)
     const picked = container.querySelector<HTMLElement>('[data-picked]')!
     expect(picked.textContent).toContain('tenant eng')

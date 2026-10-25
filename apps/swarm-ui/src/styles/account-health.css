@@ -100,12 +100,25 @@
 .ah-band { fill: color-mix(in srgb, var(--warn) 16%, transparent); }
 .ah-band-l { stroke: var(--warn-ink); stroke-width: 1.5; }
 .ah-now { stroke: var(--text-dim); stroke-width: 1; stroke-dasharray: 3 3; }
-.ah-bar.is-err, .ah-mk.is-err { fill: var(--series-1); }
-.ah-bar.is-lim, .ah-mk.is-lim { fill: var(--series-2); }
-.ah-bar.is-cred, .ah-mk.is-cred { fill: var(--series-3); }
-.ah-mk { stroke: var(--surface); stroke-width: 1; }
-.ah-hit { cursor: pointer; outline: none; }
-.ah-hit:focus-visible .ah-mk, .ah-hit.is-on .ah-mk { stroke: var(--text); stroke-width: 2; }
+.ah-bar.is-err { fill: var(--series-1); }
+.ah-bar.is-lim { fill: var(--series-2); }
+.ah-bar.is-cred { fill: var(--series-3); }
+/* The chart is drawn at its own pixel size; the marks sit on it as buttons. */
+.ah-swim-box { position: relative; }
+.ah-hit {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.ah-hit > .ah-fm { width: 10px; height: 10px; stroke: var(--surface); stroke-width: 1; }
+.ah-hit:focus-visible, .ah-hit.is-on { outline: 2px solid var(--text); outline-offset: 1px; }
 .ah-picked {
   display: flex;
   flex-wrap: wrap;

@@ -21,7 +21,7 @@
 //
 // The arithmetic is in accountHealth.ts; this file draws it.
 
-import { useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 
 import {
   FAMILIES,
@@ -481,13 +481,6 @@ const STRIP_H = 72
 const LANE_H = 46
 const LANES_TOP = 112
 
-function MarkShape({ f, x, y, r }: { f: HealthFamily; x: number; y: number; r: number }) {
-  if (f === 'err') return <circle className="ah-mk is-err" cx={x} cy={y} r={r} />
-  if (f === 'lim')
-    return <path className="ah-mk is-lim" d={`M${x} ${y - r - 1} ${x + r + 1} ${y} ${x} ${y + r + 1} ${x - r - 1} ${y}Z`} />
-  return <rect className="ah-mk is-cred" x={x - r} y={y - r} width={2 * r} height={2 * r} rx={1.5} />
-}
-
 function markSay(mk: LaneMark, name: string, now: number): string {
   const e = mk.event
   const parts = [`${name}`, whenS(mk.at, now), KIND_LABEL[e.kind]]
@@ -555,12 +548,6 @@ function Timeline({ m }: { m: Model }) {
   for (let t = Math.ceil(start / (24 * HOUR_MS)) * 24 * HOUR_MS; t < start + SPAN_HOURS * HOUR_MS; t += 24 * HOUR_MS) days.push(t)
   const nameById = new Map(rows.map((x) => [x.a.account_id, nameOf(x.a)]))
   const pick = (mk: LaneMark) => setPicked((p) => (p !== null && p.event === mk.event ? null : mk))
-  const onKey = (mk: LaneMark) => (ev: KeyboardEvent) => {
-    if (ev.key === 'Enter' || ev.key === ' ') {
-      ev.preventDefault()
-      pick(mk)
-    }
-  }
   return (
     <section className="ctl-card ah-timeline" data-state="ok">
       <div className="ctl-card-head">
@@ -570,107 +557,118 @@ function Timeline({ m }: { m: Model }) {
         </span>
       </div>
       <div className="ah-chart-scroll">
-        <svg
-          className="ah-swim"
-          viewBox={`0 0 ${W} ${H}`}
-          width={W}
-          height={H}
-          role="group"
-          aria-label="Rate-limit hits and errors per account over 7 days"
-        >
-          <text className="ah-ax" x={nowX} y={12} textAnchor="end">
-            now {hm(m.now)}
-          </text>
-          <text className="ah-ax is-nm" x={0} y={34}>
-            Whole pool, per hour
-          </text>
-          <text className="ah-ax" x={0} y={50}>
-            tallest: {tallest.total} at {hm(tallest.at)}
-          </text>
-          {hours.map((h, i) => {
-            if (h.total === 0) return null
-            const x = GUTTER + i * bw + 0.3
-            const w = Math.max(1, bw - 0.6)
-            let y = STRIP_TOP + STRIP_H
-            return (
-              <g key={`h${i}`} data-pool-hour={h.total}>
-                <title>
-                  {`${day(h.at)} ${hm(h.at)}: ${h.lim} limits · ${h.err} provider errors · ${h.cred} credential`}
-                </title>
-                {(['err', 'lim', 'cred'] as const).map((f) => {
-                  if (h[f] === 0) return null
-                  const hh = Math.max(1.5, (h[f] / mx) * STRIP_H)
-                  y -= hh
-                  return <rect key={f} className={`ah-bar is-${f}`} x={x} y={y} width={w} height={hh} />
-                })}
-              </g>
-            )
-          })}
-          <line className="ah-grid" x1={GUTTER} x2={W} y1={STRIP_TOP + STRIP_H} y2={STRIP_TOP + STRIP_H} />
-          {days.map((t) => {
-            const x = xOf(t)
-            const label = day(t)
-            const edge = x + 3 + label.length * 7 > W
-            return (
-              <g key={t}>
-                <line className="ah-grid" x1={x} x2={x} y1={STRIP_TOP} y2={H - 18} />
-                <text className="ah-ax" x={edge ? W : x + 3} y={H - 4} textAnchor={edge ? 'end' : 'start'}>
-                  {label}
-                </text>
-              </g>
-            )
-          })}
+        <div className="ah-swim-box" style={{ width: W, height: H }}>
+          <svg
+            className="ah-swim"
+            viewBox={`0 0 ${W} ${H}`}
+            width={W}
+            height={H}
+            role="group"
+            aria-label="Rate-limit hits and errors per account over 7 days"
+          >
+            <text className="ah-ax" x={nowX} y={12} textAnchor="end">
+              now {hm(m.now)}
+            </text>
+            <text className="ah-ax is-nm" x={0} y={34}>
+              Whole pool, per hour
+            </text>
+            <text className="ah-ax" x={0} y={50}>
+              tallest: {tallest.total} at {hm(tallest.at)}
+            </text>
+            {hours.map((h, i) => {
+              if (h.total === 0) return null
+              const x = GUTTER + i * bw + 0.3
+              const w = Math.max(1, bw - 0.6)
+              let y = STRIP_TOP + STRIP_H
+              return (
+                <g key={`h${i}`} data-pool-hour={h.total}>
+                  <title>
+                    {`${day(h.at)} ${hm(h.at)}: ${h.lim} limits · ${h.err} provider errors · ${h.cred} credential`}
+                  </title>
+                  {(['err', 'lim', 'cred'] as const).map((f) => {
+                    if (h[f] === 0) return null
+                    const hh = Math.max(1.5, (h[f] / mx) * STRIP_H)
+                    y -= hh
+                    return <rect key={f} className={`ah-bar is-${f}`} x={x} y={y} width={w} height={hh} />
+                  })}
+                </g>
+              )
+            })}
+            <line className="ah-grid" x1={GUTTER} x2={W} y1={STRIP_TOP + STRIP_H} y2={STRIP_TOP + STRIP_H} />
+            {days.map((t) => {
+              const x = xOf(t)
+              const label = day(t)
+              const edge = x + 3 + label.length * 7 > W
+              return (
+                <g key={t}>
+                  <line className="ah-grid" x1={x} x2={x} y1={STRIP_TOP} y2={H - 18} />
+                  <text className="ah-ax" x={edge ? W : x + 3} y={H - 4} textAnchor={edge ? 'end' : 'start'}>
+                    {label}
+                  </text>
+                </g>
+              )
+            })}
+            {rows.map(({ a, r }, i) => {
+              const y = LANES_TOP + i * LANE_H
+              return (
+                <g key={a.account_id} data-lane={a.account_id}>
+                  <rect className="ah-lane" x={GUTTER} y={y + 3} width={W - GUTTER} height={LANE_H - 6} rx={4} />
+                  <text className="ah-ax is-nm" x={0} y={y + LANE_H / 2 + 4}>
+                    {nameOf(a)}
+                  </text>
+                  {limitBands(r).map((b) => {
+                    const x0 = Math.max(GUTTER, xOf(b.from))
+                    const x1 = Math.min(W, xOf(b.to))
+                    return (
+                      <g key={`b${b.from}`} data-band={b.window ?? ''}>
+                        <title>{`${nameOf(a)}: ${windowWord(b.window) || 'a'} window · hit ${when(b.from, m.now)} · resets ${when(b.to, m.now)} · ${b.hits} ${b.hits === 1 ? 'hit' : 'hits'}`}</title>
+                        <rect className="ah-band" x={x0} y={y + 3} width={Math.max(3, x1 - x0)} height={LANE_H - 6} />
+                        <line className="ah-band-l" x1={x0} x2={x0} y1={y + 3} y2={y + LANE_H - 3} />
+                        {x1 - x0 > 44 && (
+                          <text className="ah-ax is-band" x={x0 + 4} y={y + 15}>
+                            {windowWord(b.window)}
+                          </text>
+                        )}
+                      </g>
+                    )
+                  })}
+                </g>
+              )
+            })}
+            <line className="ah-now" x1={nowX} x2={nowX} y1={16} y2={H - 18} />
+          </svg>
+          {/* THE MARKS ARE BUTTONS, laid over the chart at its own coordinates
+              (it is drawn at a fixed pixel size, so a chart unit is a pixel).
+              Each is one served event: hover names it, a press or Enter shows
+              its time, kind, tenant and task under the chart. HTML rather than
+              an SVG `<g tabindex>`, because the console's focus model
+              (focus.ts, the keyboard sweep) reaches HTML controls only. */}
           {rows.map(({ a, r }, i) => {
             const y = LANES_TOP + i * LANE_H
-            return (
-              <g key={a.account_id} data-lane={a.account_id}>
-                <rect className="ah-lane" x={GUTTER} y={y + 3} width={W - GUTTER} height={LANE_H - 6} rx={4} />
-                <text className="ah-ax is-nm" x={0} y={y + LANE_H / 2 + 4}>
-                  {nameOf(a)}
-                </text>
-                {limitBands(r).map((b) => {
-                  const x0 = Math.max(GUTTER, xOf(b.from))
-                  const x1 = Math.min(W, xOf(b.to))
-                  return (
-                    <g key={`b${b.from}`} data-band={b.window ?? ''}>
-                      <title>{`${nameOf(a)}: ${windowWord(b.window) || 'a'} window · hit ${when(b.from, m.now)} · resets ${when(b.to, m.now)} · ${b.hits} ${b.hits === 1 ? 'hit' : 'hits'}`}</title>
-                      <rect className="ah-band" x={x0} y={y + 3} width={Math.max(3, x1 - x0)} height={LANE_H - 6} />
-                      <line className="ah-band-l" x1={x0} x2={x0} y1={y + 3} y2={y + LANE_H - 3} />
-                      {x1 - x0 > 44 && (
-                        <text className="ah-ax is-band" x={x0 + 4} y={y + 15}>
-                          {windowWord(b.window)}
-                        </text>
-                      )}
-                    </g>
-                  )
-                })}
-                {laneMarks(r, start, m.now).map((mk, j) => {
-                  const x = xOf(mk.at)
-                  const yy = y + LANE_H / 2 + 5 + (mk.family === 'err' ? -8 : mk.family === 'lim' ? 0 : 8)
-                  const say = markSay(mk, nameOf(a), m.now)
-                  const on = picked !== null && picked.event === mk.event
-                  return (
-                    <g
-                      key={`m${j}`}
-                      className={`ah-hit${on ? ' is-on' : ''}`}
-                      data-mark={mk.family}
-                      role="button"
-                      tabIndex={0}
-                      aria-label={say}
-                      aria-pressed={on}
-                      onClick={() => pick(mk)}
-                      onKeyDown={onKey(mk)}
-                    >
-                      <title>{say}</title>
-                      <MarkShape f={mk.family} x={x} y={yy} r={4.5} />
-                    </g>
-                  )
-                })}
-              </g>
-            )
+            return laneMarks(r, start, m.now).map((mk, j) => {
+              const x = xOf(mk.at)
+              const yy = y + LANE_H / 2 + 5 + (mk.family === 'err' ? -8 : mk.family === 'lim' ? 0 : 8)
+              const say = markSay(mk, nameOf(a), m.now)
+              const on = picked !== null && picked.event === mk.event
+              return (
+                <button
+                  key={`${a.account_id}-${j}`}
+                  type="button"
+                  className={`ah-hit is-${mk.family}${on ? ' is-on' : ''}`}
+                  style={{ left: x - 6, top: yy - 6 }}
+                  data-mark={mk.family}
+                  data-mark-of={a.account_id}
+                  title={say}
+                  aria-label={say}
+                  aria-pressed={on}
+                  onClick={() => pick(mk)}
+                >
+                  <FamilyMark f={mk.family} />
+                </button>
+              )
+            })
           })}
-          <line className="ah-now" x1={nowX} x2={nowX} y1={16} y2={H - 18} />
-        </svg>
+        </div>
       </div>
       {picked !== null && <PickedEvent mk={picked} name={nameById.get(picked.account_id) ?? picked.account_id} now={m.now} />}
       <Legend />
