@@ -357,7 +357,10 @@ function Body({
   // TABLE OR TIMELINE (#2222, BGD "Table default, remembered"): the address
   // wins (`?view=timeline`, a followed link), then this browser's last
   // choice, then Table. Choosing writes both, and an account chosen after
-  // keeps the view in the address it writes.
+  // keeps the view in the address it writes -- the view SHOWN, not the
+  // address's: a Timeline restored from this browser's memory under a bare
+  // address (arriving from the sidebar) still writes `?view=timeline`, so the
+  // link the reader copies opens what they see.
   const linkedView = useLinkedParam('view')
   const [storedView, setStoredView] = useState<string | null>(() => {
     try {
@@ -379,7 +382,7 @@ function Body({
   }
   const choose = (id: string | null) => {
     patch((p) => ({ ...p, chosen: id, adding: p.signin.kind === 'idle' ? false : p.adding }))
-    if (typeof window !== 'undefined') followHash(paneHref('capacity/accounts', { account: id, view: linkedView }))
+    if (typeof window !== 'undefined') followHash(paneHref('capacity/accounts', { account: id, view: pageView === 'timeline' ? pageView : linkedView }))
   }
   const view = linked !== null ? { ...ui, chosen: linked } : ui
   // THE ANSWER FIRST (#2222, proposal A): can the pool take another agent,
