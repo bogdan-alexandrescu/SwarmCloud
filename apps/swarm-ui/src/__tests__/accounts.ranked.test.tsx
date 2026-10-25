@@ -294,7 +294,7 @@ describe('one subscription twice', () => {
     const banner = await screen.findByText('lone is a subscription another workspace already registered', undefined, WAIT)
     const box = banner.closest('.acct-dup') as HTMLElement
     expect(box.textContent).toContain('To fix it:')
-    expect(screen.getByRole('button', { name: 'Open lone' })).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'Open lone' })).toBeTruthy()
   })
 })
 
