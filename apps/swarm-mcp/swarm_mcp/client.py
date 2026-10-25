@@ -32,6 +32,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -624,6 +625,51 @@ def _open(request: urllib.request.Request, timeout: int):
     opener, with the redirect handler above replaced by the default one.
     """
     return _OPENER.open(request, timeout=timeout)
+
+
+def _header_map(response: Any) -> dict[str, str]:
+    """A response's headers, names lower-cased; `{}` for one that has none."""
+    headers = getattr(response, "headers", None) or {}
+    return {str(k).lower(): str(v) for k, v in dict(headers).items()}
+
+
+#: How much of a gzip body is read off the wire at a time.
+_GZIP_CHUNK = 64 * 1024
+_GZIP_MAGIC = b"\x1f\x8b"
+
+
+def _read_body(response: Any, limit: int | None = None) -> bytes:
+    """A response's body, gunzipped when it says `Content-Encoding: gzip`.
+
+    A plain body is read exactly as before -- `read()`, or `read(limit)` -- so
+    an API that does not compress is read unchanged. A body labelled gzip that
+    does not start with gzip's magic bytes was decoded on the way (a proxy, a
+    test transport) and is read as it is. With `limit`, at most that many
+    DECODED bytes come back: a small gzip body can inflate to any size, so the
+    bound is on what it inflates to, never on the wire bytes.
+    """
+    if _header_map(response).get("content-encoding", "").strip().lower() != "gzip":
+        return response.read() if limit is None else response.read(limit)
+    chunk = response.read(_GZIP_CHUNK)
+    if not chunk.startswith(_GZIP_MAGIC):
+        rest = response.read() if limit is None else response.read(max(limit - len(chunk), 0))
+        data = chunk + rest
+        return data if limit is None else data[:limit]
+    decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    out = bytearray()
+    while chunk:
+        pending = chunk
+        while pending:
+            room = 0 if limit is None else limit - len(out)
+            out += decoder.decompress(pending, room)
+            if limit is not None and len(out) >= limit:
+                return bytes(out[:limit])
+            pending = decoder.unconsumed_tail
+        if decoder.eof:
+            break
+        chunk = response.read(_GZIP_CHUNK)
+    out += decoder.flush()
+    return bytes(out if limit is None else out[:limit])
 
 
 @dataclass
@@ -1751,12 +1797,17 @@ class SwarmClient:
         if self.tenant:
             req.add_header(TENANT_HEADER, self.tenant)
         req.add_header("Accept", "application/json" if raw_limit is None else "*/*")
+        # swarm-api gzips a whole answer of 1 KB or more for a caller that asks
+        # (#1822): a board page is 1.43 MB plain, and this client is most of the
+        # API's requests. An older API ignores it and answers plain, which
+        # `_read_body` still reads.
+        req.add_header("Accept-Encoding", "gzip")
         if body is not None:
             req.add_header("Content-Type", "application/json")
         try:
             with _open(req, timeout=timeout) as response:
                 if raw_limit is not None:
-                    data = response.read(raw_limit + 1)
+                    data = _read_body(response, raw_limit + 1)
                     if len(data) > raw_limit:
                         raise SwarmError(
                             f"{method} {path} -> {response.status}, but the body is over "
@@ -1764,9 +1815,14 @@ class SwarmClient:
                             "nothing was kept",
                             status=response.status,
                         )
-                    headers = getattr(response, "headers", None) or {}
-                    return RawBody(data, {str(k).lower(): str(v) for k, v in dict(headers).items()})
-                raw = response.read().decode("utf-8", errors="replace")
+                    headers = _header_map(response)
+                    if headers.get("content-encoding") == "gzip":
+                        # The bytes are decoded: their length and encoding are
+                        # no longer the wire's.
+                        headers.pop("content-encoding")
+                        headers.pop("content-length", None)
+                    return RawBody(data, headers)
+                raw = _read_body(response).decode("utf-8", errors="replace")
                 if not raw.strip():
                     return None
                 try:
@@ -1784,7 +1840,7 @@ class SwarmClient:
                         edge=_is_edge(response.status, raw),
                     ) from exc
         except urllib.error.HTTPError as exc:
-            raw = exc.read().decode("utf-8", errors="replace")
+            raw = _read_body(exc).decode("utf-8", errors="replace")
             edge = _is_edge(exc.code, raw)
             message = f"{method} {path} -> {exc.code}: {_explain(exc.code, raw)}"
             if edge and exc.code == 401 and self.tier.value == "signed-in":
