@@ -6628,12 +6628,18 @@ const fixtureWorkflowFiles = new Map<string, boolean>()
  */
 const fixtureRemoved = new Set<string>()
 
-/** `GET /v1/repositories/counts` for the fixture registrations: secrets and QA targets, counts only. */
+/**
+ * `GET /v1/repositories/counts` for the fixture registrations: secrets and QA
+ * targets, counts only. Both are 0 because the fixture build serves no QA
+ * target (`loadQaTargets`) and no secret granted to a repository
+ * (`fixtureWorkspaceSecrets`): a card saying "QA targets: 1" would link to a
+ * list that says there are none.
+ */
 function fixtureRepositoryCounts(): unknown {
   return {
     tenant_id: FIXTURE_TENANT,
-    counts: FIXTURE_REPOS.map((r, i) => ({
-      repo_id: r.repo_id, repository: `example-org/${r.repo}`, secrets: [2, 0, 1][i] ?? 0, qa_targets: [1, 0, 2][i] ?? 0,
+    counts: FIXTURE_REPOS.map((r) => ({
+      repo_id: r.repo_id, repository: `example-org/${r.repo}`, secrets: 0, qa_targets: 0,
     })).filter((c) => !fixtureRemoved.has(c.repo_id)),
   }
 }

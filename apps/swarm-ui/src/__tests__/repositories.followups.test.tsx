@@ -334,3 +334,19 @@ describe('QA targets narrowed to one repository from the address', () => {
     expect(new URLSearchParams(pathToAddress(p!, `?${q}`)!.address.split('?')[1]).get('repository')).toBe('example-org/example-api')
   })
 })
+
+describe('the fixture build serves only counts it can show', () => {
+  it('counts no secret and no QA target, as its Secrets and QA targets pages serve none for a repository', async () => {
+    vi.resetModules()
+    const { loadRepositoryCounts } = await import('../api')
+    const { loadQaTargets } = await import('../qaTargetsApi')
+    // The fixture QA targets list is empty, so any QA-target count above 0 links to a list that contradicts it.
+    expect((await loadQaTargets()).status).toBe('empty')
+    const r = await loadRepositoryCounts()
+    expect(r.status).toBe('ok')
+    const counts = r.status === 'ok' ? Object.values(r.data) : []
+    expect(counts.length).toBeGreaterThan(0)
+    // MUTATION: invent a count for a fixture registration and this differs.
+    expect(counts.map((c) => [c.secrets, c.qa_targets])).toEqual(counts.map(() => [0, 0]))
+  })
+})
