@@ -195,7 +195,8 @@ def test_the_pod_carries_what_the_browser_image_needs(tenant):
 
 @pytest.fixture(autouse=True)
 def _no_live_browser_from_the_host(monkeypatch):
-    """Each test starts from no live browser; a test that wants one sets it.
+    """Each test starts from no live browser, whatever machine runs it; a test
+    that wants one sets it.
 
     `claude_code.body` reads `SWARM_CDP_ENDPOINT` and `SWARM_HANDOFF` from the
     process environment, and a SwarmCloud browser runner -- where an agent runs
@@ -259,12 +260,16 @@ def _no_live_browser(monkeypatch) -> None:
 
 
 def test_the_runner_hands_the_agent_the_browser(monkeypatch, tmp_path):
+    from agent_worker.runners import claude_code
     from agent_worker.runners.claude_code import BROWSER_NOTE
 
     _no_live_browser(monkeypatch)
     # A path under tmp_path, not the image's `/opt/playwright`: where that
     # directory exists (a SwarmCloud browser runner), the runner seeds a test
     # browsers directory from it and names it after BROWSER_NOTE (PW-TESTRUNNER).
+    # The browser note alone: `prepare_test_browsers` seeds no test-runner
+    # directory here (its own cases cover TEST_RUNNER_NOTE).
+    monkeypatch.setattr(claude_code, "prepare_test_browsers", lambda *a, **k: None)
     browsers = str(tmp_path / "playwright")
     seen = _run_body(monkeypatch, tmp_path, browsers)
     assert seen["env"]["PLAYWRIGHT_BROWSERS_PATH"] == browsers

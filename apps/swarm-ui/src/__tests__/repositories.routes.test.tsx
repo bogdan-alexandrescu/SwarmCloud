@@ -30,6 +30,8 @@ const config = () => SECTIONS.find((s) => s.id === 'config')!
 const PAIRS: readonly (readonly [string, string])[] = [
   ['config/repositories', '/config/repositories'],
   ['config/repositories?page=register', '/config/repositories/register'],
+  // The dashed card's Register carries its repository (REPOS-FOLLOWUPS); a reload keeps it (CONSOLE-SMALL-FIXES).
+  ['config/repositories?page=register&repo=example-labs%2Fconsole', '/config/repositories/register?repo=example-labs%2Fconsole'],
   ['config/repositories?page=tokens', '/config/repositories/tokens'],
   ['config/repositories?page=permissions', '/config/repositories/tokens/permissions'],
   ['config/repositories?repo=repo_0a1b2c3d4e5f6071', '/config/repositories/repo_0a1b2c3d4e5f6071'],
@@ -64,7 +66,19 @@ describe('paths', () => {
       const [pathname, search = ''] = path.split('?')
       expect(pathToAddress(pathname!, search)?.address, path).toBe(address)
     }
-    expect(PAIRS).toHaveLength(10)
+    expect(PAIRS).toHaveLength(11)
+  })
+
+  it('keeps the picked repository on Register, from either root, and nothing else of the query', () => {
+    // MUTATION: write the bare register path and a reload of the dashed card's Register opens step 1.
+    expect(addressToPath('config/repositories?page=register&repo=example-labs%2Fconsole')).toBe('/config/repositories/register?repo=example-labs%2Fconsole')
+    // MUTATION: drop `repo` on the way in and the shared link loses the repository.
+    expect(pathToAddress('/config/repositories/register', '?repo=example-labs%2Fconsole')?.address).toBe('config/repositories?page=register&repo=example-labs%2Fconsole')
+    expect(pathToAddress('/repositories/register', '?repo=example-labs/console')?.address).toBe('config/repositories?page=register&repo=example-labs%2Fconsole')
+    expect(pathToAddress('/config/repositories/register', '?repo=example-labs%2Fconsole&tab=settings&x=1')?.address).toBe('config/repositories?page=register&repo=example-labs%2Fconsole')
+    // An empty `repo` is no repository: the bare page.
+    expect(addressToPath('config/repositories?page=register&repo=')).toBe('/config/repositories/register')
+    expect(pathToAddress('/config/repositories/register', '?repo=')?.address).toBe('config/repositories?page=register')
   })
 
   it('reads a trailing slash and an unknown tab as the repository itself', () => {
