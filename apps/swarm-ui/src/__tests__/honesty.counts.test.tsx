@@ -23,7 +23,18 @@ const loadStats = vi.hoisted(() => vi.fn<() => Promise<Result<Stats>>>())
 // counts reads it too, so the cost it shows before the first run is the cost
 // THIS caller's first run will have (AH-9).
 const loadMe = vi.hoisted(() => vi.fn<() => Promise<Result<Me>>>())
-vi.mock('../api', () => ({ loadStats, loadMe }))
+// The workspace roster the page reads once on mount to price its Over time
+// read (COUNTS-PAGE, #2149). Refused here, so the price stays per workspace
+// and nothing this file pins moves.
+const loadTenants = vi.hoisted(() =>
+  vi.fn(() =>
+    Promise.resolve({
+      status: 'error' as const,
+      error: { kind: 'admin_required' as const, httpStatus: 403, code: null, message: 'not an admin' },
+    }),
+  ),
+)
+vi.mock('../api', () => ({ loadStats, loadMe, loadTenants }))
 
 const { PlatformCountsScreen, forgetLastRun } = await import('../PlatformCounts')
 
@@ -311,7 +322,17 @@ describe('a failed read of the counts', () => {
     // The copy block explaining the aggregation cost names counts of STATES,
     // which are a property of the contract rather than a measurement of the
     // platform, so they are allowed through by name.
-    expectNoFigures(document.body, ['1000', 'twelve', 'twenty-four'].concat(
+    //
+    // THE OVER TIME SECTION IS NOT THIS FAILURE'S SURFACE (COUNTS-PAGE,
+    // #2149). It is its own read behind its own Run, which this failure did
+    // not touch, and before that press it prints the span and the price of
+    // its read -- a price, not a measurement. It is left out of the sweep, and
+    // the sweep proves it ran over the rest by still finding the failure.
+    // MUTATION: draw a 0 in the counts' failure panel, and this goes red.
+    const surface = document.body.cloneNode(true) as HTMLElement
+    for (const n of [...surface.querySelectorAll('.pot')]) n.remove()
+    expect(surface.querySelector('.ctl-empty.is-failed'), 'the sweep lost the failure panel').not.toBeNull()
+    expectNoFigures(surface, ['1000', 'twelve', 'twenty-four'].concat(
       [String(NEVER_WRITTEN.size), String(REAL_STATES.length + NEVER_WRITTEN.size)],
     ))
   })

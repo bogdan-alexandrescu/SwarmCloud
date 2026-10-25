@@ -48,6 +48,12 @@
 //   Holders       (#432)   --       110   +15: the Held for column (capacity.html
 //                                         §C, decided 2026-10-01), one duration
 //                                         of up to two tokens per lease row
+//   Accounts      (#2222)  256     500   520   proposal A, "Answer first" (BGD,
+//                                         2026-10-24): the verdict sentence, the
+//                                         rule line, the forecast and the
+//                                         laptop note, and a ranked table whose
+//                                         rows say in words what blocks each
+//                                         account and when it clears
 //
 // A ceiling that has to be RAISED is not a failure either -- a screen that
 // gains a genuinely new column gains words. It is a decision, and the point of
@@ -333,7 +339,7 @@ const BUDGET = {
   Pools: 215,
   Runtimes: 255,
   Holders: 110,
-  Accounts: 256,
+  Accounts: 520,
 } as const
 
 function report(screenName: keyof typeof BUDGET): void {

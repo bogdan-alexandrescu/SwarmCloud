@@ -83,7 +83,7 @@ async function openRow(a: Account) {
   api.loadAccountsBoard.mockResolvedValue(ok(board(a)))
   render(<AccountsScreen />)
   await screen.findByText('Subscription accounts', undefined, WAIT)
-  const open = document.querySelector<HTMLButtonElement>('.acct-li > button.acct-open')!
+  const open = document.querySelector<HTMLButtonElement>('button.acct-open')!
   if (open.getAttribute('aria-current') !== 'true') fireEvent.click(open)
 }
 
@@ -128,12 +128,13 @@ describe('G5-07: a window tile draws its track across the tile, in a colour the 
 describe('G5-17: the chosen row keeps its muted clauses at 4.5:1 in both themes', () => {
   const hosts: HTMLElement[] = []
   // The three the QA pass measured -- "5h", "eng:team", "given out 3m ago" --
-  // and the state note that shares their line.
+  // and the state note that shared their line, on the ranked table's chosen
+  // row (#2222): the id, the organisation, the reading's age and given out.
   const CLAUSES = [
-    'li.acct-li.is-chosen > button.acct-open > small.acct-li-line > span.acct-clears > span.acct-clears-win',
-    'li.acct-li.is-chosen > span.acct-li-meta > span.raw',
-    'li.acct-li.is-chosen > span.acct-li-meta > span.acct-given',
-    'li.acct-li.is-chosen > span.acct-li-meta > span.acct-why',
+    'table > tbody > tr.acct-rank-row.is-chosen > td > small.raw',
+    'table > tbody > tr.acct-rank-row.is-chosen > td > small.acct-age',
+    'table > tbody > tr.acct-rank-row.is-chosen > td > small.acct-given',
+    'table > tbody > tr.acct-rank-row.is-chosen > td.acct-clr > small',
   ]
   for (const theme of THEMES) {
     for (const selector of CLAUSES) {
@@ -147,7 +148,7 @@ describe('G5-17: the chosen row keeps its muted clauses at 4.5:1 in both themes'
           ink = painted(at, 'color', env)
           at = at.parentElement
         }
-        const row = el.closest('li')!
+        const row = el.closest('td')!
         const bg = resolveColour(painted(row, ['background', 'background-color'], env)!, theme)
         const fg = over(resolveColour(ink!, theme), bg)
         // MUTATION: drop the `--text-dim-on-selected` rule: dark reads 4.33.
