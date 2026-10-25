@@ -13,8 +13,19 @@
 // `forecastOf`, queue more agents than the free slots, name another
 // workspace's account on a duplicate lane, or open a different detail from a
 // lane -- a case below turns red.
+//
+// ACCOUNTS-TIMELINE-MERGE (BGD, 2026-10-25 10:05Z): a lane opens the Table's
+// side sheet (the whole screen on a phone), not a detail under the lane; a
+// full lane draws its latest hold deadline as the broker serves it, and a dash
+// with its reason when it does not; the kept half of a duplicate pair is
+// marked on its lane; a Timeline restored from the browser's memory writes
+// `?view=timeline` to the address. BREAK IT: draw the old `.acct-tl-detail`,
+// drop `latest_hold_deadline`, mark only the withheld half, or leave a
+// restored address bare -- a case below turns red.
 
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AccountsBoard } from '../api'
@@ -339,13 +350,41 @@ describe('the Timeline', () => {
     expect(within(tl).getByRole('region', { name: 'Forecast' })).toBeTruthy()
   })
 
-  it('shows a full account’s holds, with their deadlines a dash and the reason', async () => {
+  it('draws a full account’s holds up to the latest hold deadline the broker serves', async () => {
+    const now = Date.now()
+    const last = now + 2 * H + 41 * 60_000
+    const accounts = b3(now).map((a) => (a.account_id === 'eng:ai-eng-2' ? { ...a, latest_hold_deadline: iso(last) } : a))
     window.history.replaceState(null, '', '/#capacity/accounts?view=timeline')
-    await mount(b3(Date.now()))
+    await mount(accounts)
     const lane = document.querySelector<HTMLElement>('.acct-tl-lane[data-account="eng:ai-eng-2"]')!
     expect(lane.textContent).toContain('Full: 6 of 6 agents')
     expect(lane.querySelectorAll('.acct-tl-holdcells > i.is-held')).toHaveLength(6)
-    expect(lane.textContent).toContain('hold deadlines — not in the accounts read')
+    // B3: "6 agents · latest hold deadline 16:45Z", labelled latest, never expected.
+    expect(lane.textContent).toContain(`6 agents hold it · latest hold deadline ${pool.utcAt(last, now)}`)
+    expect(lane.textContent).not.toContain('not in the accounts read')
+    // The bar runs from now to that instant on the lane's own axis.
+    const bar = lane.querySelector<HTMLElement>('.acct-tl-holdbar')!
+    expect(bar).not.toBeNull()
+    expect(parseFloat(bar.style.width)).toBeGreaterThan(0)
+  })
+
+  it('draws a hold deadline the broker does not know as a dash with its reason', async () => {
+    const now = Date.now()
+    const accounts = b3(now).map((a) =>
+      a.account_id === 'eng:devops-main' ? { ...a, latest_hold_deadline: null } : a,
+    )
+    window.history.replaceState(null, '', '/#capacity/accounts?view=timeline')
+    await mount(accounts)
+    const lane = (id: string) => document.querySelector<HTMLElement>(`.acct-tl-lane[data-account="${id}"]`)!
+    // No key: a broker older than the field.
+    expect(lane('eng:ai-eng-2').textContent).toContain('latest hold deadline — not served by this broker')
+    // Null: the broker read no live hold on it.
+    expect(lane('eng:devops-main').textContent).toContain('latest hold deadline — the broker read no live hold')
+    expect(lane('eng:ai-eng-2').querySelector('.acct-tl-holdbar')).toBeNull()
+    expect(lanes.holdDeadlineOf({ latest_hold_deadline: 'soon' } as never, now)).toEqual({
+      at: null,
+      reason: 'not an instant the broker served',
+    })
   })
 
   it('draws an old reading pale, and names a duplicate’s other half only inside this workspace', async () => {
@@ -365,22 +404,88 @@ describe('the Timeline', () => {
     expect(lane('eng:old').classList.contains('is-stale')).toBe(true)
   })
 
-  it('opens the Table’s own detail under the lane, keeps the view in the address, and folds the rest', async () => {
+  it('marks the kept half of a duplicate pair on its lane, naming the other only inside this workspace', async () => {
+    const now = Date.now()
+    window.history.replaceState(null, '', '/#capacity/accounts?view=timeline')
+    await mount([
+      // The kept half: the broker names the pair on both rows, and withholds only the later one.
+      acct('example-personal', { duplicate_of: 'eng:team', duplicate_reason: 'registered on the same organisation as eng:team' }, now),
+      acct('team', {
+        duplicate_of: 'eng:example-personal',
+        can_take_new_agent: false,
+        blocked_by: [{ duplicate_of: 'eng:example-personal', reason: 'same organisation' }],
+      }, now),
+      // Kept here, its later twin in another workspace: named by neither side.
+      acct('solo', { duplicate_of: null, duplicate_reason: 'this subscription is already registered in another workspace' }, now),
+      acct('plain', {}, now),
+    ])
+    const lane = (id: string) => document.querySelector<HTMLElement>(`.acct-tl-lane[data-account="${id}"]`)!
+    expect(lane('eng:example-personal').classList.contains('is-kept')).toBe(true)
+    expect(lane('eng:example-personal').textContent).toContain('One subscription with team · older, handed out')
+    // The withheld half keeps its own flag, and is not also called kept.
+    expect(lane('eng:team').classList.contains('is-kept')).toBe(false)
+    expect(lane('eng:solo').classList.contains('is-kept')).toBe(true)
+    expect(lane('eng:solo').textContent).toContain('One subscription with an account in another workspace · handed out here')
+    expect(lane('eng:plain').classList.contains('is-kept')).toBe(false)
+  })
+
+  it('opens the Table’s side sheet from a lane, keeps the view in the address, and closes back to the lanes', async () => {
     window.history.replaceState(null, '', '/#capacity/accounts?view=timeline')
     await mount(b3(Date.now()))
     const open = document.querySelector<HTMLButtonElement>('.acct-tl-open[data-account="eng:example-team"]')!
     fireEvent.click(open)
     expect(window.location.hash).toBe('#capacity/accounts?account=eng%3Aexample-team&view=timeline')
-    const detail = await waitFor(() => {
-      const d = document.querySelector<HTMLElement>('.acct-tl-detail')
+    const sheet = await waitFor(() => {
+      const d = document.querySelector<HTMLElement>('aside.acct-sheet')
       expect(d).not.toBeNull()
       return d!
     }, WAIT)
-    // The same `Detail` the Table opens: its section and its controls.
-    expect(detail.querySelector('.acct-pane-detail .acct-detail')).not.toBeNull()
-    expect(document.querySelectorAll('.acct-tl-lane.is-folded')).toHaveLength(6)
-    fireEvent.click(within(detail).getByRole('button', { name: /All accounts/ }))
+    // The same sheet a Table row opens: its label, its head and the detail.
+    expect(sheet.getAttribute('aria-label')).toBe('Account example-team')
+    expect(sheet.querySelector('.acct-sheet-head .acct-sheet-close')).not.toBeNull()
+    expect(sheet.querySelector('.acct-pane-detail .acct-detail')).not.toBeNull()
+    expect(document.querySelector('.acct-split.is-timeline.has-sheet > .acct-scrim')).not.toBeNull()
+    // Not proposal B's expanded lane: no detail under it, and no lane folds.
+    expect(document.querySelector('.acct-tl-detail')).toBeNull()
+    expect(document.querySelectorAll('.acct-tl-lane.is-folded')).toHaveLength(0)
+    expect(document.querySelectorAll('.acct-tl-lane')).toHaveLength(7)
+    // The lanes stay drawn under the sheet, the opened one marked.
+    expect(document.querySelector('.acct-tl-lane.is-open')?.getAttribute('data-account')).toBe('eng:example-team')
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Close' }))
     expect(window.location.hash).toBe('#capacity/accounts?view=timeline')
+    await waitFor(() => expect(document.querySelector('.acct-sheet')).toBeNull(), WAIT)
+    expect(document.querySelector('.acct-tl')).not.toBeNull()
+  })
+
+  it('opens the sheet as the whole screen on a phone: the lanes and the verdict step aside', async () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query.includes('560'),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }))
+    try {
+      window.history.replaceState(null, '', '/#capacity/accounts?view=timeline')
+      await mount(b3(Date.now()))
+      fireEvent.click(document.querySelector<HTMLButtonElement>('.acct-tl-open[data-account="eng:example-team"]')!)
+      const sheet = await waitFor(() => {
+        const d = document.querySelector<HTMLElement>('aside.acct-sheet')
+        expect(d).not.toBeNull()
+        return d!
+      }, WAIT)
+      expect(document.querySelector('.acct-split.is-timeline.is-detail')).not.toBeNull()
+      expect(document.querySelector('.acct-verdict, .acct-view-toggle')).toBeNull()
+      expect(sheet.querySelector('.acct-back')).not.toBeNull()
+      // The phone block hides the Timeline under an opened account, as capacity.css hides the list.
+      const css = readFileSync(resolve(__dirname, '../styles/accounts-timeline.css'), 'utf8')
+      expect(css).toMatch(/\.acct-split\.is-timeline\.is-detail > \.acct-tl\s*\{[^}]*display:\s*none/)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('keeps the view in the address an account writes when the Timeline came from the browser’s memory', async () => {
@@ -391,6 +496,22 @@ describe('the Timeline', () => {
     await waitFor(() => expect(document.querySelector('.acct-tl')).not.toBeNull(), WAIT)
     fireEvent.click(document.querySelector<HTMLButtonElement>('.acct-tl-open[data-account="eng:example-team"]')!)
     expect(window.location.hash).toBe('#capacity/accounts?account=eng%3Aexample-team&view=timeline')
+  })
+
+  it('writes ?view=timeline to the address when the Timeline is restored from the browser’s memory', async () => {
+    window.localStorage.setItem(lanes.VIEW_KEY, 'timeline')
+    window.history.replaceState(null, '', '/#capacity/accounts')
+    const before = window.history.length
+    await mount(b3(Date.now()))
+    await waitFor(() => expect(window.location.hash).toBe('#capacity/accounts?view=timeline'), WAIT)
+    // Replaced, not pushed: Back does not land on the same page with a bare address.
+    expect(window.history.length).toBe(before)
+  })
+
+  it('leaves a Table address bare: only a restored Timeline is written', async () => {
+    window.history.replaceState(null, '', '/#capacity/accounts')
+    await mount(b3(Date.now()))
+    expect(window.location.hash).toBe('#capacity/accounts')
   })
 
   it('draws the empty pool as B6: no lanes, the add form in the first lane, one heading', async () => {
