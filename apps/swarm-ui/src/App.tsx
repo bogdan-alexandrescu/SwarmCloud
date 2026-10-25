@@ -2203,11 +2203,11 @@ function SectionBody({
     case 'config/repositories':
       return <RepositoriesScreen view={view} go={go} qaLink={qaLink} />
     case 'config/secrets':
-      return <WorkspaceSecretsScreen link={secretsLink} />
+      return <WorkspaceSecretsScreen link={secretsLink} view={view} />
     case 'config/mcp-servers':
       return <McpServersScreen />
     case 'config/people':
-      return <WorkspacePeopleScreen />
+      return <WorkspacePeopleScreen view={view} />
     case 'config/workspace':
       return <WorkspaceSettingsScreen />
 

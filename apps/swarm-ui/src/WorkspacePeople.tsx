@@ -67,9 +67,15 @@ const PEOPLE_TABS: readonly TabDef[] = [
   { key: 'members', label: "Members' GitHub" },
 ]
 
-function peopleViewFromUrl(): PeopleView {
-  if (typeof window === 'undefined') return 'roles'
-  return new URLSearchParams(window.location.search).get('view') === 'members' ? 'members' : 'roles'
+/**
+ * The tab an address names. App passes the ROUTED query (`view`), because an
+ * old hash bookmark (`#work/access?view=members`) is rewritten to this path
+ * only after the first render, so the bar read at mount names no tab (GA-MOVE-VIEWS
+ * review). Mounted without App, the page reads the bar.
+ */
+function peopleViewOf(query: string | null | undefined): PeopleView {
+  const q = query !== undefined ? query ?? '' : typeof window === 'undefined' ? '' : window.location.search
+  return new URLSearchParams(q).get('view') === 'members' ? 'members' : 'roles'
 }
 
 /** The tab into the bar in place, as GitHub access writes its own: Roles is the bare path. */
@@ -100,8 +106,16 @@ function usePlatformAdmin(): boolean | null {
   return admin
 }
 
-export function WorkspacePeopleScreen() {
-  const [view, setViewState] = useState<PeopleView>(peopleViewFromUrl)
+export function WorkspacePeopleScreen({ view: routed }: { view?: string | null } = {}) {
+  const named = peopleViewOf(routed)
+  const [view, setViewState] = useState<PeopleView>(named)
+  // A new routed address names its tab; a tab picked here is written in place
+  // and leaves the route as it was, so it is not undone.
+  const [arrived, setArrived] = useState(named)
+  if (arrived !== named) {
+    setArrived(named)
+    setViewState(named)
+  }
   const admin = usePlatformAdmin()
   function setView(v: PeopleView) {
     setViewState(v)

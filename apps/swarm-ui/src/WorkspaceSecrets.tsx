@@ -100,9 +100,15 @@ const SECRETS_TABS: readonly TabDef[] = [
   { key: SECRETS_LOGINS_VIEW, label: 'Browser logins' },
 ]
 
-function secretsViewFromUrl(): SecretsView {
-  if (typeof window === 'undefined') return 'secrets'
-  return new URLSearchParams(window.location.search).get('view') === SECRETS_LOGINS_VIEW ? 'logins' : 'secrets'
+/**
+ * The tab an address names. App passes the ROUTED query (`view`), because an
+ * old hash bookmark (`#work/access?view=logins`) is rewritten to this path
+ * only after the first render, so the bar read at mount names no tab (GA-MOVE-VIEWS
+ * review). Mounted without App, the page reads the bar.
+ */
+function secretsViewOf(query: string | null | undefined): SecretsView {
+  const q = query !== undefined ? query ?? '' : typeof window === 'undefined' ? '' : window.location.search
+  return new URLSearchParams(q).get('view') === SECRETS_LOGINS_VIEW ? 'logins' : 'secrets'
 }
 
 /** The tab into the bar in place, keeping a link's query: the secrets tab is the bare path. */
@@ -189,7 +195,7 @@ export function WorkspaceSecretsEntry() {
   )
 }
 
-export function WorkspaceSecretsScreen({ link }: { link: SecretsLink | null }) {
+export function WorkspaceSecretsScreen({ link, view: routed }: { link: SecretsLink | null; view?: string | null }) {
   const list = useUrRead(loadWorkspaceSecrets, 'workspace-secrets')
   const catalogue = useUrRead(loadWorkspaceSecretCatalogue, 'workspace-secret-catalogue')
   // The link's token, read once; null once it has been sent. A ref, never
@@ -215,7 +221,15 @@ export function WorkspaceSecretsScreen({ link }: { link: SecretsLink | null }) {
   const manages = listed !== null && listed.can_manage
   const rotateFirst = link !== null && link.action === 'rotate' ? link.name : null
   const following = link !== null && link.action !== null
-  const [view, setViewState] = useState<SecretsView>(() => (following ? 'secrets' : secretsViewFromUrl()))
+  const named: SecretsView = following ? 'secrets' : secretsViewOf(routed)
+  const [view, setViewState] = useState<SecretsView>(named)
+  // A new routed address names its tab; a tab picked here is written in place
+  // and leaves the route as it was, so it is not undone.
+  const [arrived, setArrived] = useState(named)
+  if (arrived !== named) {
+    setArrived(named)
+    setViewState(named)
+  }
   function setView(v: SecretsView) {
     setViewState(v)
     writeSecretsView(v)
