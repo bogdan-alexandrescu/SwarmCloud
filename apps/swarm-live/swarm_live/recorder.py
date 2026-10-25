@@ -1,10 +1,13 @@
-"""Recording a live session's masked frames and its action log (LB-L7, LB-4).
+"""Recording a live session's frames and its action log (LB-L7, LB-4).
 
 docs/design/live-browser.md §7. The RELAY records, not the pod: it already
-carries every masked frame, and an object written by the relay's identity
-cannot be forged or padded by the agent, which shares the tenant's GSA with
-everything else in its pod. Nothing unmasked reaches the relay, so nothing
-unmasked can be recorded.
+carries every frame the gate publishes, and an object written by the relay's
+identity cannot be forged or padded by the agent, which shares the tenant's
+GSA with everything else in its pod. Since BGD's decision of 2026-10-25
+(live-browser.md §5.3) those frames are the screen as Chromium drew it, with
+nothing painted over it, so a recording holds whatever the page showed; it is
+a tenant artifact under the tenant's prefix, read only by that tenant's
+members.
 
 HOW IT SEES FRAMES. For each tunnel the relay opens one more RFB connection of
 its own (`rec-...`, see rendezvous.py), and this module is an RFB 3.8 client on

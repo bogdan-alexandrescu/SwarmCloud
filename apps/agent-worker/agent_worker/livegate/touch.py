@@ -29,8 +29,8 @@ upstream got the controller wrong.
 
 COORDINATES. The display is the page at `Device.screen_scale` (one screen
 pixel per CSS pixel, NOT the device scale factor: presets.py) plus the
-browser's UI band above it, and the page is anchored at the bottom-left, as
-the mask places it. A screen point in the page area is
+browser's UI band above it, and the page is anchored at the bottom-left
+(presets.py `page_top`). A screen point in the page area is
 `((x - 0) / screen_scale, (y - page_top) / screen_scale)` CSS pixels, which is what
 `dispatchTouchEvent` takes. A drag that leaves the page area is clamped to its
 edge rather than turned into a mouse event half-way through.

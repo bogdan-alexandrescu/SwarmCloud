@@ -6,7 +6,7 @@
 //     Try it -- each ticked from `GET /v1/onboarding` and never by the page,
 //     with "<n> of 3 done" over them;
 //   * a step that is not done says what to do next and offers it: Connect,
-//     Install the App, Manage in Access (or Enable inline), Check access;
+//     Install the App, Manage in GitHub access (or Enable inline), Check access;
 //   * a step waiting on an earlier one says so and offers nothing;
 //   * Check access on a repo runs the EXISTING verify routes -- a grant's
 //     `POST /v1/access/grants/{repo_id}/verify` for an App connection, the
@@ -132,7 +132,7 @@ describe('the page opens on three steps, ticked from the onboarding read', () =>
     expect(within(row(s, 1)).getByRole('button', { name: 'Disconnect' })).toBeTruthy()
     expect(visible(row(s, 2).querySelector('h3'))).toBe('Choose what it reaches')
     expect(visible(row(s, 2))).toContain('example-org (2 repos)')
-    const manage = within(row(s, 2)).getByRole('link', { name: 'Manage in Access' })
+    const manage = within(row(s, 2)).getByRole('link', { name: 'Manage in GitHub access' })
     expect(manage.getAttribute('href')).toBe('/config/github')
     expect(visible(row(s, 3).querySelector('h3'))).toBe('Try it')
     const pick = within(row(s, 3)).getByRole('combobox', { name: 'Repository to check' })
@@ -176,7 +176,7 @@ describe('the page opens on three steps, ticked from the onboarding read', () =>
 })
 
 describe('Choose what it reaches says where orgs are enabled', () => {
-  it('connected with no org enabled: says to enable them on Access, links there, and Enable acts inline', async () => {
+  it('connected with no org enabled: says to enable them on GitHub access, links there, and Enable acts inline', async () => {
     let enabled = false
     const calls = routes(
       () => (enabled ? TWO_DONE : NOTHING_ENABLED),
@@ -191,9 +191,9 @@ describe('Choose what it reaches says where orgs are enabled', () => {
     await mount()
     const s = await steps()
     await waitFor(() => expect(row(s, 2)?.getAttribute('data-state')).toBe('todo'), WAIT)
-    expect(visible(row(s, 2))).toMatch(/Enable the accounts and orgs SwarmCloud may work in.*Work › Access/)
+    expect(visible(row(s, 2))).toMatch(/Enable the accounts and orgs SwarmCloud may work in.*Config › GitHub access/)
     expect(visible(s)).not.toContain('appear here once it has')
-    const manage = within(row(s, 2)).getByRole('link', { name: 'Manage in Access' })
+    const manage = within(row(s, 2)).getByRole('link', { name: 'Manage in GitHub access' })
     expect(manage.getAttribute('href')).toBe('/config/github')
     expect(manage.className).toContain('primary')
     fireEvent.click(within(row(s, 2)).getByRole('button', { name: 'Enable octo-dev' }))

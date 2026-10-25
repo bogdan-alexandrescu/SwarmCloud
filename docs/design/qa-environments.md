@@ -138,6 +138,11 @@ changes: an entry is `values["<target_id>/<environment name>"]`.
   `PUT .../credential` take the `environment` name; the link document
   records it and `consume_link` compares it with the email, tenant and
   target, so a link minted for staging can never set production's password.
+  A PUT (credential or bypass) whose body names no entry, on a target of
+  several, takes the entry the link was minted for, read by the token's
+  digest from a link that is this person's, unused and unexpired (#2280):
+  the link already names it, so the request need not restate it. A body
+  naming another entry is still `consume_link`'s 403, the link not burned.
 * **Size.** A Secret Manager payload is at most 64 KiB. An entry at today's
   maxima (256-character username, 1,024-character password, 1,024-character
   bypass value) is about 2.4 KiB, so one tenant holds about 25 maximal legs;

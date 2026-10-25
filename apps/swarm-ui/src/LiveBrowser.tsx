@@ -754,7 +754,7 @@ export function LiveBrowserPane({
   const [logs, setLogs] = useState(false)
   // The element noVNC draws into, for the theater to borrow; null until LiveScreen has mounted it.
   const [screenNode, setScreenNode] = useState<HTMLElement | null>(null)
-  // The gate's reason the page is not (all) shown, while its desktop name carries one (`gateReason`).
+  // The gate's word that the browser closed, while its desktop name carries it (`gateReason`).
   const [cover, setCover] = useState<string | null>(null)
   // The frame noVNC draws (`LiveScreen`'s `onFrame`): what the caption checks the gate's report against.
   const [frame, setFrame] = useState<FrameSize | null>(null)
@@ -869,10 +869,9 @@ export function LiveBrowserPane({
           )}
         </span>
         <span className="live-strip-say">{verdict.say}</span>
-        {/* THE COVER REASON IS IN THE STRIP (STRIP-LABEL, part of #1341).
+        {/* THE GATE'S WORD IS IN THE STRIP (STRIP-LABEL, part of #1341).
             MEASURED 2026-10-15: under the screen, it sat below the fold
-            behind the theater, and the strip above the browser said nothing
-            of a page partly painted over. The strip is drawn in both. */}
+            behind the theater. The strip is drawn in both. */}
         {cover !== null && (
           <span className="live-strip-cover" data-testid="live-cover">
             {cover}.
@@ -1414,21 +1413,18 @@ export interface Rfb {
 const BROWSER_CLOSED = 'The agent has finished; its browser is closed.'
 
 /**
- * WHY THE PAGE IS NOT SHOWN (LIVE-BLANK; part of #1030). The gate fills a frame
- * it cannot vouch for -- every pixel it sends passes its mask -- and names the
- * reason as the RFB desktop name (livegate/rfb.py `desktop_name`, livegate/mask.py
- * `CANNOT_SHOW` and `PARTLY_COVERED`), which noVNC hands the page as a
- * `desktopname` event. MEASURED 2026-10-13 on release 1e86c37e: ten minutes of a
- * flat page area on Google's reCAPTCHA page, and nothing here said why.
+ * WHAT THE GATE SAYS IN ITS DESKTOP NAME (livegate/rfb.py `desktop_name`),
+ * which noVNC hands the page as a `desktopname` event. After the attempt ends
+ * the gate says, with no lead, that the agent finished (mask.py
+ * `REASON_BROWSER_CLOSED`; GREY-TAIL, part of #1344), and the strip draws it.
  *
- * The reason, when `name` is one; null for the gate's ordinary name (the page is
- * shown), or anything else. After the attempt ends the gate says, with no lead,
- * that the agent finished (mask.py `REASON_BROWSER_CLOSED`; GREY-TAIL, part of #1344).
+ * Only that name; null for the gate's ordinary name (the page is shown) or
+ * anything else. The gate redacts no part of the screen (BGD, 2026-10-25;
+ * LIVE-NOMASK-COPY, part of #2298), so a name that says the page cannot be
+ * shown safely or is partly covered is not a reason here.
  */
 export function gateReason(name: unknown): string | null {
-  if (typeof name !== 'string') return null
-  if (name === BROWSER_CLOSED) return name
-  return /^(Can['’]t show this page safely|Part of this page is covered): /.test(name) ? name : null
+  return name === BROWSER_CLOSED ? name : null
 }
 
 export type RfbConstructor = new (target: HTMLElement, channel: LiveChannel, options?: { shared?: boolean }) => Rfb
@@ -1534,7 +1530,7 @@ function LiveScreen({
   touch: boolean
   /** Told the element noVNC draws into, and null when it goes: the theater borrows it. */
   onScreen?: (node: HTMLElement | null) => void
-  /** Told the gate's reason the page is not (all) shown (`gateReason`), and null when it has none: the strip draws it. */
+  /** Told the gate's word that the browser closed (`gateReason`), and null when it has none: the strip draws it. */
   onGateSays?: (reason: string | null) => void
   /** The device as turned (`deviceSize`): the frame is fitted to its proportions, in an outline when it is mobile. */
   device?: { width: number; height: number; mobile: boolean } | null
