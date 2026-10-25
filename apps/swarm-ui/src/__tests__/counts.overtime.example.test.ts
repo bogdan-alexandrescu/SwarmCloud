@@ -47,6 +47,42 @@ describe('the over-time example', () => {
         expect(Date.parse(last.end)).toBeGreaterThan(NOW)
         for (let i = 1; i < u.buckets.length; i++) expect(u.buckets[i]!.start).toBe(u.buckets[i - 1]!.end)
       })
+
+      it(`serves every grouping, each series adding up to its bucket: ${b.key} by ${g.group}`, () => {
+        const d = platformTimeExample(platformTimeQuery(b.key, g.key, 'UTC', NOW), NOW)
+        const u = d.usage
+        const read = u.buckets.filter(isRead) as unknown as UsageFigures[]
+        // MUTATION: serve only the requested grouping (answer 3: every breakdown in one read).
+        expect(Object.keys(u.breakdowns).sort()).toEqual(['model', 'pool_account', 'runner_profile', 'tenant_id'])
+        for (const grouping of Object.values(u.breakdowns)) {
+          for (const [name, f] of FIELDS) {
+            expect(sum(grouping.rows, f), `${grouping.by} ${name}: rows against the total`).toBe(f(u.totals) ?? 0)
+          }
+          u.buckets.forEach((bk, i) => {
+            const agents = grouping.series.map((s) => s.agents[i]!)
+            const retries = grouping.series.map((s) => s.retries[i]!)
+            if (!isRead(bk)) {
+              // An unread bucket is null in every series, as in its row.
+              expect(agents.every((v) => v === null), `${grouping.by} unread ${i}`).toBe(true)
+              return
+            }
+            // MUTATION: series that do not add up to the bucket they stack in.
+            expect(agents.reduce((n: number, v) => n + (v ?? 0), 0), `${grouping.by} agents ${i}`).toBe(bk.agents)
+            expect(retries.reduce((n: number, v) => n + (v ?? 0), 0), `${grouping.by} retries ${i}`).toBe(bk.retries)
+          })
+          // Each series' span sum is its row's agents.
+          for (const s of grouping.series.filter((x) => !x.other)) {
+            const row = grouping.rows.find((r) => r.key === s.key)
+            expect(row?.agents, `${grouping.by} ${s.key}`).toBe(s.agents.reduce((n: number, v) => n + (v ?? 0), 0))
+          }
+        }
+        // The pool-account example has both of answer 4's keys, and agent type has "all others".
+        expect(u.breakdowns.pool_account.rows.map((r) => r.key)).toEqual(expect.arrayContaining(['holds no account', 'not ended']))
+        expect(u.breakdowns.runner_profile.series.some((s) => s.other)).toBe(true)
+        // The estimate count is served beside the dollars (answer 2).
+        expect(u.totals.cost.estimated).toBeGreaterThan(0)
+        expect(sum(read, (x) => x.cost.estimated)).toBe(u.totals.cost.estimated)
+      })
     }
   }
 })
