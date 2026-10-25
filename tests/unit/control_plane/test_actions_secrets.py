@@ -58,7 +58,7 @@ from swarm_api.forge_installation import (
 )
 from swarm_api.forgeapp import HttpAnswer
 from swarm_api.forgeperms import ACTIONS_SECRETS_REQUIREMENTS, REQUIRED, review_url
-from swarm_api.github_repo_admin import NOT_ADMIN
+from swarm_api.github_repo_admin import COPY, NOT_ADMIN, UNAVAILABLE
 from swarm_api.groups import StaticGroups
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
@@ -542,7 +542,7 @@ def test_the_list_says_which_secrets_swarmcloud_set(world, db):
     assert put(client, runtime_value()).status_code == 200
     listed = client.get(f"{BASE}/secrets", headers=as_("dave"))
     assert listed.status_code == 200, listed.text
-    rows = {r["name"]: r for r in listed.json()["repository"]}
+    rows = {r["name"]: r for r in listed.json()["repository_secrets"]}
     assert rows["MERGE_APP_PRIVATE_KEY"]["set_by_swarmcloud"] is True
     assert rows["MERGE_APP_PRIVATE_KEY"]["set_by"] == ROOT
     assert rows["SET_ON_GITHUB"]["set_by_swarmcloud"] is False
@@ -561,6 +561,75 @@ def test_a_delete_needs_the_typed_name(world, db):
     assert github.secrets == {}
     [record] = [d for p, d in db.docs.items() if p.startswith(f"{WRITES_COLLECTION}/")]
     assert record["state"] == "deleted"
+
+
+# --------------------------------------------------------------------------
+# the list says who may write, names its repository, links GitHub's create page
+# (SSC-ACTIONS-API-2, part of #2157)
+# --------------------------------------------------------------------------
+
+
+def listing(client: TestClient, who: str = "root"):
+    response = client.get(f"{BASE}/secrets", headers=as_(who))
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_the_list_serves_can_write_for_a_manager_github_calls_admin(world):
+    access = FakeAccess()
+    body = listing(world(FakeActionsGitHub(), admin=True, access=access))
+    assert body["can_write"] is True
+    assert body["cannot_write_because"] is None
+    assert datetime.fromisoformat(body["checked_at"]).tzinfo is not None
+    assert len(access.callers) == 1, "GitHub is asked, live, with the caller's own token"
+
+
+def test_the_list_says_why_a_manager_github_does_not_call_admin_cannot_write(world):
+    body = listing(world(FakeActionsGitHub(), admin=False))
+    assert body["can_write"] is False
+    assert body["cannot_write_because"] == COPY[NOT_ADMIN]
+    assert body["checked_at"] is not None
+
+
+def test_the_list_says_why_a_member_who_is_not_a_manager_cannot_write(world):
+    access = FakeAccess()
+    body = listing(world(FakeActionsGitHub(), admin=True, access=access), who="dave")
+    assert body["can_write"] is False
+    assert "only its admins" in body["cannot_write_because"]
+    # The manager rule fails first, so GitHub is not asked about this person.
+    assert body["checked_at"] is None and access.callers == []
+
+
+def test_a_failing_github_check_is_can_write_false_and_the_read_still_succeeds(world):
+    github = FakeActionsGitHub()
+    github.secrets[(None, "SET_ON_GITHUB")] = b"x"
+    body = listing(world(github, access=FakeAccess(error=RuntimeError("github is down"))))
+    assert body["can_write"] is False
+    assert body["cannot_write_because"] == COPY[UNAVAILABLE]
+    assert [r["name"] for r in body["repository_secrets"]] == ["SET_ON_GITHUB"]
+
+
+def test_the_write_routes_never_read_can_write_from_the_caller(world):
+    github = FakeActionsGitHub()
+    response = put(world(github, admin=False), runtime_value(), can_write=True)
+    assert response.status_code == 422, response.text
+    refused = put(world(github, admin=False), runtime_value())
+    assert refused.status_code == 403, refused.text
+    assert github.secrets == {}
+
+
+def test_repository_is_owner_repo_and_its_secrets_are_repository_secrets(world):
+    github = FakeActionsGitHub()
+    github.secrets[(None, "SET_ON_GITHUB")] = b"x"
+    body = listing(world(github), who="dave")
+    assert body["repository"] == "acme/widgets"
+    assert [r["name"] for r in body["repository_secrets"]] == ["SET_ON_GITHUB"]
+
+
+def test_the_list_serves_githubs_create_page_on_a_repository_with_no_environment(world):
+    body = listing(world(FakeActionsGitHub()), who="dave")
+    assert body["environments"] == []
+    assert body["create_url"] == "https://github.com/acme/widgets/settings/environments/new"
 
 
 # --------------------------------------------------------------------------

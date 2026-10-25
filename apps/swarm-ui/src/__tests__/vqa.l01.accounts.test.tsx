@@ -242,12 +242,13 @@ describe('V018: a code from another sign-in carries one instruction', () => {
   })
 })
 
-describe('V065: the chosen row\'s window suffix holds AA on the selection', () => {
+describe('V065: the chosen row\'s muted lines hold AA on the selection', () => {
   it('uses the selection-safe grey', () => {
-    const win = build('li.acct-li.is-chosen > button.acct-open > em.acct-window > span.acct-pct-win', hosts)
-    expect(painted(win, 'color', { ...WIDE, theme: 'dark' })).toBe('var(--text-dim-on-selected)')
-    const plain = build('li.acct-li > button.acct-open > em.acct-window > span.acct-pct-win', hosts)
-    expect(painted(plain, 'color', WIDE)).toBe('var(--text-faint)')
+    // #2222: the chosen row of the ranked table, not the list's suffix.
+    const age = build('table.acct-rank > tbody > tr.acct-rank-row.is-chosen > td > small.acct-age', hosts)
+    expect(painted(age, 'color', { ...WIDE, theme: 'dark' })).toBe('var(--text-dim-on-selected)')
+    const plain = build('table.acct-rank > tbody > tr.acct-rank-row > td > small.acct-age', hosts)
+    expect(painted(plain, 'color', WIDE)).toBe('var(--text-dim)')
   })
 })
 
@@ -270,14 +271,15 @@ describe('V067: a phone marks no row it did not open', () => {
   it('highlights the default only beside its pane', async () => {
     atPhone()
     await accounts([account(), account({ account_id: 'u-bogdan:b', label: 'b' })])
-    expect(document.querySelector('.acct-li.is-chosen')).toBeNull()
-    fireEvent.click(document.querySelectorAll('.acct-li > .acct-open')[1]!)
-    expect(document.querySelectorAll('.acct-li.is-chosen').length).toBe(1)
+    // A phone draws a card per account (#2222, mock-up A P1).
+    expect(document.querySelector('.acct-card.is-chosen')).toBeNull()
+    fireEvent.click(document.querySelectorAll('button.acct-open')[1]!)
+    expect(document.querySelectorAll('.acct-card.is-chosen').length).toBe(1)
   })
 
   it('still highlights the default on a desktop', async () => {
     await accounts([account(), account({ account_id: 'u-bogdan:b', label: 'b' })])
-    expect(document.querySelectorAll('.acct-li.is-chosen').length).toBe(1)
+    expect(document.querySelectorAll('.acct-rank-row.is-chosen').length).toBe(1)
   })
 })
 

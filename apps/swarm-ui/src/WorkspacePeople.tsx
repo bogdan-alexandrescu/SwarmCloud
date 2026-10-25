@@ -1,15 +1,17 @@
-import { Fragment, useEffect, useId, useState, type FormEvent } from 'react'
+import { Fragment, useContext, useEffect, useId, useState, type FormEvent, type ReactNode } from 'react'
 import {
   clearWorkspacePersonRole, loadAccessMembers, loadMe, loadWorkspaceRoles, setWorkspaceDefaultRole, setWorkspacePersonRole,
   type ApiError, type Result,
 } from './api'
 import { Banner, Button, Card, Dash, EmptyState, Tabs, ToneMark, type TabDef } from './components'
-import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
+import { SetupContext } from './ConfigSetup'
+import { UrRefresh, UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
 import { DEFAULT_ROLES, ROLES, sourceWords } from './roles'
 import { FailedPanel, PageHead } from './Shell'
 import { timeAgo, type AccessMember, type WorkspaceRoleEvent, type WorkspaceRoleOverride, type WorkspaceRoles } from './types'
 import './styles/keys.css'
 import './styles/onboarding.css'
+import './styles/workspace-settings.css'
 
 /**
  * SETTINGS › PEOPLE AND ROLES, A WORKSPACE'S OWN ROLES PAGE (lane
@@ -41,9 +43,103 @@ import './styles/onboarding.css'
  * Not a SECTIONS tab: a Settings route beside Profile, so the issue forms'
  * "Where" list is unchanged (§4.8). (Since CONFIG-NAV it is Config › People
  * and roles, and since GA-MOVE-VIEWS it also holds Members' GitHub, below.)
+ *
+ * THE LEAD (CONFIG-S5-LEADS; part of #2157, proposal E S5b, S5e, S5g, S5h)
+ * is one sentence over the body as built. An admin's is the setup strip's
+ * step 4, People invited, as the setup read serves it
+ * (`config_setup.people`, CONFIG-SETUP-READ): nobody else holds a role, so
+ * one button to the role form below; people waiting for an admin, counted;
+ * otherwise green. A member's or viewer's names who administers the
+ * workspace, from this page's own roster, and offers nothing. A source not
+ * read, or not served, is "—" and why: never green.
  */
 
 const ROUTE = 'GET /v1/workspace/roles'
+
+/** Step 4 as the setup read serves it (`swarm_api.config_setup.people_step`), or why it cannot be said. */
+export type PeopleStep =
+  | { read: false; reason: string }
+  | { read: true; holders: number; pending: number | null }
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+/** `config_setup.people` off the setup read; null while it has not landed. */
+export function peopleStepOf(doc: Result<unknown>): PeopleStep | null {
+  if (doc.status === 'loading') return null
+  if (doc.status === 'error' || doc.status === 'empty') return { read: false, reason: 'the setup read could not be read' }
+  const setup = isRecord(doc.data) ? doc.data.config_setup : undefined
+  const step = isRecord(setup) ? setup.people : undefined
+  if (!isRecord(step)) return { read: false, reason: 'this API does not serve who else holds a role here' }
+  if (typeof step.holders !== 'number') {
+    return { read: false, reason: typeof step.reason === 'string' && step.reason !== '' ? step.reason : 'who else holds a role here was not measured' }
+  }
+  return { read: true, holders: step.holders, pending: typeof step.pending === 'number' ? step.pending : null }
+}
+
+function joined(names: readonly string[]): string {
+  return names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
+
+function Lead({ kicker, title, tone, action }: { kicker: string; title: string; tone: 'next' | 'ok'; action?: ReactNode }) {
+  return (
+    <section className={`ws-lead is-${tone}`} aria-label={kicker}>
+      <div className="ws-lead-t">
+        <span className="ws-lead-k">{kicker}</span>
+        <b>{title}</b>
+      </div>
+      {action !== undefined && <div className="ws-lead-a">{action}</div>}
+    </section>
+  )
+}
+
+/** The page's lead: one sentence, at most one button (proposal E). */
+function PeopleLead({ state, inviteId }: { state: Result<WorkspaceRoles>; inviteId: string }) {
+  const { doc } = useContext(SetupContext)
+  if (state.status === 'loading') return null
+  if (state.status === 'error' || state.status === 'empty') {
+    return <Lead tone="next" kicker="People and roles" title="— this workspace’s roles could not be read, so who holds one is not known." />
+  }
+  const data = state.data
+  // A personal workspace has nobody to invite: the strip draws no step 4 there (S1e).
+  if (data.kind === 'user') return null
+  const name = data.tenant_id || 'this workspace'
+  if (!data.can_manage) {
+    const admins = data.people.filter((p) => p.role === 'admin').map((p) => p.email)
+    const title = admins.length === 0
+      ? `Nobody in ${name} holds admin yet: a platform admin names a group workspace’s first admin.`
+      : `${joined(admins)} ${admins.length === 1 ? 'administers' : 'administer'} ${name}, and only an admin changes roles here.`
+    return <Lead tone="ok" kicker="Read only for you" title={title} />
+  }
+  const step = peopleStepOf(doc)
+  if (step === null) return null
+  if (!step.read) return <Lead tone="next" kicker="Step 4 · People invited" title={`— ${step.reason}.`} />
+  if (step.pending !== null && step.pending > 0) {
+    return (
+      <Lead tone="next" kicker="Needs an admin"
+        title={`${step.pending} ${step.pending === 1 ? 'person is' : 'people are'} waiting for an admin to answer their request.`} />
+    )
+  }
+  if (step.holders === 0) {
+    return (
+      <Lead tone="next" kicker="Step 4 · this page" title={`Only you hold a role in ${name} so far: give each person who will run agents their own.`}
+        action={
+          <Button kind="primary" size="sm" onClick={() => {
+            const field = document.getElementById(inviteId)
+            field?.scrollIntoView?.({ block: 'center' })
+            field?.focus({ preventScroll: true })
+          }}>
+            Give a person a role
+          </Button>
+        } />
+    )
+  }
+  return (
+    <Lead tone="ok" kicker="Step 4 · done"
+      title={`${step.holders} other ${step.holders === 1 ? 'person holds' : 'people hold'} a role in ${name}; nothing here is waiting for you.`} />
+  )
+}
 
 /**
  * MEMBERS' GITHUB, THE PAGE'S SECOND TAB (GA-MOVE-VIEWS; part of #2157, BGD
@@ -117,6 +213,8 @@ export function WorkspacePeopleScreen({ view: routed }: { view?: string | null }
     setViewState(named)
   }
   const admin = usePlatformAdmin()
+  const roles = useUrRead(loadWorkspaceRoles, 'workspace-roles')
+  const inviteId = useId()
   function setView(v: PeopleView) {
     setViewState(v)
     writePeopleView(v)
@@ -124,21 +222,22 @@ export function WorkspacePeopleScreen({ view: routed }: { view?: string | null }
   return (
     <div className="pk-page wp-page">
       <PageHead title="People and roles" />
+      {/* The lead is the Roles tab's: its one button goes to the role form there. */}
+      {view === 'roles' && <PeopleLead state={roles.state} inviteId={inviteId} />}
       {/* `cfg-parts` (config.css): the Config pages' tab strip, as GitHub access draws it. */}
       {(admin === true || view === 'members') && (
         <Tabs tabs={PEOPLE_TABS} current={view} label="People and roles" className="cfg-parts" onSelect={(k) => setView(k === 'members' ? 'members' : 'roles')} />
       )}
-      {view === 'members' ? <Members /> : <RolesCard />}
+      {view === 'members' ? <Members /> : <RolesCard roles={roles} inviteId={inviteId} />}
     </div>
   )
 }
 
-function RolesCard() {
-  const roles = useUrRead(loadWorkspaceRoles, 'workspace-roles')
+function RolesCard({ roles, inviteId }: { roles: UrRead<WorkspaceRoles>; inviteId: string }) {
   return (
     <Card title="Roles in this workspace" action={<UrRefresh reads={[roles]} />}>
       <UrRegion state={roles.state} route={ROUTE} what="This workspace's roles" plural onRetry={roles.reload}>
-        {(d) => <Roles data={d} onChange={roles.reload} />}
+        {(d) => <Roles data={d} onChange={roles.reload} inviteId={inviteId} />}
       </UrRegion>
     </Card>
   )
@@ -231,7 +330,7 @@ function Members() {
   )
 }
 
-function Roles({ data, onChange }: { data: WorkspaceRoles; onChange: () => void }) {
+function Roles({ data, onChange, inviteId }: { data: WorkspaceRoles; onChange: () => void; inviteId: string }) {
   const [done, setDone] = useState<string | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
   const name = data.tenant_id || 'this workspace'
@@ -288,7 +387,7 @@ function Roles({ data, onChange }: { data: WorkspaceRoles; onChange: () => void 
 
       {data.can_manage ? (
         <>
-          <PersonForm onSet={(email, role, reason) => act(() => setWorkspacePersonRole(email, role, reason), personSaid, `${email.trim()}'s role was not changed`)} />
+          <PersonForm emailId={inviteId} onSet={(email, role, reason) => act(() => setWorkspacePersonRole(email, role, reason), personSaid, `${email.trim()}'s role was not changed`)} />
           <DefaultForm current={data.default_role} onSet={(role) => act(() => setWorkspaceDefaultRole(role),
             (a) => `The default is now ${a.default_role} (was ${a.previous_default}).`, 'The default was not changed')} />
         </>
@@ -345,9 +444,9 @@ function Overrides({ people, canManage, onClear }: {
 }) {
   const [busy, setBusy] = useState<string | null>(null)
   return (
-    // The Secrets and MCP servers table (keys.css `.mcp-servers`): left-aligned,
-    // padded rows at 1440 where the browser centred them, and a card per
-    // person on a phone, each value under its `data-label`.
+    // keys.css's stacking table (#1680): at 390 px this roster was 589 px wide
+    // in the content scroller (CONFIG-S5-LEADS review), so below 720 px each
+    // person is a card, each value under its column's `data-label`.
     <table role="table" className="mcp-servers" aria-label="People with their own role">
       <thead>
         <tr>
@@ -386,7 +485,7 @@ function Overrides({ people, canManage, onClear }: {
   )
 }
 
-function PersonForm({ onSet }: { onSet: (email: string, role: string, reason: string) => Promise<boolean> }) {
+function PersonForm({ emailId, onSet }: { emailId: string; onSet: (email: string, role: string, reason: string) => Promise<boolean> }) {
   const id = useId()
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<string>('member')
@@ -415,8 +514,8 @@ function PersonForm({ onSet }: { onSet: (email: string, role: string, reason: st
           Google owns who is in the workspace: a role given to someone not in its group yet applies when they join.
         </p>
         <div className="pk-form-row">
-          <label htmlFor={`${id}-email`}>Email</label>
-          <input id={`${id}-email`} className="ur-search pk-input" type="email" value={email} required maxLength={254}
+          <label htmlFor={emailId}>Email</label>
+          <input id={emailId} className="ur-search pk-input" type="email" value={email} required maxLength={254}
             spellCheck={false} onChange={(e) => setEmail(e.target.value)} />
           <label htmlFor={`${id}-role`}>Role</label>
           <select id={`${id}-role`} value={role} onChange={(e) => setRole(e.target.value)}>

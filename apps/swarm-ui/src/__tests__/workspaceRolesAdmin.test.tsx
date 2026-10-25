@@ -125,7 +125,7 @@ async function mount(writes: Record<string, Write> = {}) {
   vi.resetModules()
   const { PeopleScreen } = await import('../People')
   render(<PeopleScreen />)
-  await screen.findByRole('heading', { name: 'People', level: 1 }, WAIT)
+  await screen.findByRole('heading', { name: 'People and roles', level: 1 }, WAIT)
   const card = await waitFor(() => {
     const c = document.querySelector<HTMLElement>('.wra-card')
     expect(c, 'no Workspace roles card').not.toBeNull()

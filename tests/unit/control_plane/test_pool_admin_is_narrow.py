@@ -57,10 +57,12 @@ from fastapi.testclient import TestClient
 import swarm_api.routes as routes_package
 from swarm_api.auth import POOL_ADMIN_ROUTES, SCHEDULE_TICK_ROUTES, AuthContext, StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
-from swarm_api.deps import AppContext, admin_auth, build_context, current_auth
+from swarm_api.deps import AppContext, admin_auth, build_context, current_auth, get_context
+from swarm_api.errors import Forbidden
 from swarm_api.groups import GroupLookupError, MembershipResolver, StaticGroups
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
+from swarm_api.routes.people import people_scope
 from swarm_api.waker import NullWaker
 
 from .conftest import ADMIN_GROUP, api_settings, seed_pool, seed_tenant
@@ -120,8 +122,17 @@ def _all_routes() -> list[APIRoute]:
     return found
 
 
+#: The gates that count as `admin_auth`: it, and `people_scope`, the one
+#: route-scoped admin gate (ADMIN-PEOPLE-ROLES; part of #2157). That gate
+#: runs `admin_auth` first and, where it refuses, lets a workspace admin read
+#: only the workspaces they administer (tests/unit/control_plane/
+#: test_people_scoped.py); a pool admin is still refused by it, which the
+#: sweep below holds. A literal set: a new scoped gate is a new decision.
+ADMIN_GATES = (admin_auth, people_scope)
+
+
 def _is_admin_gated(route: APIRoute) -> bool:
-    return any(call is admin_auth for call in _calls(route.dependant))
+    return any(call in ADMIN_GATES for call in _calls(route.dependant))
 
 
 def _admin_routes() -> list[tuple[str, str]]:
@@ -159,7 +170,7 @@ def test_the_sweep_found_every_admin_route_the_source_declares() -> None:
     recognising the gate, this is what goes red.
     """
     declared = sum(
-        len(re.findall(r"Depends\(\s*admin_auth\s*\)", Path(m.__file__).read_text()))
+        len(re.findall(r"Depends\(\s*(?:admin_auth|people_scope)\s*\)", Path(m.__file__).read_text()))
         for m in _router_modules()
     )
     gated = [r for r in _all_routes() if _is_admin_gated(r)]
@@ -385,7 +396,23 @@ def _recording_gate(
 
 def _recorded_client(ctx: AppContext, passed: list) -> TestClient:
     app = create_app(ctx)
-    app.dependency_overrides[admin_auth] = _recording_gate(passed)
+    recorded = _recording_gate(passed)
+    app.dependency_overrides[admin_auth] = recorded
+
+    def recorded_people_scope(
+        request: Request, auth: AuthContext = Depends(current_auth),
+        context: AppContext = Depends(get_context),
+    ) -> dict[str, str] | None:
+        # `people_scope` asks `admin_auth` itself, outside the dependency
+        # tree an override replaces, so its platform pass is recorded here
+        # the same way; a refusal falls through to its scoped read as before.
+        try:
+            recorded(request, auth)
+        except Forbidden:
+            return people_scope(request, auth, context)
+        return None
+
+    app.dependency_overrides[people_scope] = recorded_people_scope
     return TestClient(app, raise_server_exceptions=False)
 
 
