@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Banner, Button, Card, Dash, EmptyState, LoadingState, Segmented, StatePill, Table, type Column } from './components'
+import { usePhoneTables } from './capacityPoll'
 import { STATE_MARK } from './marks'
 import { QA_LINK_ADDRESS } from './paths'
 import {
@@ -281,30 +282,57 @@ function NewRoutesCard({ routes, admin, gate, canPromote, promoting, failed, onP
   failed: string | null
   onPromote: (r: NewRoute) => void
 }) {
+  const phone = usePhoneTables()
   if (routes.length === 0) return null
+  const seen = (r: NewRoute) => (r.thisRun ? 'this run' : (when(r.firstSeen) ?? <Dash why="Its first sighting was not served." />))
+  const promote = (r: NewRoute) => (
+    <Button kind="primary" size="sm" busy={promoting === r.path} disabled={promoting !== null} onClick={() => onPromote(r)}
+      aria-label={`Promote ${r.path}`}>
+      Promote
+    </Button>
+  )
   const columns: Column<NewRoute>[] = [
     { key: 'route', head: 'Route', cell: (r) => <code className="qr-route">{r.path}</code> },
     { key: 'on', head: 'Found on', cell: (r) => r.on.join(', ') },
-    { key: 'seen', head: 'First seen', cell: (r) => (r.thisRun ? 'this run' : (when(r.firstSeen) ?? <Dash why="Its first sighting was not served." />)) },
+    { key: 'seen', head: 'First seen', cell: seen },
   ]
-  if (admin && canPromote) {
-    columns.push({
-      key: 'act',
-      head: <span className="qr-sr">Promote</span>,
-      cell: (r) => (
-        <Button kind="primary" size="sm" busy={promoting === r.path} disabled={promoting !== null} onClick={() => onPromote(r)}
-          aria-label={`Promote ${r.path}`}>
-          Promote
-        </Button>
-      ),
-    })
-  }
+  const act = admin && canPromote
+  if (act) columns.push({ key: 'act', head: <span className="qr-sr">Promote</span>, cell: promote })
+  // S9d: below the phone breakpoint each route is a record (`.is-stacked`,
+  // the People pattern): at 390 the four columns overflowed the card and cut
+  // Promote, the page's one action, to a sliver past its edge.
+  const table = phone ? (
+    <div className="table-wrap is-stacked qr-new-wrap">
+      <table className="qr-new-table" aria-label="New since last run">
+        <thead>
+          <tr>
+            <th scope="col">Route</th>
+            <th scope="col">Found on</th>
+            <th scope="col">First seen</th>
+            {act && <th scope="col"><span className="qr-sr">Promote</span></th>}
+          </tr>
+        </thead>
+        <tbody>
+          {routes.map((r) => (
+            <tr key={r.path}>
+              <th scope="row"><code className="qr-route">{r.path}</code></th>
+              <td data-label="Found on">{r.on.join(', ')}</td>
+              <td data-label="First seen">{seen(r)}</td>
+              {act && <td data-label="Promote" className="qr-promote-cell">{promote(r)}</td>}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  ) : (
+    <Table caption="New since last run" columns={columns} rows={routes} rowKey={(r) => r.path} />
+  )
   return (
     <section data-new-routes id={NEW_ROUTES_ID}>
       <Card title="New since last run">
         <p className="qr-hint">Routes a run found that the target does not store as screens yet. A stored screen is captured on every run.</p>
         {failed !== null && <Banner tone="bad" title="The route was not stored">{failed}</Banner>}
-        <Table caption="New since last run" columns={columns} rows={routes} rowKey={(r) => r.path} />
+        {table}
         {gate !== null && <p className="qr-hint qr-gate" data-role-gate="admin">{gate}</p>}
       </Card>
     </section>

@@ -94,6 +94,7 @@ afterEach(() => {
   cleanup()
   globalThis.fetch = realFetch
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
   window.localStorage.clear()
   window.sessionStorage.clear()
 })
@@ -422,6 +423,28 @@ describe('QA run page: New since last run (QA-RUN-NEW-ROUTES, part of #2157; S9b
     await waitFor(() => expect(newCard()!.querySelector('[data-role-gate="admin"]')).not.toBeNull(), WAIT)
     // MUTATION: draw Promote to every role, and a member's press is a certain 403.
     expect(Array.from(newCard()!.querySelectorAll('button')).some((b) => /Promote/.test(visible(b)))).toBe(false)
+  })
+
+  it('at a phone each route is a record, its Promote the whole button in its own cell (S9d)', async () => {
+    // `usePhoneTables` reads `(max-width: 560px)`; this makes it true.
+    vi.stubGlobal('matchMedia', (q: string) => ({ matches: q === '(max-width: 560px)', media: q, addEventListener() {}, removeEventListener() {} }))
+    const calls = liveNew('admin', FOUND)
+    await mountRun()
+    await waitFor(() => expect(promoteOf('/legal/imprint')).not.toBeNull(), WAIT)
+    // MUTATION: keep the four-column table at 390, and it overflows the card and cuts Promote off past its edge.
+    const wrap = newCard()!.querySelector<HTMLElement>('.table-wrap')
+    expect(wrap?.classList.contains('is-stacked')).toBe(true)
+    // MUTATION: drop a cell's key, and a stacked record is a column of unlabelled values.
+    const row = newRow('/legal/imprint')!
+    expect(row.querySelector('th[scope="row"]')?.textContent).toBe('/legal/imprint')
+    expect(Array.from(row.querySelectorAll('td')).map((td) => td.getAttribute('data-label'))).toEqual(['Found on', 'First seen', 'Promote'])
+    expect(visible(row.querySelector('td[data-label="Found on"]'))).toContain('production')
+    // MUTATION: put Promote in a keyed cell, and the record says "Promote" beside a button saying "Promote".
+    expect(promoteOf('/legal/imprint')!.closest('td')?.classList.contains('qr-promote-cell')).toBe(true)
+    // The record's Promote is the same PATCH as the desktop row's.
+    fireEvent.click(promoteOf('/legal/imprint')!)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'PATCH').length).toBe(1), WAIT)
+    await waitFor(() => expect(newRow('/legal/imprint')).toBeNull(), WAIT)
   })
 
   it('a run with none draws neither the table nor that lead', async () => {

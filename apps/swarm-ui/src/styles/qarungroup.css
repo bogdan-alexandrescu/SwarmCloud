@@ -33,6 +33,13 @@
 /* New since last run (S9b, QA-RUN-NEW-ROUTES): the table below the columns. */
 .qr-route { font-family: var(--mono); font-size: var(--t-micro); }
 .qr-gate { margin: 8px 0 0; }
+/* S9d: the phone record (QaRunGroup.tsx NewRoutesCard, `.is-stacked`, the
+   styles/people.css Manage pattern). Promote is the button alone, across the
+   record at a touch target's height: its key would say "Promote" beside a
+   button saying "Promote". The cell keeps `data-label`. */
+.is-stacked > .qr-new-table > tbody > tr > td.qr-promote-cell { display: block; padding-top: var(--ctl-s2); }
+.is-stacked > .qr-new-table > tbody > tr > td.qr-promote-cell::before { content: none; }
+.is-stacked > .qr-new-table > tbody > tr > td.qr-promote-cell > .c-btn { width: 100%; min-height: 44px; }
 .qr-sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 @media (max-width: 1079px) {
