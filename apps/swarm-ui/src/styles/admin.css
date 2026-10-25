@@ -873,4 +873,7 @@ table.adm-limits th.pool-name > .ctl-sub > .adm-key-seg {
    saw nothing mark what opened (rendered review, 2026-10-25). `[id][tabindex]`
    lifts it over the shell's `.ctl-scroll [id][tabindex="-1"]:focus { outline:
    none }` (0,4,0), which erased it on the focused row in the browser. */
+/* Room for that ring's offset on the end side, on every record so opening
+   one moves nothing: at 1440 it stood 8px past the column's edge. */
+.ten-being-created > li { margin-inline-end: 6px; }
 .ten-being-created > li.is-opened[id][tabindex] { outline: 2px solid var(--sk-ac); outline-offset: 6px; border-radius: var(--r-ctl); }
