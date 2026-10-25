@@ -296,7 +296,9 @@ describe('a workspace admin on a platform Admin page goes to Workspaces you admi
   // workspace admin to a platform page, and a typed or bookmarked one sends
   // them to the one Admin page they are shown, as CONFIG-NAV sends a member
   // to Overview.
-  const PLATFORM_PAGES = ['/admin/limits', '/admin/tenants', '/admin/runner-sizes', '/admin/counts', '/admin/people', '/admin']
+  // Not /admin/people since ADMIN-PEOPLE-ROLES (part of #2157): a workspace
+  // admin has a scoped People and roles page there (the case below).
+  const PLATFORM_PAGES = ['/admin/limits', '/admin/tenants', '/admin/runner-sizes', '/admin/counts', '/admin']
 
   it('sends a workspace admin from every platform Admin address to /admin/workspaces', async () => {
     for (const path of PLATFORM_PAGES) {
@@ -308,6 +310,31 @@ describe('a workspace admin on a platform Admin page goes to Workspaces you admi
       expect(document.querySelector('.sk-spine a[data-sec="admin"]'), path).not.toBeNull()
       cleanup()
     }
+  })
+
+  it('renders People and roles at /admin/people for a workspace admin instead of redirecting (ADMIN-PEOPLE-ROLES)', async () => {
+    const scoped = {
+      scope: 'workspaces',
+      workspaces: [{ tenant_id: 'eng', group: 'eng@example.com', display_name: 'Engineering', default_role: 'member', unavailable: false }],
+      workspaces_error: null,
+      people: [{ email: 'ana.b@example.com', display_name: null, roles: { eng: 'admin' }, last_active: null }],
+      count: 1,
+      pending: 0,
+    }
+    serve(ME(false), [PERSONAL, group('eng', 'admin')], (url) => (url.includes('/v1/admin/people') ? scoped : undefined))
+    await app('/admin/people')
+    await screen.findByRole('heading', { name: 'People and roles', level: 1 })
+    await waitFor(() => expect(document.querySelector('.pp-grid th[data-tenant="eng"]')).not.toBeNull())
+    await new Promise((r) => setTimeout(r, 30))
+    // MUTATION: keep People out of a workspace admin's Admin pages -> the
+    // redirect sends them to /admin/workspaces and this fails.
+    expect(window.location.pathname).toBe('/admin/people')
+    const rows = [...document.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((e) => e.textContent)
+    // Their workspaces' group, then the In Automate links (CONFIG-PANEL-E); no platform page.
+    expect(rows.slice(0, 2)).toEqual(['People and roles', 'Workspaces you admin'])
+    expect(rows.join(' ')).not.toMatch(/Pool limits|Runner sizes|Tenants|Platform counts/)
+    // The Admin item still lands on Workspaces you admin, as ADMIN-REDIRECT drew it.
+    expect(document.querySelector('.sk-spine a[data-sec="admin"]')?.getAttribute('href')).toBe('/admin/workspaces')
   })
 
   it('rewrites the bar in place, so Back does not return to the refused page', async () => {

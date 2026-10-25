@@ -82,7 +82,7 @@ label did not name.
 | **Automate** | `automate` | What runs here by itself, on a schedule, and what is waiting on me to approve? | Schedules · Approvals |
 | **Capacity** | `capacity` | What kinds of agent can run here, is there room for another, which ceiling is the binding one, and what is holding what there is? | Pools · Runtimes · Profile headroom · Holders · Accounts · Provider quota |
 | **Config** | `config` | What may SwarmCloud reach on GitHub as you, which repositories, secrets and MCP servers does this workspace hold, who has which role in it, and how far is its setup? | GitHub access · Repositories · Secrets · MCP servers · People and roles · Workspace Settings |
-| **Admin** | `admin` | What is each ceiling set to, who is registered to use this platform, how many agents are in each state, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer? | Pool limits · Tenants · Platform counts · People · Workspaces you admin |
+| **Admin** | `admin` | What is each ceiling set to, who is registered to use this platform, how many agents are in each state and how many ran over time, for how long and at what estimated cost, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer? | Pool limits · Tenants · Platform counts · People · Workspaces you admin |
 
 **Automate** was added on 2026-10-08 by the owner's decision SD1
 ([schedules.md §6.1](../schedules.md#61-placement-sd1)): a different question
