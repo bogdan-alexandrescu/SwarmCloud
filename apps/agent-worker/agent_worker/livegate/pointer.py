@@ -13,18 +13,17 @@ RFC 6143 §7.8.1) to a viewer that lists it, and noVNC then draws it as the
 local pointer: zero latency for the person moving it, because it never
 travels to the pod and back. The shape is the arrow only. Chromium does not
 report the cursor it would draw (no CDP event carries it), and following the
-page's `cursor` CSS would mean another report from observer.js on every
-pointer move; a hand or text beam is not worth a second channel into a page
-the agent controls.
+page's `cursor` CSS would mean a script reporting from the page on every
+pointer move; a hand or text beam is not worth a channel into a page the
+agent controls.
 
 THE MARK (`paint`). Where the pointer last was, in the frame's coordinates --
 the controller's last PointerEvent, or the agent's last
 `Input.dispatchMouseEvent` (`css_to_frame`) -- painted as the same arrow into
-a COPY of an already-masked frame, so a view-only watcher and the relay's
+a COPY of the published frame, so a view-only watcher and the relay's
 recording (which never sees a local cursor) show where the mouse is. Never
-into Xvfb's mapping, and never before the mask: painting covers pixels with
-the arrow's two colours and reads none, so a pointer over a masked field
-shows the arrow on the mask's fill, never what the mask hid.
+into Xvfb's mapping and never into the frame the hub publishes: the arrow is
+the only thing ever painted on a frame, and only on a viewer's own copy.
 
 NOTHING HERE IS LOGGED (§5.3.3): a coordinate is never a log argument.
 """
@@ -96,7 +95,7 @@ def shape(encode: Callable[[tuple[int, int, int]], bytes]) -> bytes:
 def paint(frame: Frame, x: int, y: int) -> None:
     """Paint the arrow on `frame` with its tip at (x, y), clipped to the frame.
 
-    `frame` must be a copy that has already been masked (module docstring).
+    `frame` must be a viewer's own copy of the published frame (module docstring).
     """
     ox, oy = x - HOTSPOT[0], y - HOTSPOT[1]
     colours = {rgb: frame.encode(rgb) for rgb in (OUTLINE_RGB, FILL_RGB)}

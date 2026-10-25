@@ -15,11 +15,11 @@ task that `scripts/acceptance/groups/live-browser.sh` submitted:
              /v1/live/<session>/stream, ticket as the first message), takes
              control, clicks the password field and types a password generated
              here at run time. Every frame it receives that shows the page has
-             the field's box painted with the mask's colour, and no pixel of the
-             field's own magenta anywhere.
+             the field's box in the field's own magenta, as Chromium drew it:
+             nothing is painted over it (BGD, 2026-10-25; design §5.3).
   recording  the relay's recording of the session: segments are written under
-             the task's attempt `live/` key, and their frames, decoded, have the
-             field painted the same way.
+             the task's attempt `live/` key, and their frames, decoded, show the
+             field the same way.
   returned   control is returned, the agent's `wait` ends, it reads the code
              the page derived from the password (12 hex digits of its SHA-256)
              and reports it; the task SUCCEEDED; the four human_* events exist.
@@ -90,7 +90,8 @@ FIELD_OFFSET_CSS = 80
 FIELD_CSS = (320, 40)
 MARKER_RGB = (0x00, 0xFF, 0xFF)
 FIELD_RGB = (0xFF, 0x00, 0xFF)
-#: `livegate.mask.MASK_RGB`: what the gate paints a sensitive box with.
+#: What the gate's mask painted a sensitive box with until LIVE-NOMASK
+#: (#2298): a frame whose field box is this colour was painted over.
 MASK_RGB = (0x22, 0x22, 0x22)
 #: Where the agent serves the fixture directory, inside its own pod.
 FIXTURE_PORT = 8765
@@ -232,27 +233,30 @@ def _region(pixels: bytes, width: int, bpp: int, box: Box) -> bytes:
 
 @dataclass(frozen=True)
 class Judgement:
-    """What one frame shows. `kind`: `no_page` (the fixture is not on screen,
-    or the mask blanked the whole page), `painted`, or `leak`."""
+    """What one frame shows. `kind`: `no_page` (the fixture is not on screen),
+    `shown` (the field's box is the field as drawn), or `covered`."""
 
     kind: str
     marker: Box | None = None
     field: Box | None = None
+    shown: float = 0.0
     painted: float = 0.0
-    field_pixels: int = 0
 
     def describe(self) -> str:
         if self.kind == "no_page":
             return "the fixture's marker is not on screen"
         return (f"field box {self.field.x0},{self.field.y0}-{self.field.x1},{self.field.y1}: "
-                f"{self.painted:.0%} mask paint, {self.field_pixels} field-coloured pixel(s) on screen")
+                f"{self.shown:.0%} field colour, {self.painted:.0%} mask paint")
 
 
 def judge(pixels: bytes, width: int, height: int, *, bpp: int = 4, tol: int = 0,
           field: Box | None = None) -> Judgement:
-    """Is the password field painted in this frame?
+    """Is the password field shown as Chromium drew it in this frame?
 
-    `tol` 0 is for the RFB frames, which carry the gate's paint exactly; the
+    login.html draws the field, its dots and its caret all in its magenta, so
+    a field shown as drawn is magenta across its box, typed into or not, and
+    one painted over is not (BGD, 2026-10-25: the live view paints nothing).
+    `tol` 0 is for the RFB frames, which carry Chromium's pixels exactly; the
     recording is VP8, lossy, and is judged with a tolerance. `field`, when
     given, is where the field was measured to be (the recording is judged at
     the box the live frames found); the marker must still be on screen.
@@ -265,12 +269,16 @@ def judge(pixels: bytes, width: int, height: int, *, bpp: int = 4, tol: int = 0,
         return Judgement("no_page", marker)
     inner = box.inset(2 if tol == 0 else 3)
     region = _region(pixels, width, bpp, inner)
-    painted = colour_map(region, bpp, MASK_RGB, tol).count(b"\x01") / max(1, inner.area)
-    frame = pixels[:width * height * bpp]
-    leaked = colour_map(frame, bpp, FIELD_RGB, max(tol, 0x20)).count(b"\x01")
-    allowed = 0 if tol == 0 else box.area // 100
-    ok = leaked <= allowed and painted >= (1.0 if tol == 0 else 0.95)
-    return Judgement("painted" if ok else "leak", marker, box, painted, leaked)
+    shown = colour_map(region, bpp, FIELD_RGB, max(tol, 0x20)).count(b"\x01") / max(1, inner.area)
+    painted = colour_map(region, bpp, MASK_RGB, max(tol, 0x10)).count(b"\x01") / max(1, inner.area)
+    # Not every pixel: this viewer lists no Cursor encoding, so the gate paints
+    # the pointer's arrow on its copy (rfb.py, THE POINTER), and after the
+    # click the arrow sits on the field -- a few hundred pixels of its ~11,000.
+    if tol == 0:
+        ok = shown >= 0.95 and painted == 0.0
+    else:
+        ok = shown >= 0.9 and painted <= 0.05
+    return Judgement("shown" if ok else "covered", marker, box, shown, painted)
 
 
 @dataclass
@@ -278,9 +286,9 @@ class FrameTally:
     """Every judgement of one phase of the session."""
 
     judged: int = 0
-    painted: int = 0
+    shown: int = 0
     no_page: int = 0
-    leaks: list[str] = field(default_factory=list)
+    covers: list[str] = field(default_factory=list)
     field: Box | None = None
     marker: Box | None = None
 
@@ -289,13 +297,13 @@ class FrameTally:
             self.no_page += 1
             return
         self.judged += 1
-        if verdict.kind == "painted":
-            self.painted += 1
+        if verdict.kind == "shown":
+            self.shown += 1
             self.field, self.marker = verdict.field, verdict.marker
-        elif len(self.leaks) < 5:
-            self.leaks.append(verdict.describe())
+        elif len(self.covers) < 5:
+            self.covers.append(verdict.describe())
         else:
-            self.leaks.append("...")
+            self.covers.append("...")
 
 
 # --------------------------------------------------------------------------
@@ -1008,10 +1016,10 @@ def drive_viewer(api: Api, cfg: Config, session: dict, password: str, results: R
         judge(bytes(rfb.fb), rfb.width, rfb.height))
     try:
         ws.send(OP_TEXT, json.dumps({"ticket": minted["ticket"]}).encode())
-        if not viewer.pump(90, lambda: viewer.rfb.updates > 0 and watching.painted > 0):
-            results.put("frames", "FAIL", f"no frame showed the fixture page with its field painted within "
-                        f"90 s ({viewer.rfb.updates} updates; {watching.no_page} without the page; leaks "
-                        f"{watching.leaks or 'none'}; socket close code {ws.close_code})")
+        if not viewer.pump(90, lambda: viewer.rfb.updates > 0 and watching.shown > 0):
+            results.put("frames", "FAIL", f"no frame showed the fixture page with its field as drawn within "
+                        f"90 s ({viewer.rfb.updates} updates; {watching.no_page} without the page; covered "
+                        f"{watching.covers or 'none'}; socket close code {ws.close_code})")
             return watching
         if while_watching is not None:
             watch_while(viewer, while_watching)
@@ -1055,9 +1063,9 @@ def drive_viewer(api: Api, cfg: Config, session: dict, password: str, results: R
         viewer.pump(5, lambda: not viewer.in_control)
     finally:
         ws.close()
-    leaks = watching.leaks + typing.leaks
-    if leaks:
-        results.put("frames", "FAIL", "a frame showed the password field unpainted: " + "; ".join(leaks[:3]))
+    covers = watching.covers + typing.covers
+    if covers:
+        results.put("frames", "FAIL", "a frame covered the password field: " + "; ".join(covers[:3]))
     elif typing.judged == 0:
         results.put("frames", "FAIL", "no frame showing the page arrived while the person typed")
     elif not returned:
@@ -1066,7 +1074,7 @@ def drive_viewer(api: Api, cfg: Config, session: dict, password: str, results: R
         f = typing.field
         results.put("frames", "PASS", f"{typing.judged} frame(s) while the person typed and {watching.judged} "
                     f"otherwise showed the page; in every one the field's box ({f.x0},{f.y0}-{f.x1},{f.y1}) "
-                    f"was the mask's #222222 and no field-coloured pixel showed"
+                    f"was the field as Chromium drew it, nothing painted over it"
                     + ("" if changed else "; the page did not visibly change after Enter"))
     typing.field = typing.field or watching.field
     typing.marker = typing.marker or watching.marker
@@ -1195,7 +1203,7 @@ def check_recording(cfg: Config, gcs: Gcs | None, tally: FrameTally | None,
     if shutil.which("ffmpeg") is None:
         results.put("recording", "SKIP", f"{len(segments)} VP8 segment(s) recorded under {prefix}*/live/; their "
                     "frames were not decoded: no ffmpeg here (the swarm-verify image carries none). The live "
-                    "frames, the same masked stream the relay records, are judged by the frames check")
+                    "frames, the same stream the relay records, are judged by the frames check")
         return
     seen = FrameTally()
     with tempfile.TemporaryDirectory() as scratch:
@@ -1211,13 +1219,13 @@ def check_recording(cfg: Config, gcs: Gcs | None, tally: FrameTally | None,
             for pixels in frames:
                 box = tally.field if tally.field.within(width, height) else None
                 seen.add(judge(pixels, width, height, bpp=3, tol=24, field=box))
-    if seen.leaks:
-        results.put("recording", "FAIL", "a recorded frame shows the field unpainted: " + "; ".join(seen.leaks[:3]))
+    if seen.covers:
+        results.put("recording", "FAIL", "a recorded frame covers the field: " + "; ".join(seen.covers[:3]))
     elif seen.judged == 0:
         results.put("recording", "FAIL", f"no recorded frame of {len(segments)} segment(s) shows the page")
     else:
         results.put("recording", "PASS", f"{seen.judged} recorded frame(s) of {len(segments)} segment(s) show "
-                    "the page, and in every one the field's box is the mask's paint")
+                    "the page, and in every one the field's box is the field as drawn")
 
 
 def sweep(api: Api, cfg: Config, gcs: Gcs | None, password: str, results: Results) -> dict[str, bytes]:

@@ -24,7 +24,7 @@ crosses two services. Whoever watches the live view already sees the page,
 so the path tells them nothing the pixels do not. A page
 with no web origin (about:blank, chrome://, data:, file:, an error page) is
 reported as null. `cert_error` is null -- unknown -- because the page the
-console shows is followed by the mask's session, which does not watch the
+console shows is followed by the gate's page session (mask.py), which does not watch the
 security state; the gate still refuses control on a page that is not secure
 (cdpproxy.CdpProxy.take_control), so null never lets one through.
 

@@ -9,7 +9,7 @@ preset shows only the page; the console's origin strip, which reads the top
 frame's origin over CDP (section 5.7), already shows the URL.
 
 THE FIX keeps the display and the window as they are (the page at the
-bottom, the browser's UI band above it: the agent's CDP targets, the mask's
+bottom, the browser's UI band above it: the agent's CDP targets, the
 bottom-anchored placement and the desktop preset are all unchanged) and cuts
 the captured frame to the page rows on a mobile preset. The controller's
 pointer arrives in that frame's coordinates, so the gate moves it back down
@@ -29,7 +29,6 @@ import pytest
 
 from agent_worker.livegate import __main__ as gate_main
 from agent_worker.livegate.capture import Frame
-from agent_worker.livegate.mask import MaskState, Outcome
 from agent_worker.livegate.presets import resolve
 from agent_worker.livegate.touch import TouchInjector
 
@@ -86,19 +85,7 @@ class Screen:
         return Frame(self.frame.width, self.frame.height, self.frame.stride, bytearray(self.frame.pixels))
 
 
-def _mask_vouching_for(width: int, height: int) -> MaskState:
-    """A mask with a report of a page `width` x `height` and nothing to hide: it paints nothing."""
-    state = MaskState()
-    state.session_up()
-    state.frame_attached("TOP", None)
-    state.navigated("TOP", "https://example.com/")
-    state.on_message("TOP", (
-        '{"v": 1, "k": "report", "doc": "D1", "e": 1, "vp": [%d, %d, 0, 0, 1], '
-        '"f": [], "t": [], "o": [], "tr": false}' % (width, height)))
-    return state
-
-
-def _captured(tmp_path: Path, name: str, orientation: str, *, extra: int = 0) -> tuple[Frame, Outcome]:
+def _captured(tmp_path: Path, name: str, orientation: str, *, extra: int = 0) -> tuple[Frame, str | None]:
     """One pass of the gate's capture loop on `name` in `orientation`: what the viewer is sent."""
     cfg = gate_main.GateConfig(ctl_path=str(tmp_path / "ctl.sock"), profile_dir=tmp_path / "profile",
                                downloads_dir=tmp_path / "d", uploads_dir=tmp_path / "u",
@@ -107,7 +94,6 @@ def _captured(tmp_path: Path, name: str, orientation: str, *, extra: int = 0) ->
     devices = Devices(name, orientation)
     device = devices.device
     gate.devices = devices  # type: ignore[assignment]
-    gate.mask_state = _mask_vouching_for(device.width, device.height)
     screen = Screen(device.display_width, device.display_height, extra=extra)
     gate.framebuffer = screen
 
@@ -124,17 +110,17 @@ def _captured(tmp_path: Path, name: str, orientation: str, *, extra: int = 0) ->
 
     asyncio.run(main())
     assert screen.grabs >= 1
-    return gate.hub.current.frame, gate.hub.current.outcome
+    return gate.hub.current.frame, gate.hub.current.reason
 
 
 @pytest.mark.parametrize(("name", "orientation"), sorted(MOBILE_FRAMES))
 @pytest.mark.parametrize("extra", [0, 64], ids=["fbdir-shrank", "fbdir-kept-its-size"])
 def test_a_mobile_preset_sends_the_page_and_no_browser_ui_rows(tmp_path: Path, name: str, orientation: str,
                                                                 extra: int):
-    frame, outcome = _captured(tmp_path, name, orientation, extra=extra)
+    frame, reason = _captured(tmp_path, name, orientation, extra=extra)
     assert (frame.width, frame.height) == MOBILE_FRAMES[(name, orientation)], \
         "the frame is the preset's viewport: no tab strip, no address bar"
-    assert outcome is Outcome.MASKED
+    assert reason is None
     assert frame.rgb_at(0, 0) == PAGE_WHITE, "the frame's first row is the page's first row"
     assert frame.rgb_at(frame.width - 1, 0) == PAGE_WHITE
     assert frame.rgb_at(0, frame.height - 1) == LAST_ROW, "and its last row the page's last row"
@@ -144,9 +130,9 @@ def test_a_mobile_preset_sends_the_page_and_no_browser_ui_rows(tmp_path: Path, n
 @pytest.mark.parametrize(("name", "orientation"), sorted(DESKTOP_FRAMES))
 def test_the_desktop_preset_still_sends_its_tab_strip_and_address_bar(tmp_path: Path, name: str,
                                                                       orientation: str):
-    frame, outcome = _captured(tmp_path, name, orientation)
+    frame, reason = _captured(tmp_path, name, orientation)
     assert (frame.width, frame.height) == DESKTOP_FRAMES[(name, orientation)]
-    assert outcome is Outcome.MASKED
+    assert reason is None
     assert frame.rgb_at(0, 0) == UI_GREY and frame.rgb_at(0, UI_ROWS - 1) == UI_GREY
     assert frame.rgb_at(0, UI_ROWS) == PAGE_WHITE
     assert frame.rgb_at(0, frame.height - 1) == LAST_ROW
