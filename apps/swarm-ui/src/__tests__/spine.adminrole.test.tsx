@@ -159,13 +159,14 @@ describe('who sees Admin (NAV-ADMIN-ROLE)', () => {
     expect(panelRows()).toEqual(['People and roles', 'Workspaces you admin'])
   })
 
-  it('shows a platform admin the six Admin pages, their workspaces\' group first and Runner sizes beside Pool limits (SIZES-UI)', async () => {
+  it('shows a platform admin the seven Admin pages, their workspaces\' group first and Runner sizes beside Pool limits (SIZES-UI)', async () => {
     serve(ME(true), [PERSONAL, group('eng', 'admin', { role: { name: 'admin', source: 'platform_admin' } })])
     await shell('admin', 'limits')
     await waitFor(() => expect(adminItem()).not.toBeNull())
     expect(adminItem()!.getAttribute('href')).toBe('/admin/limits')
     // Their workspaces' group first, then the platform's (S1b, CONFIG-PANEL-E).
-    expect(panelRows()).toEqual(['People and roles', 'Workspaces you admin', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts'])
+    // Platform secrets (SSC-UI, part of #2158) last of the platform's, as proposal E S1b draws it.
+    expect(panelRows()).toEqual(['People and roles', 'Workspaces you admin', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets'])
   })
 })
 
@@ -192,7 +193,8 @@ describe('Admin › Workspaces you admin (NAV-ADMIN-ROLE)', () => {
       ['Workspace', '/config/workspace'],
       ['MCP servers', '/config/mcp-servers'],
       ['People and roles', '/config/people'],
-      ['Workspace key', '/settings/keys'],
+      // Settings › API keys is Config › Secrets since SSC-UI (part of #2158).
+      ['Workspace key', '/config/secrets'],
     ])
     const { chosenTenant } = await import('../fetch')
     expect(chosenTenant()).toBeNull()

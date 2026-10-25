@@ -99,9 +99,11 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
   // issue forms already name each page as Settings › <page>. THE PERSON'S OWN
   // PAGES ONLY since CONFIG-NAV (part of #2157, BGD 2026-10-23): Workspace,
   // MCP servers and People and roles are Config's.
+  // API keys left this list for Config › Secrets' Keys for agents and MCP
+  // (SSC-UI, part of #2158; BGD 2026-10-23 23:57Z, proposal E S1: Settings
+  // keeps only Profile). `/settings/keys` still lands there (paths.ts).
   profile: [
     { key: 'profile', label: 'Profile', icon: 'people', to: 'settings/profile' },
-    { key: 'keys', label: 'API keys', icon: 'key', to: 'settings/keys' },
   ],
   work: [
     {
@@ -172,6 +174,10 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     { key: 'runner-sizes', label: 'Runner sizes', icon: 'runtimes', to: 'admin/runner-sizes' },
     { key: 'tenants', label: 'Tenants', icon: 'tenants', to: 'admin/tenants' },
     { key: 'counts', label: 'Platform counts', icon: 'counts', to: 'admin/counts' },
+    // SSC-UI (part of #2158; docs/design/secrets-scopes.md §5, proposal E S7):
+    // status only, a platform admin's alone, so under Platform and never in
+    // a workspace admin's `adminPagesFor`.
+    { key: 'platform-secrets', label: 'Platform secrets', icon: 'key', to: 'admin/platform-secrets' },
     // #847 W8 (docs/workspaces.md §6.4): a SECTIONS tab and a route, and
     // missing here, so an admin reached it only by typing /admin/people --
     // the Runs defect visual QA Q7 caught, again. SECTIONS' label, People
