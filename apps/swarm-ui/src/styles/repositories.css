@@ -377,3 +377,68 @@ table.ur-mx tr.ur-grp td { background: var(--surface-2); font-weight: 600; text-
   .ur-step { grid-template-columns: 24px minmax(0, 1fr); }
   .ur-step-acts { grid-column: 2; }
 }
+
+/* ---- QA targets with environments (QAENV-UI-FORM; Config proposal E, S9a, S9c) ----
+   A TARGET IS ONE FULL-WIDTH CARD. Its environments are a table of six
+   columns (tick, environment, host, host approval, credential, screens), as
+   S9a draws it; in a third of the page the host column alone wrapped to a
+   word a line. */
+.qa-page .ur-cards { grid-template-columns: minmax(0, 1fr); }
+/* THE PAGE'S LEAD (proposal E: every Config page is led by what is missing):
+   the first leg that cannot run, and its one next action. Warn-toned while a
+   leg is missing, live-toned when every leg can run. */
+.qa-lead { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 14px 18px; border-radius: var(--r-card); background: var(--s-warnb); border: 1px solid var(--line); min-width: 0; }
+.qa-lead.is-ok { background: var(--s-liveb); }
+.qa-lead-t { flex: 1 1 240px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.qa-lead-k { font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--s-warn); }
+.qa-lead.is-ok .qa-lead-k { color: var(--s-live); }
+.qa-lead-t b { font: 600 var(--t-lead)/var(--lh-lead) var(--font); color: var(--text); overflow-wrap: anywhere; }
+.qa-lead-s { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.qa-lead-a { display: flex; flex-wrap: wrap; gap: 8px; }
+/* ONE ROW PER ENVIRONMENT. Each leg is its own <tbody>, so its "new since
+   last run" row stays with it, and a leg that cannot run is tinted with its
+   reason under its name while the others stay as they are. */
+.qa-envs-wrap { border: 1px solid var(--line); border-radius: var(--r-tile); overflow-x: auto; }
+.qa-envs { width: 100%; border-collapse: collapse; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.qa-envs th { text-align: left; font-weight: 600; font-size: var(--t-micro); color: var(--text-dim); padding: 8px 10px; background: var(--surface-2); border-bottom: 1px solid var(--line); white-space: nowrap; }
+.qa-envs td { padding: 9px 10px; vertical-align: top; color: var(--text); }
+.qa-env + .qa-env > tr:first-child > td { border-top: 1px solid var(--line); }
+.qa-env.is-off { background: var(--s-neub); }
+.qa-env td > small { display: block; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); margin-top: 2px; overflow-wrap: anywhere; }
+.qa-env td > small.ur-bad { color: var(--s-bad); }
+.qa-env td > .c-btn { margin-top: 6px; display: flex; }
+.qa-env-tick { width: 28px; }
+/* The state words keep to one line; the "by … ago" under them wraps. */
+.qa-env td > span { white-space: nowrap; }
+.qa-env td:nth-child(2) { min-width: 180px; }
+.qa-head-acts { margin-left: auto; }
+.qa-env-tick input { margin: 2px 0 0; }
+.qa-env-host { white-space: nowrap; }
+.qa-env-disc { display: block; }
+.qa-ok { color: var(--s-live); }
+.qa-chip { display: inline-block; padding: 1px 8px; border-radius: var(--r-pill); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.qa-chip.is-warn { background: var(--s-warnb); color: var(--s-warn); }
+.qa-env-new td { padding-top: 0; }
+.qa-new-k { font-size: var(--t-micro); font-weight: 600; color: var(--text-dim); }
+.qa-new { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.qa-new li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }
+.qa-new code { overflow-wrap: anywhere; }
+.qa-new-at { font-size: var(--t-micro); color: var(--text-dim); }
+/* AT 390 EACH ENVIRONMENT IS ITS OWN BOX (S9c): the tick heads it, and every
+   cell under it is a line naming its column, the value at the right. */
+@media (max-width: 719px) {
+  .qa-envs-wrap { border: 0; overflow: visible; }
+  .qa-envs, .qa-envs tbody, .qa-envs tr, .qa-envs td { display: block; width: auto; }
+  .qa-envs thead { display: none; }
+  .qa-env { border: 1px solid var(--line); border-radius: var(--r-tile); margin-bottom: 10px; padding: 4px 0; }
+  .qa-env + .qa-env > tr:first-child > td { border-top: 0; }
+  .qa-envs td { padding: 5px 12px; }
+  .qa-env-host, .qa-env td > span { white-space: normal; overflow-wrap: anywhere; }
+  .qa-env td:nth-child(2) { min-width: 0; }
+  .qa-envs td[data-label] { position: relative; padding-left: 108px; text-align: right; min-height: 20px; }
+  .qa-envs td[data-label]::before { content: attr(data-label); position: absolute; left: 12px; top: 6px; color: var(--text-dim); font-size: var(--t-micro); text-align: left; }
+  .qa-env td > .c-btn { display: inline-flex; }
+  .qa-env-new td[data-label] { padding-left: 12px; text-align: left; }
+  .qa-env-new td[data-label]::before { display: none; }
+  .qa-env-new .qa-env-tick { display: none; }
+}

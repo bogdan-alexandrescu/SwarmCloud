@@ -3360,6 +3360,66 @@ async function fixtureAdminQuota(): Promise<Result<{ quota: QuotaState[] }>> {
 }
 
 /**
+ * A platform admin's reset of one tenant's AIMD target (QUOTA-RESET), from
+ * Admin › Pool limits (POOL-LIMITS-QUOTA, BGD 2026-10-25, part of #2302).
+ * The route proxies to the quota broker, which clamps the target into
+ * [min_target, configured_hard_max] and answers `{ quota, reset }`: `reset`
+ * carries `from_target`, `to_target` and `clamped`, which the row draws.
+ */
+export async function resetAdaptiveTarget(
+  provider: string,
+  tenant: string,
+  body: { target: number; reason: string; clear_cooldown: boolean },
+): Promise<Result<unknown>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 200))
+    const q = fixtureQuotaRows().find((row) => row.provider === provider && row.tenant_id === tenant)
+    const max = q?.configured_hard_max ?? body.target
+    const to = Math.min(body.target, max)
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: {
+        quota: { ...q, adaptive_target: to },
+        reset: { from_target: q?.adaptive_target ?? max, to_target: to, clamped: to !== body.target },
+      },
+    }
+  }
+  return write(route('/v1/admin/quota/{provider}/{tenant}/adaptive-target', { provider, tenant }), 'PUT', body)
+}
+
+/**
+ * A platform admin's change to one tenant's configured max (the broker's
+ * `configured_hard_max`), from Admin › Pool limits (POOL-LIMITS-QUOTA). The
+ * broker lowers the target to a max set below it in the same write; the
+ * answer's `change` says so (`target_clamped`, `from_target`, `to_target`).
+ */
+export async function setQuotaHardMax(
+  provider: string,
+  tenant: string,
+  body: { hard_max: number; reason: string },
+): Promise<Result<unknown>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 200))
+    const q = fixtureQuotaRows().find((row) => row.provider === provider && row.tenant_id === tenant)
+    const from = q?.adaptive_target ?? null
+    const to = from === null ? null : Math.min(from, body.hard_max)
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: {
+        quota: { ...q, configured_hard_max: body.hard_max, adaptive_target: to },
+        change: {
+          from_hard_max: q?.configured_hard_max ?? null, to_hard_max: body.hard_max,
+          from_target: from, to_target: to, target_clamped: from !== null && to !== null && to < from,
+        },
+      },
+    }
+  }
+  return write(route('/v1/admin/quota/{provider}/{tenant}/hard-max', { provider, tenant }), 'PUT', body)
+}
+
+/**
  * Set a pool's hard limit, routing by the pool's own name.
  *
  * The API has one route per pool KIND rather than one generic route, so the

@@ -92,7 +92,7 @@ export function RepositoryDetail({
   const d = detail.state.status === 'ok' || detail.state.status === 'stale' ? detail.state.data : null
   const title = d !== null ? repoName(d.repository) : repoId
   const crumb = (
-    <UrCrumb trail={[{ label: 'Work' }, { label: 'Repositories', to: LIST }, { label: title }]} go={go} />
+    <UrCrumb trail={[{ label: 'Config' }, { label: 'Repositories', to: LIST }, { label: title }]} go={go} />
   )
   if (d === null) {
     return (
@@ -960,7 +960,7 @@ function SettingsTab({
  * that writes (PATCH_WHY is about the others): `inherit` is sent as itself,
  * because that is what clears the override, as `merge_policy` does. Whether
  * Jev is ever sent code is NOT here -- it is the workspace's switch, on
- * Settings › Workspace, and a repository cannot turn it on for itself.
+ * Config › Workspace Settings, and a repository cannot turn it on for itself.
  */
 const CONTEXT_OPTIONS: readonly { key: RepoContext; label: string }[] = [
   { key: 'inherit', label: 'Inherit' },
@@ -1001,7 +1001,7 @@ function CodeIntelligenceCard({ repoId, served, onWrite, go }: { repoId: string;
         Steps here get the repository&rsquo;s graph context: a ranked pack and the graph tools, built from its index.
         Nothing leaves the platform. Whether Jev is ever sent code is the workspace&rsquo;s switch, on{' '}
         <UrLink to={WORKSPACE_SETTINGS} go={go}>
-          Settings › Workspace
+          Config › Workspace Settings
         </UrLink>
         .
       </p>
@@ -1137,8 +1137,12 @@ function KeepVersionsControl({ repoId, served, held, onWrite }: { repoId: string
   )
 }
 
-/** Settings › Workspace, where the workspace's Code intelligence switch is. */
-const WORKSPACE_SETTINGS = 'settings/workspace'
+/**
+ * Config › Workspace Settings (Settings › Workspace until CONFIG-NAV), where
+ * the workspace's Code intelligence switch is: its own address, so the link's
+ * href is its path rather than the old one's redirect (CONFIG-COPY).
+ */
+const WORKSPACE_SETTINGS = 'config/workspace'
 
 /**
  * The hard stops' two registration fields (docs/schedules.md §4.4). Shown,

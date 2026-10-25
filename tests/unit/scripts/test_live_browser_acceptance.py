@@ -9,9 +9,10 @@ beyond loopback:
   injector only once its connection holds control;
 * its websocket client upgrades, sends masked frames, reads a server's
   close code, and its frame reader joins fragments;
-* its frame judge passes a frame whose field box is the mask's paint and
-  FAILS one where a single row of the field's own colour shows -- at device
-  scale 1 and 2, exactly (RFB) and with VP8-like noise (the recording);
+* its frame judge passes a frame whose field box is the field as drawn (its
+  own magenta; BGD 2026-10-25: the live view paints nothing) and FAILS one
+  where the field is painted over, even partly -- at device scale 1 and 2,
+  exactly (RFB) and with VP8-like noise (the recording);
 * the fixture page's layout is the one the judge measures by, and the page
   cannot send the password anywhere;
 * the verdict keys, the shell group's check names and the settle states agree.
@@ -75,10 +76,15 @@ def _fill(pixels, width, box, rgb, bpp=4):
         pixels[at:at + (x1 - x0) * bpp] = px * (x1 - x0)
 
 
-def _page(scale=1, top=120, left=40, bpp=4, painted=True, width=1280, height=800):
+#: What the gate's mask painted a field with until LIVE-NOMASK (#2298).
+OLD_MASK_RGB = (0x22, 0x22, 0x22)
+
+
+def _page(scale=1, top=120, left=40, bpp=4, painted=False, width=1280, height=800):
     """The fixture as it would reach a viewer: page area starting `top` px
     down (the browser's own bar above it), marker and field at the page's CSS
-    positions times `scale`, the field painted by the mask (dilated 8 px) or not."""
+    positions times `scale`, the field as drawn, or painted over as the old
+    mask did (dilated 8 px)."""
     pixels = _frame(width, height, bpp)
     mx, my = left + 40 * scale, top + 120 * scale
     _fill(pixels, width, (mx, my, mx + 320 * scale, my + 40 * scale), lb.MARKER_RGB, bpp)
@@ -86,54 +92,53 @@ def _page(scale=1, top=120, left=40, bpp=4, painted=True, width=1280, height=800
     field = (fx, fy, fx + 320 * scale, fy + 40 * scale)
     _fill(pixels, width, field, lb.FIELD_RGB, bpp)
     if painted:
-        from agent_worker.livegate.mask import MASK_RGB
-
         d = 8
-        _fill(pixels, width, (field[0] - d, field[1] - d, field[2] + d, field[3] + d), MASK_RGB, bpp)
+        _fill(pixels, width, (field[0] - d, field[1] - d, field[2] + d, field[3] + d), OLD_MASK_RGB, bpp)
     return pixels, field
 
 
-def test_the_judge_s_mask_colour_is_the_gate_s():
-    from agent_worker.livegate.mask import MASK_RGB
+def test_the_judge_s_mask_colour_is_the_one_the_gate_used_to_paint_and_the_gate_paints_none():
+    from agent_worker.livegate import mask
 
-    assert lb.MASK_RGB == MASK_RGB
+    assert lb.MASK_RGB == OLD_MASK_RGB
+    assert not hasattr(mask, "MASK_RGB")
 
 
 @pytest.mark.parametrize("scale", [1, 2])
-def test_a_frame_whose_field_is_painted_passes(scale):
+def test_a_frame_whose_field_is_shown_as_drawn_passes(scale):
     pixels, field = _page(scale=scale)
     verdict = lb.judge(bytes(pixels), 1280, 800)
-    assert verdict.kind == "painted", verdict.describe()
+    assert verdict.kind == "shown", verdict.describe()
     assert (verdict.field.x0, verdict.field.y0, verdict.field.x1, verdict.field.y1) == field
-    assert verdict.field_pixels == 0 and verdict.painted == 1.0
+    assert verdict.shown == 1.0 and verdict.painted == 0.0
 
 
-def test_a_frame_showing_the_field_unpainted_is_a_leak():
-    pixels, _ = _page(painted=False)
+def test_a_frame_whose_field_is_painted_over_is_covered():
+    pixels, _ = _page(painted=True)
     verdict = lb.judge(bytes(pixels), 1280, 800)
-    assert verdict.kind == "leak"
-    assert verdict.field_pixels == 320 * 40
+    assert verdict.kind == "covered"
+    assert verdict.painted == 1.0 and verdict.shown == 0.0
 
 
-def test_one_unpainted_row_of_the_field_is_a_leak():
-    """MUTATION: the mask paints the field one row short."""
+def test_one_painted_row_of_the_field_is_covered():
+    """MUTATION: a box painted over part of the field (rows of it) still fails."""
     pixels, field = _page()
-    _fill(pixels, 1280, (field[0], field[3] - 3, field[2], field[3] - 2), lb.FIELD_RGB)
+    _fill(pixels, 1280, (field[0], field[1] + 10, field[2], field[1] + 12), OLD_MASK_RGB)
     verdict = lb.judge(bytes(pixels), 1280, 800)
-    assert verdict.kind == "leak", verdict.describe()
+    assert verdict.kind == "covered", verdict.describe()
 
 
-def test_a_field_coloured_pixel_anywhere_is_a_leak():
-    pixels, _ = _page()
-    _fill(pixels, 1280, (900, 700, 901, 701), lb.FIELD_RGB)
-    assert lb.judge(bytes(pixels), 1280, 800).kind == "leak"
+def test_the_pointers_arrow_on_the_field_is_still_shown():
+    """A viewer with no local cursor is sent the arrow painted on its copy (rfb.py)."""
+    pixels, field = _page()
+    x, y = (field[0] + field[2]) // 2, (field[1] + field[3]) // 2
+    _fill(pixels, 1280, (x, y, x + 12, y + 19), (0, 0, 0))
+    assert lb.judge(bytes(pixels), 1280, 800).kind == "shown"
 
 
 def test_a_frame_without_the_page_is_not_judged():
-    from agent_worker.livegate.mask import MASK_RGB
-
     blanked = _frame()
-    _fill(blanked, 1280, (0, 120, 1280, 800), MASK_RGB)  # the mask blanked the page area
+    _fill(blanked, 1280, (0, 120, 1280, 800), OLD_MASK_RGB)  # a page area painted out
     assert lb.judge(bytes(blanked), 1280, 800).kind == "no_page"
     unavailable = bytearray(bytes([0x55, 0x55, 0x55, 0]) * (1280 * 800))
     assert lb.judge(bytes(unavailable), 1280, 800).kind == "no_page"
@@ -144,9 +149,9 @@ def test_the_recording_is_judged_with_a_tolerance_at_the_live_frames_box():
     rng = random.Random(7)
     noisy = bytes(max(0, min(255, b + rng.randint(-12, 12))) for b in pixels)
     box = lb.Box(*field)
-    assert lb.judge(noisy, 1280, 800, bpp=3, tol=24, field=box).kind == "painted"
-    leaked, _ = _page(bpp=3, painted=False)
-    assert lb.judge(bytes(leaked), 1280, 800, bpp=3, tol=24, field=box).kind == "leak"
+    assert lb.judge(noisy, 1280, 800, bpp=3, tol=24, field=box).kind == "shown"
+    covered, _ = _page(bpp=3, painted=True)
+    assert lb.judge(bytes(covered), 1280, 800, bpp=3, tol=24, field=box).kind == "covered"
 
 
 # --------------------------------------------------------------------------
@@ -169,7 +174,7 @@ def test_the_fixture_s_layout_is_the_one_the_judge_measures_by():
     assert field["top"] - marker["top"] == lb.FIELD_OFFSET_CSS
     assert "background: #00ffff" in html and "background: #ff00ff" in html
     assert lb.MARKER_RGB == (0x00, 0xFF, 0xFF) and lb.FIELD_RGB == (0xFF, 0x00, 0xFF)
-    # The dilated mask of the field must not reach the marker.
+    # The field and the marker do not touch, so the judge finds each alone.
     assert field["top"] - 8 > marker["top"] + marker["height"]
 
 
@@ -223,23 +228,12 @@ class _Injector:
         pass
 
 
-class _Mask:
-    # `rfb.masked` reads `MaskState.reason`; None says the frame is the whole page.
-    reason = None
-
-    def apply(self, frame):
-        from agent_worker.livegate.mask import Outcome
-
-        return Outcome.MASKED
-
-
 def _gate_frame(width=320, height=200):
     from agent_worker.livegate.capture import Frame
-    from agent_worker.livegate.mask import MASK_RGB
 
     frame = Frame.blank(width, height, GREEN)
     frame.fill(10, 20, 130, 40, lb.MARKER_RGB)
-    frame.fill(10, 60, 110, 80, MASK_RGB)
+    frame.fill(10, 60, 110, 80, lb.FIELD_RGB)
     return frame
 
 
@@ -247,7 +241,7 @@ async def _session(handler):
     from agent_worker.livegate import rfb
 
     hub = rfb.FrameHub(320, 200)
-    hub.publish(rfb.masked(_gate_frame(), _Mask()))
+    hub.publish(_gate_frame())
     injector = _Injector()
     control = rfb.ControlState(injector)
     sessions = []
@@ -326,9 +320,8 @@ def test_the_viewer_keeps_the_gate_s_frame_and_types_only_in_control():
         changed = _gate_frame()
         changed.fill(200, 150, 210, 160, (0xAA, 0xBB, 0xCC))
         before = client.updates
-        from agent_worker.livegate import rfb
 
-        hub.publish(rfb.masked(changed, _Mask()))
+        hub.publish(changed)
         # The pointer event above is news too (LB-CURSOR): the gate may already
         # have sent this viewer an update with the pointer painted in, so the
         # first update after `before` need not be the published frame. Wait for

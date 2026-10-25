@@ -211,6 +211,57 @@ describe('one item', () => {
     await screen.findByText(/Someone decided this first: run run_8f2a was decided first/, undefined, WAIT)
   })
 
+  it('says who may decide when the last editor is refused, not "Not decided" (#2259)', async () => {
+    const message = "the member who last changed this schedule's gate, scope or spec cannot approve its merge-tier items; another of the schedule's named approvers must: dave@example.com"
+    await mount(
+      'approval=run%3Arun_8f2a',
+      routes((m, url) =>
+        m === 'POST' && url === '/v1/approvals/run%3Arun_8f2a:approve' ? { status: 403, body: { code: 'second_person_required', message } } : null,
+      ),
+    )
+    const detail = await loaded()
+    await waitFor(() => expect(within(detail).getByRole('button', { name: 'Approve' })).toBeTruthy(), WAIT)
+    fireEvent.click(within(detail).getByRole('button', { name: 'Approve' }))
+    const said = await screen.findByText(/named approvers must: dave@example\.com/, undefined, WAIT)
+    // Rendered 2026-10-25: a prefix restating the server's own first clause
+    // read "You last changed this schedule’s gate, scope or spec: the member
+    // who last changed this schedule's gate, scope or spec cannot ...".
+    expect(said.textContent).toBe(`Not decided: ${message}`)
+  })
+
+  it('says an owner-only item is the owner’s even as its last editor (#2259)', async () => {
+    const owner = { ...item('run:run_8f2a'), approvers: 'owner_only', projected: true }
+    await mount(
+      'approval=run%3Arun_8f2a',
+      routes((m, url) =>
+        m === 'GET' && url.split('?')[0] === '/v1/approvals/run%3Arun_8f2a' ? { status: 200, body: { approval: owner, run: { id: 'run_8f2a', state: 'PLANNED', plan: PLAN } } } : null,
+      ),
+    )
+    const detail = await loaded()
+    await within(detail).findByText(
+      'the platform owner alone, who may decide even as the schedule’s last editor; that decision is recorded in the audit as an owner waiver',
+      undefined,
+      WAIT,
+    )
+  })
+
+  it('says an owner-only hold’s approver once, not twice and not "only by ... only" (#2259)', async () => {
+    const held = { ...item('run:run_8f2a', { kind: 'hold' }), approvers: 'owner_only', hold: { code: 'NEEDS_OWNER', approvers: 'owner_only', matched: ['.github/workflows'] } }
+    await mount(
+      'approval=run%3Arun_8f2a',
+      routes((m, url) =>
+        m === 'GET' && url.split('?')[0] === '/v1/approvals/run%3Arun_8f2a' ? { status: 200, body: { approval: held, run: { id: 'run_8f2a', state: 'PLANNED', plan: PLAN } } } : null,
+      ),
+    )
+    const detail = await loaded()
+    const note = await within(detail).findByRole('note', undefined, WAIT)
+    // Rendered 2026-10-25: "Who may approve" said the owner-only sentence and
+    // the hold's note said it again as "Approved only by the platform owner
+    // only, ...". Said once, in "Who may approve".
+    expect(detail.textContent?.split('the platform owner alone, who may decide').length).toBe(2)
+    expect(note.textContent).not.toMatch(/only by|owner only/)
+  })
+
   it('asks a one-person tenant for the words its own hold names, and sends them', async () => {
     const held = { ...item('run:run_8f2a', { kind: 'hold' }), hold: { code: 'NEEDS_SECOND_MEMBER', approvers: 'second_member', matched: ['terraform/iam.tf'] } }
     let first = true

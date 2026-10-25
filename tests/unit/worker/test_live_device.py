@@ -8,8 +8,11 @@ docs/design/live-browser.md section 6.1. The acceptance test of lane L3b:
 * the agent's own `Emulation.*` calls are refused by the method policy;
 * in control with touch on, a press/move/release arrives as
   touchStart/Move/End;
-* in view mode no input is sent;
-* the mask covers a password field on every preset where the page draws it.
+* in view mode no input is sent.
+
+Until LIVE-NOMASK (#2298) the list ended "the mask covers a password field on
+every preset where the page draws it"; the live view paints nothing since
+BGD's decision of 2026-10-25 (design §5.3), so that case went with the mask.
 
 The expected sizes below are the design's list (section 6.1), written out
 again here rather than read from presets.py, so a preset that drifts from the
@@ -21,7 +24,6 @@ a scripted X server on a unix socket. No Chromium, no Xvfb, no network.
 from __future__ import annotations
 
 import asyncio
-import math
 import os
 import struct
 import tempfile
@@ -41,7 +43,6 @@ from agent_worker.livegate.device import (
     XRandrDisplay,
     crop,
 )
-from agent_worker.livegate.mask import MASK_RGB, MaskState, Outcome
 from agent_worker.livegate.presets import (
     BROWSER_UI_HEIGHT,
     MAX_DISPLAY_HEIGHT,
@@ -621,43 +622,6 @@ def test_in_view_mode_no_input_is_sent():
     assert dropped == 14
 
 
-# ------------------------------------------------------------ the mask
-
-
-@pytest.mark.parametrize(("name", "orientation"), DEVICES)
-def test_the_mask_covers_a_password_field_on_every_preset_where_the_page_draws_it(name, orientation):
-    width, height, _dpr, _touch, _ua = _expected(name, orientation)
-    scale = 1.0  # screen pixels per CSS pixel, on every preset (presets.py, LB-R3)
-    state = MaskState()
-    state.session_up()
-    state.frame_attached("TOP", None)
-    state.navigated("TOP", "https://login.example.test/")
-
-    async def main() -> Any:
-        device = DeviceController(FakeCdp(), FakeDisplay(), state, record=lambda k, f: None)
-        return await device.select(name, orientation)
-
-    device = asyncio.run(main())
-    # The observer reports in CSS pixels, after the device change.
-    field = (20, 40, 200, 30)
-    state.on_message("TOP", (
-        '{"v": 1, "k": "report", "doc": "D1", "e": 1, "vp": [%d, %d, 0, 0, 1], '
-        '"f": [{"id": 1, "type": "password", "ac": "", "ever": false, "r": [%d, %d, %d, %d]}], '
-        '"t": [], "o": [], "tr": false}' % (width, height, *field)))
-    frame = Frame.blank(device.display_width, device.display_height, WHITE)
-    assert state.apply(frame) is Outcome.MASKED
-
-    top = device.display_height - math.ceil(height * scale)
-    x0, y0 = math.ceil(field[0] * scale), top + math.ceil(field[1] * scale)
-    x1, y1 = math.floor((field[0] + field[2]) * scale), top + math.floor((field[1] + field[3]) * scale)
-    for y in range(y0, y1, 3):
-        for x in range(x0, x1, 5):
-            assert frame.rgb_at(x, y) == MASK_RGB, (name, orientation, x, y)
-    assert frame.rgb_at(x1 - 1, y1 - 1) == MASK_RGB
-    # The box is the field, not the whole page: well past it is untouched.
-    assert frame.rgb_at(min(x1 + 40, device.display_width - 1), min(y1 + 40, device.display_height - 1)) == WHITE
-
-
 # ------------------------------------------------------------ the display
 
 
@@ -925,8 +889,8 @@ def test_an_unreachable_display_is_a_display_error():
 
 def test_a_frame_larger_than_the_device_is_cropped_to_it():
     frame = Frame.blank(20, 10, WHITE)
-    frame.fill(0, 0, 4, 3, MASK_RGB)
+    frame.fill(0, 0, 4, 3, (0x22, 0x22, 0x22))
     out = crop(frame, 4, 3)
     assert (out.width, out.height) == (4, 3)
-    assert all(out.rgb_at(x, y) == MASK_RGB for x in range(4) for y in range(3))
+    assert all(out.rgb_at(x, y) == (0x22, 0x22, 0x22) for x in range(4) for y in range(3))
     assert crop(out, 4, 3) is out
