@@ -193,6 +193,24 @@ def test_the_pod_carries_what_the_browser_image_needs(tenant):
 # --- the runner ---------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _no_live_browser_from_the_host(monkeypatch):
+    """Each test starts from no live browser; a test that wants one sets it.
+
+    `claude_code.body` reads `SWARM_CDP_ENDPOINT` and `SWARM_HANDOFF` from the
+    process environment, and a SwarmCloud browser runner -- where an agent runs
+    these tests (CLAUDE.md) -- sets both. Inherited, they sent the
+    no-live-browser tests down the live branch: `PLAYWRIGHT_BROWSERS_PATH`
+    became the stub `/opt/swarm/live-browser-only`, and a base-image run was
+    refused as `live_browser_unavailable` (2026-10-25, POOL-LIMITS-QUOTA).
+    """
+    from agent_worker import handoff
+    from agent_worker.runners import claude_code
+
+    monkeypatch.delenv(claude_code.CDP_ENDPOINT_ENV, raising=False)
+    monkeypatch.delenv(handoff.HANDOFF_ENV, raising=False)
+
+
 def _run_body(monkeypatch, tmp_path, browsers: str | None) -> dict[str, Any]:
     from agent_worker.runners import claude_code
     from agent_worker.runners.base import RunnerContext
@@ -224,8 +242,12 @@ def _run_body(monkeypatch, tmp_path, browsers: str | None) -> dict[str, Any]:
 def test_the_runner_hands_the_agent_the_browser(monkeypatch, tmp_path):
     from agent_worker.runners.claude_code import BROWSER_NOTE
 
-    seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
-    assert seen["env"]["PLAYWRIGHT_BROWSERS_PATH"] == "/opt/playwright"
+    # A path under tmp_path, not the image's `/opt/playwright`: where that
+    # directory exists (a SwarmCloud browser runner), the runner seeds a test
+    # browsers directory from it and names it after BROWSER_NOTE (PW-TESTRUNNER).
+    browsers = str(tmp_path / "playwright")
+    seen = _run_body(monkeypatch, tmp_path, browsers)
+    assert seen["env"]["PLAYWRIGHT_BROWSERS_PATH"] == browsers
     assert seen["prompt"].startswith("Screenshot the settings page.")
     assert seen["prompt"].endswith(BROWSER_NOTE)
     assert "chromium_sandbox=False" in BROWSER_NOTE
