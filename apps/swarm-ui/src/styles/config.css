@@ -87,3 +87,21 @@
    fix: the sweep's cascade read `margin-inline` under `:where()` as nothing. */
 .cfg-page input[type='checkbox'],
 .cfg-page input[type='radio'] { margin-left: 0; margin-right: 0; }
+
+/* ---- the lead (CONFIG-LEAD-TINT; part of #2157) ------------------------------ */
+/* EVERY CONFIG PAGE'S LEAD: one next-step sentence and a button, on the info
+   tint (proposal E's `.lead`, config-e.html). One rule for every Config page:
+   a page's lead is a `section.ac-lead` around its card (Access.tsx `Lead`).
+   ITS SECONDARY BUTTONS DRAW A STRONGER BORDER. `--ctl-bd` measured 2.89:1 on
+   the tint in dark and 2.96:1 in light, under the 3:1 a control boundary is
+   held to (WCAG 2.1 SC 1.4.11, spaceprobe.ts `dividerContrast`), which is why
+   GITHUB-ACCESS-PAGE drew the lead on the plain card. Mixed 10% toward
+   `--text` it moves away from the tint in both themes: 3.49:1 dark, 3.47:1
+   light (contrast.config-lead.test.tsx measures it in every lead state). A
+   mix rather than a new token, so the pair cannot drift from `--ctl-bd`.
+   The primary's accent fill and border clear the tint on their own; ghost,
+   danger and disabled buttons keep their own borders. */
+.ac-lead > .c-card { background: var(--sk-acs); border-color: var(--sk-acl); }
+.ac-lead .c-btn:not(.is-primary):not(.is-ghost):not(.is-danger):not(.is-danger-filled):not(:disabled):not([aria-disabled='true']) {
+  border-color: color-mix(in srgb, var(--ctl-bd) 90%, var(--text));
+}
