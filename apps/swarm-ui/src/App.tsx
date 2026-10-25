@@ -1423,9 +1423,12 @@ export function App() {
 
   const [apiFailuresOnly, setApiFailuresOnly] = useState(false)
 
-  // Replaced in place by the normalise effect, so Back does not return to the Admin page.
-  const onNoAdmin = useCallback(() => {
-    setAt((r) => (r.sectionId === ADMIN_SECTION && r.taskId === null ? fromAddress('') : r))
+  // Replaced in place by the normalise effect, so Back does not return to the
+  // Admin page: Overview for someone who administers nothing (CONFIG-NAV),
+  // Workspaces you admin for a workspace admin on a platform page
+  // (ADMIN-REDIRECT). A setter, never `go`, which would push.
+  const onAdminRedirect = useCallback((to: string) => {
+    setAt((r) => (r.sectionId === ADMIN_SECTION && r.taskId === null ? fromAddress(to) : r))
   }, [])
 
   const section = sectionOf(at.sectionId)
@@ -1490,9 +1493,11 @@ export function App() {
           keepOnSwitch={at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow')}
           place={pathFor(at)}
           // ADMIN IS AN ADMIN'S (CONFIG-NAV; BGD 2026-10-23): someone who
-          // administers nothing, on an Admin address, lands on Overview. The
-          // shell says so only once both of its reads have answered.
-          onNoAdmin={onNoAdmin}
+          // administers nothing, on an Admin address, lands on Overview, and
+          // a workspace admin on a platform page lands on Workspaces you
+          // admin (ADMIN-REDIRECT; BGD 2026-10-24). The shell says so only
+          // once both of its reads have answered.
+          onAdminRedirect={onAdminRedirect}
           // THE BELL (#1206) is the shell's to place: the spine's foot, or the
           // phone header (V178). It was the only thing in a header bar drawn
           // over every page, so a section page carried an empty 48px band.

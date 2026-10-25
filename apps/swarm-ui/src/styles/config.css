@@ -87,3 +87,45 @@
    fix: the sweep's cascade read `margin-inline` under `:where()` as nothing. */
 .cfg-page input[type='checkbox'],
 .cfg-page input[type='radio'] { margin-left: 0; margin-right: 0; }
+
+/* ---- the lead (CONFIG-LEAD-TINT; part of #2157) ------------------------------ */
+/* EVERY CONFIG PAGE'S LEAD: one next-step sentence and a button, on the info
+   tint (proposal E's `.lead`, config-e.html). One rule for every Config page:
+   a page's lead is a `section.ac-lead` around its card (Access.tsx `Lead`).
+   ITS BUTTONS' BORDERS ARE IN styles.css, after the `:where(.app button)`
+   floor. `--ctl-bd` measured 2.89:1 on this tint in dark and 2.96:1 in light,
+   under the 3:1 a control boundary is held to (WCAG 2.1 SC 1.4.11,
+   spaceprobe.ts `dividerContrast`), which is why GITHUB-ACCESS-PAGE drew the
+   lead on the plain card. The stronger border sits there rather than here
+   because jsdom's source-order cascade lets the floor out-rank any section
+   sheet, so a rule here would be invisible to the spacing sweep (the
+   `.ob-step.is-next` precedent beside it says the same). */
+.ac-lead > .c-card { background: var(--sk-acs); border-color: var(--sk-acl); }
+
+/* ---- the Config panel's row badges (S1a; CONFIG-PANEL-E) -------------------- */
+/* Each row's state from the strip's read: a tick when done, a dim count, what
+   is missing in the warning tone, or a dash for a source nobody could read. */
+.cfg-badge { flex: none; font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cfg-badge.is-done { color: var(--s-live); font-weight: 650; }
+.cfg-badge.is-count { font-family: var(--mono); }
+.cfg-badge.is-missing { color: var(--s-warn); font-weight: 600; }
+.cfg-badge.is-unknown { color: var(--ctl-absent, var(--text-dim)); cursor: help; }
+
+/* ---- the Admin panel's groups (S1b, S1c) ------------------------------------ */
+.sk-pgrp + .sk-pgrp { margin-top: 6px; }
+.sk-pg { font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); padding: 6px 19px 4px; }
+.sk-pnote { margin: 6px 19px 12px; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); white-space: normal; }
+.sk-pk-sub { flex: none; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+
+/* ---- one workspace's setup progress (S10a) ---------------------------------- */
+.cfg-progress { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.cfg-progress-h { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.cfg-progress-h b { font: 650 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
+.cfg-progress-h b.is-done { color: var(--s-live); }
+.cfg-progress-h small,
+.cfg-progress-next { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+.cfg-progress .cfg-meter-bar { max-width: 360px; }
+.wya-setup { flex: 1 0 100%; min-width: 0; }
+.wya-reading { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.wya-behind { margin: 0 0 var(--ctl-s2, 8px); font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
+.cfg-badge.is-note { color: var(--text-dim); }

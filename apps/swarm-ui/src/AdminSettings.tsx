@@ -1,6 +1,7 @@
-import { Fragment, useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react'
 import {
-  loadAdminPools, loadCapacity, loadMe, loadModelClasses, loadModelPrices, loadPlatformSettings, priceRefusals, saveModelPrices, setPoolLimit, storeOwnerToken,
+  loadAdminPools, loadAdminQuota, loadCapacity, loadMe, loadModelClasses, loadModelPrices, loadPlatformSettings, priceRefusals, resetAdaptiveTarget, saveModelPrices, setPoolLimit,
+  setQuotaHardMax, storeOwnerToken,
 } from './api'
 import { Button, Card } from './components'
 import { errorHeading, isPaused, route, write, type ApiError, type Result } from './fetch'
@@ -28,8 +29,12 @@ import {
   type PlatformSettings,
   type Pool,
   type PoolKind,
+  type QuotaState,
 } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
+// The Config pages' lead (`.ws-lead`, WS-SETTINGS-PAGE), which every Admin
+// page's lead draws with (`AdminLead` below).
+import './styles/workspace-settings.css'
 import './styles/admin.css'
 
 /**
@@ -132,6 +137,8 @@ export function AdminSettingsScreen() {
     return false
   }
 
+  const read = useLeadRead(loadLimits)
+
   return (
     <>
       <Screen
@@ -141,7 +148,7 @@ export function AdminSettingsScreen() {
         // that does not exist, and it restated the section it already sits under
         // ("Admin") instead of naming the thing on the screen.
         title="Pool limits"
-        load={loadLimits}
+        load={read.load}
         // READ ON CAPACITY'S CADENCE (live QA ADM-7, 2026-10-11): read once,
         // In use went stale -- global 14 here while the sidebar's live read
         // said 10 -- and the open editor's impact reasoned from the stale 14.
@@ -162,6 +169,7 @@ export function AdminSettingsScreen() {
         {(d) => (
           <Body
             capacity={fresh !== null && fresh.over === d ? fresh.data : d}
+            unread={read.failed}
             admin={admin}
             saved={saved}
             outcomes={outcomes}
@@ -177,10 +185,186 @@ export function AdminSettingsScreen() {
           />
         )}
       </Screen>
+      {read.failed !== null && !read.held && read.failed.kind !== 'admin_required' && <PoolLeadView lead={null} unread={read.failed} />}
       <AdditionalRepositoryLimitsCard />
       <ModelPricesCard admin={admin} />
       <FallbackTokenCard />
     </>
+  )
+}
+
+/**
+ * AN ADMIN PAGE'S LEAD (ADMIN-LEADS; part of #2157, proposal E S10): what
+ * needs an admin now, in one sentence with at most one button, and a green
+ * "Nothing waiting" when that is the truth. Pool limits, Runner sizes and
+ * Tenants draw it.
+ *
+ * THE CONFIG PAGES' LEAD, NOT A NEW ONE. It is drawn with `.ws-lead`, the
+ * lead Config › Workspace Settings opens with (WorkspaceSettings.tsx `Lead`,
+ * styles/workspace-settings.css), so a later tint of that class (lane
+ * CONFIG-LEAD-TINT) reaches these too. `adm-lead` adds the two tones the
+ * Config pages have no use for (styles/admin.css): `warn`, something an admin
+ * has to act on, and `unread`.
+ *
+ * `unread` IS A DASH WITH ITS REASON, NEVER A GREEN LEAD (the honesty rule,
+ * docs/web-ui/redesign-v2.md: an em dash means "not measured"). A page whose
+ * read failed has not judged anything, and "Nothing waiting" over a read that
+ * never landed would be the one claim nobody made.
+ */
+export type AdminLeadTone = 'warn' | 'next' | 'ok' | 'unread'
+
+export function AdminLead({
+  kicker,
+  title,
+  body,
+  tone,
+  action,
+}: {
+  kicker: string
+  title: string
+  body?: ReactNode
+  tone: AdminLeadTone
+  action?: ReactNode
+}) {
+  return (
+    <section className={`ws-lead adm-lead is-${tone}`} aria-label={kicker} data-lead={tone}>
+      <div className="ws-lead-t">
+        <span className="ws-lead-k">{kicker}</span>
+        <b>{title}</b>
+        {body !== undefined && <span className="ws-lead-s">{body}</span>}
+      </div>
+      {action !== undefined && <div className="ws-lead-a">{action}</div>}
+    </section>
+  )
+}
+
+/** The dash lead: what could not be read, and the API's reason in its own heading. */
+export function UnreadLead({ what, error }: { what: string; error: ApiError }) {
+  return <AdminLead tone="unread" kicker="Not read" title={`—, ${what} could not be read`} body={`${errorHeading(error)}.`} />
+}
+
+/**
+ * WHETHER A `Screen`'S READ FAILED, for its lead. `Screen` keeps its result to
+ * itself, so its `load` is wrapped: `failed` is the last read's error (null
+ * once one lands), and `held` says whether rows from an earlier read are still
+ * on screen -- `Screen`'s stale rule, which hands those rows to its children.
+ * With rows, the lead inside them draws the dash; without, `Screen` draws its
+ * failure panel and no children, and the page draws the dash under it.
+ *
+ * The wrapper calls `load` synchronously, so `Screen`'s `pageReads` still
+ * counts the read as the page's.
+ */
+export function useLeadRead<T>(load: () => Promise<Result<T>>): {
+  load: () => Promise<Result<T>>
+  failed: ApiError | null
+  held: boolean
+} {
+  const [failed, setFailed] = useState<ApiError | null>(null)
+  const [held, setHeld] = useState(false)
+  const wrapped = useCallback(
+    () =>
+      load().then((r) => {
+        if (r?.status === 'error') setFailed(r.error)
+        else if (r?.status === 'ok' || r?.status === 'stale') {
+          setFailed(null)
+          setHeld(true)
+        } else if (r?.status === 'empty') {
+          setFailed(null)
+          setHeld(false)
+        }
+        return r
+      }),
+    // `load` is a module function on every page that uses this, so it never changes.
+    [],
+  )
+  return { load: wrapped, failed, held }
+}
+
+/**
+ * NEAR A CEILING: 80% of it in use, or more. Under that a pool still has a
+ * fifth of its ceiling free, which is room for the next tasks rather than a
+ * reason to call an admin; the mock-up's lead (S10b) is a pool at 92%.
+ */
+export const NEAR_CEILING = 0.8
+
+/**
+ * What Pool limits leads with (S10b). `unset` first: a pool with no ceiling
+ * set refuses every task that takes it (#374), which is worse than any busy
+ * pool. Then the pool with the largest share of its ceiling in use, if it is
+ * near it. A paused pool (`enabled: false`) is held on purpose and is not
+ * ranked, nor is a ceiling of 0 with nothing in use -- nothing is waiting on
+ * either.
+ */
+export type PoolLead =
+  | { kind: 'unset'; pool: string }
+  | { kind: 'near'; pool: string; active: number; ceiling: number; share: number }
+  | { kind: 'clear' }
+
+export function poolLead(pools: readonly Pool[]): PoolLead {
+  const unset = pools.find((p) => p.enabled !== false && p.effective_limit === null)
+  if (unset !== undefined) return { kind: 'unset', pool: unset.name }
+  let top: { pool: string; active: number; ceiling: number; share: number } | null = null
+  for (const p of pools) {
+    if (p.enabled === false || p.effective_limit === null) continue
+    const ceiling = p.effective_limit
+    if (ceiling <= 0 && p.active <= 0) continue
+    const share = ceiling <= 0 ? Number.POSITIVE_INFINITY : p.active / ceiling
+    if (top === null || share > top.share || (share === top.share && p.active > top.active)) top = { pool: p.name, active: p.active, ceiling, share }
+  }
+  if (top !== null && top.share >= NEAR_CEILING) return { kind: 'near', ...top }
+  return { kind: 'clear' }
+}
+
+const percent = (share: number) => (Number.isFinite(share) ? `${Math.round(share * 100)}%` : 'over')
+
+/**
+ * Pool limits' lead, drawn. `onOpen` opens the named pool's side editor (L2);
+ * absent -- a non-admin, for whom Edit is locked -- the lead has no button.
+ */
+function PoolLeadView({
+  lead,
+  unread,
+  onOpen,
+  openWhy,
+}: {
+  lead: PoolLead | null
+  unread: ApiError | null
+  onOpen?: (pool: string) => void
+  /** Why the button waits: another pool's editor holds an unsaved value. */
+  openWhy?: string
+}) {
+  if (unread !== null) return <UnreadLead what="pool use" error={unread} />
+  if (lead === null) return null
+  if (lead.kind === 'clear') {
+    // No second sentence: the table under it carries every pool's figures,
+    // and Pool limits is held to a prose budget (prose.operator.test.tsx).
+    return <AdminLead tone="ok" kicker="Nothing waiting" title="No pool is near its ceiling" />
+  }
+  const button =
+    onOpen === undefined ? undefined : (
+      <Button kind="primary" disabledReason={openWhy} onClick={() => onOpen(lead.pool)}>
+        {`Open ${lead.pool}`}
+      </Button>
+    )
+  if (lead.kind === 'unset') {
+    return (
+      <AdminLead
+        tone="warn"
+        kicker="Needs a look"
+        title={`Pool ${lead.pool} has no ceiling set`}
+        body="Admission refuses every task that takes it until one is."
+        action={button}
+      />
+    )
+  }
+  return (
+    <AdminLead
+      tone="warn"
+      kicker="Needs a look"
+      title={`Pool ${lead.pool} is at ${percent(lead.share)} of its ceiling`}
+      body={`${lead.active} of ${lead.ceiling} units in use.`}
+      action={button}
+    />
   )
 }
 
@@ -198,6 +382,13 @@ type RecordRead = 'served' | 'admins-only' | 'unread'
 /** A pool as this screen draws it: `/v1/capacity`'s, with the admin record joined on. */
 type LimitPool = Pool & Partial<Pick<AdminPool, 'admin_changed_by' | 'admin_changed_at' | 'admin_change'>> & {
   record?: RecordRead
+  /**
+   * The quota document a `provider:<p>:tenant:<t>` pool is fed by, from
+   * `GET /v1/admin/quota` (POOL-LIMITS-QUOTA). Absent: not a provider-tenant
+   * pool, no such document, or the read was refused or failed -- the row
+   * then draws only what `/v1/capacity` served.
+   */
+  quota?: QuotaState
 }
 
 /**
@@ -215,9 +406,17 @@ type LimitPool = Pool & Partial<Pick<AdminPool, 'admin_changed_by' | 'admin_chan
  * editable, and the rows say the record was not read.
  */
 export async function loadLimits(): Promise<Result<Capacity>> {
-  const [cap, admin] = await Promise.all([
+  const [cap, admin, quota] = await Promise.all([
     loadCapacity(),
     Promise.resolve(loadAdminPools()).catch(() => undefined),
+    // THE THIRD READ, FOR THE PROVIDER-TENANT ROWS (POOL-LIMITS-QUOTA, BGD
+    // 2026-10-25): their ceiling is the least of the hard limit this screen
+    // edits, the broker's configured max and the AIMD target, and only this
+    // admin read serves the last two. It failing, or being refused, never
+    // fails the screen: those rows draw what `/v1/capacity` served.
+    Promise.resolve()
+      .then(() => loadAdminQuota())
+      .catch(() => undefined),
   ])
   if (cap === undefined || (cap.status !== 'ok' && cap.status !== 'stale')) return cap
   const served = admin !== undefined && (admin.status === 'ok' || admin.status === 'stale' || admin.status === 'empty')
@@ -225,12 +424,19 @@ export async function loadLimits(): Promise<Result<Capacity>> {
   const byName = new Map(
     admin !== undefined && (admin.status === 'ok' || admin.status === 'stale') ? admin.data.pools.map((p) => [p.name, p]) : [],
   )
+  const quotas = new Map(
+    quota !== undefined && (quota.status === 'ok' || quota.status === 'stale')
+      ? quota.data.quota.map((q) => [`provider:${q.provider}:tenant:${q.tenant_id}`, q])
+      : [],
+  )
   const pools = cap.data.pools.map((p): LimitPool => {
-    if (refused) return { ...p, record: 'admins-only' }
+    const q = quotas.get(p.name)
+    const fed = q === undefined ? p : { ...p, quota: q }
+    if (refused) return { ...fed, record: 'admins-only' }
     const found = byName.get(p.name)
-    if (found === undefined) return { ...p, record: served && byName.size === 0 ? 'served' : 'unread' }
+    if (found === undefined) return { ...fed, record: served && byName.size === 0 ? 'served' : 'unread' }
     return {
-      ...p,
+      ...fed,
       admin_changed_by: found.admin_changed_by,
       admin_changed_at: found.admin_changed_at,
       admin_change: found.admin_change,
@@ -367,6 +573,7 @@ function arithmetic(
 
 function Body({
   capacity,
+  unread,
   admin,
   saved,
   outcomes,
@@ -374,6 +581,8 @@ function Body({
   onEdit,
 }: {
   capacity: Capacity
+  /** The last capacity read failed: these rows are an earlier read's, and the lead is a dash. */
+  unread: ApiError | null
   admin: boolean | null
   saved: Readonly<Record<string, SaveMark>>
   outcomes: Readonly<Record<string, SaveOutcome>>
@@ -389,7 +598,7 @@ function Body({
   // each profile's ceiling (`impactOf`, which still reads `arithmetic`). The
   // cards held no control, so nothing a person could do went with them.
   return (
-    <PoolEditor capacity={capacity} admin={admin} saved={saved} outcomes={outcomes} onSaved={onSaved} onEdit={onEdit} />
+    <PoolEditor capacity={capacity} unread={unread} admin={admin} saved={saved} outcomes={outcomes} onSaved={onSaved} onEdit={onEdit} />
   )
 }
 
@@ -871,6 +1080,7 @@ function Changed({ change, now, as: Tag }: { change: Change; now: number; as: 'd
 
 function PoolEditor({
   capacity,
+  unread,
   admin,
   saved,
   outcomes,
@@ -878,6 +1088,7 @@ function PoolEditor({
   onEdit,
 }: {
   capacity: Capacity
+  unread: ApiError | null
   /** From the session read. null: not known (yet), and treated as allowed. */
   admin: boolean | null
   saved: Readonly<Record<string, SaveMark>>
@@ -979,9 +1190,30 @@ function PoolEditor({
       />
     )
 
+  // THE LEAD'S BUTTON IS THE ROW'S `edit` (S10b): it opens the named pool's
+  // side editor, under the same rules -- none for a non-admin or a pool kind
+  // with no write route, and it waits while another pool holds an unsaved
+  // value. The row is brought into view, since a phone draws the editor under
+  // it.
+  const lead = poolLead(pools)
+  const leadPool = lead.kind === 'clear' ? undefined : pools.find((p) => p.name === lead.pool)
+  const leadOpens = leadPool !== undefined && admin !== false && isEditable(leadPool)
+  const openFromLead = (pool: string) => {
+    setEditing({ pool, draft: null })
+    const row = document.getElementById(`limit-${pool}`)
+    if (row !== null && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' })
+  }
+
   return (
-    // `has-filter` moves the sticky family heads below the filter, which
-    // sticks too (VQA V077, V187; styles/admin.css `.adm-ceilings`).
+    <>
+    <PoolLeadView
+      lead={lead}
+      unread={unread}
+      onOpen={leadOpens ? openFromLead : undefined}
+      openWhy={held !== null && held !== leadPool?.name ? 'Save or cancel the open edit first.' : undefined}
+    />
+    {/* `has-filter` moves the sticky family heads below the filter, which
+        sticks too (VQA V077, V187; styles/admin.css `.adm-ceilings`). */}
     <section className={`section adm-ceilings${filtered ? ' has-filter' : ''}`}>
       <span className="ctl-eyebrow has-q">
         Ceilings
@@ -1053,6 +1285,7 @@ function PoolEditor({
         {beside && editor}
       </div>
     </section>
+    </>
   )
 }
 
@@ -1260,6 +1493,7 @@ function PoolRow({
         <span className="ctl-sub" title={pool.name}>
           {keyBreaks(pool.name)}
         </span>
+        <QuotaLine pool={pool} now={now} />
       </th>
       <td role="cell" data-label="In use (units)">
         <span className="adm-inuse">{pool.active}</span>
@@ -1394,6 +1628,377 @@ function PoolRow({
 }
 
 /**
+ * THE TERMS OF A PROVIDER-TENANT POOL'S CEILING (POOL-LIMITS-QUOTA, BGD
+ * 2026-10-25, part of #2302).
+ *
+ * WHY THE ROW SAYS WHICH TERM BINDS. anthropic · eng sat full at 14 while this
+ * screen showed its hard limit, 100 -- the one term it could edit and not the
+ * one that bound. The pool's effective limit is the least of its hard limit,
+ * the broker's `configured_hard_max` (50) and the AIMD `adaptive_target` (14,
+ * halved by one 429), and a provider-reported quota cap when there is one;
+ * an EXHAUSTED, COOLDOWN or DISABLED quota closes the pool at 0 whatever the
+ * terms say (`QuotaState.effective_limit`). Every term tied at the least is
+ * named (AH-1: naming only the first of two tied terms sends the reader to
+ * raise one that changes nothing).
+ *
+ * A null target is "no target": AIMD has not lowered the tenant, and the
+ * configured max is the term. A null hard limit binds the pool by itself:
+ * admission refuses on a pool with no limit (#374).
+ */
+type TermKey = 'hard' | 'max' | 'target' | 'quota'
+
+interface QuotaTerm {
+  key: TermKey
+  label: string
+  value: number | null
+}
+
+/** The quota states that close a pool at 0 (`QuotaState.effective_limit`). */
+const CLOSING_STATES: Readonly<Record<string, string>> = {
+  EXHAUSTED: 'exhausted',
+  COOLDOWN: 'cooldown',
+  DISABLED: 'disabled',
+}
+
+export function quotaTerms(pool: Pool, q: QuotaState): { terms: QuotaTerm[]; binds: TermKey[]; closed: string | null } {
+  const terms: QuotaTerm[] = [
+    { key: 'hard', label: 'hard', value: pool.hard_limit },
+    { key: 'max', label: 'max', value: q.configured_hard_max },
+    { key: 'target', label: 'target', value: q.adaptive_target },
+  ]
+  if (q.quota_derived_limit !== null) terms.push({ key: 'quota', label: 'quota', value: q.quota_derived_limit })
+  const closed = CLOSING_STATES[q.state] ?? null
+  if (closed !== null) return { terms, binds: [], closed }
+  if (pool.hard_limit === null) return { terms, binds: ['hard'], closed: null }
+  const set = terms.filter((t): t is QuotaTerm & { value: number } => t.value !== null)
+  const least = Math.min(...set.map((t) => t.value))
+  return { terms, binds: set.filter((t) => t.value === least).map((t) => t.key), closed: null }
+}
+
+/** Minutes left on a cooldown, or null when there is none in force. */
+function cooldownLeft(q: QuotaState, now: number): number | null {
+  if (q.cooldown_until === null) return null
+  const until = Date.parse(q.cooldown_until)
+  if (!Number.isFinite(until) || until <= now) return null
+  return Math.max(1, Math.ceil((until - now) / 60_000))
+}
+
+/**
+ * The terms on the row itself, under the pool's name: `hard 100 · max 50 ·
+ * target 14 binds · 429 1h ago`. Drawn only for a pool the quota read fed;
+ * a member, whose quota read is refused, sees the row as before.
+ */
+function QuotaLine({ pool, now }: { pool: Pool; now: number }) {
+  const q = (pool as LimitPool).quota
+  if (q === undefined) return null
+  const { terms, binds, closed } = quotaTerms(pool, q)
+  const cooldown = cooldownLeft(q, now)
+  return (
+    <span className="ctl-sub adm-quota-line" data-quota-line="">
+      {terms.map((t, i) => (
+        <Fragment key={t.key}>
+          {i > 0 && ' · '}
+          {binds.includes(t.key) ? (
+            <b className="adm-quota-binds">
+              {t.label} {t.value ?? '—'} binds
+            </b>
+          ) : (
+            <span>
+              {t.label} {t.value ?? '—'}
+            </span>
+          )}
+        </Fragment>
+      ))}
+      {closed !== null && (
+        <>
+          {' · '}
+          <b className="adm-quota-binds">{closed} binds</b>
+        </>
+      )}
+      {q.last_429_at !== null && (
+        <>
+          {' · '}
+          <time dateTime={q.last_429_at} title={`Last 429 at ${q.last_429_at}`}>
+            429 {timeAgo(q.last_429_at, now)}
+          </time>
+        </>
+      )}
+      {cooldown !== null && <> · cooldown {cooldown}m</>}
+    </span>
+  )
+}
+
+/** What a reset's answer said, in the row's words: `target 14 → 50`, and whether it was clamped. */
+export function resetWords(name: string, data: unknown): SaveOutcome {
+  const body = typeof data === 'object' && data !== null ? (data as Record<string, unknown>) : {}
+  const reset = typeof body.reset === 'object' && body.reset !== null ? (body.reset as Record<string, unknown>) : null
+  const from = reset?.from_target
+  const to = reset?.to_target
+  if (typeof to !== 'number') {
+    return { moved: false, text: `Reset, but the response did not say what ${name}'s target became` }
+  }
+  const was = typeof from === 'number' ? String(from) : '—'
+  return { moved: true, text: `${name} target ${was} → ${to}${reset?.clamped === true ? ', clamped to the max' : ''}` }
+}
+
+/** What a configured-max change's answer said, and the broker's clamp of the target if it applied one. */
+export function hardMaxWords(name: string, data: unknown): SaveOutcome {
+  const body = typeof data === 'object' && data !== null ? (data as Record<string, unknown>) : {}
+  const change = typeof body.change === 'object' && body.change !== null ? (body.change as Record<string, unknown>) : null
+  const to = change?.to_hard_max
+  if (typeof to !== 'number') {
+    return { moved: false, text: `Saved, but the response did not say what ${name}'s max became` }
+  }
+  const from = typeof change?.from_hard_max === 'number' ? String(change.from_hard_max) : '—'
+  const clamp =
+    change?.target_clamped === true && typeof change.from_target === 'number' && typeof change.to_target === 'number'
+      ? `; target clamped ${change.from_target} → ${change.to_target}`
+      : ''
+  return { moved: true, text: `${name} max ${from} → ${to}${clamp}` }
+}
+
+/**
+ * THE QUOTA TERMS IN THE SIDE EDITOR, AND THE TWO CONTROLS OVER THEM
+ * (POOL-LIMITS-QUOTA; BGD 2026-10-25: "Console reset button", "Console edits
+ * configured max").
+ *
+ * PLATFORM ADMINS ONLY, AND ONLY WHEN KNOWN TO BE ONE. The hard-limit editor
+ * treats an unknown session as allowed because its route is the gate; these
+ * two move what the broker admits for a whole tenant, so they are drawn only
+ * for `is_admin` read as true. Both routes refuse everyone else 403 anyway
+ * (routes/admin.py `reset_adaptive_target`, `set_quota_hard_max`), a pool
+ * admin included.
+ *
+ * Both writes go through the quota broker, the only writer of quota
+ * documents, and both carry a reason: the broker audits the reset, swarm-api
+ * the max. After either, the rows are read again and the row says what the
+ * answer said -- `target 14 → 50`, clamped or not; `max 50 → 30; target
+ * clamped 40 → 30`.
+ */
+function QuotaSection({
+  pool,
+  admin,
+  now,
+  onWriting,
+  onSaved,
+}: {
+  pool: Pool
+  admin: boolean | null
+  now: number
+  onWriting: (on: boolean) => void
+  onSaved: (outcome: SaveOutcome) => Promise<boolean>
+}) {
+  const q = (pool as LimitPool).quota
+  const id = useId()
+  const [target, setTarget] = useState<string | null>(null)
+  const [targetWhy, setTargetWhy] = useState('')
+  const [clear, setClear] = useState(false)
+  const [max, setMax] = useState<string | null>(null)
+  const [maxWhy, setMaxWhy] = useState('')
+  const [busy, setBusy] = useState<'target' | 'max' | null>(null)
+  const [said, setSaid] = useState<{ kind: 'target' | 'max'; outcome: SaveOutcome } | null>(null)
+  const [error, setError] = useState<{ kind: 'target' | 'max'; error: ApiError } | null>(null)
+  if (q === undefined) return null
+
+  const { binds, closed } = quotaTerms(pool, q)
+  const cooldown = cooldownLeft(q, now)
+  const bindWord = closed !== null ? `${closed} (0)` : binds.length === 0 ? '—' : binds.join(', ')
+  const exhausted = q.state === 'EXHAUSTED'
+  // THE TARGET THE AIMD LOOP IS AT: a null target is the configured max.
+  const current = q.adaptive_target ?? q.configured_hard_max
+  const whole = (typed: string): number | null => {
+    const n = Number(typed)
+    return typed.trim() !== '' && Number.isInteger(n) && n >= 0 && n <= 100_000 ? n : null
+  }
+  const targetText = target ?? String(q.configured_hard_max)
+  const targetNext = whole(targetText)
+  const maxText = max ?? String(q.configured_hard_max)
+  const maxNext = whole(maxText)
+  const name = poolLabel(pool.name)
+
+  const run = (kind: 'target' | 'max', call: () => Promise<Result<unknown>>, words: (data: unknown) => SaveOutcome) => {
+    setBusy(kind)
+    setError(null)
+    setSaid(null)
+    onWriting(true)
+    call().then(async (r) => {
+      if (r.status === 'ok' || r.status === 'stale') {
+        const outcome = words(r.data)
+        setSaid({ kind, outcome })
+        if (kind === 'target') {
+          setTarget(null)
+          setTargetWhy('')
+          setClear(false)
+        } else {
+          setMax(null)
+          setMaxWhy('')
+        }
+        await onSaved(outcome)
+      } else if (r.status === 'error') {
+        setError({ kind, error: r.error })
+      }
+      setBusy(null)
+      onWriting(false)
+    })
+  }
+
+  const reset = (e: FormEvent) => {
+    e.preventDefault()
+    if (targetNext === null || targetWhy.trim() === '' || busy !== null) return
+    run(
+      'target',
+      () => resetAdaptiveTarget(q.provider, q.tenant_id, { target: targetNext, reason: targetWhy.trim(), clear_cooldown: exhausted && clear }),
+      (data) => resetWords(name, data),
+    )
+  }
+  const saveMax = (e: FormEvent) => {
+    e.preventDefault()
+    if (maxNext === null || maxWhy.trim() === '' || busy !== null) return
+    run('max', () => setQuotaHardMax(q.provider, q.tenant_id, { hard_max: maxNext, reason: maxWhy.trim() }), (data) => hardMaxWords(name, data))
+  }
+
+  // WHAT THE ANSWER SAID IS DRAWN ON THE ROW, ONCE, as the hard limit's save
+  // is (`outcomes`); here only an answer that did not confirm, and a refusal.
+  const answer = (kind: 'target' | 'max') => (
+    <>
+      {said?.kind === kind && !said.outcome.moved && (
+        <span className="adm-saved-what warn-text" role="status">
+          {said.outcome.text}
+        </span>
+      )}
+      {error?.kind === kind && (
+        <span className="warn-text" title={error.error.message}>
+          {errorHeading(error.error)}
+        </span>
+      )}
+    </>
+  )
+
+  return (
+    <div className="adm-quota" data-quota-section="">
+      <span className="adm-side-k">Quota · {q.state.toLowerCase()}</span>
+      <dl className="adm-side-facts">
+        <dt>Hard limit</dt>
+        <dd>{pool.hard_limit === null ? 'no limit set' : pool.hard_limit}</dd>
+        <dt>Configured max</dt>
+        <dd>{q.configured_hard_max}</dd>
+        <dt>Adaptive target</dt>
+        <dd>{q.adaptive_target === null ? `none (max ${q.configured_hard_max})` : q.adaptive_target}</dd>
+        {q.quota_derived_limit !== null && (
+          <>
+            <dt>Provider quota</dt>
+            <dd>{q.quota_derived_limit}</dd>
+          </>
+        )}
+        <dt>Binds</dt>
+        <dd>{bindWord}</dd>
+        <dt>Last 429</dt>
+        <dd>
+          {q.last_429_at === null ? (
+            'none'
+          ) : (
+            <time dateTime={q.last_429_at} title={q.last_429_at}>
+              {timeAgo(q.last_429_at, now)}
+            </time>
+          )}
+        </dd>
+        <dt>Cooldown</dt>
+        <dd>{cooldown === null ? 'none' : `${cooldown}m left`}</dd>
+      </dl>
+
+      {admin === true && (
+        <form className="adm-quota-form" onSubmit={reset} aria-label={`Reset the adaptive target for ${pool.name}`}>
+          <div className="adm-side-field">
+            <label className="adm-side-k" htmlFor={`${id}-target`}>
+              Reset target (now {current}, max {q.configured_hard_max})
+            </label>
+            <input
+              id={`${id}-target`}
+              type="number"
+              min={0}
+              max={100000}
+              value={targetText}
+              disabled={busy !== null}
+              onChange={(e) => setTarget(e.target.value)}
+              aria-label={`New adaptive target for ${pool.name}`}
+            />
+            <input
+              type="text"
+              className="adm-quota-why"
+              placeholder="reason"
+              maxLength={500}
+              value={targetWhy}
+              disabled={busy !== null}
+              onChange={(e) => setTargetWhy(e.target.value)}
+              aria-label={`Reason for resetting the target of ${pool.name}`}
+              required
+            />
+          </div>
+          {exhausted && (
+            <label className="adm-quota-check">
+              <input type="checkbox" checked={clear} disabled={busy !== null} onChange={(e) => setClear(e.target.checked)} />
+              clear cooldown
+            </label>
+          )}
+          {targetNext !== null && targetNext > q.configured_hard_max && (
+            <div className="limit-note">above the max: the broker clamps it to {q.configured_hard_max}</div>
+          )}
+          <div className="adm-side-actions">
+            <button type="submit" disabled={targetNext === null || targetWhy.trim() === '' || busy !== null}>
+              {busy === 'target' ? 'Resetting…' : 'Reset target'}
+            </button>
+            {answer('target')}
+          </div>
+        </form>
+      )}
+
+      {admin === true && (
+        <form className="adm-quota-form" onSubmit={saveMax} aria-label={`Set the configured max for ${pool.name}`}>
+          <div className="adm-side-field">
+            <label className="adm-side-k" htmlFor={`${id}-max`}>
+              Configured max (now {q.configured_hard_max})
+            </label>
+            <input
+              id={`${id}-max`}
+              type="number"
+              min={0}
+              max={100000}
+              value={maxText}
+              disabled={busy !== null}
+              onChange={(e) => setMax(e.target.value)}
+              aria-label={`New configured max for ${pool.name}`}
+            />
+            <input
+              type="text"
+              className="adm-quota-why"
+              placeholder="reason"
+              maxLength={500}
+              value={maxWhy}
+              disabled={busy !== null}
+              onChange={(e) => setMaxWhy(e.target.value)}
+              aria-label={`Reason for changing the max of ${pool.name}`}
+              required
+            />
+          </div>
+          {maxNext !== null && maxNext < current && (
+            <div className="limit-note">below the target ({current}): the broker lowers the target to {maxNext}</div>
+          )}
+          <div className="adm-side-actions">
+            <button
+              type="submit"
+              disabled={maxNext === null || maxNext === q.configured_hard_max || maxWhy.trim() === '' || busy !== null}
+            >
+              {busy === 'max' ? 'Saving…' : 'Set max'}
+            </button>
+            {answer('max')}
+          </div>
+        </form>
+      )}
+    </div>
+  )
+}
+
+/**
  * THE SIDE EDITOR (admin-help.html L2, the owner's pick 2026-10-01): the pool's
  * figures, the new ceiling, what the change does in a sentence, a typed
  * confirmation for a drastic change, and the pool's history.
@@ -1426,6 +2031,7 @@ function SideEditor({
   const change = changeOf(pool)
   const messageId = useId()
   const titleId = useId()
+  const fed = (pool as LimitPool).quota !== undefined
 
   // WHAT SOMEBODY TYPED, OR THE POOL'S OWN VALUE. An editor nobody has typed
   // in follows a re-read -- including one that picked up another operator's
@@ -1494,10 +2100,15 @@ function SideEditor({
       </h3>
       <dl className="adm-side-facts">
         <dt>In use</dt>
-        <dd>{unitsWord(pool.active)}</dd>
+        <dd>
+          {unitsWord(pool.active)}
+          {/* Free beside it for a quota-fed pool, whose terms below say why it is what it is. */}
+          {fed && pool.available !== null && ` · ${pool.available} free`}
+        </dd>
         <dt>Ceiling</dt>
         <dd>{pool.effective_limit === null ? 'no limit set' : unitsWord(pool.effective_limit)}</dd>
-        {pool.effective_limit !== pool.hard_limit && pool.hard_limit !== null && (
+        {/* A quota-fed pool's hard limit is the first of its terms below. */}
+        {!fed && pool.effective_limit !== pool.hard_limit && pool.hard_limit !== null && (
           <>
             <dt>Hard limit</dt>
             <dd>{unitsWord(pool.hard_limit)}</dd>
@@ -1598,6 +2209,11 @@ function SideEditor({
           </span>
         )}
       </div>
+
+      {/* THE QUOTA TERMS AND THEIR TWO CONTROLS, AFTER THE HARD LIMIT'S OWN
+          SAVE (POOL-LIMITS-QUOTA): the hard limit is what this editor opened
+          for, so its field stays first. */}
+      <QuotaSection pool={pool} admin={admin} now={now} onWriting={onWriting} onSaved={onSaved} />
 
       {/* THE NEWEST WRITE IS ALL THE API CAN SERVE: the pool document holds
           the last admin change -- who, when, and the value before and after

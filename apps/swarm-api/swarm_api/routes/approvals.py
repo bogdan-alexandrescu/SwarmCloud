@@ -29,6 +29,17 @@ runs (`deps.current_auth`), and never anyone's personal workspace. The rules
 below are unchanged and still apply on top of the role, to them as to anyone:
 a gate's `approvers` list, a hold, the last-editor rule and the `spec` rule.
 
+A PLATFORM-SCOPE SCHEDULE'S ITEMS ARE A PLATFORM ADMIN'S (BGD, 2026-10-24,
+"Platform admins only"; PLATFORM-SCHED-APPROVALS, part of #2157). Approving
+a gated run has the effect of `:run`, which `schedule_routes._platform_only`
+refuses to anyone else, so `:approve` and `:reject` of an item whose STORED
+schedule reference -- a record's `subject.schedule_id`, a projected run's
+`schedule.schedule_id`, never the request -- names a schedule whose stored
+`scope.mode` is `platform` are the same 403 `platform_admin_required`, with
+the same log line, before anything moves. Enforced at once, as PR 2272's.
+Items of a workspace-scope schedule, or of none, keep the rules above
+exactly; and a platform admin still meets every one of them.
+
 THE MERGE SWITCH (SD3) is an audited edit of `gate.merge`, the one way to
 `merge: auto`, which `PATCH /v1/schedules/{id}` refuses with 422
 `use_merge_switch`. To `auto`: a platform admin (PR 860's admin roles,
@@ -119,6 +130,14 @@ def _projected_run(ctx: AppContext, tenant_id: str, item_id: str) -> Any:
         raise NotFound(f"approval {item_id[:80]!r} not found") from None
 
 
+def _platform_only(auth: AuthContext, schedule: Mapping[str, Any] | None, action: str) -> None:
+    """PR 2272's refusal for a decision on a platform-scope schedule's item.
+    `schedule` is the one the item's stored reference names; None (no
+    schedule, or no longer this tenant's) keeps today's rules."""
+    if schedule is not None:
+        schedule_routes._platform_only(auth, schedule, action)
+
+
 def _audit_run(ctx: AppContext, run: Any, action: str, by: str, detail: Mapping[str, Any]) -> None:
     """A scheduled run's plan decision in its schedule's audit (§4.8)."""
     schedule_id = (run.schedule or {}).get("schedule_id")
@@ -184,8 +203,21 @@ def get_approval(
             # head (`issueci.merge_gate`): what the hold says they matched.
             "files_checked_head": (run.pull_request or {}).get("files_checked_head"),
             "approval_hold": run.to_api()["approval_hold"],
+            # #2259: a hold the plan's prompt alone set, cleared there because
+            # the pull request's own files and patches matched none of it.
+            "hold_cleared": _hold_cleared((run.pull_request or {}).get("hold_cleared")),
         }
     return out
+
+
+def _hold_cleared(value: Any) -> dict[str, Any] | None:
+    """`issueci.merge_gate`'s record of a cleared hold, as served."""
+    if not isinstance(value, dict):
+        return None
+    at = value.get("at")
+    return {"why": value.get("why"), "head_sha": value.get("head_sha"),
+            "reasons": [str(r) for r in value.get("reasons") or []],
+            "at": at.isoformat() if hasattr(at, "isoformat") else at}
 
 
 # --------------------------------------------------------------------------
@@ -201,6 +233,7 @@ def _approve_projected(ctx: AppContext, auth: AuthContext, tenant_id: str, item_
     if not isinstance(body.digest, str):
         raise ScheduleInvalid("invalid_digest", "a plan is approved by its plan_digest")
     schedule = approvals.read_schedule(ctx.db, tenant_id, (run.schedule or {}).get("schedule_id"))
+    _platform_only(auth, schedule, "approve")
     if schedule is not None:
         approvals.check_gate_approver(
             ctx, tenant_id, (schedule.get("gate") or {}).get("approvers"), email=auth.email,
@@ -237,21 +270,28 @@ def approve(
     kind = doc.get("kind")
     now = ctx.now()
     schedule = approvals.read_schedule(ctx.db, tenant_id, (doc.get("subject") or {}).get("schedule_id"))
+    _platform_only(auth, schedule, "approve")
     move = None
     run = None
+    # #2259: where only the owner may decide, the owner decides as the
+    # schedule's last editor too, and `decide` writes the waiver's audit row.
+    waiver = None
     if kind == approvals.RUN:
-        approvals.check_gate_approver(ctx, tenant_id, doc.get("approvers"), email=auth.email,
-                                      is_owner=auth.is_owner, schedule=schedule,
-                                      merge_tier=bool(doc.get("merge_tier")))
+        waiver = approvals.check_gate_approver(ctx, tenant_id, doc.get("approvers"), email=auth.email,
+                                               is_owner=auth.is_owner, schedule=schedule,
+                                               merge_tier=bool(doc.get("merge_tier")), owner_waiver=True)
         move = approvals.firing_move(ctx.db, now, approve=True, by=auth.email)
     elif kind == approvals.MERGE:
         run = IssueRuns(ctx.db, now=ctx.now).get(tenant_id, str((doc.get("subject") or {}).get("run_id")))
         if run.approval_hold:
             approvals.check_hold(ctx, run, email=auth.email, is_owner=auth.is_owner, confirm=verb.confirm)
         # A hold is checked above IN ADDITION to the schedule's approvers.
-        approvals.check_gate_approver(
+        # The run's CURRENT hold, as `issueci.merge_gate` last re-checked it
+        # on the pull request's files, decides who may; not the record's copy.
+        waiver = approvals.check_gate_approver(
             ctx, tenant_id, ((schedule or {}).get("gate") or {}).get("approvers"),
             email=auth.email, is_owner=auth.is_owner, schedule=schedule, merge_tier=True,
+            hold=run.approval_hold, owner_waiver=True,
         )
         move = approvals.merge_move(ctx.db, now, by=auth.email, resign=run_routes.owner_resigner(ctx))
     elif kind == approvals.SPEC:
@@ -259,11 +299,11 @@ def approve(
         if not (auth.is_admin or auth.is_owner):
             raise ScheduleForbidden("approver_not_allowed", "a custom-prompt spec is approved by a platform admin")
     else:
-        approvals.check_gate_approver(ctx, tenant_id, doc.get("approvers"), email=auth.email,
-                                      is_owner=auth.is_owner, schedule=schedule,
-                                      merge_tier=bool(doc.get("merge_tier")))
+        waiver = approvals.check_gate_approver(ctx, tenant_id, doc.get("approvers"), email=auth.email,
+                                               is_owner=auth.is_owner, schedule=schedule,
+                                               merge_tier=bool(doc.get("merge_tier")), owner_waiver=True)
     decided = approvals.decide(ctx.db, now, tenant_id, item_id, approve=True, by=auth.email,
-                               digest=verb.digest, move=move)
+                               digest=verb.digest, move=move, waiver=waiver)
     out: dict[str, Any] = {"approval": approvals.to_api(decided)}
     if run is not None:
         # The merge is submitted by the run's own loop, now rather than on
@@ -286,11 +326,14 @@ def reject(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """Any member of the tenant may reject (§4.5): a rejection ends a hold, it never opens one.
-    A `viewer` may not (workspace-roles §4.1)."""
+    A `viewer` may not (workspace-roles §4.1), nor anyone but a platform admin
+    an item of a platform-scope schedule (`_platform_only`)."""
     verb: RejectIn = _verb(RejectIn, body)
     approvals.require_decider(ctx, auth)
     if item_id.startswith(approvals.PROJECTED_PREFIX):
         run = _projected_run(ctx, tenant_id, item_id)
+        _platform_only(auth, approvals.read_schedule(ctx.db, tenant_id, (run.schedule or {}).get("schedule_id")),
+                       "reject")
         try:
             moved = IssueRuns(ctx.db, now=ctx.now).transition(
                 tenant_id, run.id, RunState.REJECTED, by=auth.email, from_states={RunState.PLANNED},
@@ -304,6 +347,8 @@ def reject(
         return {"approval": {"approval_id": item_id, "state": approvals.REJECTED},
                 "run": sync_issue(ctx, moved).to_api()}
     doc = approvals.get(ctx.db, tenant_id, item_id)
+    _platform_only(auth, approvals.read_schedule(ctx.db, tenant_id, (doc.get("subject") or {}).get("schedule_id")),
+                   "reject")
     now = ctx.now()
     move = approvals.firing_move(ctx.db, now, approve=False, by=auth.email) if doc.get("kind") == approvals.RUN else None
     decided = approvals.decide(ctx.db, now, tenant_id, item_id, approve=False, by=auth.email,

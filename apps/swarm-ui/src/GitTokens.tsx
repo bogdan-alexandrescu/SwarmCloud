@@ -143,7 +143,7 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
 
   return (
     <div className="ur-page ur-tokens">
-      <UrCrumb trail={[{ label: 'Work' }, { label: 'Repositories', to: LIST }, { label: 'Git tokens' }]} go={go} />
+      <UrCrumb trail={[{ label: 'Config' }, { label: 'Repositories', to: LIST }, { label: 'Git tokens' }]} go={go} />
       {/* TITLE LEFT, ACTIONS RIGHT (#138): the scope filter is an action of
           the page, and the count is the note over its first card. */}
       <PageHead title="Git tokens">
@@ -495,7 +495,7 @@ export function PermissionsPage({ go }: { go: (to: string) => void }) {
 
   return (
     <div className="ur-page ur-perms">
-      <UrCrumb trail={[{ label: 'Work' }, { label: 'Repositories', to: LIST }, { label: 'Git tokens', to: GT_PAGE }, { label: 'Permissions' }]} go={go} />
+      <UrCrumb trail={[{ label: 'Config' }, { label: 'Repositories', to: LIST }, { label: 'Git tokens', to: GT_PAGE }, { label: 'Permissions' }]} go={go} />
       <PageHead title="Permissions">
         <UrRefresh reads={[perms]} />
         {data?.order != null && <Chip>{`order ${data.order}`}</Chip>}

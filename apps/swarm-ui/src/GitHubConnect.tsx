@@ -27,7 +27,7 @@ import './styles/repositories.css'
  * of OB8 on 2026-10-07 so a person can connect before the full checklist
  * exists). Two pieces:
  *
- *   * `GitHubSetupCard`, on Work › Repositories › Git tokens -- where the
+ *   * `GitHubSetupCard`, on Config › Repositories › Git tokens -- where the
  *     console shows git access today -- reads `GET /v1/onboarding` and guides
  *     a person through three steps (GT-GUIDE, 2026-10-12): Connect GitHub
  *     (`POST .../authorize`, then the browser goes to GitHub; ending one is
@@ -172,8 +172,15 @@ const REACH_WORD: Record<string, string> = {
   classic_blocked: 'refuses classic tokens',
 }
 
-/** Where the orgs are enabled and the repositories chosen (OB4's routes; Onboarding.tsx `ACCESS`). */
-export const ACCESS_PAGE = 'work/access'
+/**
+ * Where the orgs are enabled and the repositories chosen (OB4's routes;
+ * Onboarding.tsx `ACCESS`): Config › GitHub access, Work › Access until
+ * CONFIG-NAV. Its own address, so a link's href is the page's path and not
+ * the old one's redirect (CONFIG-COPY; part of #2157).
+ */
+export const ACCESS_PAGE = 'config/github'
+/** The page's name wherever a line sends the person there. */
+const ACCESS_LABEL = 'Config › GitHub access'
 const SUBMIT_TASK = 'work/new'
 
 function str(v: unknown): string | null {
@@ -192,7 +199,7 @@ const GUIDE_OF: Partial<Record<OnboardingStep['step'], 1 | 2 | 3>> = {
 /**
  * The orgs line. NEVER "they appear here once it has" (GT-GUIDE, owner
  * 2026-10-12): `orgs_enabled` completes only once the person ENABLES an owner
- * on Work › Access, and the old line waited on a verification that was never
+ * on Config › GitHub access, and the old line waited on a verification that was never
  * going to tick it. It now says what the step waits for -- an earlier step,
  * the first read of the owners, or the person -- and where to act. `onEnabled`
  * draws an inline Enable per owner (`POST /v1/access/orgs`, Access's own
@@ -220,12 +227,12 @@ function Owners({ doc, onEnabled }: { doc: OnboardingDoc; onEnabled?: () => void
   }
 
   if (waiting !== null && GUIDE_OF[waiting as OnboardingStep['step']] === 1) {
-    return <p className="ur-hint">Orgs: after GitHub is connected and the App installed, enable the ones SwarmCloud may work in on Work › Access.</p>
+    return <p className="ur-hint">Orgs: after GitHub is connected and the App installed, enable the ones SwarmCloud may work in on {ACCESS_LABEL}.</p>
   }
   if (step === null || owners.length === 0) {
     return (
       <p className="ur-hint">
-        Orgs <Dash why="Not read yet" /> SwarmCloud has not read the accounts and orgs this connection reaches yet; then enable the ones SwarmCloud may work in on Work › Access.
+        Orgs <Dash why="Not read yet" /> SwarmCloud has not read the accounts and orgs this connection reaches yet; then enable the ones SwarmCloud may work in on {ACCESS_LABEL}.
       </p>
     )
   }
@@ -251,7 +258,7 @@ function Owners({ doc, onEnabled }: { doc: OnboardingDoc; onEnabled?: () => void
       </ul>
       {step.state !== 'done' && (
         <p className="ur-small">
-          Enable the accounts and orgs SwarmCloud may work in{onEnabled !== undefined && enabled !== null ? ' here, or' : ''} on Work › Access, where you also choose their repositories.
+          Enable the accounts and orgs SwarmCloud may work in{onEnabled !== undefined && enabled !== null ? ' here, or' : ''} on {ACCESS_LABEL}, where you also choose their repositories.
         </p>
       )}
       {ev.sso_hidden_orgs !== undefined && ev.sso_hidden_orgs > 0 && (
@@ -365,7 +372,7 @@ function GuideRow({ n, title, state, line, actions, children }: {
  *   3. Try it                  -- `access_verified`
  *
  * A step that is not done says exactly what to do next and offers it here or
- * links to where it is done (Work › Access). Try it acts through the routes
+ * links to where it is done (Config › GitHub access). Try it acts through the routes
  * that already exist -- a grant's verify, or the token's -- and hands Submit
  * a harmless task. No token value passes through any of it.
  */
@@ -538,7 +545,7 @@ function ReachStep({ doc, read, go }: { doc: OnboardingDoc; read: UrRead<Onboard
       : orgs?.state !== 'done'
         ? 'Enable the accounts and orgs SwarmCloud may work in, then choose their repositories.'
         : repos.length === 0
-          ? `${reach === '' ? 'An org is enabled' : `Enabled: ${reach}`}. Now choose the repositories SwarmCloud may work in, on Work › Access.`
+          ? `${reach === '' ? 'An org is enabled' : `Enabled: ${reach}`}. Now choose the repositories SwarmCloud may work in, on ${ACCESS_LABEL}.`
           : reach
   const issues: OnboardingIssue[] = chosen !== null && Array.isArray(chosen.issues) ? chosen.issues : []
   return (
@@ -549,7 +556,7 @@ function ReachStep({ doc, read, go }: { doc: OnboardingDoc; read: UrRead<Onboard
       line={line}
       actions={
         <UrNavButton to={ACCESS_PAGE} go={go} size="sm" kind={g.state === 'done' ? 'secondary' : 'primary'}>
-          Manage in Access
+          Manage in GitHub access
         </UrNavButton>
       }
     >
@@ -869,7 +876,7 @@ function Connected({ data, go }: { data: GitHubExchangeResponse | null; go: (to:
           Back to Git tokens
         </UrNavButton>
         <UrNavButton to={ACCESS_PAGE} go={go} size="sm">
-          Choose orgs in Access
+          Choose orgs in GitHub access
         </UrNavButton>
       </div>
     </Card>

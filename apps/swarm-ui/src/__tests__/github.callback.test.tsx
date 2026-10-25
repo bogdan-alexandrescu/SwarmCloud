@@ -138,7 +138,7 @@ describe('the callback finishes the connection', () => {
     expect(everything()).not.toContain(STATE)
   })
 
-  it('says the orgs are not read yet rather than drawing none, and that they are enabled on Work › Access (GT-GUIDE)', async () => {
+  it('says the orgs are not read yet rather than drawing none, and that they are enabled on Config › GitHub access (GT-GUIDE)', async () => {
     at(`?code=${CODE}&state=${STATE}`)
     serve((m, url) => {
       if (m === 'POST' && url === '/v1/onboarding/github/exchange') return { status: 200, body: { connection: CONNECTION } }
@@ -148,10 +148,12 @@ describe('the callback finishes the connection', () => {
     await mount()
     expect(await screen.findByText('Connected as @octo-dev')).toBeTruthy()
     // Never "they appear here once it has": the step completes only once the
-    // person enables an org on Work › Access, so the line says so and links there.
-    expect(await screen.findByText(/then enable the ones SwarmCloud may work in on Work › Access/)).toBeTruthy()
+    // person enables an org on Config › GitHub access, so the line says so and links there.
+    expect(await screen.findByText(/then enable the ones SwarmCloud may work in on Config › GitHub access/)).toBeTruthy()
+    // CONFIG-COPY (part of #2157): no old address anywhere on the screen.
+    expect(document.body.textContent).not.toMatch(/\bWork › (Setup|Access|Repositories)|(?<!Workspace )Settings › (Workspace|MCP servers)/)
     expect(screen.queryByText(/appear here once it has/)).toBeNull()
-    expect(screen.getByRole('link', { name: 'Choose orgs in Access' }).getAttribute('href')).toBe('/config/github')
+    expect(screen.getByRole('link', { name: 'Choose orgs in GitHub access' }).getAttribute('href')).toBe('/config/github')
     expect(screen.queryByRole('list', { name: 'Accounts and orgs this connection reaches' })).toBeNull()
   })
 })

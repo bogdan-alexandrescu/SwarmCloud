@@ -134,16 +134,22 @@ rounds it may spend (`validation.resolve_fix_rounds`: the spec's
 `fix_rounds`, else `metadata.merge_fix_rounds`, else 2; 0 for an issue run,
 whose own loop fixes CI before it merges). Three things come with them:
 
-* A FLAKE COSTS NO AGENT. The first red reading at a head, with a round
-  left and every failing check an Actions job, asks GitHub to re-run those
-  jobs (`GitHubWriter.rerun_job`, `actions: write`) and claims no round:
+* A FLAKE COSTS NO AGENT. The first red reading at a head whose failing
+  checks are all Actions jobs asks GitHub to re-run those jobs
+  (`GitHubWriter.rerun_job`, `actions: write`) and claims no round:
   recorded in `merge_fix.reruns` under the same guard a round is claimed
-  under, once per head. A re-run that passes reads green and wakes the step
-  to merge. Red again at that head goes to a round. While GitHub still
-  serves the very check runs that were re-run as the latest -- it has not
-  made the new ones yet -- the tick waits, at most RERUN_SETTLE_SECONDS. A
-  re-run GitHub refuses (no `actions: write`) is recorded with its `error`
-  and the round is claimed in the same tick: the refusal costs nothing.
+  under, once per head. Whether a round is left, or any was asked, or the
+  pull request is on the root's own branch, is no condition: a re-run
+  pushes nothing, so neither the round budget nor the branch bounds it
+  (#2257: with rounds checked first, an issue run's merge, which asks for
+  none, refused `checks_failed` on PR #2229's one flaky shard). A re-run
+  that passes reads green and wakes the step to merge. Red again at that
+  head goes to a round if one is left, else wakes the step `red`. While
+  GitHub still serves the very check runs that were re-run as the latest
+  -- it has not made the new ones yet -- the tick waits, at most
+  RERUN_SETTLE_SECONDS. A re-run GitHub refuses (no `actions: write`) is
+  recorded with its `error` and the round is claimed, or the step woken,
+  in the same tick: the refusal costs nothing.
 * EACH ROUND IS A STEP OF THE MERGE'S WORKFLOW. After the round's own
   workflow is submitted, the tick appends a step `ci-fix:<n>` or
   `conflict-fix:<n>` naming the round's task to the workflow the merge task
@@ -987,9 +993,11 @@ def _hand_off(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], head: str,
     task's submitter. A build or submission that raises is recorded on the
     round as its `error`, and the step woken to refuse.
 
-    `first`, when given, runs once a round is possible and before one is
-    claimed: a red reading's re-run (SPEED-D2), whose answer, when not None,
-    is this tick's. A submitted round is then appended to the merge's
+    `first`, when given, runs once no round at this head is waited on and
+    before the budget and branch checks: a red reading's re-run (SPEED-D2),
+    whose answer, when not None, is this tick's. It pushes nothing, so a
+    merge with no round left, or none asked, or a pull request off the
+    root's branch, still gets it (#2257). A submitted round is then appended to the merge's
     workflow as its step (`_append_round_step`); a round whose submission was
     refused has no task to show and stays in `merge_fix` only.
     """
@@ -1000,6 +1008,12 @@ def _hand_off(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], head: str,
     if rounds and rounds[-1].get("head") == head:
         reason = _round_at_head(ctx, db, tenant_id, task_id, rounds[-1], now, key)
         return (_WAITING, None) if reason is None else (_WAKE, reason)
+    if first is not None:
+        # Before the budget and the branch (#2257): a re-run pushes nothing,
+        # so neither bounds it.
+        early = first()
+        if early is not None:
+            return early
     if len(rounds) >= asked:
         return _WAKE, spent
     resolved = _target_and_root(ctx, tenant_id, doc)
@@ -1007,10 +1021,6 @@ def _hand_off(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], head: str,
         # Not the branch a round would push to: nothing to hand off.
         return _WAKE, spent
     target, _root = resolved
-    if first is not None:
-        early = first()
-        if early is not None:
-            return early
 
     refused = ""
     owner = None

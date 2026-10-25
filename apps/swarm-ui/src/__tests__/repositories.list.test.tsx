@@ -158,17 +158,20 @@ describe('the list says what it could not read', () => {
   it('no registrations is an empty state with the way to register', async () => {
     serve((m, url) => (m === 'GET' && url === '/v1/repositories' ? { status: 200, body: { repositories: [] } } : null))
     await mount()
-    await waitFor(() => expect(document.querySelector('.c-emp')).not.toBeNull(), WAIT)
-    expect(visible(document.querySelector('.c-emp'))).toContain('No repositories registered')
-    expect(document.querySelector('.c-emp a[href="/config/repositories/register"]')).not.toBeNull()
+    // The registry's own empty state: "Repositories SwarmCloud may reach as
+    // you" is above it with a state of its own (REPOS-PAGE).
+    const empty = () => Array.from(document.querySelectorAll('.c-emp')).find((e) => visible(e).includes('No repositories registered')) ?? null
+    await waitFor(() => expect(empty()).not.toBeNull(), WAIT)
+    expect(empty()!.querySelector('a[href="/config/repositories/register"]')).not.toBeNull()
   })
 
   it('a route that is not there yet is "not served yet", naming the route', async () => {
     serve(() => null)
     await mount()
-    await waitFor(() => expect(document.querySelector('[data-notserved]')).not.toBeNull(), WAIT)
-    const el = document.querySelector('[data-notserved]')!
-    expect(el.getAttribute('data-notserved')).toBe('GET /v1/repositories')
+    await waitFor(() => expect(document.querySelector('[data-notserved="GET /v1/repositories"]')).not.toBeNull(), WAIT)
+    // GET /v1/access, the reach-as-you card's read, is not served here either; it is its own region above (REPOS-PAGE).
+    expect(Array.from(document.querySelectorAll('[data-notserved]')).map((e) => e.getAttribute('data-notserved'))).toEqual(['GET /v1/access', 'GET /v1/repositories'])
+    const el = document.querySelector('[data-notserved="GET /v1/repositories"]')!
     expect(visible(el)).toContain('Not served yet')
     // Named on the element, not in the visible words (walkthrough E).
     expect(el.getAttribute('title')).toBe('Not served: GET /v1/repositories')

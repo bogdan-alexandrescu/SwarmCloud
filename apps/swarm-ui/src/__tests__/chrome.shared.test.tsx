@@ -105,6 +105,9 @@ async function liveApp(hash: string, held = '/v1/admin/tenants'): Promise<{ rele
     const url = String(input)
     if (url.startsWith('/v1/tenants/me')) return json(ME)
     if (url.startsWith(held)) return screenRead
+    // Config › Repositories' second head read (REPOS-PAGE): answered, so the
+    // page's refresh speaks for the held read alone, not a read never answered.
+    if (url === '/v1/access') return json({ connection: null, orgs: [], grants: [], tenant_id: 'u-bogdan' })
     return new Promise<Response>(() => {})
   }) as unknown as typeof fetch
   window.location.hash = hash

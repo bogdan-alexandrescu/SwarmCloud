@@ -378,7 +378,7 @@ def action_line(method: Any, params: Any, cause: str | None = None) -> dict[str,
 
 # Clears every password-shaped input in the document and its same-origin
 # frames. `autocomplete` catches a field a page toggled from `password` to
-# `text` to show it (the mask tracks those too, section 5.3).
+# `text` to show it.
 _CLEAR_PASSWORDS = """(() => {
   const selector = 'input[type=password], input[autocomplete~="current-password"], '
     + 'input[autocomplete~="new-password"], input[autocomplete~="one-time-code"]';

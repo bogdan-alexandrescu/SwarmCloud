@@ -138,7 +138,7 @@ describe('the repository page leads with what the index says about the head (Det
     expect(meta).toContain('head 5c4b3a2, read 2m ago')
     expect(meta).toContain('claude-code')
     expect(meta).toContain('registered by operator@swarm.example.com, 2026-10-04')
-    expect(visible(document.querySelector('.ur-crumb'))).toBe('Work › Repositories › example-org/example-web')
+    expect(visible(document.querySelector('.ur-crumb'))).toBe('Config › Repositories › example-org/example-web')
   })
 
   it('says since when the index has been behind the head, and that a stale one is judged by that age (#1693)', async () => {

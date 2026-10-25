@@ -343,8 +343,9 @@ whole batch.
 ### 2.7 What the live view and the hand-off see
 
 * **The live view is unchanged.** Frames come from Xvfb in the sidecar and
-  leave on the gate's tunnel, which does not go through the proxy. The mask
-  and the input path are unchanged.
+  leave on the gate's tunnel, which does not go through the proxy. The input
+  path is unchanged, and nothing is painted over the frames (BGD, 2026-10-25;
+  [live-browser.md](design/live-browser.md) §5.3).
 * **The person in control sees the site as a residential visitor in the
   targeted country.** Google is served in that country's locale. A sign-in
   may trigger the site's "new sign-in from <city>" notice, or a "verify it's
@@ -605,7 +606,7 @@ profile. The setting is configuration and not part of the frozen contract
 ### 6.2 The metric: Google's block rate, with a baseline first
 
 **What is counted.** The gate already follows the page on screen on its own
-CDP session (the mask needs it). For each **main-frame navigation to a Google
+CDP session (the CAPTCHA hand-off's challenge detection needs it). For each **main-frame navigation to a Google
 search host**, it counts one of three outcomes:
 
 * `ok`
