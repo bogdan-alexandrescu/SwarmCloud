@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { loadAccess, loadRepositories, loadRepositoryIndex, patchRepositoryFileIssues, patchRepositoryWorkflowFiles, runRepositoryIndex } from './api'
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
+import { deleteRepository, loadAccess, loadRepositories, loadRepositoryCounts, loadRepositoryIndex, patchRepositoryFileIssues, patchRepositoryWorkflowFiles, runRepositoryIndex } from './api'
 import { ADD_REPOSITORY_ADDRESS } from './Access'
-import { Banner, Button, Card, Dash, EmptyState, NamedMark, Tabs } from './components'
+import { Banner, Button, Card, Dash, EmptyState, NamedMark, Tabs, TypedConfirm, routedClick } from './components'
 import { useSetupSteps } from './ConfigSetup'
 import { addressToPath } from './paths'
 import { ReachableRepositories } from './ReachableRepositories'
@@ -12,7 +12,7 @@ import { RepositoryDetail, WorkflowsGrantLine } from './RepositoriesDetail'
 import { GitTokensPage, PermissionsPage } from './GitTokens'
 import { RepoDot, useForgePermissions } from './PermissionCards'
 import { QA_TARGETS_PAGE, QaTargetsScreen } from './QaTargets'
-import type { ForgeRepoStatus } from './api'
+import type { ForgeRepoStatus, RepoCounts } from './api'
 import type { AccessGrant } from './types'
 import type { QaLink } from './qaTargetsApi'
 import { useRoleGate } from './Profile'
@@ -52,16 +52,23 @@ import './styles/repositories.css'
  * registry's cards with a dashed card for each chosen repository not yet
  * registered. Add new repository goes to GitHub access with Choose
  * repositories open; nothing is added to the person's reach from here.
- * Unregistering stays as it was: the API serves `DELETE
- * /v1/repositories/{repo_id}`, but the console has never drawn it, and this
- * page adds no control for it (asked on the PR). Remove on a reach row
- * revokes the person's own grant, as it did on Work › Access.
+ * Remove on a reach row revokes the person's own grant, as it did on
+ * Work › Access.
+ *
+ * BGD'S ANSWERS TO REPOS-PAGE (REPOS-FOLLOWUPS, 2026-10-25): Remove on each
+ * registered card unregisters (`DELETE /v1/repositories/{repo_id}`, member
+ * role), behind the typed owner/name, and says first that its secrets'
+ * grants are disabled with it; the registry is read again, and a repository
+ * still chosen is a dashed card again. The dashed card's Register opens
+ * Register with `repo=owner/name`, on step 2. The reach table's Registered
+ * column and each card's "Secrets: N" and "QA targets: N" (S3a) come from the
+ * registry and ONE `GET /v1/repositories/counts`, never a read per card.
  */
 export function RepositoriesScreen({ view, go, qaLink }: { view: string | null; go: (to: string) => void; qaLink?: QaLink | null }) {
   const q = new URLSearchParams(view ?? '')
   const page = q.get('page')
   const repo = q.get('repo')
-  if (page === 'register') return <RegisterRepository go={go} />
+  if (page === 'register') return <RegisterRepository go={go} repo={repo} />
   if (page === 'tokens') return <GitTokensPage go={go} />
   if (page === 'permissions') return <PermissionsPage go={go} />
   // QA targets (VQ-6, docs/design/visual-qa-any-app.md §6): Repositories → QA targets → Run.
@@ -69,7 +76,9 @@ export function RepositoriesScreen({ view, go, qaLink }: { view: string | null; 
   // them off the bar before it rewrote the address (as App.tsx's `keyLink`
   // does for ProviderKeys); left undefined, the page reads the bar itself.
   if (page === 'qa-targets') {
-    return <QaTargetsScreen go={go} link={qaLink} tabs={<RepositoriesTabs current="qa-targets" go={go} />} />
+    return (
+      <QaTargetsScreen go={go} link={qaLink} repository={q.get('repository')} tabs={<RepositoriesTabs current="qa-targets" go={go} />} />
+    )
   }
   if (repo !== null && repo !== '') return <RepositoryDetail key={repo} repoId={repo} tab={q.get('tab')} go={go} pr={q.get('pr')} graph={{ view: q.get('view'), q: q.get('q') }} />
   // The list's heading is written HERE, as a literal, because
@@ -106,6 +115,22 @@ function RepositoriesTabs({ current, go }: { current: 'list' | 'qa-targets'; go:
 
 /** The list's own address: the strip's first tab. */
 const REPOSITORIES_LIST = 'config/repositories'
+
+/**
+ * Register with this repository picked (REPOS-FOLLOWUPS): RepositoriesRegister
+ * opens on step 2 when `repo` is in the reader's reach list, on step 1 when not.
+ */
+export function registerAddress(repository: string): string {
+  return `${REPOSITORIES_LIST}?${new URLSearchParams({ page: 'register', repo: repository }).toString()}`
+}
+
+/** QA targets narrowed to one repository's (`QaTargetsScreen`'s `repository`). */
+export function qaTargetsOf(repository: string): string {
+  return `${REPOSITORIES_LIST}?${new URLSearchParams({ page: 'qa-targets', repository }).toString()}`
+}
+
+/** The id a registered card is drawn with, so the reach table's Registered link can bring it into view. */
+const cardId = (repoId: string) => `ur-card-${repoId}`
 
 /** `owner/repo` as GitHub compares it: names are not case-sensitive there. */
 const fullName = (owner: string, name: string) => `${owner}/${name}`.toLowerCase()
@@ -150,13 +175,24 @@ function AddRepository({ go }: { go: (to: string) => void }) {
 }
 
 /** Register, or the same words disabled below `member` (the list's note says why). */
-function RegisterButton({ go, gated, kind = 'primary' }: { go: (to: string) => void; gated: boolean; kind?: 'primary' | 'secondary' }) {
+function RegisterButton({
+  go,
+  gated,
+  kind = 'primary',
+  to = REGISTER,
+}: {
+  go: (to: string) => void
+  gated: boolean
+  kind?: 'primary' | 'secondary'
+  /** Register with a repository picked (`registerAddress`), or the bare page. */
+  to?: string
+}) {
   return gated ? (
     <Button kind={kind} size="sm" disabled>
       Register
     </Button>
   ) : (
-    <UrNavButton to={REGISTER} go={go} kind={kind} size="sm">
+    <UrNavButton to={to} go={go} kind={kind} size="sm">
       Register
     </UrNavButton>
   )
@@ -197,7 +233,7 @@ function RepositoriesLead({
       <Lead
         kicker={one ? 'Repositories · one thing left.' : `Repositories · ${missing.length} left.`}
         title={one ? `${missing[0]!.repository} is chosen but not registered` : `${missing.length} chosen repositories are not registered`}
-        actions={<RegisterButton go={go} gated={gated} />}
+        actions={<RegisterButton go={go} gated={gated} to={one ? registerAddress(missing[0]!.repository) : REGISTER} />}
       >
         Register {one ? 'it' : 'each'} so it is indexed on a schedule and agents start from its map.
       </Lead>
@@ -226,7 +262,7 @@ function ChosenCard({ g, go, gated }: { g: AccessGrant; go: (to: string) => void
         <span>Not indexed: registering starts it</span>
       </div>
       <div className="ur-cacts">
-        <RegisterButton go={go} gated={gated} />
+        <RegisterButton go={go} gated={gated} to={registerAddress(g.repository)} />
       </div>
     </Card>
   )
@@ -268,6 +304,31 @@ function RepositoryList({
   const [workflowBusy, setWorkflowBusy] = useState<string | null>(null)
   const [workflowFailed, setWorkflowFailed] = useState<string | null>(null)
   const count = state.status === 'ok' || state.status === 'stale' ? state.data.length : state.status === 'empty' ? 0 : null
+  // EVERY CARD'S COUNTS IN ONE READ (REPOS-FOLLOWUPS, S3a's "Secrets: N" and
+  // "QA targets: N"): never a read per card. Counts only, never a name.
+  const counts = useUrRead(loadRepositoryCounts, 'counts')
+  const countDoc = counts.state.status === 'ok' || counts.state.status === 'stale' ? counts.state.data : null
+  const countsWhy =
+    counts.state.status === 'loading' ? 'The counts are being read' : 'The counts were not read (GET /v1/repositories/counts)'
+  // THE REGISTRATION WHOSE REMOVE WAITS FOR ITS TYPED NAME. Nothing is sent before it.
+  const [removing, setRemoving] = useState<RepoRecord | null>(null)
+  const [removeBusy, setRemoveBusy] = useState(false)
+  const [removeFailed, setRemoveFailed] = useState<string | null>(null)
+
+  async function remove(r: RepoRecord) {
+    setRemoveBusy(true)
+    setRemoveFailed(null)
+    const res = await deleteRepository(r.repo_id)
+    setRemoveBusy(false)
+    if (res.status === 'error') {
+      setRemoveFailed(writeFailure(res.error))
+      return
+    }
+    setRemoving(null)
+    // The registry again: a repository still chosen is drawn dashed from it.
+    reload()
+    counts.reload()
+  }
 
   async function indexNow(r: RepoRecord) {
     setBusy(r.repo_id)
@@ -308,6 +369,28 @@ function RepositoryList({
 
   const registered = state.status === 'ok' || state.status === 'stale' ? state.data : state.status === 'empty' ? [] : null
   const missing = grants !== null && registered !== null ? chosenNotRegistered(grants, registered) : null
+  // THE REACH TABLE'S REGISTERED COLUMN (S3a), joined as the dashed cards are:
+  // registered links to its card on this page, not registered to Register
+  // with it picked (below `member`, the words without the link).
+  const registeredCell = (g: AccessGrant): ReactNode => {
+    if (registered === null) return <Dash why="The registered repositories were not read" />
+    const r = registered.find((x) => fullName(x.owner, x.repo) === g.repository.toLowerCase())
+    if (r === undefined) {
+      const word = <NamedMark mark="warn" hue="warn" word="not registered" />
+      return roleGate !== null ? (
+        word
+      ) : (
+        <UrLink to={registerAddress(g.repository)} go={go}>
+          {word}
+        </UrLink>
+      )
+    }
+    return (
+      <a href={addressToPath(REPOSITORIES_LIST)} onClick={(e) => toCard(e, r.repo_id)}>
+        <NamedMark mark="succeeded" hue="neu" word="registered" />
+      </a>
+    )
+  }
   // ADD NEW REPOSITORY IS DRAWN ONCE (S3c: "its lead carries Add new
   // repository, so the header does not repeat it"): in the lead when the lead
   // offers it, in the head otherwise.
@@ -340,7 +423,7 @@ function RepositoryList({
               reads (#98). The age is the registry's alone (V223): the access
               read answering first must not say "read 0 s ago" for a list that
               is still reading, or failed. */}
-          <UrRefresh reads={[{ state, reload }, access]} ageOf={[{ state, reload }]} />
+          <UrRefresh reads={[{ state, reload }, access, counts]} ageOf={[{ state, reload }]} />
           <UrNavButton to={GT_PAGE} go={go} size="sm">
             Git tokens
           </UrNavButton>
@@ -364,7 +447,15 @@ function RepositoryList({
       )}
       {grants !== null && <RepositoriesLead grants={grants} missing={missing} go={go} gated={roleGate !== null} />}
       <UrRegion state={access.state} route="GET /v1/access" what="Your access" onRetry={access.reload} lines={4}>
-        {(o) => <ReachableRepositories grants={o.grants} onChange={access.reload} />}
+        {(o) => (
+          <ReachableRepositories
+            grants={o.grants}
+            onChange={access.reload}
+            empty={<ChooseOnGitHub go={go} />}
+            orgNote={false}
+            registered={registeredCell}
+          />
+        )}
       </UrRegion>
       {failed !== null && (
         <Banner tone="bad" title="Index now was refused">
@@ -425,6 +516,16 @@ function RepositoryList({
                 onIndex={() => void indexNow(r)}
                 perm={perms.get(r.repo_id)}
                 viewerOnly={roleGate !== null}
+                counts={countDoc?.[r.repo_id] ?? null}
+                countsWhy={countDoc === null ? countsWhy : 'Registered after the counts were read: Refresh counts it'}
+                onRemove={
+                  roleGate === null
+                    ? () => {
+                        setRemoveFailed(null)
+                        setRemoving(r)
+                      }
+                    : undefined
+                }
                 fileIssues={
                   <FileIssues
                     on={r.agents_may_file_issues}
@@ -448,6 +549,79 @@ function RepositoryList({
           </div>
         )}
       </UrRegion>
+      {removing !== null && (
+        <TypedConfirm
+          title={`Remove ${repoName(removing)}?`}
+          name={repoName(removing)}
+          verb="Remove registration"
+          keep="Keep it registered"
+          busy={removeBusy ? 'Removing…' : false}
+          onConfirm={() => void remove(removing)}
+          onClose={() => {
+            if (!removeBusy) setRemoving(null)
+          }}
+          error={removeFailed === null ? undefined : `Not removed: ${removeFailed}`}
+        >
+          <RemoveWords r={removing} counts={countDoc?.[removing.repo_id] ?? null} />
+        </TypedConfirm>
+      )}
+    </div>
+  )
+}
+
+/**
+ * WHAT REMOVE DOES, SAID BEFORE IT IS SENT (BGD, 2026-10-25). The API
+ * disables every grant on the registration's secrets in the transaction that
+ * removes it (`delete_repository`), so a re-registration revives none; the
+ * person's own access on GitHub and in the reach list is not touched.
+ */
+function RemoveWords({ r, counts }: { r: RepoRecord; counts: RepoCounts | null }) {
+  const n = counts?.secrets ?? null
+  const secrets =
+    n === null ? 'Every grant on its secrets is disabled with it' : n === 0 ? 'It has no secrets, so no grant is disabled' : `Every grant on its ${n === 1 ? 'secret' : `${n} secrets`} is disabled with it`
+  return (
+    <>
+      <p>
+        {repoName(r)} leaves this workspace's registry: it is no longer indexed, and agents no longer start from its map.{' '}
+        {secrets}, and registering it again turns none back on.
+      </p>
+      <p className="ur-small">
+        Your own access to it is not changed: if it is still chosen, it stays in Repositories SwarmCloud may reach as you,
+        and comes back here as chosen, not registered.
+      </p>
+    </>
+  )
+}
+
+/** The empty reach list's sentence on this page: the owners are on GitHub access (config-e.html S3c). */
+function ChooseOnGitHub({ go }: { go: (to: string) => void }) {
+  return (
+    <>
+      Choose repositories from an enabled owner on{' '}
+      <UrLink to={ADD_REPOSITORY_ADDRESS} go={go}>
+        GitHub access
+      </UrLink>
+      , or type owner/repo there.
+    </>
+  )
+}
+
+/** The Registered link: this page's own card, brought into view, never a navigation. */
+function toCard(e: MouseEvent, repoId: string) {
+  if (!routedClick(e)) return
+  e.preventDefault()
+  document.getElementById(cardId(repoId))?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+}
+
+/** A count as a card says it: none for zero, a dash with its reason when unread. */
+function CountLine({ row, label, n, why, to, go }: { row: string; label: string; n: number | null | undefined; why: string; to?: string; go: (to: string) => void }) {
+  const words = n === null || n === undefined ? null : n === 0 ? 'none' : String(n)
+  return (
+    <div className="ur-cmeta" data-row={row}>
+      <span>
+        {label}:{' '}
+        {words === null ? <Dash why={why} /> : to !== undefined ? <UrLink to={to} go={go}>{words}</UrLink> : <b>{words}</b>}
+      </span>
     </div>
   )
 }
@@ -663,6 +837,9 @@ function RepoCard({
   viewerOnly = false,
   fileIssues,
   workflowFiles,
+  counts = null,
+  countsWhy = 'The counts were not read',
+  onRemove,
 }: {
   r: RepoRecord
   go: (to: string) => void
@@ -679,6 +856,12 @@ function RepoCard({
   fileIssues?: ReactNode
   /** The `workflow_files` line (#2029). */
   workflowFiles?: ReactNode
+  /** Its secrets and QA targets, from the page's one counts read; null while not read. */
+  counts?: RepoCounts | null
+  /** Why the counts are a dash, when they are. */
+  countsWhy?: string
+  /** Remove, which asks for the typed name first; absent below `member`, so a viewer has none. */
+  onRemove?: () => void
 }) {
   const f = freshness(r.index)
   const head = r.index.head_sha
@@ -694,7 +877,7 @@ function RepoCard({
     wasConfirming.current = confirming
   }, [confirming])
   return (
-    <Card className="ur-card" title={repoName(r)}>
+    <Card className="ur-card" title={repoName(r)} id={cardId(r.repo_id)}>
       {/* THE BADGE HAS ONE SLOT (visual QA run 6, work-a-009, part of #1680).
           As the head's action it sat right of the name, and a long name pushed
           it onto a line of its own, so no two cards drew it in the same place.
@@ -728,6 +911,8 @@ function RepoCard({
         <span>Schedule {sched === null ? <Dash why="The schedule was not served" /> : <b>{sched}</b>}</span>
       </div>
       <IndexingUses r={r} go={go} />
+      <CountLine row="secrets" label="Secrets" n={counts?.secrets} why={countsWhy} go={go} />
+      <CountLine row="qa-targets" label="QA targets" n={counts?.qa_targets} why={countsWhy} to={qaTargetsOf(repoName(r))} go={go} />
       {fileIssues}
       {workflowFiles}
       <FailureLine r={r} go={go} />
@@ -740,6 +925,11 @@ function RepoCard({
         ) : (
           <Button size="sm" busy={busy} disabled={confirming || viewerOnly} onClick={onAsk} data-index-now="">
             Index now
+          </Button>
+        )}
+        {onRemove !== undefined && (
+          <Button size="sm" kind="danger" onClick={onRemove}>
+            Remove
           </Button>
         )}
       </div>

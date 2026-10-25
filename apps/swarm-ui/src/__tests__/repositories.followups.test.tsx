@@ -70,7 +70,7 @@ function live(opts: { role?: string; counts?: unknown } = {}) {
     if (m === 'GET' && path === '/v1/access') return { status: 200, body: ACCESS(grants) }
     if (m === 'DELETE' && path === `/v1/repositories/${WEB_ID}`) {
       registered = registered.filter((r) => r.repo_id !== WEB_ID)
-      return { status: 204, body: null }
+      return { status: 200, body: null }
     }
     return null
   })
@@ -98,6 +98,12 @@ afterEach(() => {
 describe('Remove on each registered card', () => {
   it('needs the typed owner/name, says the secret grants go with it, calls DELETE once, re-reads, and the card is dashed again', async () => {
     const calls = live()
+    // The API's own answer to a removal: 204, no body, no content-type.
+    const inner = globalThis.fetch
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const answer = await inner(input, init)
+      return init?.method === 'DELETE' && answer.ok ? new Response(null, { status: 204 }) : answer
+    }) as unknown as typeof fetch
     await mount()
     await waitFor(() => expect(card('example-org/example-web')).not.toBeNull(), WAIT)
     // MUTATION: drop the Remove button and this throws.
@@ -119,6 +125,7 @@ describe('Remove on each registered card', () => {
     expect((confirm as HTMLButtonElement).disabled).toBe(false)
     const readsBefore = calls.filter((c) => c.method === 'GET' && c.url.split('?')[0] === '/v1/repositories').length
     fireEvent.click(confirm)
+    // MUTATION: read the bare 204 as a failure (as `write` alone does) and the dialog stays up, saying "Not removed".
     // MUTATION: never re-read the registry and the card stays drawn registered.
     await waitFor(() => expect(dashed()).toContain('example-org/example-web'), WAIT)
     expect(card('example-org/example-web')!.classList.contains('is-chosen')).toBe(true)
@@ -308,7 +315,8 @@ describe('QA targets narrowed to one repository from the address', () => {
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
     const go = await mount('page=qa-targets&repository=example-org%2Fexample-api')
-    const names = () => Array.from(document.querySelectorAll('.qa-page .ur-cards > .c-card h2, .qa-page .ur-cards > .c-card h3')).map((h) => visible(h))
+    const names = () =>
+      Array.from(document.querySelectorAll('.qa-page .ur-cards > .qa-target')).map((el) => ['example-api-staging', 'example-web-staging'].find((n) => visible(el).includes(n)))
     // MUTATION: ignore `repository` and both targets are drawn.
     await waitFor(() => expect(names()).toEqual(['example-api-staging']), WAIT)
     const note = document.querySelector<HTMLElement>('[data-qa-filter]')

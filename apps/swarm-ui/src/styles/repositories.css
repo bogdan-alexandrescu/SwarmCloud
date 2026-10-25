@@ -63,6 +63,14 @@
    drawn in place, so its edge is dashed -- the console's mark for something
    not there yet -- and the card's surface drops away. */
 .ur-card.is-chosen { border-style: dashed; border-color: var(--ctl-bd); background: transparent; }
+/* THE REACH TABLE'S REGISTERED COLUMN (REPOS-FOLLOWUPS, config-e.html S3a),
+   on Config › Repositories only (`has-registered`). The same tracks as
+   onboarding.css' `.ac-grant`, one more before the actions, and only where
+   that grid is columns: under 1080px its rows are records, and the cell
+   carries its own label as every other cell does. */
+@media (min-width: 1080px) {
+  .ac-reach.has-registered .ac-grid-h, .ac-reach.has-registered .ac-grant { grid-template-columns: minmax(0, 1fr) 132px repeat(4, 84px) 112px 216px; }
+}
 /* The freshness badge's one slot (visual QA run 6, work-a-009): the row
    under the name, from the left edge, on every card at every width. */
 .ur-cbadge { display: flex; flex-wrap: wrap; gap: var(--ctl-s2); align-items: center; justify-content: flex-start; min-width: 0; }
