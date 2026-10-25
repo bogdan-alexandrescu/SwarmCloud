@@ -73,7 +73,7 @@ import { Button, NamedMark, Segmented, StateMark, WarnMark } from './components'
 import { NewWorkspaceDialog, WorkspaceTimeline } from './NewWorkspace'
 import { QaIdentityGrants } from './QaIdentityGrants'
 import { WORKSPACE_POLL_MS } from './OnboardingWorkspace'
-import { addressBreaks } from './AdminSettings'
+import { AdminLead, UnreadLead, addressBreaks, useLeadRead } from './AdminSettings'
 import { Absent, Mark } from './primitives'
 import { CountNote, Id, PageHead, RefreshControl, Screen, useClaimPageAge, useIdleStop, usePoll } from './Shell'
 import { TIMELINE_POLL_MS, TimelinePages } from './TimelineLanes'
@@ -1710,6 +1710,98 @@ function BeingCreatedActions({ w, owner, reload }: { w: AdminWorkspaceView; owne
   )
 }
 
+/** A record's key in the list, and the id its row is drawn under, which the lead's button lands on. */
+function recordKey(w: AdminWorkspaceView): string {
+  return w.workspace_id ?? w.request_id ?? w.requested_at ?? ''
+}
+const recordRowId = (w: AdminWorkspaceView) => `ten-ws-${recordKey(w)}`
+
+/**
+ * TENANTS' LEAD (ADMIN-LEADS; proposal E S10d, S10i): "led by the workspace
+ * waiting to be created". In order: one waiting for this admin's approval,
+ * then one whose setting up stopped and that this admin may retry -- both are
+ * this admin's to act on -- then one only the platform owner may decide or
+ * retry (a service workspace, for an admin who is not the owner), then one
+ * the job is still setting up, which needs nobody unless a step fails.
+ * Nothing in any of those states is the green lead. A denied record is a
+ * decision already taken and waits on nobody.
+ *
+ * Its button opens the record's row in "Being created" below, where Approve,
+ * Deny and Retry are; the lead adds no action of its own.
+ */
+type WorkspaceLead =
+  | { kind: 'waiting'; w: AdminWorkspaceView }
+  | { kind: 'stopped'; w: AdminWorkspaceView; step: string | null }
+  | { kind: 'owner'; w: AdminWorkspaceView }
+  | { kind: 'building'; w: AdminWorkspaceView }
+  | { kind: 'clear' }
+
+export function workspaceLead(rows: readonly AdminWorkspaceView[], owner: boolean): WorkspaceLead {
+  const mayDecide = (w: AdminWorkspaceView) => w.kind !== 'service' || owner
+  const stopped = (w: AdminWorkspaceView) => w.state === 'failed' || w.state === 'needs_owner'
+  const stepOf = (w: AdminWorkspaceView): string | null => {
+    const step = w.state === 'needs_owner' && typeof w.needs_owner_step === 'string' && w.needs_owner_step !== '' ? w.needs_owner_step : w.failure?.step
+    return typeof step === 'string' && step !== '' ? step : null
+  }
+  const waiting = rows.find((w) => w.state === 'requested' && mayDecide(w))
+  if (waiting !== undefined) return { kind: 'waiting', w: waiting }
+  const halted = rows.find((w) => stopped(w) && mayDecide(w))
+  if (halted !== undefined) return { kind: 'stopped', w: halted, step: stepOf(halted) }
+  const theirs = rows.find((w) => w.state === 'requested' || stopped(w))
+  if (theirs !== undefined) return { kind: 'owner', w: theirs }
+  const building = rows.find((w) => BUILDING.has(w.state))
+  if (building !== undefined) return { kind: 'building', w: building }
+  return { kind: 'clear' }
+}
+
+function nameOf(w: AdminWorkspaceView): string {
+  if (typeof w.display_name === 'string' && w.display_name !== '') return w.display_name
+  return w.workspace_id ?? w.principal ?? 'A workspace'
+}
+
+function WorkspaceLeadView({ lead }: { lead: WorkspaceLead }) {
+  if (lead.kind === 'clear') return <AdminLead tone="ok" kicker="Nothing waiting" title="No workspace is waiting to be created" />
+  const w = lead.w
+  const open = (label: string) => (
+    <Button
+      kind="primary"
+      onClick={() => {
+        const row = document.getElementById(recordRowId(w))
+        if (row === null) return
+        if (typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' })
+        row.focus()
+      }}
+    >
+      {label}
+    </Button>
+  )
+  switch (lead.kind) {
+    case 'waiting':
+      return <AdminLead tone="warn" kicker="Waiting for you" title={`${nameOf(w)} is waiting for your approval`} action={open('Open its request')} />
+    case 'stopped':
+      return (
+        <AdminLead
+          tone="warn"
+          kicker="Needs a look"
+          title={lead.step === null ? `Setting up ${nameOf(w)} stopped` : `Setting up ${nameOf(w)} stopped at ${lead.step}`}
+          action={open('Open its request')}
+        />
+      )
+    case 'owner':
+      return <AdminLead tone="next" kicker="Waiting for the platform owner" title={`${nameOf(w)} is waiting for the platform owner`} action={open('Open its request')} />
+    case 'building':
+      return (
+        <AdminLead
+          tone="next"
+          kicker="Being created"
+          title={`${nameOf(w)} is being created`}
+          body="Nothing needs you unless a step fails."
+          action={open('Open its progress')}
+        />
+      )
+  }
+}
+
 function BeingCreated({ owner }: { owner: boolean }) {
   const [rows, setRows] = useState<AdminWorkspaceView[] | null>(null)
   const [unread, setUnread] = useState<ApiError | null>(null)
@@ -1734,6 +1826,14 @@ function BeingCreated({ owner }: { owner: boolean }) {
   useEffect(reload, [reload])
   usePoll(WORKSPACE_POLL_MS, reload, rows === null || !rows.some((w) => BUILDING.has(w.state)))
   return (
+    <>
+    {/* The page's lead: a dash while this read has failed, nothing until it
+        first lands (a lead is never a guess). */}
+    {unread !== null ? (
+      <UnreadLead what="the workspaces being created" error={unread} />
+    ) : (
+      rows !== null && <WorkspaceLeadView lead={workspaceLead(rows, owner)} />
+    )}
     <section className="section" data-testid="being-created" aria-labelledby="ten-being-created">
       <div className="ten-bc-head">
         <h2 id="ten-being-created">Being created</h2>
@@ -1748,7 +1848,10 @@ function BeingCreated({ owner }: { owner: boolean }) {
         <ul className="ten-being-created">
           {rows.map((w) => (
             <li
-              key={w.workspace_id ?? w.request_id ?? w.requested_at ?? ''}
+              key={recordKey(w)}
+              id={recordRowId(w)}
+              // Focusable by the lead's button, which opens this record.
+              tabIndex={-1}
               data-workspace-id={w.workspace_id ?? undefined}
               data-state={w.state}
               data-kind={w.kind}
@@ -1780,6 +1883,7 @@ function BeingCreated({ owner }: { owner: boolean }) {
         />
       )}
     </section>
+    </>
   )
 }
 
@@ -1788,10 +1892,15 @@ export function TenantsScreen() {
   const phone = usePhoneTables()
   // Whether to draw New workspace and "Being created", and whether this caller is the platform owner.
   const caller = useCaller()
+  // Whether the roster's read failed, for the lead (ADMIN-LEADS): with no
+  // roster on screen `Screen` draws its failure panel and no children, so the
+  // page draws the lead's dash under it.
+  const read = useLeadRead(loadTenants)
   return (
+    <>
     <Screen
       title="Tenants"
-      load={loadTenants}
+      load={read.load}
       // WHAT THE ROSTER IS SCANNED FOR, COUNTED (#134). `no tenant key` is a
       // tenant with no credential of its own registered; it is NOT "cannot
       // run" -- an account lent to it on Capacity › Accounts still runs its
@@ -2011,6 +2120,10 @@ export function TenantsScreen() {
         </>
       )}
     </Screen>
+    {caller?.admin === true && read.failed !== null && !read.held && read.failed.kind !== 'admin_required' && (
+      <UnreadLead what="the tenants" error={read.failed} />
+    )}
+    </>
   )
 }
 

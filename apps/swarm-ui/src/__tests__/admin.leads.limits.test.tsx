@@ -20,7 +20,7 @@
 // Nothing here is token-shaped.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, waitFor, within } from '@testing-library/react'
 
 import type { ApiError, Result } from '../fetch'
 import type { Capacity, Pool, RunnerProfile } from '../types'
