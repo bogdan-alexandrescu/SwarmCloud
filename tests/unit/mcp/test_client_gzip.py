@@ -123,3 +123,11 @@ def test_a_raw_plain_body_is_still_read(wire):
     body = SwarmClient(base_url="http://api.invalid").artifact_raw(
         "x", "out.log", max_bytes=len(data))
     assert body.data == data  # MUTATION: always gunzip -- error.
+
+
+def test_a_body_labelled_gzip_but_already_decoded_is_read_as_it_is(wire):
+    # A proxy or a test transport (httpx's TestClient) that inflated the body
+    # on the way and kept the header.
+    wire.answer = _Response(json.dumps(BIG).encode(), {"Content-Type": "application/json",
+                                                       "Content-Encoding": "gzip"})
+    assert SwarmClient(base_url="http://api.invalid").request("GET", "/v1/tasks") == BIG  # MUTATION: gunzip on the header alone -- zlib.error.
