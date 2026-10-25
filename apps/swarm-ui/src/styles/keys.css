@@ -118,6 +118,36 @@ fieldset.jb-options > legend { padding: 0; margin-bottom: var(--ctl-s1); font-si
 .mcp-servers > thead > tr > th[data-col='last'], .mcp-servers > tbody > tr > td[data-label='Last used'] { white-space: nowrap; }
 .mcp-servers > tbody > tr > th > .jb-note { margin-top: 2px; }
 
+/* CONFIG › MCP SERVERS' ROWS (MCP-ROWS; part of #2157, config-e.html S5a,
+   S5d). A server the setup read lists as missing its credential is the row
+   the lead names: its cells take the mock-up's warn tint, its name the warn
+   bar Config › Secrets' needed rows carry, and its Credential cell ends in
+   the "needed, not set" chip on its own line. Register sits at the card
+   head's right, before Refresh. The addresses to allowlist are a fold under
+   the table, its count at the right of its head, as S5a draws it. */
+.mcp-head-a { margin-left: auto; display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); min-width: 0; }
+.mcp-registered > tbody > tr.is-need > th,
+.mcp-registered > tbody > tr.is-need > td { background: color-mix(in srgb, var(--warn-ink) 6%, var(--surface)); }
+.mcp-registered > tbody > tr.is-need > th { box-shadow: inset 3px 0 0 var(--warn-ink); padding-left: 10px; }
+.mcp-need {
+  display: table; margin-top: 4px; padding: 1px 8px;
+  border: 1px solid var(--warn-ink); border-radius: 999px; color: var(--warn-ink);
+  font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 500; white-space: nowrap;
+}
+.mcp-allow { min-width: 0; }
+.mcp-allow > details { border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--surface); min-width: 0; }
+.mcp-allow > details > summary {
+  display: flex; align-items: center; gap: var(--ctl-s2); padding: 10px 14px; cursor: pointer; list-style: none;
+  font-size: var(--t-meta); line-height: var(--lh-meta);
+}
+.mcp-allow > details > summary::-webkit-details-marker { display: none; }
+.mcp-allow > details > summary::before { content: "›"; display: inline-block; font-weight: 700; color: var(--text-dim); }
+.mcp-allow > details[open] > summary::before { transform: rotate(90deg); }
+.mcp-allow > details > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.mcp-allow > details > summary > b { flex: 1 0 auto; font-weight: 600; }
+.mcp-allow-n { color: var(--text-dim); text-align: right; min-width: 0; }
+.mcp-allow-b { padding: 0 14px 10px; min-width: 0; }
+
 /* SETTINGS › PROFILE (Profile.tsx; visual QA 6:overview-automate-002, -004,
    #1680). None of `pf-page`, `pf-facts` or `pf-list` had a rule: the cards
    stacked 2px apart, the facts were the browser's indented definition list
@@ -169,4 +199,9 @@ fieldset.jb-options > legend { padding: 0; margin-bottom: var(--ctl-s1); font-si
     font-weight: 400;
     color: var(--text-dim);
   }
+
+  /* A stacked server is one card: its needed bar runs the card's height. */
+  .mcp-registered > tbody > tr.is-need { background: color-mix(in srgb, var(--warn-ink) 6%, var(--surface)); box-shadow: inset 3px 0 0 var(--warn-ink); padding-left: 10px; }
+  .mcp-registered > tbody > tr.is-need > th { box-shadow: none; padding-left: 0; }
+  .mcp-registered > tbody > tr.is-need > th, .mcp-registered > tbody > tr.is-need > td { background: none; }
 }
