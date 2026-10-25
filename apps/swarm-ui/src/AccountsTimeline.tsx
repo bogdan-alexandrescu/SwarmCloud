@@ -23,10 +23,14 @@
  * SAME ANSWERS AS THE TABLE. Who can take an agent, the ranking, the reasons,
  * the clear times and the forecast are `accountsPool.ts`'s, the functions the
  * Table and the verdict use -- `forecastOf` above all, so the pace row and the
- * forecast under it cannot disagree with the Table's. Opening an account opens
- * the detail the Table opens (`renderDetail`, Accounts.tsx `Detail`).
+ * forecast under it cannot disagree with the Table's.
+ *
+ * PRESSING A LANE OPENS THE TABLE'S SIDE SHEET (BGD, 2026-10-25 10:05Z), the
+ * whole screen on a phone, not proposal B's detail under the lane: the lane
+ * only asks (`onChoose`), and Accounts.tsx `Pool` draws the one sheet both
+ * views share. The opened lane stays marked under the sheet's scrim.
  */
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 
 import { accountName } from './accountName'
 import { ageOf, clearsOf } from './AccountsTable'
@@ -55,6 +59,8 @@ import {
 import {
   bandOf,
   heightOf,
+  holdDeadlineOf,
+  keptOf,
   nextFreeAt,
   onAxis,
   paceLine,
@@ -66,6 +72,7 @@ import {
   type AccountsView,
   type AxisKind,
   type Band,
+  type LanedAccount,
   type Step,
 } from './accountsLanes'
 import { Segmented } from './components'
@@ -238,7 +245,6 @@ function WindowBand({
   now,
   axis,
   forecast,
-  folded,
   judged,
 }: {
   a: PoolAccount
@@ -246,7 +252,6 @@ function WindowBand({
   now: number
   axis: AxisKind
   forecast: ForecastResult | null
-  folded: boolean
   /** The broker judges this account's windows for new agents (Can take now, or a clock). */
   judged: boolean
 }) {
@@ -289,13 +294,13 @@ function WindowBand({
     }
   }
   const line =
-    !folded && forecast !== null && b.key === SEVEN_DAY && (b.kind === 'live' || b.kind === 'stale')
+    forecast !== null && b.key === SEVEN_DAY && (b.kind === 'live' || b.kind === 'stale')
       ? paceLine(forecast, a, now)
       : []
   const drawn = b.kind === 'live' || b.kind === 'stale' || b.kind === 'reset'
   return (
-    <div className={`acct-tl-win${folded ? ' is-folded' : ''}`}>
-      {!folded && <span className="acct-tl-chip">{bandWords(b, now)}</span>}
+    <div className="acct-tl-win">
+      <span className="acct-tl-chip">{bandWords(b, now)}</span>
       {drawn && (
         <div
           className="acct-tl-bandrow"
@@ -413,13 +418,17 @@ function agentsLine(a: PoolAccount, scope: string | null): string {
 }
 
 /**
- * A full account's holds: one block per agent holding it, of its cap. Their
- * deadlines are not in the accounts read, so they are a dash with that reason
- * rather than a time this page made up; the open account's detail lists who.
+ * A full account's holds: one block per agent holding it, of its cap, and a
+ * bar from now to the LATEST HOLD DEADLINE the broker serves (B3/B4): the
+ * latest instant any of them can still hold a slot. Labelled "latest", never
+ * "expected" -- an agent that finishes sooner frees its slot sooner, and no
+ * clock says when. A deadline the broker does not serve is a dash with its
+ * reason (`holdDeadlineOf`); the opened account's sheet lists who holds it.
  */
-function Holds({ a }: { a: PoolAccount }) {
+function Holds({ a, now, axis }: { a: LanedAccount; now: number; axis: AxisKind }) {
   const max = maxAgentsOf(a) ?? a.assigned
   const cells = Array.from({ length: Math.max(max, a.assigned) }, (_, i) => i < a.assigned)
+  const deadline = holdDeadlineOf(a, now)
   return (
     <div className="acct-tl-holds">
       <span className="acct-tl-holdcells" role="img" aria-label={`${a.assigned} of ${max} agent slots held`}>
@@ -427,9 +436,21 @@ function Holds({ a }: { a: PoolAccount }) {
           <i key={i} className={held ? 'is-held' : ''} />
         ))}
       </span>
+      {deadline.at !== null && (
+        <span className="acct-tl-holdrow" aria-hidden="true">
+          <i className="acct-tl-holdbar" style={{ width: pctX(Math.min(1, xOf(deadline.at, now, axis))) }} />
+        </span>
+      )}
       <span className="acct-tl-chip">
-        {pluralise(a.assigned, 'agent')} hold it · no clock: frees when one finishes · hold deadlines{' '}
-        <span className="acct-dash">—</span> not in the accounts read
+        {pluralise(a.assigned, 'agent')} hold it · latest hold deadline{' '}
+        {deadline.at !== null ? (
+          <b className="acct-tl-nw">{utcAt(deadline.at, now)}</b>
+        ) : (
+          <>
+            <span className="acct-dash">—</span> {deadline.reason}
+          </>
+        )}{' '}
+        · no clock: frees when one finishes
       </span>
     </div>
   )
@@ -443,22 +464,21 @@ function Lane({
   forecast,
   freeX,
   names,
+  kept,
   open,
-  folded,
   onChoose,
-  detail,
 }: {
-  a: PoolAccount
+  a: LanedAccount
   scope: string | null
   now: number
   axis: AxisKind
   forecast: ForecastResult | null
   freeX: number | null
   names: ReadonlyMap<string, string>
+  /** The other half's name when this is the kept half of a pair, null when it is not in this read (`keptOf`). */
+  kept: string | null | undefined
   open: boolean
-  folded: boolean
   onChoose: (id: string | null) => void
-  detail: ReactNode
 }) {
   const s = statusOf(a, scope, names)
   const org = organisationLine(a)
@@ -474,87 +494,71 @@ function Lane({
     'acct-tl-lane',
     a.stale && a.observed_at !== null ? 'is-stale' : '',
     dup ? 'is-dup' : '',
+    kept !== undefined ? 'is-kept' : '',
     open ? 'is-open' : '',
-    folded ? 'is-folded' : '',
   ]
     .filter(Boolean)
     .join(' ')
   return (
-    <>
-      <div className={cls} data-account={a.account_id}>
-        <div className="acct-tl-words">
-          <div className="acct-tl-namerow">
-            <button
-              type="button"
-              className="acct-tl-open"
-              data-account={a.account_id}
-              aria-expanded={open}
-              onClick={() => onChoose(open ? null : a.account_id)}
-            >
-              {accountName(a)}
-            </button>
-            {folded && (
-              <span className={`acct-tl-status is-${s.tone}`}>
-                <span aria-hidden="true">{ICON[s.tone]}</span> {s.text}
-              </span>
-            )}
-          </div>
-          {!folded && (
+    <div className={cls} data-account={a.account_id}>
+      <div className="acct-tl-words">
+        <div className="acct-tl-namerow">
+          {/* THE LANE OPENS THE TABLE'S SIDE SHEET (BGD, 2026-10-25): a
+              dialog-like panel over the page, not an expansion of this row. */}
+          <button
+            type="button"
+            className="acct-tl-open"
+            data-account={a.account_id}
+            aria-haspopup="dialog"
+            aria-current={open ? 'true' : undefined}
+            onClick={() => onChoose(a.account_id)}
+          >
+            {accountName(a)}
+          </button>
+        </div>
+        <p className="acct-tl-meta">
+          {org ?? (
             <>
-              <p className="acct-tl-meta">
-                {org ?? (
-                  <>
-                    organisation <span className="acct-dash">—</span> not recorded at sign-in
-                  </>
-                )}
-              </p>
-              <p className={`acct-tl-status is-${s.tone}`}>
-                <span aria-hidden="true">{ICON[s.tone]}</span> {s.text}
-              </p>
-              {clearsLine(a, scope, now) !== null && <p className="acct-tl-meta">{clearsLine(a, scope, now)}</p>}
-              <p className="acct-tl-meta">{agentsLine(a, scope)}</p>
-              {a.stale && a.observed_at !== null && <p className="acct-tl-meta is-stale-note">stale: {ageOf(a, now)}</p>}
-              {possible && !blocksOf(a).some(isDuplicateBlock) && (
-                <p className="acct-tl-meta is-dup-note">
-                  May be one subscription with {possibleOf ?? 'an account in another workspace'}: they read identically
-                </p>
-              )}
+              organisation <span className="acct-dash">—</span> not recorded at sign-in
             </>
           )}
-        </div>
-        <div className="acct-tl-track">
-          <FreeLine x={freeX} />
-          {a.observed_at === null
-            ? !folded && (
-                <span className="acct-tl-chip">
-                  5-hour and 7-day: <b>first reading pending</b>. No bands until the broker reads its windows; it takes one agent
-                  until then
-                </span>
-              )
-            : (folded ? [SEVEN_DAY] : windows).map((k) => (
-                <WindowBand
-                  key={k}
-                  a={a}
-                  b={bandOf(a, k)}
-                  now={now}
-                  axis={axis}
-                  forecast={forecast}
-                  folded={folded}
-                  judged={judged}
-                />
-              ))}
-          {full && !folded && <Holds a={a} />}
-        </div>
+        </p>
+        <p className={`acct-tl-status is-${s.tone}`}>
+          <span aria-hidden="true">{ICON[s.tone]}</span> {s.text}
+        </p>
+        {clearsLine(a, scope, now) !== null && <p className="acct-tl-meta">{clearsLine(a, scope, now)}</p>}
+        <p className="acct-tl-meta">{agentsLine(a, scope)}</p>
+        {a.stale && a.observed_at !== null && <p className="acct-tl-meta is-stale-note">stale: {ageOf(a, now)}</p>}
+        {possible && !blocksOf(a).some(isDuplicateBlock) && (
+          <p className="acct-tl-meta is-dup-note">
+            May be one subscription with {possibleOf ?? 'an account in another workspace'}: they read identically
+          </p>
+        )}
+        {/* THE KEPT HALF IS MARKED TOO (B2's twin): without it the withheld
+            lane named an account whose own lane said nothing about the pair. */}
+        {kept !== undefined && (
+          <p className="acct-tl-meta is-kept-note">
+            {kept === null
+              ? 'One subscription with an account in another workspace · handed out here'
+              : `One subscription with ${kept} · older, handed out`}
+          </p>
+        )}
       </div>
-      {open && (
-        <div className="acct-tl-detail" aria-label={`Account ${accountName(a)}`}>
-          <button type="button" className="acct-tl-back" onClick={() => onChoose(null)}>
-            <span aria-hidden="true">‹</span> All accounts
-          </button>
-          {detail}
-        </div>
-      )}
-    </>
+      <div className="acct-tl-track">
+        <FreeLine x={freeX} />
+        {a.observed_at === null ? (
+          <span className="acct-tl-chip">
+            5-hour and 7-day: <b>first reading pending</b>. No bands until the broker reads its windows; it takes one agent
+            until then
+          </span>
+        ) : (
+          windows.map((k) => (
+            <WindowBand key={k} a={a} b={bandOf(a, k)} now={now} axis={axis} forecast={forecast} judged={judged} />
+          ))
+        )}
+        {full && <Holds a={a} now={now} axis={axis} />}
+      </div>
+    </div>
   )
 }
 
@@ -705,7 +709,6 @@ export function AccountsTimeline({
   phone,
   openId,
   onChoose,
-  renderDetail,
   addButton,
   addForm,
 }: {
@@ -714,13 +717,12 @@ export function AccountsTimeline({
   now: number
   waiting: WaitRead
   phone: boolean
-  /** The account opened from a lane (`?account=`), or null. */
+  /** The account opened from a lane (`?account=`), or null: its sheet is open, and its lane is marked. */
   openId: string | null
+  /** Opens an account's side sheet (Accounts.tsx `Pool`). */
   onChoose: (id: string | null) => void
-  /** The detail the Table opens, for the open account. */
-  renderDetail: (a: PoolAccount) => ReactNode
   addButton: ReactNode
-  /** The add form, when it is open; drawn above the timeline. */
+  /** The add form with no click, for the empty pool only (B6); with accounts it opens in the sheet. */
   addForm: ReactNode
 }) {
   const [axis, setAxis] = useState<AxisKind>('split')
@@ -736,19 +738,6 @@ export function AccountsTimeline({
   const paced = pace === 'on' ? paceSteps(accounts, scope, now, forecast) : null
   const open = openId !== null && accounts.some((a) => a.account_id === openId) ? openId : null
   const unjudged = accounts.some((a) => a.observed_at !== null && !['now', 'clock', 'agent'].includes(groupOf(a, scope)))
-
-  // AN OPENED LANE OPENS AT ITS NAME: the lanes above it fold, so without
-  // this the reader's place moves under them.
-  const gridRef = useRef<HTMLDivElement | null>(null)
-  useEffect(() => {
-    if (open === null) return
-    const lane = [...(gridRef.current?.querySelectorAll<HTMLElement>('.acct-tl-lane') ?? [])].find(
-      (el) => el.dataset.account === open,
-    )
-    lane?.scrollIntoView?.({ block: phone ? 'start' : 'nearest' })
-    // Only when the choice changes: a poll's re-render must not move the page.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
 
   const near = axis === '7d' ? 'the week' : 'next 12 hours'
   return (
@@ -783,7 +772,7 @@ export function AccountsTimeline({
         </div>
       )}
       {accounts.length > 0 && addForm}
-      <div className="acct-tl-grid" ref={gridRef}>
+      <div className="acct-tl-grid">
         <div className="acct-tl-row acct-tl-axisrow">
           <div className="acct-tl-words">
             <p className="acct-tl-rowhead">{pluralise(accounts.length, 'account')}</p>
@@ -889,10 +878,9 @@ export function AccountsTimeline({
                 forecast={pace === 'on' ? forecast : null}
                 freeX={freeX}
                 names={names}
+                kept={keptOf(a, accounts, names)}
                 open={open === a.account_id}
-                folded={open !== null && open !== a.account_id}
                 onChoose={onChoose}
-                detail={open === a.account_id ? renderDetail(a) : null}
               />
             ))}
           </>

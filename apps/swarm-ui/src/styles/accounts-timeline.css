@@ -183,10 +183,6 @@
   border-radius: 3px;
   overflow: visible;
 }
-.acct-tl-win.is-folded .acct-tl-bandrow {
-  height: 12px;
-  margin-top: 0;
-}
 .acct-tl-band {
   position: absolute;
   bottom: 0;
@@ -306,13 +302,13 @@
 .acct-tl-lane.is-open > .acct-tl-words {
   box-shadow: inset 4px 0 0 var(--info);
 }
-.acct-tl-lane.is-folded .acct-tl-words {
-  padding-top: 6px;
-  padding-bottom: 6px;
+/* The kept half of a duplicate pair (B2's twin): the same edge as the
+   withheld half, in the info tone, because the pool still hands it out. */
+.acct-tl-lane.is-kept > .acct-tl-words {
+  box-shadow: inset 4px 0 0 var(--info);
 }
-.acct-tl-lane.is-folded .acct-tl-track {
-  padding-top: 10px;
-  padding-bottom: 8px;
+.is-kept-note {
+  color: var(--info);
 }
 
 /* A full account's holds. */
@@ -337,6 +333,20 @@
   background: var(--info);
   border-color: var(--info);
 }
+/* The bar from now to the latest hold deadline (B3), on the lane's own axis:
+   its own full-width row, so its width is a share of the track. */
+.acct-tl-holdrow {
+  display: block;
+  flex: 1 0 100%;
+  height: 6px;
+}
+.acct-tl-holdbar {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  background: var(--info);
+  border-radius: 3px;
+}
 
 .acct-tl-add {
   margin: 8px 0 0;
@@ -347,23 +357,18 @@
   border-bottom: 1px solid var(--line);
 }
 
-/* The opened account: the Table's own detail, under its lane. */
-.acct-tl-detail {
-  padding: 10px 14px 14px;
-  border-bottom: 1px solid var(--line);
-}
-/* The detail is the Table's pane, laid out for a pane's width: held to one
-   here rather than stretched across the whole timeline. */
-.acct-tl-detail > .acct-pane-detail {
-  max-width: 760px;
-}
-.acct-tl-back {
+/* THE OPENED ACCOUNT IS THE TABLE'S SIDE SHEET (BGD, 2026-10-25 10:05Z).
+   The Timeline sits in an `.acct-split` so the sheet's placement, its scrim,
+   its detail layout and the phone's "the account is the screen" are the
+   Table's own rules (accounts-ranked.css, capacity.css). The split's card
+   frame is the Table's, not the Timeline's: the Timeline is its own panel. */
+.acct-split.is-timeline {
+  display: block;
+  min-height: 0;
   border: 0;
+  border-radius: 0;
   background: none;
-  padding: 0 0 8px;
-  cursor: pointer;
-  font: 600 var(--t-meta)/var(--lh-meta) var(--font);
-  color: var(--info);
+  overflow: visible;
 }
 
 /* The waiting agents and the pool rows. */
@@ -547,7 +552,9 @@
   .acct-tl-utc {
     margin-left: 0;
   }
-  .acct-tl-detail {
-    padding: 10px 12px 12px;
+  /* On a phone the opened account is the screen (P3): the lanes step aside
+     as the Table's list does, and `‹ Accounts` brings them back. */
+  .acct-split.is-timeline.is-detail > .acct-tl {
+    display: none;
   }
 }

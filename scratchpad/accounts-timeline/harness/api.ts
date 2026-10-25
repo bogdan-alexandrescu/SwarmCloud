@@ -26,7 +26,8 @@ const B2: PoolAccount[] = [
   acct('aieng-claude1', { ...fh(0.99, '2026-10-24T10:10:00Z'), windows: { seven_day: W(0.39, '2026-10-30T14:00:00Z'), five_hour: W(0.99, '2026-10-24T10:10:00Z') } }),
   acct('devops-main', { windows: { seven_day: W(0.88, '2026-10-26T14:59:00Z'), five_hour: W(0.3, '2026-10-24T04:59:00Z', true) } }),
   acct('devops-team', { windows: { seven_day: W(0.86, '2026-10-28T12:00:00Z'), five_hour: W(0.3, '2026-10-24T04:20:00Z', true) } }),
-  acct('saga-personal', { ...wk(0.98, '2026-10-26T07:59:00Z'), organisation: { name: 'Personal', plan: 'Max' }, windows: { seven_day: W(0.98, '2026-10-26T07:59:00Z'), five_hour: W(0.3, '2026-10-24T06:00:00Z', true) } }),
+  // The kept half: the broker names the pair on both rows (ACCOUNTS-TIMELINE-MERGE).
+  acct('saga-personal', { ...wk(0.98, '2026-10-26T07:59:00Z'), duplicate_of: 'eng:team', organisation: { name: 'Personal', plan: 'Max' }, windows: { seven_day: W(0.98, '2026-10-26T07:59:00Z'), five_hour: W(0.3, '2026-10-24T06:00:00Z', true) } }),
   acct('team', {
     can_take_new_agent: false, blocked_by: [{ duplicate_of: 'eng:saga-personal', reason: 'registered on the same organisation as eng:saga-personal' }],
     duplicate_of: 'eng:saga-personal', organisation: { name: 'Personal', plan: 'Max' }, lend_to: ['smoke', 'u-bogdan'],
@@ -34,7 +35,8 @@ const B2: PoolAccount[] = [
   }),
 ]
 const B3: PoolAccount[] = [
-  acct('ai-eng-2', { assigned: 6, can_take_new_agent: false, blocked_by: [{ cap: 6, max_agents: 6 }], windows: { seven_day: W(0.9, '2026-10-25T18:59:00Z'), five_hour: W(0.4, '2026-10-24T13:20:00Z', true) } }),
+  // Hold deadlines are mock-up B's examples (B3: 16:45Z); devops-main's is left unserved, to draw the dash and its reason.
+  acct('ai-eng-2', { assigned: 6, can_take_new_agent: false, blocked_by: [{ cap: 6, max_agents: 6 }], latest_hold_deadline: iso('2026-10-24T16:45:00Z'), windows: { seven_day: W(0.9, '2026-10-25T18:59:00Z'), five_hour: W(0.4, '2026-10-24T13:20:00Z', true) } } as Partial<PoolAccount>),
   acct('ai-eng-3', { ...wk(0.97, '2026-10-27T10:59:00Z'), windows: { seven_day: W(0.97, '2026-10-27T10:59:00Z'), five_hour: W(0.2, '2026-10-24T13:20:00Z', true) } }),
   acct('aieng-claude1', { ...fh(0.91, '2026-10-24T15:10:00Z'), windows: { seven_day: W(0.52, '2026-10-30T14:00:00Z'), five_hour: W(0.91, '2026-10-24T15:10:00Z') } }),
   acct('devops-main', { assigned: 6, can_take_new_agent: false, blocked_by: [{ cap: 6, max_agents: 6 }], windows: { seven_day: W(0.92, '2026-10-26T14:59:00Z'), five_hour: W(0.38, '2026-10-24T17:10:00Z') } }),

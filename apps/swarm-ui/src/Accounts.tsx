@@ -380,6 +380,16 @@ function Body({
     setStoredView(v)
     if (typeof window !== 'undefined') followHash(viewHref(v))
   }
+  // A TIMELINE RESTORED FROM THIS BROWSER'S MEMORY IS WRITTEN TO THE ADDRESS
+  // (the review's minor, ACCOUNTS-TIMELINE-MERGE): arriving from the sidebar
+  // under a bare address drew the Timeline while the address still said
+  // nothing, so a link copied off the bar opened Table. Replaced, not pushed:
+  // it is the same visit, and Back must not land on the bare address first.
+  // A Table address stays bare, as it always was.
+  useEffect(() => {
+    if (typeof window === 'undefined' || linkedView !== null || pageView !== 'timeline') return
+    replaceHash(paneHref('capacity/accounts', { account: linked, view: 'timeline' }))
+  }, [linkedView, pageView, linked])
   const choose = (id: string | null) => {
     patch((p) => ({ ...p, chosen: id, adding: p.signin.kind === 'idle' ? false : p.adding }))
     if (typeof window !== 'undefined') followHash(paneHref('capacity/accounts', { account: id, view: pageView === 'timeline' ? pageView : linkedView }))
@@ -640,6 +650,13 @@ function followHash(hash: string): void {
   window.dispatchEvent(new HashChangeEvent('hashchange', { oldURL, newURL: window.location.href }))
 }
 
+/** `followHash`, rewriting this entry rather than adding one: the address catching up with what is drawn. */
+function replaceHash(hash: string): void {
+  const oldURL = window.location.href
+  window.history.replaceState(window.history.state, '', hash)
+  window.dispatchEvent(new HashChangeEvent('hashchange', { oldURL, newURL: window.location.href }))
+}
+
 function Pool({
   board,
   accounts,
@@ -670,12 +687,13 @@ function Pool({
   // BACK RETURNS FOCUS TO THE ROW IT LEFT (live QA CAP-11): on a phone
   // `‹ Accounts` hides the pane and focus fell to <body>. The row is drawn
   // only after the render the click causes, so it is focused from an effect.
+  // A sheet opened from a Timeline lane returns to that lane's name.
   const backTo = useRef<string | null>(null)
   useEffect(() => {
     const id = backTo.current
     if (id === null) return
     backTo.current = null
-    const row = [...document.querySelectorAll<HTMLButtonElement>('.acct-open')].find((b) => b.dataset.account === id)
+    const row = [...document.querySelectorAll<HTMLButtonElement>('.acct-open, .acct-tl-open')].find((b) => b.dataset.account === id)
     row?.focus()
   })
   // A CHOSEN ACCOUNT OPENS AT ITS TITLE (visual QA V157, V158; 2026-10-16).
@@ -721,10 +739,11 @@ function Pool({
     return () => document.removeEventListener('keydown', onKey)
   }, [sheetOpen])
 
-  // THE TIMELINE (#2222, proposal B): every account on one axis. Only a
-  // CHOSEN account opens there -- the Table's default account is a pane
-  // beside the list, and the Timeline has no pane to fill -- and it opens the
-  // same `Detail`, with every control, under its lane.
+  // THE TIMELINE (#2222, proposal B): every account on one axis. Pressing a
+  // lane opens THE SAME SIDE SHEET a Table row opens -- the whole screen on a
+  // phone -- not proposal B's detail under the lane (BGD, 2026-10-25 10:05Z).
+  // Only a CHOSEN account opens: the Table's default account is a desktop
+  // convenience, and the Timeline has no place to show it.
   const timeline =
     view === 'timeline' ? (
       <AccountsTimeline
@@ -735,26 +754,14 @@ function Pool({
         phone={phone}
         openId={shown !== null && shown.explicit ? shown.account.account_id : null}
         onChoose={choose}
-        renderDetail={(acct) => (
-          <section key={acct.account_id} className="acct-pane-detail">
-            <Detail
-              account={acct}
-              accounts={accounts as PoolAccount[]}
-              board={board}
-              now={now}
-              ui={ui}
-              patch={patch}
-              reload={reload}
-            />
-          </section>
-        )}
         addButton={shown === null ? null : <AddButton ui={ui} patch={patch} />}
         // An empty pool draws the form with no click, in the lane the first
         // account will take (B6): it is the one control that fixes the zero.
-        addForm={shown === null || addOpen(ui) ? <div className="acct-tl-add">{addForm}</div> : null}
+        // With accounts, the form opens in the sheet, as the Table's does.
+        addForm={shown === null ? <div className="acct-tl-add">{addForm}</div> : null}
       />
     ) : null
-  if (timeline !== null) return timeline
+  if (timeline !== null && shown === null) return timeline
 
   if (shown === null) {
     const unread = shortfall(board)
@@ -894,6 +901,20 @@ function Pool({
         </aside>
       </>
     ) : null
+  // THE TIMELINE SHARES THE SPLIT'S FRAME CLASSES, NOT ITS FRAME: the sheet's
+  // placement, its scrim and the phone's "the account is the screen" are
+  // `.acct-split` rules (accounts-ranked.css, capacity.css), and so is the
+  // detail's layout inside it; `is-timeline` drops the card's own border so
+  // the Timeline's panel keeps its look (accounts-timeline.css).
+  if (timeline !== null)
+    return (
+      <div
+        className={`acct-split is-ranked is-timeline${shown.explicit ? ' is-detail' : ''}${adding ? ' is-adding' : ''}${sheetOpen ? ' has-sheet' : ''}`}
+      >
+        {timeline}
+        {sheet}
+      </div>
+    )
   return (
     /* `is-detail`: a reader chose an account, so on a phone the account is the
        page and the list steps aside (frame 10). With no choice the phone shows

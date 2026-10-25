@@ -13,8 +13,8 @@
  * blocks the rest and when that clears are `accountsPool.ts`'s readings of
  * `can_take_new_agent`, `blocked_by` and `next_eligible_at`, the same
  * functions the Table ranks by; the pace is `forecastOf`'s, the same function
- * the Table's forecast says. A figure the API does not serve (a hold's
- * deadline) is not computed here at all.
+ * the Table's forecast says. A hold's deadline is the broker's own
+ * `latest_hold_deadline` (`holdDeadlineOf`), never one computed here.
  */
 import {
   blocksOf,
@@ -22,6 +22,7 @@ import {
   closedSpans,
   floorOf,
   freeSlots,
+  isDuplicateBlock,
   isWindowBlock,
   rankAccounts,
   type Forecast,
@@ -369,4 +370,62 @@ export function paceLine(forecast: Forecast, a: PoolAccount, now: number, sample
     out.push([t, Math.max(p.floor, start - (p.perHour * (t - now)) / HOUR_MS)])
   }
   return out
+}
+
+// ---------------------------------------------------------------------------
+// A full lane's holds, and the kept half of a duplicate pair
+// ---------------------------------------------------------------------------
+
+/**
+ * A listing row as the Timeline reads it: the broker's `latest_hold_deadline`
+ * (#2222, B3/B4), the latest `expires_at` among the agents holding it now.
+ * Absent from a broker older than the field; null when it holds none.
+ */
+export type LanedAccount = PoolAccount & { latest_hold_deadline?: string | null }
+
+/**
+ * THE LATEST HOLD DEADLINE, OR WHY THERE IS NONE. The instant the last of its
+ * agents can still hold a slot, drawn as "latest", never "expected": an agent
+ * that finishes sooner frees its slot sooner, and nothing says when. A
+ * deadline the broker does not serve is a dash with its reason, never a time
+ * this page made up.
+ */
+export function holdDeadlineOf(
+  a: LanedAccount,
+  now: number,
+): { at: number; reason: null } | { at: null; reason: string } {
+  if (!('latest_hold_deadline' in a) || a.latest_hold_deadline === undefined)
+    return { at: null, reason: 'not served by this broker' }
+  if (a.latest_hold_deadline === null) return { at: null, reason: 'the broker read no live hold' }
+  const at = Date.parse(a.latest_hold_deadline)
+  if (!Number.isFinite(at)) return { at: null, reason: 'not an instant the broker served' }
+  // A deadline already behind the clock has stopped counting; the next read drops it.
+  if (at <= now) return { at: null, reason: 'passed; the next read drops it' }
+  return { at, reason: null }
+}
+
+/**
+ * THE KEPT HALF OF A DUPLICATE PAIR (#2222, mock-up B's "older, handed out"):
+ * the registration the broker keeps handing out while it withholds the later
+ * one. The broker names the pair on both rows (`duplicate_of`, or only
+ * `duplicate_reason` when the other is another workspace's) and puts only the
+ * withheld one in `blocked_by`; a row another account's withheld block points
+ * at is kept too, for a broker that names the pair on one row only. Returns
+ * the other half's name, or null when it is not in this read -- another
+ * workspace's account is never named (BGD, Q2) -- and undefined when this
+ * account is not a kept half.
+ */
+export function keptOf(
+  a: PoolAccount,
+  accounts: readonly PoolAccount[],
+  names: ReadonlyMap<string, string>,
+): string | null | undefined {
+  if (blocksOf(a).some(isDuplicateBlock)) return undefined
+  const twin = accounts.find(
+    (o) => o.account_id !== a.account_id && blocksOf(o).some((b) => isDuplicateBlock(b) && b.duplicate_of === a.account_id),
+  )
+  if (twin !== undefined) return names.get(twin.account_id) ?? null
+  if (a.duplicate_of) return names.get(a.duplicate_of) ?? null
+  if (a.duplicate_reason) return null
+  return undefined
 }
