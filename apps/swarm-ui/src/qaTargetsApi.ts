@@ -55,6 +55,9 @@ export const QA_LINK_INVALID = 'qa_credential_link_invalid'
 /** The API's code for the QA secret it could not read or write: raised after the link was consumed. */
 const QA_CREDENTIAL_UNAVAILABLE = 'qa_credential_unavailable'
 
+/** `qatargets.SECRET_FULL`: the 422 `_write_values` raises at the write, after the link was consumed. */
+const QA_SECRET_FULL = 'qa_secret_full'
+
 export type HostState = 'pending' | 'approved' | 'revoked'
 
 /** `swarm_api.qaspec.FLOW_BROWSER_TOOLS`, the default first. */
@@ -355,15 +358,18 @@ export function qaCredentialLinkFrom(pathname: string, search: string): QaLink |
  * order (and `set_challenge_bypass`'s, the same): the entry, the target's
  * sign-in or the value's shape, then `consume_link`, then the secret store,
  * then the record. A success consumed it; `qa_credential_link_invalid` is a
- * link that was dead, or is for another entry or field; the store's 503
- * comes only after the link was consumed. Every other refusal (a 422, a
+ * link that was dead, or is for another entry or field; the store's 503,
+ * and the 422 whose `detail.reason` is `qa_secret_full` (the tenant's map
+ * would pass 56 KiB), come only after the link was consumed. Every other refusal (a 422, a
  * missing entry, a 5xx with no code, no answer at all) came before the link
  * was checked or cannot say, and the link is kept: a second save of a link
  * that was in fact spent is refused as invalid, and dropped then.
  */
 export function linkSpent(r: Result<unknown>): boolean {
   if (r.status !== 'error') return true
-  return r.error.code === QA_LINK_INVALID || r.error.code === QA_CREDENTIAL_UNAVAILABLE
+  if (r.error.code === QA_LINK_INVALID || r.error.code === QA_CREDENTIAL_UNAVAILABLE) return true
+  const detail = r.error.detail
+  return typeof detail === 'object' && detail !== null && (detail as { reason?: unknown }).reason === QA_SECRET_FULL
 }
 
 /** The token in a minted link's `path`, held by the caller in memory and never drawn. */

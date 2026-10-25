@@ -443,6 +443,19 @@ describe('QA targets: the link\u2019s entry and a refusal that leaves the link u
     expect(puts(calls).length).toBe(1)
   })
 
+  it('a 422 the API raises at the write, after the link was consumed (`qa_secret_full`), drops the token', async () => {
+    const token = runtimeValue()
+    const { calls, form } = await openAt(`/qa-targets/${LOGIN}/credential?t=${token}&environment=b`, () => ({
+      status: 422,
+      body: { code: 'validation_failed', message: "the tenant's QA secret is full", detail: { reason: 'qa_secret_full' } },
+    }))
+    fill(form)
+    fireEvent.submit(form)
+    // MUTATION: read every 422 as before the link and this says the link still works.
+    await waitFor(() => expect(visible(document.body)).toContain('The link is used; ask for a new one to try again.'), WAIT)
+    expect(puts(calls).length).toBe(1)
+  })
+
   it('a challenge-bypass link opens its value form and sends the value with the link\u2019s token and entry', async () => {
     const token = runtimeValue()
     const { calls, form } = await openAt(`/qa-targets/${LOGIN}/challenge-bypass?t=${token}&environment=b`)
