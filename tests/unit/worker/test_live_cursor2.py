@@ -35,7 +35,7 @@ import asyncio
 
 from agent_worker.livegate import pointer, rfb
 
-from test_live_rfb import CURSOR, Gate, _NOVNC_RGBX, _frame, _rgbx_at, _unmasking
+from test_live_rfb import CURSOR, Gate, _NOVNC_RGBX, _frame, _rgbx_at
 
 #: The arrow as the person must see it: `X` black outline, `.` white fill.
 GOLDEN = (
@@ -95,7 +95,7 @@ def novnc_decode(w: int, h: int, data: bytes) -> list[list[tuple[int, int, int, 
 
 
 async def _cursor_rect(gate: Gate) -> tuple[int, int, int, int, bytes]:
-    gate.hub.publish(rfb.masked(_frame(), _unmasking()))
+    gate.hub.publish(_frame())
     viewer = await gate.connect("person-1", encodings=(0, rfb.ENCODING_DESKTOP_SIZE, CURSOR))
     viewer.set_pixel_format(**_NOVNC_RGBX)
     viewer.request(incremental=False)
@@ -159,7 +159,7 @@ def test_the_measured_hairline_is_the_arrows_alpha_left_up_filtered() -> None:
 def test_a_move_with_no_button_is_injected_counted_and_moves_the_painted_pointer() -> None:
     async def main() -> None:
         gate = Gate()
-        gate.hub.publish(rfb.masked(_frame(), _unmasking()))
+        gate.hub.publish(_frame())
         watcher = await gate.connect("watcher", encodings=(0, CURSOR))
         watcher.set_pixel_format(**_NOVNC_RGBX)
         person = await gate.connect("person-1", encodings=(0, CURSOR))
