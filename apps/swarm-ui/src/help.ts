@@ -1437,13 +1437,15 @@ const SPECS: Record<TopicId, TopicSpec> = {
 
   'accounts-table-shape': {
     group: 'an-account',
-    title: 'The table is the shape the command line prints',
+    title: 'The page answers first, then ranks the accounts',
     short:
-      'Same columns, same order, same figures, same tilde, same meanings. If you read that in a terminal, this is the same line. Every extra fact lives in the row you open, so the table you scan never changes shape.',
+      'The page opens on how many accounts can take a new agent, which one frees first and when, and how many agents wait. The table under it is ranked by when each account can take one: those that can now, then those whose window clears at a known time, soonest first, then those that free when an agent finishes.',
     long: [
-      'Two tools that answer the same question in two shapes make a person translate between them under pressure.',
-      'So the columns are fixed and the row is where detail goes. A row that grew a column for a special case would change the shape of every other row.',
-      'The count over the Accounts table is part of the same promise: it says how many documents were read and how many could not be, because a row count computed over a partial read is not a count.',
+      'On 2026-10-24 the page read “7 accounts · 7 available” while 28 agents waited: every account was under its floor, and “available” only meant “not paused”. The verdict at the top is the broker’s own answer for each account, so it cannot say plenty while nothing can be handed out.',
+      'Each row says in words what blocks the account and the floor it is held to, and draws both windows against that floor as a tick. A window that has reset reads “reset” with nothing read since, never its old figure.',
+      'The floors are 15% left on the 5-hour window and 5% on the 7-day one. A reading older than 30 minutes counts at half, an account takes at most its agent cap (6 unless its owner set another), and a new account takes one agent until its first reading.',
+      'The forecast takes each subscription’s pace from this week’s use over the hours the week has run, and says when the pool goes dark and when it comes back. Laptop sessions spend the same windows, so it can go dark sooner than it says.',
+      'The count over the table still says how many documents were read and how many could not be, because a count computed over a partial read is not a count.',
     ],
   },
 
@@ -1451,11 +1453,11 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'an-account',
     title: 'There is no amber band, deliberately',
     short:
-      'Any threshold between "fine" and "getting full" would be a number invented in this browser. The platform’s own floor lives in the broker and nothing checks that a copy of it here still matches. The one treatment that is a fact is a window that is fully spent.',
+      'Any threshold between "fine" and "getting full" would be a number invented in this browser. A window is drawn red only when the broker itself says that window blocks the account, under its floor; short of that the bar shows the measurement.',
     long: [
       'A warning colour is a claim about a threshold. A threshold nobody published is a threshold this console made up.',
-      'The broker decides what it will and will not assign against, and it does not publish that figure to the console. A copy of it in the console would drift in silence.',
-      'So the bar shows the measurement and marks only the condition that is not a judgement: spent is spent.',
+      'The broker decides what it will and will not assign against, and names each window that blocks an account with the floor it is held to. The console draws that answer rather than a copy of the rule, which would drift in silence.',
+      'So the bar shows the measurement, the tick shows the floor, and red marks only the broker’s own verdict. In the chosen account’s tiles, spent is still the one fact drawn bad.',
     ],
   },
 
@@ -2142,7 +2144,7 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'accounts-table-shape': {
     subject: 'The accounts table',
-    act: { say: 'Open a row for everything the table does not show.', at: 'capacity/accounts' },
+    act: { say: 'Read the verdict first; open an account for its controls and everything the row does not show.', at: 'capacity/accounts' },
   },
   'no-amber-band': {
     subject: 'No amber band',

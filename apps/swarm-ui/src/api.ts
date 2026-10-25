@@ -1,3 +1,4 @@
+import type { PoolFields } from './accountsPool'
 import { noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
@@ -5625,7 +5626,13 @@ export async function setAccountLending(
  * it was parked. Local to this file and Accounts.tsx until the field moves
  * into `Account` in types.ts.
  */
-export type ServedAccount = Account & { model_classes?: string[] }
+/**
+ * `account_to_api` as served, beyond `types.ts` `Account`: the classes it
+ * serves, and the pool's answer per account (#2222: `can_take_new_agent`,
+ * `blocked_by`, `next_eligible_at`, `max_agents`, the organisation and the
+ * duplicate marks), typed in accountsPool.ts.
+ */
+export type ServedAccount = Account & PoolFields & { model_classes?: string[] }
 
 /**
  * `PUT /v1/accounts/{id}/model-classes`. The whole list, not a delta, exactly
@@ -5768,6 +5775,15 @@ function fixtureAccount(
 let fixtureAccounts: ServedAccount[] = [
   fixtureAccount('u-bogdan', 'primary', {
     assigned: 2,
+    // THE POOL'S ANSWER (#2222), on every row: can it take a new agent, what
+    // stops it, and when that clears. One of each group the page ranks by.
+    max_agents: 6,
+    can_take_new_agent: true,
+    blocked_by: [],
+    next_eligible_at: null,
+    organisation: { name: 'Example', plan: 'Team' },
+    duplicate_of: 'u-bogdan:team-copy',
+    duplicate_reason: 'registered on the same organisation as u-bogdan:team-copy',
     windows: {
       five_hour: { utilization: 0.41, resets_at: ISO(2 * 3600_000 + 51 * 60_000), reset: false },
       seven_day: { utilization: 0.63, resets_at: ISO(70 * 3600_000), reset: false },
@@ -5778,6 +5794,15 @@ let fixtureAccounts: ServedAccount[] = [
     // row is marked `~` and nothing on it may be read as current.
     observed_at: ISO(-2 * 3600_000),
     stale: true,
+    // 12% left on its five-hour window, counted at half because the reading
+    // is old: under the 15% floor until a fresh reading or the reset.
+    max_agents: 6,
+    can_take_new_agent: false,
+    blocked_by: [
+      { window: 'five_hour', used: 0.88, floor: 0.15, resets_at: ISO(3600_000 + 43 * 60_000), aged_reading: true },
+    ],
+    next_eligible_at: ISO(3600_000 + 43 * 60_000),
+    organisation: null,
     windows: {
       // A five-hour window resets within five hours (QAFIX6-FIXTURE f, run 6
       // overview-automate-016): 19h 43m read as a window no provider has.
@@ -5788,6 +5813,11 @@ let fixtureAccounts: ServedAccount[] = [
   fixtureAccount('u-bogdan', 'weekly-burn', {
     state: 'PAUSED',
     reason: 'held back for the release run on Monday',
+    max_agents: 6,
+    can_take_new_agent: false,
+    blocked_by: [],
+    next_eligible_at: null,
+    organisation: { name: 'Personal', plan: 'Max' },
     windows: {
       // Already past its reset: the figure describes a window that has refilled.
       five_hour: { utilization: 0.97, resets_at: ISO(-6 * 60_000), reset: true },
@@ -5796,6 +5826,11 @@ let fixtureAccounts: ServedAccount[] = [
   }),
   fixtureAccount('u-bogdan', 'never-polled', {
     // Registered, never observed. Utilisation is UNKNOWN, emphatically not 0%.
+    // It takes one agent until its first reading (BGD, "One until measured").
+    max_agents: 6,
+    can_take_new_agent: true,
+    blocked_by: [],
+    next_eligible_at: null,
     observed_at: null,
     stale: true,
     windows: {},
@@ -5808,6 +5843,10 @@ let fixtureAccounts: ServedAccount[] = [
     state: 'REAUTH_REQUIRED',
     reason: 'refresh failed: reauth_required',
     lend_to: ['eng'],
+    max_agents: 6,
+    can_take_new_agent: false,
+    blocked_by: [],
+    next_eligible_at: null,
     observed_at: ISO(-3 * 86_400_000),
     stale: true,
     windows: {
@@ -5827,9 +5866,68 @@ let fixtureAccounts: ServedAccount[] = [
     // the treatment cannot ship unlooked-at.
     unreadable_by: ['u-bogdan'],
     unreadable_now: ['u-bogdan'],
+    // The broker's answer is for the owner; this tenant is skipped all the same.
+    max_agents: 6,
+    can_take_new_agent: true,
+    blocked_by: [],
+    next_eligible_at: null,
     windows: {
       // Only one window came back. The 7D column says so rather than showing 0%.
       five_hour: { utilization: 0.56, resets_at: ISO(3600_000 + 12 * 60_000), reset: false },
+    },
+  }),
+  // THE GROUPS #2222's PAGE RANKS BY, one row each: a five-hour floor that
+  // clears soon, a weekly floor that clears in days, a full account, and the
+  // later registration of one subscription, withheld.
+  fixtureAccount('u-bogdan', 'five-hour-floor', {
+    max_agents: 6,
+    can_take_new_agent: false,
+    blocked_by: [{ window: 'five_hour', used: 0.92, floor: 0.15, resets_at: ISO(40 * 60_000), aged_reading: false }],
+    next_eligible_at: ISO(40 * 60_000),
+    organisation: { name: 'Example', plan: 'Team' },
+    windows: {
+      five_hour: { utilization: 0.92, resets_at: ISO(40 * 60_000), reset: false },
+      seven_day: { utilization: 0.41, resets_at: ISO(4 * 86_400_000 + 3 * 3600_000), reset: false },
+    },
+  }),
+  fixtureAccount('u-bogdan', 'weekly-floor', {
+    max_agents: 6,
+    can_take_new_agent: false,
+    blocked_by: [{ window: 'seven_day', used: 0.97, floor: 0.05, resets_at: ISO(2 * 86_400_000 + 21 * 3600_000), aged_reading: false }],
+    next_eligible_at: ISO(2 * 86_400_000 + 21 * 3600_000),
+    organisation: { name: 'Example', plan: 'Team' },
+    windows: {
+      five_hour: { utilization: 0.31, resets_at: ISO(-3 * 3600_000), reset: true },
+      seven_day: { utilization: 0.97, resets_at: ISO(2 * 86_400_000 + 21 * 3600_000), reset: false },
+      // A window this console does not know by name: listed, held to the default floor.
+      harbor_lantern: { utilization: 0.1, resets_at: ISO(-9 * 86_400_000), reset: true },
+    },
+  }),
+  fixtureAccount('u-bogdan', 'full-six', {
+    assigned: 6,
+    max_agents: 6,
+    can_take_new_agent: false,
+    blocked_by: [{ cap: 6, max_agents: 6 }],
+    next_eligible_at: null,
+    organisation: { name: 'Example', plan: 'Team' },
+    lend_to: ['smoke'],
+    windows: {
+      five_hour: { utilization: 0.52, resets_at: ISO(4 * 3600_000 + 39 * 60_000), reset: false },
+      seven_day: { utilization: 0.71, resets_at: ISO(2 * 86_400_000 + 6 * 3600_000), reset: false },
+    },
+  }),
+  fixtureAccount('u-bogdan', 'team-copy', {
+    max_agents: 6,
+    can_take_new_agent: false,
+    blocked_by: [{ duplicate_of: 'u-bogdan:primary', reason: 'registered on the same organisation as u-bogdan:primary' }],
+    next_eligible_at: null,
+    organisation: { name: 'Example', plan: 'Team' },
+    duplicate_of: 'u-bogdan:primary',
+    duplicate_reason: 'registered on the same organisation as u-bogdan:primary',
+    last_assigned_at: null,
+    windows: {
+      five_hour: { utilization: 0.41, resets_at: ISO(2 * 3600_000 + 51 * 60_000), reset: false },
+      seven_day: { utilization: 0.63, resets_at: ISO(70 * 3600_000), reset: false },
     },
   }),
 ]
