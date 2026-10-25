@@ -383,6 +383,16 @@ describe('the Timeline', () => {
     expect(window.location.hash).toBe('#capacity/accounts?view=timeline')
   })
 
+  it('keeps the view in the address an account writes when the Timeline came from the browser’s memory', async () => {
+    // Arriving from the sidebar: a bare address, the Timeline from storage.
+    window.localStorage.setItem(lanes.VIEW_KEY, 'timeline')
+    window.history.replaceState(null, '', '/#capacity/accounts')
+    await mount(b3(Date.now()))
+    await waitFor(() => expect(document.querySelector('.acct-tl')).not.toBeNull(), WAIT)
+    fireEvent.click(document.querySelector<HTMLButtonElement>('.acct-tl-open[data-account="eng:saga-team"]')!)
+    expect(window.location.hash).toBe('#capacity/accounts?account=eng%3Asaga-team&view=timeline')
+  })
+
   it('draws the empty pool as B6: no lanes, the add form in the first lane, one heading', async () => {
     window.history.replaceState(null, '', '/#capacity/accounts?view=timeline')
     await mount([])
