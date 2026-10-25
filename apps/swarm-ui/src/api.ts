@@ -8,7 +8,7 @@ import {
   type HealthRead,
   type HealthStatus,
   type PoolHealth,
-} from './accountHealth'
+} from './accountHealthModel'
 import { noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
@@ -6027,6 +6027,7 @@ async function fixtureAccountsBoard(): Promise<Result<AccountsBoard>> {
 export interface AccountHealthBoard {
   page: AccountsPage
   health: HealthRead
+  /** When the reads were made: the page's one clock ("now", "ago", open or closed). */
   readAt: number
 }
 
@@ -6078,14 +6079,14 @@ function fixtureAccountHealth(): PoolHealth {
   const top = Math.floor(FIXTURE_NOW / H) * H
   type Ev = [number, HealthKind, { w?: string; r?: number; m?: string; t?: string }?]
   const plan: Record<string, Ev[]> = {
-    'u-bogdan:primary': [[-50 * H, 'network', { m: 'connect ECONNRESET api.anthropic.com:443' }], [-98 * H, 'overloaded']],
+    'u-bogdan:primary': [[-50 * H, 'network', { m: 'the connection to the provider was reset' }], [-98 * H, 'overloaded']],
     'u-bogdan:overflow': [
       ...Array.from({ length: 9 }, (_, i): Ev => [-(40 - i * 4) * M, i % 3 === 0 ? 'server_error' : 'overloaded']),
       [-30 * H, 'overloaded'], [-30 * H + 8 * M, 'overloaded'],
     ],
     'u-bogdan:weekly-burn': [
       [-3 * H, 'rate_limit', { w: 'seven_day', r: 20 * H }],
-      [-2 * H, 'assign_refused', { w: 'seven_day', m: 'not assigned: window under its floor' }],
+      [-2 * H, 'assign_refused', { w: 'seven_day', m: 'not assigned: its 7-day window is under its floor' }],
       [-27 * H, 'exhausted'],
     ],
     'u-bogdan:five-hour-floor': [
@@ -6095,12 +6096,12 @@ function fixtureAccountHealth(): PoolHealth {
       [-120 * H, 'rate_limit', { w: 'five_hour', r: -117 * H }],
     ],
     'eng:shared': [
-      [-30 * H, 'refresh_failed', { m: 'refresh failed: invalid_grant · credential [redacted]' }],
-      [-70 * M, 'refresh_failed', { m: 'refresh failed: invalid_grant · credential [redacted]' }],
-      [-62 * M, 'auth', { m: '401 authentication_error: OAuth access expired · credential [redacted]' }],
-      [-61 * M, 'reauth', { m: 'marked reauth_needed by the worker after a 401' }],
-      [-40 * M, 'assign_refused', { m: 'not assigned: account marked reauth_needed' }],
-      [-12 * M, 'assign_refused', { m: 'not assigned: account marked reauth_needed' }],
+      [-30 * H, 'refresh_failed', { m: 'the credential refresh was refused · credential [redacted]' }],
+      [-70 * M, 'refresh_failed', { m: 'the credential refresh was refused · credential [redacted]' }],
+      [-62 * M, 'auth', { m: '401 from the provider: the sign-in expired · credential [redacted]' }],
+      [-61 * M, 'reauth', { m: 'marked as needing re-auth by the worker after a 401' }],
+      [-40 * M, 'assign_refused', { m: 'not assigned: the account needs re-auth' }],
+      [-12 * M, 'assign_refused', { m: 'not assigned: the account needs re-auth' }],
     ],
     'u-bogdan:full-six': [[-140 * H, 'network', { m: 'read timeout after 600 s, stream closed' }]],
   }
@@ -6118,7 +6119,7 @@ function fixtureAccountHealth(): PoolHealth {
         task_id: `task_${a.label.replace(/[^a-z0-9]/g, '')}${Math.abs(dt) % 9973}`,
         window: o.w ?? null,
         reset_at: o.r === undefined ? null : ISO(o.r),
-        message: o.m ?? (kind === 'rate_limit' ? 'rate_limit_event status=rejected' : kind === 'overloaded' ? '529 overloaded_error: Overloaded' : kind === 'server_error' ? '503 service unavailable, retry later' : kind === 'exhausted' ? 'PROVIDER_QUOTA_EXHAUSTED · parked at checkpoint 4, capacity released' : ''),
+        message: o.m ?? (kind === 'rate_limit' ? 'the provider rejected a request at its rate limit' : kind === 'overloaded' ? '529 from the provider: overloaded' : kind === 'server_error' ? '503 service unavailable, retry later' : kind === 'exhausted' ? 'quota exhausted · parked at checkpoint 4, capacity released' : ''),
         own: true,
       }))
       .sort((x, y) => Date.parse(y.at) - Date.parse(x.at))
@@ -6173,7 +6174,10 @@ async function fixtureAccountHealthBoard(): Promise<Result<AccountHealthBoard>> 
         unreadable_document_count: 0,
       },
       health: { kind: 'ok', pool },
-      readAt: Date.now(),
+      // The fixture's events are dated off FIXTURE_NOW, so that is when it was
+      // read: the page's clock is the read's, and a real clock would show every
+      // limit as long cleared and every incident closed.
+      readAt: FIXTURE_NOW,
     },
   }
 }

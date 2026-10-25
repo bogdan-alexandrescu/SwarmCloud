@@ -26,7 +26,7 @@ import {
   type HealthKind,
   type HealthStatus,
   type KindCounts,
-} from '../accountHealth'
+} from '../accountHealthModel'
 
 afterEach(cleanup)
 

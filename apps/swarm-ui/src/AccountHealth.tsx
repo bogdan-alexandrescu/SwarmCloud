@@ -19,7 +19,7 @@
 // F2, one account's health, is A's side-sheet section (ACCOUNT-HEALTH-SHEET):
 // every row here opens that account's sheet on Accounts.
 //
-// The arithmetic is in accountHealth.ts; this file draws it.
+// The arithmetic is in accountHealthModel.ts; this file draws it.
 
 import { useState, type ReactNode } from 'react'
 
@@ -60,8 +60,10 @@ import {
   type Incident,
   type LaneMark,
   type StatusCell,
-} from './accountHealth'
+} from './accountHealthModel'
 import { verdictOf, type PoolAccount } from './accountsPool'
+import { HelpLinks } from './HelpCard'
+import type { TopicId } from './help'
 import { loadAccountHealthBoard, type AccountHealthBoard } from './api'
 import { capacityPoll, paneHref, usePhoneTables } from './capacityPoll'
 import { Screen } from './Shell'
@@ -80,16 +82,22 @@ export function sheetHref(accountId: string): string {
   return paneHref('capacity/accounts', { account: accountId })
 }
 
+/**
+ * The page's help, as a footer index rather than a `?` after the title: the
+ * console's glyph count is capped (B7.4, `tests/help.test.ts`), and a new
+ * screen explains itself through the footer index before it takes a glyph.
+ */
+const HEALTH_TOPICS: readonly TopicId[] = ['account-health', 'absent-vs-zero']
+
 export function AccountHealthScreen() {
   const phone = usePhoneTables()
   return (
     <Screen
       title="Account health"
-      help="account-health"
       load={loadAccountHealthBoard}
       pollMs={capacityPoll(ACCOUNT_HEALTH_POLL_MS)}
     >
-      {(b) => <AccountHealthBody board={b} now={Date.now()} phone={phone} />}
+      {(b) => <AccountHealthBody board={b} now={b.readAt} phone={phone} />}
     </Screen>
   )
 }
@@ -139,6 +147,7 @@ function DesktopBody({ m }: { m: Model }) {
       <Tiles m={m} />
       <AccountList m={m} />
       <Timeline m={m} />
+      <HelpLinks topics={HEALTH_TOPICS} />
     </div>
   )
 }
@@ -802,6 +811,7 @@ function PhoneBody({ m }: { m: Model }) {
           <Timeline m={m} />
         </>
       )}
+      <HelpLinks topics={HEALTH_TOPICS} />
     </div>
   )
 }

@@ -22,7 +22,7 @@ import {
   type HealthEvent,
   type HealthKind,
   type PoolHealth,
-} from '../accountHealth'
+} from '../accountHealthModel'
 
 const NOW = Date.UTC(2026, 9, 25, 7, 10)
 const MIN = 60_000
