@@ -160,7 +160,8 @@ def test_every_refresh_carries_the_organisation_it_ran_on():
 
     old = Credential("a", "r", NOW)
     fresh = refresh(old, _Exchange(), now=NOW)
-    assert fresh.organisation == Organisation(organisation_identity(org_id), "Saga", "Team")
+    assert (fresh.organisation.identity, fresh.organisation.name, fresh.organisation.plan) == (
+        organisation_identity(org_id), "Saga", "Team")
 
 
 # --------------------------------------------------------------------------
@@ -246,11 +247,13 @@ def test_the_exchange_answer_names_the_organisation_and_plan_it_registered(broke
 def test_a_second_add_on_the_same_organisation_is_refused_naming_the_existing_label(
     broker_app, broker_client
 ):
-    org_id = _org_id()
-    assert _add(broker_client, broker_app, _token_payload(org_id), label="saga-personal").status_code == 201
+    # One seat (#2282): a second seat of the organisation registers, see test_account_seat.
+    org_id, login = _org_id(), _login()
+    assert _add(broker_client, broker_app, _token_payload(org_id, login=login),
+                label="saga-personal").status_code == 201
     secrets_before = dict(broker_app.state.secret_store.created)
 
-    again = _add(broker_client, broker_app, _token_payload(org_id), label="saga-team")
+    again = _add(broker_client, broker_app, _token_payload(org_id, login=login), label="saga-team")
 
     # MUTATION: removing `refuse_duplicate_organisation` registers the subscription twice.
     assert again.status_code == 422, again.text
@@ -266,9 +269,11 @@ def test_another_owner_on_the_same_organisation_is_refused_naming_nothing_of_the
     broker_app, broker_client
 ):
     """BGD, 2026-10-24 17:26Z (Q2): "Name it only within the same tenant"."""
-    org_id = _org_id()
-    assert _add(broker_client, broker_app, _token_payload(org_id), label="mine").status_code == 201
-    other = _add(broker_client, broker_app, _token_payload(org_id), owner=RESEARCH, label="theirs")
+    org_id, login = _org_id(), _login()
+    assert _add(broker_client, broker_app, _token_payload(org_id, login=login),
+                label="mine").status_code == 201
+    other = _add(broker_client, broker_app, _token_payload(org_id, login=login),
+                 owner=RESEARCH, label="theirs")
     assert other.status_code == 422, other.text
     message = other.json()["message"]
     assert "already registered in another workspace" in message
@@ -276,7 +281,8 @@ def test_another_owner_on_the_same_organisation_is_refused_naming_nothing_of_the
     for foreign in ("mine", "eng:", "eng ", organisation_identity(org_id), org_id, "Personal"):
         assert foreign not in other.text, foreign
     # The same add inside eng names the label, as before.
-    same = _add(broker_client, broker_app, _token_payload(org_id), owner=ENG, label="again")
+    same = _add(broker_client, broker_app, _token_payload(org_id, login=login), owner=ENG,
+                label="again")
     assert same.status_code == 422 and "mine" in same.json()["message"]
 
 
@@ -546,10 +552,10 @@ def test_swarm_api_names_the_organisation_and_carries_the_refusal(
         base_url="https://broker.invalid", audience="https://broker.invalid",
         transport=_Bridge(broker_client), tokens=_Token())
     api = TestClient(app, raise_server_exceptions=False)
-    org_id = _org_id()
+    org_id, login = _org_id(), _login()
 
     def add(label):
-        broker_app.state.token_endpoint.next = _token_payload(org_id)
+        broker_app.state.token_endpoint.next = _token_payload(org_id, login=login)
         r = api.post("/v1/accounts/authorize", headers=auth_header("alice"), json={"label": label})
         assert r.status_code == 200, r.text
         return api.post("/v1/accounts/exchange", headers=auth_header("alice"),

@@ -102,16 +102,28 @@ class Organisation:
     id itself is never stored, logged or returned. `name` and `plan` are the
     provider's display text, not secret, and are what an answer shows so a
     sign-in that authorised the wrong organisation is visible at once.
+
+    AND WHICH SEAT OF IT (#2282). On a Claude Team organisation every seat --
+    every login on it -- has its own limits, so the organisation alone is one
+    subscription only on a personal plan. `seat` is the login's own uuid
+    (`account.uuid` in the token or profile answer), as opaque as `identity`
+    (`seat_identity`): never the uuid, never the email address. None is an
+    answer that did not name the login. Two pool accounts are one
+    subscription when they share `identity` AND `seat` (`accounts.duplicates`).
     """
 
     identity: str
     name: str | None = None
     plan: str | None = None
+    seat: str | None = None
 
 
 #: Hashed in with the id, and carried on the digest, so an identity can never be
 #: mistaken for -- or confirmed against -- a bare SHA-256 of some id.
 ORGANISATION_IDENTITY_PREFIX = "anthropic-org"
+#: The same for a seat (#2282), under its own prefix, so a login's uuid and an
+#: organisation's can never hash to one identity.
+SEAT_IDENTITY_PREFIX = "anthropic-seat"
 
 #: The profile endpoint Claude Code reads its own subscription type from. Read
 #: only when the token response did not already say which organisation and plan
@@ -141,6 +153,24 @@ def organisation_identity(organisation_id: str) -> str:
     return f"{ORGANISATION_IDENTITY_PREFIX}-sha256:{digest}"
 
 
+def seat_identity(account_uuid: str) -> str:
+    """The opaque identity of a provider login (a seat), #2282."""
+    digest = hashlib.sha256(f"{SEAT_IDENTITY_PREFIX}:{account_uuid}".encode("utf-8")).hexdigest()
+    return f"{SEAT_IDENTITY_PREFIX}-sha256:{digest}"
+
+
+def _seat(payload: dict[str, Any]) -> str | None:
+    """The seat an answer names: its `account.uuid`, hashed, or None. Nothing
+    else of the login -- its email address least of all -- is read."""
+    login = payload.get("account")
+    if not isinstance(login, dict):
+        return None
+    uuid = login.get("uuid")
+    if not isinstance(uuid, str) or not uuid.strip():
+        return None
+    return seat_identity(uuid.strip())
+
+
 def _organisation_text(raw: Any) -> str | None:
     if not isinstance(raw, str):
         return None
@@ -164,8 +194,9 @@ def organisation_from_payload(payload: Any) -> Organisation | None:
     Both answers carry it as `organization: {uuid, name, ...}`; the profile's
     also carries `organization_type`, the plan. An answer with no organisation
     uuid is None -- never an identity built from the login, which is exactly
-    the confusion this exists to remove. The login (`account`, with its email
-    address) is not read at all.
+    the confusion this exists to remove. Of the login (`account`) only its
+    uuid is read, as the SEAT within the organisation (#2282), hashed; its
+    email address is not read at all.
     """
     if not isinstance(payload, dict):
         return None
@@ -179,6 +210,7 @@ def organisation_from_payload(payload: Any) -> Organisation | None:
         identity=organisation_identity(uuid.strip()),
         name=_organisation_text(organisation.get("name")),
         plan=_plan(organisation),
+        seat=_seat(payload),
     )
 
 
@@ -186,7 +218,8 @@ def read_organisation(
     payload: Any, endpoint: Any, access_token: str
 ) -> Organisation | None:
     """The organisation behind a credential, from the token response and, where
-    that leaves the identity or the plan unsaid, the profile endpoint.
+    that leaves the identity, the plan or the seat (#2282) unsaid, the
+    profile endpoint.
 
     NEVER RAISES. An add or a refresh must not fail because a descriptive
     lookup did: the identity is how a duplicate is found, and an account with
@@ -195,7 +228,7 @@ def read_organisation(
     endpoint that offers one (`HttpTokenEndpoint.profile`).
     """
     found = organisation_from_payload(payload)
-    if found is not None and found.plan is not None:
+    if found is not None and found.plan is not None and found.seat is not None:
         return found
     profile = getattr(endpoint, "profile", None)
     if not callable(profile) or not access_token:
@@ -217,6 +250,7 @@ def read_organisation(
         identity=found.identity,
         name=found.name or profiled.name,
         plan=found.plan or profiled.plan,
+        seat=found.seat or profiled.seat,
     )
 
 

@@ -894,13 +894,22 @@ def organisation_line(account_id: str, organisation: Organisation | None) -> str
 def refuse_duplicate_organisation(
     accounts: Any, organisation: Organisation | None, account_id: str, owner_tenant: str
 ) -> None:
-    """Refuse an add whose organisation another account already runs on (#2222).
+    """Refuse an add whose organisation AND seat another account already runs
+    on (#2222, #2282).
 
-    ANY LABEL AND ANY OWNER: one organisation is one subscription, and two
-    pool accounts on it count its quota twice and could hand it twice the
-    agents the cap allows. The account being REPLACED is not "another": a
-    re-sign-in of the same organisation onto the same account is the normal
-    way to replace a credential. Raised before any secret is written.
+    ANY LABEL AND ANY OWNER: one seat of one organisation is one subscription,
+    and two pool accounts on it count its quota twice and could hand it twice
+    the agents the cap allows. The account being REPLACED is not "another": a
+    re-sign-in of the same seat onto the same account is the normal way to
+    replace a credential. Raised before any secret is written.
+
+    ONLY THE SAME SEAT (BGD, 2026-10-25): a second seat of a Team
+    organisation has its own limits and registers normally. A sign-in whose
+    seat the provider did not name, or an existing account whose seat is not
+    recorded yet, is never refused on the organisation alone: the broker's
+    sweep pairs such accounts by identical readings (`accounts.duplicates`)
+    and withholds the newer, so a true double registration is still handed
+    out once.
 
     THE EXISTING ACCOUNT IS NAMED ONLY WITHIN `owner_tenant` (BGD, 2026-10-24
     17:26Z, "Name it only within the same tenant"). Another tenant's is
@@ -914,27 +923,33 @@ def refuse_duplicate_organisation(
             continue
         if other.organisation_id != organisation.identity:
             continue
+        seat = getattr(organisation, "seat", None)
+        if not seat or getattr(other, "seat_id", None) != seat:
+            continue
         if other.owner_tenant != owner_tenant:
             raise BrokerValidationError(
-                f"{ANOTHER_WORKSPACE}. One organisation is one subscription, so "
-                "it was not registered twice. If you meant another "
-                "organisation, select it on claude.ai and sign in again. "
+                f"{ANOTHER_WORKSPACE}. One seat is one subscription, so it "
+                "was not registered twice. If you meant another seat or "
+                "organisation, sign in to claude.ai as it and try again. "
                 "Nothing was registered."
             )
         raise BrokerValidationError(
-            f"this sign-in authorised organisation "
+            f"this sign-in authorised a seat of organisation "
             f"{organisation.name or '(unnamed)'} "
-            f"({organisation.plan or 'plan not reported'}), which is "
-            f"already registered as {other.label}. One organisation is one "
+            f"({organisation.plan or 'plan not reported'}) that is "
+            f"already registered as {other.label}. One seat is one "
             "subscription, so it was not registered twice. If you meant "
-            "another organisation, select it on claude.ai and sign in "
-            "again. Nothing was registered."
+            "another seat or organisation, sign in to claude.ai as it and "
+            "try again. Nothing was registered."
         )
 
 
 def mark_duplicates(store: Any) -> list[str]:
-    """Write `duplicate_of` on every account that shares an organisation, and
-    clear it on every account that no longer does. Returns the ids marked.
+    """Write `duplicate_of` on every account that shares a subscription -- an
+    organisation and a seat (#2282, `accounts.duplicates`) -- and clear it on
+    every account that no longer does, which is how the marks the
+    organisation-only rule wrote are lifted at the first sweep after it.
+    Returns the ids marked.
 
     Run after every refresh sweep and every add, so a pair registered before
     #2222 is found at its next exchange, and an account re-signed into its
@@ -971,7 +986,7 @@ def mark_duplicates(store: Any) -> list[str]:
         if other is not None:
             marked.append(account.account_id)
             log.warning(
-                "two pool accounts run on one organisation; only the older "
+                "two pool accounts run on one subscription; only the older "
                 "registration is handed out",
                 extra={"account_id": account.account_id, "duplicate_of": other,
                        "withheld": withheld},
@@ -2306,7 +2321,8 @@ def _sweep_account_pool(
         ],
         #: ACCOUNT IDS a running agent held, left unrefreshed this tick (#626).
         "held_deferred": [o.tenant_id for o in outcomes if o.reason == "held_deferred"],
-        #: ACCOUNT IDS on an organisation another account is also on (#2222).
+        #: ACCOUNT IDS on a subscription (organisation and seat, #2282) another
+        #: account is also on (#2222).
         "duplicates": duplicate_accounts,
     }
 
@@ -3085,7 +3101,7 @@ def create_app(
             base = secret_name(owner_tenant, label)
         except AccountError as exc:
             raise BrokerValidationError(str(exc)) from None
-        # ONE ORGANISATION, ONE ACCOUNT (#2222), refused before any secret is
+        # ONE SEAT, ONE ACCOUNT (#2222, #2282), refused before any secret is
         # written, so a refusal leaves nothing behind.
         refuse_duplicate_organisation(
             store.list(), organisation, f"{owner_tenant}:{label}", owner_tenant
