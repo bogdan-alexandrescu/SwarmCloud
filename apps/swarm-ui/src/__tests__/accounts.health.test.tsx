@@ -232,6 +232,19 @@ describe('F2 (A): one account’s health', () => {
     expect(chart.querySelector('.acct-hs-band')!.getAttribute('data-window')).toBe('five_hour')
     expect(chart.querySelectorAll('.acct-hs-bar').length).toBe(4)
     expect(s.textContent).toContain('limited: from the hit to the window’s reset')
+    // The stretch can be seen: a 3-hour stretch is ~7 px of a 436 px chart, so
+    // its shade and its solid strip are drawn at least 8 px wide, and the strip
+    // sits along the plot's top edge, after every bar, so no bar covers it.
+    const shade = chart.querySelector('.acct-hs-band > rect')!
+    expect(Number(shade.getAttribute('width'))).toBeGreaterThanOrEqual(8)
+    const marks = chart.querySelectorAll('.acct-hs-band-mark')
+    expect(marks.length).toBe(1)
+    const mark = marks[0]!
+    expect(Number(mark.getAttribute('width'))).toBeGreaterThanOrEqual(8)
+    expect(Number(mark.getAttribute('y')) + Number(mark.getAttribute('height'))).toBeLessThanOrEqual(18)
+    for (const bar of chart.querySelectorAll('.acct-hs-bar')) {
+      expect(bar.compareDocumentPosition(mark) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
 
     const list = within(s).getByRole('list', { name: 'Events, newest first' })
     const items = within(list).getAllByRole('listitem')
@@ -282,6 +295,9 @@ describe('F4 (A): empty and honest states', () => {
     expect(s.textContent).toContain('are unknown here, not zero')
     expect(s.textContent).not.toMatch(/\b0\b/)
     expect(within(s).queryByRole('img')).toBeNull()
+    // A route the deployment does not serve 404s again on a retry: the control reads Refresh.
+    expect(within(s).getByRole('button', { name: 'Refresh' })).toBeTruthy()
+    expect(within(s).queryByRole('button', { name: 'Try again' })).toBeNull()
   })
 
   it('draws a span the record did not serve as a dash, not a 0', async () => {
@@ -402,5 +418,26 @@ describe('at 390 (BGD, D’s P2)', () => {
     expect(cards[1]!.querySelector('.acct-hs-msg')!.textContent).toBe('529 overloaded_error: Overloaded')
     fireEvent.click(within(cards[1]!).getByRole('button', { name: '2 events ▾' }))
     expect(within(cards[1]!).getAllByRole('listitem').length).toBe(2)
+  })
+
+  it('folds every incident when none is open', async () => {
+    viewport(390)
+    const h: AccountHealth = {
+      ...emptyRecord(),
+      account_id: 'eng:aieng-claude1',
+      counts: { last_1h: counts(), last_24h: counts(), last_7d: counts({ overloaded: 2 }) },
+      events: [
+        ev(2 * 24 * 60, 'overloaded', { message: '529 overloaded_error: Overloaded' }),
+        ev(2 * 24 * 60 + 5, 'overloaded', { message: '529 overloaded_error: Overloaded' }),
+      ],
+    }
+    api.loadAccountHealth.mockResolvedValue(ok(h))
+    render(<SheetHealth a={account()} owned />)
+    const s = await section()
+    const cards = [...s.querySelectorAll('article.acct-hs-inc')] as HTMLElement[]
+    expect(cards.length).toBe(1)
+    expect(cards[0]!.classList.contains('is-open')).toBe(false)
+    expect(within(cards[0]!).queryAllByRole('listitem').length).toBe(0)
+    expect(within(cards[0]!).getByRole('button', { name: '2 events ▾' })).toBeTruthy()
   })
 })
