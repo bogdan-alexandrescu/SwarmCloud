@@ -1684,8 +1684,10 @@ Two approvers racing produce one transition, and the loser gets 409
   `second_person_waived_owner`, naming the approval, the schedule and the
   last editor. Nobody else reaches it, and a named list -- even one naming
   only the owner -- keeps the rule. A refusal names who may decide (the
-  owner, or the named approvers), never "another member" where no other
-  member is allowed. **The `/swarmcloud approve` comment path carries the
+  owner, or the other named approvers), never "another member" where no other
+  member is allowed, and never the refused member: a named list of the last
+  editor alone says nobody may decide until another member changes the
+  schedule's approvers. **The `/swarmcloud approve` comment path carries the
   waiver too** (owner answer 2026-10-25): the owner's comment on such a merge
   is decided exactly as the inbox's approve is, and writes the same
   `second_person_waived_owner` row beside the decision's (whose detail says

@@ -239,13 +239,13 @@ describe('one item', () => {
     )
     const detail = await loaded()
     await within(detail).findByText(
-      'only the platform owner, who may decide even as the schedule’s last editor; that decision is recorded in the audit as an owner waiver',
+      'the platform owner alone, who may decide even as the schedule’s last editor; that decision is recorded in the audit as an owner waiver',
       undefined,
       WAIT,
     )
   })
 
-  it('says an owner-only hold’s approver once, not "only by ... only" (#2259)', async () => {
+  it('says an owner-only hold’s approver once, not twice and not "only by ... only" (#2259)', async () => {
     const held = { ...item('run:run_8f2a', { kind: 'hold' }), approvers: 'owner_only', hold: { code: 'NEEDS_OWNER', approvers: 'owner_only', matched: ['.github/workflows'] } }
     await mount(
       'approval=run%3Arun_8f2a',
@@ -255,9 +255,11 @@ describe('one item', () => {
     )
     const detail = await loaded()
     const note = await within(detail).findByRole('note', undefined, WAIT)
-    // Rendered 2026-10-25: "Approved only by the platform owner only, ...".
-    expect(note.textContent).toContain('Approved by only the platform owner, who may decide even as the schedule’s last editor')
-    expect(note.textContent).not.toMatch(/only by/)
+    // Rendered 2026-10-25: "Who may approve" said the owner-only sentence and
+    // the hold's note said it again as "Approved only by the platform owner
+    // only, ...". Said once, in "Who may approve".
+    expect(detail.textContent?.split('the platform owner alone, who may decide').length).toBe(2)
+    expect(note.textContent).not.toMatch(/only by|owner only/)
   })
 
   it('asks a one-person tenant for the words its own hold names, and sends them', async () => {

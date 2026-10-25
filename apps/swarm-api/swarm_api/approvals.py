@@ -559,20 +559,26 @@ def check_gate_approver(ctx: Any, tenant_id: str, approvers: Any, *, email: str,
             raise ScheduleForbidden(
                 "second_person_required",
                 "the member who last changed this schedule's gate, scope or spec cannot approve its "
-                f"merge-tier items; {_who_may_decide(approvers, alone)}",
+                f"merge-tier items; {_who_may_decide(approvers, alone, email)}",
                 may_decide=APPROVERS_OWNER_ONLY if alone else approvers,
             )
     return None
 
 
-def _who_may_decide(approvers: Any, alone: bool) -> str:
+def _who_may_decide(approvers: Any, alone: bool, email: str) -> str:
     """The second-person refusal's last clause: who CAN decide, never a
-    person the item's approvers would refuse."""
+    person the item's approvers would refuse -- the refused member included.
+    A named list of the refused member alone leaves nobody (the rule is kept
+    for a named list, #2259), and the clause says so rather than naming them."""
     if alone:
         return ("only the platform owner may decide it, and the owner may as its last editor, "
                 "where the waiver is audited")
     if isinstance(approvers, list):
-        return "another of the schedule's named approvers must: " + ", ".join(str(n) for n in approvers)
+        others = [str(n) for n in approvers if str(n).strip().lower() != email]
+        if not others:
+            return ("the schedule's list of named approvers names only you, so nobody may decide it until "
+                    "another member changes the schedule's approvers")
+        return "another of the schedule's named approvers must: " + ", ".join(others)
     return "another member must"
 
 
