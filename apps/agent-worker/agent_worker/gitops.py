@@ -4363,6 +4363,18 @@ def replay_onto_tip(
     already the worker's (`replay_agent_commits` or the fold ran). A commit
     whose change the tip already holds is dropped. Nothing here touches the
     remote; `repo` is the worker-owned publish repository.
+
+    A two-parent merge in the span (a conflict round's merge of the default
+    branch) is dropped when its second parent is an ancestor of the tip and
+    applying it against its first parent (`cherry-pick -m 1`) leaves the
+    tip's tree as it is: the tip already holds it. Any other merge -- its
+    second parent not on the tip, a conflict there, a tree that would differ,
+    more than two parents -- is refused, so a different resolution on the tip
+    is never silently dropped and no merge is ever rewritten as a linear
+    commit. WHY (#2366, measured 2026-10-25): conflict round task_fa6637b0
+    made one merge of main while the owner merged main into the same branch by
+    hand (0626eadf); the round's merge was refused here and the round ended
+    publish_failed although the moved tip already held it.
     """
     g = [git_binary, *_NO_HOOKS, *_worker_identity(author_name, author_email)]
 
@@ -4404,8 +4416,33 @@ def replay_onto_tip(
         raise restore(f"could not move onto {tip[:12]}")
     for sha in shas:
         code, parents = run([*g, "rev-list", "--parents", "--max-count=1", sha], "replay-parents")
-        if code != 0 or len(parents.split()) != 2:
+        listed = parents.split()
+        if code != 0 or len(listed) not in (2, 3):
             raise restore(f"commit {sha[:12]} is a merge and cannot be replayed")
+        if len(listed) == 3:
+            # A merge the round made of the default branch (#2366): dropped
+            # only when its second parent is under the tip and replaying it
+            # against its first parent changes nothing there. Never written
+            # as a linear commit.
+            code, _ = run([*g, "merge-base", "--is-ancestor", listed[2], tip], "replay-merged")
+            if code != 0:
+                raise restore(
+                    f"commit {sha[:12]} is a merge and cannot be replayed: its second parent "
+                    f"{listed[2][:12]} is not on the moved tip"
+                )
+            code, _ = run([*g, "cherry-pick", "-m", "1", "--no-commit", sha], "replay-merge-pick")
+            if code != 0:
+                raise restore(
+                    f"commit {sha[:12]} is a merge and cannot be replayed, and conflicts with "
+                    "the moved tip"
+                )
+            code, tree = run([*g, "write-tree"], "replay-merge-tree")
+            if code != 0 or tree.strip() != sha_of("HEAD^{tree}", "replay-head-tree"):
+                raise restore(
+                    f"commit {sha[:12]} is a merge and cannot be replayed: the moved tip "
+                    "resolves it differently"
+                )
+            continue
         code, _ = run([*g, "cherry-pick", "--no-commit", sha], "replay-pick")
         if code != 0:
             raise restore(f"replaying commit {sha[:12]} onto {tip[:12]} conflicted")
