@@ -417,8 +417,13 @@ class ActionsSecrets:
                                       f"{quote(entry['environment'], safe='')}/secrets")
                     entry["secrets"] = self._names(token, path, mine, entry["environment"],
                                                    f"{owner}/{repo}")
-        return {"repository": repository, "environments": environments,
-                "environments_truncated": len(environments) >= MAX_ENVIRONMENTS}
+        # `repository_secrets`, not `repository`: the route serves `repository`
+        # as 'owner/repo', and a list under the same key overwrote it. The
+        # create page is served on the list itself, so a repository with no
+        # environment yet still links where a person makes one (Q4).
+        return {"repository_secrets": repository, "environments": environments,
+                "environments_truncated": len(environments) >= MAX_ENVIRONMENTS,
+                "create_url": create_environment_url(owner, repo)}
 
     def _names(self, token: _Bearer, path: str, mine: Mapping[tuple[str | None, str], dict],
                environment: str | None, repository: str) -> list[dict[str, Any]]:

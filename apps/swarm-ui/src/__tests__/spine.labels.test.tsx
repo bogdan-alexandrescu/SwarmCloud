@@ -68,13 +68,13 @@ describe('the rail names Help (#136)', () => {
 })
 
 describe('Admin pages do not repeat admin (#136)', () => {
-  it('reads Pool limits, Runner sizes, Tenants, Platform counts, People and Workspaces you admin with no admin mark (Schedules left Admin: SCHED-ONE-PAGE, 2026-10-13; Runner sizes joined beside Pool limits: SIZES-UI, part of #1689)', async () => {
+  it('reads Pool limits, Runner sizes, Tenants, Platform counts, People and roles and Workspaces you admin with no admin mark (Schedules left Admin: SCHED-ONE-PAGE, 2026-10-13; Runner sizes joined beside Pool limits: SIZES-UI, part of #1689)', async () => {
     await platformAdminShell('limits')
     await waitFor(() => expect(document.querySelectorAll('.sk-panel .sk-pk').length).toBeGreaterThan(0))
     // The pages, not the "In Automate" links under them (S1b, CONFIG-PANEL-E), in their groups' order.
     const pages = [...document.querySelectorAll('.sk-panel .sk-pk:not(.sk-pk-out)')]
     // Platform secrets joined last of the platform's: SSC-UI, part of #2158.
-    expect(pages.map((p) => p.querySelector('.sk-pl')?.textContent)).toEqual(['People', 'Workspaces you admin', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets'])
+    expect(pages.map((p) => p.querySelector('.sk-pl')?.textContent)).toEqual(['People and roles', 'Workspaces you admin', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets'])
     for (const p of pages) {
       // "Workspaces you admin" says admin in its name; what is held is the mark.
       if (p.querySelector('.sk-pl')?.textContent !== 'Workspaces you admin') expect(p.textContent ?? '').not.toMatch(/admin/i)
