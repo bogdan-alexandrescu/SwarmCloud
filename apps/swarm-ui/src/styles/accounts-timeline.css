@@ -302,21 +302,25 @@
 .acct-tl-lane.is-open > .acct-tl-words {
   box-shadow: inset 4px 0 0 var(--info);
 }
-/* The kept half of a duplicate pair (B2's twin): the same edge as the
-   withheld half, in the info tone, because the pool still hands it out. */
+/* The kept half of a duplicate pair (B2's twin): an edge like the withheld
+   half's, in the info tone, because the pool still hands it out. Dashed, so
+   it never reads as the opened lane's solid edge; an opened kept lane draws
+   the solid one over it. */
 .acct-tl-lane.is-kept > .acct-tl-words {
-  box-shadow: inset 4px 0 0 var(--info);
+  background: linear-gradient(var(--info) 50%, transparent 0) left top / 4px 8px repeat-y;
 }
 .is-kept-note {
   color: var(--info);
 }
 
-/* A full account's holds. */
+/* A held account's holds, one column: cells, the bar when there is one, then
+   the words, so every held lane lays out alike whether or not the broker
+   served a deadline. */
 .acct-tl-holds {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
   margin-top: 6px;
 }
 .acct-tl-holdcells {
@@ -337,7 +341,7 @@
    its own full-width row, so its width is a share of the track. */
 .acct-tl-holdrow {
   display: block;
-  flex: 1 0 100%;
+  align-self: stretch;
   height: 6px;
 }
 .acct-tl-holdbar {

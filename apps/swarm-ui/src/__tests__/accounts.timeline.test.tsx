@@ -16,7 +16,7 @@
 //
 // ACCOUNTS-TIMELINE-MERGE (BGD, 2026-10-25 10:05Z): a lane opens the Table's
 // side sheet (the whole screen on a phone), not a detail under the lane; a
-// full lane draws its latest hold deadline as the broker serves it, and a dash
+// held lane draws its latest hold deadline as the broker serves it, and a dash
 // with its reason when it does not; the kept half of a duplicate pair is
 // marked on its lane; a Timeline restored from the browser's memory writes
 // `?view=timeline` to the address. BREAK IT: draw the old `.acct-tl-detail`,

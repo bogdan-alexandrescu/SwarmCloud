@@ -36,6 +36,7 @@ import { accountName } from './accountName'
 import { ageOf, clearsOf } from './AccountsTable'
 import { Forecast, WAITING_HREF, type WaitRead } from './AccountsVerdict'
 import {
+  DEFAULT_MAX_AGENTS,
   FLOORS,
   blocksOf,
   canTake,
@@ -418,15 +419,16 @@ function agentsLine(a: PoolAccount, scope: string | null): string {
 }
 
 /**
- * A full account's holds: one block per agent holding it, of its cap, and a
- * bar from now to the LATEST HOLD DEADLINE the broker serves (B3/B4): the
+ * A held account's holds (any lane with an agent on it, full or not -- B3
+ * draws devops-team's at 5 of 6): one block per agent holding it, of its cap,
+ * and a bar from now to the LATEST HOLD DEADLINE the broker serves (B3/B4): the
  * latest instant any of them can still hold a slot. Labelled "latest", never
  * "expected" -- an agent that finishes sooner frees its slot sooner, and no
  * clock says when. A deadline the broker does not serve is a dash with its
  * reason (`holdDeadlineOf`); the opened account's sheet lists who holds it.
  */
-function Holds({ a, now, axis }: { a: LanedAccount; now: number; axis: AxisKind }) {
-  const max = maxAgentsOf(a) ?? a.assigned
+function Holds({ a, now, axis, full }: { a: LanedAccount; now: number; axis: AxisKind; full: boolean }) {
+  const max = maxAgentsOf(a) ?? DEFAULT_MAX_AGENTS
   const cells = Array.from({ length: Math.max(max, a.assigned) }, (_, i) => i < a.assigned)
   const deadline = holdDeadlineOf(a, now)
   return (
@@ -449,8 +451,9 @@ function Holds({ a, now, axis }: { a: LanedAccount; now: number; axis: AxisKind 
           <>
             <span className="acct-dash">—</span> {deadline.reason}
           </>
-        )}{' '}
-        · no clock: frees when one finishes
+        )}
+        {/* Only a full lane waits on an agent finishing; one with a free slot takes the next agent now. */}
+        {full && ' · no clock: frees when one finishes'}
       </span>
     </div>
   )
@@ -556,7 +559,7 @@ function Lane({
             <WindowBand key={k} a={a} b={bandOf(a, k)} now={now} axis={axis} forecast={forecast} judged={judged} />
           ))
         )}
-        {full && <Holds a={a} now={now} axis={axis} />}
+        {a.assigned > 0 && <Holds a={a} now={now} axis={axis} full={full} />}
       </div>
     </div>
   )
