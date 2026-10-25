@@ -569,8 +569,8 @@ def _who_may_decide(approvers: Any, alone: bool) -> str:
     """The second-person refusal's last clause: who CAN decide, never a
     person the item's approvers would refuse."""
     if alone:
-        return ("only the platform owner may decide it, and the owner may as its last editor "
-                "from the console's approvals inbox, where the waiver is audited")
+        return ("only the platform owner may decide it, and the owner may as its last editor, "
+                "where the waiver is audited")
     if isinstance(approvers, list):
         return "another of the schedule's named approvers must: " + ", ".join(str(n) for n in approvers)
     return "another member must"

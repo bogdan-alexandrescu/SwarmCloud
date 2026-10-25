@@ -1679,13 +1679,17 @@ Two approvers racing produce one transition, and the loser gets 409
   or the item's hold are `owner_only` -- the second-person rule would leave
   nobody: `owner_only` refuses every other member and the rule refuses the
   owner as the last editor. Measured on `apr_76e9cdc4800ea95c5609fd9b`. So
-  there the platform owner decides even as the last editor, from the
-  inbox, and the decision's transaction writes a second `schedule_audit` row,
+  there the platform owner decides even as the last editor, and the
+  decision's transaction writes a second `schedule_audit` row,
   `second_person_waived_owner`, naming the approval, the schedule and the
   last editor. Nobody else reaches it, and a named list -- even one naming
   only the owner -- keeps the rule. A refusal names who may decide (the
   owner, or the named approvers), never "another member" where no other
-  member is allowed. The `/swarmcloud approve` comment path does not waive.
+  member is allowed. **The `/swarmcloud approve` comment path carries the
+  waiver too** (owner answer 2026-10-25): the owner's comment on such a merge
+  is decided exactly as the inbox's approve is, and writes the same
+  `second_person_waived_owner` row beside the decision's (whose detail says
+  `via: github_comment`); everyone else keeps the second-person rule there.
 * **Platform admins cannot approve another tenant's work** by being admins
   (§5.3), and that includes `PLATFORM_OWNER`. An admin who is also a member
   approves as a member. So an `owner_only` item can only exist where the owner
