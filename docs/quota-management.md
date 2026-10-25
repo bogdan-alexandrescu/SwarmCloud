@@ -106,12 +106,16 @@ machinery does the rest. So no second hold was added.
 
 *"Every account the tenant may draw from"* is the set `choose()` draws from —
 owned **and** lent-to (`accounts_serving`), of the provider, in a state that
-takes new agents — and an account is *limited* while a recorded 429 has not
+takes new agents, and neither a withheld duplicate nor one this tenant found
+unreadable, since `choose()` would never hand it either (a full account and
+one awaiting its first reading are room: a hold ends, a reading arrives) — and
+an account is *limited* while a recorded 429 has not
 reached its reset or its readings block it
 (`AccountStore.every_account_limited`). When all of them are, the pool itself
 is spent, and that is the tenant's limit: AIMD halves exactly as before. Two
 accounts' 429s committing at the same instant may each see the other as not
-yet limited; the next report then halves, a lag of one report.
+yet limited; the next report then halves, a lag of one report. A health read
+that fails counts the 429 against the tenant, as before.
 
 Naming an account costs the same proof a reading or a swap does, so a tenant
 cannot name somebody else's account — or one it does not hold — to dodge its
