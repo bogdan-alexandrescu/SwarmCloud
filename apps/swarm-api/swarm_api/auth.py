@@ -275,7 +275,9 @@ class AuthContext:
     #: groups and personal workspace are offered as usual; a header naming
     #: any other non-`u-` id answers 503 `membership_unavailable` rather than
     #: `tenant_not_member`, because the unread membership could have changed
-    #: the answer.
+    #: the answer. With no header, a default the memberships could have
+    #: decided is unknown (`Authenticator._with_unread_memberships`), never
+    #: guessed.
     memberships_unread: bool = False
 
     @property
@@ -699,7 +701,31 @@ class Authenticator:
         ctx = self._authenticate(authorization, iap_assertion)
         ctx = self._with_own_service_tenant(self._with_own_workspace(ctx, tenant), tenant)
         ctx = self._with_default(ctx, tenant)
+        ctx = self._with_unread_memberships(ctx, tenant)
         return self._select_tenant(ctx, tenant)
+
+    @staticmethod
+    def _with_unread_memberships(ctx: AuthContext, requested: str | None) -> AuthContext:
+        """A headerless request whose default the unread memberships could
+        have decided acts in no guessed workspace (docs/design/
+        join-requests.md §4.4, with user-profile.md's Q9 rule).
+
+        Two cases, both only while `memberships_unread`: the stored default
+        was not among the choices (`default_ignored == "not_a_member"`), and
+        it may be a workspace joined by request; or there was no choice at
+        all, so the first membership would have been the default. Either way
+        `default_unknown` is set, and `require_known_default` answers every
+        route outside `PREFERENCE_FREE_ROUTES` 503 `membership_unavailable`
+        rather than running the work in another workspace. A request that
+        names a workspace, and every other caller, is untouched."""
+        if not ctx.memberships_unread or requested or ctx.default_unknown:
+            return ctx
+        if ctx.default_ignored == "not_a_member":
+            return replace(ctx, default_unknown=True, default_source="unavailable",
+                           default_ignored="")
+        if not ctx.tenant_choices:
+            return replace(ctx, default_unknown=True, default_source="unavailable")
+        return ctx
 
     def _with_default(self, ctx: AuthContext, requested: str | None) -> AuthContext:
         """Put the person's stored default workspace first (§4.5 steps 1-2).
@@ -1348,16 +1374,20 @@ class Authenticator:
         A FAILED READ NEVER STOPS A GROUP MEMBER (§4.4): the choices are left
         as they are and `memberships_unread` is set, which `_select_tenant`
         turns into a 503 only for a header the memberships could have
-        answered.
+        answered. So does a read that reached its bound (`cut_short`): what
+        it found is offered, and the rest is unknown.
         """
         if not self._memberships_enabled() or self._special(ctx) or not is_person(ctx.email):
             return ctx
         registered = dict(self._reachable_groups(tenant_groups))
         try:
-            counted = self._memberships.counted(  # type: ignore[union-attr]
-                ctx.email, registered)
+            read = self._memberships.read(ctx.email)  # type: ignore[union-attr]
         except MembershipUnavailable:
             return replace(ctx, memberships_unread=True)
+        # A read that reached its bound answers the tenants it saw; any other
+        # is unknown, so it is offered what it found AND marked unread.
+        ctx = replace(ctx, memberships_unread=read.cut_short)
+        counted = read.counted(registered)
         chosen = {tenant_id for tenant_id, _ in ctx.tenant_choices}
         joined = tuple(
             (tenant_id, group) for tenant_id, group in counted
@@ -2148,6 +2178,13 @@ def require_known_default(
     matched) is not on the list, so it fails closed.
     """
     if ctx.default_unknown and (route is None or route not in PREFERENCE_FREE_ROUTES):
+        if ctx.memberships_unread:
+            # The default is unknown because the platform memberships were
+            # not read (`_with_unread_memberships`), whatever the preferences
+            # said: name the read that failed.
+            raise MembershipUnavailable(
+                "your workspace memberships could not be read, and one may be your "
+                f"default workspace; retry shortly, or name a workspace with {TENANT_HEADER}")
         raise PreferencesUnavailable()
     return ctx
 
