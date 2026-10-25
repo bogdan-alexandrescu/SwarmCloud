@@ -258,7 +258,7 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
   const formOpen = isForm(at)
   return (
     <div className="pk-page sec-page">
-      <PageHead title={formOpen ? 'Set a secret' : 'Secrets'}>
+      <PageHead title="Secrets">
         <UrRefresh reads={[overview, repos]} ageOf={[overview]} />
         {!formOpen && (canManage || at.scope === 'personal') && (
           <Button kind="primary" size="sm" onClick={() => setWizard({ scope: at.scope, repo: repoId, consumer: null })}>
