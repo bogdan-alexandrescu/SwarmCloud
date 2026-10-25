@@ -12,6 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import CONFIG_CSS from '../styles/config.css?raw'
 
 type Json = Record<string, unknown>
 
@@ -242,5 +243,36 @@ describe('readingAge', () => {
     expect(readingAge(undefined, now)).toEqual({ age: null, why: 'the setup read carried no time' })
     expect(readingAge('', now)).toEqual({ age: null, why: 'the setup read carried no time' })
     expect(readingAge('nonsense', now)).toEqual({ age: null, why: "the setup read's time could not be read" })
+  })
+})
+
+/** The declarations of the one rule in config.css whose selector is exactly `selector`. */
+function rule(selector: string): string {
+  const flat = CONFIG_CSS.replace(/\/\*[\s\S]*?\*\//g, '')
+  const at = flat.split('}').find((r) => r.split('{')[0].trim() === selector)
+  if (at === undefined) throw new Error(`no ${selector} rule in config.css`)
+  return at.split('{')[1].replace(/\s+/g, ' ')
+}
+
+describe('the fold stays one line on a phone', () => {
+  // jsdom lays nothing out, so the review's phone-390 render (Show steps
+  // wrapped under the count, a 71px strip) is held by the rules that caused it.
+  it('never wraps the fold, and lets the count give way first', () => {
+    // MUTATION: put `flex-wrap: wrap` back on `.cfg-done` and this fails.
+    expect(rule('.cfg-done')).toContain('flex-wrap: nowrap')
+    const small = rule('.cfg-done small')
+    expect(small).toContain('min-width: 0')
+    expect(small).toContain('text-overflow: ellipsis')
+    expect(small).toContain('white-space: nowrap')
+    expect(rule('.cfg-done .ctl-link')).toContain('white-space: nowrap')
+  })
+
+  it("draws the strip's buttons as plain links, as config-e.html's <a>", () => {
+    // MUTATION: drop the reset and the global button box (1px border, 5px 12px
+    // padding) comes back, 88px wide on the fold.
+    const reset = rule('.cfg-strip button.ctl-link')
+    expect(reset).toContain('border: 0')
+    expect(reset).toContain('padding: 0')
+    expect(reset).toContain('background: none')
   })
 })
