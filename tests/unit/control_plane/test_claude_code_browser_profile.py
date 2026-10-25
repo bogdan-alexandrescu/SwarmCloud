@@ -193,6 +193,17 @@ def test_the_pod_carries_what_the_browser_image_needs(tenant):
 # --- the runner ---------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _not_a_live_browser_host(monkeypatch):
+    """Each case starts from no live-browser attempt. A host that is one (a
+    SwarmCloud agent's own container carries these) would otherwise make every
+    case a live attempt, with the stub's path and the live note; a case that
+    wants one sets its variables itself, after this has run."""
+    for name in ("SWARM_HANDOFF", "SWARM_CDP_ENDPOINT", "SWARM_BROWSER_UPLOADS",
+                 "SWARM_TEST_BROWSERS_PATH", "SWARM_JEV_BACKEND"):
+        monkeypatch.delenv(name, raising=False)
+
+
 def _run_body(monkeypatch, tmp_path, browsers: str | None) -> dict[str, Any]:
     from agent_worker.runners import claude_code
     from agent_worker.runners.base import RunnerContext
@@ -224,8 +235,12 @@ def _run_body(monkeypatch, tmp_path, browsers: str | None) -> dict[str, Any]:
 def test_the_runner_hands_the_agent_the_browser(monkeypatch, tmp_path):
     from agent_worker.runners.claude_code import BROWSER_NOTE
 
-    seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
-    assert seen["env"]["PLAYWRIGHT_BROWSERS_PATH"] == "/opt/playwright"
+    # A browsers directory the host does not have: the image's real
+    # `/opt/playwright`, on a host that carries it, seeds PW-TESTRUNNER's test
+    # directory and appends its note, which test_pw_testrunner.py holds.
+    browsers = str(tmp_path / "image-browsers")
+    seen = _run_body(monkeypatch, tmp_path, browsers)
+    assert seen["env"]["PLAYWRIGHT_BROWSERS_PATH"] == browsers
     assert seen["prompt"].startswith("Screenshot the settings page.")
     assert seen["prompt"].endswith(BROWSER_NOTE)
     assert "chromium_sandbox=False" in BROWSER_NOTE
