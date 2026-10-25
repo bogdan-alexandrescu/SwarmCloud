@@ -203,12 +203,16 @@ def _no_live_browser_from_the_host(monkeypatch):
     no-live-browser tests down the live branch: `PLAYWRIGHT_BROWSERS_PATH`
     became the stub `/opt/swarm/live-browser-only`, and a base-image run was
     refused as `live_browser_unavailable` (2026-10-25, POOL-LIMITS-QUOTA).
+    The rest of a live-browser container's variables go too, so no case is a
+    live attempt unless it sets its variables itself, after this has run.
     """
     from agent_worker import handoff
     from agent_worker.runners import claude_code
 
     monkeypatch.delenv(claude_code.CDP_ENDPOINT_ENV, raising=False)
     monkeypatch.delenv(handoff.HANDOFF_ENV, raising=False)
+    for name in ("SWARM_BROWSER_UPLOADS", "SWARM_TEST_BROWSERS_PATH", "SWARM_JEV_BACKEND"):
+        monkeypatch.delenv(name, raising=False)
 
 
 def _run_body(monkeypatch, tmp_path, browsers: str | None) -> dict[str, Any]:
