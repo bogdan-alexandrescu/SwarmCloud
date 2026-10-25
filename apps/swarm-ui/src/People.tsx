@@ -1702,7 +1702,7 @@ export function PeopleScreen() {
   usePoll(PEOPLE_POLL_MS, people.reload, !moving)
   return (
     <div className="ur-page pp-page">
-      <PageHead title="People and roles" help="people-and-roles-scope">
+      <PageHead title="People and roles">
         <UrRefresh reads={[people]} />
       </PageHead>
       <p className="ur-sub">

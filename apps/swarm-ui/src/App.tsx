@@ -2004,6 +2004,10 @@ function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: num
 const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
   'automate/schedules': 'schedules',
   'automate/approvals': 'approvals',
+  // Admin › People and roles answers differently by reader (ADMIN-PEOPLE-ROLES):
+  // its topic rides the section's `?` rather than a second glyph by the title,
+  // which the console's glyph ceiling (tests/help.test.ts) has no room for.
+  'admin/people': 'people-and-roles-scope',
 }
 
 function SectionQuestion({ section, topic = null }: { section: SectionQuestionDef; topic?: TopicId | null }) {
