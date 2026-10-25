@@ -205,11 +205,15 @@
 /* THE GRID'S OWN CONTROLS (ADMIN-PEOPLE-FILTER; part of #2157, S5c, S5f).
    The head holds the workspace filter, the count and Grant admin, pushed to
    the right of the title and wrapping under it when the card is narrow (a
-   phone). A filter with more workspaces than the card is wide scrolls inside
-   itself rather than widening the card: `.c-seg` never wraps a choice. */
+   phone). A filter with more workspaces than the card is wide stays inside
+   the card: the shared `.c-seg` is `flex: none`, which held it at its full
+   width beside the "Workspace" label and pushed it 37px past a 390px
+   viewport (rendered review, 2026-10-25). Here it shrinks to what is left
+   after the label; on a desktop it then scrolls inside itself, and on a
+   phone the shared rule wraps its segments onto a second row. */
 .pp-people .pp-head-acts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); margin-left: auto; min-width: 0; max-width: 100%; }
 .pp-filter { display: inline-flex; align-items: center; gap: var(--ctl-s2); min-width: 0; max-width: 100%; }
-.pp-filter > .c-seg { max-width: 100%; overflow-x: auto; }
+.pp-filter > .c-seg { flex: 1 1 auto; min-width: 0; max-width: 100%; overflow-x: auto; }
 /* Find a person sits on the card's first line, its count beside it. */
 .pp-find { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s1) var(--ctl-s3); margin-bottom: var(--ctl-s3); }
 .pp-find > .ur-search { flex: 0 1 18rem; width: auto; min-width: 0; }

@@ -1709,6 +1709,8 @@ interface GridView<R> {
   /** The chosen workspace, or null for every workspace. */
   column: PeopleWorkspaceColumn | null
   rows: R[]
+  /** How many rows the chosen workspace holds before Find a person narrows them; every row when none is chosen. */
+  inWorkspace: number
   typed: string
   setTyped: (v: string) => void
   choose: (key: string) => void
@@ -1725,10 +1727,12 @@ function useGridView<R extends GridRow>(rows: readonly R[], columns: PeopleWorks
   const column = columns?.find((c) => c.tenant_id === chosen) ?? null
   const q = typed.trim().toLowerCase()
   const matches = (r: R) => q === '' || r.email.toLowerCase().includes(q) || (r.display_name ?? '').toLowerCase().includes(q)
+  const held = rows.filter((r) => column === null || HOLDS_ROLE.has(r.roles?.[column.tenant_id] ?? null))
   return {
     columns: column === null ? columns : [column],
     column,
-    rows: rows.filter((r) => (column === null || HOLDS_ROLE.has(r.roles?.[column.tenant_id] ?? null)) && matches(r)),
+    rows: held.filter(matches),
+    inWorkspace: held.length,
     typed,
     setTyped,
     choose: (key) => {
@@ -1763,6 +1767,17 @@ function WorkspaceFilter({ view, all, scoped }: { view: GridView<GridRow>; all: 
       />
     </span>
   )
+}
+
+/**
+ * THE HEAD'S COUNT, NARROWED WITH THE GRID (review of ADMIN-PEOPLE-FILTER).
+ * The choice is remembered, so a reader who reloads sees a narrowed grid; a
+ * head still saying the whole platform's total above it disagreed with the
+ * rows drawn. With a workspace chosen it says how many of the total are in it.
+ */
+function narrowedCount(view: GridView<GridRow>, total: number): string | null {
+  if (view.column === null) return null
+  return `${view.inWorkspace} of ${count(total, 'person', 'people')} in ${view.column.display_name}`
 }
 
 /** "Find a person", over the loaded grid, and what it found: a count, or that nobody matches. */
@@ -1827,7 +1842,7 @@ function ScopedBody({ doc }: { doc: ScopedPeopleDoc }) {
         action={
           <span className="pp-head-acts">
             <WorkspaceFilter view={view} all={columns} scoped />
-            <Chip>{count(doc.count, 'person', 'people')}</Chip>
+            <Chip>{narrowedCount(view, doc.count) ?? count(doc.count, 'person', 'people')}</Chip>
           </span>
         }
       >
@@ -1905,9 +1920,14 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
         action={
           <span className="pp-head-acts">
             {all !== null && <WorkspaceFilter view={view} all={all} scoped={false} />}
+            {/* The pending figure is the platform's; Waiting for you carries it while a workspace is chosen. */}
             <Chip>
-              {doc.count} {doc.count === 1 ? 'person' : 'people'} ·{' '}
-              {doc.pending === 0 ? <span aria-label="none pending (measured)">none pending</span> : <>{doc.pending} pending</>}
+              {narrowedCount(view, doc.count) ?? (
+                <>
+                  {doc.count} {doc.count === 1 ? 'person' : 'people'} ·{' '}
+                  {doc.pending === 0 ? <span aria-label="none pending (measured)">none pending</span> : <>{doc.pending} pending</>}
+                </>
+              )}
             </Chip>
             <Button size="sm" onClick={() => setGranting(true)}>
               Grant admin

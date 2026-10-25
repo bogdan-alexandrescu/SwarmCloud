@@ -14,10 +14,16 @@
 //   * Recent admin actions starts folded, its head counting this week's
 //     entries, and opens on press;
 //   * Grant admin is in the grid card's head (S5c), checked and confirmed as
-//     the Admins card's is.
+//     the Admins card's is;
+//   * with a workspace chosen, the head's count is the chosen workspace's, of
+//     the total, never the whole platform's above a narrowed grid (review);
+//   * the filter's segmented control shrinks inside the card: the shared
+//     `.c-seg` is `flex: none`, which pushed it past a 390px viewport (review).
 //
 // Placeholders only; nothing here is token-shaped.
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
@@ -178,6 +184,50 @@ describe('the workspace filter (S5c, S5f)', () => {
     fireEvent.click(within(filter()).getByRole('button', { name: 'Team' }))
     expect(heads()).toEqual(['Person', 'Team', 'Last active'])
     expect(emails()).toEqual(['bob@example.com'])
+  })
+})
+
+describe("the grid head's count follows the filter (review)", () => {
+  const chip = () => head().querySelector<HTMLElement>('.c-chip')!.textContent?.replace(/\s+/g, ' ').trim()
+
+  it("says the chosen workspace's count of the platform's, for a platform admin", async () => {
+    await mount(platform([BOB, FAY, LEE], { pending: 1 }))
+    expect(chip()).toBe('3 people · 1 pending')
+    fireEvent.click(within(filter()).getByRole('button', { name: 'Labs' }))
+    // MUTATION: keep `doc.count` in the head while a workspace is chosen -> '3 people · 1 pending'.
+    expect(chip()).toBe('2 of 3 people in Labs')
+    fireEvent.click(within(filter()).getByRole('button', { name: 'Every workspace' }))
+    expect(chip()).toBe('3 people · 1 pending')
+  })
+
+  it("says the chosen workspace's count of theirs, for a workspace admin", async () => {
+    await mount(SCOPED)
+    expect(chip()).toBe('2 people')
+    fireEvent.click(within(filter()).getByRole('button', { name: 'Team' }))
+    // MUTATION: keep `doc.count` here -> '2 people' above one row.
+    expect(chip()).toBe('1 of 2 people in Team')
+  })
+
+  it('counts the workspace, not what Find a person narrowed it to', async () => {
+    await mount(platform([BOB, FAY, LEE]))
+    fireEvent.click(within(filter()).getByRole('button', { name: 'Engineering' }))
+    fireEvent.change(find(), { target: { value: 'fay' } })
+    expect(emails()).toEqual(['fay@example.com'])
+    expect(chip()).toBe('2 of 3 people in Engineering')
+  })
+})
+
+describe("the filter stays inside the card on a phone (review)", () => {
+  const css = readFileSync(join(__dirname, '..', 'styles', 'people.css'), 'utf8')
+  const rule = (css.match(/\.pp-filter\s*>\s*\.c-seg\s*\{([^}]*)\}/) ?? [])[1] ?? ''
+
+  it('lets the segmented control shrink beside its label, overriding the shared flex: none', () => {
+    // jsdom lays nothing out, so the rule is read. Without it, `.c-seg { flex: none }`
+    // held the control at full width beside "Workspace" and it ended at x=427 on a 390px phone.
+    // MUTATION: drop `flex: 1 1 auto` or `min-width: 0` -> fails.
+    expect(rule).toMatch(/flex:\s*1 1 auto/)
+    expect(rule).toMatch(/min-width:\s*0/)
+    expect(css).toMatch(/\.pp-filter\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/)
   })
 })
 
