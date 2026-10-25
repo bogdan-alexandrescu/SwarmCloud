@@ -180,3 +180,24 @@
 .pp-grant > .c-field { flex: 0 1 18rem; }
 .pp-housekeeping { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
 .pp-audit-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: var(--t-meta); line-height: var(--lh-meta); }
+
+/* PEOPLE AND ROLES (ADMIN-PEOPLE-ROLES; part of #2157, S5c, S5f): one column
+   per workspace, each cell a role. A HEAD IS A GROUP EMAIL AND BREAKS ONLY
+   BEFORE ITS `@` (a <wbr> in People.tsx): whole on one line, two heads pushed
+   Manage behind the table's scroll at 1440 (rendered review, 2026-10-25).
+   Past that the table scrolls inside its card (`.table-wrap`), never past it.
+   `none` is a measurement drawn dim, not a dash: a dash is only a column whose
+   roles were not read. An admin cell is the one a reader looks for, so it is
+   the one in the text colour and weight. */
+.pp-grid th.pp-wscol { white-space: normal; overflow-wrap: normal; word-break: normal; }
+.pp-grid td.pp-role { white-space: nowrap; }
+.pp-role-w { color: var(--text-dim); }
+.pp-role-w.is-admin { color: var(--text); font-weight: 600; }
+.pp-role-none { color: var(--text-dim); opacity: 0.75; }
+.pp-padmin { flex: none; }
+/* THE PLATFORM ADMIN CHIP WRAPS UNDER THE NAME (rendered review, 2026-10-25).
+   Beside it, on a phone it cut `alice@example.com` to "alice@examp", and at
+   1440 it widened Person until "lent by u-bogdan" broke at its hyphen. The
+   name line may wrap; the address still never breaks. */
+.pp-grid .pp-person { flex-wrap: wrap; }
+.pp-nobr { white-space: nowrap; }
