@@ -60,7 +60,7 @@ import './styles/workspace-settings.css'
  *
  * THE LEAD (CONFIG-S5-LEADS; part of #2157, proposal E S5a, S5d) is one
  * sentence over the body as built: the server whose credential is missing,
- * with one button to Config › Secrets' Add, or the green "nothing waiting".
+ * with one button to Config › Secrets, or the green "nothing waiting".
  * The list cannot say whether a `workspace_secret` server's secret is stored,
  * so the lead reads the setup read's `config_setup.secrets` (CONFIG-SETUP-READ,
  * `swarm_api.config_setup`), whose `mcp_server` items make the same test
@@ -269,8 +269,12 @@ function routedTo(address: string) {
   }
 }
 
-/** Where a missing credential is set: Config › Secrets, its Add open. */
-const SET_CREDENTIAL_ADDRESS = `${CONFIG_SECRETS_ADDRESS}?action=add`
+/**
+ * Where a missing credential is set: Config › Secrets, whose Add a secret card
+ * an admin always sees. Never `?action=add`: that is the /sc one-time link's
+ * address, and the page then says it was opened from one (CONFIG-S5-LEADS review).
+ */
+const SET_CREDENTIAL_ADDRESS = CONFIG_SECRETS_ADDRESS
 
 /** What the lead says, from the setup read's secrets step. Pure, for the tests' reasons. */
 export type McpLead =
@@ -309,8 +313,7 @@ function McpServersLead() {
       <section className="ws-lead is-next" aria-label="Secrets set">
         <div className="ws-lead-t">
           <span className="ws-lead-k">Secrets set</span>
-          <b>—</b>
-          <span className="ws-lead-s">Whether an MCP server is missing its credential is not known: {lead.reason}.</span>
+          <b>— whether an MCP server is missing its credential is not known: {lead.reason}.</b>
         </div>
       </section>
     )
