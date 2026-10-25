@@ -12,7 +12,11 @@
 //   * a firing whose attempts could not be read draws a dash with its reason,
 //     never an empty lane; a failed read dashes every lane with the failure;
 //   * one read per page of firings: the page's ids, at most SPAN_PAGE, and
-//     Older reads the next page's.
+//     Older reads the next page's;
+//   * the list under the lanes (SCHED-HISTORY-FOLLOWUP, part of #1109) names
+//     each work item in words -- an issue run by its issue's number and title,
+//     its run link, its state -- with its cost, and a cost never recorded as
+//     a dash with the reason `/spans` gave, never $0.
 //
 // The bodies are `routes/schedules.py::schedule_to_api`'s, `firing_to_api`'s
 // and `list_firing_spans`'s shapes. Placeholders only; nothing is token-shaped.
@@ -277,5 +281,72 @@ describe("a schedule's History timeline", () => {
     await waitFor(() => expect(lanes().map((l) => l.dataset.firingLane)).toEqual(['sch_a:11', 'sch_a:12']), WAIT)
     await waitFor(() => expect(reads()).toHaveLength(2), WAIT)
     expect(reads()[1]).toEqual(['sch_a:11', 'sch_a:12'])
+  })
+
+  it('lists each work item under the lanes: its issue, its run link, its state in words and its cost', async () => {
+    const planner = spanTask('task_plan', 1, 2, { label: 'plan' })
+    const half = spanTask('task_half', 1, 2)
+    const none = spanTask('task_none', 1, 1)
+    const { go } = await mount(
+      [firing(1, { work: [
+        { kind: 'issue_run', id: 'run_212' }, { kind: 'issue_run', id: 'run_9' }, { kind: 'task', id: 'task_half' },
+        { kind: 'task', id: 'task_none' }, { kind: 'api_action', id: 'label:ready', outcome: 'succeeded' },
+      ] })],
+      (url) => ({
+        status: 200,
+        body: {
+          firings: askedOf(url).map((id) => ({
+            firing_id: id,
+            items: [
+              item('run_212', [planner], {
+                kind: 'issue_run', state: 'CHECKING', updated_at: minutesAgo(1440 - 30),
+                issue: { number: 212, ref: 'example-org/example-api#212', url: 'https://github.com/example-org/example-api/issues/212', title: 'Orders endpoint 500 on empty cart' },
+                cost: { reported_usd: 1.75, unreported_attempts: 0, unread: null },
+              }),
+              item('run_9', [], {
+                kind: 'issue_run', state: 'PLANNING', unread: 'it ran no task yet',
+                issue: { number: 9, ref: 'example-org/example-api#9', url: 'https://github.com/example-org/example-api/issues/9', title: null },
+                cost: { reported_usd: null, unreported_attempts: 0, unread: 'it ran no task yet' },
+              }),
+              item('task_half', [half], { cost: { reported_usd: 2, unreported_attempts: 1, unread: null } }),
+              item('task_none', [none], { cost: { reported_usd: null, unreported_attempts: 1, unread: 'no attempt recorded a cost' } }),
+              item('label:ready', [], { kind: 'api_action', unread: 'an API action runs no attempt: it ended when it was recorded',
+                cost: { reported_usd: null, unreported_attempts: 0, unread: 'an API action runs no attempt, so it records no cost' } }),
+            ],
+          })),
+          not_found: [],
+        },
+      }),
+    )
+    const list = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('[data-testid="sc-history-items"]')
+      expect(el).not.toBeNull()
+      return el!
+    }, WAIT)
+    const row = (key: string) => list.querySelector<HTMLElement>(`[data-work="${key}"]`)!
+    const cost = (key: string) => visible(row(key).querySelector<HTMLElement>('[data-cost]'))
+    // An issue run: its issue's number and title, the run link, its state in words, its cost.
+    const run = row('issue_run:run_212')
+    expect(visible(run)).toContain('#212 Orders endpoint 500 on empty cart')
+    expect(visible(run)).toContain('checking CI on its pull request')
+    const link = [...run.querySelectorAll('a')].find((a) => visible(a) === 'run_212')
+    expect(link, 'the row does not link its run').toBeTruthy()
+    fireEvent.click(link!)
+    expect(go).toHaveBeenCalledWith('work/runs?run=run_212')
+    expect(cost('issue_run:run_212')).toBe('$1.75')
+    // A title the run never read is said, and the number still names it.
+    expect(visible(row('issue_run:run_9'))).toContain('#9')
+    expect(visible(row('issue_run:run_9'))).toContain('title not read')
+    expect(visible(row('issue_run:run_9'))).toContain('planning')
+    // A floor is marked partial, with the attempts it does not cover.
+    expect(cost('task:task_half')).toContain('$2.00')
+    expect(cost('task:task_half')).toContain('1 attempt unreported')
+    expect(visible(row('task:task_half'))).toContain('succeeded')
+    // A cost never recorded is a dash with its reason, never $0.
+    expect(cost('task:task_none')).toBe('— no attempt recorded a cost')
+    expect(cost('issue_run:run_9')).toBe('— it ran no task yet')
+    expect(cost('api_action:label:ready')).toBe('— an API action runs no attempt, so it records no cost')
+    expect(visible(row('api_action:label:ready'))).toContain('label:ready')
+    expect(visible(list)).not.toContain('$0')
   })
 })

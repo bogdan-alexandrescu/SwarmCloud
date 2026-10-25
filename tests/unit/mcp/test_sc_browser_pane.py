@@ -195,8 +195,12 @@ def test_drawing_reads_nothing_and_the_module_starts_no_timer_and_reaches_no_mod
     assert re.search(r"export function frame\(state: PaneState, view: View\): Line\[\]", model)
     for source in (model, pane):
         for forbidden in ("$.clock.every", "$.clock.after", "$.clock.sleep", "setTimeout", "setInterval",
-                          "$.model.", "$.agent.", "$.prompt.submit", "$.command.run", "$.tool."):
+                          "$.model.", "$.agent.", "$.prompt.submit", "$.tool."):
             assert forbidden not in source, f"{forbidden} would read on a timer or reach the model"  # MUTATION: a 30 s refresh timer.
+    # The one command it runs is the re-attach after the pane's Layout control
+    # saves (SC-BROWSER-FOLLOWUP, test_sc_browser_followup.py): a chat turn the
+    # person's switch asked for, never a timer's.
+    assert pane.count("$.command.run(") <= 1
     # The only MCP calls are the click runner's and /sc layout's.
     assert pane.count("$.mcp.call(") == 2
     # `run` is called from a press and from the two commands that open the pane -- never at session start.
@@ -332,4 +336,5 @@ def test_claude_plugin_test_runs_the_pane_against_the_engine(tmp_path):
     done = subprocess.run([claude, "plugin", "test", str(copy)], capture_output=True, text=True, timeout=300,
                           check=False, env=env, cwd=copy)
     assert done.returncode == 0, done.stdout + done.stderr
-    assert re.search(r"\b4 pass\b", done.stdout + done.stderr), done.stdout + done.stderr
+    # SC-BROWSER-FOLLOWUP's seven beside the four: the re-attach, and the pane at session start.
+    assert re.search(r"\b11 pass\b", done.stdout + done.stderr), done.stdout + done.stderr

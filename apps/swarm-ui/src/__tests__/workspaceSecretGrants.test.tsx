@@ -1,6 +1,7 @@
-// SETTINGS › WORKSPACE › SECRETS, THE SECOND HALF (lane SEC-UI-GRANTS, part
-// of #1347; docs/design/workspace-secrets.md §5, §2.3-2.4, §6.2). The grant
-// matrix and Rotate, held to:
+// THE WORKSPACE STORE'S GRANT MATRIX AND ROTATE (lane SEC-UI-GRANTS, part of
+// #1347; docs/design/workspace-secrets.md §5, §2.3-2.4, §6.2), on Config ›
+// Secrets since SSC-UI (part of #2158), where Rotate opens the one-time form.
+// Held to:
 //
 //   * a cell whose slot refuses the secret's kind is disabled and says why;
 //   * a tick writes exactly one grant, for exactly that consumer, through
@@ -20,6 +21,9 @@ import { serve, visible } from './repofixture'
 
 /** A credential-shaped value, built at runtime: it must reach the PUT body and nothing else. */
 const fakeValue = () => ['ws', 'rot'].join('-') + 'Z7k'.repeat(12)
+
+/** The token of a link the page mints for itself, built at runtime. */
+const mintedToken = () => ['own', 'rot'].join('') + 'Kd2'.repeat(10)
 
 const AT = '2026-10-20T09:30:00+00:00'
 
@@ -84,6 +88,13 @@ function api(opts: { list?: Json; write?: (m: string, url: string, body: unknown
   const calls = serve((m, url, body) => {
     if (m === 'GET' && url.startsWith('/v1/workspace/secrets/consumers')) return { status: 200, body: CONSUMERS }
     if (m === 'GET' && url.startsWith('/v1/workspace/secrets')) return { status: 200, body: list }
+    if (m === 'GET' && url.startsWith('/v1/secrets/overview')) {
+      return { status: 200, body: { tenant_id: 'eng', scope: 'workspace', can_manage: list.can_manage, rows: [] } }
+    }
+    if (m === 'GET' && url.startsWith('/v1/repositories')) return { status: 200, body: { repositories: [] } }
+    if (m === 'POST' && url === '/v1/workspace/secrets/links') {
+      return { status: 201, body: { url: null, path: `/settings/workspace/secrets?action=rotate&name=typesafe-key&t=${mintedToken()}`, expires_at: AT } }
+    }
     if (m !== 'GET' && opts.write) return opts.write(m, decodeURIComponent(url), body)
     return null
   })
@@ -98,10 +109,18 @@ function api(opts: { list?: Json; write?: (m: string, url: string, body: unknown
 async function load() {
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
-  return import('../WorkspaceSecrets')
+  return import('../Secrets')
 }
 
-const matrix = () => screen.findByRole('table', { name: /secret grants/i })
+/** The matrix, opened from the For agents card (S4a: "Open the grant matrix"). */
+async function matrix() {
+  await screen.findByRole('table', { name: /workspace secrets/i })
+  fireEvent.click(screen.getByRole('button', { name: /open the grant matrix/i }))
+  return screen.findByRole('table', { name: /secret grants/i })
+}
+const ROTATE_VIEW = 'action=rotate&name=typesafe-key'
+const rotateForm = () => screen.findByRole('form', { name: /rotate typesafe-key/i })
+const puts = (calls: { method: string; url: string; body: unknown }[]) => calls.filter((c) => c.method === 'PUT')
 const box = (m: HTMLElement, secret: string, consumer: string) =>
   within(m).getByRole('checkbox', { name: `Grant ${secret} to ${consumer}` }) as HTMLInputElement
 const writes = (calls: { method: string; url: string; body: unknown }[]) => calls.filter((c) => c.method !== 'GET')
@@ -133,8 +152,8 @@ afterEach(() => {
 describe('the grant matrix', () => {
   it('draws the catalogue\'s consumers grouped Profiles · Tools · Components, each cell a box', async () => {
     api()
-    const { WorkspaceSecretsScreen } = await load()
-    render(<WorkspaceSecretsScreen link={null} />)
+    const { SecretsScreen } = await load()
+    render(<SecretsScreen view={null} />)
     const m = await matrix()
     const heads = within(m).getAllByRole('columnheader').map((h) => visible(h))
     // MUTATION: draw the columns ungrouped (drop the group header row) -> fails.
@@ -149,8 +168,8 @@ describe('the grant matrix', () => {
 
   it('disables a cell whose slot refuses the secret\'s kind, and shows the reason', async () => {
     api({ list: listBody({ secrets: [record('search-token', { kind: 'bearer_token', grants: [] })] }) })
-    const { WorkspaceSecretsScreen } = await load()
-    render(<WorkspaceSecretsScreen link={null} />)
+    const { SecretsScreen } = await load()
+    render(<SecretsScreen view={null} />)
     const m = await matrix()
     const jev = box(m, 'search-token', 'tool:jev-browser')
     // MUTATION: drop the kind check (enable every grantable consumer) -> fails.
@@ -174,8 +193,8 @@ describe('the grant matrix', () => {
         ? { status: 200, body: { secret: record('typesafe-key', { grants: [grant('tool:jev-browser', true, 'typesafe'), grant('component:judge', true, 'typesafe')] }), takes_effect: 'at the next attempt' } }
         : null),
     })
-    const { WorkspaceSecretsScreen } = await load()
-    render(<WorkspaceSecretsScreen link={null} />)
+    const { SecretsScreen } = await load()
+    render(<SecretsScreen view={null} />)
     const m = await matrix()
     setList(listBody({ secrets: [record('typesafe-key', { grants: [grant('tool:jev-browser', true, 'typesafe'), grant('component:judge', true, 'typesafe')] })] }))
     await act(async () => {
@@ -202,8 +221,8 @@ describe('the grant matrix', () => {
         ? { status: 200, body: { secret: off, takes_effect: 'at the next attempt' } }
         : null),
     })
-    const { WorkspaceSecretsScreen } = await load()
-    render(<WorkspaceSecretsScreen link={null} />)
+    const { SecretsScreen } = await load()
+    render(<SecretsScreen view={null} />)
     const m = await matrix()
     // What the API serves once the write has landed.
     setList(listBody({ secrets: [off] }))
@@ -220,8 +239,8 @@ describe('the grant matrix', () => {
     api({
       write: (m) => (m === 'PUT' ? { status: 422, body: { code: 'validation_failed', message: 'component:judge reads api_key in its typesafe slot, not a opaque' } } : null),
     })
-    const { WorkspaceSecretsScreen } = await load()
-    render(<WorkspaceSecretsScreen link={null} />)
+    const { SecretsScreen } = await load()
+    render(<SecretsScreen view={null} />)
     const m = await matrix()
     await act(async () => {
       fireEvent.click(box(m, 'typesafe-key', 'component:judge'))
@@ -244,8 +263,8 @@ describe('the grant matrix', () => {
         ],
       }),
     })
-    const { WorkspaceSecretsScreen } = await load()
-    render(<WorkspaceSecretsScreen link={null} />)
+    const { SecretsScreen } = await load()
+    render(<SecretsScreen view={null} />)
     const m = await matrix()
     // MUTATION: draw the git box on every row -> fails.
     expect(within(m).queryByRole('checkbox', { name: 'Grant typesafe-key to component:git' })).toBeNull()
@@ -265,49 +284,59 @@ describe('the grant matrix', () => {
 })
 
 describe('Rotate', () => {
-  it('posts the new value once to PUT .../value, then leaves it nowhere, and the row shows the new version', async () => {
+  it('opens the one-time form for that secret: the address names the form, never a token', async () => {
+    api()
+    const { SecretsScreen } = await load()
+    render(<SecretsScreen view={null} />)
+    await screen.findByRole('table', { name: /workspace secrets/i })
+    fireEvent.click(screen.getByRole('button', { name: /rotate typesafe-key/i }))
+    // MUTATION: open an inline field in the table instead -> the address does not move and this fails.
+    expect(window.location.pathname).toBe('/config/secrets')
+    expect(window.location.search).toBe(`?${ROTATE_VIEW}`)
+  })
+
+  it('posts the new value once to PUT .../value with the form\'s own link, then leaves it nowhere and says the new version', async () => {
     const value = fakeValue()
-    const { calls, setList } = api({
+    const { calls } = api({
       write: (m, url) => (m === 'PUT' && url === '/v1/workspace/secrets/typesafe-key/value'
-        ? { status: 200, body: { secret: record('typesafe-key', { current_version: '3', rotated_at: AT, rotated_by: 'alice@example.com' }), via_link: false, note: 'n' } }
+        ? { status: 200, body: { secret: record('typesafe-key', { current_version: '3', rotated_at: AT, rotated_by: 'alice@example.com' }), via_link: true, note: 'n' } }
         : null),
     })
-    const { WorkspaceSecretsScreen } = await load()
-    render(<WorkspaceSecretsScreen link={null} />)
-    await matrix()
-    fireEvent.click(screen.getByRole('button', { name: /rotate typesafe-key/i }))
-    const form = screen.getByRole('form', { name: /rotate typesafe-key/i })
+    const { SecretsScreen } = await load()
+    render(<SecretsScreen view={ROTATE_VIEW} />)
+    const form = await rotateForm()
     const field = within(form).getByLabelText(/new value/i) as HTMLInputElement
     // MUTATION: make the field type="text" -> fails.
     expect(field.type).toBe('password')
+    expect(field.value).toBe('')
     fireEvent.change(field, { target: { value } })
-    setList(listBody({ secrets: [record('typesafe-key', { current_version: '3', rotated_at: AT, rotated_by: 'alice@example.com' })] }))
     await act(async () => {
       fireEvent.click(within(form).getByRole('button', { name: /^rotate$/i }))
     })
-    await screen.findByText(/typesafe-key was rotated/i)
+    const said = await screen.findByText(/typesafe-key was rotated/i)
+    // MUTATION: drop the version from the words -> fails.
+    expect(visible(said)).toMatch(/version 3 is current/)
 
     const carrying = calls.filter((c) => c.url.includes(value) || JSON.stringify(c.body ?? null).includes(value))
     // MUTATION: send the value twice, or in the URL -> fails.
     expect(carrying).toHaveLength(1)
     expect(carrying[0]!.method).toBe('PUT')
-    expect(carrying[0]!.body).toEqual({ value })
+    // MUTATION: open the form without minting its link -> fails.
+    expect(carrying[0]!.body).toEqual({ value, link_token: mintedToken() })
+    expect(calls.find((c) => c.url === '/v1/workspace/secrets/links')?.body).toEqual({ action: 'rotate', name: 'typesafe-key' })
     // MUTATION: keep the value in the field, state drawn as an attribute, or a "rotated to <value>" line -> fails.
     expect(leaks(value)).toEqual([])
-    const list = screen.getByRole('table', { name: /workspace secrets/i })
-    const row = within(list).getByRole('row', { name: /typesafe-key/i })
-    // MUTATION: never read the list again after a rotate -> the row still says 2 and this fails.
-    await waitFor(() => expect(visible(within(row).getByText('3', { exact: true }))).toBe('3'))
+    expect(leaks(mintedToken())).toEqual([])
+    // MUTATION: leave the form open for a second write -> fails.
+    expect(screen.queryByRole('form', { name: /rotate typesafe-key/i })).toBeNull()
   })
 
   it('empties the field on a refusal too, and says the API\'s reason', async () => {
     const value = fakeValue()
     api({ write: (m) => (m === 'PUT' ? { status: 422, body: { code: 'validation_failed', message: 'an api_key is 8 bytes to 8 KiB' } } : null) })
-    const { WorkspaceSecretsScreen } = await load()
-    render(<WorkspaceSecretsScreen link={null} />)
-    await matrix()
-    fireEvent.click(screen.getByRole('button', { name: /rotate typesafe-key/i }))
-    const form = screen.getByRole('form', { name: /rotate typesafe-key/i })
+    const { SecretsScreen } = await load()
+    render(<SecretsScreen view={ROTATE_VIEW} />)
+    const form = await rotateForm()
     fireEvent.change(within(form).getByLabelText(/new value/i), { target: { value } })
     await act(async () => {
       fireEvent.click(within(form).getByRole('button', { name: /^rotate$/i }))
@@ -327,34 +356,31 @@ describe('the one-time rotate link: ?action=rotate&name=..&t=..', () => {
         ? { status: 200, body: { secret: record('typesafe-key', { current_version: '3' }), via_link: true, note: 'n' } }
         : null),
     })
-    const { WorkspaceSecretsScreen } = await load()
-    render(<WorkspaceSecretsScreen link={{ action: 'rotate', name: 'typesafe-key', token }} />)
-    await matrix()
-    // MUTATION: ignore the link's name (open no form) -> getByRole throws.
-    const form = screen.getByRole('form', { name: /rotate typesafe-key/i })
+    const { SecretsScreen } = await load()
+    render(<SecretsScreen view={ROTATE_VIEW} token={token} />)
+    // MUTATION: ignore the link's name (open no form) -> findByRole throws.
+    const form = await rotateForm()
     // MUTATION: render the token anywhere -> fails.
     expect(leaks(token)).toEqual([])
-    for (let i = 0; i < 2; i++) {
-      const f = i === 0 ? form : (fireEvent.click(screen.getByRole('button', { name: /rotate typesafe-key/i })), screen.getByRole('form', { name: /rotate typesafe-key/i }))
-      fireEvent.change(within(f).getByLabelText(/new value/i), { target: { value: fakeValue() } })
-      await act(async () => {
-        fireEvent.click(within(f).getByRole('button', { name: /^rotate$/i }))
-      })
-      await waitFor(() => expect(writes(calls)).toHaveLength(i + 1))
-    }
-    const puts = writes(calls)
+    fireEvent.change(within(form).getByLabelText(/new value/i), { target: { value: fakeValue() } })
+    await act(async () => {
+      fireEvent.click(within(form).getByRole('button', { name: /^rotate$/i }))
+    })
+    await waitFor(() => expect(puts(calls)).toHaveLength(1))
     // MUTATION: never send the rotate link's token -> fails.
-    expect((puts[0]!.body as Json).link_token).toBe(token)
-    // MUTATION: keep the token after it is sent -> the second rotate carries it and this fails.
-    expect('link_token' in (puts[1]!.body as Json)).toBe(false)
+    expect((puts(calls)[0]!.body as Json).link_token).toBe(token)
+    // The tool's link is the form's: no second link is minted.
+    expect(calls.filter((c) => c.url === '/v1/workspace/secrets/links')).toHaveLength(0)
+    // MUTATION: keep the form for a second rotate -> fails.
+    await waitFor(() => expect(screen.queryByRole('form', { name: /rotate typesafe-key/i })).toBeNull())
   })
 })
 
 describe('who may manage', () => {
   it('a non-manager sees every box disabled and no Rotate', async () => {
     api({ list: listBody({ canManage: false }) })
-    const { WorkspaceSecretsScreen } = await load()
-    render(<WorkspaceSecretsScreen link={null} />)
+    const { SecretsScreen } = await load()
+    render(<SecretsScreen view={null} />)
     const m = await matrix()
     const boxes = within(m).getAllByRole('checkbox') as HTMLInputElement[]
     expect(boxes.length).toBeGreaterThan(0)

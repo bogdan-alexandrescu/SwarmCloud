@@ -25,7 +25,7 @@
 // stated width, since jsdom applies no `@media`). Fixtures only; no network.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
@@ -141,7 +141,10 @@ async function mountMcp(cap: Json | null): Promise<HTMLTableElement> {
   vi.resetModules()
   const { McpServersScreen } = await import('../McpServers')
   render(<McpServersScreen />)
-  return (await screen.findByRole('table', { name: 'Registered MCP servers' })) as HTMLTableElement
+  const table = (await screen.findByRole('table', { name: 'Registered MCP servers' })) as HTMLTableElement
+  // The register form opens from the card head's Register (MCP-ROWS, S5a).
+  fireEvent.click(screen.getByRole('button', { name: 'Register an MCP server' }))
+  return table
 }
 
 const profilesGroup = () =>

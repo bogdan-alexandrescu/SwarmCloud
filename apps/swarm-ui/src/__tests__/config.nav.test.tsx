@@ -147,7 +147,7 @@ describe('the Config section (CONFIG-NAV)', () => {
     expect(within(strip).getAllByRole('listitem')).toHaveLength(3)
   })
 
-  it('takes Repositories, Setup and Access out of Work, and leaves Settings only Profile and API keys', async () => {
+  it('takes Repositories, Setup and Access out of Work, and leaves Settings only Profile (API keys is Config › Secrets since SSC-UI)', async () => {
     const { App } = await routing()
     const work = App.SECTIONS.find((s) => s.id === 'work')!
     // MUTATION: leave Access in Work -> fails.
@@ -157,7 +157,7 @@ describe('the Config section (CONFIG-NAV)', () => {
     // MUTATION: leave Setup in the Work panel -> fails.
     expect(PANEL_PAGES.work.map((p) => p.key)).toEqual(['agents', 'workflows', 'runs', 'timeline'])
     // MUTATION: leave MCP servers under Profile -> fails.
-    expect(PANEL_PAGES.profile.map((p) => p.label)).toEqual(['Profile', 'API keys'])
+    expect(PANEL_PAGES.profile.map((p) => p.label)).toEqual(['Profile'])
   })
 })
 
@@ -385,13 +385,17 @@ describe('the setup strip (proposal E)', () => {
   // app mounts in one case overran the 30s test timeout on a slow runner, and
   // the timed-out loop went on mounting pages into the next case, which then
   // found two setup strips. Each page now has its own timeout and cleanup.
+  // The strip lands ~1.7s after App mounts on an idle machine, close to
+  // setup.ts' 2s `asyncUtilTimeout`, so its own wait is 10s: still a failure,
+  // not a hang (MCP-LEAD-FORM, 2026-10-25).
+  const STRIP_WAIT = { timeout: 10_000 }
   it.each(['/config/github', '/config/repositories', '/config/secrets', '/config/mcp-servers', '/config/people', '/config/workspace', '/config/workspace/setup'])(
     'runs across every Config page: %s',
     async (path) => {
       serve(ME(false), [PERSONAL, group('eng', 'admin')])
       await app(path)
       // MUTATION: mount the strip on GitHub access only -> every other row fails.
-      const strip = await screen.findByRole('list', { name: 'Workspace setup steps' })
+      const strip = await screen.findByRole('list', { name: 'Workspace setup steps' }, STRIP_WAIT)
       expect(within(strip).getAllByRole('listitem').length, path).toBe(4)
     },
   )
@@ -399,8 +403,8 @@ describe('the setup strip (proposal E)', () => {
   it('carries a compact form for the phone that names the next measured step (S2d)', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin')])
     await app('/config/secrets')
-    await screen.findByRole('list', { name: 'Workspace setup steps' })
-    await waitFor(() => expect(document.querySelector('.cfg-compact')?.textContent ?? '').toContain('Next: Repositories chosen'))
+    await screen.findByRole('list', { name: 'Workspace setup steps' }, STRIP_WAIT)
+    await waitFor(() => expect(document.querySelector('.cfg-compact')?.textContent ?? '').toContain('Next: Repositories chosen'), STRIP_WAIT)
     const compact = document.querySelector('.cfg-compact')!
     // MUTATION: drop the compact form -> the phone shows four stacked steps and this fails.
     expect(compact.textContent).toContain('Setup 1 of 4')

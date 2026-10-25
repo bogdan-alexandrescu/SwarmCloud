@@ -15,7 +15,12 @@ slower, and the existing tools were each shaped for a model reader.
   state: the pane groups them into the console's stages itself, with
   `levelsOf`), its duration, tokens and cost; and this session's running
   single tasks. `swarm_workflows` lists the whole tenant's RUNNING
-  workflows with no tokens and no parents, which is not this level.
+  workflows with no tokens and no parents, which is not this level. With
+  `project: true` (SC-BROWSER-FOLLOWUP, BGD 2026-10-25: session start tracks
+  the project's running work), also every workflow and single task still
+  RUNNING that clones this checkout's origin repository, whichever session
+  started it, marked `this_session: false`; the pane asks for it after
+  session start, and nothing else does.
 * `stages` (Level 2): one workflow, read fresh, in the same row shape.
 * `agents` (Level 3): one stage's tasks: name, state and a one-line note.
 * `agent` (Level 4): one task: state, attempts, duration, cost, tokens,
@@ -138,35 +143,76 @@ def _owned(envelope: dict[str, Any], sid: str) -> bool:
     return session.ownership(owner, sid) == "own"
 
 
-def workflows_level(client: SwarmClient, sid: str | None, now: datetime | None = None) -> dict[str, Any]:
-    """Level 1: this session's workflows and running single tasks."""
+def _clones(envelope: dict[str, Any], repository: str) -> bool:
+    """Does any of the workflow's step tasks clone `repository` (`host/owner/repo`)?"""
+    from .check import repo_key
+
+    return any(isinstance(t, dict) and repo_key(t.get("repository_url")) == repository
+               for t in envelope.get("tasks") or [])
+
+
+def workflows_level(client: SwarmClient, sid: str | None, now: datetime | None = None,
+                    project: bool = False) -> dict[str, Any]:
+    """Level 1: this session's workflows and running single tasks -- and with
+    `project`, this project's running ones whichever session started them."""
+    from .check import repo_key
+    from .sc import mark_session, project_key, running_tasks, walk_running_workflows
+
     now = now or datetime.now(timezone.utc)
     out: dict[str, Any] = {"level": "workflows", "read_at": _stamp(now), "session": session.describe(sid)}
-    if not sid:
+    repository = project_key() if project else None
+    if project:
+        out["project"] = {"repository": repository}
+        if repository is None:
+            out["project"]["note"] = ("this checkout has no origin remote naming a repository, so only "
+                                      "this session's work is listed")
+    if not sid and repository is None:
         out.update(workflows=[], single_tasks=[],
                    scope_because="this Claude Code session's id is not known to the bridge, so its work "
                                  "cannot be told from anyone else's; /sc workflows lists the tenant's")
         return out
-    page = client.workflows(claude_session=sid, limit=SESSION_PAGE)
-    ids = [str(w["workflow_id"]) for w in page["workflows"] if isinstance(w, dict) and w.get("workflow_id")]
-    if page.get("next_page_token"):
-        out["more_because"] = f"this session started more than {SESSION_PAGE} workflows; the newest are listed"
+    ids: list[str] = []
+    if sid:
+        page = client.workflows(claude_session=sid, limit=SESSION_PAGE)
+        ids = [str(w["workflow_id"]) for w in page["workflows"] if isinstance(w, dict) and w.get("workflow_id")]
+        if page.get("next_page_token"):
+            out["more_because"] = f"this session started more than {SESSION_PAGE} workflows; the newest are listed"
+    theirs: list[str] = []
+    if repository is not None:
+        # The project's RUNNING workflows, asked of the API by repository and
+        # checked again below: a route older than the filter ignores it.
+        try:
+            walk = walk_running_workflows(client, repository=repository)
+        except SwarmError as exc:
+            out["project"]["error"] = clip(str(exc), 200)
+        else:
+            theirs = [str(w["workflow_id"]) for w in walk["workflows"]
+                      if w.get("workflow_id") and str(w["workflow_id"]) not in ids]
+            if walk.get("incomplete_because"):
+                out["project"]["incomplete_because"] = walk["incomplete_because"]
 
-    def detail(workflow_id: str) -> dict[str, Any] | None:
+    def detail(item: tuple[str, bool]) -> dict[str, Any] | None:
+        workflow_id, listed_as_mine = item
         try:
             envelope = workflows.fetch(client, workflow_id)
         except SwarmError as exc:
             return {"workflow_id": workflow_id, "name": workflow_id, "state": None, "steps": [],
-                    "read_error": clip(str(exc), 200)}
+                    "read_error": clip(str(exc), 200)} if listed_as_mine else None
         # Checked AGAIN: a route older than the session filter ignores it.
-        return workflow_row(envelope, now) if _owned(envelope, sid) else None
+        if sid and _owned(envelope, sid):
+            return workflow_row(envelope, now)
+        if repository is not None and _clones(envelope, repository):
+            row = workflow_row(envelope, now)
+            if row.get("state") not in TERMINAL:
+                return {**row, "this_session": False}
+        return None
 
+    items = [(i, True) for i in ids] + [(i, False) for i in theirs]
     rows: list[dict[str, Any] | None] = []
-    if ids:
-        with ThreadPoolExecutor(max_workers=min(DETAIL_CONCURRENCY, len(ids))) as pool:
-            rows = list(pool.map(detail, ids))
+    if items:
+        with ThreadPoolExecutor(max_workers=min(DETAIL_CONCURRENCY, len(items))) as pool:
+            rows = list(pool.map(detail, items))
     out["workflows"] = [row for row in rows if row is not None]
-    from .sc import mark_session, running_tasks
 
     try:
         singles = running_tasks(client, now=now)
@@ -174,10 +220,13 @@ def workflows_level(client: SwarmClient, sid: str | None, now: datetime | None =
         out["single_tasks"] = []
         out["single_tasks_error"] = clip(str(exc), 200)
     else:
-        own = [t for t in mark_session(singles["tasks"], sid) if t.get("this_session")]
+        kept = [t for t in mark_session(singles["tasks"], sid)
+                if t.get("this_session")
+                or (repository is not None and repo_key(t.get("repository_url")) == repository)]
         out["single_tasks"] = [
-            {key: t.get(key) for key in ("task_id", "label", "state", "age_seconds", "console") if key in t}
-            for t in own
+            {key: t.get(key) for key in ("task_id", "label", "state", "age_seconds", "console", "this_session")
+             if key in t}
+            for t in kept
         ]
     return out
 
@@ -282,7 +331,7 @@ def read(client: SwarmClient, args: dict[str, Any]) -> dict[str, Any]:
     if level not in LEVELS:
         raise SwarmError(f"`level` is one of {list(LEVELS)}; it was {level!r}. Nothing was read")
     if level == "workflows":
-        return workflows_level(client, session.current())
+        return workflows_level(client, session.current(), project=args.get("project") is True)
     if level == "stages":
         workflow_id = args.get("workflow_id")
         if not isinstance(workflow_id, str) or not workflow_id.strip():

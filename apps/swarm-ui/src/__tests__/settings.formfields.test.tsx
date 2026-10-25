@@ -19,7 +19,7 @@
 // Fixtures only; no network. Nothing here is credential-shaped.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { serve } from './repofixture'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
@@ -78,6 +78,8 @@ async function mountMcp(): Promise<HTMLFormElement> {
   vi.resetModules()
   const { McpServersScreen } = await import('../McpServers')
   render(<McpServersScreen />)
+  // The register form opens from the card head's Register (MCP-ROWS, S5a).
+  fireEvent.click(await screen.findByRole('button', { name: 'Register an MCP server' }))
   return (await screen.findByRole('form', { name: /register an mcp server/i })) as HTMLFormElement
 }
 
