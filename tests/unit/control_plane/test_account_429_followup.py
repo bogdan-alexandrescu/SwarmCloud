@@ -241,10 +241,32 @@ def test_a_bad_far_future_report_on_a_five_hour_window_holds_at_most_five_hours(
     assert limited.limited_until <= _now() + timedelta(hours=5)
 
 
-def test_an_operator_resume_clears_the_hold(client, store):
+def test_an_operator_resume_through_the_state_route_clears_the_hold(client, store):
+    """The route swarm-api's resume proxies to (`set_state_and_moves`)."""
     held = _hold(client, "task_1")
     _rate_limit(client, held, reset_at=(_now() + timedelta(days=6)).isoformat())
     assert store.get(held["account_id"]).is_limited(_now())
+
+    r = client.put(f"/v1/accounts/{held['account_id']}/state",
+                   json={"state": "available", "reason": "resumed by an operator"})
+
+    assert r.status_code == 200, r.text
+    assert not store.get(held["account_id"]).is_limited(_now())
+    assert store.health(held["account_id"]).get("limited_until") is None
+
+
+def test_a_pause_keeps_the_hold(client, store):
+    held = _hold(client, "task_1")
+    _rate_limit(client, held, retry_after_seconds=600)
+
+    client.put(f"/v1/accounts/{held['account_id']}/state", json={"state": "paused"})
+
+    assert store.get(held["account_id"]).is_limited(_now())
+
+
+def test_the_store_s_resume_clears_the_hold_too(client, store):
+    held = _hold(client, "task_1")
+    _rate_limit(client, held, retry_after_seconds=600)
 
     store.set_state(held["account_id"], AccountState.AVAILABLE, "resumed by an operator")
 

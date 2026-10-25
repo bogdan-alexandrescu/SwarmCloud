@@ -760,15 +760,19 @@ class AccountStore:
         }
         if state is AccountState.AVAILABLE:
             # AN OPERATOR'S RESUME ENDS A RECORDED 429's HOLD
-            # (`Account.is_limited`), on the account and its health record.
+            # (`Account.is_limited`), on the account and its health record --
+            # as `main.set_state_and_moves`, which the state route uses, does.
             # The hold is bounded (`limited_until_for`), but a bad report can
             # still hold an account for days, and a person putting the account
             # back in service is the one who can say it is wrong. A wrong
             # resume costs one more 429, which holds it again.
             payload["limited_until"] = None
             payload["limited_window"] = None
-            self._health_ref(account_id).set({"limited_until": None}, merge=True)
         self._db.collection(COLLECTION).document(account_id).update(payload)
+        if state is AccountState.AVAILABLE:
+            # After the account's update, which raises for an account that is
+            # gone, so no record is left behind for one.
+            self._health_ref(account_id).set({"limited_until": None}, merge=True)
 
     def mark_reauth_required(self, account_id: str, reason: str) -> Account | None:
         """Record that this account's credential is dead. Returns it, or None.

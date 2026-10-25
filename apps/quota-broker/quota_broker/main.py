@@ -91,8 +91,10 @@ from .accountstore import COLLECTION as ACCOUNTS_COLLECTION
 from .accountstore import MALFORMED_ERRORS, AccountStore, MalformedAccountError
 from .accountstore import (
     HEALTH_ASSIGN_REFUSED,
+    HEALTH_DOCUMENT,
     HEALTH_EXHAUSTED,
     HEALTH_RATE_LIMIT,
+    HEALTH_SUBCOLLECTION,
     PROVIDER_ERROR_KINDS,
     health_counts,
     health_status,
@@ -1803,11 +1805,16 @@ def set_state_and_moves(
     operator has just put back in service.
 
     Writes what `AccountStore.set_state` writes (state, reason, and clearing
-    `state_before_reauth` because a person decided), plus the holds.
+    `state_before_reauth` because a person decided), plus the holds. AND
+    AVAILABLE ENDS A RECORDED 429's HOLD (`Account.is_limited`), on the
+    account and its health record in this transaction, for the reason
+    `AccountStore.set_state` gives: a bad report can hold an account for
+    days, and a person putting it back in service can say it is wrong.
     """
     from google.cloud import firestore
 
     ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    health_ref = ref.collection(HEALTH_SUBCOLLECTION).document(HEALTH_DOCUMENT)
     transaction = db.transaction()
 
     @firestore.transactional
@@ -1821,6 +1828,10 @@ def set_state_and_moves(
             replace(h, move=SWAP_DRAIN if draining else (None if h.move == SWAP_DRAIN else h.move))
             for h in live
         ]
+        resumed: dict[str, Any] = {}
+        if state is AccountState.AVAILABLE:
+            resumed = {"limited_until": None, "limited_window": None}
+            txn.set(health_ref, {"limited_until": None}, merge=True)
         txn.update(
             ref,
             {
@@ -1828,6 +1839,7 @@ def set_state_and_moves(
                 "reason": reason,
                 "state_before_reauth": "",
                 **_hold_payload(marked),
+                **resumed,
             },
         )
         _close_expired(txn, db, account_id, expired)
