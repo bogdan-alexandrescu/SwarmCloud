@@ -160,6 +160,9 @@ describe('Tenants leads with the workspace waiting to be created (S10d)', () => 
     await waitFor(() => expect(row().classList.contains('is-opened')).toBe(true), WAIT)
     expect(document.querySelector('[data-workspace-id="w-research"]')!.classList.contains('is-opened')).toBe(false)
     expect(ADMIN_CSS).toMatch(/\.ten-being-created > li\.is-opened\[id\]\[tabindex\]\s*\{[^}]*outline:/)
+    // Rendered at 1440: the ring's 6px offset stood 8px past the column's edge
+    // until every record gave it that room on its end side.
+    expect(ADMIN_CSS).toMatch(/\.ten-being-created > li\s*\{[^}]*margin-inline-end: 6px/)
   })
 
   it('names one whose setting up stopped ahead of one being set up', async () => {
