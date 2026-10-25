@@ -517,6 +517,11 @@ def test_red_on_a_workflow_that_asked_for_no_rounds_wakes_the_step(db, wake_clie
     _tick(wake_client)
     assert _wait(db)["wake_reason"] == "red"
     assert _fix_workflows(db) == []
+    # The free re-run comes before the round budget (#2257): asked and, with
+    # no `actions: write` here, refused and recorded, so the wake is this tick's.
+    (rerun,) = _fix_record(db)[mergewake.RERUNS_KEY]
+    assert rerun["head"] == HEAD and "error" in rerun
+    assert "rounds" not in _fix_record(db)
 
 
 def test_a_round_that_ended_at_the_red_head_wakes_the_step(db, wake_client, github, clock):
