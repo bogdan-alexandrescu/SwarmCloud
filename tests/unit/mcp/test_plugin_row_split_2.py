@@ -160,7 +160,7 @@ def _tool(name: str) -> dict:
 def test_the_launch_tool_offers_rows_and_describes_what_is_true_now():
     tool = _tool("swarm_workflow_launch")
     rows = tool["inputSchema"]["properties"]["rows"]
-    assert rows["enum"] == ["summary", "per-step"]  # MUTATION: no `rows` in the schema -- KeyError.
+    assert rows["enum"] == ["summary", "per-step", "pane"]  # MUTATION: no `rows` in the schema -- KeyError.
     text = " ".join(tool["description"].split())
     assert "1-200" in text and "100" in text  # MUTATION: keep "30 unless set; 1-50" -- absent.
     assert "1-50" not in text and "30 unless set" not in text  # MUTATION: leave the stale range -- present.
@@ -236,7 +236,7 @@ def test_swarm_follow_summary_needs_summary_of(swarm, world):
     with pytest.raises(SwarmError, match="summary_of"):  # MUTATION: count only what was followed -- a wrong line.
         server._call(swarm, "swarm_follow", {"task_ids": _FOLLOWED, "format": "summary"})
     assert _tool("swarm_follow")["inputSchema"]["properties"]["format"]["enum"] == [
-        "json", "lines", "progress", "summary"]  # MUTATION: no summary format in the schema.
+        "json", "lines", "progress", "summary", "stage"]  # MUTATION: no summary format in the schema.
 
 
 def _js_states(name: str) -> set[str]:
@@ -299,7 +299,7 @@ def test_the_summary_row_follows_with_format_summary_and_writes_the_line_verbati
 
 def test_the_readme_counts_every_agent_the_plugin_ships():
     agents = sorted(p.stem for p in (_PLUGIN / "agents").glob("*.md"))
-    words = {5: "five", 6: "six", 7: "seven"}
+    words = {5: "five", 6: "six", 7: "seven", 8: "eight"}
     text = " ".join(_README.read_text().split())
     assert f"All {words[len(agents)]} agents run on" in text  # MUTATION: leave "All five" -- absent.
     assert "sc:summary" in text.split("agents run on", 1)[1][:600]  # MUTATION: name five of six -- absent.
