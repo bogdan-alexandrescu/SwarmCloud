@@ -20,11 +20,15 @@ import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS, capacityPoll, paneHref, useLinkedParam, usePhoneTables } from './capacityPoll'
 import { HelpCard, HelpLinks } from './HelpCard'
 import { Mark } from './primitives'
-import { Button, Chip, Dialog, NamedMark, Segmented, ToneMark, UsageTrack, WarnMark } from './components'
+import { Button, Chip, Dialog, Segmented, ToneMark, UsageTrack, WarnMark } from './components'
 import './styles/capacity.css'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import { TaskRef } from './TaskRef'
 import { AGE_TICK_MS, useNow } from './useNow'
+import { AccountsTable } from './AccountsTable'
+import { AcctState } from './AccountState'
+import { DuplicateBanner, Forecast, RuleLine, Verdict, usePoolWaiting } from './AccountsVerdict'
+import { agoPastDay, type PoolAccount } from './accountsPool'
 import {
   FIVE_HOUR,
   SEVEN_DAY,
@@ -47,46 +51,6 @@ import {
   type AccountWindow,
   type RefreshResult,
 } from './types'
-
-/**
- * An ACCOUNT's state, drawn (brand.html §3; audit #503).
- *
- * AN ACCOUNT STATE IS NOT A TASK STATE, so it never borrows a task's mark. The
- * task marks answer "how far along is this attempt, and does it hold
- * capacity"; an account is not an attempt and holds nothing. So:
- *
- *   AVAILABLE, DRAINING  grey, no mark. Both are healthy: draining still
- *                        serves what it holds, it only stops taking more. A
- *                        hue here would be a verdict nobody reached.
- *   PAUSED               the park hue's pause bars, as capacity.html A1 draws
- *                        it. The one task state it may echo is PARKED, and
- *                        the echo is exact: a paused account, like a parked
- *                        task, holds nothing and waits for a person.
- *   REAUTH_REQUIRED      the amber warning triangle. It is a CONDITION -- the
- *                        refresh token is gone and the sweep has stopped
- *                        retrying -- and conditions are `WarnMark`.
- *   anything else        the platform's own word, faint, with no mark: a state
- *                        this console never heard of is drawn as unrecognised
- *                        rather than defaulted into a healthy one.
- *
- * The word is lower case with spaces (`reauth required`), the way every other
- * state word in the console reads; the platform's spelling is the `title`.
- */
-function AcctState({ state }: { state: string }) {
-  const word = state.toLowerCase().replace(/_/g, ' ')
-  if (state === 'REAUTH_REQUIRED') return <NamedMark className="acct-state" mark="warn" hue="warn" word={word} title={state} />
-  if (state === 'PAUSED') return <NamedMark className="acct-state" mark="parked" hue="park" word={word} title={state} />
-  const known = state === 'AVAILABLE' || state === 'DRAINING'
-  return (
-    <NamedMark
-      className="acct-state"
-      mark={null}
-      hue={known ? 'neu' : 'unknown'}
-      word={word}
-      title={known ? state : `${state}: a state this console does not recognise`}
-    />
-  )
-}
 
 /**
  * THE ONE PROVIDER, AND THE ONE CREDENTIAL KIND -- stated, never picked.
@@ -331,12 +295,13 @@ function SummaryLine({ board }: { board: AccountsBoard }) {
   // "sign in again", the other is "this is not yours to fix".
   const mine = broken.filter((a) => isOwned(a, scope)).length
   const lent = broken.length - mine
-  // A1's head chip: how many there are and how many can serve right now. Whose
-  // they are is the chosen account's ownership line, where it is about one.
-  const available = board.page.accounts.filter((a) => a.state === 'AVAILABLE').length
+  // HOW MANY THERE ARE, AND NO "AVAILABLE" (#2222). "7 accounts · 7
+  // available" was the head while every one of them was under its floor and
+  // 28 agents waited: available was the account's state, not whether it
+  // could take an agent. The verdict under the head answers that.
   return (
     <>
-      {n} account{n === 1 ? '' : 's'} &middot; {available} available
+      {n} account{n === 1 ? '' : 's'}
       {/* BEFORE anything derived from the rows, because it is the sentence
           that says how much of the pool the rows are. A count of accounts is
           not a fact when documents were dropped reaching it. */}
@@ -391,8 +356,16 @@ function Body({
     if (typeof window !== 'undefined') followHash(paneHref('capacity/accounts', { account: id }))
   }
   const view = linked !== null ? { ...ui, chosen: linked } : ui
+  // THE ANSWER FIRST (#2222, proposal A): can the pool take another agent,
+  // and if not, when. Re-read with the board, so the two agree.
+  const waiting = usePoolWaiting(board.readAt)
+  const scope = board.page.tenant_id
+  const pool = accounts as PoolAccount[]
   return (
     <>
+      <Verdict accounts={pool} scope={scope} shortfall={shortfall(board)} now={Date.now()} waiting={waiting} />
+      {accounts.length > 0 && <RuleLine accounts={pool} />}
+      <DuplicateBanner accounts={pool} scope={scope} onOpen={choose} />
       <Broken accounts={accounts} scope={board.page.tenant_id} onOpen={choose} />
       {/* A LINK TO AN ACCOUNT THIS READ DOES NOT HAVE IS SAID (live QA
           CAP-12): `?account=eng:nope` used to show another account under that
@@ -706,6 +679,12 @@ function Pool({
               <Mark kind="zero" say="The account read succeeded and this pool has no accounts yet." />
               <span>{phone ? 'add the first one below' : 'add the first one beside this list'}</span>
             </p>
+            {/* WHICH ORGANISATION (#2222): one login can hold two, and the
+                sign-in takes the one selected in that browser. */}
+            <p className="muted small">
+              Sign in to the organisation you mean: one claude.ai login can hold two, and the sign-in takes the one that is
+              selected.
+            </p>
           </div>
         </section>
         {/* The form with no click: on an empty pool it is the one fix. */}
@@ -723,7 +702,7 @@ function Pool({
        phone should land on. `is-adding`: the add form is open in the pane, so
        the pane shows on a phone too. */
     <div
-      className={`acct-split${shown.explicit ? ' is-detail' : ''}${adding ? ' is-adding' : ''}`}
+      className={`acct-split is-ranked${shown.explicit ? ' is-detail' : ''}${adding ? ' is-adding' : ''}`}
     >
       <section className="section panel acct-list" aria-label="Subscription accounts">
         <div className="acct-list-head">
@@ -734,23 +713,21 @@ function Pool({
           </h2>
           <AddButton ui={ui} patch={patch} />
         </div>
-        <ul className="acct-items">
-          {accounts.map((x) => (
-            <AcctItem
-              key={x.account_id}
-              account={x}
-              board={board}
-              now={now}
-              readAt={board.readAt}
-              // A PHONE MARKS ONLY WHAT IT OPENED (visual QA V067). The default
-              // account is a desktop convenience -- the pane beside the list
-              // shows it -- and a phone draws no pane until a row is chosen,
-              // so highlighting the default there marked a row nobody opened.
-              chosen={x.account_id === a.account_id && (shown.explicit || !phone)}
-              onChoose={() => choose(x.account_id)}
-            />
-          ))}
-        </ul>
+        {/* RANKED BY WHEN EACH CAN TAKE A NEW AGENT (#2222): one table on a
+            desktop, a card each on a phone. The name is the `acct-open`
+            button the list was, so choosing one opens the same detail under
+            it, with every control the page had. */}
+        <p className="acct-rank-note">Ranked by when each can take a new agent. Times are UTC.</p>
+        <AccountsTable
+          accounts={accounts as PoolAccount[]}
+          scope={board.page.tenant_id}
+          now={now}
+          // A PHONE MARKS ONLY WHAT IT OPENED (visual QA V067): the default
+          // account is a desktop convenience, shown in the pane under the table.
+          chosen={shown.explicit || !phone ? a.account_id : null}
+          phone={phone}
+          onChoose={(id) => choose(id)}
+        />
         <PoolFindings
           accounts={accounts}
           scope={board.page.tenant_id}
@@ -776,10 +753,12 @@ function Pool({
             </>
           )}
           <ReadingAges accounts={accounts} />{' '}
-          {/* THE TILDE'S LEGEND ONLY WHERE A TILDE IS (#127). */}
+          {/* THE TILDE'S LEGEND ONLY WHERE A TILDE IS (#127): the ranked table
+              draws an old reading pale with its age, so a `~` is only ever in
+              the chosen account's detail. */}
           &middot;{' '}
           <span className="acct-clause">
-            {anyProjected(accounts, now) ? '~ is an old reading, not current' : 'no projected figures'}
+            {anyProjected([a], now) ? '~ is an old reading, not current' : 'no projected figures'}
           </span>
           {/* THE OTHER OF THIS SCREEN'S TWO `?` (B7.4), and the reason it is one
               of the two is the STALE MARK. This console draws three different
@@ -789,6 +768,7 @@ function Pool({
               topic is what may and may not be concluded from it. */}
           <HelpCard topic="projected-not-measured" />
         </p>
+        <Forecast accounts={accounts as PoolAccount[]} scope={board.page.tenant_id} now={now} />
       </section>
       {/* THE CHOSEN ACCOUNT, beside the list (capacity.html A1). The detail is
           the same component the expanded row drew -- facts, controls, and PR
@@ -817,88 +797,6 @@ function Pool({
         )}
       </div>
     </div>
-  )
-}
-
-/**
- * One account in the list: A1's compact row.
- *
- * The label, the five-hour figure (`cs status`'s first number, under the same
- * honesty rules as ever: an em dash when unmeasured, `~` when projected), and
- * one small line -- the state, and when the binding window clears. Everything
- * else is the pane's. Under the button, outside it because a mark there is
- * focusable: the id that gets pasted into a command, when it was last given
- * out, and the `skipped here` mark.
- */
-function AcctItem({
-  account,
-  board,
-  now,
-  readAt,
-  chosen,
-  onChoose,
-}: {
-  account: Account
-  board: AccountsBoard
-  now: number
-  /** When the board this item came from was read. See `AccountsBoard.readAt`. */
-  readAt: number
-  /** Whether this is the account the pane beside the list shows. */
-  chosen: boolean
-  onChoose: () => void
-}) {
-  const five = readingOf(account, FIVE_HOUR)
-  // THE ROW THAT READS HEALTHIEST AND SERVES NOBODY. `choose()` skips an
-  // account this tenant has reported unreadable, so its window, its headroom
-  // and its state all describe an account that will not be handed out here.
-  const unusable = unreadableFor(account, board.page.tenant_id)
-  const cls = ['acct-li', chosen ? 'is-chosen' : '', unusable ? 'is-unusable' : ''].filter(Boolean).join(' ')
-  return (
-    <li className={cls}>
-      <button
-        type="button"
-        className="acct-open"
-        data-account={account.account_id}
-        aria-current={chosen ? 'true' : undefined}
-        onClick={onChoose}
-      >
-        {/* THE NAME, IN PLACE OF THE LABEL (#1913): the owner's Name when it
-            has one, the label otherwise. The id under the button stays, so
-            the Name never hides which account this is. */}
-        <b className="acct-li-name">{accountName(account)}</b>
-        {/* THE WINDOW IS NAMED AT THE FIGURE (QA G5-23): `69% 5h`. The
-            list's % is always the five-hour window, and the only place that
-            said so was the sub-line's `· 5h` -- which is the window Clears is
-            about, and is `· 7d` on another row, 200px away. */}
-        <WindowFig reading={five} window="five-hour" label="5h used" win="5h" />
-        <small className="acct-li-line">
-          <AcctState state={account.state} /> &middot;{' '}
-          <ClearsLine account={account} now={now} readAt={readAt} />
-        </small>
-      </button>
-      <span className="acct-li-meta">
-        {/* The heading is the Name (or the label); the full id is what gets
-            pasted into a command, and is printed here untransformed. */}
-        <span className="raw">{account.account_id}</span>
-        {/* LAST GIVEN OUT, ON THE ROW (#127): a pool no worker can reach --
-            every account `never` -- otherwise looks like a healthy idle one. */}
-        <span className="acct-given">
-          {neverAssigned(account) ? 'never given out' : `given out ${agoPastDay(account.last_assigned_at as string, now)}`}
-        </span>
-        {/* A MARK, NOT A CLAUSE (B4.4). The state is still AVAILABLE and that
-            is still true; the pool simply will not hand it to THIS tenant while
-            the report stands. The explanation is the mark's accessible name. */}
-        {unusable && (
-          <span
-            className="ctl-mark is-unread acct-unusable"
-            aria-label={`The pool is skipping this account for ${board.page.tenant_id}: this tenant reported it could not read the account's secret, and accounts.choose skips it for this tenant because of that. It is not skipped for anyone else. The report is forgotten thirty minutes after it was made, so this clears by itself if the cause was a freshly onboarded account; if it persists, the missing piece is a roles/secretmanager.secretAccessor grant on the secret for this tenant's worker service account.`}
-          >
-            skipped here
-          </span>
-        )}
-        <StateNote account={account} />
-      </span>
-    </li>
   )
 }
 
@@ -935,77 +833,8 @@ function readingTitle(r: AccountReading, window: string): string {
   }
 }
 
-/**
- * The five-hour figure on a list item: the number and its honesty marks, no
- * track (A1 draws none in the list; the pane's tiles carry the proportion).
- *
- * AN EM DASH, NOT A ZERO. A window nobody measured prints `—` and nothing that
- * reads as a figure; a measured 0% prints `0%`. `~` before a figure that is
- * real but no longer current.
- */
-function WindowFig({
-  reading,
-  window,
-  // The figure's name, passed rather than derived: `five-hour` is not what the
-  // figure is called, and OV-1 puts the polarity (`used`) on every %.
-  label,
-  win,
-}: {
-  reading: AccountReading
-  window: string
-  label: string
-  /** The window's short name, drawn after the figure (`69% 5h`). */
-  win?: string
-}) {
-  const title = readingTitle(reading, window)
-  const named = win === undefined ? null : <span className="acct-pct-win"> {win}</span>
-  if (reading.kind === 'never' || reading.kind === 'absent') {
-    return (
-      <em className="acct-window acct-unmeasured" data-label={label} title={title}>
-        <span className="acct-pct ctl-em">&mdash;</span>
-        {named}
-      </em>
-    )
-  }
-  // A WINDOW THAT HAS ALREADY REFILLED HAS NO CURRENT FIGURE (live QA
-  // CAP-3). `~92%` read as "about 92% used now" for a window that reset hours
-  // ago; the 92% is what it WAS, so it is said as that, after the word reset.
-  if (reading.kind === 'reset') {
-    return (
-      <em className="acct-window acct-reset" data-label={label} title={title}>
-        <span className="acct-pct">reset</span>
-        {named}
-        <small className="acct-was"> was {Math.round(reading.pct)}%</small>
-      </em>
-    )
-  }
-  const projected = isProjected(reading)
-  return (
-    <em className={`acct-window${projected ? ' acct-projected' : ''}`} data-label={label} title={title}>
-      <span className="acct-pct">
-        {projected && <span className="acct-tilde">~</span>}
-        {Math.round(reading.pct)}%
-      </span>
-      {named}
-    </em>
-  )
-}
+export { agoPastDay }
 
-/**
- * An age past a day in days AND hours (QA G5-23): `given out 1d 20h ago`, not
- * `44h ago`, which is arithmetic a reader does before reacting. Under a day it
- * is `timeAgo`'s. Floored, so an age never reads older than it is; a whole
- * number of days drops its `0h`.
- */
-export function agoPastDay(when: string, now: number = Date.now()): string {
-  const t = Date.parse(when)
-  if (!Number.isFinite(t)) return timeAgo(when, now)
-  const h = Math.floor((now - t) / 3_600_000)
-  if (h < 24) return timeAgo(t, now)
-  const d = Math.floor(h / 24)
-  const r = h % 24
-  return r === 0 ? `${d}d ago` : `${d}d ${r}h ago`
-}
 
 /**
  * One window as a tile in the chosen account's pane: the figure, and §6.4's
@@ -1182,28 +1011,6 @@ function clearsOf(account: Account, now: number, readAt: number): Clears {
   }
 }
 
-/**
- * The list item's `clears 1h 20m · 5h`, or `cleared · 5h` for a window that
- * already reset: `clears` is a countdown's label, and before `cleared` it read
- * `clears cleared` (QA-051, 2026-10-20). The past tense is the whole fact.
- */
-function ClearsLine({ account, now, readAt }: { account: Account; now: number; readAt: number }) {
-  const c = clearsOf(account, now, readAt)
-  return (
-    <span className={`acct-clears ${c.cls}`.trim()} data-label="Clears" title={c.title}>
-      {c.text !== 'cleared' && 'clears '}
-      {c.tilde && <span className="acct-tilde">~</span>}
-      {c.text}
-      {c.win !== null && (
-        <>
-          {' '}
-          &middot; <span className="acct-clears-win">{c.win}</span>
-        </>
-      )}
-    </span>
-  )
-}
-
 /** The pane's Clears tile, naming its window visibly (#127), not only in a `title=`. */
 function ClearsTile({ account, now, readAt }: { account: Account; now: number; readAt: number }) {
   const c = clearsOf(account, now, readAt)
@@ -1244,22 +1051,6 @@ function anyProjected(accounts: Account[], now: number): boolean {
     if (Number.isFinite(at) && at <= now) return true
     return isProjected(readingOf(a, binding.key))
   })
-}
-
-/** The second line under a state chip, when there is a real one to write. */
-function StateNote({ account }: { account: Account }) {
-  if (account.reason) return <span className="acct-why">{account.reason}</span>
-  const binding = bindingWindow(account)
-  if (binding && binding.window.reset) {
-    // `cs status` words this "window reset - re-reading", and it means the
-    // figures on this row describe a window that has already refilled.
-    return <span className="acct-why">window reset, awaiting a new reading</span>
-  }
-  if (account.observed_at === null) return <span className="acct-why">never observed</span>
-  if (account.stale) {
-    return <span className="acct-why">reading is {timeAgo(account.observed_at)}</span>
-  }
-  return null
 }
 
 /**

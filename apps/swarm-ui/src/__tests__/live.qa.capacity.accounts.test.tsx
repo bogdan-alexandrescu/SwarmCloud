@@ -168,7 +168,7 @@ describe('CAP-3: a window that has reset has no current figure', () => {
     windows: { five_hour: { utilization: 0.92, resets_at: new Date(Date.now() - 5 * 3_600_000).toISOString(), reset: true } },
   })
 
-  it('says reset and what it was, with no bar and no tilde, in the list and the tile', async () => {
+  it('says reset with no current figure, no bar and no tilde, in the table and the tile', async () => {
     await mount([RESET])
     for (const el of document.querySelectorAll<HTMLElement>('.acct-window[data-label="5h used"]')) {
       expect(el.querySelector('.acct-pct')!.textContent, 'the old figure is the headline').toBe('reset')
@@ -176,7 +176,12 @@ describe('CAP-3: a window that has reset has no current figure', () => {
       expect(el.querySelector('.acct-tilde'), 'a reset window is drawn as a projection').toBeNull()
       expect(el.querySelector('.ctl-util-track, .ctl-util-fill'), 'a bar for a window that refilled').toBeNull()
     }
-    expect(document.querySelectorAll('.acct-window[data-label="5h used"]').length).toBeGreaterThanOrEqual(2)
+    expect(document.querySelectorAll('.acct-window[data-label="5h used"]').length).toBe(1)
+    // The ranked table (#2222): reset, when, and nothing read since -- never the old figure, never a fill.
+    const cell = document.querySelector<HTMLElement>('tr.acct-rank-row .acct-fig')!
+    expect(cell.textContent).toMatch(/^5-hour reset .+Znothing read since$/)
+    expect(cell.textContent).not.toContain('92')
+    expect(cell.querySelector('.ctl-util-fill'), 'a fill for a window that refilled').toBeNull()
     // No `~` on screen, so the foot does not explain one.
     expect(document.querySelector('.provenance')!.textContent).toContain('no projected figures')
   })
