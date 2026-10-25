@@ -7,10 +7,11 @@
 // colours -- an account is not a task (brand.html §3).
 //
 // What this file pins:
-//   * with no choice made, the pane opens the account that needs a person, else
-//     the most used, else the first by label (`defaultAccount`, pinned in
-//     accounts.default.test.tsx) -- never a placeholder while there are accounts;
-//   * choosing a row shows that one, and only that one;
+//   * with no choice made, no account is open and no placeholder is drawn: the
+//     ranked table is the page (#2222, mock-up A F2), and an account opens as
+//     a side sheet only when its row is chosen (F4);
+//   * choosing a row shows that one, and only that one; Escape and the
+//     sheet's close button close it, and focus goes back to the row;
 //   * `Add account` sits in the list's header row;
 //   * the list is a list: one item per account, no table and no column heads;
 //   * available and draining are grey with no hue mark, paused is the park
@@ -19,8 +20,8 @@
 //   * on a phone the list is the page and a chosen account is a page of its
 //     own with a way back.
 //
-// BREAK IT: restore the `chosen.length === 0` placeholder -- the first case
-// finds "Choose an account." Or put `Add account` back in its own bar under the
+// BREAK IT: restore the `chosen.length === 0` placeholder, or open the
+// default account unasked -- the first case finds a pane. Or put `Add account` back in its own bar under the
 // list -- the header case finds it outside `.acct-list-head`.
 
 import { act, fireEvent, render, screen } from '@testing-library/react'
@@ -28,6 +29,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import STYLES from '../styles.css?raw'
 import CAPACITY from '../styles/capacity.css?raw'
+import RANKED from '../styles/accounts-ranked.css?raw'
 import { cascade } from './cssgate'
 import type { AccountsBoard } from '../api'
 import type { Result } from '../fetch'
@@ -48,7 +50,7 @@ vi.mock('../api', () => api)
 const { AccountsScreen } = await import('../Accounts')
 
 const WAIT = { timeout: 5000 } as const
-const SHEETS = `${STYLES}\n${CAPACITY}`
+const SHEETS = `${STYLES}\n${CAPACITY}\n${RANKED}`
 
 function ok<T>(data: T): Result<T> {
   return { status: 'ok', data, fetchedAt: Date.now(), serverAt: new Date().toISOString() }
@@ -113,25 +115,37 @@ const TWO = [
   account({ account_id: 'eng:b', label: 'bravo' }),
 ]
 
-describe('the pane opens an account without being asked (#503)', () => {
-  it('opens the first account by label when none is used, never the placeholder', async () => {
+describe('an account opens as a side sheet, and only when asked (#503, #2222)', () => {
+  it('opens no account until a row is chosen, and draws no placeholder', async () => {
     await mount(TWO)
     expect(screen.queryByText('Choose an account.')).toBeNull()
     expect(document.querySelector('.acct-pane-empty')).toBeNull()
-    expect(shown()).toEqual(['Account alpha'])
-    expect(item('alpha').classList.contains('is-chosen')).toBe(true)
+    expect(document.querySelector('.acct-sheet')).toBeNull()
+    expect(shown()).toEqual([])
+    expect(document.querySelectorAll('tr.acct-rank-row.is-chosen').length).toBe(0)
   })
 
-  it('opens the account that needs a sign-in first, wherever it sits', async () => {
-    await mount([TWO[0]!, account({ account_id: 'eng:b', label: 'bravo', state: 'REAUTH_REQUIRED' })])
+  it('closes on Escape and on its close button, and gives focus back to the row', async () => {
+    await mount(TWO)
+    const open = () => fireEvent.click(item('bravo').querySelector('button.acct-open')!)
+    open()
     expect(shown()).toEqual(['Account bravo'])
+    expect(document.activeElement?.classList.contains('acct-sheet-close')).toBe(true)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(shown()).toEqual([])
+    expect((document.activeElement as HTMLElement | null)?.dataset.account).toBe('eng:b')
+
+    open()
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(document.querySelector('.acct-sheet')).toBeNull()
   })
 
   it('shows the row a reader chooses, and only that one', async () => {
     await mount(TWO)
     fireEvent.click(item('bravo').querySelector('button.acct-open')!)
     expect(shown()).toEqual(['Account bravo'])
-    // Choosing the chosen row again keeps it: there is no empty pane to fall to.
+    expect(item('bravo').classList.contains('is-chosen')).toBe(true)
+    // Choosing the chosen row again keeps it open.
     fireEvent.click(item('bravo').querySelector('button.acct-open')!)
     expect(shown()).toEqual(['Account bravo'])
   })
@@ -234,20 +248,22 @@ describe('on a phone the account is a page (frame 10, #503)', () => {
   it('shows the list as the page until a row is chosen, then the account with a way back', async () => {
     await mount(TWO)
     const split = document.querySelector('.acct-split')!
-    const pane = document.querySelector('.acct-pane')!
     const list = document.querySelector('.acct-list')!
-    // Nothing chosen yet: the phone shows the list and not the pane.
+    // Nothing chosen yet: no sheet at any width.
     expect(split.classList.contains('is-detail')).toBe(false)
-    expect(display(pane, 390)).toBe('none')
-    expect(display(pane, 1440)).not.toBe('none')
+    expect(document.querySelector('.acct-pane')).toBeNull()
 
     fireEvent.click(item('bravo').querySelector('button.acct-open')!)
+    const pane = document.querySelector('.acct-pane.acct-sheet')!
     expect(split.classList.contains('is-detail')).toBe(true)
+    // A phone: the account is the page. A desktop: a sheet over the table.
     expect(display(list, 390)).toBe('none')
     expect(display(pane, 390)).not.toBe('none')
     expect(display(list, 1440)).not.toBe('none')
+    expect(cascade(SHEETS, pane, 'position', { width: 1440 }).winner?.value).toBe('fixed')
+    expect(cascade(SHEETS, pane, 'position', { width: 390 }).winner?.value ?? 'static').not.toBe('fixed')
 
-    const back = document.querySelector<HTMLButtonElement>('.acct-pane > button.acct-back')!
+    const back = document.querySelector<HTMLButtonElement>('.acct-sheet-head > button.acct-back')!
     expect(back, 'the account page has no way back').not.toBeNull()
     expect(back.textContent).toBe('‹ Accounts')
     expect(display(back, 1440)).toBe('none')

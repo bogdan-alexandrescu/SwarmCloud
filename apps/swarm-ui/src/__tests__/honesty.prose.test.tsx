@@ -23,6 +23,7 @@
 // on is a class the shipped stylesheet actually carries.
 
 import STYLES from '../styles.css?raw'
+import RANKED from '../styles/accounts-ranked.css?raw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
@@ -679,30 +680,29 @@ describe('Accounts, with every help card closed', () => {
     expect(textOf(onItem)).toBe('5-hour —no reading yet')
     expect(onItem.querySelector('.ctl-util-track'), 'an unmeasured window drew a track on its row').toBeNull()
 
-    // The 5h and 7d tiles of the account nobody has polled.
-    const unmeasured = [...document.querySelectorAll('.acct-tiles > .acct-window.acct-unmeasured')]
-    expect(unmeasured.length, 'the never-polled account drew no unmeasured window').toBe(2)
+    // The 5-hour and 7-day windows of the account nobody has polled, in its
+    // sheet (#2222, mock-up A F4: the tiles became the sheet's windows).
+    const unmeasured = sheetWindows()
+    expect(unmeasured.length, 'the never-polled account drew no window').toBe(2)
     for (const cell of unmeasured) {
-      expect(textOf(cell.querySelector('.acct-pct'))).toBe('—')
-      expect(textOf(cell.querySelector('.acct-pct'))).not.toMatch(/\d/)
+      expect(textOf(cell.querySelector('.acct-win-l'))).toMatch(/^(5|7)-(hour|day) —$/)
+      expect(textOf(cell)).not.toMatch(/\d%/)
       // THE BAR IS THE MARKER. An empty bar and a measured 0% are the same
       // picture, so an unmeasured window draws no bar at all.
       expect(cell.querySelector('.ctl-util-track'), 'an unmeasured window drew a bar').toBeNull()
       expect(cell.querySelector('.acct-bar'), 'an unmeasured window drew the old bar').toBeNull()
     }
 
-    // ...and its Clears, which has no window to count down to, is an em dash
-    // rather than a zero or a "now" -- on the tile and on the item.
-    const clears = document.querySelector('.acct-tiles > [data-label="Clears"]')!
-    expect(clears.classList.contains('acct-unmeasured'), 'the never-polled account drew a countdown').toBe(true)
-    expect(textOf(clears.querySelector('b'))).toBe('—')
+    // ...and nothing says when it clears: no window to count down to, and no
+    // zero or "now" in its place.
+    const verdict = textOf(document.querySelector('.acct-sheet .acct-sv'))
+    expect(verdict).not.toMatch(/Clears:/)
+    expect(verdict).not.toMatch(/\bnow\b/)
 
     chooseAccount('eng:fresh')
-    const measured = [...document.querySelectorAll('.acct-tiles > .acct-window')].filter(
-      (td) => !td.classList.contains('acct-unmeasured'),
-    )
-    expect(measured.length, 'the measured-zero account drew no window tile').toBeGreaterThan(0)
-    expect(textOf(measured[0]!.querySelector('.acct-pct'))).toBe('0%')
+    const measured = sheetWindows()
+    expect(textOf(measured[0]!.querySelector('.acct-win-l'))).toBe('5-hour 100% left')
+    expect(textOf(measured[0]!)).toContain('0% used')
     // The shared track draws a measured 0% with its baseline tick (§8.7.2).
     const track = measured[0]!.querySelector('.ctl-util-track')
     expect(track, 'a measured window drew no bar').not.toBeNull()
@@ -761,21 +761,23 @@ describe('Accounts, with every help card closed', () => {
   /**
    * OV-1: ONE POLARITY, AND EVERY % CARRIES ITS WORD. The Overview's headline
    * said `% left` over rows of % used; the owner set % used everywhere
-   * (Overview, Accounts, sc). This table already printed used, under column
-   * heads that said only `5h` and `7d` -- so the word goes on the head, and on
-   * the phone key that stands in for it. A1 (#503) took the heads away; the
-   * word is now the tile's own label and every figure's `data-label`.
+   * (Overview, Accounts, sc). #2222 draws a window against its floor, which
+   * is a share LEFT, so both are printed, each with its word: `59% left` on
+   * the window's line and `41% used` under it, in the row and in the sheet.
    *
-   * MUTATION: label the tiles `5h` and `7d` again.
+   * MUTATION: drop `left` or `used` from WindowCell's figures.
    */
   it('says which way every window percentage points, on every figure', async () => {
     renderAccounts([MEASURED_ZERO])
     await screen.findByText('eng:fresh', undefined, WAIT)
-    const labels = [...document.querySelectorAll('.acct-tiles > .acct-window > small')].map((t) => textOf(t))
-    expect(labels).toEqual(['5h used', '7d used'])
-    const keys = [...document.querySelectorAll('.acct-window')].map((td) => td.getAttribute('data-label'))
-    expect(keys.length, 'no window figure was drawn').toBeGreaterThan(0)
-    for (const key of keys) expect(key, 'a figure drops the polarity').toMatch(/ used$/)
+    chooseAccount('eng:fresh')
+    const cells = sheetWindows()
+    expect(cells.length, 'no window figure was drawn').toBe(2)
+    for (const cell of cells) {
+      const lines = [...cell.querySelectorAll('.acct-win-l, small')].map((l) => textOf(l)).filter((t) => t.includes('%'))
+      expect(lines.length, 'no window figure was drawn').toBeGreaterThan(0)
+      for (const line of lines) expect(line, 'a figure drops the polarity').toMatch(/\d% (left|used)$/)
+    }
   })
 })
 
@@ -799,16 +801,20 @@ function chooseAccount(id: string): HTMLElement {
   return li
 }
 
+/** The open account's two windows in its sheet (#2222, mock-up A F4), 5-hour first. */
+function sheetWindows(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>('.acct-sheet .acct-ss-wins > .acct-win')]
+}
+
 /**
- * One account's window tile, by its label -- the label carries OV-1's
- * polarity (`5h used`, `7d used`). A1 RE-POINT (#503): the figure lived in a
- * table cell per row; it is now a tile in the pane, so the account is chosen
- * first.
+ * One account's window in its sheet, by its name (`5-hour`, `7-day`). A1
+ * RE-POINT (#503) made it a tile in the pane; #2222 made the pane a sheet
+ * that opens on a click, so the account is chosen first.
  */
 function accountCell(id: string, label: string): HTMLElement {
   chooseAccount(id)
-  const cell = document.querySelector(`.acct-tiles > [data-label="${label}"]`)
-  expect(cell, `${id} has no ${label} tile`).not.toBeNull()
+  const cell = sheetWindows().find((c) => textOf(c.querySelector('.acct-win-l > b')) === label)
+  expect(cell, `${id} has no ${label} window`).toBeTruthy()
   return cell as HTMLElement
 }
 
@@ -842,7 +848,7 @@ describe('Accounts draws a window with the shared track, not the five-cell bar (
     renderAccounts(board2())
     await screen.findByText('eng:live', undefined, WAIT)
     expect(document.querySelector('.acct-bar'), 'the five-cell bar is still drawn').toBeNull()
-    const fill = accountCell('eng:live', '5h used').querySelector<HTMLElement>('.ctl-util-fill')
+    const fill = accountCell('eng:live', '5-hour').querySelector<HTMLElement>('.ctl-util-fill')
     expect(fill, 'a live reading drew no track').not.toBeNull()
     // Unrounded: 43.75, not the nearest fifth (40) and not the figure's 44.
     expect(fill!.style.width).toBe('43.75%')
@@ -851,33 +857,40 @@ describe('Accounts draws a window with the shared track, not the five-cell bar (
   })
 
   it('draws bad only for a live window that is fully spent', async () => {
-    renderAccounts(board2())
+    // #2222: bad is the BROKER's verdict, a window `blocked_by` names.
+    const [live, stale] = board2()
+    const spent = {
+      ...live!,
+      can_take_new_agent: false,
+      blocked_by: [{ window: 'seven_day', used: 1, floor: 0.05, resets_at: FAR, aged_reading: false }],
+    } as Account
+    renderAccounts([spent, stale!])
     await screen.findByText('eng:live', undefined, WAIT)
-    expect(accountCell('eng:live', '7d used').querySelector('.ctl-util-fill.is-bad')).not.toBeNull()
+    expect(accountCell('eng:live', '7-day').querySelector('.ctl-util-fill.is-bad')).not.toBeNull()
     // Spent, but the reading is stale: projected, never the verdict.
-    const old = accountCell('eng:old', '5h used')
+    const old = accountCell('eng:old', '5-hour')
     expect(old.querySelector('.ctl-util-fill.is-bad'), 'a stale reading drew the spent verdict').toBeNull()
     expect(old.querySelector('.ctl-util-fill.ov-projected')).not.toBeNull()
-    expect(old.querySelector('.acct-tilde')?.textContent).toBe('~')
-    expect(accountCell('eng:old', '7d used').querySelector('.ctl-util-fill.ov-projected')).not.toBeNull()
+    // The sheet says why it is projected, under the windows.
+    expect(textOf(document.querySelector('.acct-sheet .acct-ss-note'))).toContain('counts at half')
+    expect(accountCell('eng:old', '7-day').querySelector('.ctl-util-fill.ov-projected')).not.toBeNull()
   })
 
-  it('draws the tile’s track across the tile, and hides it at 560px and below', async () => {
+  it('draws the window’s track across its half of the sheet, and hides it at 560px and below', async () => {
     renderAccounts(board2())
     await screen.findByText('eng:live', undefined, WAIT)
-    const track = accountCell('eng:live', '5h used').querySelector('.acct-window > .ctl-util-track')
-    expect(track, 'the track is not the window cell’s own child').not.toBeNull()
-    const won = (prop: string, width: number) => {
-      const r = cascade(STYLES, track!, prop, { width })
+    const track = accountCell('eng:live', '5-hour').querySelector('.acct-floor > .ctl-util-track')
+    expect(track, 'the track is not the floor’s own child').not.toBeNull()
+    const won = (el: Element, prop: string, width: number) => {
+      const r = cascade(`${STYLES}\n${RANKED}`, el, prop, { width })
       expect(r.unsupported, 'selectors the resolver could not evaluate').toEqual([])
       return r.winner?.value ?? null
     }
-    // The tile's width (G5-07, QA 2026-10-07): 40px of a 122px tile was a
-    // lone fill nobody could read as a share (qa.g5.accounts.test.tsx).
-    expect(won('width', 1440)).toBe('100%')
-    expect(won('display', 1440)).toBe('inline-flex')
-    // The phone block's own rule governs, as it does every other track.
-    expect(won('display', 390)).toBe('none')
+    // The window's width (G5-07): a lone fill in a corner is not a share.
+    expect(won(track!, 'width', 1440)).toBe('100%')
+    expect(won(track!.parentElement!, 'max-width', 1440)).toBe('none')
+    // The phone block hides every track; the words carry the window there.
+    expect(won(track!.parentElement!, 'display', 390)).toBe('none')
   })
 })
 

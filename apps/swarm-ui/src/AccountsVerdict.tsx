@@ -358,8 +358,11 @@ export function DuplicateBanner({
                 </>
               )}
             </p>
+            {/* A LINK-BUTTON ON THE WASH, as `Banner`'s actions are: a bordered
+                button's edge (`--ctl-bd`) measured 2.8:1 on this amber in dark,
+                under the 3:1 a control boundary is held to (spacing sweep). */}
             <div className="acct-dup-acts">
-              <button type="button" className="c-btn is-sm" onClick={() => onOpen(extra.account_id)}>
+              <button type="button" className="c-link" onClick={() => onOpen(extra.account_id)}>
                 Open {x}
               </button>
             </div>
