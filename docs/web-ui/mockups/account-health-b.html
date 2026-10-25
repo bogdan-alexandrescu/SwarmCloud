@@ -231,7 +231,7 @@ svg.lanes{display:block;width:100%;height:auto}
 @media (max-width:600px){.wrap{padding:20px 12px 60px}h2{margin-top:44px}
 .phone{width:auto;margin:0 -12px;border-width:6px 0;border-radius:0}.frow figure.fr{width:100%}
 figure.fr:has(>.scroller>.app)>.scroller{display:none}
-figure.fr:has(>.scroller>.app)::before{content:"Desktop frame, drawn at 1424: open this page in a wider window to see it. Every state has its phone frame at 390 on this page (P1 to P5).";display:block;padding:12px 14px;border:1px dashed var(--line);border-radius:12px;font-size:13.5px;color:var(--mute)}
+figure.fr:has(>.scroller>.app)::before{content:"Desktop frame, drawn at 1424: open this page in a wider window to see it. The phone frames on this page are P1 (F1) and P2 (F2), both drawn at 390.";display:block;padding:12px 14px;border:1px dashed var(--line);border-radius:12px;font-size:13.5px;color:var(--mute)}
 figure.fr:has(>.scroller>.app)>figcaption{margin-left:0}
 .docmap table{min-width:0}.docmap thead{display:none}.docmap tr,.docmap td{display:block}.docmap td{border-bottom:0;padding:2px 12px}.docmap td:first-child{font-weight:600;padding-top:10px}.docmap td:last-child{padding-bottom:10px;border-bottom:1px solid var(--line)}.docmap tr:last-child td:last-child{border-bottom:0}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
@@ -580,7 +580,8 @@ function countsTable(a,o){o=o||{};
 function hourlyChart(list,o){o=o||{};
   var W=o.w||900,Hh=o.h||120,L=o.left||30,top=o.bandRow?18:6,bot=20,ph=Hh-top-bot,b=hourly(list),mx=1;
   b.forEach(function(x){if(x.n>mx)mx=x.n});
-  var bw=(W-L)/168,s='<svg class="ch" viewBox="0 0 '+W+' '+Hh+'" role="img" aria-label="'+esc(o.label||'Events per hour over 7 days')+'">';
+  /* a 5-unit gutter past the last hour keeps the now line off the chart's edge */
+  var bw=(W-L-5)/168,s='<svg class="ch" viewBox="0 0 '+W+' '+Hh+'" role="img" aria-label="'+esc(o.label||'Events per hour over 7 days')+'">';
   (o.bands||[]).forEach(function(r){var x0=L+Math.max(0,(r.from-START)/H)*bw,x1=L+Math.min(168,(r.to-START)/H)*bw;
     s+='<rect class="band" x="'+x0.toFixed(1)+'" y="'+top+'" width="'+Math.max(2,x1-x0).toFixed(1)+'" height="'+ph+'"/><line class="bandl" x1="'+x0.toFixed(1)+'" x2="'+x0.toFixed(1)+'" y1="'+top+'" y2="'+(top+ph)+'"/>';
     if(o.bandRow&&x1-x0>40) s+='<text class="bl" x="'+(x0+3).toFixed(1)+'" y="13">'+wl(r.w)+'</text>';});
@@ -588,11 +589,15 @@ function hourlyChart(list,o){o=o||{};
   s+='<text x="'+(L-6)+'" y="'+(top+10)+'" text-anchor="end">'+mx+'</text><text x="'+(L-6)+'" y="'+(top+ph)+'" text-anchor="end">0</text>';
   for(var d=19;d<=25;d++){var x=L+(T(d,0)-START)/H*bw;s+='<line class="grid" x1="'+x.toFixed(1)+'" x2="'+x.toFixed(1)+'" y1="'+top+'" y2="'+(top+ph+4)+'"/>';
     if(!o.sparseDays||d%2===1){var lab=(o.short||W<520)&&d!==19?String(d):'Oct '+d,edge=x+3+lab.length*7>W;s+='<text x="'+(edge?W:x+3).toFixed(1)+'" y="'+(Hh-4)+'"'+(edge?' text-anchor="end"':'')+'>'+lab+'</text>';}}
-  b.forEach(function(x,i){if(!x.n)return;var y=top+ph,X=(L+i*bw+.3).toFixed(2),w=Math.max(1,bw-.6).toFixed(2),tip='<b>'+day(x.t)+' '+hm(x.t)+'–'+hm(x.t+H)+'</b><br>'+FAMS.map(function(f){return x[f.f]+' '+f.label.toLowerCase()}).join(' · ');
+  /* the dashed now line goes first, behind the bars, so the current hours' bars are never hidden under it */
+  var nx=L+(NOW-START)/H*bw;s+='<line class="now" x1="'+nx.toFixed(1)+'" x2="'+nx.toFixed(1)+'" y1="'+(top-2)+'" y2="'+(top+ph)+'"/>';
+  /* at narrow widths an hour is ~1 px: every bar is at least 2.6 wide, centred on its hour and ending clear of the
+     now line (every event is before now), and the tallest are drawn first so a shorter neighbour never covers a spike's top */
+  var order=b.map(function(x,i){return i}).filter(function(i){return b[i].n}).sort(function(p,q){return b[q].n-b[p].n||p-q});
+  order.forEach(function(i){var x=b[i],y=top+ph,wn=Math.max(2.6,bw-.6),X=Math.min(nx-2-wn,L+(i+.5)*bw-wn/2).toFixed(2),w=wn.toFixed(2),tip='<b>'+day(x.t)+' '+hm(x.t)+'–'+hm(x.t+H)+'</b><br>'+FAMS.map(function(f){return x[f.f]+' '+f.label.toLowerCase()}).join(' · ');
     s+='<g class="hit" data-tip="'+esc(tip)+'">';
     ['err','lim','cred'].forEach(function(f){if(!x[f])return;var hh=x[f]/mx*ph;y-=hh;s+='<rect class="'+f+'" x="'+X+'" y="'+y.toFixed(2)+'" width="'+w+'" height="'+hh.toFixed(2)+'"/>'});
     s+='<rect x="'+X+'" y="'+top+'" width="'+w+'" height="'+ph+'" fill="transparent"/></g>';});
-  var nx=L+(NOW-START)/H*bw;s+='<line class="now" x1="'+nx.toFixed(1)+'" x2="'+nx.toFixed(1)+'" y1="'+(top-2)+'" y2="'+(top+ph)+'"/>';
   return s+'</svg>';}
 
 /* ---------- the events ---------- */
