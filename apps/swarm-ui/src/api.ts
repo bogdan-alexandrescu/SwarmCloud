@@ -5721,7 +5721,7 @@ let fixtureAccounts: ServedAccount[] = [
     can_take_new_agent: true,
     blocked_by: [],
     next_eligible_at: null,
-    organisation: { name: 'Saga', plan: 'Team' },
+    organisation: { name: 'Example', plan: 'Team' },
     duplicate_of: 'u-bogdan:team-copy',
     duplicate_reason: 'registered on the same organisation as u-bogdan:team-copy',
     windows: {
@@ -5824,7 +5824,7 @@ let fixtureAccounts: ServedAccount[] = [
     can_take_new_agent: false,
     blocked_by: [{ window: 'five_hour', used: 0.92, floor: 0.15, resets_at: ISO(40 * 60_000), aged_reading: false }],
     next_eligible_at: ISO(40 * 60_000),
-    organisation: { name: 'Saga', plan: 'Team' },
+    organisation: { name: 'Example', plan: 'Team' },
     windows: {
       five_hour: { utilization: 0.92, resets_at: ISO(40 * 60_000), reset: false },
       seven_day: { utilization: 0.41, resets_at: ISO(4 * 86_400_000 + 3 * 3600_000), reset: false },
@@ -5835,7 +5835,7 @@ let fixtureAccounts: ServedAccount[] = [
     can_take_new_agent: false,
     blocked_by: [{ window: 'seven_day', used: 0.97, floor: 0.05, resets_at: ISO(2 * 86_400_000 + 21 * 3600_000), aged_reading: false }],
     next_eligible_at: ISO(2 * 86_400_000 + 21 * 3600_000),
-    organisation: { name: 'Saga', plan: 'Team' },
+    organisation: { name: 'Example', plan: 'Team' },
     windows: {
       five_hour: { utilization: 0.31, resets_at: ISO(-3 * 3600_000), reset: true },
       seven_day: { utilization: 0.97, resets_at: ISO(2 * 86_400_000 + 21 * 3600_000), reset: false },
@@ -5849,7 +5849,7 @@ let fixtureAccounts: ServedAccount[] = [
     can_take_new_agent: false,
     blocked_by: [{ cap: 6, max_agents: 6 }],
     next_eligible_at: null,
-    organisation: { name: 'Saga', plan: 'Team' },
+    organisation: { name: 'Example', plan: 'Team' },
     lend_to: ['smoke'],
     windows: {
       five_hour: { utilization: 0.52, resets_at: ISO(4 * 3600_000 + 39 * 60_000), reset: false },
@@ -5861,7 +5861,7 @@ let fixtureAccounts: ServedAccount[] = [
     can_take_new_agent: false,
     blocked_by: [{ duplicate_of: 'u-bogdan:primary', reason: 'registered on the same organisation as u-bogdan:primary' }],
     next_eligible_at: null,
-    organisation: { name: 'Saga', plan: 'Team' },
+    organisation: { name: 'Example', plan: 'Team' },
     duplicate_of: 'u-bogdan:primary',
     duplicate_reason: 'registered on the same organisation as u-bogdan:primary',
     last_assigned_at: null,

@@ -283,7 +283,7 @@ export function inTime(at: number, now: number): string {
   return s === 'now' ? 'now' : `in ${s}`
 }
 
-/** `organisation Saga · Team`, or null when the broker recorded none. */
+/** `organisation Example · Team`, or null when the broker recorded none. */
 export function organisationLine(a: PoolAccount): string | null {
   const o = a.organisation
   if (!o || (!o.name && !o.plan)) return null

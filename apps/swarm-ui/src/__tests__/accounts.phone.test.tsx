@@ -122,16 +122,16 @@ describe('an account name is never broken at its hyphen', () => {
 
   it('holds both names of a pair whole in the duplicate banner', () => {
     const accounts = [
-      acct('saga-personal'),
+      acct('home-personal'),
       acct('team-copy', {
         can_take_new_agent: false,
-        blocked_by: [{ duplicate_of: 'eng:saga-personal', reason: 'registered on the same organisation as eng:saga-personal' }],
+        blocked_by: [{ duplicate_of: 'eng:home-personal', reason: 'registered on the same organisation as eng:home-personal' }],
       }),
     ]
     const { container } = render(<DuplicateBanner accounts={accounts} scope="eng" onOpen={() => {}} />)
     const head = container.querySelector('.acct-dup-head') as HTMLElement
-    expect(head.textContent).toBe('team-copy and saga-personal are one subscription')
-    expect([...head.querySelectorAll('.acct-nm')].map((n) => n.textContent)).toEqual(['team-copy', 'saga-personal'])
+    expect(head.textContent).toBe('team-copy and home-personal are one subscription')
+    expect([...head.querySelectorAll('.acct-nm')].map((n) => n.textContent)).toEqual(['team-copy', 'home-personal'])
   })
 
   it('holds the unmeasured names whole in the forecast', () => {

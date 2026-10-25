@@ -159,14 +159,14 @@ describe('the verdict', () => {
         AT,
       ),
       weekly('ai-eng-3', 0.97, Date.parse('2026-10-27T10:59:00Z'), AT),
-      weekly('saga-personal', 0.98, Date.parse('2026-10-26T07:59:00Z'), AT),
+      weekly('home-personal', 0.98, Date.parse('2026-10-26T07:59:00Z'), AT),
     ]
     const v = pool.verdictOf(accounts, 'eng', 0)
     expect(v.n).toBe(0)
     expect(v.next?.account.label).toBe('aieng-claude1')
     expect(pool.utcAt(v.next!.at, AT)).toBe('10:10Z')
     expect(v.next?.window).toBe('five_hour')
-    expect(v.then?.account.label).toBe('saga-personal')
+    expect(v.then?.account.label).toBe('home-personal')
     expect(pool.utcAt(v.then!.at, AT)).toBe('Oct 26 07:59Z')
     expect(v.underBy).toEqual([
       { window: 'seven_day', count: 2 },
@@ -288,12 +288,12 @@ describe('one subscription twice', () => {
   it('names the pair inside this workspace, and never another workspace’s account', () => {
     const extra = acct('team', {
       can_take_new_agent: false,
-      blocked_by: [{ duplicate_of: 'eng:saga-personal', reason: 'registered on the same organisation as eng:saga-personal' }],
-      duplicate_of: 'eng:saga-personal',
+      blocked_by: [{ duplicate_of: 'eng:home-personal', reason: 'registered on the same organisation as eng:home-personal' }],
+      duplicate_of: 'eng:home-personal',
     })
-    const older = acct('saga-personal', { duplicate_of: 'eng:team' })
+    const older = acct('home-personal', { duplicate_of: 'eng:team' })
     const pairs = duplicatePairs([extra, older])
-    expect(pairs.map((p) => [p.extra.label, p.other?.label])).toEqual([['team', 'saga-personal']])
+    expect(pairs.map((p) => [p.extra.label, p.other?.label])).toEqual([['team', 'home-personal']])
 
     const foreign = acct('lone', {
       can_take_new_agent: false,
