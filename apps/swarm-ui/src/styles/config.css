@@ -39,6 +39,16 @@
 .cfg-count small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .cfg-count .ctl-link { font-size: var(--t-micro); line-height: var(--lh-micro); }
 
+/* Finished (config-e.html `stripD`): one line on every width, the tick, the
+   words, the count and its age, and Show steps at the far end. */
+.cfg-done { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; padding: 8px 14px; min-width: 0; }
+.cfg-done .cfg-mark { margin-top: 0; }
+.cfg-done .cfg-mark circle { fill: var(--s-live); stroke: var(--s-live); }
+.cfg-done .cfg-mark path { stroke: var(--surface); stroke-width: 2; }
+.cfg-done b { font: 650 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
+.cfg-done small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.cfg-done .ctl-link { margin-left: auto; font-size: var(--t-micro); line-height: var(--lh-micro); }
+
 /* Tablet: the steps go two by two, the count under them. */
 @media (max-width: 1100px) {
   .cfg-strip { grid-template-columns: minmax(0, 1fr); }
