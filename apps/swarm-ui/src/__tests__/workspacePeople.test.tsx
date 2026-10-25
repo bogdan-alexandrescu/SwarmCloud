@@ -115,7 +115,7 @@ describe('People and roles: its address', () => {
   })
 
   it('leaves the other Settings pages and the old hashes where they were', () => {
-    expect(fromAddress('settings/keys')).toMatchObject({ sectionId: 'settings', tab: 'keys' })
+    expect(fromAddress('settings/keys')).toMatchObject({ sectionId: 'config', tab: 'secrets' })
     expect(fromAddress('settings/profile')).toMatchObject({ sectionId: 'settings', tab: 'profile' })
     expect(fromAddress('settings/anything-else')).toMatchObject({ sectionId: 'admin', tab: 'limits' })
   })

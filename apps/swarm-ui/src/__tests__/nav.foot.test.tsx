@@ -78,8 +78,8 @@ afterEach(() => {
 
 const PROFILE_PAGES: readonly [string, string][] = [
   ['Profile', '/settings/profile'],
-  ['API keys', '/settings/keys'],
-  // Workspace, MCP servers and People and roles are Config's since CONFIG-NAV (part of #2157).
+  // Workspace, MCP servers and People and roles are Config's since CONFIG-NAV
+  // (part of #2157), and API keys is Config › Secrets since SSC-UI (part of #2158).
 ]
 
 const spine = () => document.querySelector<HTMLElement>('.sk-spine')!
@@ -125,9 +125,9 @@ describe('the spine order (NAV-FOOT)', () => {
     expect([...fly!.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')])).toEqual(PROFILE_PAGES)
   })
 
-  it('keeps Profile last in the phone drawer, and its panel lists the two pages', () => {
+  it('keeps Profile last in the phone drawer, and its panel lists its page', () => {
     phoneWidth()
-    window.history.replaceState(null, '', '/settings/keys')
+    window.history.replaceState(null, '', '/settings/profile')
     render(<App />)
     fireEvent.click(document.querySelector<HTMLElement>('.sk-pbar button[aria-label="Open the menu"]')!)
     expect(document.querySelector('.sk-app.has-drawer'), 'the drawer did not open').not.toBeNull()
