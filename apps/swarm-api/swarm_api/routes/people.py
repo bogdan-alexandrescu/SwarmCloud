@@ -227,21 +227,29 @@ def administered_workspaces(ctx: AppContext, auth: AuthContext) -> dict[str, str
     selected tenant alone and never anything the request names; their own
     personal workspace and every `u-` id are left out. A workspace whose role
     could not be read is not administered: an unread role is never a wider
-    one."""
+    one. When NO role was read and none said admin, that is "could not ask",
+    `RoleUnavailable`'s 503, as `require_admin` answers an unread admin
+    lookup: a 403 would tell a real workspace admin they are not one."""
     store = ctx.roles
     if store is None:
         return {}
     email = (auth.email or "").strip().lower()
     out: dict[str, str] = {}
+    unread: RoleUnavailable | None = None
+    read = 0
     for tenant_id, principal in auth.tenant_choices:
         if principal == email or tenant_id.startswith("u-"):
             continue
         try:
             role = store.person_role(tenant_id, email, fresh=True).role
-        except RoleUnavailable:
+        except RoleUnavailable as exc:
+            unread = exc
             continue
+        read += 1
         if role == roles.ADMIN:
             out[tenant_id] = principal
+    if not out and read == 0 and unread is not None:
+        raise unread
     return out
 
 

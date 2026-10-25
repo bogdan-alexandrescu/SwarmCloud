@@ -261,3 +261,19 @@ def test_no_audit_row_is_written_by_a_workspace_admins_read(client, db) -> None:
     before = sorted(k for k in db.docs if k.startswith(f"{AUDIT_COLLECTION}/"))
     client.get(ROUTE, headers=h("alice"))
     assert sorted(k for k in db.docs if k.startswith(f"{AUDIT_COLLECTION}/")) == before
+
+
+def test_a_workspace_admin_whose_roles_cannot_be_read_is_told_so_not_refused(client, monkeypatch) -> None:
+    # "Could not ask" is a 503, as `require_admin` answers an unread admin
+    # lookup: a 403 would tell a real workspace admin they are not one.
+    from swarm_api.errors import RoleUnavailable
+    from swarm_api.roles import RoleStore
+
+    def unavailable(self, tenant_id, email, *, fresh=False):
+        raise RoleUnavailable("roles could not be read")
+
+    monkeypatch.setattr(RoleStore, "person_role", unavailable)
+    # MUTATION: count an unread role as "not an admin" -> 403 and this fails.
+    response = client.get(ROUTE, headers=h("alice"))
+    assert response.status_code == 503, response.text
+    assert "people" not in response.json()
