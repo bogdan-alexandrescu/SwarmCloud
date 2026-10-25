@@ -146,22 +146,18 @@ describe('QA-051: a window that already reset reads `cleared`, not `clears clear
     windows: { five_hour: { utilization: 0.4, resets_at: new Date(Date.now() - 5 * 3_600_000).toISOString(), reset: true } },
   })
 
-  it('drops the countdown label before the past tense, and keeps it on a countdown', async () => {
+  it('drops the countdown label before the past tense, on the chosen account’s tile', async () => {
     const LIVE = account({
       account_id: 'eng:alice-personal',
       observed_at: new Date().toISOString(),
       windows: { five_hour: { utilization: 0.4, resets_at: new Date(Date.now() + 80 * 60_000).toISOString(), reset: false } },
     })
     await mount([RESET, LIVE])
-    const lines = [...document.querySelectorAll<HTMLElement>('.acct-clears')]
-    const reset = lines.find((l) => l.closest('li, [data-account]')?.textContent?.includes('retired-laptop'))!
-    // MUTATION: put `clears ` back unconditionally in ClearsLine -- the row
-    // reads `clears cleared · 5h` again.
-    expect(reset.textContent).toBe('cleared · 5h')
-    expect(reset.textContent).not.toMatch(/clears cleared/)
-    // MUTATION: drop `clears ` for every value -- a countdown loses its label.
-    const live = lines.find((l) => l !== reset && /\dh|\dm/.test(l.textContent ?? ''))!
-    expect(live.textContent).toMatch(/^clears \d/)
+    // #2222: the list's `clears …` line went with the list; the ranked row says
+    // `reset HH:MMZ · nothing read since`, and the tile keeps the past tense.
+    const tile = document.querySelector<HTMLElement>('.acct-tiles > [data-label="Clears"] b')!
+    expect(tile.textContent).toBe('cleared')
+    expect(document.body.textContent).not.toMatch(/clears cleared/)
   })
 })
 

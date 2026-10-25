@@ -80,13 +80,18 @@ function board(accounts: Account[]): AccountsBoard {
   } as AccountsBoard
 }
 
-/** The state mark on the list item whose label is `label`. */
-function stateChip(label: string): HTMLElement {
-  const li = [...document.querySelectorAll('.acct-li')].find(
-    (el) => el.querySelector('.acct-li-name')?.textContent === label,
+/** The ranked table's row for `label` (#2222). */
+function rowFor(label: string): HTMLElement {
+  const tr = [...document.querySelectorAll('tr.acct-rank-row')].find(
+    (el) => el.querySelector('button.acct-open')?.textContent === label,
   )
-  expect(li, `no item rendered for ${label}`).toBeTruthy()
-  const chip = li!.querySelector('.acct-li-line > .acct-state')
+  expect(tr, `no item rendered for ${label}`).toBeTruthy()
+  return tr as HTMLElement
+}
+
+/** The state mark on the row whose label is `label`. */
+function stateChip(label: string): HTMLElement {
+  const chip = rowFor(label).querySelector('.acct-rank-marks > .acct-state')
   expect(chip, `the ${label} item drew no state mark`).toBeTruthy()
   return chip as HTMLElement
 }
@@ -97,8 +102,10 @@ function stateChip(label: string): HTMLElement {
  * `SOMETHING_NEW` stands for a state the API grows that this client has never
  * heard of: it is drawn as unrecognised, never defaulted into a healthy one.
  */
+// AVAILABLE draws no state on the ranked table (#2222): "available" read as
+// "can take an agent" while every account was under its floor. It is asserted
+// absent below.
 const STATES = [
-  { state: 'AVAILABLE', hue: 'neu', mark: 'none', word: 'available' },
   { state: 'PAUSED', hue: 'park', mark: 'parked', word: 'paused' },
   { state: 'DRAINING', hue: 'neu', mark: 'none', word: 'draining' },
   { state: 'REAUTH_REQUIRED', hue: 'warn', mark: 'warn', word: 'reauth required' },
@@ -110,9 +117,10 @@ describe('an account state is a mark and a word', () => {
     api.loadAccountsBoard.mockResolvedValue(
       ok(
         board(
-          STATES.map(({ state }, i) =>
-            account({ account_id: `eng:s${i}`, label: `s${i}`, state }),
-          ),
+          [
+            ...STATES.map(({ state }, i) => account({ account_id: `eng:s${i}`, label: `s${i}`, state })),
+            account({ account_id: 'eng:open', label: 'open', state: 'AVAILABLE' }),
+          ],
         ),
       ),
     )
@@ -130,8 +138,9 @@ describe('an account state is a mark and a word', () => {
 
     // THE ONE THAT WOULD HAVE BEEN SILENT, asserted as a COUNT: a bug that
     // sends every state to `unknown` satisfies "the unknown row is unknown".
-    const unknowns = document.querySelectorAll('.acct-li-line > .acct-state[data-hue="unknown"]')
+    const unknowns = document.querySelectorAll('.acct-rank-marks > .acct-state[data-hue="unknown"]')
     expect(unknowns.length, 'more than the unrecognised state drew the unknown mark').toBe(1)
+    expect(rowFor('open').querySelector('.acct-state'), 'AVAILABLE drew a state').toBeNull()
   })
 
   it('keeps the word on the surface and the mark beside it, neither standing in for the other', async () => {
@@ -157,16 +166,15 @@ describe('an account state is a mark and a word', () => {
   })
 
   it('keeps the state and the skipped-here mark apart, as two elements', async () => {
-    // The state says AVAILABLE and is right; the pool still will not hand the
-    // account to this tenant. Two facts, so two elements: the state on the
-    // item's line, the mark in its meta line -- never one run of text.
+    // The state says DRAINING and is right; the pool also will not hand the
+    // account to this tenant. Two facts, so two elements -- never one run of text.
     api.loadAccountsBoard.mockResolvedValue(
       ok(
         board([
           account({
             account_id: 'eng:skipped',
             label: 'skipped',
-            state: 'AVAILABLE',
+            state: 'DRAINING',
             unreadable_now: ['eng'],
           }),
         ]),
@@ -177,8 +185,7 @@ describe('an account state is a mark and a word', () => {
 
     const chip = stateChip('skipped')
     expect(chip.getAttribute('data-hue'), 'the state itself went missing').toBe('neu')
-    const li = chip.closest('.acct-li')!
-    const skipped = li.querySelector('.acct-li-meta > .ctl-mark.is-unread')
+    const skipped = rowFor('skipped').querySelector('.acct-rank-marks > .ctl-mark.is-unread')
     expect(skipped, 'the skipped-here mark went missing, which is the fact the state does NOT carry').toBeTruthy()
     expect(chip.contains(skipped)).toBe(false)
   })
