@@ -22,6 +22,7 @@ import {
   putQaChallengeBypass,
   putQaCredential,
   qaCredentialLinkFrom,
+  linkSpent,
   repoSlug,
   runQaTarget,
   type FlowBrowserTool,
@@ -81,8 +82,15 @@ import './styles/repositories.css'
  * the link's path the token is read off the bar once, dropped from it with
  * `history.replaceState`, and sent back as `link_token` with the save. Set
  * credential mints the same link for the signed-in admin and keeps its token
- * in memory, never drawn. Either way the token is sent at most once: the API
- * consumes it before the write, so a retry needs a new link.
+ * in memory, never drawn. The link's `environment` (the entry it was minted
+ * for, on a target of several) is sent back with it and named in the form's
+ * title (#2280). The token is dropped once an answer says the API consumed
+ * it (`linkSpent`); a refusal made before the link was checked keeps it, so
+ * the person fixes the field and saves again with the same link.
+ *
+ * A `field: "challenge_bypass"` link (`/qa-targets/<id>/challenge-bypass?t=..`)
+ * opens the same form with the bypass value's one field, and is sent and
+ * kept by the same rules.
  *
  * A CHALLENGE BYPASS (lane CAPTCHA-BYPASS, part of #2058; §2.5) is the app
  * owner's own way past their CAPTCHA or WAF challenge: a header or a cookie
@@ -166,7 +174,7 @@ export function QaTargetsScreen({ go, link }: { go: (to: string) => void; link?:
       setSaid({ tone: 'bad', title: `No credential link for ${t.name}`, text: writeFailure(r.error) })
       return
     }
-    if (r.status === 'ok') setCred({ targetId: t.id, token: r.data.token })
+    if (r.status === 'ok') setCred({ targetId: t.id, token: r.data.token, environment: null, field: 'credential' })
   }
 
   return (
@@ -201,7 +209,13 @@ export function QaTargetsScreen({ go, link }: { go: (to: string) => void; link?:
           name={nameOf(cred.targetId)}
           onSent={() => setCred((c) => (c === null ? c : { ...c, token: null }))}
           onSaved={() => {
-            setSaid({ tone: 'info', title: 'Credential saved', text: `The test credential for ${nameOf(cred.targetId)} is set. No page, route or log can show it again.` })
+            const what = cred.field === 'challenge_bypass' ? 'challenge bypass value' : 'test credential'
+            const where = cred.environment === null ? nameOf(cred.targetId) : `${nameOf(cred.targetId)} · ${cred.environment}`
+            setSaid({
+              tone: 'info',
+              title: cred.field === 'challenge_bypass' ? 'Challenge bypass value saved' : 'Credential saved',
+              text: `The ${what} for ${where} is set. No page, route or log can show it again.`,
+            })
             setCred(null)
             list.reload()
           }}
@@ -672,9 +686,10 @@ function ApproveHostForm({ t, onClose, onApproved }: { t: QaTarget; onClose: () 
 }
 
 /**
- * The test credential's form. The fields are UNCONTROLLED: their values live
- * in the DOM inputs and nowhere else, read once on submit and emptied before
- * the request is sent.
+ * The one-time link's form: the test credential's username and password, or
+ * a `challenge_bypass` link's value. The fields are UNCONTROLLED: their values
+ * live in the DOM inputs and nowhere else, read once on submit and emptied
+ * before the request is sent.
  */
 function CredentialForm({
   link,
@@ -691,62 +706,102 @@ function CredentialForm({
 }) {
   const user = useRef<HTMLInputElement>(null)
   const pass = useRef<HTMLInputElement>(null)
+  const bypass = useRef<HTMLInputElement>(null)
   const fid = useId()
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
+  const isBypass = link.field === 'challenge_bypass'
+  const where = link.environment === null ? name : `${name} · ${link.environment}`
 
   async function submit(e: FormEvent) {
     e.preventDefault()
     const username = user.current?.value ?? ''
     const password = pass.current?.value ?? ''
-    if (user.current !== null) user.current.value = ''
-    if (pass.current !== null) pass.current.value = ''
+    const value = bypass.current?.value ?? ''
+    for (const field of [user, pass, bypass]) if (field.current !== null) field.current.value = ''
     if (link.token === null) {
-      setFailed('This form needs a one-time link, and its link was already used or never came. Ask for a new one with Set credential.')
+      setFailed(`This form needs a one-time link, and its link was already used or never came. Ask for a new one${isBypass ? '' : ' with Set credential'}.`)
       return
     }
-    if (username === '' || password === '') {
-      setFailed('Type both the username and the password; nothing was sent.')
+    if (isBypass ? value === '' : username === '' || password === '') {
+      setFailed(isBypass ? 'Type the value; nothing was sent.' : 'Type both the username and the password; nothing was sent.')
       return
     }
     setBusy(true)
     setFailed(null)
-    const r = await putQaCredential(link.targetId, username, password, link.token)
-    // Sent once: the API consumed the link before it wrote.
-    onSent()
+    const r = isBypass
+      ? await putQaChallengeBypass(link.targetId, value, { token: link.token, environment: link.environment })
+      : await putQaCredential(link.targetId, username, password, link.token, link.environment)
     setBusy(false)
+    // `set_credential` checks the entry and the sign-in (`set_challenge_bypass`
+    // the value's shape) BEFORE `consume_link`: those refusals leave the link
+    // unused. A success consumed it, `qa_credential_link_invalid` is a dead
+    // link, and the store's 503 comes after the consume (`linkSpent`); only
+    // those drop the token.
+    if (linkSpent(r)) onSent()
     if (r.status === 'error') {
-      setFailed(`${writeFailure(r.error)} The link is used; ask for a new one to try again.`)
+      setFailed(
+        linkSpent(r)
+          ? `${writeFailure(r.error)} The link is used; ask for a new one to try again.`
+          : `${writeFailure(r.error)} Nothing was saved; the link still works, fix the field and save again.`,
+      )
       return
     }
     onSaved()
   }
 
   return (
-    <Card className="ur-form" title={`Test credential for ${name}`}>
-      <p className="ur-small">
-        Type the test account&rsquo;s username and password. They go from this page to the workspace&rsquo;s secret store and
-        nowhere else: Claude, the plugin and this page&rsquo;s address never see them, and the live browser types them into
-        the app&rsquo;s login without the agent holding them. Use a test account with no MFA or CAPTCHA. The link works once.
-      </p>
-      <form className="qa-cred" data-target-id={link.targetId} onSubmit={(e) => void submit(e)} autoComplete="off">
+    <Card className="ur-form" title={isBypass ? `Challenge bypass value for ${where}` : `Test credential for ${where}`}>
+      {isBypass ? (
+        <p className="ur-small">
+          Type the value of the challenge bypass the app&rsquo;s owner made for these runs. It goes from this page to the
+          workspace&rsquo;s secret store and nowhere else, and the live browser adds it on the target&rsquo;s approved origins
+          alone. The link works once.
+        </p>
+      ) : (
+        <p className="ur-small">
+          Type the test account&rsquo;s username and password. They go from this page to the workspace&rsquo;s secret store and
+          nowhere else: Claude, the plugin and this page&rsquo;s address never see them, and the live browser types them into
+          the app&rsquo;s login without the agent holding them. Use a test account with no MFA or CAPTCHA. The link works once.
+        </p>
+      )}
+      <form
+        className="qa-cred"
+        data-target-id={link.targetId}
+        data-field={link.field}
+        onSubmit={(e) => void submit(e)}
+        autoComplete="off"
+      >
         <div className="ur-fgrid">
-          <label className="ur-fl" htmlFor={`${fid}-username`}>
-            Username
-          </label>
-          <div>
-            <input id={`${fid}-username`} name="username" type="text" ref={user} autoComplete="off" spellCheck={false} />
-          </div>
-          <label className="ur-fl" htmlFor={`${fid}-password`}>
-            Password
-          </label>
-          <div>
-            <input id={`${fid}-password`} name="password" type="password" ref={pass} autoComplete="new-password" />
-          </div>
+          {isBypass ? (
+            <>
+              <label className="ur-fl" htmlFor={`${fid}-bypass_value`}>
+                Value
+              </label>
+              <div>
+                <input id={`${fid}-bypass_value`} name="bypass_value" type="password" ref={bypass} autoComplete="new-password" spellCheck={false} />
+              </div>
+            </>
+          ) : (
+            <>
+              <label className="ur-fl" htmlFor={`${fid}-username`}>
+                Username
+              </label>
+              <div>
+                <input id={`${fid}-username`} name="username" type="text" ref={user} autoComplete="off" spellCheck={false} />
+              </div>
+              <label className="ur-fl" htmlFor={`${fid}-password`}>
+                Password
+              </label>
+              <div>
+                <input id={`${fid}-password`} name="password" type="password" ref={pass} autoComplete="new-password" />
+              </div>
+            </>
+          )}
         </div>
         <div className="ur-formacts">
           <Button type="submit" kind="primary" size="sm" busy={busy}>
-            Save credential
+            {isBypass ? 'Save value' : 'Save credential'}
           </Button>
           <Button size="sm" onClick={onClose}>
             Cancel

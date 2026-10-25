@@ -100,7 +100,7 @@ function targets(
 
 function live(
   role: string,
-  opts: { run?: Reply; link?: Reply; put?: Reply; create?: Reply; platformAdmin?: boolean; approve?: Reply; pending?: Json; login?: Json; shop?: Json } = {},
+  opts: { run?: Reply; link?: Reply; put?: Reply | (() => Reply); create?: Reply; platformAdmin?: boolean; approve?: Reply; pending?: Json; login?: Json; shop?: Json } = {},
 ) {
   const calls = serve((m, url) => {
     const path = url.split('?')[0] ?? ''
@@ -112,7 +112,8 @@ function live(
     if (m === 'GET' && path === '/v1/repositories') return { status: 200, body: { repositories: [repo({ repo_id: REPO_ID })] } }
     if (m === 'POST' && path.endsWith(':run')) return opts.run ?? { status: 201, body: { workflow_id: 'wf_' + 'd4'.repeat(8), qa_target: {}, file: 'issues', browser_steps: [] } }
     if (m === 'POST' && path.endsWith('/credential-links')) return opts.link ?? null
-    if (m === 'PUT' && path.endsWith('/credential')) return opts.put ?? { status: 200, body: { credential: { set: true, set_at: '2026-10-22T09:30:00+00:00', set_by: 'vera@example.com', version: '3' } } }
+    if (m === 'PUT' && path.endsWith('/challenge-bypass')) return { status: 200, body: { challenge_bypass_value: { set: true, set_at: '2026-10-25T09:30:00+00:00', set_by: 'vera@example.com', version: '4' } } }
+    if (m === 'PUT' && path.endsWith('/credential')) return (typeof opts.put === 'function' ? opts.put() : opts.put) ?? { status: 200, body: { credential: { set: true, set_at: '2026-10-22T09:30:00+00:00', set_by: 'vera@example.com', version: '3' } } }
     if (m === 'PATCH' && path.startsWith('/v1/qa-targets/')) return { status: 200, body: { qa_target: target(APPROVED, 'shop-2') } }
     if (m === 'POST' && path === '/v1/qa-targets') return opts.create ?? { status: 201, body: { qa_target: target('qat_' + 'e5'.repeat(8), 'new', { host_state: 'pending' }) } }
     return null
@@ -310,7 +311,7 @@ describe('QA targets: the credential form', () => {
     window.history.replaceState(null, '', '/config/repositories?page=qa-targets')
     const calls = live('admin')
     const { RepositoriesScreen } = await import('../Repositories')
-    render(<RepositoriesScreen view="page=qa-targets" go={vi.fn()} qaLink={{ targetId: LOGIN, token }} />)
+    render(<RepositoriesScreen view="page=qa-targets" go={vi.fn()} qaLink={{ targetId: LOGIN, token, environment: null, field: 'credential' }} />)
     // MUTATION: drop `link={qaLink}` from Repositories' mount and no form opens.
     const form = await waitFor(() => {
       const f = document.querySelector<HTMLFormElement>('form.qa-cred')
@@ -355,8 +356,121 @@ describe('QA targets: the credential form', () => {
     expect(qaCredentialLinkFrom('/settings/keys/typesafe', `?t=${token}`)).toBeNull()
     expect(qaCredentialLinkFrom(`/qa-targets/${LOGIN}`, `?t=${token}`)).toBeNull()
     expect(qaCredentialLinkFrom('/qa-targets/not-an-id/credential', `?t=${token}`)).toBeNull()
-    expect(qaCredentialLinkFrom(`/qa-targets/${LOGIN}/credential`, `?t=${token}`)).toEqual({ targetId: LOGIN, token })
-    expect(qaCredentialLinkFrom(`/qa-targets/${LOGIN}/credential`, '')).toEqual({ targetId: LOGIN, token: null })
+    expect(qaCredentialLinkFrom(`/qa-targets/${LOGIN}/credential`, `?t=${token}`)).toEqual({ targetId: LOGIN, token, environment: null, field: 'credential' })
+    expect(qaCredentialLinkFrom(`/qa-targets/${LOGIN}/credential`, '')).toEqual({ targetId: LOGIN, token: null, environment: null, field: 'credential' })
+    // The link's entry (#2280), and a bypass link's form; a name no entry could have is read as none.
+    // MUTATION: drop `environment` from `qaCredentialLinkFrom` and this is undefined.
+    expect(qaCredentialLinkFrom(`/qa-targets/${LOGIN}/credential`, `?t=${token}&environment=prod-user`)).toEqual({ targetId: LOGIN, token, environment: 'prod-user', field: 'credential' })
+    expect(qaCredentialLinkFrom(`/qa-targets/${LOGIN}/challenge-bypass`, `?t=${token}&environment=b`)).toEqual({ targetId: LOGIN, token, environment: 'b', field: 'challenge_bypass' })
+    expect(qaCredentialLinkFrom(`/qa-targets/${LOGIN}/credential`, `?t=${token}&environment=Not%20One`)?.environment).toBeNull()
+  })
+})
+
+// A TARGET OF SEVERAL ENTRIES (#2280, lane QA-CRED-ENV): the link names the
+// entry it was minted for, the form sends it back and names it, and a refusal
+// made before the API checked the link keeps the token for a second save.
+describe('QA targets: the link\u2019s entry and a refusal that leaves the link unused (#2280)', () => {
+  async function openAt(path: string, put?: () => Reply) {
+    window.history.replaceState(null, '', path)
+    const calls = live('admin', put === undefined ? {} : { put })
+    const { QaTargetsScreen } = await import('../QaTargets')
+    render(<QaTargetsScreen go={vi.fn()} />)
+    const form = await waitFor(() => {
+      const f = document.querySelector<HTMLFormElement>('form.qa-cred')
+      if (f === null) throw new Error('no link form')
+      return f
+    }, WAIT)
+    return { calls, form }
+  }
+
+  function fill(form: HTMLFormElement): string {
+    const password = runtimeValue(30)
+    form.querySelector<HTMLInputElement>('input[name="username"]')!.value = 'qa-bot@example.com'
+    form.querySelector<HTMLInputElement>('input[name="password"]')!.value = password
+    return password
+  }
+
+  const puts = (calls: { method: string; url: string; body: unknown }[]) => calls.filter((c) => c.method === 'PUT')
+
+  it('a link for entry b sends `environment: "b"` with the credential and names the entry in the title', async () => {
+    const token = runtimeValue()
+    const { calls, form } = await openAt(`/qa-targets/${LOGIN}/credential?t=${token}&environment=b`)
+    await waitFor(() => expect(visible(document.body)).toContain('Test credential for portal \u00b7 b'), WAIT)
+    expect(window.location.href).not.toContain(token)
+    const password = fill(form)
+    fireEvent.submit(form)
+    await waitFor(() => expect(puts(calls).length).toBe(1), WAIT)
+    // MUTATION: drop `environment` from `putQaCredential`'s body and the API asks which entry.
+    expect(puts(calls)[0]!.body).toEqual({ username: 'qa-bot@example.com', password, link_token: token, environment: 'b' })
+    await waitFor(() => expect(visible(document.body)).toContain('Credential saved'), WAIT)
+    expect(visible(document.body)).toContain('portal \u00b7 b is set')
+    expect(document.documentElement.outerHTML).not.toContain(token)
+  })
+
+  it('after a 422 the form keeps the token, says the link still works, and a second save succeeds with it', async () => {
+    const token = runtimeValue()
+    const answers: Reply[] = [
+      { status: 422, body: { code: 'validation_failed', message: 'this QA target has several environments; name the one to use', detail: { reason: 'qa_target_environment_required' } } },
+      null,
+    ]
+    const { calls, form } = await openAt(`/qa-targets/${LOGIN}/credential?t=${token}&environment=b`, () => answers.shift() ?? null)
+    fill(form)
+    fireEvent.submit(form)
+    await waitFor(() => expect(visible(document.body)).toContain('Nothing was saved; the link still works, fix the field and save again.'), WAIT)
+    // MUTATION: call `onSent()` after every answer (as before #2280) and this says the link is used.
+    expect(visible(document.body)).not.toContain('The link is used')
+    fill(form)
+    fireEvent.submit(form)
+    // MUTATION: drop the token after the 422 and the form refuses before a second PUT.
+    await waitFor(() => expect(puts(calls).length).toBe(2), WAIT)
+    expect((puts(calls)[1]!.body as Json).link_token).toBe(token)
+    await waitFor(() => expect(visible(document.body)).toContain('Credential saved'), WAIT)
+  })
+
+  it('after `qa_credential_link_invalid` the form drops the token and sends nothing more', async () => {
+    const token = runtimeValue()
+    const { calls, form } = await openAt(`/qa-targets/${LOGIN}/credential?t=${token}`, () => ({
+      status: 403,
+      body: { code: 'qa_credential_link_invalid', message: 'this credential link is not valid; ask for a new one' },
+    }))
+    fill(form)
+    fireEvent.submit(form)
+    await waitFor(() => expect(visible(document.body)).toContain('The link is used; ask for a new one to try again.'), WAIT)
+    // MUTATION: keep the token on every refusal and this sends a second PUT.
+    fill(form)
+    fireEvent.submit(form)
+    await waitFor(() => expect(visible(document.body)).toContain('its link was already used or never came'), WAIT)
+    expect(puts(calls).length).toBe(1)
+  })
+
+  it('a challenge-bypass link opens its value form and sends the value with the link\u2019s token and entry', async () => {
+    const token = runtimeValue()
+    const { calls, form } = await openAt(`/qa-targets/${LOGIN}/challenge-bypass?t=${token}&environment=b`)
+    expect(form.getAttribute('data-field')).toBe('challenge_bypass')
+    await waitFor(() => expect(visible(document.body)).toContain('Challenge bypass value for portal \u00b7 b'), WAIT)
+    expect(form.querySelector('input[name="username"]')).toBeNull()
+    const input = form.querySelector<HTMLInputElement>('input[name="bypass_value"]')!
+    expect(input.type).toBe('password')
+    const value = 'qa-bypass-' + runtimeValue(20)
+    input.value = value
+    fireEvent.submit(form)
+    await waitFor(() => expect(puts(calls).length).toBe(1), WAIT)
+    const sent = puts(calls)[0]!
+    // MUTATION: PUT a bypass link's value to `/credential`, or drop its token or entry.
+    expect(sent.url).toBe(`/v1/qa-targets/${LOGIN}/challenge-bypass`)
+    expect(sent.body).toEqual({ value, link_token: token, environment: 'b' })
+    expect(input.value).toBe('')
+    await waitFor(() => expect(visible(document.body)).toContain('Challenge bypass value saved'), WAIT)
+    expect(document.documentElement.outerHTML).not.toContain(value)
+    expect(document.documentElement.outerHTML).not.toContain(token)
+  })
+
+  it('the console routes a challenge-bypass link to the QA targets page, without its token', async () => {
+    const { pathToAddress } = await import('../paths')
+    const token = runtimeValue()
+    // MUTATION: route only `/credential` in paths.ts and this is null.
+    const route = pathToAddress(`/qa-targets/${LOGIN}/challenge-bypass`, `?t=${token}&environment=b`)
+    expect(route?.address).toBe('config/repositories?page=qa-targets')
   })
 })
 
@@ -855,7 +969,7 @@ describe('QA targets: the credential link, opened in the console (VQ6-ROUTE)', (
       const { App } = await import('../App')
       render(<App />)
       // MUTATION: drop App's capture (pass no `qaLink` to RepositoriesScreen) and the first mount is handed undefined.
-      expect(handed[0]).toEqual({ view: 'page=qa-targets', qaLink: { targetId: LOGIN, token } })
+      expect(handed[0]).toEqual({ view: 'page=qa-targets', qaLink: { targetId: LOGIN, token, environment: null, field: 'credential' } })
       fireEvent.click(button(document, 'away')!)
       await waitFor(() => expect(handed.some((h) => (h as { view: string | null }).view === null)).toBe(true), WAIT)
       const before = handed.length

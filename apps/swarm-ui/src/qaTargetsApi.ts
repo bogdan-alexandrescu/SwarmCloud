@@ -38,8 +38,22 @@ import { read, route, write, type Result } from './fetch'
 /** `swarm_api.qatargets._TARGET_ID`. */
 export const QA_TARGET_ID = /^qat_[0-9a-f]{16}$/
 
-/** The credential link's path, as `QaTargets.mint_link` spells it: `/qa-targets/<id>/credential?t=<token>`. */
-const LINK_PATH = /^\/qa-targets\/(qat_[0-9a-f]{16})\/credential\/?$/
+/**
+ * A one-time link's path, as `QaTargets.mint_link` spells it:
+ * `/qa-targets/<id>/credential?t=<token>`, or `/challenge-bypass?t=..` for a
+ * `field: "challenge_bypass"` link, either with `&environment=<entry>` on a
+ * target of several entries (qa-environments.md §1.4).
+ */
+const LINK_PATH = /^\/qa-targets\/(qat_[0-9a-f]{16})\/(credential|challenge-bypass)\/?$/
+
+/** An entry's name, `qaspec.ENVIRONMENT_NAME`; anything else on a link is read as none. */
+const ENTRY_NAME = /^[a-z0-9-]{1,20}$/
+
+/** The API's code for a link that is not this person's, used, expired or for another entry or field. */
+export const QA_LINK_INVALID = 'qa_credential_link_invalid'
+
+/** The API's code for the QA secret it could not read or write: raised after the link was consumed. */
+const QA_CREDENTIAL_UNAVAILABLE = 'qa_credential_unavailable'
 
 export type HostState = 'pending' | 'approved' | 'revoked'
 
@@ -161,6 +175,14 @@ export interface QaLink {
   targetId: string
   /** Null when the link's path came without its `t`. */
   token: string | null
+  /**
+   * The entry the link was minted for (`&environment=`), sent back on the
+   * PUT; null when the link names none (a target of one entry, or a link
+   * minted without one), and the API reads it off the link record (#2280).
+   */
+  environment: string | null
+  /** The form the link opens: the credential's, or the challenge bypass value's. */
+  field: 'credential' | 'challenge_bypass'
 }
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null)
@@ -311,14 +333,37 @@ export function cannotBrowseBecause(t: QaTarget): string | null {
 }
 
 /**
- * The credential link's target and token, read off a location: only on the
- * link's own path, so a `t` anywhere else is never taken for one.
+ * A one-time link's target, token, entry and form, read off a location: only
+ * on the link's own paths, so a `t` anywhere else is never taken for one.
  */
 export function qaCredentialLinkFrom(pathname: string, search: string): QaLink | null {
   const m = LINK_PATH.exec(pathname)
   if (m === null) return null
-  const token = new URLSearchParams(search).get('t')
-  return { targetId: m[1]!, token: token === null || token === '' ? null : token }
+  const q = new URLSearchParams(search)
+  const token = q.get('t')
+  const environment = q.get('environment')
+  return {
+    targetId: m[1]!,
+    token: token === null || token === '' ? null : token,
+    environment: environment !== null && ENTRY_NAME.test(environment) ? environment : null,
+    field: m[2] === 'challenge-bypass' ? 'challenge_bypass' : 'credential',
+  }
+}
+
+/**
+ * Whether a PUT's answer spent its link, read from `QaTargets.set_credential`'s
+ * order (and `set_challenge_bypass`'s, the same): the entry, the target's
+ * sign-in or the value's shape, then `consume_link`, then the secret store,
+ * then the record. A success consumed it; `qa_credential_link_invalid` is a
+ * link that was dead, or is for another entry or field; the store's 503
+ * comes only after the link was consumed. Every other refusal (a 422, a
+ * missing entry, a 5xx with no code, no answer at all) came before the link
+ * was checked or cannot say, and the link is kept: a second save of a link
+ * that was in fact spent is refused as invalid, and dropped then.
+ */
+export function linkSpent(r: Result<unknown>): boolean {
+  if (r.status !== 'error') return true
+  return r.error.code === QA_LINK_INVALID || r.error.code === QA_CREDENTIAL_UNAVAILABLE
 }
 
 /** The token in a minted link's `path`, held by the caller in memory and never drawn. */
@@ -399,12 +444,33 @@ export async function mintQaCredentialLink(id: string): Promise<Result<{ token: 
   return { ...r, data: { token: tokenOfLinkPath(body.path), expires_at: str(body.expires_at) } }
 }
 
-/** The one call that carries a challenge bypass's value, in that one request's body. */
-export function putQaChallengeBypass(id: string, value: string): Promise<Result<unknown>> {
-  return write(route('/v1/qa-targets/{target_id}/challenge-bypass', { target_id: id }), 'PUT', { value })
+/**
+ * The one call that carries a challenge bypass's value, in that one request's
+ * body, with a `field: "challenge_bypass"` link's token and its entry when
+ * the link names one.
+ */
+export function putQaChallengeBypass(
+  id: string,
+  value: string,
+  link: { token: string; environment: string | null } | null = null,
+): Promise<Result<unknown>> {
+  const body: { value: string; link_token?: string; environment?: string } = { value }
+  if (link !== null) {
+    body.link_token = link.token
+    if (link.environment !== null) body.environment = link.environment
+  }
+  return write(route('/v1/qa-targets/{target_id}/challenge-bypass', { target_id: id }), 'PUT', body)
 }
 
-/** The one call that carries the credential, in that one request's body. */
-export function putQaCredential(id: string, username: string, password: string, linkToken: string): Promise<Result<unknown>> {
-  return write(route('/v1/qa-targets/{target_id}/credential', { target_id: id }), 'PUT', { username, password, link_token: linkToken })
+/** The one call that carries the credential, in that one request's body, with the link's entry when it names one. */
+export function putQaCredential(
+  id: string,
+  username: string,
+  password: string,
+  linkToken: string,
+  environment: string | null = null,
+): Promise<Result<unknown>> {
+  const body: { username: string; password: string; link_token: string; environment?: string } = { username, password, link_token: linkToken }
+  if (environment !== null) body.environment = environment
+  return write(route('/v1/qa-targets/{target_id}/credential', { target_id: id }), 'PUT', body)
 }
