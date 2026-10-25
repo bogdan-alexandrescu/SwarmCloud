@@ -223,6 +223,20 @@ def test_no_seat_recorded_and_identical_readings_withholds_the_newer():
     assert duplicates([a, d]) == {}
 
 
+def test_a_seat_registered_again_behind_a_readings_pair_is_withheld_against_its_root():
+    """Over-admission guard: K (no seat) pairs with B (seat s1) by readings; a
+    later C on seat s1 reads differently from K, and is still one subscription
+    with B, so it is withheld against K, the one handed out."""
+    team, seat = organisation_identity(_uuid()), seat_identity(_uuid())
+    k = _acct("k", org=team, registered=NOW - timedelta(days=3))
+    b = _acct("b", org=team, seat=seat, registered=NOW - timedelta(days=2))
+    c = _acct("c", org=team, seat=seat, registered=NOW - timedelta(days=1), week=0.12)
+    # MUTATION: comparing a newer account only with kept ones hands out K and C both.
+    assert duplicates([k, b, c]) == {
+        "eng:k": ("eng:b", False), "eng:b": ("eng:k", True), "eng:c": ("eng:k", True)}
+    assert choose([k, b, c], ENG, NOW, exclude=["eng:k"]) is None
+
+
 def test_two_idle_seatless_accounts_on_one_organisation_are_not_a_pair():
     team = organisation_identity(_uuid())
     a = _acct("a", org=team, registered=NOW - timedelta(days=2), week=0.0, five=0.0)
