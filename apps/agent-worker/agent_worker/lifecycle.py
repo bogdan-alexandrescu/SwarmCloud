@@ -904,6 +904,9 @@ class Worker:
         # exception that reaches it, decides the exit.
         self._startup_interrupt: StartupInterrupted | None = None
         self._child: ChildProcess | None = None
+        # BROWSER-USE-FLAG: whether this attempt has looked, once, for a
+        # browser call after BROWSER_IDLE_SECONDS (`_note_browser_idle`).
+        self._browser_idle_checked = False
         # How the publish path makes sure no process the agent started is alive
         # before the tenant credential is used (`_publish_git`). A callable, not
         # a direct call, so a unit test can substitute a scoped reaper: the real
@@ -3716,6 +3719,9 @@ class Worker:
                             child, observed_generation=-1, reason=str(exc)
                         )
                 if self.handoff.spooled:
+                    # BROWSER-USE-FLAG: one mark when the agent has run
+                    # BROWSER_IDLE_SECONDS without touching its browser.
+                    self._note_browser_idle(child)
                     # Live-browser §4.1-§4.3: answer the agent's requests and
                     # watch an open hand-off's hold. Never raises.
                     with self._heartbeat_meanwhile("hand-off"):
@@ -4642,6 +4648,20 @@ class Worker:
                     count=replaced,
                 )
             summary["runner"] = runner
+        # BROWSER-USE-FLAG: read off the runner's own result, before the
+        # truncation above could have cut it from `runner.output`.
+        # The seconds are the runner's own duration where `_finalise` has
+        # set it, else how long the agent child has been running (a cancel,
+        # a crash).
+        output = runner_result.get("output") if runner_result else None
+        seconds = summary.get("duration_seconds")
+        if not isinstance(seconds, (int, float)) and self._child is not None:
+            seconds = self._child.elapsed_seconds
+        summary.update(browser_use_record(
+            bool(getattr(self.handoff, "live", False)),
+            output.get(BROWSER_USE_SUMMARY_KEY) if isinstance(output, dict) else None,
+            seconds if isinstance(seconds, (int, float)) else None,
+        ))
         return runner_result
 
     # ------------------------------------------------------------------
@@ -9903,6 +9923,53 @@ class Worker:
             at=at,
         )
         return True
+
+    def _note_browser_idle(self, child: Any) -> None:
+        """`browser_unused`: a live-browser agent BROWSER_IDLE_SECONDS in with
+        no browser call and no image (BROWSER-USE-FLAG, part of #2322).
+
+        Looked for ONCE per attempt, at the first poll past the mark, and
+        written at most once: one read of the CLI's stream so far
+        (`claude_code.browser_use`), never repeated, so a long run pays it
+        once. Nothing is written when the stream cannot be read, and an agent
+        that starts using the browser later is still recorded as having used
+        it in the summary (`browser_use_record`). Never raises.
+        """
+        if self._browser_idle_checked or not getattr(self.handoff, "live", False):
+            return
+        try:
+            elapsed = float(child.elapsed_seconds)
+        except Exception:
+            return
+        if elapsed < BROWSER_IDLE_SECONDS:
+            return
+        self._browser_idle_checked = True
+        ws = self.ws
+        files = agent_stream_files(self.cfg.runner_profile)
+        if ws is None or files is None:
+            return
+        try:
+            from .runners.claude_code import browser_use as browser_use_counts
+
+            counts = browser_use_counts(ws.artifacts / files.stdout, ws.artifacts)
+        except Exception as exc:
+            self.log.warning("could not read whether the agent has used its browser",
+                             error=f"{type(exc).__name__}: {exc}")
+            return
+        if counts.get("read") is not True or counts.get("tool_calls") or counts.get("images"):
+            return
+        minutes = int(elapsed // 60)
+        self._emit_startup_mark(
+            "browser_unused",
+            {
+                "seconds": int(elapsed),
+                "tool_calls": 0,
+                "images": 0,
+                "message": (f"the agent has run {minutes} minutes on a browser runtime "
+                            "without a browser call or an image"),
+            },
+        )
+        self.log.info("browser unused so far", seconds=int(elapsed))
 
     def _emit_startup_mark(self, cause: str, detail: dict[str, Any]) -> None:
         """One startup mark on the task's events: RUNNING, with `cause`.
@@ -18656,6 +18723,67 @@ def _usage_summary(output: Any) -> dict[str, Any]:
         summary["models"] = sorted(str(m) for m in models)
 
     return summary
+
+
+#: BROWSER-USE-FLAG (part of #2322): the `result_summary` keys the worker
+#: writes whether a browser runtime was used under. `browser_used` is true,
+#: false, or null -- null when the attempt had no browser (not a live-browser
+#: profile) or its counts could not be read -- and swarm-api serves it on the
+#: task read and the list row (`codec.task_to_api`) and sums the unused
+#: browser seconds over a range (`outcomes`). Not a frozen-contract field: the
+#: summary is where the API already serves per-attempt facts.
+BROWSER_USED_SUMMARY_KEY = "browser_used"
+BROWSER_USE_SUMMARY_KEY = "browser_use"
+#: How long a live-browser agent runs with no browser call before the one
+#: `browser_unused` mark goes on its events (BROWSER-USE-FLAG, item 4).
+BROWSER_IDLE_SECONDS = 600
+
+
+def _count_or_none(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def browser_use_record(live: bool, counts: Any, seconds: float | None) -> dict[str, Any]:
+    """The `result_summary` keys for whether this attempt used its browser. Pure.
+
+    `live` is whether the attempt ran on a live-browser profile, `counts` the
+    runner's `browser_use` report (`claude_code.browser_use`), or None when it
+    wrote none, and `seconds` how long the agent ran on that runtime.
+
+    Not live: `browser_used` null and nothing else, so a claude-code task
+    reads "not a browser runtime" rather than "unused". Live: used when the
+    agent made any browser call or produced any image; unused when the stream
+    was read whole and shows neither; null when no counts were reported, the
+    stream could not be read, or a cut stream shows nothing -- a lower bound
+    of 0 is not a measurement. `browser_use` carries the counts beside it.
+    """
+    if not live:
+        return {BROWSER_USED_SUMMARY_KEY: None}
+    report = counts if isinstance(counts, dict) else {}
+    calls = _count_or_none(report.get("tool_calls")) if report.get("read") is True else None
+    images = _count_or_none(report.get("images"))
+    complete = report.get("complete") is True
+    if (calls or 0) > 0 or (images or 0) > 0:
+        used: bool | None = True
+    elif calls == 0 and images == 0 and complete:
+        used = False
+    else:
+        used = None
+    detail: dict[str, Any] = {
+        "tool_calls": calls,
+        "mcp_calls": _count_or_none(report.get("mcp_calls")) if calls is not None else None,
+        "command_calls": _count_or_none(report.get("command_calls")) if calls is not None else None,
+        "images": images,
+        "complete": complete,
+        "seconds": None if seconds is None else round(float(seconds), 1),
+    }
+    if used is None:
+        detail["unknown_because"] = (
+            "not_reported" if not report else
+            "stream_unread" if report.get("read") is not True else
+            "stream_cut"
+        )
+    return {BROWSER_USED_SUMMARY_KEY: used, BROWSER_USE_SUMMARY_KEY: detail}
 
 
 def _truncate_json(value: Any, limit: int) -> Any:

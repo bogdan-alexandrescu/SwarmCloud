@@ -299,6 +299,39 @@ at `GROUP_ROWS_MAX` per grouping and each series is two integers per bucket.
   open, or it ended after an explicit `until`. `agents_ended` says how many
   were measured. Its `model` and `pool_account` key is "not ended".
 
+### Unused browser time: `browser` (#2322, BROWSER-USE-FLAG)
+
+The 2026-10-25 audit of tenant eng found 49 browser tasks that never touched
+their browser, and found them only by reading agent logs by hand: the worker
+counted screenshots and nothing else. So every usage row (span, bucket and
+group row) carries `browser`, and the console reads unused browser hours off
+the same `GET /v1/outcomes?usage=...` it already calls for the range.
+
+* **Who decides "used".** The worker, on the attempt that ran the runner
+  (`lifecycle.browser_use_record`). It writes `result_summary.browser_used`,
+  which is true, false or null, and `browser_use`, the counts. A call is a
+  browser MCP tool call (Playwright, jev) or a Bash command that drives the
+  browser or the gate: `swarm-handoff serve|device|theme|record`,
+  `dev-browser`, or a script through `swarm_browser`. An image under the
+  task's artifacts also counts, because some agents render through a script
+  with no tool call at all. The task read and every list row serve both keys
+  (`codec.browser_use_to_api`).
+* **Null is not false.** Null means one of two things. Either the profile
+  runs no live browser (`RunnerProfile.live_browser`; today only
+  `claude-code-browser` does), or the counts could not be read. The second
+  covers no report, an unread stream, and a cut stream that shows no call:
+  a lower bound of 0 is not a measurement. Such an agent counts in
+  `unknown_agents`, and in neither `unused_agents` nor `unused_s`.
+* **The seconds are the run time.** `run_s` is the summed `run_s` of the
+  browser-runtime agents, from their attempts, as the usage block's own
+  `run_s`. `unused_s` is the part whose task the worker said did not use the
+  browser. It is 0.0 when every measured browser agent used it, and null
+  only when no browser agent in the row has a measured run.
+* **Version 10.** The tuple stores `browser_s` and `browser_used`, so every
+  day stored under 9 is derived again once, at the cost set out under "What
+  v9 costs to re-derive" below, with no extra read: the verdict is on the
+  task document the derive already reads.
+
 ### The pool account comes from the agent's own events
 
 The worker records the account it leased as an event on the agent
@@ -391,7 +424,7 @@ decision 9) and applied in PR #217.
   profile whose `RunnerProfile.cost_declared` is set (request 24); the module
   names none.
 * `DERIVE_VERSION` and `CLASSIFIER_VERSION` went 1 -> 2 with this, so every
-  stored day is derived again under the new rules. (`DERIVE_VERSION` is 9
+  stored day is derived again under the new rules. (`DERIVE_VERSION` is 10
   today; each step is recorded beside the constant in `outcomes.py`.)
 
 ### A cancel's cascade is not a failure's (decision 2)
