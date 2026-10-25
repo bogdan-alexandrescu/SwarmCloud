@@ -48,9 +48,9 @@ function listBody(): Json {
   return {
     tenant_id: 'eng',
     repo_id: REPO_ID,
-    // The route spreads the service's answer over its own `repository`, so
-    // the key arrives as the repository-level list.
-    repository: [
+    // SSC-ACTIONS-API-2: `repository` is 'owner/repo' and the list is `repository_secrets`.
+    repository: REPOSITORY,
+    repository_secrets: [
       { name: 'TEST_DB_PASSWORD', created_at: AT, updated_at: AT, set_by_swarmcloud: true, set_by: 'operator@example.com', set_at: AT },
       { name: 'SENTRY_DSN', created_at: AT, updated_at: AT, set_by_swarmcloud: false, set_by: null, set_at: null },
     ],
@@ -60,6 +60,10 @@ function listBody(): Json {
       { environment: 'staging', rule: rule('staging', 'any_branch'), secrets: [] },
     ],
     environments_truncated: false,
+    create_url: `${SETTINGS}/new`,
+    can_write: true,
+    cannot_write_because: null,
+    checked_at: new Date(Date.now() - 60_000).toISOString(),
   }
 }
 
@@ -148,6 +152,50 @@ describe('the GitHub Actions destination lists what GitHub serves', () => {
     expect(visible(envs)).toContain('MERGE_APP_PRIVATE_KEY')
     expect(visible(envs)).toContain('staging')
     expect(visible(envs)).toContain('any branch')
+  })
+})
+
+describe('SSC-ACTIONS-API-2: the list says who may write, and the pane follows it', () => {
+  it('draws the mock-up’s sentence for a caller who may write, with when GitHub was asked', async () => {
+    api()
+    await mount()
+    expect(visible(document.body)).toContain(
+      `You may write here: workspace admin, and GitHub calls you admin of ${REPOSITORY} (checked 1m ago).`)
+    expect(screen.getByRole('button', { name: /^set a secret$/i })).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: /^delete /i }).length).toBeGreaterThan(0)
+  })
+
+  it('hides Set and Delete from a caller who may not write, and says why', async () => {
+    const because = 'GitHub does not call you an admin of this repository; ask a workspace admin, or a repository admin on GitHub'
+    api({ list: () => ({ status: 200, body: { ...listBody(), can_write: false, cannot_write_because: because } }) })
+    await mount({ canManage: true })
+    expect(visible(document.body)).toContain(because)
+    expect(visible(document.body)).not.toContain('You may write here')
+    expect(screen.queryByRole('button', { name: /^set a secret/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^set /i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^delete /i })).toBeNull()
+    // The names are still read.
+    expect(visible(screen.getByRole('table', { name: /repository secrets/i }))).toContain('TEST_DB_PASSWORD')
+  })
+
+  it('opens GitHub’s create page from the list’s create_url, on a repository with no environment yet', async () => {
+    const created = `https://github.com/${REPOSITORY}/settings/environments/new`
+    api({ list: () => ({ status: 200, body: { ...listBody(), environments: [], create_url: created } }) })
+    await mount()
+    const envs = screen.getByRole('region', { name: /environments/i })
+    const link = within(envs).getByRole('link', { name: /create on github/i }) as HTMLAnchorElement
+    expect(link.href).toBe(created)
+  })
+
+  it('reads the rows from repository_secrets and the name from repository, linking only GitHub', async () => {
+    const { normActionsSecretList } = await import('../api')
+    const listed = normActionsSecretList({ ...listBody(), create_url: 'https://evil.example.com/new' })
+    expect(listed.repository).toBe(REPOSITORY)
+    expect(listed.secrets.map((x) => x.name)).toEqual(['TEST_DB_PASSWORD', 'SENTRY_DSN'])
+    expect(listed.create_url).toBeNull()
+    expect(listed.can_write).toBe(true)
+    // An answer that says nothing about writing is not known, never a yes.
+    expect(normActionsSecretList({ repository_secrets: [] }).can_write).toBeNull()
   })
 })
 
