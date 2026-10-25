@@ -39,16 +39,20 @@ import './styles/secrets-actions.css'
  *
  * ENVIRONMENTS (§11 Q4). SwarmCloud creates none until user-scoped-secrets
  * step 5 lets the App hold Administration: write. So nothing here creates
- * one: "Create on GitHub" is a link to the page the API answered, and Check
+ * one: "Create on GitHub" is a link to the page the API answered (the list's
+ * `create_url`, served with no environment yet; a checked missing one's
+ * own), and Check
  * rule is a GET of an environment's branch rule. Writing into an environment
  * whose rule is not main only asks the environment's name, typed, and sends it
  * as `confirm_environment`, the API's own gate (`guard_environment`).
  *
  * WHO MAY (§11 Q6): a workspace manager whom GitHub, asked at the write with
- * their own token, calls admin of the repository. The list route does not say
- * whether this caller is one, so the pane says the rule and the API answers
- * it at the link and at the write; `canManage` false (the overview's word,
- * when the Secrets page has it) takes the controls off.
+ * their own token, calls admin of the repository. The list answers it for
+ * this caller (`can_write`, from the same two checks a write runs, and
+ * `checked_at`, SSC-ACTIONS-API-2): true draws the mock-up's sentence, false
+ * takes Set and Delete off and says the API's reason. An answer without it
+ * falls back to `canManage` (the overview's word). Neither is the gate: the
+ * API authorises the link and the write again.
  *
  * THE APP'S PERMISSION. Until the existing App's installation accepts
  * Secrets and Environments: Read and write, every read and write is refused
@@ -104,6 +108,12 @@ function readersOf(environment: string | null, rule: ActionsEnvironmentRule | nu
   if (environment === null) return <>Read by every workflow in {repository}.</>
   if (rule !== null && rule.main_only) return <>Read by workflows that run in <b>{environment}</b>, on {rule.branch} only. SwarmCloud grants nothing further.</>
   return <>Read by workflows that run in <b>{environment}</b>, which {ruleWords(rule) === 'any branch' ? 'any branch' : `its rule (${ruleWords(rule)})`} can deploy to.</>
+}
+
+/** The API's reason as a sentence: capitalised, with its full stop. */
+function sentence(text: string): string {
+  const t = text.trim()
+  return `${t.charAt(0).toUpperCase()}${t.slice(1)}${/[.!?]$/.test(t) ? '' : '.'}`
 }
 
 /** "5 d ago", or the API's absence of a time. */
@@ -206,13 +216,17 @@ export function SecretsActions({
   const [checked, setChecked] = useState<ActionsEnvironmentRule | null>(null)
   const data = list.state.status === 'ok' || list.state.status === 'stale' ? list.state.data : null
   const refusal = list.state.status === 'error' ? appRefusalOf(list.state.error) : null
-  const manages = canManage !== false
+  // The API's answer when it gave one (SSC-ACTIONS-API-2), else the overview's
+  // word. Either way it decides only what is offered: every write is
+  // authorised again by the API, GitHub asked again.
+  const writable = data?.can_write ?? null
+  const manages = writable ?? canManage !== false
 
   const open = (s: Omit<Sheet, 'fromLink'>) => {
     setSaid(null)
     setSheet({ ...s, fromLink: false })
   }
-  const createUrl = checked?.create_url ?? data?.environments.find((e) => e.rule.settings_url !== null)?.rule.settings_url ?? null
+  const createUrl = checked?.create_url ?? data?.create_url ?? null
 
   return (
     <div className="sa-pane">
@@ -224,11 +238,20 @@ export function SecretsActions({
         <AppRefusalBanner refusal={refusal} repository={repository} />
       ) : (
         <>
-          <Banner tone="info" title={manages ? 'Who may write here' : 'Read only for you'}>
-            {manages
-              ? <>Setting or deleting takes both: you manage this workspace, and GitHub calls you admin of {repository}. SwarmCloud asks GitHub at each write, with your own GitHub connection.</>
-              : <>Only a workspace manager whom GitHub calls admin of {repository} sets or deletes these. You can read the names here.</>}
-          </Banner>
+          {writable === true && data !== null ? (
+            <Banner tone="info" title={`You may write here: workspace admin, and GitHub calls you admin of ${repository}${data.checked_at === null ? '' : ` (checked ${timeAgo(data.checked_at)})`}.`}>
+              SwarmCloud asks GitHub again at each write, with your own GitHub connection.
+            </Banner>
+          ) : (
+            <Banner tone="info" title={manages ? 'Who may write here' : 'Read only for you'}>
+              {manages
+                ? <>Setting or deleting takes both: you manage this workspace, and GitHub calls you admin of {repository}. SwarmCloud asks GitHub at each write, with your own GitHub connection.</>
+                : <>
+                    {data?.cannot_write_because != null && <>{sentence(data.cannot_write_because)} </>}
+                    Only a workspace manager whom GitHub calls admin of {repository} sets or deletes these. You can read the names here.
+                  </>}
+            </Banner>
+          )}
           {said !== null && <p className="pk-saved" role="status">{said}</p>}
           <UrRegion state={list.state} route={LIST_ROUTE} what="This repository's GitHub Actions secrets" plural onRetry={list.reload}>
             {(d) => (
