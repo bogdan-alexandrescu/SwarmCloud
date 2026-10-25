@@ -65,6 +65,14 @@ export type ScPaneState = {
   layoutNote: string | null
   failure: ScFailure | null
   calls: number
+  /**
+   * Whether Level 1 lists this PROJECT's running work beside this session's
+   * (`swarm_browse {level: "workflows", project: true}`): set at session start,
+   * which tracks the project's running work (SC-BROWSER-FOLLOWUP).
+   */
+  project: boolean
+  /** Whether this session's start already asked for the layout: one swarm_layout call per session, none on a reload. */
+  started: boolean
 }
 
 declare module 'claude-code' {

@@ -112,3 +112,126 @@ test('/sc layout pane saves the layout with one swarm_layout call and opens the 
   expect(called.length).toBe(2)
   expect(called[1].args).toEqual({ level: 'workflows' })
 })
+
+// ---- SC-BROWSER-FOLLOWUP (#2318): BGD's answers of 2026-10-25 ----------------
+
+type Queued = { command: string; args: string }
+
+/** What a run the pane module starts beneath itself reaches: `/sc attach --all` as the engine would run it. */
+function runsCommands(on: any, queued: Queued[]) {
+  on('command.run', async (_$: unknown, e: { command: string; args: string }) => {
+    queued.push({ command: e.command, args: e.args })
+    return { text: '' }
+  })
+}
+
+/**
+ * Session start as the REPL raises it. The module's start-up work runs after
+ * the hook returns (the first session.start is awaited before the first
+ * prompt), so this lets it settle: until `done` holds, then as long again.
+ */
+async function startSession($: any, on: any, done: () => boolean) {
+  on('session.start', async (_$: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
+  on('command.register', async () => ({ value: { command: 'sc-pane' } }))
+  await $.session.start({ cwd: '/work/app', surface: 'terminal', isInteractive: true })
+  await settle(done)
+}
+
+async function settle(done: () => boolean) {
+  let ticks = 0
+  while (!done() && ticks < 20000) {
+    await Promise.resolve()
+    ticks++
+  }
+  for (let i = 0; i <= ticks; i++) await Promise.resolve()
+}
+
+for (const wanted of ['rows', 'pane']) {
+  test('/sc layout ' + wanted + ' saves the choice and queues ONE /sc attach --all, and says both', async ($, on) => {
+    const called: Called[] = []
+    const queued: Queued[] = []
+    on('mcp.call', answers(called) as never)
+    placesPanes(on)
+    runsCommands(on, queued)
+    const ran = await $.command.run({ command: 'sc', args: 'layout ' + wanted })
+    expect(called[0]).toEqual({ server: 'plugin:sc:swarmcloud', tool: 'swarm_layout', args: { layout: wanted } })
+    expect(queued).toEqual([{ command: 'sc', args: 'attach --all' }])
+    expect(String(ran.text)).toContain('Layout set to ' + wanted)
+    expect(String(ran.text)).toContain('keep going until they end')
+    expect(String(ran.text)).toContain('/sc attach --all')
+  })
+}
+
+test('bare /sc layout saves nothing and attaches nothing', async ($, on) => {
+  const called: Called[] = []
+  const queued: Queued[] = []
+  on('mcp.call', answers(called) as never)
+  placesPanes(on)
+  runsCommands(on, queued)
+  await $.command.run({ command: 'sc', args: 'layout' })
+  expect(called).toEqual([{ server: 'plugin:sc:swarmcloud', tool: 'swarm_layout', args: {} }])
+  expect(queued).toEqual([])
+})
+
+/** The bridge answering swarm_layout {} with `layout`, and the list read as before. */
+function layoutIs(layout: string, called: Called[]) {
+  const rest = answers(called)
+  return async ($: unknown, e: { server: string; tool: string; args?: Record<string, unknown> }) => {
+    if (e.tool === 'swarm_layout' && !(e.args && e.args.layout)) {
+      called.push({ server: e.server, tool: e.tool, args: e.args || {} })
+      return { value: { content: [{ type: 'text', text: JSON.stringify({ layout, source: 'saved for this project' }) }], isError: false } }
+    }
+    return rest($, e)
+  }
+}
+
+test('in the pane layout session start opens the pane unread: one swarm_layout call, no list read until Refresh', async ($, on) => {
+  const called: Called[] = []
+  const opened: string[] = []
+  on('mcp.call', layoutIs('pane', called) as never)
+  on('ui.open', async (_$: unknown, e: { id: string }) => { opened.push(e.id); return { value: { isPlaced: true } } })
+  on('clock.now', async () => ({ value: Date.parse('2026-10-25T10:48:12Z') }))
+  await startSession($, on, () => opened.length > 0)
+  expect(called).toEqual([{ server: 'plugin:sc:swarmcloud', tool: 'swarm_layout', args: {} }])
+  expect(opened).toEqual(['swarmcloud'])
+
+  const ui = await mountPane($)
+  expect(await ui.find({ type: 'Text', text: /not read yet/i })).toBeTruthy()
+  expect(called.length).toBe(1)
+  await press(ui, /Refresh/)
+  expect(called.length).toBe(2)
+  expect(called[1]).toEqual({ server: 'plugin:sc:swarmcloud', tool: 'swarm_browse', args: { level: 'workflows', project: true } })
+})
+
+test('in the rows layout session start opens nothing and reads nothing more', async ($, on) => {
+  const called: Called[] = []
+  const opened: string[] = []
+  on('mcp.call', layoutIs('rows', called) as never)
+  on('ui.open', async (_$: unknown, e: { id: string }) => { opened.push(e.id); return { value: { isPlaced: true } } })
+  await startSession($, on, () => called.length > 0)
+  expect(called.map((c) => c.tool)).toEqual(['swarm_layout'])
+  expect(opened).toEqual([])
+})
+
+test('below 144 columns the unasked pane waits, and session start says so in one line', async ($, on) => {
+  const called: Called[] = []
+  const toasts: string[] = []
+  on('mcp.call', layoutIs('pane', called) as never)
+  on('ui.open', async () => ({ value: { isPlaced: false, reason: 'unasked panes seat from 144 columns; the terminal is 120' } }))
+  on('ui.toast', async (_$: unknown, e: { text: string }) => { toasts.push(e.text); return { value: undefined } })
+  await startSession($, on, () => toasts.length > 0)
+  expect(toasts.length).toBe(1)
+  expect(toasts[0]).toContain('144')
+  expect(toasts[0]).toContain('/sc-pane')
+  expect(toasts[0].indexOf('\n')).toBe(-1)
+})
+
+test('a second session.start (a reload) asks for the layout no second time', async ($, on) => {
+  const called: Called[] = []
+  on('mcp.call', layoutIs('rows', called) as never)
+  on('ui.open', async () => ({ value: { isPlaced: true } }))
+  await startSession($, on, () => called.length > 0)
+  await $.session.start({ cwd: '/work/app', surface: 'terminal', isInteractive: true } as never)
+  await settle(() => called.length > 1)
+  expect(called.length).toBe(1)
+})
