@@ -50,7 +50,9 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { answerQuestion, loadQuestions, type AgentQuestion, type OwnerAnswer, type TaskQuestions } from './api'
 import { Button } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
+import { humanReady, ownerQuestionsHold, type HeldQuestion } from './Handoff'
 import { feedData, markRead, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
+import { addressToPath } from './paths'
 import { useRoleGate } from './Profile'
 import { useRead } from './RunFiles'
 import { timeAgo, type Task } from './types'
@@ -177,10 +179,10 @@ function OptionBody({ q, label, description }: { q: AgentQuestion; label: string
 }
 
 /** The saved answer: what, who and when, and "Change" for a viewer who may answer. */
-function SavedAnswer({ a, n, onChange }: { a: OwnerAnswer; n: number; onChange: (() => void) | null }) {
+function SavedAnswer({ a, name, onChange }: { a: OwnerAnswer; name: string; onChange: (() => void) | null }) {
   return (
     <>
-      <div className="qc-saved" role="group" aria-label={`Your answer to question ${n}`}>
+      <div className="qc-saved" role="group" aria-label={`Your answer to ${name}`}>
         <span className="qc-saved-what">
           Answered: {a.choice && <b>{a.choice}</b>}
           {a.choice && a.text && ' — '}
@@ -232,12 +234,16 @@ function Question({
   taskId,
   mayAnswer,
   onSaved,
+  name = `question ${n}`,
 }: {
   q: WaitedQuestion
+  /** Its number in its own task's file: the answer is posted for index `n - 1`. */
   n: number
   taskId: string
   mayAnswer: boolean
   onSaved: (fresh: TaskQuestions) => void
+  /** How its controls are named; a held question names its asking step (#2313). */
+  name?: string
 }) {
   const saved = q.answer ?? null
   const [editing, setEditing] = useState(saved === null)
@@ -280,7 +286,7 @@ function Question({
       {q.context && <p className="dt-note qc-context">{q.context}</p>}
       {!editing && saved !== null ? (
         <>
-          <ul className="qc-options" aria-label={`Options for question ${n}`}>
+          <ul className="qc-options" aria-label={`Options for ${name}`}>
             {q.options.map((o, i) => {
               const rec = q.recommended !== null && o.label === q.recommended
               const chosen = saved.choice !== null && o.label === saved.choice
@@ -291,11 +297,11 @@ function Question({
               )
             })}
           </ul>
-          <SavedAnswer a={saved} n={n} onChange={mayAnswer ? () => setEditing(true) : null} />
+          <SavedAnswer a={saved} name={name} onChange={mayAnswer ? () => setEditing(true) : null} />
         </>
       ) : (
-        <div className="qc-pickset" role="radiogroup" aria-label={`Answer question ${n}`}>
-          <ul className="qc-options" aria-label={`Options for question ${n}`}>
+        <div className="qc-pickset" role="radiogroup" aria-label={`Answer ${name}`}>
+          <ul className="qc-options" aria-label={`Options for ${name}`}>
             {q.options.map((o, i) => {
               const rec = q.recommended !== null && o.label === q.recommended
               const on = o.label !== null && pick === o.label
@@ -330,7 +336,7 @@ function Question({
             {pick === OTHER && (
               <textarea
                 className="qc-own"
-                aria-label={`Your own answer to question ${n}`}
+                aria-label={`Your own answer to ${name}`}
                 maxLength={MAX_ANSWER_CHARS}
                 rows={3}
                 value={text}
@@ -437,5 +443,155 @@ function AskedCard({ task, count }: { task: Task; count: number }) {
         <p className="dt-note">{data.redaction_count} value(s) that looked like a credential are masked.</p>
       )}
     </section>
+  )
+}
+
+/**
+ * "QUESTIONS HOLDING THIS MERGE" (MERGE-PARK-QUESTIONS, #2313). A merge step
+ * whose review named unanswered owner questions parks PARKED(HUMAN_REQUIRED)
+ * on them (`ownerQuestionsHold`); the console drew a browser hand-off for it,
+ * and BGD asked why a merge needs a browser and his input (2026-10-25). It
+ * needs neither a browser nor a Ready press: the answer that clears the last
+ * named question resumes it on its own (QUESTION-WAKE).
+ *
+ * So the questions are drawn here, each under the step that asked it and
+ * linked to that task, with THE SAME answer control as "Questions for you"
+ * (`Question`): the asking task's own questions are read
+ * (`GET /v1/tasks/{asking}/questions`), only the named indices are drawn, and
+ * an answer is posted to the ASKING task -- where the answer route stores it
+ * and wakes this merge in the same transaction. Who may answer is the API's
+ * `may_answer` on that read, never a guess here.
+ *
+ * A hold the answer route cannot read whole (an `unreadable` entry) fails
+ * closed there and wakes nothing; only then does this card offer the
+ * re-run (`human-ready`), saying why.
+ */
+export function HeldQuestionsCard({ task }: { task: Task }) {
+  const hold = ownerQuestionsHold(task)
+  if (hold === null) return null
+  return <HeldCard task={task} questions={hold.questions} unreadable={hold.unreadable} />
+}
+
+function HeldCard({ task, questions, unreadable }: { task: Task; questions: HeldQuestion[]; unreadable: number }) {
+  const roleGate = useRoleGate('member', 'answer')
+  const asking = [...new Set(questions.map((q) => q.task_id))]
+  const n = questions.length
+  return (
+    <section id="held-questions" className="dt-card qc qc-held" aria-label="Questions holding this merge">
+      <div className="dt-card-head">
+        <h2>Questions holding this merge</h2>
+        <span className="dt-card-r">
+          <span className="dt-chip">{questionsWord(n)}</span>
+        </span>
+      </div>
+      <p className="dt-note qc-waiting" role="status">
+        <b>This merge is waiting for your answers.</b> It is parked, holding no capacity, until{' '}
+        {n === 1 ? 'the question below is' : `the ${n} questions below are`} answered. It needs no browser and no Ready:
+        the last answer resumes it on its own, and it reads every answer again before it merges.
+      </p>
+      {roleGate !== null && (
+        <p className="dt-note qc-why-not" data-role-gate="member">
+          {roleGate}
+        </p>
+      )}
+      {asking.map((id) => (
+        <AskedBy key={id} taskId={id} rows={questions.filter((q) => q.task_id === id)} roleGate={roleGate} />
+      ))}
+      {unreadable > 0 && <UnreadableHold task={task} unreadable={unreadable} />}
+    </section>
+  )
+}
+
+/** One asking task's held questions: a link to it, and each named question with the answer control. */
+function AskedBy({ taskId, rows, roleGate }: { taskId: string; rows: HeldQuestion[]; roleGate: string | null }) {
+  const { state } = useRead<TaskQuestions>(() => loadQuestions(taskId), taskId, taskId, null)
+  const [fresh, setFresh] = useState<TaskQuestions | null>(null)
+  const read = state.status === 'ok' || state.status === 'stale' ? state.data : null
+  const data = fresh ?? read
+  const mayAnswer = data?.may_answer === true && roleGate === null
+  const step = rows.find((r) => r.step_id !== null)?.step_id ?? null
+  const served = data?.status === 'ok' ? data.questions : null
+  return (
+    <div className="qc-asker" data-asking={taskId}>
+      <p className="qc-asker-head">
+        Asked by {step !== null ? <>step <b>{step}</b> · </> : null}
+        <a className="ctl-link qc-asker-link" href={addressToPath(`work/task/${encodeURIComponent(taskId)}`, 'recent')}>
+          {taskId}
+        </a>
+      </p>
+      {data !== null && data.status === 'ok' && data.may_answer !== true && (
+        <p className="dt-note qc-why-not">
+          You can read these but not answer them: {data.may_answer_because ?? 'the API did not say you may answer'}.
+        </p>
+      )}
+      {state.status === 'loading' && data === null ? (
+        <p className="dt-note">Reading its questions…</p>
+      ) : (
+        <ol className="qc-list">
+          {rows.map((r) => {
+            const q = served?.[r.question_index]
+            const name = `${step ?? taskId} question ${r.question_index + 1}`
+            if (q === undefined) {
+              const why =
+                state.status === 'error'
+                  ? errorHeading(state.error)
+                  : data?.status === 'unavailable'
+                    ? (data.unavailable_because ?? 'the API did not say why')
+                    : 'its task serves no question at that number'
+              return (
+                <li key={r.question_index} className="qc-q">
+                  <p className="qc-text">
+                    <span className="qc-n">{r.question_index + 1}.</span> {r.question ?? '—'}
+                  </p>
+                  <p className="dt-note qc-failed">This question could not be read to answer here: {why}.</p>
+                </li>
+              )
+            }
+            return (
+              <Question
+                key={`${r.question_index}:${q.answer?.at ?? ''}`}
+                q={q}
+                n={r.question_index + 1}
+                taskId={taskId}
+                mayAnswer={mayAnswer}
+                onSaved={setFresh}
+                name={name}
+              />
+            )
+          })}
+        </ol>
+      )}
+    </div>
+  )
+}
+
+/** The one case a person's re-run is the way back: a hold the answer route cannot read whole. */
+function UnreadableHold({ task, unreadable }: { task: Task; unreadable: number }) {
+  const [busy, setBusy] = useState(false)
+  const [failed, setFailed] = useState<ApiError | null>(null)
+  const [done, setDone] = useState(false)
+  const press = async (): Promise<void> => {
+    setBusy(true)
+    setFailed(null)
+    const r = await humanReady(task.id)
+    setBusy(false)
+    if (r.status === 'error') setFailed(r.error)
+    else setDone(true)
+  }
+  return (
+    <div className="dt-note qc-unreadable">
+      <p>
+        {unreadable === 1 ? 'One entry' : `${unreadable} entries`} the review named could not be read, so no answer can
+        resume this merge by itself. Once the questions are answered, re-run it: it reads every answer again.
+      </p>
+      {done ? (
+        <p>Re-run asked for: the merge reads the answers again when it next starts.</p>
+      ) : (
+        <Button size="sm" kind="secondary" disabled={busy} busy={busy ? 'Asking…' : false} onClick={() => void press()}>
+          Re-run the merge
+        </Button>
+      )}
+      {failed && <p className="qc-failed">The re-run was not asked for: {errorHeading(failed)}</p>}
+    </div>
   )
 }

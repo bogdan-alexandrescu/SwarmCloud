@@ -2815,7 +2815,10 @@ export interface Waiting extends WaitingRow {
    * [{task_id, step_id, state}], states_read. CHILDREN_INCOMPLETE: children
    * [{task_id, state}], unfinished, total, states_read. AWAITING_INPUT:
    * who_may_answer, opened_at, expires_at, answer_command. HUMAN_REQUIRED:
-   * who_may_answer, expires_at, answer_route, cause. CREDENTIAL_MISSING:
+   * who_may_answer, expires_at, answer_route, cause -- or, for a merge held
+   * by the owner's questions (park_phase owner_questions, #2313): park_phase,
+   * questions [{task_id, step_id, question_index, question}], unreadable,
+   * who_may_answer, and answer_route only when unreadable. CREDENTIAL_MISSING:
    * provider, secret_names, account_pool, forge_connection,
    * workspace_secrets, mcp_servers -- names only. BUDGET_EXHAUSTED: budget.
    * MANUAL_PAUSE: paused_by, paused_at, error.

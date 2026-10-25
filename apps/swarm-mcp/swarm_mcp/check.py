@@ -581,8 +581,14 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
         text = (f"PARKED on CI_PENDING for {evidence['age_is']} {age} min (over {CI_PENDING_MINUTES}): "
                 "its pull request's checks have not finished")
     else:
-        text = (f"PARKED on HUMAN_REQUIRED for {evidence['age_is']} {age} min: only a person "
-                "promotes it -- open its console and take control")
+        # IN THE API'S OWN WORDS when it served them (#2313): a merge step held
+        # by the owner's questions parks HUMAN_REQUIRED too, and "take control"
+        # sent the owner to a browser it does not have. An older API keeps the
+        # hand-off's sentence.
+        brief = waiting_brief(task)
+        why = (brief["summary"] if brief is not None
+               else "only a person promotes it -- open its console and take control")
+        text = f"PARKED on HUMAN_REQUIRED for {evidence['age_is']} {age} min: {why}"
     return {"kind": STUCK, "rule": "parked", "reason": text, "evidence": _with_summary(evidence, task)}
 
 
