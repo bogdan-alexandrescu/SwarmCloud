@@ -877,3 +877,22 @@ table.adm-limits th.pool-name > .ctl-sub > .adm-key-seg {
    one moves nothing: at 1440 it stood 8px past the column's edge. */
 .ten-being-created > li { margin-inline-end: 6px; }
 .ten-being-created > li.is-opened[id][tabindex] { outline: 2px solid var(--sk-ac); outline-offset: 6px; border-radius: var(--r-ctl); }
+
+/* A PROVIDER-TENANT POOL'S QUOTA TERMS (POOL-LIMITS-QUOTA, part of #2302).
+   On the row, a second line under the key: every term of the ceiling, the
+   binding one in the text ink, so a full pool says why without opening it.
+   In the side editor, the terms and the two platform-admin forms, separated
+   from the hard-limit editor above by a rule. */
+table.adm-limits th.pool-name > .adm-quota-line { display: block; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.adm-quota-line > .adm-quota-binds { color: var(--text); font-weight: 600; }
+.adm-quota { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.adm-quota-form { display: flex; flex-direction: column; gap: 6px; margin: 0; }
+.adm-quota-form .adm-side-field > input.adm-quota-why { flex: 1 1 140px; width: auto; min-width: 0; font-family: var(--font); }
+.adm-quota-check { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-meta); }
+.adm-quota-check > input { min-height: 0; }
+@media (max-width: 560px) {
+  .adm-quota-form .adm-side-field > input,
+  .adm-quota-form .adm-side-actions > button { min-height: 44px; }
+}
+/* A term never breaks inside itself: `429 6d ago` is one run. */
+.adm-quota-line > span, .adm-quota-line > b, .adm-quota-line > time { white-space: nowrap; }
