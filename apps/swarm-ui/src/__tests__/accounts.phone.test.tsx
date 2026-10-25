@@ -158,3 +158,25 @@ describe('the phone’s cards keep names and ids whole', () => {
     expect(css).toMatch(/\.acct-card-meta \.raw\s*\{[^}]*display:\s*inline-block/)
   })
 })
+
+describe('a duplicate tag keeps the other account’s name whole', () => {
+  it('holds the name in “same subscription as …” whole, on the table and the cards', () => {
+    const accounts = [
+      acct('primary', { duplicate_of: 'eng:team-copy' }),
+      acct('team-copy', {
+        can_take_new_agent: false,
+        blocked_by: [{ duplicate_of: 'eng:primary', reason: 'registered on the same organisation as eng:primary' }],
+        duplicate_of: 'eng:primary',
+      }),
+    ]
+    for (const phone of [false, true]) {
+      const { container, unmount } = render(
+        <AccountsTable accounts={accounts} scope="eng" now={NOW} chosen={null} phone={phone} onChoose={() => {}} />,
+      )
+      const tags = [...container.querySelectorAll<HTMLElement>('.acct-tag.is-dup')]
+      expect(tags.map((t) => t.textContent).sort()).toEqual(['same subscription as primary', 'same subscription as team-copy'])
+      expect(tags.map((t) => t.querySelector('.acct-nm')?.textContent).sort()).toEqual(['primary', 'team-copy'])
+      unmount()
+    }
+  })
+})
