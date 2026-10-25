@@ -381,16 +381,19 @@ def test_a_provider_key_park_stays_parked_whatever_the_grants_say(
 
 
 class Counting:
-    """Wraps the fake and counts each query streamed from the grants collection."""
+    """Wraps the fake and counts each query streamed from the grants
+    collection, and records every collection it is asked for."""
 
     def __init__(self, db) -> None:
         self._db = db
         self.grant_queries = 0
+        self.collections: list[str] = []
 
     def __getattr__(self, name):
         return getattr(self._db, name)
 
     def collection(self, path):
+        self.collections.append(path)
         ref = self._db.collection(path)
         if path != secret_slots.GRANTS_COLLECTION:
             return ref
@@ -592,6 +595,59 @@ def test_a_slot_filled_by_an_additional_repositorys_secret_admits(
     make_scheduler().drain()
 
     assert db.docs["tasks/task_extra_repo"]["state"] == "DISPATCHED"
+
+
+def test_the_codec_decodes_a_tasks_additional_repositories(db):
+    """CODEC-ADDL-REPOS: the entries swarm-api wrote come back on the Task,
+    so admission never has to read the document for them."""
+    entries = [extra(GADGETS), extra(GIZMOS)]
+    doc = on(db, "task_decoded", WIDGETS, *entries)
+
+    assert task_from_dict(doc).additional_repositories == entries
+    assert task_from_dict(on(db, "task_none", WIDGETS)).additional_repositories is None
+
+
+@pytest.mark.parametrize("why, value", [
+    ("not a list", {"a": 1}),
+    ("an entry that is not a map", ["example-org/gadgets"]),
+    ("an entry whose repository is not owner/repo", [{**extra(GADGETS), "repository": "x"}]),
+    ("an entry missing a key", [{k: v for k, v in extra(GADGETS).items() if k != "commit"}]),
+    ("two entries of one name", [extra(GADGETS), extra(GADGETS)]),
+    ("over the ceiling", [extra(f"example-org/r{i}") for i in range(11)]),
+])
+def test_a_malformed_additional_repositories_decodes_as_none(db, why, value):
+    """Like `forge_credential`: a value no writer produces is None, never a
+    ValueError from `Task.__post_init__` that fails the whole drain."""
+    doc = on(db, "task_malformed", WIDGETS)
+    doc["additional_repositories"] = value
+
+    assert task_from_dict(doc).additional_repositories is None, why
+
+
+def test_admission_reads_no_task_document_for_the_additional_repositories(db, dispatcher):
+    """The decoded field is the one admission reads: `WorkspaceGrants` asks
+    the tasks collection for nothing, and the extra repository's secret
+    still fills the slot."""
+    from scheduler.dispatch import BackendRouter
+    from scheduler.loop import Scheduler
+    from scheduler.metrics import SchedulerMetrics
+    from scheduler.store import SchedulerStore
+
+    from .conftest import scheduler_settings
+
+    world(db)
+    repository_secret(db, GADGETS)
+    on(db, "task_extra_read", WIDGETS, extra(GADGETS))
+    counting = Counting(db)
+    settings = scheduler_settings()
+    Scheduler(
+        settings=settings, store=SchedulerStore(db),
+        router=BackendRouter(cloud_run=dispatcher, gke=dispatcher, settings=settings),
+        metrics=SchedulerMetrics(), secrets=secret_slots.WorkspaceGrants(counting),
+    ).drain()
+
+    assert db.docs["tasks/task_extra_read"]["state"] == "DISPATCHED"
+    assert "tasks" not in counting.collections, counting.collections
 
 
 @pytest.mark.parametrize("why, secret, clones", [

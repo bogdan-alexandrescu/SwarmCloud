@@ -505,6 +505,14 @@ body {
 }
 .ac-lead .c-btn.is-primary:not(:disabled):not([aria-disabled='true']) { border-color: var(--sk-ac); }
 
+/* The same tie for the one button of an Admin page's lead (ADMIN-LEADS,
+   AdminSettings.tsx `AdminLead`, styles/admin.css `.adm-lead`). The primary's
+   own `border-color: var(--sk-ac)` loses to the `:where` floor in jsdom, so
+   the sweep graded a --ctl-bd edge on the lead's info tint (2.89:1 dark) that
+   no browser draws. Restated here, after the floor; the accent clears 3:1 on
+   every lead tint (7.6-8.0:1 dark, 5.2-5.4:1 light). */
+.adm-lead .c-btn.is-primary:not(:disabled):not([aria-disabled='true']) { border-color: var(--sk-ac); }
+
 /* A LINK NOBODY STYLED IS STILL A `.ctl-link`, NOT THE BROWSER'S BLUE (CH-5).
    The 2026-09-25 QA pass found three anchors with no class at all -- API
    reads' "What these mean ->", the workflow inspector's "run ->" and the

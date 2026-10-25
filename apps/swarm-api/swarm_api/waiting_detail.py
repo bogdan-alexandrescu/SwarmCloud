@@ -114,6 +114,11 @@ _POOL_WORDS = {
     "pool_paused": "every account is paused, draining or needs a sign-in",
 }
 
+#: `pool_paused` when an account the park names is withheld as a duplicate.
+_POOL_PAUSED_OR_WITHHELD = (
+    "every account is paused, draining, needs a sign-in or is withheld as a duplicate"
+)
+
 #: The accounts a pool park's line names before "and N more".
 POOL_ACCOUNTS_NAMED = 3
 
@@ -384,6 +389,16 @@ def _ready(task: Task, waiting_for: Mapping[str, Any] | None, line: Mapping[str,
     return {"detail": detail, "summary": summary, "resumes_when": resumes, "since": None}
 
 
+def _pool_other(label: Any) -> str:
+    """The other side of a duplicate pair, as the park recorded it (#2222).
+
+    `scheduler.loop.pool_blockers` writes the label only for the waiting
+    agent's own workspace (BGD, Q2: "only within the same tenant"), and null
+    for another workspace's account, which the line names without one.
+    """
+    return _str(label) or "an account in another workspace"
+
+
 def _pool_account_words(entry: Mapping[str, Any], as_of: datetime) -> str | None:
     """One account of a pool park, in words: what blocks it and when that clears."""
     label = _str(entry.get("account"))
@@ -393,6 +408,10 @@ def _pool_account_words(entry: Mapping[str, Any], as_of: datetime) -> str | None
     state = _str(entry.get("state"))
     if state:
         parts.append(state.lower())
+    withheld = entry.get("withheld")
+    if isinstance(withheld, Mapping):
+        other = _pool_other(withheld.get("same_subscription_as"))
+        parts.append(f"withheld: same subscription as {other}")
     for name, w in sorted(_mapping(entry.get("windows")).items()):
         if not isinstance(w, Mapping):
             continue
@@ -401,9 +420,15 @@ def _pool_account_words(entry: Mapping[str, Any], as_of: datetime) -> str | None
         clears = _as_dt(w.get("resets_at"))
         when = f", clears {_hhmm(clears, as_of)}" if clears is not None else ""
         parts.append(f"{_WINDOW_WORDS.get(name, name)}{pct}{when}")
+    if _str(entry.get("first_reading")) == "pending":
+        parts.append("taking one agent until its first reading")
     full = _str(entry.get("full"))
     if full:
         parts.append(f"full ({full})")
+    possible = entry.get("possible_duplicate")
+    if isinstance(possible, Mapping):
+        other = _pool_other(possible.get("of"))
+        parts.append(f"possible duplicate of {other} (identical readings)")
     return f"{label} {'; '.join(parts)}" if parts else label
 
 
@@ -420,8 +445,15 @@ def _pool(task: Task, provider: str | None, facts: dict[str, Any], as_of: dateti
     """
     pool_reason = _str(facts.get("account_pool_reason"))
     words = _POOL_WORDS.get(pool_reason or "", pool_reason or "no account can take it")
-    summary = f"No pool account can take an agent on {provider or 'its provider'}: {words}"
     accounts = [a for a in facts.get("accounts") or () if isinstance(a, Mapping)]
+    withheld = any(isinstance(a.get("withheld"), Mapping) for a in accounts)
+    if pool_reason == "pool_paused" and withheld:
+        # The broker answers `pool_paused` when nothing is assignable and
+        # nothing is dated, and a duplicate it withholds is one of those: the
+        # account is AVAILABLE, so "paused" alone would send a reader to an
+        # account nobody paused.
+        words = _POOL_PAUSED_OR_WITHHELD
+    summary = f"No pool account can take an agent on {provider or 'its provider'}: {words}"
     named = [w for w in (_pool_account_words(a, as_of) for a in accounts) if w]
     if named:
         shown = named[:POOL_ACCOUNTS_NAMED]

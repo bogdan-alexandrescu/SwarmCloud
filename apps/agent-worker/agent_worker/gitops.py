@@ -3945,7 +3945,12 @@ def push_branch(
       `main`;
     * the push is never forced. A non-fast-forward means something other than
       this attempt moved the branch, and the correct response to that is to
-      report it, not to win. It is raised as `PushRejected`.
+      report it, not to win. It is raised as `PushRejected`. One mover is
+      recognised by the caller, never by a force (#2179): a branch this task
+      continues that gained only merges of the default branch -- GitHub's
+      "Update branch", the measured case -- takes this attempt's commits
+      replayed onto the moved tip (`base_merge_tip`, `replay_onto_tip`), and
+      that push is again a plain one, a fast-forward over the fetched tip.
 
     `lease` IS THE ONE EXCEPTION, AND IT IS NOT A FORCE (#1438). It is a sha
     the caller has just proved holds only this task's own earlier worker
@@ -4160,6 +4165,208 @@ def own_branch_tip(
         if problems:
             return None, f"commit {sha[:12]} on {branch} is not this task's worker's: {'; '.join(problems)}"
     return tip, ""
+
+
+#: The most default-branch merges `base_merge_tip` walks down from a moved
+#: tip. The merge step's bound on GitHub's updates of a pull request's head
+#: (`merge.MERGE_MAX_HEAD_UPDATES`), restated because merge.py imports this
+#: module; a test holds the two together. A longer line is not an update, it
+#: is a branch someone keeps writing to.
+BASE_MERGE_MAX_STEPS = 12
+
+
+def base_merge_tip(
+    *,
+    repo: Path,
+    url: str,
+    branch: str,
+    default_branch: str,
+    token: str,
+    base: str | None,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+    branch_prefix: str = "swarm/",
+    max_steps: int = BASE_MERGE_MAX_STEPS,
+) -> tuple[str | None, str]:
+    """The moved tip of `branch` on `url`, when only merges of the default branch moved it.
+
+    Returns `(sha, "")` when every commit on the fetched tip's first-parent
+    line down to the clone `base` is a two-parent merge whose second parent
+    is reachable from the fetched `default_branch`, within `max_steps` of
+    them. Otherwise `(None, why)`, and the caller fails as it always did.
+
+    WHY (#2179, measured 2026-10-23): a CI-fix round for PR #2093 cloned the
+    pull request's branch at bfdc51ad; GitHub's "Update branch" then put a
+    merge of main on it (c903caca, parents bfdc51ad and main's 3c6bba9b), and
+    the round's push, never forced, was refused as a non-fast-forward. Such a
+    merge adds only what the default branch already published, so the
+    round's commits can go on top of it and the push stays a fast-forward.
+    This is the walk the merge step makes over GitHub's own updates
+    (`merge._updates_onto`), read from git rather than the forge API.
+
+    `repo` MUST be the worker-owned publish repository: both fetches carry
+    the token, each with the credential written for that one invocation
+    (`fetch_branch_tip`). `branch` must carry `branch_prefix`; the default
+    branch is only read.
+    """
+    branch = validate_ref(branch) or ""
+    if not branch or not branch.startswith(branch_prefix):
+        raise GitError(f"refusing to fetch {branch!r}: outside {branch_prefix!r}")
+    default_branch = validate_ref(default_branch) or ""
+    if not default_branch:
+        return None, "the repository's default branch is unknown"
+    base = (base or "").strip()
+    if not _FULL_SHA_RE.match(base):
+        return None, "the clone base is unknown, so what moved the branch cannot be read"
+    common = dict(
+        repo=repo, url=url, token=token, private_dir=private_dir, logs_dir=logs_dir,
+        timeout_seconds=timeout_seconds, logger=logger, git_binary=git_binary,
+    )
+    tip = fetch_branch_tip(branch=branch, branch_prefix=branch_prefix, **common)
+    if tip is None:
+        return None, f"could not fetch {branch} to read what moved it"
+    if tip == base:
+        return None, f"{branch} has not moved off the clone base {base[:12]}"
+    default_tip = fetch_branch_tip(branch=default_branch, branch_prefix="", **common)
+    if default_tip is None:
+        return None, f"could not fetch {default_branch} to read what moved {branch}"
+    g = [git_binary, *_NO_HOOKS]
+
+    def run(argv: list[str], slug: str) -> tuple[int, str]:
+        return _git_text(
+            argv,
+            repo=Path(repo),
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug=slug,
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+
+    head = tip
+    steps = 0
+    while head != base:
+        if steps >= max_steps:
+            return None, f"{branch} is more than {max_steps} merges past the clone base"
+        code, text = run([*g, "rev-list", "--parents", "--max-count=1", head], "base-merge-parents")
+        parents = text.split()[1:] if code == 0 else []
+        if len(parents) != 2:
+            return None, f"commit {head[:12]} on {branch} is not a merge of {default_branch}"
+        code, _ = run(
+            [*g, "merge-base", "--is-ancestor", parents[1], default_tip], "base-merge-on-default"
+        )
+        if code != 0:
+            return None, (
+                f"merge {head[:12]} on {branch} brings in {parents[1][:12]}, which is not "
+                f"on {default_branch}"
+            )
+        head = parents[0]
+        steps += 1
+    return tip, ""
+
+
+def replay_onto_tip(
+    *,
+    repo: Path,
+    base: str,
+    tip: str,
+    author_name: str,
+    author_email: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> str | None:
+    """Replay HEAD's first-parent commits since `base` onto `tip`, as the worker's.
+
+    Returns the new HEAD; None when the replay adds nothing over `tip` (it
+    already holds every change), with HEAD left on `tip`. Raises GitError on
+    a conflict, or on a merge commit in the span, after putting HEAD and the
+    working tree back where they were.
+
+    For a continued branch moved only by merges of the default branch
+    (`base_merge_tip`, #2179): each commit is cherry-picked onto the tip
+    without committing, and the resulting tree is committed with
+    `commit-tree` under `_worker_identity`, keeping the commit's message --
+    already the worker's (`replay_agent_commits` or the fold ran). A commit
+    whose change the tip already holds is dropped. Nothing here touches the
+    remote; `repo` is the worker-owned publish repository.
+    """
+    g = [git_binary, *_NO_HOOKS, *_worker_identity(author_name, author_email)]
+
+    def run(argv: list[str], slug: str) -> tuple[int, str]:
+        return _git_text(
+            argv,
+            repo=Path(repo),
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug=slug,
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+
+    def sha_of(rev: str, slug: str) -> str:
+        code, text = run([*g, "rev-parse", "--verify", "--quiet", rev], slug)
+        text = text.strip()
+        if code != 0 or not _FULL_SHA_RE.match(text):
+            raise GitError(f"could not read {rev}")
+        return text
+
+    if not _FULL_SHA_RE.match(base or "") or not _FULL_SHA_RE.match(tip or ""):
+        raise GitError("refusing to replay without the full shas of the base and the tip")
+    original = sha_of("HEAD", "replay-head")
+    code, text = run([*g, "rev-list", "--first-parent", "--reverse", f"{base}..HEAD"], "replay-list")
+    if code != 0:
+        raise GitError("could not list the commits to replay")
+    shas = text.split()
+
+    def restore(why: str) -> GitError:
+        run([*g, "cherry-pick", "--quit"], "replay-quit")
+        code, _ = run([*g, "reset", "--quiet", "--hard", original], "replay-restore")
+        if code != 0:
+            return GitError(f"{why}, and the publish repository could not be put back")
+        return GitError(why)
+
+    code, _ = run([*g, "reset", "--quiet", "--hard", tip], "replay-onto")
+    if code != 0:
+        raise restore(f"could not move onto {tip[:12]}")
+    for sha in shas:
+        code, parents = run([*g, "rev-list", "--parents", "--max-count=1", sha], "replay-parents")
+        if code != 0 or len(parents.split()) != 2:
+            raise restore(f"commit {sha[:12]} is a merge and cannot be replayed")
+        code, _ = run([*g, "cherry-pick", "--no-commit", sha], "replay-pick")
+        if code != 0:
+            raise restore(f"replaying commit {sha[:12]} onto {tip[:12]} conflicted")
+        code, tree = run([*g, "write-tree"], "replay-tree")
+        tree = tree.strip()
+        if code != 0 or not _FULL_SHA_RE.match(tree):
+            raise restore(f"could not write the tree of commit {sha[:12]}")
+        if tree == sha_of("HEAD^{tree}", "replay-head-tree"):
+            continue
+        code, raw = run([*g, "cat-file", "commit", sha], "replay-read")
+        if code != 0:
+            raise restore(f"could not read commit {sha[:12]}")
+        message = raw.partition("\n\n")[2].replace("\x00", "").strip() or "swarm: replayed commit"
+        code, made = run(
+            [*g, "commit-tree", tree, "-p", sha_of("HEAD", "replay-parent"), "-m", message],
+            "replay-write",
+        )
+        made = made.strip()
+        if code != 0 or not _FULL_SHA_RE.match(made):
+            raise restore(f"could not commit the replay of {sha[:12]}")
+        code, _ = run([*g, "reset", "--quiet", "--soft", made], "replay-advance")
+        if code != 0:
+            raise restore("could not move HEAD onto the replayed commit")
+    head = sha_of("HEAD", "replay-done")
+    if head == tip:
+        logger.info("the moved tip already holds every replayed change", tip=tip)
+        return None
+    logger.info("replayed this attempt's commits onto the moved tip", tip=tip, head=head)
+    return head
 
 
 #: The most commits a pushed branch's record lists (`branch_commits`). A

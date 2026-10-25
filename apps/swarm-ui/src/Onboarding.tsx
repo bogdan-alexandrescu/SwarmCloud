@@ -2,12 +2,11 @@ import { useState, type ReactNode } from 'react'
 import { dismissOnboarding, githubAppName, loadOnboarding } from './api'
 import { Button, ButtonLink, Card, Chip, Dash, ToneMark } from './components'
 import type { ApiError } from './fetch'
-import { ConnectButton, connectionOf, Refusal } from './GitHubConnect'
+import { connectionOf, Refusal } from './GitHubConnect'
 import { WorkspaceStepDetail, waitingOf } from './OnboardingWorkspace'
-import { addressToPath } from './paths'
+import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { GitHubPermissions } from './PermissionCards'
-import { PageHead } from './Shell'
 import type { AppInstalledEvidence, OnboardingDoc, OnboardingIssue, OnboardingStep, OnboardingStepName, OnboardingStepState, WorkspaceView } from './types'
 import { timeAgo } from './types'
 import './styles/repositories.css'
@@ -19,8 +18,11 @@ import './styles/onboarding.css'
  *
  *   * `SetupCard`, on Overview, where a person already lands -- shown while
  *     the checklist is not complete, gone by itself once it is (Entry A);
- *   * `OnboardingScreen`, Work › Setup, the same steps as a page the nav
- *     reaches whether or not the card was hidden.
+ *   * `OnboardingScreen`, Config › Workspace Settings › Workspace setup, the
+ *     same steps as a part of that page, which the nav reaches whether or not
+ *     the card was hidden. It was Work › Setup, a page of its own, until
+ *     WS-SETTINGS-PAGE (part of #2157, proposal E S6b) made it a part: it
+ *     draws no heading, since the page's h1 is Workspace Settings.
  *
  * INSTALL THE APP (#780, 2026-10-08) is its own step, between Connect GitHub
  * and the orgs: connecting authorises the App, installing it is a second act
@@ -31,8 +33,12 @@ import './styles/onboarding.css'
  * this read; nothing on this page marks a step done. A step's sub-line is its
  * evidence, its failure is the §2.3 copy the server sent WORD FOR WORD (so the
  * plugin's `/sc:setup` prints the same sentence), and its button is the next
- * action: Connect GitHub here, the rest on Work › Access, where OB4's routes
- * act. Re-check is a fresh read, which is a fresh derivation.
+ * action: Connect GitHub, Enable orgs, Choose repositories and Verify access
+ * all link to Config › GitHub access, where the App is connected and OB4's
+ * routes act (BGD, #2157: GitHub access is connect and disconnect). Connect
+ * GitHub started the authorisation in place until WS-SETTINGS-PAGE; one page
+ * does it now, so the two cannot drift. Re-check is a fresh read, which is a
+ * fresh derivation.
  *
  * HIDE IS THE PERSON'S, KEPT BY THE SERVER (§3.1-§3.2). Hide posts
  * `POST /v1/onboarding/dismiss`, which sets `dismissed_at` on the caller's own
@@ -40,12 +46,13 @@ import './styles/onboarding.css'
  * answers `dismissed: false` -- so a person who hid it does not meet it again
  * in another browser or on the plugin's surface. It was a localStorage flag
  * until that route was built (#780, step 3), which hid the card in one browser
- * only. The steps keep their state, Work › Setup still shows them, and Show on
- * Overview there posts `{dismissed: false}`.
+ * only. The steps keep their state, Workspace setup still shows them, and Show
+ * on Overview there posts `{dismissed: false}`.
  */
 
-export const SETUP = 'work/setup'
-export const ACCESS = 'work/access'
+/** Workspace setup and GitHub access, by their Config addresses (CONFIG-NAV moved both; the old ones still land). */
+export const SETUP = WORKSPACE_SETUP_ADDRESS
+export const ACCESS = 'config/github'
 const SUBMIT_TASK = 'work/new'
 
 /** The steps' names as the mock-up draws them (onboarding.html, Entry A). */
@@ -78,7 +85,7 @@ const STATE_TONE: Readonly<Record<OnboardingStepState, string>> = {
   todo: 'unknown',
 }
 
-/** The page the step's next action is on, and its button's words. */
+/** The steps whose next action is on GitHub access, and their buttons' words. Connect GitHub's is drawn apart: it says Reconnect once a connection exists. */
 const ACCESS_ACTION: Partial<Record<OnboardingStepName, string>> = {
   orgs_enabled: 'Enable orgs',
   repos_chosen: 'Choose repositories',
@@ -203,7 +210,7 @@ function stepLine(step: OnboardingStep, doc: OnboardingDoc): ReactNode {
       if (n('failed') > 0) parts.push(`${n('failed')} failed`)
       if (n('pending') > 0) parts.push(`${n('pending')} not checked yet`)
       // Name the repositories still to verify, so a person knows which
-      // grant's Verify to press on Access (#896).
+      // grant's Verify to press on GitHub access (#896).
       const open = repos
         .filter((r) => r.result === 'failed' || r.result === 'pending')
         .map((r) => `${str(r.repository) ?? '?'}${r.result === 'failed' ? ' (failed)' : ''}`)
@@ -213,7 +220,7 @@ function stepLine(step: OnboardingStep, doc: OnboardingDoc): ReactNode {
         <>
           {parts.join(' · ')} · {shown}: press Verify on{' '}
           <a className="c-link" href={addressToPath(ACCESS)}>
-            Access
+            GitHub access
           </a>
         </>
       )
@@ -262,7 +269,11 @@ function StepAction({ step, doc, reload }: { step: OnboardingStep; doc: Onboardi
       )
     }
     const view = connectionOf(doc)
-    return <ConnectButton label={view.kind === 'app' ? 'Reconnect' : 'Connect GitHub'} />
+    return (
+      <ButtonLink kind={doc.next_step === step.step ? 'primary' : 'secondary'} size="sm" href={addressToPath(ACCESS)}>
+        {view.kind === 'app' ? 'Reconnect' : 'Connect GitHub'}
+      </ButtonLink>
+    )
   }
   if (step.step === 'app_installed') {
     const url = str(step.evidence?.install_url)
@@ -435,28 +446,25 @@ export function SetupCard() {
       <Checklist doc={d} reload={doc.reload} />
       <p className="ur-hint">
         This card leaves Overview by itself once every step is done. Hide keeps every step as it is, for you in every
-        browser; Work › Setup still shows them.
+        browser; Config › Workspace Settings › Workspace setup still shows them.
       </p>
     </Card>
   )
 }
 
-/** Work › Setup: the checklist as a page. */
+/**
+ * Workspace setup, a part of Config › Workspace Settings (WS-SETTINGS-PAGE):
+ * the checklist, under the page's own heading and parts, so it draws no h1.
+ * Its read control rides in the checklist card's head.
+ */
 export function OnboardingScreen() {
   const doc = useUrRead(loadOnboarding, 'onboarding')
   return (
     <div className="ur-page ob-page">
-      <PageHead title="Setup">
-        <UrRefresh reads={[doc]} />
-        <span className="ur-acts">
-          <ButtonLink size="sm" href={addressToPath(ACCESS)}>
-            Access
-          </ButtonLink>
-        </span>
-      </PageHead>
       <p className="ur-sub">
         Connect GitHub as yourself, install the App where your repositories are, enable the orgs SwarmCloud may reach,
-        choose the repositories it may read or write, and verify that it can. Each step is checked again on every read; nothing here is marked done by hand.
+        choose the repositories it may read or write, and verify that it can, all on GitHub access. Each step is checked
+        again on every read; nothing here is marked done by hand.
       </p>
       <UrRegion state={doc.state} route="GET /v1/onboarding" what="Your setup checklist" onRetry={doc.reload} lines={6}>
         {(d) =>
@@ -468,6 +476,7 @@ export function OnboardingScreen() {
                 <span className="ur-acts">
                   <Chip className="ob-count">{countLabel(d)}</Chip>
                   {d.dismissed === true && !d.complete && <ShowOnOverview reload={doc.reload} />}
+                  <UrRefresh reads={[doc]} />
                 </span>
               }
               foot={

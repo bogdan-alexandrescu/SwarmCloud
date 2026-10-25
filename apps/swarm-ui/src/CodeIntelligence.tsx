@@ -2,12 +2,11 @@ import { useEffect, useId, useState } from 'react'
 import { loadCodeIntelligence, loadJudgment, putCodeIntelligence, type JevBackend } from './api'
 import { Banner, Card } from './components'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
-import { PageHead } from './Shell'
 import { timeAgo } from './types'
 import './styles/keys.css'
 
 /**
- * SETTINGS › WORKSPACE › CODE INTELLIGENCE (lane CTXQ-UI over CTXQ-SET;
+ * CONFIG › WORKSPACE SETTINGS › CODE INTELLIGENCE (lane CTXQ-UI over CTXQ-SET;
  * docs/design/context-quality.md §4.7, §5.4). Two switches decide what a step
  * is given about its repository, and only one of them sends anything anywhere:
  *
@@ -45,15 +44,6 @@ const NEVER: readonly string[] = [
   'the agent’s registered secrets and anything the redaction rules match',
   'issue and pull request authors, another repository’s content, the agent’s transcript and environment variables',
 ]
-
-export function WorkspaceSettingsScreen() {
-  return (
-    <div className="pk-page">
-      <PageHead title="Workspace Settings" />
-      <CodeIntelligenceCard />
-    </div>
-  )
-}
 
 export function CodeIntelligenceCard() {
   const ci = useUrRead(loadCodeIntelligence, 'code-intelligence')

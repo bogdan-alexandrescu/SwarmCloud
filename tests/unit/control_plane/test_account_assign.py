@@ -362,6 +362,8 @@ def test_the_assignment_carries_the_account_in_the_usual_shape(client, accounts)
 
 def test_assigning_counts_the_agent_onto_the_account(client, accounts):
     accounts.register(ENG, "personal")
+    # Measured: a never-observed account takes one agent (#2222).
+    _observe(accounts, f"{ENG}:personal", 0.1)
 
     assert _assign(client).json()["account"]["assigned"] == 1
     assert _assign(client).json()["account"]["assigned"] == 2
@@ -386,6 +388,8 @@ def test_releasing_twice_gives_back_one_slot_and_not_two(client, accounts):
     is retried after a lost response. The second one must be a no-op rather
     than a decrement, or one agent's exit would give back another's slot."""
     accounts.register(ENG, "personal")
+    # Measured: a never-observed account takes one agent (#2222).
+    _observe(accounts, f"{ENG}:personal", 0.1)
     first = _assign(client).json()["assignment_id"]
     second = _assign(client).json()["assignment_id"]
     assert accounts.get(f"{ENG}:personal").assigned == 2
@@ -511,6 +515,7 @@ def test_the_sweep_reclaims_an_assignment_whose_worker_never_released_it(
     nobody released.
     """
     accounts.register(ENG, "personal")
+    _observe(accounts, f"{ENG}:personal", 0.1)  # one agent until measured (#2222)
     _assign(client)
     _assign(client)
     assert accounts.get(f"{ENG}:personal").assigned == 2

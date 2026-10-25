@@ -159,10 +159,12 @@ describe('the Code intelligence switch', () => {
   })
 })
 
-describe('Settings › Workspace', () => {
+describe('Config › Workspace Settings', () => {
   it('draws the Code intelligence card', async () => {
     api(codeIntel())
-    const { WorkspaceSettingsScreen } = await load()
+    await load()
+    // The page and its parts are WorkspaceSettings.tsx's since WS-SETTINGS-PAGE.
+    const { WorkspaceSettingsScreen } = await import('../WorkspaceSettings')
     render(<WorkspaceSettingsScreen />)
     expect(await toggle()).toBeTruthy()
     // Config › Workspace Settings since CONFIG-NAV (part of #2157).
