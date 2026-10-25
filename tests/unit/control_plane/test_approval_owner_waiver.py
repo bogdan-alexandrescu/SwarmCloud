@@ -24,10 +24,11 @@ import json
 
 import pytest
 
-from swarm_api import approvals, issueruns
+from swarm_api import approvals, ghapprove, issueruns
 from swarm_api.repositories import repo_id_for
 
 from .conftest import auth_header, seed_tenant
+from .test_github_comment_approvals import _command, _comment, _connect, _replies
 from .test_approvals import (  # noqa: F401 -- the fixtures the client is built from
     OWNER,
     SWITCH,
@@ -148,6 +149,9 @@ def test_the_waiver_is_never_returned_to_anyone_but_the_owner():
             )
         assert refused.value.code == "second_person_required"
         assert "only the platform owner may decide it" in refused.value.message
+        # The comment path carries the waiver too (owner, 2026-10-25), so the
+        # refusal no longer sends the owner to the console alone.
+        assert "console" not in refused.value.message
         # Without the caller asking, the owner is refused too: no silent waiver.
         with pytest.raises(approvals.ScheduleForbidden):
             approvals.check_gate_approver(
@@ -204,6 +208,94 @@ def test_the_owner_approves_an_owner_only_merge_hold_on_a_schedule_the_owner_las
     assert len(_merge_workflows(db)) == 1
     (waiver,) = _waivers(db)
     assert waiver["detail"]["hold"] == "NEEDS_OWNER" and waiver["detail"]["kind"] == "merge"
+
+
+def _owner_hold_merge_waiting(client, db, objects, writes, clock) -> tuple[dict, dict]:
+    """#2259's merge, waiting on its pull request: an owner_only hold, the owner the last editor."""
+    seed_tenant(db, "eng")
+    seed_schedule(db, owner=OWNER)
+    db.docs[f"schedules/{SCHEDULE}"]["created_by"] = OWNER
+    _connect(db, OWNER, "root-gh")
+    _connect(db, DAVE, "Dave-GH")
+    running = _scheduled_checking(client, db, objects, writes, FULL_PLAN)
+    stored = db.docs[f"issue_runs/{running['id']}"]
+    stored.setdefault("metadata", {})["schedule"] = {"schedule_id": SCHEDULE}
+    stored["approval_hold"] = {**OWNER_HOLD, "reasons": ["protected_path"], "matched": ["src/widgets/list.py"]}
+    writes.check(SHA_A, "unit", "success")
+    _read(client, clock, running["id"])
+    _read(client, clock, running["id"])
+    (item,) = _inbox(client, kind="merge", user="root")
+    return running, item
+
+
+def test_the_owners_approve_comment_on_an_owner_only_hold_the_owner_last_edited_merges_with_the_waiver(
+    client, db, objects, writes, clock, api_context, switch_on,
+):
+    """Owner answer 2026-10-25: a `/swarmcloud approve` comment carries the owner waiver too."""
+    running, item = _owner_hold_merge_waiting(client, db, objects, writes, clock)
+    digest = approvals.merge_digest_text(item["digest"])
+
+    cid = _comment(writes, PR, _command(digest), login="root-gh", user_id=1000)
+    polled = ghapprove.poll(api_context)
+
+    # MUTATION: drop `owner_waiver=True` from `ghapprove._approve_merge` and
+    # this is refused second_person_required, approved 0.
+    assert polled["approved"] == 1, (polled, _replies(writes, PR))
+    decided = db.docs[f"approvals/{item['approval_id']}"]
+    assert decided["state"] == "approved" and decided["decided_by"] == OWNER
+    assert db.docs[f"issue_runs/{running['id']}"]["merge_approved"]["head_sha"] == SHA_A
+    (approved,) = [e for e in _audit(db, SCHEDULE) if e["action"] == "approval_approved"]
+    assert approved["detail"]["via"] == "github_comment" and approved["detail"]["comment_id"] == cid
+    # The console's row, exactly: the same waiver, beside the decision's.
+    (waiver,) = _waivers(db)
+    assert waiver["by"] == OWNER and waiver["detail"]["approval_id"] == item["approval_id"]
+    assert waiver["detail"]["waived"] == "second_person_required"
+    assert waiver["detail"]["last_editor"] == OWNER and waiver["detail"]["hold"] == "NEEDS_OWNER"
+    assert waiver["detail"]["kind"] == "merge"
+
+
+def test_another_members_approve_comment_on_an_owner_only_hold_is_refused_and_told_who_may_decide(
+    client, db, objects, writes, clock, api_context, switch_on,
+):
+    _, item = _owner_hold_merge_waiting(client, db, objects, writes, clock)
+    digest = approvals.merge_digest_text(item["digest"])
+
+    _comment(writes, PR, _command(digest), login="Dave-GH", user_id=1004)
+    polled = ghapprove.poll(api_context)
+
+    assert polled.get("approved", 0) == 0
+    assert db.docs[f"approvals/{item['approval_id']}"]["state"] == "pending"
+    assert _waivers(db) == []
+    (reply,) = _replies(writes, PR)[1:]
+    assert "only the platform owner may approve" in reply
+    assert "another member" not in reply
+
+
+def test_the_last_editors_approve_comment_on_an_ordinary_merge_keeps_the_second_person_rule(
+    client, db, objects, writes, clock, api_context, switch_on,
+):
+    """Everyone else keeps the rule on the comment path: dave last edited a `members` gate."""
+    seed_tenant(db, "eng")
+    seed_schedule(db, owner=DAVE)
+    db.docs[f"schedules/{SCHEDULE}"]["created_by"] = DAVE
+    _connect(db, DAVE, "Dave-GH")
+    running = _scheduled_checking(client, db, objects, writes, FULL_PLAN)
+    stored = db.docs[f"issue_runs/{running['id']}"]
+    stored.setdefault("metadata", {})["schedule"] = {"schedule_id": SCHEDULE}
+    stored["approval_hold"] = None
+    stored["merge_approval"] = "required"
+    writes.check(SHA_A, "unit", "success")
+    _read(client, clock, running["id"])
+    _read(client, clock, running["id"])
+    (item,) = _inbox(client, kind="merge", user="root")
+
+    _comment(writes, PR, _command(approvals.merge_digest_text(item["digest"])), login="Dave-GH", user_id=1004)
+    ghapprove.poll(api_context)
+
+    assert db.docs[f"approvals/{item['approval_id']}"]["state"] == "pending"
+    assert _waivers(db) == []
+    (reply,) = _replies(writes, PR)[1:]
+    assert "last changed this schedule" in reply and "another member must" in reply
 
 
 # --------------------------------------------------------------------------
