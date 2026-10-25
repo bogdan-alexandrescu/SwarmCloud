@@ -1429,7 +1429,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'an-account',
     title: 'The page answers first, then ranks the accounts',
     short:
-      'The page opens on how many accounts can take a new agent, which one frees first and when, and how many agents wait on the pool. The table under it is ranked by when each account can take one: those that can now, then those whose window clears at a known time, soonest first, then those that are full and free when an agent finishes.',
+      'The page opens on how many accounts can take a new agent, which frees first and when, and how many agents wait. The table ranks the accounts by when each can take one: those that can now, then those whose window clears at a known time, soonest first, then full ones that free when an agent finishes.',
     long: [
       'On 2026-10-24 the page read “7 accounts · 7 available” while 28 agents waited: every account was under its floor, and “available” only meant “not paused”. The verdict at the top is the broker’s own answer for each account, so it cannot say plenty while nothing can be handed out.',
       'Each row says in words what blocks the account and the floor it is held to, and draws both windows against that floor as a tick. A window that has reset reads “reset” with nothing read since, never its old figure.',

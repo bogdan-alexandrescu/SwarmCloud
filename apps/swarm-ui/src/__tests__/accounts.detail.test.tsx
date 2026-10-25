@@ -79,7 +79,7 @@ function account(over: Partial<PoolAccount> = {}): PoolAccount {
     can_take_new_agent: true,
     blocked_by: [],
     next_eligible_at: null,
-    organisation: { name: 'Saga', plan: 'Team' },
+    organisation: { name: 'Acme', plan: 'Team' },
     ...over,
   }
 }
@@ -121,7 +121,7 @@ describe('the sheet answers first, in mock-up A’s order', () => {
     expect(at('State')).toBeLessThan(at('Replace the credential'))
     // The account's facts, as the broker serves them.
     const kv = [...sheet.querySelectorAll('.acct-kv > dt')].map((d) => [d.textContent, d.nextElementSibling!.textContent])
-    expect(kv[0]).toEqual(['Signed in to', 'Saga · Team'])
+    expect(kv[0]).toEqual(['Signed in to', 'Acme · Team'])
     expect(kv[1]![1]).toContain('eng')
     expect(kv[2]![1]).toContain('smoke, u-bogdan')
     expect(kv[3]).toEqual(['Id', 'eng:devops-team'])
@@ -191,19 +191,19 @@ describe('the agent cap and its Change (owner only, 1 to 50)', () => {
 
 describe('a duplicate says what to do, naming only this workspace’s accounts', () => {
   it('tells the withheld registration to replace its credential, naming the other by its label', async () => {
-    const kept = account({ account_id: 'eng:saga-personal', label: 'saga-personal', duplicate_of: 'eng:team' })
+    const kept = account({ account_id: 'eng:home-personal', label: 'home-personal', duplicate_of: 'eng:team' })
     const extra = account({
       account_id: 'eng:team',
       label: 'team',
-      duplicate_of: 'eng:saga-personal',
-      duplicate_reason: 'registered on the same organisation as eng:saga-personal',
+      duplicate_of: 'eng:home-personal',
+      duplicate_reason: 'registered on the same organisation as eng:home-personal',
       can_take_new_agent: false,
-      blocked_by: [{ duplicate_of: 'eng:saga-personal', reason: 'registered on the same organisation as eng:saga-personal' }],
+      blocked_by: [{ duplicate_of: 'eng:home-personal', reason: 'registered on the same organisation as eng:home-personal' }],
     })
     const sheet = await open([kept, extra], 'eng:team')
     const dup = sheet.querySelector('.acct-ss-dup')!
     expect(dup.querySelector('h4')!.textContent).toBe('One subscription, registered twice')
-    expect(dup.textContent).toContain('team was signed in to the same organisation as saga-personal')
+    expect(dup.textContent).toContain('team was signed in to the same organisation as home-personal')
     expect(dup.textContent).toContain('Replace the credential below')
   })
 
@@ -249,14 +249,14 @@ describe('on a phone the opened account is the whole screen (mock-up A P3)', () 
     vi.unstubAllGlobals()
   })
   const dup = () => [
-    account({ account_id: 'eng:saga-personal', label: 'saga-personal' }),
+    account({ account_id: 'eng:home-personal', label: 'home-personal' }),
     account({
       account_id: 'eng:team',
       label: 'team',
-      duplicate_of: 'eng:saga-personal',
-      duplicate_reason: 'registered on the same organisation as eng:saga-personal',
+      duplicate_of: 'eng:home-personal',
+      duplicate_reason: 'registered on the same organisation as eng:home-personal',
       can_take_new_agent: false,
-      blocked_by: [{ duplicate_of: 'eng:saga-personal', reason: 'registered on the same organisation as eng:saga-personal' }],
+      blocked_by: [{ duplicate_of: 'eng:home-personal', reason: 'registered on the same organisation as eng:home-personal' }],
     }),
   ]
 
@@ -286,14 +286,14 @@ describe('the page’s duplicate banner opens the registration to fix', () => {
     // A <button> there took `:where(.app button)`'s --ctl-bd edge in the
     // spacing sweep, 2.8:1 on the amber wash in dark; a link has no edge to
     // lose, and its address can be opened in a new tab or shared.
-    const kept = account({ account_id: 'eng:saga-personal', label: 'saga-personal' })
+    const kept = account({ account_id: 'eng:home-personal', label: 'home-personal' })
     const extra = account({
       account_id: 'eng:team',
       label: 'team',
-      duplicate_of: 'eng:saga-personal',
-      duplicate_reason: 'registered on the same organisation as eng:saga-personal',
+      duplicate_of: 'eng:home-personal',
+      duplicate_reason: 'registered on the same organisation as eng:home-personal',
       can_take_new_agent: false,
-      blocked_by: [{ duplicate_of: 'eng:saga-personal', reason: 'registered on the same organisation as eng:saga-personal' }],
+      blocked_by: [{ duplicate_of: 'eng:home-personal', reason: 'registered on the same organisation as eng:home-personal' }],
     })
     api.loadAccountsBoard.mockResolvedValue(
       ok({
@@ -304,7 +304,7 @@ describe('the page’s duplicate banner opens the registration to fix', () => {
       } as AccountsBoard),
     )
     render(<AccountsScreen />)
-    const banner = (await screen.findByText('team and saga-personal are one subscription', undefined, WAIT)).closest('.acct-dup')!
+    const banner = (await screen.findByText('team and home-personal are one subscription', undefined, WAIT)).closest('.acct-dup')!
     expect(banner.querySelector('button')).toBeNull()
     const link = banner.querySelector<HTMLAnchorElement>('.acct-dup-acts > a.c-link')!
     expect(link.textContent).toBe('Open team')
