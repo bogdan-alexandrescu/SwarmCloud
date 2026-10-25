@@ -7640,6 +7640,291 @@ export async function deleteWorkspaceSecret(name: string): Promise<Result<unknow
 }
 
 // ---------------------------------------------------------------------------
+// Config › Secrets › Repository › GitHub Actions (lane SSC-UI-ACTIONS, part of
+// #2158; docs/design/secrets-scopes.md §3, §6.1, and BGD's answers in §11).
+// SecretsActions.tsx is the only caller; the routes are SSC-ACTIONS-API's
+// (apps/swarm-api/swarm_api/routes/actions_secrets.py).
+//
+// A VALUE IS AN ARGUMENT OF `setActionsSecret` AND NOTHING ELSE. §11 Q5: the
+// value is sealed in swarm-api with PyNaCl, so the page sends it as `value`
+// in that one PUT, through the one-time form, and never seals it here (no
+// libsodium in the UI). GitHub serves no value, and every list is copied
+// from an allow-list, so nothing a response carried by mistake is drawn.
+//
+// NOTHING HERE CREATES AN ENVIRONMENT (§11 Q4). The one environment call is
+// a GET of its branch rule; a missing environment is answered with GitHub's
+// page to create it, which the page links to.
+// ---------------------------------------------------------------------------
+
+/** An environment's branch rule as `actions_secrets.RULE_*` spells it. */
+export type ActionsRule = 'main_only' | 'protected_branches' | 'custom_branches' | 'any_branch'
+
+const ACTIONS_RULES: readonly ActionsRule[] = ['main_only', 'protected_branches', 'custom_branches', 'any_branch']
+
+/** One secret's name and times, as GitHub serves them, beside SwarmCloud's own record of its writes. */
+export interface ActionsSecretName {
+  name: string
+  updated_at: string | null
+  /** True when SwarmCloud's `actions_secret_writes` holds a write of it; false is "set on GitHub". */
+  set_by_swarmcloud: boolean
+  set_by: string | null
+  set_at: string | null
+}
+
+/** `GET .../actions/environments/{environment}/rule`'s answer: whether it exists and lets only the default branch deploy. */
+export interface ActionsEnvironmentRule {
+  environment: string
+  exists: boolean
+  rule: ActionsRule | null
+  main_only: boolean
+  /** The registration's default branch, read from GitHub: the one branch "main only" means. */
+  branch: string
+  branches: { name: string; type: string }[]
+  /** GitHub's page to create it, served only for a missing environment. */
+  create_url: string | null
+  /** GitHub's page listing the repository's environments. */
+  settings_url: string | null
+  /** The API's steps to create a missing one, in words. */
+  steps: string | null
+}
+
+export interface ActionsEnvironment {
+  environment: string
+  rule: ActionsEnvironmentRule
+  secrets: ActionsSecretName[]
+}
+
+/** `GET /v1/repositories/{repo_id}/actions/secrets`: the repository's secrets and each environment's. */
+export interface ActionsSecretList {
+  repo_id: string
+  secrets: ActionsSecretName[]
+  environments: ActionsEnvironment[]
+  /** The API lists at most 30 environments; true when it may have stopped there. */
+  environments_truncated: boolean
+}
+
+/**
+ * A GitHub address the API served, or null. Only `https://github.com/` is
+ * linked: these become an `href`, and a page that links wherever a response
+ * points is one bad response away from sending a person somewhere else.
+ */
+export function githubUrl(v: unknown): string | null {
+  if (typeof v !== 'string') return null
+  try {
+    const u = new URL(v)
+    return u.protocol === 'https:' && u.hostname === 'github.com' ? u.toString() : null
+  } catch {
+    return null
+  }
+}
+
+function normActionsName(raw: unknown): ActionsSecretName | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const r = raw as Record<string, unknown>
+  if (typeof r.name !== 'string' || r.name === '') return null
+  return {
+    name: r.name,
+    updated_at: wsText(r.updated_at) ?? wsText(r.created_at),
+    set_by_swarmcloud: r.set_by_swarmcloud === true,
+    set_by: wsText(r.set_by),
+    set_at: wsText(r.set_at),
+  }
+}
+
+function normActionsNames(raw: unknown): ActionsSecretName[] {
+  return (Array.isArray(raw) ? raw : []).map(normActionsName).filter((s): s is ActionsSecretName => s !== null)
+}
+
+export function normActionsRule(raw: unknown, environment = ''): ActionsEnvironmentRule {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const rule = ACTIONS_RULES.find((x) => x === r.rule) ?? null
+  return {
+    environment: wsText(r.environment) ?? environment,
+    exists: r.exists === true,
+    rule,
+    // Main only is the API's word, never inferred: a missing flag is not main only.
+    main_only: r.main_only === true && rule === 'main_only',
+    branch: wsText(r.branch) ?? 'main',
+    branches: (Array.isArray(r.branches) ? r.branches : []).flatMap((b) => {
+      if (typeof b !== 'object' || b === null) return []
+      const o = b as Record<string, unknown>
+      return typeof o.name === 'string' ? [{ name: o.name, type: typeof o.type === 'string' ? o.type : '' }] : []
+    }),
+    create_url: githubUrl(r.create_url),
+    settings_url: githubUrl(r.settings_url),
+    steps: wsText(r.steps),
+  }
+}
+
+/**
+ * The list, from an allow-list. The route spreads the service's answer over
+ * its own keys, so its `repository` is the repository-level LIST (the
+ * `owner/repo` string it set first is overwritten); a string there is read as
+ * no list rather than a name.
+ */
+export function normActionsSecretList(raw: unknown): ActionsSecretList {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const environments = (Array.isArray(r.environments) ? r.environments : []).flatMap((e): ActionsEnvironment[] => {
+    if (typeof e !== 'object' || e === null) return []
+    const o = e as Record<string, unknown>
+    if (typeof o.environment !== 'string' || o.environment === '') return []
+    return [{ environment: o.environment, rule: normActionsRule(o.rule, o.environment), secrets: normActionsNames(o.secrets) }]
+  })
+  return {
+    repo_id: wsText(r.repo_id) ?? '',
+    secrets: normActionsNames(r.repository),
+    environments,
+    environments_truncated: r.environments_truncated === true,
+  }
+}
+
+/** The fixture build's repository, the mock-up's example data (config-e.html S4b2). */
+const FIXTURE_ACTIONS_REPO = 'example-org/example-api'
+
+/** A fixture repository id ending in this reads as one whose App lacks Secrets permission. */
+export const FIXTURE_ACTIONS_UNGRANTED = '-ungranted'
+
+function fixtureActionsRule(environment: string, rule: ActionsRule | null): ActionsEnvironmentRule {
+  const base = `https://github.com/${FIXTURE_ACTIONS_REPO}/settings/environments`
+  return normActionsRule({
+    environment, exists: rule !== null, rule, main_only: rule === 'main_only', branch: 'main',
+    branches: rule === 'main_only' ? [{ name: 'main', type: 'branch' }] : [],
+    create_url: rule === null ? `${base}/new` : null, settings_url: base,
+    steps: rule === null ? `Create the environment '${environment}' on GitHub, set its deployment branches to 'Selected branches and tags' with the one rule 'main', then check its rule here again` : null,
+  }, environment)
+}
+
+function fixtureActionsRefusal<T>(target: ApiRoute): Result<T> {
+  noteFixtureProbe(target, 0, false, 'conflict')
+  return {
+    status: 'error',
+    error: {
+      kind: 'conflict', httpStatus: 409, code: 'conflict', template: target.template,
+      message: "the SwarmCloud GitHub App's installation has not granted the permission this needs (Secrets and Environments: Read and write); the installation's owner accepts it on GitHub, and nothing was written",
+      detail: { reason: 'secrets_not_granted', repository: FIXTURE_ACTIONS_REPO, review_url: 'https://github.com/organizations/example-org/settings/installations/1/permissions/update' },
+    },
+  } as Result<T>
+}
+
+/** `GET /v1/repositories/{repo_id}/actions/secrets`: names and times, read live from GitHub. */
+export async function loadActionsSecrets(repoId: string): Promise<Result<ActionsSecretList>> {
+  const target = route('/v1/repositories/{repo_id}/actions/secrets', { repo_id: repoId })
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 80))
+    if (repoId.endsWith(FIXTURE_ACTIONS_UNGRANTED)) return fixtureActionsRefusal(target)
+    noteFixtureProbe(target, 80, true)
+    const day = (n: number) => new Date(FIXTURE_NOW - n * 86_400_000).toISOString()
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: normActionsSecretList({
+        repo_id: repoId,
+        repository: [
+          { name: 'TEST_DB_PASSWORD', updated_at: day(5), set_by_swarmcloud: true, set_by: 'operator@example.com', set_at: day(5) },
+          { name: 'SENTRY_DSN', updated_at: day(40), set_by_swarmcloud: false, set_by: null, set_at: null },
+        ],
+        environments: [
+          { environment: 'repo-secrets', rule: fixtureActionsRule('repo-secrets', 'main_only'),
+            secrets: [{ name: 'MERGE_APP_PRIVATE_KEY', updated_at: day(2), set_by_swarmcloud: true, set_by: 'operator@example.com', set_at: day(2) }] },
+          { environment: 'staging', rule: fixtureActionsRule('staging', 'any_branch'), secrets: [] },
+        ],
+        environments_truncated: false,
+      }),
+    }
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normActionsSecretList(r.data) }
+  return r
+}
+
+/** `GET .../actions/environments/{environment}/rule`: §11 Q4's Check rule. It writes nothing. */
+export async function checkActionsRule(repoId: string, environment: string): Promise<Result<ActionsEnvironmentRule>> {
+  const target = route('/v1/repositories/{repo_id}/actions/environments/{environment}/rule', { repo_id: repoId, environment })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(target, 0, true)
+    const known: Readonly<Record<string, ActionsRule>> = Object.fromEntries([['repo-secrets', 'main_only'], ['staging', 'any_branch']])
+    return { status: 'ok', fetchedAt: Date.now(), data: fixtureActionsRule(environment, known[environment] ?? null) }
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normActionsRule(r.data, environment) }
+  return r
+}
+
+/** A one-time link to the Set form, as the page holds it: never its URL, which carries the token. */
+export interface ActionsLink {
+  token: string
+  expires_at: string | null
+}
+
+/**
+ * `POST /v1/repositories/{repo_id}/actions/links`: the page mints its own
+ * one-time link on Open the one-time form (§6.1, "a link the page mints for
+ * itself on click"). The answer's `url` and `path` carry the token; only the
+ * token is kept, to go back once as the write's `link_token`, and neither is
+ * drawn or put in the address.
+ */
+export async function mintActionsLink(repoId: string, name: string, environment: string | null): Promise<Result<ActionsLink>> {
+  const target = route('/v1/repositories/{repo_id}/actions/links', { repo_id: repoId })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(target, 0, true)
+    const bytes = crypto.getRandomValues(new Uint8Array(24))
+    const token = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+    return { status: 'ok', fetchedAt: Date.now(), data: { token, expires_at: new Date(Date.now() + 600_000).toISOString() } }
+  }
+  const r = await write(target, 'POST', { name, environment })
+  if (r.status === 'error') return r
+  const raw = r.status === 'ok' || r.status === 'stale' ? r.data : null
+  const d = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const path = typeof d.path === 'string' ? d.path : typeof d.url === 'string' ? d.url : ''
+  const at = path.indexOf('?')
+  const token = at === -1 ? null : new URLSearchParams(path.slice(at + 1)).get('t')
+  if (token === null || token === '') {
+    return { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The API answered without a one-time link; nothing was written.', method: 'POST' } }
+  }
+  return { status: 'ok', fetchedAt: Date.now(), data: { token, expires_at: wsText(d.expires_at) } }
+}
+
+/** What a set sends, besides the value: where, the typed environment name when its rule asks for it, and the link. */
+export interface ActionsSecretTarget {
+  environment: string | null
+  /** §11 Q4: the environment's name, typed, for one whose rule is not main only. */
+  confirm_environment: string | null
+  link_token: string | null
+}
+
+/**
+ * `PUT /v1/repositories/{repo_id}/actions/secrets/{name}`: the value, once,
+ * in this one body. swarm-api seals it and drops it (§11 Q5). The answer is
+ * whether GitHub created it (201) or updated it (204); no value comes back.
+ */
+export async function setActionsSecret(repoId: string, name: string, value: string, at: ActionsSecretTarget): Promise<Result<{ created: boolean }>> {
+  const target = route('/v1/repositories/{repo_id}/actions/secrets/{name}', { repo_id: repoId, name })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(target, 0, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: { created: true } }
+  }
+  const body: Record<string, string> = { value }
+  if (at.environment !== null) body.environment = at.environment
+  if (at.confirm_environment !== null) body.confirm_environment = at.confirm_environment
+  if (at.link_token !== null) body.link_token = at.link_token
+  const r = await write(target, 'PUT', body)
+  if (r.status === 'error') return r
+  const raw = r.status === 'ok' || r.status === 'stale' ? r.data : null
+  const d = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  return { status: 'ok', fetchedAt: Date.now(), data: { created: d.created === true } }
+}
+
+/** `DELETE /v1/repositories/{repo_id}/actions/secrets/{name}`: the body repeats the name, typed. */
+export async function deleteActionsSecret(repoId: string, name: string, confirmName: string, environment: string | null): Promise<Result<unknown>> {
+  const target = route('/v1/repositories/{repo_id}/actions/secrets/{name}', { repo_id: repoId, name })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(target, 0, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: null }
+  }
+  return write(target, 'DELETE', environment === null ? { confirm_name: confirmName } : { confirm_name: confirmName, environment })
+}
+
+// ---------------------------------------------------------------------------
 // Settings › Profile (docs/design/user-profile.md §4.2; PROFILE-API, PR #1544).
 // Profile.tsx is the only caller. Every field is copied BY NAME from an
 // allow-list, as the API builds it, so a field a response carries by mistake
