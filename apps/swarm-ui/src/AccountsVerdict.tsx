@@ -14,6 +14,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 
 import { loadTasksInState } from './api'
+import { paneHref } from './capacityPoll'
 import { accountName } from './accountName'
 import {
   AGED_AFTER_MIN,
@@ -358,13 +359,23 @@ export function DuplicateBanner({
                 </>
               )}
             </p>
-            {/* A LINK-BUTTON ON THE WASH, as `Banner`'s actions are: a bordered
-                button's edge (`--ctl-bd`) measured 2.8:1 on this amber in dark,
-                under the 3:1 a control boundary is held to (spacing sweep). */}
+            {/* A LINK ON THE WASH, to the account's own address: any <button>
+                takes `:where(.app button)`'s --ctl-bd edge in the spacing sweep's
+                source-order cascade, 2.8:1 on this amber in dark, under the 3:1 a
+                control boundary is held to. A link has no edge, and its address
+                opens in a new tab or can be shared. */}
             <div className="acct-dup-acts">
-              <button type="button" className="c-link" onClick={() => onOpen(extra.account_id)}>
+              <a
+                className="c-link"
+                href={paneHref('capacity/accounts', { account: extra.account_id })}
+                onClick={(e) => {
+                  if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
+                  e.preventDefault()
+                  onOpen(extra.account_id)
+                }}
+              >
                 Open {x}
-              </button>
+              </a>
             </div>
           </div>
         )
