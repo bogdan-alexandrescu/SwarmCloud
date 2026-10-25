@@ -51,7 +51,7 @@ is the console's. Each of those is a lane below.
 | flow recording | **exists** | QA-FLOWS: `swarm-handoff record start/stop` writes a GIF per flow |
 | the QA template | **exists, console only** | `docs/qa/console-qa.workflow.json`, 17 steps: six `capture-*` (`claude-code-browser`, haiku), six `review-*` (`claude-code`, opus, each `input_from` its capture tar), three `flow-*` (`claude-code-browser`, jev or Playwright), `report` and `flow-report` (`claude-code`, opus). The findings shape is [visual-qa.md](visual-qa.md) §4.4; QA-REPORT-TARS stages the capture tars into `report` too |
 | signing in | **console only** | QA-IDENTITY ([qa-identity.md](qa-identity.md)): an IAP JWT for the console's one host, handed by the worker to the live gate on `ctl.sock` (verb `qa_identity`, `livegate/qaidentity.py`), added on the gate's own CDP sessions; the agent never holds it |
-| password fields | **masked for people, cleared on return** | the gate's mask paints every input that is or has been `type=password` out of the screencast (`livegate/mask.py`); on the return from a person's control it clears every password input before releasing the agent (`livegate/cdpproxy.py`, "THE ORDER ON RETURN") |
+| password fields | **cleared on return** (no longer masked for people: BGD, 2026-10-25, [live-browser.md](live-browser.md) §5.3) | the screencast shows the screen as Chromium draws it, password fields included; on the return from a person's control it clears every password input before releasing the agent (`livegate/cdpproxy.py`, "THE ORDER ON RETURN") |
 | cookies | **not the agent's** | `cdppolicy.py` refuses the agent `Network.getCookies`, `getAllCookies`, `Storage.getCookies` and every cookie write |
 | an egress host allowlist | **none** | worker pods may reach any public address on 443 (`kubernetes/network-policies/allow-egress.yaml`, `0.0.0.0/0` minus private ranges); Terraform's `restrict_egress` is a port list, not hosts (`terraform/modules/network/variables.tf`); `apps/swarm-egress` is the optional residential proxy and refuses only internal names and ports (`swarm_egress/policy.py`) |
 | filing issues | **missing for an agent** | agent-autonomy.md §2 row 6; designed in its §3.2 |
@@ -227,8 +227,9 @@ The QA-IDENTITY path, generalised from one header to one sign-in:
    one more value, decoding `base64Encoded` bodies before matching. A page
    that echoes the password back ("show password", an error page) reaches
    the agent's screenshots, text and accessibility tree scrubbed. The
-   screencast's mask already paints password fields; a field typed by the
-   gate is cleared before any agent capture can exist.
+   screencast paints nothing over the screen since BGD's decision of
+   2026-10-25 (password fields draw as dots, as Chromium draws them); a field
+   typed by the gate is cleared before any agent capture can exist.
 
 **Start clicks: a chooser, or a "Sign in" button before an identity
 provider** (BGD, 2026-10-23; lane VQ8-START-CLICKS). Not every login page is

@@ -42,15 +42,17 @@ import pytest
 from agent_worker.livegate import __main__ as gate_main
 from agent_worker.livegate import rfb
 from agent_worker.livegate.capture import Frame
-from agent_worker.livegate.mask import MASK_RGB
 from agent_worker.livegate.presets import resolve
-from test_live_stream_smooth import COPY_RECT, NOVNC, Viewer, _BoxMask, _gate, _pair
+from test_live_stream_smooth import COPY_RECT, NOVNC, Viewer, _gate, _pair
 
 DESKTOP_SIZE = -223
 CURSOR = -239
 CONN = "person-1"
-#: The box the mask paints, as a password field: inside every frame size here.
-MASKED_BOX = (20, 20, 120, 60)
+#: A box of the page's background, as a password field: inside every frame
+#: size here. Until LIVE-NOMASK (#2298) the mask painted it; now the viewer
+#: must hold it as the screen drew it.
+FIELD_BOX = (20, 20, 120, 60)
+BACKGROUND = (250, 250, 250)
 #: What the stream must carry while the page changes. The capture target in
 #: control is `CONTROL_FPS` (30); a third of it is asserted because CI runs
 #: these under `-n auto` on shared cores. origin/main sent 0.2 a second here.
@@ -73,7 +75,7 @@ class Screen:
     def grab(self) -> Frame:
         device = self._devices.device
         self.grabs += 1
-        frame = Frame.blank(device.display_width, device.display_height, (250, 250, 250))
+        frame = Frame.blank(device.display_width, device.display_height, BACKGROUND)
         # A caret blinking and a block moving: something changes every frame.
         x = (self.grabs * 7) % (device.display_width - 32)
         frame.fill(x, device.frame_top + 200, x + 32, device.frame_top + 232, (200, 30, 30))
@@ -157,7 +159,6 @@ class Rig:
         devices = Devices(device)
         gate.devices = devices
         gate.framebuffer = Screen(devices)
-        gate.mask_state = _BoxMask(MASKED_BOX)
         gate.control = rfb.ControlState(injector)
         gate.touch = injector
         rig = cls(gate, devices, injector)
@@ -327,11 +328,11 @@ def test_a_pointer_event_never_answered_does_not_hold_input_for_ever(
 
 
 # --------------------------------------------------------------------------
-# (2) a full frame on connect and after a device change, every pixel masked
+# (2) a full frame on connect and after a device change, every pixel as drawn
 # --------------------------------------------------------------------------
 
 
-def test_the_first_update_and_the_first_after_a_device_change_are_the_whole_masked_frame(
+def test_the_first_update_and_the_first_after_a_device_change_are_the_whole_frame_as_drawn(
         tmp_path: Path) -> None:
     async def main() -> None:
         rig, viewer = await Rig.start(tmp_path, Injector())
@@ -353,11 +354,11 @@ def test_the_first_update_and_the_first_after_a_device_change_are_the_whole_mask
         assert after, "a frame follows the DesktopSize"
         assert _area(after[0]) == viewer.width * viewer.height, "the first update after it is the whole frame"
         assert len(after) >= 5, f"{len(after)} updates in the second after the device change"
-        x0, y0, x1, y1 = MASKED_BOX
+        x0, y0, x1, y1 = FIELD_BOX
         for y in range(y0, y1):
             for x in range(x0, x1):
                 at = (y * viewer.width + x) * 3
-                assert tuple(viewer.fb[at:at + 3]) == MASK_RGB, "every pixel under the mask stays masked"
+                assert tuple(viewer.fb[at:at + 3]) == BACKGROUND, "the field is held as the screen drew it"
         await rig.close()
 
     asyncio.run(main())

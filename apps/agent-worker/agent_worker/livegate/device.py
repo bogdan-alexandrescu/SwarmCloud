@@ -27,8 +27,7 @@ agent owns).
 THE ORDER OF A CHANGE: the name is checked first, so an unknown name changes
 nothing; then the display is resized (the step most likely to fail: a size
 past what Xvfb was started with); then the window is fitted to it, the device
-set on every page, the mask told the new scale (which makes every report stale
--- the mask fails closed until the page reports at the new size), and the
+set on every page, the scale sink (if any) told the new screen scale, and the
 injector told the new bounds. A failure part-way is recorded and raised; the
 next change starts again from the name.
 
@@ -59,8 +58,8 @@ opened as a window) has that window fitted too. The override belongs to the
 page's target, not its document, so it holds across the page's navigations,
 cross-site ones included (a new renderer under the same target). Between a page's creation and the override, the page has
 the window's own metrics: its viewport is wider than the device's page area,
-and the mask treats a viewport larger than the frame as unplaceable and blanks
-the frame (`Outcome.UNAVAILABLE`). It fails closed; it does not leak.
+and the frame shows it so, as drawn, until the override lands (nothing is
+painted over a frame, §5.3).
 
 THE DISPLAY. `XRandrDisplay` speaks RandR to Xvfb over its unix socket
 (the CRTC switched to a mode of the frame's size around `RRSetScreenSize`:
@@ -195,7 +194,8 @@ class Display(Protocol):
 
 
 class ScaleSink(Protocol):
-    """`MaskState`: screen pixels per CSS pixel."""
+    """Told screen pixels per CSS pixel on every change. The gate passes none:
+    its only user was the mask, gone with LIVE-NOMASK (#2298)."""
 
     def set_scale(self, scale: float) -> None: ...
 
@@ -431,12 +431,12 @@ def captured(frame: Frame, device: Device) -> Frame:
 class DeviceController:
     """Which device the browser is, applied from the gate's own sessions."""
 
-    def __init__(self, cdp: GateCdp, display: Display, mask: ScaleSink, *, record: Record,
+    def __init__(self, cdp: GateCdp, display: Display, scale: ScaleSink | None = None, *, record: Record,
                  on_resize: Callable[[Device], None] | None = None,
                  on_change: Callable[[Device], None] | None = None) -> None:
         self._cdp = cdp
         self._display = display
-        self._mask = mask
+        self._scale = scale
         self._record = record
         self._on_resize = on_resize
         #: Told the device once it is applied -- at start and on every change --
@@ -684,7 +684,8 @@ class DeviceController:
 
     async def _apply_display(self, device: Device) -> None:
         await self._display.resize(device.display_width, device.display_height)
-        self._mask.set_scale(device.screen_scale)
+        if self._scale is not None:
+            self._scale.set_scale(device.screen_scale)
         if self._on_resize is not None:
             self._on_resize(device)
         self._windows.clear()

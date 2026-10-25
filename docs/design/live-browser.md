@@ -63,7 +63,7 @@ Section 5.7 is about that.
 |---|---|---|
 | **LB-1** | An **interactive** remote browser: headed Chromium on a virtual display, VNC proxied through the platform into the console via noVNC, with a "take control" button. Not a view-only screencast. | §3, §4, §6 |
 | **LB-2** | Frames are visible **only to members of the agent's tenant**, checked on every connection (invariant 9). | §5.1, §5.2 |
-| **LB-3** | Password and secret fields are **masked before anything leaves the pod**. | §5.3 |
+| **LB-3** | Password and secret fields are **masked before anything leaves the pod**. **Superseded for pixels by BGD, 2026-10-25**: the screen is shown as Chromium drew it; text is still redacted. | §5.3 |
 | **LB-4** | Frames and recordings are kept **7 days**, under the tenant's GCS prefix. | §7 |
 | **LB-5** | The console presentation is **a Browser tab on the agent page, with theater mode available from it** (owner's choice, 2026-10-11, from five in-console alternatives; recorded on #1030). This replaces the earlier phased plan of separate split, picture-in-picture and wall views. | §6 |
 | **LB-6** | The browser can run **as a mobile device, not only desktop**, and a person in control works it **by touch**. Presets: Desktop 1440×900, iPhone 15 393×852, Pixel 8 412×915, iPhone SE 375×667, iPad (gen 7) 810×1080, with rotate. | §6.1 |
@@ -91,7 +91,7 @@ overrule is a question (Q9, Q12).
  |   |  ctl.sock (MAC'd, first     |    profile on a private   |
  |   +---registration wins)------->|    memory emptyDir)       |
  |                                 |  live gate:               |
- |  agent (claude-code +           |   capture -> MASK -> encode|
+ |  agent (claude-code +           |   capture -> encode        |
  |  Playwright, connectOverCDP)    |   input injection (XTEST) |    outbound WS,  
  |   +--- 127.0.0.1:9222 --------->|   CDP proxy  <-pipe-> Chromium   ticket from      +-----------+      +-----------+     +---------+
  |                                 |   tunnel client ---------------- swarm-api ----->| swarm-live|<---->| swarm-api |<--->| console |
@@ -118,12 +118,12 @@ with a different entrypoint and a **different uid**. It holds three things:
    enterprise policies of section 5.6. One window, maximised, with its address
    bar visible (no `--kiosk`, no `--app`): the address bar is part of the
    anti-phishing design.
-3. **The live gate**, one process that: captures the framebuffer, masks it
-   (section 5.3), encodes it as RFB, injects input when and only when a person
-   holds control, exposes a **CDP proxy** on `127.0.0.1:9222` for the agent,
-   and opens the outbound tunnel. Frames are produced inside the sidecar and
-   leave it only through the tunnel, already masked. They never pass through
-   the worker container.
+3. **The live gate**, one process that: captures the framebuffer, encodes it
+   as RFB with nothing painted over it (section 5.3; BGD, 2026-10-25), injects
+   input when and only when a person holds control, exposes a **CDP proxy** on
+   `127.0.0.1:9222` for the agent, and opens the outbound tunnel. Frames are
+   produced inside the sidecar and leave it only through the tunnel. They
+   never pass through the worker container.
 
 **Why a sidecar and not processes in the worker container.** A separate uid is
 the only boundary available inside one pod without gVisor or a second pod.
@@ -160,8 +160,9 @@ Four reasons, each a requirement elsewhere in this document:
 * **The agent must not reach the display** (section 1). An agent that launches
   a headed Chromium needs `DISPLAY` and the X socket, which is exactly the
   keylogging channel.
-* **The mask needs its own CDP session** to learn where the password fields
-  are (section 5.3). The gate holds Chromium's pipe; the agent gets the proxy.
+* **The gate needs its own CDP session** to follow the page on screen and
+  detect a challenge for the CAPTCHA hand-off (section 5.3). The gate holds
+  Chromium's pipe; the agent gets the proxy.
 * **The pause needs a choke point** (section 5.4). With the proxy between the
   agent and Chromium, "the agent's actions are paused" is enforced, not asked.
 * **The browser profile must live where the agent's files do not** (section
@@ -1064,8 +1065,8 @@ person on the agent's behalf:
   frame on `SHOWN_IN_CONTROL` (`apps/agent-worker/agent_worker/livegate/mask.py`,
   `challenge_host`, host and path), or a top frame on one of its hosts at any
   path (`is_challenge_host`, which tabs.py reads too; `qatarget.py`
-  `CHALLENGE_FRAMES` restates the same list). The mask tells the gate
-  (`MaskState.on_challenge`) **once per page load**: a second challenge frame
+  `CHALLENGE_FRAMES` restates the same list). The gate's own CDP session
+  reports it (`LiveGate._on_challenge`) **once per page load**: a second challenge frame
   on the same page, a same-document navigation, or the agent switching tabs
   and back raises nothing more; a new load of the top frame may raise again.
 * **The request** is `{request_id: "gate-<hex>", reason: "CAPTCHA on <host>",
@@ -1390,7 +1391,7 @@ status`, and changes no reader that does not want it. The console shows
 
 | Who | Watch | Take control | Why |
 |---|---|---|---|
-| A member of the agent's tenant | **yes** | only if the submitter allowed it for this agent | LB-2. Watching shows masked pixels of work the tenant already owns. |
+| A member of the agent's tenant | **yes** | only if the submitter allowed it for this agent | LB-2. Watching shows the screen, unmasked since 2026-10-25 (§5.3), of work the tenant already owns. |
 | The agent's submitter (`Task.submitted_by`, `apps/common/swarm_common/models.py::Task`) | yes | **yes**, and may preempt another controller | The person whose agent it is; the credentials typed are theirs or their team's. |
 | A workflow step's or schedule's agent with a non-human submitter | yes | the workflow's or schedule's human owner; if there is none, any tenant member | A service account cannot press a button. |
 | A platform admin who is not a tenant member | **no** | no | Invariant 9 and LB-2 say tenant members only. No break-glass in phase 1 (Q5). |
@@ -1463,157 +1464,79 @@ every ticket for it minted before the close. A close the relay does not
 receive is logged; the session's tunnel still ends with the stale worker's
 pod, and no new ticket for a closed session is minted.
 
-### 5.3 Masking before anything leaves the pod (LB-3)
+### 5.3 The screen leaves the pod as Chromium drew it (LB-3, amended 2026-10-25)
 
-#### 5.3.1 What is masked
+**BGD's decision, 2026-10-25 (06:00 UTC): "Stop redacting elements or sections
+of the visual content that a browser agent or session displays via the live
+browser. There is no need to redact parts of the screen in any situation."**
+So the live gate paints nothing over the screen. Every frame it publishes --
+to the live view, to the thumbnails and to the relay's recordings -- is the
+captured framebuffer exactly as Chromium drew it, in every situation: a person
+in control or not, any tab, any device preset, a challenge page or not. LB-3's
+"masked before anything leaves the pod" (§2) is superseded for pixels; it
+still holds for text (§5.3.2).
 
-The gate paints an opaque box, in the framebuffer, before encoding, over:
+**Why.** The on-screen mask had to fail closed, and failing closed meant
+blanking. It covered pages for minutes while a person was waiting to act on
+them: the grey "masking unavailable" frame on pages dev-browser opened
+(#1344), reCAPTCHA frames covered for a whole hand-off because the gate could
+not link them to their iframe boxes (#1340), whole-page blanks on every layout
+change, and the live view going grey under #1030 (LIVE-BLANK). Each fix
+narrowed one cause and left the mechanism. BGD judged on-screen redaction
+unnecessary "in any situation". What bounds who sees a frame is unchanged:
+viewers are members of the tenant the agent works for (§5.1), and recordings
+are that tenant's artifacts (§7).
 
-* every `input` whose type is or **has ever been** `password` on this page (a
-  "show password" toggle switches the type to `text`; the set is sticky), and
-  every input with `autocomplete` of `current-password`, `new-password`,
-  `one-time-code`, `cc-number` or `cc-csc`;
-* every element whose visible text matches a rule of the platform's redaction
-  set (`apps/redaction/swarm_redaction/rules.py::RULES`): an API key on a dashboard, a
-  token in a page;
-* the address bar, when the top frame's URL matches a redaction rule (a token
-  in a query string).
+#### 5.3.1 What is shown, and what the gate still does with the page
 
-Password characters are already drawn as dots; the mask hides what dots do
-not: the length, a revealed value, and secrets that are not in password fields
-at all.
+Nothing is painted over a frame. Gone with the decision: the boxes over
+`password` and credential-autocomplete inputs, over text a `swarm_redaction`
+rule matched and over the address bar when the URL matched one; their 8-pixel
+dilation; and every fail-closed blank -- the page area painted out on a stale
+or missing layout report, a child frame covered over its box, and the
+whole-frame "masking unavailable" frame for a CDP session down, a top frame
+not reported, a tab not on screen or the follower between tabs, with its
+300 ms hold. The page script that reported rectangles and visible text from
+an isolated world (`observer.js`) is deleted, and so is the run of the
+redaction rules over page text. The desktop name never says "Can't show this
+page safely: ..." or "Part of this page is covered: ...". `FrameHub.publish`
+in `rfb.py` takes the captured frame; there is no masked frame type.
 
-#### 5.3.2 How, and why it fails closed
+What the gate still does:
 
-The gate's own CDP session (on the pipe, invisible to the agent) creates an
-**isolated world** in every frame (`Page.createIsolatedWorld`), which page
-scripts and the agent's own world cannot see. A script there watches the
-sensitive elements (mutation and resize observers) and reports their rectangles
-and the visible text nodes to the gate. The gate runs the redaction rules on
-that text **in Python, by importing `swarm_redaction`** -- not a JavaScript or
-Go restatement of the rules, which is exactly the kind of second copy that has
-drifted here before. It maps page rectangles to screen coordinates from the
-window's bounds, and paints.
+* **Its own CDP session on the page on screen** (Chromium's pipe, never the
+  agent's) follows frames and navigations, out-of-process iframes included
+  through `Target.setAutoAttach`. It is there to **detect a challenge** --
+  reCAPTCHA, hCaptcha or Cloudflare, the `SHOWN_IN_CONTROL` list in
+  `livegate/mask.py` -- and raise the CAPTCHA hand-off once per page load
+  (`LiveGate._on_challenge`, §4.1, CAPTCHA-HANDOFF #2058). The module keeps
+  the name `mask.py` for history; it no longer masks.
+* **Tab following** (`tabs.py`, the follower's visibility probe), so the view
+  and the challenge detection track the tab on screen.
+* **The caption** outside the canvas (`report.py`): the top frame's origin and
+  its path, the path text-redacted with `swarm_redaction` before it leaves the
+  pod.
+* **The pointer** is painted on each viewer's own copy of a frame
+  (`pointer.py`), never on the frame the hub publishes. A viewer with no
+  local cursor -- a watcher, the relay's recorder -- gets the arrow on its
+  copy, so the recording shows where the pointer was.
+* **Two frames the gate makes itself.** Before the first capture the hub shows
+  a flat fill (#555). When the attempt has ended and Chromium has closed, the
+  desktop name is "The agent has finished; its browser is closed."
+  (`REASON_BROWSER_CLOSED`, GREY-TAIL #1344).
+* **The viewer metrics line** keeps `unavailable_ms`,
+  `unavailable_ms_by_reason` and `blank_ms`, which now cover only "not
+  captured yet" and "browser closed". `page_blanked_ms` is gone with the page
+  blank.
 
-A rectangle report is always slightly older than the frame it is painted on.
-So the gate **fails closed**:
+#### 5.3.2 What is still redacted: text, everywhere
 
-* a frame is masked only with a report taken after the last layout-changing
-  event (scroll, resize, navigation, a mutation inside a tracked element);
-  otherwise the whole page area below the address bar is painted out for that
-  frame -- after the short hold below, and only for a layout change. Scrolling
-  flickers. That is the cost;
-* while the gate's CDP session is down, or no report has arrived since a
-  navigation, every frame is a blank "masking unavailable" frame;
-* every box is dilated by 8 pixels.
-
-**Three amendments, issue #1340 (owner decisions 2026-10-14).** MEASURED
-2026-10-15 on task_2ac5d7e22a51460995a2, release b93ad6cb: the gate logged
-`live mask: frame owner unresolved (CdpError)` twice at attempt start. Linking
-an iframe to the element box its parent reports (`MaskCdp.link`) had failed for
-both reCAPTCHA frames, and the only retry was a re-created parent observer
-world, which never came. So both frames stayed covered for the whole hand-off
-("Part of this page is covered: an embedded frame on it cannot be checked"),
-and the person asked to solve the challenge could not see it. On the same
-page, the whole page area went PAGE_BLANKED for 0.3-1.2 s in every metrics
-window while the page kept changing.
-
-* **A failed link is retried** on the parent frame's next fresh report and on
-  the child's next navigation. Each retry waits at least a backoff after the
-  last failure, 250 ms doubling to 2 s, and there are at most 5 tries in all.
-  After that the frame stays covered as before. The log line carries the CDP
-  error's message as well as its class (`CdpError: No frame for given id
-  found`). That message is Chromium's protocol text and never page content;
-  any other exception is still logged by class alone. Why: one transient
-  failure at attempt start should not decide a whole hand-off. Bounded,
-  because a frame that never links must still fail closed.
-* **Challenge frames are shown while a person holds control.** Holding control
-  means a `human_wait` hand-off (`pause` until `resume` or `end_control`) or
-  take-control, and in either case the agent is held. During that time, a
-  child frame whose URL is on an exact allowlist is not covered when it cannot
-  vouch for itself. The allowlist (`mask.SHOWN_IN_CONTROL`) is `https`, an
-  exact host and a path prefix, with no port and no userinfo:
-  `www.google.com/recaptcha/`, `www.recaptcha.net/recaptcha/`,
-  `*.hcaptcha.com/` (a subdomain, not `hcaptcha.com` itself) and
-  `challenges.cloudflare.com/`. A lookalike stays covered: `recaptcha.evil.com`,
-  `www.google.com.evil.com`, `www.google.com@evil.com`, or another path on an
-  allowlisted host. Whenever the frame has reported on its current document,
-  that last report's password and credential fields stay masked, and so does
-  any of its text a redaction rule matches. The top
-  frame is never shown this way, and nothing is shown this way while the agent
-  drives: the gate reads `Gate.person_in_control` as each frame is masked, and
-  a resume clears it before the agent's held commands are released. Each frame
-  shown this way is recorded once per hand-off in the gate's event log as
-  `mask_frame_shown`, carrying the host (never the path, the query or the
-  content) and the reason `REASON_SHOWN_IN_CONTROL`. Why: a challenge is the
-  thing the person was handed the page to do. It is a third party's widget,
-  not the site's content, and while a person holds control what it shows is
-  for that person. The frame's own content, including any frame inside it, is
-  shown unchecked. That is the trade the owner chose, and §5.3.4 lists it.
-* **Fewer whole-page blanks.** When the top frame's report is stale only
-  because its observer announced a layout change (`REASON_CHANGING`), the gate
-  keeps sending the last frame it masked from a fresh report, for up to 300 ms
-  from the first announcement (`HOLD_CHANGING_SECONDS`), before it blanks.
-  Further announcements do not extend the hold. A navigation (cross-document
-  or same-document), a tab switch, a hidden tab, a session loss, a device
-  change or a change of who drives drops the held frame, and each one blanks
-  or goes UNAVAILABLE at once, as before. Why this keeps the rule: the held
-  pixels were vouched for when they were first sent, so holding them sends
-  nothing the mask has not checked. The viewer sees a page up to 300 ms old
-  instead of a grey flash.
-
-**Pages dev-browser opens, and iframe pages, issue #1344.** MEASURED
-2026-10-15 by visual QA on release b93ad6cb. On task_f7ff5ae0d8ac4612b0ff
-(browser tool dev-browser) the live view stayed the grey "masking
-unavailable" frame for minutes, also while a person held control, with
-"Can't show this page safely: the page on screen has not reported its layout
-yet". Its timeline shows dev-browser opening a new page for every navigation.
-On https://the-internet.herokuapp.com/iframe, a TinyMCE editor in an iframe,
-the whole page area was blanked for all three browser tools. Two causes, both
-in the mask's install on a newly followed page (`MaskCdp.install`), and one
-rule:
-
-* **The install's frame tree is not a navigation.** The install read
-  `Page.getFrameTree` last and told the state every frame in it had just
-  navigated. Puppeteer's `newPage()` is followed at once by its `goto()`, so
-  the page often committed while the install was under way. Its observer had
-  already reported on the new document, and that "navigation" retired it:
-  every later report from the live document was dropped as one from a page
-  navigated away from, until the next navigation. A person holding control
-  makes no navigation, so the grey stayed. Now a frame the gate already heard
-  of during the install keeps its document; a different URL only makes its
-  report stale until the next one (at most the observer's one-second
-  heartbeat).
-* **The children the tree lists are linked.** A child frame was linked to its
-  iframe element only when it attached, or when its parent's observer world
-  was created, and the install creates that world before it reads the tree.
-  So an iframe already on the page when the gate followed it stayed unlinked
-  for good: a page loaded before a tab switch, a reconnect or a device change,
-  and every page dev-browser opened. The same was true of an out-of-process
-  frame open before the follow, which the page's session never sees attach.
-  Now the install links every unlinked child of a frame it has a world for,
-  and the follower does it again once each out-of-process frame's session is
-  installed. The retries and their bound are unchanged.
-* **An unlinked child covers the box left for it.** The rule above said that
-  only a child the gate cannot place blanks the page area; an unlinked child
-  was such a child. Now an unlinked child (its link not yet answered, or
-  failed for good) whose parent's fresh report has an iframe box that no
-  linked child claims, one box for every unlinked child, covers those boxes
-  and the page is shown. Why this still fails closed: a frame's content is
-  clipped to its element's box. The observer reports the box of every iframe
-  and frame element it walks. The gate hears every child frame attach, on the
-  parent's session, before the report that measured its element. So those
-  unclaimed boxes are the unlinked children's boxes. With fewer unclaimed
-  boxes than unlinked children, one child is drawn where no report places it,
-  and the page area is blanked as before. The page area is also still blanked
-  for a child linked to an element the report does not have (one in a closed
-  shadow root, an `<object>`), and for two children linked to one element.
-  Every other rule in this section is unchanged: the top frame unreported,
-  stale or truncated, the session down, the tab not on screen.
-
-**The mask is applied once, at the source.** The relay, the recorder and the
-viewers all receive the masked frames; there is no unmasked stream anywhere to
-leak.
+The decision is about pixels. Every **text** redaction on the path is
+unchanged: logs, prompts, metadata, artifacts, hand-off reasons, Chromium's
+stderr and the caption's path all go through `swarm_redaction`. The QA
+identity is still injected by the gate and scrubbed from everything the agent
+receives over CDP ([qa-identity.md](qa-identity.md)). Nothing read from
+a page or typed by a person is logged (§5.3.3).
 
 #### 5.3.3 Keys never logged, anywhere
 
@@ -1622,31 +1545,21 @@ the relay's buffers, and the gate on its way to XTEST. **No hop logs RFB
 payloads**: every log line on the path carries byte and event counts only, and
 a unit test per hop captures logs while a key event passes and asserts no
 keysym appears. The audit records "control held 3m12s, 41 key events, 9
-pointer events", never which keys.
+pointer events", never which keys. Nothing the gate reads from a page is
+logged either.
 
-#### 5.3.4 What the mask does not cover, stated plainly
+#### 5.3.4 What a viewer sees, stated plainly
 
-* A secret drawn as an image (a QR code for 2FA setup, a screenshot of a key)
-  is not text and is not masked.
-* A secret in a canvas or a closed shadow root is not visible to the isolated
-  world and is not masked.
-* An unlinked child frame is matched to the iframe boxes its parent reports by
-  count (§5.3.2, issue #1344), which assumes the gate has heard every child
-  frame attach. One gap remains: an out-of-process frame already open when
-  the page was followed is unknown until Chromium auto-attaches its session.
-  If, in that window, another child is unlinked and held by an element the
-  observer cannot see (a closed shadow root), the out-of-process frame's
-  unclaimed box can stand in for it, and that child is shown unchecked until
-  the auto-attach lands.
-* An ordinary field the person types a secret into, which is not a password
-  field, shows what they type. The console's take-control dialog says so.
-* A challenge frame on the allowlist (`SHOWN_IN_CONTROL`, §5.3.2) is shown
-  unchecked while a person holds control, when it cannot vouch for itself.
-  Its last report on its current document is still applied: its password and
-  credential fields, and any text a redaction rule matches. Whatever it drew
-  after that report, or before it ever reported, is not checked.
-* A viewer can photograph their screen. Masking reduces what a viewer sees; it
-  is not DRM.
+* Everything on the screen. A revealed password, the length of a hidden one,
+  a token on a dashboard, a token in the address bar's query string, a QR code
+  for 2FA setup: if Chromium draws it, every viewer of the session sees it,
+  and the relay's recording keeps it for the 7 days of §7.
+* A secret the person types into any field is on screen as the field draws it
+  (dots in a password field, the characters in any other).
+* The recording is a tenant artifact under the tenant's GCS prefix, readable
+  only by members of that tenant (§7), so what it holds is bounded by
+  invariant 9, not by pixels.
+* A viewer can photograph their screen. That was true with the mask too.
 
 ### 5.4 Keeping the agent out of the person's session
 
@@ -2114,13 +2027,13 @@ the file is in the agent's reach):
 * a URL whose query or fragment names a credential or a sign-in's state
   (`token`, `code`, `state`, `session`, ...), or that the redaction filter
   would change;
-* any URL on a host of the mask's challenge list (`mask.SHOWN_IN_CONTROL`:
+* any URL on a host of the gate's challenge list (`mask.SHOWN_IN_CONTROL`:
   reCAPTCHA, hCaptcha, Cloudflare's challenge), at any path. A challenge is a
   person's to solve, and a stale one reopened would only fail.
 
 A sign-in page is reopened like any other page. Nothing here forbids it: it is
-the page the agent was on, the mask still covers its credential fields, and
-the hand-off ledger tells the agent its sign-in was NOT DONE.
+the page the agent was on, and the hand-off ledger tells the agent its sign-in
+was NOT DONE.
 
 **What a resumed attempt gets.** In `HandoffPath.prepare`, after the gate's
 registration and before the runner starts, on an attempt whose spool holds an
@@ -2165,10 +2078,10 @@ empty directory for lost work.
 ### 5.6 Keyboard, clipboard and the browser itself
 
 * **Clipboard.** Pod-to-console clipboard is **off**, always: it would hand a
-  viewer whatever the agent copied, unmasked. Console-to-pod paste is **on
-  only in control mode** (pasting a password from a password manager is how
-  most people sign in), and is injected as typed keys, so it is masked and
-  unlogged like typing (Q10).
+  viewer whatever the agent copied. Console-to-pod paste is **on only in
+  control mode** (pasting a password from a password manager is how most
+  people sign in), and is injected as typed keys, so it is unlogged like
+  typing and drawn as the field draws typing (Q10).
 * **Keyboard.** Input is injected only from the controller's connection and
   only in control mode; key events from viewers are discarded at the gate.
   The console captures keys only while the canvas has focus, so a person's
@@ -2327,7 +2240,7 @@ Theater", linked from #1030. In summary:
 * **On the person's own phone**, the console's existing two-page phone layout
   carries the same Browser tab. Take control works by touch, and the device
   switcher sits under the tab's ⋯ menu.
-* **Recordings** (§7) on the attempt's view, as a player over the masked
+* **Recordings** (§7) on the attempt's view, as a player over the recorded
   segments, for tenant members. Theater replay reads the same segments.
 * No new nav tab: everything lives inside existing views. So the issue forms'
   "Where" list (`tests/unit/scripts/test_issue_forms.py`, reading `SECTIONS` in
@@ -2435,9 +2348,9 @@ for sign-ins that only work on mobile.
   - a wheel becomes a touch scroll.
 
   The RFB key rules (§5.6) are unchanged. In view mode, no input is sent at all.
-* **Masking (§5.3) is device-independent.** It reads element boxes from the
-  page in CSS pixels and scales them by the device scale factor. A test runs
-  every preset (lane L3b).
+* **Nothing is painted over the screen on any preset** (§5.3, BGD
+  2026-10-25). The challenge detection reads frame URLs, not pixels, so it
+  does not depend on the device scale factor.
 * **Who switches the device** is question Q13. The recommendation is the agent,
   plus the person in control. A viewer's switcher shows the current device and
   is disabled.
@@ -2578,9 +2491,12 @@ viewer ticket and opens `/v1/live/{session_id}/stream` like the tab does.
 
 ## 7. Recording and replay (LB-4)
 
-**What is recorded.** The masked frames, and nothing unmasked, because nothing
-unmasked exists outside the sidecar. The **relay** records, not the pod: it
-already receives every masked frame, and a recording written by a platform
+**What is recorded.** The frames the gate publishes, which since BGD's
+decision of 2026-10-25 are the screen as Chromium drew it, with nothing
+painted over it (§5.3). The recorder has no local cursor, so the pointer's
+arrow is painted on its copy and is in the recording (rfb.py, THE POINTER).
+The **relay** records, not the pod: it
+already receives every frame, and a recording written by a platform
 identity cannot be forged or padded by the agent, which shares the tenant's GSA
 with everything else in the pod.
 
@@ -2820,6 +2736,14 @@ first, red, then the fix (CLAUDE.md, "Red first").
 
 L1-L3 share `livegate/`, a new directory; they are three lanes because their
 files do not overlap, and L3 waits for L1 because it encodes L1's frames.
+
+**The masking these rows test was removed on 2026-10-25** (BGD's decision,
+§5.3). L1's painted rectangles, sticky password type, stale-report blank and
+redaction-rule match, and L3b's mask on every preset, describe what was built
+then; `observer.js` is deleted and nothing is painted over a frame now. L13's
+frames and recording checks are inverted: they now require the password
+field's box to be the field as Chromium drew it (docs/acceptance.md). The
+rows stay as the record of the build.
 
 ### 9.1 Switching it on (LB-Lon)
 
