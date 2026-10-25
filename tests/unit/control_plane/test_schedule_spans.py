@@ -283,7 +283,7 @@ def test_the_route_table_lists_spans_with_what_it_reads_and_its_cap() -> None:
     row = _span_row()
     # Its caps, as the route holds them.
     assert f"at most {schedule_routes.SPAN_FIRINGS} firings" in row
-    assert f"{schedule_routes.SPAN_TASKS} tasks" in row
+    assert f"{schedule_routes.SPAN_TASKS} agents" in row
     assert f"{schedule_routes.SPAN_ATTEMPTS} attempts" in row
     # What it reads and serves, and that it is the caller's tenant only.
     for words in ("firing_id", "issue run", "attempts", "`cost`", "`issue`", "title",
