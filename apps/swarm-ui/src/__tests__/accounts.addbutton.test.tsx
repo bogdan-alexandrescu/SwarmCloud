@@ -103,9 +103,9 @@ async function mount(accounts: Account[]): Promise<void> {
 }
 
 function rowOf(label: string): HTMLElement {
-  const btn = [...document.querySelectorAll('.acct-li > .acct-open')].find((b) => b.textContent?.includes(label))
+  const btn = [...document.querySelectorAll('button.acct-open')].find((b) => b.textContent?.includes(label))
   expect(btn, `no row for ${label}`).toBeTruthy()
-  return btn!.closest('li') as HTMLElement
+  return btn!.closest('tr') as HTMLElement
 }
 
 describe('the sign-in form is behind a control (#127)', () => {
@@ -133,20 +133,18 @@ describe('the list names itself and qualifies its figures (#127, #503)', () => {
     const title = document.querySelector('section.acct-list .acct-list-head > h2')
     expect(title, 'the list has no title').not.toBeNull()
     expect(title!.firstChild?.textContent?.trim()).toBe('Subscription accounts')
-    // A1: no table heads. The item carries 5h; the pane's tiles carry 5h, 7d
-    // and Clears, each under its word.
+    // #2222: the ranked table names each window at its figure; the pane's
+    // tiles carry 5h, 7d and Clears, each under its word.
     expect(document.querySelector('table.accounts')).toBeNull()
-    expect(rowOf('laptop').querySelector('[data-label="5h used"]')).not.toBeNull()
+    expect([...rowOf('laptop').querySelectorAll('.acct-fig b')].map((b) => b.textContent)).toEqual(['5-hour', '7-day'])
     const tiles = [...document.querySelectorAll('.acct-tiles > .acct-tile > small')].map((t) => t.textContent)
     expect(tiles).toEqual(['5h used', '7d used', 'Clears', 'Last given out'])
   })
 
-  it('says which window Clears counts down, on the item and on the tile', async () => {
+  it('says which window Clears counts down on the tile', async () => {
     await mount([live()])
-    const line = rowOf('laptop').querySelector('[data-label="Clears"]')!
-    const win = line.querySelector('.acct-clears-win')
-    expect(win, 'the window is named only in a tooltip').not.toBeNull()
-    expect(win!.textContent).toBe('5h')
+    // The row's Clears is when it can take an agent (#2222); the tile's is the binding window's reset.
+    expect(rowOf('laptop').querySelector('.acct-clr')).not.toBeNull()
     const tile = document.querySelector('.acct-tiles > [data-label="Clears"] .acct-clears-win')
     expect(tile!.textContent).toBe('5h window')
   })

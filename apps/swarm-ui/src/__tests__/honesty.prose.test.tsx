@@ -671,13 +671,13 @@ describe('Accounts, with every help card closed', () => {
     expect(await screen.findByText('eng:never', undefined, WAIT)).toBeTruthy()
     expectAllCardsClosed()
 
-    // A1 RE-POINT (#503): the table became a list beside the chosen account.
-    // The list item carries the 5h figure; the pane's tiles carry 5h, 7d and
-    // Clears for the account it shows. The claims are unchanged.
+    // #2222 RE-POINT: the list became the ranked table, with the chosen
+    // account under it. The row names each window with an em dash and no
+    // track; the pane's tiles carry 5h, 7d and Clears. The claims are unchanged.
     const item = chooseAccount('eng:never')
-    const onItem = item.querySelector('.acct-window')!
-    expect(onItem.classList.contains('acct-unmeasured')).toBe(true)
-    expect(textOf(onItem.querySelector('.acct-pct'))).toBe('—')
+    const onItem = item.querySelector('.acct-fig')!
+    expect(textOf(onItem)).toBe('5-hour —no reading yet')
+    expect(onItem.querySelector('.ctl-util-track'), 'an unmeasured window drew a track on its row').toBeNull()
 
     // The 5h and 7d tiles of the account nobody has polled.
     const unmeasured = [...document.querySelectorAll('.acct-tiles > .acct-window.acct-unmeasured')]
@@ -696,7 +696,6 @@ describe('Accounts, with every help card closed', () => {
     const clears = document.querySelector('.acct-tiles > [data-label="Clears"]')!
     expect(clears.classList.contains('acct-unmeasured'), 'the never-polled account drew a countdown').toBe(true)
     expect(textOf(clears.querySelector('b'))).toBe('—')
-    expect(textOf(item.querySelector('[data-label="Clears"]'))).toBe('clears —')
 
     chooseAccount('eng:fresh')
     const measured = [...document.querySelectorAll('.acct-tiles > .acct-window')].filter(
@@ -793,9 +792,9 @@ const FAR = '2099-01-01T00:00:00Z'
  * list item. The pane then shows that account.
  */
 function chooseAccount(id: string): HTMLElement {
-  const raw = [...document.querySelectorAll('.acct-li span.raw')].find((s) => s.textContent === id)
+  const raw = [...document.querySelectorAll('tr.acct-rank-row .raw')].find((s) => s.textContent === id)
   expect(raw, `no list item for ${id}`).toBeTruthy()
-  const li = raw!.closest('li') as HTMLElement
+  const li = raw!.closest('tr') as HTMLElement
   fireEvent.click(li.querySelector('button.acct-open')!)
   return li
 }

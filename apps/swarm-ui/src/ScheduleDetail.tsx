@@ -519,7 +519,8 @@ function useSwitchBlock(s: Schedule, ask: boolean): SwitchBlock | null {
       setBlock({ rule, tenant: name, admins: null })
       if (!principal.is_admin) return
       const people = await loadPeople()
-      if (!live || (people.status !== 'ok' && people.status !== 'stale') || !Array.isArray(people.data.admins)) return
+      // A platform admin's read: only it carries `admins` (a workspace admin's is scoped, ADMIN-PEOPLE-ROLES).
+      if (!live || (people.status !== 'ok' && people.status !== 'stale') || !('admins' in people.data) || !Array.isArray(people.data.admins)) return
       const admins = people.data.admins.map((a) => a.email).filter((e) => e.trim().toLowerCase() !== self)
       if (admins.length > 0) setBlock({ rule, tenant: name, admins })
     })
