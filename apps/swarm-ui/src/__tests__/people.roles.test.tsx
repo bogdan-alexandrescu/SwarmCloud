@@ -140,6 +140,14 @@ describe('a platform admin (S5c)', () => {
     expect(l.querySelector('button')).toBeNull()
   })
 
+  it('says a request held for the platform owner is not one waiting here, so the lead and "1 pending" agree', async () => {
+    const held = person('hal@example.com', ws('requested', 'w-ha1000', { held: { reason: 'migrating' } }), { eng: 'none', research: null })
+    await mount(platform([held, BOB]))
+    const l = lead()!
+    expect(l.getAttribute('data-lead')).toBe('ok')
+    expect(visible(l.querySelector('.ws-lead-s'))).toBe('1 workspace request waits for the platform owner, not for an approval here.')
+  })
+
   it('draws a role column per group workspace where Teams was, and a dash for one not read', async () => {
     await mount(platform([LEE, JO, FAY, BOB]))
     expect(heads()).toEqual(['Person', 'eng', 'research', 'Personal workspace', 'Claude account', 'Ceiling', 'Last active', 'Manage'])

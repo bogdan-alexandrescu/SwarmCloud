@@ -6944,7 +6944,8 @@ function fixturePeople(): unknown {
   const people = [
     {
       email: 'carol@example.com', display_name: 'Carol', teams: [], github: 'none',
-      workspace: ws('requested', null, { request_id: 'wsr_c4r0l', requested_at: fixtureAgo(40 * 60_000), requested_via: 'console' }),
+      // A requested record has its workspace id from the moment it is filed.
+      workspace: ws('requested', 'w-c4r010', { request_id: 'wsr_c4r0l', requested_at: fixtureAgo(40 * 60_000), requested_via: 'console' }),
       claude_account: claude('none', 0, 0, []), loan_request: null,
       first_seen: fixtureAgo(45 * 60_000), last_seen: fixtureAgo(40 * 60_000), last_submitted: null, last_active: fixtureAgo(40 * 60_000),
     },

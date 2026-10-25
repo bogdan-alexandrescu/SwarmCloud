@@ -747,7 +747,22 @@ function openRequest(r: WaitingRequest): void {
 export function PeopleLead({ rows }: { rows: readonly PersonRow[] }) {
   const items = waitingRequests(rows)
   if (items.length === 0) {
-    return <AdminLead tone="ok" kicker="Nothing waiting" title="No one is waiting for an admin" body="Every workspace and Claude account request has been answered." />
+    // A request held for the platform owner's migration is `requested` and
+    // counted pending, but no admin here can decide it: said, so the lead
+    // and the table's "N pending" never read as a contradiction.
+    const held = rows.filter((r) => r.workspace.state === 'requested').length
+    return (
+      <AdminLead
+        tone="ok"
+        kicker="Nothing waiting"
+        title="No one is waiting for an admin"
+        body={
+          held === 0
+            ? 'Every workspace and Claude account request has been answered.'
+            : `${held} workspace ${held === 1 ? 'request waits' : 'requests wait'} for the platform owner, not for an approval here.`
+        }
+      />
+    )
   }
   const oldest = items[0]!
   const n = items.length
@@ -759,7 +774,7 @@ export function PeopleLead({ rows }: { rows: readonly PersonRow[] }) {
       title={`${n} ${n === 1 ? 'request is' : 'requests are'} waiting for an admin`}
       body={
         <>
-          The oldest: <b>{who}</b> asked for {requestFor(oldest)} {oldest.at !== null ? timeAgo(oldest.at) : 'at an unknown time'}. Approve or deny each; a denial says why to the person.
+          The oldest: <strong>{who}</strong> asked for {requestFor(oldest)} {oldest.at !== null ? timeAgo(oldest.at) : 'at an unknown time'}. Approve or deny each; a denial says why to the person.
         </>
       }
       action={
