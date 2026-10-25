@@ -1,8 +1,8 @@
-"""Frames from the display sidecar's Xvfb, as a copy the mask can paint on.
+"""Frames from the display sidecar's Xvfb, as a copy of the screen.
 
-docs/design/live-browser.md §3.1: the live gate captures the framebuffer,
-masks it (§5.3, `livegate.mask`), then encodes it. This module is the first
-step.
+docs/design/live-browser.md §3.1: the live gate captures the framebuffer and
+encodes it as Chromium drew it -- nothing is painted over a frame (§5.3;
+owner decision, BGD 2026-10-25). This module is the first step.
 
 HOW: XVFB'S OWN FRAMEBUFFER FILE, NOT AN X CLIENT. Xvfb started with
 `-fbdir <dir>` keeps its screen in `<dir>/Xvfb_screen0`, a memory-mapped file
@@ -12,16 +12,17 @@ third-party package: the gate opens it read-only and copies the pixel bytes.
 The directory is the sidecar's own `/tmp` (§3.1), which the worker container
 does not mount.
 
-A COPY, ALWAYS. `grab()` returns the pixels copied out of the mapping, and the
-mask paints on the copy. Painting the mapping itself would race Xvfb (the next
-draw overwrites the box) and would put the mask into what the browser reads
-back, so the unmasked screen and the masked frame are never the same memory.
+A COPY, ALWAYS. `grab()` returns the pixels copied out of the mapping: the
+device crop (device.py `captured`) and each viewer's painted pointer
+(pointer.py) work on copies, and the encoder diffs against what it sent, so
+nothing ever reads a mapping Xvfb is drawing into half-way through a frame,
+and nothing the gate does is ever drawn into what the browser reads back.
 
-ONLY WHAT IT CAN MASK. A frame the mask cannot paint correctly is a frame that
-leaves unmasked, so a format other than 32-bit ZPixmap -- the only one Xvfb
+ONLY WHAT IT CAN READ. A format other than 32-bit ZPixmap -- the only one Xvfb
 writes at the depth 24 this design runs (`-screen 0 WxHx24`) -- is refused
-with `CaptureError` rather than guessed at. The gate sends nothing for a frame
-it could not capture.
+with `CaptureError` rather than guessed at: the encoder declares the frame's
+pixel format to the viewer and sends its bytes as they are. The gate sends
+nothing for a frame it could not capture.
 """
 
 from __future__ import annotations
@@ -50,7 +51,7 @@ MAX_DIMENSION = 8192
 
 
 class CaptureError(Exception):
-    """The framebuffer could not be read as a frame the mask can paint."""
+    """The framebuffer could not be read as a frame the encoder can send."""
 
 
 @dataclass

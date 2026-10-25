@@ -415,7 +415,7 @@ export function AgentSplit({
           ) : selected === 'attempts' ? (
             <>
               <AttemptTimelineScreen taskId={taskId} />
-              {/* §7: a live-browser task's masked recordings, on its attempts. */}
+              {/* §7: a live-browser task's recordings, on its attempts. */}
               {task !== null && isLiveBrowser(task) && <RecordingsPanel task={task} />}
             </>
           ) : selected === 'checkpoints' ? null : (

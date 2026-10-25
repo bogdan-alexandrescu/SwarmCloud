@@ -88,6 +88,20 @@
 .cfg-page input[type='checkbox'],
 .cfg-page input[type='radio'] { margin-left: 0; margin-right: 0; }
 
+/* ---- the lead (CONFIG-LEAD-TINT; part of #2157) ------------------------------ */
+/* EVERY CONFIG PAGE'S LEAD: one next-step sentence and a button, on the info
+   tint (proposal E's `.lead`, config-e.html). One rule for every Config page:
+   a page's lead is a `section.ac-lead` around its card (Access.tsx `Lead`).
+   ITS BUTTONS' BORDERS ARE IN styles.css, after the `:where(.app button)`
+   floor. `--ctl-bd` measured 2.89:1 on this tint in dark and 2.96:1 in light,
+   under the 3:1 a control boundary is held to (WCAG 2.1 SC 1.4.11,
+   spaceprobe.ts `dividerContrast`), which is why GITHUB-ACCESS-PAGE drew the
+   lead on the plain card. The stronger border sits there rather than here
+   because jsdom's source-order cascade lets the floor out-rank any section
+   sheet, so a rule here would be invisible to the spacing sweep (the
+   `.ob-step.is-next` precedent beside it says the same). */
+.ac-lead > .c-card { background: var(--sk-acs); border-color: var(--sk-acl); }
+
 /* ---- the Config panel's row badges (S1a; CONFIG-PANEL-E) -------------------- */
 /* Each row's state from the strip's read: a tick when done, a dim count, what
    is missing in the warning tone, or a dash for a source nobody could read. */

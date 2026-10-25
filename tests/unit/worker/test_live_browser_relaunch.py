@@ -133,12 +133,12 @@ class Rig:
         await _until(self.showing)
 
     def showing(self) -> bool:
-        """The mask has a live session on the current Chromium's page, and its origin is reported."""
+        """The gate has a live session on the current Chromium's page, and its origin is reported."""
         gate, chromium = self.gate, self.chromium
         pages = gate.pages
         return bool(pages is not None and not gate.browser_closed and pages.current in chromium.pages
                     and pages._session in chromium.sessions
-                    and gate.mask_state._session and gate.origin is not None)
+                    and pages.state == "following" and gate.origin is not None)
 
     def events(self) -> list[tuple[str, str | None]]:
         return [(str(a.get("event")), a.get("cause")) for a in self.tunnel.actions

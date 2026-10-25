@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { loadRepositories, loadRepositoryIndex, patchRepositoryFileIssues, patchRepositoryWorkflowFiles, runRepositoryIndex } from './api'
-import { Banner, Button, Card, Dash, EmptyState, NamedMark } from './components'
+import { loadAccess, loadRepositories, loadRepositoryIndex, patchRepositoryFileIssues, patchRepositoryWorkflowFiles, runRepositoryIndex } from './api'
+import { ADD_REPOSITORY_ADDRESS } from './Access'
+import { Banner, Button, Card, Dash, EmptyState, NamedMark, Tabs } from './components'
+import { useSetupSteps } from './ConfigSetup'
+import { addressToPath } from './paths'
+import { ReachableRepositories } from './ReachableRepositories'
 import { HEAD_UNREAD, WORKFLOW_FILES_WHY, freshness, indexCredentialWords, repoName, scheduleWords, shortSha, workflowsNotGranted, type RepoRecord } from './RepositoriesData'
 import { REGISTER, GT_PAGE, TestsMapped, UrConfirmIndex, UrFreshPill, UrLink, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { RegisterRepository } from './RepositoriesRegister'
@@ -9,6 +13,7 @@ import { GitTokensPage, PermissionsPage } from './GitTokens'
 import { RepoDot, useForgePermissions } from './PermissionCards'
 import { QA_TARGETS_PAGE, QaTargetsScreen } from './QaTargets'
 import type { ForgeRepoStatus } from './api'
+import type { AccessGrant } from './types'
 import type { QaLink } from './qaTargetsApi'
 import { useRoleGate } from './Profile'
 import { CountNote, PageHead } from './Shell'
@@ -39,6 +44,18 @@ import './styles/repositories.css'
  * and queues nothing until the run is confirmed (`UrConfirmIndex`, RSA-15).
  *
  * Classes are `ur-` so a later pass can swap them for lane U0's components.
+ *
+ * CONFIG › REPOSITORIES IS REPOSITORY MANAGEMENT (REPOS-PAGE; part of #2157,
+ * BGD's decisions of 2026-10-23, proposal E, config-e.html S3a-S3c). The list
+ * page is led by what is missing, then "Repositories SwarmCloud may reach as
+ * you" (ReachableRepositories.tsx, moved off GitHub access), then the
+ * registry's cards with a dashed card for each chosen repository not yet
+ * registered. Add new repository goes to GitHub access with Choose
+ * repositories open; nothing is added to the person's reach from here.
+ * Unregistering stays as it was: the API serves `DELETE
+ * /v1/repositories/{repo_id}`, but the console has never drawn it, and this
+ * page adds no control for it (asked on the PR). Remove on a reach row
+ * revokes the person's own grant, as it did on Work › Access.
  */
 export function RepositoriesScreen({ view, go, qaLink }: { view: string | null; go: (to: string) => void; qaLink?: QaLink | null }) {
   const q = new URLSearchParams(view ?? '')
@@ -51,7 +68,9 @@ export function RepositoriesScreen({ view, go, qaLink }: { view: string | null; 
   // `qaLink` is the credential link's target and token when the shell read
   // them off the bar before it rewrote the address (as App.tsx's `keyLink`
   // does for ProviderKeys); left undefined, the page reads the bar itself.
-  if (page === 'qa-targets') return <QaTargetsScreen go={go} link={qaLink} />
+  if (page === 'qa-targets') {
+    return <QaTargetsScreen go={go} link={qaLink} tabs={<RepositoriesTabs current="qa-targets" go={go} />} />
+  }
   if (repo !== null && repo !== '') return <RepositoryDetail key={repo} repoId={repo} tab={q.get('tab')} go={go} pr={q.get('pr')} graph={{ view: q.get('view'), q: q.get('q') }} />
   // The list's heading is written HERE, as a literal, because
   // tests/unit/control_plane/test_nav_headings_agree.py reads the tab's
@@ -59,15 +78,157 @@ export function RepositoriesScreen({ view, go, qaLink }: { view: string | null; 
   // page it opens is headed Repositories.
   return (
     <RepositoryList go={go}>
-      {(meta, actions) => (
-        <>
-          <PageHead title="Repositories">
-            {actions}
-          </PageHead>
-          <CountNote>{meta}</CountNote>
-        </>
-      )}
+      {(actions) => <PageHead title="Repositories">{actions}</PageHead>}
     </RepositoryList>
+  )
+}
+
+/**
+ * THE PAGE'S TWO TABS, REPOSITORIES AND QA TARGETS (config-e.html S3: "QA
+ * targets as the page's second tab"). QA targets was a button in the list's
+ * head; it is the same address (`page=qa-targets`), drawn as the strip the
+ * other Config pages carry under their head (`cfg-parts`, config.css).
+ */
+function RepositoriesTabs({ current, go }: { current: 'list' | 'qa-targets'; go: (to: string) => void }) {
+  return (
+    <Tabs
+      className="cfg-parts"
+      label="Repositories pages"
+      current={current}
+      onGo={go}
+      tabs={[
+        { key: 'list', label: 'Repositories', href: addressToPath(REPOSITORIES_LIST) },
+        { key: 'qa-targets', label: 'QA targets', href: addressToPath(QA_TARGETS_PAGE) },
+      ]}
+    />
+  )
+}
+
+/** The list's own address: the strip's first tab. */
+const REPOSITORIES_LIST = 'config/repositories'
+
+/** `owner/repo` as GitHub compares it: names are not case-sensitive there. */
+const fullName = (owner: string, name: string) => `${owner}/${name}`.toLowerCase()
+
+/**
+ * THE GRANTS NOT IN THE REGISTRY (config-e.html S3a: "a chosen repository
+ * that is not registered yet is a dashed card with Register"). A grant is
+ * the person's (`GET /v1/access`); a registration is the workspace's
+ * (`GET /v1/repositories`). They are joined on owner/repo, because the two
+ * documents' `repo_id`s are not promised to be the same identifier.
+ */
+export function chosenNotRegistered(grants: readonly AccessGrant[], registered: readonly RepoRecord[]): AccessGrant[] {
+  const held = new Set(registered.map((r) => fullName(r.owner, r.repo)))
+  return grants.filter((g) => !held.has(g.repository.toLowerCase()))
+}
+
+/**
+ * The lead, drawn as GitHub access draws its own (Access.tsx's `Lead`, which
+ * that file does not export): the card surface, a kicker, one sentence, the
+ * next action.
+ */
+function Lead({ kicker, title, actions, children }: { kicker: string; title: string; actions: ReactNode; children: ReactNode }) {
+  return (
+    <section className="ac-lead" aria-label="Next step">
+      <Card title={title}>
+        <p className="ur-small">
+          <b className="ur-mu">{kicker}</b> {children}
+        </p>
+        <div className="ur-gh-acts">{actions}</div>
+      </Card>
+    </section>
+  )
+}
+
+/** Add new repository: GitHub access with Choose repositories open (GITHUB-ACCESS-PAGE's deep link). */
+function AddRepository({ go }: { go: (to: string) => void }) {
+  return (
+    <UrNavButton to={ADD_REPOSITORY_ADDRESS} go={go} kind="primary" size="sm">
+      Add new repository
+    </UrNavButton>
+  )
+}
+
+/** Register, or the same words disabled below `member` (the list's note says why). */
+function RegisterButton({ go, gated, kind = 'primary' }: { go: (to: string) => void; gated: boolean; kind?: 'primary' | 'secondary' }) {
+  return gated ? (
+    <Button kind={kind} size="sm" disabled>
+      Register
+    </Button>
+  ) : (
+    <UrNavButton to={REGISTER} go={go} kind={kind} size="sm">
+      Register
+    </UrNavButton>
+  )
+}
+
+/**
+ * THE ONE NEXT ACTION THAT LEADS THE PAGE (proposal E). It is read off the
+ * page's two reads, so it never says a step is left that a read says is
+ * done: nothing chosen is the strip's step 2 (its place counted from the
+ * strip, three steps in a personal workspace and four in a group one); a
+ * chosen repository not registered is Register; otherwise Add new
+ * repository. Null while either read is not in hand: the head then carries
+ * Add new repository, and nothing is claimed.
+ */
+function RepositoriesLead({
+  grants,
+  missing,
+  go,
+  gated,
+}: {
+  grants: readonly AccessGrant[]
+  missing: readonly AccessGrant[] | null
+  go: (to: string) => void
+  gated: boolean
+}) {
+  const steps = useSetupSteps().length
+  if (grants.length === 0) {
+    return (
+      <Lead kicker={`Step 2 of ${steps} · next.`} title="No repository chosen yet" actions={<AddRepository go={go} />}>
+        Choose repositories from an owner on GitHub access, or type owner/repo there.
+      </Lead>
+    )
+  }
+  if (missing === null) return null
+  if (missing.length > 0) {
+    const one = missing.length === 1
+    return (
+      <Lead
+        kicker={one ? 'Repositories · one thing left.' : `Repositories · ${missing.length} left.`}
+        title={one ? `${missing[0]!.repository} is chosen but not registered` : `${missing.length} chosen repositories are not registered`}
+        actions={<RegisterButton go={go} gated={gated} />}
+      >
+        Register {one ? 'it' : 'each'} so it is indexed on a schedule and agents start from its map.
+      </Lead>
+    )
+  }
+  const n = grants.length
+  return (
+    <Lead kicker="Repositories · nothing left." title="Every chosen repository is registered" actions={<AddRepository go={go} />}>
+      {n === 1 ? '1 repository chosen, and registered.' : `${n} repositories chosen, every one registered.`} Add new repository
+      opens GitHub access › Choose repositories.
+    </Lead>
+  )
+}
+
+/** A chosen repository not registered yet: the dashed card with Register (S3a). */
+function ChosenCard({ g, go, gated }: { g: AccessGrant; go: (to: string) => void; gated: boolean }) {
+  return (
+    <Card className="ur-card is-chosen" title={g.repository}>
+      <div className="ur-cbadge" data-badge="">
+        <NamedMark mark="warn" hue="warn" word="chosen, not registered" />
+      </div>
+      <div className="ur-cmeta">
+        <span>{g.mode === 'write' ? 'Write grant' : 'Read grant'}</span>
+      </div>
+      <div className="ur-cmeta">
+        <span>Not indexed: registering starts it</span>
+      </div>
+      <div className="ur-cacts">
+        <RegisterButton go={go} gated={gated} />
+      </div>
+    </Card>
   )
 }
 
@@ -76,9 +237,14 @@ function RepositoryList({
   children,
 }: {
   go: (to: string) => void
-  children: (meta: ReactNode, actions: ReactNode) => ReactNode
+  children: (actions: ReactNode) => ReactNode
 }) {
   const { state, reload } = useUrRead(loadRepositories, 'list')
+  // "REPOSITORIES SWARMCLOUD MAY REACH AS YOU" LEADS THE PAGE (BGD, 2026-10-23;
+  // config-e.html S3). One `GET /v1/access` feeds the card, the lead and the
+  // dashed cards of what is chosen and not registered.
+  const access = useUrRead(loadAccess, 'access')
+  const grants = access.state.status === 'ok' || access.state.status === 'stale' ? access.state.data.grants : null
   // GitHub permissions per repository (#1086): one dot each, absent until read.
   // The orgs too, for the not-granted line's installation link (#2029).
   const forge = useForgePermissions().state
@@ -140,12 +306,24 @@ function RepositoryList({
     reload()
   }
 
+  const registered = state.status === 'ok' || state.status === 'stale' ? state.data : state.status === 'empty' ? [] : null
+  const missing = grants !== null && registered !== null ? chosenNotRegistered(grants, registered) : null
+  // ADD NEW REPOSITORY IS DRAWN ONCE (S3c: "its lead carries Add new
+  // repository, so the header does not repeat it"): in the lead when the lead
+  // offers it, in the head otherwise.
+  const leadAdds = grants !== null && (grants.length === 0 || (missing !== null && missing.length === 0))
+  const chosen = (missing ?? []).map((g) => <ChosenCard key={g.repo_id} g={g} go={go} gated={roleGate !== null} />)
   // THE COUNT LINE IS THERE IN EVERY STATE (V224). Absent while the list was
   // read and when it failed, it arrived with the cards and pushed them ~37px
   // down. Reading, it says so; failed, the count is a dash with its reason.
   const meta =
     count !== null ? (
-      `${count} registered`
+      // The dashed cards are drawn in the same grid, so the note counts them apart (S3a).
+      missing !== null && missing.length > 0 ? (
+        `${count} registered · ${missing.length} chosen, not registered`
+      ) : (
+        `${count} registered`
+      )
     ) : state.status === 'loading' ? (
       'Reading the registered repositories…'
     ) : (
@@ -157,32 +335,37 @@ function RepositoryList({
   return (
     <div className="ur-page ur-list">
       {children(
-        meta,
         <span className="ur-acts">
-          {/* The list's age, on the control that renews it (#98). */}
-          <UrRefresh reads={[{ state, reload }]} />
+          {/* The registry's age, on the control that renews both the page's
+              reads (#98). The age is the registry's alone (V223): the access
+              read answering first must not say "read 0 s ago" for a list that
+              is still reading, or failed. */}
+          <UrRefresh reads={[{ state, reload }, access]} ageOf={[{ state, reload }]} />
           <UrNavButton to={GT_PAGE} go={go} size="sm">
             Git tokens
           </UrNavButton>
-          <UrNavButton to={QA_TARGETS_PAGE} go={go} size="sm">
-            QA targets
-          </UrNavButton>
           {roleGate === null ? (
-            <UrNavButton to={REGISTER} go={go} kind="primary" size="sm">
+            <UrNavButton to={REGISTER} go={go} size="sm">
               Register repository
             </UrNavButton>
           ) : (
-            <Button kind="primary" size="sm" disabled>
+            <Button size="sm" disabled>
               Register repository
             </Button>
           )}
+          {!leadAdds && <AddRepository go={go} />}
         </span>,
       )}
+      <RepositoriesTabs current="list" go={go} />
       {roleGate !== null && (
         <p className="ur-small" data-role-gate="member">
           {roleGate}
         </p>
       )}
+      {grants !== null && <RepositoriesLead grants={grants} missing={missing} go={go} gated={roleGate !== null} />}
+      <UrRegion state={access.state} route="GET /v1/access" what="Your access" onRetry={access.reload} lines={4}>
+        {(o) => <ReachableRepositories grants={o.grants} onChange={access.reload} />}
+      </UrRegion>
       {failed !== null && (
         <Banner tone="bad" title="Index now was refused">
           {failed}
@@ -198,6 +381,7 @@ function RepositoryList({
           {workflowFailed}
         </Banner>
       )}
+      <CountNote>{meta}</CountNote>
       <UrRegion
         state={state}
         route="GET /v1/repositories"
@@ -205,24 +389,26 @@ function RepositoryList({
         plural
         onRetry={reload}
         empty={
-          <EmptyState
-            kind="empty"
-            heading="No repositories registered"
-            action={
-              roleGate === null ? (
-                <UrNavButton to={REGISTER} go={go} kind="primary">
-                  Register repository
-                </UrNavButton>
-              ) : (
-                <Button kind="primary" disabled>
-                  Register repository
-                </Button>
-              )
-            }
-          >
-            A registered repository is indexed on a schedule so planners and agents start from its map. Pick one the
-            tenant's git token can read.
-          </EmptyState>
+          chosen.length > 0 ? (
+            <div className="ur-cards">{chosen}</div>
+          ) : (
+            <EmptyState
+              kind="empty"
+              heading="No repositories registered"
+              action={
+                roleGate === null ? (
+                  <UrNavButton to={REGISTER} go={go}>
+                    Register repository
+                  </UrNavButton>
+                ) : (
+                  <Button disabled>Register repository</Button>
+                )
+              }
+            >
+              None yet. A repository is registered after it is chosen; registering starts its index, so planners and
+              agents start from its map.
+            </EmptyState>
+          )
         }
       >
         {(repos) => (
@@ -258,6 +444,7 @@ function RepositoryList({
                 }
               />
             ))}
+            {chosen}
           </div>
         )}
       </UrRegion>

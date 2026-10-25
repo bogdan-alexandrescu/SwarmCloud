@@ -1,4 +1,4 @@
-// WORK › REPOSITORIES › ONE REPOSITORY › SETTINGS: the Code intelligence
+// CONFIG › REPOSITORIES › ONE REPOSITORY › SETTINGS: the Code intelligence
 // override (lane CTXQ-UI; docs/design/context-quality.md §4.7). A repository's
 // `context` is `on`, `off` or -- absent -- inherited from the workspace's
 // Code intelligence setting. The tab offers all three and writes the choice
@@ -80,7 +80,11 @@ describe('Settings: the Code intelligence override', () => {
     const g = await group()
     const card = g.closest('section, .c-card, [class*="card"]') ?? document.body
     expect(visible(card as Element)).toMatch(/nothing leaves the platform/i)
-    expect(visible(card as Element)).toMatch(/settings › workspace/i)
+    expect(visible(card as Element)).toContain('Config › Workspace Settings')
+    // CONFIG-COPY (part of #2157): never the old Settings › Workspace, and the
+    // link is Workspace Settings' own path, not the old address's redirect.
+    expect(visible(document.body)).not.toMatch(/\bWork › (Setup|Access|Repositories)|(?<!Workspace )Settings › (Workspace|MCP servers)/)
+    expect(within(card as HTMLElement).getByRole('link', { name: 'Config › Workspace Settings' }).getAttribute('href')).toBe('/config/workspace')
   })
 
   for (const [name, value] of [

@@ -646,6 +646,19 @@ class AdaptiveTargetRequest(StrictModel):
     clear_cooldown: bool = False
 
 
+class HardMaxRequest(StrictModel):
+    """`PUT /v1/admin/quota/{provider}/{tenant_id}/hard-max` (POOL-LIMITS-QUOTA).
+
+    The broker's own body is `{hard_max}` and nothing else, so `reason` stays
+    here: it is the point of swarm-api's `admin_audit` entry for the change.
+    No `requested_by`: who asked is the admin's verified email, taken from
+    the token, and a body that names one is refused (`extra="forbid"`).
+    """
+
+    hard_max: int = Field(ge=0, le=100_000)
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class DrainRequest(StrictModel):
     #: Draining disables admission into the pool and lets in-flight work finish.
     #: Undraining is the same call with `drain=false`.

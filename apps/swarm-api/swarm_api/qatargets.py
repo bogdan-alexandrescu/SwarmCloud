@@ -1103,6 +1103,23 @@ def _link_digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _live_link(snap: Any, now: datetime, *, email: str, tenant_id: str, target_id: str,
+               field: str) -> dict[str, Any] | None:
+    """The link document when it is this person's, for this tenant, target
+    and field, unused and unexpired; None otherwise. Its entry is the
+    caller's to compare."""
+    link = (snap.to_dict() or {}) if snap.exists else None
+    if not link or link.get("used_at") is not None:
+        return None
+    expires_at = link.get("expires_at")
+    if not isinstance(expires_at, datetime) or expires_at <= now:
+        return None
+    if (link.get("email"), link.get("tenant_id"), link.get("target_id"),
+            link.get("field", LINK_CREDENTIAL)) != (email, tenant_id, target_id, field):
+        return None
+    return link
+
+
 class QaTargets:
     """`qa_targets/`, `qa_target_credential_links/` and `qa_target_runs/`.
     Every read is checked against the caller's tenant: another tenant's
@@ -1613,29 +1630,46 @@ class QaTargets:
         target, entry and field, unused and unexpired. Otherwise 403 and
         nothing is written: someone else presenting a leaked link, or the link
         presented for another entry or field, does not burn it."""
-        if not isinstance(token, str) or not token or len(token) > 256:
-            raise QaCredentialLinkInvalid(LINK_INVALID_MESSAGE)
-        ref = self._db.collection(LINKS_COLLECTION).document(_link_digest(token))
+        ref = self._link_ref(token)
         now = self._now()
         transaction = self._db.transaction()
 
         @firestore.transactional
         def _consume(txn: Any) -> bool:
-            snap = _snapshot(txn.get(ref))
-            link = (snap.to_dict() or {}) if snap.exists else None
-            if not link or link.get("used_at") is not None:
-                return False
-            expires_at = link.get("expires_at")
-            if not isinstance(expires_at, datetime) or expires_at <= now:
-                return False
-            if (link.get("email"), link.get("tenant_id"), link.get("target_id"), link.get("environment"),
-                    link.get("field", LINK_CREDENTIAL)) != (email, tenant_id, target_id, environment, field):
+            link = _live_link(_snapshot(txn.get(ref)), now, email=email, tenant_id=tenant_id,
+                              target_id=target_id, field=field)
+            if link is None or link.get("environment") != environment:
                 return False
             txn.update(ref, {"used_at": now})
             return True
 
         if not _consume(transaction):
             raise QaCredentialLinkInvalid(LINK_INVALID_MESSAGE)
+
+    def _link_ref(self, token: Any) -> Any:
+        """The link's document, by the token's digest; 403 for a token no link could have."""
+        if not isinstance(token, str) or not token or len(token) > 256:
+            raise QaCredentialLinkInvalid(LINK_INVALID_MESSAGE)
+        return self._db.collection(LINKS_COLLECTION).document(_link_digest(token))
+
+    def _entry_for(self, current: Mapping[str, Any], environment: Any, link_token: Any, *, email: str,
+                   tenant_id: str, target_id: str, field: str) -> dict[str, Any]:
+        """The entry a write is for (#2280). The body's `environment` when it
+        names one, and a target of one entry as before. A target of several
+        whose body names none reads the entry the link was minted for, by the
+        same digest `consume_link` looks it up by, and only from a link that
+        is this person's, for this tenant, target and field, unused and
+        unexpired; any other link is 403 here, as `consume_link` would answer
+        it. Nothing is written: `consume_link` checks the link again, in its
+        transaction, against the entry this returns. A body naming another
+        entry than the link's is still `consume_link`'s 403, the link not burned."""
+        if environment is not None or len(current["environments"]) <= 1 or link_token is None:
+            return _entry_of(current, environment)
+        link = _live_link(_snapshot(self._link_ref(link_token).get()), self._now(), email=email,
+                          tenant_id=tenant_id, target_id=target_id, field=field)
+        if link is None:
+            raise QaCredentialLinkInvalid(LINK_INVALID_MESSAGE)
+        return _entry_of(current, link.get("environment"))
 
     def _write_entry(self, tenant_id: str, target_id: str, name: str, *, field: str,
                      record: Mapping[str, Any], moved: bool, action: str,
@@ -1684,7 +1718,8 @@ class QaTargets:
         the record on the entry with its audit row. The value is a local
         here and in the store, and nothing else."""
         current = self.get(tenant_id, target_id)
-        entry = _entry_of(current, environment)
+        entry = self._entry_for(current, environment, link_token, email=by, tenant_id=tenant_id,
+                                target_id=target_id, field=LINK_CREDENTIAL)
         name = entry["name"]
         if (entry.get("sign_in") or {}).get("kind") != "own_login":
             raise _invalid("only a target with sign_in.kind own_login takes a credential",
@@ -1719,7 +1754,8 @@ class QaTargets:
         not burn it. Without one, `qa_bypass_link_required` goes through its
         switch; off, the write goes on and is logged without the value."""
         current = self.get(tenant_id, target_id)
-        entry = _entry_of(current, environment)
+        entry = self._entry_for(current, environment, link_token, email=by, tenant_id=tenant_id,
+                                target_id=target_id, field=LINK_BYPASS)
         name = entry["name"]
         spec = entry.get("challenge_bypass")
         if not isinstance(spec, Mapping):

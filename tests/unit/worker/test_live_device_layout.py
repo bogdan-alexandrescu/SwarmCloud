@@ -9,7 +9,7 @@ device at ONE screen pixel per CSS pixel and clips the view there, and the
 gate's `scale: 3` magnified the content inside an 852 x 393 clip. The fix
 (presets.py, device.py): the display is the CSS viewport plus the browser's
 UI band, the override carries no `scale`, the window is fitted one pixel past
-the display, and the mask and touch map CSS to the screen at 1.
+the display, and touch maps CSS to the screen at 1.
 
 The expected values below are written out, not computed from presets.py, so
 a change to the arithmetic there cannot move the test with it. Every row was
@@ -27,9 +27,7 @@ from typing import Any
 import pytest
 
 from agent_worker.livegate import __main__ as gate_main
-from agent_worker.livegate.capture import Frame
 from agent_worker.livegate.device import DeviceController
-from agent_worker.livegate.mask import MASK_RGB, MaskState, Outcome
 from agent_worker.livegate.presets import (
     BROWSER_UI_HEIGHT,
     MAX_DISPLAY_HEIGHT,
@@ -255,30 +253,6 @@ def test_a_touch_maps_one_screen_pixel_to_one_css_pixel():
     asyncio.run(main())
     starts = [p for m, p, _ in cdp.calls if m == "Input.dispatchTouchEvent" and p["type"] == "touchStart"]
     assert starts[0]["touchPoints"] == [{"x": 840.0, "y": 380.0, "id": 0}]
-
-
-def test_the_mask_covers_a_password_field_where_the_rotated_page_draws_it():
-    state = MaskState()
-    state.session_up()
-    state.frame_attached("TOP", None)
-    state.navigated("TOP", "https://login.example.test/")
-
-    async def main() -> Any:
-        controller = DeviceController(GateCdp(), Display(), state, record=lambda k, f: None)
-        return await controller.select("iphone-15", "landscape")
-
-    device = asyncio.run(main())
-    state.on_message("TOP", (
-        '{"v": 1, "k": "report", "doc": "D1", "e": 1, "vp": [852, 393, 0, 0, 1], '
-        '"f": [{"id": 1, "type": "password", "ac": "", "ever": false, "r": [600, 340, 200, 30]}], '
-        '"t": [], "o": [], "tr": false}'))
-    white = (0xFF, 0xFF, 0xFF)
-    frame = Frame.blank(device.display_width, device.display_height, white)
-    assert state.apply(frame) is Outcome.MASKED
-    # The field's own box, in screen pixels: CSS + the UI band, at 1.
-    assert frame.rgb_at(600, UI_ROWS + 340) == MASK_RGB
-    assert frame.rgb_at(799, UI_ROWS + 369) == MASK_RGB
-    assert frame.rgb_at(590, UI_ROWS + 330) == white
 
 
 def test_chromium_starts_without_the_infobar_and_one_pixel_past_the_desktop_display(tmp_path: Path):
