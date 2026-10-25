@@ -66,7 +66,8 @@ provider that starts throttling everything — far more expensive than a few
 minutes of under-use.
 
 **Decrease is fast and unconditional.** A single 429 multiplies the target by
-`multiplicative_decrease` (0.5) immediately. Waiting for a second data point
+`multiplicative_decrease` (0.5) immediately — a 429 that is the *tenant's*:
+one pool account's window is that account's, below. Waiting for a second data point
 means the second data point arrives as a wall of 429s.
 
 ```
@@ -77,6 +78,61 @@ means the second data point arrives as a wall of 429s.
          |-'           v           v          <- one 429 each time
          +----------------------------> time
 ```
+
+### A pool account's 429 is the account's, not the tenant's (#2302)
+
+**Built 2026-10-25.** A 429 that names the subscription account it came from
+no longer halves the tenant. The worker's `rate-limit` report carries the pool
+account its attempt holds, with the hold's proof (assignment id, the agent's
+id and attempt: `quota_broker.main.ReportAccount`), and the broker
+(`_account_scope`) then:
+
+| The report | The tenant's `adaptive_target` | The account's health record |
+|---|---|---|
+| names no account (API-key traffic) | halved, as before | — |
+| names an account the caller cannot prove it holds | halved (`scope: not_held`) | nothing written |
+| names a held account, and another account the tenant may use has room | **unchanged**: no halving, no cooldown, no step toward `EXHAUSTED`, the success run goes on (`scope: account`) | one `rate_limit` event, with the refusing window and its reset |
+| names a held account, and **every** account the tenant may draw from is limited | halved (`scope: pool_exhausted`) | one `rate_limit` event |
+
+*Why.* On 2026-10-25 one eng account's 429 at 04:40:57Z took the tenant from
+26 to 14, and the pool sat full with 100+ agents queued while the other
+accounts had room (saga-team 7-day 61%, aieng-claude1 59%). Climbing back is
++1 per 20 clean calls, 720 of them, so one account's 5-hour window cost the
+tenant half its concurrency for hours; BGD reset it by hand at 06:25Z
+([runbook](runbooks/quota-throttled-tenant.md)). The account that was refused
+does not need the tenant halved to be kept from new work: its own window
+readings already withhold it (S15, `Account.assignable`), and the hold
+machinery does the rest. So no second hold was added.
+
+*"Every account the tenant may draw from"* is the set `choose()` draws from —
+owned **and** lent-to (`accounts_serving`), of the provider, in a state that
+takes new agents, and neither a withheld duplicate nor one this tenant found
+unreadable, since `choose()` would never hand it either (a full account and
+one awaiting its first reading are room: a hold ends, a reading arrives) — and
+an account is *limited* while a recorded 429 has not
+reached its reset or its readings block it
+(`AccountStore.every_account_limited`). When all of them are, the pool itself
+is spent, and that is the tenant's limit: AIMD halves exactly as before. Two
+accounts' 429s committing at the same instant may each see the other as not
+yet limited; the next report then halves, a lag of one report. A health read
+that fails counts the 429 against the tenant, as before.
+
+Naming an account costs the same proof a reading or a swap does, so a tenant
+cannot name somebody else's account — or one it does not hold — to dodge its
+own halving; such a report is counted against the tenant and writes nothing on
+the account. Admission's arithmetic is untouched: this changes only how far
+the tenant's ceiling falls on a 429. Capacity is still reserved all-or-nothing
+and counted from `LEASED`, and the worker still checkpoints, parks and exits
+on a 429 whatever the report says.
+
+Each account also keeps a **health record** — rate-limit and exhausted
+reports, provider errors by kind (auth, overloaded 529, 5xx, network),
+refusals at assignment, re-auth marks and failed credential refreshes, each
+with its time, tenant, agent id and a short redacted message — bounded to hourly
+counts for 7 days and the last 50 events
+(`accounts/{id}/health/record`, `quota_broker.accountstore`). It is served by
+`GET /v1/accounts/{id}/health` and summarised (24 h counts, one-word status)
+on every row of `GET /v1/accounts`.
 
 ### The invariant that must never break
 
@@ -111,7 +167,10 @@ runner child sees 429 (it is the only thing that sees the provider's headers)
     -> writes quota.json into the workspace
         -> worker reads it, decides short-wait vs park
             -> worker POSTs the observation to the quota broker
+               (naming the pool account it holds, if any: section 2)
                 -> broker applies AIMD to quota/{provider}:{tenant}
+                   (or, for a held account with room elsewhere, records it
+                    on that account's health and leaves the tenant alone)
                     -> broker writes quota_derived_limit on provider:{p}:tenant:{t}
                         -> scheduler reads the pool and admits fewer tasks
 ```

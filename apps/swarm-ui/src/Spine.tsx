@@ -30,15 +30,16 @@
  * to Overview once both reads say so (`onAdminRedirect`), and since
  * ADMIN-REDIRECT (part of #2157, BGD 2026-10-24: "Redirect, in a later lane")
  * a workspace admin who is not a platform admin, on a platform Admin page, goes
- * to Workspaces you admin, the one Admin page they are shown. A platform admin
- * is never redirected. The API's own refusal of every admin route is unchanged.
+ * to Workspaces you admin. Since ADMIN-PEOPLE-ROLES (part of #2157) People and
+ * roles is theirs too, scoped by the API to the workspaces they administer, so
+ * /admin/people is no longer sent away. A platform admin is never redirected. The API's own refusal of every admin route is unchanged.
  *
  * Production draws a red pill and a 3px red bar across the top; the pill shows
  * only what was measured (`classifyEnvironment`), never a hardcoded word.
  */
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { AGENT_TABS, type AgentTab } from './agentlist'
-import { USE_FIXTURES, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadOnboarding, loadStats, type TenantChoice } from './api'
+import { USE_FIXTURES, WORKSPACE_RENAMED_EVENT, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadOnboarding, loadStats, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
 import { Banner, Button, NamedMark, Toaster, acknowledge, routedClick } from './components'
 import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, preferencesUnavailableSnapshot, probeSnapshot, read, route, subscribePreferencesUnavailable, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
@@ -98,9 +99,11 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
   // issue forms already name each page as Settings › <page>. THE PERSON'S OWN
   // PAGES ONLY since CONFIG-NAV (part of #2157, BGD 2026-10-23): Workspace,
   // MCP servers and People and roles are Config's.
+  // API keys left this list for Config › Secrets' Keys for agents and MCP
+  // (SSC-UI, part of #2158; BGD 2026-10-23 23:57Z, proposal E S1: Settings
+  // keeps only Profile). `/settings/keys` still lands there (paths.ts).
   profile: [
     { key: 'profile', label: 'Profile', icon: 'people', to: 'settings/profile' },
-    { key: 'keys', label: 'API keys', icon: 'key', to: 'settings/keys' },
   ],
   work: [
     {
@@ -171,10 +174,15 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     { key: 'runner-sizes', label: 'Runner sizes', icon: 'runtimes', to: 'admin/runner-sizes' },
     { key: 'tenants', label: 'Tenants', icon: 'tenants', to: 'admin/tenants' },
     { key: 'counts', label: 'Platform counts', icon: 'counts', to: 'admin/counts' },
+    // SSC-UI (part of #2158; docs/design/secrets-scopes.md §5, proposal E S7):
+    // status only, a platform admin's alone, so under Platform and never in
+    // a workspace admin's `adminPagesFor`.
+    { key: 'platform-secrets', label: 'Platform secrets', icon: 'key', to: 'admin/platform-secrets' },
     // #847 W8 (docs/workspaces.md §6.4): a SECTIONS tab and a route, and
     // missing here, so an admin reached it only by typing /admin/people --
-    // the Runs defect visual QA Q7 caught, again.
-    { key: 'people', label: 'People', icon: 'people', to: 'admin/people' },
+    // the Runs defect visual QA Q7 caught, again. SECTIONS' label, People
+    // and roles, since ADMIN-PEOPLE-ROLES (part of #2157).
+    { key: 'people', label: 'People and roles', icon: 'people', to: 'admin/people' },
     // NAV-ADMIN-ROLE (part of #1633): the group workspaces the person
     // administers, last. The only Admin page a workspace admin who is not a
     // platform admin is shown (`adminPagesFor`).
@@ -209,13 +217,31 @@ export function adminWorkspaces(choices: readonly TenantChoice[]): TenantChoice[
 }
 
 /**
- * The Admin pages a person is shown: all five for a platform admin, only
- * Workspaces you admin for a workspace admin who is not one, and none for
- * anyone else -- which is how the spine knows to draw no Admin item.
+ * The Admin pages a person is shown: all of them for a platform admin, People
+ * and roles and Workspaces you admin for a workspace admin who is not one, and
+ * none for anyone else -- which is how the spine knows to draw no Admin item.
+ *
+ * THIS IS ADMIN-REDIRECT'S LIST: an Admin page that is not here sends a
+ * workspace admin to Workspaces you admin. People and roles joined it with
+ * ADMIN-PEOPLE-ROLES (part of #2157, BGD "Both, by scope"): its read
+ * (`GET /v1/admin/people`) answers a workspace admin with only the workspaces
+ * they administer, so /admin/people is a page of theirs, not one to send them
+ * away from.
  */
+export const WORKSPACE_ADMIN_PAGE_KEYS: ReadonlySet<string> = new Set(['people', WORKSPACES_YOU_ADMIN_TAB])
+
 export function adminPagesFor(platformAdmin: boolean, workspaceAdmin: boolean): readonly PanelPage[] {
   if (platformAdmin) return PANEL_PAGES.admin
-  return workspaceAdmin ? PANEL_PAGES.admin.filter((p) => p.key === WORKSPACES_YOU_ADMIN_TAB) : []
+  return workspaceAdmin ? PANEL_PAGES.admin.filter((p) => WORKSPACE_ADMIN_PAGE_KEYS.has(p.key)) : []
+}
+
+/**
+ * Where Admin lands: a platform admin's first page, and a workspace admin's
+ * Workspaces you admin -- the page ADMIN-REDIRECT sends them to, and the
+ * spine's Admin item opens, as before People and roles was theirs too.
+ */
+export function adminLanding(platformAdmin: boolean, pages: readonly PanelPage[]): PanelPage | null {
+  return (platformAdmin ? undefined : pages.find((p) => p.key === WORKSPACES_YOU_ADMIN_TAB)) ?? pages[0] ?? null
 }
 
 /**
@@ -714,7 +740,7 @@ const FRAME_RETRIES: ReadonlySet<string> = new Set(['unreachable', 'tenant_unres
 export const FRAME_RETRY_MS = 20_000
 const FRAME_RETRY_MAX_MS = 5 * 60_000
 
-function useFrameRead<T>(load: () => Promise<Result<T>>, everyMs: number | null, rereadOn = '', retry = false): [Result<T>, () => void] {
+function useFrameRead<T>(load: () => Promise<Result<T>>, everyMs: number | null, rereadOn = '', retry = false): [Result<T>, () => void, () => void] {
   const [r, setR] = useState<Result<T>>({ status: 'loading', since: Date.now() })
   const [nonce, setNonce] = useState(0)
   useEffect(() => {
@@ -756,7 +782,10 @@ function useFrameRead<T>(load: () => Promise<Result<T>>, everyMs: number | null,
     setR({ status: 'loading', since: Date.now() })
     setNonce((n) => n + 1)
   }, [])
-  return [r, again]
+  // Read again KEEPING what is drawn until the answer lands: a rename changes
+  // one name, and a shell that blanked to loading for it would flash.
+  const refresh = useCallback(() => setNonce((n) => n + 1), [])
+  return [r, again, refresh]
 }
 
 /*
@@ -1355,12 +1384,23 @@ export function SkyShell({
   // again under the new tenant rather than showing the old one's rows -- all
   // but an unsent form (`keepOnSwitch`), which is kept.
   const tenant = useSyncExternalStore(subscribeTenant, chosenTenant, chosenTenant)
-  const [me, rereadMe] = useFrameRead(loadFrameMe, null, tenant ?? '', true)
+  const [me, rereadMe, refreshMe] = useFrameRead(loadFrameMe, null, tenant ?? '', true)
   const [cap] = useFrameRead(loadFrameCapacity, 30_000, tenant ?? '')
   const fromList = useSyncExternalStore(subscribeListCounts, listCountsSnapshot, listCountsSnapshot)
   // A capped list re-reads the stats with each of its own reads (D27).
   const [stats] = useFrameRead(loadFrameStats, 30_000, `${tenant ?? ''}:${fromList !== null && !fromList.whole ? fromList.at : ''}`)
-  const [mine, rereadMine] = useFrameRead(loadFrameTenants, null)
+  const [mine, rereadMine, refreshMine] = useFrameRead(loadFrameTenants, null)
+  // A WORKSPACE RENAMED on Config › Workspace Settings (WORKSPACE-ADMIN-FIELDS,
+  // part of #2157): the name the switcher and every header draw is `me`'s, so
+  // both reads are asked again and the new name lands without a reload.
+  useEffect(() => {
+    const again = () => {
+      refreshMe()
+      refreshMine()
+    }
+    globalThis.addEventListener?.(WORKSPACE_RENAMED_EVENT, again)
+    return () => globalThis.removeEventListener?.(WORKSPACE_RENAMED_EVENT, again)
+  }, [refreshMe, refreshMine])
   // A headerless request refused because the default is unknown (Q9): said
   // beside the switcher, where naming a workspace is the next action.
   const prefsDown = useSyncExternalStore(subscribePreferencesUnavailable, preferencesUnavailableSnapshot, preferencesUnavailableSnapshot)
@@ -1379,7 +1419,8 @@ export function SkyShell({
   const adminPages = adminPagesFor(admin, adminWorkspaces(dataOf(mine) ?? []).length > 0)
   // Their names, for the note a workspace admin's Admin panel carries (S1c).
   const adminOf = useMemo(() => nameTenants(adminWorkspaces(dataOf(mine) ?? []), null).map((w) => w.display_name), [mine])
-  const spineItems = SPINE.flatMap((s) => (s.key !== 'admin' ? [s] : adminPages.length === 0 ? [] : [{ ...s, to: adminPages[0]!.to }]))
+  const landing = adminLanding(admin, adminPages)
+  const spineItems = SPINE.flatMap((s) => (s.key !== 'admin' ? [s] : landing === null ? [] : [{ ...s, to: landing.to }]))
   // ADMIN'S ADDRESSES SEND A NON-ADMIN TO OVERVIEW (CONFIG-NAV), and only
   // once both reads have answered: an unread session is not "not an admin".
   const adminDecided = who !== null && (mine.status === 'ok' || mine.status === 'stale' || mine.status === 'empty')
@@ -1388,10 +1429,10 @@ export function SkyShell({
   // panel has: an address that is no page at all keeps its 404.
   const adminRedirect = section !== 'admin' || !adminDecided
     ? null
-    : adminPages.length === 0
+    : landing === null
       ? ''
       : !missing && PANEL_PAGES.admin.some((p) => p.to === `admin/${tab}`) && !adminPages.some((p) => p.to === `admin/${tab}`)
-        ? adminPages[0]!.to
+        ? landing.to
         : null
   useEffect(() => {
     if (adminRedirect !== null) onAdminRedirect?.(adminRedirect)

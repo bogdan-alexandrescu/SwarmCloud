@@ -27,6 +27,10 @@
 }
 .acct-verdict-big > small { font-size: var(--t-figure); font-weight: 550; color: var(--text-dim); }
 .acct-verdict-say { min-width: 0; }
+/* AN ACCOUNT NAME IS ONE WORD (rendered 2026-10-25): at 390 the verdict broke
+   `five-hour-floor` at its hyphen, which reads as two accounts. Names are
+   labels a person typed, short by habit; the table keeps them whole too. */
+.acct-nm { white-space: nowrap; }
 .acct-verdict-head { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; }
 .acct-verdict-sub { margin: 4px 0 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
 .acct-verdict-sub b { color: var(--text); }
@@ -165,8 +169,9 @@
 .acct-tag.is-unk { color: var(--text-dim); background: var(--surface-2); border: 1px dashed var(--line); }
 
 /* A window against its floor: the shared track, and the floor as a tick at
-   100% minus the floor. At 560px and below the phone block hides every track
-   (styles.css), and the words carry the window there, as on every screen. */
+   100% minus the floor. At 560px and below styles.css's phone block hides
+   every track; the phone cards draw this one anyway (the phone block below
+   says why). */
 .acct-win { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .acct-win-l b { font-weight: 600; }
 .acct-floor { position: relative; display: block; width: 100%; max-width: 150px; }
@@ -198,6 +203,10 @@
 .acct-card-w2 small { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .acct-card-meta { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
 .acct-card-meta b { color: var(--text); font-weight: 600; }
+/* The id is pasted into commands, so it is read whole: on a line of its own
+   when it does not fit the rest of the line (`u-bogdan:five-hour-` / `floor`
+   at 390), and broken only when it is wider than the card. */
+.acct-card-meta .raw { display: inline-block; max-width: 100%; }
 .acct-card-more { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
 /* ---- the forecast ---- */
@@ -244,6 +253,141 @@
   }
   .acct-dup { padding: 10px 12px; }
   .acct-dup-why { display: none; }
-  .acct-floor { display: none; }
+  /* THE FLOOR STAYS ON THE PHONE (mock-up A, P1-P2; rendered 2026-10-25).
+     styles.css's phone block hides every `.ctl-util-track` because in a
+     `.ctl-util` row the bar only pictures the number beside it. This one does
+     not: the tick is the only place the 15% / 5% floor is drawn, and a card's
+     window column is ~150px at 390, room for it -- the same reason Pools'
+     Use meter is kept (capacity.css, V086). Out-ranks that rule at (0,3,0). */
+  .acct-card-w2 .acct-floor > .ctl-util-track { display: flex; }
   .acct-split.is-ranked > .acct-pane { border-top: 0; }
 }
+
+/* ---- one account, opened: the side sheet (#2222, mock-up A F4) ----
+   A sheet over the page's right side, not a pane under the table: the table
+   is the page, and a reader who opens a row reads that account beside the
+   ranking it came from. FIXED, SO IT SCROLLS ITSELF: unlike the old pane
+   (capacity-010), the sheet is the height of the window, and its own scroll
+   reaches Remove. It ends above the API-reads line (`--dock-h`, as the agent
+   drawer does). On a phone (560 and under) it is the page instead, P3: the
+   list steps aside (capacity.css `.is-detail`), `‹ Accounts` goes back, and
+   no scrim is drawn. */
+.acct-scrim { display: none; }
+@media (min-width: 561px) {
+  .acct-split.has-sheet > .acct-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 39;
+    background: color-mix(in srgb, #06101e 35%, transparent);
+  }
+  .acct-split.is-ranked > .acct-sheet {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: var(--dock-h, 28px);
+    z-index: 40;
+    width: min(520px, 100vw);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    margin: 0;
+    padding: 0 20px 24px;
+    border-top: 0;
+    border-left: 1px solid var(--line);
+    background: var(--surface);
+    box-shadow: var(--sk-sh);
+  }
+}
+.acct-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+}
+.acct-sheet-crumb { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.acct-sheet-close { margin-left: auto; }
+@media (min-width: 561px) {
+  /* The head sticks, so Close is always one Tab away however far down the sheet is read. */
+  .acct-sheet > .acct-sheet-head {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    background: var(--surface);
+    margin: 0 -20px;
+    padding: 8px 20px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+}
+@media (max-width: 560px) {
+  /* `‹ Accounts` UNDER THE HEADER (phone review, dark-phone-01): opening an
+     account scrolls the page to the sheet, and the sticky phone header
+     (`--sk-pbar-h`) covered its first line, the way back. */
+  .acct-split.is-ranked > .acct-sheet { scroll-margin-top: calc(var(--sk-pbar-h, 44px) + 8px); }
+  /* P3 DRAWS BOTH WINDOWS WITH THEIR FLOORS, as the phone list's cards do
+     (`.acct-card-w2` above): styles.css hides every `.ctl-util-track` at 560
+     and under, and the sheet's two are its picture, as
+     `.cap-pools.is-stacked` keeps its own. */
+  .acct-ss-wins .acct-floor { display: block; }
+  .acct-ss-wins .acct-floor > .ctl-util-track { display: flex; }
+  .acct-sheet-head { min-height: 0; }
+  .acct-sheet-crumb,
+  .acct-sheet-close { display: none; }
+  /* THE ACCOUNT IS THE SCREEN, NOT A CARD ON IT (P3, dark-phone-01): the
+     split's frame -- border, rounded inset and surface -- belongs to the list;
+     the opened account sits straight under the app bar, as P3 draws it. */
+  /* `overflow: visible`: the clip was for the card's rounded corners, and it cut
+     the focus ring of `‹ Accounts`, the screen's first control. */
+  .acct-split.is-ranked.is-detail { border: 0; border-radius: 0; background: none; overflow: visible; }
+  .acct-split.is-ranked.is-detail > .acct-sheet { padding: 0; }
+}
+.acct-sheet .acct-dhead-name > h3 { font-size: var(--t-lead); line-height: var(--lh-lead); }
+
+/* The verdict, as the row says it. */
+.acct-sv { display: flex; flex-direction: column; gap: 6px; }
+.acct-sv > p { margin: 0; max-width: none; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.acct-sv-chip > .acct-chip { white-space: normal; }
+.acct-sv-k { color: var(--text-dim); }
+.acct-sv .acct-why-part { display: inline; }
+.acct-sv .acct-why-part + .acct-why-part::before { content: ' · '; }
+
+/* One section of the sheet: a hairline above, a heading, its lines. */
+.acct-ss { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.acct-ss > h4 { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+.acct-ss > p { margin: 0; max-width: none; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.acct-ss-note { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.acct-ss > p.acct-ss-note { font-size: var(--t-micro); line-height: var(--lh-micro); }
+.acct-ss-k { margin: 4px 0 0; font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim); }
+/* ONE ROW PER WINDOW (mock-up A F4): each track runs the sheet's width, so the
+   5-hour and 7-day floors line up one above the other and read as one scale. */
+.acct-ss-wins { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.acct-ss-wins small { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.acct-ss-wins .acct-floor { max-width: none; }
+.acct-ss-dup { border: 1px solid var(--warn-ink); border-radius: 10px; padding: 10px 12px; background: color-mix(in srgb, var(--warn) 10%, var(--surface)); }
+
+.acct-kv { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.acct-kv > dt { color: var(--text-dim); }
+.acct-kv > dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  .acct-kv { grid-template-columns: 96px minmax(0, 1fr); }
+}
+
+.acct-cap { display: flex; flex-direction: column; gap: 6px; }
+.acct-cap > p { margin: 0; }
+.acct-cap-edit { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.acct-cap-edit label { display: inline-flex; align-items: center; gap: 8px; font-size: var(--t-meta); }
+.acct-cap-edit input { width: 72px; }
+.acct-cap-edit > small { flex: 1 1 100%; font-size: var(--t-micro); line-height: var(--lh-micro); }
+.acct-cap-err { flex: 1 1 100%; margin: 0; }
+.acct-lending-edit { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.acct-lending-edit > .acct-action { align-self: stretch; }
+/* The sheet's text controls sit in a line of text, at its height. */
+.acct-ss .c-link { min-height: 0; display: inline; }
+/* The page's action panels, inside the sheet: a section each, as mock-up A
+   draws them, so Pause, Replace the credential and Remove read as parts of
+   one account and not as a second page under it. */
+.acct-sheet .acct-detail > .acct-action { border-top: 1px solid var(--line); padding-top: 12px; }
+/* The section's grid gap spaces its note; `.muted.small`'s own 10px on top of
+   it stood "Replace the credential" 24px over its first line (light-desktop-02). */
+.acct-sheet .acct-action > p.muted.small { margin-top: 0; }
+.acct-sheet .acct-detail > .acct-action.danger { border-top-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
+.acct-sheet .acct-detail > .acct-facts { font-size: var(--t-micro); line-height: var(--lh-micro); }

@@ -86,6 +86,7 @@ export type TopicId =
   | 'blockers-at-an-instant'
   | 'capacity'
   | 'ceiling-change-evicts-nothing'
+  | 'people-and-roles-scope'
   | 'catalogue-from-route'
   | 'checkpoints'
   | 'clipboard-secure-context'
@@ -789,16 +790,26 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // AH-14. The facts are swarm_api/service.py `stats` and store.py
   // `count_tasks_by_state`; the arithmetic of the cost is PlatformCounts.tsx's
   // STATE_COUNT, which is why no number is written here.
+  //
+  // OVER TIME SINCE COUNTS-PAGE (#2149). The page draws a second read below
+  // the state counts, PlatformOverTime.tsx, and this topic said nothing about
+  // time. Its facts are BGD's decisions of 2026-10-23 -- agents by the day they
+  // were submitted with their retries apart, the four breakdowns, "Estimated
+  // cost (list price, not a bill)" with its coverage -- and docs/outcomes.md
+  // ("The nightly seal") for where the days come from.
   'platform-counts': {
     group: 'the-platform',
     title: 'What Platform counts returns',
     short:
-      'One count of agent documents per state for your own tenant, and a second set across every tenant when you are an administrator. Each state is its own count() query, so a run costs one query per state per scope, and the price grows with the platform’s history rather than its load.',
+      'Two reads, each behind its own priced button. The state counts: one count() per state for your tenant, and across every tenant when you are an administrator. Over time: agents counted on the day they were submitted, retries apart, from the daily rollup, with an estimated cost at list price, not a bill.',
     long: [
-      'Each run asks the stats route for the number of agent documents in each state, as they stand at that moment. An agent that has moved on since is counted where it is now, and nothing about how long any agent spent anywhere is in the answer.',
+      'Each run of the state counts asks the stats route for the number of agent documents in each state, as they stand at that moment. An agent that has moved on since is counted where it is now, and nothing about how long any agent spent anywhere is in that answer; that is what Over time is for.',
       'The first set is scoped to the caller’s own tenant. An administrator also gets a second set across every tenant; anyone else sees that card as not entitled, which is a permission and not a fault.',
       'Every state the contract defines is counted, including the ones never written to an agent document, so a run costs one count() per state per scope. That query bills by the index entries it scans, and those grow with every agent ever written — so the price is printed before the control that spends it, and nothing re-runs it on a timer.',
       'A total is drawn only when every state came back. When one did not, the total is withheld and the missing states are named, because a sum over a partial response is not a count of anything.',
+      'Over time counts agents, per day, week or month, across every workspace. An agent is counted once, in the bucket of the day it was submitted, wherever it is now; its retries — the attempts after its first — are a second figure in the same bucket, never added to the agents. It can be broken down by agent type, model, workspace or pool account, and every breakdown comes from the same read.',
+      'The figures come from the daily rollup, the same days the Timeline reads. Each ended day is sealed nightly by the rollup job, so a read of sealed days re-derives nothing; the newest days are derived at Run. The read is billed by the days it covers in each workspace, which is why its price is on its own Run and nothing reads it on a timer.',
+      'The cost is the list price of what the agent CLI reported, not a bill: no billing export is read, so no figure is what was charged. A cost nothing reported is “not reported”, never $0. When only some agents reported one, the total is “at least” that figure, with how many of how many reported under it. An agent stopped before it reported carries the worker’s list-price estimate instead, which is in the total and also shown apart as estimated. Run hours are a floor in the same way when some attempts never wrote an end, and tokens when some attempts reported none.',
     ],
     see: ['withheld-total', 'admin-gate-not-failure'],
   },
@@ -1429,7 +1440,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'an-account',
     title: 'The page answers first, then ranks the accounts',
     short:
-      'The page opens on how many accounts can take a new agent, which frees first and when, and how many agents wait. The table under it is ranked by when each account can take one: those that can now, then those whose window clears at a known time, soonest first, then those that free when an agent finishes.',
+      'The page opens on how many accounts can take a new agent, which one frees first and when, and how many agents wait. The table under it is ranked by when each account can take one: those that can now, then those whose window clears at a known time, soonest first, then those that free when an agent finishes.',
     long: [
       'On 2026-10-24 the page read “7 accounts · 7 available” while 28 agents waited: every account was under its floor, and “available” only meant “not paused”. The verdict at the top is the broker’s own answer for each account, so it cannot say plenty while nothing can be handed out.',
       'Each row says in words what blocks the account and the floor it is held to, and draws both windows against that floor as a tick. A window that has reset reads “reset” with nothing read since, never its old figure.',
@@ -1687,6 +1698,23 @@ const SPECS: Record<TopicId, TopicSpec> = {
     ],
   },
 
+  // ADMIN-PEOPLE-ROLES (part of #2157, BGD "Both, by scope"): Admin › People
+  // and roles is drawn for a workspace admin too, with fewer columns than a
+  // platform admin sees. Said here so a missing workspace reads as the scope
+  // working, not as a fault. A role "from the default" is a sighting: the
+  // platform cannot list a Google group's members (workspace-roles.md §4.3).
+  'people-and-roles-scope': {
+    group: 'the-platform',
+    title: 'People and roles shows the workspaces you administer',
+    short:
+      'A platform admin sees every person against every group workspace. A workspace admin sees only the workspaces they administer and the people in them: whoever was last seen there or holds a role there. A personal workspace request and a Claude account loan are a platform admin’s to decide.',
+    long: [
+      'Each cell is the person’s own role in that workspace when they hold one, else the workspace’s default when they were last seen in it, else none. A dash means that workspace’s roles could not be read, and is never a guessed role.',
+      'The platform cannot list a Google group’s members, so being in a workspace is read from the person’s last sign-in. Someone who has not signed in since joining is shown once they hold a role of their own.',
+      'Roles are changed on Config › People and roles, in the workspace itself.',
+    ],
+  },
+
   'lease-and-pool-are-two-records': {
     group: 'the-platform',
     title: 'The lease and the pool counter are two records of one fact',
@@ -1722,6 +1750,7 @@ export const HELP_PLACES = {
   'admin/limits': 'Pool limits',
   'admin/tenants': 'Tenants',
   'admin/counts': 'Platform counts',
+  'admin/people': 'People and roles',
   'automate/schedules': 'Schedules',
   'automate/approvals': 'Approvals',
   // A Capacity page since NAV-FOOT (#1672); `reference` still lands there.
@@ -1943,6 +1972,10 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   'ceiling-change-evicts-nothing': {
     subject: 'Lowering a ceiling',
     act: { say: 'To free capacity now, cancel work; lowering a ceiling only stops new work being admitted.', at: 'admin/limits' },
+  },
+  'people-and-roles-scope': {
+    subject: 'Who People and roles shows',
+    act: { say: 'To change a role, open Config › People and roles in that workspace.', at: 'admin/people' },
   },
   'lease-and-pool-are-two-records': {
     subject: 'Leases and pool counters',

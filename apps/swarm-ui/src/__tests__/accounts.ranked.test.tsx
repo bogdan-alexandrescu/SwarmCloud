@@ -159,14 +159,14 @@ describe('the verdict', () => {
         AT,
       ),
       weekly('ai-eng-3', 0.97, Date.parse('2026-10-27T10:59:00Z'), AT),
-      weekly('example-personal', 0.98, Date.parse('2026-10-26T07:59:00Z'), AT),
+      weekly('home-personal', 0.98, Date.parse('2026-10-26T07:59:00Z'), AT),
     ]
     const v = pool.verdictOf(accounts, 'eng', 0)
     expect(v.n).toBe(0)
     expect(v.next?.account.label).toBe('aieng-claude1')
     expect(pool.utcAt(v.next!.at, AT)).toBe('10:10Z')
     expect(v.next?.window).toBe('five_hour')
-    expect(v.then?.account.label).toBe('example-personal')
+    expect(v.then?.account.label).toBe('home-personal')
     expect(pool.utcAt(v.then!.at, AT)).toBe('Oct 26 07:59Z')
     expect(v.underBy).toEqual([
       { window: 'seven_day', count: 2 },
@@ -224,6 +224,40 @@ describe('the verdict', () => {
     expect(verdict.textContent).toContain('No account is registered, so no agent that needs the pool can start.')
     expect(verdict.querySelector('.acct-verdict-big')?.textContent).toBe('0 accounts')
   })
+
+  it('says which organisation to sign in to once on the empty pool, not once per merged copy', async () => {
+    api.loadTasksInState.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    api.loadAccountsBoard.mockResolvedValue(board([]))
+    render(<AccountsScreen />)
+    const panel = await waitFor(() => {
+      const el = document.querySelector('.acct-empty')
+      expect(el).not.toBeNull()
+      return el as HTMLElement
+    }, WAIT)
+    const says = (panel.textContent ?? '').split('Sign in to the organisation you mean').length - 1
+    expect(says).toBe(1)
+  })
+
+  it('never says no account is registered when a document could not be read', async () => {
+    // Rendered 2026-10-25: the head said "1 document unreadable, so this list
+    // is short" while the verdict said "No account is registered".
+    api.loadTasksInState.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    api.loadAccountsBoard.mockResolvedValue(board([], 1))
+    render(<AccountsScreen />)
+    const verdict = await screen.findByRole('region', { name: 'Can the pool take a new agent' }, WAIT)
+    expect(verdict.textContent).not.toContain('No account is registered')
+    expect(verdict.querySelector('.acct-verdict-big')?.textContent).toBe('0 of at least 1')
+    expect(verdict.querySelector('.acct-verdict-head')?.textContent).toBe(
+      'No account here could be read, so no agent that needs the pool can start.',
+    )
+    // The empty panel under it says the same, never the zero's "No accounts registered".
+    const panel = document.querySelector('.acct-empty') as HTMLElement
+    // The heading carries its `?` card after the words.
+    expect(panel.querySelector('h3')?.firstChild?.textContent).toBe('No account could be read')
+    expect(panel.textContent).not.toContain('No accounts registered')
+    expect(panel.textContent).toContain('1 registered account could not be read')
+    expect(panel.querySelector('.ctl-mark.is-zero')).toBeNull()
+  })
 })
 
 describe('the table', () => {
@@ -267,12 +301,12 @@ describe('one subscription twice', () => {
   it('names the pair inside this workspace, and never another workspace’s account', () => {
     const extra = acct('team', {
       can_take_new_agent: false,
-      blocked_by: [{ duplicate_of: 'eng:example-personal', reason: 'registered on the same organisation as eng:example-personal' }],
-      duplicate_of: 'eng:example-personal',
+      blocked_by: [{ duplicate_of: 'eng:home-personal', reason: 'registered on the same organisation as eng:home-personal' }],
+      duplicate_of: 'eng:home-personal',
     })
-    const older = acct('example-personal', { duplicate_of: 'eng:team' })
+    const older = acct('home-personal', { duplicate_of: 'eng:team' })
     const pairs = duplicatePairs([extra, older])
-    expect(pairs.map((p) => [p.extra.label, p.other?.label])).toEqual([['team', 'example-personal']])
+    expect(pairs.map((p) => [p.extra.label, p.other?.label])).toEqual([['team', 'home-personal']])
 
     const foreign = acct('lone', {
       can_take_new_agent: false,
@@ -291,7 +325,14 @@ describe('one subscription twice', () => {
     })
     api.loadAccountsBoard.mockResolvedValue(board([foreign, acct('other')]))
     render(<AccountsScreen />)
-    const banner = await screen.findByText('lone is a subscription another workspace already registered', undefined, WAIT)
+    // The head as read: the name is its own `acct-nm` span, so match the whole head.
+    const banner = await screen.findByText(
+      (_, el) =>
+        el?.classList.contains('acct-dup-head') === true &&
+        el.textContent === 'lone is a subscription another workspace already registered',
+      undefined,
+      WAIT,
+    )
     const box = banner.closest('.acct-dup') as HTMLElement
     expect(box.textContent).toContain('To fix it:')
     expect(screen.getByRole('button', { name: 'Open lone' })).toBeTruthy()

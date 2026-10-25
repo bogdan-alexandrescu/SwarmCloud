@@ -16,7 +16,7 @@
  * name is the same `acct-open` button the list was, so the account's detail
  * and every control on it are where they were.
  */
-import { useState, type ReactNode } from 'react'
+import { Fragment, useState, type ReactNode } from 'react'
 
 import { accountName } from './accountName'
 import { AcctState } from './AccountState'
@@ -276,12 +276,17 @@ function Tags({ a, names }: { a: PoolAccount; names: ReadonlyMap<string, string>
   return (
     <span className="acct-tags">
       {dup ? (
-        <span className="acct-tag is-dup">same subscription as {dup}</span>
+        <span className="acct-tag is-dup">
+          same subscription as <span className="acct-nm">{dup}</span>
+        </span>
       ) : a.duplicate_reason ? (
         <span className="acct-tag is-dup">registered in another workspace too</span>
       ) : null}
       {possible && !dup && (
-        <span className="acct-tag is-dup">may be the same subscription as {possibleOf ?? 'another workspace’s account'}</span>
+        <span className="acct-tag is-dup">
+          may be the same subscription as{' '}
+          {possibleOf === null ? 'another workspace’s account' : <span className="acct-nm">{possibleOf}</span>}
+        </span>
       )}
       {extra.length > 0 && (
         <span
@@ -289,14 +294,12 @@ function Tags({ a, names }: { a: PoolAccount; names: ReadonlyMap<string, string>
           title={`${extra.join(', ')}: ${extra.length === 1 ? 'a window' : 'windows'} this console does not know by name, held to the default floor`}
         >
           {extra.length === 1 ? '1 window' : `${extra.length} windows`} not known by name:{' '}
-          {/* THE PROVIDER'S OWN NAME, DRAWN AS AN ID: it is data the reading
-              carried, not a word this console chose, so each one is its own
-              code element (walk.copy.test.tsx reads that as the user's data). */}
+          {/* The provider's own key, drawn as an id: it is data, not a word we chose. */}
           {extra.map((w, i) => (
-            <span key={w}>
+            <Fragment key={w}>
               {i > 0 && ', '}
-              <code>{w}</code>
-            </span>
+              <span className="mono">{w}</span>
+            </Fragment>
           ))}
         </span>
       )}
@@ -584,7 +587,15 @@ function AccountCards({
       })}
       {hidden.length > 0 && (
         <p className="acct-card-more">
-          {hidden.length} more: {hidden.map((a) => accountName(a)).join(', ')}.{' '}
+          {hidden.length} more:{' '}
+          {hidden.map((a, i) => (
+            <span key={a.account_id}>
+              {i > 0 && ', '}
+              {/* Whole, as in the verdict: `team-copy` broke at its hyphen at 390. */}
+              <span className="acct-nm">{accountName(a)}</span>
+            </span>
+          ))}
+          .{' '}
           <button type="button" className="ctl-link" onClick={() => setAll(true)}>
             Show all {total}
           </button>

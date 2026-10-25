@@ -20,8 +20,8 @@ describe('Config › Workspace Settings', () => {
     }
   })
 
-  it('leaves API keys and the old hashes where they were', () => {
-    expect(fromAddress('settings/keys')).toMatchObject({ sectionId: 'settings', tab: 'keys' })
+  it('sends API keys to Config › Secrets (SSC-UI) and leaves the old hashes where they were', () => {
+    expect(fromAddress('settings/keys')).toMatchObject({ sectionId: 'config', tab: 'secrets' })
     expect(fromAddress('settings/anything-else')).toMatchObject({ sectionId: 'admin', tab: 'limits' })
   })
 })

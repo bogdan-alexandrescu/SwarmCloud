@@ -203,12 +203,16 @@ def _no_live_browser_from_the_host(monkeypatch):
     no-live-browser tests down the live branch: `PLAYWRIGHT_BROWSERS_PATH`
     became the stub `/opt/swarm/live-browser-only`, and a base-image run was
     refused as `live_browser_unavailable` (2026-10-25, POOL-LIMITS-QUOTA).
+    The rest of a live-browser container's variables go too, so no case is a
+    live attempt unless it sets its variables itself, after this has run.
     """
     from agent_worker import handoff
     from agent_worker.runners import claude_code
 
     monkeypatch.delenv(claude_code.CDP_ENDPOINT_ENV, raising=False)
     monkeypatch.delenv(handoff.HANDOFF_ENV, raising=False)
+    for name in ("SWARM_BROWSER_UPLOADS", "SWARM_TEST_BROWSERS_PATH", "SWARM_JEV_BACKEND"):
+        monkeypatch.delenv(name, raising=False)
 
 
 def _run_body(monkeypatch, tmp_path, browsers: str | None) -> dict[str, Any]:
@@ -239,9 +243,25 @@ def _run_body(monkeypatch, tmp_path, browsers: str | None) -> dict[str, Any]:
     return seen
 
 
+def _no_live_browser(monkeypatch) -> None:
+    """The runner reads the live browser's spool and endpoint from the process
+    environment, and seeds a test-browsers directory from whatever is at the
+    browsers path on THIS machine, so a run on SwarmCloud's own browser
+    container (which sets both and has /opt/playwright) took the live-browser
+    path and appended PW-TESTRUNNER's note here. These tests are of an attempt
+    with no live browser and no test-browsers directory: say so, rather than
+    inherit the machine's."""
+    from agent_worker.runners import claude_code
+
+    monkeypatch.delenv(claude_code.HANDOFF_ENV, raising=False)
+    monkeypatch.delenv(claude_code.CDP_ENDPOINT_ENV, raising=False)
+    monkeypatch.setattr(claude_code, "prepare_test_browsers", lambda *_: None)
+
+
 def test_the_runner_hands_the_agent_the_browser(monkeypatch, tmp_path):
     from agent_worker.runners.claude_code import BROWSER_NOTE
 
+    _no_live_browser(monkeypatch)
     # A path under tmp_path, not the image's `/opt/playwright`: where that
     # directory exists (a SwarmCloud browser runner), the runner seeds a test
     # browsers directory from it and names it after BROWSER_NOTE (PW-TESTRUNNER).
@@ -254,6 +274,7 @@ def test_the_runner_hands_the_agent_the_browser(monkeypatch, tmp_path):
 
 
 def test_the_runner_says_nothing_of_a_browser_on_the_base_image(monkeypatch, tmp_path):
+    _no_live_browser(monkeypatch)
     seen = _run_body(monkeypatch, tmp_path, None)
     assert "PLAYWRIGHT_BROWSERS_PATH" not in seen["env"]
     assert seen["prompt"] == "Screenshot the settings page."

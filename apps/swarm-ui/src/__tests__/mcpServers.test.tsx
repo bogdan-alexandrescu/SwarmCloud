@@ -1,4 +1,4 @@
-// SETTINGS › MCP SERVERS (lane MCP-UI; docs/design/registered-mcp-servers.md
+// CONFIG › MCP SERVERS (lane MCP-UI; docs/design/registered-mcp-servers.md
 // §4.2, §4.9, §4.11; part of #1433). The workspace's registered MCP servers:
 // the servers a task's agent may call, by name, through the worker's relay.
 //
@@ -77,7 +77,7 @@ afterEach(() => {
   window.history.replaceState(null, '', '/')
 })
 
-describe('Settings › MCP servers', () => {
+describe('Config › MCP servers', () => {
   it('lists every registration by name and URL, enabled or not', async () => {
     api(list({ canManage: true }))
     const { McpServersScreen } = await load()
@@ -121,6 +121,8 @@ describe('Settings › MCP servers', () => {
     api(list({ canManage: true }))
     const { McpServersScreen } = await load()
     render(<McpServersScreen />)
+    // The form opens from the card head's Register (MCP-ROWS, S5a).
+    fireEvent.click(await screen.findByRole('button', { name: 'Register an MCP server' }))
     await screen.findByRole('form', { name: /register an mcp server/i })
     expect(screen.getByRole('button', { name: 'Disable kb' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Enable docs' })).toBeTruthy()
@@ -153,6 +155,7 @@ describe('Settings › MCP servers', () => {
     })
     const { McpServersScreen } = await load()
     const r = render(<McpServersScreen />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Register an MCP server' }))
     const form = await screen.findByRole('form', { name: /register an mcp server/i })
     expect(form.querySelector('input[type="password"]')).toBeNull()
     fireEvent.change(within(form).getByLabelText(/^name$/i), { target: { value: 'kb' } })
