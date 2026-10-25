@@ -380,8 +380,12 @@ def test_a_conflict_rounds_merge_the_moved_tip_already_holds_ends_no_change(
         # The same resolution, but the round's merge also changed a file the
         # tip does not hold: dropping it would lose that change silently.
         {"extra": ("notes.txt", "the round also wrote this\n")},
+        # The round kept the branch's own side of the conflict, the owner
+        # did not: `cherry-pick -m 1` sees no change against the first
+        # parent there, so only a real merge into the tip shows the conflict.
+        {"resolved": "def broken():\n    return 1\n"},
     ],
-    ids=["resolved_differently", "adds_a_change_over_the_tip"],
+    ids=["resolved_differently", "adds_a_change_over_the_tip", "kept_the_branchs_side"],
 )
 def test_a_rounds_merge_that_resolves_differently_from_the_moved_tip_pushes_nothing(
     worker_factory, monkeypatch, origin, red, local_urls, forge, pushes, tmp_path, round_kw

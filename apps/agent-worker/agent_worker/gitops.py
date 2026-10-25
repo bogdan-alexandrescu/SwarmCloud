@@ -4367,7 +4367,10 @@ def replay_onto_tip(
     A two-parent merge in the span (a conflict round's merge of the default
     branch) is dropped when its second parent is an ancestor of the tip and
     applying it against its first parent (`cherry-pick -m 1`) leaves the
-    tip's tree as it is: the tip already holds it. Any other merge -- its
+    tip's tree as it is, and a real merge of it into the tip
+    (`merge-tree --write-tree`) is clean and leaves the tip's tree too -- the
+    second check catches a hunk the round resolved by keeping the branch's
+    side, which `-m 1` cannot see: the tip already holds it. Any other merge -- its
     second parent not on the tip, a conflict there, a tree that would differ,
     more than two parents -- is refused, so a different resolution on the tip
     is never silently dropped and no merge is ever rewritten as a linear
@@ -4438,6 +4441,17 @@ def replay_onto_tip(
                 )
             code, tree = run([*g, "write-tree"], "replay-merge-tree")
             if code != 0 or tree.strip() != sha_of("HEAD^{tree}", "replay-head-tree"):
+                raise restore(
+                    f"commit {sha[:12]} is a merge and cannot be replayed: the moved tip "
+                    "resolves it differently"
+                )
+            # `-m 1` sees only what the merge changed against its first
+            # parent, so a hunk the round resolved by keeping the branch's
+            # side is invisible to it. A real merge into the tip sees it: a
+            # held merge merges cleanly and leaves the tip's tree.
+            code, merged = run([*g, "merge-tree", "--write-tree", "HEAD", sha], "replay-merge-held")
+            merged_tree = merged.split("\n", 1)[0].strip()
+            if code != 0 or merged_tree != sha_of("HEAD^{tree}", "replay-head-tree"):
                 raise restore(
                     f"commit {sha[:12]} is a merge and cannot be replayed: the moved tip "
                     "resolves it differently"
