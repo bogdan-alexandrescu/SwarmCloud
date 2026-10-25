@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Banner, Button, Card, Dash, EmptyState, LoadingState, Segmented, StatePill } from './components'
+import { Banner, Button, Card, Dash, EmptyState, LoadingState, Segmented, StatePill, Table, type Column } from './components'
 import { STATE_MARK } from './marks'
 import { QA_LINK_ADDRESS } from './paths'
 import {
@@ -11,11 +11,14 @@ import {
   notStartedWhy,
   type Figure,
   type LegDetail,
+  type NewRoute,
   type QaRunGroup,
   type QaRunLeg,
   type TargetFacts,
 } from './qaRunGroupApi'
-import { UrCrumb, UrLink, UrRefresh, useUrRead } from './RepositoriesParts'
+import { promoteQaScreen, type QaScreen, type QaTarget } from './qaTargetsApi'
+import { useRoleGate } from './Profile'
+import { UrCrumb, UrLink, UrRefresh, useUrRead, writeFailure } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import type { TaskState } from './types'
 import './styles/qarungroup.css'
@@ -44,12 +47,23 @@ import './styles/qarungroup.css'
  * A LEG THAT NEVER STARTED says so, with why: a refusal's own sentence, or
  * §2.1's crash window between two submissions.
  *
+ * BELOW THE COLUMNS, "New since last run" (S9b; QA-RUN-NEW-ROUTES, part of
+ * #2157): the routes the legs found that the target does not store as
+ * screens yet, each leg's `new_since_last_run` as the target serves it. A
+ * workspace admin may Promote one, `promoteQaScreen`'s PATCH of `screens`
+ * (§5: a run never writes `screens`; this is the one way a found route
+ * enters it), and it leaves the table. Anyone else reads the table and the
+ * role sentence, never a Promote the API would refuse. S9b's Remove, which
+ * dismisses a found route, has no route to call yet and is not drawn.
+ *
  * ON A PHONE THE COLUMNS BECOME A SWITCH (S9d): one leg at a time, the
  * one-leg-only routes still above it.
  *
  * Proposal E leads every Config page with one next-action sentence and
  * button: here, the leg that did not start, else the leg still running, else
- * the QA targets the run came from.
+ * the QA targets the run came from. When the run found routes not stored
+ * yet, a lead counting them goes above that one, and its button scrolls to
+ * the table.
  */
 
 /** How often the page reads again while a leg's workflow is still running. */
@@ -240,6 +254,63 @@ function OneLegOnlyCard({ facts, legs }: { facts: Figure<TargetFacts> | null; le
   )
 }
 
+const NEW_ROUTES_ID = 'qr-new-routes'
+
+function NewRoutesLead({ count }: { count: number }) {
+  if (count === 0) return null
+  const review = () => document.getElementById(NEW_ROUTES_ID)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+  return (
+    <div data-new-routes-lead>
+      <Banner tone="info" title={`${plural(count, 'route')} found that ${count === 1 ? 'is' : 'are'} not stored yet`}
+        actions={<Button kind="primary" size="sm" onClick={review}>Review below</Button>}>
+        New since last run. Promote adds a route to the target&rsquo;s stored screens; admins only.
+      </Banner>
+    </div>
+  )
+}
+
+function NewRoutesCard({ routes, admin, gate, canPromote, promoting, failed, onPromote }: {
+  routes: readonly NewRoute[]
+  /** The caller is a workspace admin (or the role is not read yet: the API decides). */
+  admin: boolean
+  /** The role sentence for anyone below admin, else null. */
+  gate: string | null
+  /** The target was read in a shape Promote's PATCH can be built from. */
+  canPromote: boolean
+  promoting: string | null
+  failed: string | null
+  onPromote: (r: NewRoute) => void
+}) {
+  if (routes.length === 0) return null
+  const columns: Column<NewRoute>[] = [
+    { key: 'route', head: 'Route', cell: (r) => <code className="qr-route">{r.path}</code> },
+    { key: 'on', head: 'Found on', cell: (r) => r.on.join(', ') },
+    { key: 'seen', head: 'First seen', cell: (r) => (r.thisRun ? 'this run' : (when(r.firstSeen) ?? <Dash why="Its first sighting was not served." />)) },
+  ]
+  if (admin && canPromote) {
+    columns.push({
+      key: 'act',
+      head: <span className="qr-sr">Promote</span>,
+      cell: (r) => (
+        <Button kind="primary" size="sm" busy={promoting === r.path} disabled={promoting !== null} onClick={() => onPromote(r)}
+          aria-label={`Promote ${r.path}`}>
+          Promote
+        </Button>
+      ),
+    })
+  }
+  return (
+    <section data-new-routes id={NEW_ROUTES_ID}>
+      <Card title="New since last run">
+        <p className="qr-hint">Routes a run found that the target does not store as screens yet. A stored screen is captured on every run.</p>
+        {failed !== null && <Banner tone="bad" title="The route was not stored">{failed}</Banner>}
+        <Table caption="New since last run" columns={columns} rows={routes} rowKey={(r) => r.path} />
+        {gate !== null && <p className="qr-hint qr-gate" data-role-gate="admin">{gate}</p>}
+      </Card>
+    </section>
+  )
+}
+
 function Lead({ group, details, go }: { group: QaRunGroup; details: Record<string, LegDetail>; go: (to: string) => void }) {
   const idle = group.legs.find((l) => l.workflow_id === null)
   if (idle !== undefined) {
@@ -275,8 +346,14 @@ export function QaRunGroupScreen({ groupId, go }: { groupId: string; go: (to: st
   const [details, setDetails] = useState<Record<string, LegDetail>>({})
   const [facts, setFacts] = useState<Figure<TargetFacts> | null>(null)
   const [shown, setShown] = useState<string | null>(null)
+  // Promote: the routes stored from this page, the one being stored, and why the last one was not.
+  const [promoted, setPromoted] = useState<QaScreen[]>([])
+  const [promoting, setPromoting] = useState<string | null>(null)
+  const [promoteFailed, setPromoteFailed] = useState<string | null>(null)
+  const [factsNonce, setFactsNonce] = useState(0)
+  const adminGate = useRoleGate('admin', 'promote a found route to a stored screen')
 
-  // Each leg's figures, and the target's, once the group is read; again on every read of it.
+  // Each leg's figures once the group is read; again on every read of it.
   useEffect(() => {
     if (group === null) return
     let live = true
@@ -286,8 +363,18 @@ export function QaRunGroupScreen({ groupId, go }: { groupId: string; go: (to: st
         if (live) setDetails((was) => ({ ...was, [leg.environment]: d }))
       })
     }
+    return () => {
+      live = false
+    }
+  }, [group])
+
+  // The target's facts: on every read of the group, and again after a Promote.
+  useEffect(() => {
+    if (group === null) return
+    let live = true
     if (group.target_id !== null) {
-      void loadTargetFacts(group.target_id, group.legs.map((l) => l.environment)).then((f) => {
+      const workflows = Object.fromEntries(group.legs.flatMap((l) => (l.workflow_id === null ? [] : [[l.environment, l.workflow_id]])))
+      void loadTargetFacts(group.target_id, group.legs.map((l) => l.environment), workflows).then((f) => {
         if (live) setFacts(f)
       })
     } else {
@@ -296,7 +383,7 @@ export function QaRunGroupScreen({ groupId, go }: { groupId: string; go: (to: st
     return () => {
       live = false
     }
-  }, [group])
+  }, [group, factsNonce])
 
   // While a leg runs, read again on a cadence; nothing reads once every leg has ended.
   const running = group !== null && group.legs.some((l) => l.workflow_id !== null && !ended(l.workflow_state))
@@ -308,6 +395,24 @@ export function QaRunGroupScreen({ groupId, go }: { groupId: string; go: (to: st
   }, [running, reload])
 
   const name = facts?.kind === 'value' ? facts.value.name : null
+  const target = facts?.kind === 'value' ? facts.value.target : null
+  // A route stored from here leaves the table at once, whether or not the read after it has landed.
+  const newRoutes = facts?.kind === 'value' ? facts.value.newRoutes.filter((r) => !promoted.some((p) => p.path === r.path)) : []
+
+  async function promote(t: QaTarget, r: NewRoute) {
+    setPromoting(r.path)
+    setPromoteFailed(null)
+    // The stored list as read, plus every route stored from here since: a second Promote keeps the first.
+    const since = promoted.filter((p) => !t.screens.some((s) => s.id === p.id || s.path === p.path))
+    const res = await promoteQaScreen({ ...t, screens: [...t.screens, ...since] }, { id: r.id, path: r.path })
+    setPromoting(null)
+    if (res.status === 'error') {
+      setPromoteFailed(writeFailure(res.error))
+      return
+    }
+    setPromoted((was) => [...was, { id: r.id, path: r.path }])
+    setFactsNonce((n) => n + 1)
+  }
   const hosts = facts?.kind === 'value' ? facts.value.hosts : {}
   const at = group !== null ? when(group.at) : null
   const legs = group?.legs ?? []
@@ -346,6 +451,7 @@ export function QaRunGroupScreen({ groupId, go }: { groupId: string; go: (to: st
       )}
       {group !== null && (
         <>
+          <NewRoutesLead count={newRoutes.length} />
           <Lead group={group} details={details} go={go} />
           <OneLegOnlyCard facts={facts} legs={legs} />
           {legs.length > 1 && current !== null && (
@@ -370,6 +476,17 @@ export function QaRunGroupScreen({ groupId, go }: { groupId: string; go: (to: st
               />
             ))}
           </div>
+          <NewRoutesCard
+            routes={newRoutes}
+            admin={adminGate === null}
+            gate={adminGate}
+            canPromote={target !== null}
+            promoting={promoting}
+            failed={promoteFailed}
+            onPromote={(r) => {
+              if (target !== null) void promote(target, r)
+            }}
+          />
           {group.by !== null && (
             <p className="qr-hint">
               Started by {group.by}

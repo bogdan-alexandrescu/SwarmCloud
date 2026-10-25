@@ -30,6 +30,10 @@
 .qr-only { display: flex; flex-direction: column; gap: 2px; padding: 8px 0; border-bottom: 1px solid var(--line-soft); font-size: var(--t-meta); }
 .qr-only:last-child { border-bottom: 0; }
 .qr-switch { display: none; }
+/* New since last run (S9b, QA-RUN-NEW-ROUTES): the table below the columns. */
+.qr-route { font-family: var(--mono); font-size: var(--t-micro); }
+.qr-gate { margin: 8px 0 0; }
+.qr-sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 @media (max-width: 1079px) {
   .qr-cols[data-legs="3"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
