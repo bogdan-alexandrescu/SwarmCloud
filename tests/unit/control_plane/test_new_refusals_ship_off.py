@@ -468,6 +468,17 @@ NOT_SWITCHABLE_CODES = frozenset({
     "child_run_no_repository",
     "child_workflow_unapproved",
     "child_after_merged_unknown",
+    # A step's runtime policy (RUNTIME-BY-DIFF, docs/workflows.md, part of
+    # #2322), as MODEL-API's codes above: raised only for a submission whose
+    # metadata names `runtime`, the block that change introduces and which no
+    # caller sent before it (the plugin and the issue-run planner learn to
+    # write it in the same change), so no existing caller can be refused by
+    # it. Continuing past it is the breach itself: a policy swarm-api did not
+    # check would let the scheduler move a step between profiles it never
+    # signed an alternate for -- a pair, a shape or a starting profile chosen
+    # by the caller (invariant 10) -- or put every step of a workflow on the
+    # browser profile.
+    "invalid_runtime",
 })
 
 #: What the guard lets through without a switch.
