@@ -30,12 +30,12 @@ import {
 } from './fetch'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP as HELP_TOPICS, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, type TopicId } from './help'
-import { CONFIG_SECRETS_ADDRESS, GITHUB_CALLBACK_ADDRESS, KEY_LINK_ADDRESS, QA_LINK_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, keyLinkScope, keyLinkToken, movedToConfig, pathToAddress, secretsLinkToken, secretsLinkView } from './paths'
+import { CONFIG_SECRETS_ADDRESS, GITHUB_CALLBACK_ADDRESS, QA_LINK_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, movedToConfig, pathToAddress, secretsLinkToken, secretsLinkView } from './paths'
 import { GitHubCallbackScreen } from './GitHubConnect'
-import { ProviderKeysScreen } from './ProviderKeys'
 import { WorkspaceSettingsScreen, workspacePartOf } from './WorkspaceSettings'
 import { McpServersScreen } from './McpServers'
-import { WorkspaceSecretsScreen, secretsLinkOf, type SecretsLink } from './WorkspaceSecrets'
+import { SecretsScreen } from './Secrets'
+import { AdminPlatformSecretsScreen } from './AdminPlatformSecrets'
 import { SetupStrip } from './ConfigSetup'
 import { NotFound, nearestPath } from './NotFound'
 import { fmtLatency } from './panes'
@@ -475,8 +475,11 @@ export const SECTIONS: SectionDef[] = [
     tabs: [
       { id: 'github', label: 'GitHub access' },
       { id: 'repositories', label: 'Repositories' },
-      // Workspace secrets, moved whole; SECRETS-SCOPES-DESIGN (#2158) designs
-      // its scopes. Its one-time link keeps its path (paths.ts).
+      // Every secret of the workspace, the person and each repository on one
+      // page (SSC-UI, part of #2158; docs/design/secrets-scopes.md §6.1,
+      // proposal E S4): the scope picker, the store and its grants, Keys for
+      // agents and MCP (Settings › API keys until then) and token status.
+      // Every old address and one-time link lands here (paths.ts).
       { id: 'secrets', label: 'Secrets' },
       { id: 'mcp-servers', label: 'MCP servers' },
       // This workspace's people: every member reads it, its admins change it
@@ -545,6 +548,10 @@ export const SECTIONS: SectionDef[] = [
       // The id stays `counts`, so `#counts` (LEGACY) and `#history/counts`
       // (MOVED_PANES) both land here.
       { id: 'counts', label: 'Platform counts', admin: true },
+      // SSC-UI (part of #2158; docs/design/secrets-scopes.md §5, proposal E
+      // S7): each platform secret's status from Secret Manager metadata. No
+      // value and no form: the operator's script writes every one of them.
+      { id: 'platform-secrets', label: 'Platform secrets', admin: true },
       // #847 W8 (docs/workspaces.md §6.4): who has signed in, their workspace
       // requests to approve or deny, each person's ceiling and Claude account,
       // and who is an admin. Admin only, like the three before it.
@@ -599,31 +606,19 @@ const SUBMIT_HELP: SectionQuestionDef = {
 const GITHUB_CALLBACK = GITHUB_CALLBACK_ADDRESS
 
 /**
- * SETTINGS › API KEYS (KEYS-UI, owner request 2026-10-14;
- * docs/provider-keys.md). Not a section, for the reason API reads is not one:
- * it is a thing you set once, not a thing you work in, and a fifth section
- * would sit beside the questions people arrive with. It is reached from the
- * panel's foot, beside the person's own name, because the first key on it is
- * theirs. Two addresses: the page, `settings/keys`, and the one-time link
- * `/sc` mints, `settings/keys/typesafe?scope=..` (the token never enters the
- * address, paths.ts `KEY_LINK_ADDRESS`), which opens the same page.
+ * SETTINGS (KEYS-UI, then PROFILE-NAV): the person's own pages, not a
+ * section, for the reason API reads was not one. It held Settings › API keys
+ * until SSC-UI (part of #2158) moved it into Config › Secrets as Keys for
+ * agents and MCP (BGD 2026-10-23T23:57Z; proposal E S1: Settings keeps only
+ * Profile). `settings/keys` and its one-time link
+ * `settings/keys/typesafe?scope=..&t=..` land there with their token
+ * (paths.ts `MOVED_TO_CONFIG`, `secretsLinkToken`).
  *
  * `#settings` and `#settings/<anything else>` still land on Pool limits
- * (LEGACY, MOVED_PANES): only these exact addresses are Settings pages.
- *
- * SETTINGS KEEPS THE PERSON'S OWN PAGES (CONFIG-NAV; part of #2157, BGD
- * 2026-10-23): Profile and API keys. Workspace, its Secrets, MCP servers and
- * People and roles are Config pages now, and their `settings/*` addresses land
- * there (paths.ts `MOVED_TO_CONFIG`). API keys stays until the secrets design
- * moves provider keys into Config › Secrets (BGD 2026-10-23T23:57Z).
+ * (LEGACY, MOVED_PANES): only Profile's exact address is a Settings page.
  */
 const SETTINGS = 'settings'
-const KEYS_TAB = 'keys'
-/** The link's tab: the same page, opened from a one-time link. */
-const KEY_LINK_TAB = KEY_LINK_ADDRESS.slice(SETTINGS.length + 1)
 const SETTINGS_LABEL = 'Settings'
-/** The page's `<h1>` and the second half of its name in the issue forms. */
-const KEYS_LABEL = 'API keys'
 /**
  * SETTINGS › PROFILE (PROFILE-NAV; docs/design/user-profile.md §2.1, §6):
  * everything about the signed-in person in one place -- who they are, their
@@ -1005,10 +1000,9 @@ export function fromAddress(full: string): Route {
   if (hash === GITHUB_CALLBACK) return { sectionId: GITHUB_CALLBACK, tab: '', ...blank }
   // Settings › API keys and its one-time link, before LEGACY reads `settings`
   // as the eleven-item nav's Pool limits. Only the link's scope is kept.
-  if (hash === `${SETTINGS}/${KEYS_TAB}`) return { sectionId: SETTINGS, tab: KEYS_TAB, ...blank }
   if (hash === `${SETTINGS}/${PROFILE_TAB}`) return { sectionId: SETTINGS, tab: PROFILE_TAB, ...blank }
   if (hash === CONFIG_SECRETS_ADDRESS) {
-    // The link's action and name, never a token (`secretsLinkView`).
+    // The scope, the repository, the form and the link's names, never a token (`secretsLinkView`).
     const view = secretsLinkView(query)
     return { sectionId: CONFIG, tab: CONFIG_SECRETS_TAB, ...blank, ...(view === '' ? {} : { view }) }
   }
@@ -1019,10 +1013,6 @@ export function fromAddress(full: string): Route {
   if (hash === `${CONFIG}/${CONFIG_WORKSPACE_TAB}`) {
     const part = workspacePartOf(query)
     if (part !== 'settings') return { sectionId: CONFIG, tab: CONFIG_WORKSPACE_TAB, ...blank, view: `part=${part}` }
-  }
-  if (hash === KEY_LINK_ADDRESS) {
-    const scope = keyLinkScope(query)
-    return { sectionId: SETTINGS, tab: KEY_LINK_TAB, ...blank, ...(scope === null ? {} : { view: `scope=${scope}` }) }
   }
   // The Submit chooser (/submit): two large choices, opened by the spine's
   // Submit and by N.
@@ -1256,14 +1246,13 @@ export function App() {
   // The fragment the page was opened at, read before the normalise effect
   // rewrites the bar to its path: `useState(fromLocation)` already applied it.
   const mountHash = useRef(typeof window === 'undefined' ? '' : window.location.hash)
-  // THE KEY LINK'S TOKEN, read before the normalise effect below rewrites the
-  // bar without it (paths.ts `KEY_LINK_ADDRESS`): the key page may mount
-  // later than this render, behind a takeover, and would find it gone. Held
-  // here and handed to that page, never written into a route.
-  const keyLink = useRef(typeof window === 'undefined' ? null : keyLinkToken(window.location.pathname, window.location.search))
-  // THE SECRETS LINK'S TOKEN (paths.ts `SECRETS_ADDRESS`), read here for the
-  // key link's reason and handed to Config › Secrets, which
-  // sends it once with its first add. Never written into a route or storage.
+  // THE SECRETS LINK'S TOKEN (paths.ts `SECRETS_ADDRESS`), read before the
+  // normalise effect below rewrites the bar without it: the page may mount
+  // later than this render, behind a takeover, and would find it gone. Every
+  // one-time link that opens Config › Secrets -- the store's, a repository's,
+  // the runner key's, the TypeSafe key's old `settings/keys/typesafe` -- is
+  // read here (`secretsLinkToken`), handed to the page, and sent once with
+  // the write its link was minted for. Never written into a route or storage.
   const secretsLink = useRef(typeof window === 'undefined' ? null : secretsLinkToken(window.location.pathname, window.location.search))
   // Dropped once that page has mounted with it, as the QA link is below, so a
   // later visit is never handed a token already sent.
@@ -1463,9 +1452,7 @@ export function App() {
         : at.sectionId === GITHUB_CALLBACK
           ? 'Connect GitHub'
           : at.sectionId === SETTINGS
-            ? at.tab === PROFILE_TAB
-              ? PROFILE_LABEL
-              : KEYS_LABEL
+            ? PROFILE_LABEL
             : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
   const object = at.missing ? null : documentObjectOf(at)
   useEffect(() => {
@@ -1561,13 +1548,11 @@ export function App() {
                   <SubmitChooser go={go} />
                 ) : at.sectionId === GITHUB_CALLBACK ? (
                   <GitHubCallbackScreen go={go} />
-                ) : at.sectionId === SETTINGS && at.tab === PROFILE_TAB ? (
-                  <ProfileScreen />
                 ) : (
-                  // Settings › API keys and its one-time link: the last page
-                  // that is not a section. API reads was the one after it
-                  // until NAV-FOOT (#1672) made it a Capacity tab.
-                  <ProviderKeysScreen link={at.tab === KEY_LINK_TAB ? { scope: keyLinkScope(at.view ?? ''), token: keyLink.current } : null} />
+                  // Settings › Profile: the last page that is not a section.
+                  // API keys was beside it until SSC-UI moved it to Config ›
+                  // Secrets, and API reads until NAV-FOOT (#1672).
+                  <ProfileScreen />
                 )
               ) : (
                 // THE PAGE (CH-2): its `Screen`s' reads stay its own while the
@@ -1592,7 +1577,7 @@ export function App() {
                         go={go}
                         apiFailuresOnly={apiFailuresOnly}
                         qaLink={onQaPage ? qaLink.current : null}
-                        secretsLink={onSecretsPage && at.view ? { ...secretsLinkOf(at.view), token: secretsLink.current } : null}
+                        secretsLink={onSecretsPage && at.view ? secretsLink.current : null}
                       />
                     )
                     return section.id === CONFIG ? <ConfigPage go={go}>{body}</ConfigPage> : body
@@ -1654,17 +1639,14 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
     case GITHUB_CALLBACK:
       return 'work'
     // EVERY SETTINGS PAGE LIGHTS PROFILE (NAV-PROFILE; part of #1633): its
-    // panel holds them. Only the three exact addresses are these pages;
+    // panel holds them. Only Profile's exact address is one since SSC-UI;
     // `#settings/<anything else>` is Pool limits (LEGACY), and lights Admin.
     case SETTINGS:
-      return PROFILE_PANEL_TABS.includes(tab) ? 'profile' : null
+      return tab === PROFILE_TAB ? 'profile' : null
     default:
       return null
   }
 }
-
-/** The settings tabs Profile's panel lists, and the one-time key link that opens API keys. */
-const PROFILE_PANEL_TABS: readonly string[] = [PROFILE_TAB, KEYS_TAB, KEY_LINK_TAB]
 
 /**
  * THE HEAD (§B3): 44px, spanning the work area, above everything routed.
@@ -2127,8 +2109,8 @@ function SectionBody({
   apiFailuresOnly?: boolean
   /** The QA credential link App read off the bar, for the QA targets page, or null. */
   qaLink?: QaLink | null
-  /** The secrets one-time link's action, name and token, for Config › Secrets, or null. */
-  secretsLink?: SecretsLink | null
+  /** The one-time link's token App read off the bar for Config › Secrets, or null. Never drawn. */
+  secretsLink?: string | null
 }) {
   const openAgent = (id: string) => go(`${WORK}/task/${encodeURIComponent(id)}`)
   /*
@@ -2227,7 +2209,7 @@ function SectionBody({
     case 'config/repositories':
       return <RepositoriesScreen view={view} go={go} qaLink={qaLink} />
     case 'config/secrets':
-      return <WorkspaceSecretsScreen link={secretsLink} />
+      return <SecretsScreen view={view} token={secretsLink} />
     case 'config/mcp-servers':
       return <McpServersScreen />
     case 'config/people':
@@ -2245,6 +2227,8 @@ function SectionBody({
       return <PlatformCountsScreen />
     case 'admin/people':
       return <PeopleScreen />
+    case 'admin/platform-secrets':
+      return <AdminPlatformSecretsScreen />
     case 'admin/workspaces':
       return <WorkspacesYouAdminScreen go={go} />
 
