@@ -276,12 +276,17 @@ function Tags({ a, names }: { a: PoolAccount; names: ReadonlyMap<string, string>
   return (
     <span className="acct-tags">
       {dup ? (
-        <span className="acct-tag is-dup">same subscription as {dup}</span>
+        <span className="acct-tag is-dup">
+          same subscription as <span className="acct-nm">{dup}</span>
+        </span>
       ) : a.duplicate_reason ? (
         <span className="acct-tag is-dup">registered in another workspace too</span>
       ) : null}
       {possible && !dup && (
-        <span className="acct-tag is-dup">may be the same subscription as {possibleOf ?? 'another workspace’s account'}</span>
+        <span className="acct-tag is-dup">
+          may be the same subscription as{' '}
+          {possibleOf === null ? 'another workspace’s account' : <span className="acct-nm">{possibleOf}</span>}
+        </span>
       )}
       {extra.length > 0 && (
         <span
@@ -575,7 +580,15 @@ function AccountCards({
       })}
       {hidden.length > 0 && (
         <p className="acct-card-more">
-          {hidden.length} more: {hidden.map((a) => accountName(a)).join(', ')}.{' '}
+          {hidden.length} more:{' '}
+          {hidden.map((a, i) => (
+            <span key={a.account_id}>
+              {i > 0 && ', '}
+              {/* Whole, as in the verdict: `team-copy` broke at its hyphen at 390. */}
+              <span className="acct-nm">{accountName(a)}</span>
+            </span>
+          ))}
+          .{' '}
           <button type="button" className="ctl-link" onClick={() => setAll(true)}>
             Show all {total}
           </button>

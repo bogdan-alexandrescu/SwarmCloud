@@ -237,6 +237,13 @@ describe('the verdict', () => {
     expect(verdict.querySelector('.acct-verdict-head')?.textContent).toBe(
       'No account here could be read, so no agent that needs the pool can start.',
     )
+    // The empty panel under it says the same, never the zero's "No accounts registered".
+    const panel = document.querySelector('.acct-empty') as HTMLElement
+    // The heading carries its `?` card after the words.
+    expect(panel.querySelector('h3')?.firstChild?.textContent).toBe('No account could be read')
+    expect(panel.textContent).not.toContain('No accounts registered')
+    expect(panel.textContent).toContain('1 registered account could not be read')
+    expect(panel.querySelector('.ctl-mark.is-zero')).toBeNull()
   })
 })
 
