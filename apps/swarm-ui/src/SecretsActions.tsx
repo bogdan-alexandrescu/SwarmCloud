@@ -435,8 +435,11 @@ function EnvironmentBlock({
           {env.secrets.length === 0 && <>No secret in {env.environment} yet. </>}
           {open && (
             <>
-              Writing here asks you to type <b>{env.environment}</b>:{' '}
-              {env.rule.rule === 'any_branch' ? 'a workflow on any branch can read it.' : `${ruleWords(env.rule)} can deploy to it, not ${env.rule.branch} alone.`}
+              {/* The typed-name step is about writing, so only a writer is told it. */}
+              {manages ? <>Writing here asks you to type <b>{env.environment}</b>:{' '}</> : null}
+              {env.rule.rule === 'any_branch'
+                ? `${manages ? 'a' : 'A'} workflow on any branch can read it.`
+                : `${manages ? '' : 'Its rule: '}${ruleWords(env.rule)} can deploy to it, not ${env.rule.branch} alone.`}
             </>
           )}
           {!open && env.secrets.length === 0 && <>Only workflows on {env.rule.branch} in {repository} read it.</>}
