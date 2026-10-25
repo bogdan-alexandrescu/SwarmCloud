@@ -1,6 +1,6 @@
 """Renaming a workspace and naming a new workspace's first admin
 (WORKSPACE-ADMIN-FIELDS, part of #2157; docs/web-ui/mockups/config-e.html
-S6a and S6c, docs/design/workspace-roles.md §4.12).
+S6a and S6c, docs/design/workspace-roles.md §4.6 and §8).
 
     PUT  /v1/workspaces/{tenant_id}/name   {display_name}   its admins and platform admins
     POST /v1/admin/workspaces              ... first_admin?  a platform admin's

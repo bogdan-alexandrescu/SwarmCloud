@@ -39,7 +39,7 @@
  */
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { AGENT_TABS, type AgentTab } from './agentlist'
-import { USE_FIXTURES, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadOnboarding, loadStats, type TenantChoice } from './api'
+import { USE_FIXTURES, WORKSPACE_RENAMED_EVENT, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadOnboarding, loadStats, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
 import { Banner, Button, NamedMark, Toaster, acknowledge, routedClick } from './components'
 import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, preferencesUnavailableSnapshot, probeSnapshot, read, route, subscribePreferencesUnavailable, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
@@ -734,7 +734,7 @@ const FRAME_RETRIES: ReadonlySet<string> = new Set(['unreachable', 'tenant_unres
 export const FRAME_RETRY_MS = 20_000
 const FRAME_RETRY_MAX_MS = 5 * 60_000
 
-function useFrameRead<T>(load: () => Promise<Result<T>>, everyMs: number | null, rereadOn = '', retry = false): [Result<T>, () => void] {
+function useFrameRead<T>(load: () => Promise<Result<T>>, everyMs: number | null, rereadOn = '', retry = false): [Result<T>, () => void, () => void] {
   const [r, setR] = useState<Result<T>>({ status: 'loading', since: Date.now() })
   const [nonce, setNonce] = useState(0)
   useEffect(() => {
@@ -776,7 +776,10 @@ function useFrameRead<T>(load: () => Promise<Result<T>>, everyMs: number | null,
     setR({ status: 'loading', since: Date.now() })
     setNonce((n) => n + 1)
   }, [])
-  return [r, again]
+  // Read again KEEPING what is drawn until the answer lands: a rename changes
+  // one name, and a shell that blanked to loading for it would flash.
+  const refresh = useCallback(() => setNonce((n) => n + 1), [])
+  return [r, again, refresh]
 }
 
 /*
@@ -1375,12 +1378,23 @@ export function SkyShell({
   // again under the new tenant rather than showing the old one's rows -- all
   // but an unsent form (`keepOnSwitch`), which is kept.
   const tenant = useSyncExternalStore(subscribeTenant, chosenTenant, chosenTenant)
-  const [me, rereadMe] = useFrameRead(loadFrameMe, null, tenant ?? '', true)
+  const [me, rereadMe, refreshMe] = useFrameRead(loadFrameMe, null, tenant ?? '', true)
   const [cap] = useFrameRead(loadFrameCapacity, 30_000, tenant ?? '')
   const fromList = useSyncExternalStore(subscribeListCounts, listCountsSnapshot, listCountsSnapshot)
   // A capped list re-reads the stats with each of its own reads (D27).
   const [stats] = useFrameRead(loadFrameStats, 30_000, `${tenant ?? ''}:${fromList !== null && !fromList.whole ? fromList.at : ''}`)
-  const [mine, rereadMine] = useFrameRead(loadFrameTenants, null)
+  const [mine, rereadMine, refreshMine] = useFrameRead(loadFrameTenants, null)
+  // A WORKSPACE RENAMED on Config › Workspace Settings (WORKSPACE-ADMIN-FIELDS,
+  // part of #2157): the name the switcher and every header draw is `me`'s, so
+  // both reads are asked again and the new name lands without a reload.
+  useEffect(() => {
+    const again = () => {
+      refreshMe()
+      refreshMine()
+    }
+    globalThis.addEventListener?.(WORKSPACE_RENAMED_EVENT, again)
+    return () => globalThis.removeEventListener?.(WORKSPACE_RENAMED_EVENT, again)
+  }, [refreshMe, refreshMine])
   // A headerless request refused because the default is unknown (Q9): said
   // beside the switcher, where naming a workspace is the next action.
   const prefsDown = useSyncExternalStore(subscribePreferencesUnavailable, preferencesUnavailableSnapshot, preferencesUnavailableSnapshot)
