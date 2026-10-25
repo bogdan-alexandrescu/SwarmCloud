@@ -74,6 +74,8 @@ function phoneBlock(): string {
 describe('the phone cards draw each window against its floor', () => {
   it('keeps the bar and its floor tick on a phone, as mock-up A’s cards do', () => {
     expect(phoneBlock()).not.toMatch(/\.acct-floor\s*\{[^}]*display:\s*none/)
+    // styles.css's phone block hides every `.ctl-util-track`; the card's is the exception that draws the floor.
+    expect(phoneBlock()).toMatch(/\.acct-card-w2 \.acct-floor > \.ctl-util-track\s*\{[^}]*display:\s*flex/)
     const { container } = render(
       <AccountsTable accounts={[acct('primary')]} scope="eng" now={NOW} chosen={null} phone onChoose={() => {}} />,
     )
@@ -138,5 +140,21 @@ describe('an account name is never broken at its hyphen', () => {
     const tile = container.querySelector('.acct-fc-tile') as HTMLElement
     expect(tile.textContent).toContain('never-polled has no 7-day reading to take a pace from')
     expect([...tile.querySelectorAll('.acct-nm')].map((n) => n.textContent)).toEqual(['never-polled'])
+  })
+})
+
+describe('the phone’s cards keep names and ids whole', () => {
+  it('holds each folded name whole in the “more” line', () => {
+    const accounts = ['a-one', 'b-two', 'c-three', 'd-four', 'e-five', 'f-six'].map((l) => acct(l))
+    const { container } = render(
+      <AccountsTable accounts={accounts} scope="eng" now={NOW} chosen={null} phone onChoose={() => {}} />,
+    )
+    const more = container.querySelector('.acct-card-more') as HTMLElement
+    expect(more.textContent).toContain('2 more: e-five, f-six.')
+    expect([...more.querySelectorAll('.acct-nm')].map((n) => n.textContent)).toEqual(['e-five', 'f-six'])
+  })
+
+  it('moves a card’s account id to its own line before it breaks it', () => {
+    expect(css).toMatch(/\.acct-card-meta \.raw\s*\{[^}]*display:\s*inline-block/)
   })
 })
