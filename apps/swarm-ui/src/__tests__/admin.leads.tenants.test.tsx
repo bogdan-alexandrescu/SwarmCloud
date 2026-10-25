@@ -19,6 +19,7 @@
 // The api module is replaced so the page renders from records built here.
 // Nothing here is token-shaped.
 
+import ADMIN_CSS from '../styles/admin.css?raw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, waitFor, within } from '@testing-library/react'
 
@@ -146,6 +147,19 @@ describe('Tenants leads with the workspace waiting to be created (S10d)', () => 
     expect(document.activeElement).toBe(row)
     // The request it opens is the one with Approve on it.
     expect(within(row!).getByRole('button', { name: 'Approve' })).toBeTruthy()
+  })
+
+  // RENDERED 2026-10-25 (ADMIN-LEADS review): a mouse click focuses the row
+  // with no `:focus-visible`, so the record it opened carried no mark at all.
+  // The row is marked `is-opened`, which styles/admin.css outlines.
+  it('marks the record it opened, where a click draws no focus ring', async () => {
+    const l = await lead(ok([APPLYING, REQUESTED]))
+    const row = () => document.querySelector<HTMLElement>('[data-workspace-id="w-labs"]')!
+    expect(row().classList.contains('is-opened')).toBe(false)
+    fireEvent.click(within(l).getByRole('button', { name: 'Open its request' }))
+    await waitFor(() => expect(row().classList.contains('is-opened')).toBe(true), WAIT)
+    expect(document.querySelector('[data-workspace-id="w-research"]')!.classList.contains('is-opened')).toBe(false)
+    expect(ADMIN_CSS).toMatch(/\.ten-being-created > li\.is-opened\s*\{[^}]*outline:/)
   })
 
   it('names one whose setting up stopped ahead of one being set up', async () => {
