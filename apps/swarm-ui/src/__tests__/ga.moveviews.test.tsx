@@ -114,7 +114,7 @@ describe('the old addresses land on the new places', () => {
   })
 
   it('opening an old address rewrites the bar in place: replaced, never pushed', async () => {
-    serve((m, url) => {
+    serve((_m, url) => {
       if (url.includes('/v1/tenants/me')) return { status: 200, body: ME(true) }
       if (url.includes('/v1/workspace/roles')) return { status: 200, body: ROLES }
       if (url.includes('/v1/access/members')) return { status: 200, body: MEMBERS }
@@ -159,7 +159,7 @@ describe('Config › GitHub access is S2\'s two tabs and nothing else', () => {
   })
 
   it('the recovery line names Workspace setup as SECTIONS spells it, linked at its own path', async () => {
-    serve((m, url) =>
+    serve((_m, url) =>
       url.includes('/v1/access') && !url.includes('owners')
         ? { status: 200, body: { tenant_id: 'eng', connection: { state: 'revoked_by_user', forge_login: 'ana', failure: 'token refused', method: 'app_user', access_expires_at: null, refreshed_at: null }, orgs: [], grants: [] } }
         : null,
@@ -179,7 +179,7 @@ describe('Config › GitHub access is S2\'s two tabs and nothing else', () => {
 
 describe('Members is a tab of Config › People and roles', () => {
   function api(isAdmin: boolean) {
-    return serve((m, url) => {
+    return serve((_m, url) => {
       if (url.includes('/v1/tenants/me')) return { status: 200, body: ME(isAdmin) }
       if (url.includes('/v1/workspace/roles')) return { status: 200, body: { ...ROLES, can_manage: isAdmin } }
       if (url.includes('/v1/access/members')) return isAdmin ? { status: 200, body: MEMBERS } : { status: 403, body: { detail: { code: 'forbidden', message: "the tenant's members view is for admins" } } }

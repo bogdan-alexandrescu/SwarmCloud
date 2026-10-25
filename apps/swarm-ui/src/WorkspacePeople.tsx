@@ -1,14 +1,15 @@
-import { useId, useState, type FormEvent } from 'react'
+import { useEffect, useId, useState, type FormEvent } from 'react'
 import {
-  clearWorkspacePersonRole, loadWorkspaceRoles, setWorkspaceDefaultRole, setWorkspacePersonRole,
+  clearWorkspacePersonRole, loadAccessMembers, loadMe, loadWorkspaceRoles, setWorkspaceDefaultRole, setWorkspacePersonRole,
   type ApiError, type Result,
 } from './api'
-import { Banner, Button, Card } from './components'
+import { Banner, Button, Card, Dash, EmptyState, Tabs, ToneMark, type TabDef } from './components'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { DEFAULT_ROLES, ROLES, sourceWords } from './roles'
-import { PageHead } from './Shell'
-import { timeAgo, type WorkspaceRoleEvent, type WorkspaceRoleOverride, type WorkspaceRoles } from './types'
+import { FailedPanel, PageHead } from './Shell'
+import { timeAgo, type AccessMember, type WorkspaceRoleEvent, type WorkspaceRoleOverride, type WorkspaceRoles } from './types'
 import './styles/keys.css'
+import './styles/onboarding.css'
 
 /**
  * SETTINGS › PEOPLE AND ROLES, A WORKSPACE'S OWN ROLES PAGE (lane
@@ -38,22 +39,181 @@ import './styles/keys.css'
  * stored and applies when they join, and the write's answer says which.
  *
  * Not a SECTIONS tab: a Settings route beside Profile, so the issue forms'
- * "Where" list is unchanged (§4.8).
+ * "Where" list is unchanged (§4.8). (Since CONFIG-NAV it is Config › People
+ * and roles, and since GA-MOVE-VIEWS it also holds Members' GitHub, below.)
  */
 
 const ROUTE = 'GET /v1/workspace/roles'
 
+/**
+ * MEMBERS' GITHUB, THE PAGE'S SECOND TAB (GA-MOVE-VIEWS; part of #2157, BGD
+ * 2026-10-24: "Members to Config › People and roles"). It was GitHub access'
+ * Members view: every member's GitHub connection state, the owners they
+ * enabled and how many repositories they chose, moved whole. Its address is
+ * `?view=members`, which `/config/github?view=members` and `/access?view=members`
+ * land on (paths.ts `MOVED_VIEWS`).
+ *
+ * DRAWN FOR WHOEVER THE API SERVES IT TO. `GET /v1/access/members` answers
+ * `auth.is_admin` -- a platform admin -- and refuses everyone else, a
+ * workspace admin included, so the tab is offered on `principal.is_admin`
+ * from the frame's `GET /v1/tenants/me` and the read is made only when the
+ * tab is open. Someone else who follows an old link still sees the admin
+ * gate there, as GitHub access drew it.
+ */
+type PeopleView = 'roles' | 'members'
+
+const PEOPLE_TABS: readonly TabDef[] = [
+  { key: 'roles', label: 'Roles' },
+  { key: 'members', label: "Members' GitHub" },
+]
+
+function peopleViewFromUrl(): PeopleView {
+  if (typeof window === 'undefined') return 'roles'
+  return new URLSearchParams(window.location.search).get('view') === 'members' ? 'members' : 'roles'
+}
+
+/** The tab into the bar in place, as GitHub access writes its own: Roles is the bare path. */
+function writePeopleView(v: PeopleView): void {
+  const url = new URL(window.location.href)
+  if (v === 'members') url.searchParams.set('view', v)
+  else url.searchParams.delete('view')
+  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+}
+
+/** Whether the session is a platform admin; null until the frame's read answers. Unknown is not an admin. */
+function usePlatformAdmin(): boolean | null {
+  const [admin, setAdmin] = useState<boolean | null>(null)
+  useEffect(() => {
+    let live = true
+    void loadMe({ frame: true }).then(
+      (r) => {
+        if (live) setAdmin((r.status === 'ok' || r.status === 'stale') && r.data.principal?.is_admin === true)
+      },
+      () => {
+        if (live) setAdmin(false)
+      },
+    )
+    return () => {
+      live = false
+    }
+  }, [])
+  return admin
+}
+
 export function WorkspacePeopleScreen() {
-  const roles = useUrRead(loadWorkspaceRoles, 'workspace-roles')
+  const [view, setViewState] = useState<PeopleView>(peopleViewFromUrl)
+  const admin = usePlatformAdmin()
+  function setView(v: PeopleView) {
+    setViewState(v)
+    writePeopleView(v)
+  }
   return (
     <div className="pk-page wp-page">
       <PageHead title="People and roles" />
-      <Card title="Roles in this workspace" action={<UrRefresh reads={[roles]} />}>
-        <UrRegion state={roles.state} route={ROUTE} what="This workspace's roles" plural onRetry={roles.reload}>
-          {(d) => <Roles data={d} onChange={roles.reload} />}
-        </UrRegion>
-      </Card>
+      {/* `cfg-parts` (config.css): the Config pages' tab strip, as GitHub access draws it. */}
+      {(admin === true || view === 'members') && (
+        <Tabs tabs={PEOPLE_TABS} current={view} label="People and roles" className="cfg-parts" onSelect={(k) => setView(k === 'members' ? 'members' : 'roles')} />
+      )}
+      {view === 'members' ? <Members /> : <RolesCard />}
     </div>
+  )
+}
+
+function RolesCard() {
+  const roles = useUrRead(loadWorkspaceRoles, 'workspace-roles')
+  return (
+    <Card title="Roles in this workspace" action={<UrRefresh reads={[roles]} />}>
+      <UrRegion state={roles.state} route={ROUTE} what="This workspace's roles" plural onRetry={roles.reload}>
+        {(d) => <Roles data={d} onChange={roles.reload} />}
+      </UrRegion>
+    </Card>
+  )
+}
+
+function MemberRow({ m }: { m: AccessMember }) {
+  const c = m.connection
+  const writes = m.grants.filter((g) => g.mode === 'write').length
+  const state = c === null ? 'not started' : (c.state ?? 'unknown')
+  return (
+    <li className="ac-member" data-member={m.user}>
+      <div className="ac-row-name">
+        <b>{m.user}</b>
+        <small className="ur-mu">{c?.forge_login != null ? `@${c.forge_login}` : 'no GitHub account'}</small>
+      </div>
+      <span className="ac-cell">
+        <span className="ac-cell-l">Connection</span>
+        <ToneMark tone={state === 'active' ? 'ok' : c === null ? 'unknown' : 'bad'}>{c?.failure ?? state}</ToneMark>
+      </span>
+      <span className="ac-cell">
+        <span className="ac-cell-l">Owners</span>
+        {m.orgs.length === 0 ? <Dash why="No owner enabled" /> : m.orgs.map((o) => o.owner).join(', ')}
+      </span>
+      <span className="ac-cell">
+        <span className="ac-cell-l">Repositories</span>
+        {m.grants.length} · {writes} write
+      </span>
+    </li>
+  )
+}
+
+/**
+ * A 403 on the members read is the admin gate, not a failure (visual QA V047).
+ * The API refuses a non-admin with its generic `forbidden` code ("the
+ * tenant's members view is for admins"), which the client classifies as an
+ * unrecognised refusal and the region drew red, with a Try again that can
+ * never succeed. On this one admin-only route a refusal means exactly that,
+ * so it is drawn as the admin gate. A tenant or domain refusal keeps its own.
+ */
+function membersGated(state: Result<unknown>): ApiError | null {
+  if (state.status !== 'error') return null
+  const e = state.error
+  if (e.kind === 'admin_required') return e
+  if (e.kind === 'forbidden' && e.httpStatus === 403) return { ...e, kind: 'admin_required' }
+  return null
+}
+
+function Members() {
+  const members = useUrRead(loadAccessMembers, 'access-members')
+  const gate = membersGated(members.state)
+  return (
+    <Card className="ac-members" title="Members' GitHub connections" action={gate === null ? <UrRefresh reads={[members]} /> : undefined}>
+      {gate !== null ? (
+        <FailedPanel error={gate} onRetry={members.reload} />
+      ) : (
+        <UrRegion state={members.state} route="GET /v1/access/members" what="The tenant's members" onRetry={members.reload} plural lines={4}>
+          {(d) =>
+            d.members.length === 0 ? (
+              <EmptyState kind="empty" heading="No member has started">
+                Nobody in tenant {d.tenant_id} has connected GitHub or chosen a repository yet.
+              </EmptyState>
+            ) : (
+              <>
+                <p className="pk-lead">
+                  Every member of {d.tenant_id}: whether they connected GitHub, the owners they enabled and how many
+                  repositories they chose.
+                </p>
+                {/* The rows' column names (visual QA V230); a phone's records carry their own (`.ac-cell-l`). */}
+                <div className="ac-members-h" aria-hidden="true">
+                  <span>Member</span>
+                  <span>Connection</span>
+                  <span>Owners</span>
+                  <span>Repositories</span>
+                </div>
+                <ul className="ac-grid" aria-label={`Members of ${d.tenant_id}`}>
+                  {d.members.map((m) => (
+                    <MemberRow key={m.user} m={m} />
+                  ))}
+                </ul>
+              </>
+            )
+          }
+        </UrRegion>
+      )}
+      <p className="ur-hint">
+        Each member connects as themselves. An admin sees states and names, never a value, and cannot reconnect for
+        someone else.
+      </p>
+    </Card>
   )
 }
 

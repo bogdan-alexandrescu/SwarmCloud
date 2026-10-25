@@ -138,7 +138,7 @@ describe('Save as login, on the Browser tab after Return control', () => {
   })
 })
 
-describe('Access › Browser logins', () => {
+describe('Config › Secrets › Browser logins (Access › Browser logins until GA-MOVE-VIEWS)', () => {
   const api = (logins: unknown[], extra: Handler = () => null) =>
     serve((m, url, body) => {
       const hit = extra(m, url, body)
@@ -229,22 +229,23 @@ describe('Access › Browser logins', () => {
     expect(writes(calls)[0]).toMatchObject({ method: 'DELETE', url: '/v1/browser-logins/github-qa' })
   })
 
-  it('is a view of Access, in the address as ?view=logins', async () => {
-    window.history.replaceState(null, '', '/access?view=logins')
+  it('is a tab of Config › Secrets, in the address as ?view=logins (GA-MOVE-VIEWS)', async () => {
+    window.history.replaceState(null, '', '/config/secrets?view=logins')
     serve((m, url) => {
-      if (m === 'GET' && url === '/v1/access') return { status: 200, body: { tenant_id: 'u-alice', connection: null, orgs: [], grants: [] } }
+      if (m === 'GET' && url.startsWith('/v1/workspace/secrets/consumers')) return { status: 200, body: { kinds: [], providers: [], consumers: [] } }
+      if (m === 'GET' && url.startsWith('/v1/workspace/secrets')) return { status: 200, body: { tenant_id: 'u-alice', kind: 'user', can_manage: true, secrets: [] } }
       if (m === 'GET' && url === '/v1/browser-logins') return { status: 200, body: { tenant_id: 'u-alice', logins: [LOGIN('github-qa', 'https://github.com')] } }
       return null
     })
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
-    const { AccessScreen } = await import('../Access')
-    render(<AccessScreen />)
-    expect(screen.getByRole('radio', { name: /browser logins/i }).getAttribute('aria-checked')).toBe('true')
+    const { WorkspaceSecretsScreen } = await import('../WorkspaceSecrets')
+    render(<WorkspaceSecretsScreen link={null} />)
+    expect(screen.getByRole('tab', { name: /browser logins/i }).getAttribute('aria-selected')).toBe('true')
     const list = await screen.findByRole('list', { name: /browser logins/i })
     expect(visible(list)).toContain('github-qa')
-    // Back to Mine drops the view from the address.
-    fireEvent.click(screen.getByRole('radio', { name: /^mine$/i }))
+    // Back to the secrets drops the view from the address.
+    fireEvent.click(screen.getByRole('tab', { name: /^workspace secrets$/i }))
     expect(window.location.search).toBe('')
   })
 })

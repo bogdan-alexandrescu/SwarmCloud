@@ -13,10 +13,11 @@ import {
   type WorkspaceSecretList,
   type WorkspaceSecretRotate,
 } from './api'
-import { Banner, Button, Card, TypedConfirm, routedClick } from './components'
+import { BrowserLoginsPane } from './BrowserLogins'
+import { Banner, Button, Card, Tabs, TypedConfirm, routedClick, type TabDef } from './components'
 import type { ApiError } from './fetch'
-import { SECRETS_ADDRESS, addressToPath, secretsLinkToken } from './paths'
-import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
+import { SECRETS_ADDRESS, SECRETS_LOGINS_VIEW, addressToPath, secretsLinkToken } from './paths'
+import { UrRefresh, UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { timeAgo } from './types'
 import './styles/keys.css'
@@ -80,6 +81,36 @@ export function secretsLinkOf(view: string): SecretsLink {
   const q = new URLSearchParams(view)
   const action = q.get('action')
   return { action: action === 'add' || action === 'rotate' ? action : null, name: q.get('name') }
+}
+
+/**
+ * BROWSER LOGINS, THE PAGE'S SECOND TAB (GA-MOVE-VIEWS; part of #2157, BGD
+ * 2026-10-24: "Browser logins to Config › Secrets"). It was GitHub access'
+ * Browser logins view: the person's own saved live-browser sessions, by name
+ * and site, with a typed Revoke (BrowserLogins.tsx `BrowserLoginsPane`, moved
+ * whole), beside the secrets they belong with. Its address is `?view=logins`,
+ * which `/config/github?view=logins` and `/access?view=logins` land on
+ * (paths.ts `MOVED_VIEWS`). A one-time link opens the first tab whatever the
+ * address says, because its form is there.
+ */
+type SecretsView = 'secrets' | 'logins'
+
+const SECRETS_TABS: readonly TabDef[] = [
+  { key: 'secrets', label: 'Workspace secrets' },
+  { key: SECRETS_LOGINS_VIEW, label: 'Browser logins' },
+]
+
+function secretsViewFromUrl(): SecretsView {
+  if (typeof window === 'undefined') return 'secrets'
+  return new URLSearchParams(window.location.search).get('view') === SECRETS_LOGINS_VIEW ? 'logins' : 'secrets'
+}
+
+/** The tab into the bar in place, keeping a link's query: the secrets tab is the bare path. */
+function writeSecretsView(v: SecretsView): void {
+  const url = new URL(window.location.href)
+  if (v === 'logins') url.searchParams.set('view', SECRETS_LOGINS_VIEW)
+  else url.searchParams.delete('view')
+  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
 }
 
 /** Drop `t` from the address bar, keeping everything else. Idempotent. */
@@ -180,14 +211,55 @@ export function WorkspaceSecretsScreen({ link }: { link: SecretsLink | null }) {
     token.current = null
     return t
   }
-  const manages = (list.state.status === 'ok' || list.state.status === 'stale') && list.state.data.can_manage
+  const listed = list.state.status === 'ok' || list.state.status === 'stale' ? list.state.data : null
+  const manages = listed !== null && listed.can_manage
   const rotateFirst = link !== null && link.action === 'rotate' ? link.name : null
+  const following = link !== null && link.action !== null
+  const [view, setViewState] = useState<SecretsView>(() => (following ? 'secrets' : secretsViewFromUrl()))
+  function setView(v: SecretsView) {
+    setViewState(v)
+    writeSecretsView(v)
+  }
 
   return (
     <div className="pk-page">
       <PageHead title="Secrets">
         <UrRefresh reads={[list, catalogue]} ageOf={[list]} />
       </PageHead>
+      {/* `cfg-parts` (config.css): the Config pages' tab strip, as GitHub access draws it. */}
+      <Tabs tabs={SECRETS_TABS} current={view} label="Secrets" className="cfg-parts" onSelect={(k) => setView(k === SECRETS_LOGINS_VIEW ? 'logins' : 'secrets')} />
+      {view === 'logins' ? (
+        <>
+          <p className="ur-sub">
+            The browser sessions you saved from a live browser in your workspace, by name and site, with when each
+            expires. An agent names one to start signed in.
+          </p>
+          <BrowserLoginsPane tenantId={listed?.tenant_id || null} />
+        </>
+      ) : (
+        <SecretsTab list={list} catalogue={catalogue} link={link} manages={manages} rotateFirst={rotateFirst} takeToken={takeToken} />
+      )}
+    </div>
+  )
+}
+
+function SecretsTab({
+  list,
+  catalogue,
+  link,
+  manages,
+  rotateFirst,
+  takeToken,
+}: {
+  list: UrRead<WorkspaceSecretList>
+  catalogue: UrRead<WorkspaceSecretCatalogue>
+  link: SecretsLink | null
+  manages: boolean
+  rotateFirst: string | null
+  takeToken: (action: 'add' | 'rotate', name?: string | null) => string | null
+}) {
+  return (
+    <>
       {link !== null && link.action === 'add' && (
         <Banner tone="info" title="Opened from a one-time link">
           Paste the value into the form below: the /sc command and this page&rsquo;s address never see it. The link
@@ -224,7 +296,7 @@ export function WorkspaceSecretsScreen({ link }: { link: SecretsLink | null }) {
           </UrRegion>
         </Card>
       )}
-    </div>
+    </>
   )
 }
 

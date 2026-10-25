@@ -220,27 +220,22 @@ describe("c: Access's head at 390 (6:work-b-003)", () => {
     return render(<AccessScreen />)
   }
 
-  it('the actions wrap as one group under the title from the left edge, Refresh on the switch\'s row', async () => {
+  // GA-MOVE-VIEWS (part of #2157): the Mine / Members / Browser logins switch
+  // left the head for People and roles and Secrets, so Refresh is its one action.
+  it('the actions take the row under the title from the left edge, Refresh alone in them', async () => {
     await mountAccess()
     const acts = document.querySelector<HTMLElement>('.ac-page > .c-phead > .c-acts')!
     expect(acts, 'the page head draws its actions').not.toBeNull()
     const refresh = acts.querySelector('.c-refresh')!
-    const sw = screen.getByRole('radiogroup', { name: 'Whose access' })
-    const group = sw.closest('.ur-acts')!
-    // Refresh and the switch share one container: the head's actions, Refresh
-    // and the switch's group its two items, Refresh first.
     expect(refresh.parentElement).toBe(acts)
-    expect(group.parentElement).toBe(acts)
     expect(acts.firstElementChild).toBe(refresh)
+    // MUTATION: put the UrRadio "Whose access" back in Access.tsx's PageHead.
+    expect(screen.queryByRole('radiogroup', { name: 'Whose access' })).toBeNull()
+    expect(acts.querySelector('.ur-acts')).toBeNull()
     // MUTATION: drop the phone rule `.ac-page > .c-phead > .c-acts { ... }` from repositories.css.
     expect(painted(acts, ['flex', 'flex-basis'], PHONE) ?? '', 'the actions take the row under the title').toMatch(/100%/)
     expect(painted(acts, ['margin-left', 'margin'], PHONE)).toBe('0')
-    expect(painted(acts, 'justify-content', PHONE), 'the group is aligned to the left edge').toBe('flex-start')
-    // A group sized to its content wraps whole onto the next line and leaves
-    // Refresh alone; from no width it stays on Refresh's line and wraps inside.
-    // MUTATION: drop `.ac-page > .c-phead > .c-acts > .ur-acts { flex: 1 1 0 }`.
-    expect(painted(group, ['flex', 'flex-basis'], PHONE) ?? '').toMatch(/(^|\s)0(px|%)?$/)
-    expect(painted(group, ['flex-wrap', 'flex-flow'], PHONE) ?? '').toMatch(/wrap/)
+    expect(painted(acts, 'justify-content', PHONE), 'the actions are aligned to the left edge').toBe('flex-start')
   })
 
   it('at 1440 the head keeps its actions right, on one row', async () => {

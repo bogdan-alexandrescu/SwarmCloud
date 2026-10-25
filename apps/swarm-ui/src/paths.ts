@@ -94,6 +94,9 @@ export const SECRETS_LINK_PATH = '/settings/workspace/secrets'
 export const CONFIG_SECRETS_ADDRESS = 'config/secrets'
 export const CONFIG_SECRETS_PATH = '/config/secrets'
 
+/** Config › Secrets' Browser logins tab, `?view=logins` (GA-MOVE-VIEWS). */
+export const SECRETS_LOGINS_VIEW = 'logins'
+
 /** The link's token, read off a location: only on the secrets page's two paths, as `keyLinkToken`. */
 export function secretsLinkToken(pathname: string, search: string): string | null {
   const path = pathname.replace(/\/+$/, '')
@@ -110,7 +113,9 @@ export function secretsLinkToken(pathname: string, search: string): string | nul
 export function secretsLinkView(query: string): string {
   const given = new URLSearchParams(query)
   const action = given.get('action')
-  if (action !== 'add' && action !== 'rotate') return ''
+  // Browser logins, the page's second tab (GA-MOVE-VIEWS), when no link is
+  // being followed: a link's action wins, because its form is on the first.
+  if (action !== 'add' && action !== 'rotate') return given.get('view') === SECRETS_LOGINS_VIEW ? `view=${SECRETS_LOGINS_VIEW}` : ''
   const kept = new URLSearchParams({ action })
   const name = given.get('name')
   if (action === 'rotate' && name !== null && name !== '') kept.set('name', name)
@@ -234,11 +239,25 @@ const MOVED_TO_CONFIG: Readonly<Record<string, string>> = {
   'settings/people': 'config/people',
 }
 
+/**
+ * GITHUB ACCESS' TWO OLD VIEWS, EACH ON THE PAGE WHOSE SUBJECT IT IS
+ * (GA-MOVE-VIEWS; part of #2157, BGD 2026-10-24: "Members to Config › People
+ * and roles, Browser logins to Config › Secrets"). GitHub access is mock-up
+ * S2's two tabs and nothing else since; `?view=members` and `?view=logins`
+ * there -- and on `/access` and `#work/access` before it -- name these.
+ */
+const MOVED_VIEWS: ReadonlyMap<string, string> = new Map([
+  ['members', 'config/people?view=members'],
+  [SECRETS_LOGINS_VIEW, `${CONFIG_SECRETS_ADDRESS}?view=${SECRETS_LOGINS_VIEW}`],
+])
+
 /** An old Config page's address, rewritten to its new one; null for any other address. */
 export function movedToConfig(address: string): string | null {
   const q = address.indexOf('?')
   const bare = q === -1 ? address : address.slice(0, q)
   const query = q === -1 ? '' : address.slice(q + 1)
+  const view = MOVED_VIEWS.get(new URLSearchParams(query).get('view') ?? '')
+  if (view !== undefined && (bare === 'config/github' || bare === 'work/access')) return view
   const to = MOVED_TO_CONFIG[bare]
   if (to === undefined) return null
   if (bare === SECRETS_ADDRESS) {
