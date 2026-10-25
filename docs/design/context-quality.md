@@ -162,7 +162,8 @@ PR rather than done.
 
 **What `changed-guards.sh` selects:**
 * every `tests/unit/**/test_*.py` whose **text names a changed path or
-  basename**;
+  basename**, or names a `docs/**/*.md` that cites a changed path by its full
+  path (the doc closure, #2299, one level deep);
 * the fixed guard set;
 * contract parity.
 

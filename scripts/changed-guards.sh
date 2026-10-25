@@ -24,6 +24,20 @@
 #     repo-relative path or its basename. A basename in GENERIC_BASENAMES
 #     (`__init__.py`, `package.json`, ...) selects by full path only: by name
 #     alone it would select half the suite;
+#   * every tests/unit/**/test_*.py whose text names a doc -- a docs/**/*.md --
+#     that cites a changed path by its full path, as if the doc
+#     had changed too (the doc closure, #2299). Tests resolve a doc's
+#     citations without naming the file cited: PR #2267 moved `function
+#     PushTestCell(` out of apps/swarm-ui/src/Access.tsx while docs/
+#     onboarding.md cited it there, and the two tests that resolve that
+#     citation name only onboarding.md -- so this script and the pull_request
+#     run passed and main's push shards 4 and 5 went red. Full path only (a
+#     basename like App.tsx is cited for many files), and one level deep: a
+#     changed doc -- under docs/ or any .md, the paths a docs-only diff is
+#     made of -- adds no doc that cites it. 55 docs cite CLAUDE.md, and
+#     following them took a docs-only diff of it and docs/runbooks/
+#     merge-app.md from 103 files to 496 (measured 2026-10-25). It adds
+#     readers, never guards: a docs-only diff selects what it did before;
 # then runs them in ONE `pytest -q -n auto -p no:warnings` call, followed by
 # scripts/lib/check-contract-parity.sh. An empty diff runs nothing.
 #
@@ -304,6 +318,27 @@ while IFS= read -r path; do
       fi ;;
   esac
 done <"${work}/changed"
+
+# The doc closure: each doc citing a changed path that is not itself a doc
+# (docs/**, *.md) by its full path is read for as if it had changed (#2299).
+grep -v -e '^docs/' -e '\.md$' "${work}/changed" >"${work}/cited" || [[ $? -eq 1 ]]
+if [[ -s "${work}/cited" && -d "${REPO_ROOT}/docs" ]]; then
+  status=0
+  (cd "${REPO_ROOT}" && grep -rlF -f "${work}/cited" --include='*.md' docs) \
+    >"${work}/citing-docs" || status=$?
+  if [[ "${status}" -gt 1 ]]; then
+    err "grep could not search docs"
+    exit 2
+  fi
+  while IFS= read -r doc; do
+    printf '%s\n' "${doc}" >>"${work}/patterns"
+    name="${doc##*/}"
+    case "${GENERIC_BASENAMES}" in
+      *" ${name} "*) ;;
+      *) printf '%s\n' "${name}" >>"${work}/patterns" ;;
+    esac
+  done <"${work}/citing-docs"
+fi
 
 status=0
 (cd "${REPO_ROOT}" && grep -rlF -f "${work}/patterns" --include='test_*.py' tests/unit) \

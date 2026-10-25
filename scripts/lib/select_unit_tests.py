@@ -30,6 +30,18 @@ WHAT IT SELECTS, for a change it can reason about:
     every file under scripts/ that names a changed script, transitively: a
     change to scripts/lib/common.sh reaches every script that sources it, and
     so every test that runs one of those;
+  * every test whose text names a doc -- a docs/**/*.md -- that cites a
+    changed path by its full repo-relative path, as if the doc had changed
+    too (doc_closure, #2299). Tests resolve a doc's citations without naming
+    the file cited: PR #2267 moved `function PushTestCell(` out of
+    apps/swarm-ui/src/Access.tsx while docs/onboarding.md cited it there, and
+    test_onboarding_migration and test_onboarding_docs_and_mockup, which name
+    only onboarding.md, went unselected -- the pull_request run was green and
+    main's push shards 4 and 5 red. Full path only (a basename like App.tsx is
+    cited for many files), and one level deep: a changed doc -- under docs/ or
+    any .md, what a docs-only change is made of -- adds no doc that cites it
+    (55 docs cite CLAUDE.md; following them took changed-guards.sh's selection
+    for a two-doc diff from 103 files to 496, measured 2026-10-25);
   * `areas` -- docs and swarm-ui -- for the pick step's own directory-reader
     selection, when the change touches docs/ or apps/swarm-ui/.
 
@@ -240,6 +252,25 @@ def script_closure(root: Path, changed: list[str]) -> list[str]:
     return out
 
 
+def doc_closure(root: Path, changed: list[str]) -> list[str]:
+    """`changed` plus every docs/**/*.md that cites, by its full repo-relative
+    path, a changed path that is not itself a doc (docs/**, *.md) (#2299).
+    One level: a changed doc, or a doc this adds, is not a source of more."""
+    out = list(dict.fromkeys(changed))
+    base = root / "docs"
+    cited = [p for p in out if not p.startswith("docs/") and not p.endswith(".md")]
+    if not cited or not base.is_dir():
+        return out
+    for doc in sorted(base.rglob("*.md")):
+        rel = str(doc.relative_to(root))
+        if rel in out or SKIP_PARTS.intersection(doc.relative_to(root).parts) or not doc.is_file():
+            continue
+        text = doc.read_text(errors="replace")
+        if any(p in text for p in cited):
+            out.append(rel)
+    return out
+
+
 # Where the one guard list lives (CI-GUARDS-ALWAYS). A bash array of one
 # path a line; lanes run it through changed-guards.sh, pull requests here.
 GUARD_SCRIPT = "scripts/changed-guards.sh"
@@ -288,8 +319,12 @@ def select(root: Path, changed: list[str], guards: list[str] | None = None) -> d
     # Imports.
     changed_py = [c for c in changed if c.endswith(".py") and c.startswith(("apps/", "scripts/", "tests/unit/"))]
     chosen.update(r for r in import_closure(root, changed_py) if is_test(r) and r in all_tests)
-    # Text: a test that names a changed path, or a script that names one.
-    virtual = script_closure(root, changed)
+    # Text: a test that names a changed path, a script that names one, or a
+    # doc that cites one. The doc closure reads the changed paths, as
+    # changed-guards.sh's does: fed the script closure too, a change to
+    # common.sh reached 723 of 1334 files, and so the whole suite, not 463
+    # (measured 2026-10-25).
+    virtual = list(dict.fromkeys([*script_closure(root, changed), *doc_closure(root, changed)]))
     for t in all_tests:
         if t in chosen:
             continue

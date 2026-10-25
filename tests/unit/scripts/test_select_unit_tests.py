@@ -211,6 +211,11 @@ def test_the_doc_closure_is_one_level_deep(tmp_path):
     # MUTATION: let the closure take docs/ paths as sources and this is red.
     assert "tests/unit/scripts/test_w_docs.py" not in out["tests"], out
     assert sel.doc_closure(root, ["docs/x.md"]) == ["docs/x.md"]
+    # Nor is any other .md: 55 docs cite CLAUDE.md, and a docs-only change
+    # selects what it did before the closure.
+    (root / "docs" / "v.md").write_text("Read `CLAUDE.md`.\n")
+    (root / "CLAUDE.md").write_text("Rules.\n")
+    assert sel.doc_closure(root, ["CLAUDE.md"]) == ["CLAUDE.md"]
     # Nor is a doc the closure added: A.tsx reaches x.md and stops there.
     out = sel.select(root, ["apps/swarm-ui/src/A.tsx"])
     assert "tests/unit/scripts/test_x_docs.py" in out["tests"], out

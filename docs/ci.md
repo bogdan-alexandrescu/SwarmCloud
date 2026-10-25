@@ -3908,6 +3908,17 @@ says the change reaches, which are
   (a change to `scripts/lib/common.sh` reaches the tests of every script that
   sources it), and a generic basename (`Dockerfile`, `__init__.py`) only
   beside one of its directories' names;
+* every test naming a doc -- a `docs/**/*.md` -- that cites a changed path by
+  its full repo-relative path, as if the doc had changed too (#2299). Tests
+  resolve a doc's citations without naming the file cited: PR #2267 moved
+  `function PushTestCell(` out of `Access.tsx` while
+  `docs/onboarding.md` cited it there, and `test_onboarding_migration` and
+  `test_onboarding_docs_and_mockup`, which name only `onboarding.md`, went
+  unselected -- the pull-request run was green and main's push shards 4 and 5
+  red. Full path only, since a basename like `App.tsx` is cited for many
+  files; and one level deep, since a changed doc (under `docs/` or any `.md`)
+  adds no doc that cites it: 55 docs cite `CLAUDE.md`, and following them took
+  a two-doc change's selection from 103 files to 496 (measured 2026-10-25);
 * when the change also touches `docs/` or `apps/swarm-ui/`, the pick step's
   own area readers, as a docs-only change picks them.
 
@@ -4638,7 +4649,12 @@ but only its doc guards for a docs-only diff, below), every
 changed `tests/unit/**/test_*.py`, and every `tests/unit/**/test_*.py` whose
 text names a changed path by repo-relative path or basename. A generic basename
 (`__init__.py`, `package.json`, …) selects by full path only, or it would pick
-half the suite. It runs them in **one** `pytest -q -n auto -p no:warnings` call
+half the suite. A `docs/**/*.md` that cites a changed path by its full path is
+read for as if it had changed too, one level deep and never for a changed doc
+(the doc closure, #2299): the tests that resolve `docs/onboarding.md`'s
+citations name only the doc, so PR #2267's move of `function PushTestCell(`
+out of `Access.tsx` passed this script and the pull-request
+run and turned main's push shards 4 and 5 red. It adds readers, never guards. It runs them in **one** `pytest -q -n auto -p no:warnings` call
 (collecting `tests/unit/scripts` whole costs ~135 s, so files, not
 directories), then `scripts/lib/check-contract-parity.sh`, with 540 s and 60 s
 deadlines so one call stays under the ten minutes a lane allows a command. It
