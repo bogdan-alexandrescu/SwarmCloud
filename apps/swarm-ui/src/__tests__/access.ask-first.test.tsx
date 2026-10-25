@@ -122,11 +122,24 @@ function api(extra: Handler = () => null) {
   })
 }
 
-async function mount() {
+/**
+ * GitHub access (its Connection tab, or Choose repositories at `?view=choose`)
+ * beside "Repositories SwarmCloud may reach as you", which moved out of it to
+ * ReachableRepositories.tsx for Config › Repositories (GITHUB-ACCESS-PAGE,
+ * part of #2157). The cases here act on both, as one person would.
+ */
+async function mount(at: 'mine' | 'choose' = 'mine') {
+  if (at === 'choose') window.history.replaceState(null, '', '/config/github?view=choose')
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
   const { AccessScreen } = await import('../Access')
-  return render(<AccessScreen />)
+  const { ReachableRepositoriesRead } = await import('../ReachableRepositories')
+  return render(
+    <>
+      <AccessScreen />
+      <ReachableRepositoriesRead />
+    </>,
+  )
 }
 
 const writes = <C extends { method: string }>(calls: C[]) => calls.filter((c) => c.method !== 'GET')
@@ -178,7 +191,7 @@ describe('a grant is never removed or narrowed on one click (RSA-1)', () => {
 
   it('the chooser asks before Read to Not chosen and Write to Read, and not before a new grant', async () => {
     const calls = api()
-    await mount()
+    await mount('choose')
     await screen.findByRole('list', { name: "example-org's repositories, page 1" })
 
     fireEvent.click(radio(row('example-org/example-docs'), 'Not chosen'))
@@ -221,7 +234,7 @@ describe('an ask-first banner is reachable from the keyboard (RSA-27)', () => {
 describe('Chosen is every grant under the owner (RSA-29)', () => {
   it('lists a grant GitHub put on page 2, and drops the page pager', async () => {
     api()
-    await mount()
+    await mount('choose')
     await screen.findByRole('list', { name: "example-org's repositories, page 1" })
     expect(row('example-org/example-zeta')).toBeNull()
     fireEvent.click(screen.getByRole('radio', { name: 'Chosen' }))
