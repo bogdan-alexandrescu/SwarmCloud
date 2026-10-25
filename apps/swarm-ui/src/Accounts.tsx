@@ -20,11 +20,16 @@ import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS, capacityPoll, paneHref, useLinkedParam, usePhoneTables } from './capacityPoll'
 import { HelpCard, HelpLinks } from './HelpCard'
 import { Mark } from './primitives'
-import { Button, Chip, Dialog, NamedMark, Segmented, ToneMark, UsageTrack, WarnMark } from './components'
+import { Button, CIcon, Chip, Dialog, ToneMark, WarnMark } from './components'
 import './styles/capacity.css'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import { TaskRef } from './TaskRef'
 import { AGE_TICK_MS, useNow } from './useNow'
+import { AccountsTable } from './AccountsTable'
+import { AcctState } from './AccountState'
+import { DuplicateBanner, Forecast, RuleLine, Verdict, usePoolWaiting } from './AccountsVerdict'
+import { agoPastDay, type PoolAccount } from './accountsPool'
+import { AgentCap, SheetAccount, SheetDuplicate, SheetForecast, SheetVerdict, SheetWindows } from './AccountSheet'
 import {
   FIVE_HOUR,
   SEVEN_DAY,
@@ -42,51 +47,10 @@ import {
   unreadableFor,
   type Account,
   type AccountAuthorization,
-  type AccountReading,
   type AccountStateName,
   type AccountWindow,
   type RefreshResult,
 } from './types'
-
-/**
- * An ACCOUNT's state, drawn (brand.html §3; audit #503).
- *
- * AN ACCOUNT STATE IS NOT A TASK STATE, so it never borrows a task's mark. The
- * task marks answer "how far along is this attempt, and does it hold
- * capacity"; an account is not an attempt and holds nothing. So:
- *
- *   AVAILABLE, DRAINING  grey, no mark. Both are healthy: draining still
- *                        serves what it holds, it only stops taking more. A
- *                        hue here would be a verdict nobody reached.
- *   PAUSED               the park hue's pause bars, as capacity.html A1 draws
- *                        it. The one task state it may echo is PARKED, and
- *                        the echo is exact: a paused account, like a parked
- *                        task, holds nothing and waits for a person.
- *   REAUTH_REQUIRED      the amber warning triangle. It is a CONDITION -- the
- *                        refresh token is gone and the sweep has stopped
- *                        retrying -- and conditions are `WarnMark`.
- *   anything else        the platform's own word, faint, with no mark: a state
- *                        this console never heard of is drawn as unrecognised
- *                        rather than defaulted into a healthy one.
- *
- * The word is lower case with spaces (`reauth required`), the way every other
- * state word in the console reads; the platform's spelling is the `title`.
- */
-function AcctState({ state }: { state: string }) {
-  const word = state.toLowerCase().replace(/_/g, ' ')
-  if (state === 'REAUTH_REQUIRED') return <NamedMark className="acct-state" mark="warn" hue="warn" word={word} title={state} />
-  if (state === 'PAUSED') return <NamedMark className="acct-state" mark="parked" hue="park" word={word} title={state} />
-  const known = state === 'AVAILABLE' || state === 'DRAINING'
-  return (
-    <NamedMark
-      className="acct-state"
-      mark={null}
-      hue={known ? 'neu' : 'unknown'}
-      word={word}
-      title={known ? state : `${state}: a state this console does not recognise`}
-    />
-  )
-}
 
 /**
  * THE ONE PROVIDER, AND THE ONE CREDENTIAL KIND -- stated, never picked.
@@ -331,12 +295,13 @@ function SummaryLine({ board }: { board: AccountsBoard }) {
   // "sign in again", the other is "this is not yours to fix".
   const mine = broken.filter((a) => isOwned(a, scope)).length
   const lent = broken.length - mine
-  // A1's head chip: how many there are and how many can serve right now. Whose
-  // they are is the chosen account's ownership line, where it is about one.
-  const available = board.page.accounts.filter((a) => a.state === 'AVAILABLE').length
+  // HOW MANY THERE ARE, AND NO "AVAILABLE" (#2222). "7 accounts · 7
+  // available" was the head while every one of them was under its floor and
+  // 28 agents waited: available was the account's state, not whether it
+  // could take an agent. The verdict under the head answers that.
   return (
     <>
-      {n} account{n === 1 ? '' : 's'} &middot; {available} available
+      {n} account{n === 1 ? '' : 's'}
       {/* BEFORE anything derived from the rows, because it is the sentence
           that says how much of the pool the rows are. A count of accounts is
           not a fact when documents were dropped reaching it. */}
@@ -391,8 +356,16 @@ function Body({
     if (typeof window !== 'undefined') followHash(paneHref('capacity/accounts', { account: id }))
   }
   const view = linked !== null ? { ...ui, chosen: linked } : ui
+  // THE ANSWER FIRST (#2222, proposal A): can the pool take another agent,
+  // and if not, when. Re-read with the board, so the two agree.
+  const waiting = usePoolWaiting(board.readAt)
+  const scope = board.page.tenant_id
+  const pool = accounts as PoolAccount[]
   return (
     <>
+      <Verdict accounts={pool} scope={scope} shortfall={shortfall(board)} now={Date.now()} waiting={waiting} />
+      {accounts.length > 0 && <RuleLine accounts={pool} />}
+      <DuplicateBanner accounts={pool} scope={scope} onOpen={choose} />
       <Broken accounts={accounts} scope={board.page.tenant_id} onOpen={choose} />
       {/* A LINK TO AN ACCOUNT THIS READ DOES NOT HAVE IS SAID (live QA
           CAP-12): `?account=eng:nope` used to show another account under that
@@ -654,22 +627,45 @@ function Pool({
   // A CHOSEN ACCOUNT OPENS AT ITS TITLE (visual QA V157, V158; 2026-10-16).
   // On a phone the list -> detail switch kept the list's scroll offset, so a
   // row chosen low in a long list landed the reader at the bottom of the
-  // shorter detail -- State, Replace, Remove's typed confirmation -- not its
-  // name; focus fell to <body> with the row it was on. The page is scrolled
-  // to the pane and focus goes to `‹ Accounts`, its first control. On a
-  // desktop the pane neither sticks nor scrolls itself (capacity-010,
-  // styles/capacity.css `.acct-split > .acct-pane`), so it sits at the top of
-  // the card; the page moves the least that shows it.
-  const paneRef = useRef<HTMLDivElement | null>(null)
+  // shorter detail; focus fell to <body>. The page is scrolled to the pane
+  // and focus goes to `‹ Accounts`, its first control. On a desktop the
+  // detail is a SIDE SHEET (#2222, mock-up A F4) that scrolls itself: it opens
+  // at its top, and focus goes to its close button, so Escape and Tab start
+  // inside it.
+  const paneRef = useRef<HTMLElement | null>(null)
   const opened = shown !== null && shown.explicit ? shown.account.account_id : null
   useEffect(() => {
     const pane = paneRef.current
     if (opened === null || pane === null) return
-    pane.scrollIntoView?.({ block: phone ? 'start' : 'nearest' })
-    if (phone) pane.querySelector<HTMLButtonElement>('.acct-back')?.focus({ preventScroll: true })
+    if (phone) {
+      pane.scrollIntoView?.({ block: 'start' })
+      pane.querySelector<HTMLButtonElement>('.acct-back')?.focus({ preventScroll: true })
+    } else {
+      pane.scrollTop = 0
+      // A control inside that already took focus keeps it: the reload a
+      // refresh causes remounts the sheet, and its button's own hand-over
+      // (a11y-keyboard-001) runs first, as a child's effect does.
+      if (!pane.contains(document.activeElement)) {
+        pane.querySelector<HTMLButtonElement>('.acct-sheet-close')?.focus({ preventScroll: true })
+      }
+    }
     // Only when the choice changes: a poll's re-render must not move the page.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opened])
+  // ESCAPE CLOSES THE SHEET, unless a dialog on it is open: Remove's typed
+  // confirmation and lending's are `Dialog`s, and Escape is theirs first.
+  const closeRef = useRef<() => void>(() => {})
+  const sheetOpen = shown !== null && (shown.explicit || addOpen(ui))
+  useEffect(() => {
+    if (!sheetOpen || typeof document === 'undefined') return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      if (document.querySelector('.c-dlg') !== null) return
+      closeRef.current()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [sheetOpen])
 
   if (shown === null) {
     return (
@@ -706,6 +702,12 @@ function Pool({
               <Mark kind="zero" say="The account read succeeded and this pool has no accounts yet." />
               <span>{phone ? 'add the first one below' : 'add the first one beside this list'}</span>
             </p>
+            {/* WHICH ORGANISATION (#2222): one login can hold two, and the
+                sign-in takes the one selected in that browser. */}
+            <p className="muted small">
+              Sign in to the organisation you mean: one claude.ai login can hold two, and the sign-in takes the one that is
+              selected.
+            </p>
           </div>
         </section>
         {/* The form with no click: on an empty pool it is the one fix. */}
@@ -716,6 +718,19 @@ function Pool({
 
   const adding = addOpen(ui)
   const a = shown.account
+  // CLOSING: an opened account goes back to the table, focus on its row (live
+  // QA CAP-11); an add form nobody has started folds. A sign-in under way is
+  // never folded by a close -- its link and code box are the form -- so the
+  // sheet then holds it, and offers no close.
+  const closable = shown.explicit || ui.signin.kind === 'idle'
+  closeRef.current = () => {
+    if (shown.explicit) {
+      backTo.current = a.account_id
+      choose(null)
+    } else if (ui.signin.kind === 'idle') {
+      patch((p) => ({ ...p, adding: false }))
+    }
+  }
   return (
     /* `is-detail`: a reader chose an account, so on a phone the account is the
        page and the list steps aside (frame 10). With no choice the phone shows
@@ -723,7 +738,7 @@ function Pool({
        phone should land on. `is-adding`: the add form is open in the pane, so
        the pane shows on a phone too. */
     <div
-      className={`acct-split${shown.explicit ? ' is-detail' : ''}${adding ? ' is-adding' : ''}`}
+      className={`acct-split is-ranked${shown.explicit ? ' is-detail' : ''}${adding ? ' is-adding' : ''}${sheetOpen ? ' has-sheet' : ''}`}
     >
       <section className="section panel acct-list" aria-label="Subscription accounts">
         <div className="acct-list-head">
@@ -734,23 +749,21 @@ function Pool({
           </h2>
           <AddButton ui={ui} patch={patch} />
         </div>
-        <ul className="acct-items">
-          {accounts.map((x) => (
-            <AcctItem
-              key={x.account_id}
-              account={x}
-              board={board}
-              now={now}
-              readAt={board.readAt}
-              // A PHONE MARKS ONLY WHAT IT OPENED (visual QA V067). The default
-              // account is a desktop convenience -- the pane beside the list
-              // shows it -- and a phone draws no pane until a row is chosen,
-              // so highlighting the default there marked a row nobody opened.
-              chosen={x.account_id === a.account_id && (shown.explicit || !phone)}
-              onChoose={() => choose(x.account_id)}
-            />
-          ))}
-        </ul>
+        {/* RANKED BY WHEN EACH CAN TAKE A NEW AGENT (#2222): one table on a
+            desktop, a card each on a phone. The name is the `acct-open`
+            button the list was, so choosing one opens the same detail under
+            it, with every control the page had. */}
+        <p className="acct-rank-note">Ranked by when each can take a new agent. Times are UTC.</p>
+        <AccountsTable
+          accounts={accounts as PoolAccount[]}
+          scope={board.page.tenant_id}
+          now={now}
+          // A ROW IS MARKED ONLY WHEN IT IS OPEN (visual QA V067; #2222): the
+          // detail is a sheet a reader opens, so nothing is chosen by default.
+          chosen={shown.explicit ? a.account_id : null}
+          phone={phone}
+          onChoose={(id) => choose(id)}
+        />
         <PoolFindings
           accounts={accounts}
           scope={board.page.tenant_id}
@@ -776,10 +789,12 @@ function Pool({
             </>
           )}
           <ReadingAges accounts={accounts} />{' '}
-          {/* THE TILDE'S LEGEND ONLY WHERE A TILDE IS (#127). */}
+          {/* THE TILDE'S LEGEND ONLY WHERE A TILDE IS (#127): the ranked table
+              draws an old reading pale with its age, so a `~` is only ever in
+              an open account's sheet (a window with no column). */}
           &middot;{' '}
           <span className="acct-clause">
-            {anyProjected(accounts, now) ? '~ is an old reading, not current' : 'no projected figures'}
+            {shown.explicit && anyProjected([a]) ? '~ is an old reading, not current' : 'no projected figures'}
           </span>
           {/* THE OTHER OF THIS SCREEN'S TWO `?` (B7.4), and the reason it is one
               of the two is the STALE MARK. This console draws three different
@@ -789,281 +804,69 @@ function Pool({
               topic is what may and may not be concluded from it. */}
           <HelpCard topic="projected-not-measured" />
         </p>
+        <Forecast accounts={accounts as PoolAccount[]} scope={board.page.tenant_id} now={now} />
       </section>
-      {/* THE CHOSEN ACCOUNT, beside the list (capacity.html A1). The detail is
-          the same component the expanded row drew -- facts, controls, and PR
-          #413's Holding now | History switch -- so nothing it said or guarded
-          changed by moving. */}
-      <div className="acct-pane" ref={paneRef}>
-        <button
-          type="button"
-          className="acct-back"
-          onClick={() => {
-            backTo.current = a.account_id
-            choose(null)
-          }}
-        >
-          <span aria-hidden="true">‹</span> Accounts
-        </button>
-        {adding && addForm}
-        {/* ONE THING AT A TIME (live QA CAP-11): an add form nobody has
-            started stacked above the chosen account's detail, so the pane held
-            two. Cancel brings the account back. A sign-in under way keeps both,
-            so the pool can still be read while the provider's page is open. */}
-        {!(adding && (ui.signin.kind === 'idle' || ui.signin.kind === 'start_failed')) && (
-          <section key={a.account_id} className="acct-pane-detail" aria-label={`Account ${accountName(a)}`}>
-            <Detail account={a} board={board} now={now} readAt={board.readAt} ui={ui} patch={patch} reload={reload} />
-          </section>
-        )}
-      </div>
-    </div>
-  )
-}
-
-/**
- * One account in the list: A1's compact row.
- *
- * The label, the five-hour figure (`cs status`'s first number, under the same
- * honesty rules as ever: an em dash when unmeasured, `~` when projected), and
- * one small line -- the state, and when the binding window clears. Everything
- * else is the pane's. Under the button, outside it because a mark there is
- * focusable: the id that gets pasted into a command, when it was last given
- * out, and the `skipped here` mark.
- */
-function AcctItem({
-  account,
-  board,
-  now,
-  readAt,
-  chosen,
-  onChoose,
-}: {
-  account: Account
-  board: AccountsBoard
-  now: number
-  /** When the board this item came from was read. See `AccountsBoard.readAt`. */
-  readAt: number
-  /** Whether this is the account the pane beside the list shows. */
-  chosen: boolean
-  onChoose: () => void
-}) {
-  const five = readingOf(account, FIVE_HOUR)
-  // THE ROW THAT READS HEALTHIEST AND SERVES NOBODY. `choose()` skips an
-  // account this tenant has reported unreadable, so its window, its headroom
-  // and its state all describe an account that will not be handed out here.
-  const unusable = unreadableFor(account, board.page.tenant_id)
-  const cls = ['acct-li', chosen ? 'is-chosen' : '', unusable ? 'is-unusable' : ''].filter(Boolean).join(' ')
-  return (
-    <li className={cls}>
-      <button
-        type="button"
-        className="acct-open"
-        data-account={account.account_id}
-        aria-current={chosen ? 'true' : undefined}
-        onClick={onChoose}
-      >
-        {/* THE NAME, IN PLACE OF THE LABEL (#1913): the owner's Name when it
-            has one, the label otherwise. The id under the button stays, so
-            the Name never hides which account this is. */}
-        <b className="acct-li-name">{accountName(account)}</b>
-        {/* THE WINDOW IS NAMED AT THE FIGURE (QA G5-23): `69% 5h`. The
-            list's % is always the five-hour window, and the only place that
-            said so was the sub-line's `· 5h` -- which is the window Clears is
-            about, and is `· 7d` on another row, 200px away. */}
-        <WindowFig reading={five} window="five-hour" label="5h used" win="5h" />
-        <small className="acct-li-line">
-          <AcctState state={account.state} /> &middot;{' '}
-          <ClearsLine account={account} now={now} readAt={readAt} />
-        </small>
-      </button>
-      <span className="acct-li-meta">
-        {/* The heading is the Name (or the label); the full id is what gets
-            pasted into a command, and is printed here untransformed. */}
-        <span className="raw">{account.account_id}</span>
-        {/* LAST GIVEN OUT, ON THE ROW (#127): a pool no worker can reach --
-            every account `never` -- otherwise looks like a healthy idle one. */}
-        <span className="acct-given">
-          {neverAssigned(account) ? 'never given out' : `given out ${agoPastDay(account.last_assigned_at as string, now)}`}
-        </span>
-        {/* A MARK, NOT A CLAUSE (B4.4). The state is still AVAILABLE and that
-            is still true; the pool simply will not hand it to THIS tenant while
-            the report stands. The explanation is the mark's accessible name. */}
-        {unusable && (
-          <span
-            className="ctl-mark is-unread acct-unusable"
-            aria-label={`The pool is skipping this account for ${board.page.tenant_id}: this tenant reported it could not read the account's secret, and accounts.choose skips it for this tenant because of that. It is not skipped for anyone else. The report is forgotten thirty minutes after it was made, so this clears by itself if the cause was a freshly onboarded account; if it persists, the missing piece is a roles/secretmanager.secretAccessor grant on the secret for this tenant's worker service account.`}
+      {/* THE OPENED ACCOUNT, AS A SIDE SHEET (#2222, mock-up A F4; a full
+          screen on a phone, P3). It is drawn only when a row was opened or the
+          add form is open: the table is the page, and the sheet covers its
+          right side over a scrim that closes it, as Escape and the close
+          button do. The detail is the component the pane drew -- facts,
+          controls, and PR #413's holds -- so nothing it guarded changed by
+          moving. */}
+      {sheetOpen && (
+        <>
+          <div className="acct-scrim" aria-hidden="true" onClick={() => closeRef.current()} />
+          <aside
+            className="acct-pane acct-sheet"
+            ref={paneRef}
+            aria-label={shown.explicit ? `Account ${accountName(a)}` : 'Add an account'}
           >
-            skipped here
-          </span>
-        )}
-        <StateNote account={account} />
-      </span>
-    </li>
-  )
-}
-
-/**
- * Why a reading is what it is, in the cell's own tooltip.
- *
- * SHORT, AND CARRYING NO ARGUMENT. These were five sentences each, reachable
- * only by hovering a table cell with a mouse -- which is the failure mode the
- * `?` exists to fix, not a use of it. The reasoning is at
- * `#help/absent-vs-zero` and `#help/projected-not-measured`, reachable from
- * the provenance line under the table and from the footer.
- *
- * NOTHING MEASURED LEFT WITH THEM. An unmeasured cell still draws NO BAR at
- * all and still prints an em dash; a projected one still prints its tilde.
- * That is what a reader sees without hovering anything, and it is what
- * `src/__tests__/honesty.prose.test.tsx` asserts.
- *
- * The 'stale' case also drops a restatement of the broker's staleness
- * window, which §5 of the migration table lists as one of five copies of a
- * platform figure no route publishes.
- */
-function readingTitle(r: AccountReading, window: string): string {
-  switch (r.kind) {
-    case 'never':
-      return 'No reading has ever arrived. Unknown is not zero.'
-    case 'absent':
-      return `The last reading carried no ${window} window. Unmeasured is not zero.`
-    case 'reset':
-      return `Passed its reset ${timeAgo(r.resetsAt)}; the figure is what the window before it had used.`
-    case 'stale':
-      return `Last read ${timeAgo(r.observedAt)}, past the age a reading is trusted for. Marked ~.`
-    case 'live':
-      return `Read ${timeAgo(r.observedAt)}, within the age a reading is trusted for.`
-  }
-}
-
-/**
- * The five-hour figure on a list item: the number and its honesty marks, no
- * track (A1 draws none in the list; the pane's tiles carry the proportion).
- *
- * AN EM DASH, NOT A ZERO. A window nobody measured prints `—` and nothing that
- * reads as a figure; a measured 0% prints `0%`. `~` before a figure that is
- * real but no longer current.
- */
-function WindowFig({
-  reading,
-  window,
-  // The figure's name, passed rather than derived: `five-hour` is not what the
-  // figure is called, and OV-1 puts the polarity (`used`) on every %.
-  label,
-  win,
-}: {
-  reading: AccountReading
-  window: string
-  label: string
-  /** The window's short name, drawn after the figure (`69% 5h`). */
-  win?: string
-}) {
-  const title = readingTitle(reading, window)
-  const named = win === undefined ? null : <span className="acct-pct-win"> {win}</span>
-  if (reading.kind === 'never' || reading.kind === 'absent') {
-    return (
-      <em className="acct-window acct-unmeasured" data-label={label} title={title}>
-        <span className="acct-pct ctl-em">&mdash;</span>
-        {named}
-      </em>
-    )
-  }
-  // A WINDOW THAT HAS ALREADY REFILLED HAS NO CURRENT FIGURE (live QA
-  // CAP-3). `~92%` read as "about 92% used now" for a window that reset hours
-  // ago; the 92% is what it WAS, so it is said as that, after the word reset.
-  if (reading.kind === 'reset') {
-    return (
-      <em className="acct-window acct-reset" data-label={label} title={title}>
-        <span className="acct-pct">reset</span>
-        {named}
-        <small className="acct-was"> was {Math.round(reading.pct)}%</small>
-      </em>
-    )
-  }
-  const projected = isProjected(reading)
-  return (
-    <em className={`acct-window${projected ? ' acct-projected' : ''}`} data-label={label} title={title}>
-      <span className="acct-pct">
-        {projected && <span className="acct-tilde">~</span>}
-        {Math.round(reading.pct)}%
-      </span>
-      {named}
-    </em>
-  )
-}
-
-/**
- * An age past a day in days AND hours (QA G5-23): `given out 1d 20h ago`, not
- * `44h ago`, which is arithmetic a reader does before reacting. Under a day it
- * is `timeAgo`'s. Floored, so an age never reads older than it is; a whole
- * number of days drops its `0h`.
- */
-export function agoPastDay(when: string, now: number = Date.now()): string {
-  const t = Date.parse(when)
-  if (!Number.isFinite(t)) return timeAgo(when, now)
-  const h = Math.floor((now - t) / 3_600_000)
-  if (h < 24) return timeAgo(t, now)
-  const d = Math.floor(h / 24)
-  const r = h % 24
-  return r === 0 ? `${d}d ago` : `${d}d ${r}h ago`
-}
-
-/**
- * One window as a tile in the chosen account's pane: the figure, and §6.4's
- * one proportion beside it.
- *
- * The rules are the list's and the old table cell's, unchanged: an unmeasured
- * window draws NO bar at all and prints an em dash (an empty bar would read as
- * a measured 0%), a measured 0% draws the track's baseline tick, a stale or
- * reset reading is `ov-projected` beside its `~`, and `is-bad` only for a LIVE
- * window at 100% -- fully spent is a fact, not a threshold chosen in this file.
- * There is no amber band (`#help/no-amber-band`).
- */
-function WindowTile({
-  reading,
-  window,
-  label,
-}: {
-  reading: AccountReading
-  window: string
-  label: string
-}) {
-  const title = readingTitle(reading, window)
-  if (reading.kind === 'never' || reading.kind === 'absent') {
-    return (
-      <div className="acct-tile acct-window acct-unmeasured" data-label={label} title={title}>
-        <small>{label}</small>
-        <b className="acct-pct ctl-em">&mdash;</b>
-        <i className="acct-why">not measured</i>
-      </div>
-    )
-  }
-  // Reset: the window refilled, so there is no current proportion to draw --
-  // a bar at the old figure would be a measurement of a window that no longer
-  // exists (live QA CAP-3).
-  if (reading.kind === 'reset') {
-    return (
-      <div className="acct-tile acct-window acct-reset" data-label={label} title={title}>
-        <small>{label}</small>
-        <b className="acct-pct">reset</b>
-        <i className="acct-why">was {Math.round(reading.pct)}% before it refilled</i>
-      </div>
-    )
-  }
-  const projected = isProjected(reading)
-  return (
-    <div className={`acct-tile acct-window${projected ? ' acct-projected' : ''}`} data-label={label} title={title}>
-      <small>{label}</small>
-      <b className="acct-pct">
-        {projected && <span className="acct-tilde">~</span>}
-        {Math.round(reading.pct)}%
-      </b>
-      <UsageTrack
-        pct={reading.pct}
-        tone={projected ? 'ov-projected' : reading.kind === 'live' && reading.pct >= 100 ? 'is-bad' : undefined}
-      />
+            <div className="acct-sheet-head">
+              <button type="button" className="acct-back" onClick={() => closeRef.current()}>
+                <span aria-hidden="true">‹</span> Accounts
+              </button>
+              <span className="acct-sheet-crumb">{shown.explicit ? 'Accounts ›' : 'Accounts › Add an account'}</span>
+              {closable && (
+                <Button
+                  iconOnly
+                  size="sm"
+                  icon={<CIcon name="close" />}
+                  className="acct-sheet-close"
+                  onClick={() => closeRef.current()}
+                >
+                  Close
+                </Button>
+              )}
+            </div>
+            {adding && addForm}
+            {/* ONE THING AT A TIME (live QA CAP-11): an add form nobody has
+                started stacked above the chosen account's detail, so the pane held
+                two. Cancel brings the account back. A sign-in under way keeps both,
+                so the pool can still be read while the provider's page is open. */}
+            {shown.explicit && !(adding && (ui.signin.kind === 'idle' || ui.signin.kind === 'start_failed')) && (
+              <section key={a.account_id} className="acct-pane-detail" aria-label={`Account ${accountName(a)}`}>
+                <Detail
+                  account={a}
+                  accounts={accounts as PoolAccount[]}
+                  board={board}
+                  now={now}
+                  ui={ui}
+                  patch={patch}
+                  reload={reload}
+                />
+              </section>
+            )}
+          </aside>
+        </>
+      )}
     </div>
   )
 }
+
+
+export { agoPastDay }
+
+
 
 /**
  * THE AGE OF THE READINGS, in the provenance foot (CP-26, #85; §8.4(4)).
@@ -1100,166 +903,23 @@ function ReadingAges({ accounts }: { accounts: Account[] }) {
   )
 }
 
-/**
- * Time until the BINDING window resets -- the one that will actually stop you.
- *
- * Not the five-hour and not an average: an account at 5% on its five-hour and
- * 90% on its weekly is stopped by the weekly, and refilling the five-hour does
- * nothing for it. Computed once here and drawn twice -- on the list item's
- * small line and as the pane's Clears tile -- so the two cannot disagree.
- */
-interface Clears {
-  text: string
-  /** Marked `~`: the figure is projected, not measured. */
-  tilde: boolean
-  /** `acct-unmeasured` / `acct-projected`, or nothing. */
-  cls: string
-  title: string
-  /** Which window, in the figures' own words (`5h`), or null with no binding window. */
-  win: string | null
-}
 
-function clearsOf(account: Account, now: number, readAt: number): Clears {
-  const binding = bindingWindow(account)
-  if (binding === null) {
-    return {
-      text: '—',
-      tilde: false,
-      cls: 'acct-unmeasured ctl-em',
-      title:
-        'No window reading, so there is no reset instant to count down to. This is an absence of information, not a window that never clears.',
-      win: null,
-    }
-  }
-  const reading = readingOf(account, binding.key)
-  const windowName = binding.key.replace(/_/g, '-')
-  const win = windowWord(binding.key)
 
-  // A binding window that has ALREADY reset does not have a countdown; it has
-  // happened. "~now" would be arithmetic pretending to be an answer, and it
-  // reads as "about to clear" when the truth is the opposite -- it cleared, and
-  // what is missing is a reading taken since.
-  if (binding.window.reset) {
-    return {
-      text: 'cleared',
-      tilde: false,
-      cls: 'acct-projected',
-      title: `The ${windowName} window, the binding one, passed its reset ${timeAgo(binding.window.resets_at)}. It has cleared; no reading taken since has arrived, so the figures for this account still describe the window before it.`,
-      win,
-    }
-  }
-  // THE INSTANT HAS PASSED AND THIS BOARD DID NOT CALL IT RESET. Two different
-  // things put an account here and NOTHING ON THIS SCREEN MEASURES WHICH: the
-  // window may have cleared between the read and this render, or the instant
-  // and this browser's clock may simply not agree. So the tooltip reports the
-  // two things that WERE measured -- the instant is behind us, and the board
-  // is this old -- and names no cause.
-  //
-  // `~now`, AND THE MARK IS NOT OPTIONAL. "now" here is a countdown that has
-  // run out, not a claim that anything cleared, and no reading confirms either.
-  const resetsAt = new Date(binding.window.resets_at).getTime()
-  if (Number.isFinite(resetsAt) && resetsAt <= now) {
-    return {
-      text: 'now',
-      tilde: true,
-      cls: 'acct-projected',
-      title: `The ${windowName} window is the binding one, and the reset instant the platform gave for it is already in the past. The board this account came from was read ${timeAgo(readAt)} and had not marked the window reset. This page does not compare its clock with the platform's, so it cannot tell you whether the window has cleared since that read -- reload, and the platform answers.`,
-      win,
-    }
-  }
-  // The INSTANT is the provider's and counting down to it is arithmetic; what
-  // is projected is the CHOICE of which window binds, when that choice came
-  // from a figure that is no longer current.
-  const uncertain = isProjected(reading)
-  return {
-    text: clearsIn(binding.window.resets_at, now),
-    tilde: uncertain,
-    cls: uncertain ? 'acct-projected' : '',
-    title: uncertain
-      ? `Counts down to the ${windowName} window's reset, which the provider gave as an exact instant. Marked ~ because which window binds was decided from a figure that is no longer current.`
-      : `The ${windowName} window is the binding one, the one that will refuse first, and this is when it resets.`,
-    win,
-  }
-}
+
 
 /**
- * The list item's `clears 1h 20m · 5h`, or `cleared · 5h` for a window that
- * already reset: `clears` is a countdown's label, and before `cleared` it read
- * `clears cleared` (QA-051, 2026-10-20). The past tense is the whole fact.
+ * Whether any `~` is on screen (#127): the sheet's two windows draw an old
+ * reading pale with its age and never a `~` (#2222), so a `~` is only ever on
+ * an open account's window that has no column (`AllWindows`), read stale. A
+ * window already reset draws `reset`, not a `~` (live QA CAP-3). The legend
+ * follows it.
  */
-function ClearsLine({ account, now, readAt }: { account: Account; now: number; readAt: number }) {
-  const c = clearsOf(account, now, readAt)
-  return (
-    <span className={`acct-clears ${c.cls}`.trim()} data-label="Clears" title={c.title}>
-      {c.text !== 'cleared' && 'clears '}
-      {c.tilde && <span className="acct-tilde">~</span>}
-      {c.text}
-      {c.win !== null && (
-        <>
-          {' '}
-          &middot; <span className="acct-clears-win">{c.win}</span>
-        </>
-      )}
-    </span>
+function anyProjected(accounts: Account[]): boolean {
+  return accounts.some((a) =>
+    Object.keys(a.windows ?? {})
+      .filter((k) => k !== FIVE_HOUR && k !== SEVEN_DAY)
+      .some((k) => readingOf(a, k).kind === 'stale'),
   )
-}
-
-/** The pane's Clears tile, naming its window visibly (#127), not only in a `title=`. */
-function ClearsTile({ account, now, readAt }: { account: Account; now: number; readAt: number }) {
-  const c = clearsOf(account, now, readAt)
-  return (
-    <div className={`acct-tile ${c.cls}`.trim()} data-label="Clears" title={c.title}>
-      <small>Clears</small>
-      <b>
-        {c.tilde && <span className="acct-tilde">~</span>}
-        {c.text}
-      </b>
-      {c.win !== null && <i className="acct-clears-win">{c.win} window</i>}
-    </div>
-  )
-}
-
-/** `five_hour` -> `5h`, `seven_day` -> `7d`, the columns' own words; any other window by its name. */
-function windowWord(key: string): string {
-  if (key === FIVE_HOUR) return '5h'
-  if (key === SEVEN_DAY) return '7d'
-  return key.replace(/_/g, '-')
-}
-
-/**
- * Whether any `~` is on screen: a stale 5h or 7d reading, or a Clears figure
- * `clearsOf` marks -- a binding window past its instant, or chosen from a stale
- * reading. A window already reset draws `reset`, not a `~` (live QA CAP-3).
- * The legend follows it (#127).
- */
-function anyProjected(accounts: Account[], now: number): boolean {
-  return accounts.some((a) => {
-    // A reset window draws `reset`, not a `~`, so only a stale one counts.
-    if (readingOf(a, FIVE_HOUR).kind === 'stale' || readingOf(a, SEVEN_DAY).kind === 'stale') return true
-    const binding = bindingWindow(a)
-    if (binding === null) return false
-    // `cleared` carries no `~` (clearsOf), so a reset binding window is not one.
-    if (binding.window.reset) return false
-    const at = new Date(binding.window.resets_at).getTime()
-    if (Number.isFinite(at) && at <= now) return true
-    return isProjected(readingOf(a, binding.key))
-  })
-}
-
-/** The second line under a state chip, when there is a real one to write. */
-function StateNote({ account }: { account: Account }) {
-  if (account.reason) return <span className="acct-why">{account.reason}</span>
-  const binding = bindingWindow(account)
-  if (binding && binding.window.reset) {
-    // `cs status` words this "window reset - re-reading", and it means the
-    // figures on this row describe a window that has already refilled.
-    return <span className="acct-why">window reset, awaiting a new reading</span>
-  }
-  if (account.observed_at === null) return <span className="acct-why">never observed</span>
-  if (account.stale) {
-    return <span className="acct-why">reading is {timeAgo(account.observed_at)}</span>
-  }
-  return null
 }
 
 /**
@@ -1488,17 +1148,18 @@ function NameHead({ account, owned, reload }: { account: Account; owned: boolean
 
 function Detail({
   account,
+  accounts,
   board,
   now,
-  readAt,
   ui,
   patch,
   reload,
 }: {
   account: Account
+  /** The whole read, so a duplicate's other side is named only when it is in it. */
+  accounts: PoolAccount[]
   board: AccountsBoard
   now: number
-  readAt: number
   ui: Persisted
   patch: Patch
   reload: () => void
@@ -1508,30 +1169,31 @@ function Detail({
   // this test, shared with the banner and the warnings list so that what points
   // at a row and what the row offers cannot disagree.
   const owned = isOwned(account, board.page.tenant_id)
+  const scope = board.page.tenant_id
+  const pool = account as PoolAccount
+  const names = new Map(accounts.map((x) => [x.account_id, accountName(x)]))
+  // EDIT LENDING OPENS THE EDITOR THE PANE ALWAYS HAD (#2222, mock-up A F4):
+  // the sheet leads with who it is lent to, and the field, its tenant check
+  // and its confirmation are `Lending`'s, unchanged.
+  const [lending, setLending] = useState(false)
 
   const lent = (account.lend_to ?? []).length > 0
   return (
     <div className="acct-detail">
-      {/* THE HEAD (capacity.html A1): the state, what kind of account and
-          whether it is lent, the label, and WHOSE it is -- the one line that
-          decides whether the controls below exist at all. */}
+      {/* THE HEAD: the label, WHOSE it is -- the line that decides whether the
+          controls below exist at all -- its state, and whether it is lent. */}
       <header className="acct-dhead">
+        <NameHead account={account} owned={owned} reload={reload} />
         <div className="acct-dhead-row">
           <AcctState state={account.state} />
           <Chip>
             {account.provider} &middot; {lent ? 'lending on' : 'lending off'}
           </Chip>
         </div>
-        <NameHead account={account} owned={owned} reload={reload} />
         {/* AN ID IS ONE WORD (visual QA V070): `u-bogdan` broke at its hyphen
             onto two lines. Each id is an `.acct-id`, which never breaks inside
             itself; the line breaks between words. */}
         <p className="acct-idt">
-          {/* The ` ·` rides inside the id's box: the list item already prints
-              the bare id, and this is the subtitle's, not a second copy. */}
-          <span className="acct-id" title={account.account_id}>
-            {account.account_id} &middot;
-          </span>{' '}
           {owned ? (
             <>
               You own this account (tenant <Id>{account.owner_tenant}</Id>).
@@ -1539,10 +1201,10 @@ function Detail({
           ) : (
             <>
               You borrow this account from <Id>{account.owner_tenant}</Id>
-              {board.page.tenant_id !== null && (
+              {scope !== null && (
                 <>
                   {' '}
-                  (tenant <Id>{board.page.tenant_id}</Id>)
+                  (tenant <Id>{scope}</Id>)
                 </>
               )}
               .
@@ -1550,91 +1212,41 @@ function Detail({
           )}
         </p>
       </header>
-      <div className="acct-tiles">
-        <WindowTile reading={readingOf(account, FIVE_HOUR)} window="five-hour" label="5h used" />
-        <WindowTile reading={readingOf(account, SEVEN_DAY)} window="seven-day" label="7d used" />
-        <ClearsTile account={account} now={now} readAt={readAt} />
-        {/* NEVER IS NOT RECENTLY. An account registered and never handed to an
-            agent is indistinguishable, everywhere else on this screen, from a
-            healthy one nobody happened to need -- and it is also the per-account
-            shape of a pool no worker can reach. The broker serves the instant
-            precisely so this tile can tell the two apart. */}
-        <div className={`acct-tile${neverAssigned(account) ? ' is-absent' : ''}`}>
-          <small>Last given out</small>
+      {/* THE ANSWER FOR THIS ACCOUNT, as its row says it (mock-up A F4). */}
+      <SheetVerdict a={pool} scope={scope} now={now} names={names} />
+      <SheetDuplicate a={pool} accounts={accounts} owned={owned} />
+      <SheetWindows a={pool} now={now} />
+      <AllWindows account={account} now={now} />
+      <SheetHolds account={pool} owned={owned} now={now} reload={reload} fixture={board.fixture === true ? scope : undefined} />
+      <SheetAccount a={pool} scope={scope} owned={owned} editing={lending} onEditLending={() => setLending(true)} />
+      {owned && lending && (
+        <div className="acct-lending-edit">
+          <Lending account={account} board={board} reload={reload} />
+          <Button kind="ghost" size="sm" onClick={() => setLending(false)}>
+            Done
+          </Button>
+        </div>
+      )}
+      {/* B4.4: `.ctl-facts`, every clause either a MARK or that value's
+          accessible name. When it was last handed out, which classes it
+          serves, and who could not read its secret: the facts the sheet's
+          sections above do not already carry. */}
+      <ul className="ctl-facts acct-facts">
+        <li className={`ctl-fact${neverAssigned(account) ? ' is-absent' : ''}`}>
+          <b>last given out</b>
           {neverAssigned(account) ? (
-            <b>
+            <span className="acct-flags">
               <Mark
                 kind="zero"
                 say="No agent has ever been handed this account. On its own that is simply a new account; across the whole pool it is the shape of workers that cannot reach the broker."
               />
-            </b>
-          ) : (
-            // THE CLOCK, THEN THE AGE (G5-16, QA 2026-10-07; capacity.html §D
-            // draws `14:09`). The age alone made a reader do the subtraction
-            // to line the hand-out up against Holding now's Since column,
-            // which is a clock. The mock-up's `to eng` is not drawn: the
-            // broker records when an account was last handed out, not to whom.
-            <>
-              <b title={new Date(account.last_assigned_at as string).toLocaleString()}>
-                {givenAt(account.last_assigned_at as string, now)}
-              </b>
-              <i>{timeAgo(account.last_assigned_at as string, now)}</i>
-            </>
-          )}
-        </div>
-      </div>
-      {/* B4.4: `.ctl-facts` REPLACES THE DEFINITION LIST, and every `.acct-why`
-          clause under a value became either a MARK or that value's accessible
-          name. The clauses were the screen's densest prose -- five of them,
-          ~70 rendered words, under five one-word values -- and each was doing
-          one of exactly two jobs:
-
-            saying WHICH KIND OF NOTHING a `never` is  -> `.ctl-mark`, which is
-                the vocabulary the rest of the console already uses for that
-                and which a reader has learned by the time they reach this row;
-            saying HOW MUCH TO TRUST a figure          -> the figure's own
-                `aria-label`, plus the `?`. A caveat that can be read only by
-                hovering was already a failure; a caveat attached to the figure
-                is one that cannot be separated from it.
-
-          `Agents on it` is the clearest of the five. "advisory; the lease is
-          the authoritative record of who holds what" is a statement about
-          WHICH RECORD TO BELIEVE -- it is an argument, and §8.4(5) puts an
-          argument at `#help/<topic>`. B7.4 took the `?` off this row: the
-          whole sentence is the figure's own accessible name, one element
-          below, and `advisory-vs-lease` is in this screen's footer index. */}
-      <ul className="ctl-facts acct-facts">
-        <li className="ctl-fact">
-          <b>
-            agents
-          </b>
-          <span aria-label={`${account.assigned} agents, as the broker last recorded it. This count is advisory: the lease is the authoritative record of who holds what.`}>
-            {account.assigned}
-          </span>
-        </li>
-        <li className={`ctl-fact${account.observed_at === null ? ' is-absent' : ''}`}>
-          <b>last read</b>
-          {account.observed_at === null ? (
-            <span className="acct-flags">
-              <span
-                className="ctl-mark is-absent"
-                aria-label="No worker has ever reported a rate-limit reading for this account. Unknown is not zero."
-              >
-                not measured
-              </span>
             </span>
           ) : (
-            <span className="acct-flags">
-              <span
-                aria-label={
-                  account.stale
-                    ? `Read ${timeAgo(account.observed_at)}, past the age a reading is trusted for, so its figures are shown projected.`
-                    : `Read ${timeAgo(account.observed_at)}, within the age a reading is trusted for.`
-                }
-              >
-                {timeAgo(account.observed_at)}
-              </span>
-              {account.stale && <span className="ctl-mark is-partial">partial</span>}
+            // THE CLOCK, THEN THE AGE (G5-16): a clock lines the hand-out up
+            // against the holds' Since column. The age is `agoPastDay`, the
+            // row's own, so the two never round one hand-out two ways.
+            <span title={new Date(account.last_assigned_at as string).toLocaleString()}>
+              {givenAt(account.last_assigned_at as string, now)} ({agoPastDay(account.last_assigned_at as string, now)})
             </span>
           )}
         </li>
@@ -1671,22 +1283,65 @@ function Detail({
           </li>
         )}
       </ul>
-
-      <AllWindows account={account} now={now} />
-      <Holding account={account} now={now} fixture={board.fixture === true ? board.page.tenant_id : undefined} />
+      <SheetForecast a={pool} now={now} />
+      {/* THE ACTIONS THE PAGE HAD, each with its own behaviour and
+          confirmation: Pause and Drain (state), Replace the credential,
+          Refresh, the served classes, and Remove last. */}
       {owned ? (
         <>
-          <RefreshControl account={account} ui={ui} patch={patch} reload={reload} />
-          <Lending account={account} board={board} reload={reload} />
-          <ModelClasses account={account} reload={reload} />
           <StateControls account={account} reload={reload} />
           <Reauth account={account} ui={ui} patch={patch} reload={reload} />
+          <RefreshControl account={account} ui={ui} patch={patch} reload={reload} />
+          <ModelClasses account={account} reload={reload} />
           <Remove account={account} reload={reload} />
         </>
       ) : (
         <Borrowed account={account} />
       )}
     </div>
+  )
+}
+
+/**
+ * AGENTS ON IT (#2222, mock-up A F4): the broker's count against the cap, the
+ * live holds each linked to its agent (`HoldingNow`, swarm-api's tenant
+ * filtering untouched), the loans in use, History behind one control, and the
+ * cap with its Change for the owner.
+ */
+function SheetHolds({
+  account,
+  owned,
+  now,
+  reload,
+  fixture,
+}: {
+  account: PoolAccount
+  owned: boolean
+  now: number
+  reload: () => void
+  fixture: FixtureViewer
+}) {
+  const [history, setHistory] = useState(false)
+  const max = typeof account.max_agents === 'number' ? account.max_agents : null
+  return (
+    <section className="acct-ss acct-holding" aria-label="Agents on it">
+      <h4>
+        Agents on it &middot;{' '}
+        <span
+          aria-label={`${account.assigned} agents, as the broker last recorded it, of at most ${max ?? 'an unreported number'}. This count is advisory: the lease is the authoritative record of who holds what.`}
+        >
+          {account.assigned} of {max ?? '—'}
+        </span>
+      </h4>
+      <HoldingNow account={account} now={now} fixture={fixture} bare />
+      <p className="acct-ss-note">
+        <button type="button" className="c-link acct-history-toggle" aria-expanded={history} onClick={() => setHistory(!history)}>
+          {history ? 'Hide history' : 'History'}
+        </button>
+      </p>
+      {history && <HoldingHistory account={account} now={now} fixture={fixture} />}
+      <AgentCap a={account} owned={owned} reload={reload} />
+    </section>
   )
 }
 
@@ -1945,26 +1600,6 @@ function holdFixture(account: Account, fixture: FixtureViewer): HoldFixture | nu
   return fixture === undefined ? null : { account, viewer: fixture }
 }
 
-function Holding({ account, now, fixture }: { account: Account; now: number; fixture: FixtureViewer }) {
-  const [tab, setTab] = useState<'none' | 'now' | 'history'>('none')
-  const pick = (t: 'now' | 'history') => setTab(tab === t ? 'none' : t)
-  return (
-    <div className="acct-action acct-holding">
-      <Segmented
-        role="tablist"
-        label={`Who holds ${accountName(account)}`}
-        value={tab === 'none' ? null : tab}
-        options={[
-          { key: 'now', label: `Holding now (${account.assigned})` },
-          { key: 'history', label: 'History' },
-        ]}
-        onChange={pick}
-      />
-      {tab === 'now' && <HoldingNow account={account} now={now} fixture={fixture} />}
-      {tab === 'history' && <HoldingHistory account={account} now={now} fixture={fixture} />}
-    </div>
-  )
-}
 
 function useLoad<T>(load: () => Promise<Result<T>>, key: string): [Result<T>, () => void] {
   const [res, setRes] = useState<Result<T>>({ status: 'loading', since: Date.now() })
@@ -1984,7 +1619,18 @@ function useLoad<T>(load: () => Promise<Result<T>>, key: string): [Result<T>, ()
   return [res, () => setN((x) => x + 1)]
 }
 
-function HoldingNow({ account, now, fixture }: { account: Account; now: number; fixture: FixtureViewer }) {
+function HoldingNow({
+  account,
+  now,
+  fixture,
+  bare = false,
+}: {
+  account: Account
+  now: number
+  fixture: FixtureViewer
+  /** Inside the sheet's `Agents on it`, which already says the count: no heading of its own. */
+  bare?: boolean
+}) {
   const accountId = account.account_id
   const [res, retry] = useLoad(() => loadAccountHolders(accountId, holdFixture(account, fixture)), accountId)
   // The table is named by its heading (visual QA run 3, a11y-keyboard-003).
@@ -1995,7 +1641,7 @@ function HoldingNow({ account, now, fixture }: { account: Account; now: number; 
   const b = res.data
   return (
     <div className="acct-holders">
-      <h4 id={headId}>Holding now · {b.total}</h4>
+      {!bare && <h4 id={headId}>Holding now · {b.total}</h4>}
       {b.holders.length > 0 && (
         // THE MOCK-UP'S TABLE (G5-16, QA 2026-10-07; capacity.html §D): Agent ·
         // Attempt · Since. It was a bulleted list of `task_…` ids, the one
@@ -2003,7 +1649,11 @@ function HoldingNow({ account, now, fixture }: { account: Account; now: number; 
         // The agent is named the way every other screen names it (`agentName`),
         // from the task read; until that read lands, or if it fails, the id is
         // the name, and the whole id is always the link's title.
-        <table className="acct-hist acct-holding-now" aria-labelledby={headId}>
+        <table
+          className="acct-hist acct-holding-now"
+          aria-labelledby={bare ? undefined : headId}
+          aria-label={bare ? `Holding now · ${b.total}` : undefined}
+        >
           <thead>
             <tr>
               <th scope="col" data-col="holder">Agent</th>
@@ -2034,6 +1684,7 @@ function HoldingNow({ account, now, fixture }: { account: Account; now: number; 
         </table>
       )}
       {b.total === 0 && <p className="muted small">Nobody holds it.</p>}
+      {(b.by_tenant ?? []).length > 0 && bare && <p className="acct-ss-k">Loans in use</p>}
       {(b.by_tenant ?? []).length > 0 && (
         <ul className="acct-holder-tenants">
           {(b.by_tenant ?? []).map((t) => (
@@ -2248,7 +1899,7 @@ function AllWindows({ account, now }: { account: Account; now: number }) {
   if (keys.length === 0) {
     return (
       <p className="muted small">
-        No windows reported &mdash; 5h, 7d and Clears above are{' '}
+        No windows reported &mdash; the 5-hour and 7-day windows above are{' '}
         <strong>unmeasured, not zero</strong>.
       </p>
     )
@@ -3013,6 +2664,11 @@ function ModelClasses({ account, reload }: { account: Account; reload: () => voi
  * uses too -- so "use move to available" cannot drift from the button it means.
  */
 function moveLabel(to: AccountStateName): string {
+  // MOCK-UP A's WORDS (#2222, F4): Pause and Drain, and Resume for the way
+  // back. The buttons, their confirmations and the writes are unchanged.
+  if (to === 'PAUSED') return 'Pause'
+  if (to === 'DRAINING') return 'Drain'
+  if (to === 'AVAILABLE') return 'Resume'
   return `move to ${to.toLowerCase()}`
 }
 
@@ -3078,12 +2734,10 @@ function StateControls({ account, reload }: { account: Account; reload: () => vo
       <h4>
         State
       </h4>
-      {/* LOWERCASE, AS THE STATE CHIP BESIDE THEM IS (CP-23). The chip
-          lowercases the enum the API sends; these printed it raw, so the row
-          read `available` in its state column and `move to AVAILABLE` on the
-          button that sets it -- one word, two spellings, and the capitals were
-          the only thing on the screen still shouting. The prose that names
-          these buttons (`SignInDone`) spells them the same way. */}
+      {/* VERBS, NOT THE ENUM (CP-23; #2222 mock-up A F4): Pause, Drain,
+          Resume. The enum printed raw was the only thing on the screen still
+          shouting; the prose that names these buttons (`SignInDone`) spells
+          them through `moveLabel` too. */}
       <div className="acct-buttons">
         {targets.map((t) => (
           <button
