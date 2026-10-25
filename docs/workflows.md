@@ -1636,7 +1636,7 @@ test files excluded), the step runs on `claude-code-browser`; otherwise on
   in the part kept: the review runs where it can see.
 * **Resolved before admission, never after.** The profile is written in the
   same guarded transaction that moves the step PARKED -> READY. Admission reads
-  the task after that write, so the step reserves, all-or-nothing, the
+  the step after that write, so the step reserves, all-or-nothing, the
   resolved profile's pools (invariants 2 and 3); a step never holds one
   profile's capacity and runs on the other's. A step that is never promoted
   (one with no parent) runs on the browser profile it was stored on.
@@ -1648,16 +1648,16 @@ test files excluded), the step runs on `claude-code-browser`; otherwise on
   `metadata.runtime.alternate`. The scheduler swaps the profile fields and that
   signature together, and keeps the browser's in the alternate.
 * **One pair, by name.** swarm-api refuses any other pair, any other policy,
-  any other shape, the block on a plain task, and the block in the workflow's
+  any other shape, the block on a lone agent outside a workflow, and the block in the workflow's
   own metadata. The policy names two catalogue profiles and nothing else
   (invariant 10).
 * **Where it is recorded.** The step's `ready` event carries `runtime`
   (`profile`, `reason`, `ui_paths`, `parents_read`, `unreadable`, `swapped`),
-  and the task carries the same under `metadata.runtime.resolved`. A resolved
+  and the step carries the same under `metadata.runtime.resolved`. A resolved
   step is never resolved again.
 * **The re-review inherits.** The re-review the platform appends after an
   integrator copies its review's block, and swarm-api adds `inherit`, naming the
-  review's task. It runs on the profile the review **resolved** to, not one
+  review's agent. It runs on the profile the review **resolved** to, not one
   re-decided from the integrator's diff. A review that cannot be read sends it
   to the browser.
 
