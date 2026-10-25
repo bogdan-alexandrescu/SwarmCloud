@@ -211,4 +211,13 @@ describe('a read that failed is a dash with its reason, never green', () => {
     expect(text(l)).toContain('—, the tenants could not be read')
     expect(document.querySelector('.adm-lead[data-lead="ok"]')).toBeNull()
   })
+
+  // RENDERED 2026-10-25 (ADMIN-LEADS review): with no rows, `Screen` draws its
+  // failure panel (`.state.is-page`) and the dash follows it with no gap at
+  // all, the two cards touching (307px bottom, 307px top, phone-390).
+  it('keeps a card’s gap under the failure panel it follows', async () => {
+    const l = await lead(ok([]), { status: 'error', error: FAILED })
+    expect(l.previousElementSibling?.matches('.state.is-page')).toBe(true)
+    expect(ADMIN_CSS).toMatch(/\.state\.is-page \+ \.adm-lead\s*\{[^}]*margin-top: var\(--ctl-s3\)/)
+  })
 })
