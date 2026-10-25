@@ -392,10 +392,20 @@ describe('QA targets: the link\u2019s entry and a refusal that leaves the link u
 
   const puts = (calls: { method: string; url: string; body: unknown }[]) => calls.filter((c) => c.method === 'PUT')
 
+  /** The text of the title's one run held unbroken (`white-space: nowrap`), or null. */
+  const entryInTitle = (form: HTMLElement): string | null => {
+    const h = form.closest('section')?.querySelector('h2') ?? null
+    const run = Array.from(h?.querySelectorAll<HTMLElement>('span') ?? []).find((s) => s.style.whiteSpace === 'nowrap')
+    return run?.textContent ?? null
+  }
+
   it('a link for entry b sends `environment: "b"` with the credential and names the entry in the title', async () => {
     const token = runtimeValue()
     const { calls, form } = await openAt(`/qa-targets/${LOGIN}/credential?t=${token}&environment=b`)
     await waitFor(() => expect(visible(document.body)).toContain('Test credential for portal \u00b7 b'), WAIT)
+    // Rendered at 390 the title broke inside the entry's own hyphen ("prod-" / "reviewer").
+    // MUTATION: draw the entry as bare title text and this finds no unbroken run.
+    expect(entryInTitle(form)).toBe('b')
     expect(window.location.href).not.toContain(token)
     const password = fill(form)
     fireEvent.submit(form)
@@ -472,6 +482,7 @@ describe('QA targets: the link\u2019s entry and a refusal that leaves the link u
     const { calls, form } = await openAt(`/qa-targets/${LOGIN}/challenge-bypass?t=${token}&environment=b`)
     expect(form.getAttribute('data-field')).toBe('challenge_bypass')
     await waitFor(() => expect(visible(document.body)).toContain('Challenge bypass value for portal \u00b7 b'), WAIT)
+    expect(entryInTitle(form)).toBe('b')
     expect(form.querySelector('input[name="username"]')).toBeNull()
     const input = form.querySelector<HTMLInputElement>('input[name="bypass_value"]')!
     expect(input.type).toBe('password')
