@@ -731,7 +731,7 @@ function checkedLine(doc: ForgePermissionsDoc, when = true): ReactNode {
   )
 }
 
-/** Work › Setup › GitHub: the App's card, then one per org. */
+/** Config › Workspace Settings › Workspace setup › GitHub (Work › Setup until CONFIG-NAV): the App's card, then one per org. */
 export function GitHubPermissions() {
   const perms = useForgePermissions()
   const admin = useIsAdmin()
