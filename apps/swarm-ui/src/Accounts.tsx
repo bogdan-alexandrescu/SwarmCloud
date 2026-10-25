@@ -743,12 +743,6 @@ function Pool({
               Sign in to the organisation you mean: one claude.ai login can hold two, and the sign-in takes the one that is
               selected.
             </p>
-            {/* WHICH ORGANISATION (#2222): one login can hold two, and the
-                sign-in takes the one selected in that browser. */}
-            <p className="muted small">
-              Sign in to the organisation you mean: one claude.ai login can hold two, and the sign-in takes the one that is
-              selected.
-            </p>
           </div>
         </section>
         {/* The form with no click: on an empty pool it is the one fix. */}

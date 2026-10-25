@@ -2413,7 +2413,14 @@ QA-CAPTURE builds on them.
   The runner counts, from the CLI's stream, the screenshot calls and those
   whose tool_result carried an image block, and writes the counts to its
   result as `browser_screenshots` (`taken`, `seen_as_image`, `complete`).
-  `complete` is false when the stdout capture was cut. That a live run's
+  `complete` is false when the stdout capture was cut. Beside it,
+  `browser_use` counts every browser call and every image under the
+  artifacts. A browser call is a browser MCP tool, or a Bash command that
+  drives the browser or the gate. The worker records from those counts
+  whether the browser was used, as `result_summary.browser_used`
+  (BROWSER-USE-FLAG, #2322; docs/outcomes.md, "Unused browser time"). It
+  also writes one `browser_unused` mark on the agent's events when it
+  has run 10 minutes with neither. That a live run's
   stream shows the image block has not yet been seen on a deployed run. Each
   base64 image makes the stream larger, so a long sweep can pass the
   transcript's 4,000,000-character cap. The transcript is then skipped (the
