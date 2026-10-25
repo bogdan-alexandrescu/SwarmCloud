@@ -90,8 +90,8 @@ That leaves three options:
 
 | | change | cost | risk |
 |---|---|---|---|
-| A | a conditional `storage.objects.create` grant for swarm-api, limited to `tenants/*/tasks/*/attempts/*/artifacts/*`, in the shape of `api_history_purge_deleter` | IAM review (Track C); the API's "never writes artifacts" stance ends | a swarm-api bug could write an artifact into any task's prefix in any tenant. The condition bounds the path, not the tenant |
-| B | the re-review's artifact entry points at the **review's** object, and `artifact_key` accepts another task's prefix when that task is the reader's own signed `verdict_gate.task_id` | worker change in `inputs.py` (Track B) | widens the one rule that keeps a forged `result_summary` inside its own task's prefix. `result_summary` is unsigned, and a tenant's agents can write it |
+| A | a conditional `storage.objects.create` grant for swarm-api, limited to `tenants/*/tasks/*/attempts/*/artifacts/*`, in the shape of `api_history_purge_deleter` | IAM review (Track C); the API's "never writes artifacts" stance ends | a swarm-api bug could write an artifact into any agent's prefix in any tenant. The condition bounds the path, not the tenant |
+| B | the re-review's artifact entry points at the **review's** object, and `artifact_key` accepts another agent's prefix when that agent is the reader's own signed `verdict_gate.task_id` | worker change in `inputs.py` (Track B) | widens the one rule that keeps a forged `result_summary` inside its own agent's prefix. `result_summary` is unsigned, and a tenant's agents can write it |
 | C | the merge step reads the first review's verdict itself when the re-review ended `published_by: control_plane` | merge-step change | the merge path would branch on an unsigned summary field. It would have to recompute "the first review's verdict is outside the gate" itself, or a forged marker could swap a re-review's NOT_YET for the first review's MERGE |
 
 The recommendation is **A**. The bytes are produced exactly as the worker
@@ -142,7 +142,7 @@ decision into the merge path.
    other, it waits out the whole hold.
 4. **Merge-step ordering.** The merge step depends on the re-review. The
    re-review's wake has to come only after its ending transaction commits, as
-   the fix publisher's does. Otherwise the merge stages from a task that is
+   the fix publisher's does. Otherwise the merge stages from an agent that is
    not yet SUCCEEDED and refuses `verdict_unreadable`.
 5. **Re-serialisation.** If the copy were written from the parsed verdict
    instead of the bytes, the merge step's `read_verdict` would judge a
