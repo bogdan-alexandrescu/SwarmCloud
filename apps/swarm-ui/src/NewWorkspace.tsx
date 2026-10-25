@@ -43,14 +43,14 @@ import { useNow } from './useNow'
  */
 
 /** §4.3's step ids, in the order the job runs them for each kind. */
-const STEP_ORDER: Readonly<Record<WorkspaceKind, readonly string[]>> = {
+export const STEP_ORDER: Readonly<Record<WorkspaceKind, readonly string[]>> = {
   personal: ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9'],
   group: ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9'],
   service: ['A1', 'S1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'S2', 'A9'],
 }
 
 /** §4.3's rows, as an admin reads them. A6 is the person's App slot for a personal workspace and the team slot otherwise. */
-const STEP_LABEL: Readonly<Record<string, string>> = {
+export const STEP_LABEL: Readonly<Record<string, string>> = {
   A1: 'Approved and claimed',
   S1: 'Checking the service account',
   A2: 'Checking the name is free',
@@ -264,6 +264,15 @@ function Progress({ record, now }: { record: AdminWorkspaceView; now: number }) 
  * `onClose`. `onFiled` is told the record once it is filed, so the opener can read its "Being created" list again.
  */
 export function NewWorkspaceDialog({ onClose, onFiled }: { onClose: () => void; onFiled?: (record: AdminWorkspaceView) => void }) {
+  return <NewWorkspaceForm onClose={onClose} onFiled={onFiled} />
+}
+
+/**
+ * The form itself, ONE FORM FOR BOTH PLACES (WS-SETTINGS-E-REST; part of #2157): framed by the dialog above, or,
+ * with `inline`, drawn on the page as Config › Workspace Settings › Add a new workspace draws it (S6c), its buttons
+ * under its fields. Same fields, same post, same progress either way. Inline it has no Close unless `onClose` is given.
+ */
+export function NewWorkspaceForm({ onClose, onFiled, inline = false }: { onClose?: () => void; onFiled?: (record: AdminWorkspaceView) => void; inline?: boolean }) {
   const [kind, setKind] = useState<WorkspaceKind>('personal')
   const [principal, setPrincipal] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -314,68 +323,75 @@ export function NewWorkspaceDialog({ onClose, onFiled }: { onClose: () => void; 
   }
 
   const current = KINDS.find((k) => k.kind === kind) ?? KINDS[0]!
-  return (
-    <Dialog
-      title="New workspace"
-      onClose={onClose}
-      actions={
-        <>
-          <Button onClick={onClose}>Close</Button>
-          {record === null && (
-            <Button kind="primary" disabled={posting || address === ''} onClick={() => void submit()}>
-              {posting ? 'Creating…' : 'Create workspace'}
-            </Button>
-          )}
-        </>
-      }
-    >
-      {record === null ? (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault()
-            void submit()
-          }}
-        >
-          <Tabs
-            label="Workspace kind"
-            tabs={KINDS.map((k) => ({ key: k.kind, label: k.tab }))}
-            current={kind}
-            onSelect={(key) => {
-              setKind(key as WorkspaceKind)
-              setRefused(null)
-            }}
-          />
-          <label className="c-field">
-            <span className="c-lbl">{current.field}</span>
-            <input
-              className="c-inp"
-              type="email"
-              value={principal}
-              maxLength={254}
-              placeholder={current.example}
-              autoComplete="off"
-              spellCheck={false}
-              disabled={posting}
-              onChange={(e) => setPrincipal(e.target.value)}
-            />
-          </label>
-          <label className="c-field">
-            <span className="c-lbl">Display name (optional)</span>
-            <input
-              className="c-inp"
-              type="text"
-              value={displayName}
-              maxLength={MAX_DISPLAY_NAME}
-              disabled={posting}
-              onChange={(e) => setDisplayName(e.target.value)}
-            />
-          </label>
-          <Gets kind={kind} who={address === '' ? current.example : address} />
-          {refused !== null && <Refused error={refused} />}
-        </form>
-      ) : (
-        <Progress record={record} now={now} />
+  const actions = (
+    <>
+      {onClose !== undefined && <Button onClick={onClose}>Close</Button>}
+      {record === null && (
+        <Button kind="primary" disabled={posting || address === ''} onClick={() => void submit()}>
+          {posting ? 'Creating…' : 'Create workspace'}
+        </Button>
       )}
+    </>
+  )
+  const body =
+    record === null ? (
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          void submit()
+        }}
+      >
+        <Tabs
+          label="Workspace kind"
+          tabs={KINDS.map((k) => ({ key: k.kind, label: k.tab }))}
+          current={kind}
+          onSelect={(key) => {
+            setKind(key as WorkspaceKind)
+            setRefused(null)
+          }}
+        />
+        <label className="c-field">
+          <span className="c-lbl">{current.field}</span>
+          <input
+            className="c-inp"
+            type="email"
+            value={principal}
+            maxLength={254}
+            placeholder={current.example}
+            autoComplete="off"
+            spellCheck={false}
+            disabled={posting}
+            onChange={(e) => setPrincipal(e.target.value)}
+          />
+        </label>
+        <label className="c-field">
+          <span className="c-lbl">Display name (optional)</span>
+          <input
+            className="c-inp"
+            type="text"
+            value={displayName}
+            maxLength={MAX_DISPLAY_NAME}
+            disabled={posting}
+            onChange={(e) => setDisplayName(e.target.value)}
+          />
+        </label>
+        <Gets kind={kind} who={address === '' ? current.example : address} />
+        {refused !== null && <Refused error={refused} />}
+      </form>
+    ) : (
+      <Progress record={record} now={now} />
+    )
+  if (inline || onClose === undefined) {
+    return (
+      <div className="nw-inline">
+        {body}
+        {record === null && <div className="nw-acts">{actions}</div>}
+      </div>
+    )
+  }
+  return (
+    <Dialog title="New workspace" onClose={onClose} actions={actions}>
+      {body}
     </Dialog>
   )
 }
