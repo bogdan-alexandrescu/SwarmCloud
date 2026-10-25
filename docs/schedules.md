@@ -1682,12 +1682,18 @@ Two approvers racing produce one transition, and the loser gets 409
   there the platform owner decides even as the last editor, and the
   decision's transaction writes a second `schedule_audit` row,
   `second_person_waived_owner`, naming the approval, the schedule and the
-  last editor. Nobody else reaches it, and a named list -- even one naming
-  only the owner -- keeps the rule. A refusal names who may decide (the
+  last editor. Nobody else reaches it. **A named list of the owner alone
+  is owner-only too** (BGD's decision 2026-10-25, "Yes: treat [owner] like
+  owner_only"): its entries, stripped and lower-cased, are one address and
+  that address is the owner's, as the caller's own owner check found it. Its
+  waiver row records the list as it stands as `approvers`, not `owner_only`,
+  so the audit says what the gate was. Every other named list keeps the rule:
+  two names, the owner beside anyone else, a blank entry, an alias, or one
+  member who is not the owner. A refusal names who may decide (the
   owner, or the other named approvers), never "another member" where no other
   member is allowed, and never the refused member: a named list of the last
-  editor alone says nobody may decide until another member changes the
-  schedule's approvers. **The `/swarmcloud approve` comment path carries the
+  editor alone, where that editor is not the owner, says nobody may decide
+  until another member changes the schedule's approvers. **The `/swarmcloud approve` comment path carries the
   waiver too** (owner answer 2026-10-25): the owner's comment on such a merge
   is decided exactly as the inbox's approve is, and writes the same
   `second_person_waived_owner` row beside the decision's (whose detail says

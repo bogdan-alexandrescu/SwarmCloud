@@ -515,12 +515,33 @@ def require_decider(ctx: Any, auth: Any) -> None:
         store.require(auth, roles.MEMBER, fresh=True)
 
 
-def owner_alone(approvers: Any, hold: Mapping[str, Any] | None = None) -> bool:
+_OWNER_ONLY = (APPROVERS_OWNER_ONLY, "owner_only")
+
+
+def owner_alone(approvers: Any, hold: Mapping[str, Any] | None = None, *, owner: str | None = None) -> bool:
     """Whether only the platform owner may decide: the gate's approvers are
-    `owner_only`, or the item's hold is. A named list is never this, even a
-    list of one."""
-    owner = (APPROVERS_OWNER_ONLY, "owner_only")
-    return approvers in owner or (bool(hold) and (hold or {}).get("approvers") in owner)
+    `owner_only`, or the item's hold is, or the gate's approvers are a named
+    list of the owner alone.
+
+    THE NAMED LIST OF ONE (#2259, BGD's decision 2026-10-25, "Yes: treat
+    [owner] like owner_only", task_f710f280d20349fc816a): a list whose
+    entries, stripped and lower-cased, are exactly one address, and that
+    address is `owner`. `owner` is the platform owner's address as the
+    caller's own owner check found it (`check_gate_approver` passes the
+    caller's email only when `is_owner`); without it no list is this. A list
+    of two, the owner beside anyone else, a blank entry, an alias, a list
+    naming someone else, and `members` are never this."""
+    if approvers in _OWNER_ONLY or (bool(hold) and (hold or {}).get("approvers") in _OWNER_ONLY):
+        return True
+    return _names_owner_alone(approvers, owner)
+
+
+def _names_owner_alone(approvers: Any, owner: str | None) -> bool:
+    """`owner_alone`'s named list of one: every entry is the owner's address."""
+    owner = (owner or "").strip().lower()
+    if not owner or not isinstance(approvers, list) or not approvers:
+        return False
+    return {str(n).strip().lower() for n in approvers} == {owner}
 
 
 def check_gate_approver(ctx: Any, tenant_id: str, approvers: Any, *, email: str, is_owner: bool,
@@ -535,8 +556,10 @@ def check_gate_approver(ctx: Any, tenant_id: str, approvers: Any, *, email: str,
     leave nobody, so the owner decides even as the schedule's last editor.
     Only a caller that writes the audit asks for it (`owner_waiver=True`, and
     `decide(waiver=...)` with what this returns): the waiver is returned, never
-    applied silently. Nobody but `is_owner` reaches it; a named list and
-    `members` keep the rule exactly. None: no waiver was needed.
+    applied silently. Nobody but `is_owner` reaches it; `members` and a named
+    list keep the rule exactly, except a list of the owner alone (BGD
+    2026-10-25), whose waiver records the list as it stands as `approvers`.
+    None: no waiver was needed.
     """
     email = email.strip().lower()
     if approvers == APPROVERS_OWNER_ONLY or approvers == "owner_only":
@@ -550,11 +573,14 @@ def check_gate_approver(ctx: Any, tenant_id: str, approvers: Any, *, email: str,
     if merge_tier and schedule is not None and not one_person(ctx, tenant_id):
         editor = schedaudit.last_editor(ctx.db, tenant_id, schedule)
         if editor == email:
-            alone = owner_alone(approvers, hold)
+            # The caller's own owner check, never a second reading of PLATFORM_OWNER.
+            owner = email if is_owner else None
+            alone = owner_alone(approvers, hold, owner=owner)
             if alone and is_owner and owner_waiver:
+                named = not owner_alone(approvers, hold) and isinstance(approvers, list)
                 return {"waived": "second_person_required", "last_editor": editor,
                         "schedule_id": schedule.get("schedule_id"),
-                        "approvers": APPROVERS_OWNER_ONLY,
+                        "approvers": list(approvers) if named else APPROVERS_OWNER_ONLY,
                         "hold": (hold or {}).get("code") if hold else None}
             raise ScheduleForbidden(
                 "second_person_required",
