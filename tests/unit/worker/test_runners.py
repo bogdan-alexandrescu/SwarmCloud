@@ -330,7 +330,6 @@ def test_the_generic_runner_clamps_against_the_workers_exported_ceiling(tmp_path
         ("usage limit reached; resets in 30 minutes", 1800),
         ("Error: insufficient_quota", None),
         ("resource_exhausted", None),
-        ("overloaded_error", None),
     ],
 )
 def test_a_provider_rate_limit_is_recognised(text, seconds):
@@ -348,6 +347,10 @@ def test_a_provider_rate_limit_is_recognised(text, seconds):
         "the build succeeded",
         "ModuleNotFoundError: No module named 'foo'",
         "connection reset by peer",
+        # An overloaded 529 is the provider's capacity, not this account's
+        # quota: it is an error kind on the account's health record
+        # (RUNNER-ERROR-KINDS, #2302), never a park.
+        "overloaded_error",
     ],
 )
 def test_an_ordinary_failure_is_not_mistaken_for_a_rate_limit(text):

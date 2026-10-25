@@ -9433,9 +9433,52 @@ export function normAdminWorkspace(raw: unknown): AdminWorkspaceView {
  * `approved` when the requester may approve it), 200 when one already stood; the record either way. A refusal is the
  * API's code and sentence (design §4.2.3), drawn as it came.
  */
-export async function createAdminWorkspace(body: NewWorkspaceBody): Promise<Result<AdminWorkspaceView>> {
+export async function createAdminWorkspace(body: NewWorkspaceBody & { first_admin?: string }): Promise<Result<FiledAdminWorkspace>> {
   const r = await writeTo(route('/v1/admin/workspaces'), 'POST', body)
-  return r.status === 'ok' ? { ...r, data: normAdminWorkspace(r.data) } : (r as Result<AdminWorkspaceView>)
+  return r.status === 'ok' ? { ...r, data: normAdminWorkspace(r.data) } : (r as Result<FiledAdminWorkspace>)
+}
+
+/**
+ * WHAT `first_admin` CAME TO (WORKSPACE-ADMIN-FIELDS, part of #2157; config-e.html S6c): the person named on Add a new
+ * workspace, granted `admin` in that workspace alone through the role override (docs/design/workspace-roles.md §8).
+ * `member: false` is someone not yet in the group: the role is stored and takes effect once they are in it, because
+ * membership stays the group's. `granted: false` says why in `reason` (`workspace_exists`, or a refusal's code).
+ */
+export interface FirstAdminAnswer {
+  email: string
+  role: 'admin'
+  granted: boolean
+  /** Whether the group holds them now; null when the directory did not answer. Absent when nothing was granted. */
+  member?: boolean | null
+  reason?: string
+}
+
+/** A filed record as `POST /v1/admin/workspaces` answers it: the record, and `first_admin` when one was named. */
+export type FiledAdminWorkspace = AdminWorkspaceView & { first_admin?: FirstAdminAnswer | null }
+
+/**
+ * Said on `window` once a workspace is renamed, with its tenant id as `detail`, so the shell reads its own name again
+ * (`/v1/tenants/me`) and the switcher and the headers draw the new one without a reload.
+ */
+export const WORKSPACE_RENAMED_EVENT = 'swarm:workspace-renamed'
+
+/** `PUT /v1/workspaces/{tenant_id}/name`'s answer: the display name changed, the id never does. */
+export interface WorkspaceRenameAnswer {
+  tenant_id: string
+  display_name: string
+  previous_display_name: string | null
+  changed: boolean
+}
+
+/**
+ * `PUT /v1/workspaces/{tenant_id}/name` (WORKSPACE-ADMIN-FIELDS, S6a): rename a workspace -- its display name, never
+ * its id. Its admins and platform admins only; anyone else is 403 `role_admin_required` with nothing written, and a
+ * name the API refuses (empty, over 60 characters, a control or invisible character) is its 422, drawn as it came.
+ */
+export async function renameWorkspace(tenantId: string, displayName: string): Promise<Result<WorkspaceRenameAnswer>> {
+  const r = (await writeTo(route('/v1/workspaces/{tenant_id}/name', { tenant_id: tenantId }), 'PUT', { display_name: displayName })) as Result<WorkspaceRenameAnswer>
+  if (r.status === 'ok' && r.data.changed) globalThis.dispatchEvent?.(new CustomEvent(WORKSPACE_RENAMED_EVENT, { detail: tenantId }))
+  return r
 }
 
 /** `GET /v1/admin/workspaces/{workspace_id}` (admin): one record, for the dialog's progress view. */

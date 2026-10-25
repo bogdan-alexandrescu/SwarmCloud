@@ -70,7 +70,8 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from swarm_common.states import PENDING_STATES
+from swarm_common.profiles import RUNNER_PROFILES
+from swarm_common.states import PENDING_STATES, TERMINAL_STATES
 
 from .client import SwarmClient, SwarmError, task_id_of
 from .follow import (
@@ -1496,6 +1497,47 @@ def cost_words(totals: dict[str, Any]) -> str:
     last = _number(totals.get("last_attempt_cost_usd"))
     notes.append("last attempt " + (f"${last:.2f}" if last is not None else "not recorded"))
     return f"{words} over {count} attempts ({'; '.join(notes)})"
+
+
+#: The terminal states' values, as a task read serves `state`.
+TERMINAL_STATE_VALUES = frozenset(state.value for state in TERMINAL_STATES)
+
+#: Why the worker could not say whether the browser was used, in words
+#: (`lifecycle.browser_use_record`'s `unknown_because`).
+BROWSER_UNKNOWN_WORDS = {
+    "not_reported": "the runner reported no counts",
+    "stream_unread": "the agent's stream could not be read",
+    "stream_cut": "the agent's stream was cut and shows no call",
+}
+
+
+def browser_words(task: dict[str, Any]) -> str | None:
+    """`swarm_result`'s `browser` line (BROWSER-USE-FLAG, part of #2322), or None.
+
+    From the task read's `browser_used` and `browser_use`: `used (N calls, M
+    images)`, `NOT used`, or for a browser runtime whose use was not measured
+    `not measured` and why -- never `NOT used`, because an unread count is
+    not a zero. None, so no line at all, for a task that is not a browser
+    runtime (`RunnerProfile.live_browser`) or has not ended.
+    """
+    profile = RUNNER_PROFILES.get(str(task.get("runner_profile")))
+    used = task.get("browser_used")
+    detail = task.get("browser_use") if isinstance(task.get("browser_use"), dict) else {}
+    if used is True:
+        calls, images = detail.get("tool_calls"), detail.get("images")
+
+        def amount(value: Any, unit: str) -> str:
+            if not isinstance(value, int) or isinstance(value, bool):
+                return f"? {unit}s"
+            return f"{value} {unit}" + ("" if value == 1 else "s")
+
+        return f"used ({amount(calls, 'call')}, {amount(images, 'image')})"
+    if used is False:
+        return "NOT used"
+    if not getattr(profile, "live_browser", False) or task.get("state") not in TERMINAL_STATE_VALUES:
+        return None
+    because = BROWSER_UNKNOWN_WORDS.get(str(detail.get("unknown_because")), "the worker recorded no verdict")
+    return f"not measured ({because})"
 
 
 def _cost(totals: dict[str, Any]) -> dict[str, Any]:
