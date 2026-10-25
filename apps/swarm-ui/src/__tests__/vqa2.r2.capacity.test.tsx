@@ -205,15 +205,22 @@ describe('V068/V157: neither half of the card stretches; the page brings the pan
     expect(painted(pane, 'position', PHONE)).not.toBe('sticky')
   })
 
-  it('brings the pane into view when an account is chosen', async () => {
+  it('opens a desktop account as a sheet that scrolls itself, at its top, with focus on Close (#2222)', async () => {
     await accounts(many(40))
-    const pane = document.querySelector<HTMLElement>('.acct-split > .acct-pane')!
     scrolled.length = 0
     fireEvent.click(row('u-bogdan:acct-38'))
     await waitFor(() => expect(document.querySelector('.acct-pane-detail h3')!.textContent).toBe('acct-38'), WAIT)
-    // MUTATION: drop the effect's scrollIntoView and a row low in the list opens a pane above the window.
-    const shown = scrolled.filter((s) => s.el === pane)
-    expect(shown.map((s) => s.arg)).toEqual([{ block: 'nearest' }])
+    const sheet = document.querySelector<HTMLElement>('.acct-split > .acct-pane.acct-sheet')!
+    // A sheet over the table does not move the page; it opens at its own top.
+    expect(scrolled.filter((s) => s.el === sheet)).toEqual([])
+    expect(sheet.scrollTop).toBe(0)
+    // MUTATION: drop the effect's focus and Escape and Tab start on <body>.
+    expect(document.activeElement).toBe(sheet.querySelector('.acct-sheet-close'))
+    // Fixed to the window and scrolling itself (styles/accounts-ranked.css),
+    // so Remove is in reach however long the table is.
+    const placed = build('div.acct-split.is-ranked > aside.acct-pane.acct-sheet', hosts)
+    expect(painted(placed, 'position', WIDE)).toBe('fixed')
+    expect(painted(placed, ['overflow-y', 'overflow'], WIDE)).toBe('auto')
   })
 })
 
@@ -278,6 +285,9 @@ describe('V153: an id is cut inside the pane, not widening it', () => {
 describe('V154: Lending\'s serves list', () => {
   it('keeps each comma inside its id, so no line starts with one', async () => {
     await accounts([account({ lend_to: [LONG_TENANT, 'eng'] })])
+    // Lending's editor is behind Edit lending in the sheet (#2222).
+    fireEvent.click(row('u-bogdan:laptop'))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit lending' }))
     const serves = [...document.querySelectorAll('.acct-pane .ctl-fact')].find((li) => li.querySelector('b')?.textContent === 'serves')!
     const ids = [...serves.querySelectorAll('.acct-id')].map((e) => e.textContent)
     expect(ids).toEqual(['u-bogdan,', `${LONG_TENANT},`, 'eng'])
@@ -296,6 +306,8 @@ describe('V154: Lending\'s serves list', () => {
 describe('V181: Lending\'s field', () => {
   it('says what it takes in words that fit, the Add form\'s', async () => {
     await accounts([account()])
+    fireEvent.click(row('u-bogdan:laptop'))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit lending' }))
     const input = document.querySelector<HTMLInputElement>('input[aria-label^="Tenants"]')!
     expect(input.placeholder).toBe('tenant ids, comma separated')
   })
@@ -311,8 +323,8 @@ describe('V181: Lending\'s field', () => {
 describe('V155: Holding now\'s tenants', () => {
   it('cuts a long tenant in its middle, keeping its last eight', async () => {
     await accounts([account({ assigned: 2, lend_to: [LONG_TENANT] })], true)
-    fireEvent.click(screen.getByRole('tab', { name: /Holding now/ }))
-    await screen.findByText('Holding now · 2', undefined, WAIT)
+    fireEvent.click(document.querySelector<HTMLButtonElement>('button.acct-open')!)
+    await screen.findByRole('table', { name: 'Holding now · 2' }, WAIT)
     const cut = document.querySelector('.acct-holding-now .acct-cut')!
     expect(cut.querySelector('.acct-cut-tail')!.textContent).toBe(LONG_TENANT.slice(-8))
     expect(cut.textContent).toBe(LONG_TENANT)
@@ -331,7 +343,8 @@ describe('V155: Holding now\'s tenants', () => {
 describe('V070: the state-change modal and the Replace copy draw ids unbroken', () => {
   it('names the owner as an id in the modal\'s warning', async () => {
     await accounts([account({ assigned: 2 })])
-    fireEvent.click(screen.getByRole('button', { name: 'move to paused' }))
+    fireEvent.click(row('u-bogdan:laptop'))
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' }))
     const dialog = await screen.findByRole('dialog', undefined, WAIT)
     const warn = dialog.querySelector('.warn-text')!
     expect(warn.textContent).toContain('Every agent in u-bogdan loses it for new work.')
@@ -340,6 +353,7 @@ describe('V070: the state-change modal and the Replace copy draw ids unbroken', 
 
   it('names the account as an id in Replace the credential', async () => {
     await accounts([account()])
+    fireEvent.click(row('u-bogdan:laptop'))
     const head = [...document.querySelectorAll('.acct-pane h4')].find((h) => h.textContent === 'Replace the credential')!
     const copy = head.parentElement!.querySelector('p.muted.small')!
     // The full stop inside the id's box, so a cut id never leaves it to start a line.
@@ -351,6 +365,7 @@ describe('V070: the state-change modal and the Replace copy draw ids unbroken', 
 
   it('names it as an id when only a person can replace it', async () => {
     await accounts([account({ state: 'REAUTH_REQUIRED' })])
+    fireEvent.click(row('u-bogdan:laptop'))
     const head = [...document.querySelectorAll('.acct-pane h4')].find((h) => h.textContent === 'Sign in again')!
     expect(head.parentElement!.querySelector('p.muted.small .acct-id')!.textContent).toBe('u-bogdan:laptop')
   })

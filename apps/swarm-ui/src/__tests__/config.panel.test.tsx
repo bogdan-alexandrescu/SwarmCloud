@@ -233,7 +233,7 @@ describe('the Admin panel in groups (S1b, S1c)', () => {
     const [ws, platform, automate] = groups()
     // MUTATION: draw PANEL_PAGES.admin as one list -> no groups and this fails.
     expect(ws).toMatchObject({ name: 'People and workspaces', rows: ['People and roles', 'Workspaces you admin'] })
-    expect(platform).toMatchObject({ name: 'Platform', rows: ['Pool limits', 'Runner sizes', 'Tenants', 'Platform counts'] })
+    expect(platform).toMatchObject({ name: 'Platform', rows: ['Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets'] })
     // MUTATION: draw Schedules or Approvals as Admin pages -> their links leave Automate and this fails.
     expect(automate).toEqual({ name: 'In Automate', rows: ['Schedules', 'Approvals'], hrefs: ['/automate/schedules?scope=all', '/approvals'] })
     // The spine's Admin still opens Pool limits.

@@ -154,7 +154,7 @@ describe('the Submit picker reads whether Jev can run', () => {
         judgment={{ kind: 'read', jev: judgment('typesafe', false, 'no key').jev }} egress={null} />,
     )
     expect((screen.getByRole('radio', { name: /^Jev/ }) as HTMLInputElement).disabled).toBe(true)
-    expect(visible(container.querySelector('.btp-jev-off'))).toBe('Add a TypeSafe key in Settings › API keys')
+    expect(visible(container.querySelector('.btp-jev-off'))).toBe('Add a TypeSafe key in Config › Secrets')
   })
 })
 

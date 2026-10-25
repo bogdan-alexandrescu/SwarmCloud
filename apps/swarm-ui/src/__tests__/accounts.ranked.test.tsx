@@ -225,6 +225,19 @@ describe('the verdict', () => {
     expect(verdict.querySelector('.acct-verdict-big')?.textContent).toBe('0 accounts')
   })
 
+  it('says which organisation to sign in to once on the empty pool, not once per merged copy', async () => {
+    api.loadTasksInState.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    api.loadAccountsBoard.mockResolvedValue(board([]))
+    render(<AccountsScreen />)
+    const panel = await waitFor(() => {
+      const el = document.querySelector('.acct-empty')
+      expect(el).not.toBeNull()
+      return el as HTMLElement
+    }, WAIT)
+    const says = (panel.textContent ?? '').split('Sign in to the organisation you mean').length - 1
+    expect(says).toBe(1)
+  })
+
   it('never says no account is registered when a document could not be read', async () => {
     // Rendered 2026-10-25: the head said "1 document unreadable, so this list
     // is short" while the verdict said "No account is registered".

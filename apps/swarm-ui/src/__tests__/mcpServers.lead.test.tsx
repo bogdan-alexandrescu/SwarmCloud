@@ -4,7 +4,8 @@
 // WHAT EACH CASE HOLDS:
 //   * the lead names the MCP server whose credential is missing, read from
 //     the setup read's `config_setup.secrets` items of kind `mcp_server`
-//     (CONFIG-SETUP-READ), with ONE button, to Config › Secrets, where Add a secret is drawn (never
+//     (CONFIG-SETUP-READ), with ONE button, to Config › Secrets' Add a secret
+//     form with that server's consumer picked (MCP-LEAD-FORM; never
 //     `?action=add`, the one-time link's address);
 //   * every credential present reads the green "nothing waiting" lead, with
 //     no button;
@@ -82,9 +83,14 @@ describe('Config › MCP servers: its lead (S5a)', () => {
     expect(visible(lead)).not.toContain('docs-search')
     const buttons = within(lead).getAllByRole('link')
     expect(buttons).toHaveLength(1)
-    // Config › Secrets itself, where Add a secret is drawn: `?action=add` is the
-    // /sc one-time link's address, and the page then says it was opened from one.
-    expect(buttons[0]!.getAttribute('href')).toBe('/config/secrets')
+    // Add a secret on Config › Secrets, mcp:kb picked (MCP-LEAD-FORM, BGD
+    // 2026-10-25). Never `?action=add`: that is the /sc one-time link's
+    // address, and the page then says it was opened from one.
+    // MUTATION: point the button at Config › Secrets alone -> no form opens and this fails.
+    const href = buttons[0]!.getAttribute('href')!
+    expect(href).not.toMatch(/action=/)
+    expect(href.split('?')[0]).toBe('/config/secrets')
+    expect(Object.fromEntries(new URLSearchParams(href.split('?')[1] ?? ''))).toEqual({ add: 'secret', consumer: 'mcp:kb' })
     expect(lead.classList.contains('is-ok')).toBe(false)
   })
 
@@ -95,6 +101,14 @@ describe('Config › MCP servers: its lead (S5a)', () => {
     const only = await draw({ secrets: { needed: 1, done: false, items: [KB_MISSING], sources: { mcp_servers: { needed: 1, reason: null } } } })
     expect(visible(only)).toContain('Secrets set · 1 missing')
     expect(visible(only)).not.toContain('of the 1')
+  })
+
+  it('opens the form with nothing picked when several servers are missing theirs: one secret is one server\'s credential', async () => {
+    const lead = await draw({ secrets: secrets([KB_MISSING, { ...KB_MISSING, name: 'wiki', needed_by: 'mcp:wiki' }]) })
+    expect(visible(lead)).toContain('MCP servers kb and wiki have no credential stored')
+    const href = within(lead).getByRole('link').getAttribute('href')!
+    // MUTATION: pick the first server for all of them -> fails.
+    expect(href).toBe('/config/secrets?add=secret')
   })
 
   it('reads the green "nothing waiting" lead, with no button, when every credential is present', async () => {

@@ -45,8 +45,9 @@ export const WORKSPACE_ADMIN_LINKS: readonly { label: string; to: string }[] = [
   { label: 'Workspace', to: 'settings/workspace' },
   { label: 'MCP servers', to: 'settings/mcp-servers' },
   { label: 'People and roles', to: WORKSPACE_PEOPLE_ADDRESS },
-  // API keys' tenant row is the workspace key; the person's own key above it is theirs.
-  { label: 'Workspace key', to: 'settings/keys' },
+  // Keys for agents and MCP's workspace row is the workspace key (Config ›
+  // Secrets since SSC-UI; Settings › API keys until then).
+  { label: 'Workspace key', to: 'config/secrets' },
 ]
 
 function NoneToAdmin() {

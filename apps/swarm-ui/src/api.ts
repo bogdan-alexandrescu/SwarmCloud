@@ -5671,6 +5671,19 @@ export async function setAccountName(accountId: string, displayName: string | nu
   })
 }
 
+/**
+ * `PUT /v1/accounts/{id}/max-agents` (#2222): how many agents the account may
+ * hold at once, 1 to `MAX_AGENTS_LIMIT`. Owner only. swarm-api checks the range
+ * before it asks the broker and answers a 422 in the broker's words, which
+ * the detail's Change editor draws. Lowering it moves no agent already on it.
+ */
+export async function setAccountMaxAgents(accountId: string, maxAgents: number): Promise<Result<unknown>> {
+  if (USE_FIXTURES) return fixtureMaxAgents(accountId, maxAgents)
+  return write(route('/v1/accounts/{account_id}/max-agents', { account_id: accountId }), 'PUT', {
+    max_agents: maxAgents,
+  })
+}
+
 /** `PUT /v1/accounts/{id}/state`. `reason` is for the next person, so it is required here. */
 export async function setAccountState(
   accountId: string,
@@ -5876,7 +5889,16 @@ let fixtureAccounts: ServedAccount[] = [
     // The broker's answer is for the owner; this tenant is skipped all the same.
     max_agents: 6,
     can_take_new_agent: true,
-    blocked_by: [],
+    // IDENTICAL READINGS WITH ANOTHER WORKSPACE'S ACCOUNT (#2222, BGD Q1, Q2):
+    // advisory, so it still takes agents, and the other side is not named.
+    blocked_by: [
+      {
+        possible_duplicate: null,
+        advisory: true,
+        reason: 'identical readings on two polls with an account in another workspace',
+      },
+    ],
+    possible_duplicate: { of: null, reason: 'identical readings on two polls with an account in another workspace' },
     next_eligible_at: null,
     windows: {
       // Only one window came back. The 7D column says so rather than showing 0%.
@@ -6160,6 +6182,21 @@ async function fixtureName(accountId: string, displayName: string | null): Promi
   if (name === '') return fixtureRefused("an account's Name is 1 to 60 characters once trimmed, and this one is empty; send null to clear it so the label shows")
   if (name !== null && name.length > 60) return fixtureRefused(`an account's Name is at most 60 characters once trimmed; this one is ${name.length}`)
   const account: Account = { ...found, display_name: name }
+  fixtureAccounts = fixtureAccounts.map((a) => (a.account_id === accountId ? account : a))
+  return { status: 'ok', fetchedAt: Date.now(), data: { account } }
+}
+
+async function fixtureMaxAgents(accountId: string, maxAgents: number): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 180))
+  const found = fixtureAccounts.find((a) => a.account_id === accountId)
+  if (!found) return fixtureRefused(`no account '${accountId}'`)
+  // swarm-api's `_checked_max_agents`, in its words.
+  if (!Number.isInteger(maxAgents) || maxAgents < 1 || maxAgents > 50) {
+    return fixtureRefused(
+      `an account's max_agents is 1 to 50, and this is ${maxAgents}; pause the account to stop it taking new agents`,
+    )
+  }
+  const account: ServedAccount = { ...found, max_agents: maxAgents }
   fixtureAccounts = fixtureAccounts.map((a) => (a.account_id === accountId ? account : a))
   return { status: 'ok', fetchedAt: Date.now(), data: { account } }
 }
@@ -7217,6 +7254,9 @@ function fixtureSegment(url: string, n: number): string {
 /** What a fixture route answers, by template; absent is not served. Admin routes refuse the member. */
 const FIXTURE_READS: Readonly<Record<string, (url: string) => FixtureBody | undefined>> = {
   '/v1/repositories': () => ({ body: fixtureRepositories() }),
+  // Config › Secrets and Admin › Platform secrets (SSC-UI).
+  '/v1/secrets/overview': (url) => ({ body: fixtureSecretsOverview(url) }),
+  '/v1/admin/platform-secrets': () => (fixtureIsAdmin ? { body: fixturePlatformSecrets() } : 'admin'),
   '/v1/repositories/{repo_id}/index': (url) => {
     const body = fixtureRepoIndex(fixtureSegment(url, 3))
     return body === undefined ? undefined : { body }
@@ -7827,6 +7867,163 @@ export async function deleteWorkspaceSecret(name: string): Promise<Result<unknow
 }
 
 // ---------------------------------------------------------------------------
+// Config › Secrets (lane SSC-UI, part of #2158; docs/design/secrets-scopes.md
+// §4, §6.1, §6.2). Secrets.tsx and AdminPlatformSecrets.tsx are the callers.
+// THE OVERVIEW IS COPIED FROM AN ALLOW-LIST, field by field, as every secrets
+// read here is: `git_tokens` stores a `last4` the API never serves, and if a
+// response ever carried it, or a value, a length or a version name, nothing
+// below would copy it, so nothing could draw it.
+// ---------------------------------------------------------------------------
+
+/** The three scopes of §2.1, as `GET /v1/secrets/overview?scope=` spells them. */
+export type SecretsScope = 'workspace' | 'personal' | 'repository'
+
+/** One entry of a row's `shadowed_by` or `shadows` (Q1: the person's, then the repository's, then the workspace's). */
+export interface SecretsShadow {
+  scope: SecretsScope
+  /** "agents of <person>", "agents that clone <owner/repo>", "agents of this workspace". */
+  where: string
+  slot: string | null
+  person: string | null
+  repository: string | null
+}
+
+/** One row of the overview. Which fields mean anything depends on `section`. */
+export interface SecretsRow {
+  section: string
+  store: string
+  name: string
+  scope: string | null
+  kind: string | null
+  provider: string | null
+  /** `set`, `unset`, a token's state, or a login's. */
+  status: string
+  set_at: string | null
+  set_by: string | null
+  consumers: string[]
+  shadowed_by: SecretsShadow[]
+  shadows: SecretsShadow[]
+  can_manage: boolean
+  /** Yours: whether this personal secret is opted in to the selected workspace; null where not asked. */
+  opted_in: boolean | null
+  /** An MCP server's consumer (`mcp:<name>`) and the store secrets granted to it. */
+  consumer: string | null
+  secrets: string[]
+  /** A GitHub token's login, verify time, expiry and slot scope. Never any character of it. */
+  forge_login: string | null
+  verified_at: string | null
+  expires_at: string | null
+  token_scope: string | null
+  /** A QA target's id, environment and which of its two values (`credential`, `challenge_bypass`). */
+  target_id: string | null
+  environment: string | null
+  field: string | null
+  site: string | null
+  /** The console page a status-only row is managed on. */
+  page: string | null
+}
+
+export interface SecretsOverview {
+  tenant_id: string
+  scope: SecretsScope
+  repo_id: string | null
+  repository: string | null
+  personal_tenant_id: string | null
+  /** Whether the caller manages this scope; null when the API did not say, which is not a yes. */
+  can_manage: boolean | null
+  rows: SecretsRow[]
+}
+
+const SECRETS_SCOPES: readonly SecretsScope[] = ['workspace', 'personal', 'repository']
+
+function asScope(v: unknown): SecretsScope | null {
+  return typeof v === 'string' && (SECRETS_SCOPES as readonly string[]).includes(v) ? (v as SecretsScope) : null
+}
+
+function normShadows(raw: unknown): SecretsShadow[] {
+  return (Array.isArray(raw) ? raw : []).flatMap((s): SecretsShadow[] => {
+    if (typeof s !== 'object' || s === null) return []
+    const r = s as Record<string, unknown>
+    const scope = asScope(r.scope)
+    const where = wsText(r.where)
+    return scope === null || where === null
+      ? []
+      : [{ scope, where, slot: wsText(r.slot), person: wsText(r.person), repository: wsText(r.repository) }]
+  })
+}
+
+function normSecretsRow(raw: unknown): SecretsRow | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const r = raw as Record<string, unknown>
+  const section = wsText(r.section)
+  const name = wsText(r.name)
+  if (section === null || name === null) return null
+  return {
+    section,
+    store: wsText(r.store) ?? '',
+    name,
+    scope: wsText(r.scope),
+    kind: wsText(r.kind),
+    provider: wsText(r.provider),
+    status: wsText(r.status) ?? 'unknown',
+    set_at: wsText(r.set_at),
+    set_by: wsText(r.set_by),
+    consumers: wsStrings(r.consumers),
+    shadowed_by: normShadows(r.shadowed_by),
+    shadows: normShadows(r.shadows),
+    can_manage: r.can_manage === true,
+    opted_in: typeof r.opted_in === 'boolean' ? r.opted_in : null,
+    consumer: wsText(r.consumer),
+    secrets: wsStrings(r.secrets),
+    forge_login: wsText(r.forge_login),
+    verified_at: wsText(r.verified_at),
+    expires_at: wsText(r.expires_at),
+    // A git row's `scope` is the token's slot (tenant, user, repository), not a secrets scope.
+    token_scope: section === 'github' ? wsText(r.scope) : null,
+    target_id: wsText(r.target_id),
+    environment: wsText(r.environment),
+    field: wsText(r.field),
+    site: wsText(r.site),
+    page: wsText(r.page),
+  }
+}
+
+export function normSecretsOverview(raw: unknown): SecretsOverview {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  return {
+    tenant_id: wsText(r.tenant_id) ?? '',
+    scope: asScope(r.scope) ?? 'workspace',
+    repo_id: wsText(r.repo_id),
+    repository: wsText(r.repository),
+    personal_tenant_id: wsText(r.personal_tenant_id),
+    can_manage: typeof r.can_manage === 'boolean' ? r.can_manage : null,
+    rows: (Array.isArray(r.rows) ? r.rows : []).map(normSecretsRow).filter((x): x is SecretsRow => x !== null),
+  }
+}
+
+/** `GET /v1/secrets/overview?scope=..[&repo_id=..]`: every store of one scope, status only. */
+export async function loadSecretsOverview(scope: SecretsScope, repoId: string | null = null): Promise<Result<SecretsOverview>> {
+  const q = new URLSearchParams({ scope })
+  if (scope === 'repository' && repoId !== null) q.set('repo_id', repoId)
+  return readAs(route('/v1/secrets/overview', {}, q), normSecretsOverview)
+}
+
+/**
+ * WHERE A STORE SECRET IS WRITTEN: the selected workspace's own store, or one
+ * of its repositories' (`/v1/repositories/{repo_id}/secrets`, the same
+ * shapes). A form holds the target it was opened for and writes there and
+ * nowhere else, so a form opened on one repository cannot submit to another
+ * scope (SSC-UI's "cannot be submitted from the wrong scope").
+ */
+export type SecretStoreTarget = { scope: 'workspace' } | { scope: 'repository'; repoId: string }
+
+/** A one-time link the page minted for itself: its token, held in memory only, and its expiry. */
+export interface MintedLink {
+  token: string
+  expires_at: string | null
+}
+
+// ---------------------------------------------------------------------------
 // Config › Secrets › Repository › GitHub Actions (lane SSC-UI-ACTIONS, part of
 // #2158; docs/design/secrets-scopes.md §3, §6.1, and BGD's answers in §11).
 // SecretsActions.tsx is the only caller; the routes are SSC-ACTIONS-API's
@@ -8067,6 +8264,298 @@ export async function checkActionsRule(repoId: string, environment: string): Pro
 export interface ActionsLink {
   token: string
   expires_at: string | null
+}
+
+export interface SecretStoreApi {
+  target: SecretStoreTarget
+  list(): Promise<Result<WorkspaceSecretList>>
+  create(body: WorkspaceSecretCreate, linkToken: string | null): Promise<Result<null>>
+  rotate(name: string, body: WorkspaceSecretRotate, linkToken: string | null): Promise<Result<WorkspaceSecret | null>>
+  remove(name: string): Promise<Result<unknown>>
+  grant(name: string, consumer: string, enabled: boolean, slot?: string | null): Promise<Result<WorkspaceSecret | null>>
+  mintLink(action: 'add' | 'rotate', name: string | null): Promise<Result<MintedLink>>
+}
+
+/** A link answer's token, read off its `path` (`...&t=<token>`); never the path or the URL kept. */
+function mintedFrom(r: Result<unknown>): Result<MintedLink> {
+  if (r.status === 'error') return r
+  const data = (r.status === 'ok' || r.status === 'stale') && typeof r.data === 'object' && r.data !== null ? (r.data as Record<string, unknown>) : {}
+  const path = wsText(data.path) ?? wsText(data.url) ?? ''
+  const q = path.indexOf('?')
+  const token = q === -1 ? null : new URLSearchParams(path.slice(q + 1)).get('t')
+  if (token === null || token === '') {
+    return { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The link answer carried no token.', method: 'POST' } }
+  }
+  return { status: 'ok', fetchedAt: Date.now(), data: { token, expires_at: wsText(data.expires_at) } }
+}
+
+/**
+ * The fixture build's link: a token built at runtime, so the one-time form
+ * can be drawn for review. Its writes are still refused (`fixtureSecretsNotServed`).
+ */
+function fixtureMinted(target: ApiRoute): Result<MintedLink> {
+  noteFixtureProbe(target, 0, true)
+  const token = Array.from({ length: 4 }, () => Math.random().toString(36).slice(2)).join('')
+  return { status: 'ok', fetchedAt: Date.now(), data: { token, expires_at: new Date(Date.now() + 600_000).toISOString() } }
+}
+
+async function mint(target: ApiRoute, body: unknown): Promise<Result<MintedLink>> {
+  if (USE_FIXTURES) return fixtureMinted(target)
+  return mintedFrom(await write(target, 'POST', body))
+}
+
+function linkBody(action: 'add' | 'rotate', name: string | null): Record<string, string> {
+  return action === 'rotate' && name !== null ? { action, name } : { action }
+}
+
+async function fixtureRepositorySecrets(target: ApiRoute, repoId: string): Promise<Result<WorkspaceSecretList>> {
+  await new Promise((r) => setTimeout(r, 80))
+  noteFixtureProbe(target, 80, true)
+  const at = (days: number) => new Date(Date.parse(FIXTURE_CLOCK) - days * 86_400_000).toISOString()
+  const secret = (name: string, kind: string, days: number, granted: string[]) => ({
+    name, provider: 'other', kind, scope: 'repository', repo_id: repoId, current_version: '1',
+    created_at: at(days), created_by: 'alice@example.com', rotated_at: null, rotated_by: null,
+    grants: granted.map((consumer) => ({ consumer, enabled: true })),
+  })
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: normWorkspaceSecretList({
+      tenant_id: FIXTURE_TENANT,
+      can_manage: true,
+      secrets: [secret('test-db-password', 'opaque', 5, ['profile:claude-code']), secret('search-api', 'api_key', 1, ['profile:claude-code'])],
+    }),
+  }
+}
+
+const WORKSPACE_STORE: SecretStoreApi = {
+  target: { scope: 'workspace' },
+  list: loadWorkspaceSecrets,
+  create: createWorkspaceSecret,
+  rotate: rotateWorkspaceSecret,
+  remove: deleteWorkspaceSecret,
+  grant: (name, consumer, enabled, slot = null) => setWorkspaceSecretGrant(name, consumer, enabled, slot),
+  mintLink: (action, name) => mint(route('/v1/workspace/secrets/links'), linkBody(action, name)),
+}
+
+function repositoryStore(repoId: string): SecretStoreApi {
+  const repo_id = repoId
+  return {
+    target: { scope: 'repository', repoId },
+    async list() {
+      const target = route('/v1/repositories/{repo_id}/secrets', { repo_id })
+      if (USE_FIXTURES) return fixtureRepositorySecrets(target, repoId)
+      const r = await read<unknown>(target, () => false)
+      if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normWorkspaceSecretList(r.data) }
+      return r
+    },
+    async create(body, linkToken) {
+      const target = route('/v1/repositories/{repo_id}/secrets', { repo_id })
+      if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<null>
+      const r = await write(target, 'POST', linkToken === null ? body : { ...body, link_token: linkToken })
+      return r.status === 'error' ? r : { status: 'ok', fetchedAt: Date.now(), data: null }
+    },
+    async rotate(name, body, linkToken) {
+      const target = route('/v1/repositories/{repo_id}/secrets/{name}/value', { repo_id, name })
+      if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<null>
+      const r = await write(target, 'PUT', linkToken === null ? body : { ...body, link_token: linkToken })
+      return r.status === 'error' ? r : { status: 'ok', fetchedAt: Date.now(), data: servedSecret(r) }
+    },
+    async remove(name) {
+      const target = route('/v1/repositories/{repo_id}/secrets/{name}', { repo_id, name })
+      if (USE_FIXTURES) return fixtureSecretsNotServed(target)
+      return write(target, 'DELETE', { name })
+    },
+    async grant(name, consumer, enabled, slot = null) {
+      const target = route('/v1/repositories/{repo_id}/secrets/{name}/grants/{consumer}', { repo_id, name, consumer })
+      if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<null>
+      const r = await write(target, 'PUT', slot === null ? { enabled } : { enabled, slot })
+      return r.status === 'error' ? r : { status: 'ok', fetchedAt: Date.now(), data: servedSecret(r) }
+    },
+    mintLink: (action, name) => mint(route('/v1/repositories/{repo_id}/secrets/links', { repo_id }), linkBody(action, name)),
+  }
+}
+
+/** The store a target names: the workspace's own, or one repository's. */
+export function secretStore(target: SecretStoreTarget): SecretStoreApi {
+  return target.scope === 'workspace' ? WORKSPACE_STORE : repositoryStore(target.repoId)
+}
+
+/** `POST /v1/provider-keys/{provider}/links`: a one-time link to the key form, for `user` (yours) or `tenant` (the workspace's). */
+export function mintProviderKeyLink(provider: string, scope: ProviderKeyScope): Promise<Result<MintedLink>> {
+  return mint(route('/v1/provider-keys/{provider}/links', { provider }), { scope })
+}
+
+/** `POST /v1/tenants/me/credentials/links` (SSC-LINKS): a one-time link to the runner-key form for one provider. */
+export function mintRunnerKeyLink(provider: string): Promise<Result<MintedLink>> {
+  return mint(route('/v1/tenants/me/credentials/links'), { provider })
+}
+
+/**
+ * `POST /v1/tenants/me/credentials`: the workspace's runner LLM key, its
+ * value in this one body and nowhere else; `linkToken` is the one-time link's.
+ */
+export async function putRunnerKey(provider: string, apiKey: string, linkToken: string | null): Promise<Result<unknown>> {
+  const target = route('/v1/tenants/me/credentials')
+  if (USE_FIXTURES) return fixtureSecretsNotServed(target)
+  return write(target, 'POST', linkToken === null ? { provider, api_key: apiKey } : { provider, api_key: apiKey, link_token: linkToken })
+}
+
+/** `DELETE /v1/browser-logins/{name}`: remove a saved browser session of the selected (personal) workspace. */
+export async function deleteBrowserLogin(name: string): Promise<Result<unknown>> {
+  const target = route('/v1/browser-logins/{name}', { name })
+  if (USE_FIXTURES) return fixtureSecretsNotServed(target)
+  return write(target, 'DELETE')
+}
+
+// ---------------------------------------------------------------------------
+// Admin › Platform secrets (SSC-UI over SSC-PLATFORM-STATUS; §5). STATUS
+// ONLY: the route reads Secret Manager metadata and never a payload, and
+// this copies set, version count, newest time and who writes it, nothing else.
+// ---------------------------------------------------------------------------
+
+export interface PlatformSecretRow {
+  secret_id: string
+  managed_by: string
+  written_by: string
+  /** `set`, `not_set`, `not_declared` or `unreadable`. */
+  status: string
+  /** Why an `unreadable` row is: `permission_denied` or `read_failed`. */
+  reason: string | null
+  enabled_versions: number | null
+  newest_enabled_at: string | null
+  rotation_in_grace: boolean
+  /** `platform` (the catalogue) or `account` (the quota broker's, two halves each). */
+  family: string
+  owner_tenant: string | null
+  label: string | null
+  half: string | null
+}
+
+export interface PlatformSecrets {
+  secrets: PlatformSecretRow[]
+  accounts_unread: boolean
+  accounts_refused: number
+  accounts_truncated: boolean
+  read_at: string | null
+}
+
+export function normPlatformSecrets(raw: unknown): PlatformSecrets {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const rows = (Array.isArray(r.secrets) ? r.secrets : []).flatMap((x): PlatformSecretRow[] => {
+    if (typeof x !== 'object' || x === null) return []
+    const s = x as Record<string, unknown>
+    const id = wsText(s.secret_id)
+    if (id === null) return []
+    return [{
+      secret_id: id,
+      managed_by: wsText(s.managed_by) ?? '',
+      written_by: wsText(s.written_by) ?? '',
+      status: wsText(s.status) ?? 'unreadable',
+      reason: wsText(s.reason),
+      enabled_versions: typeof s.enabled_versions === 'number' ? s.enabled_versions : null,
+      newest_enabled_at: wsText(s.newest_enabled_at),
+      rotation_in_grace: s.rotation_in_grace === true,
+      family: wsText(s.family) ?? 'platform',
+      owner_tenant: wsText(s.owner_tenant),
+      label: wsText(s.label),
+      half: wsText(s.half),
+    }]
+  })
+  return {
+    secrets: rows,
+    accounts_unread: r.accounts_unread === true,
+    accounts_refused: typeof r.accounts_refused === 'number' ? r.accounts_refused : 0,
+    accounts_truncated: r.accounts_truncated === true,
+    read_at: wsText(r.read_at),
+  }
+}
+
+/** `GET /v1/admin/platform-secrets`: a platform admin's; anyone else is the route's 403. */
+export async function loadPlatformSecrets(): Promise<Result<PlatformSecrets>> {
+  return readAs(route('/v1/admin/platform-secrets'), normPlatformSecrets, (d) => d.secrets.length === 0)
+}
+
+/**
+ * The fixture build's overview, one scope at a time: the shapes
+ * `swarm_api.secrets_overview` serves, with a shadowed name, a needed key
+ * and a QA sign-in not set, so every state of the page can be drawn. No value.
+ */
+function fixtureSecretsOverview(url: string): unknown {
+  const q = new URLSearchParams(url.slice(url.indexOf('?') + 1))
+  const scope = q.get('scope') ?? 'workspace'
+  const at = (days: number) => new Date(Date.parse(FIXTURE_CLOCK) - days * 86_400_000).toISOString()
+  const base = { section: 'agents', store: 'workspace_secrets', consumers: ['profile:claude-code'], shadowed_by: [], shadows: [], can_manage: true }
+  const github = (scopeOf: string) => ({
+    section: 'github', store: 'git_tokens', name: `swarm-tenant-${FIXTURE_TENANT}-git`, scope: scopeOf, kind: 'app_user',
+    status: 'active', forge_login: 'operator', verified_at: at(0.002), expires_at: new Date(Date.parse(FIXTURE_CLOCK) + 7 * 3_600_000).toISOString(),
+    set_at: at(3), set_by: 'alice@example.com', consumers: [], can_manage: false, page: '/repositories/tokens',
+  })
+  if (scope === 'repository') {
+    const repoId = q.get('repo_id') ?? FIXTURE_REPOS[0].repo_id
+    const repo = FIXTURE_REPOS.find((r) => r.repo_id === repoId) ?? FIXTURE_REPOS[0]
+    const repository = `example-org/${repo.repo}`
+    return {
+      tenant_id: FIXTURE_TENANT, scope, repo_id: repoId, repository, personal_tenant_id: null, can_manage: true,
+      rows: [
+        { ...base, name: 'search-api', scope: 'repository', kind: 'api_key', status: 'set', set_at: at(1), set_by: 'alice@example.com',
+          shadows: [{ scope: 'workspace', where: 'agents of this workspace', slot: 'files' }],
+          shadowed_by: [{ scope: 'personal', where: 'agents of alice@example.com', person: 'alice@example.com', slot: 'files' }] },
+        { ...base, name: 'test-db-password', scope: 'repository', kind: 'opaque', status: 'set', set_at: at(5), set_by: 'alice@example.com' },
+        { section: 'qa_sign_in', store: 'qa_targets', name: 'Studio', target_id: 'qat_fixture1', environment: 'staging', field: 'credential', status: 'set', set_at: at(2), set_by: 'alice@example.com', consumers: [], can_manage: true },
+        { section: 'qa_sign_in', store: 'qa_targets', name: 'Studio', target_id: 'qat_fixture1', environment: 'production', field: 'credential', status: 'unset', set_at: null, set_by: null, consumers: [], can_manage: true },
+        { section: 'actions', store: 'actions_secret_writes', name: 'MERGE_APP_PRIVATE_KEY', environment: 'repo-secrets', status: 'set', set_at: at(2), set_by: 'alice@example.com', consumers: [], can_manage: true },
+      ],
+    }
+  }
+  if (scope === 'personal') {
+    return {
+      tenant_id: FIXTURE_TENANT, scope, repo_id: null, repository: null, personal_tenant_id: FIXTURE_TENANT, can_manage: true,
+      rows: [
+        { ...base, name: 'search-api', scope: 'personal', kind: 'api_key', status: 'set', set_at: at(2), set_by: 'alice@example.com', opted_in: null,
+          shadows: [{ scope: 'workspace', where: 'agents of this workspace', slot: 'files' }] },
+        { section: 'keys', store: 'provider_keys', name: 'typesafe', status: 'set', set_at: at(6), set_by: 'alice@example.com', consumers: [], can_manage: true },
+        { section: 'browser_sessions', store: 'browser_logins', name: 'studio-staging', site: 'studio.example.com', status: 'active', set_at: at(2), set_by: 'alice@example.com', expires_at: new Date(Date.parse(FIXTURE_CLOCK) + 5 * 86_400_000).toISOString(), consumers: [], can_manage: true },
+        github('user'),
+      ],
+    }
+  }
+  return {
+    tenant_id: FIXTURE_TENANT, scope: 'workspace', repo_id: null, repository: null, personal_tenant_id: null, can_manage: true,
+    rows: [
+      { ...base, name: 'typesafe-key', scope: 'workspace', kind: 'api_key', status: 'set', set_at: at(2), set_by: 'alice@example.com',
+        shadowed_by: [{ scope: 'personal', where: 'agents of alice@example.com', person: 'alice@example.com', slot: 'typesafe' }] },
+      { section: 'keys', store: 'provider_keys', name: 'typesafe', status: 'unset', set_at: null, set_by: null, consumers: [], can_manage: true },
+      { section: 'keys', store: 'runner_provider_keys', name: 'anthropic', status: 'set', set_at: null, set_by: null, consumers: ['profile:claude-code'], can_manage: true },
+      { section: 'keys', store: 'mcp_servers', name: 'kb', consumer: 'mcp:kb', secrets: [], status: 'unset', set_at: null, set_by: null, consumers: ['mcp:kb'], can_manage: true },
+      { section: 'accounts', store: 'pool_accounts', name: 'subscription accounts', status: 'elsewhere', consumers: [], can_manage: false, page: '/capacity/accounts' },
+      github('tenant'),
+    ],
+  }
+}
+
+/** The fixture build's Admin › Platform secrets: one not declared, one in a rotation's grace, two account halves. */
+function fixturePlatformSecrets(): unknown {
+  const at = (days: number) => new Date(Date.parse(FIXTURE_CLOCK) - days * 86_400_000).toISOString()
+  const tf = 'terraform'
+  const row = (secret_id: string, status: string, versions: number | null, days: number | null, managed_by: string, written_by: string) => ({
+    secret_id, status, reason: null, enabled_versions: versions, newest_enabled_at: days === null ? null : at(days),
+    rotation_in_grace: (versions ?? 0) > 1, managed_by, written_by, family: 'platform',
+  })
+  return {
+    secrets: [
+      row('swarm-github-app-private-key', 'set', 1, 41, tf, 'scripts/create-secrets.sh --github-app private-key'),
+      row('swarm-github-app-webhook-secret', 'set', 1, 41, tf, 'scripts/create-secrets.sh --github-app-webhook-secret'),
+      row('swarm-search-api-key', 'set', 2, 0.25, tf, 'scripts/create-secrets.sh --search-api-key'),
+      row('swarm-live-key', 'not_declared', null, null, tf, 'scripts/create-secrets.sh --live-key'),
+      row('swarm-workspace-grant-key', 'set', 1, 23, tf, 'scripts/create-secrets.sh --workspace-grant-key'),
+      ...['access', 'refresh'].map((half) => ({
+        ...row(`swarm-account-${FIXTURE_TENANT}--max-1${half === 'refresh' ? '-refresh' : ''}`, 'set', 1, 2, 'quota-broker', 'the quota broker (Capacity › Accounts)'),
+        family: 'account', owner_tenant: FIXTURE_TENANT, label: 'max-1', half,
+      })),
+    ],
+    counts: {}, accounts_unread: false, accounts_refused: 0, accounts_truncated: false, read_at: FIXTURE_CLOCK,
+  }
 }
 
 /**
@@ -8981,9 +9470,52 @@ export function normAdminWorkspace(raw: unknown): AdminWorkspaceView {
  * `approved` when the requester may approve it), 200 when one already stood; the record either way. A refusal is the
  * API's code and sentence (design §4.2.3), drawn as it came.
  */
-export async function createAdminWorkspace(body: NewWorkspaceBody): Promise<Result<AdminWorkspaceView>> {
+export async function createAdminWorkspace(body: NewWorkspaceBody & { first_admin?: string }): Promise<Result<FiledAdminWorkspace>> {
   const r = await writeTo(route('/v1/admin/workspaces'), 'POST', body)
-  return r.status === 'ok' ? { ...r, data: normAdminWorkspace(r.data) } : (r as Result<AdminWorkspaceView>)
+  return r.status === 'ok' ? { ...r, data: normAdminWorkspace(r.data) } : (r as Result<FiledAdminWorkspace>)
+}
+
+/**
+ * WHAT `first_admin` CAME TO (WORKSPACE-ADMIN-FIELDS, part of #2157; config-e.html S6c): the person named on Add a new
+ * workspace, granted `admin` in that workspace alone through the role override (docs/design/workspace-roles.md §8).
+ * `member: false` is someone not yet in the group: the role is stored and takes effect once they are in it, because
+ * membership stays the group's. `granted: false` says why in `reason` (`workspace_exists`, or a refusal's code).
+ */
+export interface FirstAdminAnswer {
+  email: string
+  role: 'admin'
+  granted: boolean
+  /** Whether the group holds them now; null when the directory did not answer. Absent when nothing was granted. */
+  member?: boolean | null
+  reason?: string
+}
+
+/** A filed record as `POST /v1/admin/workspaces` answers it: the record, and `first_admin` when one was named. */
+export type FiledAdminWorkspace = AdminWorkspaceView & { first_admin?: FirstAdminAnswer | null }
+
+/**
+ * Said on `window` once a workspace is renamed, with its tenant id as `detail`, so the shell reads its own name again
+ * (`/v1/tenants/me`) and the switcher and the headers draw the new one without a reload.
+ */
+export const WORKSPACE_RENAMED_EVENT = 'swarm:workspace-renamed'
+
+/** `PUT /v1/workspaces/{tenant_id}/name`'s answer: the display name changed, the id never does. */
+export interface WorkspaceRenameAnswer {
+  tenant_id: string
+  display_name: string
+  previous_display_name: string | null
+  changed: boolean
+}
+
+/**
+ * `PUT /v1/workspaces/{tenant_id}/name` (WORKSPACE-ADMIN-FIELDS, S6a): rename a workspace -- its display name, never
+ * its id. Its admins and platform admins only; anyone else is 403 `role_admin_required` with nothing written, and a
+ * name the API refuses (empty, over 60 characters, a control or invisible character) is its 422, drawn as it came.
+ */
+export async function renameWorkspace(tenantId: string, displayName: string): Promise<Result<WorkspaceRenameAnswer>> {
+  const r = (await writeTo(route('/v1/workspaces/{tenant_id}/name', { tenant_id: tenantId }), 'PUT', { display_name: displayName })) as Result<WorkspaceRenameAnswer>
+  if (r.status === 'ok' && r.data.changed) globalThis.dispatchEvent?.(new CustomEvent(WORKSPACE_RENAMED_EVENT, { detail: tenantId }))
+  return r
 }
 
 /** `GET /v1/admin/workspaces/{workspace_id}` (admin): one record, for the dialog's progress view. */

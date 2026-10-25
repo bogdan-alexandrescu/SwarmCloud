@@ -524,6 +524,66 @@ export function forecastOf(accounts: readonly PoolAccount[], scope: string | nul
   }
 }
 
+// ---------------------------------------------------------------------------
+// One account's forecast, for its detail (#2222, ACCOUNTS-A-DETAIL)
+// ---------------------------------------------------------------------------
+
+/**
+ * One subscription's own 7-day outlook, the pool forecast's rule applied to
+ * one account: its used share over the hours since its week opened
+ * (`resets_at` minus 7 days), so no new API field. An aged reading counts at
+ * half, as the broker counts it.
+ *
+ *   `floorAt`  when, at this pace, its share left reaches its 7-day floor;
+ *              null when that is not before its week resets
+ *   `underNow` already under its floor
+ *   `resetsAt` when its week resets: the served instant, or the one after it
+ *              for a window that already reset
+ *   `read`     whether `resetsAt` is the served instant (true) or one week on
+ *              from a reset nothing has been read since (false)
+ *
+ * Null when there is no 7-day reading to take a pace from.
+ */
+export interface AccountPace {
+  perHour: number
+  floor: number
+  floorAt: number | null
+  underNow: boolean
+  resetsAt: number
+  read: boolean
+}
+
+export function accountPaceOf(a: PoolAccount, now: number): AccountPace | null {
+  const w = a.windows?.[SEVEN_DAY]
+  const resetsAt = w ? Date.parse(w.resets_at) : Number.NaN
+  if (a.observed_at === null || !w || !Number.isFinite(resetsAt) || !Number.isFinite(w.utilization)) return null
+  const floor = floorOf(a, SEVEN_DAY)
+  if (w.reset) return { perHour: 0, floor, floorAt: null, underNow: false, resetsAt: resetsAt + WEEK_MS, read: false }
+  const hours = (now - (resetsAt - WEEK_MS)) / HOUR_MS
+  const perHour = hours > 0 ? Math.max(0, w.utilization) / hours : 0
+  const left = Math.max(0, 1 - w.utilization) * (a.stale ? 0.5 : 1)
+  const above = left - floor
+  if (above <= 0) return { perHour, floor, floorAt: now, underNow: true, resetsAt, read: true }
+  const at = perHour > 0 ? now + (above / perHour) * HOUR_MS : Infinity
+  return { perHour, floor, floorAt: at < resetsAt ? at : null, underNow: false, resetsAt, read: true }
+}
+
+/**
+ * The detail's head chip: `Can take a new agent · 6 of 6 slots free`,
+ * `Full · 6 of 6 agents`, `Cannot take a new agent`, or null when the broker
+ * does not say. A never-measured account counts one slot (BGD, "One until
+ * measured").
+ */
+export function slotsLine(a: PoolAccount, scope: string | null): string | null {
+  const can = canTake(a, scope)
+  if (can === null) return null
+  const max = a.observed_at === null ? Math.min(MAX_BEFORE_READING, maxAgentsOf(a) ?? DEFAULT_MAX_AGENTS) : (maxAgentsOf(a) ?? DEFAULT_MAX_AGENTS)
+  if (can) return `Can take a new agent · ${freeSlots(a)} of ${max} slot${max === 1 ? '' : 's'} free`
+  const cap = blocksOf(a).find(isCapBlock)
+  if (cap !== undefined && groupOf(a, scope) === 'agent') return `Full · ${cap.cap} of ${cap.max_agents} agents`
+  return 'Cannot take a new agent'
+}
+
 /**
  * An age past a day in days AND hours (QA G5-23): `given out 1d 20h ago`, not
  * `44h ago`, which is arithmetic a reader does before reacting. Under a day it
