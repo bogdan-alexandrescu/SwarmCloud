@@ -827,7 +827,6 @@
   "tests/unit/scripts/test_egress_rollout.py": 4.7,
   "tests/unit/scripts/test_flaky_quarantine.py": 0.3,
   "tests/unit/scripts/test_followups_1023_docs.py": 0.1,
-  "tests/unit/scripts/test_fork_prs_off_self_hosted.py": 13.0,
   "tests/unit/scripts/test_frozen_contract_check.py": 0.9,
   "tests/unit/scripts/test_fs_database_exists_retry.py": 1.8,
   "tests/unit/scripts/test_github_app_runbook.py": 0.4,
