@@ -12,7 +12,7 @@ import {
   setWorkspaceLoan,
 } from './api'
 import { AdminLead } from './AdminSettings'
-import { Banner, Button, buttonClass, Card, Chip, Dash, Dialog, ToneMark } from './components'
+import { Banner, Button, buttonClass, Card, Chip, CIcon, Dash, Dialog, Segmented, ToneMark } from './components'
 import type { ApiError, Result } from './fetch'
 import { trapTab } from './focus'
 import { ApprovedWaiting, JobSteps, waitingOf } from './OnboardingWorkspace'
@@ -912,9 +912,21 @@ function isWaiting(row: PersonRow): boolean {
  * row is the person, their workspace and Manage; the rest is in the drawer,
  * which opens as a full sheet.
  */
-function Row({ row, doc, phone, onManage }: { row: PersonRow; doc: PeopleDoc; phone: boolean; onManage: (email: string) => void }) {
+function Row({
+  row,
+  doc,
+  columns,
+  phone,
+  onManage,
+}: {
+  row: PersonRow
+  doc: PeopleDoc
+  /** The grid's columns as narrowed by the workspace filter; null for an older API's doc. */
+  columns: PeopleWorkspaceColumn[] | null
+  phone: boolean
+  onManage: (email: string) => void
+}) {
   const w = row.workspace
-  const columns = gridColumns(doc)
   const manage = (
     <td role="cell" data-label="Manage" className="pp-manage-cell">
       <Button size="sm" onClick={() => onManage(row.email)}>
@@ -1228,6 +1240,85 @@ function AdminList({ admins, onRemove }: { admins: AdminHolder[]; onRemove: (ema
   )
 }
 
+/** What a grant gives, in both places Grant admin asks before it grants. */
+const GRANT_GIVES = 'An admin can approve workspaces, change every ceiling and pool limit, lend accounts and grant admin to others.'
+
+function granted(d: { email: string; changed: boolean }): string {
+  return d.changed ? `${d.email} is now an admin.` : `${d.email} was already an admin.`
+}
+
+/**
+ * GRANT ADMIN FROM THE GRID'S HEAD (S5c draws it there): the Admins card's
+ * grant, as a dialog -- one email address, checked by the field's own
+ * validity, then the same question before anything is sent (live QA ADM-4).
+ */
+function GrantDialog({ reload, onClose, onSaid }: { reload: () => void; onClose: () => void; onSaid: (s: Said) => void }) {
+  const formId = useId()
+  const [email, setEmail] = useState('')
+  const [valid, setValid] = useState(false)
+  const [asking, setAsking] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const typed = email.trim()
+  const ask = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    if (typed === '' || !e.currentTarget.checkValidity()) return
+    setAsking(typed)
+  }
+  const grant = async () => {
+    if (busy || asking === null) return
+    setBusy(true)
+    const r = await grantAdmin(asking)
+    setBusy(false)
+    onSaid(outcome(r, granted))
+    reload()
+    onClose()
+  }
+  return (
+    <Dialog
+      title="Grant admin"
+      onClose={onClose}
+      actions={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          {asking === null ? (
+            <Button kind="primary" type="submit" form={formId} disabled={!valid}>
+              Grant admin
+            </Button>
+          ) : (
+            <Button kind="primary" disabled={busy} onClick={() => void grant()}>
+              {busy ? 'Granting…' : 'Grant admin'}
+            </Button>
+          )}
+        </>
+      }
+    >
+      {asking === null ? (
+        <form id={formId} className="pp-grant-form" onSubmit={ask} noValidate>
+          <label className="c-field">
+            <span className="c-lbl">Email</span>
+            <input
+              className="c-inp"
+              type="email"
+              required
+              value={email}
+              onChange={(e) => {
+                setEmail(e.target.value)
+                setValid(e.target.value.trim() !== '' && e.target.checkValidity())
+              }}
+            />
+          </label>
+          {typed !== '' && !valid && <p className="ur-hint">Grant admin takes one email address.</p>}
+        </form>
+      ) : (
+        <>
+          <p>Make {asking} a platform admin?</p>
+          <p className="ur-hint">{GRANT_GIVES}</p>
+        </>
+      )}
+    </Dialog>
+  )
+}
+
 function Admins({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
   const [email, setEmail] = useState('')
   const [busy, setBusy] = useState(false)
@@ -1256,7 +1347,7 @@ function Admins({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
     const r = await grantAdmin(granting)
     setBusy(false)
     setGranting(null)
-    setSaid(outcome(r, (d) => (d.changed ? `${d.email} is now an admin.` : `${d.email} was already an admin.`)))
+    setSaid(outcome(r, granted))
     reload()
   }
   const remove = async () => {
@@ -1323,9 +1414,7 @@ function Admins({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
           }
         >
           <p>Make {granting} a platform admin?</p>
-          <p className="ur-hint">
-            An admin can approve workspaces, change every ceiling and pool limit, lend accounts and grant admin to others.
-          </p>
+          <p className="ur-hint">{GRANT_GIVES}</p>
         </Dialog>
       )}
       {target !== null && (
@@ -1408,68 +1497,104 @@ export function housekeepingSummary(entries: readonly AuditEntry[]): string {
   return [...counts].map(([a, n]) => `${a} × ${n}`).join(', ')
 }
 
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000
+
+/**
+ * THE FOLDED HEAD'S COUNT (S5c, "12 this week"): the decisions -- not the
+ * housekeeping the card folds away too -- recorded in the last seven days.
+ * The read holds at most AUDIT_SHOWN entries, so when it is full and even its
+ * oldest entry is from this week, the count is a floor and says so ("50+").
+ */
+export function thisWeek(entries: readonly AuditEntry[], now: number = Date.now()): string {
+  const from = now - WEEK_MS
+  const at = (e: AuditEntry) => (e.at === null ? Number.NaN : Date.parse(e.at))
+  const n = entries.filter((e) => !HOUSEKEEPING.has(e.action) && at(e) >= from).length
+  const oldest = entries.at(-1)
+  const floor = entries.length >= AUDIT_SHOWN && oldest !== undefined && at(oldest) >= from
+  return `${n}${floor ? '+' : ''} this week`
+}
+
+/**
+ * RECENT ADMIN ACTIONS OPENS FOLDED (S5c): the page is for what waits and who
+ * holds which role; the record is read when it is wanted. The head is the one
+ * control and carries this week's count, so the folded card still says
+ * whether anything happened.
+ */
 function Audit({ entries }: { entries: AuditEntry[] }) {
+  const [open, setOpen] = useState(false)
   const [showHousekeeping, setShowHousekeeping] = useState(false)
+  const bodyId = useId()
   const decisions = entries.filter((e) => !HOUSEKEEPING.has(e.action))
   const folded = entries.length - decisions.length
   const runs = auditRuns(showHousekeeping ? entries : decisions)
   const scope = entries.length >= AUDIT_SHOWN ? `the latest ${entries.length} entries` : `the ${entries.length} recorded ${entries.length === 1 ? 'entry' : 'entries'}`
   return (
-    <Card className="pp-audit" title="Recent admin actions">
-      {entries.length === 0 ? (
-        <p className="ur-hint">
-          <span aria-label="no admin actions recorded (measured)">no admin actions recorded</span>
-        </p>
-      ) : (
-        <>
-          <p className="ur-hint" data-testid="pp-audit-shown">
-            {entries.length >= AUDIT_SHOWN
-              ? `The latest ${entries.length} entries; older ones are not shown here.`
-              : `All ${entries.length} recorded ${entries.length === 1 ? 'entry' : 'entries'}.`}
+    <Card
+      className={`pp-audit${open ? ' is-open' : ''}`}
+      title={
+        <button type="button" className="pp-fold" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen((o) => !o)}>
+          <CIcon name="chevron" className="c-ic pp-fold-ic" />
+          Recent admin actions
+        </button>
+      }
+      action={<span className="ur-hint pp-week">{thisWeek(entries)}</span>}
+    >
+      <div id={bodyId} hidden={!open}>
+        {!open ? null : entries.length === 0 ? (
+          <p className="ur-hint">
+            <span aria-label="no admin actions recorded (measured)">no admin actions recorded</span>
           </p>
-          {folded > 0 && (
-            <p className="ur-hint pp-housekeeping" data-testid="pp-housekeeping">
-              <span>
-                {housekeepingSummary(entries)} housekeeping {showHousekeeping ? 'shown' : 'hidden'}
-              </span>{' '}
-              <Button size="sm" aria-pressed={showHousekeeping} onClick={() => setShowHousekeeping((v) => !v)}>
-                {showHousekeeping ? 'Hide housekeeping' : 'Show housekeeping'}
-              </Button>
+        ) : (
+          <>
+            <p className="ur-hint" data-testid="pp-audit-shown">
+              {entries.length >= AUDIT_SHOWN
+                ? `The latest ${entries.length} entries; older ones are not shown here.`
+                : `All ${entries.length} recorded ${entries.length === 1 ? 'entry' : 'entries'}.`}
             </p>
-          )}
-          {runs.length === 0 ? (
-            <p className="ur-hint">No approvals, denials, loans or admin grants in {scope}.</p>
-          ) : (
-            <ol className="pp-audit-list" aria-label="Admin audit">
-              {runs.map((r, i) => {
-                const tenant = auditTenant(r.first)
-                const target = auditTarget(r.first)
-                return (
-                  <li key={`${r.first.at ?? ''}:${i}`} data-count={r.count}>
-                    {r.first.at !== null ? timeAgo(r.first.at) : <Dash why="The entry carries no time" />}
-                    {r.count > 1 && r.last.at !== null && r.last.at !== r.first.at ? ` to ${timeAgo(r.last.at)}` : ''} ·{' '}
-                    <b>{r.first.action}</b>
-                    {r.count > 1 ? (
-                      <> × {r.count}</>
-                    ) : target !== null ? (
-                      <>
-                        {' '}
-                        <code>{target}</code>
-                      </>
-                    ) : (
-                      <>
-                        {' '}
-                        <Dash why="The entry names no target" />
-                      </>
-                    )}
-                    {tenant !== null && <> · {tenant}</>} by {r.first.by}
-                  </li>
-                )
-              })}
-            </ol>
-          )}
-        </>
-      )}
+            {folded > 0 && (
+              <p className="ur-hint pp-housekeeping" data-testid="pp-housekeeping">
+                <span>
+                  {housekeepingSummary(entries)} housekeeping {showHousekeeping ? 'shown' : 'hidden'}
+                </span>{' '}
+                <Button size="sm" aria-pressed={showHousekeeping} onClick={() => setShowHousekeeping((v) => !v)}>
+                  {showHousekeeping ? 'Hide housekeeping' : 'Show housekeeping'}
+                </Button>
+              </p>
+            )}
+            {runs.length === 0 ? (
+              <p className="ur-hint">No approvals, denials, loans or admin grants in {scope}.</p>
+            ) : (
+              <ol className="pp-audit-list" aria-label="Admin audit">
+                {runs.map((r, i) => {
+                  const tenant = auditTenant(r.first)
+                  const target = auditTarget(r.first)
+                  return (
+                    <li key={`${r.first.at ?? ''}:${i}`} data-count={r.count}>
+                      {r.first.at !== null ? timeAgo(r.first.at) : <Dash why="The entry carries no time" />}
+                      {r.count > 1 && r.last.at !== null && r.last.at !== r.first.at ? ` to ${timeAgo(r.last.at)}` : ''} ·{' '}
+                      <b>{r.first.action}</b>
+                      {r.count > 1 ? (
+                        <> × {r.count}</>
+                      ) : target !== null ? (
+                        <>
+                          {' '}
+                          <code>{target}</code>
+                        </>
+                      ) : (
+                        <>
+                          {' '}
+                          <Dash why="The entry names no target" />
+                        </>
+                      )}
+                      {tenant !== null && <> · {tenant}</>} by {r.first.by}
+                    </li>
+                  )
+                })}
+              </ol>
+            )}
+          </>
+        )}
+      </div>
     </Card>
   )
 }
@@ -1546,6 +1671,136 @@ function listed(names: readonly string[]): string {
 }
 
 /**
+ * THE GRID'S WORKSPACE IS THIS DEVICE'S CHOICE, AND THE PAGE IS RIGHT WITHOUT
+ * IT: storage throws in a private window and in previews, and the grid then
+ * opens on every workspace. So does a remembered workspace this read no
+ * longer serves -- removed, or not one this reader administers.
+ */
+export const PEOPLE_WORKSPACE_KEY = 'swarm.people.workspace'
+
+/** Every workspace: never a tenant id, which is a slug. */
+const EVERY = '*'
+
+/** A person is IN a workspace when they hold a role there; `none` and an unread cell are not one. */
+const HOLDS_ROLE: ReadonlySet<PeopleRoleCell> = new Set(['admin', 'member', 'viewer'])
+
+function rememberedWorkspace(): string {
+  try {
+    return window.localStorage.getItem(PEOPLE_WORKSPACE_KEY) ?? EVERY
+  } catch {
+    return EVERY
+  }
+}
+
+function rememberWorkspace(key: string): void {
+  try {
+    if (key === EVERY) window.localStorage.removeItem(PEOPLE_WORKSPACE_KEY)
+    else window.localStorage.setItem(PEOPLE_WORKSPACE_KEY, key)
+  } catch {
+    // Nothing to do: this visit still shows the choice.
+  }
+}
+
+type GridRow = { email: string; display_name?: string | null; roles?: Record<string, PeopleRoleCell> }
+
+interface GridView<R> {
+  /** The columns to draw: the chosen one, or every one; null for an older API's doc. */
+  columns: PeopleWorkspaceColumn[] | null
+  /** The chosen workspace, or null for every workspace. */
+  column: PeopleWorkspaceColumn | null
+  rows: R[]
+  typed: string
+  setTyped: (v: string) => void
+  choose: (key: string) => void
+}
+
+/**
+ * THE GRID, NARROWED (S5c, S5f): to the chosen workspace's column and the
+ * people who hold a role in it, then to the people whose name or email holds
+ * what was typed. Both read the list already loaded; neither asks the API.
+ */
+function useGridView<R extends GridRow>(rows: readonly R[], columns: PeopleWorkspaceColumn[] | null): GridView<R> {
+  const [chosen, setChosen] = useState(rememberedWorkspace)
+  const [typed, setTyped] = useState('')
+  const column = columns?.find((c) => c.tenant_id === chosen) ?? null
+  const q = typed.trim().toLowerCase()
+  const matches = (r: R) => q === '' || r.email.toLowerCase().includes(q) || (r.display_name ?? '').toLowerCase().includes(q)
+  return {
+    columns: column === null ? columns : [column],
+    column,
+    rows: rows.filter((r) => (column === null || HOLDS_ROLE.has(r.roles?.[column.tenant_id] ?? null)) && matches(r)),
+    typed,
+    setTyped,
+    choose: (key) => {
+      setChosen(key)
+      rememberWorkspace(key)
+    },
+  }
+}
+
+/**
+ * THE WORKSPACE FILTER, IN THE GRID CARD'S HEAD: a platform admin's "Every
+ * workspace" and one choice per workspace (S5c); a workspace admin's only the
+ * workspaces they administer, "Both" when there are two (S5f). One workspace
+ * leaves nothing to choose, so no filter is drawn.
+ */
+function WorkspaceFilter({ view, all, scoped }: { view: GridView<GridRow>; all: readonly PeopleWorkspaceColumn[]; scoped: boolean }) {
+  if (all.length < 2) return null
+  return (
+    <span className="pp-filter">
+      <span className="c-lbl" aria-hidden="true">
+        Workspace
+      </span>
+      <Segmented<string>
+        small
+        label="Workspace"
+        value={view.column?.tenant_id ?? EVERY}
+        onChange={view.choose}
+        options={[
+          { key: EVERY, label: scoped && all.length === 2 ? 'Both' : 'Every workspace' },
+          ...all.map((c) => ({ key: c.tenant_id, label: c.display_name })),
+        ]}
+      />
+    </span>
+  )
+}
+
+/** "Find a person", over the loaded grid, and what it found: a count, or that nobody matches. */
+function FindPerson({ view }: { view: GridView<GridRow> }) {
+  const q = view.typed.trim()
+  const n = view.rows.length
+  const where = view.column !== null ? ` in ${view.column.display_name}` : ''
+  return (
+    <div className="pp-find">
+      <input
+        type="search"
+        className="ur-search"
+        aria-label="Find a person"
+        placeholder="Find a person"
+        value={view.typed}
+        maxLength={200}
+        onChange={(e) => view.setTyped(e.target.value)}
+      />
+      <span className="ur-hint" role="status">
+        {q === '' ? '' : `${n === 0 ? 'Nobody' : count(n, 'person', 'people')}${where} ${n > 1 ? 'match' : 'matches'} “${q}”`}
+      </span>
+    </div>
+  )
+}
+
+/** What the grid draws when its narrowing left nobody: why, in the reader's terms. */
+function NobodyShown({ view }: { view: GridView<GridRow> }) {
+  const c = view.column
+  if (view.typed.trim() !== '') return <p className="ur-hint pp-nobody">Find a person reads the names and email addresses on this page.</p>
+  if (c === null) return null
+  return (
+    <p className="ur-hint pp-nobody">
+      {c.unavailable ? `${c.display_name}’s roles could not be read, so who is in it is not known.` : `Nobody holds a role in ${c.display_name}.`}
+    </p>
+  )
+}
+
+/**
  * A WORKSPACE ADMIN'S PAGE (S5f): the lead, then the grid of their workspaces
  * and nothing else. Nobody waits for a workspace admin here: a personal
  * workspace request and a loan are a platform admin's, so the lead says that
@@ -1556,6 +1811,8 @@ function ScopedBody({ doc }: { doc: ScopedPeopleDoc }) {
   const rows: ScopedPersonRow[] = Array.isArray(doc.people) ? doc.people : []
   const phone = usePhoneTables()
   const names = listed(columns.map((c) => c.display_name))
+  const view = useGridView(rows, columns)
+  const shown = view.columns ?? columns
   return (
     <>
       <AdminLead
@@ -1564,23 +1821,35 @@ function ScopedBody({ doc }: { doc: ScopedPeopleDoc }) {
         title={`Nobody is waiting for you in ${names}`}
         body={`Showing ${names}, the ${columns.length === 1 ? 'workspace' : 'workspaces'} you administer. A request for a personal workspace or a Claude account is a platform admin’s to decide.`}
       />
-      <Card className="pp-people" title="People and their roles" action={<Chip>{count(doc.count, 'person', 'people')}</Chip>}>
+      <Card
+        className="pp-people"
+        title="People and their roles"
+        action={
+          <span className="pp-head-acts">
+            <WorkspaceFilter view={view} all={columns} scoped />
+            <Chip>{count(doc.count, 'person', 'people')}</Chip>
+          </span>
+        }
+      >
+        {rows.length > 0 && <FindPerson view={view} />}
         {rows.length === 0 ? (
           <p className="ur-hint">Nobody has been seen in {names} yet, and nobody holds a role there.</p>
+        ) : view.rows.length === 0 ? (
+          <NobodyShown view={view} />
         ) : (
           <div className={`table-wrap ${tableMode(phone)} pp-wrap`}>
             <table className="pools pp-table pp-grid" role="table">
               <thead role="rowgroup">
                 <tr role="row">
                   <th role="columnheader" scope="col">Person</th>
-                  {columns.map((c) => (
+                  {shown.map((c) => (
                     <ColumnHead key={c.tenant_id} column={c} />
                   ))}
                   <th role="columnheader" scope="col">Last active</th>
                 </tr>
               </thead>
               <tbody role="rowgroup">
-                {rows.map((row) => (
+                {view.rows.map((row) => (
                   <tr key={row.email} role="row" data-email={row.email}>
                     <th role="rowheader" scope="row">
                       <span className="pp-person">
@@ -1590,7 +1859,7 @@ function ScopedBody({ doc }: { doc: ScopedPeopleDoc }) {
                         </span>
                       </span>
                     </th>
-                    {columns.map((c) => (
+                    {shown.map((c) => (
                       <RoleCell key={c.tenant_id} cell={row.roles?.[c.tenant_id]} column={c} />
                     ))}
                     <td role="cell" data-label="Last active">
@@ -1618,7 +1887,11 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
   // redraws it from the list, so a decision made in it shows there.
   const [managing, setManaging] = useState<string | null>(null)
   const managed = managing === null ? null : (rows.find((r) => r.email === managing) ?? null)
-  const columns = gridColumns(doc)
+  const all = gridColumns(doc)
+  const view = useGridView(rows, all)
+  const columns = view.columns
+  const [granting, setGranting] = useState(false)
+  const [said, setSaid] = useState<Said | null>(null)
   return (
     <>
       <PeopleLead rows={rows} />
@@ -1630,16 +1903,26 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
         // Not the page's own heading again under it (visual QA V082).
         title="People and their roles"
         action={
-          <Chip>
-            {doc.count} {doc.count === 1 ? 'person' : 'people'} ·{' '}
-            {doc.pending === 0 ? <span aria-label="none pending (measured)">none pending</span> : <>{doc.pending} pending</>}
-          </Chip>
+          <span className="pp-head-acts">
+            {all !== null && <WorkspaceFilter view={view} all={all} scoped={false} />}
+            <Chip>
+              {doc.count} {doc.count === 1 ? 'person' : 'people'} ·{' '}
+              {doc.pending === 0 ? <span aria-label="none pending (measured)">none pending</span> : <>{doc.pending} pending</>}
+            </Chip>
+            <Button size="sm" onClick={() => setGranting(true)}>
+              Grant admin
+            </Button>
+          </span>
         }
       >
+        <SaidLine said={said} />
+        {rows.length > 0 && <FindPerson view={view} />}
         {rows.length === 0 ? (
           <p className="ur-hint">
             <span aria-label="no one has signed in (measured)">no one has signed in</span>
           </p>
+        ) : view.rows.length === 0 ? (
+          <NobodyShown view={view} />
         ) : (
           /* THE TENANTS PATTERN (Activity.tsx, design-system.md §7.3): the
               table has its own scroll container inside the card; below 560px
@@ -1668,8 +1951,8 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
                 </tr>
               </thead>
               <tbody role="rowgroup">
-                {rows.map((row) => (
-                  <Row key={row.email} row={row} doc={doc} phone={phone} onManage={setManaging} />
+                {view.rows.map((row) => (
+                  <Row key={row.email} row={row} doc={doc} columns={columns} phone={phone} onManage={setManaging} />
                 ))}
               </tbody>
             </table>
@@ -1684,6 +1967,7 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
         <Audit entries={Array.isArray(doc.audit) ? doc.audit : []} />
       </div>
       {managed !== null && <Drawer key={managed.email} row={managed} doc={doc} reload={reload} onClose={() => setManaging(null)} />}
+      {granting && <GrantDialog reload={reload} onClose={() => setGranting(false)} onSaid={setSaid} />}
     </>
   )
 }
