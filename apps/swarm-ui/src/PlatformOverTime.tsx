@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { usePhoneTables, tableMode } from './capacityPoll'
 import { HatchDef, useHatchId, VALUE_LABEL_GAP_PX } from './charts/parts'
 import { linearScale, ValueAxis } from './charts/TimeSeries'
@@ -1057,6 +1057,15 @@ function Stack({
  * overtime.css lays it over the plot only where the plot is wide; on a phone
  * (F7) it stays under the chart. It never covers its own bucket, so the ring
  * on the picked column stays in sight.
+ *
+ * IT FITS, OR IT GOES UNDER THE CHART. Laid over the chart it is held between
+ * the agents axis's top label and the x labels, and clips rather than scrolls:
+ * a hover's readout takes no pointer, so a scrolled-off figure could never be
+ * reached (review, 2026-10-25: at 1440 the costs and the last coverage line
+ * were sliced off, and with a breakdown most of the figures). So after every
+ * draw, and on every resize, it is measured where the overlay put it; when
+ * its figures are taller than the room, `data-place="under"` puts it back in
+ * the flow under the chart, where every figure shows.
  */
 function Readout({
   bucket, index, count, hover, layers, by, size, tz, onClose,
@@ -1074,8 +1083,22 @@ function Readout({
   onClose: () => void
 }) {
   const name = bucketName(bucket.start, size, tz)
+  const box = useRef<HTMLDivElement>(null)
+  // On every render, not on a key: what fits depends on the bucket, the
+  // layers and the plot's width, and the measure is one read of one box.
+  useLayoutEffect(() => {
+    const el = box.current
+    if (el === null) return
+    const fit = () => {
+      el.removeAttribute('data-place')
+      if (el.scrollHeight > el.clientHeight + 1) el.setAttribute('data-place', 'under')
+    }
+    fit()
+    window.addEventListener('resize', fit)
+    return () => window.removeEventListener('resize', fit)
+  })
   return (
-    <div className="pot-readout" role="status" aria-live="polite" data-side={index >= count / 2 ? 'left' : 'right'} data-hover={hover ? '' : undefined}>
+    <div ref={box} className="pot-readout" role="status" aria-live="polite" data-side={index >= count / 2 ? 'left' : 'right'} data-hover={hover ? '' : undefined}>
       <p className="pot-readout-head">
         <b>{name}</b>
         <span>{!isRead(bucket) ? unreadWords(bucket.unread_reason) : bucket.in_progress ? 'in progress, so far' : 'sealed'}</span>

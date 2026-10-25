@@ -144,14 +144,29 @@
 .pot-plot { container: pot-plot / inline-size; position: relative; display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
 .pot-readout { padding: var(--ctl-s2) var(--ctl-s3); border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface-2); }
 .pot-readout[data-hover] { pointer-events: none; }
+/* OVER THE CHART IT FITS THE PLOT, NEVER SCROLLS (review, 2026-10-25): held
+   below the agents axis's top label (y 22, so 32 clears it at 1.2x) and above
+   the x labels (the drawing's last 22, so 30 off the bottom), clear of the
+   value labels in the 48 gutter on the left (58 at 1.2x) and the 26 on the right. Its
+   figures sit three or four to a row and its layers in narrow columns, so a
+   bucket's readout fits at 1440; where it still would not -- a long
+   breakdown, a narrow plot -- PlatformOverTime.tsx measures it and sets
+   `data-place="under"`, which puts it back in the flow under the chart. It
+   clips while it is measured, so nothing it holds is ever out of reach behind
+   a scrollbar a hover cannot take. The shadow is the system's token for a
+   surface over the page, which carries a value for each theme. */
 @container pot-plot (min-width: 640px) {
   .pot-readout {
-    position: absolute; z-index: 2; top: 20px;
-    width: min(560px, calc(50% - 24px)); max-height: calc(100% - 28px); overflow-y: auto;
-    background: var(--surface); box-shadow: 0 10px 30px rgba(0, 0, 0, .18);
+    position: absolute; z-index: 2; top: 32px;
+    width: min(560px, calc(50% - 64px)); max-height: calc(100% - 62px); overflow: hidden;
+    padding: var(--ctl-s1) var(--ctl-s2);
+    background: var(--surface); box-shadow: var(--ctl-shadow-pop);
   }
-  .pot-readout[data-side='left'] { left: 11px; }
-  .pot-readout[data-side='right'] { right: 11px; }
+  .pot-readout[data-side='left'] { left: 60px; }
+  .pot-readout[data-side='right'] { right: 32px; }
+  .pot-readout .pot-readout-list { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: var(--ctl-s1) var(--ctl-s2); }
+  .pot-readout .pot-readout-layers { columns: 150px; font: var(--t-micro)/var(--lh-micro) var(--font); margin-bottom: var(--ctl-s1); padding-bottom: var(--ctl-s1); }
+  .pot-readout[data-place='under'] { position: static; width: auto; max-height: none; overflow: visible; box-shadow: none; background: var(--surface-2); }
 }
 .pot-readout-head { display: flex; align-items: baseline; gap: var(--ctl-s2); margin: 0 0 var(--ctl-s1); font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); }
 .pot-readout-head b { color: var(--text); }

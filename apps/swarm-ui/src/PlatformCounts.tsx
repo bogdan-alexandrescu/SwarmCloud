@@ -394,7 +394,12 @@ function runPrice(admin: boolean | null, over: OverTimePrice | null): string {
     return `${counts} reads`
   }
   const low = admin === null ? `${STATE_COUNT}–` : ''
-  if (over.total === null) return `${low}${STATE_COUNT * 2} reads + ~${over.perWorkspace} a workspace`
+  // The per-workspace part is the admin's alone: "12–24 reads + ~178 a
+  // workspace" read as if the 12 paid it too (review, 2026-10-25).
+  if (over.total === null) {
+    const admins = `${STATE_COUNT * 2} reads + ~${over.perWorkspace} a workspace`
+    return admin === null ? `${STATE_COUNT} reads, or ${admins}` : admins
+  }
   return `${low}~${STATE_COUNT * 2 + over.total} reads`
 }
 

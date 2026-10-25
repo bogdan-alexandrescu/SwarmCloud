@@ -165,6 +165,76 @@ describe('the readout (F6): over the chart, on the side away from its bucket', (
 })
 
 /**
+ * THE OVERLAY FITS (review, 2026-10-25): at 1440 the overlaid readout's
+ * figures were 317px in a 282px box, and 633px in 247px with a breakdown, so
+ * it scrolled and sliced its last lines -- and a hover's readout takes no
+ * pointer, so they could not be reached. jsdom lays nothing out, so the box's
+ * two heights are given here: a readout left over the chart never holds more
+ * than it shows, and one that would is put under the chart.
+ */
+function heights(content: number, room: number): () => void {
+  const sh = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
+  const ch = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight')
+  Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get() { return this.classList.contains('pot-readout') ? content : 0 } })
+  // Under the chart the box is as tall as what it holds.
+  Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+    configurable: true,
+    get() { return this.classList.contains('pot-readout') ? (this.dataset.place === 'under' ? content : room) : 0 },
+  })
+  return () => {
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', sh ?? { configurable: true, value: 0 })
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', ch ?? { configurable: true, value: 0 })
+  }
+}
+
+describe('the overlaid readout never holds more than it shows', () => {
+  it('goes under the chart when its figures are taller than the room over it', async () => {
+    const restore = heights(317, 282)
+    try {
+      await drawn()
+      fireEvent.click(hits()[BUCKETS.length - 1]!)
+      const ro = document.querySelector<HTMLElement>('.pot-readout')!
+      // MUTATION: lay the readout over the chart whatever its height.
+      expect(ro.dataset.place, 'a readout taller than its room stayed over the chart').toBe('under')
+      expect(ro.scrollHeight).toBeLessThanOrEqual(ro.clientHeight)
+      // A hover's readout is measured too.
+      fireEvent.keyDown(document.querySelector<HTMLElement>('.pot-agents .pot-chart')!, { key: 'Escape' })
+      fireEvent.mouseEnter(hits()[1]!)
+      const hover = document.querySelector<HTMLElement>('.pot-readout')!
+      expect(hover.dataset.place).toBe('under')
+      expect(hover.scrollHeight).toBeLessThanOrEqual(hover.clientHeight)
+    } finally {
+      restore()
+    }
+  })
+
+  it('stays over the chart when it fits', async () => {
+    const restore = heights(240, 282)
+    try {
+      await drawn()
+      fireEvent.click(hits()[0]!)
+      const ro = document.querySelector<HTMLElement>('.pot-readout')!
+      // MUTATION: always put it under the chart.
+      expect(ro.hasAttribute('data-place'), 'a readout that fits was put under the chart').toBe(false)
+      expect(ro.scrollHeight).toBeLessThanOrEqual(ro.clientHeight)
+    } finally {
+      restore()
+    }
+  })
+
+  it('clips rather than scrolls over the chart, and the place under it is the flow', () => {
+    const at = css.indexOf('@container pot-plot (min-width: 640px)')
+    const block = css.slice(at, css.indexOf('\n}', at))
+    // MUTATION: give the overlay a scrollbar again.
+    expect(block).not.toMatch(/overflow(-y)?:\s*auto/)
+    expect(block).toMatch(/\.pot-readout\s*\{[^}]*overflow:\s*hidden/)
+    expect(block).toMatch(/\.pot-readout\[data-place='under'\]\s*\{[^}]*position:\s*static/)
+    // The dark theme's shadow: the token, which carries a value per theme.
+    expect(block).toMatch(/\.pot-readout\s*\{[^}]*box-shadow:\s*var\(--ctl-shadow-pop\)/)
+  })
+})
+
+/**
  * THE AXIS LABELS. A label is --t-micro, 12px, in the drawing's own units,
  * and overtime.css lets a drawing grow to 1.2 times its authored width. Two
  * value labels need their 12 units plus 4 between them; two x labels need

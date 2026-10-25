@@ -170,6 +170,14 @@ describe('a caller nobody could name yet', () => {
     await waitFor(() => expect(loadPlatformTime).toHaveBeenCalledTimes(1))
   })
 
+  it('says the per-workspace part is the admin’s alone while the roster is not known either', async () => {
+    loadTenants.mockResolvedValue({ status: 'error', error: { kind: 'admin_required', httpStatus: 403, code: null, message: 'no' } })
+    render(<PlatformCountsScreen />)
+    const per = readEstimate(spanDays('week', Date.now(), viewerZone()), null).perWorkspace
+    // MUTATION: "12–24 reads + ~N a workspace" again, as if the 12 paid it too (review, 2026-10-25).
+    await waitFor(() => expect(runButtons()[0]!.textContent).toBe(`Run the count · ${PER_SCOPE} reads, or ${PER_SCOPE * 2} reads + ~${per} a workspace`))
+  })
+
   it('does not read Over time when the count’s answer shows a tenant', async () => {
     loadStats.mockResolvedValue(counted(false))
     render(<PlatformCountsScreen />)
