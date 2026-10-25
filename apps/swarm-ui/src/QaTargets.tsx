@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { loadRepositories } from './api'
 import { Banner, Button, Card, EmptyState } from './components'
 import { repoName } from './RepositoriesData'
@@ -128,7 +128,16 @@ function linkFromLocation(): QaLink | null {
   return qaCredentialLinkFrom(window.location.pathname, window.location.search)
 }
 
-export function QaTargetsScreen({ go, link }: { go: (to: string) => void; link?: QaLink | null }) {
+export function QaTargetsScreen({
+  go,
+  link,
+  tabs,
+}: {
+  go: (to: string) => void
+  link?: QaLink | null
+  /** Config › Repositories' Repositories | QA targets strip, drawn under the head as the list draws it (REPOS-PAGE). */
+  tabs?: ReactNode
+}) {
   const list = useUrRead(loadQaTargets, 'qa-targets')
   // ONLY A WORKSPACE ADMIN REGISTERS, CHANGES OR SETS A CREDENTIAL (§1); a
   // member runs. A viewer does neither. The server decides.
@@ -181,6 +190,7 @@ export function QaTargetsScreen({ go, link }: { go: (to: string) => void; link?:
           )}
         </span>
       </PageHead>
+      {tabs}
       <p className="ur-small">
         Web applications this workspace&rsquo;s visual-QA runs test, each filing its findings in one of the workspace&rsquo;s
         registered repositories. A new or changed host waits for a platform admin&rsquo;s approval before any run.

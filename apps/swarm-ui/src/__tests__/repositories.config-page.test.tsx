@@ -112,6 +112,7 @@ describe('Config › Repositories: what SwarmCloud may reach as you, then the re
     // MUTATION: drop the QA targets tab and this is null.
     const tabs = document.querySelector<HTMLElement>('nav[aria-label="Repositories pages"]')
     expect(tabs).not.toBeNull()
+    expect(document.querySelector('.c-phead')!.compareDocumentPosition(tabs!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(Array.from(tabs!.querySelectorAll('a')).map((a) => [visible(a), a.getAttribute('href'), a.getAttribute('aria-current')])).toEqual([
       ['Repositories', '/config/repositories', 'page'],
       ['QA targets', '/config/repositories?page=qa-targets', null],
@@ -126,6 +127,8 @@ describe('Config › Repositories: what SwarmCloud may reach as you, then the re
     expect(tabs).not.toBeNull()
     expect(tabs!.querySelector('a[aria-current="page"]')?.textContent).toBe('QA targets')
     expect(document.querySelector('h1')?.textContent).toBe('QA targets')
+    // MUTATION: draw the strip above the QA targets head and it moves between the two tabs' pages.
+    expect(document.querySelector('.c-phead')!.compareDocumentPosition(tabs!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 })
 
@@ -141,6 +144,8 @@ describe('the page is led by what is missing (proposal E)', () => {
     expect(visible(dashed()!)).toContain('Read grant')
     // MUTATION: match the registry by repo name alone and the registered one is drawn dashed too.
     expect(document.querySelectorAll('.ur-cards > .ur-card.is-chosen')).toHaveLength(1)
+    // MUTATION: count the dashed card as registered, or leave it uncounted, and the note disagrees with the grid.
+    expect(visible(document.querySelector('.c-count-note'))).toContain('1 registered · 1 chosen, not registered')
     const lead = document.querySelector<HTMLElement>('section[aria-label="Next step"]')
     expect(lead).not.toBeNull()
     expect(visible(lead!)).toContain('example-labs/console is chosen but not registered')
