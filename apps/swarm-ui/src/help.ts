@@ -789,16 +789,26 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // AH-14. The facts are swarm_api/service.py `stats` and store.py
   // `count_tasks_by_state`; the arithmetic of the cost is PlatformCounts.tsx's
   // STATE_COUNT, which is why no number is written here.
+  //
+  // OVER TIME SINCE COUNTS-PAGE (#2149). The page draws a second read below
+  // the state counts, PlatformOverTime.tsx, and this topic said nothing about
+  // time. Its facts are BGD's decisions of 2026-10-23 -- agents by the day they
+  // were submitted with their retries apart, the four breakdowns, "Estimated
+  // cost (list price, not a bill)" with its coverage -- and docs/outcomes.md
+  // ("The nightly seal") for where the days come from.
   'platform-counts': {
     group: 'the-platform',
     title: 'What Platform counts returns',
     short:
-      'One count of agent documents per state for your own tenant, and a second set across every tenant when you are an administrator. Each state is its own count() query, so a run costs one query per state per scope, and the price grows with the platform’s history rather than its load.',
+      'Two reads, each behind its own priced button. The state counts: one count() per state for your tenant, and across every tenant when you are an administrator. Over time: agents counted on the day they were submitted, retries apart, from the daily rollup, with an estimated cost at list price, not a bill.',
     long: [
-      'Each run asks the stats route for the number of agent documents in each state, as they stand at that moment. An agent that has moved on since is counted where it is now, and nothing about how long any agent spent anywhere is in the answer.',
+      'Each run of the state counts asks the stats route for the number of agent documents in each state, as they stand at that moment. An agent that has moved on since is counted where it is now, and nothing about how long any agent spent anywhere is in that answer; that is what Over time is for.',
       'The first set is scoped to the caller’s own tenant. An administrator also gets a second set across every tenant; anyone else sees that card as not entitled, which is a permission and not a fault.',
       'Every state the contract defines is counted, including the ones never written to an agent document, so a run costs one count() per state per scope. That query bills by the index entries it scans, and those grow with every agent ever written — so the price is printed before the control that spends it, and nothing re-runs it on a timer.',
       'A total is drawn only when every state came back. When one did not, the total is withheld and the missing states are named, because a sum over a partial response is not a count of anything.',
+      'Over time counts agents, per day, week or month, across every workspace. An agent is counted once, in the bucket of the day it was submitted, wherever it is now; its retries — the attempts after its first — are a second figure in the same bucket, never added to the agents. It can be broken down by agent type, model, workspace or pool account, and every breakdown comes from the same read.',
+      'The figures come from the daily rollup, the same days the Timeline reads. Each ended day is sealed nightly by the rollup job, so a read of sealed days re-derives nothing; the newest days are derived at Run. The read is billed by the days it covers in each workspace, which is why its price is on its own Run and nothing reads it on a timer.',
+      'The cost is the list price of what the agent CLI reported, not a bill: no billing export is read, so no figure is what was charged. A cost nothing reported is “not reported”, never $0. When only some agents reported one, the total is “at least” that figure, with how many of how many reported under it. An agent stopped before it reported carries the worker’s list-price estimate instead, which is in the total and also shown apart as estimated. Run hours are a floor in the same way when some attempts never wrote an end, and tokens when some attempts reported none.',
     ],
     see: ['withheld-total', 'admin-gate-not-failure'],
   },
