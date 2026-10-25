@@ -265,6 +265,49 @@ describe('QA targets: a target with environments, one Run over the ticked ones (
     })
   })
 
+  it('a target served in the one-origin shape offers its own new routes, and Promote to an admin only', async () => {
+    // `to_api` -> `_flat_api` -> `discovery_status` serves `new_since_last_run`
+    // on the target itself when it has no `environments[]`.
+    const flat: Json = {
+      ...app([]),
+      environments: undefined,
+      base_url: 'https://docs.example.test',
+      host: 'docs.example.test',
+      environment: 'production',
+      host_state: 'approved',
+      approved_by: 'ops@example.com',
+      approved_at: '2026-10-22T09:00:00+00:00',
+      sign_in: { kind: 'none' },
+      credential: UNSET,
+      challenge_bypass_value: UNSET,
+      new_since_last_run: [{ id: 'changelog', path: '/changelog', first_seen: '2026-10-24T21:12:00+00:00' }],
+    }
+    live('member', [flat])
+    await mountPage()
+    // MUTATION: build the one-origin leg with `new_since_last_run: []` and a stored target never shows its new routes.
+    expect(visible(card(APP))).toContain('New since last run')
+    expect(visible(card(APP))).toContain('/changelog')
+    // MUTATION: draw Promote to every role and a member's press is a certain 403.
+    expect(button(card(APP), /^Promote/)).toBeNull()
+    cleanup()
+
+    const calls = live('admin', [flat])
+    await mountPage()
+    const promote = button(card(APP), 'Promote /changelog')
+    // MUTATION: drop the target's own `new_since_last_run` and an admin has nothing to Promote.
+    expect(promote).not.toBeNull()
+    fireEvent.click(promote!)
+    await waitFor(() => expect(calls.filter((c2) => c2.method === 'PATCH').length).toBe(1), WAIT)
+    // MUTATION: replace `screens` with the new route alone and the stored list is lost.
+    expect(calls.find((c2) => c2.method === 'PATCH')!.body).toEqual({
+      screens: [
+        { id: 'home', path: '/' },
+        { id: 'settings', path: '/settings' },
+        { id: 'changelog', path: '/changelog' },
+      ],
+    })
+  })
+
   it("an admin's Set credential on one leg mints a link naming that environment, and the form names it", async () => {
     const calls = live('admin', [app([STAGING, PRODUCTION_NO_CREDENTIAL])])
     await mountPage()
