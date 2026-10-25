@@ -435,7 +435,8 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   { name: 'config', routes: ['config/secrets', 'config/mcp-servers', 'config/people', 'config/workspace'], floor: 60 },
   { name: 'capacity', routes: ['capacity/pools', 'capacity/catalogue', 'capacity/profiles'], floor: 140 },
   // API reads is Capacity's last page since NAV-FOOT (#1672), so it closes this walk.
-  { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/quota', 'capacity/api-reads'], floor: 160 },
+  // Account health (ACCOUNT-HEALTH-PAGE; part of #2302) sits beside Accounts, as in the rail.
+  { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/account-health', 'capacity/quota', 'capacity/api-reads'], floor: 160 },
   // Workspaces you admin (NAV-ADMIN-ROLE; part of #1633) is Admin's last tab;
   // Runner sizes (SIZES-UI; part of #1689) sits beside Pool limits, as in the rail.
   // Platform secrets (SSC-UI; part of #2158) sits after Platform counts, as in the rail.

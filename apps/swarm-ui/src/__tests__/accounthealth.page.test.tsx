@@ -108,13 +108,13 @@ function rec(a: HealthAccount, events: HealthEvent[]): AccountHealthRecord {
 /** Seven accounts, one of each state, as the mock-ups' example pool. */
 function pool(): { accounts: HealthAccount[]; events: Map<string, HealthEvent[]> } {
   const plan: Array<[string, HealthStatus, HealthEvent[]]> = [
-    ['saga-team', 'healthy', [ev(600, 'network')]],
+    ['example-team', 'healthy', [ev(600, 'network')]],
     ['aieng-claude1', 'limited', [ev(80, 'rate_limit', { window: 'five_hour', resetIn: 120 }), ev(40, 'assign_refused', { window: 'five_hour' })]],
     ['ai-eng-2', 'erroring', [ev(30, 'overloaded'), ev(25, 'overloaded'), ev(20, 'server_error'), ev(15, 'overloaded')]],
     ['ai-eng-3', 'reauth_needed', [ev(62, 'auth'), ev(61, 'reauth'), ev(30, 'assign_refused')]],
     ['devops-main', 'healthy', []],
     ['devops-team', 'healthy', [ev(3000, 'overloaded')]],
-    ['saga-personal', 'limited', [ev(200, 'rate_limit', { window: 'seven_day', resetIn: 1500 })]],
+    ['example-personal', 'limited', [ev(200, 'rate_limit', { window: 'seven_day', resetIn: 1500 })]],
   ]
   const events = new Map<string, HealthEvent[]>()
   const accounts = plan.map(([label, s, evs]) => {
@@ -178,8 +178,8 @@ describe('F1: the tiles and the list', () => {
       'eng:ai-eng-3',
       'eng:ai-eng-2',
       'eng:aieng-claude1',
-      'eng:saga-personal',
-      'eng:saga-team',
+      'eng:example-personal',
+      'eng:example-team',
       // Two quiet healthy accounts: by id, so the order is stable between polls.
       'eng:devops-main',
       'eng:devops-team',
@@ -227,7 +227,7 @@ describe('F3: the swimlane', () => {
   it('says how many older events count only in the totals when a record is past its last 50', () => {
     const { accounts, events } = pool()
     const many = Array.from({ length: 57 }, (_, i) => ev(100 + i * 60, 'network'))
-    events.set('eng:saga-team', many)
+    events.set('eng:example-team', many)
     const b = board(accounts, events)
 
     const { container } = desktop(b)
@@ -299,7 +299,7 @@ describe('F4: the honest states', () => {
     expect(container.querySelector('svg.ah-swim')).toBeNull()
     expect(container.querySelector('.ah-timeline')!.getAttribute('data-state')).toBe('unreadable')
     expect(Number(container.querySelector('[data-tile="limited"] .ah-tile-n')!.textContent)).toBe(2)
-    const last = container.querySelector('tr[data-account="eng:saga-team"] td:nth-child(6) .ah-dash')!
+    const last = container.querySelector('tr[data-account="eng:example-team"] td:nth-child(6) .ah-dash')!
     expect(last.getAttribute('title')).toContain('The health read failed')
   })
 })
@@ -383,10 +383,10 @@ describe('review fixes: the phone, the swimlane, the list and the development po
   it('cuts the Last event message to one line with the whole of it as its title', () => {
     const { accounts, events } = pool()
     const long = 'x'.repeat(30) + ' a provider message long enough to widen the column past its card'
-    events.set('eng:saga-team', [ev(600, 'network', { message: long })])
+    events.set('eng:example-team', [ev(600, 'network', { message: long })])
     const { container } = desktop(board(accounts, events))
 
-    const cell = container.querySelector('tr[data-account="eng:saga-team"] td.ah-last-td')!
+    const cell = container.querySelector('tr[data-account="eng:example-team"] td.ah-last-td')!
     const msg = cell.querySelector<HTMLElement>('.ah-msg.is-one-line')!
     expect(msg.getAttribute('title')).toBe(long)
   })
