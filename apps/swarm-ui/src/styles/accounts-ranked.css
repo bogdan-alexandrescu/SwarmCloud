@@ -318,7 +318,9 @@
   /* THE ACCOUNT IS THE SCREEN, NOT A CARD ON IT (P3, dark-phone-01): the
      split's frame -- border, rounded inset and surface -- belongs to the list;
      the opened account sits straight under the app bar, as P3 draws it. */
-  .acct-split.is-ranked.is-detail { border: 0; border-radius: 0; background: none; }
+  /* `overflow: visible`: the clip was for the card's rounded corners, and it cut
+     the focus ring of `‹ Accounts`, the screen's first control. */
+  .acct-split.is-ranked.is-detail { border: 0; border-radius: 0; background: none; overflow: visible; }
   .acct-split.is-ranked.is-detail > .acct-sheet { padding: 0; }
 }
 .acct-sheet .acct-dhead-name > h3 { font-size: var(--t-lead); line-height: var(--lh-lead); }
