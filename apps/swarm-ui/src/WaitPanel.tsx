@@ -272,6 +272,50 @@ function PersonFacts({ reason, d, now }: { reason: string; d: Record<string, unk
   )
 }
 
+/**
+ * A MERGE HELD BY THE OWNER'S QUESTIONS (#2313): who may answer, how many
+ * questions and where they are -- the held-questions card under this panel,
+ * with the answer control -- and NO "Answer with" human-ready route: the API
+ * serves none (swarm_api/waiting_detail.py `_owner_questions`), because the
+ * last answer resumes it by itself. Only a hold the answer route cannot read
+ * whole carries one, and then it is drawn.
+ */
+function OwnerQuestionFacts({ d }: { d: Record<string, unknown> }) {
+  const who = obj(d.who_may_answer)
+  const asked = Array.isArray(d.questions) ? d.questions.length : null
+  const unreadable = int(d.unreadable)
+  const route = str(d.answer_route)
+  return (
+    <>
+      <Fact k="who" label="Who may answer">
+        <Text value={who?.text} />
+      </Fact>
+      <Fact k="questions" label="Questions">
+        {asked === null ? (
+          <NotRecorded />
+        ) : (
+          <>
+            {asked} open ·{' '}
+            <a className="ctl-link" href="#held-questions">
+              answer them below
+            </a>
+          </>
+        )}
+      </Fact>
+      {unreadable !== null && unreadable > 0 && (
+        <Fact k="unreadable" label="Unreadable entries">
+          {String(unreadable)}
+        </Fact>
+      )}
+      {route !== null && (
+        <Fact k="answer" label="Then">
+          <code className="wp-cmd">{route}</code>
+        </Fact>
+      )}
+    </>
+  )
+}
+
 function DetailFacts({ w, now }: { w: Waiting; now: number }) {
   const d = obj(w.detail) ?? {}
   switch (w.reason) {
@@ -304,8 +348,10 @@ function DetailFacts({ w, now }: { w: Waiting; now: number }) {
           </Fact>
         </>
       )
-    case 'AWAITING_INPUT':
     case 'HUMAN_REQUIRED':
+      if (d.park_phase === 'owner_questions') return <OwnerQuestionFacts d={d} />
+      return <PersonFacts reason={w.reason} d={d} now={now} />
+    case 'AWAITING_INPUT':
       return <PersonFacts reason={w.reason} d={d} now={now} />
     case 'CREDENTIAL_MISSING': {
       // NAMES ONLY: the API builds `secret_names` from an allow-list and never

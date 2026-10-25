@@ -316,6 +316,24 @@ describe('the questions are drawn inline, with the answer control', () => {
     expect(panel.textContent).not.toContain('human-ready')
   })
 
+  it('offers the re-run only for a hold the answer route cannot read whole', async () => {
+    const c = await draw(mergeHeld())
+    const card = await within(c).findByRole('region', { name: 'Questions holding this merge' })
+    expect(within(card).queryByRole('button', { name: 'Re-run the merge' })).toBeNull()
+    const blocked = [
+      {
+        reason: 'HUMAN_REQUIRED',
+        park_phase: 'owner_questions',
+        owner_questions: { code: 'owner_questions_open', questions: HELD.slice(0, 1), unreadable: 1 },
+      } as unknown as NonNullable<Task['blocked_by']>[number],
+    ]
+    const u = await draw(mergeHeld({ id: 'task_unreadable0000000000', blocked_by: blocked }))
+    const held = (await within(u).findAllByRole('region', { name: 'Questions holding this merge' })).at(-1)!
+    // MUTATION: drop `UnreadableHold` -- an unreadable hold has no way back but this.
+    expect(within(held).getByRole('button', { name: 'Re-run the merge' })).toBeTruthy()
+    expect(held.textContent).toContain('could not be read')
+  })
+
   it('draws no held-questions card for a hand-off park', async () => {
     const c = await draw(handOff())
     expect(within(c).queryByRole('region', { name: 'Questions holding this merge' })).toBeNull()
