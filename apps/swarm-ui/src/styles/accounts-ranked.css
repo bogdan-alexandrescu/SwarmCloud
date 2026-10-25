@@ -333,7 +333,9 @@
 .acct-ss-note { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
 .acct-ss > p.acct-ss-note { font-size: var(--t-micro); line-height: var(--lh-micro); }
 .acct-ss-k { margin: 4px 0 0; font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim); }
-.acct-ss-wins { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; font-size: var(--t-meta); line-height: var(--lh-meta); }
+/* ONE ROW PER WINDOW (mock-up A F4): each track runs the sheet's width, so the
+   5-hour and 7-day floors line up one above the other and read as one scale. */
+.acct-ss-wins { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; font-size: var(--t-meta); line-height: var(--lh-meta); }
 .acct-ss-wins small { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .acct-ss-wins .acct-floor { max-width: none; }
 .acct-ss-dup { border: 1px solid var(--warn-ink); border-radius: 10px; padding: 10px 12px; background: color-mix(in srgb, var(--warn) 10%, var(--surface)); }
