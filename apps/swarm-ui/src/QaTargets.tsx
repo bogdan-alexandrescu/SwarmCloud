@@ -23,6 +23,7 @@ import {
   putQaCredential,
   qaCredentialLinkFrom,
   linkSpent,
+  QA_LINK_INVALID,
   repoSlug,
   runQaTarget,
   type FlowBrowserTool,
@@ -685,6 +686,14 @@ function ApproveHostForm({ t, onClose, onApproved }: { t: QaTarget; onClose: () 
   )
 }
 
+/** A refusal's message as a sentence: capitalised, and ended with a full stop when it has no end of its own. */
+function asSentence(message: string): string {
+  const t = message.trim()
+  if (t === '') return t
+  const capital = t.charAt(0).toUpperCase() + t.slice(1)
+  return /[.!?]$/.test(capital) ? capital : `${capital}.`
+}
+
 /**
  * The one-time link's form: the test credential's username and password, or
  * a `challenge_bypass` link's value. The fields are UNCONTROLLED: their values
@@ -740,10 +749,17 @@ function CredentialForm({
     // those drop the token.
     if (linkSpent(r)) onSent()
     if (r.status === 'error') {
+      // The API's message is a lowercase clause with no full stop; drawn as
+      // is it ran into the next sentence ("name the one to use Nothing was
+      // saved"). `qa_credential_link_invalid`'s message already ends "ask for
+      // a new one", so that refusal is not told to ask twice.
+      const why = asSentence(writeFailure(r.error))
       setFailed(
-        linkSpent(r)
-          ? `${writeFailure(r.error)} The link is used; ask for a new one to try again.`
-          : `${writeFailure(r.error)} Nothing was saved; the link still works, fix the field and save again.`,
+        !linkSpent(r)
+          ? `${why} Nothing was saved; the link still works, fix the field and save again.`
+          : r.error.code === QA_LINK_INVALID
+            ? `${why} The link is used.`
+            : `${why} The link is used; ask for a new one to try again.`,
       )
       return
     }
