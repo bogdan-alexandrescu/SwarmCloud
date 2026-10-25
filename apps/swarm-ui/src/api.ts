@@ -7855,10 +7855,26 @@ export interface ActionsEnvironment {
 /** `GET /v1/repositories/{repo_id}/actions/secrets`: the repository's secrets and each environment's. */
 export interface ActionsSecretList {
   repo_id: string
+  /** `owner/repo`, as the API names the registration; null when it did not. */
+  repository: string | null
+  /** The repository-level secrets (the API's `repository_secrets`). */
   secrets: ActionsSecretName[]
   environments: ActionsEnvironment[]
   /** The API lists at most 30 environments; true when it may have stopped there. */
   environments_truncated: boolean
+  /** GitHub's create-environment page, served on the list even with no environment yet. */
+  create_url: string | null
+  /**
+   * Whether this caller passes both checks a write runs (workspace manager,
+   * and GitHub calls them admin of the repository, asked live). It decides
+   * only what the pane offers: every write is authorised again by the API.
+   * Null when the API did not say.
+   */
+  can_write: boolean | null
+  /** The API's sentence for why not, when `can_write` is false. */
+  cannot_write_because: string | null
+  /** When GitHub was asked; null when the manager rule refused first. */
+  checked_at: string | null
 }
 
 /**
@@ -7915,10 +7931,9 @@ export function normActionsRule(raw: unknown, environment = ''): ActionsEnvironm
 }
 
 /**
- * The list, from an allow-list. The route spreads the service's answer over
- * its own keys, so its `repository` is the repository-level LIST (the
- * `owner/repo` string it set first is overwritten); a string there is read as
- * no list rather than a name.
+ * The list, from an allow-list. `repository` is the `owner/repo` name and
+ * the repository-level rows are `repository_secrets` (SSC-ACTIONS-API-2: the
+ * route's spread used to overwrite the name with the rows).
  */
 export function normActionsSecretList(raw: unknown): ActionsSecretList {
   const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
@@ -7930,9 +7945,14 @@ export function normActionsSecretList(raw: unknown): ActionsSecretList {
   })
   return {
     repo_id: wsText(r.repo_id) ?? '',
-    secrets: normActionsNames(r.repository),
+    repository: wsText(r.repository),
+    secrets: normActionsNames(r.repository_secrets),
     environments,
     environments_truncated: r.environments_truncated === true,
+    create_url: githubUrl(r.create_url),
+    can_write: typeof r.can_write === 'boolean' ? r.can_write : null,
+    cannot_write_because: wsText(r.cannot_write_because),
+    checked_at: wsText(r.checked_at),
   }
 }
 
@@ -7977,7 +7997,8 @@ export async function loadActionsSecrets(repoId: string): Promise<Result<Actions
       fetchedAt: Date.now(),
       data: normActionsSecretList({
         repo_id: repoId,
-        repository: [
+        repository: FIXTURE_ACTIONS_REPO,
+        repository_secrets: [
           { name: 'TEST_DB_PASSWORD', updated_at: day(5), set_by_swarmcloud: true, set_by: 'operator@example.com', set_at: day(5) },
           { name: 'SENTRY_DSN', updated_at: day(40), set_by_swarmcloud: false, set_by: null, set_at: null },
         ],
@@ -7987,6 +8008,11 @@ export async function loadActionsSecrets(repoId: string): Promise<Result<Actions
           { environment: 'staging', rule: fixtureActionsRule('staging', 'any_branch'), secrets: [] },
         ],
         environments_truncated: false,
+        create_url: `https://github.com/${FIXTURE_ACTIONS_REPO}/settings/environments/new`,
+        // The mock-up's sentence: a writer, GitHub asked a minute before the capture clock.
+        can_write: true,
+        cannot_write_because: null,
+        checked_at: new Date(FIXTURE_NOW - 60_000).toISOString(),
       }),
     }
   }
