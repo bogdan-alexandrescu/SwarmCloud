@@ -89,6 +89,17 @@ from .accounts import (
 )
 from .accountstore import COLLECTION as ACCOUNTS_COLLECTION
 from .accountstore import MALFORMED_ERRORS, AccountStore, MalformedAccountError
+from .accountstore import (
+    HEALTH_ASSIGN_REFUSED,
+    HEALTH_EXHAUSTED,
+    HEALTH_RATE_LIMIT,
+    PROVIDER_ERROR_KINDS,
+    health_counts,
+    health_status,
+    health_to_api,
+    limited_until_for,
+    refusing_window,
+)
 from .credentials import REFRESH_SUFFIX, CredentialRefresher
 from .oauth import HttpTokenEndpoint
 from .publishledger import FirestorePublishLedger, InMemoryPublishLedger
@@ -382,9 +393,43 @@ class AccountSwap(_AttemptHold):
     exclude: list[str] = Field(default_factory=list, max_length=20)
 
 
+class ReportAccount(_AttemptHold):
+    """The pool account a reporting attempt holds, and the proof it holds it.
+
+    The proof is `_AttemptHold`'s, all of it: a report that names an account
+    moves the 429 off the tenant's AIMD target and onto that account (#2302),
+    so naming one must cost exactly what reading or swapping it costs -- a
+    LIVE hold with this assignment id, issued to the caller's tenant, stamped
+    with this task and attempt. Anything less and a tenant could name some
+    other account to dodge its own halving.
+    """
+
+    account_id: str = Field(min_length=1, max_length=128)
+
+
 class RateLimitReport(StrictModel):
     retry_after_seconds: int | None = Field(default=None, ge=0, le=86_400)
     reset_at: datetime | None = None
+    #: The pool account the attempt held when the provider refused it (#2302).
+    #: None for API-key traffic, which reports exactly as it always has.
+    account: ReportAccount | None = None
+    #: A short, platform-written sentence for the account's health record.
+    #: The worker redacts it before sending (`agent_worker.control`); the
+    #: record caps it (`accountstore.health_message`).
+    message: str = Field(default="", max_length=500)
+
+
+class AccountErrorReport(StrictModel):
+    """A provider error on a held account that is not a rate limit (#2302).
+
+    Health only: it never touches AIMD. `kind` is one of
+    `accountstore.PROVIDER_ERROR_KINDS` -- auth, overloaded (529), server_error
+    (5xx), network.
+    """
+
+    account: ReportAccount
+    kind: str = Field(min_length=1, max_length=32)
+    message: str = Field(default="", max_length=500)
 
 
 class HardMaxRequest(StrictModel):
@@ -629,6 +674,17 @@ def _names(other: str | None, viewer: str, platform_wide: bool) -> bool:
     if other is None:
         return False
     return platform_wide or other.split(":", 1)[0] == viewer
+
+
+def _health_row(raw: Any, account: Any, now: datetime) -> dict[str, Any]:
+    """The two health fields a listing row carries (#2302): the last 24 h's
+    counts by kind and the one-word status (`accountstore.health_status`).
+    Counts and a word, nothing that names a tenant or a task."""
+    data = raw if isinstance(raw, dict) else {}
+    return {
+        "health_24h": health_counts(data, now)["last_24h"],
+        "health_status": health_status(account, data, now),
+    }
 
 
 def account_to_api(
@@ -2788,6 +2844,119 @@ def create_app(
         request.app.state.metrics.observe(state)
         return {"quota": quota_to_api(state)}
 
+    # -- a 429 is the account's when an account was refused (#2302) --------
+    #
+    # A report that names the pool account its attempt holds is recorded
+    # against THAT ACCOUNT -- its health record -- and does not multiply the
+    # tenant's adaptive target. The account is already kept from new work by
+    # its own window readings (S15) and the hold machinery; halving the
+    # tenant on top of that punished every other account for one account's
+    # window (2026-10-25: eng fell 26 -> 14 on one 429 and sat full with 100+
+    # queued while other accounts had room). The tenant is still halved:
+    #
+    #   * for a report that names no account -- API-key traffic, as before;
+    #   * for one whose account the caller cannot prove it holds (`not_held`):
+    #     naming an account must not be a way to dodge the halving;
+    #   * when every account the tenant may draw from is limited at once
+    #     (`AccountStore.every_account_limited`): the pool as a whole is spent,
+    #     and that IS the tenant's limit.
+    #
+    # This changes how far the tenant's ceiling falls on a 429, never
+    # admission's arithmetic: the pools are still written only through
+    # `QuotaBroker._mutate`, and the scheduler still reserves all-or-nothing
+    # and counts from LEASED.
+
+    #: What `_account_scope` decided, as the route answers it.
+    SCOPE_TENANT = "tenant"
+    SCOPE_ACCOUNT = "account"
+    SCOPE_POOL_EXHAUSTED = "pool_exhausted"
+    SCOPE_NOT_HELD = "not_held"
+
+    def _held_report_account(
+        request: Request, tenant_id: str, provider: str, ref: ReportAccount
+    ) -> tuple[Any, Hold] | None:
+        """(the decoded account, the caller's hold), or None when not proven.
+
+        `_attempt_hold` over the raw document, then the decoded account for its
+        windows. The account must also be of the reported provider: a hold on
+        an anthropic account says nothing about another provider's 429.
+        """
+        store = getattr(request.app.state, "account_store", None)
+        if store is None:
+            return None
+        data = _raw_account(request.app.state.broker.db, ref.account_id)
+        if data is None:
+            return None
+        hold = _attempt_hold(
+            data,
+            datetime.now(timezone.utc),
+            assignment_id=ref.assignment_id,
+            tenant_id=tenant_id,
+            task_id=ref.task_id,
+            attempt_id=ref.attempt_id,
+        )
+        if hold is None:
+            return None
+        try:
+            account = store.get(ref.account_id)
+        except MalformedAccountError:
+            return None
+        if account is None or account.provider != provider:
+            return None
+        return account, hold
+
+    def _account_scope(
+        request: Request, provider: str, tenant_id: str, body: RateLimitReport, kind: str
+    ) -> str:
+        """Record the report against its account when it names one; say how
+        far the tenant falls (`SCOPE_*`). Halve unless `SCOPE_ACCOUNT`."""
+        ref = body.account
+        if ref is None:
+            return SCOPE_TENANT
+        held = _held_report_account(request, tenant_id, provider, ref)
+        if held is None:
+            request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
+            log.warning(
+                "a rate-limit report named an account its caller does not hold; "
+                "counted against the tenant",
+                extra={"account_id": ref.account_id, "tenant_id": tenant_id,
+                       "provider": provider},
+            )
+            return SCOPE_NOT_HELD
+        account, hold = held
+        store = request.app.state.account_store
+        now = datetime.now(timezone.utc)
+        window = refusing_window(account, now, reset_at=body.reset_at)
+        until = limited_until_for(
+            now,
+            reset_at=body.reset_at,
+            retry_after_seconds=body.retry_after_seconds,
+            account=account,
+            window=window,
+        )
+        store.record_health(
+            account.account_id,
+            kind,
+            tenant_id=tenant_id,
+            task_id=hold.task_id,
+            window=window,
+            reset_at=body.reset_at or until,
+            message=body.message,
+            limited_until=until,
+        )
+        if store.every_account_limited(tenant_id, provider, now):
+            return SCOPE_POOL_EXHAUSTED
+        return SCOPE_ACCOUNT
+
+    def _scoped_answer(state: Any, scope: str) -> dict[str, Any]:
+        return {
+            "quota": quota_to_api(state),
+            #: How this report was counted: `tenant` / `not_held` /
+            #: `pool_exhausted` halved the tenant's target, `account` did not.
+            "scope": scope,
+            "tenant_target_decreased": scope != SCOPE_ACCOUNT,
+        }
+
     @app.post("/v1/quota/{provider}/{tenant_id}/rate-limit")
     def report_rate_limit(
         request: Request,
@@ -2798,16 +2967,24 @@ def create_app(
     ) -> dict[str, Any]:
         name = _known_provider(provider)
         _authorize(request, authorization, tenant_id)
-        state = request.app.state.broker.observe_rate_limit(
-            name,
-            tenant_id,
-            retry_after_seconds=body.retry_after_seconds,
-            reset_at=body.reset_at,
-        )
+        scope = _account_scope(request, name, tenant_id, body, HEALTH_RATE_LIMIT)
+        if scope == SCOPE_ACCOUNT:
+            # The account's 429, recorded against the account: the tenant's
+            # document is not touched -- no halving, no cooldown, no step
+            # toward EXHAUSTED, and the success run toward the next increase
+            # goes on. Read through `current` so the answer is the live state.
+            state = request.app.state.broker.current(name, tenant_id)
+        else:
+            state = request.app.state.broker.observe_rate_limit(
+                name,
+                tenant_id,
+                retry_after_seconds=body.retry_after_seconds,
+                reset_at=body.reset_at,
+            )
+            request.app.state.metrics.decreases.labels(provider=name).inc()
         request.app.state.metrics.reports.labels(provider=name, kind="rate_limit").inc()
-        request.app.state.metrics.decreases.labels(provider=name).inc()
         request.app.state.metrics.observe(state)
-        return {"quota": quota_to_api(state)}
+        return _scoped_answer(state, scope)
 
     @app.post("/v1/quota/{provider}/{tenant_id}/exhausted")
     def report_exhausted(
@@ -2819,15 +2996,57 @@ def create_app(
     ) -> dict[str, Any]:
         name = _known_provider(provider)
         _authorize(request, authorization, tenant_id)
-        state = request.app.state.broker.observe_exhausted(
-            name,
-            tenant_id,
-            retry_after_seconds=body.retry_after_seconds,
-            reset_at=body.reset_at,
-        )
+        scope = _account_scope(request, name, tenant_id, body, HEALTH_EXHAUSTED)
+        if scope == SCOPE_ACCOUNT:
+            state = request.app.state.broker.current(name, tenant_id)
+        else:
+            state = request.app.state.broker.observe_exhausted(
+                name,
+                tenant_id,
+                retry_after_seconds=body.retry_after_seconds,
+                reset_at=body.reset_at,
+            )
         request.app.state.metrics.reports.labels(provider=name, kind="exhausted").inc()
         request.app.state.metrics.observe(state)
-        return {"quota": quota_to_api(state)}
+        return _scoped_answer(state, scope)
+
+    @app.post("/v1/quota/{provider}/{tenant_id}/account-error")
+    def report_account_error(
+        request: Request,
+        provider: str,
+        tenant_id: str,
+        body: AccountErrorReport,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """A provider error on a held account, for its health record only (#2302).
+
+        Never touches AIMD or the tenant's quota document. Refused (403) for an
+        account the caller does not hold, by the same proof as a rate-limit
+        report's: a tenant may not write into another's account health.
+        """
+        name = _known_provider(provider)
+        _authorize(request, authorization, tenant_id)
+        if body.kind not in PROVIDER_ERROR_KINDS:
+            raise BrokerValidationError(
+                f"unknown provider error kind {body.kind!r}; known: "
+                f"{', '.join(PROVIDER_ERROR_KINDS)}"
+            )
+        held = _held_report_account(request, tenant_id, name, body.account)
+        if held is None:
+            request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
+            raise BrokerAuthError(
+                "this caller holds no live hold on that account for that task and attempt"
+            )
+        account, hold = held
+        recorded = request.app.state.account_store.record_health(
+            account.account_id,
+            body.kind,
+            tenant_id=tenant_id,
+            task_id=hold.task_id,
+            message=body.message,
+        )
+        request.app.state.metrics.reports.labels(provider=name, kind="account_error").inc()
+        return {"account_id": account.account_id, "kind": body.kind, "recorded": recorded}
 
     @app.put("/v1/quota/{provider}/{tenant_id}/hard-max")
     def set_hard_max(
@@ -2935,11 +3154,19 @@ def create_app(
             accounts = [a for a in listing.accounts if a.may_serve(scope)]
         else:
             accounts = listing.accounts
+        # Each row's 24 h health counts and status (#2302), so a list can draw
+        # them without one read per account. Counts only, never an event: an
+        # event names a tenant and a task, and a row is read by borrowers.
+        now = datetime.now(timezone.utc)
+        health = store.health_many(a.account_id for a in accounts)
         return {
             "accounts": [
                 # `scope or ""`: a reader with no tenant is named nothing,
                 # never given the owner's view by default.
-                account_to_api(a, viewer=scope or "", platform_wide=platform_wide)
+                {
+                    **account_to_api(a, viewer=scope or "", platform_wide=platform_wide),
+                    **_health_row(health.get(a.account_id), a, now),
+                }
                 for a in accounts
             ],
             "tenant_id": scope,
@@ -4039,6 +4266,15 @@ def create_app(
             unusable=body.unusable,
         )
         if body.unusable and was_held:
+            # Refused at assignment, on the account's health record (#2302).
+            # A fixed sentence, NEVER `body.unusable`: that quotes Secret
+            # Manager's error and names the secret.
+            _accounts(request).record_health(
+                account_id,
+                HEALTH_ASSIGN_REFUSED,
+                tenant_id=caller_tenant or None,
+                message="the worker it was assigned to could not read its credential",
+            )
             owner = account.get("owner_tenant")
             owner = owner if isinstance(owner, str) else ""
             log.error(
@@ -4193,6 +4429,17 @@ def create_app(
         tenant_id, _data, _hold = _holder(request, authorization, body.account_id, body)
         provider = _known_provider(body.provider)
         store = _accounts(request)
+        if body.reason == SWAP_UNUSABLE:
+            # The account being LEFT could not be read by the attempt that was
+            # moved onto it: refused at assignment (#2302), whatever the move
+            # below finds. Recorded after `_holder`, so only its holder can.
+            store.record_health(
+                body.account_id,
+                HEALTH_ASSIGN_REFUSED,
+                tenant_id=tenant_id,
+                task_id=body.task_id,
+                message="the worker it was moved to could not read its credential",
+            )
         db = request.app.state.broker.db
         now = datetime.now(timezone.utc)
         exclude = {body.account_id, *(a for a in body.exclude if a)}
@@ -4333,6 +4580,49 @@ def create_app(
             "holds": [_hold_to_api(h) for h in _live_holds(data, now)],
             "observed_at": now.isoformat(),
         }
+
+    @app.get("/v1/accounts/{account_id}/health")
+    def account_health(
+        request: Request,
+        account_id: str,
+        bearer: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """One account's health record (#2302): counts for the last 1 h / 24 h /
+        7 d by kind, an hourly series for 7 days, the last 50 events newest
+        first, and a one-word status -- `healthy`, `limited`, `erroring` or
+        `reauth_needed`, by the rule in `accountstore.health_status`:
+
+          1. `reauth_needed` when the account is REAUTH_REQUIRED;
+          2. `limited` when a recorded 429 has not reached its reset, or the
+             account's window readings keep it from a new agent;
+          3. `erroring` with 3 or more errors (auth, overloaded, 5xx, network,
+             refused at assignment, refresh failed) in the last hour;
+          4. otherwise `healthy`.
+
+        PLATFORM-ONLY, like the holder reads beside it: the events name every
+        tenant and task that met the account. swarm-api is the one caller; it
+        resolves the human's tenant and filters per viewer.
+        """
+        _platform_only(
+            request,
+            bearer,
+            "only the platform may read an account's health; it names other "
+            "tenants' work",
+        )
+        store = _accounts(request)
+        try:
+            account = store.get(account_id)
+        except MalformedAccountError:
+            # The record is still served: a broken document is exactly the
+            # account whose health an operator wants to read.
+            account = None
+            if _raw_account(request.app.state.broker.db, account_id) is None:
+                raise BrokerValidationError(f"no account {account_id!r}") from None
+        else:
+            if account is None:
+                raise BrokerValidationError(f"no account {account_id!r}")
+        now = datetime.now(timezone.utc)
+        return health_to_api(account_id, account, store.health(account_id), now)
 
     @app.get("/v1/accounts/{account_id}/holds/history")
     def account_hold_history(

@@ -249,6 +249,11 @@ class AccountPool(Protocol):
         cursor: str | None,
     ) -> dict[str, Any]: ...
 
+    # One account's health record (#2302). A PLATFORM read like the two
+    # above: its events name every tenant and task that met the account, and
+    # `routes/accounts.py` filters them per viewer.
+    def account_health(self, account_id: str) -> dict[str, Any]: ...
+
     # THE ONE QUOTA ROUTE this API calls (QUOTA-RESET, 2026-10-14): a platform
     # admin's reset of a tenant's AIMD target, proxied so the broker stays the
     # only writer of quota documents. Only `routes/admin.py` calls it.
@@ -604,6 +609,9 @@ class BrokerClient:
             f"/v1/accounts/{quote(account_id, safe='')}/holds/history",
             params={"from": start or "", "to": end or "", "cursor": cursor or ""},
         )
+
+    def account_health(self, account_id: str) -> dict[str, Any]:
+        return self._call("GET", f"/v1/accounts/{quote(account_id, safe='')}/health")
 
     def set_adaptive_target(
         self,

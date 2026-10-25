@@ -1558,6 +1558,15 @@ class Worker:
                 # holds the replacement; re-reading it costs one API call and
                 # saves the attempt.
                 refusal = self._credential_refusal()
+                if refusal is not None and self._account is not None:
+                    # An auth error on the held account, for its health record
+                    # (#2302); every refusal, the reloaded ones included.
+                    self.control.report_account_error(
+                        provider=str(refusal.get("provider") or self.cfg.provider or ""),
+                        account=self._account,
+                        kind="auth",
+                        message="the provider refused the account's credential",
+                    )
                 if refusal is not None and credential_reloads < MAX_CREDENTIAL_RELOADS:
                     credential_reloads += 1
                     # RESUMED, NOT STARTED AGAIN (#626). A restart from the
@@ -1658,6 +1667,10 @@ class Worker:
                 state=quota.state,
                 retry_after_seconds=quota.retry_after_seconds,
                 reset_at=quota.reset_at,
+                # The pool account the runner was refused on, when it held
+                # one (#2302): the 429 is that account's, not the tenant's.
+                account=self._account,
+                message=quota.detail,
             )
             if decision.park or attempt_number > MAX_IN_WORKER_RETRIES:
                 return self._park_for_quota(decision, source="runner")
@@ -10227,11 +10240,19 @@ class Worker:
                 state = ProviderState(str(decision.detail.get("provider_state", "EXHAUSTED")))
             except ValueError:
                 state = ProviderState.EXHAUSTED
+            # The account this attempt still holds -- it is given back on the
+            # way out, in `_cleanup` -- so a park on an account's 429 names it
+            # (#2302). Only a RUNNER's 429 is the account's: a stop read from
+            # the broker (preflight, backpressure) was no account's refusal.
+            # The park itself is unchanged (invariant 4).
+            from_runner = decision.detail.get("source") == "runner"
             self.control.update_quota_state(
                 provider=provider,
                 state=state,
                 retry_after_seconds=decision.wait_seconds,
                 reset_at=decision.next_eligible_at,
+                account=self._account if from_runner else None,
+                message=str(decision.detail.get("signal_detail") or ""),
             )
         # `source` is where the signal was OBSERVED (the runner's 429, the
         # control plane's aggregate, the pre-flight check); `decision.detail`
