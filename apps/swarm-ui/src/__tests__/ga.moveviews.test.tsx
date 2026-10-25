@@ -293,3 +293,30 @@ describe('Browser logins is a tab of Config › Secrets', () => {
     expect(screen.getByText('Opened from a one-time link')).toBeTruthy()
   })
 })
+
+describe("People and roles' role list and overrides read as the house list and table (seen on the render, GA-MOVE-VIEWS review)", () => {
+  // The rendered review at 1440 found both drawn by the browser's defaults:
+  // the definition list indented 40px at 16px, the table's cells centred and
+  // unpadded. They take Profile's label-value grid (`.pf-facts`) and the
+  // Secrets / MCP servers table (`.mcp-servers`, which stacks on a phone).
+  const WIDE = { width: 1440 }
+  const PHONE = { width: 390 }
+  it('draws the role list as a label-value grid and the overrides as a table that stacks at 390', async () => {
+    const { painted } = await import('./marks')
+    serve((_m, url) => (url.includes('/v1/workspace/roles') ? { status: 200, body: { ...ROLES, people: [{ email: 'bo.c@example.com', role: 'admin', source: 'override', granted_by: 'ops@example.com', granted_at: '2026-10-18T09:14:03Z', granted_via: 'console', reason: 'lead' }] } } : null))
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const { WorkspacePeopleScreen } = await import('../WorkspacePeople')
+    render(<WorkspacePeopleScreen />)
+    const table = await screen.findByRole('table', { name: 'People with their own role' })
+    const facts = screen.getByText('Sees everything.').closest('dl')!
+    // MUTATION: drop `className="pf-facts"` from RoleTable's <dl> -> fails.
+    expect(painted(facts, 'display', WIDE)).toBe('grid')
+    // MUTATION: drop `className="mcp-servers"` from Overrides' <table> -> fails.
+    const cell = table.querySelector('tbody td')!
+    expect(painted(cell, 'text-align', WIDE)).toBe('left')
+    expect(painted(table.querySelector('tbody tr')!, 'display', PHONE)).toBe('block')
+    // Every cell names its column, which a phone draws above the value.
+    for (const c of table.querySelectorAll('tbody th, tbody td')) expect(c.getAttribute('data-label'), c.textContent ?? '').not.toBeNull()
+  })
+})
