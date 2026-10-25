@@ -58,6 +58,7 @@ export const USER_KEYS: readonly string[] = [
   'swarm.workflows.recent', // Spine.tsx RECENT_WORKFLOWS_KEY
   'swarm.workflows.newest', // Spine.tsx NEWEST_WORKFLOWS_KEY
   'swarm.timeline.view', // Activity.tsx VIEW_KEY: a saved filter query
+  'swarm.access.owner', // Access.tsx CHOSEN_OWNER_KEY: the phone chooser's owner (sessionStorage)
   SIGNED_OUT_KEY,
 ]
 
