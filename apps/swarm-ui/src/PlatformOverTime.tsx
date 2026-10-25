@@ -72,7 +72,20 @@ import './styles/overtime.css'
  * the read already paid for when there is one and otherwise shows what Run
  * will read and what it costs. `run` is the page's own Run (COUNTS-PAGE's one
  * shared button): each new value is one press, and mounting is none.
+ *
+ * ONE RUN ON THE PAGE (COUNTS-ONE-RUN; BGD, CTV-5, 2026-10-24, and
+ * 2026-10-25). When the page passes `run`, this view draws no Run of its own:
+ * two primary buttons each priced half of what the page reads. The page's Run
+ * prices both reads summed, so this view hands it its own half through
+ * `onPrice`, again whenever the bucket (and so the span) changes. Without
+ * `run` the view keeps its own priced Run, as the dev preview mounts it.
  */
+export interface OverTimePrice {
+  /** The read's price over every workspace, or null while the roster is not known. */
+  total: number | null
+  /** One workspace's share, for the price while `total` is null. */
+  perWorkspace: number
+}
 
 /**
  * THE SESSION'S READS, kept for the tab's lifetime as Platform counts keeps
@@ -89,7 +102,15 @@ export function forgetOverTime(): void {
 
 const UNIT: Record<TimeBucket, string> = { day: 'day', week: 'week', month: 'month' }
 
-export function PlatformOverTime({ workspaces = null, run: pressed }: { workspaces?: number | null; run?: number }) {
+export function PlatformOverTime({
+  workspaces = null,
+  run: pressed,
+  onPrice,
+}: {
+  workspaces?: number | null
+  run?: number
+  onPrice?: (price: OverTimePrice) => void
+}) {
   const [bucket, setBucket] = useState<TimeBucket>('week')
   const [breakdown, setBreakdown] = useState<Breakdown>('none')
   const [reads, setReads] = useState<Record<string, Result<PlatformTime>>>(() => ({ ...kept }))
@@ -114,6 +135,13 @@ export function PlatformOverTime({ workspaces = null, run: pressed }: { workspac
   const price = readEstimate(days, known)
   const priceWords = price.total === null ? `~${int(price.perWorkspace)} reads a workspace` : `~${int(price.total)} reads`
   const spanWords = TIME_BUCKETS.find((b) => b.key === bucket)!.span
+  const shared = pressed !== undefined
+
+  // THE PAGE PRICES ITS ONE RUN WITH THIS HALF: told again only when the
+  // figure moves, so a clock tick that keeps the span is no re-render above.
+  useEffect(() => {
+    onPrice?.({ total: price.total, perWorkspace: price.perWorkspace })
+  }, [price.total, price.perWorkspace])
 
   // A REF, NOT `busy`: two presses inside one render both read `busy` as it
   // was before the first, and each press bills a read.
@@ -168,14 +196,18 @@ export function PlatformOverTime({ workspaces = null, run: pressed }: { workspac
         <BreakdownMenu value={breakdown} onPick={setBreakdown} />
         <span className="pot-run">
           <span className="pot-prov">{provenance}</span>
-          <Button kind={run === null ? 'primary' : 'secondary'} onClick={go} aria-disabled={busy || undefined}>
-            {run === null ? 'Run' : 'Run again'}
-            {' · '}
-            <span className="pot-price">{priceWords}</span>
-          </Button>
+          {/* NO SECOND RUN when the page has one: its Run reads this too. */}
+          {!shared && (
+            <Button kind={run === null ? 'primary' : 'secondary'} onClick={go} aria-disabled={busy || undefined}>
+              {run === null ? 'Run' : 'Run again'}
+              {' · '}
+              <span className="pot-price">{priceWords}</span>
+            </Button>
+          )}
         </span>
       </div>
       <p className="pot-note">
+        {shared && 'The page’s Run reads this too. '}
         {price.total === null
           ? `The price is ~${int(price.perWorkspace)} reads for each workspace: one stored day for each of ${days} days, and the newest derived live. `
           : `The price is ~${int(price.total)} reads for ${spanWords} of stored days over ${known} workspaces, and the newest derived live. `}
@@ -452,6 +484,9 @@ type ReadBucket = UsageBucket & UsageFigures
 
 function Answer({ data, breakdown, tz }: { data: PlatformTime; breakdown: Breakdown; tz: string }) {
   const [picked, setPicked] = useState<number | null>(null)
+  // THE HOVERED BUCKET (F6): its readout follows the pointer until a bucket is
+  // picked, and a picked one stays put under a passing pointer.
+  const [hovered, setHovered] = useState<number | null>(null)
   const u = data.usage
   const size: LedgerBucketSize = data.bucket
   const unread = u.buckets.filter((b) => !isRead(b)).length
@@ -459,6 +494,7 @@ function Answer({ data, breakdown, tz }: { data: PlatformTime; breakdown: Breakd
   const grouping = groupingOf(u, breakdown)
   const layers = grouping === null ? null : layersOf(grouping)
   const label = breakdownOf(breakdown).label.toLowerCase()
+  const shown = picked ?? hovered
   return (
     <>
       <Tiles data={data} unread={unread} unit={unit} />
@@ -471,7 +507,25 @@ function Answer({ data, breakdown, tz }: { data: PlatformTime; breakdown: Breakd
           </p>
         </div>
         <div className={layers === null ? 'pot-agents-body' : 'pot-agents-body is-split'}>
-          <AgentsFigure buckets={u.buckets} layers={layers} size={size} tz={tz} picked={picked} onPick={setPicked} />
+          {/* THE PLOT: the chart and its readout, which overtime.css lays over
+              the chart where the plot is wide (F6) and keeps under it on a
+              phone (F7). */}
+          <div className="pot-plot">
+            <AgentsFigure buckets={u.buckets} layers={layers} size={size} tz={tz} picked={picked} onPick={setPicked} onHover={setHovered} />
+            {shown !== null && u.buckets[shown] !== undefined && (
+              <Readout
+                bucket={u.buckets[shown]!}
+                index={shown}
+                count={u.buckets.length}
+                hover={picked === null}
+                layers={layers}
+                by={grouping?.by ?? null}
+                size={size}
+                tz={tz}
+                onClose={() => setPicked(null)}
+              />
+            )}
+          </div>
           {layers !== null && <SplitTable layers={layers} by={grouping!.by} />}
         </div>
         <Legend
@@ -482,9 +536,6 @@ function Answer({ data, breakdown, tz }: { data: PlatformTime; breakdown: Breakd
             ['pot-key-wash', 'in progress: the bucket is still filling'],
           ]}
         />
-        {picked !== null && u.buckets[picked] !== undefined && (
-          <Readout bucket={u.buckets[picked]!} index={picked} layers={layers} by={grouping?.by ?? null} size={size} tz={tz} onClose={() => setPicked(null)} />
-        )}
       </section>
       <CostCard data={data} size={size} tz={tz} picked={picked} />
       <Table data={data} grouping={grouping} breakdown={breakdown} tz={tz} />
@@ -797,7 +848,7 @@ function moveKeys(n: number, picked: number | null, onPick: (i: number | null) =
   }
 }
 
-function AgentsFigure({ buckets, layers, size, tz, picked, onPick }: { buckets: readonly UsageBucket[]; layers: Layers | null; size: LedgerBucketSize; tz: string; picked: number | null; onPick: (i: number | null) => void }) {
+function AgentsFigure({ buckets, layers, size, tz, picked, onPick, onHover }: { buckets: readonly UsageBucket[]; layers: Layers | null; size: LedgerBucketSize; tz: string; picked: number | null; onPick: (i: number | null) => void; onHover: (i: number | null) => void }) {
   const hatch = useHatchId()
   const read = buckets.filter(isRead)
   const maxAgents = Math.max(0, ...read.map((b) => b.agents))
@@ -811,14 +862,14 @@ function AgentsFigure({ buckets, layers, size, tz, picked, onPick }: { buckets: 
       onKeyDown={moveKeys(buckets.length, picked, onPick)}
     >
       {AGENT_DRAWN.map((d) => (
-        <AgentsDrawing key={d.key} d={d} hatch={`${hatch}-${d.key}`} buckets={buckets} layers={layers} size={size} tz={tz} maxAgents={maxAgents} maxRetries={maxRetries} picked={picked} onPick={onPick} />
+        <AgentsDrawing key={d.key} d={d} hatch={`${hatch}-${d.key}`} buckets={buckets} layers={layers} size={size} tz={tz} maxAgents={maxAgents} maxRetries={maxRetries} picked={picked} onPick={onPick} onHover={onHover} />
       ))}
     </div>
   )
 }
 
 function AgentsDrawing({
-  d, hatch, buckets, layers, size, tz, maxAgents, maxRetries, picked, onPick,
+  d, hatch, buckets, layers, size, tz, maxAgents, maxRetries, picked, onPick, onHover,
 }: {
   d: Drawing
   hatch: string
@@ -830,6 +881,7 @@ function AgentsDrawing({
   maxRetries: number
   picked: number | null
   onPick: (i: number | null) => void
+  onHover: (i: number | null) => void
 }) {
   const n = buckets.length
   const plotW = d.w - GUTTER - RIGHT
@@ -850,7 +902,7 @@ function AgentsDrawing({
   const barX = (i: number) => x0(i) + (col - barW) / 2
   const height = (scale: typeof aScale, base: number, v: number, max: number) => (max === 0 || v === 0 ? 0 : Math.max(1, base - scale(v)))
   return (
-    <svg className={`pot-svg is-${d.key}`} viewBox={`0 0 ${d.w} ${d.h}`} width={d.w} height={d.h} role="group" aria-label={`Agents per ${size}, drawn ${d.w} wide`}>
+    <svg className={`pot-svg is-${d.key}`} viewBox={`0 0 ${d.w} ${d.h}`} width={d.w} height={d.h} role="group" aria-label={`Agents per ${size}, drawn ${d.w} wide`} onMouseLeave={() => onHover(null)}>
       <HatchDef id={hatch} />
       <text className="pot-lane" x={GUTTER} y={top - 8}>agents per {size}</text>
       {/* The narrow drawing's label is short: the long one ran the width of the
@@ -916,6 +968,7 @@ function AgentsDrawing({
           width={col}
           height={retriesBase - top}
           onClick={() => onPick(picked === i ? null : i)}
+          onMouseEnter={() => onHover(i)}
         >
           <title>{bucketName(b.start, size, tz)}</title>
         </rect>
@@ -994,15 +1047,26 @@ function Stack({
 }
 
 /**
- * THE READOUT ON ONE BUCKET (F6), pinned under the chart so it never covers
- * the marks it describes. Every figure with its coverage; a live region, so a
- * keyboard reader hears it as the arrows move it.
+ * THE READOUT ON ONE BUCKET (F6): the picked bucket's, else the hovered one's.
+ * Every figure with its coverage; a live region, so a keyboard reader hears it
+ * as the arrows move it.
+ *
+ * OVER THE CHART, ON THE SIDE AWAY FROM ITS BUCKET (COUNTS-ONE-RUN), as
+ * counts-a.html's F6 draws it: below the chart it pushed the cost card down
+ * the page by its own height on every pick. `data-side` is that side, and
+ * overtime.css lays it over the plot only where the plot is wide; on a phone
+ * (F7) it stays under the chart. It never covers its own bucket, so the ring
+ * on the picked column stays in sight.
  */
 function Readout({
-  bucket, index, layers, by, size, tz, onClose,
+  bucket, index, count, hover, layers, by, size, tz, onClose,
 }: {
   bucket: UsageBucket
   index: number
+  /** How many buckets the chart draws, to say which half `index` is in. */
+  count: number
+  /** Shown for the pointer, not picked: it takes no pointer itself, and has nothing to close. */
+  hover: boolean
   layers: Layers | null
   by: string | null
   size: LedgerBucketSize
@@ -1011,11 +1075,11 @@ function Readout({
 }) {
   const name = bucketName(bucket.start, size, tz)
   return (
-    <div className="pot-readout" role="status" aria-live="polite">
+    <div className="pot-readout" role="status" aria-live="polite" data-side={index >= count / 2 ? 'left' : 'right'} data-hover={hover ? '' : undefined}>
       <p className="pot-readout-head">
         <b>{name}</b>
         <span>{!isRead(bucket) ? unreadWords(bucket.unread_reason) : bucket.in_progress ? 'in progress, so far' : 'sealed'}</span>
-        <button type="button" className="pot-readout-close" aria-label="Close the readout" onClick={onClose}>×</button>
+        {!hover && <button type="button" className="pot-readout-close" aria-label="Close the readout" onClick={onClose}>×</button>}
       </p>
       {!isRead(bucket) ? (
         <p className="pot-readout-none">No figure, not zero: this {size} was not read. The next Run reads it again.</p>

@@ -5,7 +5,11 @@
    `--series-1` and retries `--series-5` on their own lane, with a legend
    naming both (design-system.md §1.6). */
 
-.pot { display: flex; flex-direction: column; gap: var(--ctl-s3); margin-top: var(--ctl-s5); min-width: 0; }
+/* NO TOP MARGIN: Over time is the first thing under the page head (mock-up
+   F1's order, COUNTS-ONE-RUN), and the head's own margin is the one gap under
+   every admin head (qafix4.pageheads.b). "Right now" below it takes the
+   change-of-subject space instead. */
+.pot { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
 .pot-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--ctl-s1) var(--ctl-s3); }
 .pot-title { margin: 0; font: 600 var(--t-title)/var(--lh-title) var(--font); color: var(--text); }
 .pot-sub,
@@ -130,8 +134,25 @@
 .pot-key-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text); border: 1.5px solid var(--text); }
 .pot-key-dot.is-open { background: var(--surface); }
 
-/* THE READOUT, pinned under the chart (F6, phone): it never covers a mark. */
+/* THE READOUT (F6). Under the chart where the plot is narrow -- a phone's
+   340, F7 -- so it never covers a mark there. Where the plot is wide it is
+   laid OVER the chart, on the side away from its bucket (`data-side`, set by
+   PlatformOverTime.tsx), as counts-a.html's F6 draws it: in the flow it pushed
+   the cost card down by its own height on every pick and every hover. At most
+   half the plot less a margin, so it never reaches the bucket it describes;
+   a hover's readout takes no pointer, so it cannot steal the hover it shows. */
+.pot-plot { container: pot-plot / inline-size; position: relative; display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
 .pot-readout { padding: var(--ctl-s2) var(--ctl-s3); border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface-2); }
+.pot-readout[data-hover] { pointer-events: none; }
+@container pot-plot (min-width: 640px) {
+  .pot-readout {
+    position: absolute; z-index: 2; top: 20px;
+    width: min(560px, calc(50% - 24px)); max-height: calc(100% - 28px); overflow-y: auto;
+    background: var(--surface); box-shadow: 0 10px 30px rgba(0, 0, 0, .18);
+  }
+  .pot-readout[data-side='left'] { left: 11px; }
+  .pot-readout[data-side='right'] { right: 11px; }
+}
 .pot-readout-head { display: flex; align-items: baseline; gap: var(--ctl-s2); margin: 0 0 var(--ctl-s1); font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); }
 .pot-readout-head b { color: var(--text); }
 .pot-readout-close { margin-left: auto; min-width: 32px; min-height: 32px; border: 0; background: none; color: var(--text-dim); cursor: pointer; font: var(--t-lead)/var(--lh-flush) var(--font); }
@@ -208,3 +229,18 @@
 .pot-readout-layers li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 1px 0; break-inside: avoid; }
 .pot-readout-layers li span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .pot-readout-layers b { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* RIGHT NOW (PlatformCounts.tsx, COUNTS-ONE-RUN): the state counts under Over
+   time, in mock-up F1's order. A change of subject from the span above -- a
+   snapshot, not part of it -- so it takes what `.counts-ticks` takes
+   (admin.css, QA-098): `--ctl-s5` and the hairline. Here rather than in
+   admin.css because it exists only since Over time sits above it. */
+.counts-now {
+  margin-top: var(--ctl-s5);
+  border-top-width: 1px;
+  border-top-style: solid;
+  border-top-color: var(--line-soft);
+  padding-top: var(--ctl-s5);
+}
+.counts-now > .sc-h2 { margin-top: 0; }
+.counts-now > .sb-note { margin-bottom: var(--ctl-s3); }

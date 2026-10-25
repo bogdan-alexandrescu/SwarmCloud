@@ -3,7 +3,7 @@ import { loadMe, loadStats, loadTenants } from './api'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
 import { HelpCard, HelpLinks } from './HelpCard'
-import { PlatformOverTime } from './PlatformOverTime'
+import { PlatformOverTime, type OverTimePrice } from './PlatformOverTime'
 import { Mark } from './primitives'
 import { FrameAge, PageHead, timeAgo, useClaimPageAge } from './Shell'
 import { NEVER_WRITTEN, REAL_STATES, pluralise, type Stats } from './types'
@@ -159,6 +159,17 @@ export function PlatformCountsScreen() {
    */
   const [workspaces, setWorkspaces] = useState<number | null>(null)
 
+  /**
+   * ONE RUN FOR THE PAGE (COUNTS-ONE-RUN; BGD, CTV-5, 2026-10-24 17:30Z:
+   * "roster on mount, one shared Run", and 2026-10-25). The page drew two
+   * primary Runs, each priced at half of what the page reads. The head's Run
+   * now reads both: `presses` moves Over time's `run` prop, and Over time
+   * hands back the price of its read for the bucket it shows (`overPrice`),
+   * priced from the roster above. Null until it has said.
+   */
+  const [presses, setPresses] = useState(0)
+  const [overPrice, setOverPrice] = useState<OverTimePrice | null>(null)
+
   useEffect(() => {
     let live = true
     loadMe().then((r) => {
@@ -179,6 +190,14 @@ export function PlatformCountsScreen() {
   // was before the first, and each press bills a count.
   const counting = useRef(false)
   const go = () => {
+    // OVER TIME IS PRESSED FOR AN ADMIN ONLY: its read is platform scope, and
+    // for anyone else the route would only refuse it. Pressed first, so a
+    // press while the count is still in flight still reaches it; it refuses a
+    // press of its own while its read is in flight. When nobody could say who
+    // is asking, the count's own answer says (it carries the platform half
+    // only for an admin), and Over time is pressed when it lands.
+    const known = admin
+    if (known === true) setPresses((n) => n + 1)
     if (counting.current) return
     counting.current = true
     setBusy(true)
@@ -187,6 +206,9 @@ export function PlatformCountsScreen() {
       counting.current = false
       setRun(r)
       setBusy(false)
+      if (known === null && (r.status === 'ok' || r.status === 'stale') && r.data.platform_tasks_by_state !== undefined) {
+        setPresses((n) => n + 1)
+      }
       // Counted only on a read that actually produced counts. Incrementing on
       // every settled promise would let a failure inflate a number the toolbar
       // then presents as work that was billed.
@@ -214,8 +236,7 @@ export function PlatformCountsScreen() {
   // number on screen is the number this caller's next press will cost -- and
   // when nobody could say who the caller is, BOTH numbers, because a single one
   // would be a guess about the caller presented as a price.
-  const queries =
-    admin === null ? `${STATE_COUNT}–${STATE_COUNT * 2}` : String(STATE_COUNT * (admin ? 2 : 1))
+  const queries = runPrice(admin, overPrice)
 
   // WHAT WAS READ, AND HOW LONG AGO -- in the head's actions, before the run. A run that came back with no counts is a failed query
   // (the panel below says so), so it reads as a failed run here too, and
@@ -272,61 +293,69 @@ export function PlatformCountsScreen() {
         >
           {run === null ? 'Run the count' : 'Run it again'}
           {' · '}
-          <span className="counts-cost">{queries} reads</span>
+          <span className="counts-cost">{queries}</span>
         </Button>
       </PageHead>
 
-      {/* BOTH CARDS BEFORE THE FIRST RUN (#135), each with `not run` in its
-          figure slot: the page has its shape before the press, and an empty
-          page is not mistaken for a platform with nothing on it. They stay
-          while the first run is in flight (VQA V029) -- removing them on the
-          press left the page blank until the answer came -- marked busy, and
-          are replaced by the result, so a result never shares the screen
-          with the placeholder it replaces. */}
-      {run === null && (
-        <div className="ctl-cards counts-scopes" aria-busy={busy || undefined}>
-          <NotRun title="This tenant" queries={STATE_COUNT} counting={busy} />
-          <NotRun title="Every tenant" queries={admin === false ? null : STATE_COUNT} counting={busy} />
-        </div>
-      )}
-
-      {run?.status === 'error' && <Failed error={run.error} />}
-
-      {run?.status === 'empty' && (
-        <div className="ctl-empty is-failed">
-          <span
-            className="ctl-mark is-unread"
-            aria-label="The read succeeded and returned no counts at all, which should be impossible. Treat it as a failed query rather than an idle platform."
-          >
-            not read
-          </span>
-          <h3>No counts came back</h3>
-          <p>Treat this as a failed query.</p>
-        </div>
-      )}
-
-      {data && (
-        <div className="ctl-cards counts-scopes" aria-busy={busy || undefined}>
-          <Scope title="This tenant" subtitle={data.tenant_id} counts={data.tasks_by_state} scale={scale} />
-          {data.platform_tasks_by_state !== undefined ? (
-            <Scope
-              title="Every tenant"
-              subtitle="all tenants"
-              counts={data.platform_tasks_by_state}
-              scale={scale}
-            />
-          ) : (
-            <AdminGated />
-          )}
-        </div>
-      )}
       {/* OVER TIME (COUNTS-PAGE, #2149): how many agents ran per day, week
           or month, for how long and at what estimated cost -- the view BGD
-          picked (counts-a.html F2 to F6). Below the state counts, which are
-          a snapshot of now, and above the ticks, which read nothing. It is
-          drawn whether or not the count has run: it has its own priced Run,
-          and nothing in it is read before that press. */}
-      <PlatformOverTime workspaces={workspaces} />
+          picked (counts-a.html F2 to F6). FIRST, then the state counts, then
+          the ticks: mock-up F1's order (BGD, 2026-10-25, COUNTS-ONE-RUN). It
+          is drawn whether or not the count has run, and draws no Run of its
+          own: the head's one Run reads it (`run`), priced with its half
+          (`onPrice`). */}
+      <PlatformOverTime workspaces={workspaces} run={presses} onPrice={setOverPrice} />
+      {/* RIGHT NOW (F1): the live counts this page always had, read by the
+          same Run. A snapshot, so it is a section of its own, under the span
+          above rather than part of it. */}
+      <section className="counts-now" aria-labelledby="counts-now-title">
+        <h2 className="sc-h2" id="counts-now-title">Right now: agents in each state</h2>
+        <p className="sb-note">A snapshot, read by the same Run.</p>
+        {/* BOTH CARDS BEFORE THE FIRST RUN (#135), each with `not run` in its
+            figure slot: the page has its shape before the press, and an empty
+            page is not mistaken for a platform with nothing on it. They stay
+            while the first run is in flight (VQA V029) -- removing them on the
+            press left the page blank until the answer came -- marked busy, and
+            are replaced by the result, so a result never shares the screen
+            with the placeholder it replaces. */}
+        {run === null && (
+          <div className="ctl-cards counts-scopes" aria-busy={busy || undefined}>
+            <NotRun title="This tenant" queries={STATE_COUNT} counting={busy} />
+            <NotRun title="Every tenant" queries={admin === false ? null : STATE_COUNT} counting={busy} />
+          </div>
+        )}
+
+        {run?.status === 'error' && <Failed error={run.error} />}
+
+        {run?.status === 'empty' && (
+          <div className="ctl-empty is-failed">
+            <span
+              className="ctl-mark is-unread"
+              aria-label="The read succeeded and returned no counts at all, which should be impossible. Treat it as a failed query rather than an idle platform."
+            >
+              not read
+            </span>
+            <h3>No counts came back</h3>
+            <p>Treat this as a failed query.</p>
+          </div>
+        )}
+
+        {data && (
+          <div className="ctl-cards counts-scopes" aria-busy={busy || undefined}>
+            <Scope title="This tenant" subtitle={data.tenant_id} counts={data.tasks_by_state} scale={scale} />
+            {data.platform_tasks_by_state !== undefined ? (
+              <Scope
+                title="Every tenant"
+                subtitle="all tenants"
+                counts={data.platform_tasks_by_state}
+                scale={scale}
+              />
+            ) : (
+              <AdminGated />
+            )}
+          </div>
+        )}
+      </section>
       {/* THE PLATFORM TICKS (§8.4), moved here from Admin › Schedules
           (SCHED-ONE-PAGE, 2026-10-13). Static: nothing here is billed or
           read, so it is drawn whether or not the count has run. */}
@@ -346,6 +375,28 @@ export function PlatformCountsScreen() {
 }
 
 const COUNTS_TOPICS: readonly TopicId[] = ['platform-counts', 'absent-vs-zero']
+
+/**
+ * WHAT THE ONE RUN COSTS: the state counts plus the over-time read, summed,
+ * as one figure on the button (mock-up F1: `Run · ~584 reads`).
+ *
+ *   * A caller known not to be an admin reads only their own tenant's counts:
+ *     the over-time read is platform scope, so their Run does not ask for it.
+ *   * An admin's is both scopes' counts plus Over time's read, `~` because
+ *     that half is an estimate (platformTimeApi.ts `readEstimate`). While the
+ *     roster is not known it is per workspace, said as such, never a guess at
+ *     the platform's size presented as a total.
+ *   * Nobody could say who is asking: both callers' prices, low to high.
+ */
+function runPrice(admin: boolean | null, over: OverTimePrice | null): string {
+  if (admin === false || over === null) {
+    const counts = admin === null ? `${STATE_COUNT}–${STATE_COUNT * 2}` : String(STATE_COUNT * (admin ? 2 : 1))
+    return `${counts} reads`
+  }
+  const low = admin === null ? `${STATE_COUNT}–` : ''
+  if (over.total === null) return `${low}${STATE_COUNT * 2} reads + ~${over.perWorkspace} a workspace`
+  return `${low}~${STATE_COUNT * 2 + over.total} reads`
+}
 
 /**
  * How many `count()` queries one run costs, for one scope.
