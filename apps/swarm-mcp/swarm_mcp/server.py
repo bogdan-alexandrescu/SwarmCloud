@@ -1279,6 +1279,17 @@ TOOLS: list[dict[str, Any]] = [
                                     "need its patch are SKIPPED."
                                 ),
                             },
+                            "runtime": {
+                                "type": "string",
+                                "enum": ["browser_if_ui"],
+                                "description": (
+                                    "For a review: run on claude-code-browser only when "
+                                    "an upstream step's change touches UI (test files "
+                                    "excluded), on claude-code otherwise; the platform "
+                                    "decides as the step is readied. Name no "
+                                    "runner_profile, or claude-code-browser."
+                                ),
+                            },
                             "inputs": _INPUTS_SCHEMA,
                             "files": _FILES_SCHEMA,
                             "additional_repositories": {

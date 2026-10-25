@@ -117,6 +117,8 @@ from .validation import (
     MERGE_METADATA_KEY,
     MERGE_ON_VERDICT,
     MERGE_STEP_MAX_ATTEMPTS,
+    RUNTIME_METADATA_KEY,
+    RuntimePolicyInvalid,
     SERVICE_FORGE_ACCESS,
     SINGLE_PR,
     DispatchOptionError,
@@ -151,6 +153,7 @@ from .validation import (
     resolve_merge_choice,
     resolve_fix_rounds,
     resolve_merge_fix_rounds,
+    resolve_runtime_policy,
     AFTER_PRS_METADATA_KEY,
     github_repository,
     is_service_submitter,
@@ -704,6 +707,25 @@ class SubmissionService:
         # override the workflow's choice.
         metadata = dict(spec.metadata)
         metadata[DISPATCH_METADATA_KEY] = dispatch.to_metadata()
+        # A `browser_if_ui` step (#2322): stored on the browser, with the
+        # `code` profile's own fields beside it, each checked here exactly as
+        # if the step had named that profile, so a swap at READY can only
+        # land on a spec this submission would have accepted. Signed by
+        # `_sign` with the rest (`specsigning.sign_task_specs`).
+        runtime = resolve_runtime_policy(
+            spec.metadata, runner_profile=profile.name, step_id=step_id,
+            workflow_step=workflow_id is not None,
+        )
+        if runtime is not None:
+            metadata[RUNTIME_METADATA_KEY] = {
+                **runtime,
+                "alternate": self._runtime_alternate(
+                    runtime, spec, tenant=tenant, step_id=step_id,
+                    resource_class_override=resource_class_override,
+                    repository_url=repository_url, mcp_credentials=mcp_credentials,
+                    mcp_whole_submission=mcp_whole_submission, mcp_inherited=mcp_inherited,
+                ),
+            }
         # Who the agent's commits name (P37, `gitidentity`): the authenticated
         # caller unless the caller of this method resolved someone else (a
         # child's parent, a service account's continued task). Inside the
@@ -763,6 +785,51 @@ class SubmissionService:
             # that covers it (`specsign.signing_format`).
             model_class=stored_model_class(profile, model_class),
         )
+
+    def _runtime_alternate(
+        self, runtime: Mapping[str, str], spec: TaskCreate, *, tenant: Tenant,
+        step_id: str | None, resource_class_override: str | None,
+        repository_url: str | None, mcp_credentials: Mapping[str, Any] | None,
+        mcp_whole_submission: bool, mcp_inherited: McpInheritance | None,
+    ) -> dict[str, Any]:
+        """The `code` profile's fields for a `browser_if_ui` step (#2322).
+
+        Every check `_build_task` makes of a step's profile, made again for
+        the other one: its declared inputs (so a browser-only input such as
+        `browser_tool` is refused, not dropped), its MCP servers, its
+        resource class, timeout and model class. The signature fields are
+        filled by `specsigning.sign_task_specs`.
+        """
+        code = validate_runner_profile(runtime["code"])
+        validate_runner_input(
+            code, spec.input, step_id=step_id,
+            repository_url=repository_url or spec.repository_url,
+        )
+        self.check_mcp_servers(
+            code, spec.input, tenant.tenant_id,
+            credentials=mcp_credentials if mcp_credentials is not None else spec.mcp_credentials,
+            whole_submission=mcp_whole_submission, inherited=mcp_inherited, step_id=step_id,
+        )
+        resource_class = validate_resource_class_override(
+            code, resource_class_override,
+            sizes=(runnersizes.current_sizes(self._store.db)
+                   if resource_class_override is not None else None),
+        )
+        class_models = self._settings.worker_class_models
+        model_class = validate_model_class(code, spec.model_class, step_id=step_id)
+        check_model_class_available(code, model_class, class_models, step_id=step_id)
+        return {
+            "runner_profile": code.name,
+            "resource_class": resource_class,
+            "timeout_seconds": validate_timeout(code, spec.timeout_seconds),
+            "provider": code.provider,
+            "model": resolve_task_model(code, model_class, spec.model, class_models,
+                                        step_id=step_id),
+            "model_class": stored_model_class(code, model_class),
+            "spec_signature": None,
+            "spec_key_version": None,
+            "spec_format": None,
+        }
 
     # -- registered MCP servers (docs/design/registered-mcp-servers.md) --------
 
@@ -1053,6 +1120,15 @@ class SubmissionService:
             # value, and a step's own `input_from` is the only declaration
             # `validate_dag` ever sees (#151).
             reject_reserved_metadata(spec.metadata)
+            # A runtime policy is one step's (#2322): copied onto every step,
+            # it would put every step on the browser profile or refuse it.
+            if RUNTIME_METADATA_KEY in spec.metadata:
+                raise RuntimePolicyInvalid(
+                    "metadata.runtime is a step's, not the workflow's: put it in the "
+                    "metadata of each step that should run on the browser only when "
+                    "its upstream change touches UI",
+                    detail={"field": f"metadata.{RUNTIME_METADATA_KEY}"},
+                )
             # Copied onto every step's task, so refused once, here, without a
             # step id: it is the workflow's (#294).
             reject_non_finite(spec.metadata, label="metadata")
@@ -1231,6 +1307,10 @@ class SubmissionService:
                 # The step's own metadata, merged as `_build_task` will store
                 # it, under the same rules as any task's metadata.
                 reject_reserved_metadata(step.metadata)
+                # Its runtime policy (#2322), refused here so it is counted;
+                # `_build_task` checks it again and builds the alternate.
+                resolve_runtime_policy(step.metadata, runner_profile=step.runner_profile,
+                                       step_id=step.step_id, workflow_step=True)
                 step_metadata = {**spec.metadata, **step.metadata}
                 # Lane MS1: the CI-fix rounds a merge step may spend, as each
                 # step's task will store them.
@@ -1401,6 +1481,14 @@ class SubmissionService:
             if source.input_from:
                 task.metadata[INPUT_FROM_METADATA_KEY] = {
                     step_task_id[src]: filename for src, filename in source.input_from.items()
+                }
+            # The re-review runs on what its review RESOLVED to (#2322): the
+            # review's task id beside the policy it copied, read by the
+            # scheduler as the re-review is readied (`scheduler.runtime`).
+            runtime_block = task.metadata.get(RUNTIME_METADATA_KEY)
+            if step_id == rereview_step_id and isinstance(runtime_block, dict) and source.when:
+                runtime_block["inherit"] = {
+                    "step": source.when.step, "task_id": step_task_id[source.when.step],
                 }
             step_task_id[step_id] = task.id
             step_model_class[step_id] = task.model_class

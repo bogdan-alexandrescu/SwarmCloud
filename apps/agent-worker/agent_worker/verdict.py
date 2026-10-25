@@ -641,6 +641,15 @@ def pull_request_lines(record: dict[str, Any]) -> list[str]:
 
 #: The repository paths whose change makes a review UI-gated.
 UI_PATH_PREFIXES = ("apps/swarm-ui/", "docs/web-ui/")
+#: Test files under those prefixes are NOT UI (fix 6 of the 2026-10-25 runtime
+#: audit, #2322): a change to `__tests__/`, a `tests/` directory or a
+#: `*.test.*` file renders nothing new, and gating it sent a test-only change
+#: to a render follow-up. The scheduler resolves a `browser_if_ui` review's
+#: profile by the same rule (`scheduler.runtime.is_ui_path`), restated there
+#: because neither image carries the other's package and `swarm_common` is
+#: frozen; tests/unit/control_plane/test_runtime_by_diff.py holds the two equal.
+TEST_DIRECTORIES = ("__tests__", "tests")
+TEST_FILE_MARK = ".test."
 #: The one profile that renders pages (contract request 108's browser runner).
 RENDERED_REVIEW_PROFILE = "claude-code-browser"
 #: What a rendered review leaves in its artifacts directory.
@@ -682,9 +691,18 @@ def _patch_paths(header: str) -> list[str]:
     return paths
 
 
+def is_test_path(path: str) -> bool:
+    """Whether a repository path is a test file: under `__tests__/` or `tests/`, or `*.test.*`."""
+    parts = path.lstrip("/").split("/")
+    return any(part in TEST_DIRECTORIES for part in parts[:-1]) or TEST_FILE_MARK in parts[-1]
+
+
 def is_ui_path(path: str) -> bool:
-    """Whether a repository-relative path is one a rendered review must see."""
-    return isinstance(path, str) and path.lstrip("/").startswith(UI_PATH_PREFIXES)
+    """Whether a repository-relative path is one a rendered review must see (tests are not)."""
+    if not isinstance(path, str):
+        return False
+    text = path.lstrip("/")
+    return text.startswith(UI_PATH_PREFIXES) and not is_test_path(text)
 
 
 def ui_paths_in_patch(text: str) -> list[str]:

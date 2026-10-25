@@ -185,6 +185,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from types import MappingProxyType
 from typing import Annotated, Any, Callable, Literal, Mapping
 
 from google.cloud import firestore
@@ -211,6 +212,9 @@ from .validation import (
     MERGE_METADATA_KEY,
     MERGE_ON_VERDICT,
     MERGE_STEP_ID,
+    RUNTIME_METADATA_KEY,
+    RUNTIME_POLICY_BROWSER_IF_UI,
+    RUNTIME_POLICY_PROFILES,
     IssueRef,
 )
 
@@ -223,6 +227,14 @@ RUN_ID_PREFIX = "run"
 #: Who plans, and who works. Fixed here, never a caller's choice (invariant 10).
 PLANNER_PROFILE = "claude-code"
 STEP_PROFILE = "claude-code"
+#: The compiled review runs on the browser only when the change is UI (#2322,
+#: BGD 2026-10-25): submitted on the policy's browser profile, the one it
+#: runs if nothing resolves it, and resolved by the scheduler from what the
+#: implementer steps changed (`scheduler.runtime`). The pair is the
+#: validator's one pair, read rather than restated.
+REVIEW_PROFILE = RUNTIME_POLICY_PROFILES["browser"]
+REVIEW_RUNTIME: Mapping[str, str] = MappingProxyType(
+    {"policy": RUNTIME_POLICY_BROWSER_IF_UI, **RUNTIME_POLICY_PROFILES})
 
 #: The one file the planner writes, read back out of its artifacts.
 PLAN_FILE = "plan.json"
@@ -2309,7 +2321,8 @@ def compile_plan(run: "IssueRun", review_context: str | None = None) -> Workflow
     assert last is not None  # PlanSpec has at least one step
     steps.append({
         "step_id": REVIEW_STEP,
-        "runner_profile": STEP_PROFILE,
+        "runner_profile": REVIEW_PROFILE,
+        "metadata": {RUNTIME_METADATA_KEY: dict(REVIEW_RUNTIME)},
         "depends_on": [last],
         "builds_on": last,
         "input_from": {last: PATCH_FILE},
@@ -2456,11 +2469,12 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
     last = impl[-1]
     steps.append({
         "step_id": REVIEW_STEP,
-        "runner_profile": STEP_PROFILE,
+        "runner_profile": REVIEW_PROFILE,
         "depends_on": list(impl),
         "builds_on": last,
         "input_from": {sid: PATCH_FILE for sid in impl},
-        "metadata": {INPUT_LAYOUT_METADATA_KEY: INPUT_LAYOUT_BY_PARENT},
+        "metadata": {INPUT_LAYOUT_METADATA_KEY: INPUT_LAYOUT_BY_PARENT,
+                     RUNTIME_METADATA_KEY: dict(REVIEW_RUNTIME)},
         "input": {
             "issue": ref.number,
             "prompt": (

@@ -1593,6 +1593,10 @@ everyone sees it.
   the UI paths and the profile the step runs on, so a reviewer knows before
   it writes a verdict that MERGE from anywhere but a rendered review will not
   count.
+* **Test files are not UI** (#2322, fix 6 of the 2026-10-25 runtime audit):
+  a path under `__tests__/` or a `tests/` directory, or a `*.test.*` file,
+  renders nothing new, so a test-only change is not gated. Before this, a
+  test-only change needed a render follow-up lane.
 * **Unchanged:** a lane whose patch touches no UI path, every NOT_YET, and an
   unreadable verdict (which the gate still refuses by name, never reads as
   either verdict).
@@ -1600,6 +1604,62 @@ everyone sees it.
   `claude-code-review` may publish and `post-verdict` posts as a GitHub
   review. Holding it to the browser profile would make a UI lane unmergeable
   there; that is the owner's call, asked on the pull request that added this.
+
+### A review's runtime is chosen from its diff: `runtime: browser_if_ui`
+
+Owner decision, 2026-10-25 (#2322): "if a review only does code review and a
+UI review or UI QA is not needed, it should not dispatch a review task with a
+browser runtime." A runtime audit of one day found 43 browser pods that ran
+reviews of non-UI code, and 8 reviews of UI files on `claude-code` that the
+rule above forced to NOT_YET, each costing a follow-up lane. Both happened
+because the submitter chose the profile before anyone knew what the change
+touched.
+
+So a workflow step may leave the choice to the platform. In the step's
+`metadata`:
+
+```json
+"metadata": {"runtime": {"policy": "browser_if_ui",
+                         "browser": "claude-code-browser", "code": "claude-code"}}
+```
+
+with `runner_profile: "claude-code-browser"` (the plugin spells this as
+`runtime: "browser_if_ui"` on the step). When the scheduler readies the step,
+it reads what the step's parents changed: their `result_summary.git.files`,
+and the steps each parent's `builds_on` chain started from, because a chain's
+last step lists only its own diff. If any changed path is UI (the rule above,
+test files excluded), the step runs on `claude-code-browser`; otherwise on
+`claude-code`. The compiled issue-run review asks for this policy.
+
+* **A failed read resolves to the browser.** A parent that cannot be read (or
+  is another tenant's), has no file list, or whose list was cut with no UI path
+  in the part kept: the review runs where it can see.
+* **Resolved before admission, never after.** The profile is written in the
+  same guarded transaction that moves the step PARKED -> READY. Admission reads
+  the task after that write, so the step reserves, all-or-nothing, the
+  resolved profile's pools (invariants 2 and 3); a step never holds one
+  profile's capacity and runs on the other's. A step that is never promoted
+  (one with no parent) runs on the browser profile it was stored on.
+* **Only a spec swarm-api signed.** The worker refuses any spec whose
+  `runner_profile` swarm-api did not sign, and the scheduler holds no key. So
+  swarm-api checks the step under **both** profiles at submission (inputs,
+  MCP servers, resource class, timeout, model class: a browser-only input such
+  as `browser_tool` is refused), and signs the `claude-code` spec too, into
+  `metadata.runtime.alternate`. The scheduler swaps the profile fields and that
+  signature together, and keeps the browser's in the alternate.
+* **One pair, by name.** swarm-api refuses any other pair, any other policy,
+  any other shape, the block on a plain task, and the block in the workflow's
+  own metadata. The policy names two catalogue profiles and nothing else
+  (invariant 10).
+* **Where it is recorded.** The step's `ready` event carries `runtime`
+  (`profile`, `reason`, `ui_paths`, `parents_read`, `unreadable`, `swapped`),
+  and the task carries the same under `metadata.runtime.resolved`. A resolved
+  step is never resolved again.
+* **The re-review inherits.** The re-review the platform appends after an
+  integrator copies its review's block, and swarm-api adds `inherit`, naming the
+  review's task. It runs on the profile the review **resolved** to, not one
+  re-decided from the integrator's diff. A review that cannot be read sends it
+  to the browser.
 
 ### What a MERGE verdict publishes
 
