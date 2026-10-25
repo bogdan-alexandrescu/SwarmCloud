@@ -1453,6 +1453,79 @@ def test_qa_identity_docs_cite_only_what_resolves(doc: Path):
 
 
 # --------------------------------------------------------------------------
+# LIVE-NOMASK (part of #2298): the live gate paints nothing over the screen
+# --------------------------------------------------------------------------
+#
+# BGD decided on 2026-10-25 that no part of what the live browser shows is
+# redacted on screen. live-browser.md §5.3 described a fail-closed mask that
+# painted boxes and blanked pages; it now records the decision, says what the
+# gate still does, and keeps the text redaction and the no-logging rule. The
+# rest of the document, the relay's recorder and the other docs follow.
+
+LB_53 = "### 5.3 The screen leaves the pod as Chromium drew it (LB-3, amended 2026-10-25)"
+LB_DECISION = (
+    "Stop redacting elements or sections of the visual content that a browser agent or "
+    "session displays via the live browser. There is no need to redact parts of the screen "
+    "in any situation."
+)
+
+
+def _lb_53() -> str:
+    text = _text(LIVE_BROWSER)
+    start = text.index(LB_53)
+    return text[start: text.index("### 5.4 ", start)]
+
+
+def test_live_browser_5_3_records_bgds_decision_and_why():
+    body = _flat(_lb_53())
+    assert "BGD's decision, 2026-10-25" in body and LB_DECISION in body
+    for issue in ("#1030", "#1340", "#1344"):
+        assert issue in body, issue
+    # What the gate still does with the page, as built.
+    for kept in ("`SHOWN_IN_CONTROL`", "`LiveGate._on_challenge`", "`Target.setAutoAttach`",
+                 "`REASON_BROWSER_CLOSED`", "`FrameHub.publish`", "`report.py`", "`pointer.py`"):
+        assert kept in body, kept
+    assert "`page_blanked_ms` is gone" in body
+    assert "Every **text** redaction on the path is unchanged" in body
+    assert "#### 5.3.3 Keys never logged, anywhere" in _lb_53()
+    assert "**No hop logs RFB payloads**" in body
+
+
+def test_live_browser_no_longer_says_frames_are_masked():
+    text = _flat(_text(LIVE_BROWSER))
+    for stale in (
+        "capture -> MASK -> encode",
+        "leave it only through the tunnel, already masked",
+        "The mask needs its own CDP session",
+        "Watching shows masked pixels",
+        "The masked frames, and nothing unmasked",
+        "already receives every masked frame",
+        "as a player over the masked segments",
+        "Masking (§5.3) is device-independent",
+        "the mask still covers its credential fields",
+        "MaskState.on_challenge",
+        "So the gate **fails closed**",
+    ):
+        assert stale not in text, stale
+    # The one remaining mention of LB-3's masking says it is superseded.
+    lb3 = next(line for line in _text(LIVE_BROWSER).splitlines() if line.startswith("| **LB-3** |"))
+    assert "Superseded for pixels by BGD, 2026-10-25" in lb3
+
+
+def test_the_recorder_and_other_docs_no_longer_say_frames_are_masked():
+    recorder = (REPO / "apps" / "swarm-live" / "swarm_live" / "recorder.py").read_text(encoding="utf-8")
+    head = recorder.split('"""', 2)[1]
+    assert "masked frame" not in head and "unmasked" not in head
+    assert "2026-10-25" in head
+    egress = _flat(_text(DOCS / "browser-egress.md"))
+    assert "The mask and the input path are unchanged" not in egress
+    assert "(the mask needs it)" not in egress
+    any_app = _flat(_text(DOCS / "design" / "visual-qa-any-app.md"))
+    assert "the gate's mask paints every input" not in any_app
+    assert "screencast's mask already paints" not in any_app
+
+
+# --------------------------------------------------------------------------
 # Runner sizes: docs/design/runner-sizes.md §6 lane SIZES-DOCS (part of #1689)
 # --------------------------------------------------------------------------
 #
@@ -2051,9 +2124,8 @@ SSC_BUILT = "## 12. What was built (2026-10-24, lane SSC-DOCS, part of #2158)"
 SSC_SECURITY = "## Secrets scopes and GitHub Actions secrets"
 SSC_KEYS = "## 7. Secrets scopes: what changes for these keys, and what does not (#2158)"
 #: §9's lanes that are not built, each for a reason the status line gives:
-#: phase 0 because Q3 declined the second App, the console rows because they
-#: wait for #2157's Config section.
-SSC_UNBUILT = ("SSC-SECRETS-APP", "SSC-UI-ACTIONS")
+#: phase 0 because Q3 declined the second App.
+SSC_UNBUILT = ("SSC-SECRETS-APP",)
 #: Lanes marked built by their own lane, before their PR had a number: §9
 #: says "(built, lane <name>" and §12 has a "**<name> (lane <name>" entry.
 SSC_BUILT_BY_LANE = ("SSC-UI",)
@@ -2112,9 +2184,9 @@ def _check_ssc_lanes(text: str) -> None:
         assert f"**{lane} (PR {pr.group(1)}" in built, f"§12 has no entry for {lane} with PR {pr.group(1)}"
     for lane, pr in SSC_ADDED.items():
         assert f"**{lane} (PR {pr})" in built or f"PR {pr} ({lane})" in built, lane
-    # The console rows stay unbuilt only while their files are absent.
-    if (REPO / "apps" / "swarm-ui" / "src" / "SecretsActions.tsx").exists():
-        raise AssertionError("SSC-UI-ACTIONS' SecretsActions.tsx exists: mark it built in §9 and §12")
+    # The pane stays "not mounted" only while Secrets.tsx does not import it.
+    if "./SecretsActions" in _text(REPO / "apps" / "swarm-ui" / "src" / "Secrets.tsx"):
+        raise AssertionError("Secrets.tsx mounts SSC-UI-ACTIONS' pane: drop 'not mounted' from the status, §9 and §12")
 
 
 def _check_ssc_code(text: str) -> None:
@@ -2217,8 +2289,8 @@ _SSC_MUTATIONS = [
     ("lanes", "| 1 | **SSC-OVERVIEW** (built, PR 2248) |", "| 1 | **SSC-OVERVIEW** |"),
     ("lanes", "**SSC-OVERVIEW (PR 2248).** §4 and §6.2: `GET /v1/secrets/overview` reads",
      "**SSC-OVERVIEW.** §4 and §6.2: `GET /v1/secrets/overview` reads"),
-    ("status", "and the console's GitHub Actions pane.** Designed 2026-10-23 (lane SECRETS-SCOPES-DESIGN, PR 2159);",
-     "and the console's GitHub Actions pane.** Nothing in this document is built (lane SECRETS-SCOPES-DESIGN, PR 2159);"),
+    ("status", "and mounting the GitHub Actions pane.** Designed 2026-10-23 (lane SECRETS-SCOPES-DESIGN, PR 2159);",
+     "and mounting the GitHub Actions pane.** Nothing in this document is built (lane SECRETS-SCOPES-DESIGN, PR 2159);"),
     ("code", "| `grant_key_required` | a repository grant is written unattested, and the release drops it, "
      "because a repository grant is released only when attested (§2.2) | every environment holds the grant key |",
      ""),

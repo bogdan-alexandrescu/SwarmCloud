@@ -6,6 +6,7 @@ import { atLeast, roleOf, type RoleName } from './roles'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { noteOwnName } from './Spine'
+import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { humaniseUntil, timeAgo } from './types'
 import { accountName } from './accountName'
 import './styles/keys.css'
@@ -35,7 +36,9 @@ import type {
  *   4. your Claude accounts.
  *
  * THE PAGES THAT OWN A THING STAY ITS SOURCE. Each summary links to its owning
- * page: Work › Setup, Work › Access, Settings › API keys, Capacity › Accounts.
+ * page: Config › Workspace Settings › Workspace setup, Config › GitHub access,
+ * Settings › API keys, Capacity › Accounts. Each link is the page's own Config
+ * path (CONFIG-COPY; part of #2157), never the old address its redirect reads.
  * A GitHub row for a workspace other than the acting one switches workspace
  * first (`chooseTenant`, with the panel's own toast), because Access is
  * scoped to the acting workspace and the address never selects one.
@@ -65,6 +68,13 @@ import type {
  */
 
 const PROFILE_ROUTE = 'GET /v1/profile'
+
+/** Config › Workspace Settings › Workspace setup (Work › Setup until CONFIG-NAV), at its own path. */
+const SETUP_PATH = addressToPath(WORKSPACE_SETUP_ADDRESS)
+const SETUP_LABEL = 'Config › Workspace Settings › Workspace setup'
+/** Config › GitHub access (Work › Access until CONFIG-NAV), at its own path. */
+const ACCESS_PATH = addressToPath('config/github')
+const ACCESS_LABEL = 'Config › GitHub access'
 
 /** Where a stored role came from, in the words §4.11 shows beside it. */
 const ROLE_SOURCE_WORDS: Readonly<Record<string, string>> = {
@@ -391,7 +401,7 @@ function YouCard({ p, disabled, save }: { p: Profile; disabled: boolean; save: S
 
   const needsSetup = p.workspaces.every((w) => !(w.kind === 'user' && w.selectable))
   return (
-    <Card title="You" action={<CardLink href="/setup">Work › Setup</CardLink>}>
+    <Card title="You" action={<CardLink href={SETUP_PATH}>{SETUP_LABEL}</CardLink>}>
       <dl className="pf-facts">
         <dt>Email</dt>
         <dd>{p.identity.email}</dd>
@@ -458,7 +468,7 @@ function YouCard({ p, disabled, save }: { p: Profile; disabled: boolean; save: S
           </li>
         ))}
       </ul>
-      {needsSetup && <p className="ur-small">You have no ready personal workspace. Request one on Work › Setup.</p>}
+      {needsSetup && <p className="ur-small">You have no ready personal workspace. Request one on {SETUP_LABEL}.</p>}
       {p.workspaces.length === 0 && <p className="ur-small">You are not in any workspace yet.</p>}
       <DefaultEditor p={p} disabled={disabled} save={save} />
     </Card>
@@ -528,8 +538,8 @@ function GitHubRow({ row, ws }: { row: ProfileGitHub; ws: ProfileWorkspace | und
       {' · '}
       {facts.join(' · ')}
       {row.failure?.recovery != null && <span className="ur-small">{` ${row.failure.recovery}`}</span>}{' '}
-      <a className="c-link" href="/access" onClick={switchFirst(ws)}>
-        {ws === undefined || ws.is_acting ? 'Open Work › Access' : `Open Work › Access in ${ws.display_name}`}
+      <a className="c-link" href={ACCESS_PATH} onClick={switchFirst(ws)}>
+        {ws === undefined || ws.is_acting ? `Open ${ACCESS_LABEL}` : `Open ${ACCESS_LABEL} in ${ws.display_name}`}
       </a>
     </li>
   )
@@ -538,7 +548,7 @@ function GitHubRow({ row, ws }: { row: ProfileGitHub; ws: ProfileWorkspace | und
 function GitHubCard({ p }: { p: Profile }) {
   const rows = p.connections.github
   return (
-    <Card title="GitHub" action={<CardLink href="/access">Work › Access</CardLink>}>
+    <Card title="GitHub" action={<CardLink href={ACCESS_PATH}>{ACCESS_LABEL}</CardLink>}>
       {rows === undefined || p.unavailable.includes('github') ? (
         <Unreadable what="Your GitHub connections" />
       ) : (
@@ -715,7 +725,9 @@ function ClaudeAccountsCard({ p }: { p: Profile }) {
   } else if (c.personal_workspace === null) {
     body = (
       <p className="ur-small">
-        You have no personal workspace yet, which is where your own accounts live. <a className="c-link" href="/setup">Request one on Work › Setup</a>.
+        {/* The period sits inside the link: .c-link is inline-flex, so once this long label wraps
+            it becomes a block and a period after </a> lands on a line of its own at 390px. */}
+        You have no personal workspace yet, which is where your own accounts live. <a className="c-link" href={SETUP_PATH}>Request one on {SETUP_LABEL}.</a>
       </p>
     )
   } else {

@@ -1335,10 +1335,10 @@ function GitHubQuotaLines({ quota }: { quota: GitHubQuota[] }) {
 }
 
 /**
- * A lead, drawn on the card surface. S2 tints it with the info colour, but a
- * button on the info tint draws its border at 2.89:1 in dark, under the 3:1
- * the spacing sweep holds every control to (spacing.setup.test.tsx), and the
- * fix is a stylesheet rule outside this page's file -- asked in the PR.
+ * A lead, on the info tint as S2 draws it: `.ac-lead`, the one Config lead
+ * style (the tint in styles/config.css; its buttons' borders, which clear 3:1
+ * on the tint, in styles.css after the button floor). CONFIG-LEAD-TINT;
+ * measured in contrast.config-lead.test.tsx.
  */
 function Lead({ kicker, title, actions, children }: { kicker?: string; title: string; actions: ReactNode; children: ReactNode }) {
   return (

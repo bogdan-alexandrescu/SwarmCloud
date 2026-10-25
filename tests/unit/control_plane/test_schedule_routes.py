@@ -527,8 +527,9 @@ ID_ROUTES = _id_routes()
 
 def test_the_sweep_is_not_empty() -> None:
     # Every tenant id route of §7.1 this lane builds: read, edit, delete, the
-    # four verbs, the history, one firing and the audit.
-    assert len(ID_ROUTES) == 10, ID_ROUTES
+    # four verbs, the history, one firing, the audit, and the History
+    # timeline's spans of one page of firings (#1109).
+    assert len(ID_ROUTES) == 11, ID_ROUTES
 
 
 def _send(client, method: str, path: str, sid: str, user: str):

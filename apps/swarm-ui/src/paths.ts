@@ -167,7 +167,9 @@ function keyLinkView(query: string): string {
  * `qaCredentialLinkFrom`) before its normalise effect rewrites it.
  */
 export const QA_LINK_ADDRESS = 'config/repositories?page=qa-targets'
-const QA_LINK_PATH = /^\/qa-targets\/[^/]+\/credential$/
+// A `field: "challenge_bypass"` link's `/qa-targets/<id>/challenge-bypass?t=..`
+// lands there too, its form opened by the same capture (#2280).
+const QA_LINK_PATH = /^\/qa-targets\/[^/]+\/(credential|challenge-bypass)$/
 
 /**
  * ONE QA DISPATCH'S RUN PAGE (lane QAENV-UI-RUNPAGE, part of #2136;

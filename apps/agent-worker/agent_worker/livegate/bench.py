@@ -1,10 +1,10 @@
-"""Measure the live gate's capture -> mask -> encode -> send path (STREAM-SMOOTH; part of #1030).
+"""Measure the live gate's capture -> encode -> send path (STREAM-SMOOTH; part of #1030).
 
     uv run python -m agent_worker.livegate.bench [--seconds 4] [--json out.json]
 
 WHY THIS EXISTS. "Taking control is choppy" is a sentence; this is the number
 under it. It runs the gate's own code -- `XvfbFramebuffer.grab`, `captured`,
-`MaskState.apply`, `FrameHub`, `RfbSession` and `LiveGate._capture` -- on
+`FrameHub`, `RfbSession` and `LiveGate._capture` -- on
 synthetic but realistic frames, with no Xvfb, no Chromium and no network, so
 the same command measures any checkout: the before and after in the
 STREAM-SMOOTH pull request are this module run on origin/main and on the
@@ -15,7 +15,7 @@ TWO PARTS.
 
 * `frames`: per frame, at 1440x987 (Desktop) and 393x852 (iPhone 15), for a
   static page, a page scrolling and a field being typed into: milliseconds to
-  grab, to mask, and to encode and send one update to a viewer that speaks as
+  grab, and to encode and send one update to a viewer that speaks as
   noVNC 1.4.0 does (its encoding list, its pixel format, one incremental
   request per update), and the bytes of that update.
 * `session`: the real capture loop, a person in control (or only watching),
@@ -35,6 +35,10 @@ measured live.
 
 NOTHING HERE IS A SECRET OR PAGE DATA: the pages are drawn from a seeded
 random glyph set, and the typed keys are letters.
+
+NO MASK COLUMN. Until LIVE-NOMASK (#2298) the frames part also timed the mask
+(`mask_ms`); the gate paints nothing on a frame now (§5.3; owner decision,
+BGD 2026-10-25), so there is no step between the grab and the encode to time.
 """
 
 from __future__ import annotations
@@ -59,8 +63,7 @@ from . import __main__ as gate_main
 from . import rfb
 from .capture import Frame, XvfbFramebuffer
 from .device import captured
-from .mask import MaskState
-from .presets import Device, resolve
+from .presets import resolve
 
 #: The two sizes the owner named: Desktop and iPhone 15, as the viewer gets them.
 SIZES = {"desktop": ("desktop", "landscape"), "iphone": ("iphone-15", "portrait")}
@@ -251,24 +254,6 @@ class Screen:
         os.close(self._fd)
 
 
-def _mask_state(device: Device, page: Page) -> MaskState:
-    """A mask with a fresh report: a password field and a screenful of text blocks."""
-    state = MaskState(scale=device.screen_scale)
-    state.session_up()
-    state.frame_attached("top", None)
-    state.navigated("top", "https://shop.example.test/checkout")
-    page_h = device.frame_height - (page.chrome if device.frame_top == 0 else 0)
-    texts = [{"s": f"paragraph {i} of the checkout page", "b": i, "r": [20, 30 + i * 20, 300, 14]}
-             for i in range(40)]
-    state.on_message("top", json.dumps({
-        "v": 1, "k": "report", "doc": "d1", "e": 1,
-        "vp": [device.display_width / device.screen_scale, page_h / device.screen_scale, 0, 0, 1],
-        "f": [{"id": 1, "type": "password", "ac": "", "ever": False, "r": [40, 300, 240, 28]}],
-        "t": texts, "o": [], "tr": False,
-    }))
-    return state
-
-
 # --------------------------------------------------------------------------
 # A viewer that speaks as noVNC 1.4.0 does
 # --------------------------------------------------------------------------
@@ -411,17 +396,16 @@ async def _frames(size: str, scenario: str, encodings: tuple[int, ...], n: int) 
         page = Page(device.display_width, device.display_height,
                     chrome=device.frame_top if device.frame_top else 80)
         screen = Screen(Path(tmp), page)
-        state = _mask_state(device, page)
         hub = rfb.FrameHub(device.display_width, device.frame_height)
         control = rfb.ControlState(_Injector())
         (sr, sw), (cr, cw) = await _pair()
         session = rfb.RfbSession("bench", sr, sw, hub, control, _Injector())
         task = asyncio.create_task(session.serve())
         client = Client(cr, cw)
-        grab, mask, send, sizes = [], [], [], []
+        grab, send, sizes = [], [], []
         with XvfbFramebuffer(screen.path) as fb:
             first = captured(fb.grab(), device)
-            hub.publish(rfb.masked(first, state))
+            hub.publish(first)
             await client.handshake(encodings)
             client.request(False)
             await cw.drain()
@@ -434,13 +418,10 @@ async def _frames(size: str, scenario: str, encodings: tuple[int, ...], n: int) 
                 t0 = time.perf_counter()
                 frame = captured(fb.grab(), device)
                 t1 = time.perf_counter()
-                done = rfb.masked(frame, state)
-                t2 = time.perf_counter()
-                hub.publish(done)
+                hub.publish(frame)
                 client.request(True)
                 await cw.drain()
                 grab.append((t1 - t0) * 1000)
-                mask.append((t2 - t1) * 1000)
                 if scenario == "static":
                     # Nothing changed, so no update comes (on main and on the
                     # branch): there is nothing to time at the viewer. The
@@ -449,7 +430,7 @@ async def _frames(size: str, scenario: str, encodings: tuple[int, ...], n: int) 
                     sizes.append(0)
                     continue
                 update = await client.read_update()
-                send.append((update.received - t2) * 1000)
+                send.append((update.received - t1) * 1000)
                 sizes.append(update.nbytes)
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -457,7 +438,6 @@ async def _frames(size: str, scenario: str, encodings: tuple[int, ...], n: int) 
         screen.close()
     return {
         "grab_ms": round(statistics.median(grab), 2),
-        "mask_ms": round(statistics.median(mask), 2),
         "encode_send_ms": round(statistics.median(send), 2) if send else None,
         "bytes_per_update": int(statistics.median(sizes)),
     }
@@ -488,7 +468,6 @@ async def _session(size: str, scenario: str, *, control: bool, seconds: float,
                     chrome=device.frame_top if device.frame_top else 80)
         screen = Screen(Path(tmp), page)
         gate = _gate(Path(tmp))
-        gate.mask_state = _mask_state(device, page)
         gate.devices = SimpleNamespace(device=device)
         gate.framebuffer = XvfbFramebuffer(screen.path)
         sent: list[tuple[float, tuple[int, int, int, int]]] = []
@@ -644,10 +623,10 @@ async def run(*, seconds: float, frames: int, sizes: tuple[str, ...] = tuple(SIZ
 
 
 def _table(result: dict[str, Any]) -> str:
-    lines = ["| frames: size/scenario/viewer | grab ms | mask ms | encode+send ms | bytes/update |",
-             "|---|---:|---:|---:|---:|"]
+    lines = ["| frames: size/scenario/viewer | grab ms | encode+send ms | bytes/update |",
+             "|---|---:|---:|---:|"]
     for key, r in result["frames"].items():
-        lines.append(f"| {key} | {r['grab_ms']} | {r['mask_ms']} | {r['encode_send_ms']} | {r['bytes_per_update']:,} |")
+        lines.append(f"| {key} | {r['grab_ms']} | {r['encode_send_ms']} | {r['bytes_per_update']:,} |")
     if result.get("levels"):
         lines += ["", "| zlib level: size/scenario | encode+send ms | bytes/update |", "|---|---:|---:|"]
         for key, r in result["levels"].items():

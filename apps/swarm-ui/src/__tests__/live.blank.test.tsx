@@ -1,17 +1,19 @@
-// THE STRIP SAYS WHY THE PAGE IS NOT SHOWN (LIVE-BLANK; part of #1030).
+// THE STRIP SAYS ONLY WHAT THE GATE STILL NAMES (LIVE-BLANK, part of #1030;
+// LIVE-NOMASK-COPY, part of #2298).
 //
-// MEASURED 2026-10-13 (release 1e86c37e): on Google's reCAPTCHA page the
-// canvas showed the browser's tab strip over a flat #222 page area for ten
-// minutes, and on a resumed attempt a flat #555 frame, and nothing on the
-// tab said why. The gate still fills a frame it cannot vouch for -- every
-// pixel sent passes its mask -- and now names the reason as the RFB desktop
-// name (livegate/rfb.py, DesktopName -307), which noVNC hands the page as a
-// `desktopname` event. The strip above the screen says it (it was the line
-// under the screen until #1341: below the fold behind the theater).
+// The gate used to fill a frame it could not vouch for and name the reason as
+// the RFB desktop name ("Can't show this page safely: ...", "Part of this page
+// is covered: ..."), which the strip drew. BGD decided on 2026-10-25 that the
+// live browser redacts no part of the screen in any situation, so the gate no
+// longer blanks or covers anything and the strip has no masking reason to
+// draw: a desktop name with either lead is not a reason here. The one name the
+// strip still draws is the gate's word that the agent finished and its browser
+// closed (mask.py `REASON_BROWSER_CLOSED`; GREY-TAIL, part of #1344).
 //
-// MUTATIONS: drop the `desktopname` listener; show every desktop name (the
-// gate's ordinary "swarm live browser" would read as a fault); keep the
-// reason after the gate names the page again.
+// MUTATIONS: drop the `desktopname` listener (the closed browser says
+// nothing); show every desktop name (the gate's ordinary "swarm live browser"
+// would read as a fault); put the masking leads back (the "safely" cases
+// fail); keep the label after the gate names the page again.
 
 import { act, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -83,7 +85,8 @@ const { LiveBrowserPane, gateReason } = await import('../LiveBrowser')
 
 const ID = 'task_0123456789abcdef0790'
 const ME = ['ada', 'example.com'].join('@')
-const WHY = 'Can’t show this page safely: the tab on screen has not reported its layout yet'
+const CLOSED = 'The agent has finished; its browser is closed.'
+const SAFELY = 'Can’t show this page safely: the tab on screen has not reported its layout yet'
 
 function ok<T>(data: T): Result<T> {
   return { status: 'ok', data, fetchedAt: Date.now() }
@@ -133,24 +136,23 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('the gate’s reason for not showing the page', () => {
-  it('is read only from a desktop name that says it cannot show the page', () => {
-    expect(gateReason('Can’t show this page safely: a frame on the page cannot be placed')).toBe(
-      'Can’t show this page safely: a frame on the page cannot be placed',
-    )
-    expect(gateReason("Can't show this page safely: switching tabs")).toBe("Can't show this page safely: switching tabs")
+describe('the gate’s reason in the strip', () => {
+  it('is never a masking reason: the gate blanks and covers nothing (BGD, 2026-10-25)', () => {
+    expect(gateReason('Can’t show this page safely: a frame on the page cannot be placed')).toBeNull()
+    expect(gateReason("Can't show this page safely: switching tabs")).toBeNull()
+    expect(gateReason('Part of this page is covered: an embedded frame on it cannot be checked')).toBeNull()
     expect(gateReason('swarm live browser')).toBeNull()
     expect(gateReason('')).toBeNull()
   })
 
   it('reads the gate’s word that the agent finished, said with no lead (GREY-TAIL; part of #1344)', () => {
-    // MUTATION: a gateReason that reads only the two leads drops it, and the closed browser's grey says nothing.
-    expect(gateReason('The agent has finished; its browser is closed.')).toBe('The agent has finished; its browser is closed.')
+    // MUTATION: a gateReason that drops it leaves the closed browser's grey saying nothing.
+    expect(gateReason(CLOSED)).toBe(CLOSED)
     // MUTATION: matching it as a prefix would read any name that starts with it.
     expect(gateReason('The agent has finished; its browser is closed. Or is it')).toBeNull()
   })
 
-  it('is said in the strip while the gate names it, and goes when the page is back', async () => {
+  it('draws no masking reason, draws the closed browser’s label, and clears it when the gate names the page again', async () => {
     render(<LiveBrowserPane task={task} live={{ status: 'ok', liveBrowser: true, session: session() }} reload={() => {}} />)
     const r = await waitFor(() => {
       const made = rfb.FakeRfb.made.at(-1)
@@ -162,13 +164,18 @@ describe('the gate’s reason for not showing the page', () => {
     })
     expect(screen.getByText('View only.')).toBeTruthy()
     act(() => {
-      r.dispatchEvent(new CustomEvent('desktopname', { detail: { name: WHY } }))
+      r.dispatchEvent(new CustomEvent('desktopname', { detail: { name: SAFELY } }))
     })
-    expect(screen.getByText(WHY, { exact: false })).toBeTruthy()
+    expect(screen.queryByText(SAFELY, { exact: false })).toBeNull()
+    expect(document.querySelector('[data-testid="live-cover"]')).toBeNull()
+    act(() => {
+      r.dispatchEvent(new CustomEvent('desktopname', { detail: { name: CLOSED } }))
+    })
+    expect(screen.getByTestId('live-cover').textContent).toContain(CLOSED)
     act(() => {
       r.dispatchEvent(new CustomEvent('desktopname', { detail: { name: 'swarm live browser' } }))
     })
-    expect(screen.queryByText(WHY, { exact: false })).toBeNull()
+    expect(document.querySelector('[data-testid="live-cover"]')).toBeNull()
     expect(screen.getByText('View only.')).toBeTruthy()
   })
 })

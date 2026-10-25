@@ -200,12 +200,11 @@ from .issueruns import (
     IssueRuns,
     RunState,
     failure_text,
-    hard_stop_hold,
     iam_patch_hits,
+    merge_hold,
     requirements_finding,
     verification_finding,
     verification_text,
-    widen_hold,
 )
 from .issuesync import _tenant, keyword_mark, sync_pull_request
 from .redaction import redact
@@ -1614,9 +1613,9 @@ def _changed_files(ctx: Any, run: IssueRun, number: int, token: str) -> list[str
     return list(files)
 
 
-def _iam_patch_files(ctx: Any, run: IssueRun, number: int, token: str) -> list[str] | None:
-    """The changed `.tf` files whose patch touches a `google_*_iam_*` line
-    (§4.4), or None when the patches could not all be read: held, not clean."""
+def _pull_patches(ctx: Any, run: IssueRun, number: int, token: str) -> dict[str, str | None] | None:
+    """The pull request's patches, path to unified diff (None where the
+    forge omitted one), or None when they could not all be read."""
     issues = getattr(ctx, "forge", None)
     if issues is None:
         return None
@@ -1627,7 +1626,7 @@ def _iam_patch_files(ctx: Any, run: IssueRun, number: int, token: str) -> list[s
         return None
     if patches is None or cut:
         return None
-    return iam_patch_hits(patches)
+    return dict(patches)
 
 
 def merge_gate(
@@ -1636,9 +1635,10 @@ def merge_gate(
     """None: the merge may go ahead. Otherwise the run, still CHECKING, waiting.
 
     THE PLAN'S FILES ARE ADVISORY, so the stops are checked again here, on
-    the pull request's own changed files, before the merge continuation is
-    submitted (§4.4): once per head, widening the run's hold (never
-    narrowing it). A run whose hold blocks -- the security-class stop
+    the pull request's own changed files and patches, before the merge
+    continuation is submitted (§4.4): once per head, widening the run's hold
+    (`merge_hold`), which narrows it only where the plan's prompt alone set
+    it and the real change matches none of it (#2259). A run whose hold blocks -- the security-class stop
     always, the others once their switch is on -- or whose schedule's gate
     says `merge: approve` (`merge_approval: "required"`) merges only once a
     `merge` approval has been given AT THIS HEAD (`merge_approved`); until
@@ -1666,7 +1666,8 @@ def merge_gate(
     hold = run.approval_hold
     if record.get("files_checked_head") != head:
         files = _changed_files(ctx, run, int(record["number"]), token)
-        iam_files = _iam_patch_files(ctx, run, int(record["number"]), token) if files is not None else None
+        patches = _pull_patches(ctx, run, int(record["number"]), token) if files is not None else None
+        iam_files = iam_patch_hits(patches) if patches is not None else None
         if files is not None and iam_files is None:
             files = None  # the patches could not all be read: the same wait as the files
         if files is None:
@@ -1684,14 +1685,22 @@ def merge_gate(
             registration = Repositories(ctx.db, now=ctx.now).find(
                 tenant_id, repo_id_for(tenant_id, ref.owner, ref.repo)
             ) or {}
-            hold = widen_hold(hold, hard_stop_hold(
-                files, platform=platform_of(registration),
+            # #2259: the stops over the real files AND their patches; a hold
+            # the plan's prompt alone set clears when none of it matches.
+            before = hold
+            hold, cleared = merge_hold(
+                hold, run.plan, files, platform=platform_of(registration),
                 hard_stop_paths=hard_stop_paths_of(registration),
                 # #2029: a workflow change's merge is held for the owner
                 # where the switch let it be pushed (STOP_WORKFLOWS, Q3).
                 workflow_files=workflow_files_of(registration), issue_read=run.issue_read,
-                iam_files=iam_files, at=now,
-            ))
+                iam_files=iam_files, patches=patches, at=now,
+            )
+            if cleared:
+                record["hold_cleared"] = {"why": cleared, "head_sha": head, "at": now,
+                                          "reasons": list((before or {}).get("reasons") or [])}
+                log.info("issue run %s tenant=%s: hold %s cleared at %s: %s", run.id, tenant_id,
+                         (before or {}).get("code"), head[:12], cleared)
             record["files_checked_head"] = head
     changes: dict[str, Any] = {}
     if hold != run.approval_hold:
