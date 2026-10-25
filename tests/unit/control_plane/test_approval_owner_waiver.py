@@ -119,9 +119,25 @@ def test_a_named_list_holding_the_owner_keeps_the_second_person_rule(client, db)
     refused = _decide(client, item["approval_id"], "approve", user="root", digest="digest-1")
 
     assert refused.status_code == 403 and refused.json()["code"] == "second_person_required"
-    assert "named approvers must: " + OWNER in refused.json()["message"]
-    assert "another member must" not in refused.json()["message"]
+    message = refused.json()["message"]
+    # Rendered 2026-10-25: the refusal told the owner that "another of the
+    # schedule's named approvers must: root@example.com" -- the owner himself.
+    # A list naming only the refused member leaves nobody, and says so.
+    assert "named approvers must" not in message and OWNER not in message
+    assert "names only you" in message and "nobody may decide it" in message
+    assert "another member must" not in message
     assert _waivers(db) == []
+
+
+def test_a_named_lists_refusal_names_only_the_other_approvers(client, db):
+    item = _merge_tier_item(client, db, last_editor=OWNER, approvers=[OWNER, DAVE])
+
+    refused = _decide(client, item["approval_id"], "approve", user="root", digest="digest-1")
+
+    assert refused.status_code == 403 and refused.json()["code"] == "second_person_required"
+    message = refused.json()["message"]
+    assert message.endswith("another of the schedule's named approvers must: " + DAVE)
+    assert OWNER not in message
 
 
 def test_the_waiver_is_never_returned_to_anyone_but_the_owner():

@@ -222,7 +222,11 @@ describe('one item', () => {
     const detail = await loaded()
     await waitFor(() => expect(within(detail).getByRole('button', { name: 'Approve' })).toBeTruthy(), WAIT)
     fireEvent.click(within(detail).getByRole('button', { name: 'Approve' }))
-    await screen.findByText(/You last changed this schedule’s gate, scope or spec: .*named approvers must: dave@example\.com/, undefined, WAIT)
+    const said = await screen.findByText(/named approvers must: dave@example\.com/, undefined, WAIT)
+    // Rendered 2026-10-25: a prefix restating the server's own first clause
+    // read "You last changed this schedule’s gate, scope or spec: the member
+    // who last changed this schedule's gate, scope or spec cannot ...".
+    expect(said.textContent).toBe(`Not decided: ${message}`)
   })
 
   it('says an owner-only item is the owner’s even as its last editor (#2259)', async () => {
@@ -234,7 +238,26 @@ describe('one item', () => {
       ),
     )
     const detail = await loaded()
-    await within(detail).findByText(/the platform owner only, even as the schedule’s last editor \(the waiver is audited\)/, undefined, WAIT)
+    await within(detail).findByText(
+      'only the platform owner, who may decide even as the schedule’s last editor; that decision is recorded in the audit as an owner waiver',
+      undefined,
+      WAIT,
+    )
+  })
+
+  it('says an owner-only hold’s approver once, not "only by ... only" (#2259)', async () => {
+    const held = { ...item('run:run_8f2a', { kind: 'hold' }), approvers: 'owner_only', hold: { code: 'NEEDS_OWNER', approvers: 'owner_only', matched: ['.github/workflows'] } }
+    await mount(
+      'approval=run%3Arun_8f2a',
+      routes((m, url) =>
+        m === 'GET' && url.split('?')[0] === '/v1/approvals/run%3Arun_8f2a' ? { status: 200, body: { approval: held, run: { id: 'run_8f2a', state: 'PLANNED', plan: PLAN } } } : null,
+      ),
+    )
+    const detail = await loaded()
+    const note = await within(detail).findByRole('note', undefined, WAIT)
+    // Rendered 2026-10-25: "Approved only by the platform owner only, ...".
+    expect(note.textContent).toContain('Approved by only the platform owner, who may decide even as the schedule’s last editor')
+    expect(note.textContent).not.toMatch(/only by/)
   })
 
   it('asks a one-person tenant for the words its own hold names, and sends them', async () => {
