@@ -1082,6 +1082,13 @@ CONFLICT_ROUND_METADATA_KEY = "merge_conflict_round"
 #: that the branch now stands on the default branch's head. The worker spells
 #: it `agent_worker.lifecycle.CONFLICT_ROUND_FIELD`.
 CONFLICT_ROUND_FIELD = "conflict_round"
+#: A CI fix's red head (#2276): `{"pull_request": int, "head_sha": 40-hex}`,
+#: copied from `metadata.ci_fix` at submission, on a continuation only, and
+#: only those two fields. Inside the signed block, so the worker may act on
+#: it: at attempt start it ends a fix as superseded when the pull request's
+#: branch has moved past that head or the pull request is merged or closed.
+#: The worker spells it `agent_worker.cifixstart.FIELD`.
+CI_FIX_HEAD_FIELD = "ci_fix_head"
 
 #: The key inside `task.metadata` the worker stages declared inputs from:
 #: `{upstream TASK id: filename}`. Written by workflow expansion only
@@ -1698,6 +1705,10 @@ class DispatchOptions:
     #: a continuation whose metadata carries `CONFLICT_ROUND_METADATA_KEY`.
     #: Written only when true, inside the signed block.
     conflict_round: bool = False
+    #: A CI fix's red head (#2276), `{"pull_request": int, "head_sha": str}`:
+    #: set by `submit_workflow` on a continuation whose `metadata.ci_fix`
+    #: names a head. Written only when set, inside the signed block.
+    ci_fix_head: dict[str, Any] | None = None
     #: `(upstream TASK id, upstream STEP id)` for every `input_from` entry of a
     #: step that opted in to `input_layout: "by_parent"` (#75), else empty. The
     #: worker sees only task ids in `metadata.input_from`; this is how it learns
@@ -1911,6 +1922,13 @@ class DispatchOptions:
         # other step stores exactly the block it stored before.
         if self.conflict_round:
             block[CONFLICT_ROUND_FIELD] = True
+        # Absent on every step but a CI fix that names its red head (#2276),
+        # so every other step stores exactly the block it stored before.
+        if self.ci_fix_head:
+            block[CI_FIX_HEAD_FIELD] = {
+                "pull_request": self.ci_fix_head["pull_request"],
+                "head_sha": self.ci_fix_head["head_sha"],
+            }
         # Absent on every step but an `await-input` step (HW-API-SUBMIT), so
         # every other step stores exactly the block it stored before.
         if self.await_input is not None:
