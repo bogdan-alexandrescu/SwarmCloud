@@ -249,9 +249,9 @@ describe('readingAge', () => {
 /** The declarations of the one rule in config.css whose selector is exactly `selector`. */
 function rule(selector: string): string {
   const flat = CONFIG_CSS.replace(/\/\*[\s\S]*?\*\//g, '')
-  const at = flat.split('}').find((r) => r.split('{')[0].trim() === selector)
+  const at = flat.split('}').find((r) => (r.split('{')[0] ?? '').trim() === selector)
   if (at === undefined) throw new Error(`no ${selector} rule in config.css`)
-  return at.split('{')[1].replace(/\s+/g, ' ')
+  return (at.split('{')[1] ?? '').replace(/\s+/g, ' ')
 }
 
 describe('the fold stays one line on a phone', () => {
