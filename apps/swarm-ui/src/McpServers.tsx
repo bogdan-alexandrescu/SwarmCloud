@@ -326,7 +326,10 @@ function McpServersLead() {
     )
   }
   const n = lead.names.length
-  const kicker = lead.of === null ? 'Secrets set' : `Secrets set · ${n} of the ${lead.of} missing ${n === 1 ? 'is' : 'are'} here`
+  // "1 of the 1 missing is here" reads as a slip: when every missing secret is an MCP server's, the count alone.
+  const kicker = lead.of === null ? 'Secrets set'
+    : lead.of <= n ? `Secrets set · ${n} missing`
+      : `Secrets set · ${n} of the ${lead.of} missing ${n === 1 ? 'is' : 'are'} here`
   return (
     <section className="ws-lead is-next" aria-label={kicker}>
       <div className="ws-lead-t">
