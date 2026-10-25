@@ -4336,6 +4336,37 @@ def base_merge_tip(
     return tip, ""
 
 
+def base_merge_changed_paths(
+    *,
+    repo: Path,
+    base: str,
+    tip: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> frozenset[str]:
+    """The paths whose content differs between the clone `base` and the moved
+    `tip` -- what the base merges `base_merge_tip` accepted changed (#2367).
+
+    Empty when the diff cannot be read: `replay_onto_tip` then takes no
+    conflict as superseded, and fails as it did before.
+    """
+    code, text = _git_text(
+        [git_binary, *_NO_HOOKS, "diff", "--name-only", "-z", base, tip],
+        repo=Path(repo),
+        private_dir=private_dir,
+        logs_dir=logs_dir,
+        slug="replay-base-merge-paths",
+        timeout_seconds=timeout_seconds,
+        logger=logger,
+    )
+    if code != 0:
+        return frozenset()
+    return frozenset(path for path in text.split("\0") if path)
+
+
 def replay_onto_tip(
     *,
     repo: Path,
@@ -4348,13 +4379,14 @@ def replay_onto_tip(
     timeout_seconds: int,
     logger: Any,
     git_binary: str = "git",
+    superseded: list[str] | None = None,
 ) -> str | None:
     """Replay HEAD's first-parent commits since `base` onto `tip`, as the worker's.
 
     Returns the new HEAD; None when the replay adds nothing over `tip` (it
     already holds every change), with HEAD left on `tip`. Raises GitError on
-    a conflict, or on a merge commit in the span, after putting HEAD and the
-    working tree back where they were.
+    a conflict outside the base merge's paths, or on a merge commit in the
+    span, after putting HEAD and the working tree back where they were.
 
     For a continued branch moved only by merges of the default branch
     (`base_merge_tip`, #2179): each commit is cherry-picked onto the tip
@@ -4363,6 +4395,22 @@ def replay_onto_tip(
     already the worker's (`replay_agent_commits` or the fold ran). A commit
     whose change the tip already holds is dropped. Nothing here touches the
     remote; `repo` is the worker-owned publish repository.
+
+    SUPERSEDED BY THE BASE (#2367). MEASURED 2026-10-25: four CI-fix rounds
+    had hand-patched tests/unit/scripts/unit_test_durations.json, main's
+    #2312 rewrote it and was merged into their branches, and each replay
+    conflicted on it. When EVERY conflicted path of a pick is one the base
+    merge changed (`base_merge_changed_paths`, clone base..tip), the tip's
+    version of each is taken -- removed where the tip has none -- and the
+    pick goes on. That is safe here and nowhere else: `base_merge_tip` has
+    already proved everything between the base and the tip is merges of the
+    default branch, so the tip's version is main's own change and the
+    round's, written against the older base, is stale by construction; the
+    merge wake reads CI again at the new head, so a round whose fix was not
+    in fact superseded meets its red check again rather than a silent pass.
+    Each such path is appended once to `superseded` when given. A conflict
+    in any path the base merge did not change, a merge commit in the span,
+    or any other failure still raises, as before.
     """
     g = [git_binary, *_NO_HOOKS, *_worker_identity(author_name, author_email)]
 
@@ -4399,6 +4447,38 @@ def replay_onto_tip(
             return GitError(f"{why}, and the publish repository could not be put back")
         return GitError(why)
 
+    merged_paths: list[frozenset[str]] = []
+
+    def take_tip(sha: str) -> None:
+        # A failed pick: superseded only when every unmerged path is one the
+        # base merge changed; anything else raises as it always did.
+        conflicted = f"replaying commit {sha[:12]} onto {tip[:12]} conflicted"
+        code, text = run([*g, "diff", "--name-only", "-z", "--diff-filter=U"], "replay-unmerged")
+        unmerged = sorted({path for path in text.split("\0") if path}) if code == 0 else []
+        if not merged_paths:
+            merged_paths.append(base_merge_changed_paths(
+                repo=repo, base=base, tip=tip, private_dir=private_dir, logs_dir=logs_dir,
+                timeout_seconds=timeout_seconds, logger=logger, git_binary=git_binary,
+            ))
+        if not unmerged or not set(unmerged) <= merged_paths[0]:
+            raise restore(conflicted)
+        for path in unmerged:
+            code, _ = run([*g, "cat-file", "-e", f"HEAD:{path}"], "replay-tip-has")
+            if code == 0:
+                code, _ = run([*g, "checkout", "HEAD", "--", path], "replay-take-tip")
+                if code == 0:
+                    code, _ = run([*g, "add", "--", path], "replay-take-add")
+            else:
+                code, _ = run([*g, "rm", "--quiet", "-f", "--", path], "replay-take-rm")
+            if code != 0:
+                raise restore(f"{conflicted}, and the tip's version could not be taken")
+        # The pick is resolved; its sequencer state is not needed again.
+        run([*g, "cherry-pick", "--quit"], "replay-resolved")
+        if superseded is not None:
+            superseded.extend(path for path in unmerged if path not in superseded)
+        logger.info("took the moved tip's version of paths the base merge changed",
+                    commit=sha, tip=tip, paths=len(unmerged))
+
     code, _ = run([*g, "reset", "--quiet", "--hard", tip], "replay-onto")
     if code != 0:
         raise restore(f"could not move onto {tip[:12]}")
@@ -4408,7 +4488,7 @@ def replay_onto_tip(
             raise restore(f"commit {sha[:12]} is a merge and cannot be replayed")
         code, _ = run([*g, "cherry-pick", "--no-commit", sha], "replay-pick")
         if code != 0:
-            raise restore(f"replaying commit {sha[:12]} onto {tip[:12]} conflicted")
+            take_tip(sha)
         code, tree = run([*g, "write-tree"], "replay-tree")
         tree = tree.strip()
         if code != 0 or not _FULL_SHA_RE.match(tree):
