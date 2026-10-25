@@ -146,6 +146,7 @@ from swarm_redaction import redact as redact_text
 from . import artifact_manifest as manifest_mod
 from . import cachedirs as cachedirs_mod
 from . import children as children_mod
+from . import cifixstart as cifixstart_mod
 from . import continuation as continuation_mod
 from . import publishpr as publishpr_mod
 from . import egress as egress_mod
@@ -3156,6 +3157,15 @@ class Worker:
         # A clone is the single slowest step before the agent starts, and the
         # one most likely to vary with repository size.
         self._heartbeat()
+        # ---- STEP 5 (after): a superseded CI fix runs no agent (#2276) ------
+        # A CI fix waits for capacity after `scripts/ci-fix.sh` checked its red
+        # head, and the branch can be fixed, merged or closed meanwhile. On a
+        # fresh clone, before any runner starts, it ends SUCCEEDED no_change
+        # (`cifixstart.superseded`), after the window closes like every other
+        # ending `_prepare` decides on.
+        superseded = self._ci_fix_superseded(repo_info)
+        if superseded:
+            return functools.partial(self._finish_superseded_ci_fix, superseded)
         # The services the clone declares, up from here to `_cleanup` (TS-RUN).
         self._start_test_services()
 
@@ -6706,6 +6716,55 @@ class Worker:
             "nothing to change: a step this one needs changed nothing; no agent ran",
             upstream=list(upstream),
         )
+        return Outcome(exit_code=ExitCode.OK, state=TaskState.SUCCEEDED)
+
+    def _ci_fix_superseded(self, repo_info: dict[str, Any] | None) -> str | None:
+        """Why this CI fix has nothing left to fix, or None (#2276, `cifixstart`).
+
+        Only for a task whose SIGNED dispatch block carries `ci_fix_head`, on a
+        fresh clone: an attempt restored from a checkpoint has already run its
+        agent on the red head, and the push judges that work. The pull request
+        is read with the reader `_read_pull_at_start` uses; a forge that cannot
+        be read, or a token this worker may not hold, leaves the clone alone
+        to decide, so an outage never ends a fix that still has work.
+        """
+        rec = cifixstart_mod.record((self._task or {}).get("metadata"))
+        if rec is None or repo_info is None or repo_info.get("from_checkpoint") \
+                or self._restored_from is not None:
+            return None
+        pull: PullHead | None = None
+        url = self._repo_url
+        token = None if self._git_token_refusal() else self._git_token()
+        if url and token:
+            try:
+                token, access = self._probe_reading_again(url, token, "the CI fix start check")
+                if access is not None:
+                    pull = self._read_pull(access, token or "", rec.pull_request)
+            except (forge_mod.ForgeUnavailable, ForgeError) as exc:
+                self.log.warning(
+                    "CI fix start check: the pull request could not be read; the clone decides",
+                    number=rec.pull_request, error=self._scrub(str(exc)[:300]),
+                )
+        return cifixstart_mod.superseded(rec, self._clone_commit, pull)
+
+    def _finish_superseded_ci_fix(self, reason: str) -> Outcome:
+        """End a superseded CI fix SUCCEEDED as `no_change`, before its agent ran (#2276).
+
+        No agent, no publish, no push: the red commit it was to fix is no
+        longer the pull request's head, or the pull request is merged or
+        closed. The generation is checked first, as before any ending, and the
+        finish is the fenced write every other ending makes, which releases
+        the lease (invariant 5).
+        """
+        self.phases.enter("superseded_ci_fix")
+        self.control.validate_generation()
+        summary: dict[str, Any] = {
+            expected_mod.NO_CHANGE_SUMMARY_KEY: True,
+            NO_CHANGE_REASON_SUMMARY_KEY: reason,
+        }
+        with self._metrics_after_the_record():
+            self.control.finish(state=TaskState.SUCCEEDED, exit_code=0, result_summary=summary)
+        self.log.info("CI fix superseded at start; no agent ran", reason=reason)
         return Outcome(exit_code=ExitCode.OK, state=TaskState.SUCCEEDED)
 
     def _integrates_with_changes(self) -> list[str]:

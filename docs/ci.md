@@ -2375,8 +2375,25 @@ fixer by hand and push the fix-up from a laptop.
 `swarm/<task-id>` branch of this repository, and runs
 [`scripts/ci-fix.sh`](../scripts/ci-fix.sh) `run`:
 
-1. **Only the pull request's current head.** A red run for a commit the branch
-   has already moved past is ignored.
+1. **Only the pull request's current head, at submit and again at start.** A
+   red run for a commit the branch has already moved past is ignored. The
+   check at submit is not enough, because a fix waits for capacity before it
+   starts and the red head can be superseded while it waits. PR #2224's two
+   fixes started 1.5-2 h after submission, when the owner had already fixed
+   and merged the branch: one agent found nothing to change and failed
+   `published_nothing`, the other reset onto the red sha and failed with
+   HEAD moved (#2276). So swarm-api signs the red head into the dispatch
+   block (`ci_fix_head`, `swarm_api.validation.CI_FIX_HEAD_FIELD`; the
+   worker acts on no unsigned metadata), and the worker checks it again on
+   the attempt's fresh clone, before any runner starts
+   ([`agent_worker/cifixstart.py`](../apps/agent-worker/agent_worker/cifixstart.py),
+   `lifecycle.py::Worker._ci_fix_superseded`). A branch that moved past the
+   red commit, a merged or closed pull request, or a head the forge reports
+   moved ends the attempt SUCCEEDED as `no_change`, with a `no_change_reason`
+   starting `superseded:` (`lifecycle.py::Worker._finish_superseded_ci_fix`).
+   No agent runs and nothing is pushed. A forge that cannot be read leaves the
+   clone alone to decide. An attempt restored from a checkpoint is not
+   checked, because its agent already ran.
 2. **Every failed job is read, cut where it failed, redacted, then capped.**
    The script lists the run's jobs through the Actions API and reads each
    failed job's own log (`actions/jobs/<id>/logs`), not `gh run view
