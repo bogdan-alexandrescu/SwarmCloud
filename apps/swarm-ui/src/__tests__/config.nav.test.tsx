@@ -381,22 +381,25 @@ describe('a workspace admin on a platform Admin page goes to Workspaces you admi
 })
 
 describe('the setup strip (proposal E)', () => {
-  it('runs across every Config page', async () => {
-    for (const path of ['/config/github', '/config/repositories', '/config/secrets', '/config/mcp-servers', '/config/people', '/config/workspace', '/config/workspace/setup']) {
-      serve(ME(false), [PERSONAL, group('eng', 'admin')])
-      await app(path)
-      // MUTATION: mount the strip on GitHub access only -> every other row fails.
-      const strip = await screen.findByRole('list', { name: 'Workspace setup steps' })
-      expect(within(strip).getAllByRole('listitem').length, path).toBe(4)
-      cleanup()
-    }
+  // The strip lands ~1.7s after App mounts on an idle machine (its setup read),
+  // close to setup.ts' 2s `asyncUtilTimeout`; under a 50-file parallel run it
+  // missed it, and seven pages in one case crossed the 30s test timeout. So one
+  // case per page, and the strip's own wait is 10s: still a failure, not a hang.
+  const STRIP_WAIT = { timeout: 10_000 }
+  it.each(['/config/github', '/config/repositories', '/config/secrets', '/config/mcp-servers', '/config/people', '/config/workspace', '/config/workspace/setup'])('runs across every Config page: %s', async (path) => {
+    serve(ME(false), [PERSONAL, group('eng', 'admin')])
+    await app(path)
+    // MUTATION: mount the strip on GitHub access only -> every other row fails.
+    const strip = await screen.findByRole('list', { name: 'Workspace setup steps' }, STRIP_WAIT)
+    expect(within(strip).getAllByRole('listitem').length, path).toBe(4)
+    cleanup()
   })
 
   it('carries a compact form for the phone that names the next measured step (S2d)', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin')])
     await app('/config/secrets')
-    await screen.findByRole('list', { name: 'Workspace setup steps' })
-    await waitFor(() => expect(document.querySelector('.cfg-compact')?.textContent ?? '').toContain('Next: Repositories chosen'))
+    await screen.findByRole('list', { name: 'Workspace setup steps' }, STRIP_WAIT)
+    await waitFor(() => expect(document.querySelector('.cfg-compact')?.textContent ?? '').toContain('Next: Repositories chosen'), STRIP_WAIT)
     const compact = document.querySelector('.cfg-compact')!
     // MUTATION: drop the compact form -> the phone shows four stacked steps and this fails.
     expect(compact.textContent).toContain('Setup 1 of 4')
