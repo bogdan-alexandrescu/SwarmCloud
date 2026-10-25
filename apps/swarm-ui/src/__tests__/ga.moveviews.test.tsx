@@ -337,3 +337,41 @@ describe("People and roles' role list and overrides read as the house list and t
     for (const c of table.querySelectorAll('tbody th, tbody td')) expect(c.getAttribute('data-label'), c.textContent ?? '').not.toBeNull()
   })
 })
+
+describe('an old bookmark lands on the new page with its tab drawn (GA-MOVE-VIEWS review)', () => {
+  // The review found the bar right and the tab wrong: each page read its tab
+  // off window.location once, at mount, before the router had written the new
+  // address, so a hash bookmark drew Workspace secrets under ?view=logins and
+  // Roles under ?view=members. The tab is the routed address App carries.
+  function api() {
+    return serve((m, url) => {
+      if (url.includes('/v1/tenants/me')) return { status: 200, body: ME(true) }
+      if (url.includes('/v1/workspace/roles')) return { status: 200, body: ROLES }
+      if (url.includes('/v1/access/members')) return { status: 200, body: MEMBERS }
+      if (m === 'GET' && url.includes('/v1/workspace/secrets/consumers')) return { status: 200, body: { kinds: [], providers: [], consumers: [] } }
+      if (m === 'GET' && url.includes('/v1/workspace/secrets')) return { status: 200, body: SECRETS }
+      if (m === 'GET' && url === '/v1/browser-logins') return { status: 200, body: { tenant_id: 'u-ana', logins: [LOGIN] } }
+      return null
+    })
+  }
+  const LANDS: readonly [string, string, string][] = [
+    ['/#work/access?view=logins', '/config/secrets?view=logins', 'Browser logins'],
+    ['/#config/github?view=logins', '/config/secrets?view=logins', 'Browser logins'],
+    ['/#config/github?view=members', '/config/people?view=members', "Members' GitHub"],
+    ['/#work/access?view=members', '/config/people?view=members', "Members' GitHub"],
+    ['/#config/people?view=members', '/config/people?view=members', "Members' GitHub"],
+    ['/config/github?view=logins', '/config/secrets?view=logins', 'Browser logins'],
+    ['/config/github?view=members', '/config/people?view=members', "Members' GitHub"],
+  ]
+  it.each(LANDS)('%s opens %s on %s', async (old, now, tab) => {
+    api()
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const mod = await import('../App')
+    window.history.replaceState(null, '', old)
+    render(<mod.App />)
+    await waitFor(() => expect(window.location.pathname + window.location.search).toBe(now))
+    // MUTATION: read the tab off window.location at mount again (peopleViewFromUrl / secretsViewFromUrl) -> the hash rows fail.
+    await waitFor(() => expect(screen.getByRole('tab', { name: tab }).getAttribute('aria-selected')).toBe('true'))
+  })
+})
