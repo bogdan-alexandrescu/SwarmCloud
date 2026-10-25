@@ -167,3 +167,44 @@
 .pot-table td[data-col='cost'] .pot-cov { white-space: normal; text-wrap: balance; }
 .pot-tile-floor { display: block; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .pot-table th[role='rowheader'] .pot-cov { white-space: normal; max-width: 22ch; }
+
+/* A BREAKDOWN STACKS THE AGENTS CHART (BGD's answer 1, 2026-10-24; mock-up
+   A's F3 and F4): the five series colours in the route's order, the busiest
+   at the bottom, and "all others" in a neutral of its own -- --series-5 is
+   already the fifth layer and the retries lane, so "all others" is that slate
+   pulled toward the text colour, darker in light and lighter in dark. An
+   unknown is never a colour: it is the hatch, outlined so its band reads as a
+   band (charts README). The split table sits beside the chart where the card
+   is wide, and under it on a phone. */
+.pot-layer { fill-opacity: .85; stroke: var(--surface); stroke-width: .75; }
+.pot-layer-0 { fill: var(--series-1); background: var(--series-1); }
+.pot-layer-1 { fill: var(--series-2); background: var(--series-2); }
+.pot-layer-2 { fill: var(--series-3); background: var(--series-3); }
+.pot-layer-3 { fill: var(--series-4); background: var(--series-4); }
+.pot-layer-4 { fill: var(--series-5); background: var(--series-5); }
+.pot-layer-other { fill: color-mix(in srgb, var(--series-5) 55%, var(--text)); background: color-mix(in srgb, var(--series-5) 55%, var(--text)); }
+.pot-layer-unknown { stroke: var(--text-faint); stroke-width: 1; }
+.pot-agents-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ctl-s3); min-width: 0; }
+@media (min-width: 1100px) {
+  .pot-agents-body.is-split { grid-template-columns: minmax(0, 1fr) minmax(260px, 320px); align-items: start; }
+}
+.pot-split { min-width: 0; }
+.pot-split table { width: 100%; border-collapse: collapse; font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
+.pot-split thead th { font-weight: 600; color: var(--text-dim); text-align: left; padding: 0 var(--ctl-s1) var(--ctl-s1); border-bottom: 1px solid var(--line); }
+.pot-split th[scope='row'] { font-weight: 400; text-align: left; }
+.pot-split-name > span { overflow-wrap: anywhere; }
+.pot-split th,
+.pot-split td { padding: 5px var(--ctl-s1); border-bottom: 1px solid var(--line); vertical-align: top; }
+.pot-split-name { display: flex; align-items: baseline; gap: 8px; }
+.pot-split-name .pot-key { transform: translateY(1px); }
+.pot-split .is-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pot-split .pot-row-total th,
+.pot-split .pot-row-total td { font-weight: 600; border-bottom: 0; }
+
+/* THE READOUT'S LAYERS (F6): top of the stack first, as the split table, and
+   read DOWN each column: a grid's rows put the top layer's neighbour four
+   layers down the stack beside it (review, 2026-10-25). */
+.pot-readout-layers { columns: 220px; column-gap: var(--ctl-s3); margin: 0 0 var(--ctl-s2); padding: 0 0 var(--ctl-s2); list-style: none; border-bottom: 1px solid var(--line); font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
+.pot-readout-layers li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 1px 0; break-inside: avoid; }
+.pot-readout-layers li span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.pot-readout-layers b { font-weight: 600; font-variant-numeric: tabular-nums; }

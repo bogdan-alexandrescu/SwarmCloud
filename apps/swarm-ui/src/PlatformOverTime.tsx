@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { usePhoneTables, tableMode } from './capacityPoll'
 import { HatchDef, useHatchId, VALUE_LABEL_GAP_PX } from './charts/parts'
 import { linearScale, ValueAxis } from './charts/TimeSeries'
@@ -10,6 +10,7 @@ import {
   TIME_BUCKETS,
   TOKEN_KINDS,
   breakdownOf,
+  groupingOf,
   isRead,
   loadPlatformTime,
   platformTimeQuery,
@@ -23,6 +24,8 @@ import {
   type UsageBucket,
   type UsageFigures,
   type UsageGroupRow,
+  type UsageGrouping,
+  type UsageSeries,
 } from './platformTimeApi'
 import { Mark } from './primitives'
 import { timeAgo } from './types'
@@ -43,13 +46,21 @@ import './styles/overtime.css'
  *     submitted, once, and its attempts after the first are `retries` in the
  *     same bucket -- drawn as their own neutral bars (`--series-5`) on
  *     their own scale, under the agents', never stacked into them.
- *   * THE FOUR BREAKDOWNS are the route's `group`, picked from a menu that
- *     says what each groups by and what it does with an agent that has no
- *     value yet.
+ *   * THE FOUR BREAKDOWNS are the route's `usage.breakdowns`, picked from a
+ *     menu that says what each groups by and what it does with an agent that
+ *     has no value yet. Every one comes with each read (BGD's answer 3,
+ *     2026-10-24), so picking one draws at once and never costs a read.
+ *   * A BREAKDOWN STACKS THE AGENTS CHART (answer 1, mock-up A's F3 and F4):
+ *     the route's five busiest keys plus "all others", each a layer, with the
+ *     split table beside it; retries stay apart, as totals on their own lane.
+ *     A key that says a value was not measured is never a coloured layer: it
+ *     is one hatched layer on top, and its own rows in the tables. "holds no
+ *     account" (answer 4) is a fact, so it stacks.
  *   * COST IS "Estimated cost (list price, not a bill)", the route's own
  *     `cost_label`, printed as served. Absent cost is "not reported", never
  *     $0; a partial one is "at least $X" with "k of n agents reported"; the
- *     stopped-run estimate is included in the sum and shown apart.
+ *     stopped-run estimate is included in the sum and shown apart as "n
+ *     estimated from a stopped run ($X)" (answer 2).
  *
  * NULL IS NOT 0 (charts/README.md). An unread bucket is a hatched band with no
  * bar and no digit. A sum nothing reported is "not reported". An attempt with
@@ -57,16 +68,17 @@ import './styles/overtime.css'
  *
  * NOTHING IS READ BEFORE RUN. The read is billed by the days it covers, so it
  * is a priced button, as Platform counts' own count is, and nothing here runs
- * on a timer or on a change of bucket or breakdown. A change of either draws
- * the read already paid for when there is one (None and Agent type are one
- * read) and otherwise shows what Run will read and what it costs.
+ * on a timer or on a change of bucket or breakdown. A change of bucket draws
+ * the read already paid for when there is one and otherwise shows what Run
+ * will read and what it costs. `run` is the page's own Run (COUNTS-PAGE's one
+ * shared button): each new value is one press, and mounting is none.
  */
 
 /**
  * THE SESSION'S READS, kept for the tab's lifetime as Platform counts keeps
  * its last run (#135): a read is billed, and leaving the page and coming back
- * should not throw one away. Keyed by `viewKey`, so each bucket and grouping
- * keeps its own answer with its own age.
+ * should not throw one away. Keyed by `viewKey`, the bucket size: each keeps
+ * its own answer with its own age, and every breakdown is in it.
  */
 let kept: Record<string, Result<PlatformTime>> = {}
 
@@ -77,7 +89,7 @@ export function forgetOverTime(): void {
 
 const UNIT: Record<TimeBucket, string> = { day: 'day', week: 'week', month: 'month' }
 
-export function PlatformOverTime({ workspaces = null }: { workspaces?: number | null }) {
+export function PlatformOverTime({ workspaces = null, run: pressed }: { workspaces?: number | null; run?: number }) {
   const [bucket, setBucket] = useState<TimeBucket>('week')
   const [breakdown, setBreakdown] = useState<Breakdown>('none')
   const [reads, setReads] = useState<Record<string, Result<PlatformTime>>>(() => ({ ...kept }))
@@ -86,7 +98,7 @@ export function PlatformOverTime({ workspaces = null }: { workspaces?: number | 
   const now = useNow(AGE_TICK_MS)
   const tz = useMemo(() => viewerZone(), [])
 
-  const key = viewKey(bucket, breakdown)
+  const key = viewKey(bucket)
   const run = reads[key] ?? null
   const data = run !== null && (run.status === 'ok' || run.status === 'stale') ? run.data : null
 
@@ -110,7 +122,7 @@ export function PlatformOverTime({ workspaces = null }: { workspaces?: number | 
     reading.current = true
     setBusy(true)
     const at = key
-    loadPlatformTime(platformTimeQuery(bucket, breakdown, tz)).then((r) => {
+    loadPlatformTime(platformTimeQuery(bucket, tz)).then((r) => {
       reading.current = false
       setBusy(false)
       setReads((was) => {
@@ -121,6 +133,15 @@ export function PlatformOverTime({ workspaces = null }: { workspaces?: number | 
       })
     })
   }
+
+  // THE PAGE'S RUN: a new value is a press; the value it mounted with is not.
+  const seen = useRef(pressed)
+  useEffect(() => {
+    if (pressed === undefined || pressed === seen.current) return
+    seen.current = pressed
+    go()
+    // `go` reads the bucket of this render, which is the one the press is for.
+  }, [pressed])
 
   const provenance = busy
     ? 'reading now…'
@@ -158,7 +179,7 @@ export function PlatformOverTime({ workspaces = null }: { workspaces?: number | 
         {price.total === null
           ? `The price is ~${int(price.perWorkspace)} reads for each workspace: one stored day for each of ${days} days, and the newest derived live. `
           : `The price is ~${int(price.total)} reads for ${spanWords} of stored days over ${known} workspaces, and the newest derived live. `}
-        A breakdown read already is drawn at once; another is its own read. Nothing here refreshes on its own. Times in your zone, {tz}. Weeks start Monday.
+        A breakdown costs no read: it groups the same days. Nothing here refreshes on its own. Times in your zone, {tz}. Weeks start Monday.
       </p>
 
       <div className="pot-body" aria-busy={busy || undefined}>
@@ -224,7 +245,7 @@ function BreakdownMenu({ value, onPick }: { value: Breakdown; onPick: (b: Breakd
               <span className="pot-menu-says">{b.says}</span>
             </button>
           ))}
-          <p className="pot-menu-foot">Picking one reads nothing. A grouping not read yet is read by Run.</p>
+          <p className="pot-menu-foot">Picking one reads nothing: every breakdown comes with the read.</p>
         </div>
       )}
     </span>
@@ -369,7 +390,8 @@ function tokenCell(t: TokenSum, ended: number): Cell {
 function costCell(f: UsageFigures): Cell {
   const c = f.cost
   const cover = [`${int(c.reporting)} of ${int(c.agents)} agents reported`]
-  if (c.estimated_usd !== null) cover.push(`${usd(c.estimated_usd)} estimated from a stopped run`)
+  // BGD's answer 2: the count of agents beside the dollars, as F2's cost tile.
+  if (c.estimated > 0) cover.push(`${int(c.estimated)} estimated from a stopped run${c.estimated_usd === null ? '' : ` (${usd(c.estimated_usd)})`}`)
   // BGD: a null cost reads "not reported", whatever the reason; a row where
   // none ended says why on the line under it.
   if (c.sum_usd === null) return { text: 'not reported', tone: 'absent', cover: f.agents_ended === 0 && f.agents > 0 ? ['none ended yet', ...cover] : cover }
@@ -434,33 +456,131 @@ function Answer({ data, breakdown, tz }: { data: PlatformTime; breakdown: Breakd
   const size: LedgerBucketSize = data.bucket
   const unread = u.buckets.filter((b) => !isRead(b)).length
   const unit = UNIT[size as TimeBucket] ?? size
+  const grouping = groupingOf(u, breakdown)
+  const layers = grouping === null ? null : layersOf(grouping)
+  const label = breakdownOf(breakdown).label.toLowerCase()
   return (
     <>
       <Tiles data={data} unread={unread} unit={unit} />
       <section className="ctl-card pot-card pot-agents" aria-labelledby="pot-agents-title">
         <div className="pot-card-head">
-          <h3 className="pot-card-title" id="pot-agents-title">Agents over time</h3>
+          <h3 className="pot-card-title" id="pot-agents-title">Agents over time{layers !== null && `, by ${label}`}</h3>
           <p className="pot-card-sub">
             Agents per {unit}, placed on the day each was submitted. Retries sit apart, on their own scale.
-            {breakdown !== 'none' && ` The ${breakdownOf(breakdown).label.toLowerCase()} split is in the table below: the rollup serves it for the span, not per ${unit}.`}
+            {layers !== null && layers.unknown.length > 0 && ' What is not known yet is hatched on top, never a colour of its own.'}
           </p>
         </div>
-        <AgentsFigure buckets={u.buckets} size={size} tz={tz} picked={picked} onPick={setPicked} />
+        <div className={layers === null ? 'pot-agents-body' : 'pot-agents-body is-split'}>
+          <AgentsFigure buckets={u.buckets} layers={layers} size={size} tz={tz} picked={picked} onPick={setPicked} />
+          {layers !== null && <SplitTable layers={layers} by={grouping!.by} />}
+        </div>
         <Legend
           keys={[
-            ['pot-key-agents', 'agents'],
+            ...(layers === null ? [['pot-key-agents', 'agents'] as const] : []),
             ['pot-key-retries', 'retries, own scale'],
             ['pot-key-unread', 'not read: no figure, not zero'],
             ['pot-key-wash', 'in progress: the bucket is still filling'],
           ]}
         />
         {picked !== null && u.buckets[picked] !== undefined && (
-          <Readout bucket={u.buckets[picked]!} size={size} tz={tz} onClose={() => setPicked(null)} />
+          <Readout bucket={u.buckets[picked]!} index={picked} layers={layers} by={grouping?.by ?? null} size={size} tz={tz} onClose={() => setPicked(null)} />
         )}
       </section>
       <CostCard data={data} size={size} tz={tz} picked={picked} />
-      <Table data={data} breakdown={breakdown} tz={tz} />
+      <Table data={data} grouping={grouping} breakdown={breakdown} tz={tz} />
     </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// The layers of a breakdown (answer 1)
+// ---------------------------------------------------------------------------
+
+/**
+ * A GROUPING AS LAYERS. `stacked` is the route's measured series in its order
+ * -- the busiest first, so at the bottom -- then "all others"; `unknown` is
+ * every series that is not a measurement, drawn as ONE hatched layer on top
+ * (charts README: an unknown is never a stacked colour) and listed apart.
+ */
+interface Layers {
+  stacked: UsageSeries[]
+  unknown: UsageSeries[]
+}
+
+function layersOf(g: UsageGrouping): Layers {
+  return { stacked: g.series.filter((s) => s.measured), unknown: g.series.filter((s) => !s.measured) }
+}
+
+/** The swatch class of a stacked layer: the five series colours, then a neutral for "all others". */
+function layerClass(s: UsageSeries, i: number): string {
+  return s.other ? 'pot-layer-other' : `pot-layer-${Math.min(i, 4)}`
+}
+
+/**
+ * THE WORDS FOR A KEY. Under pool account, the unknowns say what is unknown:
+ * "not ended" is F4's "account not known yet" (it is read off the agent's
+ * events when it ends), apart from "holds no account" (answer 4).
+ */
+function keyName(by: string | null, s: Pick<UsageSeries, 'key' | 'other' | 'keys'>): string {
+  if (s.other) return `${s.key} (${int(s.keys)})`
+  if (by === 'pool_account') {
+    if (s.key === 'not ended') return 'account not known yet'
+    if (s.key === 'not recorded') return 'account not recorded'
+    if (s.key === 'unread') return 'account not read'
+  }
+  return s.key
+}
+
+function sumOf(v: ReadonlyArray<number | null>): number {
+  return v.reduce<number>((n, x) => n + (x ?? 0), 0)
+}
+
+/**
+ * THE SPLIT TABLE BESIDE THE STACK (F3, F4): top of the stack first, so it
+ * reads down the chart beside it -- the hatched unknowns, then "all others",
+ * then the named layers -- each with its agents over the read buckets and its
+ * share, and their total, which is the Agents tile's.
+ */
+function SplitTable({ layers, by }: { layers: Layers; by: string }) {
+  const rows = [
+    ...layers.unknown.map((s) => ({ s, cls: 'pot-key-unread' })),
+    ...layers.stacked.map((s, i) => ({ s, cls: layerClass(s, i) })).reverse(),
+  ]
+  const total = rows.reduce((n, r) => n + sumOf(r.s.agents), 0)
+  return (
+    <div className="pot-split">
+      <table aria-label="Layers, top of the stack first">
+        <thead>
+          <tr>
+            <th scope="col">Layer, top of the stack first</th>
+            <th scope="col" className="is-num">Agents</th>
+            <th scope="col" className="is-num">Share</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(({ s, cls }) => {
+            const n = sumOf(s.agents)
+            return (
+              <tr key={s.key} data-key={s.key}>
+                <th scope="row">
+                  <span className="pot-split-name">
+                    <i className={`pot-key ${cls}`} aria-hidden />
+                    <span>{keyName(by, s)}</span>
+                  </span>
+                </th>
+                <td className="is-num">{int(n)}</td>
+                <td className="is-num">{total === 0 ? '—' : pct(n, total)}</td>
+              </tr>
+            )
+          })}
+          <tr data-key="__total" className="pot-row-total">
+            <th scope="row">All agents</th>
+            <td className="is-num">{int(total)}</td>
+            <td />
+          </tr>
+        </tbody>
+      </table>
+    </div>
   )
 }
 
@@ -640,6 +760,14 @@ const COST_DRAWN = [
 
 type Drawing = { key: string; w: number; h: number; ticks: number }
 
+/**
+ * Room between two value labels on this view's axes. The shared gap is for
+ * drawings shown at their own size; these grow up to a fifth past theirs, and
+ * at the shared gap the cost axis printed "$443" over "$400" with nothing
+ * between them (review, 2026-10-25).
+ */
+const AXIS_GAP_PX = Math.max(VALUE_LABEL_GAP_PX, 24)
+
 const GUTTER = 48
 /** Room past the last column for the newest x label, which is centred on it and anchored there. */
 const RIGHT = 26
@@ -669,7 +797,7 @@ function moveKeys(n: number, picked: number | null, onPick: (i: number | null) =
   }
 }
 
-function AgentsFigure({ buckets, size, tz, picked, onPick }: { buckets: readonly UsageBucket[]; size: LedgerBucketSize; tz: string; picked: number | null; onPick: (i: number | null) => void }) {
+function AgentsFigure({ buckets, layers, size, tz, picked, onPick }: { buckets: readonly UsageBucket[]; layers: Layers | null; size: LedgerBucketSize; tz: string; picked: number | null; onPick: (i: number | null) => void }) {
   const hatch = useHatchId()
   const read = buckets.filter(isRead)
   const maxAgents = Math.max(0, ...read.map((b) => b.agents))
@@ -683,18 +811,19 @@ function AgentsFigure({ buckets, size, tz, picked, onPick }: { buckets: readonly
       onKeyDown={moveKeys(buckets.length, picked, onPick)}
     >
       {AGENT_DRAWN.map((d) => (
-        <AgentsDrawing key={d.key} d={d} hatch={`${hatch}-${d.key}`} buckets={buckets} size={size} tz={tz} maxAgents={maxAgents} maxRetries={maxRetries} picked={picked} onPick={onPick} />
+        <AgentsDrawing key={d.key} d={d} hatch={`${hatch}-${d.key}`} buckets={buckets} layers={layers} size={size} tz={tz} maxAgents={maxAgents} maxRetries={maxRetries} picked={picked} onPick={onPick} />
       ))}
     </div>
   )
 }
 
 function AgentsDrawing({
-  d, hatch, buckets, size, tz, maxAgents, maxRetries, picked, onPick,
+  d, hatch, buckets, layers, size, tz, maxAgents, maxRetries, picked, onPick,
 }: {
   d: Drawing
   hatch: string
   buckets: readonly UsageBucket[]
+  layers: Layers | null
   size: LedgerBucketSize
   tz: string
   maxAgents: number
@@ -724,7 +853,9 @@ function AgentsDrawing({
     <svg className={`pot-svg is-${d.key}`} viewBox={`0 0 ${d.w} ${d.h}`} width={d.w} height={d.h} role="group" aria-label={`Agents per ${size}, drawn ${d.w} wide`}>
       <HatchDef id={hatch} />
       <text className="pot-lane" x={GUTTER} y={top - 8}>agents per {size}</text>
-      <text className="pot-lane" x={GUTTER} y={retriesTop - 8}>retries per {size}, own scale</text>
+      {/* The narrow drawing's label is short: the long one ran the width of the
+          plot and the picked bucket's ring struck through it (review, 2026-10-25). */}
+      <text className="pot-lane" x={GUTTER} y={retriesTop - 8}>{d.key === 'narrow' ? 'retries, own scale' : `retries per ${size}, own scale`}</text>
       {/* PER LANE, so the gap between the lanes -- where the retries lane's
           label is printed -- never carries a hatch: text never sits on one
           (design-system.md §1.5). */}
@@ -738,20 +869,23 @@ function AgentsDrawing({
         ),
       )}
       {maxAgents > 0 && (
-        <ValueAxis side="left" scale={aScale} extent={{ lo: 0, hi: maxAgents, degenerate: false }} format={(v) => int(v)} left={GUTTER} ticks={d.ticks} minGapPx={VALUE_LABEL_GAP_PX} keep={[0]} />
+        <ValueAxis side="left" scale={aScale} extent={{ lo: 0, hi: maxAgents, degenerate: false }} format={(v) => int(v)} left={GUTTER} ticks={d.ticks} minGapPx={AXIS_GAP_PX} keep={[0]} />
       )}
       {maxRetries > 0 && (
-        <ValueAxis side="left" scale={rScale} extent={{ lo: 0, hi: maxRetries, degenerate: false }} format={(v) => int(v)} left={GUTTER} ticks={d.key === 'narrow' ? 1 : 2} minGapPx={VALUE_LABEL_GAP_PX} keep={[0]} />
+        <ValueAxis side="left" scale={rScale} extent={{ lo: 0, hi: maxRetries, degenerate: false }} format={(v) => int(v)} left={GUTTER} ticks={1} minGapPx={AXIS_GAP_PX} keep={[0]} />
       )}
       <line className="pot-base" x1={GUTTER} x2={d.w - RIGHT} y1={agentsBase} y2={agentsBase} />
       <line className="pot-base" x1={GUTTER} x2={d.w - RIGHT} y1={retriesBase} y2={retriesBase} />
+      {layers !== null && (
+        <Stack layers={layers} buckets={buckets} hatch={hatch} cx={(i) => x0(i) + col / 2} half={barW / 2} y={(v) => (maxAgents === 0 ? agentsBase : aScale(v))} />
+      )}
       {buckets.map((b, i) => {
         if (!isRead(b)) return null
         const ah = height(aScale, agentsBase, b.agents, maxAgents)
         const rh = height(rScale, retriesBase, b.retries, maxRetries)
         return (
           <g key={`b${i}`}>
-            <rect data-bar="agents" data-value={b.agents} className="pot-bar-agents" x={barX(i)} y={agentsBase - ah} width={barW} height={ah} />
+            {layers === null && <rect data-bar="agents" data-value={b.agents} className="pot-bar-agents" x={barX(i)} y={agentsBase - ah} width={barW} height={ah} />}
             <rect data-bar="retries" data-value={b.retries} className="pot-bar-retries" x={barX(i)} y={retriesBase - rh} width={barW} height={rh} />
           </g>
         )
@@ -773,11 +907,89 @@ function AgentsDrawing({
           <rect key={`p${lane}`} className="pot-picked" x={x0(picked) + 0.5} y={y0! - 2} width={Math.max(1, col - 1)} height={y1! - y0! + 4} />
         ))}
       {buckets.map((b, i) => (
-        <rect key={`h${i}`} className="pot-hit" x={x0(i)} y={top} width={col} height={retriesBase - top} onClick={() => onPick(picked === i ? null : i)}>
+        <rect
+          key={`h${i}`}
+          className="pot-hit"
+          data-stack-top={layers !== null && isRead(b) ? stackTop(layers, i) : undefined}
+          x={x0(i)}
+          y={top}
+          width={col}
+          height={retriesBase - top}
+          onClick={() => onPick(picked === i ? null : i)}
+        >
           <title>{bucketName(b.start, size, tz)}</title>
         </rect>
       ))}
     </svg>
+  )
+}
+
+/** A read bucket's stack height: every layer's agents in it, the hatched ones too. */
+function stackTop(layers: Layers, i: number): number {
+  return [...layers.stacked, ...layers.unknown].reduce((n, s) => n + (s.agents[i] ?? 0), 0)
+}
+
+/**
+ * THE STACKED AREA (F3, F4). One path a layer, each layer's band laid on the
+ * ones below it, in the route's order; the unknowns as one hatched band on top.
+ * A run of read buckets is one shape through the column centres; an unread
+ * bucket breaks it, so the area never bridges a bucket with no figure. A run
+ * of one bucket is a bar's width, so it is not a line nothing can see.
+ */
+function Stack({
+  layers, buckets, hatch, cx, half, y,
+}: {
+  layers: Layers
+  buckets: readonly UsageBucket[]
+  hatch: string
+  cx: (i: number) => number
+  half: number
+  y: (v: number) => number
+}) {
+  const runs: number[][] = []
+  let cur: number[] = []
+  buckets.forEach((b, i) => {
+    if (isRead(b)) {
+      cur.push(i)
+      return
+    }
+    if (cur.length > 0) runs.push(cur)
+    cur = []
+  })
+  if (cur.length > 0) runs.push(cur)
+  const below = buckets.map(() => 0)
+  const band = (s: UsageSeries): string =>
+    runs
+      .map((run) => {
+        const xs = run.length === 1 ? [cx(run[0]!) - half, cx(run[0]!) + half] : run.map(cx)
+        const at = run.length === 1 ? [run[0]!, run[0]!] : run
+        const upper = at.map((i, k) => `${xs[k]!.toFixed(1)},${y(below[i]! + (s.agents[i] ?? 0)).toFixed(1)}`)
+        const lower = at.map((i, k) => `${xs[k]!.toFixed(1)},${y(below[i]!).toFixed(1)}`).reverse()
+        return `M${[...upper, ...lower].join(' L')} Z`
+      })
+      .join(' ')
+  const lift = (list: readonly UsageSeries[]) => buckets.forEach((_, i) => {
+    below[i]! += list.reduce((n, s) => n + (s.agents[i] ?? 0), 0)
+  })
+  const stacked = layers.stacked.map((s, k) => {
+    const path = <path key={s.key} data-layer={s.key} className={`pot-layer ${layerClass(s, k)}`} d={band(s)} />
+    lift([s])
+    return path
+  })
+  // The unknowns as one band: their sum per bucket, above every stacked layer.
+  const unknown: UsageSeries = {
+    key: 'unknown',
+    measured: false,
+    other: false,
+    keys: layers.unknown.length,
+    agents: buckets.map((_, i) => layers.unknown.reduce((n, s) => n + (s.agents[i] ?? 0), 0)),
+    retries: [],
+  }
+  return (
+    <g>
+      {stacked}
+      {layers.unknown.length > 0 && <path data-unknown="" className="pot-layer-unknown" d={band(unknown)} fill={`url(#${hatch})`} />}
+    </g>
   )
 }
 
@@ -786,7 +998,17 @@ function AgentsDrawing({
  * the marks it describes. Every figure with its coverage; a live region, so a
  * keyboard reader hears it as the arrows move it.
  */
-function Readout({ bucket, size, tz, onClose }: { bucket: UsageBucket; size: LedgerBucketSize; tz: string; onClose: () => void }) {
+function Readout({
+  bucket, index, layers, by, size, tz, onClose,
+}: {
+  bucket: UsageBucket
+  index: number
+  layers: Layers | null
+  by: string | null
+  size: LedgerBucketSize
+  tz: string
+  onClose: () => void
+}) {
   const name = bucketName(bucket.start, size, tz)
   return (
     <div className="pot-readout" role="status" aria-live="polite">
@@ -798,15 +1020,28 @@ function Readout({ bucket, size, tz, onClose }: { bucket: UsageBucket; size: Led
       {!isRead(bucket) ? (
         <p className="pot-readout-none">No figure, not zero: this {size} was not read. The next Run reads it again.</p>
       ) : (
-        <dl className="pot-readout-list">
-          <ReadoutRow name="Agents" cell={{ text: int(bucket.agents), tone: 'plain', cover: [`${int(bucket.agents_ended)} ended`] }} />
-          <ReadoutRow name="Retries" cell={{ text: int(bucket.retries), tone: 'plain', cover: [] }} />
-          <ReadoutRow name="Run hours" cell={runCell(bucket)} />
-          <ReadoutRow name="Tokens in + out" cell={inOutCell(bucket)} />
-          <ReadoutRow name="Cache read" cell={tokenCell(bucket.tokens.cache_read_input_tokens, bucket.agents_ended)} />
-          <ReadoutRow name="Cache write" cell={tokenCell(bucket.tokens.cache_creation_input_tokens, bucket.agents_ended)} />
-          <ReadoutRow name="Estimated cost" cell={costCell(bucket)} />
-        </dl>
+        <>
+          {layers !== null && (
+            <ul className="pot-readout-layers" aria-label="Layers in this bucket, top of the stack first">
+              {[...layers.unknown.map((s) => ({ s, cls: 'pot-key-unread' })), ...layers.stacked.map((s, i) => ({ s, cls: layerClass(s, i) })).reverse()].map(({ s, cls }) => (
+                <li key={s.key}>
+                  <i className={`pot-key ${cls}`} aria-hidden />
+                  <span>{keyName(by, s)}</span>
+                  <b>{int(s.agents[index] ?? 0)}</b>
+                </li>
+              ))}
+            </ul>
+          )}
+          <dl className="pot-readout-list">
+            <ReadoutRow name="Agents" cell={{ text: int(bucket.agents), tone: 'plain', cover: [`${int(bucket.agents_ended)} ended`] }} />
+            <ReadoutRow name="Retries" cell={{ text: int(bucket.retries), tone: 'plain', cover: [] }} />
+            <ReadoutRow name="Run hours" cell={runCell(bucket)} />
+            <ReadoutRow name="Tokens in + out" cell={inOutCell(bucket)} />
+            <ReadoutRow name="Cache read" cell={tokenCell(bucket.tokens.cache_read_input_tokens, bucket.agents_ended)} />
+            <ReadoutRow name="Cache write" cell={tokenCell(bucket.tokens.cache_creation_input_tokens, bucket.agents_ended)} />
+            <ReadoutRow name="Estimated cost" cell={costCell(bucket)} />
+          </dl>
+        </>
       )}
     </div>
   )
@@ -928,7 +1163,7 @@ function CostDrawing({
         ) : null,
       )}
       {max > 0 && (
-        <ValueAxis side="left" scale={scale} extent={{ lo: 0, hi: max, degenerate: false }} format={(v) => usd(v)} left={GUTTER} ticks={d.ticks} minGapPx={VALUE_LABEL_GAP_PX} keep={[0]} />
+        <ValueAxis side="left" scale={scale} extent={{ lo: 0, hi: max, degenerate: false }} format={(v) => usd(v)} left={GUTTER} ticks={d.ticks} minGapPx={AXIS_GAP_PX} keep={[0]} />
       )}
       <line className="pot-base" x1={GUTTER} x2={d.w - RIGHT} y1={plotBase} y2={plotBase} />
       {segs.map((p) => (
@@ -971,16 +1206,17 @@ const FOLDED = 8
 const KEY_SAYS: Record<string, string> = {
   'not ended': 'still open, or ended after the span; never guessed',
   'not recorded': 'nothing recorded it; never guessed',
+  'holds no account': 'its profile takes no pool account, or it was never admitted',
 }
 
-function Table({ data, breakdown, tz }: { data: PlatformTime; breakdown: Breakdown; tz: string }) {
+function Table({ data, grouping, breakdown, tz }: { data: PlatformTime; grouping: UsageGrouping | null; breakdown: Breakdown; tz: string }) {
   const phone = usePhoneTables()
   const [all, setAll] = useState(false)
   const u = data.usage
   const size = data.bucket
   const unit = UNIT[size as TimeBucket] ?? size
   const b = breakdownOf(breakdown)
-  const byGroup = breakdown !== 'none'
+  const byGroup = grouping !== null
   const n = u.buckets.length
   const newestFirst = [...u.buckets].reverse()
   const shown = all ? newestFirst : newestFirst.slice(0, FOLDED)
@@ -1011,7 +1247,9 @@ function Table({ data, breakdown, tz }: { data: PlatformTime; breakdown: Breakdo
           </thead>
           <tbody role="rowgroup">
             {byGroup
-              ? u.groups.rows.map((r) => <FigureRow key={r.key} rowKey={r.key} name={r.key} says={KEY_SAYS[r.key]} f={r} costLabel={u.cost_label} head={head} />)
+              ? grouping.rows.map((r) => (
+                  <FigureRow key={r.key} rowKey={r.key} name={keyName(grouping.by, { key: r.key, other: false, keys: 1 })} says={KEY_SAYS[r.key]} f={r} costLabel={u.cost_label} head={head} />
+                ))
               : shown.map((bk) =>
                   isRead(bk) ? (
                     <FigureRow key={bk.start} rowKey={bk.start} name={bucketName(bk.start, size, tz)} says={bk.in_progress ? 'so far' : undefined} f={bk} costLabel={u.cost_label} head={head} />
@@ -1036,8 +1274,8 @@ function Table({ data, breakdown, tz }: { data: PlatformTime; breakdown: Breakdo
           {all ? '' : `${n - FOLDED} older ${unit}s folded; newest first.`}
         </p>
       )}
-      {byGroup && u.groups.rows_total > u.groups.rows.length && (
-        <p className="pot-fold">{u.groups.rows_total - u.groups.rows.length} smaller groups are not listed; the total counts them.</p>
+      {byGroup && grouping.rows_total > grouping.rows.length && (
+        <p className="pot-fold">{grouping.rows_total - grouping.rows.length} smaller groups are not listed; the total counts them.</p>
       )}
       {!u.totals.complete && (
         <p className="pot-fold">
