@@ -388,7 +388,8 @@ describe('the setup strip (proposal E)', () => {
       serve(ME(false), [PERSONAL, group('eng', 'admin')])
       await app(path)
       // MUTATION: mount the strip on GitHub access only -> every other row fails.
-      const strip = await screen.findByRole('list', { name: 'Workspace setup steps' })
+      // A whole-App mount: under a loaded parallel run it outlasts the 1 s default (worker run, 2026-10-25).
+      const strip = await screen.findByRole('list', { name: 'Workspace setup steps' }, { timeout: 5000 })
       expect(within(strip).getAllByRole('listitem').length, path).toBe(4)
       cleanup()
     }
@@ -397,8 +398,8 @@ describe('the setup strip (proposal E)', () => {
   it('carries a compact form for the phone that names the next measured step (S2d)', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin')])
     await app('/config/secrets')
-    await screen.findByRole('list', { name: 'Workspace setup steps' })
-    await waitFor(() => expect(document.querySelector('.cfg-compact')?.textContent ?? '').toContain('Next: Repositories chosen'))
+    await screen.findByRole('list', { name: 'Workspace setup steps' }, { timeout: 5000 })
+    await waitFor(() => expect(document.querySelector('.cfg-compact')?.textContent ?? '').toContain('Next: Repositories chosen'), { timeout: 5000 })
     const compact = document.querySelector('.cfg-compact')!
     // MUTATION: drop the compact form -> the phone shows four stacked steps and this fails.
     expect(compact.textContent).toContain('Setup 1 of 4')
