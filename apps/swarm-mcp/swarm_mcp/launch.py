@@ -1220,6 +1220,47 @@ def _own(entries: list[dict[str, Any]], sid: str | None, left_out: dict[str, int
     return kept
 
 
+def _own_or_project(entries: list[dict[str, Any]], sid: str | None, repository: str | None,
+                    left_out: dict[str, int]) -> list[dict[str, Any]]:
+    """The entries tagged with session `sid`, and -- `/sc attach --all
+    --project`, at session start (SC-BROWSER-FOLLOWUP, BGD 2026-10-25) --
+    those that clone `repository`, whichever session started them; each kept
+    entry marked `this_session`. The rest counted in `left_out` by why."""
+    from . import session
+    from .check import repo_key
+
+    kept = []
+    for entry in entries:
+        kind = session.ownership(session.owner_of(entry), sid)
+        if kind == "own" or (repository is not None and repo_key(entry.get("repository_url")) == repository):
+            kept.append({**entry, "this_session": kind == "own"})
+        else:
+            left_out[kind] += 1
+    return kept
+
+
+def _merged_listings(listings: list[dict[str, Any]]) -> dict[str, Any]:
+    """Several `sc.running_workflows` answers as one: each workflow once, in
+    board order again; incomplete when any was."""
+    from . import sc
+
+    seen: set[str] = set()
+    found: list[dict[str, Any]] = []
+    for listing in listings:
+        for entry in listing.get("workflows") or []:
+            ident = str(entry.get("workflow_id") or "")
+            if isinstance(entry, dict) and ident and ident not in seen:
+                seen.add(ident)
+                found.append(entry)
+    out: dict[str, Any] = {"workflows": sc.group_by_workspace(found), "count": len(found),
+                           "tenant_id": next((l.get("tenant_id") for l in listings if l.get("tenant_id")), None),
+                           "complete": all(l.get("complete") is not False for l in listings)}
+    reasons = [l["incomplete_because"] for l in listings if l.get("incomplete_because")]
+    if reasons:
+        out["incomplete_because"] = "; ".join(reasons)
+    return out
+
+
 def _read_workflows(client: SwarmClient, workflow_ids: list[str]) -> dict[str, dict[str, Any]]:
     """`{workflow_id: envelope}` for each id whose `GET /v1/workflows/{id}`
     answered, at most eight reads at a time."""
@@ -1244,6 +1285,7 @@ def for_all(
     new_only: bool = False,
     exclude: list[str] | None = None,
     rows: str | None = None,
+    project: bool = False,
 ) -> dict[str, Any]:
     """One titled copy per running workflow, closest to finish first in
     workspace blocks (`sc.group_by_workspace`, `board.order`), up to the
@@ -1259,15 +1301,24 @@ def for_all(
     ids the caller names -- rows it can see live. Without them, unchanged.
 
     `rows` (`swarm_workflow_launch`'s argument, PLUGIN-ROW-SPLIT-2) is the
-    mode for every copy, the single tasks' too; None reads the setting."""
+    mode for every copy, the single tasks' too; None reads the setting.
+
+    `project` (`/sc attach --all --project`, SC-BROWSER-FOLLOWUP, BGD
+    2026-10-25): what the SessionStart hook asks for in the rows layout --
+    this session's work AND every workflow and single task still running that
+    clones this checkout's origin repository (`repository` names another),
+    whichever Claude Code session started it. At session start only: the
+    plain attach-all, `/sc check` and the watch stay this session's. With no
+    origin naming a repository it widens to nothing and says so."""
     from . import sc, session
 
-    filtering = repository is not None or new_only or bool(exclude)
+    filtering = (repository is not None or new_only or bool(exclude)) and not project
     scope = None
-    if repository is not None:
+    if repository is not None or project:
         from .check import resolve_scope
 
-        scope = resolve_scope(repository)
+        scope = resolve_scope(repository if repository is not None else "origin")
+    project_repo = scope["key"] if project and scope else None
     skip = frozenset((attached() if new_only else frozenset()) | {str(i) for i in exclude or [] if i})
 
     # The single tasks first, and on their own: a failure to read them is
@@ -1286,8 +1337,15 @@ def for_all(
 
     sid = session.current()
     record = session.project_record()
-    listing = sc.running_workflows(
-        client, **server_scope(scope and scope["key"], sid, record))
+    if project:
+        # Two reads the API can filter, each a page or two: this session's
+        # work, and the project's repository's.
+        listing = _merged_listings(
+            ([sc.running_workflows(client, claude_session=sid)] if sid else [])
+            + ([sc.running_workflows(client, repository=project_repo)] if project_repo else []))
+    else:
+        listing = sc.running_workflows(
+            client, **server_scope(scope and scope["key"], sid, record))
     names = workflows.workspace_names(client)
     cap = max_live_rows()
     entries = sc.group_by_workspace(named_workspaces(
@@ -1302,11 +1360,23 @@ def for_all(
     by_api = (listing.get("filtered_by_api") or {}).get("left_out") or {}
     for kind in ("other_session", "untagged"):
         left_out["workflows"][kind] += int(by_api.get(kind) or 0)
-    entries = _own(entries, sid, left_out["workflows"])
-    if singles:
-        singles = {**singles, "tasks": _own(singles["tasks"], sid, left_out["single_tasks"])}
     already: list[str] = []
     unread: list[dict[str, Any]] = []
+    if project:
+        entries = _own_or_project(entries, sid, project_repo, left_out["workflows"])
+        if singles:
+            singles = {**singles, "tasks": _own_or_project(singles["tasks"], sid, project_repo,
+                                                           left_out["single_tasks"])}
+        if skip:
+            already = [str(e.get("workflow_id")) for e in entries if str(e.get("workflow_id")) in skip]
+            entries = [e for e in entries if str(e.get("workflow_id")) not in skip]
+            if singles:
+                already += [str(t.get("task_id")) for t in singles["tasks"] if str(t.get("task_id")) in skip]
+                singles = {**singles, "tasks": [t for t in singles["tasks"] if str(t.get("task_id")) not in skip]}
+    else:
+        entries = _own(entries, sid, left_out["workflows"])
+        if singles:
+            singles = {**singles, "tasks": _own(singles["tasks"], sid, left_out["single_tasks"])}
     if filtering:
         # THIS SESSION'S WORK, WITHIN THE PROJECT (SC-TITLES, owner
         # 2026-10-18): work in the project's record is kept whatever
@@ -1392,6 +1462,19 @@ def for_all(
         "for your running single tasks (args `attach_tasks`)"
     )
     out["session"] = {**session.describe(sid), "left_out": left_out}
+    if project:
+        out["project"] = {
+            "repository": project_repo,
+            "from_other_sessions": sum(1 for e in [*entries, *((singles or {}).get("tasks") or [])]
+                                       if e.get("this_session") is False),
+            "scope": ("this session's work and this project's running work, whichever session started "
+                      "it -- at session start only; /sc check and the watch stay this session's"),
+        }
+        if project_repo is None:
+            out["project"]["note"] = ("this checkout has no origin remote naming a repository, so "
+                                      "only this session's work was attached")
+        if skip:
+            out["already_attached"] = already
     if filtering:
         out["repository"] = scope["key"] if scope else None
         if scope and scope.get("note"):

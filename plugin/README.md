@@ -1293,7 +1293,29 @@ layouts and a toggle, remembered per project:
 `swarm_layout` in `<config_dir>/sc-layout/`, keyed by the project as `/sc
 watch` is; it outranks the plugin's `layout` option, and every launch reads
 it, so it switches without restarting the session. Rows already running keep
-going until they end: a plugin cannot stop a /workflows row.
+going until they end: a plugin cannot stop a /workflows row. So a switch also
+re-attaches (BGD, 2026-10-25, SC-BROWSER-FOLLOWUP): after it saves, the same
+`/sc layout` run goes on as `/sc attach --all`, one chat turn, and rows in the
+new layout start beside the old ones. (The engine refuses `$.command.run`
+inside a `command.run` hook, so the run is rewritten rather than queued twice;
+the pane's `[Layout]` control, a press, queues it with `$.command.run`.)
+
+At session start the pane module makes ONE `swarm_layout` call (after the
+session has started; a reload asks nothing), and in the pane layout opens the
+pane drawing "not read yet" with Refresh: no list read until someone presses
+it. Claude Code seats a pane nobody asked for only from 144 terminal columns;
+below that it waits and a one-line toast says so.
+
+Session start also tracks THIS PROJECT's running work (BGD's note of the same
+day), at session start only: the SessionStart hook names, beside this
+session's own work, every workflow and single task still running that clones
+this checkout's origin repository, whichever session started it. In the rows
+layout it asks for `/sc attach --all --project` (`swarm_workflow_launch
+{attach: "all", project: true}`); in the pane layout the pane's Level 1 lists
+it once read (`swarm_browse {level: "workflows", project: true}`). Another
+repository's work from another session is left out, and `/sc check`, the watch
+and the plain `/sc attach --all` stay this session's (owner decision
+2026-10-14).
 
 What the pane needs and what was not measured: Claude Code's function hooks,
 early access in this build (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`); without
