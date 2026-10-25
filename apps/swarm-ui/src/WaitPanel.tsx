@@ -296,9 +296,16 @@ function OwnerQuestionFacts({ d }: { d: Record<string, unknown> }) {
         ) : (
           <>
             {asked} open ·{' '}
-            <a className="ctl-link" href="#held-questions">
+            {/* A button, not `href="#held-questions"`: the console still routes
+                legacy hash addresses, so that anchor sent the page to Overview
+                (nav.links.test.tsx). This scrolls to the card instead. */}
+            <button
+              type="button"
+              className="ctl-link"
+              onClick={() => document.getElementById('held-questions')?.scrollIntoView?.({ block: 'start' })}
+            >
               answer them below
-            </a>
+            </button>
           </>
         )}
       </Fact>
