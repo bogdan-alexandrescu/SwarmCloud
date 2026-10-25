@@ -391,3 +391,43 @@ ol.sc-pobj { padding-left: 18px; }
   .sc-edit-cols { grid-template-columns: minmax(0, 1fr); }
   .sc-edit-side { position: static; }
 }
+
+/* ---- one schedule's History as a timeline (#1109, schedules.html detail A) --
+   One lane per firing, a card each, its rows the tasks its work ran. The
+   rows, bars, hatch and cut are the Timeline page's (`.tl-row`, `.tl-seg`,
+   timeline.css), so the two pages read the same; only the card around a
+   firing, its head and the dash of an unread item are drawn here. The axis
+   is time since each firing, so lanes days apart line up. */
+/* The label column is the Timeline page's plus 40px: a row's second line is
+   "run_8f2a · succeeded · 2 attempts", which 240px cut at "1 att…". */
+.sht { --tl-labw: 280px; min-width: 0; }
+.sht-bar { display: flex; justify-content: flex-end; margin: 0 0 8px; }
+.sht-legend { margin: 0 0 8px; }
+.sht-axis { border-radius: 10px 10px 0 0; margin-bottom: 8px; }
+.sht-axis .tl-trk { height: 30px; background-image: none; }
+.sht-tk-end { right: 0; border-left: 0; border-right: 1px solid var(--line-soft); padding: 6px 5px 0 0; }
+.sht-lanes { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; min-width: 0; }
+.sht-firing { display: grid; gap: 4px; min-width: 0; }
+.sht-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; min-width: 0;
+  font-size: var(--t-meta); line-height: var(--lh-meta);
+}
+.sht-when { font-weight: 600; }
+.sht-trigger, .sht-count { color: var(--text-dim); }
+.sht-out { display: inline-flex; flex-direction: column; min-width: 0; max-width: 100%; }
+.sht-out > .sc-cut { white-space: normal; overflow-wrap: anywhere; }
+.sht-gap {
+  position: absolute; inset: 0; display: flex; align-items: center; padding: 0 10px;
+  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.sht-none { margin: 0; padding: 10px 12px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.sht-skel { position: absolute; top: 50%; left: 10px; transform: translateY(-50%); }
+.sht-retry { margin: 8px 0 0; }
+.sht-pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; margin-top: 10px; font-size: var(--t-meta); color: var(--text-dim); }
+@media (max-width: 640px) {
+  /* A firing per card on a phone: the label stacks over its bar
+     (timeline.css), and the gap's words wrap under a track two lines tall. */
+  .sht-firing .tl-trk:has(> .sht-gap) { height: auto; min-height: 28px; }
+  .sht-gap { position: static; padding: 4px 8px; }
+}
