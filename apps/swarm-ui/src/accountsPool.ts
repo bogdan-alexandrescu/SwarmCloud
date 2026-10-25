@@ -445,9 +445,10 @@ export const FORECAST_HORIZON_MS = 8 * 86_400_000
 /**
  * The closed stretches of one subscription's 7-day window at its own pace:
  * closed when its share left reaches its floor, open again at its reset, and
- * at the same pace through the week after.
+ * at the same pace through the week after. Exported for the Timeline's pace
+ * row, so the row and this forecast are one computation.
  */
-function closedSpans(p: Pace, now: number): Array<[number, number]> {
+export function closedSpans(p: Pace, now: number): Array<[number, number]> {
   const spans: Array<[number, number]> = []
   if (p.perHour <= 0) return p.above <= 0 ? [[now, p.resetsAt]] : spans
   const close = now + (p.above / p.perHour) * HOUR_MS

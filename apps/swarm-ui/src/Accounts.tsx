@@ -27,8 +27,11 @@ import { TaskRef } from './TaskRef'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { AccountsTable } from './AccountsTable'
 import { AcctState } from './AccountState'
-import { DuplicateBanner, Forecast, RuleLine, Verdict, usePoolWaiting } from './AccountsVerdict'
+import { DuplicateBanner, Forecast, RuleLine, Verdict, usePoolWaiting, type WaitRead } from './AccountsVerdict'
 import { agoPastDay, type PoolAccount } from './accountsPool'
+import { AccountsTimeline, ViewToggle } from './AccountsTimeline'
+import { VIEW_KEY, viewOf, type AccountsView } from './accountsLanes'
+import { safeStorage } from './panes'
 import {
   FIVE_HOUR,
   SEVEN_DAY,
@@ -351,9 +354,32 @@ function Body({
   // account can be linked to and a reload reopens it. The address wins over
   // the held choice, which is what a followed link means.
   const linked = useLinkedParam('account')
+  // TABLE OR TIMELINE (#2222, BGD "Table default, remembered"): the address
+  // wins (`?view=timeline`, a followed link), then this browser's last
+  // choice, then Table. Choosing writes both, and an account chosen after
+  // keeps the view in the address it writes.
+  const linkedView = useLinkedParam('view')
+  const [storedView, setStoredView] = useState<string | null>(() => {
+    try {
+      return safeStorage()?.getItem(VIEW_KEY) ?? null
+    } catch {
+      return null
+    }
+  })
+  const pageView = viewOf(linkedView, storedView)
+  const viewHref = (v: AccountsView) => paneHref('capacity/accounts', { account: linked, view: v })
+  const chooseView = (v: AccountsView) => {
+    try {
+      safeStorage()?.setItem(VIEW_KEY, v)
+    } catch {
+      /* Storage blocked: the address still carries the choice. */
+    }
+    setStoredView(v)
+    if (typeof window !== 'undefined') followHash(viewHref(v))
+  }
   const choose = (id: string | null) => {
     patch((p) => ({ ...p, chosen: id, adding: p.signin.kind === 'idle' ? false : p.adding }))
-    if (typeof window !== 'undefined') followHash(paneHref('capacity/accounts', { account: id }))
+    if (typeof window !== 'undefined') followHash(paneHref('capacity/accounts', { account: id, view: linkedView }))
   }
   const view = linked !== null ? { ...ui, chosen: linked } : ui
   // THE ANSWER FIRST (#2222, proposal A): can the pool take another agent,
@@ -363,7 +389,12 @@ function Body({
   const pool = accounts as PoolAccount[]
   return (
     <>
-      <Verdict accounts={pool} scope={scope} shortfall={shortfall(board)} now={Date.now()} waiting={waiting} />
+      {/* THE TOGGLE BESIDE THE VERDICT (BGD): the answer is the same in both
+          views, so it stays above them and only what follows it changes. */}
+      <div className="acct-verdict-row">
+        <Verdict accounts={pool} scope={scope} shortfall={shortfall(board)} now={Date.now()} waiting={waiting} />
+        <ViewToggle view={pageView} hrefOf={viewHref} onChange={chooseView} />
+      </div>
       {accounts.length > 0 && <RuleLine accounts={pool} />}
       <DuplicateBanner accounts={pool} scope={scope} onOpen={choose} />
       <Broken accounts={accounts} scope={board.page.tenant_id} onOpen={choose} />
@@ -386,6 +417,8 @@ function Body({
         patch={patch}
         reload={reload}
         choose={choose}
+        view={pageView}
+        waiting={waiting}
         addForm={<AddAccount board={board} accounts={accounts} ui={ui} patch={patch} reload={reload} />}
       />
       <HelpLinks topics={ACCOUNT_TOPICS} />
@@ -597,6 +630,8 @@ function Pool({
   patch,
   reload,
   choose,
+  view,
+  waiting,
   addForm,
 }: {
   board: AccountsBoard
@@ -605,6 +640,8 @@ function Pool({
   patch: Patch
   reload: () => void
   choose: (id: string | null) => void
+  view: AccountsView
+  waiting: WaitRead
   addForm: ReactNode
 }) {
   // One clock for the whole render. Reading Date.now() per item would let two
@@ -643,6 +680,33 @@ function Pool({
     // Only when the choice changes: a poll's re-render must not move the page.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opened])
+
+  // THE TIMELINE (#2222, proposal B): every account on one axis. Only a
+  // CHOSEN account opens there -- the Table's default account is a pane
+  // beside the list, and the Timeline has no pane to fill -- and it opens the
+  // same `Detail`, with every control, under its lane.
+  const timeline =
+    view === 'timeline' ? (
+      <AccountsTimeline
+        accounts={accounts as PoolAccount[]}
+        scope={board.page.tenant_id}
+        now={now}
+        waiting={waiting}
+        phone={phone}
+        openId={shown !== null && shown.explicit ? shown.account.account_id : null}
+        onChoose={choose}
+        renderDetail={(acct) => (
+          <section key={acct.account_id} className="acct-pane-detail">
+            <Detail account={acct} board={board} now={now} readAt={board.readAt} ui={ui} patch={patch} reload={reload} />
+          </section>
+        )}
+        addButton={shown === null ? null : <AddButton ui={ui} patch={patch} />}
+        // An empty pool draws the form with no click, in the lane the first
+        // account will take (B6): it is the one control that fixes the zero.
+        addForm={shown === null || addOpen(ui) ? <div className="acct-tl-add">{addForm}</div> : null}
+      />
+    ) : null
+  if (timeline !== null) return timeline
 
   if (shown === null) {
     return (

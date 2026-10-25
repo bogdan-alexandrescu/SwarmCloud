@@ -1149,7 +1149,8 @@ function keptKeys(sectionId: string, tab: string): readonly string[] {
   if (sectionId !== CAPACITY) return []
   if (tab === 'pools') return ['pool']
   if (tab === 'holders') return ['pool', 'tenant']
-  if (tab === 'accounts') return ['account']
+  // And its Table / Timeline view (#2222, ACCOUNTS-TIMELINE): linkable.
+  if (tab === 'accounts') return ['account', 'view']
   return []
 }
 
