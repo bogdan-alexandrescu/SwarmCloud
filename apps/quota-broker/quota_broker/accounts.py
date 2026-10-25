@@ -1408,14 +1408,21 @@ def duplicates(accounts: Iterable[Account]) -> dict[str, tuple[str, bool]]:
     for group in groups.values():
         if len(group) < 2:
             continue
-        kept: list[Account] = []
+        # Compared with EVERY older account, withheld ones too, and withheld
+        # against the kept account at the root of the chain: a seatless K
+        # paired with B (seat s1) by its readings, and a later C on seat s1,
+        # are one subscription however C's readings compare with K's.
+        seen: list[Account] = []
+        root: dict[str, str] = {}
         for a in sorted(group, key=_registration_order):
-            older = next((k for k in kept if one_subscription(k, a)), None)
+            older = next((k for k in seen if one_subscription(k, a)), None)
+            seen.append(a)
             if older is None:
-                kept.append(a)
                 continue
-            out[a.account_id] = (older.account_id, True)
-            out.setdefault(older.account_id, (a.account_id, False))
+            kept = root.get(older.account_id, older.account_id)
+            root[a.account_id] = kept
+            out[a.account_id] = (kept, True)
+            out.setdefault(kept, (a.account_id, False))
     return out
 
 
