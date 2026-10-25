@@ -4,7 +4,10 @@
 #1933. Built by lanes VQ-1 to VQ-7 of [agent-autonomy.md](agent-autonomy.md)
 §6, on that document's capabilities (above all the brokered issue writes of
 its §3.2). Nothing here changes behaviour until those lanes merge. The
-owner answered §9's three questions on 2026-10-22 (~06:40Z).
+owner answered §9's three questions on 2026-10-22 (~06:40Z). Since
+2026-10-25 a target may carry several environments that one dispatch runs
+together, discovering as it captures (#2136): §10 says what that changed
+here, and [qa-environments.md](qa-environments.md) is its design.
 
 **The request (BGD, 2026-10-22):** "with the features we have today, can we
 dispatch a lane to use our browser agents and do a visual qa of our product
@@ -84,6 +87,11 @@ not one):
 | `authorized_by`, `attested_at` | the registrant's statement that the tenant may test this application | someone else's app: the platform does not decide whose it is, but it records who said it may be tested |
 | `host_state` | `pending`, `approved` (with `approved_by`, `approved_at`) or `revoked` | §1.2 |
 
+**Environments (#2136, §10).** A target may instead carry `environments[]`:
+`base_url`, `sign_in`, `credential`, `challenge_bypass`, `environment`,
+`read_posts`, `rate` and `host_state` (with its approval) then live in each
+entry, one per leg, and everything else above stays on the target once.
+
 **Who may register one.** A workspace **admin** of the tenant, through
 `POST /v1/qa-targets` (and `PATCH`, `DELETE`), because a target sends the
 tenant's agents to an outside site and files into the tenant's repository in
@@ -115,7 +123,9 @@ is the allowlist, made where it can be enforced:
   with the host and the registrant. The approval is per host, and covers the
   declared `extra_origin` of a login (§2.3) only when it is named in the same
   approval. Changing `base_url`'s host or `extra_origin` sets it back to
-  `pending`. The approver is any platform admin, audited (VQ-Q1, answered,
+  `pending`. On a target with `environments[]` the approval is per entry:
+  `:approve-host` names the entry, and a change resets that entry alone
+  (§10). The approver is any platform admin, audited (VQ-Q1, answered,
   §9). In the console the control is **Approve host** on the target's card
   on Repositories › QA targets (`apps/swarm-ui/src/QaTargets.tsx`), drawn to
   a platform admin only, which sends the route above once the admin has
@@ -541,9 +551,11 @@ finding) carries over.
    the scheduler or reconciler ends rings none, so every read of the target
    settles a discovery whose agent has ended too. Storing the list never
    bumps the target's `revision`, so a run already started keeps its mark.
-   `:run` on a target with `discover` and nothing discovered is refused
-   (`qa_target_no_screens`) with "press Run discovery on the QA targets page
-   (or call `:discover`)".
+   `:run` on a target with `discover` and nothing stored no longer waits for
+   a discovery: it renders `discover.slots` crawling capture steps that
+   start from the base path (§10). Only a target with neither `screens` nor
+   `discover` is refused `qa_target_no_screens`. The standalone discovery
+   stays, for a list without a run.
 2. **capture-<group>**: `claude-code-browser`, haiku, as the console's, with
    the console-specific parts replaced (§4.2). Groups of at most 8 screens,
    at most 8 groups (60 screens a run, the discovery cap).
@@ -691,7 +703,8 @@ holds unchanged:
   beyond it are listed, one line each, in one roll-up issue "Visual QA of
   <name>, <date>: <n> further findings", so nothing is silently dropped.
 * **De-duplicated by the broker.** The `file` step calls `issue_create` with
-  `dedupe_key: "visual-qa:<target_id>:<screen>:<normalised title>"`.
+  `dedupe_key: "visual-qa:<target_id>:<environment>:<screen>:<normalised title>"`,
+  the leg's name in it since #2136 (§10).
   swarm-api writes `<!-- swarm-qa target=<id> key=<sha256[:12]> -->` into the
   body and, before filing, searches the repository's open issues for that
   marker; a match answers `{existing: N}` and files nothing, and the step
@@ -740,14 +753,17 @@ holds unchanged:
 
 * **On demand**: the console (Repositories → a repository's QA targets →
   Run, with "Flows with" for one run's flow browser), the API
-  `POST /v1/qa-targets/{id}:run` (body: optional `screens` subset,
+  `POST /v1/qa-targets/{id}:run` (body: optional `environments`, the
+  entries to run by name, default every one; optional `screens` subset,
   `file: "issues" | "none"`, optional `browser_tool: "playwright" | "jev"`
   for this run's flows, §4.1), and the plugin's `swarm_qa_run`. A
-  member may run; the run is that member's submission in the tenant.
+  member may run; the run is that member's submission in the tenant, one
+  workflow per leg linked by a run group (§10).
 * **A schedule type `visual-qa`** (optional): tenant-scoped, created by a
-  workspace admin, parameter `target` (a target of the same tenant), minimum
-  interval 24 hours, budget fields set by its creator like every type. It
-  fires the same `:run` path. No merge gate exists to set: it files issues
+  workspace admin, parameters `target` (a target of the same tenant) and
+  optional `environments`, minimum interval 24 hours, budget fields set by
+  its creator like every type. It fires the same `:run` path, one work item
+  per leg ([schedules.md](../schedules.md) §3.17). No merge gate exists to set: it files issues
   and changes no code.
 
 ---
@@ -756,11 +772,11 @@ holds unchanged:
 
 | kind | name | owner at dev-iam |
 |---|---|---|
-| collection | `qa_targets/{target_id}` | no |
-| routes | `POST/GET/PATCH/DELETE /v1/qa-targets`, `:approve-host` (platform admin), `:run`, `/credential-links`, `PUT /credential`, `PUT /challenge-bypass` (§2.5) | no |
+| collection | `qa_targets/{target_id}`; `qa_run_groups/{group_id}` (§10) | no |
+| routes | `POST/GET/PATCH/DELETE /v1/qa-targets`, `:approve-host` (platform admin), `:run`, `:discover`, `/credential-links`, `PUT /credential`, `PUT /challenge-bypass` (§2.5); `POST /v1/qa-targets:migrate` (platform admin) and `GET /v1/qa-runs/{group_id}` (§10) | no |
 | worker route | `POST /v1/attempts/{attempt_id}/qa-target` | no |
 | gate | `ctl.sock` verb `qa_sign_in`; the method rule, origin lock and rate limit (`livegate/qatarget.py`); the scrub of one more value | no |
-| capture tool | `swarm_qa capture --keep-storage --settle generic`, `swarm_qa discover` | no |
+| capture tool | `swarm_qa capture --keep-storage --settle generic`, `capture --crawl` (§10), `swarm_qa discover` | no |
 | renderer | `swarm_api/qaspec.py` | no |
 | plugin tools | `swarm_qa_targets`, `swarm_qa_run`, `swarm_qa_target_credential_link` | no |
 | schedule type | `visual-qa` | no |
@@ -812,3 +828,97 @@ recommended first; the answer is built, not reopened.
   opt-in for private repositories"** (`file.evidence`, default
   `console_link`). The options were (a) that; (b) a console link only; (c)
   the evidence branch by default.
+
+---
+
+## 10. Environments, the run group and discovery during QA (built, #2136)
+
+BGD asked on 2026-10-23 for one dispatch to QA an app's staging and
+production legs together, discovering routes while it captures, because a
+run over a stored route list misses what shipped since. The design and its
+reasons are [qa-environments.md](qa-environments.md); BGD's answers are its
+§10, and what each lane built is its §11. Each paragraph below says what
+changed in this document's model.
+
+**Environments.** A target may carry `environments[]`, at most 8 entries,
+each a leg with its own `name`, `base_url`, `environment` mark, sign-in
+(start clicks and `extra_origin` included), credential, bypass, host
+approval, `read_posts` and `rate`; screens, flows, exclusions and filing
+stay on the target once ([qa-environments.md](qa-environments.md) §1.1).
+`:approve-host`, `:run`, `:discover` and the credential link name the
+entry, and a link minted for one leg can never set another's password. The
+tenant's one QA secret (VQ-Q2) stays one secret with no new IAM: an entry's
+values sit under `values["<target_id>/<name>"]`. A target stored in the
+one-origin shape reads as one entry until a platform admin's
+`POST /v1/qa-targets:migrate` rewrites it, audited `qa_target_migrated`.
+
+**The run group.** `:run` takes `environments` by name and checks every
+named leg before submitting any, so one leg's pending host or missing
+credential refuses the whole dispatch and nothing spends. It writes
+`qa_run_groups/{group_id}` with every leg `pending`, then submits one
+workflow per leg, each with its own one mark, so the single-mark rule
+(VQ2-RESERVE) is unchanged; a leg refused after another started answers
+207 and is shown "not started" with its reason. `GET /v1/qa-runs/{group_id}`
+serves the group in its own tenant, and the console's run page,
+`/qa-runs/<group_id>`, draws one column per leg
+([qa-environments.md](qa-environments.md) §2.1, §7).
+
+**Capture steps crawl.** Each capture step captures its stored routes from
+minute zero, then walks the same graph from the base path and every stored
+route and captures the new routes it owns, the owner fixed by a hash of the
+path so two steps never capture one route (`swarm_qa capture --crawl`).
+`found_per_step` defaults to 8, BGD's answer of 2026-10-23, and is cut so
+stored plus new routes stay within 60 a leg; a crawling step's timeout is
+2,700 s. Every step writes `found.json` and the report gains a coverage
+section per leg. A discovering target with nothing stored renders
+`discover.slots` (default 4, at most 8) crawling steps instead of waiting
+for §4.1's discovery ([qa-environments.md](qa-environments.md) §3.1, §3.5).
+
+**Disclosure clicks.** The walk, capture's and §4.1 discovery's alike, reads
+more link sources and `#/` hash routes, and clicks only controls that
+reveal: `aria-expanded="false"`, `aria-haspopup`, `role=tab` and
+`<summary>`. It never clicks a control inside a `<form>`, a submit or reset,
+an input, an off-origin link, or anything carrying an exclusion word (§1's
+defaults plus logout and sign out) or matching an exclusion selector. A
+click the gate refused marks its control `write_attempting`, never clicked
+again and listed for a person. Bounds: 20 clicks a page and 200 a crawl,
+600 s a crawl, every navigation spaced by `navigation_ms`
+([qa-environments.md](qa-environments.md) §4).
+
+**Per-leg `discovered`, and Promote.** When a leg's capture steps end, the
+existing `task_finished` doorbell settles the run: its `found.json` files
+are read through the tenant-checked, redacted artifact read, held to the
+same rules as §4.1's `discovered_screens`, and merged into **that leg's**
+`discovered` with `first_seen`, `last_seen` and the workflow that last saw
+each route; a route unseen by 3 complete crawls in a row is dropped. A run
+never writes `screens` or bumps `revision`. Each leg serves
+`new_since_last_run`, and the card offers **Promote** for each, a workspace
+admin's PATCH of `screens`. A target with `screens` runs `screens` alone,
+so on it a found route is captured again by the crawl or once promoted
+([qa-environments.md](qa-environments.md) §5, §11).
+
+**Filing per environment.** One issue per finding per leg (BGD's Q8 (a)):
+the dedupe key is `visual-qa:<target_id>:<environment>:<screen>:<title>`,
+titles start `[<leg>]` (`[staging]`, `[production]`), and a grouped run's
+issue links `/qa-runs/<group_id>`, where the other leg's run is. The two
+legs' file steps never race on one key
+([qa-environments.md](qa-environments.md) §7).
+
+**The shared-origin rule.** When a `non_production` entry shares any origin
+with a `production` entry of the same target, it is treated as production
+for writes (`apps/swarm-api/swarm_api/qaspec.py::shares_production_origin`):
+the worker route answers `mutating: false` for every step of it, and no
+mutating flow is rendered for it or for any production leg of a target of
+several entries. The rule compares the entries of one target only: AI
+Studio's legs share `https://studio.saga.xyz` behind a Staging | Production
+toggle, and they are held read-only by it only while they are entries of one
+target (qa-environments.md §11 says how they are registered today). The
+gate holds one leg per attempt: a second
+`qa_sign_in` hand-off whose `(target_id, environment_name)` differs is
+refused `target_changed` before any field of it is taken
+([qa-environments.md](qa-environments.md) §1.5, §6).
+
+Nothing of §3 is softened. Every rule there holds on every leg, production
+legs read only (BGD's Q6 (a)), the production account is an MFA-free,
+least-privilege QA account rather than a solved challenge (Q7 (a), §2.4),
+and the shared-origin rule only ever turns a write permission off.
