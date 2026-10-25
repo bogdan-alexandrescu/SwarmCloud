@@ -3882,6 +3882,11 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     totals = progress.spend_totals(client, task, read_attempts=False)
     described.update(totals)
     described["cost"] = progress.cost_words(totals)
+    # WHETHER ITS BROWSER WAS USED (BROWSER-USE-FLAG, part of #2322), as the
+    # task read served it: no key for a task that is not a browser runtime.
+    browser = progress.browser_words(task)
+    if browser is not None:
+        described["browser"] = browser
     # Where to watch it: the API's link, as served, or no key (`console_link`).
     return with_console(described, task)
 
