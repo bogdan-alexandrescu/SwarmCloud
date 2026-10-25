@@ -6938,6 +6938,15 @@ class Worker:
         bound with no UI path in it, or a `builds_on` step that cannot be
         read, is [] -- gated, naming no path -- because a review that could
         not be told what it reviews is not one that saw it.
+
+        ONLY WHAT THE LANE ITSELF CHANGED IS ITS UI CHANGE (#2337). A lane
+        started from another PR's branch that merged origin/main carries
+        their UI files in its patch, and its code-only review was forced to
+        NOT_YET. So an upstream's `swarm-work.patch`, and a `builds_on`
+        step's list, are judged by the paths its own commits changed
+        (`result_summary.git.own_files`) when it recorded them; a step
+        recorded without them, or one whose document cannot be read, is
+        judged by the whole patch, as before.
         """
         if not owner_questions_mod.is_review(task.get("metadata")):
             return None
@@ -6947,6 +6956,12 @@ class Worker:
         unknown = False
         for item in staged:
             if not item.filename.endswith(verdict_mod.PATCH_SUFFIX):
+                continue
+            own = self._own_ui_paths(item)
+            if own is not None:
+                paths, cut = own
+                found.update(dict.fromkeys(paths))
+                unknown = unknown or cut
                 continue
             try:
                 text = (ws.work / item.path).read_text(encoding="utf-8", errors="replace")
@@ -6975,6 +6990,24 @@ class Worker:
             runner_profile=self.cfg.runner_profile,
         )
         return list(found)
+
+    def _own_ui_paths(self, item: inputs_mod.StagedInput) -> tuple[list[str], bool] | None:
+        """The UI paths the step that made this staged patch changed itself (#2337).
+
+        Only for its harvested `swarm-work.patch`, the one `own_files`
+        describes; any other `.patch` it wrote is read as a patch. None
+        when the step recorded no own list or its document cannot be read.
+        """
+        if item.filename != PATCH_NAME:
+            return None
+        try:
+            upstream = inputs_mod.fetch_upstream_task(
+                self.db, upstream_task_id=item.upstream_task_id, tenant_id=self.cfg.tenant_id,
+                call_options=self.control.call_options(),
+            )
+        except InputUnavailable:
+            return None
+        return verdict_mod.ui_paths_in_own_files(upstream.get("result_summary"))
 
     def _hold_ui_review_to_rendered(self) -> None:
         """Rewrite this UI-gated review's MERGE to NOT_YET unless it rendered (#2184)."""
@@ -12540,6 +12573,13 @@ class Worker:
             # [] would claim a measured empty diff.
             out["files"] = [f.as_record(self._scrub) for f in work.files]
             out["files_truncated"] = work.files_truncated
+        if work.own_files is not None:
+            # The paths this step's own commits and uncommitted work changed,
+            # a merge of main or of another branch left out (#2337): what a
+            # review's rendered gate judges. Absent when not measured, so the
+            # gate falls back to `files` and the patch rather than to [].
+            out["own_files"] = [self._scrub(path) for path in work.own_files]
+            out["own_files_truncated"] = work.own_files_truncated
         if work.patch_omitted:
             out["patch_note"] = (
                 f"the diff was {work.patch_bytes} bytes, over the "
