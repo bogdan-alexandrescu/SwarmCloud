@@ -1179,8 +1179,7 @@
   box-shadow: inset 3px 0 0 var(--s-warn);
 }
 .ho-strip { padding: var(--ctl-s2) 0; }
-.ho-facts, .ho-masked, .ho-starting, .ho-refused { display: block; }
-.ho-masked { color: var(--text-dim); font-size: var(--t-micro); }
+.ho-facts, .ho-starting, .ho-refused { display: block; }
 .ho-refused { color: var(--bad); }
 
 /* --- a live-browser task's recordings (§7) ------------------------------ */

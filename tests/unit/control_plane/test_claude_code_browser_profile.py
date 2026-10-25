@@ -194,16 +194,23 @@ def test_the_pod_carries_what_the_browser_image_needs(tenant):
 
 
 @pytest.fixture(autouse=True)
-def _not_a_live_browser_runner(monkeypatch):
-    """Each case starts from no live browser, whatever machine runs it. On a
-    live-browser runner SWARM_HANDOFF, SWARM_CDP_ENDPOINT and
-    SWARM_TEST_BROWSERS_PATH are set, and the cases that do not set them read
-    the runner's own: a live attempt, or a prompt with the test-runner note,
-    there only. A case that wants them sets them itself."""
+def _no_live_browser_from_the_host(monkeypatch):
+    """Each test starts from no live browser, whatever machine runs it; a test
+    that wants one sets it.
+
+    `claude_code.body` reads `SWARM_CDP_ENDPOINT`, `SWARM_HANDOFF` and
+    `SWARM_TEST_BROWSERS_PATH` from the process environment, and a SwarmCloud
+    browser runner -- where an agent runs these tests (CLAUDE.md) -- sets them.
+    Inherited, they sent the no-live-browser tests down the live branch:
+    `PLAYWRIGHT_BROWSERS_PATH` became the stub `/opt/swarm/live-browser-only`,
+    and a base-image run was refused as `live_browser_unavailable` (2026-10-25,
+    POOL-LIMITS-QUOTA), or a prompt carried the test-runner note there only.
+    """
+    from agent_worker import handoff
     from agent_worker.runners import claude_code
 
-    monkeypatch.delenv(claude_code.HANDOFF_ENV, raising=False)
     monkeypatch.delenv(claude_code.CDP_ENDPOINT_ENV, raising=False)
+    monkeypatch.delenv(handoff.HANDOFF_ENV, raising=False)
     monkeypatch.delenv(claude_code.TEST_BROWSERS_ENV, raising=False)
 
 
@@ -239,12 +246,15 @@ def test_the_runner_hands_the_agent_the_browser(monkeypatch, tmp_path):
     from agent_worker.runners import claude_code
     from agent_worker.runners.claude_code import BROWSER_NOTE
 
-    # The browser note alone: no test-runner directory. On a runner where
-    # /opt/playwright exists, `prepare_test_browsers` seeds one and the
-    # prompt ends with TEST_RUNNER_NOTE instead (its own cases cover that).
+    # A path under tmp_path, not the image's `/opt/playwright`: where that
+    # directory exists (a SwarmCloud browser runner), the runner seeds a test
+    # browsers directory from it and names it after BROWSER_NOTE (PW-TESTRUNNER).
+    # The browser note alone: `prepare_test_browsers` seeds no test-runner
+    # directory here (its own cases cover TEST_RUNNER_NOTE).
     monkeypatch.setattr(claude_code, "prepare_test_browsers", lambda *a, **k: None)
-    seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
-    assert seen["env"]["PLAYWRIGHT_BROWSERS_PATH"] == "/opt/playwright"
+    browsers = str(tmp_path / "playwright")
+    seen = _run_body(monkeypatch, tmp_path, browsers)
+    assert seen["env"]["PLAYWRIGHT_BROWSERS_PATH"] == browsers
     assert seen["prompt"].startswith("Screenshot the settings page.")
     assert seen["prompt"].endswith(BROWSER_NOTE)
     assert "chromium_sandbox=False" in BROWSER_NOTE

@@ -262,9 +262,10 @@ function useYou(taskId: string, enabled: boolean): string | null {
  *
  * NEUTRAL WORDING (owner decision, 2026-10-13, QA12-04): a hand-off is not
  * always a sign-in, so nothing here says "sign in". The headline is "The agent
- * needs your help" with the agent's own reason; the button is "I'm ready";
- * that password fields are masked is said as a fact about the browser, not as
- * a step. The theater's checklist (TheaterTimeline.tsx) is its own lane's.
+ * needs your help" with the agent's own reason; the button is "I'm ready".
+ * The live view shows the page as Chromium draws it (BGD, 2026-10-25;
+ * LIVE-NOMASK-COPY, part of #2298), so nothing here says a field is masked.
+ * The theater's checklist (TheaterTimeline.tsx) is its own lane's.
  *
  * After "I'm ready" the task is READY and `handoffOf` is null; while it is on
  * its way back to RUNNING the banner says so instead of vanishing
@@ -374,9 +375,6 @@ export function HandoffBanner({
         {control !== null && <span className="ho-ctl"> · {control}</span>}
         {clock !== null && <span className="ho-left"> · {clock}</span>}
       </span>
-      {h.phase === 'hold' && (
-        <span className="ho-masked">Password fields are masked before anything leaves the agent's pod.</span>
-      )}
       {ready.kind === 'done' && (
         <span className="ho-starting">
           Starting your browser. It is admitted like any agent and starts cold, so allow a minute or two; the agent
