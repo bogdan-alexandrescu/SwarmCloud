@@ -514,7 +514,7 @@ describe('Workflows (write): a needed row, a gap only where a covered repository
   })
 })
 
-describe('Work › Repositories: a status dot per repository', () => {
+describe('Config › Repositories: a status dot per repository', () => {
   async function mountList() {
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()

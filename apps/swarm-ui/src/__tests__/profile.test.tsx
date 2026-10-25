@@ -209,8 +209,8 @@ describe('Settings › Profile', () => {
   it('links each summary to the page that owns it', async () => {
     await drawn()
     const link = (name: string) => within(region(name)).getAllByRole('link').map((a) => a.getAttribute('href'))
-    expect(link('You and your workspaces')).toContain('/setup')
-    expect(link('Your connections')).toEqual(expect.arrayContaining(['/access', '/settings/keys']))
+    expect(link('You and your workspaces')).toContain('/config/workspace/setup')
+    expect(link('Your connections')).toEqual(expect.arrayContaining(['/config/github', '/settings/keys']))
     expect(link('Claude accounts')).toContain('/capacity/accounts')
   })
 
@@ -281,5 +281,35 @@ describe('Settings › Profile', () => {
     for (const box of screen.getAllByRole('checkbox')) expect((box as HTMLInputElement).disabled).toBe(true)
     fireEvent.click(screen.getByRole('button', { name: 'Save name' }))
     expect(calls.filter((c) => c.method !== 'GET')).toEqual([])
+  })
+})
+
+// CONFIG-COPY (part of #2157): CONFIG-NAV moved Work › Setup and Work › Access
+// into Config. The page names them as Config › Workspace Settings › Workspace
+// setup and Config › GitHub access, and links each at its own path rather
+// than at the old address's redirect.
+describe('Settings › Profile names the Config pages by their Config addresses (CONFIG-COPY)', () => {
+  const OLD = /\bWork › (Setup|Access|Repositories)|(?<!Workspace )Settings › (Workspace|MCP servers)/
+
+  it('draws no old address and links Workspace setup and GitHub access at their Config paths', async () => {
+    await drawn()
+    expect(visible(document.body)).not.toMatch(OLD)
+    const you = within(region('You and your workspaces'))
+    expect(you.getByRole('link', { name: /^Config › Workspace Settings › Workspace setup/ }).getAttribute('href')).toBe('/config/workspace/setup')
+    const github = within(region('Your connections'))
+    expect(github.getByRole('link', { name: /^Config › GitHub access/ }).getAttribute('href')).toBe('/config/github')
+    const rows = github.getAllByRole('link', { name: /^Open Config › GitHub access/ })
+    expect(rows.length).toBeGreaterThan(0)
+    for (const a of rows) expect(a.getAttribute('href')).toBe('/config/github')
+  })
+
+  it('sends a person with no personal workspace to Workspace setup by its Config address', async () => {
+    const f = fixture()
+    const workspaces = (f.workspaces as Json[]).filter((w) => w.kind !== 'user')
+    await drawn({ ...f, workspaces, claude_accounts: { ...(f.claude_accounts as Json), personal_workspace: null, accounts: [] } })
+    expect(visible(document.body)).not.toMatch(OLD)
+    expect(visible(region('You and your workspaces'))).toContain('Request one on Config › Workspace Settings › Workspace setup.')
+    const request = screen.getByRole('link', { name: 'Request one on Config › Workspace Settings › Workspace setup' })
+    expect(request.getAttribute('href')).toBe('/config/workspace/setup')
   })
 })
