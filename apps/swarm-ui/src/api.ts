@@ -6786,6 +6786,29 @@ const fixtureFileIssues = new Map<string, boolean>()
  */
 const fixtureWorkflowFiles = new Map<string, boolean>()
 
+/**
+ * The fixture registrations the fixture build removed (`deleteRepository`):
+ * gone from its list and its counts, and still among its grants, so the
+ * page draws each again as a dashed "chosen, not registered" card.
+ */
+const fixtureRemoved = new Set<string>()
+
+/**
+ * `GET /v1/repositories/counts` for the fixture registrations: secrets and QA
+ * targets, counts only. Both are 0 because the fixture build serves no QA
+ * target (`loadQaTargets`) and no secret granted to a repository
+ * (`fixtureWorkspaceSecrets`): a card saying "QA targets: 1" would link to a
+ * list that says there are none.
+ */
+function fixtureRepositoryCounts(): unknown {
+  return {
+    tenant_id: FIXTURE_TENANT,
+    counts: FIXTURE_REPOS.map((r) => ({
+      repo_id: r.repo_id, repository: `example-org/${r.repo}`, secrets: 0, qa_targets: 0,
+    })).filter((c) => !fixtureRemoved.has(c.repo_id)),
+  }
+}
+
 function fixtureRepositories(): unknown {
   return {
     repositories: FIXTURE_REPOS.map((r, i) => ({
@@ -6804,7 +6827,7 @@ function fixtureRepositories(): unknown {
       index_credential: { source: 'tenant', secret_name: `swarm-tenant-${FIXTURE_TENANT}-git` },
       agents_may_file_issues: fixtureFileIssues.get(r.repo_id) ?? false,
       workflow_files: fixtureWorkflowFiles.get(r.repo_id) ?? false,
-    })),
+    })).filter((x) => !fixtureRemoved.has(x.repo_id)),
   }
 }
 
@@ -7220,6 +7243,7 @@ const FIXTURE_READS: Readonly<Record<string, (url: string) => FixtureBody | unde
   // Config › Secrets and Admin › Platform secrets (SSC-UI).
   '/v1/secrets/overview': (url) => ({ body: fixtureSecretsOverview(url) }),
   '/v1/admin/platform-secrets': () => (fixtureIsAdmin ? { body: fixturePlatformSecrets() } : 'admin'),
+  '/v1/repositories/counts': () => ({ body: fixtureRepositoryCounts() }),
   '/v1/repositories/{repo_id}/index': (url) => {
     const body = fixtureRepoIndex(fixtureSegment(url, 3))
     return body === undefined ? undefined : { body }
@@ -7437,6 +7461,56 @@ export async function registerRepository(body: RegisterRepositoryBody): Promise<
   return writeTo(route('/v1/repositories'), 'POST', body)
 }
 
+/**
+ * `DELETE /v1/repositories/{repo_id}`: unregister (member role). The API
+ * disables every grant on the registration's secrets in the transaction that
+ * removes it (`delete_repository`), so a re-registration revives none. The
+ * person's own grant on the repository (`/v1/access`) is not touched.
+ */
+export async function deleteRepository(repoId: string): Promise<Result<unknown>> {
+  const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
+  if (USE_FIXTURES) {
+    if (!FIXTURE_REPOS.some((r) => r.repo_id === repoId) || fixtureRemoved.has(repoId)) return repoNotServed<unknown>(target)
+    await new Promise((r) => setTimeout(r, 180))
+    noteFixtureProbe(target, 180, true)
+    fixtureRemoved.add(repoId)
+    return { status: 'ok', fetchedAt: Date.now(), data: null }
+  }
+  // The API answers 204 with no body and no content-type; `write` reads that
+  // as the success it is (CONSOLE-SMALL-FIXES).
+  return write(target, 'DELETE')
+}
+
+/** One registration's counts: its repository secrets for agents and its QA targets. Never a name. */
+export interface RepoCounts {
+  repo_id: string
+  secrets: number | null
+  qa_targets: number | null
+}
+
+const countOf = (v: unknown): number | null => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null)
+
+/** The served counts by `repo_id`; a row without a `repo_id` is dropped, a count not a whole number is null. */
+export function normRepoCounts(raw: unknown): Record<string, RepoCounts> {
+  const rows = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>).counts : null
+  const out: Record<string, RepoCounts> = {}
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (typeof row !== 'object' || row === null) continue
+    const r = row as Record<string, unknown>
+    if (typeof r.repo_id !== 'string') continue
+    out[r.repo_id] = { repo_id: r.repo_id, secrets: countOf(r.secrets), qa_targets: countOf(r.qa_targets) }
+  }
+  return out
+}
+
+/**
+ * `GET /v1/repositories/counts`: every registration's secret and QA-target
+ * counts in one read (REPOS-FOLLOWUPS), for Config › Repositories' cards.
+ */
+export async function loadRepositoryCounts(): Promise<Result<Record<string, RepoCounts>>> {
+  return readAs(route('/v1/repositories/counts'), normRepoCounts)
+}
+
 /** `POST /v1/repositories/{repo_id}/index:run`: queue an index run now. */
 export async function runRepositoryIndex(repoId: string, kind: 'full' | 'incremental'): Promise<Result<unknown>> {
   return writeTo(route('/v1/repositories/{repo_id}/index:run', { repo_id: repoId }), 'POST', { kind })
@@ -7464,8 +7538,8 @@ export async function verifyGitToken(tokenId: string): Promise<Result<unknown>> 
 
 // ---------------------------------------------------------------------------
 // Provider keys a person or an admin sets: TypeSafe (KEYS-API, PR #1284;
-// docs/provider-keys.md). Settings › API keys (ProviderKeys.tsx) is the only
-// caller. THE KEY IS AN ARGUMENT OF `putProviderKey` AND NOTHING ELSE: it goes
+// docs/provider-keys.md). Config › Secrets' key form (Secrets.tsx) is the
+// only writer. THE KEY IS AN ARGUMENT OF `putProviderKey` AND NOTHING ELSE: it goes
 // into that one request's body and is not kept, logged or returned here, and
 // no response carries it back. The status is copied field by field
 // (`normKeyStatus`), so anything a response carried by mistake is never drawn.
