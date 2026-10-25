@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useId, useRef, useState, type CSSProperties, type FormEvent } from 'react'
 import { loadRepositories } from './api'
 import { Banner, Button, Card, EmptyState } from './components'
 import { repoName } from './RepositoriesData'
@@ -686,6 +686,8 @@ function ApproveHostForm({ t, onClose, onApproved }: { t: QaTarget; onClose: () 
   )
 }
 
+const ENTRY_RUN: CSSProperties = { whiteSpace: 'nowrap' }
+
 /** A refusal's message as a sentence: capitalised, and ended with a full stop when it has no end of its own. */
 function asSentence(message: string): string {
   const t = message.trim()
@@ -720,7 +722,17 @@ function CredentialForm({
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
   const isBypass = link.field === 'challenge_bypass'
-  const where = link.environment === null ? name : `${name} · ${link.environment}`
+  // The entry is one unbroken run: at 390 the title broke at the name's own
+  // hyphen ("ai-studio-prod · prod-" / "reviewer"). An entry is at most 20
+  // characters (`ENTRY_NAME`), so it always fits a line.
+  const where =
+    link.environment === null ? (
+      name
+    ) : (
+      <>
+        {name} · <span style={ENTRY_RUN}>{link.environment}</span>
+      </>
+    )
 
   async function submit(e: FormEvent) {
     e.preventDefault()
@@ -767,7 +779,14 @@ function CredentialForm({
   }
 
   return (
-    <Card className="ur-form" title={isBypass ? `Challenge bypass value for ${where}` : `Test credential for ${where}`}>
+    <Card
+      className="ur-form"
+      title={
+        <>
+          {isBypass ? 'Challenge bypass value for' : 'Test credential for'} {where}
+        </>
+      }
+    >
       {isBypass ? (
         <p className="ur-small">
           Type the value of the challenge bypass the app&rsquo;s owner made for these runs. It goes from this page to the
