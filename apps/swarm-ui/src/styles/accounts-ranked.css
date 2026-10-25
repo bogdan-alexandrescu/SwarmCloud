@@ -1,0 +1,264 @@
+/* CAPACITY › ACCOUNTS, ANSWER FIRST (#2222; docs/web-ui/mockups/accounts-a.html,
+   F1-F3, F5 and P1, P2, P4, P5). The verdict, the rule line, the duplicate
+   banner, the ranked table and its phone cards, and the forecast. Imported by
+   AccountsVerdict.tsx and AccountsTable.tsx; the rest of the page is
+   capacity.css's. Type from the scale tokens only; colour from the shell's. */
+
+/* ---- the verdict ---- */
+.acct-verdict {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 22px;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--bad-ink);
+  border-radius: 12px;
+  padding: 16px 20px;
+  margin: 0 0 12px;
+}
+.acct-verdict.is-some { border-left-color: var(--ok-ink); }
+.acct-verdict-big {
+  font-size: calc(var(--t-figure) * 2);
+  line-height: var(--lh-flush);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.acct-verdict-big > small { font-size: var(--t-figure); font-weight: 550; color: var(--text-dim); }
+.acct-verdict-say { min-width: 0; }
+/* AN ACCOUNT NAME IS ONE WORD (rendered 2026-10-25): at 390 the verdict broke
+   `five-hour-floor` at its hyphen, which reads as two accounts. Names are
+   labels a person typed, short by habit; the table keeps them whole too. */
+.acct-nm { white-space: nowrap; }
+.acct-verdict-head { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; }
+.acct-verdict-sub { margin: 4px 0 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.acct-verdict-sub b { color: var(--text); }
+.acct-verdict-wait {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  text-align: right;
+  border-left: 1px solid var(--line);
+  padding-left: 20px;
+  max-width: 320px;
+}
+.acct-verdict-wn { font-size: var(--t-figure); line-height: var(--lh-figure); font-weight: 650; font-variant-numeric: tabular-nums; }
+.acct-verdict-wn > small { font-size: var(--t-meta); font-weight: 500; color: var(--text-dim); }
+.acct-verdict-wait > a { font-weight: 600; font-size: var(--t-meta); }
+.acct-verdict-wait > small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+
+.acct-verdict + .acct-rule { margin-top: -6px; }
+.acct-rule { margin: 0 0 12px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.acct-rule b { color: var(--text); font-weight: 600; }
+
+/* ---- one subscription twice ---- */
+.acct-dup {
+  border: 1px solid var(--warn-ink);
+  /* The page's surface, not a warn tint: the banner's buttons keep their 3:1
+     boundary on it (spacing.accounts), and the warn border and head say what it is. */
+  border-left-width: 4px;
+  background: var(--surface);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin: 0 0 12px;
+}
+.acct-dup-head { font-size: var(--t-body); }
+.acct-dup > p { margin: 2px 0 0; font-size: var(--t-meta); line-height: var(--lh-meta); max-width: none; }
+.acct-dup-acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+
+/* ---- the ranked table ---- */
+.acct-rank-note { margin: 0; padding: 8px 12px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.acct-rank-wrap { padding: 0 0 4px; }
+.acct-rank {
+  border-collapse: collapse;
+  width: 100%;
+  table-layout: fixed;
+  font-size: var(--t-meta);
+  line-height: var(--lh-meta);
+  font-variant-numeric: tabular-nums;
+}
+.acct-rank-c-n { width: 32px; }
+.acct-rank-c-name { width: 17%; }
+.acct-rank-c-can { width: 100px; }
+.acct-rank-c-why { width: 21%; }
+.acct-rank-c-clr { width: 11%; }
+.acct-rank-c-win { width: 12%; }
+.acct-rank-c-ag { width: 64px; }
+.acct-rank thead th {
+  font-size: var(--t-micro);
+  font-weight: 600;
+  color: var(--text-dim);
+  text-align: left;
+  padding: 7px 8px;
+  background: var(--surface-2);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.acct-rank td { padding: 9px 8px; border-bottom: 1px solid var(--line-soft); vertical-align: top; overflow-wrap: anywhere; }
+.acct-rank td small { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.acct-rank .acct-rank-n { color: var(--text-dim); text-align: right; }
+.acct-rank-grp > th {
+  text-align: left;
+  background: var(--bg);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  color: var(--text-dim);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.acct-rank-row.is-chosen > td { background: var(--sk-acs); }
+/* The muted clauses keep 4.5:1 on the selection (G5-17), as the list's did. */
+.acct-rank-row.is-chosen > td small,
+.acct-rank-row.is-chosen > td .acct-dash { color: var(--text-dim-on-selected); }
+.acct-rank-row.is-stale .acct-fig > .acct-win,
+.acct-card.is-stale .acct-card-w2 { opacity: 0.6; }
+
+/* Borderless: its `border: 0` is also inline (AccountsTable.tsx `OpenName`, why there). */
+.acct-rank-name {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  /* An underline, not a border: a border is the control's boundary and owes 3:1
+     on every row tint, the chosen row's included (spacing.accounts). */
+  text-decoration: underline dotted var(--text-dim);
+  text-underline-offset: 3px;
+  overflow-wrap: anywhere;
+}
+.acct-rank-name[aria-current='true'] { color: var(--sk-ac); }
+
+.acct-rank-marks { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; font-size: var(--t-micro); }
+.acct-why-part { display: block; }
+.acct-why-part + .acct-why-part { margin-top: 3px; }
+.acct-clr > b { font-weight: 600; }
+.acct-lent { white-space: nowrap; }
+.acct-dash { color: var(--text-dim); }
+
+.acct-chip {
+  display: inline-block;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.acct-chip.is-yes { color: var(--ok-ink); background: color-mix(in srgb, var(--ok) 18%, transparent); }
+.acct-chip.is-no { color: var(--bad-ink); background: color-mix(in srgb, var(--bad) 18%, transparent); }
+.acct-chip.is-full { color: var(--warn-ink); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.acct-chip.is-unknown { color: var(--text-dim); border: 1px dashed var(--line); }
+
+.acct-tags { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 3px; }
+.acct-tag {
+  display: inline-block;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  font-weight: 500;
+  padding: 0 6px;
+  border-radius: 9px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.acct-tag.is-dup { color: var(--warn-ink); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.acct-tag.is-unk { color: var(--text-dim); background: var(--surface-2); border: 1px dashed var(--line); }
+
+/* A window against its floor: the shared track, and the floor as a tick at
+   100% minus the floor. At 560px and below styles.css's phone block hides
+   every track; the phone cards draw this one anyway (the phone block below
+   says why). */
+.acct-win { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.acct-win-l b { font-weight: 600; }
+.acct-floor { position: relative; display: block; width: 100%; max-width: 150px; }
+.acct-floor > .ctl-util-track { width: 100%; }
+.acct-floor > s { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--text); }
+
+/* ---- the phone's cards ---- */
+.acct-cards { display: flex; flex-direction: column; gap: 12px; padding: 0 12px 12px; }
+.acct-cards-grp { display: flex; flex-direction: column; gap: 10px; }
+.acct-cards-gh { margin: 4px 0 0; font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim); }
+.acct-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.acct-card.is-chosen { border-color: var(--sk-ac); }
+.acct-card-top { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.acct-card-top > .acct-rank-name { font-size: var(--t-body); }
+.acct-card-top > .acct-chip { margin-left: auto; }
+.acct-card-why { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.acct-card-why > .acct-why-part { display: inline; }
+.acct-card-why > .acct-why-part + .acct-why-part::before { content: ' · '; }
+.acct-card-w2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; font-size: var(--t-meta); }
+.acct-card-w2 small { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.acct-card-meta { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+.acct-card-meta b { color: var(--text); font-weight: 600; }
+/* The id is pasted into commands, so it is read whole: on a line of its own
+   when it does not fit the rest of the line (`u-bogdan:five-hour-` / `floor`
+   at 390), and broken only when it is wider than the card. */
+.acct-card-meta .raw { display: inline-block; max-width: 100%; }
+.acct-card-more { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+
+/* ---- the forecast ---- */
+/* No border of its own: the list head is the one bordered surface in this
+   column, and two stacked with no gutter read as one (spacing.accounts). */
+.acct-forecast { padding: 12px 14px 14px; }
+.acct-fc-headrow { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 8px 0; }
+.acct-fc-sub { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); min-width: 0; }
+.acct-fc-headrow > h3 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); }
+.acct-fc-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); gap: 12px; }
+.acct-fc-tile { border: 1px solid var(--line); border-radius: 9px; padding: 8px 12px; min-width: 0; }
+.acct-fc-k { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.acct-fc-v { font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 650; overflow-wrap: anywhere; }
+.acct-fc-tile > small { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.acct-fc-note {
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  background: var(--surface-2);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 10px 0 0;
+  max-width: none;
+}
+
+/* ---- the page, ranked: the table across, the chosen account under it ---- */
+.acct-split.is-ranked { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+.acct-split.is-ranked > .acct-list { border-right: 0; }
+.acct-split.is-ranked > .acct-pane { border-top: 1px solid var(--line); }
+
+@media (max-width: 560px) {
+  .acct-verdict { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 14px; }
+  .acct-verdict-big { font-size: calc(var(--t-figure) * 1.6); }
+  .acct-verdict-head { font-size: var(--t-body); line-height: var(--lh-body); }
+  .acct-verdict-wait {
+    max-width: none;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    text-align: left;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+    padding: 8px 0 0;
+    gap: 4px 8px;
+  }
+  .acct-dup { padding: 10px 12px; }
+  .acct-dup-why { display: none; }
+  /* THE FLOOR STAYS ON THE PHONE (mock-up A, P1-P2; rendered 2026-10-25).
+     styles.css's phone block hides every `.ctl-util-track` because in a
+     `.ctl-util` row the bar only pictures the number beside it. This one does
+     not: the tick is the only place the 15% / 5% floor is drawn, and a card's
+     window column is ~150px at 390, room for it -- the same reason Pools'
+     Use meter is kept (capacity.css, V086). Out-ranks that rule at (0,3,0). */
+  .acct-card-w2 .acct-floor > .ctl-util-track { display: flex; }
+  .acct-split.is-ranked > .acct-pane { border-top: 0; }
+}

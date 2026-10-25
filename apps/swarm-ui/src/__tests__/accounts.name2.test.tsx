@@ -98,7 +98,7 @@ async function mountPeople(body: Json) {
   vi.resetModules()
   const { PeopleScreen } = await import('../People')
   render(<PeopleScreen />)
-  await screen.findByRole('heading', { name: 'People', level: 1 }, WAIT)
+  await screen.findByRole('heading', { name: 'People and roles', level: 1 }, WAIT)
   await waitFor(() => expect(document.querySelector('.pp-people tbody tr')).not.toBeNull(), WAIT)
 }
 

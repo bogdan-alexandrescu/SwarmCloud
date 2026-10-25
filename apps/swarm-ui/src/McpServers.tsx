@@ -1,12 +1,14 @@
-import { useId, useState, type FormEvent, type MouseEvent, type MutableRefObject } from 'react'
+import { useContext, useId, useState, type FormEvent, type MouseEvent, type MutableRefObject } from 'react'
 import { USE_FIXTURES, loadCapacity } from './api'
-import { Banner, Button, Card, routedClick } from './components'
+import { Banner, Button, ButtonLink, Card, routedClick } from './components'
+import { SetupContext } from './ConfigSetup'
 import { noteFixtureProbe, read, route, write, type ApiError, type ApiRoute, type Result } from './fetch'
-import { addressToPath } from './paths'
+import { CONFIG_SECRETS_ADDRESS, addressToPath } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { timeAgo, type RunnerProfile } from './types'
 import './styles/keys.css'
+import './styles/workspace-settings.css'
 
 /**
  * SETTINGS › MCP SERVERS, AND THE SUBMIT FORM'S PICKER (lane MCP-UI over
@@ -55,6 +57,15 @@ import './styles/keys.css'
  * and asks for each picked `dispatch` server's credential once, for the whole
  * workflow (`McpCredentialField`), because `WorkflowCreate.mcp_credentials` is
  * one map every step naming the server uses.
+ *
+ * THE LEAD (CONFIG-S5-LEADS; part of #2157, proposal E S5a, S5d) is one
+ * sentence over the body as built: the server whose credential is missing,
+ * with one button to Config › Secrets, or the green "nothing waiting".
+ * The list cannot say whether a `workspace_secret` server's secret is stored,
+ * so the lead reads the setup read's `config_setup.secrets` (CONFIG-SETUP-READ,
+ * `swarm_api.config_setup`), whose `mcp_server` items make the same test
+ * Config › Secrets' MCP row makes. That source unread, or not served, is "—"
+ * and why: never green.
  */
 
 export type McpAuthMode = 'none' | 'dispatch' | 'workspace_secret'
@@ -248,11 +259,104 @@ export function McpServersLink() {
   return <a href={addressToPath(MCP_SERVERS_ADDRESS)} onClick={go}>Settings › MCP servers</a>
 }
 
+/** Routed in-app, as `McpServersLink`: this screen is drawn without App's `go`. */
+function routedTo(address: string) {
+  return (e: MouseEvent<HTMLAnchorElement>) => {
+    if (!routedClick(e)) return
+    e.preventDefault()
+    window.history.pushState(null, '', addressToPath(address))
+    window.dispatchEvent(new PopStateEvent('popstate'))
+  }
+}
+
+/**
+ * Where a missing credential is set: Config › Secrets, whose Add a secret card
+ * an admin always sees. Never `?action=add`: that is the /sc one-time link's
+ * address, and the page then says it was opened from one (CONFIG-S5-LEADS review).
+ */
+const SET_CREDENTIAL_ADDRESS = CONFIG_SECRETS_ADDRESS
+
+/** What the lead says, from the setup read's secrets step. Pure, for the tests' reasons. */
+export type McpLead =
+  | { kind: 'unknown'; reason: string }
+  | { kind: 'missing'; names: string[]; of: number | null }
+  | { kind: 'clear' }
+
+/** The `mcp_server` part of `config_setup.secrets` (`swarm_api.config_setup.secrets_step`); null while the read has not landed. */
+export function mcpLeadOf(doc: Result<unknown>): McpLead | null {
+  if (doc.status === 'loading') return null
+  if (doc.status === 'error' || doc.status === 'empty') return { kind: 'unknown', reason: 'the setup read could not be read' }
+  const setup = isRecord(doc.data) ? doc.data.config_setup : undefined
+  const step = isRecord(setup) ? setup.secrets : undefined
+  if (!isRecord(step)) return { kind: 'unknown', reason: 'this API does not serve which secrets are needed and not stored' }
+  const source = isRecord(step.sources) ? step.sources.mcp_servers : undefined
+  if (!isRecord(source) || typeof source.needed !== 'number') {
+    return { kind: 'unknown', reason: (isRecord(source) ? text(source.reason) : null) ?? 'the MCP servers’ credentials were not measured' }
+  }
+  const items = Array.isArray(step.items) ? step.items : []
+  const names = [...new Set(items.flatMap((i) => (isRecord(i) && i.kind === 'mcp_server' && text(i.name) !== null ? [text(i.name)!] : [])))]
+  if (names.length === 0) return { kind: 'clear' }
+  return { kind: 'missing', names, of: typeof step.needed === 'number' ? step.needed : null }
+}
+
+function joined(names: readonly string[]): string {
+  return names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
+
+/** The page's lead: one sentence, at most one button (proposal E). */
+function McpServersLead() {
+  const { doc } = useContext(SetupContext)
+  const lead = mcpLeadOf(doc)
+  if (lead === null) return null
+  if (lead.kind === 'unknown') {
+    return (
+      <section className="ws-lead is-next" aria-label="Secrets set">
+        <div className="ws-lead-t">
+          <span className="ws-lead-k">Secrets set</span>
+          <b>— whether an MCP server is missing its credential is not known: {lead.reason}.</b>
+        </div>
+      </section>
+    )
+  }
+  if (lead.kind === 'clear') {
+    return (
+      <section className="ws-lead is-ok" aria-label="Nothing waiting">
+        <div className="ws-lead-t">
+          <span className="ws-lead-k">Nothing waiting</span>
+          <b>No MCP server here is missing its credential.</b>
+        </div>
+      </section>
+    )
+  }
+  const n = lead.names.length
+  // "1 of the 1 missing is here" reads as a slip: when every missing secret is an MCP server's, the count alone.
+  const kicker = lead.of === null ? 'Secrets set'
+    : lead.of <= n ? `Secrets set · ${n} missing`
+      : `Secrets set · ${n} of the ${lead.of} missing ${n === 1 ? 'is' : 'are'} here`
+  return (
+    <section className="ws-lead is-next" aria-label={kicker}>
+      <div className="ws-lead-t">
+        <span className="ws-lead-k">{kicker}</span>
+        <b>
+          {n === 1 ? `MCP server ${lead.names[0]} has no credential stored` : `MCP servers ${joined(lead.names)} have no credential stored`}
+          , so every call to {n === 1 ? 'it' : 'them'} fails until a workspace secret is granted to {n === 1 ? `mcp:${lead.names[0]}` : 'each'}.
+        </b>
+      </div>
+      <div className="ws-lead-a">
+        <ButtonLink kind="primary" size="sm" href={addressToPath(SET_CREDENTIAL_ADDRESS)} onClick={routedTo(SET_CREDENTIAL_ADDRESS)}>
+          {n === 1 ? `Set ${lead.names[0]}’s credential` : 'Set their credentials'}
+        </ButtonLink>
+      </div>
+    </section>
+  )
+}
+
 export function McpServersScreen() {
   const list = useUrRead(loadMcpServers, 'mcp-servers')
   return (
     <div className="pk-page">
       <PageHead title="MCP servers" />
+      <McpServersLead />
       <Card title="Registered MCP servers" action={<UrRefresh reads={[list]} />}>
         <p className="pk-lead">
           The MCP servers an agent may call during its run, by name. An agent names them on Submit; the
