@@ -368,6 +368,37 @@ describe('the Timeline', () => {
     expect(parseFloat(bar.style.width)).toBeGreaterThan(0)
   })
 
+  it('draws a held but not full account’s latest hold deadline too, and a dash with its reason when unserved', async () => {
+    const now = Date.now()
+    const last = now + 3 * H
+    // B3: devops-team holds 5 of 6 and its lane says "5 agents · latest hold deadline 17:04Z".
+    const accounts = b3(now).map((a) =>
+      a.account_id === 'eng:devops-team'
+        ? { ...a, max_agents: 6, latest_hold_deadline: iso(last) }
+        : a.account_id === 'eng:devops-main'
+          ? { ...a, latest_hold_deadline: iso(now + H) }
+          : a,
+    )
+    window.history.replaceState(null, '', '/#capacity/accounts?view=timeline')
+    const first = await mount(accounts)
+    const lane = (id: string) => document.querySelector<HTMLElement>(`.acct-tl-lane[data-account="${id}"]`)!
+    const team = lane('eng:devops-team')
+    expect(team.querySelectorAll('.acct-tl-holdcells > i')).toHaveLength(6)
+    expect(team.querySelectorAll('.acct-tl-holdcells > i.is-held')).toHaveLength(5)
+    expect(team.textContent).toContain(`5 agents hold it · latest hold deadline ${pool.utcAt(last, now)}`)
+    expect(team.querySelector('.acct-tl-holdbar')).not.toBeNull()
+    // It still has a free slot, so it does not say it frees only when one finishes.
+    expect(team.textContent).not.toContain('frees when one finishes')
+    expect(lane('eng:devops-main').textContent).toContain('frees when one finishes')
+    // Not served: the same dash and reason a full lane draws.
+    first.unmount()
+    window.history.replaceState(null, '', '/#capacity/accounts?view=timeline')
+    await mount(b3(now))
+    expect(lane('eng:devops-team').textContent).toContain('latest hold deadline — not served by this broker')
+    // An account nobody holds draws no holds at all.
+    expect(lane('eng:ai-eng-3').querySelector('.acct-tl-holds')).toBeNull()
+  })
+
   it('draws a hold deadline the broker does not know as a dash with its reason', async () => {
     const now = Date.now()
     const accounts = b3(now).map((a) =>
