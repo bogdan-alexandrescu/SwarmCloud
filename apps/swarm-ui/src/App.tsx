@@ -526,8 +526,13 @@ export const SECTIONS: SectionDef[] = [
     // admin is the last tab, and the last clause is its. Admin is no longer
     // only the platform's: a workspace admin reaches this section for that
     // one page, which is why the tab carries no `admin: true` mark.
+    //
+    // PLATFORM COUNTS' CLAUSE ASKS ABOUT TIME SINCE COUNTS-PAGE (part of
+    // #2149, BGD's decisions of 2026-10-23): the page draws how many agents
+    // ran per day, week or month, for how long and at what estimated cost,
+    // below the state counts it always had.
     question:
-      'What is each ceiling set to, who is registered to use this platform, how many agents are in each state, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer?',
+      'What is each ceiling set to, who is registered to use this platform, how many agents are in each state and how many ran over time, for how long and at what estimated cost, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer?',
     tabs: [
       { id: 'limits', label: 'Pool limits', admin: true },
       // SIZES-UI (part of #1689, docs/design/runner-sizes.md §4.6): each
@@ -543,7 +548,10 @@ export const SECTIONS: SectionDef[] = [
       // #847 W8 (docs/workspaces.md §6.4): who has signed in, their workspace
       // requests to approve or deny, each person's ceiling and Claude account,
       // and who is an admin. Admin only, like the three before it.
-      { id: 'people', label: 'People', admin: true },
+      // "People and roles" since ADMIN-PEOPLE-ROLES (part of #2157, S5c):
+      // every person against every workspace, and for a workspace admin who
+      // is not a platform admin only the workspaces they administer.
+      { id: 'people', label: 'People and roles', admin: true },
       // NAV-ADMIN-ROLE: each group workspace whose stored role for the
       // caller is admin, with its four settings pages. Not marked `admin`:
       // it reads `/v1/tenants/mine`, which everyone may, and a workspace
@@ -1422,9 +1430,12 @@ export function App() {
 
   const [apiFailuresOnly, setApiFailuresOnly] = useState(false)
 
-  // Replaced in place by the normalise effect, so Back does not return to the Admin page.
-  const onNoAdmin = useCallback(() => {
-    setAt((r) => (r.sectionId === ADMIN_SECTION && r.taskId === null ? fromAddress('') : r))
+  // Replaced in place by the normalise effect, so Back does not return to the
+  // Admin page: Overview for someone who administers nothing (CONFIG-NAV),
+  // Workspaces you admin for a workspace admin on a platform page
+  // (ADMIN-REDIRECT). A setter, never `go`, which would push.
+  const onAdminRedirect = useCallback((to: string) => {
+    setAt((r) => (r.sectionId === ADMIN_SECTION && r.taskId === null ? fromAddress(to) : r))
   }, [])
 
   const section = sectionOf(at.sectionId)
@@ -1489,9 +1500,11 @@ export function App() {
           keepOnSwitch={at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow')}
           place={pathFor(at)}
           // ADMIN IS AN ADMIN'S (CONFIG-NAV; BGD 2026-10-23): someone who
-          // administers nothing, on an Admin address, lands on Overview. The
-          // shell says so only once both of its reads have answered.
-          onNoAdmin={onNoAdmin}
+          // administers nothing, on an Admin address, lands on Overview, and
+          // a workspace admin on a platform page lands on Workspaces you
+          // admin (ADMIN-REDIRECT; BGD 2026-10-24). The shell says so only
+          // once both of its reads have answered.
+          onAdminRedirect={onAdminRedirect}
           // THE BELL (#1206) is the shell's to place: the spine's foot, or the
           // phone header (V178). It was the only thing in a header bar drawn
           // over every page, so a section page carried an empty 48px band.
@@ -1996,6 +2009,10 @@ function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: num
 const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
   'automate/schedules': 'schedules',
   'automate/approvals': 'approvals',
+  // Admin › People and roles answers differently by reader (ADMIN-PEOPLE-ROLES):
+  // its topic rides the section's `?` rather than a second glyph by the title,
+  // which the console's glyph ceiling (tests/help.test.ts) has no room for.
+  'admin/people': 'people-and-roles-scope',
 }
 
 function SectionQuestion({ section, topic = null }: { section: SectionQuestionDef; topic?: TopicId | null }) {

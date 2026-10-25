@@ -1,16 +1,16 @@
-"""The live gate's RFB server: masked frames out, the controller's input in (L3).
+"""The live gate's RFB server: captured frames out, the controller's input in (L3).
 
-docs/design/live-browser.md §3.1 (the gate encodes the masked framebuffer as
+docs/design/live-browser.md §3.1 (the gate encodes the captured framebuffer as
 RFB), §4.2 (control mode), §5.6 (keyboard and clipboard), §5.3.3 (keys never
 logged) and §5.10 (controller input is rate limited at the gate). The console
 runs noVNC; between it and this module are swarm-api and the relay, which
 carry each viewer's RFB byte stream through the tunnel as its own connection
 with its own id. This module speaks RFB 3.8 on one such stream.
 
-ONLY MASKED FRAMES. `FrameHub.publish` takes a `MaskedFrame`, and the only way
-to make one is `masked(frame, mask_state)`, which paints the frame with the
-mask (§5.3) first. A raw `Frame` is refused with `TypeError`, so a capture
-loop that forgot the mask fails at once instead of streaming.
+FRAMES AS CAPTURED (§5.3; owner decision, BGD 2026-10-25). `FrameHub.publish`
+takes the captured `Frame` as it is: nothing is painted over any part of it,
+in any situation. The pointer is painted on each viewer's own copy (THE
+POINTER, below), never on the published frame.
 
 INPUT ONLY FROM THE CONTROLLER, ONLY IN CONTROL MODE (§5.6). Every key,
 pointer and paste message is read -- the stream must stay in step -- and then
@@ -20,11 +20,10 @@ other connection's is. Control changes hands through `ControlState.grant` and
 `revoke`, which release every key and button the previous controller held.
 
 THE CLIPBOARD IS ONE-WAY (§5.6, Q10). This server NEVER SENDS ServerCutText:
-pod-to-console clipboard would hand a viewer whatever the agent copied,
-unmasked, and the module has no code that writes that message. Console-to-pod
-paste (`ClientCutText`) from the controller is typed as keys through the
-injector, so it is masked and unlogged like typing; from anyone else it is
-discarded.
+pod-to-console clipboard would hand a viewer whatever the agent copied, and
+the module has no code that writes that message. Console-to-pod paste
+(`ClientCutText`) from the controller is typed as keys through the injector,
+so it is unlogged like typing; from anyone else it is discarded.
 
 RATE LIMIT (§5.10). The controller's injected events are limited to
 `MAX_INPUT_EVENTS_PER_SECOND` by a token bucket; a paste costs one token per
@@ -66,12 +65,10 @@ is announced with the DesktopSize pseudo-encoding, and a viewer that cannot
 take one is disconnected (noVNC reconnects).
 
 ONLY WHAT CHANGED, AND ONLY WHEN ASKED. Each viewer's last update is kept, as
-the pixels it was sent: masked, with its pointer painted. A new update is
-diffed against it in `TILE` x `TILE` tiles, and carries only the tiles that
-changed -- adjacent changed tiles of a band merged into one rectangle,
-trimmed to the rows that changed. The diff runs on the masked frame, so a
-masked area whose contents change is still the mask's colour in it, and
-nothing is ever sent from the unmasked screen. An update is sent only in
+the pixels it was sent, with its pointer painted. A new update is diffed
+against it in `TILE` x `TILE` tiles, and carries only the tiles that changed
+-- adjacent changed tiles of a band merged into one rectangle, trimmed to the
+rows that changed. An update is sent only in
 answer to a FramebufferUpdateRequest, from the newest frame at that moment,
 so frames never queue for a slow viewer: it gets the latest when it asks.
 
@@ -109,16 +106,15 @@ from a frame captured after it that changed anything -- the latency the
 person feels, inside the pod. Its p50 and p95 are logged when the connection
 closes, with the update and byte counts: numbers, never content.
 
-WHY THE PAGE IS NOT SHOWN (LIVE-BLANK; part of #1030). A frame the mask
-cannot vouch for is still filled -- every pixel sent passes the mask -- and
-the viewer is told why: a viewer that lists the DesktopName pseudo-encoding
-(-307; noVNC 1.4.0 does, and hands the page a `desktopname` event) is sent
-"Can't show this page safely: <reason>" (`mask.CANNOT_SHOW`), or "Part of
-this page is covered: <reason>" when frames on it are covered, with the
-update whose frame first carries it, and `_DESKTOP_NAME` again once the page
-is back. The console's strip shows it (LiveBrowser.tsx `gateReason`).
-MEASURED 2026-10-13 on release 1e86c37e: a flat page area for ten minutes on
-Google's reCAPTCHA page, and nothing on the console said why.
+THE AGENT HAS FINISHED (GREY-TAIL; part of #1344). A viewer that lists the
+DesktopName pseudo-encoding (-307; noVNC 1.4.0 does, and hands the page a
+`desktopname` event) is sent `mask.REASON_BROWSER_CLOSED` as the desktop name
+once the attempt ended and the gate closed Chromium, with the update whose
+frame first carries it, and `_DESKTOP_NAME` again if a browser is back.
+Every other frame carries `_DESKTOP_NAME`. Until LIVE-NOMASK (#2298) a frame
+the mask painted out was named "Can't show this page safely: <reason>" or
+"Part of this page is covered: <reason>"; nothing is painted out now, so
+neither is ever sent.
 
 WHAT A VIEWER WAS SHOWN IS MEASURED (LIVE-MEASURE; part of #1030). Owner
 decision 2026-10-13: Phase 1 of the live-browser plan is "measure", and
@@ -131,23 +127,21 @@ that logger's lines to stderr as bare JSON, so Cloud Logging parses them into
 jsonPayload and scripts/live-report.sh can query them. The line holds frames
 captured and changed, updates, the update rate in the seconds the page
 changed, the longest a changed frame waited for an update, the time the frame
-was the unavailable (#555) or page-blanked (#222) fill, input-to-frame p50
+carried a reason (`unavailable_ms`: before the first capture, the hub's #555
+fill, and after the browser closed), input-to-frame p50
 and p95 for the inputs a changed frame followed within
 `INPUT_CHANGE_WINDOW_SECONDS` (a key that changed nothing is not timed to a
 later, unrelated change), and the input counts. Numbers only, as above.
 
-THE UNAVAILABLE TIME SAYS WHICH REASON (LB-GREY; part of #1344). MEASURED
-2026-10-16 (QA batch post-1015, release 85114dbf): 2 of 17 dev-browser runs
-showed the unavailable fill for over 10 s (13.2 s, 18.8 s) against at most
-4.8 s for Playwright, and `unavailable_ms` alone could not say whether those
-frames said the page had "not reported its layout yet", that "no page is
-open", or that the followed page "is not the tab on screen" -- three causes
-with three different fixes. So the line also carries
-`unavailable_ms_by_reason` and `unavailable_longest_ms_by_reason`, keyed by
-`UNAVAILABLE_REASON_KEYS` (a short, fixed key per reason the mask and the hub
-name, "other" for any other, so a query has a schema to rely on). A stretch
-is one reason held frame after frame: a change of reason ends one and starts
-the next, and the longest is what tells one 18 s wait from many short ones.
+THE UNAVAILABLE TIME SAYS WHICH REASON (LB-GREY; part of #1344). The line
+also carries `unavailable_ms_by_reason` and
+`unavailable_longest_ms_by_reason`, keyed by `UNAVAILABLE_REASON_KEYS` (a
+short, fixed key per reason a frame can carry, "other" for any other, so a
+query has a schema to rely on): `not_captured` and `browser_closed`, the
+only two since the mask's reasons went with it (LIVE-NOMASK, #2298).
+`blank_ms` is kept equal to `unavailable_ms` for scripts/live_report.py. A
+stretch is one reason held frame after frame: a change of reason ends one
+and starts the next.
 
 THE POINTER (LB-CURSOR; part of #1030). Xvfb's framebuffer never holds the X
 pointer, and noVNC hides its own over the canvas, so without this the person
@@ -158,8 +152,8 @@ Every other viewer -- a watcher, the relay's recorder, a controller with no
 local cursor -- gets the arrow painted where the pointer last was
 (`FrameHub.pointer`: the controller's last PointerEvent, or the agent's last
 mouse event, which the gate passes on from the CDP proxy), into its own copy
-of the frame after the mask has painted it: never into the published frame,
-never into Xvfb's mapping, and never under the mask. The controller with a
+of the frame: never into the published frame and never into Xvfb's
+mapping. The controller with a
 local cursor is not painted one too: it would trail its own pointer.
 """
 
@@ -180,20 +174,7 @@ from typing import Any, Callable
 
 from .capture import Frame
 from .inject import MAX_TYPED_CHARS, Injector
-from .mask import (
-    CANNOT_SHOW,
-    PARTLY_COVERED,
-    REASON_BROWSER_CLOSED,
-    REASON_HIDDEN,
-    REASON_NO_PAGE,
-    REASON_NO_SESSION,
-    REASON_NOT_REPORTED,
-    REASON_SWITCHING,
-    REASON_TOO_WIDE,
-    UNAVAILABLE_RGB,
-    MaskState,
-    Outcome,
-)
+from .mask import REASON_BROWSER_CLOSED
 from .pointer import HEIGHT as CURSOR_HEIGHT
 from .pointer import HOTSPOT as CURSOR_HOTSPOT
 from .pointer import WIDTH as CURSOR_WIDTH
@@ -272,18 +253,13 @@ VIEWER_METRICS_EVENT = "live_viewer_metrics"
 
 #: The hub's reason until the gate's first capture (`FrameHub`).
 REASON_NOT_CAPTURED = "the gate has not captured the screen yet"
+#: The hub's flat fill until the gate's first capture: there is no screen yet.
+NOT_CAPTURED_RGB = (0x55, 0x55, 0x55)
 
-#: The metrics line's key for each reason an unavailable frame carries
-#: (module docstring, THE UNAVAILABLE TIME SAYS WHICH REASON). Every reason
-#: `MaskState` gives `Outcome.UNAVAILABLE`, plus the hub's own.
+#: The metrics line's key for each reason a frame carries (module docstring,
+#: THE UNAVAILABLE TIME SAYS WHICH REASON): the hub's own, and `MaskState`'s.
 UNAVAILABLE_REASON_KEYS: dict[str, str] = {
     REASON_NOT_CAPTURED: "not_captured",
-    REASON_NO_SESSION: "no_session",
-    REASON_NO_PAGE: "no_page",
-    REASON_NOT_REPORTED: "not_reported",
-    REASON_HIDDEN: "hidden",
-    REASON_SWITCHING: "switching",
-    REASON_TOO_WIDE: "too_wide",
     REASON_BROWSER_CLOSED: "browser_closed",
 }
 #: The key of an unavailable frame whose reason is not in `UNAVAILABLE_REASON_KEYS`.
@@ -343,52 +319,34 @@ class RfbError(Exception):
     """The viewer sent something this server will not handle; the connection ends."""
 
 
-class MaskedFrame:
-    """A frame the mask has painted. Made only by `masked`."""
+class Published:
+    """A frame the hub holds: the captured `Frame` as it is, with when and what it says."""
 
-    __slots__ = ("frame", "outcome", "at", "reason")
+    __slots__ = ("frame", "at", "reason")
 
-    def __init__(self, frame: Frame, outcome: Outcome, *, _token: object,
-                 reason: str | None = None) -> None:
-        if _token is not _MASKED:
-            raise TypeError("a MaskedFrame is made by rfb.masked(), which applies the mask")
+    def __init__(self, frame: Frame, reason: str | None = None) -> None:
         self.frame = frame
-        self.outcome = outcome
-        #: Why the frame is not (all of) the page (`MaskState.reason`); None when it is.
+        #: What the frame says besides the page (`REASON_NOT_CAPTURED`,
+        #: `mask.REASON_BROWSER_CLOSED`); None for a page on screen.
         self.reason = reason
-        #: `time.monotonic()` when it was masked, just after the grab: an
+        #: `time.monotonic()` when it was published, just after the grab: an
         #: update from it can show an input that arrived before this.
         self.at = time.monotonic()
 
 
-_MASKED = object()
-
-
-def masked(frame: Frame, mask: MaskState) -> MaskedFrame:
-    """Paint `frame` with the mask, in place, and mark it fit to leave the pod."""
-    outcome = mask.apply(frame)
-    return MaskedFrame(frame, outcome, _token=_MASKED, reason=mask.reason)
-
-
-def desktop_name(frame: MaskedFrame) -> bytes:
-    """The desktop name a viewer is sent with `frame` (module docstring, WHY THE PAGE IS NOT SHOWN)."""
-    if frame.reason is None:
-        return _DESKTOP_NAME
+def desktop_name(frame: Published) -> bytes:
+    """The desktop name a viewer is sent with `frame` (module docstring, THE AGENT HAS FINISHED)."""
     if frame.reason == REASON_BROWSER_CLOSED:
-        # A whole sentence: the page is not unsafe, the browser is gone (mask.py).
-        return REASON_BROWSER_CLOSED.encode("utf-8")
-    lead = PARTLY_COVERED if frame.outcome is Outcome.MASKED else CANNOT_SHOW
-    return f"{lead}: {frame.reason}".encode("utf-8")[:MAX_DESKTOP_NAME_BYTES]
+        return REASON_BROWSER_CLOSED.encode("utf-8")[:MAX_DESKTOP_NAME_BYTES]
+    return _DESKTOP_NAME
 
 
 class FrameHub:
-    """The latest masked frame, and a wake-up for every session waiting on one."""
+    """The latest captured frame, and a wake-up for every session waiting on one."""
 
     def __init__(self, width: int = 1280, height: int = 800) -> None:
-        # Until the first frame: the "masking unavailable" fill (§5.3.2).
-        blank = Frame.blank(width, height, UNAVAILABLE_RGB)
-        self._current = MaskedFrame(blank, Outcome.UNAVAILABLE, _token=_MASKED,
-                                    reason=REASON_NOT_CAPTURED)
+        # Until the first frame: a flat fill, since there is no screen to show yet.
+        self._current = Published(Frame.blank(width, height, NOT_CAPTURED_RGB), REASON_NOT_CAPTURED)
         self.version = 0
         #: How many published frames differed from the one before: what a
         #: stalled connection is measured against (module docstring).
@@ -400,25 +358,23 @@ class FrameHub:
         self.pointer = PointerTracker(on_move=self._pointer_moved)
 
     @property
-    def current(self) -> MaskedFrame:
+    def current(self) -> Published:
         return self._current
 
-    def publish(self, frame: MaskedFrame) -> None:
-        if not isinstance(frame, MaskedFrame):
-            raise TypeError("only a MaskedFrame may be published: apply the mask with rfb.masked()")
-        old, new = self._current.frame, frame.frame
-        # One memcmp of the masked pixels: a static page, or the mask's
-        # fill frame after frame, is not a change.
+    def publish(self, frame: Frame, *, reason: str | None = None) -> None:
+        """Publish the captured `frame`, as it is, to every viewer; `reason` is what it says besides."""
+        published = Published(frame, reason)
+        old, new = self._current.frame, frame
+        # One memcmp of the pixels: a static page is not a change.
         changed = ((old.width, old.height, old.stride) != (new.width, new.height, new.stride)
                    or old.pixels != new.pixels)
         if changed:
             self.changes += 1
-        self._current = frame
+        self._current = published
         if self._metrics:
             now = time.monotonic()
             for metrics in self._metrics:
-                metrics.frame(now, changed=changed, outcome=frame.outcome, at=frame.at,
-                              reason=frame.reason)
+                metrics.frame(now, changed=changed, at=published.at, reason=reason)
         self._wake_all()
 
     def _pointer_moved(self) -> None:
@@ -527,8 +483,7 @@ class ViewerMetrics:
     log line. Constant memory: per-second counters, not a list of frames.
     """
 
-    def __init__(self, conn_id: str, *, now: float, outcome: Outcome,
-                 reason: str | None = None) -> None:
+    def __init__(self, conn_id: str, *, now: float, reason: str | None = None) -> None:
         self.conn_id = conn_id
         self._opened = now
         self.frames_captured = 0
@@ -546,15 +501,13 @@ class ViewerMetrics:
         # The oldest change this viewer has not been sent: (captured, published).
         self._owed: tuple[float, float] | None = None
         self._longest_gap = 0.0
-        self._outcome = outcome
-        self._outcome_since = now
+        self._reason_since = now
         self._unavailable = 0.0
-        # The open stretch's reason key while the frame is unavailable, else
+        # The open stretch's reason key while the frame carries a reason, else
         # None; and per key, the closed stretches' total and the longest one.
-        self._reason = unavailable_reason_key(reason) if outcome is Outcome.UNAVAILABLE else None
+        self._reason = None if reason is None else unavailable_reason_key(reason)
         self._unavailable_by_reason: dict[str, float] = {}
         self._unavailable_longest: dict[str, float] = {}
-        self._page_blanked = 0.0
         # The input being timed, and the capture time of the change it caused.
         self._input_at: float | None = None
         self._input_change_at: float | None = None
@@ -580,16 +533,15 @@ class ViewerMetrics:
             self.inputs_unchanged += 1
             self._input_at = None
 
-    def frame(self, now: float, *, changed: bool, outcome: Outcome, at: float,
-              reason: str | None = None) -> None:
+    def frame(self, now: float, *, changed: bool, at: float, reason: str | None = None) -> None:
         """The hub published a frame (`changed`: its pixels differ from the last;
-        `reason`: the frame's `MaskedFrame.reason`)."""
+        `reason`: the frame's `Published.reason`)."""
         self._tick(now)
         self.frames_captured += 1
-        key = unavailable_reason_key(reason) if outcome is Outcome.UNAVAILABLE else None
-        if outcome is not self._outcome or key != self._reason:
-            self._close_outcome(now)
-            self._outcome, self._reason = outcome, key
+        key = None if reason is None else unavailable_reason_key(reason)
+        if key != self._reason:
+            self._close_reason(now)
+            self._reason = key
         if not changed:
             return
         self.frames_changed += 1
@@ -625,16 +577,13 @@ class ViewerMetrics:
             self._input_hist[bisect.bisect_left(INPUT_TO_FRAME_BOUNDS_MS, waited)] += 1
             self._input_at = self._input_change_at = None
 
-    def _close_outcome(self, now: float) -> None:
-        held = now - self._outcome_since
-        if self._outcome is Outcome.UNAVAILABLE:
+    def _close_reason(self, now: float) -> None:
+        held = now - self._reason_since
+        if self._reason is not None:
             self._unavailable += held
-            if self._reason is not None:
-                self._add_stretch(self._unavailable_by_reason, self._unavailable_longest,
-                                  self._reason, held)
-        elif self._outcome is Outcome.PAGE_BLANKED:
-            self._page_blanked += held
-        self._outcome_since = now
+            self._add_stretch(self._unavailable_by_reason, self._unavailable_longest,
+                              self._reason, held)
+        self._reason_since = now
 
     @staticmethod
     def _add_stretch(total: dict[str, float], longest: dict[str, float], key: str,
@@ -652,14 +601,11 @@ class ViewerMetrics:
         gap = self._longest_gap
         if self._owed is not None:
             gap = max(gap, now - self._owed[1])
-        unavailable, blanked = self._unavailable, self._page_blanked
+        unavailable = self._unavailable
         by_reason, longest = dict(self._unavailable_by_reason), dict(self._unavailable_longest)
-        if self._outcome is Outcome.UNAVAILABLE:
-            unavailable += now - self._outcome_since
-            if self._reason is not None:
-                self._add_stretch(by_reason, longest, self._reason, now - self._outcome_since)
-        elif self._outcome is Outcome.PAGE_BLANKED:
-            blanked += now - self._outcome_since
+        if self._reason is not None:
+            unavailable += now - self._reason_since
+            self._add_stretch(by_reason, longest, self._reason, now - self._reason_since)
         samples = sorted(self.input_to_frame_ms)
 
         def pct(q: int) -> float | None:
@@ -688,8 +634,7 @@ class ViewerMetrics:
             "unavailable_ms_by_reason": {k: round(v * 1000, 1) for k, v in sorted(by_reason.items())},
             "unavailable_longest_ms_by_reason": {k: round(v * 1000, 1)
                                                  for k, v in sorted(longest.items())},
-            "page_blanked_ms": round(blanked * 1000, 1),
-            "blank_ms": round((unavailable + blanked) * 1000, 1),
+            "blank_ms": round(unavailable * 1000, 1),
             "input_samples": len(samples),
             "inputs_unchanged": self.inputs_unchanged,
             "input_to_frame_p50_ms": pct(50),
@@ -849,7 +794,7 @@ def find_scroll(old: bytes, new: bytes, width: int, height: int,
     a row is only counted as moved if it is exactly the old row, so the
     CopyRects built from this leave the viewer holding exactly `new` there.
     Several runs, because what does not move with the page -- a fixed header,
-    the mask over a field -- splits the area that does. The runs come in the
+    a sticky footer -- splits the area that does. The runs come in the
     order they can be copied in: each one's source is rows no earlier copy
     wrote. None when less than `_SCROLL_MIN_CHANGED` of the frame changed or
     fewer than `TILE` rows moved.
@@ -970,7 +915,7 @@ class RfbSession:
         self._inputs_ready = asyncio.Event()
         self._injecting = False  # an injection is awaiting its answer: the injector is behind
         self.counts = SessionCounts()
-        self.metrics = ViewerMetrics(conn_id, now=time.monotonic(), outcome=hub.current.outcome,
+        self.metrics = ViewerMetrics(conn_id, now=time.monotonic(),
                                      reason=hub.current.reason)
         self._format: _Format | None = None  # the viewer's; None until ServerInit
         self._encodings: tuple[int, ...] = (ENCODING_RAW,)
@@ -1288,7 +1233,7 @@ class RfbSession:
         job = _Job(frame=frame, target=self._format, encoding=self._encoding(),
                    level=self._level(), copy_rect=ENCODING_COPY_RECT in self._encodings,
                    incremental=incremental,
-                   # This viewer's own copy gets the pointer, after the mask (module docstring).
+                   # This viewer's own copy gets the pointer (module docstring).
                    pointer=None if self._local_pointer() else self._hub.pointer.position,
                    resend=self._resend, new_streams=self._new_streams)
         self._resend = self._new_streams = False
@@ -1297,7 +1242,7 @@ class RfbSession:
         changed = bool(rects)
         name = desktop_name(current)
         if ENCODING_DESKTOP_NAME in self._encodings and name != self._name_sent:
-            # Before the pixels, so the strip says why as the fill is drawn.
+            # Before the pixels, so the strip says it as the frame is drawn.
             self._name_sent = name
             rects.insert(0, struct.pack(">HHHHiI", 0, 0, 0, 0, ENCODING_DESKTOP_NAME, len(name)) + name)
         if self._cursor_due:

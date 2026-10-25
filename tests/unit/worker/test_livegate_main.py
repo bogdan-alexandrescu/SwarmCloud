@@ -484,8 +484,10 @@ def test_main_starts_the_components_in_the_designs_order(short_tmp):
         ], "Xvfb, then Chromium and the CDP proxy, then ctl.sock, then the view"
         methods = rig.browser.transport.methods
         assert methods[0] == "Browser.getVersion", "Chromium answers on its pipe before anything else"
-        # The mask is installed on a gate-only session on the page on screen.
-        assert "Page.addScriptToEvaluateOnNewDocument" in methods
+        # The page watch reads the frame tree on a gate-only session on the page
+        # on screen, and runs no script there (nothing paints, LIVE-NOMASK).
+        assert "Page.getFrameTree" in methods
+        assert "Page.addScriptToEvaluateOnNewDocument" not in methods
         assert rig.gate.pages.current == "PAGE1"
         # The default device was applied to the display.
         assert rig.display.sizes and rig.display.sizes[-1] == (1440, 987)

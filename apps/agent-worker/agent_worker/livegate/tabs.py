@@ -27,12 +27,12 @@ WHAT IS NOT REOPENED (`refusal`): anything but http(s); a URL carrying
 userinfo; a URL longer than `MAX_URL_CHARS`; a URL whose query or fragment
 names a parameter that carries a credential or a sign-in's state
 (`SECRET_PARAMS`: an OAuth `code` or `state`, a `token`...), or that the
-redaction filter would change; and any URL on a host of the mask's
+redaction filter would change; and any URL on a host of the gate's
 challenge list (`mask.SHOWN_IN_CONTROL`: reCAPTCHA, hCaptcha, Cloudflare's
 challenge), at any path -- a challenge is a person's to solve, and a stale one
 reopened would only fail. A sign-in page is otherwise reopened like any other
-page: it is the page the agent was on, the mask still covers its credential
-fields, and the hand-off ledger tells the agent its sign-in was NOT DONE.
+page: it is the page the agent was on, and the hand-off ledger tells the
+agent its sign-in was NOT DONE.
 
 SITE STORAGE GOES WITH THE TAB THAT NEEDS IT. Chromium's DOMStorage domain
 writes an origin's localStorage only through a frame OF that origin, so the
@@ -103,7 +103,7 @@ class TabsRefused(Exception):
 
 
 def _challenge_host(host: str) -> bool:
-    # The mask's match, which also tells the gate of a challenge on the
+    # mask.py's match, which also tells the gate of a challenge on the
     # agent's page (CAPTCHA-HANDOFF): one list, read one way.
     return is_challenge_host(host)
 

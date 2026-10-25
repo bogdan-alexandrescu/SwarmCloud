@@ -1,9 +1,15 @@
 # One visual-QA dispatch over an app's environments, discovering as it captures
 
-**Status: DESIGN, not built.** Lane QA-ENVIRONMENTS-DESIGN, 2026-10-23, part
-of #2136. Nothing here changes behaviour. The build lanes of §8 start only
-after the owner answers §9; the pull request carrying this file is not
-merged until then.
+**Status: BUILT.** Designed by lane QA-ENVIRONMENTS-DESIGN (PR 2144),
+2026-10-23, part of #2136; BGD answered §9 the same day (§10), and the build
+follows those answers. Built by QAENV-GATE (PR 2161), QAENV-CRAWL (PR 2162),
+QAENV-MODEL (PR 2163), QAENV-RUN (PR 2175), QAENV-SC (PR 2177),
+QAENV-SETTLE (PR 2181), QAENV-UI-RUNPAGE (PR 2261) and QAENV-UI-FORM
+(PR 2304), all merged by 2026-10-25, and described in
+[visual-qa-any-app.md](visual-qa-any-app.md) §10 and
+[schedules.md](../schedules.md) §3.17 by QAENV-DOCS. §11 records what each
+lane built and where the build differs from the text below; the text below
+is the design as decided, kept so the reasons stay with it.
 
 **The request (BGD, 2026-10-23 ~17:40Z, #2136):** dispatch one visual-QA
 workflow from the console against an app such as `https://studio.saga.xyz`
@@ -138,6 +144,11 @@ changes: an entry is `values["<target_id>/<environment name>"]`.
   `PUT .../credential` take the `environment` name; the link document
   records it and `consume_link` compares it with the email, tenant and
   target, so a link minted for staging can never set production's password.
+  A PUT (credential or bypass) whose body names no entry, on a target of
+  several, takes the entry the link was minted for, read by the token's
+  digest from a link that is this person's, unused and unexpired (#2280):
+  the link already names it, so the request need not restate it. A body
+  naming another entry is still `consume_link`'s 403, the link not burned.
 * **Size.** A Secret Manager payload is at most 64 KiB. An entry at today's
   maxima (256-character username, 1,024-character password, 1,024-character
   bypass value) is about 2.4 KiB, so one tenant holds about 25 maximal legs;
@@ -511,7 +522,9 @@ merges the union into **that leg's** `discovered`. Each route there carries
 `first_seen`, `last_seen` and the `workflow_id` that last saw it. Storing
 never bumps `revision`, exactly as discovery's write does today, so a run
 already started keeps its mark. The next run's stored list includes them,
-so a route found today is captured from minute zero tomorrow. `screens`, the
+so a route found today is captured from minute zero tomorrow; as built,
+that holds only on a leg without `screens` (§11), and a target with
+`screens` reaches a found route through Promote. `screens`, the
 list an admin wrote, is never written by a run: the report and the target's
 card list "new since the last run" with **Promote** (an admin's PATCH, as
 any edit of `screens` is).
@@ -771,3 +784,129 @@ lane. Each answer is recorded on the design agent (`task_182e885f55a44323940e`,
 **F-2** stays open: whether production Galatia's `sagents` realm requires a
 second factor for a QA account. Under Q7 the answer is to create an MFA-free QA
 account there; BGD or the app's owner does that.
+
+---
+
+## 11. What was built
+
+Read from each lane's merged pull request and from main at `76f4b49`,
+2026-10-25, by lane QAENV-DOCS. Each entry names what now holds and, where
+the build differs from §1 to §7, says so; the sections above are not
+rewritten, so the reason for each decision stays next to it.
+
+* **QAENV-MODEL (PR 2163).** §1.1 to §1.5 and §6's read-only production leg.
+  A target carries `environments[]` (at most 8 entries, each `name`
+  `[a-z0-9-]{1,20}`, unique in the target); `qaspec.leg` builds one leg's
+  view and every existing rule is applied to that view. `:approve-host`,
+  `:run`, `:discover`, the credential link and `PUT .../credential` take the
+  entry's name, required on a target of several. Secret values sit under
+  `values["<target_id>/<name>"]` (`qatargets.map_key`), the legacy bare key
+  read until the entry's next write; the map is held under 56 KiB
+  (`qa_secret_full`, 422). The worker route serves the mark's entry alone,
+  with `environment_name`, and answers 404 for a mark that names no entry,
+  another entry, or none on a target of several. **Differs:** a registration
+  without `environments` is still stored in the one-origin shape until
+  `POST /v1/qa-targets:migrate` runs (a platform admin's call, safe to
+  repeat); it is never run automatically. It ran on 2026-10-24 at 00:18Z
+  and migrated the three stored targets (#2136's comment of that time).
+* **QAENV-GATE (PR 2161).** §1.5's one leg per attempt. The worker passes
+  `environment_name` in the `qa_sign_in` hand-off, and the gate refuses a
+  second hand-off as `target_changed` when `(target_id, environment_name)`
+  differs, before it takes any field of it. **Stricter than §1.5:** a missing
+  name is a value, not a wildcard, so named-then-unnamed and
+  unnamed-then-named are both refused; an attempt that spans the release
+  carries on signed out.
+* **QAENV-CRAWL (PR 2162).** §3.1, §3.5 and §4 in `swarm_qa`.
+  `capture --crawl --step K --steps G` captures its stored share, harvests
+  links on every captured page, walks from the start path and every stored
+  route, and captures the new routes it owns
+  (`1 + int(sha256(p)[:8], 16) mod G`) up to `--found-per-step` (default and
+  ceiling 8, BGD's §10 answer), writing `found.json`. The wider walk and
+  disclosure-only clicks of §4 are shared with `discover` (`--no-clicks`
+  turns them off there). Bounds: 60 pages, depth 3, 20 clicks a page and
+  200 a crawl, `--crawl-seconds` 600 (at most 900), navigations spaced by
+  `--navigation-ms` (never under 1 s). **Differs:** `skipped`'s
+  `write_attempting` is a list of `{path, text}` rather than a count, because
+  §4 says the coverage section lists those controls; route states are
+  recorded for tabs only, and a menu or accordion that opens has its links
+  read but is not stored as a screen of its own.
+* **QAENV-RUN (PR 2175).** §2.1, §2.2, §3.1's renderer and §7's schedule.
+  `:run` takes `environments` (default every entry; the old singular
+  `environment` still works, never with it), checks every leg with
+  `runnable_legs` before submitting any, writes `qa_run_groups/{group_id}`
+  (`qrg_` + 16 hex) with each leg `pending`, then submits one workflow per
+  leg inside its own mark; a later leg refused answers 207. A one-leg run
+  still answers `workflow_id` at the top level beside `group_id` and
+  `legs`. Crawling capture steps carry the whole stored list, a
+  `found_per_step` cut so stored plus `G x found_per_step` stays within 60,
+  and a 2,700 s timeout; a discovering target with nothing stored renders
+  `discover.slots` crawling steps (default 4, at most 8). The report gains a
+  coverage section per leg. The `visual-qa` schedule takes `environments`
+  and its caps became BGD's Q9 (a): $40 a leg, `max_concurrent` 2, $160 a
+  day (schedules.md §3.17).
+* **QAENV-SC (PR 2177).** §7 in the plugin. `swarm_qa_run` takes
+  `environments` by name (1 to 8, a bare name only) and answers `group_id`
+  and `legs`; `swarm_qa_targets` lists each target's entries with no
+  credential field at all; `swarm_qa_target_credential_link` takes an
+  optional `environment`.
+* **QAENV-SETTLE (PR 2181).** §3.5, §5 and §7's filing.
+  `QaTargets.settle_run`, rung by the existing `task_finished` doorbell once
+  a leg's capture steps have ended, reads each `capture-<g>/found.json`
+  through the tenant-checked, redacted artifact read, holds it to
+  `qaspec.found_routes`, and merges the union into that leg's `discovered`
+  with `first_seen`, `last_seen` and `workflow_id`, never writing `screens`
+  or `revision`. A route unseen by three complete crawls in a row is dropped;
+  a crawl stopped by a bound changes nothing. Each leg serves
+  `new_since_last_run`. The file step's dedupe key is
+  `visual-qa:<target_id>:<environment>:<screen>:<title>`, its titles start
+  `[<leg>]`, and a grouped run's issue links `/qa-runs/<group_id>`, the page
+  that shows the other leg. **Differs from §5:** the next run's stored list
+  is a leg's `discovered` only when the target sets no `screens`: the
+  renderer (`apps/swarm-api/swarm_api/qaspec.py::_screens`) uses `screens`
+  alone when a target sets it, so on such a target a found route is captured
+  again only by its owner's crawl or once an admin promotes it. And because
+  `found.json` lists every stored route in `stored` whether or not it loaded,
+  a stored route is never marked `missing_since`. Both were asked of the
+  owner on PR 2181 and are not changed here. The dedupe key now names the
+  leg on one-origin targets too; an issue filed under the old key is still
+  found by the file step's `issue_list` search on the screen's path.
+* **QAENV-UI-RUNPAGE (PR 2261).** §7's run page and §5's "Between legs".
+  `/qa-runs/<group_id>` draws one column per leg (a switch on a phone), a
+  leg with no workflow as "not started" with its reason, and above the
+  columns the routes one leg's `discovered` holds and the other's lacks, as
+  information only. Its figures are read by the console from each step's
+  artifacts (`manifest.json`, `found.json`, `findings.json`, `filed.json`),
+  not served by `GET /v1/qa-runs/{group_id}`. Work › Submit a workflow's
+  "Visual QA of a registered app" entry links to the target card's form, so
+  there is one form.
+* **QAENV-UI-FORM (PR 2304).** §7's dispatch form and §5's Promote. A target's
+  card draws one row per entry, each with its host, approval, credential
+  state and its own reason it cannot run; Run sends `{environments, file,
+  browser_tool?}` and nothing else and links the run group. Credential links
+  and Approve host are per entry. "New since last run" is drawn per leg, and
+  **Promote**, a workspace admin's PATCH of `screens`, to an admin only.
+  **Open with the owner:** "Flows with" keeps three choices where the mock-up
+  drew two, and Run discovery on a target of several entries discovers each
+  ticked leg; §7 says neither.
+
+**The shared-origin rule spans one target, and AI Studio is now two.**
+`qaspec.shares_production_origin` compares an entry with the other entries
+of its own target. On 2026-10-24 AI Studio was registered as two targets
+(#2136's comments of 22:39Z and 23:10Z): `ai-studio-prod`, whose entries are
+all `production`, and `ai-studio-staging`, whose entries are all
+`non_production`, both on `https://studio.saga.xyz`. No entry of
+`ai-studio-staging` shares an origin with a production entry of its own
+target, so §1.5's rule does not turn its write permission off, although the
+comment of 22:39Z says it does. Nothing can write there today, because
+neither target declares a flow and a capture step is never `mutating`; a
+`mutating: true` flow added to `ai-studio-staging` would be rendered, and
+its step's writes to the shared origin would be allowed whichever backend
+the page's toggle picks, the case §1.5 exists for. Whether the rule should compare a tenant's targets, or
+the two legs should be entries of one target as §1.2 planned, is asked of
+the owner in this lane's `questions.json`.
+
+**Not changed by this lane, asked instead.** `docs/qa/any-app-qa.md`, the
+built renderer's page, still lists `qa_target_no_screens` as the refusal for
+"no `screens` and nothing `discovered`" and gives the capture command
+without `--crawl`; it is outside this lane's territory, so the correction is
+a question in this lane's `questions.json` and its pull request.

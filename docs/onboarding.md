@@ -126,8 +126,9 @@ its pull request; the pieces that came last, and where each one lives:
   `swarmcloud/onboarding-check-<nonce>`, is created and deleted
   (`apps/swarm-api/swarm_api/access.py::AccessService._push_test`). It is
   asked from `uv run sc access verify owner/repo --push-test`
-  (`apps/swarm-mcp/swarm_mcp/sc.py::cmd_access_verify`) and from the Access
-  page's push test column (`apps/swarm-ui/src/Access.tsx` (`function PushTestCell(`)).
+  (`apps/swarm-mcp/swarm_mcp/sc.py::cmd_access_verify`) and from the push
+  test column of the repositories SwarmCloud may reach as you
+  (`apps/swarm-ui/src/ReachableRepositories.tsx` (`function PushTestCell(`)).
 * **Org approval pending, recorded and re-checked.** Asking an org's owners
   to install the App is recorded
   (`apps/swarm-api/swarm_api/access.py::AccessService.request_install`, from

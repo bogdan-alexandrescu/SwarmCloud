@@ -11,6 +11,7 @@
     POST   /v1/schedules/{id}:pause {cancel_live: true, confirm}   and cancel the live runs (§2.11)
     POST   /v1/schedules:pause-all {confirm}       every enabled schedule of the caller's tenant (§2.11)
     GET    /v1/schedules/{id}/firings[/{firing_id}]
+    GET    /v1/schedules/{id}/spans?firing_id=…    one page of firings' work and attempt spans
     GET    /v1/schedules/{id}/audit                newest first
     GET    /v1/admin/schedules                     every tenant's, with the tick's health (§5.3)
     POST   /v1/admin/schedules/{id}:pause | :disable | :enable
@@ -103,7 +104,7 @@ from swarm_common.admission import _snapshot
 from .. import cronexpr, roles, schedulefire, schedules, scheduletypes
 from ..auth import AuthContext
 from ..deps import AppContext, admin_auth, current_auth, get_context, paged_limit, tenant_scope
-from ..errors import Conflict, NoClaudeAccount, NotFound, WorkspaceNotReady
+from ..errors import Conflict, NoClaudeAccount, NotFound, ValidationFailed, WorkspaceNotReady
 from ..issueruns import TERMINAL_RUN_STATES, IssueRuns, RunState
 from ..repositories import COLLECTION as REPOSITORIES
 from ..repositories import Repositories, platform_of
@@ -133,6 +134,22 @@ HISTORY = 50
 #: index, `schedule_id, slot desc`) puts them last. They are read by their own
 #: equality query, at most this many, and merged by `fired_at`.
 RUN_NOW_SCAN = 200
+
+#: THE HISTORY TIMELINE'S PAGE (#1109, SCHED-HISTORY-TIMELINE). schedules.html
+#: detail A's risk note: the timeline needs every firing's work and its
+#: attempts' spans, one read per firing page, and that cost decides the design.
+#: So `/spans` takes the firing ids of ONE page the History tab draws, at most
+#: this many, and never reads a firing it was not asked for.
+SPAN_FIRINGS = 10
+
+#: The tasks one `/spans` call reads, across its firings: each costs an
+#: attempts query. A page whose work is bigger serves the rest as unread, with
+#: that reason, rather than reading without bound.
+SPAN_TASKS = 100
+
+#: Attempts read per task, newest first. A task that retried more than this
+#: says so (`attempts_truncated`); max_attempts is 3 by default.
+SPAN_ATTEMPTS = 20
 
 #: Awaiting-approval firings read for the pending counts. They are documents
 #: a person clears; more than this many pending is itself the news.
@@ -1148,6 +1165,162 @@ def get_firing(
     if not row or row.get("tenant_id") != tenant_id or row.get("schedule_id") != schedule_id:
         raise NotFound(f"firing {firing_id[:96]!r} not found")
     return {"firing": firing_to_api(row)}
+
+
+#: Why an item draws a dash instead of bars, in words the UI shows as served.
+_UNREAD_API_ACTION = "an API action runs no attempt: it ended when it was recorded"
+_UNREAD_CAP = f"more work than one page reads ({SPAN_TASKS} tasks): open the item to see it"
+
+
+def _val(v: Any) -> Any:
+    """An enum's value; a stored string or None as it is."""
+    return getattr(v, "value", v)
+
+
+def _span_task(task: Any, step_label: str | None, attempts: list[Any] | None,
+               unread: str | None) -> dict[str, Any]:
+    """One task as the timeline draws it: the fields `lanes.buildLane` reads,
+    and its attempts' spans. Not the input, the spec or the result: the
+    timeline draws when capacity was held, and nothing of what was asked."""
+    shown = None if attempts is None else attempts[:SPAN_ATTEMPTS]
+    return _json({
+        "task_id": task.id,
+        "step_id": task.step_id,
+        "label": step_label or task.step_id or task.runner_profile,
+        "state": _val(task.state),
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+        "completed_at": task.completed_at,
+        "current_generation": task.current_generation,
+        "park_reason": _val(task.park_reason),
+        "next_eligible_at": task.next_eligible_at,
+        "attempts": None if shown is None else [
+            {"attempt_id": a.attempt_id, "task_id": a.task_id, "generation": a.generation,
+             "created_at": a.created_at, "completed_at": a.completed_at, "exit_code": a.exit_code}
+            for a in reversed(shown)  # oldest first, as the lanes draw them
+        ],
+        "attempts_truncated": attempts is not None and len(attempts) > SPAN_ATTEMPTS,
+        "attempts_unread": unread,
+    })
+
+
+def _item_tasks(ctx: AppContext, tenant_id: str, item: Mapping[str, Any]) -> tuple[
+        list[tuple[str, str | None]], dict[str, Any]]:
+    """The tasks one work item ran, as (task_id, label), and the item's own
+    facts: its state and when it last moved, or why it cannot be drawn."""
+    kind, item_id = str(item.get("kind")), str(item.get("id"))
+    if kind == "task":
+        return [(item_id, None)], {}
+    if kind == "workflow":
+        found = ctx.store.workflows_by_id(tenant_id, [item_id], submitted_by=None)
+        if not found:
+            return [], {"unread": "its workflow was not found"}
+        wf = found[0]
+        steps = [(s.task_id, s.step_id) for s in wf.steps if s.task_id]
+        return steps, _json({"state": _val(wf.state), "updated_at": wf.updated_at})
+    if kind == "issue_run":
+        try:
+            run = IssueRuns(ctx.db, now=ctx.now).get(tenant_id, item_id)
+        except NotFound:
+            return [], {"unread": "its issue run was not found"}
+        out: list[tuple[str, str | None]] = []
+        if run.planner_task_id:
+            out.append((run.planner_task_id, "plan"))
+        wf_ids = ([run.workflow_id] if run.workflow_id else []) + list(run.ci_fix_workflows)
+        workflows = {w.workflow_id: w for w in ctx.store.workflows_by_id(tenant_id, wf_ids, submitted_by=None)}
+        for n, wf_id in enumerate(wf_ids):
+            wf = workflows.get(wf_id)
+            prefix = "" if n == 0 and run.workflow_id else f"fix {n if run.workflow_id else n + 1} · "
+            for step in (wf.steps if wf is not None else []):
+                if step.task_id:
+                    out.append((step.task_id, f"{prefix}{step.step_id}"))
+        return out, _json({"state": _val(run.state), "updated_at": run.updated_at})
+    return [], {"unread": _UNREAD_API_ACTION if kind == "api_action" else f"a {kind} has no attempts to read"}
+
+
+@router.get("/v1/schedules/{schedule_id}/spans")
+def list_firing_spans(
+    schedule_id: str,
+    firing_id: list[str] = Query(default=[]),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The work of ONE PAGE of firings and its attempts' spans (#1109).
+
+    The History tab's timeline draws a lane per firing and a bar per task each
+    work item ran; `GET /v1/schedules/{id}` serves the firings and their
+    `work[]`, and this serves what the bars need for the firing ids asked --
+    at most `SPAN_FIRINGS`, never every firing ever. No document is written
+    and no new shape is stored: the firings, issue runs, workflows, tasks and
+    attempts are read as they are.
+
+    TENANT-SCOPED like every route here: the schedule is read under the
+    caller's tenant first (another tenant's is the same 404 as a missing
+    one), a firing is served only if its id is this schedule's and its stored
+    `tenant_id` and `schedule_id` match, and every task, workflow and run is
+    read through the tenant-checked store. A firing id that is not this
+    schedule's is listed in `not_found` and nothing of it is read.
+
+    HONEST GAPS (redesign-v2.md): an item whose tasks or attempts could not be
+    read carries `unread` (or a task its `attempts_unread`) with the reason,
+    so the UI draws a dash and says why, never an empty lane.
+    """
+    _read(ctx, tenant_id, schedule_id)
+    wanted = list(dict.fromkeys(i for i in firing_id if i))
+    if len(wanted) > SPAN_FIRINGS:
+        raise ValidationFailed(
+            f"at most {SPAN_FIRINGS} firings are read at once",
+            detail={"asked": len(wanted), "limit": SPAN_FIRINGS},
+        )
+    ours = [i for i in wanted if i.startswith(f"{schedule_id}:") and "/" not in i]
+    col = ctx.db.collection(schedulefire.FIRINGS)
+    rows: dict[str, dict[str, Any]] = {}
+    if ours:
+        for snap in ctx.db.get_all([col.document(i) for i in ours]):
+            row = snap.to_dict() if snap.exists else None
+            if row and row.get("tenant_id") == tenant_id and row.get("schedule_id") == schedule_id:
+                rows[str(row.get("firing_id"))] = row
+
+    budget = SPAN_TASKS
+    out: list[dict[str, Any]] = []
+    for fid in wanted:
+        row = rows.get(fid)
+        if row is None:
+            continue
+        items: list[dict[str, Any]] = []
+        for item in row.get("work") or []:
+            kind, item_id = str(item.get("kind")), str(item.get("id"))
+            shown: dict[str, Any] = {"kind": kind, "id": item_id, "state": None, "updated_at": None,
+                                     "tasks": [], "unread": None}
+            if budget <= 0 and kind != "api_action":
+                shown["unread"] = _UNREAD_CAP
+                items.append(shown)
+                continue
+            pairs, facts = _item_tasks(ctx, tenant_id, item)
+            shown.update(facts)
+            if len(pairs) > budget:
+                shown["unread"] = _UNREAD_CAP
+                pairs = pairs[:budget]
+            budget -= len(pairs)
+            tasks = ctx.store.tasks_by_id(tenant_id, (t for t, _ in pairs))
+            for task_id, label in pairs:
+                task = tasks.get(task_id)
+                if task is None:
+                    shown["tasks"].append({"task_id": task_id, "label": label, "attempts": None,
+                                           "attempts_unread": "its task was not found"})
+                    continue
+                try:
+                    attempts = ctx.store.list_attempts(tenant_id, task_id, limit=SPAN_ATTEMPTS + 1)
+                except Exception as exc:  # one task's read does not blank the page
+                    log.warning("schedule spans: attempts of %s not read: %s", task_id, type(exc).__name__)
+                    shown["tasks"].append(_span_task(task, label, None, "its attempts could not be read"))
+                    continue
+                shown["tasks"].append(_span_task(task, label, attempts, None))
+            if not pairs and shown["unread"] is None and facts.get("unread") is None:
+                shown["unread"] = "it ran no task yet"
+            items.append(shown)
+        out.append({"firing_id": fid, "items": items})
+    return {"firings": out, "not_found": [i for i in wanted if i not in rows]}
 
 
 @router.get("/v1/schedules/{schedule_id}/audit")

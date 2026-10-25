@@ -22,7 +22,6 @@ import {
   loadRepositories,
   setMergeMode,
   type FiringOwnLive,
-  type FiringWork,
   type NothingStartedDetail,
   type Schedule,
   type ScheduleAuditEntry,
@@ -38,6 +37,7 @@ import { pluralise } from './types'
 import { Absent, Mark } from './primitives'
 import { addressToPath } from './paths'
 import { EditSchedule, plainValue } from './ScheduleEdit'
+import { HistoryPane, HistoryTimeline, workAddress } from './ScheduleHistoryTimeline'
 import {
   DryRunChip,
   InApp,
@@ -64,15 +64,6 @@ export const DETAIL_TABS: readonly DetailTab[] = ['history', 'budget', 'gate', '
 /** A `tab=` value as a tab, or History for anything else (AUT-11). */
 export function detailTabOf(v: string | null): DetailTab {
   return DETAIL_TABS.includes(v as DetailTab) ? (v as DetailTab) : 'history'
-}
-
-/** Where one piece of a firing's work is read: Work's own page for it. */
-function workAddress(w: FiringWork): string | null {
-  if (w.kind === 'issue_run') return `work/runs?${new URLSearchParams({ run: w.id }).toString()}`
-  if (w.kind === 'task') return `work/task/${encodeURIComponent(w.id)}`
-  if (w.kind === 'workflow') return `work/workflows?${new URLSearchParams({ wf: w.id }).toString()}`
-  // An api_action (a label, a comment) has no page of its own here.
-  return null
 }
 
 /** What a firing came to: its outcome once ended, its state while it is not. */
@@ -181,6 +172,36 @@ export function refusalWords(code: string): string {
   return REFUSAL_WORDS[code] ?? `refused at planning (${code})`
 }
 
+/**
+ * What a firing came to, and why when it started nothing or refused a run:
+ * the table's Outcome cell and the timeline's lane head, so the two views
+ * never disagree about a firing.
+ */
+function FiringOutcome({ f }: { f: ScheduleFiring }) {
+  return (
+    <>
+      <span className="sc-cut" title={firingWord(f)}>{firingWord(f)}</span>
+      {f.approval_id !== null && f.state === 'awaiting_approval' && <span className="sc-sub">waiting for approval, holding nothing</span>}
+      {f.skip?.code === 'NOTHING_STARTED' &&
+        nothingStartedLines(nothingDetail(f)).map((line) => (
+          <span key={line} className="sc-sub" data-nothing-started={nothingDetail(f).reason ?? ''}>
+            {line}
+          </span>
+        ))}
+      {ownLive(f) !== null && (
+        <span className="sc-sub" data-own-live>
+          {ownLiveWords(ownLive(f)!)}
+        </span>
+      )}
+      {(f.refused_runs ?? []).map((r) => (
+        <span key={r.run_id} className="sc-sub" data-refused={r.code}>
+          {r.issue} not started: {refusalWords(r.code)}
+        </span>
+      ))}
+    </>
+  )
+}
+
 function FiringRows({ firings, go }: { firings: ScheduleFiring[]; go: (to: string) => void }) {
   const now = useNow()
   return (
@@ -205,24 +226,7 @@ function FiringRows({ firings, go }: { firings: ScheduleFiring[]; go: (to: strin
                 </td>
                 <td data-label="Trigger">{f.trigger.replace(/_/g, ' ')}</td>
                 <td data-label="Outcome">
-                  <span className="sc-cut" title={firingWord(f)}>{firingWord(f)}</span>
-                  {f.approval_id !== null && f.state === 'awaiting_approval' && <span className="sc-sub">waiting for approval, holding nothing</span>}
-                  {f.skip?.code === 'NOTHING_STARTED' &&
-                    nothingStartedLines(nothingDetail(f)).map((line) => (
-                      <span key={line} className="sc-sub" data-nothing-started={nothingDetail(f).reason ?? ''}>
-                        {line}
-                      </span>
-                    ))}
-                  {ownLive(f) !== null && (
-                    <span className="sc-sub" data-own-live>
-                      {ownLiveWords(ownLive(f)!)}
-                    </span>
-                  )}
-                  {(f.refused_runs ?? []).map((r) => (
-                    <span key={r.run_id} className="sc-sub" data-refused={r.code}>
-                      {r.issue} not started: {refusalWords(r.code)}
-                    </span>
-                  ))}
+                  <FiringOutcome f={f} />
                 </td>
                 <td data-label="Work">
                   {f.work.length === 0 ? (
@@ -515,7 +519,8 @@ function useSwitchBlock(s: Schedule, ask: boolean): SwitchBlock | null {
       setBlock({ rule, tenant: name, admins: null })
       if (!principal.is_admin) return
       const people = await loadPeople()
-      if (!live || (people.status !== 'ok' && people.status !== 'stale') || !Array.isArray(people.data.admins)) return
+      // A platform admin's read: only it carries `admins` (a workspace admin's is scoped, ADMIN-PEOPLE-ROLES).
+      if (!live || (people.status !== 'ok' && people.status !== 'stale') || !('admins' in people.data) || !Array.isArray(people.data.admins)) return
       const admins = people.data.admins.map((a) => a.email).filter((e) => e.trim().toLowerCase() !== self)
       if (admins.length > 0) setBlock({ rule, tenant: name, admins })
     })
@@ -1034,7 +1039,12 @@ function DetailBody({
           (firings.length === 0 ? (
             <Absent kind="zero" heading="Never fired" say="This schedule has no firing recorded: it has not fired yet." />
           ) : (
-            <FiringRows firings={firings} go={go} />
+            // THE TIMELINE FIRST, THE TABLE BEHIND THE TOGGLE (#1109, BGD
+            // 2026-10-25): schedules.html detail A's History pane.
+            <HistoryPane
+              timeline={<HistoryTimeline scheduleId={s.schedule_id} firings={firings} go={go} outcome={(f) => <FiringOutcome f={f} />} />}
+              table={<FiringRows firings={firings} go={go} />}
+            />
           ))}
         {tab === 'budget' && <Budget s={s} />}
         {tab === 'gate' && <Gate s={s} onChanged={reread} go={go} />}

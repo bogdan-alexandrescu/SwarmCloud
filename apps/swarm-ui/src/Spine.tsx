@@ -27,8 +27,12 @@
  * administers nothing was shown four pages they could never use. The routes
  * stay, but since CONFIG-NAV (part of #2157, BGD 2026-10-23: "Admin is shown
  * only to admins") a direct link from someone who administers nothing goes
- * to Overview once both reads say so (`onNoAdmin`); the API's own refusal of
- * every admin route is unchanged.
+ * to Overview once both reads say so (`onAdminRedirect`), and since
+ * ADMIN-REDIRECT (part of #2157, BGD 2026-10-24: "Redirect, in a later lane")
+ * a workspace admin who is not a platform admin, on a platform Admin page, goes
+ * to Workspaces you admin. Since ADMIN-PEOPLE-ROLES (part of #2157) People and
+ * roles is theirs too, scoped by the API to the workspaces they administer, so
+ * /admin/people is no longer sent away. A platform admin is never redirected. The API's own refusal of every admin route is unchanged.
  *
  * Production draws a red pill and a 3px red bar across the top; the pill shows
  * only what was measured (`classifyEnvironment`), never a hardcoded word.
@@ -51,7 +55,7 @@ import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppState
 import { feedData, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
 import { firstName } from './PersonName'
 import { roleOf } from './roles'
-import { SetupContext, SetupMeter, setupSteps, setupUnfinished, type SetupRead } from './ConfigSetup'
+import { ConfigBadgeMark, SetupContext, SetupMeter, setupSteps, setupUnfinished, useConfigBadges, type SetupRead } from './ConfigSetup'
 
 export type SpineSection = 'profile' | 'overview' | 'work' | 'automate' | 'capacity' | 'config' | 'admin' | 'help' | null
 
@@ -170,8 +174,9 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     { key: 'counts', label: 'Platform counts', icon: 'counts', to: 'admin/counts' },
     // #847 W8 (docs/workspaces.md §6.4): a SECTIONS tab and a route, and
     // missing here, so an admin reached it only by typing /admin/people --
-    // the Runs defect visual QA Q7 caught, again.
-    { key: 'people', label: 'People', icon: 'people', to: 'admin/people' },
+    // the Runs defect visual QA Q7 caught, again. SECTIONS' label, People
+    // and roles, since ADMIN-PEOPLE-ROLES (part of #2157).
+    { key: 'people', label: 'People and roles', icon: 'people', to: 'admin/people' },
     // NAV-ADMIN-ROLE (part of #1633): the group workspaces the person
     // administers, last. The only Admin page a workspace admin who is not a
     // platform admin is shown (`adminPagesFor`).
@@ -206,13 +211,72 @@ export function adminWorkspaces(choices: readonly TenantChoice[]): TenantChoice[
 }
 
 /**
- * The Admin pages a person is shown: all five for a platform admin, only
- * Workspaces you admin for a workspace admin who is not one, and none for
- * anyone else -- which is how the spine knows to draw no Admin item.
+ * The Admin pages a person is shown: all of them for a platform admin, People
+ * and roles and Workspaces you admin for a workspace admin who is not one, and
+ * none for anyone else -- which is how the spine knows to draw no Admin item.
+ *
+ * THIS IS ADMIN-REDIRECT'S LIST: an Admin page that is not here sends a
+ * workspace admin to Workspaces you admin. People and roles joined it with
+ * ADMIN-PEOPLE-ROLES (part of #2157, BGD "Both, by scope"): its read
+ * (`GET /v1/admin/people`) answers a workspace admin with only the workspaces
+ * they administer, so /admin/people is a page of theirs, not one to send them
+ * away from.
  */
+export const WORKSPACE_ADMIN_PAGE_KEYS: ReadonlySet<string> = new Set(['people', WORKSPACES_YOU_ADMIN_TAB])
+
 export function adminPagesFor(platformAdmin: boolean, workspaceAdmin: boolean): readonly PanelPage[] {
   if (platformAdmin) return PANEL_PAGES.admin
-  return workspaceAdmin ? PANEL_PAGES.admin.filter((p) => p.key === WORKSPACES_YOU_ADMIN_TAB) : []
+  return workspaceAdmin ? PANEL_PAGES.admin.filter((p) => WORKSPACE_ADMIN_PAGE_KEYS.has(p.key)) : []
+}
+
+/**
+ * Where Admin lands: a platform admin's first page, and a workspace admin's
+ * Workspaces you admin -- the page ADMIN-REDIRECT sends them to, and the
+ * spine's Admin item opens, as before People and roles was theirs too.
+ */
+export function adminLanding(platformAdmin: boolean, pages: readonly PanelPage[]): PanelPage | null {
+  return (platformAdmin ? undefined : pages.find((p) => p.key === WORKSPACES_YOU_ADMIN_TAB)) ?? pages[0] ?? null
+}
+
+/**
+ * THE ADMIN PANEL IN GROUPS (CONFIG-PANEL-E; part of #2157, proposal E S1b,
+ * S1c). First the workspaces the person administers -- People and
+ * Workspaces you admin -- then, for a platform admin only, the platform's own
+ * pages. A workspace admin is drawn only the first group: no platform page,
+ * no lock, no disabled row. The group a page falls in is its key's, so a page
+ * added to PANEL_PAGES.admin lands under Platform unless it is named here.
+ */
+export const ADMIN_WORKSPACE_KEYS: ReadonlySet<string> = new Set(['people', WORKSPACES_YOU_ADMIN_TAB])
+
+export interface AdminGroup {
+  key: 'workspaces' | 'platform'
+  title: string
+  rows: readonly PanelPage[]
+}
+
+/** `pages` (`adminPagesFor`'s) in their groups; a group with no page is not drawn. */
+export function adminGroups(pages: readonly PanelPage[]): AdminGroup[] {
+  const platform = pages.filter((p) => !ADMIN_WORKSPACE_KEYS.has(p.key))
+  const groups: AdminGroup[] = [
+    // A platform admin's first group holds every person too (Admin › People), so its heading says both.
+    { key: 'workspaces', title: platform.length > 0 ? 'People and workspaces' : 'Your workspaces', rows: pages.filter((p) => ADMIN_WORKSPACE_KEYS.has(p.key)) },
+    { key: 'platform', title: 'Platform', rows: platform },
+  ]
+  return groups.filter((g) => g.rows.length > 0)
+}
+
+/**
+ * "IN AUTOMATE": LINKS, NOT ADMIN PAGES (BGD, 2026-10-23T23:57Z, answer 1).
+ * Every workspace's schedules and approvals stay in Automate; Admin only links
+ * there (S1b, S1c). A platform admin's Schedules link opens the All
+ * workspaces scope (Schedules.tsx ALL_TENANTS_SCHEDULES; the address
+ * /admin/schedules has redirected to it since SCHED-ONE-PAGE).
+ */
+export function inAutomateLinks(platformAdmin: boolean): readonly PanelPage[] {
+  return [
+    { key: 'schedules', label: 'Schedules', icon: 'schedules', to: platformAdmin ? 'automate/schedules?scope=all' : 'automate/schedules' },
+    { key: 'approvals', label: 'Approvals', icon: 'approvals', to: 'automate/approvals' },
+  ]
 }
 
 /**
@@ -1266,11 +1330,13 @@ export interface ShellProps {
    */
   place?: string
   /**
-   * The open page is an Admin page and both reads say this person
-   * administers nothing (CONFIG-NAV): App sends them to Overview. Called once
-   * the reads have landed, never while either is in flight.
+   * The open page is an Admin page this person is not shown, once both reads
+   * have landed and never while either is in flight: `''` (Overview) for
+   * someone who administers nothing (CONFIG-NAV), and `admin/workspaces` for
+   * a workspace admin on a platform page (ADMIN-REDIRECT). App rewrites the
+   * bar in place.
    */
-  onNoAdmin?: () => void
+  onAdminRedirect?: (to: string) => void
   children: ReactNode
 }
 
@@ -1301,7 +1367,7 @@ export function SkyShell({
   dock,
   keepOnSwitch = false,
   place = '',
-  onNoAdmin,
+  onAdminRedirect,
   children,
 }: ShellProps) {
   // THE CHOSEN TENANT (fetch.ts), null for the default. Every read sends it;
@@ -1331,14 +1397,26 @@ export function SkyShell({
   // stored admin of a group workspace. Both reads unread is no Admin at all,
   // never a locked one that then disappears.
   const adminPages = adminPagesFor(admin, adminWorkspaces(dataOf(mine) ?? []).length > 0)
-  const spineItems = SPINE.flatMap((s) => (s.key !== 'admin' ? [s] : adminPages.length === 0 ? [] : [{ ...s, to: adminPages[0]!.to }]))
+  // Their names, for the note a workspace admin's Admin panel carries (S1c).
+  const adminOf = useMemo(() => nameTenants(adminWorkspaces(dataOf(mine) ?? []), null).map((w) => w.display_name), [mine])
+  const landing = adminLanding(admin, adminPages)
+  const spineItems = SPINE.flatMap((s) => (s.key !== 'admin' ? [s] : landing === null ? [] : [{ ...s, to: landing.to }]))
   // ADMIN'S ADDRESSES SEND A NON-ADMIN TO OVERVIEW (CONFIG-NAV), and only
   // once both reads have answered: an unread session is not "not an admin".
   const adminDecided = who !== null && (mine.status === 'ok' || mine.status === 'stale' || mine.status === 'empty')
-  const noAdmin = section === 'admin' && adminDecided && adminPages.length === 0
+  // A WORKSPACE ADMIN'S PLATFORM ADDRESS SENDS THEM TO WORKSPACES YOU ADMIN
+  // (ADMIN-REDIRECT): an Admin page that is not among theirs. Only a page the
+  // panel has: an address that is no page at all keeps its 404.
+  const adminRedirect = section !== 'admin' || !adminDecided
+    ? null
+    : landing === null
+      ? ''
+      : !missing && PANEL_PAGES.admin.some((p) => p.to === `admin/${tab}`) && !adminPages.some((p) => p.to === `admin/${tab}`)
+        ? landing.to
+        : null
   useEffect(() => {
-    if (noAdmin) onNoAdmin?.()
-  }, [noAdmin, onNoAdmin])
+    if (adminRedirect !== null) onAdminRedirect?.(adminRedirect)
+  }, [adminRedirect, onAdminRedirect])
   // THE WORKSPACE IN HAND IS THE PERSON'S OWN (S1e): no People and roles, and
   // a three-step strip. Read off `me`'s tenant kind, which is what the People
   // page itself reads: `/v1/tenants/mine` answers empty for someone in no
@@ -1868,6 +1946,7 @@ export function SkyShell({
         tab={tab}
         agentTab={agentTab}
         adminPages={adminPages}
+        adminOf={adminOf}
         configPages={configPages}
         nav={nav}
         counts={counts}
@@ -2670,6 +2749,7 @@ function PanelPages({
   tab,
   agentTab,
   adminPages,
+  adminOf = [],
   configPages,
   nav,
   counts,
@@ -2684,6 +2764,8 @@ function PanelPages({
   agentTab: AgentTab
   /** The Admin pages this person is shown (`adminPagesFor`); none draws no Admin panel. */
   adminPages: readonly PanelPage[]
+  /** The names of the group workspaces the person administers, for a workspace admin's note (S1c). */
+  adminOf?: readonly string[]
   /** Config's pages for the workspace in hand (`configPagesFor`). */
   configPages: readonly PanelPage[]
   nav: (to: string) => void
@@ -2769,11 +2851,74 @@ function PanelPages({
   const title = PANEL_TITLE[sec]
   // A 404 is on no page, though its section is drawn (CH-14).
   const lit = missing ? { row: '', kid: null } : litPage(sec, tab, agentTab)
+  // The Admin panel's groups (S1b, S1c); every other panel is one group with no heading.
+  const groups: { key: string; title: string | null; rows: readonly PanelPage[] }[] = sec === 'admin' ? adminGroups(rows) : [{ key: sec, title: null, rows }]
+  const platformAdmin = groups.some((g) => g.key === 'platform')
   return (
     <>
       <div className="sk-pt">{title}</div>
       {/* S1a: the setup strip's count, as a meter under Config's title. */}
       {sec === 'config' && <SetupMeter />}
+      {groups.map((g) => (
+        <div key={g.key} className="sk-pgrp" role={g.title === null ? undefined : 'group'} aria-label={g.title ?? undefined}>
+          {g.title !== null && <div className="sk-pg">{g.title}</div>}
+          <PanelRows sec={sec} rows={g.rows} lit={lit} nav={nav} counts={counts} apiFailuresOnly={apiFailuresOnly} onApiFilter={onApiFilter} />
+        </div>
+      ))}
+      {/* A WORKSPACE ADMIN IS TOLD WHOSE PAGES THESE ARE (S1c), and that the
+          platform's are not hidden behind a lock but simply not theirs. */}
+      {sec === 'admin' && !platformAdmin && (
+        <p className="sk-pnote">
+          {adminOf.length > 0 ? `Showing ${listed(adminOf)}, the workspaces you administer. ` : ''}The platform’s own pages are shown to platform admins only.
+        </p>
+      )}
+      {sec === 'admin' && (
+        <div className="sk-pgrp" role="group" aria-label="In Automate">
+          <div className="sk-pg">In Automate</div>
+          {inAutomateLinks(platformAdmin).map((p) => (
+            <a key={p.key} className="sk-pk sk-pk-out" {...routed(p.to, () => nav(p.to))}>
+              <Icon name={p.icon} />
+              <span className="sk-pl">
+                {p.label}
+                <span aria-hidden="true"> ↗</span>
+              </span>
+              {p.key === 'schedules' && platformAdmin && <small className="sk-pk-sub">all workspaces</small>}
+              {p.key === 'approvals' && <CountMark c={counts.approvals} />}
+            </a>
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+/** "a", "a and b", "a, b and c". */
+function listed(names: readonly string[]): string {
+  return names.length <= 1 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
+
+/** One group's rows in the panel: each page, its children when it is open, and its count or setup badge. */
+function PanelRows({
+  sec,
+  rows,
+  lit,
+  nav,
+  counts,
+  apiFailuresOnly,
+  onApiFilter,
+}: {
+  sec: PanelSection
+  rows: readonly PanelPage[]
+  lit: { row: string; kid: string | null }
+  nav: (to: string) => void
+  counts: Readonly<Record<string, PanelCount>>
+  apiFailuresOnly: boolean
+  onApiFilter?: (failuresOnly: boolean) => void
+}) {
+  // S1a: each Config row's state, from the read the strip draws.
+  const badges = useConfigBadges()
+  return (
+    <>
       {rows.map((p) => {
         const group = p.key === lit.row
         // THE PAGE ITSELF IS LIT (#503). A row with children is a group: it
@@ -2784,7 +2929,7 @@ function PanelPages({
             <Icon name={p.icon} />
             <span className="sk-pl">{p.label}</span>
             {p.admin === true && <span className="sk-adm">admin</span>}
-            {p.kids === undefined && <CountMark c={counts[p.key]} />}
+            {sec === 'config' ? <ConfigBadgeMark badge={badges[p.key]} /> : p.kids === undefined && <CountMark c={counts[p.key]} />}
             {p.kids !== undefined && p.key === 'pools' && <CountMark c={counts.pools} />}
           </>
         )
@@ -2981,7 +3126,8 @@ function Flyout({
   if (section !== 'profile' && section !== 'work' && section !== 'automate' && section !== 'capacity' && section !== 'config' && section !== 'admin') return null
   const lit = tab === '' ? { row: '', kid: null } : litPage(section, tab, agentTab)
   const name = PANEL_TITLE[section]
-  const rows = section === 'admin' ? adminPages : section === 'config' ? configPages : PANEL_PAGES[section]
+  // The Admin rows in the panel's group order (S1b), so the two never list them differently.
+  const rows = section === 'admin' ? adminGroups(adminPages).flatMap((g) => g.rows) : section === 'config' ? configPages : PANEL_PAGES[section]
   if (rows.length === 0) return null
   // A plain labelled group of links, not role="menu": a menu promises arrow
   // keys and roving focus, which this does not have. Tab walks it.

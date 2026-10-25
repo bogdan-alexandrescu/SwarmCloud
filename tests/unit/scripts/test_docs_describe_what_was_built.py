@@ -1453,6 +1453,79 @@ def test_qa_identity_docs_cite_only_what_resolves(doc: Path):
 
 
 # --------------------------------------------------------------------------
+# LIVE-NOMASK (part of #2298): the live gate paints nothing over the screen
+# --------------------------------------------------------------------------
+#
+# BGD decided on 2026-10-25 that no part of what the live browser shows is
+# redacted on screen. live-browser.md §5.3 described a fail-closed mask that
+# painted boxes and blanked pages; it now records the decision, says what the
+# gate still does, and keeps the text redaction and the no-logging rule. The
+# rest of the document, the relay's recorder and the other docs follow.
+
+LB_53 = "### 5.3 The screen leaves the pod as Chromium drew it (LB-3, amended 2026-10-25)"
+LB_DECISION = (
+    "Stop redacting elements or sections of the visual content that a browser agent or "
+    "session displays via the live browser. There is no need to redact parts of the screen "
+    "in any situation."
+)
+
+
+def _lb_53() -> str:
+    text = _text(LIVE_BROWSER)
+    start = text.index(LB_53)
+    return text[start: text.index("### 5.4 ", start)]
+
+
+def test_live_browser_5_3_records_bgds_decision_and_why():
+    body = _flat(_lb_53())
+    assert "BGD's decision, 2026-10-25" in body and LB_DECISION in body
+    for issue in ("#1030", "#1340", "#1344"):
+        assert issue in body, issue
+    # What the gate still does with the page, as built.
+    for kept in ("`SHOWN_IN_CONTROL`", "`LiveGate._on_challenge`", "`Target.setAutoAttach`",
+                 "`REASON_BROWSER_CLOSED`", "`FrameHub.publish`", "`report.py`", "`pointer.py`"):
+        assert kept in body, kept
+    assert "`page_blanked_ms` is gone" in body
+    assert "Every **text** redaction on the path is unchanged" in body
+    assert "#### 5.3.3 Keys never logged, anywhere" in _lb_53()
+    assert "**No hop logs RFB payloads**" in body
+
+
+def test_live_browser_no_longer_says_frames_are_masked():
+    text = _flat(_text(LIVE_BROWSER))
+    for stale in (
+        "capture -> MASK -> encode",
+        "leave it only through the tunnel, already masked",
+        "The mask needs its own CDP session",
+        "Watching shows masked pixels",
+        "The masked frames, and nothing unmasked",
+        "already receives every masked frame",
+        "as a player over the masked segments",
+        "Masking (§5.3) is device-independent",
+        "the mask still covers its credential fields",
+        "MaskState.on_challenge",
+        "So the gate **fails closed**",
+    ):
+        assert stale not in text, stale
+    # The one remaining mention of LB-3's masking says it is superseded.
+    lb3 = next(line for line in _text(LIVE_BROWSER).splitlines() if line.startswith("| **LB-3** |"))
+    assert "Superseded for pixels by BGD, 2026-10-25" in lb3
+
+
+def test_the_recorder_and_other_docs_no_longer_say_frames_are_masked():
+    recorder = (REPO / "apps" / "swarm-live" / "swarm_live" / "recorder.py").read_text(encoding="utf-8")
+    head = recorder.split('"""', 2)[1]
+    assert "masked frame" not in head and "unmasked" not in head
+    assert "2026-10-25" in head
+    egress = _flat(_text(DOCS / "browser-egress.md"))
+    assert "The mask and the input path are unchanged" not in egress
+    assert "(the mask needs it)" not in egress
+    any_app = _flat(_text(DOCS / "design" / "visual-qa-any-app.md"))
+    assert "the gate's mask paints every input" not in any_app
+    assert "screencast's mask already paints" not in any_app
+
+
+# --------------------------------------------------------------------------
 # Runner sizes: docs/design/runner-sizes.md §6 lane SIZES-DOCS (part of #1689)
 # --------------------------------------------------------------------------
 #
@@ -2228,3 +2301,159 @@ def test_secrets_scopes_checks_fail_on_a_one_line_mutation(check: str, old: str,
     run(text)
     with pytest.raises(AssertionError):
         run(text.replace(old, new))
+
+
+# -- QAENV-DOCS: one visual-QA dispatch over an app's environments (#2136) ----
+#
+# docs/design/qa-environments.md §8's phase 4, after QAENV-MODEL, -GATE,
+# -CRAWL, -RUN, -SETTLE, -UI-RUNPAGE, -UI-FORM and -SC merged. The design's
+# status said "DESIGN, not built", visual-qa-any-app.md still refused a
+# discovering target with nothing stored (`qa_target_no_screens`, "press Run
+# discovery"), and schedules.md §3.17 still gave the `visual-qa` caps as $80 a
+# day and one at a time, which BGD changed on 2026-10-23 (§10, Q9 (a)). Each
+# figure below is read from the code that holds it.
+
+QAENV_DESIGN = DOCS / "design" / "qa-environments.md"
+QAENV_ANY_APP = DOCS / "design" / "visual-qa-any-app.md"
+SCHEDULES = DOCS / "schedules.md"
+QAENV_BUILT = "## 11. What was built"
+QAENV_ANY_APP_BUILT = "## 10. Environments, the run group and discovery during QA (built, #2136)"
+QAENV_SCHEDULE = "### 3.17 `visual-qa`"
+QAENV_QASPEC = "apps/swarm-api/swarm_api/qaspec.py"
+QAENV_TARGETS = "apps/swarm-api/swarm_api/qatargets.py"
+QAENV_VISUAL_QA = "apps/swarm-api/swarm_api/schedtypes/visual_qa.py"
+QAENV_SWARM_QA = "images/agent-runtime-browser/swarm_qa.py"
+
+#: Every merged lane of §8, with its pull request (read on GitHub 2026-10-25).
+QAENV_PRS = {
+    "QAENV-GATE": 2161, "QAENV-CRAWL": 2162, "QAENV-MODEL": 2163, "QAENV-RUN": 2175,
+    "QAENV-SC": 2177, "QAENV-SETTLE": 2181, "QAENV-UI-RUNPAGE": 2261, "QAENV-UI-FORM": 2304,
+}
+
+
+def _qaenv_int(path: str, name: str) -> int:
+    """The integer a module-level `NAME = <int>` assigns, read from its source."""
+    match = re.search(rf"^{name} = (\d+)$", _cited_symbol(path, name), flags=re.M)
+    assert match, f"{path} assigns no integer {name}"
+    return int(match.group(1))
+
+
+def _qaenv_caps() -> tuple[int, int, int]:
+    source = _cited_symbol(QAENV_VISUAL_QA, "BUDGET_CAPS")
+    match = re.search(r"per_run_usd=(\d+), per_day_usd=(\d+), max_concurrent=(\d+)", source)
+    assert match, "BUDGET_CAPS is not in the shape this test reads"
+    return int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+
+def _check_qaenv_status(text: str) -> None:
+    head = _flat(text.split("\n---\n", 1)[0])
+    assert "DESIGN, not built" not in head and "Nothing here changes behaviour" not in head
+    assert "**Status: BUILT.**" in head and "§11" in head
+    for lane, number in QAENV_PRS.items():
+        assert f"{lane} (PR {number})" in head, f"the status names no PR for {lane}"
+    assert "QA-ENVIRONMENTS-DESIGN (PR 2144)" in head
+
+
+def _check_qaenv_built(text: str) -> None:
+    raw = _section(text, QAENV_BUILT)
+    body = _flat(raw)
+    for lane, number in QAENV_PRS.items():
+        assert f"**{lane} (PR {number}).**" in raw, f"§11 has no entry for {lane}"
+    # Where the build differs from the design's text, said where a reader looks.
+    assert f"`{QAENV_QASPEC}::_screens`" in raw
+    assert 'raw = target.get("screens")' in _cited_symbol(QAENV_QASPEC, "_screens")
+    assert "uses `screens` alone when a target sets it" in body
+    assert "`write_attempting` is a list of `{path, text}`" in body
+    assert "a missing name is a value, not a wildcard" in body
+    assert "docs/qa/any-app-qa.md" in body and "questions.json" in body
+    # §5's sentence that promised more than was built carries its correction.
+    five = _flat(_section(text, "## 5. Where found routes go"))
+    assert "only on a leg without `screens` (§11)" in five
+
+
+def _check_qaenv_any_app(text: str) -> None:
+    raw = _section(text, QAENV_ANY_APP_BUILT)
+    body = _flat(raw)
+    assert body.count("[qa-environments.md](qa-environments.md)") >= 7
+    paragraphs = {
+        "**Environments.**": ("`environments[]`", f"at most {_qaenv_int(QAENV_QASPEC, 'MAX_ENVIRONMENTS')}",
+                              '`values["<target_id>/<name>"]`', "`POST /v1/qa-targets:migrate`"),
+        "**The run group.**": ("`qa_run_groups/{group_id}`", "`GET /v1/qa-runs/{group_id}`", "207",
+                               "/qa-runs/<group_id>"),
+        "**Capture steps crawl.**": (f"`found_per_step` defaults to {_qaenv_int(QAENV_QASPEC, 'FOUND_PER_STEP')}",
+                                     f"`discover.slots` (default {_qaenv_int(QAENV_QASPEC, 'DEFAULT_SLOTS')}",
+                                     f"{_qaenv_int(QAENV_QASPEC, 'CRAWL_CAPTURE_TIMEOUT'):,} s", "`found.json`"),
+        "**Disclosure clicks.**": ("`aria-expanded=\"false\"`", "inside a `<form>`", "`write_attempting`",
+                                   f"{_qaenv_int(QAENV_SWARM_QA, 'MAX_CLICKS_PAGE')} clicks a page",
+                                   f"{_qaenv_int(QAENV_SWARM_QA, 'MAX_CLICKS_CRAWL')} a crawl"),
+        "**Per-leg `discovered`, and Promote.**": ("**that leg's** `discovered`", "`first_seen`",
+                                                    f"{_qaenv_int(QAENV_TARGETS, 'MISSING_DROP_AFTER')} complete crawls",
+                                                    "`new_since_last_run`", "**Promote**"),
+        "**Filing per environment.**": ("`visual-qa:<target_id>:<environment>:<screen>:<title>`", "`[<leg>]`"),
+        "**The shared-origin rule.**": (f"`{QAENV_QASPEC}::shares_production_origin`", "`target_changed`",
+                                        "`(target_id, environment_name)`"),
+    }
+    for lead, phrases in paragraphs.items():
+        assert lead in body, f"§10 has no paragraph {lead}"
+        # The paragraph the lead opens: up to its blank line.
+        para = _flat(raw.split(lead, 1)[1].split("\n\n", 1)[0])
+        assert "qa-environments.md" in para, f"{lead} does not point at the design"
+        for phrase in phrases:
+            assert phrase in para, f"{lead} does not say {phrase!r}"
+    assert "Nothing of §3 is softened" in body
+    # §4.1 no longer refuses a discovering target with nothing stored.
+    steps = _flat(_section(text, "### 4.1 The steps"))
+    assert "press Run discovery on the QA targets page" not in steps
+    assert "renders `discover.slots` crawling capture steps" in steps
+    # §5's dedupe key and §6's triggers follow the per-leg build.
+    assert "`dedupe_key: \"visual-qa:<target_id>:<environment>:<screen>:<normalised title>\"`" in _flat(
+        _section(text, "## 5. Filing"))
+    triggers = _flat(_section(text, "## 6. Triggers"))
+    assert "`environments`" in triggers and "one work item per leg" in triggers
+
+
+def _check_qaenv_safety(text: str) -> None:
+    """§3, the owner's safety rules, keep every sentence the build relied on."""
+    three = _flat(_section(text, "## 3. Safety on someone else's application"))
+    for sentence in ("Read-only by default.", "Nothing lifts the second.",
+                     "its answer carries `mutating: true` only when the stored target is `non_production`",
+                     "**any** request but `GET` and `HEAD` to every other origin",
+                     "(default 2 s, floor 1 s)"):
+        assert sentence in three, f"§3 lost {sentence!r}"
+
+
+def _check_qaenv_schedule(text: str) -> None:
+    body = _flat(_section(text, QAENV_SCHEDULE))
+    per_run, per_day, concurrent = _qaenv_caps()
+    assert (per_run, per_day, concurrent) == (40, 160, 2)
+    assert f"`per_run_usd` {per_run} a leg" in body
+    assert f"`per_day_usd` {per_day}" in body and f"`max_concurrent` {concurrent}" in body
+    assert "BGD on 2026-10-23" in body and "Q9 (a)" in body and "VQ7-CAPS" in body
+    assert "`max_concurrent` 1, set by BGD" not in body
+    assert "`environments`" in body and "one work item per leg" in body
+    assert f"`{_qaenv_refusal()}`" in body
+
+
+def _qaenv_refusal() -> str:
+    match = re.search(r'^ENVIRONMENT_NOT_FOUND = "([a-z_]+)"$',
+                      _cited_symbol(QAENV_VISUAL_QA, "ENVIRONMENT_NOT_FOUND"), flags=re.M)
+    assert match
+    return match.group(1)
+
+
+_QAENV_CHECKS = {
+    "status": (QAENV_DESIGN, _check_qaenv_status), "built": (QAENV_DESIGN, _check_qaenv_built),
+    "any-app": (QAENV_ANY_APP, _check_qaenv_any_app), "safety": (QAENV_ANY_APP, _check_qaenv_safety),
+    "schedule": (SCHEDULES, _check_qaenv_schedule),
+}
+
+
+@pytest.mark.parametrize("check", sorted(_QAENV_CHECKS))
+def test_qa_environments_docs_describe_what_was_built(check: str):
+    doc, run = _QAENV_CHECKS[check]
+    run(_text(doc))
+
+
+@pytest.mark.parametrize("doc", (QAENV_DESIGN, QAENV_ANY_APP), ids=lambda p: p.name)
+def test_qa_environments_docs_cite_only_what_resolves(doc: Path):
+    _assert_cites_resolve(doc)

@@ -30,6 +30,7 @@ No credentials, no network. The fake forge is `merge_world.MergeWorld`.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -288,6 +289,229 @@ def test_red_with_no_rounds_asked_for_is_checks_failed(tmp_path, rounds):
     assert outcome.summary["refusal"]["code"] == "checks_failed"
 
 
+def _rerun(world: MergeWorld, *, ago: float = 60, head: str = PINNED, rounds: int = 0,
+           **extra: Any) -> None:
+    """swarm-api's free re-run of the failing Actions jobs at `head` (SPEED-D2,
+    #2257), requested `ago` seconds ago, on the merge task's own document.
+    The red check run the step reads is job 7, the one the tick re-ran."""
+    world.runs[0]["id"] = 7
+    entry: dict[str, Any] = {"round": 1, "head": head, "claimed_at": None, "jobs": [7],
+                             "requested_at": datetime.now(timezone.utc) - timedelta(seconds=ago),
+                             **extra}
+    entry["claimed_at"] = entry["requested_at"]
+    world.docs[TASK]["metadata"] = {
+        "merge_fix_rounds": rounds,
+        merge.MERGE_FIX_METADATA_KEY: {merge.RERUNS_KEY: [entry]},
+    }
+
+
+def test_red_with_no_rounds_and_a_fresh_rerun_at_this_head_parks(tmp_path):
+    """Zero rounds asked (#2257, task_076d1ae89d014e4688ce): the tick re-ran
+    the failing jobs at this head a minute ago, so a wake inside the settle
+    window waits for the re-run's answer instead of refusing on the old one."""
+    world = MergeWorld(tmp_path)
+    _red(world)
+    _rerun(world)
+
+    outcome = merge.run_merge(world.context())
+
+    _parked(outcome, merge.CI_RERUN_PENDING, PINNED)
+    assert merge.CI_RERUN_PENDING == "ci_rerun_pending"
+    assert CHECK in outcome.summary["wait"]["message"]
+    assert "re-run" in outcome.summary["wait"]["message"]
+    assert world.merge_calls() == []
+
+
+def test_red_with_rounds_left_and_a_fresh_rerun_parks(tmp_path):
+    world = MergeWorld(tmp_path)
+    _red(world)
+    _rerun(world, rounds=2)
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert "refusal" not in outcome.summary
+
+
+def test_red_after_the_rerun_settle_window_is_checks_failed(tmp_path):
+    world = MergeWorld(tmp_path)
+    _red(world)
+    _rerun(world, ago=merge.RERUN_SETTLE_SECONDS + 5)
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+
+
+def _rerun_answered_red(world: MergeWorld) -> None:
+    """The re-run's own check run: a new id, red again, beside job 7."""
+    world.runs.append({**world.runs[0], "id": 8})
+
+
+@pytest.mark.parametrize("ago", [60, merge.RERUN_SETTLE_SECONDS - 5])
+def test_the_reruns_own_red_answer_inside_the_window_is_checks_failed(tmp_path, ago):
+    """#2257 review: the hold is for the reading the re-run replaces. Once the
+    failing run is a new id -- the re-run's own answer, inside the settle
+    window -- the step refuses rather than parking on it, so the tick's red
+    wake is not repeated every CI_READ_SECONDS until the window ends."""
+    world = MergeWorld(tmp_path)
+    _red(world)
+    _rerun(world, ago=ago)
+    _rerun_answered_red(world)
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+    assert world.merge_calls() == []
+
+
+def test_the_reruns_own_red_answer_with_no_required_check_is_checks_failed(tmp_path):
+    """The same on the no-required path (`judge_other_checks`)."""
+    world = MergeWorld(tmp_path)
+    world.rules = []
+    world.branch = {"name": "main", "protected": False}
+    _red(world)
+    _rerun(world)
+    stale = merge.run_merge(world.context())
+    _parked(stale, merge.CI_RERUN_PENDING, PINNED)
+
+    (tmp_path / "answered").mkdir()
+    world = MergeWorld(tmp_path / "answered")
+    world.rules = []
+    world.branch = {"name": "main", "protected": False}
+    _red(world)
+    _rerun(world)
+    _rerun_answered_red(world)
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+
+
+def test_a_rerun_of_other_jobs_does_not_hold_the_refusal(tmp_path):
+    world = MergeWorld(tmp_path)
+    _red(world)
+    _rerun(world, jobs=[99])
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+
+
+LINT = "lint"
+
+
+def _second_required(world: MergeWorld, **run: Any) -> None:
+    """A second required check, `lint`, whose one run is `run`."""
+    world.rules[0]["parameters"]["required_status_checks"].append(
+        {"context": LINT, "integration_id": None})
+    if run:
+        world.runs.append({"name": LINT, "status": "completed", "conclusion": "failure",
+                           "app": {"id": merge_world.ACTIONS_APP}, **run})
+
+
+@pytest.mark.parametrize("second", [
+    pytest.param(lambda w: _second_required(w, id=30), id="a-job-it-did-not-re-run"),
+    pytest.param(lambda w: (_second_required(w), w.statuses.append(
+        {"context": LINT, "state": "failure"})), id="a-red-commit-status"),
+])
+def test_a_red_check_the_tick_did_not_re_run_is_not_held_by_a_settling_rerun(tmp_path, second):
+    """PR 2268 re-review: the hold is for a reading made only of the jobs the
+    tick re-ran (its `_rerunnable` asks every failing check to be one). A
+    second red check beside job 7 -- another job, or a commit status, which
+    no re-run replaces -- is a real failure: it refuses at once, not after
+    RERUN_SETTLE_SECONDS of `ci_rerun_pending`."""
+    world = MergeWorld(tmp_path)
+    _red(world)
+    _rerun(world)
+    second(world)
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+    assert LINT in outcome.summary["refusal"]["message"]
+
+
+def test_a_rerun_answered_red_on_one_job_is_not_held_by_another_still_settling(tmp_path):
+    """Jobs 7 and 30 were re-run; 30's re-run (new id 31) answered red while
+    7 is still the old reading. The re-run is once per head, so 31 red is
+    final: the step refuses rather than waiting on 7."""
+    world = MergeWorld(tmp_path)
+    _red(world)
+    _second_required(world, id=31)
+    _rerun(world, jobs=[7, 30])
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+
+
+def test_every_failing_check_a_job_the_tick_re_ran_still_parks(tmp_path):
+    """The control for the two above: both red checks are jobs the tick
+    re-ran and neither has answered, so the step waits for the re-run."""
+    world = MergeWorld(tmp_path)
+    _red(world)
+    _second_required(world, id=30)
+    _rerun(world, jobs=[7, 30])
+
+    outcome = merge.run_merge(world.context())
+
+    _parked(outcome, merge.CI_RERUN_PENDING, PINNED)
+
+
+def _future(world: MergeWorld) -> None:
+    _rerun(world, ago=-3600)
+
+
+def _naive(world: MergeWorld) -> None:
+    _rerun(world)
+    entry = world.docs[TASK]["metadata"][merge.MERGE_FIX_METADATA_KEY][merge.RERUNS_KEY][0]
+    entry["requested_at"] = entry["requested_at"].replace(tzinfo=None)
+
+
+def _naive_text(world: MergeWorld) -> None:
+    _rerun(world)
+    entry = world.docs[TASK]["metadata"][merge.MERGE_FIX_METADATA_KEY][merge.RERUNS_KEY][0]
+    entry["requested_at"] = entry["requested_at"].replace(tzinfo=None).isoformat()
+
+
+def test_a_fresh_rerun_served_as_iso_text_still_parks(tmp_path):
+    """swarm-api's state routes serve a Firestore instant as ISO 8601 text
+    (`attemptstate.jsonable`): a tz-aware one is read as the instant."""
+    world = MergeWorld(tmp_path)
+    _red(world)
+    _rerun(world)
+    entry = world.docs[TASK]["metadata"][merge.MERGE_FIX_METADATA_KEY][merge.RERUNS_KEY][0]
+    entry["requested_at"] = entry["requested_at"].isoformat()
+
+    outcome = merge.run_merge(world.context())
+
+    _parked(outcome, merge.CI_RERUN_PENDING, PINNED)
+
+
+@pytest.mark.parametrize("mutate", [
+    pytest.param(lambda w: _rerun(w, error="GitHub refused the re-run", requested_at=None),
+                 id="refused"),
+    pytest.param(lambda w: _rerun(w, head=FIXED), id="other-head"),
+    pytest.param(lambda w: _rerun(w, requested_at=None), id="claimed-not-requested"),
+    pytest.param(_future, id="forged-future"),
+    pytest.param(_naive, id="naive-instant"),
+    pytest.param(_naive_text, id="naive-text"),
+    pytest.param(lambda w: _rerun(w, requested_at="yesterday"), id="not-an-instant"),
+])
+def test_a_refused_or_other_head_rerun_does_not_hold_the_refusal(tmp_path, mutate):
+    """Only a re-run GitHub accepted, at this head, inside the window holds
+    it. The document is tenant-writable, so an instant the tick could not
+    have written -- in the future, naive, not a datetime -- holds nothing."""
+    world = MergeWorld(tmp_path)
+    _red(world)
+    mutate(world)
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+
+
 def test_a_forged_round_budget_is_capped_at_the_apis_maximum(tmp_path):
     from swarm_api import validation
 
@@ -310,6 +534,8 @@ def test_the_tick_and_the_worker_read_the_same_keys_and_codes():
     assert merge.MERGE_FIX_METADATA_KEY == mergewake.MERGE_FIX_METADATA_KEY == "merge_fix"
     assert merge.BRANCH_UPDATE_PENDING == mergewake.BRANCH_UPDATE_PENDING
     assert merge.MERGE_FIX_ROUNDS_MAX == mergewake.MERGE_FIX_ROUNDS_MAX
+    assert merge.RERUNS_KEY == mergewake.RERUNS_KEY == "reruns"
+    assert merge.RERUN_SETTLE_SECONDS == mergewake.RERUN_SETTLE_SECONDS
 
 
 # ---------------------------------------------------------------------------
