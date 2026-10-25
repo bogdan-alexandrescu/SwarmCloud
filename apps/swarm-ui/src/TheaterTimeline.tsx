@@ -498,7 +498,8 @@ function timeLeft(deadline: string, now: number, inControl = false): string {
  * NEUTRAL WORDING (owner decision 2026-10-13, "Neutral wording"): a hand-off
  * is not always a sign-in -- a captcha, an approval, a second factor -- so
  * the agent's own reason is the headline and the steps fit any of them.
- * Password masking stays, said as a fact under the steps, not as a step.
+ * Nothing under the steps says a password is masked: the live view shows the
+ * page as Chromium draws it (BGD, 2026-10-25; LIVE-NOMASK-COPY, part of #2298).
  *
  * THE TICKS ARE WHAT IS KNOWN, NOT WHAT IS HOPED (lane LB-UX2a, the chosen
  * mockup). "The agent asked for your help" is done the moment a hand-off
@@ -596,7 +597,6 @@ export function HandoffChecklist({
         {step(youControl, <>You took control.</>)}
         {step(false, <>Do what the agent asked, in the browser.</>)}
       </ol>
-      <p className="th-note">Passwords you type are masked before they leave the agent’s pod.</p>
       {!youControl && canTake && take ? (
         <div className="th-take">{take}</div>
       ) : !youControl && canTake === false ? (

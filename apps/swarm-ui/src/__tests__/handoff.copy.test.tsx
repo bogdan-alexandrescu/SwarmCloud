@@ -151,8 +151,9 @@ describe('QA12-04: a hand-off is worded for any reason, not as a sign-in', () =>
     const text = screen.getByRole('status').textContent ?? ''
     expect(text).toContain(`The agent needs your help: ${REASON}`)
     expect(text).not.toMatch(/sign in|sign-in/i)
-    // Password masking is a fact about the browser, not a step.
-    expect(text).toMatch(/password fields are masked/i)
+    // The live view shows the page as drawn (BGD, 2026-10-25; LIVE-NOMASK-COPY,
+    // part of #2298): nothing here may say a field is masked.
+    expect(text).not.toMatch(/masked/i)
   })
 
   it('a parked hand-off offers "I\'m ready", and says nothing about signing in', async () => {
