@@ -433,7 +433,18 @@ class AccountErrorReport(StrictModel):
 
 
 class HardMaxRequest(StrictModel):
+    """A platform caller's configured max for one tenant, audited in `quota_audit`."""
+
     hard_max: int = Field(ge=0, le=100_000)
+    #: The person a platform caller acts for. swarm-api's admin proxy sends
+    #: its admin's verified email, from the token; only a platform caller
+    #: reaches this field. Optional, so a caller that names no one is still
+    #: audited -- as the identity the broker verified.
+    requested_by: str | None = Field(default=None, max_length=320)
+    #: Why, in the operator's words. Optional here, unlike a target reset's:
+    #: swarm-api requires one, and a direct platform call without one is
+    #: recorded as having none rather than refused.
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class AdaptiveTargetRequest(StrictModel):
@@ -771,6 +782,14 @@ def account_to_api(
                 #: counts at half (`Account.headroom`).
                 "aged_reading": aged,
             })
+    # A RECORDED 429 THAT HAS NOT RESET (`Account.is_limited`): `choose()`
+    # skips the account until it does, so the page says so, with when.
+    limited = getattr(account, "is_limited", None)
+    if callable(limited) and limited(now):
+        blocked_by.append({
+            "limited_until": _iso(getattr(account, "limited_until", None)),
+            "window": getattr(account, "limited_window", None),
+        })
     max_agents = getattr(account, "max_agents", None)
     live_holds = getattr(account, "live_holds", None)
     if isinstance(max_agents, int) and callable(live_holds):
@@ -3070,12 +3089,28 @@ def create_app(
         body: HardMaxRequest,
         authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, Any]:
+        """Set a tenant's configured max. PLATFORM ONLY; audited in `quota_audit`
+        in the same transaction as the quota document, with who asked
+        (`requested_by`, and the identity the broker verified) and why."""
         name = _known_provider(provider)
-        _, is_platform = request.app.state.identity.resolve(authorization)
+        identity = request.app.state.identity
+        _, is_platform = identity.resolve(authorization)
         if not is_platform:
             request.app.state.metrics.auth_failures.labels(kind="not_platform").inc()
             raise BrokerAuthError("only the platform may change a configured hard max")
-        state = request.app.state.broker.set_hard_max(name, tenant_id, body.hard_max)
+        verified = getattr(identity, "verified_email", None)
+        caller = verified(authorization) if callable(verified) else ""
+        state = request.app.state.broker.set_hard_max(
+            name,
+            tenant_id,
+            body.hard_max,
+            requested_by=(body.requested_by or "").strip().lower(),
+            reason=body.reason or "",
+            caller=caller,
+        )
+        request.app.state.metrics.admin_changes.labels(
+            provider=name, action="hard_max_set"
+        ).inc()
         request.app.state.metrics.observe(state)
         return {"quota": quota_to_api(state)}
 

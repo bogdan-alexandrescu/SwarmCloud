@@ -25,6 +25,8 @@ No credentials, no network: the broker runs over the shared FakeFirestore.
 from __future__ import annotations
 
 import secrets
+import subprocess
+import sys
 import tomllib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -81,11 +83,11 @@ def _windows(now: datetime, used: float = 0.2) -> dict[str, WindowReading]:
 
 
 def _account(label: str, now: datetime, **fields: Any) -> Account:
+    fields.setdefault("windows", _windows(now))
     return Account(
         account_id=f"{ENG}:{label}",
         owner_tenant=ENG,
         label=label,
-        windows=_windows(now),
         observed_at=now,
         **fields,
     )
@@ -294,6 +296,28 @@ def test_the_broker_depends_on_swarm_redaction_and_its_image_ships_it():
     dockerfile = (REPO / "images/swarm-quota-broker/Dockerfile").read_text()
     assert "COPY apps/redaction/ /src/apps/redaction/" in dockerfile
     assert "--prune swarm-redaction" not in dockerfile
+
+
+def test_the_workspace_apply_render_path_imports_without_swarm_redaction():
+    """`kubernetes/render.py` puts apps/common, apps/quota-broker and
+    apps/scheduler on its path and nothing else (the workspace-apply image
+    copies exactly those), then imports `scheduler.dispatch`, which reaches
+    `quota_broker.accountstore`. The broker's redaction must not be a
+    module-level import on that path."""
+    script = (
+        "import builtins, sys\n"
+        f"sys.path[:0] = [{str(REPO / 'apps/common')!r}, {str(REPO / 'apps/quota-broker')!r},"
+        f" {str(REPO / 'apps/scheduler')!r}]\n"
+        "real = builtins.__import__\n"
+        "def guard(name, *a, **k):\n"
+        "    if name.split('.')[0] == 'swarm_redaction':\n"
+        "        raise ImportError('swarm_redaction is not in the workspace-apply image')\n"
+        "    return real(name, *a, **k)\n"
+        "builtins.__import__ = guard\n"
+        "import scheduler.dispatch, quota_broker.accountstore\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr[-2000:]
 
 
 # -- 3. the hard-max route audits who and why ------------------------------------
