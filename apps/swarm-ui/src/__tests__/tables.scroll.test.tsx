@@ -20,7 +20,7 @@
 // is for the next release's screenshots.
 
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import type { AccountsBoard } from '../api'
@@ -188,14 +188,16 @@ describe("CH-13: a chosen account's detail stays inside what the phone shows", (
    * a row spanning the 909px scrolling table, held at the scrollport's left by
    * a sticky rule. It is now the pane beside the list, so the property this
    * guarded -- the detail never scrolls away with the table's columns -- holds
-   * by construction: the detail is not inside the scroller at all.
+   * by construction: the detail is not inside the scroller at all. Since
+   * #2222 that pane is a side sheet over the ranked table, still outside it.
    * MUTATION: render the detail back inside the table as a spanning row.
    */
   it('draws the detail beside the scrolling table, never inside it', async () => {
     api.loadAccountsBoard.mockResolvedValue(ok(board([account()])))
     render(<AccountsScreen />)
-    // The pane opens the first account with no click (#503).
+    // The account opens as a side sheet on its row (#2222).
     await screen.findByText('Subscription accounts', undefined, WAIT)
+    fireEvent.click(document.querySelector<HTMLButtonElement>('button.acct-open')!)
 
     const detail = document.querySelector('.acct-pane .acct-detail')
     expect(detail, 'the chosen account drew no detail in the pane').not.toBeNull()

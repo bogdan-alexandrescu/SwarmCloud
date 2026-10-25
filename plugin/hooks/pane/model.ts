@@ -7,7 +7,8 @@
 // mock-ups are docs/design/mockups/sc-browser-b.html in PR 2328): the open
 // workflow's stages on the left, the selected stage's agents -- then one
 // agent's details -- on the right; Level 1 a full-width list of this
-// session's workflows; one column at a time on a narrow terminal.
+// session's workflows (and, after session start, this project's running
+// work); one column at a time on a narrow terminal.
 //
 // NOTHING IS READ UNTIL SOMEBODY ASKS. `act` is the only place a read is
 // made: one `swarm_browse` call per click (open, a workflow, a stage, an
@@ -57,6 +58,7 @@ export function initialState(): PaneState {
     stage: null, agents: null, agentsReadAt: null,
     taskId: null, agent: null, agentReadAt: null, agentFrom: 'agents',
     layout: null, layoutNote: null, failure: null, calls: 0,
+    project: false, started: false,
   }
 }
 
@@ -370,16 +372,32 @@ export function frame(state: PaneState, view: View): Line[] {
 function listFrame(state: PaneState, view: View): Line[] {
   const { cols } = view
   const failure = state.failure
-  const head: Line = [plain(' SwarmCloud · this session')]
+  const head: Line = [plain(state.project ? ' SwarmCloud · this project' : ' SwarmCloud · this session')]
   const out: Line[] = [failure ? fit(head, cols) : ends(head, [plain(clock(state.listReadAt) + ' '), refreshButton()], cols)]
   if (failure) out.push(fit([plain(' failed ' + clock(failure.at) + ' · ' + (state.listReadAt ? 'last good read ' + clock(state.listReadAt) : 'nothing read yet'))], cols))
   out.push(rule(cols))
   const rows = state.workflows || []
+  if (!failure && state.workflows === null) {
+    // UNREAD (BGD, 2026-10-25: "open it with no read"): the pane the session
+    // start opened, before anyone pressed Refresh. Never the empty state: no
+    // read said there is nothing.
+    const left: Line[] = [[plain(' Stages')], [plain(' none: no')], [plain(' workflow open')]]
+    const right: Line[] = [
+      ...rightText('Not read yet.', cols),
+      [],
+      ...rightText('Refresh lists ' + (state.project ? 'this project’s running SwarmCloud work and this session’s' : 'this session’s SwarmCloud work') +
+        ': one call, no model tokens.', cols),
+    ]
+    out.push(...columns(left, right, cols))
+    out.push(rule(cols))
+    out.push(fit([plain(' not read yet · ' + state.calls + ' call' + (state.calls === 1 ? '' : 's') + ' made, 0 model tokens')], cols))
+    return out
+  }
   if (failure || (rows.length === 0 && state.singles.length === 0)) {
     const left: Line[] = [[plain(' Stages')], [plain(' none: no')], [plain(' workflow open')]]
     const right: Line[] = failure ? errorBlock(failure, cols, state.listReadAt ? 'The list was last read at ' + clock(state.listReadAt) + ', ' + ago(state.listReadAt, failure.at) + ': not current.' : null) : [
       ...rightText('No SwarmCloud work', cols),
-      ...rightText('in this session yet.', cols),
+      ...rightText(state.project ? 'in this session or running in this project.' : 'in this session yet.', cols),
       [],
       ...rightText('Start one with /sc run <spec>, or attach running ones with /sc attach --all.', cols),
     ]
@@ -426,7 +444,7 @@ function listFrame(state: PaneState, view: View): Line[] {
   const failed = rows.filter((r) => r.state && r.state !== 'SUCCEEDED' && TERMINAL.indexOf(r.state) >= 0).length
   const known = rows.map((r) => r.tokens).filter((t): t is number => typeof t === 'number')
   const costs = rows.map((r) => r.cost_usd).filter((c): c is number => typeof c === 'number')
-  const parts = [all + ' in this session']
+  const parts = [all + (state.project ? ' in this session and project' : ' in this session')]
   if (running) parts.push(running + ' running')
   if (succeeded) parts.push(succeeded + ' succeeded')
   if (failed) parts.push(failed + ' failed')
@@ -689,9 +707,12 @@ function stageTasks(state: PaneState, number: number): string[] {
   return stage ? stage.steps.map((s) => s.task_id).filter((t): t is string => typeof t === 'string' && t.length > 0) : []
 }
 
-const READ_LIST: Read = {
-  tool: BROWSE, args: { level: 'workflows' },
-  take: (s, d, at) => ({ ...s, level: 'workflows', workflows: Array.isArray(d.workflows) ? d.workflows : [], singles: Array.isArray(d.single_tasks) ? d.single_tasks : [], listReadAt: d.read_at || at }),
+/** Level 1's read: this session's work, and with `project` (set at session start) this project's running work too. */
+function readList(state: PaneState): Read {
+  return {
+    tool: BROWSE, args: state.project ? { level: 'workflows', project: true } : { level: 'workflows' },
+    take: (s, d, at) => ({ ...s, level: 'workflows', workflows: Array.isArray(d.workflows) ? d.workflows : [], singles: Array.isArray(d.single_tasks) ? d.single_tasks : [], listReadAt: d.read_at || at }),
+  }
 }
 
 function readWorkflow(id: string): Read {
@@ -740,14 +761,14 @@ function refreshRead(state: PaneState): Read | null {
   if (state.level === 'agent' && state.taskId) return readAgent(state.taskId, state.agentFrom)
   if (state.level === 'agents' && state.stage !== null) return readStage(state, state.stage)
   if (state.level === 'stages' && state.workflowId) return readWorkflow(state.workflowId)
-  return READ_LIST
+  return readList(state)
 }
 
 /** What `action` reads, or how it moves without reading. */
 export function plan(state: PaneState, action: string): { read: Read | null; move: PaneState | null } {
   const [verb, ...rest] = action.split(':')
   const arg = rest.join(':')
-  if (verb === 'open') return { read: action === 'open' ? READ_LIST : readWorkflow(arg), move: null }
+  if (verb === 'open') return { read: action === 'open' ? readList(state) : readWorkflow(arg), move: null }
   if (verb === 'retry' && state.failure && state.failure.action !== 'retry') return plan({ ...state, failure: null }, state.failure.action)
   if (verb === 'refresh' || verb === 'retry') return { read: refreshRead(state), move: null }
   if (verb === 'stage') {

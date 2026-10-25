@@ -5671,6 +5671,19 @@ export async function setAccountName(accountId: string, displayName: string | nu
   })
 }
 
+/**
+ * `PUT /v1/accounts/{id}/max-agents` (#2222): how many agents the account may
+ * hold at once, 1 to `MAX_AGENTS_LIMIT`. Owner only. swarm-api checks the range
+ * before it asks the broker and answers a 422 in the broker's words, which
+ * the detail's Change editor draws. Lowering it moves no agent already on it.
+ */
+export async function setAccountMaxAgents(accountId: string, maxAgents: number): Promise<Result<unknown>> {
+  if (USE_FIXTURES) return fixtureMaxAgents(accountId, maxAgents)
+  return write(route('/v1/accounts/{account_id}/max-agents', { account_id: accountId }), 'PUT', {
+    max_agents: maxAgents,
+  })
+}
+
 /** `PUT /v1/accounts/{id}/state`. `reason` is for the next person, so it is required here. */
 export async function setAccountState(
   accountId: string,
@@ -5876,7 +5889,16 @@ let fixtureAccounts: ServedAccount[] = [
     // The broker's answer is for the owner; this tenant is skipped all the same.
     max_agents: 6,
     can_take_new_agent: true,
-    blocked_by: [],
+    // IDENTICAL READINGS WITH ANOTHER WORKSPACE'S ACCOUNT (#2222, BGD Q1, Q2):
+    // advisory, so it still takes agents, and the other side is not named.
+    blocked_by: [
+      {
+        possible_duplicate: null,
+        advisory: true,
+        reason: 'identical readings on two polls with an account in another workspace',
+      },
+    ],
+    possible_duplicate: { of: null, reason: 'identical readings on two polls with an account in another workspace' },
     next_eligible_at: null,
     windows: {
       // Only one window came back. The 7D column says so rather than showing 0%.
@@ -6160,6 +6182,21 @@ async function fixtureName(accountId: string, displayName: string | null): Promi
   if (name === '') return fixtureRefused("an account's Name is 1 to 60 characters once trimmed, and this one is empty; send null to clear it so the label shows")
   if (name !== null && name.length > 60) return fixtureRefused(`an account's Name is at most 60 characters once trimmed; this one is ${name.length}`)
   const account: Account = { ...found, display_name: name }
+  fixtureAccounts = fixtureAccounts.map((a) => (a.account_id === accountId ? account : a))
+  return { status: 'ok', fetchedAt: Date.now(), data: { account } }
+}
+
+async function fixtureMaxAgents(accountId: string, maxAgents: number): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 180))
+  const found = fixtureAccounts.find((a) => a.account_id === accountId)
+  if (!found) return fixtureRefused(`no account '${accountId}'`)
+  // swarm-api's `_checked_max_agents`, in its words.
+  if (!Number.isInteger(maxAgents) || maxAgents < 1 || maxAgents > 50) {
+    return fixtureRefused(
+      `an account's max_agents is 1 to 50, and this is ${maxAgents}; pause the account to stop it taking new agents`,
+    )
+  }
+  const account: ServedAccount = { ...found, max_agents: maxAgents }
   fixtureAccounts = fixtureAccounts.map((a) => (a.account_id === accountId ? account : a))
   return { status: 'ok', fetchedAt: Date.now(), data: { account } }
 }
@@ -9433,9 +9470,52 @@ export function normAdminWorkspace(raw: unknown): AdminWorkspaceView {
  * `approved` when the requester may approve it), 200 when one already stood; the record either way. A refusal is the
  * API's code and sentence (design §4.2.3), drawn as it came.
  */
-export async function createAdminWorkspace(body: NewWorkspaceBody): Promise<Result<AdminWorkspaceView>> {
+export async function createAdminWorkspace(body: NewWorkspaceBody & { first_admin?: string }): Promise<Result<FiledAdminWorkspace>> {
   const r = await writeTo(route('/v1/admin/workspaces'), 'POST', body)
-  return r.status === 'ok' ? { ...r, data: normAdminWorkspace(r.data) } : (r as Result<AdminWorkspaceView>)
+  return r.status === 'ok' ? { ...r, data: normAdminWorkspace(r.data) } : (r as Result<FiledAdminWorkspace>)
+}
+
+/**
+ * WHAT `first_admin` CAME TO (WORKSPACE-ADMIN-FIELDS, part of #2157; config-e.html S6c): the person named on Add a new
+ * workspace, granted `admin` in that workspace alone through the role override (docs/design/workspace-roles.md §8).
+ * `member: false` is someone not yet in the group: the role is stored and takes effect once they are in it, because
+ * membership stays the group's. `granted: false` says why in `reason` (`workspace_exists`, or a refusal's code).
+ */
+export interface FirstAdminAnswer {
+  email: string
+  role: 'admin'
+  granted: boolean
+  /** Whether the group holds them now; null when the directory did not answer. Absent when nothing was granted. */
+  member?: boolean | null
+  reason?: string
+}
+
+/** A filed record as `POST /v1/admin/workspaces` answers it: the record, and `first_admin` when one was named. */
+export type FiledAdminWorkspace = AdminWorkspaceView & { first_admin?: FirstAdminAnswer | null }
+
+/**
+ * Said on `window` once a workspace is renamed, with its tenant id as `detail`, so the shell reads its own name again
+ * (`/v1/tenants/me`) and the switcher and the headers draw the new one without a reload.
+ */
+export const WORKSPACE_RENAMED_EVENT = 'swarm:workspace-renamed'
+
+/** `PUT /v1/workspaces/{tenant_id}/name`'s answer: the display name changed, the id never does. */
+export interface WorkspaceRenameAnswer {
+  tenant_id: string
+  display_name: string
+  previous_display_name: string | null
+  changed: boolean
+}
+
+/**
+ * `PUT /v1/workspaces/{tenant_id}/name` (WORKSPACE-ADMIN-FIELDS, S6a): rename a workspace -- its display name, never
+ * its id. Its admins and platform admins only; anyone else is 403 `role_admin_required` with nothing written, and a
+ * name the API refuses (empty, over 60 characters, a control or invisible character) is its 422, drawn as it came.
+ */
+export async function renameWorkspace(tenantId: string, displayName: string): Promise<Result<WorkspaceRenameAnswer>> {
+  const r = (await writeTo(route('/v1/workspaces/{tenant_id}/name', { tenant_id: tenantId }), 'PUT', { display_name: displayName })) as Result<WorkspaceRenameAnswer>
+  if (r.status === 'ok' && r.data.changed) globalThis.dispatchEvent?.(new CustomEvent(WORKSPACE_RENAMED_EVENT, { detail: tenantId }))
+  return r
 }
 
 /** `GET /v1/admin/workspaces/{workspace_id}` (admin): one record, for the dialog's progress view. */

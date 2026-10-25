@@ -12,8 +12,10 @@
 //   * an empty history says so, rather than rendering an empty list that
 //     looks like a load that never finished.
 //
-// The panel is COLLAPSED and loads nothing until asked: a row opening must not
-// cost broker reads nobody wanted. That is asserted too.
+// Nothing is read until an account is OPENED: the table costs no holders
+// read. Opening one is asking for it (#2222, mock-up A F4: the side sheet
+// shows who holds it at once), and History waits behind its own control.
+// Both are asserted.
 
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
@@ -97,7 +99,7 @@ function holders(over: Partial<AccountHolders>): AccountHolders {
 /** Answer each read by its URL, so the test says which route got what. */
 function serve(byPath: { holders?: AccountHolders; history?: HoldHistory }) {
   reads.read.mockImplementation(async (target: { url: string }) => {
-    if (target.url.includes('/holders')) return ok(byPath.holders)
+    if (target.url.includes('/holders')) return ok(byPath.holders ?? holders({}))
     if (target.url.includes('/history')) return ok(byPath.history)
     throw new Error(`unexpected read ${target.url}`)
   })
@@ -106,8 +108,8 @@ function serve(byPath: { holders?: AccountHolders; history?: HoldHistory }) {
 async function openRow(a: Account, tenant = 'eng') {
   api.loadAccountsBoard.mockResolvedValue(ok(board(a, tenant)))
   render(<AccountsScreen />)
-  // The list item, not any button naming the account: the pane opens the
-  // first account on its own now (#503), and its controls name it too.
+  // The row's name, not any button naming the account: the sheet's controls
+  // name it too. Nothing is open until it is clicked (#2222).
   await screen.findByText('Subscription accounts', undefined, WAIT)
   const open = document.querySelector<HTMLButtonElement>('button.acct-open')!
   if (open.getAttribute('aria-current') !== 'true') fireEvent.click(open)
@@ -118,12 +120,18 @@ beforeEach(() => {
 })
 
 describe('holding now', () => {
-  it('loads nothing until the tab is asked for', async () => {
+  it('reads nothing for the table, the holders once an account is opened, and History only when asked', async () => {
     serve({ holders: holders({}) })
-    await openRow(account())
-
-    expect(await screen.findByRole('tab', { name: 'Holding now (3)' }, WAIT)).toBeTruthy()
+    api.loadAccountsBoard.mockResolvedValue(ok(board(account())))
+    render(<AccountsScreen />)
+    await screen.findByText('Subscription accounts', undefined, WAIT)
     expect(reads.read).not.toHaveBeenCalled()
+
+    fireEvent.click(document.querySelector<HTMLButtonElement>('button.acct-open')!)
+    expect(await screen.findByText('Nobody holds it.', undefined, WAIT)).toBeTruthy()
+    const urls = () => reads.read.mock.calls.map((c) => (c[0] as { url: string }).url)
+    expect(urls().every((u) => u.includes('/holders'))).toBe(true)
+    expect(screen.getByRole('button', { name: 'History' }).getAttribute('aria-expanded')).toBe('false')
   })
 
   it('links the own task, its attempt and since when, and says "agent not recorded" apart from it', async () => {
@@ -138,7 +146,6 @@ describe('holding now', () => {
       }),
     })
     await openRow(account())
-    fireEvent.click(await screen.findByRole('tab', { name: 'Holding now (3)' }, WAIT))
 
     const link = await screen.findByRole('link', { name: 'task_abc' }, WAIT)
     expect(link.getAttribute('href')).toBe('#work/task/task_abc')
@@ -160,7 +167,6 @@ describe('holding now', () => {
       }),
     })
     await openRow(account())
-    fireEvent.click(await screen.findByRole('tab', { name: /Holding now/ }, WAIT))
 
     expect(await screen.findByText('unverified', undefined, WAIT)).toBeTruthy()
     expect(screen.queryByRole('link', { name: /task/ })).toBeNull()
@@ -170,7 +176,6 @@ describe('holding now', () => {
   it('gives a borrower a count of other tenants and no tenant name', async () => {
     serve({ holders: holders({ viewer: 'borrower', total: 1, others: 1 }) })
     await openRow(account({ owner_tenant: 'eng' }), 'research')
-    fireEvent.click(await screen.findByRole('tab', { name: /Holding now/ }, WAIT))
 
     expect(await screen.findByText('+1 held by other tenants', undefined, WAIT)).toBeTruthy()
   })
@@ -180,10 +185,11 @@ describe('holding now', () => {
       holders: holders({ total: 2, others: 2, by_tenant: [{ tenant: 'research', n: 2 }] }),
     })
     await openRow(account())
-    fireEvent.click(await screen.findByRole('tab', { name: /Holding now/ }, WAIT))
 
     const row = await screen.findByText(/2 agents ·/, undefined, WAIT)
     expect(row.textContent).toContain('research')
+    // The owner's loans in use, named as that (#2222, the sheet's Agents on it).
+    expect(screen.getByText('Loans in use')).toBeTruthy()
     // The by-tenant line replaces the anonymous count; both would double it.
     expect(screen.queryByText(/held by other tenants/)).toBeNull()
   })
@@ -198,7 +204,7 @@ describe('history', () => {
       },
     })
     await openRow(account())
-    fireEvent.click(await screen.findByRole('tab', { name: 'History' }, WAIT))
+    fireEvent.click(await screen.findByRole('button', { name: 'History' }, WAIT))
 
     expect(await screen.findByText('No holds recorded in this window.', undefined, WAIT)).toBeTruthy()
   })
@@ -220,7 +226,7 @@ describe('history', () => {
       },
     })
     await openRow(account(), 'research')
-    fireEvent.click(await screen.findByRole('tab', { name: 'History' }, WAIT))
+    fireEvent.click(await screen.findByRole('button', { name: 'History' }, WAIT))
 
     expect(await screen.findByRole('link', { name: 'task_mine' }, WAIT)).toBeTruthy()
     expect(screen.getByText('3 other agents in this window')).toBeTruthy()
@@ -254,7 +260,7 @@ describe('history', () => {
       },
     })
     await openRow(account(), 'research')
-    fireEvent.click(await screen.findByRole('tab', { name: 'History' }, WAIT))
+    fireEvent.click(await screen.findByRole('button', { name: 'History' }, WAIT))
 
     expect(await screen.findByText('1 other agent in this window', undefined, WAIT)).toBeTruthy()
     expect(document.querySelectorAll('.acct-hist tbody tr').length).toBe(1)
@@ -272,7 +278,7 @@ describe('history', () => {
       },
     })
     await openRow(account(), 'research')
-    fireEvent.click(await screen.findByRole('tab', { name: 'History' }, WAIT))
+    fireEvent.click(await screen.findByRole('button', { name: 'History' }, WAIT))
 
     expect(await screen.findByText(/Older history was not searched further/, undefined, WAIT)).toBeTruthy()
     expect(screen.queryByText(/other agents? in this window/)).toBeNull()

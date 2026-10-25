@@ -115,7 +115,9 @@ export function secretsLinkToken(pathname: string, search: string): string | nul
  * rotate, `name` (an add link names no secret); the GitHub Actions link's
  * `name` and `env` (swarm_api `actions_secrets`); the runner-key link's
  * `runner_key=<provider>` (SSC-LINKS, BGD 2026-10-24); and `key=typesafe`,
- * the TypeSafe key form Settings › API keys used to be. NEVER `t`, and
+ * the TypeSafe key form Settings › API keys used to be; and, when none of
+ * those forms is named, `add=secret` with an optional `consumer` (Add a
+ * secret, a consumer picked: `secretsAddAddress`). NEVER `t`, and
  * nothing else: an unknown key, or a value of the wrong shape, is dropped,
  * not carried. Always in this order, so one view has one spelling. '' for none.
  */
@@ -138,10 +140,31 @@ export function secretsLinkView(query: string): string {
   }
   const action = take('action', (v) => v === 'add' || v === 'rotate')
   if (action === 'rotate') take('name', (v) => SECRETS_NAME.test(v))
+  let form = action !== null
   if (action === null && scope !== 'repository') {
-    if (take('runner_key', (v) => SECRETS_ID.test(v)) === null) take('key', (v) => v === 'typesafe')
+    form = take('runner_key', (v) => SECRETS_ID.test(v)) !== null || take('key', (v) => v === 'typesafe') !== null
   }
+  if (!form && take('add', (v) => v === 'secret') !== null) take('consumer', (v) => SECRETS_CONSUMER.test(v))
   return kept.toString()
+}
+
+/** A catalogue consumer's name, `<kind>:<name>` (`mcp:kb`, `profile:claude-code`); the page checks it against the catalogue. */
+const SECRETS_CONSUMER = /^[a-z][a-z_-]{0,31}:[A-Za-z0-9_.-]{1,128}$/
+
+/**
+ * ADD A SECRET, A CONSUMER PICKED (lane MCP-LEAD-FORM, part of #2157; BGD
+ * 2026-10-25, "Open the form, consumer picked"; proposal E S5a: the MCP
+ * servers lead's button "opens setting it"). Config › Secrets with its Add a
+ * secret sheet open and `consumer` ticked at Who reads it. NEVER
+ * `?action=add`: that is the /sc one-time link's form, and the page then says
+ * it was opened from one. Through `secretsLinkView`, so a bookmark survives;
+ * a consumer the catalogue does not list opens the sheet with nothing ticked,
+ * and a reader who may not add secrets gets the page with no sheet.
+ */
+export function secretsAddAddress(consumer: string | null): string {
+  const q = new URLSearchParams({ add: 'secret' })
+  if (consumer !== null) q.set('consumer', consumer)
+  return `${CONFIG_SECRETS_ADDRESS}?${secretsLinkView(q.toString())}`
 }
 
 /** A registration id or a provider name, as the API mints them. */

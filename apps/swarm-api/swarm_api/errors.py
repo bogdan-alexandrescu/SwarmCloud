@@ -412,3 +412,142 @@ class PlatformAdminAuditUnavailable(UpstreamUnavailable):
     is never taken unaudited (Q12)."""
 
     code = "platform_admin_audit_unavailable"
+
+
+# --------------------------------------------------------------------------
+# Join requests (docs/design/join-requests.md §4.9; lane JOIN-STORE, part of
+# #2325)
+#
+# Every 4xx here gates a route or a path that did not exist before the
+# design, so none narrows anything a person could do; each is listed in
+# `NOT_SWITCHABLE_CODES` in the refusal guard with that reason, and raised
+# with `raise`, never `refuse`. The 503s are not refusals at all.
+# --------------------------------------------------------------------------
+
+
+class JoinLinkUnknown(NotFound):
+    """A join code that is unknown, rotated, switched off, or for a workspace
+    whose group is no longer the registered one (§4.2). One answer for all
+    of them, with the same body, so a code that does not work reveals
+    nothing."""
+
+    code = "join_link_unknown"
+
+
+class JoinAlreadyMember(Conflict):
+    """A request from someone already in the workspace, by the group or by a
+    valid platform membership (§4.1)."""
+
+    code = "join_already_member"
+
+
+class JoinAlreadyReaches(Conflict):
+    """A request from a platform admin: their reach already makes them admin
+    there, so nobody needs to decide it (§4.1)."""
+
+    code = "join_already_reaches"
+
+
+class JoinNotOffered(Conflict):
+    """A join request, membership or join link for a personal (`u-`) or
+    service workspace: only registered group workspaces take requests
+    (§4.1, §4.6)."""
+
+    code = "join_not_offered"
+
+
+class JoinRequestUnknown(NotFound):
+    """No request has that `ref`, or the caller may not act on it -- a
+    withdrawal by anyone but its requester reads exactly like a request that
+    does not exist (§4.6)."""
+
+    code = "join_request_unknown"
+
+
+class JoinRequestInvalid(Conflict):
+    """A request whose MAC fails: something changed it after it was signed,
+    so an admin approving it would approve someone they never saw (§4.1).
+    Nothing is written; the request is logged and counted."""
+
+    code = "join_request_invalid"
+
+
+class JoinRequestDecided(Conflict):
+    """A decision on a request that is no longer `requested`: approved,
+    denied, withdrawn or expired. Two admins deciding at once: one wins and
+    the other gets this (§4.10)."""
+
+    code = "join_request_decided"
+
+
+class JoinWorkspaceChanged(Conflict):
+    """An approval whose workspace is no longer a registered group
+    workspace, or whose id now selects another group than the request named
+    (§4.3 step 2). Nothing is written."""
+
+    code = "join_workspace_changed"
+
+
+class JoinRoleNotAllowed(Conflict):
+    """An approval choosing `admin`: an admin is named person by person,
+    after joining (§4.3 step 4)."""
+
+    code = "join_role_not_allowed"
+
+
+class JoinDeciderRequired(Forbidden):
+    """A decision, removal or join-link change by someone who is neither
+    that workspace's `admin` (read fresh) nor a platform admin (§4.6). Not a
+    switch: it gates new routes from their first build."""
+
+    code = "join_decider_required"
+
+
+class JoinRequestsOpenLimit(RateLimited):
+    """A person with the most open requests across workspaces asks for
+    another (§4.1)."""
+
+    code = "join_requests_open_limit"
+
+
+class JoinRequestsDailyLimit(RateLimited):
+    """A person who has asked the most times in the last 24 hours asks
+    again (§4.1)."""
+
+    code = "join_requests_daily_limit"
+
+
+class JoinDeniedRecently(RateLimited):
+    """A new request to a workspace that denied this person within the hold;
+    `detail.opens_on` is the UTC day it opens (§4.1)."""
+
+    code = "join_denied_recently"
+
+    def __init__(self, message: str, retry_after_seconds: float, *, opens_on: str) -> None:
+        super().__init__(message, retry_after_seconds)
+        self.detail["opens_on"] = opens_on
+
+
+class JoinWorkspaceQueueFull(RateLimited):
+    """A workspace already holding the most open requests. Only someone
+    holding a working code can reach it, so it reveals nothing to anyone
+    else (§4.1)."""
+
+    code = "join_workspace_queue_full"
+
+
+class MembershipUnavailable(UpstreamUnavailable):
+    """A person's platform memberships could not be read -- Firestore
+    failed, or the bounded read ended before the tenant asked about was
+    answered (§4.4). Never `tenant_not_member`: the unread membership could
+    have changed the answer."""
+
+    code = "membership_unavailable"
+
+
+class JoinSigningUnavailable(UpstreamUnavailable):
+    """A join request, decision, link or membership write in an environment
+    with no settings key: an unsigned record is skipped by every reader, so
+    nothing is written."""
+
+    code = "join_signing_unavailable"

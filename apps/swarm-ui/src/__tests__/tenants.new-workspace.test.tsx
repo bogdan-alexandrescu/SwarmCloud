@@ -98,7 +98,8 @@ async function mount() {
 
 function fill(tab: string, principal: string, displayName: string) {
   fireEvent.click(within(dialog()).getByRole('tab', { name: tab }))
-  fireEvent.change(within(dialog()).getByLabelText(/address/i), { target: { value: principal } })
+  // The kind's own address: the group tab also asks for a first admin's (WORKSPACE-ADMIN-FIELDS).
+  fireEvent.change(within(dialog()).getByLabelText(/^(Person’s email address|Group address|Service account address)$/), { target: { value: principal } })
   fireEvent.change(within(dialog()).getByLabelText(/display name/i), { target: { value: displayName } })
 }
 
