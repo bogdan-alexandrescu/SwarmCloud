@@ -1589,6 +1589,20 @@ everyone sees it.
   its bound with no UI path in the part kept, or a `builds_on` step that
   cannot be read, is gated too: a review that could not be told what it
   reviews is not one that saw it.
+* **Only the paths the lane changed itself count** (#2337). On 2026-10-25
+  two code-only lanes started from other open PRs' branches and merged
+  `origin/main` first (PRs 2334 and 2335); their patches carried 20 and 10 UI
+  files they had not written, and their reviews' MERGE was forced to NOT_YET.
+  So the harvest also records `result_summary.git.own_files`: the paths of the
+  step's non-merge commits on HEAD's first-parent line since the commit it
+  started from, each against its first parent, plus its uncommitted work. A
+  merge of main or of another branch brings nothing into it. When the
+  upstream that made a staged `swarm-work.patch`, or the `builds_on` step,
+  recorded that list, the gate reads it instead of the patch headers or
+  `git.files`. A step recorded without it (harvested before #2337, or whose
+  listing failed) is judged by the whole patch, as before, so nothing older
+  is waved through. A lane that fast-forwarded onto main has main's commits
+  on its first-parent line and is gated on them: that errs towards gating.
 * **The rule is in the review's own prompt.** The worker appends it, naming
   the UI paths and the profile the step runs on, so a reviewer knows before
   it writes a verdict that MERGE from anywhere but a rendered review will not

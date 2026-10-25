@@ -1,14 +1,16 @@
-import { useContext, useState, type MouseEvent, type ReactNode } from 'react'
-import { loadProfile } from './api'
+import { useContext, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react'
+import { dismissOnboarding, loadMe, loadProfile, loadWorkspaceRoles, renameWorkspace } from './api'
 import { CodeIntelligenceCard } from './CodeIntelligence'
-import { Button, ButtonLink, Card, Tabs, routedClick } from './components'
-import { SetupContext } from './ConfigSetup'
-import { NewWorkspaceDialog } from './NewWorkspace'
+import { Button, ButtonLink, Card, Dash, Tabs, routedClick } from './components'
+import { SetupContext, useSetupSteps, type SetupStep } from './ConfigSetup'
+import type { ApiError } from './fetch'
+import { Refusal } from './GitHubConnect'
+import { NewWorkspaceForm, STEP_LABEL as JOB_STEP_LABEL, STEP_ORDER as JOB_STEP_ORDER } from './NewWorkspace'
 import { ACCESS as GITHUB_ACCESS_ADDRESS, OnboardingScreen, STEP_LABEL, countLabel } from './Onboarding'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
-import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
+import { UrRefresh, UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
-import type { Profile } from './types'
+import type { OnboardingDoc, Profile, WorkspaceRoles } from './types'
 import './styles/workspace-settings.css'
 
 /**
@@ -29,14 +31,22 @@ import './styles/workspace-settings.css'
  *     is unread. A workspace admin sees two parts; members keep Request your
  *     workspace in the setup checklist.
  *
- * NO NEW CREATION PATH. Add a new workspace opens Admin › Tenants' own dialog
- * (NewWorkspace.tsx), which posts `POST /v1/admin/workspaces` and nothing
- * else. The API is the gate either way: a non-admin who reached the dialog
- * would be refused there, so hiding the part is for clarity, not security.
+ * NO NEW CREATION PATH. Add a new workspace draws Admin › Tenants' own form
+ * (NewWorkspace.tsx's `NewWorkspaceForm`, the body of its dialog) on the page,
+ * as S6c draws it (WS-SETTINGS-E-REST), and it posts `POST /v1/admin/workspaces`
+ * and nothing else. The API is the gate either way: a non-admin who reached
+ * the form would be refused there, so hiding the part is for clarity, not
+ * security.
  *
  * Each part is led by one sentence and one button (proposal E): Settings and
- * Workspace setup by the checklist's next step, from the read the strip and
- * the checklist draw, so the lead cannot disagree with either.
+ * Workspace setup by setup's next step, from the read the strip and the
+ * checklist draw, so the lead cannot disagree with either. While the
+ * checklist has a step left, that step leads (the strip's GitHub and
+ * Repositories steps are checklist steps); once the checklist is complete the
+ * lead moves on to the strip's next step (`useSetupSteps`, the strip's own
+ * derivation: Secrets set, then People invited), and it is green only when
+ * the strip has nothing left and nothing unmeasured (WS-SETTINGS-E-REST, S6a:
+ * "Setup's next step is on Secrets · Go to Secrets").
  */
 
 export type WorkspacePart = 'settings' | 'setup' | 'new'
@@ -79,19 +89,36 @@ const ON_GITHUB_ACCESS: ReadonlySet<string> = new Set(['github_connected', 'orgs
 const STATE_WORD: Readonly<Record<string, string>> = { done: 'done', in_progress: 'in progress', failed: 'failed', stale: 'needs a re-check', todo: 'to do' }
 
 /**
- * The checklist's next step as a lead, from the shell's onboarding read (the
- * one the strip and Workspace setup draw), so the lead can never call setup
- * finished while the checklist under it shows a failed step. Nothing until
- * the read lands: a lead is never a guess.
+ * The Config page each strip step is done on, by name, for the lead's words.
+ * Pairs, not an object literal: the publish scan reads a `secrets:` key with a
+ * string value as a credential.
+ */
+const PAGE_OF: ReadonlyMap<SetupStep['key'], string> = new Map<SetupStep['key'], string>([
+  ['github', 'GitHub access'],
+  ['repositories', 'Repositories'],
+  ['secrets', 'Secrets'],
+  ['people', 'People and roles'],
+])
+
+/** The strip's next step: the first measured step not done, the rule the strip draws its `is-next` by. */
+function stripNextAt(steps: readonly SetupStep[]): number {
+  return steps.findIndex((s) => s.state !== 'done' && s.state !== 'unknown')
+}
+
+/**
+ * Setup's next step as a lead, from the shell's onboarding read (the one the
+ * strip and Workspace setup draw), so the lead can never call setup finished
+ * while the checklist under it shows a failed step, or while the strip above
+ * it still has Secrets or People open. Nothing until the read lands: a lead
+ * is never a guess.
  */
 function SetupLead({ part, go }: { part: 'settings' | 'setup'; go?: (to: string) => void }) {
   const { doc } = useContext(SetupContext)
+  const strip = useSetupSteps()
   if (doc.status !== 'ok' && doc.status !== 'stale') return null
   const d = doc.data
   if (!Array.isArray(d.steps) || d.steps.length === 0) return null
-  if (d.complete) {
-    return <Lead tone="ok" kicker={part === 'settings' ? 'Nothing here needs you' : 'Setup is complete'} title={`Every step is done: ${countLabel(d)}`} />
-  }
+  if (d.complete) return <StripLead part={part} steps={strip} doc={d} go={go} />
   const at = d.steps.findIndex((s) => s.step === d.next_step)
   const next = at === -1 ? null : d.steps[at]!
   if (next === null) return null
@@ -127,17 +154,265 @@ function SetupLead({ part, go }: { part: 'settings' | 'setup'; go?: (to: string)
   )
 }
 
-/** The workspace these settings are about: the profile's acting workspace. */
-function ThisWorkspace({ profile }: { profile: Profile }) {
-  const ws = profile.workspaces.find((w) => w.is_acting) ?? null
+/** `workspaces.MAX_DISPLAY_NAME`; the API refuses a longer name as 422. */
+const MAX_WORKSPACE_NAME = 60
+
+/**
+ * RENAME (WORKSPACE-ADMIN-FIELDS, part of #2157; config-e.html S6a): the workspace's display name, never its id. Offered
+ * to the workspace's admins in a group workspace -- a personal workspace is always "Your workspace" in the switcher --
+ * and the API is the gate: anyone else is refused 403 with nothing written. Every rule on the name is the API's (1-60
+ * characters, no control or invisible character), drawn as its code and sentence. A rename tells the shell
+ * (`WORKSPACE_RENAMED_EVENT`), which reads its name again, so the switcher and the headers follow.
+ */
+function RenameForm({ tenantId, current, onDone, onCancel }: { tenantId: string; current: string; onDone: (name: string) => void; onCancel: () => void }) {
+  const [name, setName] = useState(current)
+  const [saving, setSaving] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+  const typed = name.trim()
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (saving || typed === '') return
+    if (typed === current) {
+      onCancel()
+      return
+    }
+    setSaving(true)
+    setRefused(null)
+    const r = await renameWorkspace(tenantId, typed)
+    setSaving(false)
+    if (r.status === 'ok' || r.status === 'stale') onDone(r.data.display_name)
+    else if (r.status === 'error') setRefused(r.error)
+  }
   return (
-    <Card title="This workspace">
+    <form className="ws-rename" aria-label="Rename this workspace" onSubmit={(e) => void submit(e)}>
+      <label className="c-field">
+        <span className="c-lbl">New name</span>
+        <input
+          className="c-inp"
+          type="text"
+          value={name}
+          maxLength={MAX_WORKSPACE_NAME}
+          autoComplete="off"
+          autoFocus
+          disabled={saving}
+          onChange={(e) => setName(e.target.value)}
+        />
+      </label>
+      <p className="ur-hint">
+        Changes the name everyone in it sees. The id <code>{tenantId}</code> stays as it is.
+      </p>
+      {refused !== null && (
+        <p className="ur-small ob-issue" role="alert" data-code={refused.code ?? undefined}>
+          {refused.code !== null && <b className="ur-bad">{refused.code}</b>} {refused.message}
+        </p>
+      )}
+      <div className="ws-rename-a">
+        <Button kind="primary" size="sm" type="submit" busy={saving ? 'Saving…' : false} disabled={typed === ''}>
+          Save name
+        </Button>
+        <Button size="sm" disabled={saving} onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  )
+}
+
+/** The acting workspace's name as the shell draws it: `/v1/tenants/me`'s, which a rename changes. */
+const loadThisMe = () => loadMe()
+
+/**
+ * The lead once the checklist is complete: the strip's next step (S6a, S6b),
+ * green only when every strip step is measured done. A step nothing measured
+ * is said, never counted as done.
+ */
+function StripLead({ part, steps, doc, go }: { part: 'settings' | 'setup'; steps: readonly SetupStep[]; doc: OnboardingDoc; go?: (to: string) => void }) {
+  const at = stripNextAt(steps)
+  if (at === -1) {
+    const unmeasured = steps.filter((s) => s.state === 'unknown')
+    if (unmeasured.length === 0) {
+      return <Lead tone="ok" kicker={part === 'settings' ? 'Nothing here needs you' : 'Setup is complete'} title={`Every step is done: ${countLabel(doc)}`} />
+    }
+    return (
+      <Lead
+        kicker={part === 'settings' ? 'Setup’s next step' : 'The checklist is done'}
+        title={`${unmeasured.length} of ${steps.length} setup steps not measured`}
+        body={unmeasured.map((s) => `${s.label}: ${s.line}`).join('; ')}
+      />
+    )
+  }
+  const next = steps[at]!
+  const page = PAGE_OF.get(next.key) ?? next.label
+  if (part === 'settings') {
+    return (
+      <Lead
+        kicker="Setup’s next step"
+        title={`Setup’s next step is on ${page}`}
+        body={`${next.label}: ${next.line}`}
+        action={
+          <ButtonLink kind="primary" size="sm" href={addressToPath(next.to)} onClick={routed(next.to, go)}>
+            Go to {page}
+          </ButtonLink>
+        }
+      />
+    )
+  }
+  return (
+    <Lead
+      kicker={`Step ${at + 1} of ${steps.length} · next`}
+      title={`${next.label}: ${next.line}`}
+      body="The checklist is done; the strip above has this step left."
+      action={
+        <ButtonLink kind="primary" size="sm" href={addressToPath(next.to)} onClick={routed(next.to, go)}>
+          Open {page}
+        </ButtonLink>
+      }
+    />
+  )
+}
+
+/** A strip step's mark, as the strip draws it: a tick for done, a filled ring for next, a dashed ring for unmeasured. */
+function StepRow({ step, next, action }: { step: Pick<SetupStep, 'label' | 'state'> & { line?: string }; next: boolean; action?: ReactNode }) {
+  return (
+    <li className={`ws-step is-${step.state}${next ? ' is-next' : ''}`} aria-label={step.label}>
+      <span className="ws-mark" aria-hidden="true" />
+      <span className="ws-step-t">
+        <b>{step.label}</b>
+        {step.line !== undefined && <small>{step.line}</small>}
+      </span>
+      {action}
+    </li>
+  )
+}
+
+/** Each after-the-checklist step's page and its button's word (S6b). */
+const AFTER: ReadonlyArray<{ key: SetupStep['key']; verb: string }> = [
+  { key: 'secrets', verb: 'Set' },
+  { key: 'people', verb: 'Invite' },
+]
+
+/**
+ * AFTER THE CHECKLIST (S6b): the strip's steps 3-4, Secrets set and People
+ * invited, which the onboarding checklist does not hold, each with its line
+ * and its button to the page it is done on. The same steps the strip draws
+ * (`useSetupSteps`), so the card and the strip cannot disagree; People
+ * invited is absent in a personal workspace, as it is from the strip (S1e).
+ */
+function AfterChecklist({ go }: { go?: (to: string) => void }) {
+  const steps = useSetupSteps()
+  const at = stripNextAt(steps)
+  const nextKey = at === -1 ? null : steps[at]!.key
+  const rows = AFTER.flatMap((a) => {
+    const s = steps.find((x) => x.key === a.key)
+    return s === undefined ? [] : [{ step: s, verb: a.verb }]
+  })
+  return (
+    <Card title="After the checklist">
+      <ol className="ws-steps" aria-label="After the checklist">
+        {rows.map(({ step, verb }) => (
+          <StepRow
+            key={step.key}
+            step={step}
+            next={step.key === nextKey}
+            action={
+              <ButtonLink kind={step.key === nextKey ? 'primary' : undefined} size="sm" href={addressToPath(step.to)} onClick={routed(step.to, go)}>
+                {verb}
+              </ButtonLink>
+            }
+          />
+        ))}
+      </ol>
+    </Card>
+  )
+}
+
+/**
+ * ON OVERVIEW (S6b): whether the setup card is on Overview for the reader,
+ * and Show on Overview while they have hidden it: `{dismissed: false}`, the
+ * write the checklist's own button makes. Read from the shell's onboarding
+ * read; nothing until it lands.
+ */
+function OnOverview() {
+  const { doc } = useContext(SetupContext)
+  const [busy, setBusy] = useState(false)
+  const [shown, setShown] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+  if (doc.status !== 'ok' && doc.status !== 'stale') return null
+  const d = doc.data
+  const hidden = d.dismissed === true && !d.complete && !shown
+  return (
+    <Card title="On Overview">
+      <p className="ur-hint">
+        {d.complete
+          ? 'The checklist is complete, so the setup card has left Overview by itself.'
+          : hidden
+            ? 'The setup card is hidden on Overview for you.'
+            : shown
+              ? 'The setup card is back on Overview for you.'
+              : 'The setup card is on Overview until every checklist step is done. Hide there takes it off for you alone.'}
+      </p>
+      {hidden && (
+        <div className="ws-acts">
+          <Button
+            size="sm"
+            busy={busy}
+            onClick={() => {
+              setBusy(true)
+              setRefused(null)
+              void dismissOnboarding(false).then((res) => {
+                setBusy(false)
+                if (res.status === 'error') setRefused(res.error)
+                else setShown(true)
+              })
+            }}
+          >
+            Show on Overview
+          </Button>
+        </div>
+      )}
+      {refused !== null && <Refusal error={refused} title="The checklist is still hidden from Overview" />}
+    </Card>
+  )
+}
+
+const PEOPLE_ADDRESS = 'config/people'
+
+/** The workspace's default role, from the roles read People and roles makes (`GET /v1/workspace/roles`). */
+function DefaultRole({ roles }: { roles: UrRead<WorkspaceRoles> }) {
+  const r = roles.state
+  if (r.status === 'loading') return <Dash why="Reading the workspace’s roles" />
+  if (r.status === 'error') return <Dash why={`GET /v1/workspace/roles: ${r.error.message}`} />
+  if (r.status === 'empty') return <Dash why="The roles read answered nothing" />
+  return r.data.default_role === null ? <Dash why="The roles read names no default role" /> : <>{r.data.default_role}</>
+}
+
+/** The workspace these settings are about: the profile's acting workspace, and its default role (S6a). */
+function ThisWorkspace({ profile, roles, go }: { profile: Profile; roles: UrRead<WorkspaceRoles>; go?: (to: string) => void }) {
+  const ws = profile.workspaces.find((w) => w.is_acting) ?? null
+  const me = useUrRead(loadThisMe, `me:${ws?.tenant_id ?? ''}`)
+  const [renamed, setRenamed] = useState<string | null>(null)
+  const [renaming, setRenaming] = useState(false)
+  const read = me.state.status === 'ok' || me.state.status === 'stale' ? me.state.data : null
+  const stored = read !== null && ws !== null && read.tenant.tenant_id === ws.tenant_id ? read.tenant.display_name || null : null
+  const name = renamed ?? stored ?? ws?.display_name ?? ''
+  const mayRename = ws !== null && ws.kind === 'group' && ws.role.name === 'admin'
+  return (
+    <Card
+      title="This workspace"
+      action={
+        mayRename && !renaming ? (
+          <Button size="sm" onClick={() => setRenaming(true)}>
+            Rename
+          </Button>
+        ) : undefined
+      }
+    >
       {ws === null ? (
         <p className="ur-hint">The profile read names no acting workspace.</p>
       ) : (
         <dl className="ws-kv">
           <dt>Name</dt>
-          <dd>{ws.display_name}</dd>
+          <dd>{name}</dd>
           <dt>Id</dt>
           <dd>
             <code>{ws.tenant_id}</code>
@@ -146,48 +421,99 @@ function ThisWorkspace({ profile }: { profile: Profile }) {
           <dd>{ws.kind === 'user' ? 'personal' : ws.kind || 'unknown'}</dd>
           <dt>Your role</dt>
           <dd>{ws.role.name || 'unknown'}</dd>
+          {/* A personal workspace has nobody else in it, so no default to hold. */}
+          {ws.kind !== 'user' && (
+            <>
+              <dt>Default role</dt>
+              <dd data-testid="ws-default-role">
+                <DefaultRole roles={roles} /> ·{' '}
+                <a className="ctl-link" href={addressToPath(PEOPLE_ADDRESS)} onClick={routed(PEOPLE_ADDRESS, go)}>
+                  People and roles
+                </a>
+              </dd>
+            </>
+          )}
         </dl>
+      )}
+      {ws !== null && renaming && (
+        <RenameForm
+          tenantId={ws.tenant_id}
+          current={name}
+          onCancel={() => setRenaming(false)}
+          onDone={(next) => {
+            setRenamed(next)
+            setRenaming(false)
+          }}
+        />
       )}
     </Card>
   )
 }
 
-/** Add a new workspace, for a platform admin: Admin › Tenants' New workspace dialog, unchanged. */
+/** The job's steps only a service workspace runs: in its order, not in a group's. */
+const SERVICE_ONLY: ReadonlySet<string> = new Set(JOB_STEP_ORDER.service.filter((id) => !JOB_STEP_ORDER.group.includes(id)))
+
+/**
+ * Add a new workspace, for a platform admin (S6c): Admin › Tenants' form,
+ * drawn on the page, beside the list of what creating it does, which is the
+ * workspace job's own steps (NewWorkspace.tsx's labels, in a service's
+ * order, the longest). After Create the form gives way to the record's
+ * progress, and Add another starts a fresh form.
+ */
 function AddWorkspace() {
-  const [open, setOpen] = useState(false)
+  const [round, setRound] = useState(0)
   const [filed, setFiled] = useState<string | null>(null)
   return (
     <>
       <Lead
         kicker="Platform admins only"
         title="Add a new workspace"
-        body="A personal or group workspace you file is approved at once, because you are a platform admin; a service workspace waits for the platform owner’s approval. Its progress is on Admin › Tenants."
-        action={
-          <Button kind="primary" size="sm" onClick={() => setOpen(true)}>
-            New workspace
-          </Button>
-        }
+        body="It opens on Config with the setup strip at step 1, for whoever will run it. A personal or group workspace you file is approved at once, because you are a platform admin; a service workspace waits for the platform owner’s approval. Its progress is also on Admin › Tenants."
       />
-      <Card title="What creating it does">
-        <p className="ur-hint">
-          The form asks for the kind, one address and an optional display name, and posts them to{' '}
-          <code>POST /v1/admin/workspaces</code>, the route Admin › Tenants › New workspace uses. The workspace job then
-          gives it its own worker account, IAM, storage prefix, namespace and pool, and the form ticks each step as the job
-          checks it.
-        </p>
-        {filed !== null && (
+      <div className="ws-grid is-form">
+        <Card
+          title="New workspace"
+          action={
+            filed !== null ? (
+              <Button
+                size="sm"
+                onClick={() => {
+                  setFiled(null)
+                  setRound((n) => n + 1)
+                }}
+              >
+                Add another
+              </Button>
+            ) : undefined
+          }
+        >
+          <NewWorkspaceForm key={round} inline onFiled={(r) => setFiled(r.workspace_id ?? r.request_id ?? 'the request')} />
+        </Card>
+        <Card title="What creating it does">
+          <ol className="ws-steps" aria-label="What creating it does">
+            {JOB_STEP_ORDER.service.map((id) => (
+              <StepRow key={id} step={{ label: JOB_STEP_LABEL[id] ?? id, state: 'todo', line: SERVICE_ONLY.has(id) ? 'a service workspace only' : undefined }} next={false} />
+            ))}
+          </ol>
           <p className="ur-hint">
-            Filed <code>{filed}</code>. Admin › Tenants lists it under Being created until it is ready.
+            Create posts the kind, one address, an optional display name and, for a group, an optional first admin to{' '}
+            <code>POST /v1/admin/workspaces</code>, the
+            route Admin › Tenants › New workspace uses. Each step then ticks in the form as the workspace job checks it.
           </p>
-        )}
-      </Card>
-      {open && <NewWorkspaceDialog onClose={() => setOpen(false)} onFiled={(r) => setFiled(r.workspace_id ?? r.request_id ?? 'the request')} />}
+          {filed !== null && (
+            <p className="ur-hint">
+              Filed <code>{filed}</code>. Admin › Tenants lists it under Being created until it is ready.
+            </p>
+          )}
+        </Card>
+      </div>
     </>
   )
 }
 
 export function WorkspaceSettingsScreen({ part = 'settings', go }: { part?: WorkspacePart; go?: (to: string) => void }) {
   const profile = useUrRead(loadProfile, 'profile')
+  const roles = useUrRead(loadWorkspaceRoles, 'workspace-roles')
   const read = profile.state.status === 'ok' || profile.state.status === 'stale' ? profile.state.data : null
   const platformAdmin = read !== null && read.identity.is_admin === true
   const tabs = [
@@ -198,7 +524,7 @@ export function WorkspaceSettingsScreen({ part = 'settings', go }: { part?: Work
   return (
     <div className="pk-page ws-page">
       <PageHead title="Workspace Settings">
-        <UrRefresh reads={[profile]} />
+        <UrRefresh reads={part === 'settings' ? [profile, roles] : [profile]} />
       </PageHead>
       <Tabs className="cfg-parts" label="Workspace Settings" current={part} onGo={go} tabs={tabs} />
       {part === 'settings' && (
@@ -206,7 +532,7 @@ export function WorkspaceSettingsScreen({ part = 'settings', go }: { part?: Work
           <SetupLead part="settings" go={go} />
           <div className="ws-grid">
             <UrRegion state={profile.state} route="GET /v1/profile" what="This workspace" onRetry={profile.reload}>
-              {(p) => <ThisWorkspace profile={p} />}
+              {(p) => <ThisWorkspace profile={p} roles={roles} go={go} />}
             </UrRegion>
             <CodeIntelligenceCard />
           </div>
@@ -215,7 +541,13 @@ export function WorkspaceSettingsScreen({ part = 'settings', go }: { part?: Work
       {part === 'setup' && (
         <>
           <SetupLead part="setup" go={go} />
-          <OnboardingScreen />
+          <div className="ws-grid is-setup">
+            <OnboardingScreen />
+            <div className="ws-col">
+              <AfterChecklist go={go} />
+              <OnOverview />
+            </div>
+          </div>
         </>
       )}
       {part === 'new' &&

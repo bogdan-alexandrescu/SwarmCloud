@@ -296,6 +296,7 @@ from .procman import ChildProcess, ChildResult, reap_foreign_processes
 from .quota import QuotaDecision, decide, read_runner_signal, signal_from_control
 from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED, SPEND_KEYS
 from .runners.cliagent import (
+    ACCOUNT_ERROR_KINDS,
     ACCOUNT_MOVE_ENV,
     ACCOUNT_STREAM_ENV,
     RESUME_MOVED,
@@ -904,6 +905,9 @@ class Worker:
         # exception that reaches it, decides the exit.
         self._startup_interrupt: StartupInterrupted | None = None
         self._child: ChildProcess | None = None
+        # BROWSER-USE-FLAG: whether this attempt has looked, once, for a
+        # browser call after BROWSER_IDLE_SECONDS (`_note_browser_idle`).
+        self._browser_idle_checked = False
         # How the publish path makes sure no process the agent started is alive
         # before the tenant credential is used (`_publish_git`). A callable, not
         # a direct call, so a unit test can substitute a scoped reaper: the real
@@ -1558,6 +1562,15 @@ class Worker:
                 # holds the replacement; re-reading it costs one API call and
                 # saves the attempt.
                 refusal = self._credential_refusal()
+                if refusal is not None and self._account is not None:
+                    # An auth error on the held account, for its health record
+                    # (#2302); every refusal, the reloaded ones included.
+                    self.control.report_account_error(
+                        provider=str(refusal.get("provider") or self.cfg.provider or ""),
+                        account=self._account,
+                        kind="auth",
+                        message="the provider refused the account's credential",
+                    )
                 if refusal is not None and credential_reloads < MAX_CREDENTIAL_RELOADS:
                     credential_reloads += 1
                     # RESUMED, NOT STARTED AGAIN (#626). A restart from the
@@ -1658,6 +1671,10 @@ class Worker:
                 state=quota.state,
                 retry_after_seconds=quota.retry_after_seconds,
                 reset_at=quota.reset_at,
+                # The pool account the runner was refused on, when it held
+                # one (#2302): the 429 is that account's, not the tenant's.
+                account=self._account,
+                message=quota.detail,
             )
             if decision.park or attempt_number > MAX_IN_WORKER_RETRIES:
                 return self._park_for_quota(decision, source="runner")
@@ -3716,6 +3733,9 @@ class Worker:
                             child, observed_generation=-1, reason=str(exc)
                         )
                 if self.handoff.spooled:
+                    # BROWSER-USE-FLAG: one mark when the agent has run
+                    # BROWSER_IDLE_SECONDS without touching its browser.
+                    self._note_browser_idle(child)
                     # Live-browser §4.1-§4.3: answer the agent's requests and
                     # watch an open hand-off's hold. Never raises.
                     with self._heartbeat_meanwhile("hand-off"):
@@ -4642,6 +4662,20 @@ class Worker:
                     count=replaced,
                 )
             summary["runner"] = runner
+        # BROWSER-USE-FLAG: read off the runner's own result, before the
+        # truncation above could have cut it from `runner.output`.
+        # The seconds are the runner's own duration where `_finalise` has
+        # set it, else how long the agent child has been running (a cancel,
+        # a crash).
+        output = runner_result.get("output") if runner_result else None
+        seconds = summary.get("duration_seconds")
+        if not isinstance(seconds, (int, float)) and self._child is not None:
+            seconds = self._child.elapsed_seconds
+        summary.update(browser_use_record(
+            bool(getattr(self.handoff, "live", False)),
+            output.get(BROWSER_USE_SUMMARY_KEY) if isinstance(output, dict) else None,
+            seconds if isinstance(seconds, (int, float)) else None,
+        ))
         return runner_result
 
     # ------------------------------------------------------------------
@@ -6918,6 +6952,15 @@ class Worker:
         bound with no UI path in it, or a `builds_on` step that cannot be
         read, is [] -- gated, naming no path -- because a review that could
         not be told what it reviews is not one that saw it.
+
+        ONLY WHAT THE LANE ITSELF CHANGED IS ITS UI CHANGE (#2337). A lane
+        started from another PR's branch that merged origin/main carries
+        their UI files in its patch, and its code-only review was forced to
+        NOT_YET. So an upstream's `swarm-work.patch`, and a `builds_on`
+        step's list, are judged by the paths its own commits changed
+        (`result_summary.git.own_files`) when it recorded them; a step
+        recorded without them, or one whose document cannot be read, is
+        judged by the whole patch, as before.
         """
         if not owner_questions_mod.is_review(task.get("metadata")):
             return None
@@ -6927,6 +6970,12 @@ class Worker:
         unknown = False
         for item in staged:
             if not item.filename.endswith(verdict_mod.PATCH_SUFFIX):
+                continue
+            own = self._own_ui_paths(item)
+            if own is not None:
+                paths, cut = own
+                found.update(dict.fromkeys(paths))
+                unknown = unknown or cut
                 continue
             try:
                 text = (ws.work / item.path).read_text(encoding="utf-8", errors="replace")
@@ -6955,6 +7004,24 @@ class Worker:
             runner_profile=self.cfg.runner_profile,
         )
         return list(found)
+
+    def _own_ui_paths(self, item: inputs_mod.StagedInput) -> tuple[list[str], bool] | None:
+        """The UI paths the step that made this staged patch changed itself (#2337).
+
+        Only for its harvested `swarm-work.patch`, the one `own_files`
+        describes; any other `.patch` it wrote is read as a patch. None
+        when the step recorded no own list or its document cannot be read.
+        """
+        if item.filename != PATCH_NAME:
+            return None
+        try:
+            upstream = inputs_mod.fetch_upstream_task(
+                self.db, upstream_task_id=item.upstream_task_id, tenant_id=self.cfg.tenant_id,
+                call_options=self.control.call_options(),
+            )
+        except InputUnavailable:
+            return None
+        return verdict_mod.ui_paths_in_own_files(upstream.get("result_summary"))
 
     def _hold_ui_review_to_rendered(self) -> None:
         """Rewrite this UI-gated review's MERGE to NOT_YET unless it rendered (#2184)."""
@@ -9512,6 +9579,8 @@ class Worker:
         self._note_session(data.get("session_id"))
         # AT THE LATEST AT THE END OF THE RUN, every window not yet sent.
         self._forward_readings(data.get("readings"), final=True)
+        # Before any move: the error belongs to the account the run was on.
+        self._report_runner_error(data.get("error"))
         stopped_for = data.get("stopped_for")
         just_swapped, self._just_swapped = self._just_swapped, False
         reason: str | None = None
@@ -9539,6 +9608,31 @@ class Worker:
                 )
             return None
         return self._swap_account(reason)
+
+    def _report_runner_error(self, error: Any) -> None:
+        """The provider error the runner classified, on the held account's
+        health record (RUNNER-ERROR-KINDS, #2302). Never raises.
+
+        An overloaded 529, a 5xx or a network failure the CLI gave up on
+        (`cliagent.classify_account_error`). Health only: the broker's
+        `/account-error` route never touches AIMD, and the run itself fails
+        exactly as before. An `auth` error is not read from here; the
+        credential path reports it (`_credential_refusal`). The message was
+        redacted by the runner and is again by `report_account_error`.
+        """
+        account = self._account
+        if account is None or not isinstance(error, dict):
+            return
+        kind = error.get("kind")
+        if kind not in ACCOUNT_ERROR_KINDS:
+            return
+        message = error.get("message")
+        self.control.report_account_error(
+            provider=str(self.cfg.provider or ""),
+            account=account,
+            kind=str(kind),
+            message=message if isinstance(message, str) else "",
+        )
 
     def _swap_account(self, reason: str) -> dict[str, str] | Outcome | None:
         """Move the hold through the broker and rebuild the child's environment.
@@ -9904,6 +9998,53 @@ class Worker:
         )
         return True
 
+    def _note_browser_idle(self, child: Any) -> None:
+        """`browser_unused`: a live-browser agent BROWSER_IDLE_SECONDS in with
+        no browser call and no image (BROWSER-USE-FLAG, part of #2322).
+
+        Looked for ONCE per attempt, at the first poll past the mark, and
+        written at most once: one read of the CLI's stream so far
+        (`claude_code.browser_use`), never repeated, so a long run pays it
+        once. Nothing is written when the stream cannot be read, and an agent
+        that starts using the browser later is still recorded as having used
+        it in the summary (`browser_use_record`). Never raises.
+        """
+        if self._browser_idle_checked or not getattr(self.handoff, "live", False):
+            return
+        try:
+            elapsed = float(child.elapsed_seconds)
+        except Exception:
+            return
+        if elapsed < BROWSER_IDLE_SECONDS:
+            return
+        self._browser_idle_checked = True
+        ws = self.ws
+        files = agent_stream_files(self.cfg.runner_profile)
+        if ws is None or files is None:
+            return
+        try:
+            from .runners.claude_code import browser_use as browser_use_counts
+
+            counts = browser_use_counts(ws.artifacts / files.stdout, ws.artifacts)
+        except Exception as exc:
+            self.log.warning("could not read whether the agent has used its browser",
+                             error=f"{type(exc).__name__}: {exc}")
+            return
+        if counts.get("read") is not True or counts.get("tool_calls") or counts.get("images"):
+            return
+        minutes = int(elapsed // 60)
+        self._emit_startup_mark(
+            "browser_unused",
+            {
+                "seconds": int(elapsed),
+                "tool_calls": 0,
+                "images": 0,
+                "message": (f"the agent has run {minutes} minutes on a browser runtime "
+                            "without a browser call or an image"),
+            },
+        )
+        self.log.info("browser unused so far", seconds=int(elapsed))
+
     def _emit_startup_mark(self, cause: str, detail: dict[str, Any]) -> None:
         """One startup mark on the task's events: RUNNING, with `cause`.
 
@@ -10227,11 +10368,19 @@ class Worker:
                 state = ProviderState(str(decision.detail.get("provider_state", "EXHAUSTED")))
             except ValueError:
                 state = ProviderState.EXHAUSTED
+            # The account this attempt still holds -- it is given back on the
+            # way out, in `_cleanup` -- so a park on an account's 429 names it
+            # (#2302). Only a RUNNER's 429 is the account's: a stop read from
+            # the broker (preflight, backpressure) was no account's refusal.
+            # The park itself is unchanged (invariant 4).
+            from_runner = decision.detail.get("source") == "runner"
             self.control.update_quota_state(
                 provider=provider,
                 state=state,
                 retry_after_seconds=decision.wait_seconds,
                 reset_at=decision.next_eligible_at,
+                account=self._account if from_runner else None,
+                message=str(decision.detail.get("signal_detail") or ""),
             )
         # `source` is where the signal was OBSERVED (the runner's 429, the
         # control plane's aggregate, the pre-flight check); `decision.detail`
@@ -12473,6 +12622,13 @@ class Worker:
             # [] would claim a measured empty diff.
             out["files"] = [f.as_record(self._scrub) for f in work.files]
             out["files_truncated"] = work.files_truncated
+        if work.own_files is not None:
+            # The paths this step's own commits and uncommitted work changed,
+            # a merge of main or of another branch left out (#2337): what a
+            # review's rendered gate judges. Absent when not measured, so the
+            # gate falls back to `files` and the patch rather than to [].
+            out["own_files"] = [self._scrub(path) for path in work.own_files]
+            out["own_files_truncated"] = work.own_files_truncated
         if work.patch_omitted:
             out["patch_note"] = (
                 f"the diff was {work.patch_bytes} bytes, over the "
@@ -18656,6 +18812,67 @@ def _usage_summary(output: Any) -> dict[str, Any]:
         summary["models"] = sorted(str(m) for m in models)
 
     return summary
+
+
+#: BROWSER-USE-FLAG (part of #2322): the `result_summary` keys the worker
+#: writes whether a browser runtime was used under. `browser_used` is true,
+#: false, or null -- null when the attempt had no browser (not a live-browser
+#: profile) or its counts could not be read -- and swarm-api serves it on the
+#: task read and the list row (`codec.task_to_api`) and sums the unused
+#: browser seconds over a range (`outcomes`). Not a frozen-contract field: the
+#: summary is where the API already serves per-attempt facts.
+BROWSER_USED_SUMMARY_KEY = "browser_used"
+BROWSER_USE_SUMMARY_KEY = "browser_use"
+#: How long a live-browser agent runs with no browser call before the one
+#: `browser_unused` mark goes on its events (BROWSER-USE-FLAG, item 4).
+BROWSER_IDLE_SECONDS = 600
+
+
+def _count_or_none(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def browser_use_record(live: bool, counts: Any, seconds: float | None) -> dict[str, Any]:
+    """The `result_summary` keys for whether this attempt used its browser. Pure.
+
+    `live` is whether the attempt ran on a live-browser profile, `counts` the
+    runner's `browser_use` report (`claude_code.browser_use`), or None when it
+    wrote none, and `seconds` how long the agent ran on that runtime.
+
+    Not live: `browser_used` null and nothing else, so a claude-code task
+    reads "not a browser runtime" rather than "unused". Live: used when the
+    agent made any browser call or produced any image; unused when the stream
+    was read whole and shows neither; null when no counts were reported, the
+    stream could not be read, or a cut stream shows nothing -- a lower bound
+    of 0 is not a measurement. `browser_use` carries the counts beside it.
+    """
+    if not live:
+        return {BROWSER_USED_SUMMARY_KEY: None}
+    report = counts if isinstance(counts, dict) else {}
+    calls = _count_or_none(report.get("tool_calls")) if report.get("read") is True else None
+    images = _count_or_none(report.get("images"))
+    complete = report.get("complete") is True
+    if (calls or 0) > 0 or (images or 0) > 0:
+        used: bool | None = True
+    elif calls == 0 and images == 0 and complete:
+        used = False
+    else:
+        used = None
+    detail: dict[str, Any] = {
+        "tool_calls": calls,
+        "mcp_calls": _count_or_none(report.get("mcp_calls")) if calls is not None else None,
+        "command_calls": _count_or_none(report.get("command_calls")) if calls is not None else None,
+        "images": images,
+        "complete": complete,
+        "seconds": None if seconds is None else round(float(seconds), 1),
+    }
+    if used is None:
+        detail["unknown_because"] = (
+            "not_reported" if not report else
+            "stream_unread" if report.get("read") is not True else
+            "stream_cut"
+        )
+    return {BROWSER_USED_SUMMARY_KEY: used, BROWSER_USE_SUMMARY_KEY: detail}
 
 
 def _truncate_json(value: Any, limit: int) -> Any:

@@ -75,6 +75,7 @@ export const BROWSER_KEYS: readonly string[] = [
   LIST_SNAP_PREF,
   'swarm.repograph.drawing', // RepoGraph.tsx DRAWING_KEY
   DIFF_VIEW_KEY,
+  'swarm.accounts.view', // accountsLanes.ts VIEW_KEY: Table or Timeline
   'swarm.schedule.history.view', // ScheduleHistoryTimeline.tsx HISTORY_VIEW_KEY: Timeline or Table
 ]
 

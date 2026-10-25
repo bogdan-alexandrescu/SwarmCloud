@@ -447,6 +447,17 @@ SWITCHES: dict[str, Switch] = {
         "3). On once a schedule's failures are visible in the console (S7), so a "
         "pause has a screen that says why",
     ),
+    # Join requests (docs/design/join-requests.md §4.9, lane JOIN-STORE, part
+    # of #2325) have NO switch here, deliberately: join_link_unknown,
+    # join_already_member, join_already_reaches, join_not_offered,
+    # join_request_unknown, join_request_invalid, join_request_decided,
+    # join_workspace_changed, join_role_not_allowed, join_decider_required and
+    # the four 429s (join_requests_open_limit, join_requests_daily_limit,
+    # join_denied_recently, join_workspace_queue_full) gate routes and stores
+    # that did not exist before that design, so none narrows anything a
+    # person could do, and continuing past any of them is the breach itself.
+    # They are raised with `raise`, and listed in the guard's
+    # NOT_SWITCHABLE_CODES with that reason.
 }
 
 

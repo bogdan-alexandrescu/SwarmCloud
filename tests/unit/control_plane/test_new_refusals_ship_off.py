@@ -479,6 +479,31 @@ NOT_SWITCHABLE_CODES = frozenset({
     # by the caller (invariant 10) -- or put every step of a workflow on the
     # browser profile.
     "invalid_runtime",
+    # Join requests (JOIN-STORE, docs/design/join-requests.md §4.6, §4.9, part
+    # of #2325): raised only by the join-request and join-link routes and the
+    # stores behind them, which that design introduces, so no existing caller
+    # can be refused by them. Continuing past any of them is the breach
+    # itself: a person admitted through a link nobody turned on, a request
+    # whose requester was edited after it was signed, a decision on a request
+    # already decided or on a workspace whose group changed, a person made
+    # `admin` without being named, a request decided by someone who is not
+    # that workspace's admin (`join_decider_required`, gated from its first
+    # build like WORKSPACE_APPROVAL_OWNER_ONLY), or a queue nobody owns
+    # growing past its limits.
+    "join_link_unknown",
+    "join_already_member",
+    "join_already_reaches",
+    "join_not_offered",
+    "join_request_unknown",
+    "join_request_invalid",
+    "join_request_decided",
+    "join_workspace_changed",
+    "join_role_not_allowed",
+    "join_decider_required",
+    "join_requests_open_limit",
+    "join_requests_daily_limit",
+    "join_denied_recently",
+    "join_workspace_queue_full",
 })
 
 #: What the guard lets through without a switch.

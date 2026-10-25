@@ -2247,11 +2247,11 @@ def test_a_documented_grey_is_not_the_default_grey(sheet_scan, theme):
 #: element carries to be that mark, and the property that paints it. A new
 #: mark for the same reading belongs here.
 PROJECTED_MARKS = (
+    # The Accounts screen's `.acct-tilde` was the same mark on its rows from O1
+    # (2026-10-02) until the ranked table (#2222, ACCOUNTS-A-LIST) drew an old
+    # reading with this fill alone, through `FloorTrack`, and named it in
+    # words beside the track ("counts at half"); no .tsx renders the tilde.
     (frozenset({"ctl-util-fill", "ov-projected"}), "background-color"),
-    # The tilde is the Accounts screen's since O1 (2026-10-02) drew Overview's
-    # account pool as one line: `.ov-tilde` went with Overview's account rows,
-    # and `.acct-tilde` is the same mark on the rows that remain.
-    (frozenset({"acct-tilde"}), "color"),
 )
 
 #: The distance a projected mark keeps from `--ctl-absent`. The same floor

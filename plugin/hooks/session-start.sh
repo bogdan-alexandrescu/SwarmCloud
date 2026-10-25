@@ -89,6 +89,19 @@
 # id>.json`, so the running MCP server tags and scopes by the session's
 # current id (swarm_mcp.session). The matcher includes `clear` for that.
 #
+# AND THIS PROJECT'S RUNNING WORK, AT SESSION START ONLY (SC-BROWSER-FOLLOWUP,
+# BGD 2026-10-25: "at start also try to run attach and see if there are any
+# workflows that the project its starting in has any work running in sc that
+# needs to be attached and tracked here"). Beside this session's own work the
+# context also names what is still running for THIS project -- whatever
+# clones this checkout's origin repository, whichever session started it --
+# and in the rows layout asks for `/sc attach --all --project`; in the pane
+# layout the pane module opens the pane unread at session start and its
+# Refresh lists that work. Another repository's work from another session is
+# never named, and `/sc check` and the watch stay this session's. The layout
+# is the project's saved one, else the plugin's `layout` option, handed on
+# as SWARM_PLUGIN_LAYOUT below.
+#
 # AND IT REFRESHES THE BUILD BOARD ONCE (BOARD-WIRE, part of #1773). In a
 # project that already has a board folder (`.claude/build-board/`) or a run
 # record (`launched.jsonl` in `.sc-swarmcloud-runs/`, or the older
@@ -269,7 +282,7 @@ trap 'rm -f "$out"' EXIT
 export SWARM_PLUGIN_DEPLOYMENT_URL="$url"
 # Each remaining setting under the bridge's name, unless the environment
 # already names it. By indirection, so no value is spelled or printed here.
-for key in OAUTH_CLIENT_ID DEFAULT_TARGET OAUTH_CLIENT_SECRET; do
+for key in OAUTH_CLIENT_ID DEFAULT_TARGET OAUTH_CLIENT_SECRET LAYOUT; do
   given="CLAUDE_PLUGIN_OPTION_$key"
   wanted="SWARM_PLUGIN_$key"
   if [ -n "${!given:-}" ] && [ -z "${!wanted:-}" ]; then

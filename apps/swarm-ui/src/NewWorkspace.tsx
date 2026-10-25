@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { createAdminWorkspace, loadAdminWorkspace } from './api'
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { createAdminWorkspace, loadAdminWorkspace, type FirstAdminAnswer } from './api'
 import { Button, Dash, Dialog, Tabs, ToneMark } from './components'
 import type { ApiError } from './fetch'
 import { ApprovedWaiting, WORKSPACE_POLL_MS, waitingOf } from './OnboardingWorkspace'
@@ -20,7 +20,18 @@ import { useNow } from './useNow'
  * admin's request for one waits for the owner, where a personal or group
  * request by an admin is approved in the same transaction that files it.
  *
- * THE POST IS `{kind, principal, display_name}` AND NOTHING ELSE. Limits are
+ * FIRST ADMIN (WORKSPACE-ADMIN-FIELDS, part of #2157; config-e.html S6c). A
+ * group's tab also asks, optionally, for the first admin's address, sent as
+ * `first_admin`: the API grants that person `admin` in this workspace alone,
+ * through the role override, audited (docs/design/workspace-roles.md §8). The
+ * dialog opens only for a platform admin (Admin › Tenants, Config › Workspace
+ * Settings › Add a new workspace), and the route is a platform admin's either
+ * way. Membership stays the group's, so the form says that the role takes
+ * effect once the person is in the group, and after filing it says whether
+ * they are in it yet.
+ *
+ * THE POST IS `{kind, principal, display_name}` (and a group's
+ * `first_admin`) AND NOTHING ELSE. Limits are
  * the API's per-kind default (§4.2.2), so the dialog does not send them, and
  * nothing a caller could send here names an image, a command, a resource spec
  * or a backend parameter (invariant 10). Every shape check is the API's
@@ -43,14 +54,14 @@ import { useNow } from './useNow'
  */
 
 /** §4.3's step ids, in the order the job runs them for each kind. */
-const STEP_ORDER: Readonly<Record<WorkspaceKind, readonly string[]>> = {
+export const STEP_ORDER: Readonly<Record<WorkspaceKind, readonly string[]>> = {
   personal: ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9'],
   group: ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9'],
   service: ['A1', 'S1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'S2', 'A9'],
 }
 
 /** §4.3's rows, as an admin reads them. A6 is the person's App slot for a personal workspace and the team slot otherwise. */
-const STEP_LABEL: Readonly<Record<string, string>> = {
+export const STEP_LABEL: Readonly<Record<string, string>> = {
   A1: 'Approved and claimed',
   S1: 'Checking the service account',
   A2: 'Checking the name is free',
@@ -259,14 +270,59 @@ function Progress({ record, now }: { record: AdminWorkspaceView; now: number }) 
   )
 }
 
+/** What `first_admin` came to, after filing: granted, and whether the group holds them yet; or why not. */
+function FirstAdminOutcome({ answer, group }: { answer: FirstAdminAnswer; group: string | null }) {
+  const who = <code>{answer.email}</code>
+  const inGroup = group !== null ? <code>{group}</code> : 'the group'
+  if (!answer.granted) {
+    return (
+      <p className="ur-small ob-issue" role="status" data-first-admin="refused" data-code={answer.reason ?? undefined}>
+        {who} was not made its admin
+        {answer.reason === 'workspace_exists' ? (
+          <>: this workspace already existed. Name its admins on People and roles.</>
+        ) : (
+          <>
+            {' '}
+            ({answer.reason ?? 'no reason given'}). Send the form again while it is being created, or name them on People and roles.
+          </>
+        )}
+      </p>
+    )
+  }
+  return (
+    <p className="ur-small" role="status" data-first-admin={answer.member === true ? 'member' : 'pending'}>
+      {who} is its first admin.{' '}
+      {answer.member === true ? (
+        <>They are in {inGroup}, so the role applies now.</>
+      ) : answer.member === false ? (
+        <>They are not in {inGroup} yet: the role takes effect once they are, because membership stays the group’s.</>
+      ) : (
+        <>Whether they are in {inGroup} could not be checked; the role takes effect once they are in it.</>
+      )}
+    </p>
+  )
+}
+
 /**
  * The dialog. Rendered by Admin › Tenants' New workspace button (lane WK-UI-TENANTS), which unmounts it on
  * `onClose`. `onFiled` is told the record once it is filed, so the opener can read its "Being created" list again.
  */
 export function NewWorkspaceDialog({ onClose, onFiled }: { onClose: () => void; onFiled?: (record: AdminWorkspaceView) => void }) {
+  return <NewWorkspaceForm onClose={onClose} onFiled={onFiled} />
+}
+
+/**
+ * The form itself, ONE FORM FOR BOTH PLACES (WS-SETTINGS-E-REST; part of #2157): framed by the dialog above, or,
+ * with `inline`, drawn on the page as Config › Workspace Settings › Add a new workspace draws it (S6c), its buttons
+ * under its fields. Same fields, same post, same progress either way. Inline it has no Close unless `onClose` is given.
+ */
+export function NewWorkspaceForm({ onClose, onFiled, inline = false }: { onClose?: () => void; onFiled?: (record: AdminWorkspaceView) => void; inline?: boolean }) {
   const [kind, setKind] = useState<WorkspaceKind>('personal')
   const [principal, setPrincipal] = useState('')
   const [displayName, setDisplayName] = useState('')
+  const [firstAdmin, setFirstAdmin] = useState('')
+  const [firstAdminAnswer, setFirstAdminAnswer] = useState<FirstAdminAnswer | null>(null)
+  const firstAdminHint = useId()
   const [posting, setPosting] = useState(false)
   const inFlight = useRef(false)
   const [refused, setRefused] = useState<ApiError | null>(null)
@@ -301,12 +357,15 @@ export function NewWorkspaceDialog({ onClose, onFiled }: { onClose: () => void; 
     setPosting(true)
     setRefused(null)
     const name = displayName.trim()
-    const r = await createAdminWorkspace({ kind, principal: address, display_name: name === '' ? null : name })
+    // A group's only: a personal workspace's person is its admin, and a service workspace has no people.
+    const admin = kind === 'group' ? firstAdmin.trim() : ''
+    const r = await createAdminWorkspace({ kind, principal: address, display_name: name === '' ? null : name, ...(admin === '' ? {} : { first_admin: admin }) })
     inFlight.current = false
     if (!mounted.current) return
     setPosting(false)
     if (r.status === 'ok' || r.status === 'stale') {
       setRecord(r.data)
+      setFirstAdminAnswer(r.data.first_admin ?? null)
       onFiled?.(r.data)
       return
     }
@@ -314,68 +373,101 @@ export function NewWorkspaceDialog({ onClose, onFiled }: { onClose: () => void; 
   }
 
   const current = KINDS.find((k) => k.kind === kind) ?? KINDS[0]!
-  return (
-    <Dialog
-      title="New workspace"
-      onClose={onClose}
-      actions={
-        <>
-          <Button onClick={onClose}>Close</Button>
-          {record === null && (
-            <Button kind="primary" disabled={posting || address === ''} onClick={() => void submit()}>
-              {posting ? 'Creating…' : 'Create workspace'}
-            </Button>
-          )}
-        </>
-      }
-    >
-      {record === null ? (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault()
-            void submit()
-          }}
-        >
-          <Tabs
-            label="Workspace kind"
-            tabs={KINDS.map((k) => ({ key: k.kind, label: k.tab }))}
-            current={kind}
-            onSelect={(key) => {
-              setKind(key as WorkspaceKind)
-              setRefused(null)
-            }}
-          />
-          <label className="c-field">
-            <span className="c-lbl">{current.field}</span>
-            <input
-              className="c-inp"
-              type="email"
-              value={principal}
-              maxLength={254}
-              placeholder={current.example}
-              autoComplete="off"
-              spellCheck={false}
-              disabled={posting}
-              onChange={(e) => setPrincipal(e.target.value)}
-            />
-          </label>
-          <label className="c-field">
-            <span className="c-lbl">Display name (optional)</span>
-            <input
-              className="c-inp"
-              type="text"
-              value={displayName}
-              maxLength={MAX_DISPLAY_NAME}
-              disabled={posting}
-              onChange={(e) => setDisplayName(e.target.value)}
-            />
-          </label>
-          <Gets kind={kind} who={address === '' ? current.example : address} />
-          {refused !== null && <Refused error={refused} />}
-        </form>
-      ) : (
-        <Progress record={record} now={now} />
+  const actions = (
+    <>
+      {onClose !== undefined && <Button onClick={onClose}>Close</Button>}
+      {record === null && (
+        <Button kind="primary" disabled={posting || address === ''} onClick={() => void submit()}>
+          {posting ? 'Creating…' : 'Create workspace'}
+        </Button>
       )}
+    </>
+  )
+  const body =
+record === null ? (
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          void submit()
+        }}
+      >
+        <Tabs
+          label="Workspace kind"
+          tabs={KINDS.map((k) => ({ key: k.kind, label: k.tab }))}
+          current={kind}
+          onSelect={(key) => {
+            setKind(key as WorkspaceKind)
+            setRefused(null)
+          }}
+        />
+        <label className="c-field">
+          <span className="c-lbl">{current.field}</span>
+          <input
+            className="c-inp"
+            type="email"
+            value={principal}
+            maxLength={254}
+            placeholder={current.example}
+            autoComplete="off"
+            spellCheck={false}
+            disabled={posting}
+            onChange={(e) => setPrincipal(e.target.value)}
+          />
+        </label>
+        <label className="c-field">
+          <span className="c-lbl">Display name (optional)</span>
+          <input
+            className="c-inp"
+            type="text"
+            value={displayName}
+            maxLength={MAX_DISPLAY_NAME}
+            disabled={posting}
+            onChange={(e) => setDisplayName(e.target.value)}
+          />
+        </label>
+        {kind === 'group' && (
+          <>
+            <label className="c-field">
+              <span className="c-lbl">First admin’s email address (optional)</span>
+              <input
+                className="c-inp"
+                type="email"
+                value={firstAdmin}
+                maxLength={254}
+                placeholder="name@your-domain"
+                autoComplete="off"
+                spellCheck={false}
+                disabled={posting}
+                aria-describedby={firstAdminHint}
+                onChange={(e) => setFirstAdmin(e.target.value)}
+              />
+            </label>
+            <p className="ur-hint" id={firstAdminHint} data-testid="new-workspace-first-admin-hint">
+              Made admin of this workspace and no other. Someone not yet in the group gets the role now, and it takes
+              effect once they are in the group: membership stays the group’s.
+            </p>
+          </>
+        )}
+        <Gets kind={kind} who={address === '' ? current.example : address} />
+        {refused !== null && <Refused error={refused} />}
+      </form>
+    ) : (
+      <>
+        {firstAdminAnswer !== null && <FirstAdminOutcome answer={firstAdminAnswer} group={str(record.principal)} />}
+        <Progress record={record} now={now} />
+      </>
+    )
+  if (inline || onClose === undefined) {
+    return (
+      <div className="nw-inline">
+        {body}
+        {record === null && <div className="nw-acts">{actions}</div>}
+      </div>
+    )
+  }
+  return (
+    <Dialog title="New workspace" onClose={onClose} actions={actions}>
+      {body}
     </Dialog>
   )
 }
