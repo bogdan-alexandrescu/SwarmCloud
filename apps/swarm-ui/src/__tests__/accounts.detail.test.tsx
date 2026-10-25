@@ -232,6 +232,39 @@ describe('a duplicate says what to do, naming only this workspace’s accounts',
   })
 })
 
+describe('the page’s duplicate banner opens the registration to fix', () => {
+  it('is a link to its `?account=` address, not a bordered button on the wash, and opens its sheet', async () => {
+    // A <button> there took `:where(.app button)`'s --ctl-bd edge in the
+    // spacing sweep, 2.8:1 on the amber wash in dark; a link has no edge to
+    // lose, and its address can be opened in a new tab or shared.
+    const kept = account({ account_id: 'eng:saga-personal', label: 'saga-personal' })
+    const extra = account({
+      account_id: 'eng:team',
+      label: 'team',
+      duplicate_of: 'eng:saga-personal',
+      duplicate_reason: 'registered on the same organisation as eng:saga-personal',
+      can_take_new_agent: false,
+      blocked_by: [{ duplicate_of: 'eng:saga-personal', reason: 'registered on the same organisation as eng:saga-personal' }],
+    })
+    api.loadAccountsBoard.mockResolvedValue(
+      ok({
+        page: { accounts: [kept, extra] as Account[], tenant_id: 'eng', unreadable_documents: [], unreadable_document_count: 0 } as AccountsPage,
+        tenants: [],
+        tenantsDetail: null,
+        readAt: Date.now(),
+      } as AccountsBoard),
+    )
+    render(<AccountsScreen />)
+    const banner = (await screen.findByText('team and saga-personal are one subscription', undefined, WAIT)).closest('.acct-dup')!
+    expect(banner.querySelector('button')).toBeNull()
+    const link = banner.querySelector<HTMLAnchorElement>('.acct-dup-acts > a.c-link')!
+    expect(link.textContent).toBe('Open team')
+    expect(link.getAttribute('href')).toBe('#capacity/accounts?account=eng%3Ateam')
+    fireEvent.click(link)
+    await waitFor(() => expect(document.querySelector('.acct-sheet')?.getAttribute('aria-label')).toBe('Account team'), WAIT)
+  })
+})
+
 describe('one account’s forecast, from today’s reading', () => {
   const now = Date.parse('2026-10-24T09:16:00Z')
   const week = (used: number, resetsIn: number, over: Partial<PoolAccount> = {}) =>
