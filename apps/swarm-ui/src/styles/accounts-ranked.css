@@ -434,12 +434,13 @@
 .acct-hs-chart .acct-hs-now { stroke: var(--text-dim); stroke-width: 1; stroke-dasharray: 3 3; }
 .acct-hs-chart .acct-hs-band > rect { fill: color-mix(in srgb, var(--warn) 14%, transparent); }
 .acct-hs-chart .acct-hs-band > line { stroke: var(--warn-ink); stroke-width: 1; }
+.acct-hs-chart .acct-hs-band-mark { fill: var(--warn-ink); }
 .acct-hs-chart .acct-hs-bar > .is-err { fill: var(--series-1); }
 .acct-hs-chart .acct-hs-bar > .is-lim { fill: var(--series-4); }
 .acct-hs-chart .acct-hs-bar > .is-cred { fill: var(--series-2); }
 .acct-hs-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .acct-hs-legend > span { display: inline-flex; align-items: center; }
-.acct-hs-bandkey { display: inline-block; width: 16px; height: 10px; margin-right: 6px; border: 1px solid var(--warn-ink); border-radius: 2px; background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.acct-hs-bandkey { display: inline-block; width: 16px; height: 10px; margin-right: 6px; border: 1px solid var(--warn-ink); border-top-width: 3px; border-radius: 2px; background: color-mix(in srgb, var(--warn) 14%, transparent); }
 
 .acct-hs-evs { list-style: none; margin: 0; padding: 0; }
 .acct-hs-ev { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 8px 0; border-bottom: 1px solid var(--line); }

@@ -6375,7 +6375,8 @@ async function fixtureAccountHealth(accountId: string): Promise<Result<AccountHe
   type Ev = [number, AccountHealthKind, Partial<AccountHealthEvent>?]
   const ev = (list: Ev[]): AccountHealthEvent[] =>
     list.map(([h, kind, over]) => ({
-      at: at(h),
+      // Another workspace's event is floored to its hour, as the route floors it.
+      at: over?.own === false ? new Date(now - h * H - ((now - h * H) % H)).toISOString() : at(h),
       kind,
       tenant_id: 'u-bogdan',
       task_id: task(),

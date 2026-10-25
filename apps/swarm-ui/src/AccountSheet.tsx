@@ -629,6 +629,8 @@ function HealthStats({ h }: { h: AccountHealth }) {
 }
 
 const DAY_MS = 24 * HOUR_MS
+/** The narrowest a limited stretch is drawn, so a 5-hour one is a mark the reader can find at 340 px. */
+const BAND_MIN_PX = 8
 
 /**
  * PER HOUR, 7 DAYS (mock-up A's `hourlyChart`): a stacked bar per hour by
@@ -659,25 +661,32 @@ export function HealthSeries({ h, now, width }: { h: AccountHealth; now: number;
     'limited stretch',
     'limited stretches',
   )} shaded`
+  // A 5-hour stretch is ~12 px of 436 (2.4 px an hour) and its hit's own bars
+  // stand in it, so a stretch is drawn at least BAND_MIN_PX wide, and also as
+  // a solid strip along the plot's top edge, drawn after the bars so none
+  // covers it: the legend's key promises a mark the reader can find.
+  const spans = bands.flatMap((b) => {
+    let x0 = Math.max(L, x(b.from))
+    const x1 = Math.min(W - 5, x(b.to))
+    if (x1 <= L) return []
+    const w = Math.max(BAND_MIN_PX, x1 - x0)
+    x0 = Math.max(L, Math.min(x0, W - 5 - w))
+    return [{ b, x0, w }]
+  })
   return (
     <figure className="acct-hs-series">
       <svg className="acct-hs-chart" viewBox={`0 0 ${W} ${Hh}`} role="img" aria-label={label}>
-        {bands.map((b, i) => {
-          const x0 = Math.max(L, x(b.from))
-          const x1 = Math.min(W - 5, x(b.to))
-          if (x1 <= L) return null
-          return (
-            <g key={i} className="acct-hs-band" data-window={b.window ?? ''}>
-              <rect x={x0.toFixed(1)} y={top} width={Math.max(2, x1 - x0).toFixed(1)} height={ph} />
-              <line x1={x0.toFixed(1)} x2={x0.toFixed(1)} y1={top} y2={top + ph} />
-              {x1 - x0 > 40 && b.window !== null && (
-                <text x={(x0 + 3).toFixed(1)} y={13}>
-                  {windowWord(b.window)}
-                </text>
-              )}
-            </g>
-          )
-        })}
+        {spans.map(({ b, x0, w }, i) => (
+          <g key={i} className="acct-hs-band" data-window={b.window ?? ''}>
+            <rect x={x0.toFixed(1)} y={top} width={w.toFixed(1)} height={ph} />
+            <line x1={x0.toFixed(1)} x2={x0.toFixed(1)} y1={top} y2={top + ph} />
+            {w > 40 && b.window !== null && (
+              <text x={(x0 + 3).toFixed(1)} y={11}>
+                {windowWord(b.window)}
+              </text>
+            )}
+          </g>
+        ))}
         <line className="acct-hs-grid" x1={L} x2={W} y1={top + ph} y2={top + ph} />
         <line className="acct-hs-grid" x1={L} x2={W} y1={top} y2={top} />
         <text x={L - 6} y={top + 10} textAnchor="end">
@@ -729,6 +738,17 @@ export function HealthSeries({ h, now, width }: { h: AccountHealth; now: number;
               </g>
             )
           })}
+        {spans.map(({ b, x0, w }, i) => (
+          <rect
+            key={i}
+            className="acct-hs-band-mark"
+            data-window={b.window ?? ''}
+            x={x0.toFixed(1)}
+            y={top - 4}
+            width={w.toFixed(1)}
+            height={3}
+          />
+        ))}
       </svg>
       <figcaption className="acct-hs-legend">
         {FAMILIES.map((f) => (
@@ -870,7 +890,8 @@ type HealthRead = Result<AccountHealth> | { status: 'threw'; message: string }
  *     last 50 events; at 390, D's P2 instead -- the three counts stacked, the
  *     series, then the incidents, the open one expanded;
  *   * the record with none: a measured zero said once in words, no chart;
- *   * a 404: the record is not served here -- a dash and its reason, NEVER a 0;
+ *   * a 404: the record is not served here -- a dash and its reason, NEVER a 0,
+ *     and Refresh rather than Try again (a retry would 404 again);
  *   * needs re-auth: the fix first;
  *   * any other failure: unreadable, a dash with what went wrong, and Try again.
  */
@@ -914,7 +935,12 @@ export function SheetHealth({ a, owned }: { a: PoolAccount; owned: boolean }) {
   const busy = reading
   const refresh = (
     <button type="button" className="c-link acct-hs-refresh" disabled={busy} onClick={() => setNonce((n) => n + 1)}>
-      {busy ? 'Reading…' : res.status === 'error' || res.status === 'threw' ? 'Try again' : 'Refresh'}
+      {busy
+        ? 'Reading…'
+        : // A 404 is a route this deployment does not serve: a retry would 404 again.
+          (res.status === 'error' && res.error.kind !== 'not_found') || res.status === 'threw'
+          ? 'Try again'
+          : 'Refresh'}
     </button>
   )
   const head = (word: ReactNode, note: string | null) => (
@@ -978,7 +1004,8 @@ export function SheetHealth({ a, owned }: { a: PoolAccount; owned: boolean }) {
   const width = phone ? 340 : 436
   const incidents = phone ? incidentsOf(h.events, h.status, now) : []
   const firstOpen = incidents.findIndex((x) => x.open)
-  const expandAt = firstOpen === -1 ? 0 : firstOpen
+  // D's P2: the open one expanded, the closed ones folded -- so with none open, all fold.
+  const expandAt = firstOpen
 
   return (
     <section className={`acct-ss acct-hs${phone ? ' is-phone' : ''}`} aria-label="Health">
