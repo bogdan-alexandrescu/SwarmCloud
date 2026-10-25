@@ -12,7 +12,7 @@
 //   * the form shows "Flow browser", Playwright by default or Jev, sends it,
 //     and an edit never drops it (lane VQ9-TOOL; BGD, 2026-10-23);
 //   * the credential form reads its link token from the URL and removes it
-//     from the address bar, as ProviderKeys.tsx does, and sends it once as
+//     from the address bar, as Config › Secrets' key form does, and sends it once as
 //     `link_token` with the username and password, which never stay in the DOM;
 //   * an admin's Set credential mints a link and opens the same form with the
 //     token held in memory, never drawn;

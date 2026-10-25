@@ -54,8 +54,8 @@ export const GITHUB_CALLBACK_PATH = '/onboarding/github/callback'
  * in the console links to it and the not-found page must never offer it.
  * ITS TOKEN IS NEVER PART OF THE ADDRESS, exactly like the GitHub callback's
  * `code`: the address is what the router writes back into the bar, so the
- * token is dropped here and only `scope` is kept. The form reads the token off
- * the bar once, itself (ProviderKeys.tsx `takeLinkToken`).
+ * token is dropped here and only `scope` is kept. App reads the token off the
+ * bar once (`secretsLinkToken`) and hands it to Config › Secrets' key form.
  */
 export const KEY_LINK_ADDRESS = 'settings/keys/typesafe'
 export const KEY_LINK_PATH = '/settings/keys/typesafe'
@@ -510,7 +510,10 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     if (qarun !== null && qarun !== '') return `/qa-runs/${encodeURIComponent(qarun)}`
     const page = q.get('page')
     const repo = q.get('repo')
-    if (page === 'register' || page === 'tokens') return `${REPOSITORIES_PATH}/${page}`
+    // Register keeps the repository a dashed card picked (REPOS-FOLLOWUPS), so
+    // a reload or a shared link opens it on the same repository.
+    if (page === 'register') return repo === null || repo === '' ? `${REPOSITORIES_PATH}/register` : `${REPOSITORIES_PATH}/register?${new URLSearchParams({ repo }).toString()}`
+    if (page === 'tokens') return `${REPOSITORIES_PATH}/tokens`
     if (page === 'permissions') return `${REPOSITORIES_PATH}/tokens/permissions`
     if (repo !== null && repo !== '') {
       const tab = q.get('tab')
@@ -648,7 +651,10 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
   const repoTail = seg[0] === 'repositories' ? seg.slice(1) : seg[0] === 'config' && seg[1] === 'repositories' ? seg.slice(2) : []
   if (repoTail.length >= 1) {
     const at = (q: Record<string, string>) => plain(`config/repositories?${new URLSearchParams(q).toString()}`)
-    if (repoTail[0] === 'register' && repoTail.length === 1) return at({ page: 'register' })
+    if (repoTail[0] === 'register' && repoTail.length === 1) {
+      const picked = new URLSearchParams(query).get('repo')
+      return picked === null || picked === '' ? at({ page: 'register' }) : at({ page: 'register', repo: picked })
+    }
     if (repoTail[0] === 'tokens') return repoTail[1] === 'permissions' ? at({ page: 'permissions' }) : at({ page: 'tokens' })
     const repo = decodeURIComponent(repoTail[0] ?? '')
     const tab = repoTail[1]
