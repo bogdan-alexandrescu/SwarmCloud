@@ -282,6 +282,9 @@ describe('on a phone the account is a page (frame 10, #503)', () => {
     expect(won(['border', 'border-width', 'border-style'], 390)).toBe('0')
     expect(won(['border-radius'], 390)).toBe('0')
     expect(won(['background', 'background-color'], 390)).toBe('none')
+    // With no rounded corners there is nothing to clip, and the clip cut the
+    // focus ring of `‹ Accounts`, the screen's first control (dark-phone-01).
+    expect(won(['overflow', 'overflow-x', 'overflow-y'], 390)).toBe('visible')
     // The list at 390 and every desktop keep the card.
     expect(won(['border', 'border-width', 'border-style'], 1440)).toBe('1px solid var(--line)')
   })
