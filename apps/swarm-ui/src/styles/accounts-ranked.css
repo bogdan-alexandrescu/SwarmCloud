@@ -362,5 +362,8 @@
    draws them, so Pause, Replace the credential and Remove read as parts of
    one account and not as a second page under it. */
 .acct-sheet .acct-detail > .acct-action { border-top: 1px solid var(--line); padding-top: 12px; }
+/* The section's grid gap spaces its note; `.muted.small`'s own 10px on top of
+   it stood "Replace the credential" 24px over its first line (light-desktop-02). */
+.acct-sheet .acct-action > p.muted.small { margin-top: 0; }
 .acct-sheet .acct-detail > .acct-action.danger { border-top-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
 .acct-sheet .acct-detail > .acct-facts { font-size: var(--t-micro); line-height: var(--lh-micro); }
