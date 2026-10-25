@@ -243,6 +243,29 @@ describe('QA targets: the page and who sees what', () => {
     // MUTATION: swallow a refused run and nothing is said.
     await waitFor(() => expect(visible(card(APPROVED))).toContain('agents_may_file_issues is off'), WAIT)
   })
+
+  it('Delete reports success on the API’s bare 204, never an expired sign-in (CONSOLE-SMALL-FIXES)', async () => {
+    const calls = live('admin')
+    // `routes/qatargets.py` answers a removal with `Response(status_code=204)`:
+    // no body and no content-type, which `serve` cannot spell.
+    const inner = globalThis.fetch
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'DELETE') {
+        await inner(input, init)
+        return new Response(null, { status: 204 })
+      }
+      return inner(input, init)
+    }) as unknown as typeof fetch
+    await mountPage()
+    await waitFor(() => expect(button(card(APPROVED), 'Delete')).not.toBeNull(), WAIT)
+    fireEvent.click(button(card(APPROVED), 'Delete')!)
+    fireEvent.click(button(card(APPROVED), 'Delete shop')!)
+    // MUTATION: read the bare 204 as the sign-in page (as `write` did) and the card says "NOT saved".
+    await waitFor(() => expect(visible(document.body)).toContain('Deleted shop'), WAIT)
+    expect(visible(document.body)).not.toMatch(/NOT saved|expired/)
+    expect(document.querySelector('.qa-target [role="alert"]')).toBeNull()
+    expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.url)).toEqual([`/v1/qa-targets/${APPROVED}`])
+  })
 })
 
 describe('QA targets: the credential form', () => {
