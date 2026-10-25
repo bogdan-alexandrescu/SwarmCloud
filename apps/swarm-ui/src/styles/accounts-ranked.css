@@ -52,7 +52,10 @@
 /* ---- one subscription twice ---- */
 .acct-dup {
   border: 1px solid var(--warn-ink);
-  background: color-mix(in srgb, var(--warn) 10%, var(--surface));
+  /* The page's surface, not a warn tint: the banner's buttons keep their 3:1
+     boundary on it (spacing.accounts), and the warn border and head say what it is. */
+  border-left-width: 4px;
+  background: var(--surface);
   border-radius: 12px;
   padding: 12px 14px;
   margin: 0 0 12px;
@@ -108,6 +111,7 @@
 .acct-rank-row.is-stale .acct-fig > .acct-win,
 .acct-card.is-stale .acct-card-w2 { opacity: 0.6; }
 
+/* Borderless: its `border: 0` is also inline (AccountsTable.tsx `OpenName`, why there). */
 .acct-rank-name {
   border: 0;
   background: none;
@@ -117,7 +121,10 @@
   color: var(--text);
   text-align: left;
   cursor: pointer;
-  border-bottom: 1px dotted var(--text-dim);
+  /* An underline, not a border: a border is the control's boundary and owes 3:1
+     on every row tint, the chosen row's included (spacing.accounts). */
+  text-decoration: underline dotted var(--text-dim);
+  text-underline-offset: 3px;
   overflow-wrap: anywhere;
 }
 .acct-rank-name[aria-current='true'] { color: var(--sk-ac); }
@@ -135,7 +142,7 @@
   line-height: var(--lh-micro);
   font-weight: 600;
   padding: 1px 8px;
-  border-radius: 99px;
+  border-radius: 999px;
   white-space: nowrap;
 }
 .acct-chip.is-yes { color: var(--ok-ink); background: color-mix(in srgb, var(--ok) 18%, transparent); }
@@ -164,7 +171,7 @@
 .acct-win-l b { font-weight: 600; }
 .acct-floor { position: relative; display: block; width: 100%; max-width: 150px; }
 .acct-floor > .ctl-util-track { width: 100%; }
-.acct-floor > s { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--text); border-radius: 1px; }
+.acct-floor > s { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--text); }
 
 /* ---- the phone's cards ---- */
 .acct-cards { display: flex; flex-direction: column; gap: 12px; padding: 0 12px 12px; }
@@ -194,7 +201,9 @@
 .acct-card-more { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
 /* ---- the forecast ---- */
-.acct-forecast { padding: 4px 14px 14px; border-top: 1px solid var(--line); }
+/* No border of its own: the list head is the one bordered surface in this
+   column, and two stacked with no gutter read as one (spacing.accounts). */
+.acct-forecast { padding: 12px 14px 14px; }
 .acct-fc-headrow { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 8px 0; }
 .acct-fc-sub { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); min-width: 0; }
 .acct-fc-headrow > h3 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); }

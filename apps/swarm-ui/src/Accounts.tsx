@@ -4553,7 +4553,8 @@ function Reauth({
   }
 
   return (
-    <div className="acct-action">
+    // `data-replace`: the duplicate banner's "Replace the credential" lands here (#2222).
+    <div className="acct-action" data-replace={account.account_id}>
       <h4>{broken ? 'Sign in again' : 'Replace the credential'}</h4>
       <p className="muted small">
         {broken ? (

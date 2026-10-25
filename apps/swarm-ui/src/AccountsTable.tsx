@@ -389,6 +389,12 @@ function OpenName({ a, chosen, onChoose }: { a: PoolAccount; chosen: boolean; on
       className="acct-open acct-rank-name"
       data-account={a.account_id}
       aria-current={chosen ? 'true' : undefined}
+      // BORDERLESS INLINE: the spacing probe orders rules by source alone, so
+      // the zero-specificity `:where(.app button)` border later in styles.css
+      // out-ranks any rule in this screen's sheet, and it graded a 1px boundary
+      // on the chosen row (2.89:1) that no browser draws (styles.css restates
+      // `border: 0` after it for the old list's `.acct-li > .acct-open`).
+      style={{ border: 0 }}
       onClick={onChoose}
     >
       {accountName(a)}
