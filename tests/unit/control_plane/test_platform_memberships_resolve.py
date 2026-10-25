@@ -479,3 +479,90 @@ def test_a_store_over_settings_without_the_limits_keeps_the_constants(key):
         _ask(store, tenant_id=f"ws{i}", group=f"ws{i}@example.com")
     with pytest.raises(JoinRequestsOpenLimit):
         _ask(store, tenant_id="ws9", group="ws9@example.com")
+
+
+# -- an unread membership never decides a headerless request's workspace ------------
+
+class Prefs:
+    """`Preferences`: the stored default workspace, per email."""
+
+    def __init__(self, **defaults: str) -> None:
+        self.defaults = defaults
+
+    def cached(self, email: str) -> SimpleNamespace:
+        name = email.split("@", 1)[0]
+        return SimpleNamespace(default_workspace=self.defaults.get(name, ""), display_name="")
+
+
+def _build_with_prefs(store: MembershipStore, key: str, prefs: Prefs,
+                      ) -> tuple[Authenticator, FakeSession]:
+    session = FakeSession({g: set(m) for g, m in GOOGLE.items()})
+    auth = Authenticator(
+        api_settings(platform_memberships=True, settings_key=key),
+        StaticTokenVerifier(claims()),
+        CloudIdentityGroups(PROJECT, session=session),
+        preferences=prefs,  # type: ignore[arg-type]
+        memberships=store,
+    )
+    return auth, session
+
+
+def test_a_stored_default_the_unread_memberships_may_hold_is_never_guessed(store, db, key):
+    from swarm_api.auth import PREFERENCE_FREE_ROUTES, require_known_default
+
+    join(store, subject=ALICE)
+    auth, _ = _build_with_prefs(store, key, Prefs(alice="eng"))
+    # The control: read, the stored default applies.
+    assert auth.authenticate("Bearer t-alice").tenant_id == "eng"
+
+    db.broken = True
+    store._cache.clear()
+    ctx = auth.authenticate("Bearer t-alice")
+    assert ctx.default_unknown is True
+    assert ctx.default_ignored == ""
+    with pytest.raises(MembershipUnavailable):
+        require_known_default(ctx, ("POST", "/v1/tasks"))
+    # The switcher's own routes are still served, and a named workspace is.
+    for route in PREFERENCE_FREE_ROUTES:
+        require_known_default(ctx, route)
+    named = auth.authenticate("Bearer t-alice", None, tenant="research")
+    assert named.tenant_id == "research" and named.default_unknown is False
+
+
+def test_with_no_other_choice_an_unread_membership_leaves_the_default_unknown(store, db, key):
+    from swarm_api.auth import require_known_default
+
+    join(store)
+    db.broken = True
+    auth, _ = build(store, key)
+    ctx = auth.authenticate("Bearer t-lee")
+    assert ctx.default_unknown is True
+    with pytest.raises(MembershipUnavailable):
+        require_known_default(ctx, ("POST", "/v1/tasks"))
+
+
+def test_an_unread_membership_leaves_a_group_members_default_known(store, db, key):
+    from swarm_api.auth import require_known_default
+
+    db.broken = True
+    auth, _ = _build_with_prefs(store, key, Prefs())
+    ctx = auth.authenticate("Bearer t-alice")
+    assert ctx.default_unknown is False and ctx.tenant_id == "research"
+    require_known_default(ctx, ("POST", "/v1/tasks"))
+
+
+def test_a_read_cut_short_by_a_flood_is_unknown_not_a_no(store, db, key):
+    join(store)
+    # A worker floods lee's subject with unsigned grants dated after the
+    # valid one, pushing it past the bounded read.
+    for i in range(memberships.SCAN_LIMIT):
+        FakeFirestore.collection(db, memberships.COLLECTION).document().set({
+            "tenant_id": f"junk{i}", "group": ENG_GROUP, "subject": LEE, "state": "member",
+            "by": "x@example.com", "at": f"2027-01-01T00:00:{i % 60:02d}.{i:06d}Z",
+            "via": "join_request", "reason": "",
+            "mac": {"v": 1, "key": "k", "sig": secrets.token_urlsafe(32)}})
+    auth, _ = build(store, key)
+    with pytest.raises(MembershipUnavailable):
+        auth.authenticate("Bearer t-lee", None, tenant="eng")
+    # Denial of service of the membership alone: a group member is untouched.
+    assert auth.authenticate("Bearer t-alice").tenant_id == "research"
