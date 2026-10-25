@@ -381,7 +381,10 @@ def test_the_mcp_sends_the_callers_identity_and_nothing_that_could_raise_it() ->
     """No key that acts as an admin for a non-admin: every header the MCP
     client sets is the caller's own bearer token, the workspace it selects
     (which the API checks against the caller), or content negotiation."""
-    allowed = {"Authorization", "Accept", "Content-Type", "Content-Length", "TENANT_HEADER"}
+    # `Accept-Encoding` is content negotiation (API-GZIP, #1822): it asks for a
+    # gzip body and can raise nothing.
+    allowed = {"Authorization", "Accept", "Accept-Encoding", "Content-Type", "Content-Length",
+               "TENANT_HEADER"}
     seen: dict[str, list[str]] = {}
     for source in _mcp_sources():
         for match in re.finditer(r"add_header\(\s*(?:\"([^\"]+)\"|([A-Za-z_.]+))", source.read_text()):
