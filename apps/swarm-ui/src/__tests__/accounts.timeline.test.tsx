@@ -96,8 +96,8 @@ function b3(now: number): PoolAccount[] {
     under('aieng-claude1', 'five_hour', 0.91, T('2026-10-24T15:10:00Z'), now),
     acct('devops-main', { assigned: 6, can_take_new_agent: false, blocked_by: [{ cap: 6, max_agents: 6 }], windows: { seven_day: win(0.92, now + 2 * D) } }, now),
     acct('devops-team', { assigned: 5, windows: { seven_day: win(0.89, T('2026-10-28T12:00:00Z')) } }, now),
-    under('saga-personal', 'seven_day', 0.98, T('2026-10-26T07:59:00Z'), now),
-    under('saga-team', 'five_hour', 0.95, T('2026-10-24T15:00:00Z'), now),
+    under('example-personal', 'seven_day', 0.98, T('2026-10-26T07:59:00Z'), now),
+    under('example-team', 'five_hour', 0.95, T('2026-10-24T15:00:00Z'), now),
   ]
 }
 
@@ -332,9 +332,9 @@ describe('the Timeline', () => {
     expect(names[0]).toBe('devops-team')
     const first = tl.querySelector('.acct-tl-step')!
     expect(first.getAttribute('title')).toMatch(/^1 from /)
-    // 3 wait, 1 slot now: 1 starts now, 2 queue at the clocks (saga-team, then aieng-claude1).
+    // 3 wait, 1 slot now: 1 starts now, 2 queue at the clocks (example-team, then aieng-claude1).
     await waitFor(() => expect(tl.textContent).toContain('1 start now'), WAIT)
-    expect(tl.textContent).toMatch(/2 queue\s·\ssaga-team takes 2 at \d\d:\d\dZ/)
+    expect(tl.textContent).toMatch(/2 queue\s·\sexample-team takes 2 at \d\d:\d\dZ/)
     // The forecast under it is the Table's own.
     expect(within(tl).getByRole('region', { name: 'Forecast' })).toBeTruthy()
   })
@@ -352,13 +352,13 @@ describe('the Timeline', () => {
     const now = Date.now()
     window.history.replaceState(null, '', '/#capacity/accounts?view=timeline')
     await mount([
-      acct('saga-personal', { windows: { seven_day: win(0.5, now + 3 * D) } }, now),
-      acct('team', { can_take_new_agent: false, blocked_by: [{ duplicate_of: 'eng:saga-personal', reason: 'same organisation' }] }, now),
+      acct('example-personal', { windows: { seven_day: win(0.5, now + 3 * D) } }, now),
+      acct('team', { can_take_new_agent: false, blocked_by: [{ duplicate_of: 'eng:example-personal', reason: 'same organisation' }] }, now),
       acct('copy', { can_take_new_agent: false, blocked_by: [{ duplicate_of: 'other:theirs', reason: 'same organisation' }] }, now),
       acct('old', { stale: true, windows: { seven_day: win(0.4, now + 2 * D) } }, now),
     ])
     const lane = (id: string) => document.querySelector<HTMLElement>(`.acct-tl-lane[data-account="${id}"]`)!
-    expect(lane('eng:team').textContent).toContain('Not handed out: one subscription with saga-personal')
+    expect(lane('eng:team').textContent).toContain('Not handed out: one subscription with example-personal')
     expect(lane('eng:copy').textContent).toContain('one subscription with an account in another workspace')
     expect(lane('eng:copy').textContent).not.toContain('theirs')
     expect(lane('eng:team').classList.contains('is-dup')).toBe(true)
@@ -368,9 +368,9 @@ describe('the Timeline', () => {
   it('opens the Table’s own detail under the lane, keeps the view in the address, and folds the rest', async () => {
     window.history.replaceState(null, '', '/#capacity/accounts?view=timeline')
     await mount(b3(Date.now()))
-    const open = document.querySelector<HTMLButtonElement>('.acct-tl-open[data-account="eng:saga-team"]')!
+    const open = document.querySelector<HTMLButtonElement>('.acct-tl-open[data-account="eng:example-team"]')!
     fireEvent.click(open)
-    expect(window.location.hash).toBe('#capacity/accounts?account=eng%3Asaga-team&view=timeline')
+    expect(window.location.hash).toBe('#capacity/accounts?account=eng%3Aexample-team&view=timeline')
     const detail = await waitFor(() => {
       const d = document.querySelector<HTMLElement>('.acct-tl-detail')
       expect(d).not.toBeNull()
@@ -389,8 +389,8 @@ describe('the Timeline', () => {
     window.history.replaceState(null, '', '/#capacity/accounts')
     await mount(b3(Date.now()))
     await waitFor(() => expect(document.querySelector('.acct-tl')).not.toBeNull(), WAIT)
-    fireEvent.click(document.querySelector<HTMLButtonElement>('.acct-tl-open[data-account="eng:saga-team"]')!)
-    expect(window.location.hash).toBe('#capacity/accounts?account=eng%3Asaga-team&view=timeline')
+    fireEvent.click(document.querySelector<HTMLButtonElement>('.acct-tl-open[data-account="eng:example-team"]')!)
+    expect(window.location.hash).toBe('#capacity/accounts?account=eng%3Aexample-team&view=timeline')
   })
 
   it('draws the empty pool as B6: no lanes, the add form in the first lane, one heading', async () => {
