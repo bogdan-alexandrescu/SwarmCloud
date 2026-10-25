@@ -18,7 +18,7 @@
 // other-workspace case finds a label. Count an aged reading whole in
 // `accountPaceOf` -- the pace case moves.
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AccountsBoard } from '../api'
@@ -282,10 +282,11 @@ describe('on a phone the opened account is the whole screen (mock-up A P3)', () 
 })
 
 describe('the page’s duplicate banner opens the registration to fix', () => {
-  it('is a link to its `?account=` address, not a bordered button on the wash, and opens its sheet', async () => {
-    // A <button> there took `:where(.app button)`'s --ctl-bd edge in the
-    // spacing sweep, 2.8:1 on the amber wash in dark; a link has no edge to
-    // lose, and its address can be opened in a new tab or shared.
+  // MAIN'S BANNER, THIS SHEET (PR 2309 + PR 2326): the banner sits on the
+  // page's surface, so its two actions are buttons with a 3:1 edge, and both
+  // open the account's sheet. Replace the credential also brings the sheet's
+  // own Replace the credential section into view and focuses its button.
+  const dupBoard = () => {
     const kept = account({ account_id: 'eng:home-personal', label: 'home-personal' })
     const extra = account({
       account_id: 'eng:team',
@@ -303,14 +304,33 @@ describe('the page’s duplicate banner opens the registration to fix', () => {
         readAt: Date.now(),
       } as AccountsBoard),
     )
+  }
+  const findBanner = async () =>
+    (
+      await screen.findByText(
+        (_, el) => el?.classList.contains('acct-dup-head') === true && el.textContent === 'team and home-personal are one subscription',
+        undefined,
+        WAIT,
+      )
+    ).closest('.acct-dup') as HTMLElement
+
+  it('opens the account’s sheet from Open', async () => {
+    dupBoard()
     render(<AccountsScreen />)
-    const banner = (await screen.findByText('team and home-personal are one subscription', undefined, WAIT)).closest('.acct-dup')!
-    expect(banner.querySelector('button')).toBeNull()
-    const link = banner.querySelector<HTMLAnchorElement>('.acct-dup-acts > a.c-link')!
-    expect(link.textContent).toBe('Open team')
-    expect(link.getAttribute('href')).toBe('#capacity/accounts?account=eng%3Ateam')
-    fireEvent.click(link)
+    const banner = await findBanner()
+    fireEvent.click(within(banner).getByRole('button', { name: 'Open team' }))
     await waitFor(() => expect(document.querySelector('.acct-sheet')?.getAttribute('aria-label')).toBe('Account team'), WAIT)
+  })
+
+  it('lands Replace the credential on the sheet’s own section, its button focused', async () => {
+    dupBoard()
+    render(<AccountsScreen />)
+    const banner = await findBanner()
+    fireEvent.click(within(banner).getByRole('button', { name: 'Replace the credential' }))
+    await waitFor(() => expect(document.querySelector('.acct-sheet')?.getAttribute('aria-label')).toBe('Account team'), WAIT)
+    const section = document.querySelector<HTMLElement>('.acct-sheet [data-replace="eng:team"]')
+    expect(section, 'the sheet has no section the banner can land on').not.toBeNull()
+    await waitFor(() => expect(section!.contains(document.activeElement)).toBe(true), WAIT)
   })
 })
 

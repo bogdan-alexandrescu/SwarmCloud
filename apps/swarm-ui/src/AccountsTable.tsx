@@ -16,7 +16,7 @@
  * name is the same `acct-open` button the list was, so the account's detail
  * and every control on it are where they were.
  */
-import { useState, type ReactNode } from 'react'
+import { Fragment, useState, type ReactNode } from 'react'
 
 import { accountName } from './accountName'
 import { AcctState } from './AccountState'
@@ -276,19 +276,31 @@ function Tags({ a, names }: { a: PoolAccount; names: ReadonlyMap<string, string>
   return (
     <span className="acct-tags">
       {dup ? (
-        <span className="acct-tag is-dup">same subscription as {dup}</span>
+        <span className="acct-tag is-dup">
+          same subscription as <span className="acct-nm">{dup}</span>
+        </span>
       ) : a.duplicate_reason ? (
         <span className="acct-tag is-dup">registered in another workspace too</span>
       ) : null}
       {possible && !dup && (
-        <span className="acct-tag is-dup">may be the same subscription as {possibleOf ?? 'another workspace’s account'}</span>
+        <span className="acct-tag is-dup">
+          may be the same subscription as{' '}
+          {possibleOf === null ? 'another workspace’s account' : <span className="acct-nm">{possibleOf}</span>}
+        </span>
       )}
       {extra.length > 0 && (
         <span
           className="acct-tag is-unk"
           title={`${extra.join(', ')}: ${extra.length === 1 ? 'a window' : 'windows'} this console does not know by name, held to the default floor`}
         >
-          {extra.length === 1 ? '1 window' : `${extra.length} windows`} not known by name: {extra.join(', ')}
+          {extra.length === 1 ? '1 window' : `${extra.length} windows`} not known by name:{' '}
+          {/* The provider's own key, drawn as an id: it is data, not a word we chose. */}
+          {extra.map((w, i) => (
+            <Fragment key={w}>
+              {i > 0 && ', '}
+              <span className="mono">{w}</span>
+            </Fragment>
+          ))}
         </span>
       )}
     </span>
@@ -389,6 +401,12 @@ function OpenName({ a, chosen, onChoose }: { a: PoolAccount; chosen: boolean; on
       className="acct-open acct-rank-name"
       data-account={a.account_id}
       aria-current={chosen ? 'true' : undefined}
+      // BORDERLESS INLINE: the spacing probe orders rules by source alone, so
+      // the zero-specificity `:where(.app button)` border later in styles.css
+      // out-ranks any rule in this screen's sheet, and it graded a 1px boundary
+      // on the chosen row (2.89:1) that no browser draws (styles.css restates
+      // `border: 0` after it for the old list's `.acct-li > .acct-open`).
+      style={{ border: 0 }}
       onClick={onChoose}
     >
       {accountName(a)}
@@ -569,7 +587,15 @@ function AccountCards({
       })}
       {hidden.length > 0 && (
         <p className="acct-card-more">
-          {hidden.length} more: {hidden.map((a) => accountName(a)).join(', ')}.{' '}
+          {hidden.length} more:{' '}
+          {hidden.map((a, i) => (
+            <span key={a.account_id}>
+              {i > 0 && ', '}
+              {/* Whole, as in the verdict: `team-copy` broke at its hyphen at 390. */}
+              <span className="acct-nm">{accountName(a)}</span>
+            </span>
+          ))}
+          .{' '}
           <button type="button" className="ctl-link" onClick={() => setAll(true)}>
             Show all {total}
           </button>

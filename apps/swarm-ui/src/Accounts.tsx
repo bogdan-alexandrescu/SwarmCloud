@@ -681,6 +681,8 @@ function Pool({
   }, [sheetOpen])
 
   if (shown === null) {
+    const unread = shortfall(board)
+    const unreadIds = board.page.unreadable_documents ?? []
     return (
       /* THE EMPTY POOL IS THE SAME CARD (visual QA V072, 2026-10-11). The
          heading sat on the page above a bordered panel and the add form floated
@@ -704,16 +706,42 @@ function Pool({
                 failing, and an operator who assumes the second will go looking
                 for an error that was never raised.
                 `honesty.prose.test.tsx` pins a `?` to this panel. */}
+            {/* AN UNREADABLE DOCUMENT IS NOT A ZERO (rendered 2026-10-25): the
+                page head said "1 document unreadable, so this list is short"
+                while this panel said "No accounts registered" with the zero
+                mark. The store holds that account; this page cannot read it. */}
             <h3>
-              No accounts registered
+              {unread > 0 ? 'No account could be read' : 'No accounts registered'}
               <HelpCard topic="park-on-missing-credential" />
             </h3>
             {/* B4.4: THE MARK IS THE CLAIM. `.ctl-mark.is-zero` says "the read
                 succeeded and returned nothing" in two words, in the fixed
                 vocabulary every other screen uses for the same kind of nothing. */}
-            <p className="acct-flags">
-              <Mark kind="zero" say="The account read succeeded and this pool has no accounts yet." />
-              <span>{phone ? 'add the first one below' : 'add the first one beside this list'}</span>
+            {unread > 0 ? (
+              <p className="acct-flags">
+                <Mark kind="partial" say="The store holds account documents this read could not parse." />
+                <span>
+                  {pluralise(unread, 'registered account')} could not be read
+                  {unreadIds.length > 0 && ': '}
+                  {unreadIds.map((id, i) => (
+                    <span key={id}>
+                      {i > 0 && ', '}
+                      <span className="acct-nm raw">{id}</span>
+                    </span>
+                  ))}
+                </span>
+              </p>
+            ) : (
+              <p className="acct-flags">
+                <Mark kind="zero" say="The account read succeeded and this pool has no accounts yet." />
+                <span>{phone ? 'add the first one below' : 'add the first one beside this list'}</span>
+              </p>
+            )}
+            {/* WHICH ORGANISATION (#2222): one login can hold two, and the
+                sign-in takes the one selected in that browser. */}
+            <p className="muted small">
+              Sign in to the organisation you mean: one claude.ai login can hold two, and the sign-in takes the one that is
+              selected.
             </p>
             {/* WHICH ORGANISATION (#2222): one login can hold two, and the
                 sign-in takes the one selected in that browser. */}
@@ -4429,7 +4457,8 @@ function Reauth({
   }
 
   return (
-    <div className="acct-action">
+    // `data-replace`: the duplicate banner's "Replace the credential" lands here (#2222).
+    <div className="acct-action" data-replace={account.account_id}>
       <h4>{broken ? 'Sign in again' : 'Replace the credential'}</h4>
       <p className="muted small">
         {broken ? (

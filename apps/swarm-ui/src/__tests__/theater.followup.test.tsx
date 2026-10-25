@@ -20,7 +20,8 @@
 //   QA12-05 while you hold control, the top flag reads "You are in control".
 //   QA12-21 one m:ss countdown; in control, the idle timer says so.
 //   Owner decision "Neutral wording": steps that fit any hand-off, the
-//   agent's own reason as the headline, password masking as a fact.
+//   agent's own reason as the headline. Nothing says a password is masked:
+//   the live view shows the page as drawn (BGD, 2026-10-25; part of #2298).
 //
 // MUTATIONS, one per block: drop the 55vh floor from the phone media block;
 // drop the phone `.th-bottom .live-ask` rule; put the top chips back; drop the
@@ -493,7 +494,7 @@ describe('the hand-off checklist (QA12-23, QA12-05, QA12-21, neutral wording)', 
     expect(stripStep().dataset.done).toBe('false')
   })
 
-  it('neutral wording: the agent’s reason is the headline, no step says sign in, masking is a fact', async () => {
+  it('neutral wording: the agent’s reason is the headline, no step says sign in, nothing says masked', async () => {
     stubFetch(answer)
     render(<Tab handoff={wait()} />)
     await flush()
@@ -504,8 +505,7 @@ describe('the hand-off checklist (QA12-23, QA12-05, QA12-21, neutral wording)', 
     for (const s of steps) expect(s).not.toMatch(/sign[ -]?in|password/i)
     expect(steps[0]).toMatch(/asked for your help/i)
     expect(list.textContent).not.toMatch(/signed-in/i)
-    const notes = [...list.querySelectorAll('p')].map((p) => p.textContent ?? '')
-    expect(notes.some((n) => /passwords .*masked/i.test(n))).toBe(true)
+    expect(list.textContent).not.toMatch(/masked/i)
   })
 
   it('QA12-05 / QA12-21: while you hold control the flag reads "You are in control" and the timer is the idle one', async () => {

@@ -43,6 +43,14 @@ const api = vi.hoisted(() => ({
   loadStats: vi.fn(),
   // Platform counts reads the session to price its first run (AH-9).
   loadMe: vi.fn(),
+  // And the workspace roster, once on mount, to price its Over time read
+  // (COUNTS-PAGE, #2149). Refused here: the price stays per workspace.
+  loadTenants: vi.fn(() =>
+    Promise.resolve({
+      status: 'error',
+      error: { kind: 'admin_required', httpStatus: 403, code: null, message: 'not an admin' },
+    }),
+  ),
   loadAdminQuota: vi.fn(),
 }))
 vi.mock('../api', () => api)
@@ -210,6 +218,15 @@ const BUDGET = {
   // not a sentence of prose; the margin is the same as before, so one more
   // job fits and a paragraph still does not.
   'Platform ticks': 195,
+  // OVER TIME, MOUNTED ON PLATFORM COUNTS BY COUNTS-PAGE (#2149, BGD's pick
+  // of 2026-10-24, counts-a.html). Measured on its own, as the ticks are, so
+  // its words neither hide inside Platform counts' 32 nor raise it: 196 at the
+  // mount, before its Run, with the roster refused so the price reads per
+  // workspace. Most of it is the not-run card that names what Run will draw
+  // and what it costs, and the five tiles' labels and feet, each a fact
+  // about a figure rather than a sentence of prose. The margin is under the
+  // others' quarter on purpose: a renamed tile fits, a paragraph does not.
+  'Over time': 205,
   // RAISED 52 -> 76, 2026-09-25, BY THE OWNER'S CP-8 / CP-9 / CP-10 DECISIONS
   // (#85), measured at 61 on CI after them. What the words are: a `Feeds pool`
   // column naming the pool each cap feeds, column names that carry their basis
@@ -242,12 +259,18 @@ describe('the operator screens carry data, not prose', () => {
     const { container } = render(<PlatformCountsScreen />)
     screen.getByRole('button', { name: /count/i }).click()
     await waitFor(() => expect(container.querySelector('.ctl-util, .split-row')).not.toBeNull())
-    measured['Platform counts'] = words(container, '.counts-ticks')
+    measured['Platform counts'] = words(container, '.counts-ticks, .pot')
     expect(measured['Platform counts']).toBeLessThanOrEqual(BUDGET['Platform counts'])
     const ticks = container.querySelector<HTMLElement>('.counts-ticks')
     expect(ticks, 'the platform ticks section was not drawn, so its budget measured nothing').not.toBeNull()
     measured['Platform ticks'] = words(ticks!)
     expect(measured['Platform ticks']).toBeLessThanOrEqual(BUDGET['Platform ticks'])
+    // MUTATION: drop <PlatformOverTime /> from the page, and this goes red
+    // rather than measuring nothing.
+    const over = container.querySelector<HTMLElement>('.pot')
+    expect(over, 'the Over time section was not drawn, so its budget measured nothing').not.toBeNull()
+    measured['Over time'] = words(over!)
+    expect(measured['Over time']).toBeLessThanOrEqual(BUDGET['Over time'])
   })
 
   it('Provider quota stays inside its word budget', async () => {

@@ -5,7 +5,7 @@
 //
 // WHAT EACH CASE HOLDS, over routes/qatargets.py's shapes:
 //   * a target with `discover` and nothing discovered shows Run discovery to a
-//     member, and Run is disabled saying why;
+//     member, and Run is enabled: its capture steps crawl (QAENV-RUN, §3.1);
 //   * Run discovery POSTs the target's own `:discover` with nothing a caller
 //     picks, and the card then shows Discovering… linking the workflow;
 //   * a target with discovered screens shows "N screens discovered, <time
@@ -121,9 +121,10 @@ describe('QA targets: discovery from the console (QA-DISCOVER, §4.1)', () => {
     const start = button(before, 'Run discovery')
     expect(start).not.toBeNull()
     expect(start!.disabled).toBe(false)
-    // MUTATION: leave Run enabled with nothing discovered and the click is a certain 422.
-    expect(button(before, 'Run')!.disabled).toBe(true)
-    expect(visible(before.querySelector('[data-cannot-run]'))).toContain('Run discovery')
+    // MUTATION: keep Run disabled with nothing discovered: since QAENV-RUN the API runs a target that
+    // discovers from its base alone, its capture steps crawling (qa-environments.md §3.1).
+    expect(button(before, 'Run')!.disabled).toBe(false)
+    expect(before.querySelector('[data-cannot-run]')).toBeNull()
 
     fireEvent.click(start!)
     await waitFor(() => expect(calls.filter((c) => c.method === 'POST').length).toBe(1), WAIT)

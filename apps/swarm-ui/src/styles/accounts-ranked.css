@@ -27,6 +27,10 @@
 }
 .acct-verdict-big > small { font-size: var(--t-figure); font-weight: 550; color: var(--text-dim); }
 .acct-verdict-say { min-width: 0; }
+/* AN ACCOUNT NAME IS ONE WORD (rendered 2026-10-25): at 390 the verdict broke
+   `five-hour-floor` at its hyphen, which reads as two accounts. Names are
+   labels a person typed, short by habit; the table keeps them whole too. */
+.acct-nm { white-space: nowrap; }
 .acct-verdict-head { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; }
 .acct-verdict-sub { margin: 4px 0 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
 .acct-verdict-sub b { color: var(--text); }
@@ -52,7 +56,10 @@
 /* ---- one subscription twice ---- */
 .acct-dup {
   border: 1px solid var(--warn-ink);
-  background: color-mix(in srgb, var(--warn) 10%, var(--surface));
+  /* The page's surface, not a warn tint: the banner's buttons keep their 3:1
+     boundary on it (spacing.accounts), and the warn border and head say what it is. */
+  border-left-width: 4px;
+  background: var(--surface);
   border-radius: 12px;
   padding: 12px 14px;
   margin: 0 0 12px;
@@ -60,10 +67,6 @@
 .acct-dup-head { font-size: var(--t-body); }
 .acct-dup > p { margin: 2px 0 0; font-size: var(--t-meta); line-height: var(--lh-meta); max-width: none; }
 .acct-dup-acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-/* NO EDGE ON THE WASH: `--ctl-bd` measures 2.8:1 on this amber in dark, under
-   a control boundary's 3:1. `.c-link` already draws none in a browser; this is
-   named so no `button` rule of any weight can put one back (spacing sweep). */
-.acct-dup-acts > .c-link, .acct-ss-dup .c-link { border: 0; min-height: 0; padding: 0; background: none; }
 
 /* ---- the ranked table ---- */
 .acct-rank-note { margin: 0; padding: 8px 12px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
@@ -112,6 +115,7 @@
 .acct-rank-row.is-stale .acct-fig > .acct-win,
 .acct-card.is-stale .acct-card-w2 { opacity: 0.6; }
 
+/* Borderless: its `border: 0` is also inline (AccountsTable.tsx `OpenName`, why there). */
 .acct-rank-name {
   border: 0;
   background: none;
@@ -121,7 +125,10 @@
   color: var(--text);
   text-align: left;
   cursor: pointer;
-  border-bottom: 1px dotted var(--text-dim);
+  /* An underline, not a border: a border is the control's boundary and owes 3:1
+     on every row tint, the chosen row's included (spacing.accounts). */
+  text-decoration: underline dotted var(--text-dim);
+  text-underline-offset: 3px;
   overflow-wrap: anywhere;
 }
 .acct-rank-name[aria-current='true'] { color: var(--sk-ac); }
@@ -162,13 +169,14 @@
 .acct-tag.is-unk { color: var(--text-dim); background: var(--surface-2); border: 1px dashed var(--line); }
 
 /* A window against its floor: the shared track, and the floor as a tick at
-   100% minus the floor. At 560px and below the phone block hides every track
-   (styles.css), and the words carry the window there, as on every screen. */
+   100% minus the floor. At 560px and below styles.css's phone block hides
+   every track; the phone cards draw this one anyway (the phone block below
+   says why). */
 .acct-win { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .acct-win-l b { font-weight: 600; }
 .acct-floor { position: relative; display: block; width: 100%; max-width: 150px; }
 .acct-floor > .ctl-util-track { width: 100%; }
-.acct-floor > s { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--text); border-radius: 0; }
+.acct-floor > s { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--text); }
 
 /* ---- the phone's cards ---- */
 .acct-cards { display: flex; flex-direction: column; gap: 12px; padding: 0 12px 12px; }
@@ -195,13 +203,16 @@
 .acct-card-w2 small { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .acct-card-meta { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
 .acct-card-meta b { color: var(--text); font-weight: 600; }
+/* The id is pasted into commands, so it is read whole: on a line of its own
+   when it does not fit the rest of the line (`u-bogdan:five-hour-` / `floor`
+   at 390), and broken only when it is wider than the card. */
+.acct-card-meta .raw { display: inline-block; max-width: 100%; }
 .acct-card-more { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
 /* ---- the forecast ---- */
-/* The rule above it is an inset shadow, not a border: the list's head and
-   this are two blocks of one card, not two surfaces stacked with no gutter
-   (the spacing sweep's surfaces-touch). */
-.acct-forecast { padding: 4px 14px 14px; box-shadow: inset 0 1px 0 var(--line); }
+/* No border of its own: the list head is the one bordered surface in this
+   column, and two stacked with no gutter read as one (spacing.accounts). */
+.acct-forecast { padding: 12px 14px 14px; }
 .acct-fc-headrow { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 8px 0; }
 .acct-fc-sub { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); min-width: 0; }
 .acct-fc-headrow > h3 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); }
@@ -242,7 +253,13 @@
   }
   .acct-dup { padding: 10px 12px; }
   .acct-dup-why { display: none; }
-  .acct-floor { display: none; }
+  /* THE FLOOR STAYS ON THE PHONE (mock-up A, P1-P2; rendered 2026-10-25).
+     styles.css's phone block hides every `.ctl-util-track` because in a
+     `.ctl-util` row the bar only pictures the number beside it. This one does
+     not: the tick is the only place the 15% / 5% floor is drawn, and a card's
+     window column is ~150px at 390, room for it -- the same reason Pools'
+     Use meter is kept (capacity.css, V086). Out-ranks that rule at (0,3,0). */
+  .acct-card-w2 .acct-floor > .ctl-util-track { display: flex; }
   .acct-split.is-ranked > .acct-pane { border-top: 0; }
 }
 
@@ -306,11 +323,11 @@
      account scrolls the page to the sheet, and the sticky phone header
      (`--sk-pbar-h`) covered its first line, the way back. */
   .acct-split.is-ranked > .acct-sheet { scroll-margin-top: calc(var(--sk-pbar-h, 44px) + 8px); }
-  /* P3 DRAWS BOTH WINDOWS WITH THEIR FLOORS: the phone list's cards drop the
-     floor track for room; the opened account is the page, and has it. */
+  /* P3 DRAWS BOTH WINDOWS WITH THEIR FLOORS, as the phone list's cards do
+     (`.acct-card-w2` above): styles.css hides every `.ctl-util-track` at 560
+     and under, and the sheet's two are its picture, as
+     `.cap-pools.is-stacked` keeps its own. */
   .acct-ss-wins .acct-floor { display: block; }
-  /* styles.css hides every `.ctl-util-track` at 560 and under; the sheet's
-     two are its picture, as `.cap-pools.is-stacked` keeps its own. */
   .acct-ss-wins .acct-floor > .ctl-util-track { display: flex; }
   .acct-sheet-head { min-height: 0; }
   .acct-sheet-crumb,

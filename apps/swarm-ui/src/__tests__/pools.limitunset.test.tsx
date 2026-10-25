@@ -29,6 +29,9 @@ const api = vi.hoisted(() => ({
   loadAdminPools: vi.fn(),
   setPoolLimit: vi.fn(),
   loadMe: vi.fn(),
+  // Pool limits' third read (POOL-LIMITS-QUOTA): stubbed like the others, so
+  // the one macrotask below drains it too rather than the fixture's 170 ms.
+  loadAdminQuota: vi.fn(),
 }))
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()

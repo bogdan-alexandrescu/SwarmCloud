@@ -1317,11 +1317,18 @@ Designed 2026-10-22 for #1933 in
 [design/visual-qa-any-app.md](design/visual-qa-any-app.md) §6; **built by lane
 VQ-7** (`swarm_api/schedtypes/visual_qa.py`, the `TYPES` entry), on lane VQ-2's
 QA targets (`swarm_api/qatargets.py`). A schedule is the optional trigger; the
-on-demand one is `POST /v1/qa-targets/{id}:run`.
+on-demand one is `POST /v1/qa-targets/{id}:run`. Since lane QAENV-RUN
+(2026-10-23, #2136) a target may carry several environments, and a firing
+runs the legs it names
+([design/qa-environments.md](design/qa-environments.md) §2.2, §7).
 
 * **Does.** A firing **is the target's `:run`**, made by the schedule's
-  owner: the same `QaTargets.runnable`, `render_run` and `record_run` the
-  route calls, in its order. The one difference is that the workflow is
+  owner: the same `QaTargets.runnable_legs` (every named leg checked, and
+  each rendered, before any is submitted), `open_group` and per-leg
+  `record_run` the route calls, in its order. A firing is **one work item
+  per leg**: one run group, one workflow per leg, each within the firing's
+  room. A leg the room cannot hold is not started, said in the group and in
+  the firing's selection (`no_room`), and the next firing runs it. The one difference is that the workflow is
   submitted through the firing, so it carries the firing's mark and spends a
   place of its room. It runs with `file: "issues"`, `:run`'s default. The
   browser steps' `metadata.qa_target` is a reserved key (VQ2-RESERVE), so the
@@ -1338,8 +1345,12 @@ on-demand one is `POST /v1/qa-targets/{id}:run`.
   would page someone over a decision nobody had made yet. Refused firings
   still count toward §4.4's consecutive-failure pause, which is what stops a
   schedule whose host is never approved from refusing every day for ever.
-* **Parameters.** `target` only: a QA target id. Nothing about the run is a
-  schedule parameter. The URL, sign-in, screens, flows and filing rules all
+* **Parameters.** `target`, a QA target id, and optional `environments`,
+  the target's entries to run by name (1 to 8 unique names, every entry
+  when unset). Each name is checked against the target at create, at edit
+  and at every firing; a name the target lacks is refused
+  `qa_target_environment_unknown`. Nothing else about the run is a schedule
+  parameter. The URL, sign-in, screens, flows and filing rules all
   belong to the target, which a workspace admin sets (design §1.1). So a
   schedule can only start a run a member could start by hand (invariant 10).
 * **The tenant.** The target must be the schedule's tenant's own. At create
@@ -1358,18 +1369,25 @@ on-demand one is `POST /v1/qa-targets/{id}:run`.
   application.
 * **Gate.** Run and plan auto, merge **off**, and the floor is the same. It
   files issues and changes no code, so there is no merge gate to set.
-* **Budget.** `BUDGET_CAPS` in the executor: `per_run_usd` 40, `per_day_usd`
-  80, `max_concurrent` 1, set by BGD on 2026-10-22 (VQ7-CAPS, #1933) from the
-  first measured run: the full-console QA run 5b (`wf_025ae735511546d99eff`,
-  17 steps, 362 screenshots) cost $23.62, 94% of the $25 per run the type
-  first shipped with. $40 leaves headroom over that run; $80 a day is the
-  daily firing plus one run-now.
-* **Produces.** One QA workflow per firing. Its findings are filed as issues
-  in the target's repository by the workflow's `file` step, through the
-  brokered issue tools (design §5).
+* **Budget.** `BUDGET_CAPS` in the executor: `per_run_usd` 40 a leg,
+  `per_day_usd` 160, `max_concurrent` 2, set by BGD on 2026-10-23
+  ([design/qa-environments.md](design/qa-environments.md) §10, Q9 (a)).
+  `per_run_usd` is a tripwire per work item, and a leg is one, so $40 bounds
+  each leg as it bounded a run; `max_concurrent` 2 lets a two-leg firing
+  start both legs; $160 a day keeps the daily firing plus one run-now for
+  both legs. A schedule may set lower figures. The history: BGD first set
+  $40 a run, $80 a day and one at a time on 2026-10-22 (VQ7-CAPS, #1933)
+  from the first measured run, the full-console QA run 5b
+  (`wf_025ae735511546d99eff`, 17 steps, 362 screenshots), which cost $23.62,
+  94% of the $25 per run the type first shipped with. A leg also pays its
+  capture steps' crawl, which no run had measured when the caps were set.
+* **Produces.** One run group per firing and one QA workflow per leg. Each
+  leg's findings are filed as issues in the target's repository by that
+  workflow's `file` step, through the brokered issue tools (design §5), one
+  issue per finding per leg, titled `[<leg>]`.
 * **Blast radius.** Issues in one repository the tenant registered, at most
-  the target's `max_issues` per run, and read-only traffic to one approved
-  host at the target's rate.
+  the target's `max_issues` per leg, and read-only traffic to each named
+  leg's approved origins at that leg's rate.
 
 ### 3.18 `image-tool-rescan`
 
@@ -1560,7 +1578,7 @@ admin, not by a gate set to `auto`.
 
 | stop | detected | what happens |
 |---|---|---|
-| **IAM, Terraform bootstrap, `terraform/**/iam*.tf`, any `google_*_iam_*` change** | at plan (the plan's `files`, and a scan of step prompts for the paths) **and** at merge (the pull request's changed files, read through the forge API before the merge continuation is submitted, `issueci._merge`'s point) | **Held** (§4.5, "The hold lives on the issue run"), and the approver must satisfy BOTH the hold's rule and the schedule's approvers (`owner_only` or a named list): a hold only ever makes approval stricter and never replaces them. In a `platform: true` repository the hold is `NEEDS_OWNER` with `approvers: owner_only`. In any other repository it is `NEEDS_SECOND_MEMBER` with `approvers: second_member` (§4.6, SD11). The plan's files are advisory, which is why the merge check exists |
+| **IAM, Terraform bootstrap, `terraform/**/iam*.tf`, any `google_*_iam_*` change** | at plan (the plan's `files`, and a scan of step prompts for the paths) **and** at merge (the pull request's changed files, read through the forge API before the merge continuation is submitted, `issueci._merge`'s point) | **Held** (§4.5, "The hold lives on the issue run"), and the approver must satisfy BOTH the hold's rule and the schedule's approvers (`owner_only` or a named list): a hold only ever makes approval stricter and never replaces them. In a `platform: true` repository the hold is `NEEDS_OWNER` with `approvers: owner_only`. In any other repository it is `NEEDS_SECOND_MEMBER` with `approvers: second_member` (§4.6, SD11). The plan's files are advisory, which is why the merge check exists. The merge check reads the changed files AND their patches, and a hold whose every stop came from the plan's prompt alone (none from the plan's files or the issue; never `security`) clears there when none of it matches the real change: the run's pull request records `hold_cleared` ("hold set from the plan's prompt; the pull request changes none of it"), and the merge follows the gate's ordinary approval (#2259) |
 | **The frozen contract**, `apps/common/swarm_common/**`, in a repository whose registration marks it `platform: true` | the same two points | `NEEDS_OWNER` with `approvers: owner_only`, and the inbox item links [contract-change-requests.md](contract-change-requests.md). `platform: true` exists only in a platform repository, so this hold never reaches another tenant |
 | **`.github/workflows/**`** | at plan | **Refused, not held.** The credential cannot push those files (§0), so the step would fail after spending. When the planner's plan names such a file, the plan is not stored: the run moves `PLANNING` → `FAILED`, a transition `RUN_TRANSITIONS` already has, with `error` carrying the code `WORKFLOWS_PATH` and the matched files. No workflow is submitted, no re-plan is attempted, and no state is added. The issue gets a comment saying the change must be made by a person or split out of the issue, and the sweep's cooldown (§3.1) applies to it as to `NOT_READY`. A person's plan edit (`PLANNED` → `PLANNED`) that adds such a path is refused with the existing 422 `invalid_plan`, naming the path |
 | **A security-class issue**: label `security`, or the form's severity S0 | at selection and at plan | Excluded from `issue-sweep` by default. If a member removes `security` from `labels_exclude`, or a run is created on such an issue by any path, its plan is **always** held and its merge is never `auto` (owner decision 2026-10-08). The hold is `NEEDS_OWNER`, `approvers: owner_only`, in a `platform: true` repository, and `NEEDS_SECOND_MEMBER` elsewhere (SD11) |
@@ -1674,6 +1692,30 @@ Two approvers racing produce one transition, and the loser gets 409
   merges, or switch its merge to automatic (§4.2), when the tenant has more
   than one member. In a personal `u-*` tenant there is one person, so the
   rule cannot apply, and the console says so on the gate card.
+* **The owner waiver** (**Owner decision 2026-10-24, "Owner may decide,
+  audited"**, #2259). Where only the owner may decide -- the gate's approvers
+  or the item's hold are `owner_only` -- the second-person rule would leave
+  nobody: `owner_only` refuses every other member and the rule refuses the
+  owner as the last editor. Measured on `apr_76e9cdc4800ea95c5609fd9b`. So
+  there the platform owner decides even as the last editor, and the
+  decision's transaction writes a second `schedule_audit` row,
+  `second_person_waived_owner`, naming the approval, the schedule and the
+  last editor. Nobody else reaches it. **A named list of the owner alone
+  is owner-only too** (BGD's decision 2026-10-25, "Yes: treat [owner] like
+  owner_only"): its entries, stripped and lower-cased, are one address and
+  that address is the owner's, as the caller's own owner check found it. Its
+  waiver row records the list as it stands as `approvers`, not `owner_only`,
+  so the audit says what the gate was. Every other named list keeps the rule:
+  two names, the owner beside anyone else, a blank entry, an alias, or one
+  member who is not the owner. A refusal names who may decide (the
+  owner, or the other named approvers), never "another member" where no other
+  member is allowed, and never the refused member: a named list of the last
+  editor alone, where that editor is not the owner, says nobody may decide
+  until another member changes the schedule's approvers. **The `/swarmcloud approve` comment path carries the
+  waiver too** (owner answer 2026-10-25): the owner's comment on such a merge
+  is decided exactly as the inbox's approve is, and writes the same
+  `second_person_waived_owner` row beside the decision's (whose detail says
+  `via: github_comment`); everyone else keeps the second-person rule there.
 * **Platform admins cannot approve another tenant's work** by being admins
   (§5.3), and that includes `PLATFORM_OWNER`. An admin who is also a member
   approves as a member. So an `owner_only` item can only exist where the owner

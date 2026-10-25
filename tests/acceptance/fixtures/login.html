@@ -10,9 +10,10 @@
 
   THE LAYOUT IS THE MEASUREMENT. tests/acceptance/test_live_browser.py finds
   the cyan marker in a frame, and from it where the password field must be:
-  the same left edge and width, 80 CSS pixels lower, 40 tall. Every pixel of
-  that box must be the mask's paint, and no pixel of the field's own magenta
-  may show anywhere. Change a number here and change it there
+  the same left edge and width, 80 CSS pixels lower, 40 tall. That box must
+  show the field as Chromium drew it -- its own magenta, dots and caret
+  included -- since the live view paints nothing over a frame (BGD,
+  2026-10-25). Change a number here and change it there
   (MARKER_CSS, FIELD_OFFSET_CSS, FIELD_CSS); a unit test holds them equal.
 
   THE PASSWORD GOES NOWHERE. The field has no `name`, so a form submission

@@ -10,13 +10,13 @@ part of the fix:
 
 * the capture rate follows control: 30 a second while a person holds it, 10
   while people only watch or the relay records, none with nobody there;
-* an update carries only the 64x64 tiles that changed, and never a pixel the
-  mask did not leave -- a masked area whose contents change stays masked in
-  the update;
+* an update carries only the 64x64 tiles that changed, and the viewer holds
+  exactly the published frame after it -- a field whose contents change is
+  sent as drawn (nothing is painted over a frame since LIVE-NOMASK, #2298);
 * a viewer that asks once is sent once, however many frames are published
   meanwhile: nothing queues behind a slow viewer;
 * Tight, which noVNC offers, is lossless here: Fill and zlib'd Basic, never
-  JPEG, and what the viewer rebuilds is the masked frame byte for byte;
+  JPEG, and what the viewer rebuilds is the published frame byte for byte;
 * a controller's key reaches the display while an update is being encoded,
   and the framebuffer is grabbed off the event loop.
 
@@ -41,7 +41,6 @@ import pytest
 from agent_worker.livegate import __main__ as gate_main
 from agent_worker.livegate import rfb
 from agent_worker.livegate.capture import Frame
-from agent_worker.livegate.mask import MASK_RGB, MaskState, Outcome
 
 TIGHT = 7
 ZLIB = 6
@@ -232,26 +231,6 @@ class Gate:
         await asyncio.gather(*self.tasks, return_exceptions=True)
 
 
-def _clean() -> MaskState:
-    class _Clean(MaskState):
-        def apply(self, frame: Frame):  # type: ignore[override]
-            return Outcome.MASKED
-
-    return _Clean()
-
-
-class _BoxMask(MaskState):
-    """A mask over one box -- a password field -- as `MaskState.apply` paints it."""
-
-    def __init__(self, box: tuple[int, int, int, int]) -> None:
-        super().__init__()
-        self.box = box
-
-    def apply(self, frame: Frame):  # type: ignore[override]
-        frame.fill(*self.box, MASK_RGB)
-        return Outcome.MASKED
-
-
 def _page(width: int, height: int, seed: int = 1) -> Frame:
     """A frame with text-like detail, so no encoder can pass it as one colour."""
     frame = Frame.blank(width, height, (255, 255, 255))
@@ -332,7 +311,7 @@ def test_the_capture_loop_paces_itself_by_control_and_grabs_off_the_loop(tmp_pat
         nobody = fb.grabs - grabs
         capture.cancel()
         await asyncio.gather(capture, return_exceptions=True)
-        # A frame's wait is what is left of 1/fps after the grab and the mask.
+        # A frame's wait is what is left of 1/fps after the grab.
         assert all(w <= 1 / 10 + 0.005 for w in watching) and max(watching) > 1 / 30, watching
         assert all(w <= 1 / 30 + 0.005 for w in controlled), controlled
         assert nobody == 0
@@ -357,7 +336,7 @@ def test_the_wait_between_frames_ends_when_control_changes_hands(tmp_path: Path)
 
 
 # --------------------------------------------------------------------------
-# (b) only the tiles that changed, and never an unmasked pixel
+# (b) only the tiles that changed, and the frame as published
 # --------------------------------------------------------------------------
 
 
@@ -365,14 +344,14 @@ def test_an_update_carries_only_the_tiles_that_changed() -> None:
     async def main() -> None:
         gate = Gate(320, 200)
         base = _page(320, 200)
-        gate.hub.publish(rfb.masked(base, _clean()))
+        gate.hub.publish(base)
         viewer = await gate.connect("person-1")
         viewer.request(False)
         await viewer.flush()
         await viewer.read_update()
         changed = _page(320, 200)
         changed.fill(200, 70, 207, 82, (1, 2, 3))  # one character typed, inside tile (3, 1)
-        gate.hub.publish(rfb.masked(changed, _clean()))
+        gate.hub.publish(changed)
         viewer.request(True)
         await viewer.flush()
         rects = [r for r in await viewer.read_update() if r[4] >= 0]
@@ -387,40 +366,40 @@ def test_an_update_carries_only_the_tiles_that_changed() -> None:
     asyncio.run(main())
 
 
-def test_a_masked_area_whose_contents_change_stays_masked_in_the_update() -> None:
+def test_a_field_whose_contents_change_is_sent_as_drawn_in_the_update() -> None:
     async def main() -> None:
         box = (40, 30, 150, 60)  # a password field, across two tiles
-        mask = _BoxMask(box)
         gate = Gate(256, 128)
         secret = (0x5E, 0xC2, 0xE7)
         first = _page(256, 128)
         first.fill(*box, secret)
-        gate.hub.publish(rfb.masked(first, mask))
+        gate.hub.publish(first)
         viewer = await gate.connect("person-1")
         recorder = await gate.connect("rec-1", encodings=(ZLIB, RAW, -223))
         for v in (viewer, recorder):
             v.request(False)
             await v.flush()
             await v.read_update()
-        # The person types: what is under the mask changes, and so does a
-        # character next to it, in the same tiles.
+        # The person types: the field's dots change, and so does a character
+        # next to it, in the same tiles.
         for i in range(5):
             typed = _page(256, 128)
             typed.fill(*box, secret)
-            typed.fill(42 + 9 * i, 36, 48 + 9 * i, 50, (i, 9, 250 - i))  # under the mask: a colour _page never draws
+            typed.fill(42 + 9 * i, 36, 48 + 9 * i, 50, (i, 9, 250 - i))  # in the field: a colour _page never draws
             typed.fill(160 + 4 * i, 40, 163 + 4 * i, 50, (0, 0, 0))  # beside it
-            expected = rfb.masked(typed, mask)
+            expected = typed
             gate.hub.publish(expected)
             for v in (viewer, recorder):
                 v.request(True)
                 await v.flush()
                 await v.read_update()
-                assert v.fb == _rgb_of(expected.frame), "the viewer holds exactly the masked frame"
-        hidden = {bytes(secret)} | {bytes((i, 9, 250 - i)) for i in range(5)}
+                assert v.fb == _rgb_of(expected), "the viewer holds exactly the published frame"
+        drawn = {bytes(secret)} | {bytes((i, 9, 250 - i)) for i in range(5)}
         for v in (viewer, recorder):
-            # Every pixel of every rect either viewer was sent, as the viewer reads them.
+            # Every pixel of every rect either viewer was sent, as the viewer reads them:
+            # the field as Chromium drew it reached both.
             sent = {rgb[at:at + 3] for rgb in v.wire for at in range(0, len(rgb), 3)}
-            assert not sent & hidden
+            assert drawn <= sent
         await gate.close()
 
     asyncio.run(main())
@@ -439,15 +418,15 @@ def _scrolled_page(width: int, height: int, offset: int, chrome: int = 24) -> Fr
     return frame
 
 
-def test_a_scroll_is_sent_as_a_copy_of_what_the_viewer_has_and_stays_masked() -> None:
+def test_a_scroll_is_sent_as_a_copy_of_what_the_viewer_has() -> None:
     async def main() -> None:
         width, height = 320, 240
         secret = (0x5E, 0xC2, 0xE7)
         gate = Gate(width, height)
-        mask = _BoxMask((60, 100, 200, 130))  # a password field the page scrolls under
+        # A fixed box the page scrolls under (a sticky field): it does not move with the page.
         first = _scrolled_page(width, height, 0)
         first.fill(60, 100, 200, 130, secret)
-        gate.hub.publish(rfb.masked(first, mask))
+        gate.hub.publish(first)
         viewer = await gate.connect("person-1")
         viewer.request(False)
         await viewer.flush()
@@ -456,21 +435,21 @@ def test_a_scroll_is_sent_as_a_copy_of_what_the_viewer_has_and_stays_masked() ->
         for step in range(1, 6):
             frame = _scrolled_page(width, height, 17 * step)
             frame.fill(60, 100, 200, 130, secret)
-            expected = rfb.masked(frame, mask)
+            expected = frame
             gate.hub.publish(expected)
             before = gate.sessions["person-1"].counts.bytes_sent
             viewer.request(True)
             await viewer.flush()
             rects = await viewer.read_update()
-            assert viewer.fb == _rgb_of(expected.frame), "the viewer holds exactly the masked frame"
+            assert viewer.fb == _rgb_of(expected), "the viewer holds exactly the published frame"
             copies = [r for r in rects if r[4] == COPY_RECT]
             assert copies, rects
             # The rows scrolled in, the scrollbar, and the rows beside the fixed
-            # mask (their old copy holds the mask, so they cannot be copied):
+            # box (their old copy holds the box, so they cannot be copied):
             # on a frame this small that is still a good share of it.
             assert gate.sessions["person-1"].counts.bytes_sent - before < full / 2
         sent = {rgb[at:at + 3] for rgb in viewer.wire for at in range(0, len(rgb), 3)}
-        assert bytes(secret) not in sent
+        assert bytes(secret) in sent
         await gate.close()
 
     asyncio.run(main())
@@ -479,13 +458,13 @@ def test_a_scroll_is_sent_as_a_copy_of_what_the_viewer_has_and_stays_masked() ->
 def test_a_viewer_that_does_not_offer_copy_rect_is_never_sent_one() -> None:
     async def main() -> None:
         gate = Gate(320, 240)
-        gate.hub.publish(rfb.masked(_scrolled_page(320, 240, 0), _clean()))
+        gate.hub.publish(_scrolled_page(320, 240, 0))
         recorder = await gate.connect("rec-1", encodings=(ZLIB, RAW, -223))
         recorder.request(False)
         await recorder.flush()
         await recorder.read_update()
         nxt = _scrolled_page(320, 240, 40)
-        gate.hub.publish(rfb.masked(nxt, _clean()))
+        gate.hub.publish(nxt)
         recorder.request(True)
         await recorder.flush()
         rects = await recorder.read_update()
@@ -504,7 +483,7 @@ def test_a_viewer_that_does_not_offer_copy_rect_is_never_sent_one() -> None:
 def test_frames_published_while_a_viewer_reads_are_not_queued_for_it() -> None:
     async def main() -> None:
         gate = Gate(128, 64)
-        gate.hub.publish(rfb.masked(_page(128, 64), _clean()))
+        gate.hub.publish(_page(128, 64))
         viewer = await gate.connect("person-1")
         viewer.request(False)
         await viewer.flush()
@@ -514,7 +493,7 @@ def test_frames_published_while_a_viewer_reads_are_not_queued_for_it() -> None:
         last = None
         for i in range(30):
             last = _page(128, 64, seed=i + 2)
-            gate.hub.publish(rfb.masked(last, _clean()))
+            gate.hub.publish(last)
             await asyncio.sleep(0.005)
         await viewer.read_update()  # the one it asked for
         with pytest.raises(asyncio.TimeoutError):
@@ -541,7 +520,7 @@ def test_novnc_is_sent_tight_and_rebuilds_the_frame_byte_for_byte() -> None:
         frame = _page(300, 170)
         frame.fill(0, 64, 128, 128, (30, 40, 50))  # two whole tiles of one colour: Fill
         frame.fill(299, 169, 300, 170, (7, 8, 9))  # a lone pixel in the last tile
-        gate.hub.publish(rfb.masked(frame, _clean()))
+        gate.hub.publish(frame)
         viewer = await gate.connect("person-1")
         viewer.request(False)
         await viewer.flush()
@@ -553,7 +532,7 @@ def test_novnc_is_sent_tight_and_rebuilds_the_frame_byte_for_byte() -> None:
         # And again incrementally, through the same zlib stream.
         for seed in (3, 4, 5):
             nxt = _page(300, 170, seed=seed)
-            gate.hub.publish(rfb.masked(nxt, _clean()))
+            gate.hub.publish(nxt)
             viewer.request(True)
             await viewer.flush()
             await viewer.read_update()
@@ -567,7 +546,7 @@ def test_the_recorder_still_gets_zlib_and_rebuilds_the_frame_byte_for_byte() -> 
     async def main() -> None:
         gate = Gate(200, 130)
         frame = _page(200, 130)
-        gate.hub.publish(rfb.masked(frame, _clean()))
+        gate.hub.publish(frame)
         recorder = await gate.connect("rec-1", encodings=(ZLIB, RAW, -223))
         recorder.request(False)
         await recorder.flush()
@@ -576,7 +555,7 @@ def test_the_recorder_still_gets_zlib_and_rebuilds_the_frame_byte_for_byte() -> 
         assert recorder.fb == _rgb_of(frame)
         nxt = _page(200, 130)
         nxt.fill(10, 100, 30, 110, (0, 0, 0))
-        gate.hub.publish(rfb.masked(nxt, _clean()))
+        gate.hub.publish(nxt)
         recorder.request(True)
         await recorder.flush()
         rects = await recorder.read_update()
@@ -606,7 +585,7 @@ def test_a_key_reaches_the_display_while_an_update_is_being_encoded(monkeypatch:
 
     async def main() -> None:
         gate = Gate(128, 64)
-        gate.hub.publish(rfb.masked(_page(128, 64), _clean()))
+        gate.hub.publish(_page(128, 64))
         viewer = await gate.connect("person-1")
         await gate.control.grant("person-1")
         viewer.request(False)
@@ -635,7 +614,7 @@ def test_a_key_reaches_the_display_while_an_update_is_being_encoded(monkeypatch:
 def test_the_time_from_a_key_to_the_first_frame_after_it_is_measured() -> None:
     async def main() -> None:
         gate = Gate(128, 64)
-        gate.hub.publish(rfb.masked(_page(128, 64), _clean()))
+        gate.hub.publish(_page(128, 64))
         viewer = await gate.connect("person-1")
         await gate.control.grant("person-1")
         viewer.request(False)
@@ -647,7 +626,7 @@ def test_the_time_from_a_key_to_the_first_frame_after_it_is_measured() -> None:
         await asyncio.sleep(0.05)
         drawn = _page(128, 64)
         drawn.fill(10, 10, 17, 22, (0, 0, 0))
-        gate.hub.publish(rfb.masked(drawn, _clean()))
+        gate.hub.publish(drawn)
         await viewer.read_update()
         counts = gate.sessions["person-1"].counts
         assert len(counts.input_to_frame_ms) == 1
@@ -663,10 +642,10 @@ def test_the_time_from_a_key_to_the_first_frame_after_it_is_measured() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_the_relays_recorder_rebuilds_every_masked_frame_from_tiled_updates() -> None:
+def test_the_relays_recorder_rebuilds_every_published_frame_from_tiled_updates() -> None:
     """The recorder (swarm_live/recorder.py) is an RFB client of its own; what
     it decodes is what the recording holds. Fed the gate's tiled Zlib updates,
-    it must hold exactly the masked frame after each one, scroll and all."""
+    it must hold exactly the published frame after each one, scroll and all."""
     # swarm-live is not a member of the root uv workspace; tests/unit/live/test_relay.py
     # puts it on the path the same way.
     app = str(Path(__file__).resolve().parents[3] / "apps" / "swarm-live")
@@ -676,9 +655,8 @@ def test_the_relays_recorder_rebuilds_every_masked_frame_from_tiled_updates() ->
 
     async def main() -> None:
         width, height = 320, 240
-        mask = _BoxMask((60, 100, 200, 130))
         gate = Gate(width, height)
-        gate.hub.publish(rfb.masked(_scrolled_page(width, height, 0), mask))
+        gate.hub.publish(_scrolled_page(width, height, 0))
         (sr, sw), (cr, cw) = await _pair()
         session = rfb.RfbSession("rec-1", sr, sw, gate.hub, gate.control, gate.injector)
         task = asyncio.create_task(session.serve())
@@ -696,14 +674,14 @@ def test_the_relays_recorder_rebuilds_every_masked_frame_from_tiled_updates() ->
 
         await until(lambda: decoder.ready)
         for step in range(1, 6):
-            expected = rfb.masked(_scrolled_page(width, height, 23 * step), mask)
+            expected = _scrolled_page(width, height, 23 * step)
             seen = decoder.version
             gate.hub.publish(expected)
             decoder.request(incremental=True)
             cw.write(decoder.take_outbound())
             await cw.drain()
             await until(lambda: decoder.version > seen)
-            assert decoder.rgb() == _rgb_of(expected.frame)
+            assert decoder.rgb() == _rgb_of(expected)
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         cw.close()
@@ -727,7 +705,7 @@ def test_a_full_request_made_while_an_unchanged_frame_renders_is_answered(monkey
     async def main() -> None:
         gate = Gate(128, 64)
         page = _page(128, 64)
-        gate.hub.publish(rfb.masked(page, _clean()))
+        gate.hub.publish(page)
         viewer = await gate.connect("person-1")
         viewer.request(False)
         await viewer.flush()
@@ -735,7 +713,7 @@ def test_a_full_request_made_while_an_unchanged_frame_renders_is_answered(monkey
         monkeypatch.setattr(rfb.RfbSession, "_render", held)
         viewer.request(True)
         await viewer.flush()
-        gate.hub.publish(rfb.masked(_page(128, 64), _clean()))  # the same picture again
+        gate.hub.publish(_page(128, 64))  # the same picture again
         loop = asyncio.get_running_loop()
         assert await loop.run_in_executor(None, rendering.wait, 5)
         viewer.request(False)  # a full refresh, while that render runs

@@ -14,7 +14,7 @@
 // in the duplicate banner, or put "available" back in the head -- a case below
 // turns red.
 
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { AccountsBoard } from '../api'
@@ -224,6 +224,27 @@ describe('the verdict', () => {
     expect(verdict.textContent).toContain('No account is registered, so no agent that needs the pool can start.')
     expect(verdict.querySelector('.acct-verdict-big')?.textContent).toBe('0 accounts')
   })
+
+  it('never says no account is registered when a document could not be read', async () => {
+    // Rendered 2026-10-25: the head said "1 document unreadable, so this list
+    // is short" while the verdict said "No account is registered".
+    api.loadTasksInState.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    api.loadAccountsBoard.mockResolvedValue(board([], 1))
+    render(<AccountsScreen />)
+    const verdict = await screen.findByRole('region', { name: 'Can the pool take a new agent' }, WAIT)
+    expect(verdict.textContent).not.toContain('No account is registered')
+    expect(verdict.querySelector('.acct-verdict-big')?.textContent).toBe('0 of at least 1')
+    expect(verdict.querySelector('.acct-verdict-head')?.textContent).toBe(
+      'No account here could be read, so no agent that needs the pool can start.',
+    )
+    // The empty panel under it says the same, never the zero's "No accounts registered".
+    const panel = document.querySelector('.acct-empty') as HTMLElement
+    // The heading carries its `?` card after the words.
+    expect(panel.querySelector('h3')?.firstChild?.textContent).toBe('No account could be read')
+    expect(panel.textContent).not.toContain('No accounts registered')
+    expect(panel.textContent).toContain('1 registered account could not be read')
+    expect(panel.querySelector('.ctl-mark.is-zero')).toBeNull()
+  })
 })
 
 describe('the table', () => {
@@ -291,10 +312,19 @@ describe('one subscription twice', () => {
     })
     api.loadAccountsBoard.mockResolvedValue(board([foreign, acct('other')]))
     render(<AccountsScreen />)
-    const banner = await screen.findByText('lone is a subscription another workspace already registered', undefined, WAIT)
+    // The head as read: the name is its own `acct-nm` span, so match the whole head.
+    const banner = await screen.findByText(
+      (_, el) =>
+        el?.classList.contains('acct-dup-head') === true &&
+        el.textContent === 'lone is a subscription another workspace already registered',
+      undefined,
+      WAIT,
+    )
     const box = banner.closest('.acct-dup') as HTMLElement
     expect(box.textContent).toContain('To fix it:')
-    expect(screen.getByRole('link', { name: 'Open lone' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Open lone' })).toBeTruthy()
+    // Mock-up A's second action: the fix the banner names, one click away.
+    expect(within(box).getByRole('button', { name: 'Replace the credential' })).toBeTruthy()
   })
 })
 

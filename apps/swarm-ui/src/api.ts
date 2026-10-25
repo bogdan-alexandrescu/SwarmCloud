@@ -35,7 +35,7 @@ import type {
   IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, IssueRunSummaryPage, RunCreateBody, RunPlan,
   GitHubAuthorization, GitHubAuthorizeSurface, GitHubDisconnectResponse, GitHubExchangeBody, GitHubExchangeResponse, OnboardingDoc,
   OnboardingDismissal, OwnerTokenResponse, AccessInstallRequestResponse,
-  AdminGrantAnswer, AdminRemoveAnswer, AdminWorkspaceView, LoanDeclineAnswer, LoanRequestAnswer, NewWorkspaceBody, PeopleDoc, WorkspaceActionAnswer, WorkspaceKind, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceState, WorkspaceView,
+  AdminGrantAnswer, AdminRemoveAnswer, AdminWorkspaceView, LoanDeclineAnswer, LoanRequestAnswer, NewWorkspaceBody, PeopleDoc, ScopedPeopleDoc, WorkspaceActionAnswer, WorkspaceKind, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceState, WorkspaceView,
   AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
   AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
   NotificationTopic, Preferences, PreferencesSaved, PreferencesWrite, Profile, ProfileClaudeAccount, ProfileClaudeAccounts, ProfileDefault,
@@ -91,7 +91,7 @@ const FIXTURE_NOW = Date.parse(FIXTURE_CLOCK)
  * in the fixture build, so no live read ever depends on it; a dev server
  * opened by hand has no cookie and is the member, as is any other value.
  */
-export type FixturePersona = 'member' | 'platform-admin'
+export type FixturePersona = 'member' | 'platform-admin' | 'workspace-admin'
 const PERSONA_COOKIE = 'swarm_qa_persona'
 
 function readFixturePersona(): FixturePersona {
@@ -99,7 +99,8 @@ function readFixturePersona(): FixturePersona {
   for (const part of document.cookie.split(';')) {
     const at = part.indexOf('=')
     if (at > 0 && part.slice(0, at).trim() === PERSONA_COOKIE) {
-      return part.slice(at + 1).trim() === 'platform-admin' ? 'platform-admin' : 'member'
+      const value = part.slice(at + 1).trim()
+      return value === 'platform-admin' || value === 'workspace-admin' ? value : 'member'
     }
   }
   return 'member'
@@ -108,6 +109,12 @@ function readFixturePersona(): FixturePersona {
 const FIXTURE_PERSONA: FixturePersona = USE_FIXTURES ? readFixturePersona() : 'member'
 /** Whether the fixture caller is a platform admin: the `platform-admin` persona only. */
 const fixtureIsAdmin = FIXTURE_PERSONA === 'platform-admin'
+/**
+ * The `workspace-admin` persona (ADMIN-PEOPLE-ROLES): eng's stored admin and
+ * no platform admin, so Admin › People and roles is answered scoped to eng
+ * (S5f) and every platform Admin read refuses it as the member's does.
+ */
+const fixtureIsWorkspaceAdmin = FIXTURE_PERSONA === 'workspace-admin'
 /** The group workspace the `platform-admin` persona administers: `tenant:eng` in fixtureCapacity is its pool. */
 const FIXTURE_GROUP = { tenant_id: 'eng', principal: 'eng@example.com' } as const
 
@@ -2675,7 +2682,7 @@ export async function loadMyTenants(): Promise<Result<TenantChoice[]>> {
     // The member has a personal tenant and no group, so there is nothing to
     // pick. The platform-admin persona is also a member of `eng`, where its
     // STORED role is admin -- what Admin › Workspaces you admin lists.
-    if (!fixtureIsAdmin) return { status: 'empty', fetchedAt: Date.now() }
+    if (!fixtureIsAdmin && !fixtureIsWorkspaceAdmin) return { status: 'empty', fetchedAt: Date.now() }
     return { status: 'ok', fetchedAt: Date.now(), data: fixtureTenantChoices() }
   }
   return read<TenantChoice[]>(route('/v1/tenants/mine'), (rows) => rows.length === 0, { frame: true })
@@ -3358,6 +3365,66 @@ async function fixtureAdminQuota(): Promise<Result<{ quota: QuotaState[] }>> {
       quota: fixtureQuotaRows().map((q) => ({ ...q, feeds_pool: pools.get(`provider:${q.provider}:tenant:${q.tenant_id}`) ?? null })),
     },
   }
+}
+
+/**
+ * A platform admin's reset of one tenant's AIMD target (QUOTA-RESET), from
+ * Admin › Pool limits (POOL-LIMITS-QUOTA, BGD 2026-10-25, part of #2302).
+ * The route proxies to the quota broker, which clamps the target into
+ * [min_target, configured_hard_max] and answers `{ quota, reset }`: `reset`
+ * carries `from_target`, `to_target` and `clamped`, which the row draws.
+ */
+export async function resetAdaptiveTarget(
+  provider: string,
+  tenant: string,
+  body: { target: number; reason: string; clear_cooldown: boolean },
+): Promise<Result<unknown>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 200))
+    const q = fixtureQuotaRows().find((row) => row.provider === provider && row.tenant_id === tenant)
+    const max = q?.configured_hard_max ?? body.target
+    const to = Math.min(body.target, max)
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: {
+        quota: { ...q, adaptive_target: to },
+        reset: { from_target: q?.adaptive_target ?? max, to_target: to, clamped: to !== body.target },
+      },
+    }
+  }
+  return write(route('/v1/admin/quota/{provider}/{tenant}/adaptive-target', { provider, tenant }), 'PUT', body)
+}
+
+/**
+ * A platform admin's change to one tenant's configured max (the broker's
+ * `configured_hard_max`), from Admin › Pool limits (POOL-LIMITS-QUOTA). The
+ * broker lowers the target to a max set below it in the same write; the
+ * answer's `change` says so (`target_clamped`, `from_target`, `to_target`).
+ */
+export async function setQuotaHardMax(
+  provider: string,
+  tenant: string,
+  body: { hard_max: number; reason: string },
+): Promise<Result<unknown>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 200))
+    const q = fixtureQuotaRows().find((row) => row.provider === provider && row.tenant_id === tenant)
+    const from = q?.adaptive_target ?? null
+    const to = from === null ? null : Math.min(from, body.hard_max)
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: {
+        quota: { ...q, configured_hard_max: body.hard_max, adaptive_target: to },
+        change: {
+          from_hard_max: q?.configured_hard_max ?? null, to_hard_max: body.hard_max,
+          from_target: from, to_target: to, target_clamped: from !== null && to !== null && to < from,
+        },
+      },
+    }
+  }
+  return write(route('/v1/admin/quota/{provider}/{tenant}/hard-max', { provider, tenant }), 'PUT', body)
 }
 
 /**
@@ -5734,7 +5801,7 @@ let fixtureAccounts: ServedAccount[] = [
     can_take_new_agent: true,
     blocked_by: [],
     next_eligible_at: null,
-    organisation: { name: 'Acme', plan: 'Team' },
+    organisation: { name: 'Example', plan: 'Team' },
     duplicate_of: 'u-bogdan:team-copy',
     duplicate_reason: 'registered on the same organisation as u-bogdan:team-copy',
     windows: {
@@ -5846,7 +5913,7 @@ let fixtureAccounts: ServedAccount[] = [
     can_take_new_agent: false,
     blocked_by: [{ window: 'five_hour', used: 0.92, floor: 0.15, resets_at: ISO(40 * 60_000), aged_reading: false }],
     next_eligible_at: ISO(40 * 60_000),
-    organisation: { name: 'Acme', plan: 'Team' },
+    organisation: { name: 'Example', plan: 'Team' },
     windows: {
       five_hour: { utilization: 0.92, resets_at: ISO(40 * 60_000), reset: false },
       seven_day: { utilization: 0.41, resets_at: ISO(4 * 86_400_000 + 3 * 3600_000), reset: false },
@@ -5857,7 +5924,7 @@ let fixtureAccounts: ServedAccount[] = [
     can_take_new_agent: false,
     blocked_by: [{ window: 'seven_day', used: 0.97, floor: 0.05, resets_at: ISO(2 * 86_400_000 + 21 * 3600_000), aged_reading: false }],
     next_eligible_at: ISO(2 * 86_400_000 + 21 * 3600_000),
-    organisation: { name: 'Acme', plan: 'Team' },
+    organisation: { name: 'Example', plan: 'Team' },
     windows: {
       five_hour: { utilization: 0.31, resets_at: ISO(-3 * 3600_000), reset: true },
       seven_day: { utilization: 0.97, resets_at: ISO(2 * 86_400_000 + 21 * 3600_000), reset: false },
@@ -5871,7 +5938,7 @@ let fixtureAccounts: ServedAccount[] = [
     can_take_new_agent: false,
     blocked_by: [{ cap: 6, max_agents: 6 }],
     next_eligible_at: null,
-    organisation: { name: 'Acme', plan: 'Team' },
+    organisation: { name: 'Example', plan: 'Team' },
     lend_to: ['smoke'],
     windows: {
       five_hour: { utilization: 0.52, resets_at: ISO(4 * 3600_000 + 39 * 60_000), reset: false },
@@ -5883,7 +5950,7 @@ let fixtureAccounts: ServedAccount[] = [
     can_take_new_agent: false,
     blocked_by: [{ duplicate_of: 'u-bogdan:primary', reason: 'registered on the same organisation as u-bogdan:primary' }],
     next_eligible_at: null,
-    organisation: { name: 'Acme', plan: 'Team' },
+    organisation: { name: 'Example', plan: 'Team' },
     duplicate_of: 'u-bogdan:primary',
     duplicate_reason: 'registered on the same organisation as u-bogdan:primary',
     last_assigned_at: null,
@@ -7056,6 +7123,25 @@ function fixtureAdminWorkspacesRoles(): unknown {
   }
 }
 
+/** The grid's columns (ADMIN-PEOPLE-ROLES): eng, the personas' group, and research. */
+const FIXTURE_PEOPLE_COLUMNS = [
+  { tenant_id: FIXTURE_GROUP.tenant_id, group: FIXTURE_GROUP.principal, display_name: FIXTURE_GROUP.principal, default_role: 'member', unavailable: false },
+  { tenant_id: 'research', group: 'research@example.com', display_name: 'research@example.com', default_role: 'viewer', unavailable: false },
+]
+
+/**
+ * `GET /v1/admin/people` as the `workspace-admin` persona reads it (S5f):
+ * eng alone, its people's cells and when they were last seen, nothing else.
+ */
+function fixtureScopedPeople(): unknown {
+  const people = [
+    { email: 'alice@example.com', display_name: null, roles: { eng: 'admin' }, last_active: fixtureAgo(5 * 60_000) },
+    { email: 'bob@example.com', display_name: 'Bob', roles: { eng: 'member' }, last_active: fixtureAgo(3 * FIXTURE_HOUR) },
+    { email: 'erin@example.com', display_name: null, roles: { eng: 'viewer' }, last_active: null },
+  ]
+  return { scope: 'workspaces', workspaces: [FIXTURE_PEOPLE_COLUMNS[0]], workspaces_error: null, people, count: people.length, pending: 0 }
+}
+
 /**
  * `GET /v1/admin/people` (run-4 admin-003): four people -- three signed in
  * with a ready workspace, one pending (a requested workspace) -- and one
@@ -7071,31 +7157,34 @@ function fixturePeople(): unknown {
   const ownAccounts = fixtureAccounts.filter((a) => a.owner_tenant === FIXTURE_TENANT)
   const people = [
     {
-      email: 'carol@example.com', display_name: 'Carol', teams: [], github: 'none',
-      workspace: ws('requested', null, { request_id: 'wsr_c4r0l', requested_at: fixtureAgo(40 * 60_000), requested_via: 'console' }),
+      email: 'carol@example.com', display_name: 'Carol', teams: [], github: 'none', roles: { eng: 'none', research: 'none' },
+      workspace: ws('requested', 'w-c4r01e', { request_id: 'wsr_c4r0l', requested_at: fixtureAgo(40 * 60_000), requested_via: 'console' }),
       claude_account: claude('none', 0, 0, []), loan_request: null,
       first_seen: fixtureAgo(45 * 60_000), last_seen: fixtureAgo(40 * 60_000), last_submitted: null, last_active: fixtureAgo(40 * 60_000),
     },
     {
-      email: 'alice@example.com', display_name: null, teams: [FIXTURE_GROUP.principal], github: 'connected',
+      email: 'alice@example.com', display_name: null, teams: [FIXTURE_GROUP.principal], github: 'connected', roles: { eng: 'admin', research: 'none' },
       workspace: ws('ready', FIXTURE_TENANT, { ready_at: fixtureAgo(9 * 24 * FIXTURE_HOUR) }),
       claude_account: claude('own', ownAccounts.length, 1, [FIXTURE_GROUP.tenant_id]), loan_request: null,
       first_seen: fixtureAgo(9 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(5 * 60_000), last_submitted: fixtureAgo(20 * 60_000), last_active: fixtureAgo(5 * 60_000),
     },
     {
-      email: 'bob@example.com', display_name: 'Bob', teams: [FIXTURE_GROUP.principal], github: 'connected',
+      email: 'bob@example.com', display_name: 'Bob', teams: [FIXTURE_GROUP.principal], github: 'connected', roles: { eng: 'member', research: 'viewer' },
       workspace: ws('ready', 'u-bob', { ready_at: fixtureAgo(6 * 24 * FIXTURE_HOUR) }),
       claude_account: claude('lent', 0, 1, [FIXTURE_TENANT]), loan_request: { state: 'lent', requested_at: fixtureAgo(6 * 24 * FIXTURE_HOUR), decided_at: fixtureAgo(5 * 24 * FIXTURE_HOUR) },
       first_seen: fixtureAgo(6 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(3 * FIXTURE_HOUR), last_submitted: fixtureAgo(4 * FIXTURE_HOUR), last_active: fixtureAgo(3 * FIXTURE_HOUR),
     },
     {
-      email: 'dave@example.com', display_name: null, teams: [], github: 'expired',
+      email: 'dave@example.com', display_name: null, teams: [], github: 'expired', roles: { eng: 'none', research: 'admin' },
       workspace: ws('ready', 'u-dave', { ready_at: fixtureAgo(20 * 24 * FIXTURE_HOUR) }),
       claude_account: claude('provider_key', 0, 0, [], true), loan_request: null,
       first_seen: fixtureAgo(20 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(4 * 24 * FIXTURE_HOUR), last_submitted: null, last_active: fixtureAgo(4 * 24 * FIXTURE_HOUR),
     },
   ]
   return {
+    scope: 'platform',
+    workspaces: FIXTURE_PEOPLE_COLUMNS,
+    workspaces_error: null,
     people,
     count: people.length,
     pending: people.filter((p) => p.workspace.state === 'requested').length,
@@ -7174,7 +7263,7 @@ const FIXTURE_READS: Readonly<Record<string, (url: string) => FixtureBody | unde
   '/v1/code-intelligence': () => ({ body: fixtureCodeIntelligence() }),
   '/v1/profile': () => ({ body: fixtureProfile() }),
   '/v1/workspace/roles': () => ({ body: fixtureWorkspaceRoles() }),
-  '/v1/admin/people': () => (fixtureIsAdmin ? { body: fixturePeople() } : 'admin'),
+  '/v1/admin/people': () => (fixtureIsAdmin ? { body: fixturePeople() } : fixtureIsWorkspaceAdmin ? { body: fixtureScopedPeople() } : 'admin'),
   '/v1/admin/workspaces/roles': () => (fixtureIsAdmin ? { body: fixtureAdminWorkspacesRoles() } : 'admin'),
   // Admin › Tenants' "Being created": nothing is being built.
   '/v1/admin/workspaces': () => (fixtureIsAdmin ? { body: { workspaces: [] } } : 'admin'),
@@ -7832,10 +7921,26 @@ export interface ActionsEnvironment {
 /** `GET /v1/repositories/{repo_id}/actions/secrets`: the repository's secrets and each environment's. */
 export interface ActionsSecretList {
   repo_id: string
+  /** `owner/repo`, as the API names the registration; null when it did not. */
+  repository: string | null
+  /** The repository-level secrets (the API's `repository_secrets`). */
   secrets: ActionsSecretName[]
   environments: ActionsEnvironment[]
   /** The API lists at most 30 environments; true when it may have stopped there. */
   environments_truncated: boolean
+  /** GitHub's create-environment page, served on the list even with no environment yet. */
+  create_url: string | null
+  /**
+   * Whether this caller passes both checks a write runs (workspace manager,
+   * and GitHub calls them admin of the repository, asked live). It decides
+   * only what the pane offers: every write is authorised again by the API.
+   * Null when the API did not say.
+   */
+  can_write: boolean | null
+  /** The API's sentence for why not, when `can_write` is false. */
+  cannot_write_because: string | null
+  /** When GitHub was asked; null when the manager rule refused first. */
+  checked_at: string | null
 }
 
 /**
@@ -7892,10 +7997,9 @@ export function normActionsRule(raw: unknown, environment = ''): ActionsEnvironm
 }
 
 /**
- * The list, from an allow-list. The route spreads the service's answer over
- * its own keys, so its `repository` is the repository-level LIST (the
- * `owner/repo` string it set first is overwritten); a string there is read as
- * no list rather than a name.
+ * The list, from an allow-list. `repository` is the `owner/repo` name and
+ * the repository-level rows are `repository_secrets` (SSC-ACTIONS-API-2: the
+ * route's spread used to overwrite the name with the rows).
  */
 export function normActionsSecretList(raw: unknown): ActionsSecretList {
   const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
@@ -7907,9 +8011,14 @@ export function normActionsSecretList(raw: unknown): ActionsSecretList {
   })
   return {
     repo_id: wsText(r.repo_id) ?? '',
-    secrets: normActionsNames(r.repository),
+    repository: wsText(r.repository),
+    secrets: normActionsNames(r.repository_secrets),
     environments,
     environments_truncated: r.environments_truncated === true,
+    create_url: githubUrl(r.create_url),
+    can_write: typeof r.can_write === 'boolean' ? r.can_write : null,
+    cannot_write_because: wsText(r.cannot_write_because),
+    checked_at: wsText(r.checked_at),
   }
 }
 
@@ -7954,7 +8063,8 @@ export async function loadActionsSecrets(repoId: string): Promise<Result<Actions
       fetchedAt: Date.now(),
       data: normActionsSecretList({
         repo_id: repoId,
-        repository: [
+        repository: FIXTURE_ACTIONS_REPO,
+        repository_secrets: [
           { name: 'TEST_DB_PASSWORD', updated_at: day(5), set_by_swarmcloud: true, set_by: 'operator@example.com', set_at: day(5) },
           { name: 'SENTRY_DSN', updated_at: day(40), set_by_swarmcloud: false, set_by: null, set_at: null },
         ],
@@ -7964,6 +8074,11 @@ export async function loadActionsSecrets(repoId: string): Promise<Result<Actions
           { environment: 'staging', rule: fixtureActionsRule('staging', 'any_branch'), secrets: [] },
         ],
         environments_truncated: false,
+        create_url: `https://github.com/${FIXTURE_ACTIONS_REPO}/settings/environments/new`,
+        // The mock-up's sentence: a writer, GitHub asked a minute before the capture clock.
+        can_write: true,
+        cannot_write_because: null,
+        checked_at: new Date(FIXTURE_NOW - 60_000).toISOString(),
       }),
     }
   }
@@ -8749,9 +8864,13 @@ export async function requestLoan(): Promise<Result<LoanRequestAnswer>> {
   return writeTo(route('/v1/workspace/loan-request'), 'POST', { via: 'console' }) as Promise<Result<LoanRequestAnswer>>
 }
 
-/** `GET /v1/admin/people` (admin): everyone, pending first, the last 50 audit entries, the lendable accounts. */
-export async function loadPeople(): Promise<Result<PeopleDoc>> {
-  return readAs(route('/v1/admin/people'), (raw) => raw as PeopleDoc)
+/**
+ * `GET /v1/admin/people` (a platform admin: everyone, pending first, every
+ * workspace's column, the last 50 audit entries, the lendable accounts; a
+ * workspace admin: only the workspaces they administer, `ScopedPeopleDoc`).
+ */
+export async function loadPeople(): Promise<Result<PeopleDoc | ScopedPeopleDoc>> {
+  return readAs(route('/v1/admin/people'), (raw) => raw as PeopleDoc | ScopedPeopleDoc)
 }
 
 // -- Admin › Runner sizes (SIZES-UI; part of #1689) ---------------------------

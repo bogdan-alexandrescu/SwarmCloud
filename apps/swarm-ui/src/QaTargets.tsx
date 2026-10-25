@@ -22,15 +22,21 @@ import {
   putQaChallengeBypass,
   putQaCredential,
   qaCredentialLinkFrom,
+  legsOf,
+  linkSpent,
+  promoteQaScreen,
   repoSlug,
   runQaTarget,
   type FlowBrowserTool,
   type QaCredentialStatus,
+  type QaEnvironment,
   type QaLink,
+  type QaRunGroupStart,
   type QaScreen,
   type QaTarget,
   type QaTargetSend,
 } from './qaTargetsApi'
+import { qaRunAddress } from './paths'
 import './styles/repositories.css'
 
 /**
@@ -81,8 +87,15 @@ import './styles/repositories.css'
  * the link's path the token is read off the bar once, dropped from it with
  * `history.replaceState`, and sent back as `link_token` with the save. Set
  * credential mints the same link for the signed-in admin and keeps its token
- * in memory, never drawn. Either way the token is sent at most once: the API
- * consumes it before the write, so a retry needs a new link.
+ * in memory, never drawn. The link's `environment` (the entry it was minted
+ * for, on a target of several) is sent back with it and named in the form's
+ * title (#2280). The token is dropped once an answer says the API consumed
+ * it (`linkSpent`); a refusal made before the link was checked keeps it, so
+ * the person fixes the field and saves again with the same link.
+ *
+ * A `field: "challenge_bypass"` link (`/qa-targets/<id>/challenge-bypass?t=..`)
+ * opens the same form with the bypass value's one field, and is sent and
+ * kept by the same rules.
  *
  * A CHALLENGE BYPASS (lane CAPTCHA-BYPASS, part of #2058; §2.5) is the app
  * owner's own way past their CAPTCHA or WAF challenge: a header or a cookie
@@ -160,7 +173,7 @@ export function QaTargetsScreen({
   const nameOf = (id: string) => targets.find((t) => t.id === id)?.name ?? id
   // While a discovery runs, read the list again until it ends: the card's
   // Discovering… becomes the count or the error without a manual refresh.
-  const discovering = targets.some((t) => t.discovering !== null)
+  const discovering = targets.some((t) => legsOf(t).some((leg) => leg.discovering !== null))
   const reload = list.reload
   useEffect(() => {
     if (!discovering) return
@@ -168,14 +181,15 @@ export function QaTargetsScreen({
     return () => window.clearInterval(timer)
   }, [discovering, reload])
 
-  async function openCredential(t: QaTarget) {
+  // The link is bound to the leg it sets (§1.4): a link for staging never sets production's password.
+  async function openCredential(t: QaTarget, leg: QaEnvironment) {
     setSaid(null)
-    const r = await mintQaCredentialLink(t.id)
+    const r = await mintQaCredentialLink(t.id, leg.name)
     if (r.status === 'error') {
-      setSaid({ tone: 'bad', title: `No credential link for ${t.name}`, text: writeFailure(r.error) })
+      setSaid({ tone: 'bad', title: `No credential link for ${legLabel(t, leg)}`, text: writeFailure(r.error) })
       return
     }
-    if (r.status === 'ok') setCred({ targetId: t.id, token: r.data.token })
+    if (r.status === 'ok') setCred({ targetId: t.id, token: r.data.token, environment: leg.name, field: 'credential' })
   }
 
   return (
@@ -200,6 +214,7 @@ export function QaTargetsScreen({
           {adminGate}
         </p>
       )}
+      <QaLead targets={targets} admin={adminGate === null} onCredential={(t, leg) => void openCredential(t, leg)} />
       {said !== null && (
         <Banner tone={said.tone} title={said.title}>
           {said.text}
@@ -211,7 +226,13 @@ export function QaTargetsScreen({
           name={nameOf(cred.targetId)}
           onSent={() => setCred((c) => (c === null ? c : { ...c, token: null }))}
           onSaved={() => {
-            setSaid({ tone: 'info', title: 'Credential saved', text: `The test credential for ${nameOf(cred.targetId)} is set. No page, route or log can show it again.` })
+            const what = cred.field === 'challenge_bypass' ? 'challenge bypass value' : 'test credential'
+            const where = cred.environment === null ? nameOf(cred.targetId) : `${nameOf(cred.targetId)} · ${cred.environment}`
+            setSaid({
+              tone: 'info',
+              title: cred.field === 'challenge_bypass' ? 'Challenge bypass value saved' : 'Credential saved',
+              text: `The ${what} for ${where} is set. No page, route or log can show it again.`,
+            })
             setCred(null)
             list.reload()
           }}
@@ -263,8 +284,8 @@ export function QaTargetsScreen({
                 runGate={runGate}
                 onApproved={(doc) => setApproved((was) => ({ ...was, [doc.id]: doc }))}
                 onEdit={() => setEditing(t)}
-                onDiscovering={list.reload}
-                onCredential={() => void openCredential(t)}
+                onChanged={list.reload}
+                onCredential={(leg) => void openCredential(t, leg)}
                 onDeleted={() => {
                   setSaid({ tone: 'info', title: `Deleted ${t.name}`, text: 'The target and its test credential are gone.' })
                   list.reload()
@@ -283,39 +304,46 @@ function toolName(tool: FlowBrowserTool): string {
   return tool === 'jev' ? 'Jev' : 'Playwright'
 }
 
-function hostWords(t: QaTarget): string {
-  if (t.host_state === 'approved') {
-    return t.approved_by === null ? 'approved' : `approved by ${t.approved_by}${t.approved_at === null ? '' : ` ${timeAgo(t.approved_at)}`}`
-  }
-  return t.host_state ?? 'unknown'
+/** The host's state, its one word (S9a draws the column that short). */
+function hostWords(leg: QaEnvironment): string {
+  return leg.host_state ?? 'unknown'
 }
 
-function credentialWords(t: QaTarget): string | null {
-  if (t.sign_in.kind !== 'own_login') return null
-  const c = t.credential
-  if (!c.set) return 'Own login · test credential not set'
-  const parts = ['Own login · test credential set']
-  if (c.set_at !== null) parts.push(timeAgo(c.set_at))
-  if (c.set_by !== null) parts.push(`by ${c.set_by}`)
-  return parts.join(' ')
+/** `by ops@… 3d ago` under an approved host, or null. */
+function approvedWhen(leg: QaEnvironment): string | null {
+  if (leg.host_state !== 'approved' || (leg.approved_by === null && leg.approved_at === null)) return null
+  return [leg.approved_by === null ? null : `by ${leg.approved_by}`, leg.approved_at === null ? null : timeAgo(leg.approved_at)].filter(Boolean).join(' ')
+}
+
+/** `own login · test credential set`, `not set`, or `none needed`: never a value. */
+function credentialWords(leg: QaEnvironment): string {
+  if (leg.sign_in.kind !== 'own_login') return 'none needed'
+  return leg.credential.set ? 'own login · test credential set' : 'not set'
+}
+
+/** `30h ago by admin@…` under a set credential, or null. */
+function credentialWhen(leg: QaEnvironment): string | null {
+  const c = leg.credential
+  if (leg.sign_in.kind !== 'own_login' || !c.set || (c.set_at === null && c.set_by === null)) return null
+  return [c.set_at === null ? null : timeAgo(c.set_at), c.set_by === null ? null : `by ${c.set_by}`].filter(Boolean).join(' ')
 }
 
 /**
  * `Start clicks: Staging → Sign in`, each control's text exactly as stored and
  * in the order the gate clicks them (§2.2); null when the sign-in has none, so
- * a card says so only when the gate clicks something before the form.
+ * a leg says so only when the gate clicks something before the form.
  */
-function startClickWords(t: QaTarget): string | null {
-  const clicks = t.sign_in.start_clicks
+function startClickWords(leg: QaEnvironment): string | null {
+  const clicks = leg.sign_in.start_clicks
   if (clicks.length === 0) return null
   return `Start clicks: ${clicks.map((c) => c.text).join(' → ')}`
 }
 
 /** `Challenge bypass · header X-QA-Bypass · value set 2h ago by …`: never the value. */
-function bypassWords(t: QaTarget): string | null {
-  const b = t.challenge_bypass
+function bypassWords(leg: QaEnvironment): string | null {
+  const b = leg.challenge_bypass
   if (b === null) return null
-  return `Challenge bypass · ${b.kind} ${b.name} · ${valueWords(t.challenge_bypass_value)}`
+  return `Challenge bypass · ${b.kind} ${b.name} · ${valueWords(leg.challenge_bypass_value)}`
 }
 
 function valueWords(v: QaCredentialStatus): string {
@@ -326,6 +354,89 @@ function valueWords(v: QaCredentialStatus): string {
   return parts.join(' ')
 }
 
+/** A leg's name as a sentence says it: its entry name, or the target's for the one-origin shape. */
+function legLabel(t: QaTarget, leg: QaEnvironment): string {
+  return leg.name === null ? t.name : `${t.name} ${leg.name}`
+}
+
+function kindWords(leg: QaEnvironment): string {
+  return leg.environment === 'non_production' ? 'Non-production' : 'Production'
+}
+
+/** What the page's lead says about one leg that cannot run (Config proposal E: led by what is missing). */
+export interface QaNeed {
+  t: QaTarget
+  leg: QaEnvironment
+  title: string
+  body: string
+  /** Its next action is a workspace admin's Set credential. */
+  credential: boolean
+}
+
+/**
+ * Every leg of every target that cannot run now, in the cards' order, with
+ * the sentence the lead says for it. The reason is `cannotRunBecause`'s, the
+ * one the leg's own row says.
+ */
+export function needsOf(targets: QaTarget[]): QaNeed[] {
+  const out: QaNeed[] = []
+  for (const t of targets) {
+    const legs = legsOf(t)
+    for (const leg of legs) {
+      const why = cannotRunBecause(t, leg)
+      if (why === null) continue
+      const who = legLabel(t, leg)
+      const others = legs.filter((l) => l !== leg && cannotRunBecause(t, l) === null).map((l) => l.name ?? t.name)
+      const rest = others.length === 0 ? '' : ` ${others.join(', ').replace(/^./, (c) => c.toUpperCase())} ${others.length === 1 ? 'runs' : 'run'} now.`
+      const credential = cannotBrowseBecause(t, leg) !== null && leg.host_state === 'approved' && leg.sign_in.kind === 'own_login' && !leg.credential.set
+      const title =
+        credential ? `${who} has no test credential`
+        : leg.host_state === 'pending' ? `${who} waits for a platform admin to approve its host`
+        : leg.host_state === 'revoked' ? `${who}’s host approval was revoked`
+        : `${who} cannot run`
+      const body = credential ? `Its leg cannot run until a workspace admin sets it.${rest}` : `${why}${rest}`
+      out.push({ t, leg, title, body, credential })
+    }
+  }
+  return out
+}
+
+/** The page's one next-action sentence: the first leg that cannot run, or that every leg can. */
+function QaLead({ targets, admin, onCredential }: { targets: QaTarget[]; admin: boolean; onCredential: (t: QaTarget, leg: QaEnvironment) => void }) {
+  if (targets.length === 0) return null
+  const needs = needsOf(targets)
+  const first = needs[0]
+  if (first === undefined) {
+    const n = targets.reduce((sum, t) => sum + legsOf(t).length, 0)
+    return (
+      <section className="qa-lead is-ok" data-qa-lead="" aria-label="QA targets">
+        <div className="qa-lead-t">
+          <span className="qa-lead-k">QA targets · nothing missing</span>
+          <b>{n === 1 ? 'The one environment can run' : `Every environment can run: ${n}`}</b>
+          <span className="qa-lead-s">Tick the environments on a target and press Run.</span>
+        </div>
+      </section>
+    )
+  }
+  const whose = first.leg.name === null ? 'its' : `${first.leg.name}’s`
+  return (
+    <section className="qa-lead" data-qa-lead="" aria-label="QA targets">
+      <div className="qa-lead-t">
+        <span className="qa-lead-k">{`QA targets · ${needs.length} missing`}</span>
+        <b>{first.title}</b>
+        <span className="qa-lead-s">{first.body}</span>
+      </div>
+      {first.credential && admin && (
+        <div className="qa-lead-a">
+          <Button kind="primary" size="sm" onClick={() => onCredential(first.t, first.leg)}>
+            {first.leg.name === null ? 'Set its credential' : `Set ${whose} credential`}
+          </Button>
+        </div>
+      )}
+    </section>
+  )
+}
+
 function TargetCard({
   t,
   go,
@@ -334,12 +445,13 @@ function TargetCard({
   runGate,
   onApproved,
   onEdit,
-  onDiscovering,
+  onChanged,
   onCredential,
   onDeleted,
 }: {
   t: QaTarget
   go: (to: string) => void
+  /** The caller is a workspace admin: Edit, Delete, Set credential and Promote are drawn. */
   admin: boolean
   /** The session is a platform admin (`principal.is_admin`): Approve host is drawn. */
   platformAdmin: boolean
@@ -348,44 +460,71 @@ function TargetCard({
   /** The caller's role is below `member`: Run is disabled and this says why. */
   runGate: string | null
   onEdit: () => void
-  /** A discovery was started: read the list again, which now says it runs. */
-  onDiscovering: () => void
-  onCredential: () => void
+  /** A discovery was started or a route promoted: read the list again. */
+  onChanged: () => void
+  onCredential: (leg: QaEnvironment) => void
   onDeleted: () => void
 }) {
-  const why = cannotRunBecause(t)
+  const legs = legsOf(t)
+  const named = t.environments.length > 0
+  const keyOf = (leg: QaEnvironment) => leg.name ?? ''
+  // The legs NOT ticked, by name: every runnable leg starts ticked (S9a), and
+  // a leg that becomes runnable on a later read is ticked without a click.
+  const [unticked, setUnticked] = useState<ReadonlySet<string>>(() => new Set())
+  const runnable = legs.filter((leg) => cannotRunBecause(t, leg) === null)
+  const ticked = runnable.filter((leg) => !unticked.has(keyOf(leg)))
   const [reportOnly, setReportOnly] = useState(false)
   /** This one run's flow browser; null runs the target's own. */
   const [runTool, setRunTool] = useState<FlowBrowserTool | null>(null)
   const [busy, setBusy] = useState(false)
-  const [started, setStarted] = useState<string | null>(null)
+  const [started, setStarted] = useState<QaRunGroupStart | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const [approving, setApproving] = useState(false)
-  // An approved target with a login's extra origin can be approved again, to set or clear its IdP token path (QA-IDP-POST).
-  const canApprove = platformAdmin && t.host !== null && (t.host_state !== 'approved' || t.sign_in.extra_origin !== null)
-  const cannotBrowse = cannotBrowseBecause(t)
+  /** The leg whose host the platform admin is approving (its key), or null. */
+  const [approving, setApproving] = useState<string | null>(null)
   const [discoveryBusy, setDiscoveryBusy] = useState(false)
+  const [promoting, setPromoting] = useState<string | null>(null)
+  // An approved leg with a login's extra origin can be approved again, to set or clear its IdP token path (QA-IDP-POST).
+  const canApprove = (leg: QaEnvironment) => platformAdmin && leg.host !== null && (leg.host_state !== 'approved' || leg.extra_origin !== null)
+  // Discovery browses the ticked legs that may be browsed, one `:discover` each.
+  const discoverable = legs.filter((leg) => !unticked.has(keyOf(leg)) && cannotBrowseBecause(t, leg) === null && leg.discovering === null)
+  const anyDiscovered = legs.some((leg) => leg.discovered.length > 0)
+  const why = legs.length === 1 ? cannotRunBecause(t, legs[0]!) : null
 
   async function discover() {
-    if (runGate !== null || cannotBrowse !== null || t.discovering !== null) return
+    if (runGate !== null || discoverable.length === 0) return
     setDiscoveryBusy(true)
     setFailed(null)
-    const r = await discoverQaTarget(t.id)
+    const said: string[] = []
+    for (const leg of discoverable) {
+      const r = await discoverQaTarget(t.id, leg.name)
+      if (r.status === 'error') said.push(leg.name === null ? writeFailure(r.error) : `${leg.name}: ${writeFailure(r.error)}`)
+    }
     setDiscoveryBusy(false)
-    if (r.status === 'error') setFailed(writeFailure(r.error))
-    else onDiscovering()
+    if (said.length > 0) setFailed(said.join(' '))
+    onChanged()
   }
 
   async function run() {
-    if (why !== null || runGate !== null) return
+    if (ticked.length === 0 || runGate !== null) return
     setBusy(true)
     setFailed(null)
     setStarted(null)
-    const r = await runQaTarget(t.id, reportOnly ? 'none' : 'issues', runTool)
+    // Names only (invariant 10). The one-origin shape names none: its only entry runs.
+    const names = named ? ticked.flatMap((leg) => (leg.name === null ? [] : [leg.name])) : null
+    const r = await runQaTarget(t.id, reportOnly ? 'none' : 'issues', runTool, names)
     setBusy(false)
     if (r.status === 'error') setFailed(writeFailure(r.error))
-    else if (r.status === 'ok') setStarted(r.data.workflow_id)
+    else if (r.status === 'ok') setStarted(r.data)
+  }
+
+  async function promote(found: QaScreen) {
+    setPromoting(found.id)
+    setFailed(null)
+    const r = await promoteQaScreen(t, found)
+    setPromoting(null)
+    if (r.status === 'error') setFailed(writeFailure(r.error))
+    else onChanged()
   }
 
   async function remove() {
@@ -399,63 +538,144 @@ function TargetCard({
   }
 
   const slug = repoSlug(t.repository)
-  const login = credentialWords(t)
-  const bypass = bypassWords(t)
-  const clicks = startClickWords(t)
+  const screensWords = t.screens.length === 0 ? (t.discovers ? 'Discovers its screens' : 'No screens') : `${t.screens.length} screen${t.screens.length === 1 ? '' : 's'}`
+  const runLabel = named ? `Run ${ticked.length} environment${ticked.length === 1 ? '' : 's'}` : 'Run'
+  const approvingLeg = approving === null ? null : (legs.find((leg) => keyOf(leg) === approving) ?? null)
   return (
     <div className="qa-target" data-target-id={t.id} data-host-state={t.host_state ?? undefined}>
-    <Card className="ur-card" title={t.name}>
+    <Card
+      className="ur-card"
+      title={t.name}
+      action={
+        admin ? (
+          <span className="ur-cacts qa-head-acts">
+            <Button size="sm" onClick={onEdit}>
+              Edit
+            </Button>
+          </span>
+        ) : undefined
+      }
+    >
       <div className="ur-cmeta">
-        <span>
-          Address <b>{t.base_url ?? t.host ?? t.id}</b>
-        </span>
         <span>
           Files in <b>{slug ?? t.repository ?? t.repo_id ?? 'an unnamed repository'}</b>
         </span>
+        <span>{screensWords}</span>
       </div>
-      <div className="ur-cmeta">
-        <span>
-          Host <b className={t.host_state === 'approved' ? undefined : 'ur-bad'}>{hostWords(t)}</b>
-        </span>
-        <span>{t.environment === 'non_production' ? 'Non-production' : 'Production'}</span>
-        <span>{t.screens.length === 0 ? (t.discovers ? 'Discovers its screens' : 'No screens') : `${t.screens.length} screen${t.screens.length === 1 ? '' : 's'}`}</span>
+      <div className="qa-envs-wrap">
+        <table className="qa-envs" aria-label={`${t.name}’s environments`}>
+          <thead>
+            <tr>
+              <th scope="col" className="qa-env-tick" aria-label="Run" />
+              <th scope="col">Environment</th>
+              <th scope="col">Host</th>
+              <th scope="col">Host approval</th>
+              <th scope="col">Credential</th>
+              <th scope="col">Screens</th>
+            </tr>
+          </thead>
+          {legs.map((leg) => {
+            const key = keyOf(leg)
+            const legWhy = cannotRunBecause(t, leg)
+            const label = leg.name ?? kindWords(leg)
+            const clicks = startClickWords(leg)
+            const bypass = bypassWords(leg)
+            return (
+              <tbody key={key} className={legWhy === null ? 'qa-env' : 'qa-env is-off'} data-environment={leg.name ?? undefined}>
+                <tr>
+                  <td className="qa-env-tick">
+                    <input
+                      type="checkbox"
+                      data-run-leg=""
+                      aria-label={`Run ${label}`}
+                      checked={legWhy === null && !unticked.has(key)}
+                      disabled={legWhy !== null}
+                      onChange={(e) => {
+                        const on = e.target.checked
+                        setUnticked((was) => {
+                          const next = new Set(was)
+                          if (on) next.delete(key)
+                          else next.add(key)
+                          return next
+                        })
+                      }}
+                    />
+                  </td>
+                  <td data-label="Environment">
+                    <b>{label}</b>
+                    {leg.name !== null && <small>{kindWords(leg)}</small>}
+                    {legWhy !== null && (
+                      <small className="ur-bad" data-cannot-run="">
+                        Cannot run: {legWhy}
+                      </small>
+                    )}
+                    {clicks !== null && <small data-start-clicks="">{clicks}</small>}
+                    {bypass !== null && <small data-challenge-bypass="">{bypass}</small>}
+                  </td>
+                  <td data-label="Host" className="qa-env-host">
+                    {leg.base_url ?? leg.host ?? '—'}
+                  </td>
+                  <td data-label="Host approval">
+                    <span className={leg.host_state === 'approved' ? 'qa-ok' : 'ur-bad'}>{hostWords(leg)}</span>
+                    {approvedWhen(leg) !== null && <small>{` ${approvedWhen(leg)}`}</small>}
+                    {canApprove(leg) && approving !== key && (
+                      <Button size="sm" onClick={() => setApproving(key)}>
+                        {leg.host_state === 'approved' ? 'Approve again' : 'Approve host'}
+                      </Button>
+                    )}
+                  </td>
+                  <td data-label="Credential">
+                    {leg.sign_in.kind === 'own_login' && !leg.credential.set ? (
+                      <span className="qa-chip is-warn">not set</span>
+                    ) : (
+                      <span className={leg.sign_in.kind === 'own_login' ? 'qa-ok' : undefined}>{credentialWords(leg)}</span>
+                    )}
+                    {credentialWhen(leg) !== null && <small>{` ${credentialWhen(leg)}`}</small>}
+                    {admin && leg.sign_in.kind === 'own_login' && (
+                      <Button size="sm" onClick={() => onCredential(leg)}>
+                        Set credential
+                      </Button>
+                    )}
+                  </td>
+                  <td data-label="Screens">
+                    <LegScreens t={t} leg={leg} go={go} />
+                  </td>
+                </tr>
+                {leg.new_since_last_run.length > 0 && (
+                  <tr className="qa-env-new">
+                    <td className="qa-env-tick" aria-hidden="true" />
+                    <td colSpan={5} data-label="New since last run">
+                      <span className="qa-new-k">New since last run</span>
+                      <ul className="qa-new">
+                        {leg.new_since_last_run.map((found) => (
+                          <li key={found.id}>
+                            <code>{found.path}</code>
+                            {found.first_seen !== null && <span className="qa-new-at">{`first seen ${timeAgo(found.first_seen)}`}</span>}
+                            {admin && (
+                              <Button size="sm" busy={promoting === found.id} disabled={promoting !== null} onClick={() => void promote(found)}>
+                                {`Promote ${found.path}`}
+                              </Button>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            )
+          })}
+        </table>
       </div>
-      {t.discovers && <DiscoveryLine t={t} go={go} />}
-      {login !== null && <div className="ur-cmeta">{login}</div>}
-      {clicks !== null && (
-        <div className="ur-cmeta" data-start-clicks="">
-          {clicks}
-        </div>
-      )}
-      {bypass !== null && (
-        <div className="ur-cmeta" data-challenge-bypass="">
-          {bypass}
-        </div>
-      )}
-      {why !== null && (
-        <p className="ur-small ur-bad" data-cannot-run="">
-          Cannot run: {why}
-        </p>
-      )}
       {runGate !== null && why === null && (
         <p className="ur-small" data-role-gate="member">
           {runGate}
         </p>
       )}
       <div className="ur-cacts">
-        <Button size="sm" kind="primary" busy={busy} disabled={why !== null || runGate !== null} onClick={() => void run()}>
-          Run
+        <Button size="sm" kind="primary" busy={busy} disabled={ticked.length === 0 || runGate !== null} onClick={() => void run()}>
+          {runLabel}
         </Button>
-        {t.discovers && (
-          <Button
-            size="sm"
-            busy={discoveryBusy}
-            disabled={runGate !== null || cannotBrowse !== null || t.discovering !== null}
-            onClick={() => void discover()}
-          >
-            {t.discovered.length > 0 ? 'Run discovery again' : 'Run discovery'}
-          </Button>
-        )}
         <label className="ur-small">
           <input type="checkbox" checked={reportOnly} onChange={(e) => setReportOnly(e.target.checked)} data-report-only="" /> report
           only, file no issues
@@ -472,33 +692,24 @@ function TargetCard({
             <option value="jev">Jev, this run</option>
           </select>
         </label>
-        {admin && (
-          <>
-            <Button size="sm" onClick={onEdit}>
-              Edit
-            </Button>
-            {t.sign_in.kind === 'own_login' && (
-              <Button size="sm" onClick={onCredential}>
-                Set credential
-              </Button>
-            )}
-            <Button size="sm" kind="danger" disabled={busy} onClick={() => setConfirmDelete(true)}>
-              Delete
-            </Button>
-          </>
+        {t.discovers && (
+          <Button size="sm" busy={discoveryBusy} disabled={runGate !== null || discoverable.length === 0} onClick={() => void discover()}>
+            {anyDiscovered ? 'Run discovery again' : 'Run discovery'}
+          </Button>
         )}
-        {canApprove && !approving && (
-          <Button size="sm" onClick={() => setApproving(true)}>
-            {t.host_state === 'approved' ? 'Approve again' : 'Approve host'}
+        {admin && (
+          <Button size="sm" kind="danger" disabled={busy} onClick={() => setConfirmDelete(true)}>
+            Delete
           </Button>
         )}
       </div>
-      {canApprove && approving && (
+      {approvingLeg !== null && canApprove(approvingLeg) && (
         <ApproveHostForm
           t={t}
-          onClose={() => setApproving(false)}
+          leg={approvingLeg}
+          onClose={() => setApproving(null)}
           onApproved={(doc) => {
-            setApproving(false)
+            setApproving(null)
             onApproved(doc)
           }}
         />
@@ -514,14 +725,7 @@ function TargetCard({
           </Button>
         </div>
       )}
-      {started !== null && (
-        <p className="ur-small" role="status">
-          Started{' '}
-          <UrLink to={`work/workflows?wf=${encodeURIComponent(started)}`} go={go}>
-            {started}
-          </UrLink>
-        </p>
-      )}
+      {started !== null && <StartedLine started={started} go={go} />}
       {failed !== null && (
         <p className="ur-small ur-bad" role="alert">
           {failed}
@@ -532,13 +736,57 @@ function TargetCard({
   )
 }
 
-/** The discovery's state on a target that discovers (§4.1): running, found, or failed. */
-function DiscoveryLine({ t, go }: { t: QaTarget; go: (to: string) => void }) {
-  const running = t.discovering
-  const n = t.discovered.length
+/**
+ * What a Run started: the run group's page (`/qa-runs/<group_id>`, one
+ * column per leg, QAENV-UI-RUNPAGE), and each leg the API could not start
+ * with its refusal's sentence (a 207). An answer with no group links each
+ * leg's workflow.
+ */
+function StartedLine({ started, go }: { started: QaRunGroupStart; go: (to: string) => void }) {
+  const submitted = started.legs.filter((l) => l.refused === null && l.workflow_id !== null)
+  const refused = started.legs.filter((l) => l.refused !== null)
+  const workflows = submitted.length > 0 ? submitted.map((l) => l.workflow_id!) : started.workflow_id === null ? [] : [started.workflow_id]
+  const names = submitted.flatMap((l) => (l.environment === null ? [] : [l.environment]))
   return (
     <>
-      <div className="ur-cmeta" data-discovery="">
+      <p className="ur-small" role="status">
+        {`Started${names.length === 0 ? '' : ` ${names.join(' and ')}`}`}
+        {started.group_id !== null ? (
+          <>
+            {' · '}
+            <UrLink to={qaRunAddress(started.group_id)} go={go}>
+              open the run
+            </UrLink>
+          </>
+        ) : null}
+        {workflows.map((wf) => (
+          <span key={wf}>
+            {' · '}
+            <UrLink to={`work/workflows?wf=${encodeURIComponent(wf)}`} go={go}>
+              {wf}
+            </UrLink>
+          </span>
+        ))}
+      </p>
+      {refused.map((l) => (
+        <p key={l.environment ?? ''} className="ur-small ur-bad" role="alert">
+          {`${l.environment ?? 'The run'} did not start: ${l.refused}`}
+        </p>
+      ))}
+    </>
+  )
+}
+
+/** A leg's Screens cell: the stored count, or its discovery's state (§4.1): running, found, or failed. */
+function LegScreens({ t, leg, go }: { t: QaTarget; leg: QaEnvironment; go: (to: string) => void }) {
+  const running = leg.discovering
+  const n = leg.discovered.length
+  const stored = t.screens.length > 0 ? <span>{t.screens.length}</span> : null
+  if (!t.discovers) return stored ?? <span>none</span>
+  return (
+    <>
+      {stored}
+      <span className="qa-env-disc" data-discovery="">
         {running !== null ? (
           <span role="status">
             Discovering…
@@ -554,16 +802,16 @@ function DiscoveryLine({ t, go }: { t: QaTarget; go: (to: string) => void }) {
         ) : n > 0 ? (
           <span>
             {`${n} screen${n === 1 ? '' : 's'} discovered`}
-            {t.discovered_at !== null && `, ${timeAgo(t.discovered_at)}`}
+            {leg.discovered_at !== null && `, ${timeAgo(leg.discovered_at)}`}
           </span>
         ) : (
-          <span>No screens discovered yet</span>
+          <span>{stored === null ? 'Discovers its screens' : 'No screens discovered yet'}</span>
         )}
-      </div>
-      {running === null && t.discovery_error !== null && (
-        <p className="ur-small ur-bad" data-discovery-error="">
-          The last discovery stored nothing: {t.discovery_error}
-        </p>
+      </span>
+      {running === null && leg.discovery_error !== null && (
+        <small className="ur-bad" data-discovery-error="">
+          The last discovery stored nothing: {leg.discovery_error}
+        </small>
       )}
     </>
   )
@@ -583,12 +831,23 @@ function typedHost(text: string): string {
  * 2026-10-23, #2067). It starts as the approved one, and an approval sent
  * without it clears it.
  */
-function ApproveHostForm({ t, onClose, onApproved }: { t: QaTarget; onClose: () => void; onApproved: (doc: QaTarget) => void }) {
-  const host = t.host ?? ''
-  const origin = t.sign_in.extra_origin
+function ApproveHostForm({
+  t,
+  leg,
+  onClose,
+  onApproved,
+}: {
+  t: QaTarget
+  /** The leg whose host this is (§1.3): named to the API on a target of entries. */
+  leg: QaEnvironment
+  onClose: () => void
+  onApproved: (doc: QaTarget) => void
+}) {
+  const host = leg.host ?? ''
+  const origin = leg.extra_origin
   const [typed, setTyped] = useState('')
   const [typedOrigin, setTypedOrigin] = useState('')
-  const [tokenPath, setTokenPath] = useState(t.approved_idp_token_path ?? '')
+  const [tokenPath, setTokenPath] = useState(leg.approved_idp_token_path ?? '')
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
   const fid = useId()
@@ -600,7 +859,7 @@ function ApproveHostForm({ t, onClose, onApproved }: { t: QaTarget; onClose: () 
     setBusy(true)
     setFailed(null)
     const path = tokenPath.trim()
-    const r = await approveQaTargetHost(t.id, host, origin, path === '' ? null : path)
+    const r = await approveQaTargetHost(t.id, host, origin, path === '' ? null : path, leg.name)
     setBusy(false)
     if (r.status === 'error') {
       setFailed(writeFailure(r.error))
@@ -611,7 +870,7 @@ function ApproveHostForm({ t, onClose, onApproved }: { t: QaTarget; onClose: () 
   }
 
   return (
-    <form className="qa-approve" data-target-id={t.id} onSubmit={(e) => void submit(e)} autoComplete="off">
+    <form className="qa-approve" data-target-id={t.id} data-environment-approve={leg.name ?? undefined} onSubmit={(e) => void submit(e)} autoComplete="off">
       <p className="ur-small">
         {`Approving ${host} lets this workspace's visual-QA runs open it. The approval is recorded under your name.`}
         {origin !== null && ` The login also signs in through ${origin}, approved with it.`}
@@ -682,9 +941,10 @@ function ApproveHostForm({ t, onClose, onApproved }: { t: QaTarget; onClose: () 
 }
 
 /**
- * The test credential's form. The fields are UNCONTROLLED: their values live
- * in the DOM inputs and nowhere else, read once on submit and emptied before
- * the request is sent.
+ * The one-time link's form: the test credential's username and password, or
+ * a `challenge_bypass` link's value. The fields are UNCONTROLLED: their values
+ * live in the DOM inputs and nowhere else, read once on submit and emptied
+ * before the request is sent.
  */
 function CredentialForm({
   link,
@@ -701,62 +961,102 @@ function CredentialForm({
 }) {
   const user = useRef<HTMLInputElement>(null)
   const pass = useRef<HTMLInputElement>(null)
+  const bypass = useRef<HTMLInputElement>(null)
   const fid = useId()
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
+  const isBypass = link.field === 'challenge_bypass'
+  const where = link.environment === null ? name : `${name} · ${link.environment}`
 
   async function submit(e: FormEvent) {
     e.preventDefault()
     const username = user.current?.value ?? ''
     const password = pass.current?.value ?? ''
-    if (user.current !== null) user.current.value = ''
-    if (pass.current !== null) pass.current.value = ''
+    const value = bypass.current?.value ?? ''
+    for (const field of [user, pass, bypass]) if (field.current !== null) field.current.value = ''
     if (link.token === null) {
-      setFailed('This form needs a one-time link, and its link was already used or never came. Ask for a new one with Set credential.')
+      setFailed(`This form needs a one-time link, and its link was already used or never came. Ask for a new one${isBypass ? '' : ' with Set credential'}.`)
       return
     }
-    if (username === '' || password === '') {
-      setFailed('Type both the username and the password; nothing was sent.')
+    if (isBypass ? value === '' : username === '' || password === '') {
+      setFailed(isBypass ? 'Type the value; nothing was sent.' : 'Type both the username and the password; nothing was sent.')
       return
     }
     setBusy(true)
     setFailed(null)
-    const r = await putQaCredential(link.targetId, username, password, link.token)
-    // Sent once: the API consumed the link before it wrote.
-    onSent()
+    const r = isBypass
+      ? await putQaChallengeBypass(link.targetId, value, { token: link.token, environment: link.environment })
+      : await putQaCredential(link.targetId, username, password, link.token, link.environment)
     setBusy(false)
+    // `set_credential` checks the entry and the sign-in (`set_challenge_bypass`
+    // the value's shape) BEFORE `consume_link`: those refusals leave the link
+    // unused. A success consumed it, `qa_credential_link_invalid` is a dead
+    // link, and the store's 503 comes after the consume (`linkSpent`); only
+    // those drop the token.
+    if (linkSpent(r)) onSent()
     if (r.status === 'error') {
-      setFailed(`${writeFailure(r.error)} The link is used; ask for a new one to try again.`)
+      setFailed(
+        linkSpent(r)
+          ? `${writeFailure(r.error)} The link is used; ask for a new one to try again.`
+          : `${writeFailure(r.error)} Nothing was saved; the link still works, fix the field and save again.`,
+      )
       return
     }
     onSaved()
   }
 
   return (
-    <Card className="ur-form" title={`Test credential for ${name}`}>
-      <p className="ur-small">
-        Type the test account&rsquo;s username and password. They go from this page to the workspace&rsquo;s secret store and
-        nowhere else: Claude, the plugin and this page&rsquo;s address never see them, and the live browser types them into
-        the app&rsquo;s login without the agent holding them. Use a test account with no MFA or CAPTCHA. The link works once.
-      </p>
-      <form className="qa-cred" data-target-id={link.targetId} onSubmit={(e) => void submit(e)} autoComplete="off">
+    <Card className="ur-form" title={isBypass ? `Challenge bypass value for ${where}` : `Test credential for ${where}`}>
+      {isBypass ? (
+        <p className="ur-small">
+          Type the value of the challenge bypass the app&rsquo;s owner made for these runs. It goes from this page to the
+          workspace&rsquo;s secret store and nowhere else, and the live browser adds it on the target&rsquo;s approved origins
+          alone. The link works once.
+        </p>
+      ) : (
+        <p className="ur-small">
+          Type the test account&rsquo;s username and password. They go from this page to the workspace&rsquo;s secret store and
+          nowhere else: Claude, the plugin and this page&rsquo;s address never see them, and the live browser types them into
+          the app&rsquo;s login without the agent holding them. Use a test account with no MFA or CAPTCHA. The link works once.
+        </p>
+      )}
+      <form
+        className="qa-cred"
+        data-target-id={link.targetId}
+        data-field={link.field}
+        onSubmit={(e) => void submit(e)}
+        autoComplete="off"
+      >
         <div className="ur-fgrid">
-          <label className="ur-fl" htmlFor={`${fid}-username`}>
-            Username
-          </label>
-          <div>
-            <input id={`${fid}-username`} name="username" type="text" ref={user} autoComplete="off" spellCheck={false} />
-          </div>
-          <label className="ur-fl" htmlFor={`${fid}-password`}>
-            Password
-          </label>
-          <div>
-            <input id={`${fid}-password`} name="password" type="password" ref={pass} autoComplete="new-password" />
-          </div>
+          {isBypass ? (
+            <>
+              <label className="ur-fl" htmlFor={`${fid}-bypass_value`}>
+                Value
+              </label>
+              <div>
+                <input id={`${fid}-bypass_value`} name="bypass_value" type="password" ref={bypass} autoComplete="new-password" spellCheck={false} />
+              </div>
+            </>
+          ) : (
+            <>
+              <label className="ur-fl" htmlFor={`${fid}-username`}>
+                Username
+              </label>
+              <div>
+                <input id={`${fid}-username`} name="username" type="text" ref={user} autoComplete="off" spellCheck={false} />
+              </div>
+              <label className="ur-fl" htmlFor={`${fid}-password`}>
+                Password
+              </label>
+              <div>
+                <input id={`${fid}-password`} name="password" type="password" ref={pass} autoComplete="new-password" />
+              </div>
+            </>
+          )}
         </div>
         <div className="ur-formacts">
           <Button type="submit" kind="primary" size="sm" busy={busy}>
-            Save credential
+            {isBypass ? 'Save value' : 'Save credential'}
           </Button>
           <Button size="sm" onClick={onClose}>
             Cancel

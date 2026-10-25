@@ -11,10 +11,9 @@
  * Nothing here re-derives the rule: `can_take_new_agent`, `blocked_by` and
  * `next_eligible_at` are the broker's own answers (`accountsPool.ts`).
  */
-import { useEffect, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useState, type ReactNode } from 'react'
 
 import { loadTasksInState } from './api'
-import { paneHref } from './capacityPoll'
 import { accountName } from './accountName'
 import {
   AGED_AFTER_MIN,
@@ -45,6 +44,16 @@ export const WAITING_HREF = '#work/running/waiting'
 export function andList(xs: readonly string[]): string {
   if (xs.length <= 1) return xs.join('')
   return `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`
+}
+
+/** `andList` over drawn names, each whole (`Nm`). */
+function andNames(accounts: readonly PoolAccount[]): ReactNode {
+  return accounts.map((a, i) => (
+    <Fragment key={a.account_id}>
+      {i === 0 ? '' : i === accounts.length - 1 ? ' and ' : ', '}
+      <Nm a={a} />
+    </Fragment>
+  ))
 }
 
 // ---------------------------------------------------------------------------
@@ -93,8 +102,16 @@ export function usePoolWaiting(key: number): WaitRead {
 // The verdict
 // ---------------------------------------------------------------------------
 
+/**
+ * An account's name, never broken at its hyphen (`.acct-nm`): at 390 the
+ * verdict read `five-` / `hour-floor`, which is two accounts to a reader.
+ */
+function Nm({ a }: { a: PoolAccount }) {
+  return <span className="acct-nm">{accountName(a)}</span>
+}
+
 function Name({ a }: { a: PoolAccount }) {
-  return <b>{accountName(a)}</b>
+  return <b className="acct-nm">{accountName(a)}</b>
 }
 
 function WaitBox({ read, free }: { read: WaitRead; free: number | null }) {
@@ -146,10 +163,17 @@ export function Verdict({
   waiting: WaitRead
 }) {
   const v = verdictOf(accounts, scope, shortfall)
-  const of = `of ${v.short ? 'at least ' : ''}${v.m}`
+  // An empty read with an unreadable document is not an empty pool: it is at
+  // least that many accounts this page could not read (rendered 2026-10-25,
+  // when the head said "this list is short" and the verdict "none registered").
+  const unread = v.m === 0 && shortfall > 0
+  const of = `of ${v.short ? 'at least ' : ''}${unread ? shortfall : v.m}`
   let head: ReactNode
   let sub: ReactNode = null
-  if (v.m === 0) {
+  if (unread) {
+    head = 'No account here could be read, so no agent that needs the pool can start.'
+    sub = `${pluralise(shortfall, 'registered account')} could not be read, so nothing on this page counts ${shortfall === 1 ? 'it' : 'them'}.`
+  } else if (v.m === 0) {
     head = 'No account is registered, so no agent that needs the pool can start.'
     sub =
       'Agents whose runner profile uses the pool wait until an account is added here, or one is lent to this workspace. Agents with their own key are not affected.'
@@ -160,10 +184,10 @@ export function Verdict({
     const next = v.next
     head = next ? (
       <>
-        No account can take a new agent. Next: {accountName(next.account)} at {utcAt(next.at, now)}.
+        No account can take a new agent. Next: <Nm a={next.account} /> at {utcAt(next.at, now)}.
       </>
     ) : v.full ? (
-      <>No account can take a new agent. Next: {accountName(v.full)}, when one of its agents finishes.</>
+      <>No account can take a new agent. Next: <Nm a={v.full} />, when one of its agents finishes.</>
     ) : (
       'No account can take a new agent, and no clock says when one will.'
     )
@@ -196,12 +220,11 @@ export function Verdict({
     )
   } else {
     const slots = pluralise(v.free, 'free slot')
-    const names = v.open.map((a) => accountName(a))
     const each = v.open.map(freeSlots)
     head =
       v.n === 1 ? (
         <>
-          1 account can take a new agent: {slots} on {names[0]}.
+          1 account can take a new agent: {slots} on <Nm a={v.open[0]!} />.
         </>
       ) : (
         <>
@@ -223,7 +246,7 @@ export function Verdict({
       <>
         {v.n > 1 && (
           <>
-            {andList(names)}
+            {andNames(v.open)}
             {each.every((x) => x === each[0]) ? `, ${each[0]} each.` : ` (${andList(each.map(String))}).`}
           </>
         )}
@@ -236,7 +259,7 @@ export function Verdict({
     <section className={`acct-verdict ${tone}`} aria-label="Can the pool take a new agent">
       <div className="acct-verdict-big">
         {v.n === null ? <span title="This broker does not serve can_take_new_agent">&mdash;</span> : v.n}{' '}
-        <small>{v.m === 0 ? 'accounts' : of}</small>
+        <small>{v.m === 0 && !unread ? 'accounts' : of}</small>
       </div>
       <div className="acct-verdict-say">
         <p className="acct-verdict-head">{head}</p>
@@ -299,6 +322,20 @@ export function duplicatePairs(accounts: readonly PoolAccount[]): Pair[] {
   return out
 }
 
+/**
+ * Open the account, then bring its "Replace the credential" section into view
+ * once the detail has drawn it (`data-replace` in Accounts.tsx).
+ */
+function openReplace(id: string, onOpen: (id: string) => void) {
+  onOpen(id)
+  if (typeof window === 'undefined') return
+  window.setTimeout(() => {
+    const at = [...document.querySelectorAll<HTMLElement>('[data-replace]')].find((el) => el.dataset.replace === id)
+    at?.scrollIntoView?.({ block: 'start' })
+    at?.querySelector<HTMLElement>('button')?.focus({ preventScroll: true })
+  }, 60)
+}
+
 export function DuplicateBanner({
   accounts,
   scope,
@@ -313,20 +350,28 @@ export function DuplicateBanner({
   return (
     <>
       {pairs.map(({ extra, other, proven }) => {
-        const x = accountName(extra)
-        const y = other === null ? null : accountName(other)
+        const x = <Nm a={extra} />
+        const y = other === null ? null : <Nm a={other} />
         const org = organisationLine(extra)
         const owned = scope === null || extra.owner_tenant === scope
         return (
           <div key={extra.account_id} className="acct-dup" role="status">
             <b className="acct-dup-head">
-              {proven
-                ? y !== null
-                  ? `${x} and ${y} are one subscription`
-                  : `${x} is a subscription another workspace already registered`
-                : y !== null
-                  ? `${x} and ${y} may be one subscription`
-                  : `${x} may be a subscription another workspace registered`}
+              {proven ? (
+                y !== null ? (
+                  <>
+                    {x} and {y} are one subscription
+                  </>
+                ) : (
+                  <>{x} is a subscription another workspace already registered</>
+                )
+              ) : y !== null ? (
+                <>
+                  {x} and {y} may be one subscription
+                </>
+              ) : (
+                <>{x} may be a subscription another workspace registered</>
+              )}
             </b>
             <p>
               {proven ? (
@@ -359,23 +404,17 @@ export function DuplicateBanner({
                 </>
               )}
             </p>
-            {/* A LINK ON THE WASH, to the account's own address: any <button>
-                takes `:where(.app button)`'s --ctl-bd edge in the spacing sweep's
-                source-order cascade, 2.8:1 on this amber in dark, under the 3:1 a
-                control boundary is held to. A link has no edge, and its address
-                opens in a new tab or can be shared. */}
             <div className="acct-dup-acts">
-              <a
-                className="c-link"
-                href={paneHref('capacity/accounts', { account: extra.account_id })}
-                onClick={(e) => {
-                  if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
-                  e.preventDefault()
-                  onOpen(extra.account_id)
-                }}
-              >
-                Open {x}
-              </a>
+              <button type="button" className="c-btn is-sm" onClick={() => onOpen(extra.account_id)}>
+                Open {accountName(extra)}
+              </button>
+              {/* The fix the banner names, one click from it. It is the chosen
+                  account's own control, so it opens that account and goes to it. */}
+              {owned && (
+                <button type="button" className="c-btn is-sm" onClick={() => openReplace(extra.account_id, onOpen)}>
+                  Replace the credential
+                </button>
+              )}
             </div>
           </div>
         )
@@ -410,12 +449,15 @@ export function Forecast({ accounts, scope, now }: { accounts: readonly PoolAcco
   if (k === 0 && f.unmeasured.length === 0) {
     tiles = <Tile k="Goes dark" v="—" small="no subscription here takes agents" />
   } else if (f.unmeasured.length > 0) {
-    const names = f.unmeasured.map((a) => accountName(a))
     tiles = (
       <Tile
         k="Goes dark"
         v="—"
-        small={`${andList(names)} ${names.length === 1 ? 'has' : 'have'} no 7-day reading to take a pace from`}
+        small={
+          <>
+            {andNames(f.unmeasured)} {f.unmeasured.length === 1 ? 'has' : 'have'} no 7-day reading to take a pace from
+          </>
+        }
       />
     )
   } else if (f.darkAt === null) {
@@ -434,12 +476,20 @@ export function Forecast({ accounts, scope, now }: { accounts: readonly PoolAcco
           small={f.darkNow ? 'every subscription is under its 7-day floor' : `${inTime(f.darkAt, now)}, at this pace`}
         />
         {!f.darkNow && f.lastOpen !== null && (
-          <Tile k="Why dark" v={accountName(f.lastOpen)} small="the last one open reaches its 7-day floor" />
+          <Tile k="Why dark" v={<Nm a={f.lastOpen} />} small="the last one open reaches its 7-day floor" />
         )}
         <Tile
           k="Back"
           v={f.backAt === null ? '—' : utcAt(f.backAt, now)}
-          small={f.back === null ? 'not within 8 days' : `${accountName(f.back)}’s week resets`}
+          small={
+            f.back === null ? (
+              'not within 8 days'
+            ) : (
+              <>
+                <Nm a={f.back} />’s week resets
+              </>
+            )
+          }
         />
       </>
     )
