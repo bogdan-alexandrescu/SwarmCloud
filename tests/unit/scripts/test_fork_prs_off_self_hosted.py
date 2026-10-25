@@ -67,6 +67,7 @@ head. Do not move such a job to self-hosted without that check.
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 from pathlib import Path
@@ -158,8 +159,12 @@ def _trigger_names(doc: dict) -> set[str]:
     return {str(e) for e in (on or {})}
 
 
-def _file_triggers(filename: str) -> set[str]:
-    return _trigger_names(yaml.safe_load((WORKFLOWS / filename).read_text()))
+@functools.cache
+def _file_triggers(filename: str) -> frozenset[str]:
+    # Cached: _verdict_of asks once per job, and re-parsing accept.yml for each
+    # of its jobs made this file 7-15 CI-seconds, too slow for the walkers of
+    # GitHub and images that run on every pull request (test_select_unit_tests).
+    return frozenset(_trigger_names(yaml.safe_load((WORKFLOWS / filename).read_text())))
 
 
 def _short_form_allowed(filename: str | None, triggers: set[str] | None) -> str | None:
