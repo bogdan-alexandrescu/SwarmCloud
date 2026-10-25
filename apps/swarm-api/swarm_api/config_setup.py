@@ -51,7 +51,6 @@ from swarm_common.models import Tenant
 
 from .auth import AuthContext
 from .judgment import TYPESAFE_BACKEND, JudgmentSettings, settings_mac
-from .mcp_servers import McpServers
 from .provider_keys import TYPESAFE, ProviderKeys
 from .qatargets import QaTargets, credential_status
 from .roles import ADMIN, RoleStore
