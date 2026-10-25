@@ -298,6 +298,20 @@ export function duplicatePairs(accounts: readonly PoolAccount[]): Pair[] {
   return out
 }
 
+/**
+ * Open the account, then bring its "Replace the credential" section into view
+ * once the detail has drawn it (`data-replace` in Accounts.tsx).
+ */
+function openReplace(id: string, onOpen: (id: string) => void) {
+  onOpen(id)
+  if (typeof window === 'undefined') return
+  window.setTimeout(() => {
+    const at = [...document.querySelectorAll<HTMLElement>('[data-replace]')].find((el) => el.dataset.replace === id)
+    at?.scrollIntoView?.({ block: 'start' })
+    at?.querySelector<HTMLElement>('button')?.focus({ preventScroll: true })
+  }, 60)
+}
+
 export function DuplicateBanner({
   accounts,
   scope,
@@ -362,6 +376,13 @@ export function DuplicateBanner({
               <button type="button" className="c-btn is-sm" onClick={() => onOpen(extra.account_id)}>
                 Open {x}
               </button>
+              {/* The fix the banner names, one click from it. It is the chosen
+                  account's own control, so it opens that account and goes to it. */}
+              {owned && (
+                <button type="button" className="c-btn is-sm" onClick={() => openReplace(extra.account_id, onOpen)}>
+                  Replace the credential
+                </button>
+              )}
             </div>
           </div>
         )

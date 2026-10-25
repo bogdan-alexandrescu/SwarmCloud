@@ -14,7 +14,7 @@
 // in the duplicate banner, or put "available" back in the head -- a case below
 // turns red.
 
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { AccountsBoard } from '../api'
@@ -295,6 +295,8 @@ describe('one subscription twice', () => {
     const box = banner.closest('.acct-dup') as HTMLElement
     expect(box.textContent).toContain('To fix it:')
     expect(screen.getByRole('button', { name: 'Open lone' })).toBeTruthy()
+    // Mock-up A's second action: the fix the banner names, one click away.
+    expect(within(box).getByRole('button', { name: 'Replace the credential' })).toBeTruthy()
   })
 })
 
