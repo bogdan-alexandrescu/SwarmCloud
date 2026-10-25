@@ -2419,7 +2419,7 @@ QA-CAPTURE builds on them.
   drives the browser or the gate. The worker records from those counts
   whether the browser was used, as `result_summary.browser_used`
   (BROWSER-USE-FLAG, #2322; docs/outcomes.md, "Unused browser time"). It
-  also writes one `browser_unused` mark on the task's events when the agent
+  also writes one `browser_unused` mark on the agent's events when it
   has run 10 minutes with neither. That a live run's
   stream shows the image block has not yet been seen on a deployed run. Each
   base64 image makes the stream larger, so a long sweep can pass the

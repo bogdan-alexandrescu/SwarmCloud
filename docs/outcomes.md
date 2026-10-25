@@ -301,7 +301,7 @@ at `GROUP_ROWS_MAX` per grouping and each series is two integers per bucket.
 
 ### Unused browser time: `browser` (#2322, BROWSER-USE-FLAG)
 
-The 2026-10-25 audit of tenant eng found 49 browser tasks that never touched
+The 2026-10-25 audit of tenant eng found 49 browser agents that never touched
 their browser, and found them only by reading agent logs by hand: the worker
 counted screenshots and nothing else. So every usage row (span, bucket and
 group row) carries `browser`, and the console reads unused browser hours off
@@ -313,8 +313,8 @@ the same `GET /v1/outcomes?usage=...` it already calls for the range.
   browser MCP tool call (Playwright, jev) or a Bash command that drives the
   browser or the gate: `swarm-handoff serve|device|theme|record`,
   `dev-browser`, or a script through `swarm_browser`. An image under the
-  task's artifacts also counts, because some agents render through a script
-  with no tool call at all. The task read and every list row serve both keys
+  agent's artifacts also counts, because some agents render through a script
+  with no tool call at all. `GET /v1/tasks/{id}` and every list row serve both keys
   (`codec.browser_use_to_api`).
 * **Null is not false.** Null means one of two things. Either the profile
   runs no live browser (`RunnerProfile.live_browser`; today only
@@ -324,7 +324,7 @@ the same `GET /v1/outcomes?usage=...` it already calls for the range.
   `unknown_agents`, and in neither `unused_agents` nor `unused_s`.
 * **The seconds are the run time.** `run_s` is the summed `run_s` of the
   browser-runtime agents, from their attempts, as the usage block's own
-  `run_s`. `unused_s` is the part whose task the worker said did not use the
+  `run_s`. `unused_s` is the part whose agent the worker said did not use the
   browser. It is 0.0 when every measured browser agent used it, and null
   only when no browser agent in the row has a measured run.
 * **Version 10.** The tuple stores `browser_s` and `browser_used`, so every
