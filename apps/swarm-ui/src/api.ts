@@ -2648,8 +2648,14 @@ export async function loadMe(options: { frame?: boolean } = {}): Promise<Result<
 /** One tenant the caller may select: an entry of `GET /v1/tenants/mine`. */
 export interface TenantChoice {
   tenant_id: string
-  /** The registered group's email -- unique where the tenant id is not; "Your workspace (u-…)" for your own. */
+  /**
+   * A group workspace's stored name (`tenants/{id}.display_name`, what its admins rename it to; MINE-NAMES), or its
+   * registered group's email when the API could not read one; "Your workspace (u-…)" for your own. An older API
+   * served the email always.
+   */
   display_name: string
+  /** A group workspace's registered group email -- unique where the tenant id and the name are not. Absent for your own, and from an older API. */
+  group?: string
   /** `user` for the caller's own personal workspace, `group` for a tenant group (#1200). Absent from an older API. */
   kind?: 'user' | 'group'
   /**

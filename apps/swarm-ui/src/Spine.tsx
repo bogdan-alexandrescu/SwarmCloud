@@ -443,12 +443,14 @@ function focusInChrome(): boolean {
 }
 
 /**
- * THE TENANT NAMES `/v1/tenants/me` HAS GIVEN IN THIS BROWSER, by tenant id
- * (QA G1-06, 2026-10-07). `/v1/tenants/mine` names each tenant by its
- * registered group's email -- it reads nothing, by design -- so the shell
- * called one tenant "Engineering" in the panel and "eng@example.com" in the list
- * under it. The list draws the name `me` gave where one is known: the current
- * tenant's always, another's once it has been acted as here.
+ * THE TENANT NAMES THIS BROWSER HAS BEEN GIVEN, by tenant id (QA G1-06,
+ * 2026-10-07): `/v1/tenants/me`'s for each tenant acted as here, and each
+ * name `/v1/tenants/mine` served from its tenant document. `/mine` once named
+ * every tenant by its registered group's email, so the shell called one
+ * tenant "Engineering" in the panel and "eng@example.com" in the list under
+ * it. It now serves the stored name (MINE-NAMES, part of #2157), which the
+ * list prefers to this store; the store is what is drawn when `/mine` could
+ * not read a workspace's name and fell back to the group email.
  */
 export const TENANT_NAMES_STORE = 'swarm.tenants.names'
 
@@ -474,7 +476,7 @@ function learnTenantName(id: string, name: string): void {
 
 /** A tenant the list offers, named as the panel names it, with the group it was registered by. */
 export interface NamedTenantChoice extends TenantChoice {
-  /** The registered group's email: `/v1/tenants/mine`'s own `display_name`. */
+  /** The registered group's email: `/v1/tenants/mine`'s `group` (its `display_name` from an older API). */
   group: string
   /** The person's default workspace (§4.5), as `/v1/tenants/mine` marks it. */
   is_default: boolean
@@ -506,9 +508,20 @@ export const PROFILE_ADDRESS = 'settings/profile'
 export const PROFILE_PATH = '/settings/profile'
 
 /**
- * The one name the shell draws for a tenant: the current tenant's from `me`,
- * another's as `me` last gave it in this browser, and the group email only
- * for a tenant never acted as here. The caller's own personal workspace
+ * The name `/v1/tenants/mine` served from the workspace's own tenant document
+ * (MINE-NAMES), or null when it served the group email in its place -- no
+ * document yet, or one it could not read -- or is an older API with no `group`.
+ */
+export function servedTenantName(c: TenantChoice): string | null {
+  return c.kind !== 'user' && typeof c.group === 'string' && c.display_name !== '' && c.display_name !== c.group ? c.display_name : null
+}
+
+/**
+ * The one name the shell draws for a tenant: the current tenant's from `me`;
+ * another's as `/v1/tenants/mine` served it from its tenant document, so a
+ * rename lands in everyone's list at once (BGD, 2026-10-25), not only once
+ * they act there; else as this browser last saw it; and the group email only
+ * for a tenant never named either way. The caller's own personal workspace
  * (`kind: user`) is always "Your workspace". The id is always the secondary line.
  */
 export function nameTenants(choices: readonly TenantChoice[], me: Me | null): NamedTenantChoice[] {
@@ -517,10 +530,11 @@ export function nameTenants(choices: readonly TenantChoice[], me: Me | null): Na
     const is_default = defaultChoice(c)
     if (c.kind === 'user') return { tenant_id: c.tenant_id, display_name: OWN_WORKSPACE_LABEL, group: OWN_WORKSPACE_LABEL, is_default }
     const current = me !== null && me.tenant.tenant_id === c.tenant_id ? me.tenant.display_name || null : null
+    const group = c.group ?? c.display_name
     // `via` rides along: the list draws a platform admin's reach entries under
     // their own heading, and the shell its banner (`isReach`).
     const via = c.via === undefined ? {} : { via: c.via }
-    return { tenant_id: c.tenant_id, display_name: current ?? known[c.tenant_id] ?? c.display_name, group: c.display_name, is_default, ...via }
+    return { tenant_id: c.tenant_id, display_name: current ?? servedTenantName(c) ?? known[c.tenant_id] ?? group, group, is_default, ...via }
   })
 }
 
@@ -1804,6 +1818,15 @@ export function SkyShell({
     // With no tenant chosen, `me` names the default: Recent keeps its list under the bare key (CH-3).
     if (who !== null && tenant === null) learnDefaultTenant(who.tenant.tenant_id)
   }, [who, tenant])
+  useEffect(() => {
+    // Each name `/mine` read from a tenant document is kept too, so a later
+    // `/mine` that could not read it draws the newest one seen, not an older `me`'s.
+    if (signingOut()) return
+    for (const c of dataOf(mine) ?? []) {
+      const served = servedTenantName(c)
+      if (served !== null) learnTenantName(c.tenant_id, served)
+    }
+  }, [mine])
   const switchable = who !== null && choices.length > 1
   // THE SWITCH ON A KEPT FORM, for the banner over it and its button's words.
   const switched = useSyncExternalStore(subscribeTenantSwitch, tenantSwitchSnapshot, tenantSwitchSnapshot)

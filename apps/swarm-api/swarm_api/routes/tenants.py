@@ -59,7 +59,9 @@ from ..codec import console_origin, tenant_to_api
 from ..deps import AppContext, current_auth, get_context
 from ..errors import KeyLinkInvalid, ValidationFailed
 from ..schemas import FEATURE_UNKNOWN, CredentialCreate, FeatureState, StrictModel, TenantFeatures
+from ..store import TENANTS
 from ..validation import AWAIT_INPUT_PROFILE, known_providers
+from .workspace_name import clean_name
 
 log = logging.getLogger(__name__)
 
@@ -228,11 +230,21 @@ def get_mine(
     one that is not `ready` yet is not listed either.
 
     THEN the registered tenant groups Cloud Identity confirmed for this
-    request, in admin order, `kind: group`. Nothing is read for them, so a
-    group listed here need not have a tenant document yet; selecting it on a
-    submit creates one exactly as a first submit by its default member does.
-    Their `display_name` is the group email: it is what an admin registered,
-    it is unique where the tenant id is not, and it needs no read.
+    request, in admin order, `kind: group`. Membership is not read: it is
+    the verified request's. What IS read is each one's NAME (MINE-NAMES, part
+    of #2157): BGD decided on 2026-10-25 that a workspace its admins rename
+    (`PUT /v1/workspaces/{id}/name`) is renamed in everyone's switcher at
+    once, not only once they next act in it, and the name lives in
+    `tenants/{id}.display_name`. So every group entry's `tenants/{id}` --
+    the platform admin's reach entries below included -- is read in ONE
+    `get_all` per call, never a read per workspace, and a personal entry's
+    is not read at all. `display_name` is the stored name; `group` is the
+    registered group email, always. A group with no tenant document yet, a
+    stored name `workspace_name.clean_name` would refuse (the tenant's own
+    worker can rewrite its document), or a read that failed keeps today's
+    fallback, the group email, as `display_name`: an entry is never dropped
+    for its name, and selecting a group without a document on a submit
+    creates one exactly as a first submit by its default member does.
 
     Empty for a caller in no registered group without a ready workspace.
 
@@ -251,32 +263,65 @@ def get_mine(
     AFTER THEM, for a platform admin with the reach on, every registered group
     workspace they are NOT a member of (`AuthContext.platform_reach`), each
     `via: "platform_admin"`, `is_default: false` and `role: admin` by rule --
-    no read. Every other entry's role costs one cached grant read; a
+    no role read. Every other entry's role costs one cached grant read; a
     personal entry's costs none.
     """
+    groups = [tenant_id for tenant_id, principal in auth.tenant_choices
+              if principal != auth.email]
+    groups += [tenant_id for tenant_id, _group in auth.platform_reach]
+    names = _stored_names(ctx, groups)
     entries = [
-        _choice(ctx, auth, tenant_id, principal, first=index == 0)
+        _choice(ctx, auth, tenant_id, principal, names, first=index == 0)
         for index, (tenant_id, principal) in enumerate(auth.tenant_choices)
     ]
     for tenant_id, group in auth.platform_reach:
         entries.append({
-            "tenant_id": tenant_id, "display_name": group, "kind": "group",
+            "tenant_id": tenant_id, "display_name": names.get(tenant_id, group),
+            "group": group, "kind": "group",
             "is_default": False, "via": roles.VIA_PLATFORM_ADMIN,
             "role": {"name": roles.ADMIN, "source": roles.SOURCE_PLATFORM_ADMIN},
         })
     return entries
 
 
-def _choice(ctx: AppContext, auth: AuthContext, tenant_id: str, principal: str, *,
-            first: bool) -> dict:
+def _stored_names(ctx: AppContext, tenant_ids: list[str]) -> dict[str, str]:
+    """`{tenant_id: display_name}` for the documents that hold a name the
+    rename route would accept, in ONE `get_all`. A missing document, a name
+    `clean_name` refuses, or a failed read is simply absent, so its entry
+    keeps the group email; the read never fails the list."""
+    wanted = list(dict.fromkeys(tenant_ids))
+    if not wanted:
+        return {}
+    tenants = ctx.db.collection(TENANTS)
+    names: dict[str, str] = {}
+    try:
+        for snap in ctx.db.get_all([tenants.document(tenant_id) for tenant_id in wanted]):
+            if not snap.exists:
+                continue
+            stored = (snap.to_dict() or {}).get("display_name")
+            if not isinstance(stored, str):
+                continue
+            try:
+                names[snap.id] = clean_name(stored)
+            except ValidationFailed:
+                continue
+    except Exception:  # noqa: BLE001 -- a name is cosmetic; the list is not
+        log.warning("tenants/mine: workspace names unreadable; serving group emails",
+                    exc_info=True)
+        return {}
+    return names
+
+
+def _choice(ctx: AppContext, auth: AuthContext, tenant_id: str, principal: str,
+            names: dict[str, str], *, first: bool) -> dict:
     # The personal entry is the one whose principal is the caller themselves;
     # `_with_own_workspace` is the only place such an entry is made.
     if principal == auth.email:
         entry = {"tenant_id": tenant_id, "display_name": f"Your workspace ({tenant_id})",
                  "kind": "user", "via": roles.VIA_PERSONAL}
     else:
-        entry = {"tenant_id": tenant_id, "display_name": principal, "kind": "group",
-                 "via": roles.VIA_MEMBER}
+        entry = {"tenant_id": tenant_id, "display_name": names.get(tenant_id, principal),
+                 "group": principal, "kind": "group", "via": roles.VIA_MEMBER}
     entry.update(_role_field(ctx, roles.with_tenant(auth, tenant_id, principal)))
     entry["is_default"] = first
     if first:

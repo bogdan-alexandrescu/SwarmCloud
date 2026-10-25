@@ -219,7 +219,7 @@ function me(tenantId: string) {
 }
 
 /** A live API with `mine` as the caller's verified memberships. */
-function liveApi(mine: { tenant_id: string; display_name: string; kind?: 'user' | 'group' }[]) {
+function liveApi(mine: { tenant_id: string; display_name: string; group?: string; kind?: 'user' | 'group' }[]) {
   const f = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     const chosen = new Headers(init?.headers).get(TENANT_HEADER)
@@ -436,6 +436,71 @@ const loadForm = async (): Promise<Result<{ n: number }>> => {
   formReads++
   return { status: 'ok', data: { n: formReads }, fetchedAt: Date.now() }
 }
+
+// A workspace renamed by its admins is named by `/v1/tenants/mine` from its own
+// tenant document (MINE-NAMES, part of #2157; BGD 2026-10-25): everyone's list
+// draws the new name at once, not the one this browser saw when it last acted there.
+describe('a workspace the person is not acting in', () => {
+  const NAMES_STORE = 'swarm.tenants.names'
+  const RENAMED = { tenant_id: 'research', display_name: 'Research Lab', group: 'research@example.com', kind: 'group' as const }
+
+  it('is drawn by the name /mine served, over the one this browser last saw', async () => {
+    // MUTATION: drop `servedTenantName(c)` from nameTenants and the stale name wins.
+    window.localStorage.setItem(NAMES_STORE, JSON.stringify({ research: 'Research' }))
+    liveApi([{ ...ENG, group: 'eng@example.com', kind: 'group' as const }, RENAMED])
+    await shell()
+    await waitFor(() => expect(switcher()).not.toBeNull())
+    fireEvent.click(switcher()!)
+    expect(rowFor('Engineering')?.getAttribute('aria-current')).toBe('true')
+    const row = rowFor('Research Lab')
+    expect(row, 'the served name is not drawn').toBeDefined()
+    expect(row?.getAttribute('aria-current')).toBeNull()
+    expect(row?.getAttribute('title')).toBe('registered as research@example.com')
+    expect(row?.querySelector('small')?.textContent).toBe('research')
+    expect(rowFor('Research'), 'the stale name is still drawn').toBeUndefined()
+    // And it is kept, for a later /mine that cannot read it.
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(NAMES_STORE) ?? '{}').research).toBe('Research Lab'))
+  })
+
+  it('keeps the name this browser last saw when /mine fell back to the group email', async () => {
+    // MUTATION: treat a `display_name` equal to `group` as a served name.
+    window.localStorage.setItem(NAMES_STORE, JSON.stringify({ research: 'Research' }))
+    liveApi([ENG, { ...RENAMED, display_name: 'research@example.com' }])
+    await shell()
+    await waitFor(() => expect(switcher()).not.toBeNull())
+    fireEvent.click(switcher()!)
+    expect(rowFor('Research')?.getAttribute('title')).toBe('registered as research@example.com')
+    expect(rowFor('research@example.com')).toBeUndefined()
+  })
+
+  it('is drawn by its new name after a rename, without a reload', async () => {
+    // MUTATION: drop the switcher's /mine re-read on WORKSPACE_RENAMED_EVENT.
+    let mine = [ENG, { ...RENAMED, display_name: 'research@example.com' }]
+    const f = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const chosen = new Headers(init?.headers).get(TENANT_HEADER)
+      if (url.includes('/v1/workspaces/research/name')) {
+        mine = [ENG, RENAMED]
+        return ok({ tenant_id: 'research', display_name: 'Research Lab', previous_display_name: 'research', changed: true })
+      }
+      if (url.includes('/v1/tenants/mine')) return ok(mine)
+      if (url.includes('/v1/tenants/me')) return ok(me(chosen ?? 'eng'))
+      return ok({ pools: [] })
+    })
+    globalThis.fetch = f as unknown as typeof fetch
+    await shell()
+    await waitFor(() => expect(switcher()).not.toBeNull())
+    fireEvent.click(switcher()!)
+    expect(rowFor('research@example.com')).toBeDefined()
+    // The rename as Config › Workspace Settings sends it, from the shell's own module instance.
+    const { renameWorkspace } = await import('../api')
+    await act(async () => {
+      await renameWorkspace('research', 'Research Lab')
+    })
+    await waitFor(() => expect(rowFor('Research Lab')).toBeDefined())
+    expect(rowFor('research@example.com')).toBeUndefined()
+  })
+})
 
 describe('the default workspace in the tenant block (§4.5)', () => {
   const backButton = () =>

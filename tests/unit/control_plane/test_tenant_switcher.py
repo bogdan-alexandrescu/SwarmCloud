@@ -308,9 +308,12 @@ def test_mine_lists_exactly_the_verified_memberships_in_admin_order(client):
     # Each membership is reached as a member and, with no grant stored, holds
     # the workspace default `member` (docs/design/workspace-roles.md §4.3, §4.7).
     as_member = {"via": "member", "role": {"name": "member", "source": "default"}}
-    eng = {"tenant_id": "eng", "display_name": ENG_GROUP, "kind": "group"} | as_member
+    # No tenant document is seeded, so each is named by its group email
+    # (MINE-NAMES' fallback), which `group` carries too.
+    eng = {"tenant_id": "eng", "display_name": ENG_GROUP, "group": ENG_GROUP,
+           "kind": "group"} | as_member
     research = {"tenant_id": "research", "display_name": RESEARCH_GROUP,
-                "kind": "group"} | as_member
+                "group": RESEARCH_GROUP, "kind": "group"} | as_member
     # The first entry is the default and says why (docs/design/user-profile.md
     # §4.5): with no stored default and no ready workspace, the first group.
     first = {"is_default": True, "default_source": "first_group"}

@@ -119,8 +119,16 @@ def own(user: str) -> dict[str, str]:
     return {"tenant_id": f"u-{user}", "display_name": f"Your workspace (u-{user})", "kind": "user"}
 
 
-ENG = {"tenant_id": "eng", "display_name": ENG_GROUP, "kind": "group"}
-RESEARCH = {"tenant_id": "research", "display_name": RESEARCH_GROUP, "kind": "group"}
+# `seeded` gives each group workspace a tenant document named by its id, so
+# that stored name is what `/mine` serves (MINE-NAMES), the group email beside
+# it; `group(...)` is a workspace with no document, named by its group email.
+ENG = {"tenant_id": "eng", "display_name": "eng", "group": ENG_GROUP, "kind": "group"}
+RESEARCH = {"tenant_id": "research", "display_name": "research", "group": RESEARCH_GROUP,
+            "kind": "group"}
+
+
+def unseeded(entry: dict[str, str]) -> dict[str, str]:
+    return entry | {"display_name": entry["group"]}
 
 
 # -- the list ------------------------------------------------------------------
@@ -145,17 +153,17 @@ def test_no_ready_workspace_is_not_listed(client, seeded):
                                    "denied", "failed", "", "READY"])
 def test_only_a_ready_workspace_is_listed(client, db, state):
     seed_personal(db, "alice", state=state)
-    assert mine(client, "alice") == [ENG]
+    assert mine(client, "alice") == [unseeded(ENG)]
 
 
 def test_a_group_kind_document_at_the_personal_id_is_not_offered(client, db):
     seed_personal(db, "alice", kind="group")
-    assert mine(client, "alice") == [ENG]
+    assert mine(client, "alice") == [unseeded(ENG)]
 
 
 def test_a_workspace_record_naming_someone_else_is_not_offered(client, db):
     seed_personal(db, "alice", record_principal="alice@partner.com")
-    assert mine(client, "alice") == [ENG]
+    assert mine(client, "alice") == [unseeded(ENG)]
 
 
 def test_a_service_identity_is_never_offered_a_personal_tenant(group_map, db):
