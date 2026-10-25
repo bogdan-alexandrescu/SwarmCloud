@@ -282,6 +282,23 @@ describe('Browser logins is a tab of Config › Secrets', () => {
     await waitFor(() => expect(calls.some((c) => c.method === 'DELETE' && c.url === '/v1/browser-logins/github-qa')).toBe(true))
   })
 
+  it('in a group workspace the tab says only where logins live, and the head offers no Refresh of the secrets (seen on the render)', async () => {
+    serve((m, url) => {
+      if (m === 'GET' && url.includes('/v1/workspace/secrets/consumers')) return { status: 200, body: { kinds: [], providers: [], consumers: [] } }
+      if (m === 'GET' && url.includes('/v1/workspace/secrets')) return { status: 200, body: { ...SECRETS, tenant_id: 'eng', kind: 'group' } }
+      return null
+    })
+    window.history.replaceState(null, '', '/config/secrets?view=logins')
+    await mount()
+    await screen.findByText('Not kept in a group tenant')
+    // MUTATION: draw the "browser sessions you saved" lede whatever the tenant -> fails.
+    expect(visible(document.body)).not.toMatch(/The browser sessions you saved/)
+    // MUTATION: keep the head's UrRefresh on the Browser logins tab -> fails.
+    expect(document.querySelector('.c-phead .c-refresh')).toBeNull()
+    fireEvent.click(screen.getByRole('tab', { name: 'Workspace secrets' }))
+    expect(document.querySelector('.c-phead .c-refresh')).not.toBeNull()
+  })
+
   it('a one-time add link opens the secrets, whatever the view', async () => {
     api()
     window.history.replaceState(null, '', '/config/secrets?view=logins')
