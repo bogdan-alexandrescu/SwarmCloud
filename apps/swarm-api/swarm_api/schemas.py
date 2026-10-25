@@ -793,6 +793,33 @@ class AccountCreate(StrictModel):
     credential: str = Field(min_length=8, max_length=16384)
 
 
+#: An account's health (#2302), as `GET /v1/accounts/{id}/health` and each row
+#: of `GET /v1/accounts` serve it. Allow-lists, not types: the broker
+#: (`quota_broker.accountstore`) owns the record, and `routes/accounts.py`
+#: serves a value outside these as nothing rather than passing it through.
+#: The four statuses, by the broker's rule (`accountstore.health_status`):
+#: re-auth first, then limited, then erroring (3+ errors in the last hour).
+ACCOUNT_HEALTH_STATUSES = ("healthy", "limited", "erroring", "reauth_needed")
+#: What an event may be: a rate limit or an exhausted report; a provider error
+#: by kind (auth, overloaded 529, 5xx, network); refused at assignment; a
+#: re-auth mark; a credential refresh that failed.
+ACCOUNT_HEALTH_KINDS = (
+    "rate_limit",
+    "exhausted",
+    "auth",
+    "overloaded",
+    "server_error",
+    "network",
+    "assign_refused",
+    "reauth",
+    "refresh_failed",
+)
+#: The window a rate-limit event names.
+ACCOUNT_HEALTH_WINDOWS = ("five_hour", "seven_day", "other")
+#: The count windows the record serves.
+ACCOUNT_HEALTH_SPANS = ("last_1h", "last_24h", "last_7d")
+
+
 class AccountLending(StrictModel):
     lend_to: list[str] = Field(default_factory=list, max_length=50)
 
