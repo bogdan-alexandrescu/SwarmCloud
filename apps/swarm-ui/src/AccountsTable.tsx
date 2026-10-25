@@ -288,7 +288,16 @@ function Tags({ a, names }: { a: PoolAccount; names: ReadonlyMap<string, string>
           className="acct-tag is-unk"
           title={`${extra.join(', ')}: ${extra.length === 1 ? 'a window' : 'windows'} this console does not know by name, held to the default floor`}
         >
-          {extra.length === 1 ? '1 window' : `${extra.length} windows`} not known by name: {extra.join(', ')}
+          {extra.length === 1 ? '1 window' : `${extra.length} windows`} not known by name:{' '}
+          {/* THE PROVIDER'S OWN NAME, DRAWN AS AN ID: it is data the reading
+              carried, not a word this console chose, so each one is its own
+              code element (walk.copy.test.tsx reads that as the user's data). */}
+          {extra.map((w, i) => (
+            <span key={w}>
+              {i > 0 && ', '}
+              <code>{w}</code>
+            </span>
+          ))}
         </span>
       )}
     </span>

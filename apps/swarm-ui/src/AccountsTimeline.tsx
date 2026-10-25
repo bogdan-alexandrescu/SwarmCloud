@@ -26,7 +26,7 @@
  * forecast under it cannot disagree with the Table's. Opening an account opens
  * the detail the Table opens (`renderDetail`, Accounts.tsx `Detail`).
  */
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 
 import { accountName } from './accountName'
 import { ageOf, clearsOf } from './AccountsTable'
@@ -69,7 +69,7 @@ import {
   type Step,
 } from './accountsLanes'
 import { Segmented } from './components'
-import { HelpCard } from './HelpCard'
+import { HelpNote } from './HelpCard'
 import { FIVE_HOUR, SEVEN_DAY, pluralise, unreadableFor } from './types'
 import './styles/accounts-timeline.css'
 
@@ -725,6 +725,7 @@ export function AccountsTimeline({
 }) {
   const [axis, setAxis] = useState<AxisKind>('split')
   const [pace, setPace] = useState<'off' | 'on'>('on')
+  const emptyHelp = useId()
   const ranked = rankAccounts(accounts, scope).flatMap((g) => g.accounts)
   const names = new Map(accounts.map((a) => [a.account_id, accountName(a)]))
   const forecast = forecastOf(accounts, scope, now)
@@ -811,12 +812,15 @@ export function AccountsTimeline({
         {accounts.length === 0 ? (
           <div className="acct-tl-row">
             <div className="acct-tl-words">
-              {/* The empty Table's `?` (B7.4), here too: the cost of the zero
-                  -- work waits rather than fails -- is the one thing an empty
-                  pool cannot show. */}
-              <p className="acct-tl-rowhead">
+              {/* The empty Table's topic, here too: the cost of the zero --
+                  work waits rather than fails -- is the one thing an empty pool
+                  cannot show. PUBLISHED, NOT DRAWN (B7.4): the Table and the
+                  Timeline are one screen, and the console's ceiling of
+                  twenty-seven `?` has no room for this view to draw a second
+                  copy of the glyph the empty Table already draws. */}
+              <p className="acct-tl-rowhead" aria-describedby={emptyHelp}>
                 No lanes yet
-                <HelpCard topic="park-on-missing-credential" />
+                <HelpNote topic="park-on-missing-credential" id={emptyHelp} />
               </p>
               <p className="acct-tl-meta">Each account you add is a lane here</p>
             </div>
