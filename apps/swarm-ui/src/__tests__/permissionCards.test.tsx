@@ -146,7 +146,7 @@ afterEach(() => {
   vi.unstubAllEnvs()
 })
 
-describe('Setup › GitHub: one card for the App and one per org', () => {
+describe('Workspace setup › GitHub: one card for the App and one per org', () => {
   it('draws a fully granted org collapsed, with a count chip and what it enables in the header', async () => {
     routes(() => answer())
     await mountSection()
@@ -207,6 +207,21 @@ describe('Setup › GitHub: one card for the App and one per org', () => {
     expect(cells[4]).toContain("merges can't see CI, so they fail")
     expect(cells[4]).toContain('Merge, CI')
     expect(rows.every((r) => r.getAttribute('data-ok') === 'true')).toBe(true)
+  })
+
+  it("draws each row's capability words at the table's own size, never in a <small> (CONFIG-COPY render review)", async () => {
+    // The table is already --t-micro; a <small> inside a cell shrank "Push,
+    // Merge" one step further, to 10px measured on the rendered Workspace
+    // setup page (2026-10-25, both themes, 1440 and 390), under the 11.5px floor.
+    routes(() => answer())
+    await mountSection()
+    await waitFor(() => expect(cardNamed('example-org')).toBeDefined(), WAIT)
+    const card = cardNamed('example-org')!
+    fireEvent.click(card.querySelector('button[aria-expanded]')!)
+    const caps = Array.from(card.querySelectorAll<HTMLElement>('.fp-grants .fp-caps'))
+    expect(caps.length).toBeGreaterThan(0)
+    expect(caps.map((c) => c.tagName)).toEqual(caps.map(() => 'SPAN'))
+    expect(card.querySelectorAll('.fp-grants small')).toHaveLength(0)
   })
 
   it('folds the grants SwarmCloud does not use under "Also granted"', async () => {
