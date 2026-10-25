@@ -116,6 +116,15 @@ pass, an ImportError, a fixture bug -- stays failed. tflint is the expected case
 installs it only with `INSTALL_TFLINT=1`, which is off because no tflint
 release passes the image promote gate (images/agent-runtime-base/Dockerfile).
 
+A CHECK GETS WHAT IS LEFT OF THE STEP WHEN IT STARTS (#2274). Each check's
+limit is `min(CHECK_TIMEOUT_SECONDS, deadline - now - CHECK_MARGIN_SECONDS)`,
+read from the clock as it starts, never one value computed for the round: with
+640 s left after the agent's end_turn, three checks each given that one 610 s
+limit ran ~1,800 s, the runner was SIGKILLed at the step's deadline, and no
+pre-publish record was written. A check the budget cannot cover (under
+`MIN_CHECK_SECONDS` left) is not started: it and every check after it are
+`skipped` for budget -- advisory, never sent to the agent to fix.
+
 A DECLARED SERVICE'S TESTS RUN FOR REAL (TS-GATE, #1627;
 docs/design/test-services.md §5, owner decisions of 2026-10-23 in §10). A
 repository that checks in `.swarm/test-services.toml` (`agent_worker.testservices`)
@@ -223,6 +232,15 @@ CONFLICT_TURNS = 1
 MIN_GATE_SECONDS = 120.0
 #: Any one check. changed-guards.sh holds itself under ten minutes.
 CHECK_TIMEOUT_SECONDS = 600.0
+#: Kept back from the step's deadline by every check (#2274): after the last
+#: check the gate still restores the tree, measures test reach and writes its
+#: record and sections, and the runner uploads the transcript, all before the
+#: step's SIGKILL.
+CHECK_MARGIN_SECONDS = 30.0
+#: Below this much budget left a check is not started but skipped for budget:
+#: even the quickest check (shellcheck or ruff on a few files) needs seconds to
+#: start, and one killed at its limit is only a timeout nobody can fix.
+MIN_CHECK_SECONDS = 10.0
 #: How long the runner waits for the worker to answer the rebase. The worker
 #: answers on its control poll; a fetch of a large repository is the slow case.
 REBASE_WAIT_SECONDS = 300.0
@@ -1497,25 +1515,42 @@ def select_checks(repo: Path, files: Sequence[str], *, base: str,
 
 def run_checks(repo: Path, checks: Sequence[Check], *, env: Mapping[str, str],
                runner: Runner = run_command, timeout: float = CHECK_TIMEOUT_SECONDS,
-               clock: Callable[[], float] = time.monotonic) -> list[Outcome]:
+               clock: Callable[[], float] = time.monotonic,
+               deadline: float | None = None) -> list[Outcome]:
+    """Run `checks` in order, each under `timeout` -- and, given `deadline`
+    (an instant on `clock`), under what is left of it when the check starts."""
     # uv's project environments live outside the clone, and go with the round (#1964).
     with tempfile.TemporaryDirectory(prefix="prepublish-uv-", dir=_outside(repo, env),
                                      ignore_cleanup_errors=True) as uv_root:
         return _run_checks(repo, checks, env=env, runner=uv_outside(runner, Path(uv_root)),
-                           timeout=timeout, clock=clock)
+                           timeout=timeout, clock=clock, deadline=deadline)
 
 
 def _run_checks(repo: Path, checks: Sequence[Check], *, env: Mapping[str, str],
-                runner: Runner, timeout: float, clock: Callable[[], float]) -> list[Outcome]:
+                runner: Runner, timeout: float, clock: Callable[[], float],
+                deadline: float | None = None) -> list[Outcome]:
     outcomes: list[Outcome] = []
+    out_of_budget: str | None = None
     for check in checks:
         if check.run is None:
             outcomes.append(Outcome(check.name, SKIPPED, 0.0, check.files, check.command,
                                     reason=check.skipped))
             continue
+        limit = timeout
+        if deadline is not None and out_of_budget is None:
+            left = deadline - clock() - CHECK_MARGIN_SECONDS
+            if left < MIN_CHECK_SECONDS:
+                out_of_budget = (f"the step's budget ran out before this check "
+                                 f"({max(0, int(left))} s left)")
+            limit = min(timeout, left)
+        if out_of_budget is not None:
+            # Once out of budget, no later check starts either (#2274).
+            outcomes.append(Outcome(check.name, SKIPPED, 0.0, check.files, check.command,
+                                    reason=out_of_budget))
+            continue
         started = clock()
         try:
-            status, output = check.run(runner, repo, env, timeout)
+            status, output = check.run(runner, repo, env, limit)
         except OSError as exc:
             status, output = ERROR, f"{type(exc).__name__}: the check could not run"
         # A check that finds at run time it cannot run (graph-pytest's
@@ -2133,11 +2168,13 @@ class Gate:
                       for c in checks]
         else:
             env = {k: v for k, v in self.env.items() if k != TEST_SERVICES_ENV}
-        timeout = max(30.0, min(CHECK_TIMEOUT_SECONDS, self.remaining() - 30.0))
+        # Each check's limit is read as it starts, from this deadline (#2274).
+        deadline = self.clock() + self.remaining()
         state = record_tree(self.repo, runner=self.runner, env=self.env)
         try:
             outcomes = run_checks(self.repo, checks, env=env, runner=self.runner,
-                                  timeout=timeout, clock=self.clock)
+                                  timeout=CHECK_TIMEOUT_SECONDS, clock=self.clock,
+                                  deadline=deadline)
         finally:
             # §5.2 step 5: what the gate started goes with the round, so a
             # fix round starts it afresh. The worker's own runs on (Q4).
