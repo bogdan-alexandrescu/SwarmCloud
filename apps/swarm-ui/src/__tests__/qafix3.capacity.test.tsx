@@ -252,7 +252,7 @@ describe('a11y-keyboard-003: every capacity table has an accessible name', () =>
     expect(screen.getByRole('table', { name: 'openai quota, by tenant' })).toBeTruthy()
   })
 
-  it('names Accounts\' Holding now and History tables by their headings', async () => {
+  it('names Accounts\' Holding now and History tables', async () => {
     const since = new Date(Date.now() - 30 * 60_000).toISOString()
     reads.read.mockImplementation(async (target: { url: string }) => {
       if (target.url.includes('/holders')) {
@@ -267,10 +267,10 @@ describe('a11y-keyboard-003: every capacity table has an accessible name', () =>
       throw new Error(`unexpected read ${target.url}`)
     })
     await renderAccounts()
-    fireEvent.click(await screen.findByRole('tab', { name: /Holding now/ }, WAIT))
-    // MUTATION: drop `aria-labelledby` from HoldingNow's <table>.
+    fireEvent.click(document.querySelector<HTMLButtonElement>('button.acct-open')!)
+    // MUTATION: drop the `aria-label` from HoldingNow's <table> in the sheet (#2222).
     expect(await screen.findByRole('table', { name: 'Holding now · 1' }, WAIT)).toBeTruthy()
-    fireEvent.click(screen.getByRole('tab', { name: 'History' }))
+    fireEvent.click(screen.getByRole('button', { name: 'History' }))
     // MUTATION: drop `aria-labelledby` from HoldingHistory's <table>.
     expect(await screen.findByRole('table', { name: 'History' }, WAIT)).toBeTruthy()
   })
@@ -299,7 +299,10 @@ describe('capacity-002: Accounts\' remove button is drawn off until it is armed'
   // case first pinned is now a danger OUTLINE -- the danger ink on its edge,
   // no fill -- so it still reads as off, never as the armed fill.
   it('is the danger outline, unfaded, before the label is typed, and the filled red once it is', async () => {
+    reads.read.mockResolvedValue(ok({ account_id: 'eng:alice-personal', viewer: 'owner', total: 0, holders: [], others: 0 }))
     await renderAccounts()
+    // Remove is in the account's sheet (#2222), which opens on its row.
+    fireEvent.click(document.querySelector<HTMLButtonElement>('button.acct-open')!)
     const btn = screen.getByRole('button', { name: 'remove alice-personal' }) as HTMLButtonElement
     expect(btn.disabled).toBe(true)
     for (const theme of THEMES) {

@@ -1,6 +1,7 @@
 // LIVE QA, CAPACITY › ACCOUNTS (2026-10-11, swarm.example.com).
 //
-//   CAP-1   `move to paused` / `move to draining` wrote on the first click.
+//   CAP-1   `move to paused` / `move to draining` (Pause and Drain since #2222)
+//           wrote on the first click.
 //           A state button now opens a confirm that names the account and its
 //           agents, and pausing or draining needs a reason.
 //   CAP-2   `save lending` sent any free text, on the first click. Ids the
@@ -84,14 +85,20 @@ function board(accounts: Account[], tenants: Tenant[] | null = [{ tenant_id: 'en
 async function mount(accounts: Account[], tenants?: Tenant[] | null): Promise<void> {
   api.loadAccountsBoard.mockResolvedValue(ok(tenants === undefined ? board(accounts) : board(accounts, tenants)))
   render(<AccountsScreen />)
-  await screen.findByText(accounts[0]!.account_id, undefined, WAIT)
+  await screen.findAllByText(accounts[0]!.account_id, undefined, WAIT)
+}
+
+/** Open the first account's sheet (#2222): its controls live there. */
+function openFirst(): void {
+  fireEvent.click(document.querySelector<HTMLButtonElement>('button.acct-open')!)
 }
 
 describe('CAP-1: a state change is confirmed before it is written', () => {
   it('opens a confirm naming the account and its agents, and writes nothing on the first click', async () => {
     api.setAccountState.mockResolvedValue(ok({}))
     await mount([account({})])
-    fireEvent.click(await screen.findByRole('button', { name: 'move to draining' }, WAIT))
+    openFirst()
+    fireEvent.click(await screen.findByRole('button', { name: 'Drain' }, WAIT))
     expect(api.setAccountState, 'the first click wrote').not.toHaveBeenCalled()
     const dialog = await screen.findByRole('dialog', undefined, WAIT)
     expect(dialog.textContent).toContain('eng:alice-personal')
@@ -101,20 +108,22 @@ describe('CAP-1: a state change is confirmed before it is written', () => {
   it('refuses to pause or drain with no reason, and writes the reason it was given', async () => {
     api.setAccountState.mockResolvedValue(ok({}))
     await mount([account({})])
-    fireEvent.click(await screen.findByRole('button', { name: 'move to paused' }, WAIT))
+    openFirst()
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause' }, WAIT))
     const dialog = await screen.findByRole('dialog', undefined, WAIT)
-    const verb = within(dialog).getByRole('button', { name: 'move to paused' })
+    const verb = within(dialog).getByRole('button', { name: 'Pause' })
     expect((verb as HTMLButtonElement).disabled, 'pause with an empty reason is armed').toBe(true)
     fireEvent.click(verb)
     expect(api.setAccountState).not.toHaveBeenCalled()
     fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'held for the release' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'move to paused' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Pause' }))
     await waitFor(() => expect(api.setAccountState).toHaveBeenCalledWith('eng:alice-personal', 'PAUSED', 'held for the release'), WAIT)
   })
 
   it('writes nothing when the confirm is dismissed', async () => {
     await mount([account({})])
-    fireEvent.click(await screen.findByRole('button', { name: 'move to draining' }, WAIT))
+    openFirst()
+    fireEvent.click(await screen.findByRole('button', { name: 'Drain' }, WAIT))
     const dialog = await screen.findByRole('dialog', undefined, WAIT)
     fireEvent.click(within(dialog).getByRole('button', { name: /^Leave it/ }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), WAIT)
@@ -131,6 +140,8 @@ describe('CAP-1: a state change is confirmed before it is written', () => {
 describe('CAP-2: lending is checked against the tenants and confirmed', () => {
   it('refuses an id the tenant list does not hold, before anything is sent', async () => {
     await mount([account({})])
+    openFirst()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit lending' }))
     const field = await screen.findByRole('combobox', { name: /is lent to$/ }, WAIT)
     fireEvent.change(field, { target: { value: 'no-such-tenant, BAD ID!' } })
     const save = screen.getByRole('button', { name: 'save lending' }) as HTMLButtonElement
@@ -143,6 +154,8 @@ describe('CAP-2: lending is checked against the tenants and confirmed', () => {
   it('confirms a valid loan naming the tenant, and sends only from the confirm', async () => {
     api.setAccountLending.mockResolvedValue(ok({}))
     await mount([account({})])
+    openFirst()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit lending' }))
     fireEvent.change(await screen.findByRole('combobox', { name: /is lent to$/ }, WAIT), { target: { value: 'smoke' } })
     fireEvent.click(screen.getByRole('button', { name: 'save lending' }))
     expect(api.setAccountLending, 'the first click lent the account').not.toHaveBeenCalled()
@@ -168,20 +181,20 @@ describe('CAP-3: a window that has reset has no current figure', () => {
     windows: { five_hour: { utilization: 0.92, resets_at: new Date(Date.now() - 5 * 3_600_000).toISOString(), reset: true } },
   })
 
-  it('says reset with no current figure, no bar and no tilde, in the table and the tile', async () => {
+  it('says reset with no current figure, no bar and no tilde, in the table and the sheet', async () => {
     await mount([RESET])
-    for (const el of document.querySelectorAll<HTMLElement>('.acct-window[data-label="5h used"]')) {
-      expect(el.querySelector('.acct-pct')!.textContent, 'the old figure is the headline').toBe('reset')
-      expect(el.textContent).toContain('was 92%')
-      expect(el.querySelector('.acct-tilde'), 'a reset window is drawn as a projection').toBeNull()
-      expect(el.querySelector('.ctl-util-track, .ctl-util-fill'), 'a bar for a window that refilled').toBeNull()
-    }
-    expect(document.querySelectorAll('.acct-window[data-label="5h used"]').length).toBe(1)
     // The ranked table (#2222): reset, when, and nothing read since -- never the old figure, never a fill.
     const cell = document.querySelector<HTMLElement>('tr.acct-rank-row .acct-fig')!
     expect(cell.textContent).toMatch(/^5-hour reset .+Znothing read since$/)
     expect(cell.textContent).not.toContain('92')
     expect(cell.querySelector('.ctl-util-fill'), 'a fill for a window that refilled').toBeNull()
+    // The sheet's window says the same, in the same words (#2222, F4).
+    openFirst()
+    const win = document.querySelector<HTMLElement>('.acct-sheet .acct-ss-wins > .acct-win')!
+    expect(win.textContent).toMatch(/^5-hour reset .+Znothing read since$/)
+    expect(win.textContent).not.toContain('92')
+    expect(win.querySelector('.ctl-util-fill'), 'a fill for a window that refilled').toBeNull()
+    expect(win.querySelector('.acct-tilde'), 'a reset window is drawn as a projection').toBeNull()
     // No `~` on screen, so the foot does not explain one.
     expect(document.querySelector('.provenance')!.textContent).toContain('no projected figures')
   })
@@ -190,15 +203,18 @@ describe('CAP-3: a window that has reset has no current figure', () => {
 describe('CAP-11: the add form can be closed, and focus follows it', () => {
   it('focuses the label field on open, and Esc and Cancel close it back to the button', async () => {
     await mount([account({})])
+    // An account is open in the sheet (#2222), so the form has something to give way to.
+    openFirst()
     const add = await screen.findByRole('button', { name: /Add account/ }, WAIT)
     fireEvent.click(add)
     const label = await screen.findByRole('textbox', { name: 'label' }, WAIT)
     await waitFor(() => expect(document.activeElement).toBe(label), WAIT)
-    // One thing in the pane: the account's detail steps aside for the form.
+    // One thing in the sheet: the account's detail steps aside for the form.
     expect(document.querySelector('.acct-pane-detail')).toBeNull()
     fireEvent.keyDown(label, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('textbox', { name: 'label' })).toBeNull(), WAIT)
     expect(document.activeElement).toBe(add)
+    // Escape closed the form, not the sheet under it.
     expect(document.querySelector('.acct-pane-detail')).not.toBeNull()
     fireEvent.click(add)
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }, WAIT))

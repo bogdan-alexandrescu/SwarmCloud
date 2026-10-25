@@ -46,6 +46,10 @@ const TOKENS = new Set<string>([
   // on Config › MCP servers, which this sweep reaches since CONFIG-NAV made it
   // a section tab (part of #2157). The fixture server allows `fetch_page`.
   'fetch_page',
+  // A usage window the console does not know by name, as the broker keys it:
+  // the account's data, listed verbatim on Capacity › Subscription accounts.
+  // The fixture account `weekly-floor` carries `harbor_lantern` (#2222's tag).
+  'harbor_lantern',
 ])
 
 const RULES: ReadonlyArray<readonly [string, RegExp]> = [
