@@ -725,7 +725,9 @@ function ClaudeAccountsCard({ p }: { p: Profile }) {
   } else if (c.personal_workspace === null) {
     body = (
       <p className="ur-small">
-        You have no personal workspace yet, which is where your own accounts live. <a className="c-link" href={SETUP_PATH}>Request one on {SETUP_LABEL}</a>.
+        {/* The period sits inside the link: .c-link is inline-flex, so once this long label wraps
+            it becomes a block and a period after </a> lands on a line of its own at 390px. */}
+        You have no personal workspace yet, which is where your own accounts live. <a className="c-link" href={SETUP_PATH}>Request one on {SETUP_LABEL}.</a>
       </p>
     )
   } else {

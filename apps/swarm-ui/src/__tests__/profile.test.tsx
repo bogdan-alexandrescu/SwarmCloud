@@ -309,7 +309,16 @@ describe('Settings › Profile names the Config pages by their Config addresses 
     await drawn({ ...f, workspaces, claude_accounts: { ...(f.claude_accounts as Json), personal_workspace: null, accounts: [] } })
     expect(visible(document.body)).not.toMatch(OLD)
     expect(visible(region('You and your workspaces'))).toContain('Request one on Config › Workspace Settings › Workspace setup.')
-    const request = screen.getByRole('link', { name: 'Request one on Config › Workspace Settings › Workspace setup' })
+    const request = screen.getByRole('link', { name: 'Request one on Config › Workspace Settings › Workspace setup.' })
     expect(request.getAttribute('href')).toBe('/config/workspace/setup')
+  })
+
+  it('keeps the Claude accounts sentence\'s closing period inside its link, so a wrapped link does not leave it on a line of its own', async () => {
+    const f = fixture()
+    await drawn({ ...f, claude_accounts: { ...(f.claude_accounts as Json), personal_workspace: null, accounts: [] } })
+    const claude = within(region('Claude accounts'))
+    const request = claude.getByRole('link', { name: 'Request one on Config › Workspace Settings › Workspace setup.' })
+    expect(request.getAttribute('href')).toBe('/config/workspace/setup')
+    expect(request.parentElement?.lastChild).toBe(request)
   })
 })
