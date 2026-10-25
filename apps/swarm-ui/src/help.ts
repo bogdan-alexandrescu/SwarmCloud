@@ -86,6 +86,7 @@ export type TopicId =
   | 'blockers-at-an-instant'
   | 'capacity'
   | 'ceiling-change-evicts-nothing'
+  | 'people-and-roles-scope'
   | 'catalogue-from-route'
   | 'checkpoints'
   | 'clipboard-secure-context'
@@ -1685,6 +1686,23 @@ const SPECS: Record<TopicId, TopicSpec> = {
     ],
   },
 
+  // ADMIN-PEOPLE-ROLES (part of #2157, BGD "Both, by scope"): Admin › People
+  // and roles is drawn for a workspace admin too, with fewer columns than a
+  // platform admin sees. Said here so a missing workspace reads as the scope
+  // working, not as a fault. A role "from the default" is a sighting: the
+  // platform cannot list a Google group's members (workspace-roles.md §4.3).
+  'people-and-roles-scope': {
+    group: 'the-platform',
+    title: 'People and roles shows the workspaces you administer',
+    short:
+      'A platform admin sees every person against every group workspace. A workspace admin sees only the workspaces they administer and the people in them: whoever was last seen there or holds a role there. A personal workspace request and a Claude account loan are a platform admin’s to decide.',
+    long: [
+      'Each cell is the person’s own role in that workspace when they hold one, else the workspace’s default when they were last seen in it, else none. A dash means that workspace’s roles could not be read, and is never a guessed role.',
+      'The platform cannot list a Google group’s members, so being in a workspace is read from the person’s last sign-in. Someone who has not signed in since joining is shown once they hold a role of their own.',
+      'Roles are changed on Config › People and roles, in the workspace itself.',
+    ],
+  },
+
   'lease-and-pool-are-two-records': {
     group: 'the-platform',
     title: 'The lease and the pool counter are two records of one fact',
@@ -1720,6 +1738,7 @@ export const HELP_PLACES = {
   'admin/limits': 'Pool limits',
   'admin/tenants': 'Tenants',
   'admin/counts': 'Platform counts',
+  'admin/people': 'People and roles',
   'automate/schedules': 'Schedules',
   'automate/approvals': 'Approvals',
   // A Capacity page since NAV-FOOT (#1672); `reference` still lands there.
@@ -1941,6 +1960,10 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   'ceiling-change-evicts-nothing': {
     subject: 'Lowering a ceiling',
     act: { say: 'To free capacity now, cancel work; lowering a ceiling only stops new work being admitted.', at: 'admin/limits' },
+  },
+  'people-and-roles-scope': {
+    subject: 'Who People and roles shows',
+    act: { say: 'To change a role, open Config › People and roles in that workspace.', at: 'admin/people' },
   },
   'lease-and-pool-are-two-records': {
     subject: 'Leases and pool counters',

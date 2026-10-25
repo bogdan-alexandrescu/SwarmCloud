@@ -11,6 +11,7 @@ import {
   setWorkspaceCeiling,
   setWorkspaceLoan,
 } from './api'
+import { AdminLead } from './AdminSettings'
 import { Banner, Button, buttonClass, Card, Chip, Dash, Dialog, ToneMark } from './components'
 import type { ApiError, Result } from './fetch'
 import { trapTab } from './focus'
@@ -20,8 +21,21 @@ import { Mark } from './primitives'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead, usePoll } from './Shell'
 import { tableMode, usePhoneTables } from './capacityPoll'
+import { HelpCard } from './HelpCard'
 import { PersonWorkspaceRoles, WorkspaceRolesCard } from './WorkspaceRolesAdmin'
-import type { AdminAuditEntry, AdminHolder, LendableAccount, PeopleDoc, PersonClaudeAccount, PersonRow, WorkspaceState } from './types'
+import type {
+  AdminAuditEntry,
+  AdminHolder,
+  LendableAccount,
+  PeopleDoc,
+  PeopleRoleCell,
+  PeopleWorkspaceColumn,
+  PersonClaudeAccount,
+  PersonRow,
+  ScopedPeopleDoc,
+  ScopedPersonRow,
+  WorkspaceState,
+} from './types'
 import { timeAgo } from './types'
 import { accountName } from './accountName'
 import './styles/repositories.css'
@@ -69,6 +83,24 @@ import './styles/people.css'
  * then most recently active), kept by a stable sort that only lifts
  * `requested` rows. While any row is approved or applying, the list is read
  * again every 5 s so its steps move; at rest it is read once per visit.
+ *
+ * PEOPLE AND ROLES (ADMIN-PEOPLE-ROLES; part of #2157, proposal E S5c, S5f):
+ * "Every person against every workspace; the lead is who is waiting for an
+ * admin." The lean table is the grid: the Teams column became one column per
+ * group workspace the API served (`PeopleDoc.workspaces`), each cell the
+ * person's role there, and Workspace became Own workspace. Approve, Deny,
+ * Lend, Decline, the ceiling and the Admin switch stay where they were, on
+ * Waiting for you and in each row's drawer. The page opens with a lead that
+ * names the oldest open request, and its one button goes to it.
+ *
+ * A WORKSPACE ADMIN who is not a platform admin is answered a SCOPED read
+ * (`scope: workspaces`): only the workspaces they administer, and of each
+ * person only their cells and when they were last seen. That page draws the
+ * grid and the lead and nothing else -- no Waiting for you (every request
+ * here is a platform admin's to decide), no Manage, no Admins, no Recent
+ * admin actions, no Workspace roles card -- because none of it was served
+ * and none of its writes would be answered. The API is what holds the line
+ * (`people_scope`, routes/people.py); this page only draws what it was given.
  *
  * AN APPROVAL NOTHING WILL BUILD IS NOT IN FLIGHT (2026-10-10, w-752763). With
  * workspace building off in the deployment, one banner says how many approved
@@ -770,7 +802,43 @@ function PersonCell({ row, doc }: { row: PersonRow; doc: PeopleDoc }) {
       </span>
       <GitHubMark github={row.github} />
       {holderOf(doc, row.email)?.role === 'owner' && <Chip className="pp-owner">platform owner</Chip>}
+      {/* The grid's Platform role (S5c), in the person's own cell rather than a column of its own. */}
+      {gridColumns(doc) !== null && holderOf(doc, row.email)?.role === 'admin' && <Chip className="pp-padmin">platform admin</Chip>}
     </span>
+  )
+}
+
+/** The grid's columns, or null for an older API's doc, which draws the Teams column instead. */
+function gridColumns(doc: { workspaces?: PeopleWorkspaceColumn[] | null }): PeopleWorkspaceColumn[] | null {
+  return Array.isArray(doc.workspaces) ? doc.workspaces : null
+}
+
+/**
+ * ONE CELL OF THE GRID: the person's role in one workspace, as the API said it
+ * (`people.role_cell`). `none` is a word, not a dash: it is a measurement --
+ * not seen there and no role of their own. A dash is only for a workspace
+ * whose roles were not read, and says why.
+ */
+function RoleCell({ cell, column }: { cell: PeopleRoleCell | undefined; column: PeopleWorkspaceColumn }) {
+  const role = cell === undefined || cell === null || column.unavailable ? 'unread' : cell
+  return (
+    <td role="cell" data-label={column.display_name} data-tenant={column.tenant_id} data-role={role} className="pp-role">
+      {role === 'unread' ? (
+        <Dash why={`${column.display_name}’s roles could not be read`} />
+      ) : role === 'none' ? (
+        <span className="pp-role-none">none</span>
+      ) : (
+        <span className={`pp-role-w is-${role}`}>{role}</span>
+      )}
+    </td>
+  )
+}
+
+function ColumnHead({ column }: { column: PeopleWorkspaceColumn }) {
+  return (
+    <th role="columnheader" scope="col" data-tenant={column.tenant_id} title={column.group} className="pp-wscol">
+      {column.display_name}
+    </th>
   )
 }
 
@@ -831,6 +899,7 @@ function isWaiting(row: PersonRow): boolean {
  */
 function Row({ row, doc, phone, onManage }: { row: PersonRow; doc: PeopleDoc; phone: boolean; onManage: (email: string) => void }) {
   const w = row.workspace
+  const columns = gridColumns(doc)
   const manage = (
     <td role="cell" data-label="Manage" className="pp-manage-cell">
       <Button size="sm" onClick={() => onManage(row.email)}>
@@ -843,12 +912,14 @@ function Row({ row, doc, phone, onManage }: { row: PersonRow; doc: PeopleDoc; ph
       <th role="rowheader" scope="row">
         <PersonCell row={row} doc={doc} />
       </th>
-      {!phone && (
-        <td role="cell" data-label="Teams">
-          {row.teams.length > 0 ? row.teams.join(', ') : <Dash why="Resolves to no team" />}
-        </td>
-      )}
-      <td role="cell" data-label="Workspace">
+      {columns !== null
+        ? columns.map((c) => <RoleCell key={c.tenant_id} cell={row.roles?.[c.tenant_id]} column={c} />)
+        : !phone && (
+            <td role="cell" data-label="Teams">
+              {row.teams.length > 0 ? row.teams.join(', ') : <Dash why="Resolves to no team" />}
+            </td>
+          )}
+      <td role="cell" data-label={columns !== null ? 'Own workspace' : 'Workspace'}>
         <WorkspaceCell row={row} />
       </td>
       {!phone && (
@@ -1401,6 +1472,130 @@ export function BuildingOff({ doc }: { doc: PeopleDoc }) {
   )
 }
 
+/** What a waiting request asks for, in the lead's sentence. */
+function askedFor(r: WaitingRequest): string {
+  return r.kind === 'workspace' ? 'a workspace' : 'to borrow a Claude account'
+}
+
+/** "N people", "1 workspace": a count and its noun. */
+function count(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`
+}
+
+/**
+ * THE LEAD (S5c): who is waiting for an admin. Each open request on Waiting
+ * for you, counted, and the OLDEST named -- the one that has waited longest
+ * is the one to answer first -- with one button that takes the reader to it:
+ * its row is scrolled into view and its first decision focused. Green when
+ * nothing is open, and then no button.
+ */
+function PeopleLead({ rows }: { rows: readonly PersonRow[] }) {
+  const items = waitingRequests(rows)
+  const oldest = items[0]
+  if (oldest === undefined) {
+    return <AdminLead tone="ok" kicker="Nothing waiting" title="Nobody is waiting for an admin" body="A new workspace request or a request to borrow a Claude account appears here first." />
+  }
+  const open = () => {
+    const li = [...document.querySelectorAll<HTMLElement>('.pp-waiting li.pp-req')].find((el) => el.dataset.kind === oldest.kind && el.dataset.email === oldest.row.email)
+    if (li === undefined) return
+    li.scrollIntoView?.({ block: 'center' })
+    ;(li.querySelector<HTMLElement>('button, select, input') ?? li).focus()
+  }
+  return (
+    <AdminLead
+      tone="warn"
+      kicker="Needs an admin"
+      title={`${count(items.length, 'request is', 'requests are')} waiting for an admin`}
+      body={`The oldest: ${oldest.row.email} asked for ${askedFor(oldest)} ${oldest.at !== null ? timeAgo(oldest.at) : 'at an unknown time'}.`}
+      action={
+        <Button kind="primary" onClick={open}>
+          Review the oldest
+        </Button>
+      }
+    />
+  )
+}
+
+/** The grid's columns were not read: the list is still served, and this says why the workspace columns are missing. */
+function ColumnsUnread({ code }: { code: string }) {
+  return (
+    <Banner tone="warn" title="The workspaces’ roles could not be read">
+      Each person’s own workspace and account are below; the workspace columns are not ({code}). Read again shortly.
+    </Banner>
+  )
+}
+
+/** The names a sentence lists: "A", "A and B", "A, B and C". */
+function listed(names: readonly string[]): string {
+  return names.length <= 1 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
+}
+
+/**
+ * A WORKSPACE ADMIN'S PAGE (S5f): the lead, then the grid of their workspaces
+ * and nothing else. Nobody waits for a workspace admin here: a personal
+ * workspace request and a loan are a platform admin's, so the lead says that
+ * rather than drawing decisions this reader cannot make.
+ */
+function ScopedBody({ doc }: { doc: ScopedPeopleDoc }) {
+  const columns = Array.isArray(doc.workspaces) ? doc.workspaces : []
+  const rows: ScopedPersonRow[] = Array.isArray(doc.people) ? doc.people : []
+  const phone = usePhoneTables()
+  const names = listed(columns.map((c) => c.display_name))
+  return (
+    <>
+      <AdminLead
+        tone="ok"
+        kicker="Your workspaces"
+        title={`Nobody is waiting for you in ${names}`}
+        body={`Showing ${names}, the ${columns.length === 1 ? 'workspace' : 'workspaces'} you administer. A request for a personal workspace or a Claude account is a platform admin’s to decide.`}
+      />
+      <Card className="pp-people" title="People and their roles" action={<Chip>{count(doc.count, 'person', 'people')}</Chip>}>
+        {rows.length === 0 ? (
+          <p className="ur-hint">Nobody has been seen in {names} yet, and nobody holds a role there.</p>
+        ) : (
+          <div className={`table-wrap ${tableMode(phone)} pp-wrap`}>
+            <table className="pools pp-table pp-grid" role="table">
+              <thead role="rowgroup">
+                <tr role="row">
+                  <th role="columnheader" scope="col">Person</th>
+                  {columns.map((c) => (
+                    <ColumnHead key={c.tenant_id} column={c} />
+                  ))}
+                  <th role="columnheader" scope="col">Last active</th>
+                </tr>
+              </thead>
+              <tbody role="rowgroup">
+                {rows.map((row) => (
+                  <tr key={row.email} role="row" data-email={row.email}>
+                    <th role="rowheader" scope="row">
+                      <span className="pp-person">
+                        <Avatar email={row.email} />
+                        <span className="pp-who" title={row.email}>
+                          <PersonName email={row.email} name={row.display_name ?? null} variant="full" />
+                        </span>
+                      </span>
+                    </th>
+                    {columns.map((c) => (
+                      <RoleCell key={c.tenant_id} cell={row.roles?.[c.tenant_id]} column={c} />
+                    ))}
+                    <td role="cell" data-label="Last active">
+                      {row.last_active !== null ? timeAgo(row.last_active) : <Dash why="Not seen since roles were recorded" />}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </>
+  )
+}
+
+function isScoped(doc: PeopleDoc | ScopedPeopleDoc): doc is ScopedPeopleDoc {
+  return doc.scope === 'workspaces'
+}
+
 function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
   const rows = pendingFirst(Array.isArray(doc.people) ? doc.people : [])
   const phone = usePhoneTables()
@@ -1408,14 +1603,17 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
   // redraws it from the list, so a decision made in it shows there.
   const [managing, setManaging] = useState<string | null>(null)
   const managed = managing === null ? null : (rows.find((r) => r.email === managing) ?? null)
+  const columns = gridColumns(doc)
   return (
     <>
+      <PeopleLead rows={rows} />
       <BuildingOff doc={doc} />
       <WaitingCard doc={doc} rows={rows} reload={reload} />
+      {doc.workspaces_error != null && <ColumnsUnread code={doc.workspaces_error} />}
       <Card
         className="pp-people"
-        // Not "People" again under the page's own "People" (visual QA V082).
-        title="Everyone who has signed in"
+        // Not the page's own heading again under it (visual QA V082).
+        title="People and their roles"
         action={
           <Chip>
             {doc.count} {doc.count === 1 ? 'person' : 'people'} ·{' '}
@@ -1434,12 +1632,14 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
               fixed layout, which split this table into equal columns and broke
               a workspace id at its hyphen. */
           <div className={`table-wrap ${tableMode(phone)} pp-wrap`}>
-            <table className="pools pp-table" role="table">
+            <table className={`pools pp-table${columns !== null ? ' pp-grid' : ''}`} role="table">
               <thead role="rowgroup">
                 <tr role="row">
                   <th role="columnheader" scope="col">Person</th>
-                  {!phone && <th role="columnheader" scope="col">Teams</th>}
-                  <th role="columnheader" scope="col">Workspace</th>
+                  {columns !== null
+                    ? columns.map((c) => <ColumnHead key={c.tenant_id} column={c} />)
+                    : !phone && <th role="columnheader" scope="col">Teams</th>}
+                  <th role="columnheader" scope="col">{columns !== null ? 'Own workspace' : 'Workspace'}</th>
                   {!phone && (
                     <>
                       <th role="columnheader" scope="col">Claude account</th>
@@ -1473,24 +1673,31 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
   )
 }
 
-/** Admin › People. */
+/** Admin › People and roles. */
 export function PeopleScreen() {
   const people = useUrRead(loadPeople, 'people')
   const data = people.state.status === 'ok' || people.state.status === 'stale' ? people.state.data : null
+  const scoped = data !== null && isScoped(data)
   // A row waiting on something the platform will not do by itself is not moving.
   const moving =
     data !== null &&
+    !isScoped(data) &&
     Array.isArray(data.people) &&
     data.people.some((r) => IN_FLIGHT.has(r.workspace.state) && waitingOf(r.workspace) !== 'publishing_off')
   usePoll(PEOPLE_POLL_MS, people.reload, !moving)
   return (
     <div className="ur-page pp-page">
-      <PageHead title="People">
+      <PageHead title="People and roles">
         <UrRefresh reads={[people]} />
       </PageHead>
-      <p className="ur-sub">Everyone who has signed in, what they are waiting for, and who is an admin.</p>
+      <p className="ur-sub">
+        {scoped
+          ? 'The people in the workspaces you administer, and their role in each.'
+          : 'Every person against every workspace, what they are waiting for, and who is an admin.'}
+      </p>
+      <HelpCard topic="people-and-roles-scope" />
       <UrRegion state={people.state} route="GET /v1/admin/people" what="People" plural onRetry={people.reload} lines={6}>
-        {(d) => <PeopleBody doc={d} reload={people.reload} />}
+        {(d) => (isScoped(d) ? <ScopedBody doc={d} /> : <PeopleBody doc={d} reload={people.reload} />)}
       </UrRegion>
     </div>
   )

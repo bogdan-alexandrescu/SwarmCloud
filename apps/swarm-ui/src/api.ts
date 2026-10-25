@@ -34,7 +34,7 @@ import type {
   IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, IssueRunSummaryPage, RunCreateBody, RunPlan,
   GitHubAuthorization, GitHubAuthorizeSurface, GitHubDisconnectResponse, GitHubExchangeBody, GitHubExchangeResponse, OnboardingDoc,
   OnboardingDismissal, OwnerTokenResponse, AccessInstallRequestResponse,
-  AdminGrantAnswer, AdminRemoveAnswer, AdminWorkspaceView, LoanDeclineAnswer, LoanRequestAnswer, NewWorkspaceBody, PeopleDoc, WorkspaceActionAnswer, WorkspaceKind, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceState, WorkspaceView,
+  AdminGrantAnswer, AdminRemoveAnswer, AdminWorkspaceView, LoanDeclineAnswer, LoanRequestAnswer, NewWorkspaceBody, PeopleDoc, ScopedPeopleDoc, WorkspaceActionAnswer, WorkspaceKind, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceState, WorkspaceView,
   AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
   AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
   NotificationTopic, Preferences, PreferencesSaved, PreferencesWrite, Profile, ProfileClaudeAccount, ProfileClaudeAccounts, ProfileDefault,
@@ -90,7 +90,7 @@ const FIXTURE_NOW = Date.parse(FIXTURE_CLOCK)
  * in the fixture build, so no live read ever depends on it; a dev server
  * opened by hand has no cookie and is the member, as is any other value.
  */
-export type FixturePersona = 'member' | 'platform-admin'
+export type FixturePersona = 'member' | 'platform-admin' | 'workspace-admin'
 const PERSONA_COOKIE = 'swarm_qa_persona'
 
 function readFixturePersona(): FixturePersona {
@@ -98,7 +98,8 @@ function readFixturePersona(): FixturePersona {
   for (const part of document.cookie.split(';')) {
     const at = part.indexOf('=')
     if (at > 0 && part.slice(0, at).trim() === PERSONA_COOKIE) {
-      return part.slice(at + 1).trim() === 'platform-admin' ? 'platform-admin' : 'member'
+      const value = part.slice(at + 1).trim()
+      return value === 'platform-admin' || value === 'workspace-admin' ? value : 'member'
     }
   }
   return 'member'
@@ -107,6 +108,12 @@ function readFixturePersona(): FixturePersona {
 const FIXTURE_PERSONA: FixturePersona = USE_FIXTURES ? readFixturePersona() : 'member'
 /** Whether the fixture caller is a platform admin: the `platform-admin` persona only. */
 const fixtureIsAdmin = FIXTURE_PERSONA === 'platform-admin'
+/**
+ * The `workspace-admin` persona (ADMIN-PEOPLE-ROLES): eng's stored admin and
+ * no platform admin, so Admin › People and roles is answered scoped to eng
+ * (S5f) and every platform Admin read refuses it as the member's does.
+ */
+const fixtureIsWorkspaceAdmin = FIXTURE_PERSONA === 'workspace-admin'
 /** The group workspace the `platform-admin` persona administers: `tenant:eng` in fixtureCapacity is its pool. */
 const FIXTURE_GROUP = { tenant_id: 'eng', principal: 'eng@example.com' } as const
 
@@ -2674,7 +2681,7 @@ export async function loadMyTenants(): Promise<Result<TenantChoice[]>> {
     // The member has a personal tenant and no group, so there is nothing to
     // pick. The platform-admin persona is also a member of `eng`, where its
     // STORED role is admin -- what Admin › Workspaces you admin lists.
-    if (!fixtureIsAdmin) return { status: 'empty', fetchedAt: Date.now() }
+    if (!fixtureIsAdmin && !fixtureIsWorkspaceAdmin) return { status: 'empty', fetchedAt: Date.now() }
     return { status: 'ok', fetchedAt: Date.now(), data: fixtureTenantChoices() }
   }
   return read<TenantChoice[]>(route('/v1/tenants/mine'), (rows) => rows.length === 0, { frame: true })
@@ -6921,6 +6928,25 @@ function fixtureAdminWorkspacesRoles(): unknown {
   }
 }
 
+/** The grid's columns (ADMIN-PEOPLE-ROLES): eng, the personas' group, and research. */
+const FIXTURE_PEOPLE_COLUMNS = [
+  { tenant_id: FIXTURE_GROUP.tenant_id, group: FIXTURE_GROUP.principal, display_name: 'Engineering', default_role: 'member', unavailable: false },
+  { tenant_id: 'research', group: 'research@example.com', display_name: 'Research', default_role: 'viewer', unavailable: false },
+]
+
+/**
+ * `GET /v1/admin/people` as the `workspace-admin` persona reads it (S5f):
+ * eng alone, its people's cells and when they were last seen, nothing else.
+ */
+function fixtureScopedPeople(): unknown {
+  const people = [
+    { email: 'alice@example.com', display_name: null, roles: { eng: 'admin' }, last_active: fixtureAgo(5 * 60_000) },
+    { email: 'bob@example.com', display_name: 'Bob', roles: { eng: 'member' }, last_active: fixtureAgo(3 * FIXTURE_HOUR) },
+    { email: 'erin@example.com', display_name: null, roles: { eng: 'viewer' }, last_active: null },
+  ]
+  return { scope: 'workspaces', workspaces: [FIXTURE_PEOPLE_COLUMNS[0]], workspaces_error: null, people, count: people.length, pending: 0 }
+}
+
 /**
  * `GET /v1/admin/people` (run-4 admin-003): four people -- three signed in
  * with a ready workspace, one pending (a requested workspace) -- and one
@@ -6936,31 +6962,34 @@ function fixturePeople(): unknown {
   const ownAccounts = fixtureAccounts.filter((a) => a.owner_tenant === FIXTURE_TENANT)
   const people = [
     {
-      email: 'carol@example.com', display_name: 'Carol', teams: [], github: 'none',
+      email: 'carol@example.com', display_name: 'Carol', teams: [], github: 'none', roles: { eng: 'none', research: 'none' },
       workspace: ws('requested', null, { request_id: 'wsr_c4r0l', requested_at: fixtureAgo(40 * 60_000), requested_via: 'console' }),
       claude_account: claude('none', 0, 0, []), loan_request: null,
       first_seen: fixtureAgo(45 * 60_000), last_seen: fixtureAgo(40 * 60_000), last_submitted: null, last_active: fixtureAgo(40 * 60_000),
     },
     {
-      email: 'alice@example.com', display_name: null, teams: [FIXTURE_GROUP.principal], github: 'connected',
+      email: 'alice@example.com', display_name: null, teams: [FIXTURE_GROUP.principal], github: 'connected', roles: { eng: 'admin', research: 'none' },
       workspace: ws('ready', FIXTURE_TENANT, { ready_at: fixtureAgo(9 * 24 * FIXTURE_HOUR) }),
       claude_account: claude('own', ownAccounts.length, 1, [FIXTURE_GROUP.tenant_id]), loan_request: null,
       first_seen: fixtureAgo(9 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(5 * 60_000), last_submitted: fixtureAgo(20 * 60_000), last_active: fixtureAgo(5 * 60_000),
     },
     {
-      email: 'bob@example.com', display_name: 'Bob', teams: [FIXTURE_GROUP.principal], github: 'connected',
+      email: 'bob@example.com', display_name: 'Bob', teams: [FIXTURE_GROUP.principal], github: 'connected', roles: { eng: 'member', research: 'viewer' },
       workspace: ws('ready', 'u-bob', { ready_at: fixtureAgo(6 * 24 * FIXTURE_HOUR) }),
       claude_account: claude('lent', 0, 1, [FIXTURE_TENANT]), loan_request: { state: 'lent', requested_at: fixtureAgo(6 * 24 * FIXTURE_HOUR), decided_at: fixtureAgo(5 * 24 * FIXTURE_HOUR) },
       first_seen: fixtureAgo(6 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(3 * FIXTURE_HOUR), last_submitted: fixtureAgo(4 * FIXTURE_HOUR), last_active: fixtureAgo(3 * FIXTURE_HOUR),
     },
     {
-      email: 'dave@example.com', display_name: null, teams: [], github: 'expired',
+      email: 'dave@example.com', display_name: null, teams: [], github: 'expired', roles: { eng: 'none', research: 'admin' },
       workspace: ws('ready', 'u-dave', { ready_at: fixtureAgo(20 * 24 * FIXTURE_HOUR) }),
       claude_account: claude('provider_key', 0, 0, [], true), loan_request: null,
       first_seen: fixtureAgo(20 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(4 * 24 * FIXTURE_HOUR), last_submitted: null, last_active: fixtureAgo(4 * 24 * FIXTURE_HOUR),
     },
   ]
   return {
+    scope: 'platform',
+    workspaces: FIXTURE_PEOPLE_COLUMNS,
+    workspaces_error: null,
     people,
     count: people.length,
     pending: people.filter((p) => p.workspace.state === 'requested').length,
@@ -7039,7 +7068,7 @@ const FIXTURE_READS: Readonly<Record<string, (url: string) => FixtureBody | unde
   '/v1/code-intelligence': () => ({ body: fixtureCodeIntelligence() }),
   '/v1/profile': () => ({ body: fixtureProfile() }),
   '/v1/workspace/roles': () => ({ body: fixtureWorkspaceRoles() }),
-  '/v1/admin/people': () => (fixtureIsAdmin ? { body: fixturePeople() } : 'admin'),
+  '/v1/admin/people': () => (fixtureIsAdmin ? { body: fixturePeople() } : fixtureIsWorkspaceAdmin ? { body: fixtureScopedPeople() } : 'admin'),
   '/v1/admin/workspaces/roles': () => (fixtureIsAdmin ? { body: fixtureAdminWorkspacesRoles() } : 'admin'),
   // Admin › Tenants' "Being created": nothing is being built.
   '/v1/admin/workspaces': () => (fixtureIsAdmin ? { body: { workspaces: [] } } : 'admin'),
@@ -8329,9 +8358,13 @@ export async function requestLoan(): Promise<Result<LoanRequestAnswer>> {
   return writeTo(route('/v1/workspace/loan-request'), 'POST', { via: 'console' }) as Promise<Result<LoanRequestAnswer>>
 }
 
-/** `GET /v1/admin/people` (admin): everyone, pending first, the last 50 audit entries, the lendable accounts. */
-export async function loadPeople(): Promise<Result<PeopleDoc>> {
-  return readAs(route('/v1/admin/people'), (raw) => raw as PeopleDoc)
+/**
+ * `GET /v1/admin/people` (a platform admin: everyone, pending first, every
+ * workspace's column, the last 50 audit entries, the lendable accounts; a
+ * workspace admin: only the workspaces they administer, `ScopedPeopleDoc`).
+ */
+export async function loadPeople(): Promise<Result<PeopleDoc | ScopedPeopleDoc>> {
+  return readAs(route('/v1/admin/people'), (raw) => raw as PeopleDoc | ScopedPeopleDoc)
 }
 
 // -- Admin › Runner sizes (SIZES-UI; part of #1689) ---------------------------

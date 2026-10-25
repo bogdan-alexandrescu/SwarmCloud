@@ -330,7 +330,9 @@ describe('a workspace admin on a platform Admin page goes to Workspaces you admi
     // redirect sends them to /admin/workspaces and this fails.
     expect(window.location.pathname).toBe('/admin/people')
     const rows = [...document.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((e) => e.textContent)
-    expect(rows).toEqual(['People and roles', 'Workspaces you admin'])
+    // Their workspaces' group, then the In Automate links (CONFIG-PANEL-E); no platform page.
+    expect(rows.slice(0, 2)).toEqual(['People and roles', 'Workspaces you admin'])
+    expect(rows.join(' ')).not.toMatch(/Pool limits|Runner sizes|Tenants|Platform counts/)
     // The Admin item still lands on Workspaces you admin, as ADMIN-REDIRECT drew it.
     expect(document.querySelector('.sk-spine a[data-sec="admin"]')?.getAttribute('href')).toBe('/admin/workspaces')
   })
