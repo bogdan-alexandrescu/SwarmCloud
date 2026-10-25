@@ -129,8 +129,11 @@ fieldset.jb-options > legend { padding: 0; margin-bottom: var(--ctl-s1); font-si
 .mcp-registered > tbody > tr.is-need > th,
 .mcp-registered > tbody > tr.is-need > td { background: color-mix(in srgb, var(--warn-ink) 6%, var(--surface)); }
 .mcp-registered > tbody > tr.is-need > th { box-shadow: inset 3px 0 0 var(--warn-ink); padding-left: 10px; }
+/* Its own line under the credential name, sized to its text. Not `display: table`:
+   that makes a table box, which inherits `border-collapse: collapse` from
+   table.mcp-servers and then ignores its own padding and border-radius. */
 .mcp-need {
-  display: table; margin-top: 4px; padding: 1px 8px;
+  display: block; width: fit-content; margin-top: 4px; padding: 1px 8px;
   border: 1px solid var(--warn-ink); border-radius: 999px; color: var(--warn-ink);
   font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 500; white-space: nowrap;
 }
