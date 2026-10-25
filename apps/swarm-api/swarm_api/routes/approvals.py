@@ -29,6 +29,17 @@ runs (`deps.current_auth`), and never anyone's personal workspace. The rules
 below are unchanged and still apply on top of the role, to them as to anyone:
 a gate's `approvers` list, a hold, the last-editor rule and the `spec` rule.
 
+A PLATFORM-SCOPE SCHEDULE'S ITEMS ARE A PLATFORM ADMIN'S (BGD, 2026-10-24,
+"Platform admins only"; PLATFORM-SCHED-APPROVALS, part of #2157). Approving
+a gated run has the effect of `:run`, which `schedule_routes._platform_only`
+refuses to anyone else, so `:approve` and `:reject` of an item whose STORED
+schedule reference -- a record's `subject.schedule_id`, a projected run's
+`schedule.schedule_id`, never the request -- names a schedule whose stored
+`scope.mode` is `platform` are the same 403 `platform_admin_required`, with
+the same log line, before anything moves. Enforced at once, as PR 2272's.
+Items of a workspace-scope schedule, or of none, keep the rules above
+exactly; and a platform admin still meets every one of them.
+
 THE MERGE SWITCH (SD3) is an audited edit of `gate.merge`, the one way to
 `merge: auto`, which `PATCH /v1/schedules/{id}` refuses with 422
 `use_merge_switch`. To `auto`: a platform admin (PR 860's admin roles,
@@ -119,6 +130,14 @@ def _projected_run(ctx: AppContext, tenant_id: str, item_id: str) -> Any:
         raise NotFound(f"approval {item_id[:80]!r} not found") from None
 
 
+def _platform_only(auth: AuthContext, schedule: Mapping[str, Any] | None, action: str) -> None:
+    """PR 2272's refusal for a decision on a platform-scope schedule's item.
+    `schedule` is the one the item's stored reference names; None (no
+    schedule, or no longer this tenant's) keeps today's rules."""
+    if schedule is not None:
+        schedule_routes._platform_only(auth, schedule, action)
+
+
 def _audit_run(ctx: AppContext, run: Any, action: str, by: str, detail: Mapping[str, Any]) -> None:
     """A scheduled run's plan decision in its schedule's audit (§4.8)."""
     schedule_id = (run.schedule or {}).get("schedule_id")
@@ -201,6 +220,7 @@ def _approve_projected(ctx: AppContext, auth: AuthContext, tenant_id: str, item_
     if not isinstance(body.digest, str):
         raise ScheduleInvalid("invalid_digest", "a plan is approved by its plan_digest")
     schedule = approvals.read_schedule(ctx.db, tenant_id, (run.schedule or {}).get("schedule_id"))
+    _platform_only(auth, schedule, "approve")
     if schedule is not None:
         approvals.check_gate_approver(
             ctx, tenant_id, (schedule.get("gate") or {}).get("approvers"), email=auth.email,
@@ -237,6 +257,7 @@ def approve(
     kind = doc.get("kind")
     now = ctx.now()
     schedule = approvals.read_schedule(ctx.db, tenant_id, (doc.get("subject") or {}).get("schedule_id"))
+    _platform_only(auth, schedule, "approve")
     move = None
     run = None
     if kind == approvals.RUN:
@@ -286,11 +307,14 @@ def reject(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """Any member of the tenant may reject (§4.5): a rejection ends a hold, it never opens one.
-    A `viewer` may not (workspace-roles §4.1)."""
+    A `viewer` may not (workspace-roles §4.1), nor anyone but a platform admin
+    an item of a platform-scope schedule (`_platform_only`)."""
     verb: RejectIn = _verb(RejectIn, body)
     approvals.require_decider(ctx, auth)
     if item_id.startswith(approvals.PROJECTED_PREFIX):
         run = _projected_run(ctx, tenant_id, item_id)
+        _platform_only(auth, approvals.read_schedule(ctx.db, tenant_id, (run.schedule or {}).get("schedule_id")),
+                       "reject")
         try:
             moved = IssueRuns(ctx.db, now=ctx.now).transition(
                 tenant_id, run.id, RunState.REJECTED, by=auth.email, from_states={RunState.PLANNED},
@@ -304,6 +328,8 @@ def reject(
         return {"approval": {"approval_id": item_id, "state": approvals.REJECTED},
                 "run": sync_issue(ctx, moved).to_api()}
     doc = approvals.get(ctx.db, tenant_id, item_id)
+    _platform_only(auth, approvals.read_schedule(ctx.db, tenant_id, (doc.get("subject") or {}).get("schedule_id")),
+                   "reject")
     now = ctx.now()
     move = approvals.firing_move(ctx.db, now, approve=False, by=auth.email) if doc.get("kind") == approvals.RUN else None
     decided = approvals.decide(ctx.db, now, tenant_id, item_id, approve=False, by=auth.email,
@@ -338,6 +364,9 @@ def merge_mode(
     # Either direction is a decision (workspace-roles §4.1): `member` first.
     approvals.require_decider(ctx, auth)
     stored = schedule_routes._read(ctx, tenant_id, schedule_id)
+    # A platform-scope schedule is a platform admin's to change, either
+    # direction (BGD, 2026-10-24; `schedule_routes._platform_only`).
+    schedule_routes._platform_only(auth, stored, "merge_mode")
     entry = scheduletypes.get(str(stored.get("type")))
     if entry is None:
         raise ScheduleInvalid("unknown_type", f"{stored.get('type')!r} is no longer a schedule type")
@@ -384,6 +413,7 @@ def merge_mode(
     @firestore.transactional
     def _apply(txn: Any) -> dict[str, Any]:
         before = schedule_routes._owned(_snapshot(txn.get(ref)), tenant_id, schedule_id)
+        schedule_routes._platform_only(auth, before, "merge_mode")
         if verb.revision != before.get("revision"):
             raise ScheduleConflict("schedule_changed", "the schedule was changed since it was read; read it again",
                                    revision=before.get("revision"))

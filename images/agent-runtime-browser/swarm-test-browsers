@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""swarm-test-browsers: run one test command with a Chromium of its own (PW-TESTRUNNER).
+
+    swarm-test-browsers npx playwright install chromium
+    swarm-test-browsers npx playwright test
+
+WHY (BGD, 2026-10-24, "Test-runner exception on browser"; part of #2253). On
+claude-code-browser the agent's `PLAYWRIGHT_BROWSERS_PATH` is the live-browser
+stub (BROWSER-ENFORCE, #1030), so a repository's own `npx playwright test`
+could not launch the headless Chromium it needs, and /opt/playwright is
+read-only, so the revision the repository pins had nowhere to go. A headless
+TEST process may now launch its own Chromium; the agent's own browsing stays
+on the live browser.
+
+WHAT IT DOES. Runs its arguments, and only them, with `PLAYWRIGHT_BROWSERS_PATH`
+set to `$SWARM_TEST_BROWSERS_PATH`: the writable directory the claude-code
+runner made in the attempt's cache and seeded with links to this image's
+revisions (`claude_code.prepare_test_browsers`). The agent's own environment
+is untouched -- this process's variables die with it. `PLAYWRIGHT_SKIP_BROWSER_GC`
+keeps an install from pruning the seeded links, as the image's own ENV does.
+
+`--with-deps` is refused before anything runs: the image already holds every
+library and font Chromium needs, and the agent is not root, so it would only
+fail on `su` after a download (task_2791f0996eab4f958252).
+
+Exits: the command's own status; 2 for a usage error, `--with-deps`, or a
+missing test directory (no live-browser runner prepared one).
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+TEST_BROWSERS_ENV = "SWARM_TEST_BROWSERS_PATH"
+BROWSERS_PATH_ENV = "PLAYWRIGHT_BROWSERS_PATH"
+SKIP_GC_ENV = "PLAYWRIGHT_SKIP_BROWSER_GC"
+USAGE = "usage: swarm-test-browsers <command> [args...]  (e.g. swarm-test-browsers npx playwright test)"
+
+
+def main(argv: list[str]) -> int:
+    if not argv:
+        print(USAGE, file=sys.stderr)
+        return 2
+    if "--with-deps" in argv:
+        print("swarm-test-browsers: --with-deps is never needed here: Chromium's system "
+              "libraries and fonts are already in this image. Run it without the flag "
+              "(swarm-test-browsers npx playwright install chromium).", file=sys.stderr)
+        return 2
+    directory = os.environ.get(TEST_BROWSERS_ENV, "").strip()
+    if not directory or not os.path.isdir(directory):
+        print(f"swarm-test-browsers: ${TEST_BROWSERS_ENV} names no directory, so this "
+              "attempt has no test browsers directory; the command was not run.", file=sys.stderr)
+        return 2
+    env = dict(os.environ)
+    env[BROWSERS_PATH_ENV] = directory
+    env[SKIP_GC_ENV] = "1"
+    try:
+        os.execvpe(argv[0], argv, env)
+    except OSError as exc:
+        print(f"swarm-test-browsers: cannot run {argv[0]}: {exc.strerror}", file=sys.stderr)
+        return 127
+    return 0  # unreachable: execvpe replaced this process
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

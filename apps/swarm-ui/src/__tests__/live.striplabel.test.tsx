@@ -1,5 +1,5 @@
-// THE THEATER'S STRIP SAYS WHY PART OF THE PAGE IS COVERED, AND THE DEVICE
-// AND CONTROL LABELS FOLLOW THE SESSION (lane STRIP-LABEL; part of #1341).
+// THE THEATER'S STRIP SAYS WHAT THE GATE NAMES, AND THE DEVICE AND CONTROL
+// LABELS FOLLOW THE SESSION (lane STRIP-LABEL; part of #1341).
 //
 // MEASURED 2026-10-15 ~04:05Z on task_2ac5d7e22a51460995a2, `?theater=1`, as
 // the person in control with the Desktop preset selected:
@@ -13,7 +13,10 @@
 //       "You are in control".
 //
 //   1. In theater, the gate's reason is in the strip above the browser while
-//      the desktop name carries one, and goes when it does not.
+//      the desktop name carries one, and goes when it does not. Since BGD's
+//      decision of 2026-10-25 (LIVE-NOMASK-COPY, part of #2298) the gate
+//      covers nothing, so the one reason left is that the agent finished and
+//      its browser closed; a "Part of this page is covered" name draws nothing.
 //   2. The device label follows a preset change. As swarm-api's `set_device`
 //      really answers, the route's answer and the next read still carry the
 //      device the gate last REPORTED (iPad): the caption says the Desktop
@@ -110,6 +113,7 @@ const { LiveBrowserPane, liveReadOf } = await import('../LiveBrowser')
 const ID = 'task_0123456789abcdef1341'
 const ME = ['ada', 'example.com'].join('@')
 const COVERED = 'Part of this page is covered: an embedded frame on it cannot be checked'
+const CLOSED = 'The agent has finished; its browser is closed.'
 
 function ok<T>(data: T): Result<T> {
   return { status: 'ok', data, fetchedAt: Date.now() }
@@ -219,17 +223,22 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('1. the theater strip says why part of the page is covered', () => {
-  it('shows a partly-covered desktop name above the browser, and clears it when the gate names the page again', async () => {
+describe('1. the theater strip says what the gate names', () => {
+  it('shows the closed browser’s label above the browser, no covered-page reason, and clears it when the gate names the page again', async () => {
     render(<Held first={session()} />)
     const r = await connected()
-    expect(within(theaterStrip()).queryByText(COVERED, { exact: false })).toBeNull()
+    expect(within(theaterStrip()).queryByText(CLOSED, { exact: false })).toBeNull()
 
     act(() => {
       r.dispatchEvent(new CustomEvent('desktopname', { detail: { name: COVERED } }))
     })
+    expect(within(theaterStrip()).queryByText(COVERED, { exact: false })).toBeNull()
+
+    act(() => {
+      r.dispatchEvent(new CustomEvent('desktopname', { detail: { name: CLOSED } }))
+    })
     const strip = theaterStrip()
-    expect(within(strip).getByText(COVERED, { exact: false })).toBeTruthy()
+    expect(within(strip).getByText(CLOSED, { exact: false })).toBeTruthy()
     // Above the browser: the strip comes before the stage the screen is borrowed into.
     const stage = theaterRoot().querySelector('.th-stage') as HTMLElement
     expect(strip.compareDocumentPosition(stage) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
@@ -237,7 +246,7 @@ describe('1. the theater strip says why part of the page is covered', () => {
     act(() => {
       r.dispatchEvent(new CustomEvent('desktopname', { detail: { name: 'swarm live browser' } }))
     })
-    expect(within(theaterStrip()).queryByText(COVERED, { exact: false })).toBeNull()
+    expect(within(theaterStrip()).queryByText(CLOSED, { exact: false })).toBeNull()
   })
 })
 

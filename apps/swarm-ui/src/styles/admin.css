@@ -849,3 +849,31 @@ table.adm-limits th.pool-name > .ctl-sub > .adm-key-seg {
 @media (min-width: 1280px) {
   .rs-classes { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
+
+/* -- Every Admin page's lead (ADMIN-LEADS; part of #2157, proposal E S10) --
+   The Config pages' `.ws-lead` (styles/workspace-settings.css) with the two
+   tones an Admin page needs and a Config page does not: `is-warn`, something
+   an admin has to act on (the mock-up's `.lead.wn`), and `is-unread`, a read
+   that failed. Unread is the honesty rule's not-measured form -- dashed
+   border, no tint, the dash in its sentence -- so it can never be read as the
+   green "Nothing waiting" (`is-ok`, the Config lead's own). The lead is the
+   page's first block, a card's gap above what it leads. */
+.adm-lead { margin: 0 0 var(--ctl-s3); }
+.adm-lead.is-warn { background: var(--s-warnb); border-color: color-mix(in srgb, var(--s-warn) 40%, var(--line)); }
+.adm-lead.is-warn .ws-lead-k { color: var(--s-warn); }
+.adm-lead.is-unread { background: transparent; border: 1px dashed var(--line); }
+.adm-lead.is-unread .ws-lead-k { color: var(--text-dim); }
+/* With no rows, `Screen` draws its failure panel and no children, and the
+   page draws the dash after it (Pool limits, Tenants): a card's gap, which the
+   lead's own bottom margin does not give (rendered 2026-10-25: touching). */
+.state.is-page + .adm-lead { margin-top: var(--ctl-s3); }
+
+/* The record Tenants' lead opened ("Open its request"). Its row takes focus,
+   but a mouse click matches no `:focus-visible`, so without this the reader
+   saw nothing mark what opened (rendered review, 2026-10-25). `[id][tabindex]`
+   lifts it over the shell's `.ctl-scroll [id][tabindex="-1"]:focus { outline:
+   none }` (0,4,0), which erased it on the focused row in the browser. */
+/* Room for that ring's offset on the end side, on every record so opening
+   one moves nothing: at 1440 it stood 8px past the column's edge. */
+.ten-being-created > li { margin-inline-end: 6px; }
+.ten-being-created > li.is-opened[id][tabindex] { outline: 2px solid var(--sk-ac); outline-offset: 6px; border-radius: var(--r-ctl); }

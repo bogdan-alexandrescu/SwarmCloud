@@ -26,6 +26,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from .conftest import measure
+
 from quota_broker.accounts import (
     DEFAULT_HOLD_TTL,
     DEFAULT_MAX_AGENTS,
@@ -314,6 +316,7 @@ def test_re_registering_keeps_the_owners_cap(client, accounts):
 
 def test_the_assign_past_the_cap_parks_on_accounts_full(client, accounts, broker):
     accounts.register(ENG, "team")
+    measure(accounts, f"{ENG}:team")  # one agent until measured (#2222)
     _cap(client, f"{ENG}:team", 2)
     taken = [_assign(client, n).json() for n in range(3)]
     assert [t["account_id"] for t in taken[:2]] == [f"{ENG}:team"] * 2

@@ -7,6 +7,12 @@
  * peak RSS pinned at 8 GiB for 20 minutes). Outside an agent container -- CI,
  * which shards the suite four ways, or a laptop -- vitest keeps its default.
  *
+ * The worker carries SWARM_TASK_ID into the agent's own environment
+ * (`runners/cliagent.py` _PLAIN_PASSTHROUGH, `runners/generic.py` _build_env),
+ * and the pre-publish gate's vitest check gets the same environment. Until it
+ * did, #1642's gate below was inert: the variable reached the runner process
+ * only, and task_45e9d3b7c0264ef78091 was OOM-killed at 8 GiB the same way.
+ *
  * The budget: 2 GiB of headroom for the main process and the agent beside it,
  * then 2 GiB per jsdom worker, because the full-app renders are the heavy
  * tests. At least one worker; two when the limit cannot be read.

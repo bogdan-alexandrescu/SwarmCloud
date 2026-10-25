@@ -527,8 +527,9 @@ ID_ROUTES = _id_routes()
 
 def test_the_sweep_is_not_empty() -> None:
     # Every tenant id route of §7.1 this lane builds: read, edit, delete, the
-    # four verbs, the history, one firing and the audit.
-    assert len(ID_ROUTES) == 10, ID_ROUTES
+    # four verbs, the history, one firing, the audit, and the History
+    # timeline's spans of one page of firings (#1109).
+    assert len(ID_ROUTES) == 11, ID_ROUTES
 
 
 def _send(client, method: str, path: str, sid: str, user: str):
@@ -688,7 +689,8 @@ def test_a_member_pauses_all_of_their_own_tenants_schedules_and_none_of_anothers
     response = client.post("/v1/schedules:pause-all", json={"confirm": "eng", "reason": "incident"},
                            headers=auth_header("alice"))
     assert response.status_code == 200, response.text
-    assert response.json() == {"tenant_id": "eng", "paused": sorted([first, second]), "unchanged": [already]}
+    assert response.json() == {"tenant_id": "eng", "paused": sorted([first, second]), "unchanged": [already],
+                               "admin_required": []}
     for sid in (first, second):
         doc = stored(db, sid)
         assert doc["state"] == "paused" and doc["next_run_at"] is None

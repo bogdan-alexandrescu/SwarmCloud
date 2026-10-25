@@ -468,11 +468,27 @@ function ownerWords(o: AccessOwner): string {
   return `${kind} · ${o.repository_selection === 'all' ? 'all repositories' : 'selected repositories'}`
 }
 
+/**
+ * What an owner's line in the phone select says after its name: the card's
+ * chip for an enabled owner ("2 chosen"), its install state for one that is
+ * not, so the select answers what the card would before it is opened.
+ */
+export function ownerOption(o: AccessOwner, granted: number): string {
+  let state: string
+  if (o.enabled) state = `${granted} chosen`
+  else if (o.method === 'pat') state = 'via token'
+  else if (o.install_state === 'requested') state = 'install requested'
+  else if (o.install_state === 'installed') state = 'installed, not enabled'
+  else state = 'not installed'
+  return `${o.owner} · ${state}${o.sso === 'required' ? ' · SSO not authorised' : ''}`
+}
+
 function Owners({
   owners,
   orgsListed,
   grants,
   selected,
+  phone = false,
   onSelect,
   onEnabled,
   onChange,
@@ -481,6 +497,14 @@ function Owners({
   orgsListed: boolean
   grants: AccessGrant[]
   selected: string | null
+  /**
+   * PHONE CHOOSER (GA-PHONE-CHOOSER, S2f; BGD 2026-10-24). Under 560px the
+   * owner column is a select and only the selected owner's card is drawn: a
+   * stack of every card put the repositories a screen or more below the top.
+   * `selected` may then be an owner not enabled yet, whose card is where
+   * Install and Enable are.
+   */
+  phone?: boolean
   onSelect: (owner: string) => void
   /** The POST answered: the owner is enabled, so its repositories may be read now and not before. */
   onEnabled: (owner: string) => void
@@ -554,17 +578,36 @@ function Owners({
     onChange()
   }
 
+  const grantedTo = (key: string) => grants.filter((g) => g.owner.toLowerCase() === key).length
+  const drawn = phone ? owners.filter((o) => o.owner.toLowerCase() === selected) : owners
   return (
     <div className="ac-owners">
-      <ul className="ac-owner-list" aria-label="Owners your connection reaches">
-        {owners.map((o) => {
+      {phone && (
+        <label className="c-field ac-owner-select">
+          <span className="c-lbl">
+            {owners.length === 1 ? 'Owner · the one your connection reaches' : `Owner · one of ${owners.length} your connection reaches`}
+          </span>
+          <select className="c-inp" value={selected ?? ''} onChange={(e) => onSelect(e.target.value)}>
+            {owners.map((o) => {
+              const key = o.owner.toLowerCase()
+              return (
+                <option key={key} value={key}>
+                  {ownerOption(o, grantedTo(key))}
+                </option>
+              )
+            })}
+          </select>
+        </label>
+      )}
+      <ul className="ac-owner-list" aria-label={phone ? 'The selected owner' : 'Owners your connection reaches'}>
+        {drawn.map((o) => {
           const key = o.owner.toLowerCase()
-          const granted = grants.filter((g) => g.owner.toLowerCase() === key).length
+          const granted = grantedTo(key)
           const isSel = selected === key
           return (
             <li key={key} className={`ac-owner${isSel ? ' is-selected' : ''}`} data-owner={o.owner}>
               <div className="ac-owner-h">
-                {o.enabled ? (
+                {o.enabled && !phone ? (
                   <button type="button" className="ac-owner-pick" aria-pressed={isSel} onClick={() => onSelect(key)}>
                     <b>{o.owner}</b>
                   </button>
@@ -1102,9 +1145,41 @@ export function NotInstalledNotice({
   )
 }
 
+/**
+ * THE PHONE CHOOSER'S OWNER SURVIVES A RELOAD in this tab's sessionStorage,
+ * the way the tenant choice does (fetch.ts `TENANT_PREF`). Not the address:
+ * App's `keptKeys` keeps only `view` on GitHub access, so an `?owner=` would
+ * be cut off before the page read it, and `view=choose` stays the deep link.
+ * Read and written at phone width only: desktop opens on the first enabled
+ * owner, as it always has. Sign-out sweeps it with every `swarm.` session key
+ * (signoutState.ts, where it is listed as per-user).
+ */
+export const CHOSEN_OWNER_KEY = 'swarm.access.owner'
+
+function storedOwner(): string | null {
+  try {
+    return globalThis.sessionStorage?.getItem(CHOSEN_OWNER_KEY) ?? null
+  } catch {
+    return null
+  }
+}
+
+function storeOwner(owner: string): void {
+  try {
+    globalThis.sessionStorage?.setItem(CHOSEN_OWNER_KEY, owner)
+  } catch {
+    /* storage refused: the pick holds until the page is left, as on desktop */
+  }
+}
+
 function Choose({ overview, reloadOverview }: { overview: AccessOverview; reloadOverview: () => void }) {
   const owners = useUrRead(loadAccessOwners, 'access-owners')
-  const [picked, setPicked] = useState<string | null>(null)
+  const phone = usePhoneTables()
+  const [picked, setPickedState] = useState<string | null>(() => (phone ? storedOwner() : null))
+  function setPicked(key: string) {
+    setPickedState(key)
+    if (phone) storeOwner(key)
+  }
   // Owners whose POST /v1/access/orgs answered while GET /v1/access has not
   // been read again yet: enabled, so selectable at once.
   const [landed, setLanded] = useState<string[]>([])
@@ -1135,48 +1210,63 @@ function Choose({ overview, reloadOverview }: { overview: AccessOverview; reload
         installing it on an account or org lets it reach that owner&apos;s repositories (Installed GitHub Apps).
       </p>
       <UrRegion state={owners.state} route="GET /v1/access/orgs" what="The owners your connection reaches" onRetry={owners.reload} plural lines={3} reading={ASKING_GITHUB}>
-        {(o) => (
-          <>
-            {!o.owners.some((x) => x.install_state === 'installed') && (
-              <NotInstalledNotice
-                login={login ?? o.owners.find((x) => x.owner_type === 'User')?.owner ?? null}
-                installUrl={o.install_url}
-                appName={o.app_name}
-              />
-            )}
-            <div className="ac-chooser">
-              <Owners
-                owners={o.owners}
-                orgsListed={o.orgs_listed}
-                grants={overview.grants}
-                selected={selected}
-                onSelect={setPicked}
-                onEnabled={(key) => {
-                  setLanded((was) => (was.includes(key) ? was : [...was, key]))
-                  setPicked(key)
-                }}
-                onChange={reloadAll}
-              />
-              {selected !== null ? (
-                <RepoChooser
-                  key={selected}
-                  owner={selected}
-                  chosen={overview.grants.filter((g) => g.owner.toLowerCase() === selected.toLowerCase())}
-                  onChange={reloadOverview}
+        {(o) => {
+          // On a phone the select may stand on an owner not enabled yet (its
+          // card holds Install or Enable), and the repositories shown are that
+          // owner's or none: never the first enabled owner's under another's card.
+          const keys = o.owners.map((x) => x.owner.toLowerCase())
+          const shown = phone ? (picked !== null && keys.includes(picked) ? picked : (selected ?? keys[0] ?? null)) : selected
+          const reposOf = phone ? (shown !== null && enabled.includes(shown) ? shown : null) : selected
+          const where = phone ? 'above' : 'on the left'
+          return (
+            <>
+              {!o.owners.some((x) => x.install_state === 'installed') && (
+                <NotInstalledNotice
+                  login={login ?? o.owners.find((x) => x.owner_type === 'User')?.owner ?? null}
+                  installUrl={o.install_url}
+                  appName={o.app_name}
                 />
-              ) : o.owners.some((x) => x.install_state === 'installed') ? (
-                <EmptyState kind="empty" heading="No owner enabled yet">
-                  Enable an owner on the left: SwarmCloud lists its repositories once the App is installed there.
-                </EmptyState>
-              ) : (
-                <EmptyState kind="empty" heading="Nothing to list until the App is installed">
-                  Install {githubAppName(o.app_name)} on an owner on the left; its repositories are listed here once it is, and
-                  you have enabled it.
-                </EmptyState>
               )}
-            </div>
-          </>
-        )}
+              <div className="ac-chooser">
+                <Owners
+                  owners={o.owners}
+                  orgsListed={o.orgs_listed}
+                  grants={overview.grants}
+                  selected={shown}
+                  phone={phone}
+                  onSelect={setPicked}
+                  onEnabled={(key) => {
+                    setLanded((was) => (was.includes(key) ? was : [...was, key]))
+                    setPicked(key)
+                  }}
+                  onChange={reloadAll}
+                />
+                {reposOf !== null ? (
+                  <RepoChooser
+                    key={reposOf}
+                    owner={reposOf}
+                    chosen={overview.grants.filter((g) => g.owner.toLowerCase() === reposOf.toLowerCase())}
+                    onChange={reloadOverview}
+                  />
+                ) : phone && enabled.length > 0 ? (
+                  <EmptyState kind="empty" heading={`${o.owners.find((x) => x.owner.toLowerCase() === shown)?.owner ?? 'This owner'} is not enabled`}>
+                    SwarmCloud lists its repositories once the App is installed there and you have enabled it; its card above
+                    says which step is left. Pick an enabled owner to choose from theirs.
+                  </EmptyState>
+                ) : o.owners.some((x) => x.install_state === 'installed') ? (
+                  <EmptyState kind="empty" heading="No owner enabled yet">
+                    Enable an owner {where}: SwarmCloud lists its repositories once the App is installed there.
+                  </EmptyState>
+                ) : (
+                  <EmptyState kind="empty" heading="Nothing to list until the App is installed">
+                    Install {githubAppName(o.app_name)} on an owner {where}; its repositories are listed here once it is, and
+                    you have enabled it.
+                  </EmptyState>
+                )}
+              </div>
+            </>
+          )
+        }}
       </UrRegion>
       <TypedRepository tenantId={overview.tenant_id} onChange={reloadAll} />
     </Card>
@@ -1245,10 +1335,10 @@ function GitHubQuotaLines({ quota }: { quota: GitHubQuota[] }) {
 }
 
 /**
- * A lead, drawn on the card surface. S2 tints it with the info colour, but a
- * button on the info tint draws its border at 2.89:1 in dark, under the 3:1
- * the spacing sweep holds every control to (spacing.setup.test.tsx), and the
- * fix is a stylesheet rule outside this page's file -- asked in the PR.
+ * A lead, on the info tint as S2 draws it: `.ac-lead`, the one Config lead
+ * style (the tint in styles/config.css; its buttons' borders, which clear 3:1
+ * on the tint, in styles.css after the button floor). CONFIG-LEAD-TINT;
+ * measured in contrast.config-lead.test.tsx.
  */
 function Lead({ kicker, title, actions, children }: { kicker?: string; title: string; actions: ReactNode; children: ReactNode }) {
   return (

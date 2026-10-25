@@ -214,6 +214,63 @@ What this does **not** stop: an agent that names a binary itself
 browser. The stub turns the default path, the one an agent reaches for, into
 an instruction; it is not a sandbox, and the pod remains the boundary.
 
+#### The test-runner exception (PW-TESTRUNNER, #2253)
+
+One sanctioned path launches a Chromium that is not the live browser: a
+repository's own headless **test** suite. BROWSER-ENFORCE made a step on
+`claude-code-browser` unable to run `npx playwright test` at all (#2253: the
+suite's launch hit the stub, and the revision the repository pins had nowhere
+writable to go under the read-only root). BGD decided on 2026-10-24 that a
+headless test process may launch its own Chromium while the agent's own
+browsing stays on the live browser, #1030 unchanged; PR #2254 built it. Before
+the CLI starts, the runner makes a writable directory,
+`$XDG_CACHE_HOME/swarm-test-browsers`
+(`apps/agent-worker/agent_worker/runners/claude_code.py::prepare_test_browsers`),
+seeds it with a link to each of the image's own revisions, and names it to the
+agent as `$SWARM_TEST_BROWSERS_PATH`; the prompt gains
+`apps/agent-worker/agent_worker/runners/claude_code.py::TEST_RUNNER_NOTE`.
+The image's `swarm-test-browsers <command>` (`/usr/local/bin`, root-owned,
+`0555`) runs that one command, and only it, with `PLAYWRIGHT_BROWSERS_PATH`
+pointed at the directory and `PLAYWRIGHT_SKIP_BROWSER_GC` set so an install
+keeps the seeded links: `swarm-test-browsers npx playwright install chromium`,
+then `swarm-test-browsers npx playwright test`. It refuses, with exit 2 and
+before running anything, `--with-deps` (Chromium's libraries and fonts are
+already in the image and the agent is not root, so the flag could only fail on
+`su` after a download), an empty command, and an attempt that has no test
+directory. The agent's own `PLAYWRIGHT_BROWSERS_PATH` is unchanged:
+`/opt/swarm/live-browser-only`, so its scripts, `swarm_browser.live()`, the
+Playwright MCP server and dev-browser behave exactly as above, and a plain
+`chromium.launch()` still fails and names the CDP endpoint. The directory is
+deliberately not named `ms-playwright`, Playwright's default, so no process
+finds it unless it is pointed at it, and the wrapper's override dies with the
+one process it `exec`s.
+
+**What it costs.** One Chromium revision is about 170 MB; a repository that
+pins the image's own revision downloads nothing, the seeded link satisfies it.
+The directory is in the attempt's cache, not under `work/`, so it never rides a
+checkpoint (capped at 2 GiB). On GKE, where `claude-code-browser` runs, the
+cache is the 20 GiB pd-balanced network disk
+(`apps/scheduler/scheduler/dispatch.py::CACHE_VOLUME_GIB`): neither memory nor
+ephemeral-storage, so a full disk gives ENOSPC rather than an eviction. On
+Cloud Run the cache sits inside the workspace's memory tmpfs, so each revision
+costs about 170 MB of the container's memory, and a full workspace gives
+ENOSPC, not an OOM kill. The cache is emptied at the start of each attempt, so
+a resumed (parked) attempt downloads the revision again.
+
+**What still could reopen #1030**, as #2254 states it:
+`swarm-test-browsers python browse.py`, or
+`PLAYWRIGHT_BROWSERS_PATH=$SWARM_TEST_BROWSERS_PATH python …`, gives the agent
+a hidden headless Chromium. The wrapper cannot tell a test runner from a
+browsing script; an allowlist of `npx`/`npm` is bypassed by
+`npm exec -- node browse.js`. This was already possible before #2254:
+`/opt/playwright` is world-readable, so `PLAYWRIGHT_BROWSERS_PATH=/opt/playwright`
+or an `executable_path=` into it always worked. BROWSER-ENFORCE is a default
+plus an instruction, not a sandbox. What #2254 adds is a *named, sanctioned*
+path; an agent that misreads the note could use it for browsing, and the guard
+against that is the note's "only for test suites". A test Chromium also has the
+pod's own egress, not the live browser's gate: the same egress the agent's
+`curl` already has.
+
 ### 3.2.1 dev-browser (opt-in)
 
 Owner decision 2026-10-14 (DEVB-INSTALL, part of #1030): the browser image

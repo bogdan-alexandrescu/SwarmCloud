@@ -472,16 +472,17 @@ class ControlState:
             log.info("live rfb: control granted conn=%s", conn_id)
 
     async def revoke(self) -> None:
+        # Revoked before the lock and before the release, so a release that
+        # cannot be sent (the page's session went with it) or a lock held by
+        # one (`connection_closed` over a pipe nobody reads, FLAKE-LIVEGATE,
+        # #2230) cannot keep control: no input reaches the display from here,
+        # however long the release takes or whether a bound cuts it off.
+        revoked, self._controller = self._controller, None
+        if revoked is None:
+            return
+        log.info("live rfb: control revoked conn=%s", revoked)
         async with self._lock:
-            if self._controller is None:
-                return
-            try:
-                await self._injector.release_all()
-            finally:
-                # Revoked even when a release could not be sent (the page's
-                # session went with it): no input reaches the display from here.
-                log.info("live rfb: control revoked conn=%s", self._controller)
-                self._controller = None
+            await self._injector.release_all()
 
     async def connection_closed(self, conn_id: str) -> None:
         """The controller's stream ended: let go of what it held.

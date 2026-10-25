@@ -262,3 +262,15 @@ enable_github_hooks_dedup_role = true
 # its conditioned member for swarm-api. Recorded here in the same change so a
 # later bootstrap plan from main keeps them rather than destroying them.
 enable_mcp_credentials = true
+
+# SSC-PLATFORM-STATUS (PR 2218, #2158 secrets-scopes.md §5.2 and §11 Q7;
+# platform_secret_status.tf): swarm-api may read Secret Manager METADATA
+# (secretmanager.secrets.get, secretmanager.versions.list -- never a payload)
+# on swarm-* secrets of this project, conditioned by project number, so Admin ›
+# Platform secrets stops reading every row as unreadable (permission_denied).
+# BGD, 2026-10-24: committed ahead of his `make bootstrap`, so a later plan
+# from main keeps the grant instead of destroying it. NOT YET APPLIED when this
+# line was committed. Lint the platform_secret_status_grants output with
+# iamPolicies:lintPolicy first; the plan is 2 adds / 0 changes / 0 destroys:
+# the role (swarmSecretStatusViewer) and its conditioned member for swarm-api.
+enable_platform_secret_status = true

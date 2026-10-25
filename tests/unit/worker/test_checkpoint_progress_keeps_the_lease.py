@@ -23,7 +23,11 @@ The owner's fix (2026-10-21, lane CHECKPOINT-PROGRESS), one property per test:
 
 Every timing below is on a 1 s beat with a 3 s bound, so one lease timeout --
 the bound's third (`config.HEARTBEAT_MEANWHILE_BOUND_LEASE_TIMEOUTS`) -- is
-1 s. The windows asserted leave about half a beat of slack each way.
+1 s. Tests 1-4 run the beat thread on a virtual clock (`_Clock`, through the
+worker's `heartbeat_clock` and `heartbeat_wait`), so a beat lands at the same
+instant on every run and no band around it is needed (#2233). Test 5 drives
+the whole worker loop on the real clock; its window leaves about half a beat
+of slack each way.
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ import json
 import tarfile
 import threading
 import time
+from typing import Callable
 
 import pytest
 
@@ -48,6 +53,7 @@ from worker_seeds import TENANT, seed_attempt
 
 
 def _count_beats(worker) -> list[float]:
+    """The real-clock times of the beats, for test 5's whole-loop run."""
     beats: list[float] = []
     real = worker._heartbeat
 
@@ -59,32 +65,92 @@ def _count_beats(worker) -> list[float]:
     return beats
 
 
-class _Progress:
-    """A stand-in counter that advances from its own thread until told not to."""
+class _Clock:
+    """A virtual monotonic clock the beat thread reads and waits on (#2233).
 
-    def __init__(self) -> None:
-        self.files = 0
-        self.bytes = 0
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+    Tests 1-4 ran on real sleeps with half a beat of slack, and on a loaded
+    runner one beat landed at 7.01 s against a 7 s band (run 40089538773)
+    with nothing wrong in `_heartbeat_meanwhile`. Here the thread's clock is
+    `now`, and its wait moves `now` forward by the time it asked to wait,
+    running any action scheduled inside that span on the way (and 1 ms for a
+    wait of nothing, as a real clock would). The block ends
+    at `ends_at`: the wait that reaches it returns as the real `stop` would.
+    Every beat lands at the same instant on every run, so the assertions
+    read the property itself, not a band around it.
+    """
 
-    def reading(self) -> tuple[int, int]:
-        return (self.files, self.bytes)
+    def __init__(self, ends_at: float) -> None:
+        self.now = 0.0
+        self.ends_at = ends_at
+        self.spun = False
+        self._waits = 0
+        self._scheduled: list[tuple[float, Callable[[], object]]] = []
 
-    def advance_for(self, seconds: float) -> None:
-        def run() -> None:
-            end = time.monotonic() + seconds
-            while time.monotonic() < end and not self._stop.wait(0.1):
-                self.files += 1
-                self.bytes += 4096
+    def at(self, when: float, action: Callable[[], object]) -> None:
+        self._scheduled.append((when, action))
+        self._scheduled.sort(key=lambda entry: entry[0])
 
-        self._thread = threading.Thread(target=run, daemon=True)
-        self._thread.start()
+    def monotonic(self) -> float:
+        return self.now
 
-    def stop(self) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join()
+    def wait(self, event: threading.Event, seconds: float) -> bool:
+        self._waits += 1
+        if self._waits > 100_000:
+            # A thread that never asks for time would hang a real worker's
+            # CPU; end it, and `_hold` fails the test on it.
+            self.spun = True
+            return True
+        # A real clock moves while a thread loops, even through a wait of
+        # nothing; 1 ms per such wait keeps a busy loop (the mutations below
+        # make several) going forward in time rather than standing still.
+        target = self.now + max(seconds, 0.001)
+        while self._scheduled and self._scheduled[0][0] <= min(target, self.ends_at):
+            when, action = self._scheduled.pop(0)
+            self.now = when
+            action()
+        if target >= self.ends_at:
+            self.now = self.ends_at
+            return True
+        self.now = target
+        return event.is_set()
+
+
+def _advancing_until(clock: _Clock, until: float) -> Callable[[], tuple[int, int]]:
+    """A checkpoint counter that moves every 0.1 s of the clock until `until`."""
+
+    def reading() -> tuple[int, int]:
+        tenths = int(min(clock.now, until) * 10)
+        return (tenths, tenths * 4096)
+
+    return reading
+
+
+def _hold(worker, clock: _Clock, progress=None, what="checkpoint (test)") -> list[float]:
+    """Run `_heartbeat_meanwhile` on `clock` until it ends; the beats' times."""
+    beats: list[float] = []
+    real = worker._heartbeat
+
+    def counted():
+        beats.append(round(clock.now, 3))
+        return real()
+
+    worker._heartbeat = counted  # type: ignore[method-assign]
+    worker.heartbeat_clock = clock.monotonic
+    worker.heartbeat_wait = clock.wait
+    before = set(threading.enumerate())
+    with worker._heartbeat_meanwhile(what, progress=progress):
+        for thread in set(threading.enumerate()) - before:
+            if thread.name == "heartbeat-meanwhile":
+                # Real seconds, only as a backstop: on the virtual clock the
+                # thread finishes in milliseconds.
+                thread.join(timeout=30)
+                assert not thread.is_alive(), "the beat thread did not end on the virtual clock"
+    assert not clock.spun, "the beat thread spun without waiting"
+    return beats
+
+
+def _gaps(beats: list[float]) -> list[float]:
+    return [round(later - earlier, 2) for earlier, later in zip(beats, beats[1:])]
 
 
 def _worker(db, worker_factory, **kwargs):
@@ -99,7 +165,7 @@ def _worker(db, worker_factory, **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# 1-4. the thread under a long operation
+# 1-4. the thread under a long operation, on a virtual clock
 # ---------------------------------------------------------------------------
 
 
@@ -107,19 +173,17 @@ def test_a_checkpoint_that_keeps_advancing_past_the_bound_keeps_beating(db, work
     """The #1808 case: still archiving at the bound. Before, the thread
     stopped at 3 s and nothing beat after it."""
     worker = _worker(db, worker_factory)
-    beats = _count_beats(worker)
-    progress = _Progress()
-    start = time.monotonic()
-    progress.advance_for(7)
-    with worker._heartbeat_meanwhile("checkpoint (test)", progress=progress.reading):
-        time.sleep(7)
-    progress.stop()
-    past_bound = [round(b - start, 2) for b in beats if b > start + 3.5]
+    clock = _Clock(ends_at=7)
+    beats = _hold(worker, clock, progress=_advancing_until(clock, 7))
+    past_bound = [b for b in beats if b > 3]
     # MUTATION: ignore `progress` past the bound (stop there as before) and
-    # no beat lands after 3.5 s.
+    # no beat lands after 3 s.
     assert len(past_bound) >= 3, (
         f"{len(past_bound)} beats past the 3 s bound while the checkpoint advanced: {past_bound}"
     )
+    # Every beat within one interval of the one before: the lease never went
+    # a lease timeout unextended while the checkpoint advanced.
+    assert max(_gaps(beats)) <= 1, beats
 
 
 def test_a_checkpoint_that_stops_advancing_stops_beating_one_lease_timeout_later(
@@ -129,20 +193,16 @@ def test_a_checkpoint_that_stops_advancing_stops_beating_one_lease_timeout_later
     thread beats past the bound while it advances and stops one lease timeout
     (1 s) after the last advance it saw."""
     worker = _worker(db, worker_factory)
-    beats = _count_beats(worker)
-    progress = _Progress()
-    start = time.monotonic()
-    progress.advance_for(5)
-    with worker._heartbeat_meanwhile("checkpoint (test)", progress=progress.reading):
-        time.sleep(10)
-    progress.stop()
-    extended = [round(b - start, 2) for b in beats if start + 3.5 < b < start + 5.5]
-    after_wedge = [round(b - start, 2) for b in beats if b > start + 7]
+    clock = _Clock(ends_at=10)
+    beats = _hold(worker, clock, progress=_advancing_until(clock, 5))
+    extended = [b for b in beats if 3 < b <= 5]
+    after_wedge = [b for b in beats if b > 5 + 1]
     # MUTATION: ignore `progress` past the bound and `extended` is empty --
     # the control that shows the extension was live before the wedge.
-    assert extended, "no beat past the bound while the checkpoint still advanced"
+    assert extended, f"no beat past the bound while the checkpoint still advanced: {beats}"
+    assert max(_gaps(beats)) <= 1, beats
     # MUTATION: keep beating past the bound until the ceiling whether or not
-    # the counter moves, and beats land at 7, 8 and 9 s.
+    # the counter moves, and beats land at 6, 7, 8 and 9 s.
     assert not after_wedge, (
         f"beats more than a lease timeout after the checkpoint stopped advancing: {after_wedge}"
     )
@@ -151,21 +211,16 @@ def test_a_checkpoint_that_stops_advancing_stops_beating_one_lease_timeout_later
 def test_the_hard_ceiling_stops_the_beating_even_while_the_checkpoint_advances(
     db, worker_factory
 ):
-    """Ceiling 5 s, advancing for the whole 9 s: no beat after the ceiling."""
+    """Ceiling 5 s, advancing for the whole 9 s: no beat at or after the ceiling."""
     worker = _worker(db, worker_factory, heartbeat_meanwhile_ceiling_seconds=5)
-    beats = _count_beats(worker)
-    progress = _Progress()
-    start = time.monotonic()
-    progress.advance_for(9)
-    with worker._heartbeat_meanwhile("checkpoint (test)", progress=progress.reading):
-        time.sleep(9)
-    progress.stop()
-    extended = [round(b - start, 2) for b in beats if start + 3.5 < b < start + 5]
-    past_ceiling = [round(b - start, 2) for b in beats if b > start + 5.5]
+    clock = _Clock(ends_at=9)
+    beats = _hold(worker, clock, progress=_advancing_until(clock, 9))
+    extended = [b for b in beats if 3 < b < 5]
+    past_ceiling = [b for b in beats if b >= 5]
     # MUTATION: ignore `progress` and `extended` is empty (the control).
-    assert extended, "no beat between the bound and the ceiling while the checkpoint advanced"
-    # MUTATION: drop the ceiling, and beats land at 6, 7 and 8 s.
-    assert not past_ceiling, f"beats past the 5 s ceiling: {past_ceiling}"
+    assert extended, f"no beat between the bound and the ceiling while the checkpoint advanced: {beats}"
+    # MUTATION: drop the ceiling, and beats land at 5, 6, 7 and 8 s.
+    assert not past_ceiling, f"beats at or past the 5 s ceiling: {past_ceiling}"
 
 
 def test_a_fenced_attempt_stops_beating_at_once_even_while_the_checkpoint_advances(
@@ -176,20 +231,14 @@ def test_a_fenced_attempt_stops_beating_at_once_even_while_the_checkpoint_advanc
     first ask after the fence. A stale generation never keeps a lease
     (invariant 5)."""
     worker = _worker(db, worker_factory)
-    beats = _count_beats(worker)
-    progress = _Progress()
-    start = time.monotonic()
-    progress.advance_for(10)
-    with worker._heartbeat_meanwhile("checkpoint (test)", progress=progress.reading):
-        time.sleep(5.5)
-        db.doc("tasks/task_1").update({"current_generation": 2})
-        fenced_at = time.monotonic()
-        time.sleep(4.5)
-    progress.stop()
-    before_fence = [b for b in beats if start + 3.5 < b < fenced_at]
-    after_fence = [round(b - start, 2) for b in beats if b > fenced_at]
+    clock = _Clock(ends_at=10)
+    fenced_at = 5.5
+    clock.at(fenced_at, lambda: db.doc("tasks/task_1").update({"current_generation": 2}))
+    beats = _hold(worker, clock, progress=_advancing_until(clock, 10))
+    before_fence = [b for b in beats if 3 < b < fenced_at]
+    after_fence = [b for b in beats if b > fenced_at]
     # MUTATION: ignore `progress` and `before_fence` is empty (the control).
-    assert before_fence, "no beat past the bound before the fence"
+    assert before_fence, f"no beat past the bound before the fence: {beats}"
     # MUTATION: skip the poll on an extended beat (the progress vouches for
     # it) and beats land at 6, 7, 8 and 9 s.
     assert not after_fence, f"beats after the attempt was fenced: {after_fence}"
@@ -199,13 +248,13 @@ def test_without_a_progress_counter_the_bound_is_as_it_was(db, worker_factory):
     """Every other long operation (a clone, a carrier push) passes no
     counter: it stops at the bound, exactly as before #1808."""
     worker = _worker(db, worker_factory)
-    beats = _count_beats(worker)
-    start = time.monotonic()
-    with worker._heartbeat_meanwhile("clone"):
-        time.sleep(6)
-    past_bound = [round(b - start, 2) for b in beats if b > start + 3.5]
+    clock = _Clock(ends_at=6)
+    beats = _hold(worker, clock, what="clone")
+    past_bound = [b for b in beats if b > 3]
+    # The control: it did beat, up to the bound.
+    assert beats, "no beat at all before the bound"
     # MUTATION: extend without a counter (treat None as advancing) and beats
-    # land at 4 and 5 s.
+    # land at 3, 4 and 5 s.
     assert not past_bound, f"beats past the bound with no progress counter: {past_bound}"
 
 

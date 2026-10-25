@@ -538,9 +538,19 @@ def read_verdict(path: Path, *, task_id: str, filename: str) -> Verdict:
         raise refuse(f"is not JSON ({type(exc).__name__})") from exc
     if not isinstance(document, dict):
         raise refuse("is not a JSON object")
+    read = verdict_of_document(document)
+    if read is None:
+        raise refuse(f"has `verdict` {document.get('verdict')!r}")
+    return read
+
+
+def verdict_of_document(document: dict[str, Any]) -> Verdict | None:
+    """A parsed verdict file's object, read and bounded; None when its
+    `verdict` is not one of `REVIEW_VERDICTS`. `read_verdict` refuses that by
+    name; a check-only step's own verdict (#2241) is then no verdict."""
     verdict = _normalise(document.get("verdict"))
     if verdict is None:
-        raise refuse(f"has `verdict` {document.get('verdict')!r}")
+        return None
 
     raw_findings = document.get("findings")
     items = raw_findings if isinstance(raw_findings, list) else (

@@ -142,6 +142,30 @@ DEFAULT_MAX_AGENTS = 6
 #: thousand cannot quietly turn the cap off.
 MAX_AGENTS_LIMIT = 50
 
+#: How many agents an account NOBODY HAS MEASURED YET may hold (#2222; BGD,
+#: 2026-10-24 ~10:55Z, "One until measured"). A never-observed account reads
+#: as fully free (`Account.headroom`), so it won every pick until the poller
+#: read it: at 10:38Z that day eng:saga-team was handed an agent before its
+#: first reading, and the sign-in behind it had authorised the wrong
+#: organisation -- one whose week was 98% spent. One agent keeps a new account
+#: usable at once; its first reading decides the rest, up to `max_agents`.
+MAX_AGENTS_BEFORE_READING = 1
+
+#: IDENTICAL READINGS, THE FALLBACK FOR A MISSING ORGANISATION (#2222; BGD,
+#: 2026-10-24 17:26Z, "Build it as a safety net"). Nothing has yet confirmed
+#: the provider returns an organisation id, and without one `duplicates` finds
+#: nothing. The real pair of that morning (eng:team and eng:saga-personal, one
+#: Personal Max subscription) read identical figures in every window with
+#: resets ONE SECOND apart. A reset is an absolute instant the provider keeps
+#: per subscription, so two subscriptions agree on it only by coincidence;
+#: five seconds allows for the provider's own rounding and nothing more.
+IDENTICAL_RESET_SKEW = timedelta(seconds=5)
+#: How many consecutive polls of BOTH accounts must agree before the pair is a
+#: `possible_duplicate`. One agreement can be a coincidence -- two accounts
+#: whose figures happen to round alike once; two independent pairs of
+#: readings, each new on both sides, are evidence.
+IDENTICAL_READINGS_POLLS = 2
+
 #: How long a hold survives without being released.
 #:
 #: Longer than the longest runner profile's timeout (7200s) plus the setup and
@@ -361,6 +385,43 @@ class WindowReading:
 
 
 @dataclass(frozen=True)
+class IdenticalReadings:
+    """How long this account has read the same as `with_account` (#2222).
+
+    `observed_at` and `other_observed_at` are the two readings the last count
+    was made on, so a pass that sees the same pair of readings again counts
+    nothing: only a NEW reading of BOTH sides is another poll.
+    """
+
+    with_account: str
+    polls: int
+    observed_at: datetime
+    other_observed_at: datetime
+
+    def to_firestore(self) -> dict[str, Any]:
+        return {
+            "with": self.with_account,
+            "polls": self.polls,
+            "observed_at": self.observed_at,
+            "other_observed_at": self.other_observed_at,
+        }
+
+    @classmethod
+    def from_firestore(cls, raw: Any) -> "IdenticalReadings | None":
+        """Descriptive: anything malformed reads as no record, which only
+        restarts the count -- it never flags anything."""
+        if not isinstance(raw, dict):
+            return None
+        other, polls = raw.get("with"), raw.get("polls")
+        mine, theirs = raw.get("observed_at"), raw.get("other_observed_at")
+        if not (isinstance(other, str) and other and isinstance(polls, int)
+                and not isinstance(polls, bool) and polls > 0
+                and isinstance(mine, datetime) and isinstance(theirs, datetime)):
+            return None
+        return cls(other, polls, _aware(mine), _aware(theirs))
+
+
+@dataclass(frozen=True)
 class Hold:
     """One agent's claim on an account, with a deadline.
 
@@ -522,6 +583,51 @@ class Account:
     #: without anyone releasing it.
     max_agents: int = DEFAULT_MAX_AGENTS
 
+    #: WHICH SUBSCRIPTION THIS IS (#2222): the opaque identity of the
+    #: provider ORGANISATION its credential runs on (`oauth.Organisation`),
+    #: recorded at add and at every refresh. Never the login -- one login can
+    #: belong to two organisations, and those are two subscriptions. None is
+    #: an account the provider has not yet said this about, which is every
+    #: document written before this field.
+    organisation_id: str | None = None
+    #: The organisation's display name and plan ("Personal", "Max"), as the
+    #: provider gave them. Display text, not secret, and never an identity.
+    organisation_name: str | None = None
+    organisation_plan: str | None = None
+    #: WHICH SEAT OF THAT ORGANISATION (#2282): the opaque identity of the
+    #: provider LOGIN the credential was issued to (`oauth.Organisation.seat`),
+    #: recorded at add and at every refresh that names it. On a Team
+    #: organisation every seat has its own limits, so a subscription is the
+    #: organisation AND the seat. Never the login's uuid or email. None is an
+    #: account the provider has not yet said this about -- every document
+    #: written before this field, until its next refresh.
+    seat_id: str | None = None
+
+    #: When this account was first registered. None is a document written
+    #: before this field, which is older than any that carries one. Decides
+    #: which of two registrations of one organisation is kept (`duplicates`).
+    registered_at: datetime | None = None
+
+    #: Another account registered on the same SUBSCRIPTION (#2222) -- the same
+    #: organisation and seat, or with no seat recorded the same readings
+    #: (#2282, `duplicates`) -- or None.
+    #: Both of a pair carry it, each naming the other side; `duplicate_withheld`
+    #: is True on the newer one, which `choose()` never hands out -- one
+    #: subscription is one account's worth of agents, however many labels it
+    #: has.
+    duplicate_of: str | None = None
+    duplicate_withheld: bool = False
+
+    #: Another account whose readings have been IDENTICAL on
+    #: `IDENTICAL_READINGS_POLLS` consecutive polls, while the two have no
+    #: pair of recorded organisations to tell them apart (#2222), or None.
+    #: A DIFFERENT flag from `duplicate_of`: that one is proven by the
+    #: provider's organisation and withholds the newer side; this one is
+    #: inferred, and is shown, never withheld (`identical_reading_pairs`).
+    possible_duplicate_of: str | None = None
+    #: The count behind it, kept between passes.
+    identical_readings: IdenticalReadings | None = None
+
     def serves_class(self, model_class: str | None) -> bool:
         """Whether a step of `model_class` may run on this account.
 
@@ -547,6 +653,19 @@ class Account:
         they re-check the cap (`quota_broker.main.acquire_hold`).
         """
         return len(self.live_holds(now)) >= self.max_agents
+
+    def awaits_first_reading(self, now: datetime) -> bool:
+        """Whether this account has no reading yet AND already holds the one
+        agent such an account may (`MAX_AGENTS_BEFORE_READING`).
+
+        LIVE holds, for the reason `is_full` gives. Once a reading arrives
+        this is False for good, and the account takes agents up to its
+        `max_agents` like any other.
+        """
+        return (
+            self.observed_at is None
+            and len(self.live_holds(now)) >= MAX_AGENTS_BEFORE_READING
+        )
 
     def is_unreadable_for(
         self,
@@ -609,11 +728,21 @@ class Account:
         A window that has passed its reset time is treated as full again, which
         is what `resetsAt` means, and is why an exhausted account can return to
         the pool without anyone probing it.
+
+        A NEVER-OBSERVED ACCOUNT READS AS FULL, AND TAKES ONE AGENT. Optimistic
+        on purpose: a new account has to be assignable before it can report
+        anything, and assuming it empty makes onboarding a chicken-and-egg
+        problem. But optimism alone made it win EVERY pick until the poller
+        read it: on 2026-10-24 at 10:38Z eng:saga-team was handed an agent
+        before its first reading, and a sign-in that had authorised the wrong
+        organisation would have run that agent -- and every one after it --
+        against a week already 98% spent. So `choose()` hands a never-observed
+        account at most `MAX_AGENTS_BEFORE_READING` agent
+        (`awaits_first_reading`); its first reading decides the rest (BGD,
+        "One until measured").
         """
         if not self.windows or self.observed_at is None:
-            # Never observed. Optimistic ON PURPOSE: a new account has to be
-            # assignable before it can report anything, and the alternative --
-            # assuming empty -- makes onboarding a chicken-and-egg problem.
+            # Never observed: full, and capped at one agent by `choose()`.
             return 1.0
 
         if now - self.observed_at > stale_after:
@@ -813,6 +942,17 @@ class Account:
             "model_classes": list(self.model_classes),
             "display_name": self.display_name,
             "max_agents": self.max_agents,
+            "organisation_id": self.organisation_id,
+            "organisation_name": self.organisation_name,
+            "organisation_plan": self.organisation_plan,
+            "seat_id": self.seat_id,
+            "registered_at": self.registered_at,
+            "duplicate_of": self.duplicate_of,
+            "duplicate_withheld": self.duplicate_withheld,
+            "possible_duplicate_of": self.possible_duplicate_of,
+            "identical_readings": (
+                self.identical_readings.to_firestore() if self.identical_readings else None
+            ),
         }
 
     @classmethod
@@ -872,6 +1012,20 @@ class Account:
             # is unreadable -- out of the pool -- rather than read as some
             # number nobody chose.
             max_agents=max_agents_from_firestore(data.get("max_agents")),
+            # Descriptive: a malformed identity reads as none, which is how
+            # every account read before #2222 -- never as some other one.
+            organisation_id=_optional_text(data.get("organisation_id")),
+            organisation_name=_optional_text(data.get("organisation_name")),
+            organisation_plan=_optional_text(data.get("organisation_plan")),
+            seat_id=_optional_text(data.get("seat_id")),
+            registered_at=_optional_instant(data.get("registered_at")),
+            duplicate_of=_optional_text(data.get("duplicate_of")),
+            # Only a stored True withholds: anything else is the default.
+            duplicate_withheld=data.get("duplicate_withheld") is True,
+            # Descriptive: an inferred flag that never withholds anything.
+            possible_duplicate_of=_optional_text(data.get("possible_duplicate_of")),
+            identical_readings=IdenticalReadings.from_firestore(
+                data.get("identical_readings")),
         )
 
 
@@ -1205,6 +1359,161 @@ def accounts_serving(
     ]
 
 
+def _registration_order(account: Account) -> tuple[int, datetime, str]:
+    """Older first: a document with no `registered_at` predates the field."""
+    return (
+        0 if account.registered_at is None else 1,
+        account.registered_at or datetime.min.replace(tzinfo=timezone.utc),
+        account.account_id,
+    )
+
+
+def one_subscription(a: Account, b: Account) -> bool:
+    """Whether two accounts on ONE organisation are one subscription (#2282).
+
+    ONE SUBSCRIPTION IS ONE SEAT (BGD, 2026-10-25). On a Claude Team
+    organisation every seat has its own limits; on 2026-10-25 four seats of
+    one Team organisation read 59-61% of their week beside the kept one's 97%
+    and were withheld as its duplicates, with 104 tasks queued. So: two
+    recorded seats decide -- the same seat is one subscription whatever the
+    readings say, two seats are two whatever they say. Where either seat is
+    not recorded yet (every account added before #2282, until its next
+    refresh) only identical readings pair them (`readings_identical`, DUP-1's
+    fallback): readings that differ are proof of two quotas.
+    """
+    seat_a, seat_b = getattr(a, "seat_id", None), getattr(b, "seat_id", None)
+    if seat_a and seat_b:
+        return seat_a == seat_b
+    return readings_identical(a, b)
+
+
+def duplicates(accounts: Iterable[Account]) -> dict[str, tuple[str, bool]]:
+    """Every account sharing a subscription with another: `(other, withheld)`.
+
+    A SUBSCRIPTION IS AN ORGANISATION AND A SEAT (#2222, #2282), whatever the
+    labels or owners: two accounts on one organisation are a pair only when
+    `one_subscription` says so. Of a pair the OLDEST registration is kept: it
+    names the first newer one and is not withheld. Every newer one names the
+    kept one it pairs with and is withheld, so `choose()` hands the
+    subscription out once. An account with no recorded organisation is in no
+    pair here (absence is not sameness; `identical_reading_pairs` flags it).
+    An account in no pair is absent from the answer.
+    """
+    groups: dict[tuple[str, str], list[Account]] = {}
+    for a in accounts:
+        identity = getattr(a, "organisation_id", None)
+        if identity:
+            groups.setdefault((a.provider, identity), []).append(a)
+    out: dict[str, tuple[str, bool]] = {}
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        # Compared with EVERY older account, withheld ones too, and withheld
+        # against the kept account at the root of the chain: a seatless K
+        # paired with B (seat s1) by its readings, and a later C on seat s1,
+        # are one subscription however C's readings compare with K's.
+        seen: list[Account] = []
+        root: dict[str, str] = {}
+        for a in sorted(group, key=_registration_order):
+            older = next((k for k in seen if one_subscription(k, a)), None)
+            seen.append(a)
+            if older is None:
+                continue
+            kept = root.get(older.account_id, older.account_id)
+            root[a.account_id] = kept
+            out[a.account_id] = (kept, True)
+            out.setdefault(kept, (a.account_id, False))
+    return out
+
+
+def _withheld(accounts: list[Account]) -> set[str]:
+    """Accounts `choose()` must not hand out because an older registration of
+    the same subscription (`duplicates`) is the one in use: the stored mark,
+    or a pair in this very list that the sweep has not marked yet. A stored
+    mark whose pair no longer holds is cleared by the broker's next sweep
+    (`main.mark_duplicates`), which is also what the hold transaction reads."""
+    marked = {a.account_id for a in accounts if getattr(a, "duplicate_withheld", False) is True}
+    return marked | {i for i, (_, held) in duplicates(accounts).items() if held}
+
+
+def readings_identical(a: Account, b: Account, *, skew: timedelta = IDENTICAL_RESET_SKEW) -> bool:
+    """Whether two accounts' latest readings could be one subscription's.
+
+    Every window the same: the same windows, the same utilisation, and resets
+    within `skew`. Never for two IDLE accounts -- 0% everywhere -- because a
+    provider that dates an unused window from the moment it is asked would
+    give two unrelated idle accounts resets seconds apart, and figures nobody
+    spent say nothing about whose quota they are.
+    """
+    if a.observed_at is None or b.observed_at is None:
+        return False
+    if not a.windows or set(a.windows) != set(b.windows):
+        return False
+    if all(round(r.utilization, 4) == 0 for r in a.windows.values()):
+        return False
+    for name, mine in a.windows.items():
+        theirs = b.windows[name]
+        if round(mine.utilization, 4) != round(theirs.utilization, 4):
+            return False
+        if abs(mine.resets_at - theirs.resets_at) > skew:
+            return False
+    return True
+
+
+def identical_reading_pairs(
+    accounts: Iterable[Account],
+) -> dict[str, tuple[IdenticalReadings | None, str | None]]:
+    """Every account's next identical-readings count and possible duplicate.
+
+    THE FALLBACK FOR A MISSING ORGANISATION (#2222, `IDENTICAL_RESET_SKEW`).
+    Two accounts of one provider are compared only when they do not BOTH
+    carry a recorded organisation: two recorded organisations are decided by
+    `duplicates` (the same organisation and seat, or with a seat unrecorded
+    the same readings, #2282), and a recorded organisation that differs
+    always wins over figures that coincide.
+
+    A count goes up only when BOTH sides carry a reading newer than the ones
+    it was last counted on, so a pass that sees the same readings again, or a
+    new reading of one side only, is not another poll. Readings that differ
+    anywhere end the count and clear the flag. Of several matching accounts
+    the one already being counted is kept, else the oldest registration.
+
+    Returns `(count, possible_duplicate_of)` for EVERY account, None/None for
+    one in no match, so a caller can clear what no longer holds.
+    """
+    accounts = sorted(accounts, key=_registration_order)
+    out: dict[str, tuple[IdenticalReadings | None, str | None]] = {}
+    for a in accounts:
+        partners = [
+            b
+            for b in accounts
+            if b.account_id != a.account_id
+            and b.provider == a.provider
+            and not (a.organisation_id and b.organisation_id)
+            and readings_identical(a, b)
+        ]
+        if not partners:
+            out[a.account_id] = (None, None)
+            continue
+        prev = a.identical_readings
+        b = next(
+            (p for p in partners if prev is not None and p.account_id == prev.with_account),
+            partners[0],
+        )
+        assert a.observed_at is not None and b.observed_at is not None
+        if prev is None or prev.with_account != b.account_id:
+            count = IdenticalReadings(b.account_id, 1, a.observed_at, b.observed_at)
+        elif a.observed_at > prev.observed_at and b.observed_at > prev.other_observed_at:
+            count = IdenticalReadings(b.account_id, prev.polls + 1, a.observed_at, b.observed_at)
+        else:
+            count = prev
+        out[a.account_id] = (
+            count,
+            b.account_id if count.polls >= IDENTICAL_READINGS_POLLS else None,
+        )
+    return out
+
+
 def choose(
     accounts: Iterable[Account],
     tenant_id: str,
@@ -1246,12 +1555,23 @@ def choose(
     `model_class` is the step's class (`Account.serves_class`); "" asks about
     none. An account that cannot run the step's model is never handed it,
     however much headroom it has (owner decision R5).
+
+    A DUPLICATE IS HANDED OUT ONCE (#2222): of two accounts on one
+    subscription -- one organisation and one seat (#2282) -- only the older
+    registration is a candidate (`duplicates`).
+    AND A NEVER-MEASURED ACCOUNT TAKES ONE AGENT (`awaits_first_reading`):
+    it is skipped while it holds one and has no reading, and is an ordinary
+    candidate from its first reading on.
     """
     skip = {str(a) for a in exclude}
+    accounts = list(accounts)
+    withheld = _withheld(accounts)
     candidates = [
         a
         for a in accounts
         if a.state in ASSIGNABLE_STATES
+        and a.account_id not in withheld
+        and not a.awaits_first_reading(now)
         and a.may_serve(tenant_id)
         and (model_class == "" or a.serves_class(model_class))
         and a.account_id not in skip
@@ -1319,6 +1639,16 @@ def eligibility(
         with no instant at all -- when somebody acts is not a time the broker
         can know -- so it shortens nothing here.
 
+      * no reading yet, and already holding the one agent such an account
+        may (`Account.awaits_first_reading`, #2222): the broker's next usage
+        poll, which reads a never-observed account first. Undated, so the
+        reason is `NO_RECENT_READING`, as for an aged reading.
+
+      * a later registration of an organisation another account already
+        holds (`duplicates`, #2222): a person, who removes one of the two.
+        Undated and no candidate at all, so a pool of nothing else is
+        `POOL_PAUSED`.
+
       * every slot taken (`Account.is_full`, #2222), with its windows clear:
         an agent on it finishing. Undated -- no instant predicts a finish --
         so the reason becomes `ACCOUNTS_FULL`, which the worker re-asks within
@@ -1333,6 +1663,8 @@ def eligibility(
     which outlives the attempt, is what dates it.
     """
     skip = {str(a) for a in exclude}
+    accounts = list(accounts)
+    withheld = _withheld(accounts)
     serves = [
         a
         for a in accounts
@@ -1376,7 +1708,9 @@ def eligibility(
         # subscription, which is the contention the pool exists to remove.
         return Unavailable.NO_ACCOUNT_AVAILABLE, min(marks) if marks else None
 
-    assignable = [a for a in mine if a.state in ASSIGNABLE_STATES]
+    assignable = [
+        a for a in mine if a.state in ASSIGNABLE_STATES and a.account_id not in withheld
+    ]
     if not assignable and not marks:
         # Paused, draining or needing re-authentication. Every one of those is
         # a person's decision or a person's job, so there is nothing to wait
@@ -1394,6 +1728,12 @@ def eligibility(
             # Blocked by the staleness halving alone. Not evidence of
             # exhaustion: the broker's own usage poll refreshes this reading
             # on its next sweep, which is sooner than any window but undated.
+            waiting_on_poll = True
+        elif a.awaits_first_reading(now):
+            # Holding the one agent a never-measured account may: its first
+            # reading, the usage poll's to take, decides the rest. Before
+            # `is_full` so a never-measured account whose cap is one reads as
+            # waiting on that reading, not as full.
             waiting_on_poll = True
         elif a.is_full(now):
             # Room by every window, and every slot taken: it frees when an
@@ -1446,6 +1786,7 @@ __all__ = [
     "DEFAULT_ASSIGN_FLOOR",
     "DEFAULT_MAX_AGENTS",
     "MAX_AGENTS_LIMIT",
+    "MAX_AGENTS_BEFORE_READING",
     "WINDOW_FLOORS",
     "window_floor",
     "DEFAULT_HOLD_TTL",
@@ -1463,12 +1804,19 @@ __all__ = [
     "SWAP_UNUSABLE",
     "HOLD_LOG_COLLECTION",
     "HOLD_LOG_RETENTION",
+    "IDENTICAL_READINGS_POLLS",
+    "IDENTICAL_RESET_SKEW",
+    "IdenticalReadings",
     "account_id_for",
     "accounts_serving",
     "choose",
     "due_for_refresh",
+    "duplicates",
+    "one_subscription",
     "eligibility",
     "holds_from_firestore",
+    "identical_reading_pairs",
+    "readings_identical",
     "holds_to_firestore",
     "hold_log_entry",
     "max_agents_from_firestore",

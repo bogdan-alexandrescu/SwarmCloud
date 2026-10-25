@@ -38,7 +38,7 @@ from quota_broker.main import create_app
 from quota_broker.service import QuotaBroker
 from quota_broker.settings import BrokerSettings
 
-from .conftest import core_settings
+from .conftest import core_settings, measure
 from .fakes import FakeFirestore, FakeTransaction
 from .test_malformed_account_document import ENG, SENTINEL, _rendered
 from .test_malformed_account_document import _Identity as _DocumentIdentity
@@ -102,6 +102,7 @@ def broker(db) -> QuotaBroker:
 def accounts(broker) -> AccountStore:
     store = AccountStore(broker.db)
     store.register(ENG, "held")
+    measure(store, f"{ENG}:held")  # one agent until measured (#2222)
     return store
 
 
@@ -334,6 +335,8 @@ def test_a_sweep_that_can_read_no_document_s_holds_reports_an_error(
     import quota_broker.main as broker_main
 
     accounts.register(ENG, "second")
+    # Measured like `held`, so the never-observed one does not outrank it.
+    measure(accounts, f"{ENG}:second")
     _assign(client)
     monkeypatch.setattr(broker_main, "holds_from_firestore", _decoder_bug)
 

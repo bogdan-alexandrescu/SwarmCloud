@@ -790,12 +790,15 @@ report is still good.
 
 ## Changing an account is the developer's to do
 
-`uv run sc account pause <label>`, `resume`, `drain`, `remove` and `add` WRITE
-to the shared account pool, and this skill is not granted them. Tell the
-developer the command and let them run it: `drain` stops new assignments and
-moves running agents to another account at their next turn boundary; `remove`
-asks them to type the account's label back; `add` opens a browser for them to
-sign in to Claude and asks them to paste a code, which only they can do.
+`uv run sc account pause <label>`, `resume`, `drain`, `remove`,
+`max-agents <label> <n>` and `add` WRITE to the shared account pool, and this
+skill is not granted them. Tell the developer the command and let them run it:
+`drain` stops new assignments and moves running agents to another account at
+their next turn boundary; `remove` asks them to type the account's label back;
+`max-agents` sets how many agents the account may hold at once (1 to 50; the
+agents already on it stay) and asks for the label typed back too; `add` opens a
+browser for them to sign in to Claude and asks them to paste a code, which only
+they can do.
 
 The task view says what the agent produced before its code: each artifact by
 name and size, the runner's own summary, the exit code, the duration, and the

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react'
 import {
   loadAdminPools, loadCapacity, loadMe, loadModelClasses, loadModelPrices, loadPlatformSettings, priceRefusals, saveModelPrices, setPoolLimit, storeOwnerToken,
 } from './api'
@@ -30,6 +30,9 @@ import {
   type PoolKind,
 } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
+// The Config pages' lead (`.ws-lead`, WS-SETTINGS-PAGE), which every Admin
+// page's lead draws with (`AdminLead` below).
+import './styles/workspace-settings.css'
 import './styles/admin.css'
 
 /**
@@ -132,6 +135,8 @@ export function AdminSettingsScreen() {
     return false
   }
 
+  const read = useLeadRead(loadLimits)
+
   return (
     <>
       <Screen
@@ -141,7 +146,7 @@ export function AdminSettingsScreen() {
         // that does not exist, and it restated the section it already sits under
         // ("Admin") instead of naming the thing on the screen.
         title="Pool limits"
-        load={loadLimits}
+        load={read.load}
         // READ ON CAPACITY'S CADENCE (live QA ADM-7, 2026-10-11): read once,
         // In use went stale -- global 14 here while the sidebar's live read
         // said 10 -- and the open editor's impact reasoned from the stale 14.
@@ -162,6 +167,7 @@ export function AdminSettingsScreen() {
         {(d) => (
           <Body
             capacity={fresh !== null && fresh.over === d ? fresh.data : d}
+            unread={read.failed}
             admin={admin}
             saved={saved}
             outcomes={outcomes}
@@ -177,10 +183,186 @@ export function AdminSettingsScreen() {
           />
         )}
       </Screen>
+      {read.failed !== null && !read.held && read.failed.kind !== 'admin_required' && <PoolLeadView lead={null} unread={read.failed} />}
       <AdditionalRepositoryLimitsCard />
       <ModelPricesCard admin={admin} />
       <FallbackTokenCard />
     </>
+  )
+}
+
+/**
+ * AN ADMIN PAGE'S LEAD (ADMIN-LEADS; part of #2157, proposal E S10): what
+ * needs an admin now, in one sentence with at most one button, and a green
+ * "Nothing waiting" when that is the truth. Pool limits, Runner sizes and
+ * Tenants draw it.
+ *
+ * THE CONFIG PAGES' LEAD, NOT A NEW ONE. It is drawn with `.ws-lead`, the
+ * lead Config › Workspace Settings opens with (WorkspaceSettings.tsx `Lead`,
+ * styles/workspace-settings.css), so a later tint of that class (lane
+ * CONFIG-LEAD-TINT) reaches these too. `adm-lead` adds the two tones the
+ * Config pages have no use for (styles/admin.css): `warn`, something an admin
+ * has to act on, and `unread`.
+ *
+ * `unread` IS A DASH WITH ITS REASON, NEVER A GREEN LEAD (the honesty rule,
+ * docs/web-ui/redesign-v2.md: an em dash means "not measured"). A page whose
+ * read failed has not judged anything, and "Nothing waiting" over a read that
+ * never landed would be the one claim nobody made.
+ */
+export type AdminLeadTone = 'warn' | 'next' | 'ok' | 'unread'
+
+export function AdminLead({
+  kicker,
+  title,
+  body,
+  tone,
+  action,
+}: {
+  kicker: string
+  title: string
+  body?: ReactNode
+  tone: AdminLeadTone
+  action?: ReactNode
+}) {
+  return (
+    <section className={`ws-lead adm-lead is-${tone}`} aria-label={kicker} data-lead={tone}>
+      <div className="ws-lead-t">
+        <span className="ws-lead-k">{kicker}</span>
+        <b>{title}</b>
+        {body !== undefined && <span className="ws-lead-s">{body}</span>}
+      </div>
+      {action !== undefined && <div className="ws-lead-a">{action}</div>}
+    </section>
+  )
+}
+
+/** The dash lead: what could not be read, and the API's reason in its own heading. */
+export function UnreadLead({ what, error }: { what: string; error: ApiError }) {
+  return <AdminLead tone="unread" kicker="Not read" title={`—, ${what} could not be read`} body={`${errorHeading(error)}.`} />
+}
+
+/**
+ * WHETHER A `Screen`'S READ FAILED, for its lead. `Screen` keeps its result to
+ * itself, so its `load` is wrapped: `failed` is the last read's error (null
+ * once one lands), and `held` says whether rows from an earlier read are still
+ * on screen -- `Screen`'s stale rule, which hands those rows to its children.
+ * With rows, the lead inside them draws the dash; without, `Screen` draws its
+ * failure panel and no children, and the page draws the dash under it.
+ *
+ * The wrapper calls `load` synchronously, so `Screen`'s `pageReads` still
+ * counts the read as the page's.
+ */
+export function useLeadRead<T>(load: () => Promise<Result<T>>): {
+  load: () => Promise<Result<T>>
+  failed: ApiError | null
+  held: boolean
+} {
+  const [failed, setFailed] = useState<ApiError | null>(null)
+  const [held, setHeld] = useState(false)
+  const wrapped = useCallback(
+    () =>
+      load().then((r) => {
+        if (r?.status === 'error') setFailed(r.error)
+        else if (r?.status === 'ok' || r?.status === 'stale') {
+          setFailed(null)
+          setHeld(true)
+        } else if (r?.status === 'empty') {
+          setFailed(null)
+          setHeld(false)
+        }
+        return r
+      }),
+    // `load` is a module function on every page that uses this, so it never changes.
+    [],
+  )
+  return { load: wrapped, failed, held }
+}
+
+/**
+ * NEAR A CEILING: 80% of it in use, or more. Under that a pool still has a
+ * fifth of its ceiling free, which is room for the next tasks rather than a
+ * reason to call an admin; the mock-up's lead (S10b) is a pool at 92%.
+ */
+export const NEAR_CEILING = 0.8
+
+/**
+ * What Pool limits leads with (S10b). `unset` first: a pool with no ceiling
+ * set refuses every task that takes it (#374), which is worse than any busy
+ * pool. Then the pool with the largest share of its ceiling in use, if it is
+ * near it. A paused pool (`enabled: false`) is held on purpose and is not
+ * ranked, nor is a ceiling of 0 with nothing in use -- nothing is waiting on
+ * either.
+ */
+export type PoolLead =
+  | { kind: 'unset'; pool: string }
+  | { kind: 'near'; pool: string; active: number; ceiling: number; share: number }
+  | { kind: 'clear' }
+
+export function poolLead(pools: readonly Pool[]): PoolLead {
+  const unset = pools.find((p) => p.enabled !== false && p.effective_limit === null)
+  if (unset !== undefined) return { kind: 'unset', pool: unset.name }
+  let top: { pool: string; active: number; ceiling: number; share: number } | null = null
+  for (const p of pools) {
+    if (p.enabled === false || p.effective_limit === null) continue
+    const ceiling = p.effective_limit
+    if (ceiling <= 0 && p.active <= 0) continue
+    const share = ceiling <= 0 ? Number.POSITIVE_INFINITY : p.active / ceiling
+    if (top === null || share > top.share || (share === top.share && p.active > top.active)) top = { pool: p.name, active: p.active, ceiling, share }
+  }
+  if (top !== null && top.share >= NEAR_CEILING) return { kind: 'near', ...top }
+  return { kind: 'clear' }
+}
+
+const percent = (share: number) => (Number.isFinite(share) ? `${Math.round(share * 100)}%` : 'over')
+
+/**
+ * Pool limits' lead, drawn. `onOpen` opens the named pool's side editor (L2);
+ * absent -- a non-admin, for whom Edit is locked -- the lead has no button.
+ */
+function PoolLeadView({
+  lead,
+  unread,
+  onOpen,
+  openWhy,
+}: {
+  lead: PoolLead | null
+  unread: ApiError | null
+  onOpen?: (pool: string) => void
+  /** Why the button waits: another pool's editor holds an unsaved value. */
+  openWhy?: string
+}) {
+  if (unread !== null) return <UnreadLead what="pool use" error={unread} />
+  if (lead === null) return null
+  if (lead.kind === 'clear') {
+    // No second sentence: the table under it carries every pool's figures,
+    // and Pool limits is held to a prose budget (prose.operator.test.tsx).
+    return <AdminLead tone="ok" kicker="Nothing waiting" title="No pool is near its ceiling" />
+  }
+  const button =
+    onOpen === undefined ? undefined : (
+      <Button kind="primary" disabledReason={openWhy} onClick={() => onOpen(lead.pool)}>
+        {`Open ${lead.pool}`}
+      </Button>
+    )
+  if (lead.kind === 'unset') {
+    return (
+      <AdminLead
+        tone="warn"
+        kicker="Needs a look"
+        title={`Pool ${lead.pool} has no ceiling set`}
+        body="Admission refuses every task that takes it until one is."
+        action={button}
+      />
+    )
+  }
+  return (
+    <AdminLead
+      tone="warn"
+      kicker="Needs a look"
+      title={`Pool ${lead.pool} is at ${percent(lead.share)} of its ceiling`}
+      body={`${lead.active} of ${lead.ceiling} units in use.`}
+      action={button}
+    />
   )
 }
 
@@ -367,6 +549,7 @@ function arithmetic(
 
 function Body({
   capacity,
+  unread,
   admin,
   saved,
   outcomes,
@@ -374,6 +557,8 @@ function Body({
   onEdit,
 }: {
   capacity: Capacity
+  /** The last capacity read failed: these rows are an earlier read's, and the lead is a dash. */
+  unread: ApiError | null
   admin: boolean | null
   saved: Readonly<Record<string, SaveMark>>
   outcomes: Readonly<Record<string, SaveOutcome>>
@@ -389,7 +574,7 @@ function Body({
   // each profile's ceiling (`impactOf`, which still reads `arithmetic`). The
   // cards held no control, so nothing a person could do went with them.
   return (
-    <PoolEditor capacity={capacity} admin={admin} saved={saved} outcomes={outcomes} onSaved={onSaved} onEdit={onEdit} />
+    <PoolEditor capacity={capacity} unread={unread} admin={admin} saved={saved} outcomes={outcomes} onSaved={onSaved} onEdit={onEdit} />
   )
 }
 
@@ -871,6 +1056,7 @@ function Changed({ change, now, as: Tag }: { change: Change; now: number; as: 'd
 
 function PoolEditor({
   capacity,
+  unread,
   admin,
   saved,
   outcomes,
@@ -878,6 +1064,7 @@ function PoolEditor({
   onEdit,
 }: {
   capacity: Capacity
+  unread: ApiError | null
   /** From the session read. null: not known (yet), and treated as allowed. */
   admin: boolean | null
   saved: Readonly<Record<string, SaveMark>>
@@ -979,9 +1166,30 @@ function PoolEditor({
       />
     )
 
+  // THE LEAD'S BUTTON IS THE ROW'S `edit` (S10b): it opens the named pool's
+  // side editor, under the same rules -- none for a non-admin or a pool kind
+  // with no write route, and it waits while another pool holds an unsaved
+  // value. The row is brought into view, since a phone draws the editor under
+  // it.
+  const lead = poolLead(pools)
+  const leadPool = lead.kind === 'clear' ? undefined : pools.find((p) => p.name === lead.pool)
+  const leadOpens = leadPool !== undefined && admin !== false && isEditable(leadPool)
+  const openFromLead = (pool: string) => {
+    setEditing({ pool, draft: null })
+    const row = document.getElementById(`limit-${pool}`)
+    if (row !== null && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' })
+  }
+
   return (
-    // `has-filter` moves the sticky family heads below the filter, which
-    // sticks too (VQA V077, V187; styles/admin.css `.adm-ceilings`).
+    <>
+    <PoolLeadView
+      lead={lead}
+      unread={unread}
+      onOpen={leadOpens ? openFromLead : undefined}
+      openWhy={held !== null && held !== leadPool?.name ? 'Save or cancel the open edit first.' : undefined}
+    />
+    {/* `has-filter` moves the sticky family heads below the filter, which
+        sticks too (VQA V077, V187; styles/admin.css `.adm-ceilings`). */}
     <section className={`section adm-ceilings${filtered ? ' has-filter' : ''}`}>
       <span className="ctl-eyebrow has-q">
         Ceilings
@@ -1053,6 +1261,7 @@ function PoolEditor({
         {beside && editor}
       </div>
     </section>
+    </>
   )
 }
 

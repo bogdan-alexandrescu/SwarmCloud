@@ -242,6 +242,7 @@ from .gitops import (
     MergeOutcome,
     PeerPin,
     PushRejected,
+    base_merge_tip,
     branch_commits,
     clone_at_commit,
     commit_dirty,
@@ -260,6 +261,7 @@ from .gitops import (
     read_head_as_data,
     read_head_branch_as_data,
     read_origin_ref_as_data,
+    replay_onto_tip,
     retry_clone,
     shallow_clone,
     summarize_work,
@@ -538,6 +540,13 @@ PUBLISH_UNREACHABLE_FIELD = "forge_unreachable"
 #: task_6a0c9afdbaea449eb53d: "push failed with exit 1", state SUCCEEDED, the
 #: workflow green, and the work found in `swarm-work.patch` six hours later.
 PUBLISH_FAILED_FIELD = "publish_failed"
+#: The `result_summary.git` key `_publish_git` sets when a continued branch
+#: moved only by merges of the default branch already holds every change this
+#: round made (#2179: PR #2093's GitHub update carried main's identical fix).
+#: Its value is the reason, naming the moved tip; nothing was pushed. Read by
+#: `_no_change_after_publish`: the attempt ends `no_change`, not
+#: `publish_failed`.
+BASE_MERGE_NO_CHANGE_FIELD = "base_merge_no_change"
 #: The paths a push may touch only with the `workflow` scope (AU-3,
 #: docs/design/agent-autonomy.md §3.3): `_publish_git` hands a branch whose
 #: new commits touch either to swarm-api's `git_push_branch`. Restated from
@@ -578,6 +587,16 @@ CONFLICT_ROUND_FIELD = "conflict_round"
 #: kept as `result_summary.no_change_reason`.
 VERIFICATION_FILE = "verification.md"
 NO_CHANGE_REASON_SUMMARY_KEY = "no_change_reason"
+#: A check-only `publish_to_pr` step's other evidence (CHECKONLY-VERDICT, part
+#: of #2241): a review's `verdict.json` beside a diff that is empty is the
+#: `no_change` result too, so a rendered review that found nothing to fix
+#: becomes a verdict instead of failing `empty_diff`. Only for a step that
+#: publishes onto an existing pull request: there the verdict has a pull
+#: request to land on (`_post_no_change_evidence`).
+CHECK_VERDICT_FILE = "verdict.json"
+#: Where the comment that carries a `publish_to_pr` step's no-change evidence
+#: is recorded, in `result_summary` (`_post_no_change_evidence`).
+NO_CHANGE_COMMENT_SUMMARY_KEY = "no_change_comment"
 #: At most this many bytes of `verification.md` are kept in the summary; the
 #: file itself is uploaded whole with the other artifacts.
 NO_CHANGE_REASON_MAX_BYTES = 4000
@@ -857,6 +876,15 @@ class Worker:
         # run the schedule without waiting it out.
         self.startup_sleep: Callable[[float], Any] = time.sleep
         self.startup_clock: Callable[[], float] = time.monotonic
+        # What a beat and `_heartbeat_meanwhile`'s thread read the time from,
+        # and what that thread waits with (`wait(stop, seconds)`, True once
+        # stopped). Replaceable so a test runs the thread on a virtual clock:
+        # on real sleeps a busy runner scheduled one beat 0.01 s past its
+        # band with nothing wrong in the thread (#2233). A replacement holds
+        # for those two only; the loop and the lease's outage check read
+        # `time.monotonic`, so a test that swaps it runs no loop.
+        self.heartbeat_clock: Callable[[], float] = time.monotonic
+        self.heartbeat_wait: Callable[[threading.Event, float], bool] = threading.Event.wait
         # The egress probe (#721 (a), `agent_worker.egress`): started at the
         # top of `run`, waited for by the clone only, stopped when the startup
         # window closes. The connect, cap and interval are replaceable so a
@@ -4244,7 +4272,8 @@ class Worker:
             summary[expected_mod.NO_CHANGE_SUMMARY_KEY] = True
             summary[NO_CHANGE_REASON_SUMMARY_KEY] = verified
             self.log.info(
-                f"nothing to change: the diff is empty and the agent wrote {VERIFICATION_FILE}",
+                "nothing to change: the diff is empty and the agent wrote "
+                f"{VERIFICATION_FILE} (or, publishing onto a pull request, {CHECK_VERDICT_FILE})",
                 allow_empty_diff=self._allows_empty_diff(),
             )
         # Before the check, which counts what is carried as present (#166).
@@ -4253,10 +4282,19 @@ class Worker:
         # and crash paths: a parked attempt resumes later and may still write
         # the file.
         missing = self._report_missing_outputs(summary, fails_the_attempt=ran_clean)
-        self._publish_checked(
-            summary,
-            self._publish_withheld(ran_clean, missing=missing, title_refused=title_refused),
-        )
+        withheld = self._publish_withheld(ran_clean, missing=missing, title_refused=title_refused)
+        self._publish_checked(summary, withheld)
+        if (
+            ran_clean
+            and withheld is None
+            and summary.get(expected_mod.NO_CHANGE_SUMMARY_KEY) is True
+        ):
+            # A `publish_to_pr` step that checked and changed nothing (#2241):
+            # its evidence goes onto the pull request as a comment, not a commit.
+            self._post_no_change_evidence(summary)
+        if ran_clean and self._no_change_after_publish(summary):
+            self.log.info("nothing to change: the moved branch already holds this round's change",
+                          reason=summary.get(NO_CHANGE_REASON_SUMMARY_KEY))
         if self._pushed_branch is not None:
             # The branch this attempt actually pushed, read from git after the
             # push (#667, observer P11): a step summary can be checked against
@@ -6459,12 +6497,181 @@ class Worker:
             return None
         text = self._read_agent_text(VERIFICATION_FILE, [])
         if text is None or not text.strip():
+            text = self._check_verdict_text()
+        if text is None or not text.strip():
             return None
         reason = str(self._scrub(text.strip()))
         encoded = reason.encode("utf-8")
         if len(encoded) > NO_CHANGE_REASON_MAX_BYTES:
             reason = encoded[:NO_CHANGE_REASON_MAX_BYTES].decode("utf-8", "ignore").rstrip() + "..."
         return reason
+
+    def _onto_pr_target(self) -> "publishpr_mod.Target | None":
+        """The pull request this step's no-change evidence lands on, or None.
+
+        Only the step that would publish onto it -- the one that opens a pull
+        request, with no `single-pr` role -- as in `_publish_git`. A value
+        swarm-api could not have signed is None here: the start already
+        refused it, so this attempt never reached its finish with one.
+        """
+        if self._pr_role() or not self._opens_pull_request():
+            return None
+        try:
+            return self._publish_to_pr()
+        except WorkerError:
+            return None
+
+    def _check_verdict_text(self) -> str | None:
+        """A `publish_to_pr` step's `verdict.json`, as the reason its empty
+        diff is a result (CHECKONLY-VERDICT, part of #2241); else None.
+
+        On 2026-10-24 PR 2235's render lane rendered every frame, found no
+        defect, changed nothing, and failed `empty_diff`, so its review never
+        became a verdict. A verdict the reader cannot read -- not JSON, no
+        MERGE or NOT_YET -- is no evidence, and the step fails as before.
+        """
+        if self._onto_pr_target() is None:
+            return None
+        raw = self._read_agent_text(CHECK_VERDICT_FILE, [])
+        if raw is None:
+            return None
+        try:
+            document = json.loads(raw)
+        except ValueError:
+            return None
+        if not isinstance(document, dict):
+            return None
+        read = verdict_mod.verdict_of_document(document)
+        if read is None:
+            return None
+        lines = [f"Review verdict ({CHECK_VERDICT_FILE}): {read.verdict}"]
+        if read.findings:
+            lines.append("")
+            lines += [f"- {finding}" for finding in read.findings]
+        if read.findings_dropped:
+            lines.append(f"- ... and {read.findings_dropped} more")
+        return "\n".join(lines)
+
+    def _post_no_change_evidence(self, summary: dict[str, Any]) -> None:
+        """Post a `publish_to_pr` step's no-change evidence as ONE comment on
+        its pull request (CHECKONLY-VERDICT, part of #2241).
+
+        A step that checked and changed nothing has no commit to push onto
+        the pull request, so its evidence -- `no_change_reason`, from
+        `verification.md` or its `verdict.json` -- goes there as a comment
+        instead, where the pull request's reader and its merge step see it.
+        The comment ends with a hidden marker naming this task and attempt,
+        so a finish of the same attempt again finds it and posts nothing.
+
+        The same gates as a push: publishing enabled, the forge grant, the
+        git token, a token that can push, and the pull request read again and
+        held to `publishpr.refusal` (open, ours, not a fork). Never a refusal
+        of the step: the evidence is the step's result either way, so a
+        comment not posted is recorded in `result_summary` and logged, as the
+        out-of-territory comment is (#1468). Reached only from
+        `_record_finalised`, beside the publish it stands in for.
+        """
+        target = self._onto_pr_target()
+        reason = summary.get(NO_CHANGE_REASON_SUMMARY_KEY)
+        if target is None or not isinstance(reason, str) or not reason.strip():
+            return
+        record: dict[str, Any] = {"number": target.number}
+        summary[NO_CHANGE_COMMENT_SUMMARY_KEY] = record
+
+        def skipped(why: str) -> None:
+            record["posted"] = False
+            record["reason"] = str(self._scrub(why[:400]))
+            self.log.warning("the no-change evidence was not posted on the pull request",
+                             number=target.number, reason=record["reason"])
+
+        if not self.cfg.git_publish_enabled:
+            return skipped("publishing is disabled for this worker")
+        refused = self._forge_write_refusal()
+        if refused is not None:
+            return skipped(f"{refused[0]}: {refused[1]}")
+        token_refusal = self._git_token_refusal()
+        if token_refusal:
+            return skipped(f"the tenant git token is refused: {token_refusal}")
+        url = self._repo_url or self.cfg.repository_url
+        if not url:
+            return skipped("the repository URL is unknown")
+        token = self._git_token()
+        try:
+            token, access = self._probe_reading_again(url, token, "the no-change comment probe")
+            if access is None:
+                return skipped("this repository is not on a forge this worker can publish to")
+            if not access.can_push or not token:
+                return skipped(access.reason or "no credential that can write")
+            pull = self._read_pull(access, token, target.number)
+            why = publishpr_mod.refusal(
+                pull, target=target, repository=access.ref.full_name,
+                branch_prefix=self.cfg.git_branch_prefix,
+            )
+            if why:
+                return skipped(why)
+            marker = (
+                f"<!-- swarm:no-change task={self.cfg.task_id} "
+                f"attempt={self.cfg.attempt_id} -->"
+            )
+            try:
+                # A read is retried on an outage; the POST is not, since one
+                # whose answer was lost may have made the comment (the marker
+                # finds it on the next finish).
+                existing = forge_mod.retry_transient(
+                    lambda: forge_mod.list_issue_comments(
+                        ref=access.ref, token=token, number=target.number
+                    ),
+                    policy=self._forge_retry(),
+                    what="the pull request's comments",
+                )
+            except ForgeError as exc:
+                existing = []
+                self.log.warning("the pull request's comments could not be read",
+                                 error=str(self._scrub(str(exc)[:300])))
+            if any(marker in body for body in existing):
+                record["posted"] = True
+                record["comment"] = "already posted"
+                return None
+            checked = self._pr_start_head or pull.head_sha
+            body = "\n".join([
+                f"SwarmCloud checked this pull request at `{checked}` and changed nothing.",
+                "",
+                f"- task: `{self.cfg.task_id}`",
+                f"- attempt: `{self.cfg.attempt_id}`",
+                "",
+                _neutralise_mentions(reason.strip()),
+                "",
+                marker,
+            ])
+            record["comment"] = forge_mod.create_issue_comment(
+                ref=access.ref, token=token, number=target.number, body=body
+            )
+            record["posted"] = True
+            record["head"] = checked
+            self.log.info("the no-change evidence is posted on the pull request",
+                          number=target.number)
+        except ForgeError as exc:
+            return skipped(f"the forge refused it: {exc}")
+        return None
+
+    def _no_change_after_publish(self, summary: dict[str, Any]) -> bool:
+        """Mark `summary` as the `no_change` result when the publish found the
+        continued branch already holding this round's change; True when it did.
+
+        Decided at the publish, not by the harvest's diff (#2179): the round
+        did change its clone, but the branch it continues moved by a merge of
+        the default branch (`_push_onto_base_merge`) to a tip that already
+        holds every change, the PR #2093 case. The work is on the branch, so
+        it is the `no_change` result rather than `publish_failed`, with the
+        moved tip named in the reason.
+        """
+        git = summary.get("git")
+        reason = git.get(BASE_MERGE_NO_CHANGE_FIELD) if isinstance(git, dict) else None
+        if not reason or git.get(PUBLISH_FAILED_FIELD) is True:
+            return False
+        summary[expected_mod.NO_CHANGE_SUMMARY_KEY] = True
+        summary[NO_CHANGE_REASON_SUMMARY_KEY] = str(reason)
+        return True
 
     def _upstream_left(self, task_id: str) -> str | None:
         """`expected_mod.left_nothing` of one upstream, read through the
@@ -10074,7 +10281,7 @@ class Worker:
         # Read BEFORE the beat: the lease's new expiry is computed from the
         # time the beat started, and a beat that retried for most of its
         # budget must not be credited with that time again.
-        started = time.monotonic()
+        started = self.heartbeat_clock()
         if self.control.heartbeat() is not False:
             # Landed: the lease is live for one more extension from when the
             # beat started (#70). A refused beat (False) extends nothing, and
@@ -11203,13 +11410,14 @@ class Worker:
         from .config import HEARTBEAT_MEANWHILE_BOUND_LEASE_TIMEOUTS
 
         stop = threading.Event()
+        clock, wait = self.heartbeat_clock, self.heartbeat_wait
         interval = self.cfg.heartbeat_interval_seconds
         bound = self.cfg.heartbeat_meanwhile_max_seconds
         ceiling_seconds = max(bound, self.cfg.heartbeat_meanwhile_ceiling_seconds)
         # One lease timeout: the longest the block may go without progress
         # past the bound before it is treated as wedged.
         stall = bound / HEARTBEAT_MEANWHILE_BOUND_LEASE_TIMEOUTS
-        opened = time.monotonic()
+        opened = clock()
         deadline = opened + bound
         ceiling = opened + ceiling_seconds
         # What the extension saw, for its one log event: the reading at the
@@ -11267,17 +11475,17 @@ class Worker:
 
         def beat() -> None:
             while True:
-                now = time.monotonic()
+                now = clock()
                 until = limit(now)
                 if until is None:
                     return
-                if stop.wait(max(0.0, min(due() - now, until - now))):
+                if wait(stop, max(0.0, min(due() - now, until - now))):
                     return
-                if time.monotonic() >= until:
+                if clock() >= until:
                     continue  # the top of the loop re-reads and decides
-                if time.monotonic() < due():
+                if clock() < due():
                     continue  # another beat landed meanwhile; wait for the next
-                asked[:] = [time.monotonic()]
+                asked[:] = [clock()]
                 try:
                     signals = self.control.poll()
                     if signals.is_fenced(self.cfg.generation):
@@ -12510,6 +12718,167 @@ class Worker:
         )
         return pushed
 
+    def _push_onto_base_merge(
+        self,
+        publish_repo: Path,
+        rejected: PushRejected,
+        *,
+        url: str,
+        token: str,
+        branch: str,
+        protected: tuple[str, ...],
+        default_branch: str | None,
+        author_name: str,
+        author_email: str,
+        out: dict[str, Any],
+    ) -> str | None:
+        """Publish onto a continued branch moved only by merges of the default branch (#2179).
+
+        MEASURED 2026-10-23 (task_045fda9399ba47289b3a): a CI-fix round for
+        PR #2093 cloned its branch at bfdc51ad and made one commit; GitHub's
+        "Update branch" meanwhile put a merge of main on the branch
+        (c903caca, parents bfdc51ad and main's 3c6bba9b). The push, never
+        forced, was a non-fast-forward, and the only recovery,
+        `_push_over_own_earlier_attempt`, refuses a branch this task
+        continues, so the round failed publish_failed although the moved tip
+        was only main merged in -- and already carried the same fix.
+
+        When every commit the fetched tip adds over the clone base is such a
+        merge (`gitops.base_merge_tip`), this attempt's commits are replayed
+        onto it (`gitops.replay_onto_tip`), the checks that ran before the
+        first push run again over the replayed span -- worker authorship,
+        the added-text leak scan, and the workflow paths, which this route
+        may not newly reach -- and the branch is pushed with no lease: a
+        fast-forward over the fetched tip, so it is still never forced, and
+        anything that moved it again is refused as before. Returns the
+        pushed sha; None when the moved tip already holds every change, with
+        `BASE_MERGE_NO_CHANGE_FIELD` set in `out` (the attempt's `no_change`,
+        `_no_change_after_publish`). Any other mover re-raises `rejected`; a
+        replay that conflicts, or fails a check, raises its own GitError
+        naming the base merge. Nothing is pushed in either case.
+        """
+        cfg = self.cfg
+        ws = self.ws
+        assert ws is not None
+        base = self._publish_base
+        tip, why = base_merge_tip(
+            repo=publish_repo,
+            url=url,
+            branch=branch,
+            default_branch=default_branch or "",
+            token=token,
+            base=base,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=cfg.git_clone_timeout_seconds,
+            logger=self.log,
+            branch_prefix=cfg.git_branch_prefix,
+        )
+        if tip is None or base is None:
+            self.log.warning(
+                "the push was refused and the branch did not move by a merge of the "
+                "default branch alone; publishing nothing",
+                branch=branch,
+                reason=str(self._scrub(why)),
+            )
+            raise rejected
+        moved = (
+            f"{branch} moved to {tip[:12]} by a base merge of "
+            f"{default_branch or 'the default branch'} only"
+        )
+        try:
+            head = replay_onto_tip(
+                repo=publish_repo,
+                base=base,
+                tip=tip,
+                author_name=author_name,
+                author_email=author_email,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_harvest_timeout_seconds,
+                logger=self.log,
+            )
+        except GitError as exc:
+            raise GitError(
+                f"the push was refused: {moved}, and replaying this round's commits onto "
+                f"it conflicted or failed ({str(self._scrub(str(exc)[:200]))}); nothing was "
+                "pushed or forced"
+            ) from rejected
+        out["base_merge_from"] = base
+        out["base_merge_tip"] = tip
+        if head is None:
+            out[BASE_MERGE_NO_CHANGE_FIELD] = (
+                f"no_change: {moved}, which already holds every change this round "
+                "made; nothing was pushed"
+            )
+            self.log.info("the moved tip already holds this round's change; nothing to push",
+                          branch=branch, tip=tip)
+            return None
+        # The same checks the first push passed, over the span the push now
+        # adds: the moved tip is the base from here on.
+        verify_worker_authorship(
+            repo=publish_repo,
+            base=tip,
+            author_name=author_name,
+            author_email=author_email,
+            also_own=((cfg.git_author_name, cfg.git_author_email),),
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=cfg.git_harvest_timeout_seconds,
+            logger=self.log,
+        )
+        leak = final_tree_leak(
+            repo=publish_repo,
+            base=tip,
+            leaks=self._leaks_in_added_text,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=cfg.git_harvest_timeout_seconds,
+            logger=self.log,
+            overlap=self._scan_overlap(),
+        )
+        if leak is not None:
+            raise GitError(
+                f"the push was refused: {moved}, and the replay onto it failed the leak "
+                f"check: {str(self._scrub(leak))}; nothing was pushed"
+            )
+        self._publish_base = tip
+        workflow_paths = self._workflow_paths(publish_repo, floor=None)
+        if workflow_paths:
+            # The first push carried none, or it went to the broker; a replay
+            # that reaches `.github/workflows/` is not this route's to push.
+            self._publish_base = base
+            self.log.warning("the replay onto the moved tip touches workflow files; "
+                             "publishing nothing", branch=branch)
+            raise rejected
+        try:
+            # No lease: HEAD descends from the tip just fetched, so this is
+            # a fast-forward, and a branch moved again is refused.
+            pushed = push_branch(
+                repo=publish_repo,
+                url=url,
+                branch=branch,
+                token=token,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_clone_timeout_seconds,
+                logger=self.log,
+                branch_prefix=cfg.git_branch_prefix,
+                protected=protected,
+            )
+        except GitError:
+            self._publish_base = base
+            raise
+        self.log.info(
+            "the continued branch moved only by a merge of the default branch; "
+            "pushed this round's commits onto it as a fast-forward",
+            branch=branch,
+            moved_tip=tip,
+            head=pushed or "unknown",
+            how="fast_forward",
+        )
+        return pushed
+
     def _publish_git(
         self,
         *,
@@ -13138,11 +13507,29 @@ class Worker:
                             branch=branch, tool_tip=tool_tip,
                         )
                         raise
-                    pushed = self._push_over_own_earlier_attempt(
-                        publish_repo, rejected, url=url, token=token, branch=branch,
-                        protected=protected, author_name=author_name,
-                        author_email=author_email,
-                    )
+                    if branch == f"{cfg.git_branch_prefix}{cfg.task_id}":
+                        pushed = self._push_over_own_earlier_attempt(
+                            publish_repo, rejected, url=url, token=token, branch=branch,
+                            protected=protected, author_name=author_name,
+                            author_email=author_email,
+                        )
+                    else:
+                        # A branch this task continues (#2179): GitHub's
+                        # "Update branch" merging the default branch into
+                        # it mid-run is the measured mover. Only that mover
+                        # is taken, as a fast-forward onto it; see
+                        # `_push_onto_base_merge`.
+                        pushed = self._push_onto_base_merge(
+                            publish_repo, rejected, url=url, token=token, branch=branch,
+                            protected=protected, default_branch=access.default_branch,
+                            author_name=author_name, author_email=author_email,
+                            out=out,
+                        )
+                        if pushed is None:
+                            out["published"] = False
+                            out["auto_committed"] = auto_committed
+                            out["publish_reason"] = out[BASE_MERGE_NO_CHANGE_FIELD]
+                            return out
         except GitError as exc:
             out["published"] = False
             out["auto_committed"] = auto_committed
