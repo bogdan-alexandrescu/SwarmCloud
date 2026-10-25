@@ -38,6 +38,7 @@ from .accounts import (
     AccountError,
     AccountState,
     WindowReading,
+    _withheld,
     account_id_for,
     accounts_serving,
     secret_name,
@@ -1112,21 +1113,31 @@ class AccountStore:
     def every_account_limited(self, tenant_id: str, provider: str, now: datetime) -> bool:
         """Whether every account `tenant_id` may draw `provider` work from is limited.
 
-        THE SET `choose()` DRAWS FROM, before the per-attempt filters: owned or
-        lent (`accounts_serving`, invariant 9), of this provider, and in a state
-        that takes new agents. A paused, draining or re-auth account is not one
-        the tenant may use, so it neither counts as room nor as a limit. Each
-        is limited by `account_limited`: a recorded 429 not yet reset, or
+        THE SET `choose()` DRAWS FROM, by its own predicate less the filters
+        that pass with time: owned or lent (`accounts_serving`, invariant 9),
+        of this provider, in a state that takes new agents, not a withheld
+        duplicate (`_withheld`), and not one THIS tenant found unreadable
+        (`is_unreadable_for`). An account `choose()` would never hand this
+        tenant is no room, so it must not keep the tenant from being halved:
+        a borrower that cannot read a lent account would otherwise never be.
+        A FULL account and one awaiting its first reading ARE room -- a hold
+        ends, a reading arrives -- and the step's model class is not asked
+        about: a 429 is about the provider, not one step. Each account in the
+        set is limited by `account_limited`: a recorded 429 not yet reset, or
         window readings that block it.
 
         True on an EMPTY set too: no account can take the tenant's work, which
         is the pool exhausted as surely as every account spent. That is the one
         case an account's 429 still halves the tenant (`quota_broker.main`).
         """
+        accounts = self.list()
+        withheld = _withheld(accounts)
         serving = [
             a
-            for a in accounts_serving(self.list(), tenant_id, provider)
+            for a in accounts_serving(accounts, tenant_id, provider)
             if a.state in ASSIGNABLE_STATES
+            and a.account_id not in withheld
+            and not a.is_unreadable_for(tenant_id, now)
         ]
         records = self.health_many(a.account_id for a in serving)
         return all(account_limited(a, records.get(a.account_id), now) for a in serving)

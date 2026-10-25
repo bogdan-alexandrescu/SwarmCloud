@@ -676,10 +676,13 @@ def _names(other: str | None, viewer: str, platform_wide: bool) -> bool:
     return platform_wide or other.split(":", 1)[0] == viewer
 
 
-def _health_row(raw: Any, account: Any, now: datetime) -> dict[str, Any]:
+def _health_row(raw: Any, account: Any, now: datetime, *, readable: bool = True) -> dict[str, Any]:
     """The two health fields a listing row carries (#2302): the last 24 h's
     counts by kind and the one-word status (`accountstore.health_status`).
-    Counts and a word, nothing that names a tenant or a task."""
+    Counts and a word, nothing that names a tenant or a task. Both None when
+    the records could not be read: unknown, never a made-up `healthy`."""
+    if not readable:
+        return {"health_24h": None, "health_status": None}
     data = raw if isinstance(raw, dict) else {}
     return {
         "health_24h": health_counts(data, now)["last_24h"],
@@ -2944,9 +2947,20 @@ def create_app(
             message=body.message,
             limited_until=until,
         )
-        if store.every_account_limited(tenant_id, provider, now):
+        try:
+            exhausted = store.every_account_limited(tenant_id, provider, now)
+        except Exception as exc:  # noqa: BLE001 - fail closed, below
+            # Not knowing whether the pool has room is not evidence that it
+            # does: the tenant is halved, as every 429 was before #2302, and
+            # the report still succeeds -- a 500 would leave AIMD unaware.
+            log.warning(
+                "could not tell whether the tenant's accounts are all limited; "
+                "counting the 429 against the tenant",
+                extra={"tenant_id": tenant_id, "provider": provider,
+                       "error": type(exc).__name__},
+            )
             return SCOPE_POOL_EXHAUSTED
-        return SCOPE_ACCOUNT
+        return SCOPE_POOL_EXHAUSTED if exhausted else SCOPE_ACCOUNT
 
     def _scoped_answer(state: Any, scope: str) -> dict[str, Any]:
         return {
@@ -3158,14 +3172,20 @@ def create_app(
         # them without one read per account. Counts only, never an event: an
         # event names a tenant and a task, and a row is read by borrowers.
         now = datetime.now(timezone.utc)
-        health = store.health_many(a.account_id for a in accounts)
+        try:
+            health: dict[str, Any] | None = store.health_many(a.account_id for a in accounts)
+        except Exception as exc:  # noqa: BLE001 - the list must still answer
+            log.warning("could not read the accounts' health records for the listing",
+                        extra={"error": type(exc).__name__})
+            health = None
         return {
             "accounts": [
                 # `scope or ""`: a reader with no tenant is named nothing,
                 # never given the owner's view by default.
                 {
                     **account_to_api(a, viewer=scope or "", platform_wide=platform_wide),
-                    **_health_row(health.get(a.account_id), a, now),
+                    **_health_row(health.get(a.account_id) if health is not None else None,
+                                  a, now, readable=health is not None),
                 }
                 for a in accounts
             ],
