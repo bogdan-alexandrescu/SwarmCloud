@@ -19,6 +19,13 @@ not name. No route here accepts or returns a token.
 `app_installed` asks the access service, as this caller, whether the GitHub
 App is installed anywhere they reach; `onboarding.read` asks it only for an
 active App connection (#780, 2026-10-08).
+
+`config_setup` (CONFIG-SETUP-READ, part of #2157) is the Config setup strip's
+steps 3 and 4, Secrets set and People invited, measured by
+`swarm_api.config_setup` for the same `tenant_scope` workspace. It rides on
+this read, as a new field beside the checklist, so the console's strip makes
+one read for all four steps; nothing the checklist served changes. It names
+what is needed and never carries a value, so any member may read it.
 """
 
 from __future__ import annotations
@@ -30,10 +37,11 @@ from swarm_common.models import Tenant
 
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
-from .. import onboarding
+from .. import config_setup, onboarding
 from ..forgeapp import Caller as AccessCaller
 from ..publish_workspace import WorkspacePublisher
 from .people import workspace_publisher
+from .provider_keys import CONSUMERS as KEY_CONSUMERS
 
 router = APIRouter(prefix="/v1/onboarding", tags=["onboarding"])
 
@@ -58,10 +66,14 @@ def get_onboarding(
     service = getattr(request.app.state, "access", None)
     installations = None if service is None else (
         lambda: service.installations(AccessCaller(email=auth.email, tenant_id=tenant_id)))
-    return onboarding.read(ctx.db, caller, tenant=tenant, now=ctx.now(),
+    view = onboarding.read(ctx.db, caller, tenant=tenant, now=ctx.now(),
                            installations=installations, workspaces=workspaces,
                            workspace_required=required,
                            workspace_publishing=bool(publisher.enabled))
+    view["config_setup"] = config_setup.read(ctx.db, auth=auth, tenant=judged, roles=ctx.roles,
+                                             settings=ctx.settings, now=ctx.now,
+                                             key_consumers=KEY_CONSUMERS)
+    return view
 
 
 class DismissBody(BaseModel):
