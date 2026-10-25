@@ -7,6 +7,7 @@ export const meta = {
     { title: 'Attach', detail: 'given {attach: workflow_id}, one sc:workflow agent reads the workflow with swarm_workflow_status and probes the follow every row makes; given {attach: "all"}, one sc:workflow agent lists the running workflows and your running single tasks with swarm_workflows and the run returns the attach call for each workflow and one for the tasks; nothing is submitted' },
     { title: 'Tasks', detail: 'given {attach_tasks: [...]}, one sc:task row per single task -- a task in no workflow -- titled from its label, follows it until it finishes; nothing is submitted' },
     { title: 'Summary', detail: 'given rows: "summary" (the sc plugin\'s default), ONE sc:summary row follows the whole workflow or task batch instead of a row each, writing a count line only when the counts change and naming each step that fails or waits for a person' },
+    { title: 'Finish', detail: 'given rows: "pane" (the sc plugin\'s pane layout, /sc layout pane), ONE sc:finish row per workflow notices its finish, writing a stage line only when the workflow\'s stage changes and holding each follow until it does; the SwarmCloud pane browses the stages' },
     { title: 'Result', detail: 'one sc:workflow agent reads the workflow state SwarmCloud derived with one swarm_workflow_status call, and re-attaches once any step whose row ended UNKNOWN while the workflow still runs' },
   ],
 }
@@ -761,12 +762,19 @@ function readHandle(given) {
   return { path: path, digest: digest }
 }
 
-// The row mode the bridge chose (the sc plugin's `rows` setting): 'summary'
-// or 'per-step'; null for anything else, which runs a row per step -- what
-// every bridge older than the setting launched.
+// The row mode the bridge chose (the sc plugin's `rows` setting, or 'pane'
+// when this project's layout is the pane: `/sc layout pane`): 'summary',
+// 'per-step' or 'pane'; null for anything else, which runs a row per step --
+// what every bridge older than the setting launched.
 function readRows(given) {
   const mode = typeof given === 'string' ? given.trim().toLowerCase() : ''
-  return mode === 'summary' || mode === 'per-step' ? mode : null
+  return mode === 'summary' || mode === 'per-step' || mode === 'pane' ? mode : null
+}
+
+// Whether a mode follows a whole workflow with ONE row: the summary row, or
+// the pane layout's sc:finish row.
+function oneRow(mode) {
+  return mode === 'summary' || mode === 'pane'
 }
 
 // A per-step copy's share of the rows: `{from, to, steps, others}` as the
@@ -1698,8 +1706,9 @@ async function attachTasks(given, cap, rowMode) {
   const tasks = groupByWorkspace(given)
   const follow = tasks.slice(0, limit)
   const rest = tasks.slice(limit)
-  if (rowMode === 'summary') {
-    // ONE row for the batch (PLUGIN-ROW-SPLIT); the rest, past the cap, listed.
+  if (oneRow(rowMode)) {
+    // ONE row for the batch (PLUGIN-ROW-SPLIT) -- the pane layout's too: a
+    // batch of single tasks has no stages; the rest, past the cap, listed.
     for (const task of rest) log(task.task_id + ' · not followed · swarm_follow it, or /sc status ' + task.task_id + workspaceNote(task.workspace) + consoleSuffix(task.console))
     const out = await summarizeTasks(follow)
     out.not_followed = rest.map((task) => withConsole({ task_id: task.task_id, workspace: task.workspace || null, title: task.title || null }, task.console))
@@ -2062,26 +2071,7 @@ async function followSummary(view, items) {
       ended = { state: 'UNKNOWN', last_error: (answer && answer.last_error) || 'the summary row stopped before it answered' }
       break
     }
-    let moved = false
-    for (const told of answer.tasks) {
-      const item = told && byTask[flatText(told.task_id)]
-      if (!item || typeof told.state !== 'string' || !told.state) continue
-      if (told.state !== item.state || (told.park_reason || null) !== (item.park_reason || null)) moved = true
-      item.state = told.state
-      item.park_reason = told.park_reason || null
-      for (const key of ['pr_url', 'cost_usd', 'last_error']) {
-        if (told[key] !== null && told[key] !== undefined) item[key] = told[key]
-      }
-      // The questions whole when the row gave them (an older sc:summary
-      // gives only how many); `asked` counts them for the notice either way.
-      if (Array.isArray(told.questions)) {
-        item.questions = ownerQuestions(told.questions)
-        item.asked = told.questions.length
-      } else if (typeof told.questions === 'number') {
-        item.asked = told.questions
-      }
-      if (Array.isArray(told.answered)) item.answered = told.answered.filter((index) => typeof index === 'number' && index >= 0)
-    }
+    const moved = absorbAnswer(answer, byTask)
     notice()
     const now = summaryLine(view.noun, items, view.console)
     if (now !== line) {
@@ -2092,6 +2082,153 @@ async function followSummary(view, items) {
     if (answer.state !== 'running' || !moved) break
   }
   return { ended: ended, line: line, notice: notice }
+}
+
+// What an sc:summary or sc:finish row answered, written onto the items it
+// followed (`byTask`: task id -> item). Returns whether any state moved.
+function absorbAnswer(answer, byTask) {
+  let moved = false
+  for (const told of answer.tasks) {
+    const item = told && byTask[flatText(told.task_id)]
+    if (!item || typeof told.state !== 'string' || !told.state) continue
+    if (told.state !== item.state || (told.park_reason || null) !== (item.park_reason || null)) moved = true
+    item.state = told.state
+    item.park_reason = told.park_reason || null
+    for (const key of ['pr_url', 'cost_usd', 'last_error']) {
+      if (told[key] !== null && told[key] !== undefined) item[key] = told[key]
+    }
+    // The questions whole when the row gave them (an older sc:summary
+    // gives only how many); `asked` counts them for the notice either way.
+    if (Array.isArray(told.questions)) {
+      item.questions = ownerQuestions(told.questions)
+      item.asked = told.questions.length
+    } else if (typeof told.questions === 'number') {
+      item.asked = told.questions
+    }
+    if (Array.isArray(told.answered)) item.answered = told.answered.filter((index) => typeof index === 'number' && index >= 0)
+  }
+  return moved
+}
+
+// THE PANE LAYOUT'S ROW (SC-BROWSER-BUILD, #2318; BGD picked proposal B on
+// 2026-10-25). With `/sc layout pane` the SwarmCloud pane beside the chat is
+// where stages, agents and details are browsed, with direct MCP calls and no
+// model tokens, so a workflow keeps ONE quiet /workflows row whose only job is
+// to notice the finish: an sc:finish agent labelled `SC · <name>` that writes
+// a line only when the workflow's STAGE changes and holds each follow until it
+// does (`swarm_follow` format "stage", compact.watch_stage) -- one call per
+// stage or per half hour, where a summary row takes one per step change.
+//
+// The census words a stage line counts, in its order: swarm_mcp.compact
+// STAGE_WORDS says the same, and a unit test holds the two equal.
+const STAGE_WORDS = ['failed', 'running', 'parked', 'waiting']
+
+function stageWord(state) {
+  if (SUMMARY_DONE.indexOf(state) >= 0) return 'succeeded'
+  if (SUMMARY_FAILED.indexOf(state) >= 0) return 'failed'
+  if (SUMMARY_RUNNING.indexOf(state) >= 0) return 'running'
+  if (state === 'PARKED') return 'parked'
+  return 'waiting'
+}
+
+// `{key, line}` for tasks in `stages` (task id -> console stage) at `states`
+// (task id -> state): swarm_mcp.compact.stage_line, which a unit test holds
+// this equal to. The key is `stage <n>`, the lowest stage still unfinished, or
+// `done`; the row writes the line only when the key changes.
+function stageLine(stages, states) {
+  const byStage = {}
+  let total = 0
+  for (const id of Object.keys(stages)) {
+    const n = stages[id]
+    total = Math.max(total, n)
+    if (!byStage[n]) byStage[n] = []
+    byStage[n].push(states[id])
+  }
+  let done = 0
+  const unfinished = []
+  for (let n = 1; n <= total; n++) {
+    const held = byStage[n] || []
+    if (held.every((state) => TERMINAL.indexOf(state) >= 0)) done += 1
+    else unfinished.push(n)
+  }
+  if (unfinished.length === 0) {
+    const failed = Object.keys(stages).filter((id) => SUMMARY_FAILED.indexOf(states[id]) >= 0).length
+    return failed
+      ? { key: 'done', line: 'finished · ' + failed + ' failed · ' + done + '/' + total + ' stages' }
+      : { key: 'done', line: 'succeeded · ' + done + '/' + total + ' stages' }
+  }
+  const current = unfinished[0]
+  const counts = {}
+  for (const word of STAGE_WORDS) counts[word] = 0
+  for (const state of byStage[current]) {
+    const word = stageWord(state)
+    if (counts[word] !== undefined) counts[word] += 1
+  }
+  const census = STAGE_WORDS.filter((word) => counts[word]).map((word) => counts[word] + ' ' + word)
+  return { key: 'stage ' + current, line: ['stage ' + current].concat(census).join(' · ') }
+}
+
+function stageItems(items) {
+  const stages = {}
+  const states = {}
+  for (const item of items) {
+    if (!item.task_id) continue
+    stages[item.task_id] = item.stage || 1
+    states[item.task_id] = item.state || null
+  }
+  return { stages: stages, states: states }
+}
+
+function finishPrompt(view, items, open, key) {
+  const all = stageItems(items)
+  const notFollowed = {}
+  for (const item of items) if (item.task_id && open.indexOf(item) < 0) notFollowed[item.task_id] = item.state || null
+  return ['FINISH',
+    'workflow_id: ' + view.workflowId,
+    'name: ' + view.name,
+    'key: ' + key,
+    'stage_of: ' + JSON.stringify({ stages: all.stages, states: notFollowed, key: key }),
+  ].concat(open.map((item) => 'task: ' + item.task_id + ' ' + item.name))
+    .concat(['details: ' + (view.details || fallbackDetails(view.workspace, null))])
+    .join('\n')
+}
+
+// Follow `items` -- each {name, task_id, state, stage, console} -- with ONE
+// sc:finish row, as followSummary follows them with an sc:summary row: the
+// stage line now, then again only when the stage changes. Started again,
+// under the same label, only while it answers `running` and the states moved.
+async function followStage(view, items) {
+  let current = stageLine(stageItems(items).stages, stageItems(items).states)
+  log(current.line)
+  const byTask = {}
+  for (const item of items) if (item.task_id) byTask[item.task_id] = item
+  const unfinished = () => items.filter((item) => item.task_id && TERMINAL.indexOf(item.state) < 0)
+  let ended = { state: 'FINISHED', last_error: null }
+  for (let tried = 1; tried <= SUMMARY_TRIES && unfinished().length > 0; tried++) {
+    let answer = null
+    try {
+      answer = await agent(finishPrompt(view, items, unfinished(), current.key), {
+        label: clip(TITLE_PREFIX + view.name, LABEL_CHARS),
+        phase: 'Finish',
+        agentType: 'sc:finish',
+        schema: SUMMARY,
+      })
+    } catch (error) {
+      ended = { state: 'UNKNOWN', last_error: 'the finish row failed: ' + failureText(error) }
+      break
+    }
+    if (!answer || !Array.isArray(answer.tasks)) {
+      ended = { state: 'UNKNOWN', last_error: (answer && answer.last_error) || 'the finish row stopped before it answered' }
+      break
+    }
+    const moved = absorbAnswer(answer, byTask)
+    const now = stageLine(stageItems(items).stages, stageItems(items).states)
+    if (now.key !== current.key) log(now.line)
+    current = now
+    ended = { state: answer.state, last_error: answer.last_error || null }
+    if (answer.state !== 'running' || !moved) break
+  }
+  return { ended: ended, line: summaryLine(view.noun, items, view.console), notice: () => {} }
 }
 
 // A summary item as the result carries it: its state, pull request and cost.
@@ -2120,15 +2257,15 @@ function summaryAsker(item, where) {
 // THE SUMMARY OF A WORKFLOW: one row follows every unfinished step, then one
 // status read gives the state SwarmCloud derived, which fills any step the
 // row left unfinished, and the run ends with a line per step.
-async function summarizeWorkflow(wf, steps, knownConsole) {
+async function summarizeWorkflow(wf, steps, knownConsole, mode) {
   const items = steps.map((step) => ({
     id: step.step_id, name: step.step_id, task_id: step.task_id || null, state: step.state || null,
     console: step.console || null, finished_before_attach: !!step.finished_before_attach,
+    stage: wf.stages.stage[step.step_id] || 1,
   }))
-  phase('Summary')
-  const followed = await followSummary({
-    workflowId: wf.id, name: wf.name, noun: 'step', console: knownConsole, workspace: wf.workspace,
-  }, items)
+  const view = { workflowId: wf.id, name: wf.name, noun: 'step', console: knownConsole, workspace: wf.workspace }
+  phase(mode === 'pane' ? 'Finish' : 'Summary')
+  const followed = mode === 'pane' ? await followStage(view, items) : await followSummary(view, items)
 
   phase('Result')
   const read = await readStatus(wf.id, setupLabel(wf.name, [stepsText(wf.count), wf.id], 'result', knownConsole))
@@ -2160,7 +2297,7 @@ async function summarizeWorkflow(wf, steps, knownConsole) {
     workflow_id: wf.id,
     workspace: wf.workspace,
     title: wf.title,
-    rows: 'summary',
+    rows: mode === 'pane' ? 'pane' : 'summary',
     state: state,
     state_note: note,
     steps: items.map((item) => summaryResult(item, 'step_id')),
@@ -2237,9 +2374,9 @@ async function attachOne(workflowId, givenTitle, givenWorkspace, givenDetails, r
   const known = {}
   for (const step of attached.steps) known[step.step_id] = step
   const finished = (step) => !!step && TERMINAL.indexOf(step.state) >= 0
-  if (rowMode === 'summary') {
-    log(workflowId + ' attached · ' + wf.title + ' · one summary row' + workspaceNote(wf.workspace) + consoleSuffix(attached.console))
-    return await summarizeWorkflow(wf, attached.steps.map((step) => Object.assign({}, step, { finished_before_attach: finished(step) })), attached.console)
+  if (oneRow(rowMode)) {
+    log(workflowId + ' attached · ' + wf.title + (rowMode === 'pane' ? ' · one row that notices its finish; the SwarmCloud pane browses its stages' : ' · one summary row') + workspaceNote(wf.workspace) + consoleSuffix(attached.console))
+    return await summarizeWorkflow(wf, attached.steps.map((step) => Object.assign({}, step, { finished_before_attach: finished(step) })), attached.console, rowMode)
   }
   // A per-step copy's share: the steps it follows, and -- the copy whose
   // share starts at 1 only -- the finished steps no share holds. Every step
@@ -2394,8 +2531,8 @@ async function unverifiedWithRows(submitted, back, differs, workflowConsole) {
   const known = {}
   for (const step of back.steps) known[step.step_id] = step
   log(id + ' · the read-back differs from the spec · following its ' + open.length + ' unfinished step(s) anyway' + workspaceNote(wf.workspace) + consoleSuffix(workflowConsole))
-  const result = given.rows === 'summary'
-    ? await summarizeWorkflow(wf, back.steps.map((step) => Object.assign({}, step, { finished_before_attach: finished(step) })), workflowConsole)
+  const result = oneRow(given.rows)
+    ? await summarizeWorkflow(wf, back.steps.map((step) => Object.assign({}, step, { finished_before_attach: finished(step) })), workflowConsole, given.rows)
     : await finish(wf, await followSteps(wf, open, (step) =>
       (step.depends_on || [])
         .filter((parent) => known[parent] && !finished(known[parent]) && known[parent].task_id)
@@ -2611,8 +2748,8 @@ if (knownShape && knownShape.length > 0) {
 
 // ONE summary row for the whole workflow (PLUGIN-ROW-SPLIT): nothing has
 // finished yet, so every step is counted queued until the row reads it.
-if (given.rows === 'summary') {
-  return verified(await summarizeWorkflow(wf, wf.all, submitted.console))
+if (oneRow(given.rows)) {
+  return verified(await summarizeWorkflow(wf, wf.all, submitted.console, given.rows))
 }
 
 // Just submitted, so no parent has finished: every row is handed all of its

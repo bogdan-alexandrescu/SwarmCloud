@@ -1,11 +1,6 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode, type RefObject } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react'
 import {
-  createWorkspaceSecret,
-  deleteWorkspaceSecret,
-  loadWorkspaceSecretCatalogue,
-  loadWorkspaceSecrets,
-  rotateWorkspaceSecret,
-  setWorkspaceSecretGrant,
+  type SecretStoreApi,
   type WorkspaceSecret,
   type WorkspaceSecretCatalogue,
   type WorkspaceSecretConsumer,
@@ -13,126 +8,56 @@ import {
   type WorkspaceSecretList,
   type WorkspaceSecretRotate,
 } from './api'
-import { BrowserLoginsPane, isPersonalTenant } from './BrowserLogins'
-import { Banner, Button, Card, Tabs, TypedConfirm, routedClick, type TabDef } from './components'
+import { Banner, Button, TypedConfirm } from './components'
 import type { ApiError } from './fetch'
-import { SECRETS_ADDRESS, SECRETS_LOGINS_VIEW, addressToPath, secretsLinkToken } from './paths'
-import { UrRefresh, UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
-import { PageHead } from './Shell'
 import { timeAgo } from './types'
 import './styles/keys.css'
 
 /**
- * SETTINGS › WORKSPACE › SECRETS (lane SEC-UI-LIST over SEC-STORE-API, part
- * of #1347; docs/design/workspace-secrets.md §5). The selected workspace's
- * secrets store: the list, Add and a typed Delete; then SEC-UI-GRANTS's
- * grant matrix and Rotate (`GrantMatrix`, `RotateSecret`).
+ * THE SECRETS STORE'S PARTS (lane SEC-UI-LIST over SEC-STORE-API, then
+ * SEC-UI-GRANTS, part of #1347; docs/design/workspace-secrets.md §5). The
+ * store's list with a typed Delete, its grant matrix, Rotate and Add. Config ›
+ * Secrets (Secrets.tsx, lane SSC-UI, part of #2158) is the page that draws
+ * them: this file was that page, Settings › Workspace › Secrets, until the
+ * secrets-scopes design gave one store several scopes, and each part now
+ * writes to the store it is handed (`SecretStoreApi`: the workspace's own, or
+ * one repository's, docs/design/secrets-scopes.md §2) and to no other.
  *
- * A VALUE IS NEVER HELD BY THIS PAGE. Its fields are uncontrolled: the value
- * lives in the DOM input and nowhere else -- not in React state (a controlled
- * input writes its value back as an attribute), not in storage, not in the
- * address, not in a log. Submit reads each field once, empties it before the
- * request leaves, and hands the value to `createWorkspaceSecret`, which puts
- * it in that one request's body. Nothing here can draw it back: the API never
- * serves a value, and `normWorkspaceSecret` copies a record from an
- * allow-list, so a value, a length or the last characters a response carried
- * by mistake are dropped before any of this sees them. A refusal is the API's
- * message, which never interpolates a value (`payload_for`'s constants).
+ * A VALUE IS NEVER HELD BY THESE PARTS. Their fields are uncontrolled: the
+ * value lives in the DOM input and nowhere else -- not in React state (a
+ * controlled input writes its value back as an attribute), not in storage,
+ * not in the address, not in a log. Submit reads each field once, empties it
+ * before the request leaves, and hands the value to the store's `create` or
+ * `rotate`, which puts it in that one request's body. Nothing here can draw
+ * it back: the API never serves a value, and `normWorkspaceSecret` copies a
+ * record from an allow-list, so a value, a length or the last characters a
+ * response carried by mistake are dropped before any of this sees them. A
+ * refusal is the API's message, which never interpolates a value
+ * (`payload_for`'s constants).
  *
- * THE ONE-TIME LINK (`/settings/workspace/secrets?action=add&t=..`, paths.ts
- * `SECRETS_LINK_PATH`). App reads the token off the bar before its normalise
- * effect rewrites it (this page reads it itself when rendered alone), the
- * page drops `t` from the bar in a layout effect, before anything paints, and
- * the token is sent back as `link_token` with the first add, then forgotten:
- * the API consumes it before the write, so a retry goes without it. It is
- * held in a ref, never drawn.
- *
- * A rotate link (`?action=rotate&name=..&t=..`) opens Rotate for that name, and
- * its token goes back once, with that rotate only.
+ * THE ONE-TIME LINK'S TOKEN is the page's (Secrets.tsx): a part takes it
+ * through `takeToken`, once, for the write its link was minted for.
  *
  * ROTATE KEEPS ADD'S RULES: uncontrolled fields, read once and emptied before
  * the request leaves, the value in that one `PUT .../value` body and nowhere
- * else. The row then shows the version the list serves.
+ * else.
  *
  * THE GRANT MATRIX writes ONE grant per tick: `PUT .../{name}/grants/{consumer}`
- * with `{enabled}`, for exactly the box ticked (`use-in` is §9 Q3's list of
- * workspaces, not a cell). The box moves at once and goes back if the API
- * refuses; a running attempt keeps what it was released (§4.3), so the page
- * says the change takes effect at the next attempt.
+ * with `{enabled}`, for exactly the box ticked. The box moves at once and goes
+ * back if the API refuses; a running attempt keeps what it was released
+ * (§4.3), so the page says the change takes effect at the next attempt.
  *
- * WHO MAY MANAGE is the API's `can_manage` (`workspace_secrets.require_manager`:
- * a personal workspace's person; a group workspace's admin or a platform
- * admin). Only an explicit true offers Add, Rotate, Delete or a live box; the
- * API is still the gate.
+ * WHO MAY MANAGE is the API's `can_manage`. Only an explicit true offers
+ * Rotate, Delete or a live box; the API is still the gate.
  */
 
-const LIST_ROUTE = 'GET /v1/workspace/secrets'
-const CATALOGUE_ROUTE = 'GET /v1/workspace/secrets/consumers'
-
-/** The link as the route carries it; `token` is App's capture, absent when rendered alone. */
-export interface SecretsLink {
-  action: 'add' | 'rotate' | null
-  name: string | null
-  token?: string | null
-}
-
-/** The route's view (`action=add`, `action=rotate&name=..`) as a link. Never a token: the view carries none. */
-export function secretsLinkOf(view: string): SecretsLink {
-  const q = new URLSearchParams(view)
-  const action = q.get('action')
-  return { action: action === 'add' || action === 'rotate' ? action : null, name: q.get('name') }
-}
-
-/**
- * BROWSER LOGINS, THE PAGE'S SECOND TAB (GA-MOVE-VIEWS; part of #2157, BGD
- * 2026-10-24: "Browser logins to Config › Secrets"). It was GitHub access'
- * Browser logins view: the person's own saved live-browser sessions, by name
- * and site, with a typed Revoke (BrowserLogins.tsx `BrowserLoginsPane`, moved
- * whole), beside the secrets they belong with. Its address is `?view=logins`,
- * which `/config/github?view=logins` and `/access?view=logins` land on
- * (paths.ts `MOVED_VIEWS`). A one-time link opens the first tab whatever the
- * address says, because its form is there.
- */
-type SecretsView = 'secrets' | 'logins'
-
-const SECRETS_TABS: readonly TabDef[] = [
-  { key: 'secrets', label: 'Workspace secrets' },
-  { key: SECRETS_LOGINS_VIEW, label: 'Browser logins' },
-]
-
-/**
- * The tab an address names. App passes the ROUTED query (`view`), because an
- * old hash bookmark (`#work/access?view=logins`) is rewritten to this path
- * only after the first render, so the bar read at mount names no tab (GA-MOVE-VIEWS
- * review). Mounted without App, the page reads the bar.
- */
-function secretsViewOf(query: string | null | undefined): SecretsView {
-  const q = query !== undefined ? query ?? '' : typeof window === 'undefined' ? '' : window.location.search
-  return new URLSearchParams(q).get('view') === SECRETS_LOGINS_VIEW ? 'logins' : 'secrets'
-}
-
-/** The tab into the bar in place, keeping a link's query: the secrets tab is the bare path. */
-function writeSecretsView(v: SecretsView): void {
-  const url = new URL(window.location.href)
-  if (v === 'logins') url.searchParams.set('view', SECRETS_LOGINS_VIEW)
-  else url.searchParams.delete('view')
-  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
-}
-
-/** Drop `t` from the address bar, keeping everything else. Idempotent. */
-function dropLinkToken(): void {
-  const url = new URL(window.location.href)
-  if (!url.searchParams.has('t')) return
-  url.searchParams.delete('t')
-  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
-}
 
 /**
  * A kind in the reader's words. An unknown one is shown as the API spells it.
  * Built from pairs rather than `name: '...'` lines: the worker's publish-time
  * credential scan reads a line like that as a key assignment.
  */
-const KIND_WORDS: Readonly<Record<string, string>> = Object.fromEntries([
+export const KIND_WORDS: Readonly<Record<string, string>> = Object.fromEntries([
   ['api_key', 'API key'],
   ['bearer_token', 'Bearer token'],
   ['basic_auth', 'Username and password'],
@@ -145,7 +70,7 @@ const KIND_WORDS: Readonly<Record<string, string>> = Object.fromEntries([
  * key the API takes, the label, and whether the field is masked. The first of
  * each pair names an identity, the second is the secret part.
  */
-const STRUCTURED: Readonly<Record<string, readonly [StructuredField, StructuredField]>> = {
+export const STRUCTURED: Readonly<Record<string, readonly [StructuredField, StructuredField]>> = {
   basic_auth: [
     { key: 'username', label: 'Username', masked: false },
     { key: 'password', label: 'Password', masked: true },
@@ -162,161 +87,8 @@ interface StructuredField {
   masked: boolean
 }
 
-const DEFAULT_PROVIDER = 'typesafe'
-const DEFAULT_KIND = 'api_key'
-
-/** A settings page, routed in-app like the panel's own links. */
-function SettingsLink({ address, children }: { address: string; children: ReactNode }) {
-  const go = (e: MouseEvent<HTMLAnchorElement>) => {
-    if (!routedClick(e)) return
-    e.preventDefault()
-    window.history.pushState(null, '', addressToPath(address))
-    window.dispatchEvent(new PopStateEvent('popstate'))
-  }
-  return <a href={addressToPath(address)} onClick={go}>{children}</a>
-}
-
-/**
- * THE PANE'S ENTRY ON SETTINGS › WORKSPACE (§5: "a pane of the Workspace
- * page"). App draws it under the Workspace page's own cards; it reads
- * nothing, so the Workspace page costs no extra request.
- */
-export function WorkspaceSecretsEntry() {
-  return (
-    <Card title="Secrets">
-      <p className="pk-lead">
-        The credentials this workspace stores for its agents, tools and components &mdash; a TypeSafe key, a search
-        API key &mdash; and which of them each one is granted to. Values are stored write-only.
-      </p>
-      <p className="pk-uses">
-        <SettingsLink address={SECRETS_ADDRESS}>Open Settings › Workspace › Secrets</SettingsLink>
-      </p>
-    </Card>
-  )
-}
-
-export function WorkspaceSecretsScreen({ link, view: routed }: { link: SecretsLink | null; view?: string | null }) {
-  const list = useUrRead(loadWorkspaceSecrets, 'workspace-secrets')
-  const catalogue = useUrRead(loadWorkspaceSecretCatalogue, 'workspace-secret-catalogue')
-  // The link's token, read once; null once it has been sent. A ref, never
-  // state or a prop of anything drawn: nothing renders it.
-  const token = useRef<string | null | undefined>(undefined)
-  if (token.current === undefined) {
-    token.current = link === null || link.action === null
-      ? null
-      : link.token !== undefined ? link.token : secretsLinkToken(window.location.pathname, window.location.search)
-  }
-  useLayoutEffect(() => {
-    if (link !== null) dropLinkToken()
-  }, [link])
-  // The token goes with the write its link was minted for, once: an add link
-  // with the first add, a rotate link with the rotate of the name it names.
-  const takeToken = (action: 'add' | 'rotate', name: string | null = null) => {
-    if (link === null || link.action !== action || (action === 'rotate' && link.name !== name)) return null
-    const t = token.current ?? null
-    token.current = null
-    return t
-  }
-  const listed = list.state.status === 'ok' || list.state.status === 'stale' ? list.state.data : null
-  const manages = listed !== null && listed.can_manage
-  const rotateFirst = link !== null && link.action === 'rotate' ? link.name : null
-  const following = link !== null && link.action !== null
-  const named: SecretsView = following ? 'secrets' : secretsViewOf(routed)
-  const [view, setViewState] = useState<SecretsView>(named)
-  // A new routed address names its tab; a tab picked here is written in place
-  // and leaves the route as it was, so it is not undone.
-  const [arrived, setArrived] = useState(named)
-  if (arrived !== named) {
-    setArrived(named)
-    setViewState(named)
-  }
-  function setView(v: SecretsView) {
-    setViewState(v)
-    writeSecretsView(v)
-  }
-
-  return (
-    <div className="pk-page">
-      {/* The head's Refresh is the secrets' read, so the logins tab, whose
-          list is read by its own pane, does not offer it (rendered review). */}
-      <PageHead title="Secrets">{view === 'secrets' && <UrRefresh reads={[list, catalogue]} ageOf={[list]} />}</PageHead>
-      {/* `cfg-parts` (config.css): the Config pages' tab strip, as GitHub access draws it. */}
-      <Tabs tabs={SECRETS_TABS} current={view} label="Secrets" className="cfg-parts" onSelect={(k) => setView(k === SECRETS_LOGINS_VIEW ? 'logins' : 'secrets')} />
-      {view === 'logins' ? (
-        <>
-          {/* In a group workspace the pane says where logins live instead, so
-              a lede promising "the sessions you saved" would contradict it. */}
-          {(listed === null || isPersonalTenant(listed.tenant_id)) && (
-            <p className="ur-sub">
-              The browser sessions you saved from a live browser in your workspace, by name and site, with when each
-              expires. An agent names one to start signed in.
-            </p>
-          )}
-          <BrowserLoginsPane tenantId={listed?.tenant_id || null} />
-        </>
-      ) : (
-        <SecretsTab list={list} catalogue={catalogue} link={link} manages={manages} rotateFirst={rotateFirst} takeToken={takeToken} />
-      )}
-    </div>
-  )
-}
-
-function SecretsTab({
-  list,
-  catalogue,
-  link,
-  manages,
-  rotateFirst,
-  takeToken,
-}: {
-  list: UrRead<WorkspaceSecretList>
-  catalogue: UrRead<WorkspaceSecretCatalogue>
-  link: SecretsLink | null
-  manages: boolean
-  rotateFirst: string | null
-  takeToken: (action: 'add' | 'rotate', name?: string | null) => string | null
-}) {
-  return (
-    <>
-      {link !== null && link.action === 'add' && (
-        <Banner tone="info" title="Opened from a one-time link">
-          Paste the value into the form below: the /sc command and this page&rsquo;s address never see it. The link
-          works once, for ten minutes.
-        </Banner>
-      )}
-      {link !== null && link.action === 'rotate' && (
-        <Banner tone="info" title={`Opened from a one-time rotate link${link.name === null ? '' : ` for ${link.name}`}`}>
-          Paste the new value into the Rotate form below: the /sc command and this page&rsquo;s address never see it.
-          The link works once, for ten minutes, and only for the secret it names.
-        </Banner>
-      )}
-      <Card title="Secrets">
-        <p className="pk-lead">
-          The credentials this workspace stores for its agents, tools and platform components, and who each one is
-          granted to. A value is stored write-only: no page and no API route shows it, its length or any of its
-          characters again. Back to <SettingsLink address="settings/workspace">Settings › Workspace</SettingsLink>.
-        </p>
-        <UrRegion state={list.state} route={LIST_ROUTE} what="The workspace's secrets" plural onRetry={list.reload}>
-          {(d) => <SecretList data={d} onChange={list.reload} rotateFirst={rotateFirst} takeToken={takeToken} />}
-        </UrRegion>
-      </Card>
-      {(list.state.status === 'ok' || list.state.status === 'stale') && (
-        <Card title="Grants">
-          <UrRegion state={catalogue.state} route={CATALOGUE_ROUTE} what="The consumers a secret may be granted to" plural onRetry={catalogue.reload}>
-            {(c) => <GrantMatrix data={list.state.status === 'ok' || list.state.status === 'stale' ? list.state.data : null} catalogue={c} onChange={list.reload} />}
-          </UrRegion>
-        </Card>
-      )}
-      {manages && (
-        <Card title="Add a secret">
-          <UrRegion state={catalogue.state} route={CATALOGUE_ROUTE} what="The kinds and providers a secret is stored as" plural onRetry={catalogue.reload}>
-            {(c) => <AddSecret catalogue={c} takeToken={() => takeToken('add')} onAdded={list.reload} />}
-          </UrRegion>
-        </Card>
-      )}
-    </>
-  )
-}
+export const DEFAULT_PROVIDER = 'typesafe'
+export const DEFAULT_KIND = 'api_key'
 
 /** "3d ago by alice@…", or a dash's reason. */
 function setWords(s: WorkspaceSecret): string {
@@ -330,48 +102,45 @@ function LastUsed({ at }: { at: string | null | undefined }) {
   return at === null ? <td data-label="Last used">never</td> : <td data-label="Last used" title={at}>{timeAgo(at)}</td>
 }
 
-function SecretList({
+/**
+ * THE STORE'S LIST: name, provider, kind, set, version, last used and what it
+ * is granted to, with Rotate and a typed Delete for a manager. Rotate opens
+ * the one-time form (`onRotate`, the page's), never a field in this table.
+ * `note` is what the page knows about a row that the store does not: which
+ * scope wins its name (the overview's shadowing, §2.4).
+ */
+export function SecretList({
   data,
+  store,
+  label,
   onChange,
-  rotateFirst,
-  takeToken,
+  onRotate,
+  note,
 }: {
   data: WorkspaceSecretList
+  store: SecretStoreApi
+  /** The table's accessible name: "Workspace secrets", "Repository secrets". */
+  label: string
   onChange: () => void
-  /** A rotate link's name: its Rotate form opens on load. */
-  rotateFirst: string | null
-  takeToken: (action: 'rotate', name: string) => string | null
+  onRotate: (name: string) => void
+  note?: (name: string) => ReactNode
 }) {
   const [deleting, setDeleting] = useState<string | null>(null)
   const [deleted, setDeleted] = useState<string | null>(null)
-  const [rotating, setRotating] = useState<string | null>(rotateFirst)
-  const [rotated, setRotated] = useState<string | null>(null)
   const target = deleting === null ? undefined : data.secrets.find((s) => s.name === deleting)
-  const turning = rotating === null || !data.can_manage ? undefined : data.secrets.find((s) => s.name === rotating && !isForge(s))
   return (
     <>
-      {!data.can_manage && (
-        <p className="ur-small">
-          Only this workspace&rsquo;s admin or a platform admin can add, rotate, grant or delete its secrets (in a
-          personal workspace, its person). You can read them here.
-        </p>
-      )}
       {deleted !== null && (
         <p className="pk-saved" role="status">
           {deleted} was deleted. Running attempts keep the copy they were given.
         </p>
       )}
-      {rotated !== null && (
-        <p className="pk-saved" role="status">
-          {rotated}
-        </p>
-      )}
       {data.secrets.length === 0 ? (
-        <p className="ur-small">No secret is stored for {data.tenant_id || 'this workspace'} yet.</p>
+        <p className="ur-small">No secret is stored here yet.</p>
       ) : (
         // The registered-MCP-servers table's rules (keys.css), which also
         // stack it into cards on a phone: the same shape of list, one page over.
-        <table role="table" className="mcp-servers" aria-label="Workspace secrets">
+        <table role="table" className="mcp-servers" aria-label={label}>
           <thead>
             <tr>
               <th scope="col">Name</th>
@@ -387,9 +156,13 @@ function SecretList({
           <tbody>
             {data.secrets.map((s) => {
               const on = s.grants.filter((g) => g.enabled).map((g) => g.consumer)
+              const said = note?.(s.name)
               return (
                 <tr key={s.name}>
-                  <th scope="row" data-label="Name"><code>{s.name}</code></th>
+                  <th scope="row" data-label="Name">
+                    <code>{s.name}</code>
+                    {said !== undefined && said !== null && <span className="sec-notes">{said}</span>}
+                  </th>
                   <td data-label="Provider">{s.provider || 'not said'}</td>
                   <td data-label="Kind">{KIND_WORDS[s.kind] ?? (s.kind || 'not said')}</td>
                   <td data-label="Set" title={s.set_at ?? undefined}>{setWords(s)}</td>
@@ -405,10 +178,7 @@ function SecretList({
                         <span className="jb-note">Set under Access and Git tokens</span>
                       ) : (
                         <span className="pk-form-row">
-                          <Button kind="secondary" size="sm" aria-label={`Rotate ${s.name}`} onClick={() => {
-                            setRotated(null)
-                            setRotating(s.name)
-                          }}>
+                          <Button kind="secondary" size="sm" aria-label={`Rotate ${s.name}`} onClick={() => onRotate(s.name)}>
                             Rotate
                           </Button>
                           <Button kind="danger" size="sm" aria-label={`Delete ${s.name}`} onClick={() => {
@@ -427,22 +197,10 @@ function SecretList({
           </tbody>
         </table>
       )}
-      {turning !== undefined && (
-        <RotateSecret
-          key={turning.name}
-          secret={turning}
-          takeToken={() => takeToken('rotate', turning.name)}
-          onCancel={() => setRotating(null)}
-          onDone={(words) => {
-            setRotating(null)
-            setRotated(words)
-            onChange()
-          }}
-        />
-      )}
       {target !== undefined && (
         <DeleteSecret
           secret={target}
+          store={store}
           onKeep={() => setDeleting(null)}
           onDone={() => {
             setDeleting(null)
@@ -462,7 +220,7 @@ function SecretList({
  * off, and says what it does not reach: an attempt already running keeps
  * the copy it was released (§4.3).
  */
-function DeleteSecret({ secret, onKeep, onDone }: { secret: WorkspaceSecret; onKeep: () => void; onDone: () => void }) {
+function DeleteSecret({ secret, store, onKeep, onDone }: { secret: WorkspaceSecret; store: SecretStoreApi; onKeep: () => void; onDone: () => void }) {
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
   const on = secret.grants.filter((g) => g.enabled).map((g) => g.consumer)
@@ -471,7 +229,7 @@ function DeleteSecret({ secret, onKeep, onDone }: { secret: WorkspaceSecret; onK
     if (busy) return
     setBusy(true)
     setFailed(null)
-    const r = await deleteWorkspaceSecret(secret.name)
+    const r = await store.remove(secret.name)
     setBusy(false)
     if (r.status === 'error') {
       setFailed(`${secret.name} was not deleted: ${r.error.message}`)
@@ -513,7 +271,7 @@ function DeleteSecret({ secret, onKeep, onDone }: { secret: WorkspaceSecret; onK
 /** A forge token's kind (§6.2): listed, written by its own path, granted only to `component:git`. */
 const FORGE_KIND = 'forge_token'
 
-function isForge(s: WorkspaceSecret): boolean {
+export function isForge(s: Pick<WorkspaceSecret, 'kind'>): boolean {
   return s.kind === FORGE_KIND
 }
 
@@ -528,7 +286,7 @@ const KIND_PHRASE: Readonly<Record<string, string>> = Object.fromEntries([
 ])
 
 /** The matrix's column groups, in §5's order. A consumer of another kind is not a column. */
-const GROUPS: readonly (readonly [string, string])[] = [
+export const GROUPS: readonly (readonly [string, string])[] = [
   ['profile', 'Profiles'],
   ['tool', 'Tools'],
   ['component', 'Components'],
@@ -541,7 +299,7 @@ const GROUPS: readonly (readonly [string, string])[] = [
  * written, with the reason it cannot when it is not, and the slot to name
  * only when the consumer reads more than one.
  */
-interface Cell {
+export interface Cell {
   open: boolean
   /** The forge row's git cell: shown ticked whatever its grant says (§6.2). */
   locked: boolean
@@ -550,7 +308,7 @@ interface Cell {
   slot: string | null
 }
 
-function cellOf(secret: WorkspaceSecret, c: WorkspaceSecretConsumer): Cell | null {
+export function cellOf(secret: Pick<WorkspaceSecret, 'kind'>, c: WorkspaceSecretConsumer): Cell | null {
   const forgeOnly = c.slots.length > 0 && c.slots.every((sl) => sl.kinds.length > 0 && sl.kinds.every((k) => k === FORGE_KIND))
   if (isForge(secret)) {
     if (forgeOnly) return { open: false, locked: true, reason: 'the worker’s git credentials; locked', title: c.note || undefined, slot: null }
@@ -575,7 +333,7 @@ const cellKey = (name: string, consumer: string) => `${name}\u0000${consumer}`
  * box at once and writes ONE grant; a refusal puts it back and says why.
  * A wide matrix scrolls inside its own `.table-wrap`, so the page does not.
  */
-function GrantMatrix({ data, catalogue, onChange }: { data: WorkspaceSecretList | null; catalogue: WorkspaceSecretCatalogue; onChange: () => void }) {
+export function GrantMatrix({ data, store, catalogue, onChange }: { data: WorkspaceSecretList | null; store: SecretStoreApi; catalogue: WorkspaceSecretCatalogue; onChange: () => void }) {
   const id = useId()
   // The boxes moved since the list was last read: what was ticked, or what
   // the API answered. Cleared when the list is read again, which then says.
@@ -598,7 +356,7 @@ function GrantMatrix({ data, catalogue, onChange }: { data: WorkspaceSecretList 
     setMoved((m) => ({ ...m, [key]: next }))
     setBusy((b) => ({ ...b, [key]: true }))
     setSaid(null)
-    const r = await setWorkspaceSecretGrant(secret.name, c.consumer, next, cell.slot)
+    const r = await store.grant(secret.name, c.consumer, next, cell.slot)
     setBusy((b) => {
       const { [key]: _done, ...rest } = b
       return rest
@@ -683,13 +441,15 @@ function GrantMatrix({ data, catalogue, onChange }: { data: WorkspaceSecretList 
  * emptied before the request leaves, as Add's are; what the page says after
  * is the version, never anything of the value.
  */
-function RotateSecret({
+export function RotateSecret({
   secret,
+  store,
   takeToken,
   onCancel,
   onDone,
 }: {
   secret: WorkspaceSecret
+  store: SecretStoreApi
   takeToken: () => string | null
   onCancel: () => void
   onDone: (words: string) => void
@@ -721,11 +481,11 @@ function RotateSecret({
       : { fields: { [structured[0].key]: read[0]!, [structured[1].key]: read[1]! } }
     setBusy(true)
     setFailed(null)
-    const r = await rotateWorkspaceSecret(secret.name, body, takeToken())
+    const r = await store.rotate(secret.name, body, takeToken())
     setBusy(false)
     if (r.status === 'error') {
       setFailed(r.error.code === 'SECRET_LINK_INVALID'
-        ? `${secret.name} was not rotated: the one-time link is used, expired or not yours. Rotate it again here without it, or ask /sc for a new link.`
+        ? `${secret.name} was not rotated: the one-time link is used, expired or not yours. Nothing was written. Open the form again from Rotate, or ask /sc for a new link.`
         : `${secret.name} was not rotated: ${r.error.message}`)
       return
     }
@@ -767,29 +527,42 @@ function RotateSecret({
 /** A create's refusal, in words. The API's message never carries a value. */
 function refusalWords(e: ApiError, name: string): string {
   if (e.code === 'SECRET_LINK_INVALID') {
-    return `${name} was not added: the one-time link is used, expired or not yours. Add it again here without it, or ask /sc for a new link.`
+    return `${name} was not added: the one-time link is used, expired or not yours. Nothing was written. Open the form again from Add a secret, or ask /sc for a new link.`
   }
   return `${name} was not added: ${e.message}`
 }
 
-function AddSecret({
+/** What the wizard already chose, so the form asks only for the value (SSC-UI). */
+export interface AddFixed {
+  name: string
+  provider: string
+  kind: string
+}
+
+export function AddSecret({
   catalogue,
+  store,
+  fixed = null,
   takeToken,
   onAdded,
 }: {
   catalogue: WorkspaceSecretCatalogue
+  store: SecretStoreApi
+  /** The name, provider and kind the wizard chose; null asks for them here. */
+  fixed?: AddFixed | null
   /** The one-time link's token, handed over once; null after, or without a link. */
   takeToken: () => string | null
-  onAdded: () => void
+  /** Called with the name, after the store answered. */
+  onAdded: (name: string) => void
 }) {
   const id = useId()
   const providers = catalogue.providers.length > 0 ? catalogue.providers : [DEFAULT_PROVIDER]
   const kinds = catalogue.kinds.length > 0 ? catalogue.kinds : [DEFAULT_KIND]
   const firstProvider = providers.includes(DEFAULT_PROVIDER) ? DEFAULT_PROVIDER : providers[0]!
   const firstKind = kinds.includes(DEFAULT_KIND) ? DEFAULT_KIND : kinds[0]!
-  const [name, setName] = useState('')
-  const [provider, setProvider] = useState(firstProvider)
-  const [kind, setKind] = useState(firstKind)
+  const [name, setName] = useState(fixed?.name ?? '')
+  const [provider, setProvider] = useState(fixed?.provider ?? firstProvider)
+  const [kind, setKind] = useState(fixed?.kind ?? firstKind)
   // Whether every value field holds something. A boolean, never a value.
   const [filled, setFilled] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -826,22 +599,36 @@ function AddSecret({
     setAdded(null)
     setFailed(null)
     // The link is consumed before the write, so it is sent once.
-    const r = await createWorkspaceSecret(body, takeToken())
+    const r = await store.create(body, takeToken())
     setBusy(false)
     if (r.status === 'error') {
       setFailed(refusalWords(r.error, named))
       return
     }
-    setName('')
-    setProvider(firstProvider)
-    setKind(firstKind)
+    if (fixed === null) {
+      setName('')
+      setProvider(firstProvider)
+      setKind(firstKind)
+    }
     setAdded(named)
-    onAdded()
+    onAdded(named)
   }
 
   return (
     <>
       <form className="pk-form" autoComplete="off" aria-label="Add a secret" onSubmit={(e) => void save(e)}>
+        {fixed !== null ? (
+          // The wizard chose these; the form asks for the value alone.
+          <dl className="sec-kv">
+            <dt>Name</dt>
+            <dd><code>{fixed.name}</code></dd>
+            <dt>Provider</dt>
+            <dd>{fixed.provider}</dd>
+            <dt>Kind</dt>
+            <dd>{KIND_WORDS[fixed.kind] ?? fixed.kind}</dd>
+          </dl>
+        ) : (
+          <>
         <label htmlFor={`${id}-name`}>Name</label>
         <input id={`${id}-name`} className="ur-search pk-input" value={name} required maxLength={64} spellCheck={false}
           autoCapitalize="off" autoCorrect="off" placeholder="typesafe-key" aria-describedby={`${id}-name-why`}
@@ -852,20 +639,27 @@ function AddSecret({
         <span id={`${id}-name-why`} className="jb-note">
           What grants name: lower-case letters, digits and hyphens, starting with a letter or a digit. Never the value.
         </span>
+        {/* Each label with its control, so a narrow form wraps a pair, never a label from its select. */}
         <div className="pk-form-row">
-          <label htmlFor={`${id}-provider`}>Provider</label>
-          <select id={`${id}-provider`} value={provider} onChange={(e) => setProvider(e.target.value)}>
-            {providers.map((p) => <option key={p} value={p}>{p}</option>)}
-          </select>
-          <label htmlFor={`${id}-kind`}>Kind</label>
-          <select id={`${id}-kind`} value={kind} onChange={(e) => {
-            setKind(e.target.value)
-            // The value fields are drawn afresh for the new kind, empty.
-            setFilled(false)
-          }}>
-            {kinds.map((k) => <option key={k} value={k}>{KIND_WORDS[k] ?? k}</option>)}
-          </select>
+          <span className="pk-form-row">
+            <label htmlFor={`${id}-provider`}>Provider</label>
+            <select id={`${id}-provider`} value={provider} onChange={(e) => setProvider(e.target.value)}>
+              {providers.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </span>
+          <span className="pk-form-row">
+            <label htmlFor={`${id}-kind`}>Kind</label>
+            <select id={`${id}-kind`} value={kind} onChange={(e) => {
+              setKind(e.target.value)
+              // The value fields are drawn afresh for the new kind, empty.
+              setFilled(false)
+            }}>
+              {kinds.map((k) => <option key={k} value={k}>{KIND_WORDS[k] ?? k}</option>)}
+            </select>
+          </span>
         </div>
+          </>
+        )}
         {structured === undefined ? (
           <SecretField key={`${kind}-value`} id={`${id}-value`} label="Value" masked input={value} onInput={recheck} />
         ) : (
@@ -878,11 +672,11 @@ function AddSecret({
         )}
         <div className="pk-form-row">
           <Button kind="primary" size="sm" type="submit" busy={busy ? 'Adding…' : false} disabled={!filled || name.trim() === ''}>
-            Add
+            {fixed === null ? 'Add' : 'Set secret'}
           </Button>
         </div>
       </form>
-      {added !== null && (
+      {added !== null && fixed === null && (
         <p className="pk-saved" role="status">
           {added} was added. Grant it to a profile, tool or component before an agent can use it.
         </p>

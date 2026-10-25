@@ -56,6 +56,8 @@ const MEMBERS: Json = {
 }
 
 const SECRETS: Json = { tenant_id: 'u-ana', kind: 'user', can_manage: true, secrets: [] }
+/** Config › Secrets' own read (Secrets.tsx, SSC-UI): the scope's rows, and whose workspace it is. */
+const OVERVIEW: Json = { tenant_id: 'u-ana', scope: 'workspace', personal_tenant_id: 'u-ana', can_manage: true, rows: [] }
 const LOGIN = { name: 'github-qa', site: 'https://github.com', saved_at: '2026-10-20T10:00:00Z', expires_at: '2099-01-01T00:00:00Z', saved_by: 'ana.b@example.com' }
 
 afterEach(() => {
@@ -244,6 +246,8 @@ describe('Browser logins is a tab of Config › Secrets', () => {
     return serve((m, url) => {
       if (m === 'GET' && url.includes('/v1/workspace/secrets/consumers')) return { status: 200, body: { kinds: [], providers: [], consumers: [] } }
       if (m === 'GET' && url.includes('/v1/workspace/secrets')) return { status: 200, body: SECRETS }
+      if (m === 'GET' && url.startsWith('/v1/secrets/overview')) return { status: 200, body: OVERVIEW }
+      if (m === 'GET' && url.startsWith('/v1/repositories')) return { status: 200, body: { repositories: [] } }
       if (m === 'GET' && url === '/v1/browser-logins') return { status: 200, body: { tenant_id: 'u-ana', logins: [LOGIN] } }
       if (m === 'DELETE' && url === '/v1/browser-logins/github-qa') return { status: 200, body: { name: 'github-qa', revoked: true } }
       return null
@@ -252,14 +256,14 @@ describe('Browser logins is a tab of Config › Secrets', () => {
   async function mount() {
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
-    const { WorkspaceSecretsScreen } = await import('../WorkspaceSecrets')
-    return render(<WorkspaceSecretsScreen link={null} />)
+    const { SecretsScreen } = await import('../Secrets')
+    return render(<SecretsScreen />)
   }
 
   it('the tab draws the person\'s saved logins, and its address is ?view=logins', async () => {
     api()
     await mount()
-    // MUTATION: leave the tab out of WorkspaceSecrets.tsx -> fails.
+    // MUTATION: leave the tab out of Secrets.tsx -> fails.
     fireEvent.click(screen.getByRole('tab', { name: 'Browser logins' }))
     expect(new URLSearchParams(window.location.search).get('view')).toBe('logins')
     const list = await screen.findByRole('list', { name: /browser logins/i })
@@ -286,6 +290,8 @@ describe('Browser logins is a tab of Config › Secrets', () => {
     serve((m, url) => {
       if (m === 'GET' && url.includes('/v1/workspace/secrets/consumers')) return { status: 200, body: { kinds: [], providers: [], consumers: [] } }
       if (m === 'GET' && url.includes('/v1/workspace/secrets')) return { status: 200, body: { ...SECRETS, tenant_id: 'eng', kind: 'group' } }
+      if (m === 'GET' && url.startsWith('/v1/secrets/overview')) return { status: 200, body: { ...OVERVIEW, tenant_id: 'eng' } }
+      if (m === 'GET' && url.startsWith('/v1/repositories')) return { status: 200, body: { repositories: [] } }
       return null
     })
     window.history.replaceState(null, '', '/config/secrets?view=logins')
@@ -301,11 +307,11 @@ describe('Browser logins is a tab of Config › Secrets', () => {
 
   it('a one-time add link opens the secrets, whatever the view', async () => {
     api()
-    window.history.replaceState(null, '', '/config/secrets?view=logins')
+    window.history.replaceState(null, '', '/config/secrets?action=add&view=logins')
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
-    const { WorkspaceSecretsScreen } = await import('../WorkspaceSecrets')
-    render(<WorkspaceSecretsScreen link={{ action: 'add', name: null, token: null }} />)
+    const { SecretsScreen } = await import('../Secrets')
+    render(<SecretsScreen view="action=add&view=logins" token={'t-' + 'x'.repeat(8)} />)
     expect(screen.getByRole('tab', { name: 'Workspace secrets' }).getAttribute('aria-selected')).toBe('true')
     expect(screen.getByText('Opened from a one-time link')).toBeTruthy()
   })
@@ -350,6 +356,8 @@ describe('an old bookmark lands on the new page with its tab drawn (GA-MOVE-VIEW
       if (url.includes('/v1/access/members')) return { status: 200, body: MEMBERS }
       if (m === 'GET' && url.includes('/v1/workspace/secrets/consumers')) return { status: 200, body: { kinds: [], providers: [], consumers: [] } }
       if (m === 'GET' && url.includes('/v1/workspace/secrets')) return { status: 200, body: SECRETS }
+      if (m === 'GET' && url.startsWith('/v1/secrets/overview')) return { status: 200, body: OVERVIEW }
+      if (m === 'GET' && url.startsWith('/v1/repositories')) return { status: 200, body: { repositories: [] } }
       if (m === 'GET' && url === '/v1/browser-logins') return { status: 200, body: { tenant_id: 'u-ana', logins: [LOGIN] } }
       return null
     })

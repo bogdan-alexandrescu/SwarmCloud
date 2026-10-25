@@ -12,10 +12,15 @@
 //   * the routes seen on one leg only are listed above the columns, both ways;
 //   * Work › Submit a workflow's "Visual QA of a registered app" entry leads
 //     to the QA targets card's form, so there is one form;
-//   * `/qa-runs/<id>` and its address are inverses.
+//   * `/qa-runs/<id>` and its address are inverses;
+//   * the routes a run found that are not stored as screens yet (each leg's
+//     `new_since_last_run`) are listed under "New since last run" and counted
+//     by a lead above the run's own; Promote, a workspace admin's PATCH of
+//     `screens`, stores one and it leaves the table; a member sees no Promote;
+//     a run with none draws neither (QA-RUN-NEW-ROUTES, part of #2157).
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 
 const WAIT = { timeout: 4000 }
@@ -89,6 +94,7 @@ afterEach(() => {
   cleanup()
   globalThis.fetch = realFetch
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
   window.localStorage.clear()
   window.sessionStorage.clear()
 })
@@ -275,5 +281,181 @@ describe('/qa-runs/<group_id> (paths.ts)', () => {
     // MUTATION: route it outside Config › Repositories (the mock-up's breadcrumb), or drop the group.
     expect([at.sectionId, at.tab]).toEqual(['config', 'repositories'])
     expect(new URLSearchParams(at.view ?? '').get('qarun')).toBe(GROUP)
+  })
+})
+
+// -- New since last run (QA-RUN-NEW-ROUTES, part of #2157; config-e.html S9b) ----
+
+type Found = { id: string; path: string; workflow_id?: string }
+
+/** The target as `_entry_api` serves it: each leg's `discovered` and `new_since_last_run`. */
+function targetWithNew(fresh: Record<string, Found[]>): Json {
+  return {
+    qa_target: {
+      id: TARGET, tenant_id: 'eng', name: 'Studio', revision: 4,
+      screens: [{ id: 'home', path: '/' }, { id: 'settings', path: '/settings' }],
+      environments: Object.entries(fresh).map(([name, found]) => ({
+        name, host: `${name}.example.test`, environment: name === 'production' ? 'production' : 'non_production',
+        discovered: [{ id: 'settings', path: '/settings', first_seen: '2026-10-20T10:00:00+00:00' }, ...found.map((f) => ({ ...f, first_seen: '2026-10-23T21:40:00+00:00' }))],
+        new_since_last_run: found.map((f) => ({ ...f, first_seen: '2026-10-23T21:40:00+00:00' })),
+      })),
+    },
+  }
+}
+
+function me(role: string): Json {
+  return {
+    tenant: { tenant_id: 'eng', kind: 'group', principal: 'eng@example.com', display_name: null },
+    principal: { email: 'vera@example.com', domain: 'example.com', groups: [], is_admin: false, is_admin_unresolved: false },
+    environment: 'dev',
+    environment_declared: true,
+    role: { name: role, source: 'override' },
+  }
+}
+
+function liveNew(role: string, fresh: Record<string, Found[]>) {
+  const answers: Record<string, Json> = {
+    [`/v1/qa-runs/${GROUP}`]: group([
+      leg('staging', { workflow_id: WF_STAGING, workflow_state: 'SUCCEEDED' }),
+      leg('production', { workflow_id: WF_PRODUCTION, workflow_state: 'SUCCEEDED' }),
+    ]),
+    [`/v1/workflows/${WF_STAGING}`]: workflow(WF_STAGING, 'SUCCEEDED', [['report', 'SUCCEEDED']]),
+    [`/v1/workflows/${WF_PRODUCTION}`]: workflow(WF_PRODUCTION, 'SUCCEEDED', [['report', 'SUCCEEDED']]),
+    [`/v1/qa-targets/${TARGET}`]: targetWithNew(fresh),
+    '/v1/tenants/me': me(role),
+  }
+  const calls = serve((m, url) => {
+    const path = url.split('?')[0] ?? ''
+    if (m === 'PATCH' && path === `/v1/qa-targets/${TARGET}`) return { status: 200, body: answers[path]! }
+    if (m !== 'GET') return null
+    const body = answers[path]
+    return body === undefined ? null : { status: 200, body }
+  })
+  vi.stubEnv('VITE_LIVE', '1')
+  vi.resetModules()
+  return calls
+}
+
+const FOUND: Record<string, Found[]> = {
+  staging: [{ id: 'beta-reports', path: '/beta/reports', workflow_id: WF_STAGING }, { id: 'settings-labs', path: '/settings/labs', workflow_id: WF_STAGING }],
+  production: [{ id: 'legal-imprint', path: '/legal/imprint', workflow_id: WF_PRODUCTION }],
+}
+
+const newCard = () => document.querySelector<HTMLElement>('[data-new-routes]')
+const newLead = () => document.querySelector<HTMLElement>('[data-new-routes-lead]')
+const newRow = (path: string) =>
+  Array.from(newCard()?.querySelectorAll<HTMLElement>('tbody tr') ?? []).find((r) => visible(r.querySelector('code')) === path) ?? null
+const promoteOf = (path: string) =>
+  Array.from(newRow(path)?.querySelectorAll<HTMLButtonElement>('button') ?? []).find((b) => /^Promote/.test(visible(b))) ?? null
+
+describe('QA run page: New since last run (QA-RUN-NEW-ROUTES, part of #2157; S9b)', () => {
+  it('draws the found-but-unstored routes under New since last run, and the lead counts them above the run\'s own', async () => {
+    liveNew('admin', FOUND)
+    await mountRun()
+    // MUTATION: drop the card, and the routes a run found are never offered to store.
+    await waitFor(() => expect(newCard()).not.toBeNull(), WAIT)
+    const card = newCard()!
+    expect(visible(card)).toContain('New since last run')
+    // MUTATION: list one leg's routes only, or the target's stored screens.
+    expect(newRow('/beta/reports')).not.toBeNull()
+    expect(newRow('/settings/labs')).not.toBeNull()
+    expect(newRow('/legal/imprint')).not.toBeNull()
+    expect(newRow('/settings')).toBeNull()
+    // MUTATION: name the wrong leg the route was found on.
+    expect(visible(newRow('/legal/imprint'))).toContain('production')
+    expect(visible(newRow('/beta/reports'))).toContain('staging')
+    // MUTATION: drop "this run" when the route's last sighting is this leg's own workflow.
+    expect(visible(newRow('/beta/reports'))).toContain('this run')
+    // MUTATION: draw the card above the columns (S9b: "below").
+    expect(legs()[legs().length - 1]!.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // MUTATION: count something other than the routes listed, or drop the lead.
+    const lead = newLead()
+    expect(lead).not.toBeNull()
+    expect(visible(lead)).toContain('3 routes found that are not stored yet')
+    expect(Array.from(lead!.querySelectorAll('button')).some((b) => visible(b) === 'Review below')).toBe(true)
+    // MUTATION: draw it below the run's own lead, or in its place (the run's "ended" lead is still drawn).
+    const own = Array.from(document.querySelectorAll<HTMLElement>('.c-banner')).find((b) => /environments ended/.test(visible(b)))
+    expect(own).not.toBeUndefined()
+    expect(lead!.compareDocumentPosition(own!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('Promote stores one route as a screen (the PATCH of screens) and it leaves the table', async () => {
+    const calls = liveNew('admin', FOUND)
+    await mountRun()
+    await waitFor(() => expect(promoteOf('/legal/imprint')).not.toBeNull(), WAIT)
+    fireEvent.click(promoteOf('/legal/imprint')!)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'PATCH').length).toBe(1), WAIT)
+    const sent = calls.find((c) => c.method === 'PATCH')!
+    // MUTATION: patch another target, or another route.
+    expect(sent.url).toBe(`/v1/qa-targets/${TARGET}`)
+    // MUTATION: replace `screens` with the new route alone, or send anything else, and the stored list is lost.
+    expect(sent.body).toEqual({
+      screens: [
+        { id: 'home', path: '/' },
+        { id: 'settings', path: '/settings' },
+        { id: 'legal-imprint', path: '/legal/imprint' },
+      ],
+    })
+    // MUTATION: keep a stored route in the table, and the admin promotes it twice.
+    await waitFor(() => expect(newRow('/legal/imprint')).toBeNull(), WAIT)
+    expect(newRow('/beta/reports')).not.toBeNull()
+    await waitFor(() => expect(visible(newLead())).toContain('2 routes found that are not stored yet'), WAIT)
+
+    // A second Promote keeps the first: `screens` holds both.
+    fireEvent.click(promoteOf('/beta/reports')!)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'PATCH').length).toBe(2), WAIT)
+    // MUTATION: build the second PATCH from the target as first read, and the first promoted route is dropped.
+    expect(calls.filter((c) => c.method === 'PATCH')[1]!.body).toEqual({
+      screens: [
+        { id: 'home', path: '/' },
+        { id: 'settings', path: '/settings' },
+        { id: 'legal-imprint', path: '/legal/imprint' },
+        { id: 'beta-reports', path: '/beta/reports' },
+      ],
+    })
+  })
+
+  it('a member sees the routes and no Promote', async () => {
+    liveNew('member', FOUND)
+    await mountRun()
+    await waitFor(() => expect(newRow('/beta/reports')).not.toBeNull(), WAIT)
+    // The role read lands after the target's; wait for the gate's sentence before asserting the absence.
+    await waitFor(() => expect(newCard()!.querySelector('[data-role-gate="admin"]')).not.toBeNull(), WAIT)
+    // MUTATION: draw Promote to every role, and a member's press is a certain 403.
+    expect(Array.from(newCard()!.querySelectorAll('button')).some((b) => /Promote/.test(visible(b)))).toBe(false)
+  })
+
+  it('at a phone each route is a record, its Promote the whole button in its own cell (S9d)', async () => {
+    // `usePhoneTables` reads `(max-width: 560px)`; this makes it true.
+    vi.stubGlobal('matchMedia', (q: string) => ({ matches: q === '(max-width: 560px)', media: q, addEventListener() {}, removeEventListener() {} }))
+    const calls = liveNew('admin', FOUND)
+    await mountRun()
+    await waitFor(() => expect(promoteOf('/legal/imprint')).not.toBeNull(), WAIT)
+    // MUTATION: keep the four-column table at 390, and it overflows the card and cuts Promote off past its edge.
+    const wrap = newCard()!.querySelector<HTMLElement>('.table-wrap')
+    expect(wrap?.classList.contains('is-stacked')).toBe(true)
+    // MUTATION: drop a cell's key, and a stacked record is a column of unlabelled values.
+    const row = newRow('/legal/imprint')!
+    expect(row.querySelector('th[scope="row"]')?.textContent).toBe('/legal/imprint')
+    expect(Array.from(row.querySelectorAll('td')).map((td) => td.getAttribute('data-label'))).toEqual(['Found on', 'First seen', 'Promote'])
+    expect(visible(row.querySelector('td[data-label="Found on"]'))).toContain('production')
+    // MUTATION: put Promote in a keyed cell, and the record says "Promote" beside a button saying "Promote".
+    expect(promoteOf('/legal/imprint')!.closest('td')?.classList.contains('qr-promote-cell')).toBe(true)
+    // The record's Promote is the same PATCH as the desktop row's.
+    fireEvent.click(promoteOf('/legal/imprint')!)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'PATCH').length).toBe(1), WAIT)
+    await waitFor(() => expect(newRow('/legal/imprint')).toBeNull(), WAIT)
+  })
+
+  it('a run with none draws neither the table nor that lead', async () => {
+    liveNew('admin', { staging: [], production: [] })
+    await mountRun()
+    await waitFor(() => expect(legs().length).toBe(2), WAIT)
+    // The target's read has landed: its one-leg-only card says so.
+    await waitFor(() => expect(visible(document.querySelector('[data-one-leg-only]'))).toContain('Every route found is on every environment'), WAIT)
+    // MUTATION: draw an empty table, or a lead counting 0.
+    expect(newCard()).toBeNull()
+    expect(newLead()).toBeNull()
+    expect(document.body.textContent ?? '').not.toContain('not stored yet')
   })
 })
