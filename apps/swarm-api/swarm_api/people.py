@@ -1656,6 +1656,10 @@ class People:
                      if isinstance(v, dict) and v.get("state") == "held"), None)
         return out
 
+    def in_workspaces(self, rosters: Mapping[str, Mapping[str, Any] | None]) -> list[dict[str, Any]]:
+        """A workspace admin's rows (`scoped_people`), named by this list's lookup."""
+        return scoped_people(self._db, self._names, rosters)
+
     def audit(self, limit: int = AUDIT_SHOWN) -> list[dict[str, Any]]:
         """The last `limit` admin_audit entries, newest first: who did what,
         to which workspace (or admin email), and when."""
@@ -1666,3 +1670,107 @@ class People:
             data = snap.to_dict() or {}
             out.append({k: _iso(v) for k, v in data.items()})
         return out
+
+
+# -- Admin › People and roles: the person × workspace grid ---------------------
+#
+# ADMIN-PEOPLE-ROLES (part of #2157; config-e.html frames S5c, S5f). Each row
+# gains `roles`, one cell per group workspace the READER may administer: every
+# registered group for a platform admin, and for a workspace admin only the
+# groups whose verified membership and signed grant make them its admin
+# (`routes/people.py` decides which). A cell is what the person's grants say
+# there -- `roles.RoleStore.person_role`'s rule, read once per WORKSPACE, not
+# once per cell -- or `none` when they are neither in the group (the `teams`
+# their last sighting recorded) nor hold a role of their own in it. A column
+# whose grants could not be read serves null cells and says so, rather than a
+# guessed `member`.
+
+#: A person who is neither in the group nor holds a role of their own there.
+CELL_NONE = "none"
+
+
+def workspace_rosters(role_store: Any, workspaces: Mapping[str, str]) -> dict[str, dict[str, Any] | None]:
+    """tenant_id -> {"default": role, "overrides": {email: role}}, or None for
+    a workspace whose grants could not be read. Two reads per workspace (its
+    default and its overrides), however many people there are."""
+    from .errors import RoleUnavailable
+
+    out: dict[str, dict[str, Any] | None] = {}
+    for tenant_id in workspaces:
+        try:
+            default, _ = role_store.default_role(tenant_id)
+            overrides = {email: grant.role for email, grant in role_store.overrides(tenant_id)}
+        except RoleUnavailable:
+            log.warning("people grid: roles unread tenant=%s", tenant_id)
+            out[tenant_id] = None
+            continue
+        out[tenant_id] = {"default": default, "overrides": overrides}
+    return out
+
+
+def role_cell(email: str, teams: Iterable[str], tenant_id: str,
+              roster: Mapping[str, Any] | None) -> str | None:
+    """One cell: the person's own role, else the default when they are in the
+    group, else `none`; null when the column's grants were not read."""
+    if roster is None:
+        return None
+    own = roster["overrides"].get(email)
+    if own is not None:
+        return str(own)
+    return str(roster["default"]) if tenant_id in set(teams) else CELL_NONE
+
+
+def grid_columns(workspaces: Mapping[str, str],
+                 rosters: Mapping[str, Mapping[str, Any] | None]) -> list[dict[str, Any]]:
+    """The grid's columns, in the order given: id, the group's address (what
+    `/v1/tenants/mine` names a group by), its default role, and whether its
+    roles were read."""
+    return [{"tenant_id": tenant_id, "display_name": group,
+             "default_role": (rosters.get(tenant_id) or {}).get("default"),
+             "unavailable": rosters.get(tenant_id) is None}
+            for tenant_id, group in workspaces.items()]
+
+
+def add_role_cells(rows: list[dict[str, Any]],
+                   rosters: Mapping[str, Mapping[str, Any] | None]) -> None:
+    """Give each of `People.everyone`'s rows its `roles`, one cell per column."""
+    for row in rows:
+        row["roles"] = {tid: role_cell(row["email"], row.get("teams") or [], tid, roster)
+                        for tid, roster in rosters.items()}
+
+
+def scoped_people(db: Any, names: NameLookup,
+                  rosters: Mapping[str, Mapping[str, Any] | None]) -> list[dict[str, Any]]:
+    """A WORKSPACE ADMIN's rows: the people in `rosters`' workspaces -- by the
+    `teams` their last sighting recorded, or by a role of their own there --
+    and of each only their email, display name, last sighting and the cells
+    of those workspaces. Never their other teams, their personal workspace or
+    its request, their Claude account or a loan: those are the platform's
+    (S5f: "A request for a personal workspace is a platform admin's").
+    Most recently active first, then by email."""
+    scope = set(rosters)
+    found: dict[str, dict[str, Any]] = {}
+    for snap in db.collection(ws.PEOPLE).limit(MAX_PEOPLE).stream():
+        data = snap.to_dict() or {}
+        email = str(data.get("principal") or "").strip().lower()
+        if email:
+            found[email] = data
+    held = {email for roster in rosters.values() if roster is not None
+            for email in roster["overrides"]}
+    rows: list[dict[str, Any]] = []
+    for email in sorted(set(found) | held):
+        data = found.get(email) or {}
+        teams = [t for t in (data.get("teams") or []) if t in scope]
+        if not teams and email not in held:
+            continue
+        last = _later(data.get("last_seen"))
+        rows.append({"email": email,
+                     "roles": {tid: role_cell(email, teams, tid, roster)
+                               for tid, roster in rosters.items()},
+                     "last_active": _iso(last), "_last": last})
+    rows.sort(key=lambda r: (-(r["_last"].timestamp() if r["_last"] else 0.0), r["email"]))
+    shown = names([r["email"] for r in rows]) if rows else {}
+    for row in rows:
+        row.pop("_last")
+        row["display_name"] = shown.get(row["email"])
+    return rows

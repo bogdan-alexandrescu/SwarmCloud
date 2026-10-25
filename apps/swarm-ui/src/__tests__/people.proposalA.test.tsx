@@ -13,7 +13,8 @@
 //     Decline (an optional reason, LOAN-DECLINE); each
 //     calls its existing route by WORKSPACE ID; the card is absent when
 //     nothing is open;
-//   * the table has no Actions column: Person, Teams, Workspace, Claude
+//   * the table has no Actions column: Person, a role column per group
+//     workspace (ADMIN-PEOPLE-ROLES), Personal workspace, Claude
 //     account, Ceiling, Last active and a Manage button, a row with an open
 //     request marked, and no column that breaks a word;
 //   * Manage opens a drawer with Facts, Ceiling, Claude account, Admin and
@@ -118,7 +119,7 @@ async function mount(body: Json, writes: Record<string, (body: unknown) => { sta
   vi.resetModules()
   const { PeopleScreen } = await import('../People')
   const utils = render(<PeopleScreen />)
-  await screen.findByRole('heading', { name: 'People', level: 1 }, WAIT)
+  await screen.findByRole('heading', { name: 'People and roles', level: 1 }, WAIT)
   await waitFor(() => expect(document.querySelector('.pp-people tbody tr')).not.toBeNull(), WAIT)
   return { ...utils, calls }
 }
@@ -153,7 +154,7 @@ afterEach(() => {
 describe('the page says what it is for', () => {
   it('in one plain line', async () => {
     await mount(people(ROWS))
-    expect(document.querySelector('.pp-page .ur-sub')?.textContent).toBe('Everyone who has signed in, what they are waiting for, and who is an admin.')
+    expect(document.querySelector('.pp-page .ur-sub')?.textContent).toBe('Everyone who has signed in, their role in each workspace, what they are waiting for, and who is an admin.')
   })
 })
 
@@ -277,11 +278,13 @@ describe('Waiting for you', () => {
 })
 
 describe('the lean table', () => {
-  it('has no Actions column: Person, Teams, Workspace, Claude account, Ceiling, Last active, and Manage', async () => {
+  // ADMIN-PEOPLE-ROLES: Teams became one role column per group workspace
+  // (people.roles.test.tsx); an API that serves none draws none.
+  it('has no Actions column: Person, Personal workspace, Claude account, Ceiling, Last active, and Manage', async () => {
     // MUTATION: put an Approve, Deny, Lend, select or ceiling field back in a row.
     await mount(people(ROWS))
     const heads = [...document.querySelectorAll<HTMLElement>('.pp-people thead th')].map((th) => th.textContent?.trim())
-    expect(heads).toEqual(['Person', 'Teams', 'Workspace', 'Claude account', 'Ceiling', 'Last active', 'Manage'])
+    expect(heads).toEqual(['Person', 'Personal workspace', 'Claude account', 'Ceiling', 'Last active', 'Manage'])
     for (const tr of document.querySelectorAll<HTMLElement>('.pp-people tbody tr')) {
       expect(within(tr).getAllByRole('button').map((b) => b.textContent)).toEqual(['Manage'])
       expect(tr.querySelector('select, input, textarea')).toBeNull()

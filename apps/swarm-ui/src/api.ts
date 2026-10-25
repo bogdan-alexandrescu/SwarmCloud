@@ -34,7 +34,7 @@ import type {
   IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, IssueRunSummaryPage, RunCreateBody, RunPlan,
   GitHubAuthorization, GitHubAuthorizeSurface, GitHubDisconnectResponse, GitHubExchangeBody, GitHubExchangeResponse, OnboardingDoc,
   OnboardingDismissal, OwnerTokenResponse, AccessInstallRequestResponse,
-  AdminGrantAnswer, AdminRemoveAnswer, AdminWorkspaceView, LoanDeclineAnswer, LoanRequestAnswer, NewWorkspaceBody, PeopleDoc, WorkspaceActionAnswer, WorkspaceKind, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceState, WorkspaceView,
+  AdminGrantAnswer, AdminRemoveAnswer, AdminWorkspaceView, LoanDeclineAnswer, LoanRequestAnswer, NewWorkspaceBody, PeopleDoc, ScopedPeopleDoc, WorkspaceActionAnswer, WorkspaceKind, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceState, WorkspaceView,
   AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
   AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
   NotificationTopic, Preferences, PreferencesSaved, PreferencesWrite, Profile, ProfileClaudeAccount, ProfileClaudeAccounts, ProfileDefault,
@@ -90,7 +90,12 @@ const FIXTURE_NOW = Date.parse(FIXTURE_CLOCK)
  * in the fixture build, so no live read ever depends on it; a dev server
  * opened by hand has no cookie and is the member, as is any other value.
  */
-export type FixturePersona = 'member' | 'platform-admin'
+/**
+ * `workspace-admin` (ADMIN-PEOPLE-ROLES): a member of `eng` whose stored role
+ * there is admin, and no platform admin -- the caller Admin › People and
+ * roles is scoped for. Everywhere else it reads as `member` does.
+ */
+export type FixturePersona = 'member' | 'platform-admin' | 'workspace-admin'
 const PERSONA_COOKIE = 'swarm_qa_persona'
 
 function readFixturePersona(): FixturePersona {
@@ -98,7 +103,8 @@ function readFixturePersona(): FixturePersona {
   for (const part of document.cookie.split(';')) {
     const at = part.indexOf('=')
     if (at > 0 && part.slice(0, at).trim() === PERSONA_COOKIE) {
-      return part.slice(at + 1).trim() === 'platform-admin' ? 'platform-admin' : 'member'
+      const value = part.slice(at + 1).trim()
+      return value === 'platform-admin' || value === 'workspace-admin' ? value : 'member'
     }
   }
   return 'member'
@@ -2674,7 +2680,8 @@ export async function loadMyTenants(): Promise<Result<TenantChoice[]>> {
     // The member has a personal tenant and no group, so there is nothing to
     // pick. The platform-admin persona is also a member of `eng`, where its
     // STORED role is admin -- what Admin › Workspaces you admin lists.
-    if (!fixtureIsAdmin) return { status: 'empty', fetchedAt: Date.now() }
+    // The workspace-admin persona is in `eng` as its admin, as that persona is.
+    if (!fixtureIsAdmin && FIXTURE_PERSONA !== 'workspace-admin') return { status: 'empty', fetchedAt: Date.now() }
     return { status: 'ok', fetchedAt: Date.now(), data: fixtureTenantChoices() }
   }
   return read<TenantChoice[]>(route('/v1/tenants/mine'), (rows) => rows.length === 0, { frame: true })
@@ -6960,8 +6967,19 @@ function fixturePeople(): unknown {
       first_seen: fixtureAgo(20 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(4 * 24 * FIXTURE_HOUR), last_submitted: null, last_active: fixtureAgo(4 * 24 * FIXTURE_HOUR),
     },
   ]
+  // The grid's cells (ADMIN-PEOPLE-ROLES): alice is eng's admin, bob a
+  // member there, research's only admin is someone this list does not hold.
+  const cells: Record<string, Record<string, string>> = {
+    'carol@example.com': { eng: 'none', research: 'none' },
+    'alice@example.com': { eng: 'admin', research: 'none' },
+    'bob@example.com': { eng: 'member', research: 'viewer' },
+    'dave@example.com': { eng: 'none', research: 'member' },
+  }
   return {
-    people,
+    scope: 'platform',
+    workspaces: FIXTURE_PEOPLE_WORKSPACES,
+    workspaces_error: null,
+    people: people.map((p) => ({ ...p, roles: cells[p.email] })),
     count: people.length,
     pending: people.filter((p) => p.workspace.state === 'requested').length,
     audit: [],
@@ -6970,6 +6988,38 @@ function fixturePeople(): unknown {
     provisioning: { available: true, approved_waiting: 0 },
     admins: [{ email: 'alice@example.com', role: 'admin', granted_by: 'ops@example.com', granted_at: fixtureAgo(30 * 24 * FIXTURE_HOUR) }],
     admins_error: null,
+  }
+}
+
+/** The grid's columns: the two registered group workspaces the fixtures know. */
+const FIXTURE_PEOPLE_WORKSPACES = [
+  { tenant_id: FIXTURE_GROUP.tenant_id, display_name: FIXTURE_GROUP.principal, default_role: 'member', unavailable: false },
+  { tenant_id: 'research', display_name: 'research@example.com', default_role: 'viewer', unavailable: false },
+]
+
+/**
+ * `GET /v1/admin/people` for the workspace-admin persona: only `eng`, the
+ * workspace it administers, and only the people in it -- no personal
+ * workspace, request, Claude account, admins or audit.
+ */
+function fixtureScopedPeople(): unknown {
+  const people = [
+    { email: 'alice@example.com', display_name: null, roles: { eng: 'admin' }, last_active: fixtureAgo(5 * 60_000) },
+    { email: 'bob@example.com', display_name: 'Bob', roles: { eng: 'member' }, last_active: fixtureAgo(3 * FIXTURE_HOUR) },
+    { email: 'erin@example.com', display_name: null, roles: { eng: 'viewer' }, last_active: fixtureAgo(2 * 24 * FIXTURE_HOUR) },
+  ]
+  return {
+    scope: 'workspace_admin',
+    workspaces: [FIXTURE_PEOPLE_WORKSPACES[0]],
+    people,
+    count: people.length,
+    pending: 0,
+    provisioning: null,
+    audit: [],
+    lendable_accounts: null,
+    lendable_error: 'platform_admin_only',
+    admins: null,
+    admins_error: 'platform_admin_only',
   }
 }
 
@@ -7039,7 +7089,8 @@ const FIXTURE_READS: Readonly<Record<string, (url: string) => FixtureBody | unde
   '/v1/code-intelligence': () => ({ body: fixtureCodeIntelligence() }),
   '/v1/profile': () => ({ body: fixtureProfile() }),
   '/v1/workspace/roles': () => ({ body: fixtureWorkspaceRoles() }),
-  '/v1/admin/people': () => (fixtureIsAdmin ? { body: fixturePeople() } : 'admin'),
+  '/v1/admin/people': () =>
+    fixtureIsAdmin ? { body: fixturePeople() } : FIXTURE_PERSONA === 'workspace-admin' ? { body: fixtureScopedPeople() } : 'admin',
   '/v1/admin/workspaces/roles': () => (fixtureIsAdmin ? { body: fixtureAdminWorkspacesRoles() } : 'admin'),
   // Admin › Tenants' "Being created": nothing is being built.
   '/v1/admin/workspaces': () => (fixtureIsAdmin ? { body: { workspaces: [] } } : 'admin'),
@@ -8332,6 +8383,30 @@ export async function requestLoan(): Promise<Result<LoanRequestAnswer>> {
 /** `GET /v1/admin/people` (admin): everyone, pending first, the last 50 audit entries, the lendable accounts. */
 export async function loadPeople(): Promise<Result<PeopleDoc>> {
   return readAs(route('/v1/admin/people'), (raw) => raw as PeopleDoc)
+}
+
+/**
+ * The same read, as Admin › People and roles takes it (ADMIN-PEOPLE-ROLES):
+ * a platform admin's `PeopleDoc`, or, for a workspace admin, only the
+ * workspaces they administer and their people (`scope: 'workspace_admin'`).
+ * `loadPeople` stays the platform admin's, for the pages that read `admins`.
+ */
+export async function loadPeopleAndRoles(): Promise<Result<PeopleDoc | ScopedPeopleDoc>> {
+  return readAs(route('/v1/admin/people'), (raw) => raw as PeopleDoc | ScopedPeopleDoc)
+}
+
+/** `PUT /v1/admin/people/workspaces/{tenant_id}/role`: a person's own role in a workspace the caller administers. */
+export async function setPeopleWorkspaceRole(tenantId: string, email: string, role: string): Promise<Result<PersonRoleChange>> {
+  return writeTo(route('/v1/admin/people/workspaces/{tenant_id}/role', { tenant_id: tenantId }), 'PUT', roleBody({ email: email.trim(), role }, '')) as Promise<
+    Result<PersonRoleChange>
+  >
+}
+
+/** `DELETE /v1/admin/people/workspaces/{tenant_id}/role`: back to that workspace's default. */
+export async function clearPeopleWorkspaceRole(tenantId: string, email: string): Promise<Result<PersonRoleChange>> {
+  return writeTo(route('/v1/admin/people/workspaces/{tenant_id}/role', { tenant_id: tenantId }), 'DELETE', roleBody({ email: email.trim() }, '')) as Promise<
+    Result<PersonRoleChange>
+  >
 }
 
 // -- Admin › Runner sizes (SIZES-UI; part of #1689) ---------------------------

@@ -171,7 +171,9 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     // #847 W8 (docs/workspaces.md §6.4): a SECTIONS tab and a route, and
     // missing here, so an admin reached it only by typing /admin/people --
     // the Runs defect visual QA Q7 caught, again.
-    { key: 'people', label: 'People', icon: 'people', to: 'admin/people' },
+    // ADMIN-PEOPLE-ROLES (part of #2157): renamed with its SECTIONS tab, and
+    // a workspace admin's page too (`adminPagesFor`).
+    { key: 'people', label: 'People and roles', icon: 'people', to: 'admin/people' },
     // NAV-ADMIN-ROLE (part of #1633): the group workspaces the person
     // administers, last. The only Admin page a workspace admin who is not a
     // platform admin is shown (`adminPagesFor`).
@@ -206,13 +208,23 @@ export function adminWorkspaces(choices: readonly TenantChoice[]): TenantChoice[
 }
 
 /**
- * The Admin pages a person is shown: all five for a platform admin, only
- * Workspaces you admin for a workspace admin who is not one, and none for
+ * THE ADMIN PAGES A WORKSPACE ADMIN WHO IS NOT A PLATFORM ADMIN IS SHOWN:
+ * People and roles, which the API scopes to the workspaces they administer
+ * (ADMIN-PEOPLE-ROLES; part of #2157), and Workspaces you admin. Every other
+ * Admin page is the platform's. A platform Admin address outside this list is
+ * one such a person is sent away from (ADMIN-REDIRECT's list): `/admin/people`
+ * is no longer one of them.
+ */
+export const WORKSPACE_ADMIN_PAGES: ReadonlySet<string> = new Set(['people', WORKSPACES_YOU_ADMIN_TAB])
+
+/**
+ * The Admin pages a person is shown: all of them for a platform admin,
+ * `WORKSPACE_ADMIN_PAGES` for a workspace admin who is not one, and none for
  * anyone else -- which is how the spine knows to draw no Admin item.
  */
 export function adminPagesFor(platformAdmin: boolean, workspaceAdmin: boolean): readonly PanelPage[] {
   if (platformAdmin) return PANEL_PAGES.admin
-  return workspaceAdmin ? PANEL_PAGES.admin.filter((p) => p.key === WORKSPACES_YOU_ADMIN_TAB) : []
+  return workspaceAdmin ? PANEL_PAGES.admin.filter((p) => WORKSPACE_ADMIN_PAGES.has(p.key)) : []
 }
 
 /**

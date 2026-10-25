@@ -6,8 +6,9 @@
  *   * A platform admin (`/v1/tenants/me` `is_admin`) sees Admin with its six
  *     pages, Workspaces you admin last.
  *   * A person whose stored role is `admin` in a GROUP workspace
- *     (`/v1/tenants/mine`) sees Admin with only Workspaces you admin, which
- *     lists those workspaces; each link selects the workspace, then opens
+ *     (`/v1/tenants/mine`) sees Admin with People and roles, scoped to those
+ *     workspaces (ADMIN-PEOPLE-ROLES; part of #2157), and Workspaces you
+ *     admin, which lists them; each link selects the workspace, then opens
  *     the page.
  *   * Anyone else -- a member, or the admin of only their own personal
  *     workspace -- sees no Admin item, flyout or drawer entry, and nothing is
@@ -20,7 +21,8 @@
  * MUTATION: draw `SPINE` unfiltered and the member, personal-admin and
  * in-flight cases go red; drop `kind === 'group'` from `adminWorkspaces` and
  * the personal-admin case does; return all of PANEL_PAGES.admin from
- * `adminPagesFor` for a workspace admin and the eng case does; drop
+ * `adminPagesFor` for a workspace admin, or only Workspaces you admin, and
+ * the eng case does; drop
  * `chooseTenant` from the page's links and its People and roles case does.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -147,13 +149,14 @@ describe('who sees Admin (NAV-ADMIN-ROLE)', () => {
     expect(adminItem()).toBeNull()
   })
 
-  it('shows a workspace admin of eng only Workspaces you admin, and Admin opens it', async () => {
+  it('shows a workspace admin of eng People and roles and Workspaces you admin (ADMIN-PEOPLE-ROLES), and Admin opens the first', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin'), group('ops', 'member')])
     await shell('admin', 'workspaces')
     await waitFor(() => expect(adminItem()).not.toBeNull())
-    expect(adminItem()!.getAttribute('href')).toBe('/admin/workspaces')
+    // People and roles first, as S5f's panel draws it; it is scoped to eng.
+    expect(adminItem()!.getAttribute('href')).toBe('/admin/people')
     expect(adminItem()!.querySelector('.sk-lkd, .sk-ic.sk-lk')).toBeNull()
-    expect(panelRows()).toEqual(['Workspaces you admin'])
+    expect(panelRows()).toEqual(['People and roles', 'Workspaces you admin'])
   })
 
   it('shows a platform admin the six Admin pages, Runner sizes beside Pool limits (SIZES-UI) and Workspaces you admin last', async () => {
@@ -161,7 +164,7 @@ describe('who sees Admin (NAV-ADMIN-ROLE)', () => {
     await shell('admin', 'limits')
     await waitFor(() => expect(adminItem()).not.toBeNull())
     expect(adminItem()!.getAttribute('href')).toBe('/admin/limits')
-    expect(panelRows()).toEqual(['Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'People', 'Workspaces you admin'])
+    expect(panelRows()).toEqual(['Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'People and roles', 'Workspaces you admin'])
   })
 })
 

@@ -117,7 +117,7 @@ async function mount(phone = false) {
   vi.resetModules()
   const { PeopleScreen } = await import('../People')
   const utils = render(<PeopleScreen />)
-  await screen.findByRole('heading', { name: 'People', level: 1 }, WAIT)
+  await screen.findByRole('heading', { name: 'People and roles', level: 1 }, WAIT)
   await waitFor(() => expect(document.querySelector('.pp-people tbody tr')).not.toBeNull(), WAIT)
   return utils
 }
@@ -164,7 +164,7 @@ describe('a job step reads on one line with its state (V081)', () => {
   it('gives the phone record\'s Workspace value the record\'s width, its key on the line above', async () => {
     // MUTATION: drop the Workspace override: the value is back in the ~166px column.
     await mount(true)
-    const cell = rowOf('gus@example.com').querySelector<HTMLElement>('td[data-label="Workspace"]')!
+    const cell = rowOf('gus@example.com').querySelector<HTMLElement>('td[data-label="Personal workspace"]')!
     expect(painted(cell, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
     expect(painted(cell.querySelector('.pp-ws')!, 'grid-column', PHONE)).toBe('1')
     expect(painted(cell, 'content', PHONE, 'before'), 'the key is still said').toBe('attr(data-label)')

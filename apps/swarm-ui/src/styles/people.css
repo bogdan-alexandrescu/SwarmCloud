@@ -76,8 +76,8 @@
    button saying "Manage". The cell keeps `data-label` (the record names every
    cell, admin.people.test.tsx) and draws no key; the button spans the record
    at a touch target's height. */
-.is-stacked > .pp-table > tbody > tr > td[data-label='Workspace'] { grid-template-columns: minmax(0, 1fr); gap: var(--ctl-s1); }
-.is-stacked > .pp-table > tbody > tr > td[data-label='Workspace'] > * { grid-column: 1; }
+.is-stacked > .pp-table > tbody > tr > td[data-label='Personal workspace'] { grid-template-columns: minmax(0, 1fr); gap: var(--ctl-s1); }
+.is-stacked > .pp-table > tbody > tr > td[data-label='Personal workspace'] > * { grid-column: 1; }
 .is-stacked > .pp-table > tbody > tr > td.pp-manage-cell { display: block; padding-top: var(--ctl-s2); }
 .is-stacked > .pp-table > tbody > tr > td.pp-manage-cell::before { content: none; }
 .is-stacked > .pp-table > tbody > tr > td.pp-manage-cell > .c-btn { width: 100%; min-height: 44px; }
@@ -180,3 +180,17 @@
 .pp-grant > .c-field { flex: 0 1 18rem; }
 .pp-housekeeping { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
 .pp-audit-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: var(--t-meta); line-height: var(--lh-meta); }
+
+/* ADMIN-PEOPLE-ROLES (part of #2157, config-e.html S5c/S5f): a column per
+   group workspace, each cell the person's role there. The heading is the
+   workspace id, kept on one line; `none` is dimmed so the roles a person
+   does hold stand out across a row. A workspace admin's cell is a select. */
+.pp-table > thead > tr > th.pp-rolecol { white-space: nowrap; }
+.pp-table > tbody > tr > td.pp-rolecell { white-space: nowrap; }
+.pp-role.is-admin { font-weight: 600; }
+.pp-role.is-none,
+.pp-roleselect.is-none { color: var(--text-dim); }
+/* The app's own select (styles.css), at the small button's height on a
+   desktop row and a 44px target on a phone record. */
+.pp-roleselect { height: var(--h-sm); min-height: 0; padding-top: 0; padding-bottom: 0; max-width: 100%; }
+.is-stacked > .pp-table .pp-roleselect { height: 44px; }

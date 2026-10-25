@@ -119,7 +119,7 @@ async function mount(body: Json, writes: Record<string, (body: unknown) => { sta
   vi.resetModules()
   const { PeopleScreen } = await import('../People')
   const utils = render(<PeopleScreen />)
-  await screen.findByRole('heading', { name: 'People', level: 1 }, WAIT)
+  await screen.findByRole('heading', { name: 'People and roles', level: 1 }, WAIT)
   return { ...utils, calls }
 }
 
@@ -168,7 +168,7 @@ describe('the tab', () => {
   it('is in the Admin section, admin only', () => {
     const admin = SECTIONS.find((s) => s.id === 'admin')!
     const tab = admin.tabs.find((t) => t.id === 'people')
-    expect(tab).toEqual({ id: 'people', label: 'People', admin: true })
+    expect(tab).toEqual({ id: 'people', label: 'People and roles', admin: true })
   })
 
   // A tab and a route are not enough: the panel draws PANEL_PAGES, and a page
@@ -188,14 +188,14 @@ describe('the tab', () => {
     vi.resetModules()
     const { SkyShell: LiveShell } = await import('../Spine')
     render(
-      <LiveShell section="admin" tab="people" title="People" go={vi.fn()} foot={null}>
+      <LiveShell section="admin" tab="people" title="People and roles" go={vi.fn()} foot={null}>
         {null}
       </LiveShell>,
     )
     await waitFor(() => expect(document.querySelectorAll('.sk-panel .sk-pk').length).toBeGreaterThan(0), WAIT)
     const labels = [...document.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((el) => el.textContent)
-    expect(labels).toContain('People')
-    expect(document.querySelector('.sk-panel .sk-pk.is-on .sk-pl')?.textContent).toBe('People')
+    expect(labels).toContain('People and roles')
+    expect(document.querySelector('.sk-panel .sk-pk.is-on .sk-pl')?.textContent).toBe('People and roles')
   })
 })
 
@@ -562,7 +562,7 @@ describe('the layout fits the card (seen live at 1456, 2026-10-09)', () => {
     for (const tr of document.querySelectorAll<HTMLElement>('.pp-people tbody tr')) {
       expect(tr.firstElementChild?.matches('th[scope="row"]'), 'the record has no name').toBe(true)
       const labels = [...tr.querySelectorAll('td')].map((td) => td.getAttribute('data-label'))
-      expect(labels, 'the phone record is the person, their workspace and Manage').toEqual(['Workspace', 'Manage'])
+      expect(labels, 'the phone record is the person, their workspace and Manage').toEqual(['Personal workspace', 'Manage'])
       expect(painted(tr.querySelector('td')!, 'display', PHONE)).toBe('grid')
     }
   })

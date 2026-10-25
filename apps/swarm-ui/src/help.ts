@@ -119,6 +119,7 @@ export type TopicId =
   | 'partial-read'
   | 'paused-vs-full'
   | 'peak-memory'
+  | 'people-and-roles-scope'
   | 'platform-counts'
   | 'poll-cadence'
   | 'pool-freshness'
@@ -801,6 +802,23 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'A total is drawn only when every state came back. When one did not, the total is withheld and the missing states are named, because a sum over a partial response is not a count of anything.',
     ],
     see: ['withheld-total', 'admin-gate-not-failure'],
+  },
+
+  // ADMIN-PEOPLE-ROLES (part of #2157; config-e.html S5c, S5f): Admin ›
+  // People and roles, renamed from People, and read by who reads it. The
+  // facts are swarm_api/routes/people.py `people_reader` and `administered`,
+  // and swarm_api/people.py `role_cell`.
+  'people-and-roles-scope': {
+    group: 'the-platform',
+    title: 'People and roles shows the workspaces you administer',
+    short:
+      'Every person against every group workspace, each cell their role there. A platform admin sees every workspace and everyone. A workspace admin sees only the workspaces they administer and only the people in them, and can change a role only there. A request for a personal workspace, a ceiling and a loan stay a platform admin’s.',
+    long: [
+      'Each row is a person and each column a group workspace. A cell is the role their grants give them there: their own role when one was granted, the workspace’s default when they are in its group, and none when they are neither. A cell that could not be read is a dash, never a guessed member.',
+      'Which columns you get is decided by the server from your verified identity. A platform admin gets every registered group workspace. Anyone else gets the group workspaces whose membership lists them and whose grants make them its admin, read again on every request, so a demotion counts at once. A member or a viewer is refused, as before.',
+      'The requests that lead the page are the ones an admin answers here: a personal workspace and a Claude account loan. Both are the platform’s, so a workspace admin is never shown them; joining a group workspace is decided by its group.',
+    ],
+    see: ['admin-gate-not-failure'],
   },
 
   'poll-cadence': {
@@ -1720,6 +1738,7 @@ export const HELP_PLACES = {
   'admin/limits': 'Pool limits',
   'admin/tenants': 'Tenants',
   'admin/counts': 'Platform counts',
+  'admin/people': 'People and roles',
   'automate/schedules': 'Schedules',
   'automate/approvals': 'Approvals',
   // A Capacity page since NAV-FOOT (#1672); `reference` still lands there.
@@ -1901,6 +1920,10 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   'tenant-fields': {
     subject: 'Tenants columns',
     act: { say: 'To change a tenant’s ceiling, follow its Enforced figure to the pool it sets.', at: 'admin/tenants' },
+  },
+  'people-and-roles-scope': {
+    subject: 'Who People and roles shows',
+    act: { say: 'Open People and roles to change a person’s role in a workspace you administer.', at: 'admin/people' },
   },
   'platform-counts': {
     subject: 'Platform counts',

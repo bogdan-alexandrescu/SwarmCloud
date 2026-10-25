@@ -542,8 +542,12 @@ export const SECTIONS: SectionDef[] = [
       { id: 'counts', label: 'Platform counts', admin: true },
       // #847 W8 (docs/workspaces.md §6.4): who has signed in, their workspace
       // requests to approve or deny, each person's ceiling and Claude account,
-      // and who is an admin. Admin only, like the three before it.
-      { id: 'people', label: 'People', admin: true },
+      // and who is an admin. RENAMED People and roles (ADMIN-PEOPLE-ROLES;
+      // part of #2157, config-e.html S5c/S5f): every person against every
+      // workspace. A workspace admin reaches it too, scoped by the API to the
+      // workspaces they administer; it still reads `/v1/admin/*`, so the mark
+      // stays.
+      { id: 'people', label: 'People and roles', admin: true },
       // NAV-ADMIN-ROLE: each group workspace whose stored role for the
       // caller is admin, with its four settings pages. Not marked `admin`:
       // it reads `/v1/tenants/mine`, which everyone may, and a workspace

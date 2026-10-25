@@ -5872,6 +5872,47 @@ export interface PersonRow {
   last_seen: string | null
   last_submitted: string | null
   last_active: string | null
+  /**
+   * ADMIN-PEOPLE-ROLES: one cell per `PeopleDoc.workspaces` column, by tenant
+   * id -- the person's role there, `none`, or null when that column's roles
+   * were not read. Absent from an older API.
+   */
+  roles?: Record<string, RoleCell | null>
+}
+
+/** A cell of Admin › People and roles' grid (`people.role_cell`). */
+export type RoleCell = 'admin' | 'member' | 'viewer' | 'none'
+
+/** A column of the grid: a group workspace the reader may administer (`people.grid_columns`). */
+export interface PeopleWorkspace {
+  tenant_id: string
+  /** The group's address, as `/v1/tenants/mine` names a group. */
+  display_name: string
+  /** Null when `unavailable`. */
+  default_role: string | null
+  /** Its roles could not be read: every cell in it is null. */
+  unavailable: boolean
+}
+
+/**
+ * A WORKSPACE ADMIN's row (`people.scoped_people`): who, their cells in the
+ * workspaces the reader administers, and when they were last seen. Nothing
+ * the platform holds -- no personal workspace, request, Claude account or
+ * other team.
+ */
+export interface ScopedPersonRow {
+  email: string
+  display_name?: string | null
+  roles: Record<string, RoleCell | null>
+  last_active: string | null
+}
+
+/** `GET /v1/admin/people` for a workspace admin who is not a platform admin. */
+export interface ScopedPeopleDoc {
+  scope: 'workspace_admin'
+  workspaces: PeopleWorkspace[]
+  people: ScopedPersonRow[]
+  count: number
 }
 
 /** One `admin_audit` entry: a workspace action names a workspace id, an admin change an email. */
@@ -5908,6 +5949,12 @@ export interface PeopleDoc {
   /** `AdminRoles.holders`: the owner first. Null, with the reason, when the roles were not read; absent from an older API. */
   admins?: AdminHolder[] | null
   admins_error?: string | null
+  /** ADMIN-PEOPLE-ROLES: who read it. Absent from an older API, which served a platform admin only. */
+  scope?: 'platform'
+  /** The grid's columns: every registered group workspace. Absent from an older API. */
+  workspaces?: PeopleWorkspace[]
+  /** Why `workspaces` is empty when the registry could not be read. */
+  workspaces_error?: string | null
 }
 
 /** One `admin_roles/` holder. An ADMIN_GROUPS member has no document and is not listed. */

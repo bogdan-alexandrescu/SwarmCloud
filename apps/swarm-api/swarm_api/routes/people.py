@@ -29,6 +29,29 @@ Lane W7 (docs/workspaces.md §6.3-§6.4):
                                                          scheduler identity
                                                          (`auth.ROLLUP_SWEEPER_ROUTES`)
 
+Lane ADMIN-PEOPLE-ROLES (part of #2157; config-e.html frames S5c, S5f):
+
+    GET    /v1/admin/people                              also a WORKSPACE admin's,
+                                                         scoped (below)
+    PUT    /v1/admin/people/workspaces/{tenant_id}/role  a person's role there;
+                                                         body {email, role}
+    DELETE /v1/admin/people/workspaces/{tenant_id}/role  back to the default;
+                                                         body {email}
+
+WHO READS WHAT. A platform admin (`admin_auth`'s rule) reads everyone and
+every registered group workspace, as before, plus each row's role cells. A
+person who is not one reads the page only if they ADMINISTER a group
+workspace -- a group their verified membership lists (`tenant_choices`, the
+same pass `/v1/tenants/mine` serves) whose signed grants make them `admin`,
+read fresh -- and then only those workspaces, the people in them, and of each
+person only the cells of those workspaces. Everyone else is refused exactly
+as before (`admin_auth`'s 403, or its 503 when the directory did not answer).
+The approve, deny, retry, ceiling, loan, admin and workspace routes are
+unchanged and stay a platform admin's: a personal workspace and its
+Claude account are the platform's, never a group admin's. The scope is
+decided on the server from the caller's verified identity alone: no query
+parameter, path or header widens it.
+
 Lane WK-RECORD (docs/design/workspace-kinds.md §4.2.2):
 
     POST /v1/admin/workspaces                    file a personal, group or service
@@ -53,16 +76,19 @@ on `app.state` so a test injects a fake, exactly as `account_pool` is.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import Field
 
+from .. import roles
 from ..admins import AdminRoles, build_admin_roles
-from ..auth import AuthContext
+from ..auth import AuthContext, require_admin
 from ..brokerclient import AccountPool
-from ..deps import AppContext, admin_auth, get_context
+from ..deps import AppContext, admin_auth, current_auth, get_context
+from ..errors import Forbidden, RoleUnavailable
 from .. import workspaces as ws
 from ..groups import MembershipResolver
 from ..people import (
@@ -71,12 +97,16 @@ from ..people import (
     MAX_REASON,
     MIN_CEILING,
     People,
+    add_role_cells,
+    grid_columns,
     name_lookup,
+    workspace_rosters,
 )
 from ..publish_workspace import WorkspacePublisher, publisher_for
 from ..schemas import StrictModel
 from ..specsigning import signer_from_settings
 from .accounts import account_pool
+from .roles import PersonClear, PersonRole, _clear_person, _registered, _set_person
 
 router = APIRouter(prefix="/v1/admin", tags=["people"])
 
@@ -212,18 +242,114 @@ def people_service(
                       getattr(ctx.settings, "worker_firestore_off_tenants", ()) or ()))
 
 
+# -- Admin › People and roles: who reads it (ADMIN-PEOPLE-ROLES) ---------------
+
+#: Why a section a workspace admin is not served is null: it is the platform's.
+PLATFORM_ADMIN_ONLY = "platform_admin_only"
+
+
+@dataclass(frozen=True)
+class PeopleReader:
+    """Who is reading Admin › People and roles. `workspaces` is None for a
+    platform admin (every registered group workspace) and otherwise the
+    group workspaces this person administers, tenant id -> group, never
+    empty."""
+
+    auth: AuthContext
+    workspaces: dict[str, str] | None
+
+    @property
+    def platform(self) -> bool:
+        return self.workspaces is None
+
+
+def administered(ctx: AppContext, auth: AuthContext) -> dict[str, str]:
+    """The group workspaces `auth` administers: each group its VERIFIED
+    membership lists (`tenant_choices`; never a platform admin's reach, never
+    the person's own workspace) whose signed grants say `admin`, read fresh
+    so a demotion counts on the next request. A workspace whose grants could
+    not be read is left out: unknown is not admin."""
+    store = ctx.roles
+    if store is None:
+        return {}
+    out: dict[str, str] = {}
+    for tenant_id, principal in auth.tenant_choices:
+        if principal == auth.email or tenant_id.startswith("u-") or tenant_id in out:
+            continue
+        try:
+            role = store.person_role(tenant_id, auth.email, fresh=True).role
+        except RoleUnavailable:
+            continue
+        if role == roles.ADMIN:
+            out[tenant_id] = principal.lower()
+    return out
+
+
+def people_reader(
+    request: Request,
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> PeopleReader:
+    """`admin_auth`'s rule first; a person it refuses with a 403 is let in
+    only as the admin of the workspaces `administered` finds, and refused
+    with that same 403 when it finds none. A 503 (the directory did not
+    answer) is never turned into a narrower read."""
+    path = getattr(request.scope.get("route"), "path", None)
+    route = (request.method.upper(), path) if path else None
+    try:
+        return PeopleReader(auth=require_admin(auth, route), workspaces=None)
+    except Forbidden:
+        mine = administered(ctx, auth)
+        if not mine:
+            raise
+        return PeopleReader(auth=auth, workspaces=mine)
+
+
 @router.get("/people")
 def list_people(
     request: Request,
-    auth: AuthContext = Depends(admin_auth),
+    reader: PeopleReader = Depends(people_reader),
     ctx: AppContext = Depends(get_context),
     people: People = Depends(people_service),
 ) -> dict:
     """§6.4: everyone who has signed in, pending requests first, the last 50
     audit entries, and the accounts this admin may lend. The lendable list
     comes from the quota broker; when it does not answer, the rest of the
-    page is still served and `lendable_accounts` is null with the reason."""
+    page is still served and `lendable_accounts` is null with the reason.
+
+    ADMIN-PEOPLE-ROLES: `scope`, the grid's `workspaces` (its columns) and
+    each row's `roles` (one cell per column). A workspace admin is served
+    `scope: workspace_admin`, their workspaces, their people
+    (`People.in_workspaces`), and null or empty for every platform section."""
+    assert ctx.roles is not None
+    if not reader.platform:
+        workspaces = reader.workspaces or {}
+        rosters = workspace_rosters(ctx.roles, workspaces)
+        rows = people.in_workspaces(rosters)
+        return {
+            "scope": "workspace_admin",
+            "workspaces": grid_columns(workspaces, rosters),
+            "people": rows, "count": len(rows), "pending": 0,
+            "provisioning": None, "audit": [],
+            "lendable_accounts": None, "lendable_error": PLATFORM_ADMIN_ONLY,
+            "admins": None, "admins_error": PLATFORM_ADMIN_ONLY,
+        }
+    auth = reader.auth
     body = people.everyone(store=ctx.store)
+    body["scope"] = "platform"
+    # The grid's columns: every registered group workspace, the Terraform
+    # groups then the `ready` job-made ones (`routes/roles.py` lists the
+    # same). When the registry cannot be read the rest of the page is served
+    # with no columns and the reason.
+    try:
+        workspaces = ctx.authenticator.registered_group_workspaces()
+        body["workspaces_error"] = None
+    except Exception as exc:  # noqa: BLE001 - one section, never the page
+        workspaces = {}
+        body["workspaces_error"] = getattr(exc, "code", None) or type(exc).__name__
+    rosters = workspace_rosters(ctx.roles, workspaces)
+    body["workspaces"] = grid_columns(workspaces, rosters)
+    add_role_cells(body["people"], rosters)
     try:
         pool = account_pool(request, ctx)
         body["lendable_accounts"] = people.lendable(pool, admin_email=auth.email,
@@ -241,6 +367,51 @@ def list_people(
         body["admins"] = None
         body["admins_error"] = getattr(exc, "code", None) or type(exc).__name__
     return body
+
+
+def _acting_in(ctx: AppContext, reader: PeopleReader, tenant_id: str) -> str:
+    """The group of `tenant_id` for a role write there, or the refusal. A platform
+    admin may act in any registered group workspace (`routes/roles._registered`,
+    404 otherwise) and is recorded `via: platform_admin`. A workspace admin
+    only in one `administered` found for THIS request: anything else is 403,
+    before anything is read about it, and the message names no one in it."""
+    if reader.platform:
+        return _registered(ctx, tenant_id)
+    group = (reader.workspaces or {}).get(tenant_id)
+    if group is None:
+        raise Forbidden("you administer other workspaces, not this one; nothing was changed")
+    return group
+
+
+def _via(reader: PeopleReader, requested: str) -> str:
+    return roles.VIA_PLATFORM_ADMIN if reader.platform else requested
+
+
+@router.put("/people/workspaces/{tenant_id}/role")
+def set_person_role(
+    tenant_id: str,
+    body: PersonRole,
+    reader: PeopleReader = Depends(people_reader),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """A cell of the grid: a person's own role in one group workspace. The
+    write is `routes/roles.py`'s, one signed grant and its audit row."""
+    group = _acting_in(ctx, reader, tenant_id)
+    return _set_person(ctx, tenant_id=tenant_id, group=group, by=reader.auth.email,
+                       via=_via(reader, body.via), body=body)
+
+
+@router.delete("/people/workspaces/{tenant_id}/role")
+def clear_person_role(
+    tenant_id: str,
+    body: PersonClear,
+    reader: PeopleReader = Depends(people_reader),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Back to the workspace's default role."""
+    _acting_in(ctx, reader, tenant_id)
+    return _clear_person(ctx, tenant_id=tenant_id, by=reader.auth.email,
+                         via=_via(reader, body.via), body=body)
 
 
 @router.post("/workspaces/sweep")

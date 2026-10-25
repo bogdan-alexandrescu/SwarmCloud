@@ -72,7 +72,7 @@ describe('Admin pages do not repeat admin (#136)', () => {
     await platformAdminShell('limits')
     await waitFor(() => expect(document.querySelectorAll('.sk-panel .sk-pk').length).toBeGreaterThan(0))
     const pages = [...document.querySelectorAll('.sk-panel .sk-pk')]
-    expect(pages.map((p) => p.querySelector('.sk-pl')?.textContent)).toEqual(['Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'People', 'Workspaces you admin'])
+    expect(pages.map((p) => p.querySelector('.sk-pl')?.textContent)).toEqual(['Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'People and roles', 'Workspaces you admin'])
     for (const p of pages) {
       // "Workspaces you admin" says admin in its name; what is held is the mark.
       if (p.querySelector('.sk-pl')?.textContent !== 'Workspaces you admin') expect(p.textContent ?? '').not.toMatch(/admin/i)
