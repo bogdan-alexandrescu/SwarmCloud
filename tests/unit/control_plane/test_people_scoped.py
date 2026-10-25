@@ -152,6 +152,8 @@ def test_a_workspace_admin_reads_only_their_workspaces_columns_and_people(client
     assert body["scope"] == "workspaces"
     # MUTATION: list every registered group to a workspace admin -> research is a column.
     assert columns(body) == ["eng"]
+    # Named as /v1/tenants/mine and the Admin panel name it: the group email.
+    assert body["workspaces"][0]["display_name"] == "eng@example.com"
     # MUTATION: list everyone who has signed in -> erin and carol are rows.
     assert grid(body) == {
         "alice@example.com": {"eng": "admin"},

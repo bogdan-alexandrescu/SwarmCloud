@@ -290,14 +290,14 @@ def list_people(
     rest (`People.in_workspaces`). Every write on this router stays a
     platform admin's (`admin_auth`)."""
     if scope is not None:
-        return people.in_workspaces(ctx.roles, scope, store=ctx.store)
+        return people.in_workspaces(ctx.roles, scope)
     body = people.everyone(store=ctx.store)
     body["scope"] = SCOPE_PLATFORM
     # The grid's columns fail alone, like the two sections below: a registry
     # that cannot be read leaves the list served and says why.
     try:
         columns, grants = people.role_columns(
-            ctx.roles, ctx.authenticator.registered_group_workspaces(), store=ctx.store)
+            ctx.roles, ctx.authenticator.registered_group_workspaces())
         people.add_roles(body["people"], columns, grants)
         body["workspaces"] = columns
         body["workspaces_error"] = None

@@ -6930,8 +6930,8 @@ function fixtureAdminWorkspacesRoles(): unknown {
 
 /** The grid's columns (ADMIN-PEOPLE-ROLES): eng, the personas' group, and research. */
 const FIXTURE_PEOPLE_COLUMNS = [
-  { tenant_id: FIXTURE_GROUP.tenant_id, group: FIXTURE_GROUP.principal, display_name: 'Engineering', default_role: 'member', unavailable: false },
-  { tenant_id: 'research', group: 'research@example.com', display_name: 'Research', default_role: 'viewer', unavailable: false },
+  { tenant_id: FIXTURE_GROUP.tenant_id, group: FIXTURE_GROUP.principal, display_name: FIXTURE_GROUP.principal, default_role: 'member', unavailable: false },
+  { tenant_id: 'research', group: 'research@example.com', display_name: 'research@example.com', default_role: 'viewer', unavailable: false },
 ]
 
 /**
@@ -6963,7 +6963,7 @@ function fixturePeople(): unknown {
   const people = [
     {
       email: 'carol@example.com', display_name: 'Carol', teams: [], github: 'none', roles: { eng: 'none', research: 'none' },
-      workspace: ws('requested', null, { request_id: 'wsr_c4r0l', requested_at: fixtureAgo(40 * 60_000), requested_via: 'console' }),
+      workspace: ws('requested', 'w-c4r01e', { request_id: 'wsr_c4r0l', requested_at: fixtureAgo(40 * 60_000), requested_via: 'console' }),
       claude_account: claude('none', 0, 0, []), loan_request: null,
       first_seen: fixtureAgo(45 * 60_000), last_seen: fixtureAgo(40 * 60_000), last_submitted: null, last_active: fixtureAgo(40 * 60_000),
     },

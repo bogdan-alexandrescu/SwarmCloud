@@ -1539,21 +1539,24 @@ class People:
 
     # -- the person × workspace grid (ADMIN-PEOPLE-ROLES; part of #2157) --------
 
-    def role_columns(self, role_store: Any, workspaces: Mapping[str, str], *,
-                     store: Any) -> tuple[list[dict[str, Any]], dict[str, dict[str, str] | None]]:
+    def role_columns(self, role_store: Any, workspaces: Mapping[str, str],
+                     ) -> tuple[list[dict[str, Any]], dict[str, dict[str, str] | None]]:
         """One column per group workspace in `workspaces` (tenant_id -> group),
         in its order, and each one's overrides as email -> role: one roster
         read and one default read per workspace, never one per cell. A
         workspace whose roles could not be read is a column marked
         `unavailable` with None for its overrides, so its cells say "not
-        read" and never a guessed role."""
+        read" and never a guessed role.
+
+        A column is named by its GROUP EMAIL, as `GET /v1/tenants/mine` names
+        the workspace: the switcher and the Admin panel's note print that
+        name, and the same workspace under a second name on the next line
+        reads as two workspaces (rendered review, 2026-10-25). It is unique
+        where a tenant document's label is not, and it costs no read."""
         columns: list[dict[str, Any]] = []
         grants: dict[str, dict[str, str] | None] = {}
         for tenant_id, group in workspaces.items():
-            tenant = store.get_tenant(tenant_id)
-            column: dict[str, Any] = {
-                "tenant_id": tenant_id, "group": group,
-                "display_name": getattr(tenant, "display_name", None) or group}
+            column: dict[str, Any] = {"tenant_id": tenant_id, "group": group, "display_name": group}
             try:
                 default, _ = role_store.default_role(tenant_id)
                 grants[tenant_id] = {email: g.role for email, g in role_store.overrides(tenant_id)}
@@ -1572,8 +1575,7 @@ class People:
             row["roles"] = {c["tenant_id"]: role_cell(row["email"], teams, c, grants)
                             for c in columns}
 
-    def in_workspaces(self, role_store: Any, workspaces: Mapping[str, str], *,
-                      store: Any) -> dict[str, Any]:
+    def in_workspaces(self, role_store: Any, workspaces: Mapping[str, str]) -> dict[str, Any]:
         """A WORKSPACE ADMIN'S READ (S5f): only `workspaces`, the group
         workspaces they administer, and only the people in them -- whoever was
         last seen in one (`people/{id}.teams`) or holds a role of their own in
@@ -1584,7 +1586,7 @@ class People:
         platform's admins and none of its audit. Nobody is waiting for a
         workspace admin here: a personal workspace request and a loan are a
         platform admin's to decide."""
-        columns, grants = self.role_columns(role_store, workspaces, store=store)
+        columns, grants = self.role_columns(role_store, workspaces)
         wanted = set(workspaces)
         seen: dict[str, dict[str, Any]] = {}
         for snap in self._db.collection(ws.PEOPLE).limit(MAX_PEOPLE).stream():

@@ -21,7 +21,6 @@ import { Mark } from './primitives'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead, usePoll } from './Shell'
 import { tableMode, usePhoneTables } from './capacityPoll'
-import { HelpCard } from './HelpCard'
 import { PersonWorkspaceRoles, WorkspaceRolesCard } from './WorkspaceRolesAdmin'
 import type {
   AdminAuditEntry,
@@ -215,7 +214,9 @@ function claudeText(c: PersonClaudeAccount): ReactNode {
   if (c.source === 'lent' && c.lent_accounts !== undefined && c.lent_accounts.length > 0) {
     return c.lent_accounts.map((a) => `${accountWithId(a)}, lent by ${a.owner_name ?? a.owner_tenant}`).join('; ')
   }
-  if (c.source === 'lent') return c.lent_by.length > 0 ? `lent by ${c.lent_by.join(', ')}` : `lent (${c.lent})`
+  // The lenders' tenant ids are tokens like the workspace ids beside them:
+  // "lent by u-" over "bogdan" read as a lender called "u-" (rendered review).
+  if (c.source === 'lent') return c.lent_by.length > 0 ? <>lent by <span className="pp-nobr">{c.lent_by.join(', ')}</span></> : `lent (${c.lent})`
   if (c.source === 'provider_key') return 'provider key'
   return 'none'
 }
@@ -834,10 +835,24 @@ function RoleCell({ cell, column }: { cell: PeopleRoleCell | undefined; column: 
   )
 }
 
+/**
+ * A column's head is the workspace's group email, which may break before its
+ * `@` and nowhere else: whole on one line, two of them pushed Manage behind
+ * the table's scroll at 1440 (rendered review, 2026-10-25).
+ */
 function ColumnHead({ column }: { column: PeopleWorkspaceColumn }) {
+  const at = column.display_name.indexOf('@')
   return (
     <th role="columnheader" scope="col" data-tenant={column.tenant_id} title={column.group} className="pp-wscol">
-      {column.display_name}
+      {at > 0 ? (
+        <>
+          {column.display_name.slice(0, at)}
+          <wbr />
+          {column.display_name.slice(at)}
+        </>
+      ) : (
+        column.display_name
+      )}
     </th>
   )
 }
@@ -1687,7 +1702,7 @@ export function PeopleScreen() {
   usePoll(PEOPLE_POLL_MS, people.reload, !moving)
   return (
     <div className="ur-page pp-page">
-      <PageHead title="People and roles">
+      <PageHead title="People and roles" help="people-and-roles-scope">
         <UrRefresh reads={[people]} />
       </PageHead>
       <p className="ur-sub">
@@ -1695,7 +1710,6 @@ export function PeopleScreen() {
           ? 'The people in the workspaces you administer, and their role in each.'
           : 'Every person against every workspace, what they are waiting for, and who is an admin.'}
       </p>
-      <HelpCard topic="people-and-roles-scope" />
       <UrRegion state={people.state} route="GET /v1/admin/people" what="People" plural onRetry={people.reload} lines={6}>
         {(d) => (isScoped(d) ? <ScopedBody doc={d} /> : <PeopleBody doc={d} reload={people.reload} />)}
       </UrRegion>
