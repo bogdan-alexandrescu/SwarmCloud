@@ -296,6 +296,7 @@ from .procman import ChildProcess, ChildResult, reap_foreign_processes
 from .quota import QuotaDecision, decide, read_runner_signal, signal_from_control
 from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED, SPEND_KEYS
 from .runners.cliagent import (
+    ACCOUNT_ERROR_KINDS,
     ACCOUNT_MOVE_ENV,
     ACCOUNT_STREAM_ENV,
     RESUME_MOVED,
@@ -9525,6 +9526,8 @@ class Worker:
         self._note_session(data.get("session_id"))
         # AT THE LATEST AT THE END OF THE RUN, every window not yet sent.
         self._forward_readings(data.get("readings"), final=True)
+        # Before any move: the error belongs to the account the run was on.
+        self._report_runner_error(data.get("error"))
         stopped_for = data.get("stopped_for")
         just_swapped, self._just_swapped = self._just_swapped, False
         reason: str | None = None
@@ -9552,6 +9555,31 @@ class Worker:
                 )
             return None
         return self._swap_account(reason)
+
+    def _report_runner_error(self, error: Any) -> None:
+        """The provider error the runner classified, on the held account's
+        health record (RUNNER-ERROR-KINDS, #2302). Never raises.
+
+        An overloaded 529, a 5xx or a network failure the CLI gave up on
+        (`cliagent.classify_account_error`). Health only: the broker's
+        `/account-error` route never touches AIMD, and the run itself fails
+        exactly as before. An `auth` error is not read from here; the
+        credential path reports it (`_credential_refusal`). The message was
+        redacted by the runner and is again by `report_account_error`.
+        """
+        account = self._account
+        if account is None or not isinstance(error, dict):
+            return
+        kind = error.get("kind")
+        if kind not in ACCOUNT_ERROR_KINDS:
+            return
+        message = error.get("message")
+        self.control.report_account_error(
+            provider=str(self.cfg.provider or ""),
+            account=account,
+            kind=str(kind),
+            message=message if isinstance(message, str) else "",
+        )
 
     def _swap_account(self, reason: str) -> dict[str, str] | Outcome | None:
         """Move the hold through the broker and rebuild the child's environment.
