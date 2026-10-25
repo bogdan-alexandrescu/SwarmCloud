@@ -85,6 +85,15 @@ describe('Config › MCP servers: its lead (S5a)', () => {
     expect(lead.classList.contains('is-ok')).toBe(false)
   })
 
+  it('counts the missing against the whole step only when some are elsewhere', async () => {
+    const elsewhere = await draw({ secrets: secrets([KB_MISSING]) })
+    expect(visible(elsewhere)).toContain('Secrets set · 1 of the 3 missing is here')
+    cleanup()
+    const only = await draw({ secrets: { needed: 1, done: false, items: [KB_MISSING], sources: { mcp_servers: { needed: 1, reason: null } } } })
+    expect(visible(only)).toContain('Secrets set · 1 missing')
+    expect(visible(only)).not.toContain('of the 1')
+  })
+
   it('reads the green "nothing waiting" lead, with no button, when every credential is present', async () => {
     const lead = await draw({ secrets: secrets([]) })
     expect(lead.classList.contains('is-ok')).toBe(true)
