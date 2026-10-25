@@ -39,6 +39,15 @@ reason: the run's creator asked for its pull request to be made green.
 The tenant on every route comes from `tenant_scope`, never from the body: a
 run is created in the caller's tenant (through `submit_tasks`, which runs
 `tenant_for`) and every other route reads it under that same check.
+
+A PLATFORM-SCOPE SCHEDULE'S PLAN IS A PLATFORM ADMIN'S TO DECIDE (BGD,
+2026-10-25; PLATFORM-SCHED-ROUTES, part of #2157). `plan:approve` and
+`plan:reject` of a run whose STORED `schedule.schedule_id` -- never the
+request -- names a schedule whose stored `scope.mode` is `platform` are 403
+`platform_admin_required` to anyone else, workspace admin included, before
+the run moves: the inbox's own check (`routes.approvals._platform_only`),
+with its log line. A run of a workspace-scope schedule, or of none, keeps
+the rules above exactly.
 """
 
 from __future__ import annotations
@@ -333,6 +342,18 @@ def _from_workflow(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
         tenant_id, run.id, to, by=SYSTEM,
         patch={"error": f"the run's workflow {run.workflow_id} ended {derived}"},
     )
+
+
+def platform_only(ctx: AppContext, auth: AuthContext, tenant_id: str, run: IssueRun, action: str) -> None:
+    """`routes.approvals._platform_only` over the schedule `run`'s STORED
+    reference names (PLATFORM-SCHED-ROUTES): a platform-scope schedule's run
+    is decided by a platform admin alone; no schedule, or one no longer this
+    tenant's, keeps today's rules. Imported here, not at the top: that module
+    imports this one."""
+    from .approvals import _platform_only
+
+    _platform_only(auth, approvals.read_schedule(ctx.db, tenant_id, (run.schedule or {}).get("schedule_id")),
+                   action)
 
 
 def _approve(
@@ -1129,6 +1150,7 @@ def approve_plan(
     # workspace-roles.md §4.8), before the run is read or moved.
     approvals.require_decider(ctx, auth)
     run = _runs(ctx).get(tenant_id, run_id)
+    platform_only(ctx, auth, tenant_id, run, "approve")
     if run.state != RunState.PLANNED:
         raise Conflict(
             f"run {run_id!r} is {run.state.value}; only a PLANNED run's plan can be approved",
@@ -1205,6 +1227,7 @@ def reject_plan(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     approvals.require_decider(ctx, auth)
+    platform_only(ctx, auth, tenant_id, _runs(ctx).get(tenant_id, run_id), "reject")
     run = _runs(ctx).transition(
         tenant_id, run_id, RunState.REJECTED, by=auth.email, digest=body.plan_digest,
         from_states=_PLANNED_ONLY,

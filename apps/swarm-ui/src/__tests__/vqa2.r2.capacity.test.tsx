@@ -221,6 +221,8 @@ describe('V158: a phone lands on the chosen account\'s head', () => {
   it('scrolls the page to the pane and puts focus on ‹ Accounts', async () => {
     atPhone()
     await accounts(many(40))
+    // A phone shows the first cards and "Show all" (#2222, mock-up A P1).
+    fireEvent.click(screen.getByRole('button', { name: 'Show all 40' }))
     scrolled.length = 0
     fireEvent.click(row('u-bogdan:acct-38'))
     await waitFor(() => expect(document.querySelector('.acct-split.is-detail')).not.toBeNull(), WAIT)

@@ -1317,11 +1317,18 @@ Designed 2026-10-22 for #1933 in
 [design/visual-qa-any-app.md](design/visual-qa-any-app.md) §6; **built by lane
 VQ-7** (`swarm_api/schedtypes/visual_qa.py`, the `TYPES` entry), on lane VQ-2's
 QA targets (`swarm_api/qatargets.py`). A schedule is the optional trigger; the
-on-demand one is `POST /v1/qa-targets/{id}:run`.
+on-demand one is `POST /v1/qa-targets/{id}:run`. Since lane QAENV-RUN
+(2026-10-23, #2136) a target may carry several environments, and a firing
+runs the legs it names
+([design/qa-environments.md](design/qa-environments.md) §2.2, §7).
 
 * **Does.** A firing **is the target's `:run`**, made by the schedule's
-  owner: the same `QaTargets.runnable`, `render_run` and `record_run` the
-  route calls, in its order. The one difference is that the workflow is
+  owner: the same `QaTargets.runnable_legs` (every named leg checked, and
+  each rendered, before any is submitted), `open_group` and per-leg
+  `record_run` the route calls, in its order. A firing is **one work item
+  per leg**: one run group, one workflow per leg, each within the firing's
+  room. A leg the room cannot hold is not started, said in the group and in
+  the firing's selection (`no_room`), and the next firing runs it. The one difference is that the workflow is
   submitted through the firing, so it carries the firing's mark and spends a
   place of its room. It runs with `file: "issues"`, `:run`'s default. The
   browser steps' `metadata.qa_target` is a reserved key (VQ2-RESERVE), so the
@@ -1338,8 +1345,12 @@ on-demand one is `POST /v1/qa-targets/{id}:run`.
   would page someone over a decision nobody had made yet. Refused firings
   still count toward §4.4's consecutive-failure pause, which is what stops a
   schedule whose host is never approved from refusing every day for ever.
-* **Parameters.** `target` only: a QA target id. Nothing about the run is a
-  schedule parameter. The URL, sign-in, screens, flows and filing rules all
+* **Parameters.** `target`, a QA target id, and optional `environments`,
+  the target's entries to run by name (1 to 8 unique names, every entry
+  when unset). Each name is checked against the target at create, at edit
+  and at every firing; a name the target lacks is refused
+  `qa_target_environment_unknown`. Nothing else about the run is a schedule
+  parameter. The URL, sign-in, screens, flows and filing rules all
   belong to the target, which a workspace admin sets (design §1.1). So a
   schedule can only start a run a member could start by hand (invariant 10).
 * **The tenant.** The target must be the schedule's tenant's own. At create
@@ -1358,18 +1369,25 @@ on-demand one is `POST /v1/qa-targets/{id}:run`.
   application.
 * **Gate.** Run and plan auto, merge **off**, and the floor is the same. It
   files issues and changes no code, so there is no merge gate to set.
-* **Budget.** `BUDGET_CAPS` in the executor: `per_run_usd` 40, `per_day_usd`
-  80, `max_concurrent` 1, set by BGD on 2026-10-22 (VQ7-CAPS, #1933) from the
-  first measured run: the full-console QA run 5b (`wf_025ae735511546d99eff`,
-  17 steps, 362 screenshots) cost $23.62, 94% of the $25 per run the type
-  first shipped with. $40 leaves headroom over that run; $80 a day is the
-  daily firing plus one run-now.
-* **Produces.** One QA workflow per firing. Its findings are filed as issues
-  in the target's repository by the workflow's `file` step, through the
-  brokered issue tools (design §5).
+* **Budget.** `BUDGET_CAPS` in the executor: `per_run_usd` 40 a leg,
+  `per_day_usd` 160, `max_concurrent` 2, set by BGD on 2026-10-23
+  ([design/qa-environments.md](design/qa-environments.md) §10, Q9 (a)).
+  `per_run_usd` is a tripwire per work item, and a leg is one, so $40 bounds
+  each leg as it bounded a run; `max_concurrent` 2 lets a two-leg firing
+  start both legs; $160 a day keeps the daily firing plus one run-now for
+  both legs. A schedule may set lower figures. The history: BGD first set
+  $40 a run, $80 a day and one at a time on 2026-10-22 (VQ7-CAPS, #1933)
+  from the first measured run, the full-console QA run 5b
+  (`wf_025ae735511546d99eff`, 17 steps, 362 screenshots), which cost $23.62,
+  94% of the $25 per run the type first shipped with. A leg also pays its
+  capture steps' crawl, which no run had measured when the caps were set.
+* **Produces.** One run group per firing and one QA workflow per leg. Each
+  leg's findings are filed as issues in the target's repository by that
+  workflow's `file` step, through the brokered issue tools (design §5), one
+  issue per finding per leg, titled `[<leg>]`.
 * **Blast radius.** Issues in one repository the tenant registered, at most
-  the target's `max_issues` per run, and read-only traffic to one approved
-  host at the target's rate.
+  the target's `max_issues` per leg, and read-only traffic to each named
+  leg's approved origins at that leg's rate.
 
 ### 3.18 `image-tool-rescan`
 

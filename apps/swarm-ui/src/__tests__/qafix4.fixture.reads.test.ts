@@ -172,7 +172,7 @@ describe('Runner sizes are served (F2, admin-002)', () => {
 describe('the people list is served (F3, admin-003)', () => {
   it('some signed in, one pending, one admin', async () => {
     const api = await apiAs('platform-admin')
-    const doc = ok(await api.loadPeople(), 'GET /v1/admin/people')
+    const doc = ok(await api.loadPeople(), 'GET /v1/admin/people') as import('../types').PeopleDoc
     // MUTATION: leave loadPeople answering repoNotServed -> fails.
     expect(doc.people.length).toBeGreaterThan(2)
     expect(doc.people.filter((p) => p.last_seen !== null).length, 'signed in').toBeGreaterThan(1)
