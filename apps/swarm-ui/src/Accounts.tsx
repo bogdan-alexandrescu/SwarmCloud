@@ -29,7 +29,7 @@ import { AccountsTable } from './AccountsTable'
 import { AcctState } from './AccountState'
 import { DuplicateBanner, Forecast, RuleLine, Verdict, usePoolWaiting } from './AccountsVerdict'
 import { agoPastDay, type PoolAccount } from './accountsPool'
-import { AgentCap, SheetAccount, SheetDuplicate, SheetForecast, SheetVerdict, SheetWindows } from './AccountSheet'
+import { AgentCap, SheetAccount, SheetDuplicate, SheetForecast, SheetHealth, SheetVerdict, SheetWindows } from './AccountSheet'
 import {
   FIVE_HOUR,
   SEVEN_DAY,
@@ -1319,6 +1319,9 @@ function Detail({
         )}
       </ul>
       <SheetForecast a={pool} now={now} />
+      {/* ITS HEALTH (#2302, mock-up A's F2): after the facts, before the
+          actions. One read when the sheet opens; it never polls. */}
+      <SheetHealth a={pool} owned={owned} />
       {/* THE ACTIONS THE PAGE HAD, each with its own behaviour and
           confirmation: Pause and Drain (state), Replace the credential,
           Refresh, the served classes, and Remove last. */}

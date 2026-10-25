@@ -324,7 +324,7 @@ describe('F4 (A): empty and honest states', () => {
     })
     render(<SheetHealth a={account()} owned />)
     const s = await section()
-    expect(within(s).getByRole('alert').textContent).toContain('The health record could not be read: the broker did not answer.')
+    expect(s.querySelector('.acct-hs-unread')!.textContent).toContain('The health record could not be read: the broker did not answer.')
     expect(s.textContent).toContain('unknown until a read succeeds, not zero')
     expect(s.textContent).not.toMatch(/\b0\b/)
     api.loadAccountHealth.mockResolvedValueOnce(ok(limited()))
