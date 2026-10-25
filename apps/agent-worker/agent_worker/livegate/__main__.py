@@ -24,9 +24,11 @@ this order:
    presets.py), touch (touch.py) and the session carry (session.py). The
    dispatcher's startup probe is `test -S <ctl.sock>`, so the worker starts
    only once this socket exists, and its registration is the first (§5.4.2).
-4. THE VIEW. The capture loop (capture.py) paints every frame with the mask
-   (mask.py, observer.js, on a gate-only CDP session on the page on screen)
-   before the RFB server (rfb.py) may publish it; the tunnel to the relay
+4. THE VIEW. The capture loop (capture.py) publishes every frame to the RFB
+   server (rfb.py) as Chromium drew it: nothing is painted over any part of
+   it, in any situation (§5.3; owner decision, BGD 2026-10-25). A gate-only
+   CDP session on the page on screen (mask.py) watches for a challenge and
+   for the browser closing, and never touches a pixel. The tunnel to the relay
    (tunnel.py) opens when the worker hands over a ticket, and each viewer is
    an RFB stream through it, with the controller's input injected only in
    control mode.
@@ -69,8 +71,8 @@ credential BEFORE Chromium closes, and the verb is refused after it.
 A CAPTCHA ON THE AGENT'S PAGE IS A HAND-OFF THE GATE RAISES (CAPTCHA-HANDOFF;
 docs/design/live-browser.md §4.1, part of #2058). BGD decided on 2026-10-23
 that an agent need not notice a CAPTCHA itself: when a frame on the page the
-follower shows is a challenge (mask.py `SHOWN_IN_CONTROL`, the list the mask
-and tabs.py already read), the mask tells `_on_challenge` once per page load,
+follower shows is a challenge (mask.py `SHOWN_IN_CONTROL`, the list mask.py
+and tabs.py already read), `MaskState` tells `_on_challenge` once per page load,
 and the gate puts one request in `status` (`challenge`: `request_id`, the
 reason "CAPTCHA on <host>", host only, and `expect` that host). ctl.sock is
 the worker's to call, so the request waits there for the worker's next read;
@@ -128,7 +130,7 @@ from .device import WINDOW_OVERHANG, DeviceController, XRandrDisplay, captured
 from .. import browser_tools
 from .egress import EgressConfigError, EgressSettings, LocalForwarder, chromium_proxy_args, describe, notice_url
 from .inject import InjectError, XInjector, display_socket
-from .mask import REASON_SWITCHING, MaskCdp, MaskState
+from .mask import MaskCdp, MaskState
 from .pointer import css_to_frame
 from .presets import DEFAULT_PRESET, MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH, Device, UnknownPreset, resolve
 from .qaidentity import OP as QA_IDENTITY_OP
@@ -137,7 +139,7 @@ from .qatarget import OP as QA_SIGN_IN_OP
 from .qatarget import QaTarget, QaTargetRefused
 from .qatarget import handle_ctl as qa_target_ctl
 from .report import agent_report, browser_report, device_report, egress_report, encode_report, page_origin
-from .rfb import ControlState, FrameHub, RfbSession, masked
+from .rfb import ControlState, FrameHub, RfbSession
 from .rfb import metrics_log as rfb_metrics_log
 from .session import OPS as SESSION_OPS
 from .session import SessionCarry
@@ -160,8 +162,8 @@ CHROMIUM_READY_SECONDS = 45.0
 TUNNEL_OPEN_SECONDS = 8.0
 #: Frames per second while a person holds control (STREAM-SMOOTH; part of
 #: #1030). Measured with `livegate.bench` (the numbers are in the pull
-#: request): a changed Desktop frame costs the gate about 1 ms to grab, 0.1 ms
-#: to mask and a few ms to diff and encode, so 30 a second fits one core with
+#: request): a changed Desktop frame costs the gate about 1 ms to grab and a
+#: few ms to diff and encode, so 30 a second fits one core with
 #: room for the recorder. 30 is what a screen-sharing viewer reads as motion
 #: rather than steps, and with a 16 ms browser paint it puts the next frame
 #: after a key within ~50 ms; the viewer pulls at its own pace on top of this
@@ -242,13 +244,13 @@ VISIBLE_PROBE_SECONDS = 2.0
 #: The isolated world the visibility probe reads `document.visibilityState`
 #: in: a world no page script can reach, so a page cannot claim to be shown.
 VISIBLE_WORLD = "swarm-live-visible"
-#: Agent commands after which another tab may be on screen. The mask holds
-#: (`MaskState.hold`) from the moment one is forwarded until the follower has
-#: looked again, and at most `TAB_SWITCH_HOLD_SECONDS` if it never answers.
+#: Agent commands after which another tab may be on screen. The follower looks
+#: which tab is shown when one is forwarded, when Chromium answers it, and
+#: again `TAB_SWITCH_LOOK_AGAIN_SECONDS` later in case it never answers.
 TAB_SWITCH_METHODS = frozenset({
     "Target.createTarget", "Target.activateTarget", "Target.closeTarget", "Page.bringToFront", "Page.close",
 })
-TAB_SWITCH_HOLD_SECONDS = 5.0
+TAB_SWITCH_LOOK_AGAIN_SECONDS = 5.0
 
 #: CHROMIUM IS STARTED AGAIN WHEN IT EXITS UNEXPECTEDLY (BROWSER-RELAUNCH;
 #: part of #1030), at most this many times in this many seconds, then it
@@ -618,9 +620,8 @@ class GateProxy(CdpProxy):
 
     It also tells the page follower when the agent asks Chromium to open,
     close or bring forward a tab (`TAB_SWITCH_METHODS`): `on_tab_switch` as
-    the command is forwarded, so the mask holds before the switch can happen,
-    and `on_tab_switched` when Chromium has answered it, so the follower looks
-    which tab is shown after it did (LIVE-BLANK).
+    the command is forwarded, and `on_tab_switched` when Chromium has answered
+    it, so the follower looks which tab is shown after it did (LIVE-BLANK).
     """
 
     agent_seen = False
@@ -692,44 +693,42 @@ def redacted_stderr(lines: list[str]) -> list[str]:
 
 
 class PageFollower:
-    """Which page is on screen, and the mask's gate-only session on it.
+    """Which page is on screen, and the gate-only session on it (mask.py `MaskCdp`).
 
     The display holds one window (§3.1), and the page on screen is its tab
-    Chromium shows. Between pages the mask's session is down, so every frame
-    is the blank "masking unavailable" frame: it fails closed.
+    Chromium shows. The session watches that page's frames for a challenge
+    (CAPTCHA-HANDOFF) and its top frame's origin for the caption (report.py);
+    it never touches a pixel, so every frame is published as captured whether
+    the session is up or not (§5.3, LIVE-NOMASK).
 
     WHICH TAB IS SHOWN IS ASKED, NOT GUESSED (LIVE-BLANK; part of #1030). The
     follower used to follow the NEWEST page target, on the rule that "the
     visible tab is the one opened last", and on start the last one
-    `Target.getTargets` listed. MEASURED 2026-10-13 on release 1e86c37e: on
-    task_2ac5d7e22a51460995a2, at Google's reCAPTCHA page, and on
-    task_9d2890cce74147f985ff, the page area was the mask's flat #222 for ten
-    minutes and more; on task_84cb2038aa704c829d48's resumed attempt the whole
-    frame was the "unavailable" #555. An agent driving Chromium over the CDP
-    proxy (Playwright MCP, swarm_browser) opens tabs and brings others
-    forward, and a profile restored on a resumed attempt brings back several
-    tabs in an order that says nothing about which is shown. A followed tab
-    that is not shown runs no animation frames, so its observer never
-    measures again; its first layout change after that left its report stale
-    for good, and the page area of the tab that WAS shown blanked with it.
+    `Target.getTargets` listed. MEASURED 2026-10-13 on release 1e86c37e: the
+    gate followed a tab that was not on screen for ten minutes and more. An
+    agent driving Chromium over the CDP proxy (Playwright MCP, swarm_browser)
+    opens tabs and brings others forward, and a profile restored on a resumed
+    attempt brings back several tabs in an order that says nothing about
+    which is shown; a caption and a challenge watch on a tab nobody sees are
+    about the wrong page.
 
     So `check` asks every page for `document.visibilityState`, in an isolated
     world (`VISIBLE_WORLD`) no page script can reach, and follows the shown
     one -- of several (a second window: the gate's own fresh page), the one
     shown most recently. It runs on start, when a tab is created or
-    destroyed, after the agent's every tab command (`TAB_SWITCH_METHODS`,
-    while the mask holds), and every `VISIBLE_POLL_SECONDS`. A Chromium that
-    answers no probe at all gets the old rule, the newest page.
+    destroyed, after the agent's every tab command (`TAB_SWITCH_METHODS`),
+    and every `VISIBLE_POLL_SECONDS`. A Chromium that answers no probe at
+    all gets the old rule, the newest page.
 
-    OUT-OF-PROCESS FRAMES. The mask's install asks Chromium to auto-attach
-    the page's cross-site iframes (mask.py `MaskCdp`); each one's session is
-    a CHILD of the page's, and the follower installs the observer on it
-    (`MaskCdp(child=True)`) and routes its events, so a cross-site frame --
-    an ad, an embedded sign-in -- is shown and masked rather than covered.
+    OUT-OF-PROCESS FRAMES. The install asks Chromium to auto-attach the
+    page's cross-site iframes (mask.py `MaskCdp`); each one's session is a
+    CHILD of the page's, and the follower installs `MaskCdp(child=True)` on
+    it and routes its events, so a reCAPTCHA in a renderer of its own is
+    still seen as a challenge.
 
-    The mask's handlers await replies (`MaskCdp.link`), and the pipe reader
-    must never wait on a reply (cdpproxy.py), so its events are queued here
-    and handled on a task of their own, in order.
+    The pipe reader must never wait on a reply (cdpproxy.py), so the
+    session's events are queued here and handled on a task of their own, in
+    order.
 
     The page it follows is the page on screen, so its top frame's origin is
     the one the console's strip shows (§5.7, report.py): `on_origin` is told
@@ -742,16 +741,17 @@ class PageFollower:
     and the strip "has not reported the page's address yet", for good. The
     follower used to give up on its page in three ways, each silent and each
     permanent: its session detached (`Target.detachedFromTarget`) and nothing
-    attached again; an attach answered but the mask's install then failed,
-    which left `_session` set on a dead session, so every later `follow` of
-    that page returned early as if all were well; and a crashed renderer kept
-    a session whose observer was gone. Now each of those -- and a follow that
+    attached again; an attach answered but the install then failed, which
+    left `_session` set on a dead session, so every later `follow` of that
+    page returned early as if all were well; and a crashed renderer kept a
+    session that heard nothing more. Now each of those -- and a follow that
     raised -- starts ONE reconnect loop (`_reconnect`): it re-reads the pages
-    Chromium has, attaches to the current one (or the newest), re-injects the
-    observer, and retries on `RECONNECT_DELAYS` until one holds. With no page
+    Chromium has, attaches to the current one (or the newest), installs
+    again, and retries on `RECONNECT_DELAYS` until one holds. With no page
     left it says so (`closed`) and the next page Chromium creates is followed.
     `state` is what the gate tells the timeline: `following`, `reconnecting`
-    (the mask is down while it does), or `closed` (the agent has no page).
+    (the caption and the challenge watch are down while it does), or
+    `closed` (the agent has no page).
     """
 
     def __init__(self, cdp: CdpProxy, state: MaskState,
@@ -771,11 +771,10 @@ class PageFollower:
         self.current: str | None = None
         self.state = "none"
         self._session: str | None = None
-        #: The session is attached but what the mask installed on it is gone (a crash).
+        #: The session is attached but its renderer is gone (a crash).
         self._stale = False
-        self._mask: MaskCdp | None = None
-        #: The mask on every session this follow holds: the page's and its
-        #: out-of-process frames', by session id.
+        #: The `MaskCdp` on every session this follow holds: the page's and
+        #: its out-of-process frames', by session id.
         self._masks: dict[str, MaskCdp] = {}
         #: Out-of-process frame sessions under the page's: session -> targetId.
         self._children: dict[str, str] = {}
@@ -834,7 +833,7 @@ class PageFollower:
             target = info.get("targetId")
             if info.get("type") == "page" and isinstance(target, str) and target not in self.pages:
                 self.pages.append(target)
-                # A new tab is usually shown at once: hold until it is looked at.
+                # A new tab is usually shown at once: look.
                 self.tab_switching()
         elif method == "Target.targetDestroyed":
             target = params.get("targetId")
@@ -853,10 +852,8 @@ class PageFollower:
                     self._forget_probe(page)
             if self._session is not None and gone == self._session:
                 self._session = None
-                self._mask = None
                 self._masks.clear()
                 self._children.clear()
-                self._state.session_down()
                 if self.current is not None:
                     # Its page may well still be there (a renderer swap, a session
                     # Chromium dropped): attach again rather than stay grey.
@@ -869,7 +866,7 @@ class PageFollower:
         if not isinstance(child, str):
             return
         if info.get("type") != "iframe":
-            # A worker or anything else the auto-attach brought: the mask has no use for it.
+            # A worker or anything else the auto-attach brought: no frame to watch.
             self._spawn_quiet(self._cdp.call("Target.detachFromTarget", {"sessionId": child}))
             return
         self._children[child] = str(info.get("targetId", ""))
@@ -877,41 +874,29 @@ class PageFollower:
         async def send(method: str, params: dict[str, Any]) -> dict[str, Any]:
             return await self._cdp.call(method, params, child)
 
-        mask = MaskCdp(self._state, send, child=True)
-        self._masks[child] = mask
-        self._spawn_quiet(self._install_child(mask))
-
-    async def _install_child(self, mask: MaskCdp) -> None:
-        """The observer on an out-of-process frame's session, then its link.
-
-        A frame out of process before this page was followed never attached
-        on the page's session, so nothing there linked it: every session's
-        mask links what it can place once the frame is known (#1344).
-        """
-        await mask.install()
-        for other in list(self._masks.values()):
-            await other.relink()
+        watch = MaskCdp(self._state, send, child=True)
+        self._masks[child] = watch
+        self._spawn_quiet(watch.install())
 
     def tab_switching(self) -> None:
-        """Another tab may be about to be shown: hold the mask and look. Never waits."""
+        """Another tab may be about to be shown: look, now and once more later. Never waits."""
         if self._closing:
             return
-        self._state.hold(REASON_SWITCHING)
         self._spawn(self.check())
-        self._spawn_quiet(self._release_after(TAB_SWITCH_HOLD_SECONDS))
+        self._spawn_quiet(self._check_after(TAB_SWITCH_LOOK_AGAIN_SECONDS))
 
     def tab_switched(self) -> None:
         """Chromium answered the agent's tab command: look which tab it shows now."""
         if not self._closing:
             self._spawn(self.check())
 
-    async def _release_after(self, seconds: float) -> None:
-        """A tab command Chromium never answered must not hold the mask for ever."""
+    async def _check_after(self, seconds: float) -> None:
+        """A tab command Chromium never answered is looked at again."""
         await asyncio.sleep(seconds)
         await self.check()
 
     async def check(self) -> None:
-        """Follow the tab Chromium shows, then let the mask trust reports again."""
+        """Follow the tab Chromium shows."""
         if self._checking:
             self._check_again = True
             return
@@ -925,7 +910,6 @@ class PageFollower:
                     break
         finally:
             self._checking = False
-            self._state.release()
 
     async def _watch(self) -> None:
         while not self._closing:
@@ -958,7 +942,7 @@ class PageFollower:
         if all(self._shown_last.get(p) is None for p in live):
             return live[-1]  # a Chromium that answers no probe: the newest page
         if self.current in live:
-            return self.current  # none shown (a minimised window): stay, the mask says why
+            return self.current  # none shown (a minimised window): stay
         unknown = [p for p in live if self._shown_last.get(p) is None]
         return unknown[-1] if unknown else live[-1]
 
@@ -1009,16 +993,14 @@ class PageFollower:
             self._spawn_quiet(self._cdp.call("Target.detachFromTarget", {"sessionId": session}))
 
     def _crashed(self) -> None:
-        """The page's renderer is gone, and with it the observer: fail closed and re-attach."""
+        """The page's renderer is gone: re-attach."""
         self._stale = True
-        self._mask = None
-        self._state.session_down()
         self.recover("crashed")
 
     def recover(self, cause: str, exc: BaseException | None = None) -> None:
         """Start the reconnect loop, unless one is running. Never waits."""
         if exc is not None:
-            log.info("live gate: mask follow failed (%s)", type(exc).__name__)
+            log.info("live gate: page follow failed (%s)", type(exc).__name__)
         if self._closing:
             return
         if self._reconnecting is not None and not self._reconnecting.done():
@@ -1064,7 +1046,7 @@ class PageFollower:
         async def run() -> None:
             try:
                 await work
-            except Exception as exc:  # noqa: BLE001 -- the frame stays covered; the session is gone
+            except Exception as exc:  # noqa: BLE001 -- the session is gone
                 log.info("live gate: page follower side task failed (%s)", type(exc).__name__)
 
         task = asyncio.get_running_loop().create_task(run())
@@ -1085,10 +1067,8 @@ class PageFollower:
             if target is None and self.current is None and self.state == "closed":
                 return
             old, old_session = self.current, self._session
-            self._state.session_down()
             self._session = None
             self._stale = False
-            self._mask = None
             self._masks.clear()
             self._children.clear()
             if old is not None:
@@ -1112,18 +1092,15 @@ class PageFollower:
                 return await self._cdp.call(method, params, session)
 
             try:
-                mask = MaskCdp(self._state, send)
-                self._mask = mask
-                self._masks[session] = mask
-                await mask.install()
+                watch = MaskCdp(self._state, send)
+                self._masks[session] = watch
+                await watch.install()
                 tree = await send("Page.getFrameTree", {})
             except BaseException:
-                # Never leave a session the mask is not installed on looking
+                # Never leave a session nothing is installed on looking
                 # followed: the next `follow` of this page would return early.
-                self._state.session_down()
                 if self._session == session:
                     self._session = None
-                    self._mask = None
                     self._masks.clear()
                     self._children.clear()
                 try:
@@ -1132,7 +1109,7 @@ class PageFollower:
                     pass
                 raise
             if self._session != session:
-                return  # it detached while the mask installed; the reconnect loop has it
+                return  # it detached while it installed; the reconnect loop has it
             self._top_frame((tree.get("frameTree") or {}).get("frame") or {})
             self._set_state("following")
 
@@ -1148,15 +1125,15 @@ class PageFollower:
     async def _drain(self) -> None:
         while True:
             session, method, params = await self._queue.get()
-            mask = self._masks.get(session)
-            if mask is None:
+            watch = self._masks.get(session)
+            if watch is None:
                 continue
             if method == "Page.frameNavigated" and session == self._session:
                 self._top_frame(params.get("frame") or {})
             try:
-                await mask.on_event(method, params)
-            except Exception as exc:  # noqa: BLE001 -- one event; the mask fails closed
-                log.info("live gate: mask event failed (%s)", type(exc).__name__)
+                await watch.on_event(method, params)
+            except Exception as exc:  # noqa: BLE001 -- one event
+                log.info("live gate: page event failed (%s)", type(exc).__name__)
 
     def halt(self) -> None:
         """Chromium's pipe closed: there is no page to reconnect to, ever."""
@@ -1174,8 +1151,6 @@ class PageFollower:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        self._state.session_down()
-        self._state.release()
 
 
 # --------------------------------------------------------------------------
@@ -1225,9 +1200,10 @@ class LiveGate:
         #: which launches no browser.
         self.startup: dict[str, float] = {}
         self.desktop = resolve(DEFAULT_PRESET)
-        #: The event log hears of every challenge frame shown in a hand-off (mask.py SHOWN_IN_CONTROL).
-        #: It tells `_on_challenge` of a challenge on the agent's page, once per load.
-        self.mask_state = MaskState(record=self.record, on_challenge=self._on_challenge)
+        #: The page on screen's challenges (mask.py SHOWN_IN_CONTROL): it tells
+        #: `_on_challenge` of one on the agent's page, once per load. And the
+        #: desktop name once the browser closed (`REASON_BROWSER_CLOSED`).
+        self.mask_state = MaskState(on_challenge=self._on_challenge)
         #: The hand-off the gate asks the worker for (CAPTCHA-HANDOFF), in
         #: `status` until the worker's `pause` takes it off; None otherwise.
         self.challenge: dict[str, Any] | None = None
@@ -1488,7 +1464,7 @@ class LiveGate:
             raise SetupError(f"Chromium refused Browser.getVersion ({type(version.exception()).__name__})")
         # CDP answered: the browser is up, whatever is applied to it next.
         self.startup.setdefault("browser_ready", self._wall())
-        self.devices = DeviceController(self.proxy, self.deps.open_display(self.cfg), self.mask_state,
+        self.devices = DeviceController(self.proxy, self.deps.open_display(self.cfg),
                                         record=self.record, on_resize=self._on_resize,
                                         on_change=self._device_changed)
         try:
@@ -1496,7 +1472,7 @@ class LiveGate:
             if previous is not None and (previous.name, previous.orientation) != (
                     self.devices.device.name, self.devices.device.orientation):
                 await self.devices.select(previous.name, previous.orientation)
-        except Exception as exc:  # noqa: BLE001 -- the desktop still works; the mask fails closed
+        except Exception as exc:  # noqa: BLE001 -- the desktop still works
             preset = previous.name if previous is not None else DEFAULT_PRESET
             self.record("device_failed", {"preset": preset, "cause": type(exc).__name__})
             log.warning("live gate: device not applied (%s)", type(exc).__name__)
@@ -1505,7 +1481,7 @@ class LiveGate:
             self._device_changed(self.devices.device)
         self.pages = PageFollower(self.proxy, self.mask_state, on_origin=self._origin_changed,
                                   on_state=self._page_state)
-        # The agent's own tab commands: the mask holds until the follower has looked (LIVE-BLANK).
+        # The agent's own tab commands: the follower looks which tab is shown (LIVE-BLANK).
         self.proxy.on_tab_switch = self.pages.tab_switching
         self.proxy.on_tab_switched = self.pages.tab_switched
         await self.pages.start()
@@ -1531,7 +1507,7 @@ class LiveGate:
                  if self.ctl.restarted else "")
 
     async def start_view(self) -> None:
-        """4. Capture -> mask -> RFB; the tunnel opens on the worker's ticket."""
+        """4. Capture -> RFB; the tunnel opens on the worker's ticket."""
         self.framebuffer = self.deps.open_framebuffer(self.cfg)
         self._tasks["capture"] = asyncio.create_task(self._capture())
 
@@ -1550,7 +1526,6 @@ class LiveGate:
         if not expected:
             log.warning("live gate: chromium closed its pipe")
         self.browser_closed = True
-        self.mask_state.session_down()
         if self.pages is not None:
             self.pages.halt()
         if self.devices is not None:
@@ -1682,15 +1657,15 @@ class LiveGate:
     # -- capture ------------------------------------------------------------
 
     async def _capture(self) -> None:
-        """Grab, mask, publish, at `capture_fps` for who is there.
+        """Grab and publish, at `capture_fps` for who is there.
 
         The grab -- a 4 MB copy out of Xvfb's mapping, and the device crop --
         runs on a thread, so the event loop that reads the controller's input
-        is never held by it. The mask runs here on the loop: `MaskState` is fed
-        by the CDP events on this loop and is single-threaded, and painting a
-        few boxes costs a tenth of a millisecond (livegate.bench). The wait to
-        the next frame counts the work already done, so 30 a second is 30, and
-        it ends early when control changes hands.
+        is never held by it. The frame is published as captured: nothing is
+        painted over any part of it, in any situation (§5.3; owner decision,
+        BGD 2026-10-25). The wait to the next frame counts the work already
+        done, so 30 a second is 30, and it ends early when control changes
+        hands.
         """
         loop = asyncio.get_running_loop()
         failing = False
@@ -1702,15 +1677,11 @@ class LiveGate:
             device = self.devices.device if self.devices is not None else self.desktop
             try:
                 frame = await asyncio.to_thread(self._grab, device)
-                # Read after the grab, as the mask is applied: a resume in
-                # between is the agent driving again.
-                self.mask_state.set_in_control(self.person_in_control)
-                published = masked(frame, self.mask_state)
             except Exception as exc:  # noqa: BLE001 -- see below
                 # NOTHING IS SENT FOR THIS FRAME, AND THE LOOP GOES ON
                 # (LIVE-BLANK). Only `CaptureError` was caught here, so any
-                # other failure -- a header caught mid-rewrite, a mask that
-                # raised -- ended the capture task in silence: the viewer kept
+                # other failure -- a header caught mid-rewrite -- ended the
+                # capture task in silence: the viewer kept
                 # the hub's first blank for good and `first_frame` never came.
                 if not failing:
                     log.warning("live gate: capture failed (%s); nothing is sent",
@@ -1719,7 +1690,7 @@ class LiveGate:
                 await self._pace(started + 1.0 / fps)
                 continue
             failing = False
-            self.hub.publish(published)
+            self.hub.publish(frame, reason=self.mask_state.reason)
             # The first frame the stream is given: the capture runs only while
             # an RFB stream (a viewer, or the relay's recorder) is open, and
             # every stream sends from the hub this was published to.
@@ -1730,7 +1701,7 @@ class LiveGate:
             await self._pace(started + 1.0 / fps)
 
     def _grab(self, device: Any) -> Frame:
-        """On a thread: the screen, cut to the device's frame. Unmasked: never published from here."""
+        """On a thread: the screen, cut to the device's frame."""
         return captured(self.framebuffer.grab(), device)
 
     async def _pace(self, until: float) -> None:
@@ -1751,18 +1722,6 @@ class LiveGate:
     def control_changed(self) -> None:
         """Control was granted or released: the capture rate follows at once."""
         self._rate_changed.set()
-
-    @property
-    def person_in_control(self) -> bool:
-        """A person holds control -- a hand-off, or take-control -- and the agent is held.
-
-        The mask shows a challenge frame unchecked only then (mask.py
-        `SHOWN_IN_CONTROL`, issue #1340): never while the agent drives, so
-        never once `resume` has begun handing the agent its page back.
-        """
-        if self.proxy is None or not self.proxy.paused:
-            return False
-        return self._handed_off or self._episode is not None
 
     def _agent_pointer(self, x: float, y: float) -> None:
         """The agent's `Input.dispatchMouseEvent`, in CSS pixels: where watchers see the pointer (pointer.py)."""
@@ -2053,7 +2012,7 @@ class LiveGate:
         }
 
     def _on_challenge(self, host: str) -> None:
-        """The mask saw a challenge on the page it follows: ask for a person (module docstring).
+        """The page watch (mask.py) saw a challenge on the page it follows: ask for a person (module docstring).
 
         Not on the gate's own QA sign-in tab (`qa_target.signing_in`: its
         challenge ends the sign-in), and not while a person already holds the
@@ -2471,8 +2430,6 @@ class LiveGate:
         # the agent finished until the pod stops, not that the gate lost the page.
         if cause == "attempt_end":
             self.mask_state.browser_closed()
-        else:
-            self.mask_state.session_down()
         self._origin_changed(None)
         removed = 0
         try:

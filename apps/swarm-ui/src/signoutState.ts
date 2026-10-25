@@ -58,6 +58,7 @@ export const USER_KEYS: readonly string[] = [
   'swarm.workflows.recent', // Spine.tsx RECENT_WORKFLOWS_KEY
   'swarm.workflows.newest', // Spine.tsx NEWEST_WORKFLOWS_KEY
   'swarm.timeline.view', // Activity.tsx VIEW_KEY: a saved filter query
+  'swarm.access.owner', // Access.tsx CHOSEN_OWNER_KEY: the phone chooser's owner (sessionStorage)
   SIGNED_OUT_KEY,
 ]
 
@@ -74,6 +75,7 @@ export const BROWSER_KEYS: readonly string[] = [
   LIST_SNAP_PREF,
   'swarm.repograph.drawing', // RepoGraph.tsx DRAWING_KEY
   DIFF_VIEW_KEY,
+  'swarm.schedule.history.view', // ScheduleHistoryTimeline.tsx HISTORY_VIEW_KEY: Timeline or Table
 ]
 
 function ours(key: string): boolean {

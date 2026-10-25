@@ -143,11 +143,24 @@ function pushAnswer(check: Record<string, unknown>, failures: unknown[] = [], pu
   return body
 }
 
-async function mount() {
+/**
+ * GitHub access (its Connection tab, or Choose repositories at `?view=choose`)
+ * beside "Repositories SwarmCloud may reach as you", which moved out of it to
+ * ReachableRepositories.tsx for Config › Repositories (GITHUB-ACCESS-PAGE,
+ * part of #2157). The cases here act on both, as one person would.
+ */
+async function mount(at: 'mine' | 'choose' = 'mine') {
+  if (at === 'choose') window.history.replaceState(null, '', '/config/github?view=choose')
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
   const { AccessScreen } = await import('../Access')
-  return render(<AccessScreen />)
+  const { ReachableRepositoriesRead } = await import('../ReachableRepositories')
+  return render(
+    <>
+      <AccessScreen />
+      <ReachableRepositoriesRead />
+    </>,
+  )
 }
 
 const grantRow = (repository: string) => document.querySelector(`li.ac-grant[data-repo="${repository}"]`) as HTMLElement
@@ -172,6 +185,7 @@ async function runPushTest(answer: unknown) {
 afterEach(() => {
   vi.unstubAllEnvs()
   vi.restoreAllMocks()
+  window.history.replaceState(null, '', '/config/github')
 })
 
 describe('the opt-in push test (D6)', () => {
@@ -236,7 +250,7 @@ describe('the opt-in push test (D6)', () => {
 describe('owners: via token, and an install someone else approves', () => {
   it('says an owner enabled through the person\'s token is via token', async () => {
     api()
-    await mount()
+    await mount('choose')
     await screen.findByRole('list', { name: 'Owners your connection reaches' })
     expect(visible(owner('example-tok'))).toContain('via token')
     expect(visible(owner('example-org'))).not.toContain('via token')
@@ -249,7 +263,7 @@ describe('owners: via token, and an install someone else approves', () => {
         ? { status: 200, body: { tenant_id: 'eng', recorded: true, install_url: INSTALL_URL, org: ORG('example-new', { install_state: 'requested', enabled: false }) } }
         : null,
     )
-    await mount()
+    await mount('choose')
     await screen.findByRole('list', { name: 'Owners your connection reaches' })
     fireEvent.click(within(owner('example-new')).getByRole('button', { name: 'Request install' }))
     await waitFor(() => expect(calls.filter((c) => c.method === 'POST' && c.url === '/v1/access/orgs/example-new/install-request')).toHaveLength(1))
@@ -258,7 +272,7 @@ describe('owners: via token, and an install someone else approves', () => {
 
   it('draws ORG_APPROVAL_PENDING\'s copy word for word on a requested org, with Re-check and Withdraw', async () => {
     api()
-    await mount()
+    await mount('choose')
     await screen.findByRole('list', { name: 'Owners your connection reaches' })
     const row = owner('example-wait')
     expect(visible(row)).toContain(PENDING_COPY)

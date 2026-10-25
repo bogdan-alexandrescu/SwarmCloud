@@ -39,7 +39,6 @@ import pytest
 
 from agent_worker.livegate import ctl, inject, rfb
 from agent_worker.livegate.capture import Frame
-from agent_worker.livegate.mask import UNAVAILABLE_RGB, MaskState
 
 LIVEGATE_LOGGER = "agent_worker.livegate"
 #: The Cursor pseudo-encoding (RFC 6143 §7.8.1), spelled here so a renamed constant cannot hide it.
@@ -380,7 +379,7 @@ def test_pointer_coordinates_are_clamped_to_the_screen() -> None:
 def test_the_server_sends_frame_updates_and_nothing_else() -> None:
     async def main() -> None:
         gate = Gate()
-        gate.hub.publish(rfb.masked(_frame(), _unmasking()))
+        gate.hub.publish(_frame())
         person = await gate.connect("person-1")
         await gate.control.grant("person-1")
         person.cut_text(secrets.token_urlsafe(10))
@@ -388,7 +387,7 @@ def test_the_server_sends_frame_updates_and_nothing_else() -> None:
         person.request(incremental=False)
         await person.flush()
         await person.read_update()
-        gate.hub.publish(rfb.masked(_frame(rgb=(1, 2, 3)), _unmasking()))
+        gate.hub.publish(_frame(rgb=(1, 2, 3)))
         person.request(incremental=True)
         await person.flush()
         await person.read_update()
@@ -406,31 +405,23 @@ def test_the_rfb_module_has_no_way_to_send_cut_text() -> None:
 
 
 # --------------------------------------------------------------------------
-# Only masked frames leave (section 5.3), in the viewer's pixel format
+# Frames leave as captured (section 5.3, LIVE-NOMASK), in the viewer's pixel format
 # --------------------------------------------------------------------------
 
 
-def test_the_hub_accepts_only_frames_that_went_through_the_mask() -> None:
-    hub = rfb.FrameHub(64, 40)
-    with pytest.raises(TypeError):
-        hub.publish(_frame())  # type: ignore[arg-type]
-
-
-def test_a_frame_reaches_the_viewer_as_the_mask_left_it() -> None:
+def test_a_frame_reaches_the_viewer_as_it_was_captured() -> None:
     async def main() -> None:
         gate = Gate()
-        # A mask whose CDP session is down blanks the whole frame (§5.3.2):
-        # the viewer must receive the blank, not the pixels underneath.
-        gate.hub.publish(rfb.masked(_frame(rgb=(200, 100, 50)), MaskState()))
+        # Nothing is painted over a frame in any situation (BGD, 2026-10-25):
+        # the viewer receives the captured pixels.
+        gate.hub.publish(_frame(rgb=(200, 100, 50)))
         viewer = await gate.connect("viewer-a")
         viewer.set_pixel_format(big_endian=False, shifts=(0, 8, 16))  # noVNC's RGBX
         viewer.request(incremental=False)
         await viewer.flush()
         [(x, y, w, h, enc, data)] = await viewer.read_update()
         assert (x, y, w, h, enc) == (0, 0, 64, 40, 0)
-        r, g, b = UNAVAILABLE_RGB
-        assert data[:4] == bytes([r, g, b, 0])
-        assert data == bytes([r, g, b, 0]) * (64 * 40)
+        assert data == bytes([200, 100, 50, 0]) * (64 * 40)
         await gate.close()
 
     asyncio.run(main())
@@ -454,14 +445,14 @@ def test_an_incremental_update_carries_only_the_rows_that_changed() -> None:
     async def main() -> None:
         gate = Gate()
         base = _frame()
-        gate.hub.publish(rfb.masked(base, _unmasking()))
+        gate.hub.publish(base)
         viewer = await gate.connect("viewer-a")
         viewer.request(incremental=False)
         await viewer.flush()
         await viewer.read_update()
         changed = _frame()
         changed.fill(0, 10, 64, 13, (255, 255, 255))
-        gate.hub.publish(rfb.masked(changed, _unmasking()))
+        gate.hub.publish(changed)
         viewer.request(incremental=True)
         await viewer.flush()
         [(x, y, w, h, enc, _data)] = await viewer.read_update()
@@ -474,18 +465,18 @@ def test_an_incremental_update_carries_only_the_rows_that_changed() -> None:
 def test_an_identical_frame_is_not_resent_and_the_request_waits_for_a_change() -> None:
     async def main() -> None:
         gate = Gate()
-        gate.hub.publish(rfb.masked(_frame(), _unmasking()))
+        gate.hub.publish(_frame())
         viewer = await gate.connect("viewer-a")
         viewer.request(incremental=False)
         await viewer.flush()
         await viewer.read_update()
-        gate.hub.publish(rfb.masked(_frame(), _unmasking()))  # a static page
+        gate.hub.publish(_frame())  # a static page
         viewer.request(incremental=True)
         await viewer.flush()
         assert gate.sessions["viewer-a"].counts.updates == 1
         changed = _frame()
         changed.fill(0, 0, 64, 1, (9, 9, 9))
-        gate.hub.publish(rfb.masked(changed, _unmasking()))
+        gate.hub.publish(changed)
         [(_x, y, _w, h, _enc, _)] = await asyncio.wait_for(viewer.read_update(), 2)
         assert (y, h) == (0, 1)
         await gate.close()
@@ -496,7 +487,7 @@ def test_an_identical_frame_is_not_resent_and_the_request_waits_for_a_change() -
 def test_zlib_is_used_when_the_viewer_offers_it() -> None:
     async def main() -> None:
         gate = Gate()
-        gate.hub.publish(rfb.masked(_frame(), MaskState()))
+        gate.hub.publish(_frame())
         viewer = await gate.connect("viewer-a", encodings=(6, 0))
         viewer.request(incremental=False)
         await viewer.flush()
@@ -512,7 +503,7 @@ def test_a_display_resize_is_announced_with_desktop_size() -> None:
     async def main() -> None:
         gate = Gate(width=64, height=40)
         viewer = await gate.connect("viewer-a", encodings=(0, rfb.ENCODING_DESKTOP_SIZE))
-        gate.hub.publish(rfb.masked(_frame(32, 48), MaskState()))
+        gate.hub.publish(_frame(32, 48))
         viewer.request(incremental=True)
         await viewer.flush()
         [(_x, _y, w, h, enc, _)] = await viewer.read_update()
@@ -536,7 +527,7 @@ def test_the_controllers_keys_are_injected_and_counted_after_a_device_switch() -
         await person.flush()
 
         # iphone-15 -> desktop: the display changes shape under the open connection.
-        gate.hub.publish(rfb.masked(_frame(48, 32), MaskState()))
+        gate.hub.publish(_frame(48, 32))
         person.request(incremental=True)
         await person.flush()
         [(_x, _y, w, h, enc, _)] = await person.read_update()
@@ -555,18 +546,6 @@ def test_the_controllers_keys_are_injected_and_counted_after_a_device_switch() -
         await gate.close()
 
     asyncio.run(main())
-
-
-def _unmasking() -> MaskState:
-    """A mask that paints nothing: stands in for a clean report in a test
-    about encoding, which is not the mask's test."""
-
-    class _Clean(MaskState):
-        def apply(self, frame: Frame):  # type: ignore[override]
-            from agent_worker.livegate.mask import Outcome
-            return Outcome.MASKED
-
-    return _Clean()
 
 
 # --------------------------------------------------------------------------
@@ -1093,7 +1072,7 @@ def test_a_viewer_that_lists_the_cursor_encoding_is_sent_the_arrow_with_its_bitm
     async def main() -> None:
         from agent_worker.livegate import pointer
         gate = Gate()
-        gate.hub.publish(rfb.masked(_frame(), _unmasking()))
+        gate.hub.publish(_frame())
         viewer = await gate.connect("person-1", encodings=(0, rfb.ENCODING_DESKTOP_SIZE, CURSOR))
         viewer.set_pixel_format(**_NOVNC_RGBX)
         viewer.request(incremental=False)
@@ -1116,7 +1095,7 @@ def test_a_viewer_that_lists_the_cursor_encoding_is_sent_the_arrow_with_its_bitm
         # Sent once: the next update carries the frame alone.
         changed = _frame()
         changed.fill(0, 5, 64, 6, (1, 2, 3))
-        gate.hub.publish(rfb.masked(changed, _unmasking()))
+        gate.hub.publish(changed)
         viewer.request(incremental=True)
         await viewer.flush()
         assert _cursor_rects(await viewer.read_update()) == []
@@ -1128,7 +1107,7 @@ def test_a_viewer_that_lists_the_cursor_encoding_is_sent_the_arrow_with_its_bitm
 def test_a_viewer_that_does_not_list_the_cursor_encoding_is_sent_no_cursor() -> None:
     async def main() -> None:
         gate = Gate()
-        gate.hub.publish(rfb.masked(_frame(), _unmasking()))
+        gate.hub.publish(_frame())
         viewer = await gate.connect("recorder", encodings=(6, 0, rfb.ENCODING_DESKTOP_SIZE))
         viewer.request(incremental=False)
         await viewer.flush()
@@ -1142,12 +1121,12 @@ def test_a_viewer_that_does_not_list_the_cursor_encoding_is_sent_no_cursor() -> 
 def test_the_cursor_is_sent_again_after_every_desktop_size_change() -> None:
     async def main() -> None:
         gate = Gate(width=64, height=40)
-        gate.hub.publish(rfb.masked(_frame(64, 40), _unmasking()))
+        gate.hub.publish(_frame(64, 40))
         viewer = await gate.connect("person-1", encodings=(0, rfb.ENCODING_DESKTOP_SIZE, CURSOR))
         viewer.request(incremental=False)
         await viewer.flush()
         assert len(_cursor_rects(await viewer.read_update())) == 1
-        gate.hub.publish(rfb.masked(_frame(32, 48), _unmasking()))
+        gate.hub.publish(_frame(32, 48))
         viewer.request(incremental=True)
         await viewer.flush()
         [(_x, _y, w, h, enc, _)] = await viewer.read_update()
@@ -1181,7 +1160,7 @@ def test_a_watcher_sees_the_pointer_where_the_controller_moved_it_and_xvfbs_buff
             before = screen.read_bytes()
             with XvfbFramebuffer(screen) as fb:
                 gate = Gate(width=64, height=40)
-                gate.hub.publish(rfb.masked(fb.grab(), _unmasking()))
+                gate.hub.publish(fb.grab())
                 watcher = await gate.connect("watcher", encodings=(0, CURSOR))
                 watcher.set_pixel_format(**_NOVNC_RGBX)
                 person = await gate.connect("person-1", encodings=(0, CURSOR))
@@ -1210,7 +1189,7 @@ def test_the_agents_pointer_reaches_a_watcher_too() -> None:
     async def main() -> None:
         from agent_worker.livegate import pointer
         gate = Gate(width=64, height=40)
-        gate.hub.publish(rfb.masked(_frame(rgb=_BACKGROUND), _unmasking()))
+        gate.hub.publish(_frame(rgb=_BACKGROUND))
         watcher = await gate.connect("watcher", encodings=(0,))
         watcher.set_pixel_format(**_NOVNC_RGBX)
         gate.hub.pointer.move(40, 30)
@@ -1230,22 +1209,24 @@ def test_the_agents_pointer_reaches_a_watcher_too() -> None:
     asyncio.run(main())
 
 
-def test_the_pointer_never_reveals_what_the_mask_covered() -> None:
+def test_the_pointer_is_the_only_thing_painted_on_a_viewers_copy() -> None:
     async def main() -> None:
         from agent_worker.livegate import pointer
         gate = Gate(width=64, height=40)
-        # The mask is down: the whole frame is the "unavailable" fill (§5.3.2).
-        gate.hub.publish(rfb.masked(_frame(rgb=(200, 100, 50)), MaskState()))
+        gate.hub.publish(_frame(rgb=(200, 100, 50)))
         watcher = await gate.connect("watcher", encodings=(0,))
         watcher.set_pixel_format(**_NOVNC_RGBX)
         gate.hub.pointer.move(10, 10)
         watcher.request(incremental=False)
         await watcher.flush()
         [(_x, _y, w, h, _enc, data)] = await watcher.read_update()
-        allowed = {UNAVAILABLE_RGB, pointer.OUTLINE_RGB, pointer.FILL_RGB}
+        allowed = {(200, 100, 50), pointer.OUTLINE_RGB, pointer.FILL_RGB}
         seen = {_rgbx_at(data, w, x, y) for y in range(h) for x in range(w)}
         assert seen <= allowed
         assert pointer.OUTLINE_RGB in seen
+        # The published frame itself carries no pointer.
+        published = gate.hub.current.frame
+        assert all(published.rgb_at(x, y) == (200, 100, 50) for y in range(40) for x in range(64))
         await gate.close()
 
     asyncio.run(main())
@@ -1254,7 +1235,7 @@ def test_the_pointer_never_reveals_what_the_mask_covered() -> None:
 def test_the_controller_with_a_local_cursor_is_not_sent_a_second_lagging_one() -> None:
     async def main() -> None:
         gate = Gate(width=64, height=40)
-        gate.hub.publish(rfb.masked(_frame(rgb=_BACKGROUND), _unmasking()))
+        gate.hub.publish(_frame(rgb=_BACKGROUND))
         person = await gate.connect("person-1", encodings=(0, CURSOR))
         person.set_pixel_format(**_NOVNC_RGBX)
         await gate.control.grant("person-1")

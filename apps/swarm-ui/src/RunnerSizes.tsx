@@ -33,6 +33,7 @@
  */
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 
+import { AdminLead, UnreadLead } from './AdminSettings'
 import { loadRunnerSizes, loadRunnerSizeVersions, previewRunnerSizes, restoreRunnerSizes, saveRunnerSizes } from './api'
 import { usePhoneTables } from './capacityPoll'
 import { Banner, Button, Card, Dialog, ToneMark, TypedConfirm } from './components'
@@ -302,14 +303,102 @@ function movedBetween(before: RunnerSizesDoc, after: RunnerSizesDoc): string[] {
   return out
 }
 
+/**
+ * WHAT THE POOLS ADMIT OF THE SAVED SIZES, as the page's own preview read
+ * answered it, for the lead. Every preview's `admits_before` is the saved
+ * version's (the body only moves `admits_after`), so any answer for the
+ * version on screen will do -- the empty one the page posts on arrival, or
+ * one for a draft typed since. `failed` is the last answer's error, when no
+ * answer for this version landed.
+ */
+type Admits = { version: number; data: RunnerSizesPreview | null; failed: ApiError | null }
+
+function admitsAfter(was: Admits | null, version: number, r: Result<RunnerSizesPreview>): Admits | null {
+  const same = was !== null && was.version === version ? was : { version, data: null, failed: null }
+  if (r.status === 'ok' || r.status === 'stale') return { version, data: r.data, failed: null }
+  if (r.status === 'error') return same.data !== null ? same : { version, data: null, failed: r.error }
+  return was
+}
+
+/**
+ * A CLASS A PLATFORM-WIDE POOL ADMITS NONE OF: one agent of it weighs more
+ * units than the pool's ceiling, the row the pools table marks `too small`
+ * (`AdmitsCell`). A pool at limit 0 admits nothing of any class and is not
+ * this: Pool limits leads with it.
+ */
+export function tooSmall(doc: RunnerSizesDoc, preview: RunnerSizesPreview): { pool: string; cls: string; units: number; ceiling: number } | null {
+  for (const p of Array.isArray(preview.pools) ? preview.pools : []) {
+    for (const cls of Object.keys(p.admits_before ?? {})) {
+      const units = doc.classes[cls]?.units ?? preview.classes?.[cls]?.units_before
+      if (typeof units === 'number' && p.hard_limit > 0 && units > p.hard_limit) return { pool: p.pool, cls, units, ceiling: p.hard_limit }
+    }
+  }
+  return null
+}
+
+/** The class card's memory field, which the lead's button lands on: memory is what moves a class's units most. */
+function openClass(cls: string): void {
+  const card = document.querySelector<HTMLElement>(`.rs-class[data-class="${cls}"]`)
+  if (card === null) return
+  if (typeof card.scrollIntoView === 'function') card.scrollIntoView({ block: 'start' })
+  const label = Array.from(card.querySelectorAll('label')).find((l) => l.textContent === `${cls} ${FIELD_WORDS.memory_gib}`)
+  const input = label === undefined ? card.querySelector('input') : document.getElementById(label.htmlFor)
+  if (input instanceof HTMLElement) input.focus()
+}
+
+/**
+ * RUNNER SIZES' LEAD (ADMIN-LEADS; proposal E S10c, S10h). What needs an
+ * admin, in order: a stored version that could not be read (the platform is
+ * on the code defaults), then a class a pool admits none of. Otherwise the
+ * green lead. A dash when the sizes, or what the pools admit, could not be
+ * read; nothing while either is still being read: a lead is never a guess.
+ */
+function SizesLead({ state, admits }: { state: Result<RunnerSizesDoc>; admits: Admits | null }) {
+  if (state.status === 'error' || state.status === 'stale') return <UnreadLead what="the runner sizes" error={state.error} />
+  if (state.status !== 'ok') return null
+  const doc = state.data
+  if (doc.malformed) {
+    return (
+      <AdminLead
+        tone="warn"
+        kicker="Needs a look"
+        title={`Version ${doc.current_version} could not be read`}
+        body="The platform runs at the code defaults shown here until a save writes a valid version."
+      />
+    )
+  }
+  const mine = admits !== null && admits.version === doc.current_version ? admits : null
+  if (mine === null) return null
+  if (mine.data === null) return mine.failed === null ? null : <UnreadLead what="what the pools admit" error={mine.failed} />
+  const small = tooSmall(doc, mine.data)
+  if (small !== null) {
+    return (
+      <AdminLead
+        tone="warn"
+        kicker="Needs a look"
+        title={`Pool ${small.pool} admits no ${small.cls} agent`}
+        body={`${small.cls} takes ${small.units} units and ${small.pool}’s ceiling is ${small.ceiling}.`}
+        action={
+          <Button kind="primary" onClick={() => openClass(small.cls)}>
+            {`Open ${small.cls}`}
+          </Button>
+        }
+      />
+    )
+  }
+  return <AdminLead tone="ok" kicker="Nothing waiting" title="Every class fits every pool’s ceiling" body="A change shows what the pools would admit before you save it." />
+}
+
 export function RunnerSizesScreen() {
   const sizes = useUrRead(loadRunnerSizes, 'runner-sizes')
   const versions = useUrRead(loadRunnerSizeVersions, 'runner-size-versions')
+  const [admits, setAdmits] = useState<Admits | null>(null)
   return (
     <div className="ur-page rs-page">
       <PageHead title="Runner sizes">
         <UrRefresh reads={[sizes, versions]} ageOf={[sizes]} />
       </PageHead>
+      <SizesLead state={sizes.state} admits={admits} />
       <p className="ur-sub">
         Each class’s CPU request, CPU limit and memory. A save is a new version: the next admission takes it, and a running agent keeps the size it was admitted with.
       </p>
@@ -317,6 +406,7 @@ export function RunnerSizesScreen() {
         {(doc) => (
           <RunnerSizesBody
             doc={doc}
+            onPreview={(version, r) => setAdmits((was) => admitsAfter(was, version, r))}
             reload={() => {
               sizes.reload()
               versions.reload()
@@ -342,7 +432,18 @@ export function RunnerSizesScreen() {
 
 type Confirm = { classes: string[]; send: () => void } | null
 
-function RunnerSizesBody({ doc, reload, history }: { doc: RunnerSizesDoc; reload: () => void; history: ReactNode }) {
+function RunnerSizesBody({
+  doc,
+  onPreview,
+  reload,
+  history,
+}: {
+  doc: RunnerSizesDoc
+  /** Every preview answer, with the version it was asked over: the lead reads what the pools admit from it. */
+  onPreview: (version: number, r: Result<RunnerSizesPreview>) => void
+  reload: () => void
+  history: ReactNode
+}) {
   const [draft, setDraft] = useState<Draft>(() => draftOf(doc))
   const [reason, setReason] = useState('')
   const [preview, setPreview] = useState<{ key: string; result: Result<RunnerSizesPreview> } | null>(null)
@@ -367,9 +468,11 @@ function RunnerSizesBody({ doc, reload, history }: { doc: RunnerSizesDoc; reload
 
   useEffect(() => {
     let live = true
+    const version = doc.current_version
     const timer = setTimeout(() => {
-      void previewRunnerSizes(changes, doc.current_version).then((result) => {
+      void previewRunnerSizes(changes, version).then((result) => {
         if (!live) return
+        onPreview(version, result)
         setPreview({ key, result })
         if (result.status === 'ok' || result.status === 'stale') {
           const use = result.data.recent_use
@@ -449,11 +552,9 @@ function RunnerSizesBody({ doc, reload, history }: { doc: RunnerSizesDoc; reload
 
   return (
     <>
-      {doc.malformed && (
-        <Banner tone="warn" title={`Version ${doc.current_version} could not be read`}>
-          The stored version is missing or breaks a frozen bound, so the platform runs at the code defaults, and this page shows them. Saving writes a new, valid version.
-        </Banner>
-      )}
+      {/* A STORED VERSION THAT COULD NOT BE READ IS THE PAGE'S LEAD
+          (`SizesLead`), which says what this banner said. Drawn here as well
+          it was the same sentence twice, one screen apart. */}
       {stale !== null && (
         <div className="rs-stale">
           <Banner tone="warn" title={`Another admin saved ${stale.version === null ? 'a newer version' : `version ${stale.version}`} while you edited`}>

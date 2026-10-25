@@ -11,8 +11,9 @@ approval goes through (the digest, the hold and the schedule's approvers are
 checked there), and a merge through `approvals.decide` with
 `approvals.merge_move`, after the same `check_hold` and `check_gate_approver`
 the inbox's approve route makes. So the digest check, the hold check, the
-second-person rule and the audit are the console's, and two comments racing
-the console's approve make one transition: the loser meets `already_decided`.
+second-person rule with its owner waiver (#2259) and the audit are the
+console's, and two comments racing the console's approve make one
+transition: the loser meets `already_decided`.
 
 THE POLL IS BOUNDED BY THE INBOX. It reads comments only on the threads of
 PLANNED issue runs (the inbox's projected `plan` and `hold` items) and of
@@ -428,10 +429,14 @@ def _approve_merge(ctx: Any, item: Item, auth: Any, comment: Comment) -> None:
     run = IssueRuns(ctx.db, now=ctx.now).get(item.tenant_id, item.run.id)
     if run.approval_hold:
         approvals.check_hold(ctx, run, email=auth.email, is_owner=auth.is_owner)
-    # A hold is checked above IN ADDITION to the schedule's approvers.
-    approvals.check_gate_approver(
+    # A hold is checked above IN ADDITION to the schedule's approvers. The
+    # owner waiver (#2259) is the inbox's too (owner answer 2026-10-25): where
+    # only the owner may decide, the owner's comment decides as the schedule's
+    # last editor, and `decide` writes the same `second_person_waived_owner` row.
+    waiver = approvals.check_gate_approver(
         ctx, item.tenant_id, ((schedule or {}).get("gate") or {}).get("approvers"),
         email=auth.email, is_owner=auth.is_owner, schedule=schedule, merge_tier=True,
+        hold=run.approval_hold, owner_waiver=True,
     )
     from .routes.runs import owner_resigner
 
@@ -439,7 +444,7 @@ def _approve_merge(ctx: Any, item: Item, auth: Any, comment: Comment) -> None:
     approvals.decide(ctx.db, now, item.tenant_id, item.approval_id, approve=True, by=auth.email,
                      digest=item.digest,
                      move=approvals.merge_move(ctx.db, now, by=auth.email, resign=owner_resigner(ctx)),
-                     audit_detail=_audit_detail(item, comment, auth.email))
+                     audit_detail=_audit_detail(item, comment, auth.email), waiver=waiver)
 
 
 def handle(ctx: Any, item: Item, comment: Comment, own_logins: set[str]) -> bool:

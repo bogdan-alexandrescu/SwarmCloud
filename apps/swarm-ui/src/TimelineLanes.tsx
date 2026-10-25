@@ -2117,7 +2117,7 @@ function MergedPill({
   )
 }
 
-function Seg({
+export function Seg({
   s,
   since,
   until,

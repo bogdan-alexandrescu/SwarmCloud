@@ -297,6 +297,7 @@ class AccountStore:
                 organisation_id=current.organisation_id,
                 organisation_name=current.organisation_name,
                 organisation_plan=current.organisation_plan,
+                seat_id=current.seat_id,
                 registered_at=current.registered_at,
                 duplicate_of=current.duplicate_of,
                 duplicate_withheld=current.duplicate_withheld,
@@ -545,7 +546,10 @@ class AccountStore:
         blanking a known expiry on every failure would hide exactly the figure
         an operator needs while it is failing. `organisation` likewise (#2222):
         written only when the exchange named one, so a refresh that could not
-        say never erases what an earlier one recorded.
+        say never erases what an earlier one recorded -- and its seat (#2282)
+        only when the exchange named that too: a refresh never changes the
+        login a credential was issued to, so an answer that leaves it unsaid
+        must not erase the seat that tells two Team seats apart.
         """
         ref = self._db.collection(COLLECTION).document(account_id)
         snap = ref.get()
@@ -559,6 +563,9 @@ class AccountStore:
             payload["organisation_id"] = organisation.identity
             payload["organisation_name"] = organisation.name
             payload["organisation_plan"] = organisation.plan
+            seat = getattr(organisation, "seat", None)
+            if seat is not None:
+                payload["seat_id"] = seat
         ref.update(payload)
         return True
 
@@ -566,8 +573,13 @@ class AccountStore:
         """Write which organisation this account's credential runs on (#2222).
 
         `organisation` is an `oauth.Organisation`: an opaque identity, never
-        the provider's id, and its display name and plan. None for an account
-        that is gone.
+        the provider's id, its display name and plan, and the seat (#2282).
+        None for an account that is gone.
+
+        A NEW SIGN-IN WRITES ITS SEAT EVEN WHEN IT IS None: the credential was
+        replaced, possibly by another login, so the old seat no longer says
+        anything about it. A seatless account pairs only by identical
+        readings (`accounts.one_subscription`).
         """
         ref = self._db.collection(COLLECTION).document(account_id)
         if not getattr(ref.get(), "exists", False):
@@ -577,12 +589,14 @@ class AccountStore:
                 "organisation_id": organisation.identity,
                 "organisation_name": organisation.name,
                 "organisation_plan": organisation.plan,
+                "seat_id": getattr(organisation, "seat", None),
             }
         )
         return self.get(account_id)
 
     def set_duplicate(self, account_id: str, duplicate_of: str | None, withheld: bool) -> bool:
-        """Mark (or clear) this account as one of a pair on one organisation.
+        """Mark (or clear) this account as one of a pair on one subscription
+        (one organisation and seat, #2282).
 
         False when the account is gone. Written by the broker from
         `accounts.duplicates`, never by a caller.

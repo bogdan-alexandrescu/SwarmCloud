@@ -114,11 +114,18 @@ function api(owners: unknown[], extra: (m: string, url: string) => { status: num
   })
 }
 
-async function mount() {
+/**
+ * GitHub access' Connection tab, its Choose repositories tab, or the
+ * reach-as-you list, which ReachableRepositories.tsx draws since
+ * GITHUB-ACCESS-PAGE (part of #2157).
+ */
+async function mount(at: 'mine' | 'choose' | 'grants' = 'mine') {
+  if (at === 'choose') window.history.replaceState(null, '', '/config/github?view=choose')
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
   const { AccessScreen } = await import('../Access')
-  return render(<AccessScreen />)
+  const { ReachableRepositoriesRead } = await import('../ReachableRepositories')
+  return render(at === 'grants' ? <ReachableRepositoriesRead /> : <AccessScreen />)
 }
 
 /** Stub `matchMedia`, which jsdom does not have, as a phone or a desktop. */
@@ -144,7 +151,7 @@ afterEach(() => {
 describe('Access (VQA2-R5)', () => {
   it('V165: "Install on <a long owner>" shrinks to its card and wraps, at 400 and at 1440', async () => {
     api([ORG('example-org'), UNINSTALLED])
-    await mount()
+    await mount('choose')
     const link = await screen.findByRole('link', { name: `Install on ${LONG}` })
     expect(link.parentElement!.classList.contains('ac-owner-acts')).toBe(true)
     for (const env of [WIDE, PHONE]) {
@@ -164,7 +171,7 @@ describe('Access (VQA2-R5)', () => {
 
   it('V226: the grants Read/Write segment is as wide as its words, not its 132px track', async () => {
     api([ORG('example-org'), ORG('octo-dev')])
-    await mount()
+    await mount('grants')
     await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
     const seg = document.querySelector<HTMLElement>('li.ac-grant[data-repo="octo-dev/example-api"] > .c-seg')!
     expect(seg).not.toBeNull()
@@ -176,6 +183,7 @@ describe('Access (VQA2-R5)', () => {
     media(true)
     api([ORG('example-org')])
     await mount()
+    await screen.findByRole('heading', { name: 'What SwarmCloud may do as you' })
     const rules = document.querySelector<HTMLElement>('.ac-rules.is-folded')!
     expect(rules).not.toBeNull()
     const summaries = [...rules.querySelectorAll<HTMLElement>('summary')]
@@ -194,7 +202,7 @@ describe('Access (VQA2-R5)', () => {
   it('V229: beside the repository pane, 24 owners are a capped list that scrolls; stacked, it is the page', async () => {
     const owners = Array.from({ length: 24 }, (_, n) => ORG(`example-owner-${String(n).padStart(2, '0')}`))
     api(owners)
-    await mount()
+    await mount('choose')
     const list = await screen.findByRole('list', { name: 'Owners your connection reaches' })
     expect(list.querySelectorAll('li.ac-owner').length).toBe(24)
     expect(painted(list, 'max-height', WIDE)).toBe('min(600px, 70vh)')
@@ -231,23 +239,28 @@ describe('Access (VQA2-R5)', () => {
     expect(painted(row.querySelector<HTMLElement>('.ac-cell-l')!, 'display', PHONE)).toBe('inline')
   })
 
-  it('V232: the lede says what Mine, Members and Browser logins each show', async () => {
+  it('V232: the lede says what Connection, Choose repositories, Members and Browser logins each show', async () => {
     api([ORG('example-org')], (m, url) => (m === 'GET' && url === '/v1/access/members' ? { status: 200, body: { tenant_id: 'eng', members: [] } } : null))
     await mount()
     const lede = () => visible(document.querySelector('.ac-page > .ur-sub'))
     await waitFor(() => expect(lede()).toContain('in tenant eng'))
-    expect(lede()).toMatch(/^The orgs and repositories SwarmCloud may reach as you in tenant eng/)
+    // The reach-as-you list left the page (GITHUB-ACCESS-PAGE), so no tab's lede promises it.
+    // MUTATION: put "The orgs and repositories SwarmCloud may reach as you" back as Mine's lede.
+    expect(lede()).toMatch(/^How SwarmCloud acts as you on GitHub in tenant eng/)
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Choose repositories' }))
+    expect(lede()).toMatch(/^The owners the GitHub App is installed on in tenant eng/)
 
     fireEvent.click(screen.getByRole('radio', { name: 'Members' }))
-    expect(lede()).not.toMatch(/orgs and repositories SwarmCloud may reach as you/)
+    expect(lede()).not.toMatch(/acts as you on GitHub|owners the GitHub App/)
     expect(lede()).toMatch(/^Every member in tenant eng: whether they connected GitHub/)
 
     fireEvent.click(screen.getByRole('radio', { name: 'Browser logins' }))
-    expect(lede()).not.toMatch(/orgs and repositories SwarmCloud may reach as you/)
+    expect(lede()).not.toMatch(/acts as you on GitHub|owners the GitHub App/)
     expect(lede()).toMatch(/^The browser sessions you saved from a live browser in your workspace/)
 
     fireEvent.click(screen.getByRole('radio', { name: 'Mine' }))
-    expect(lede()).toMatch(/^The orgs and repositories SwarmCloud may reach as you/)
+    expect(lede()).toMatch(/^How SwarmCloud acts as you on GitHub/)
   })
 })
 

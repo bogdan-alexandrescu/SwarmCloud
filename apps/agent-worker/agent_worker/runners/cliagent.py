@@ -96,11 +96,18 @@ _SENSITIVE_PASSTHROUGH: tuple[str, ...] = ("HTTPS_PROXY", "HTTP_PROXY", "TYPESAF
 #: worker's paths for the agent's tool caches, off the workspace volume, and
 #: the switches that keep them small on Cloud Run. TMPDIR is set above with
 #: the platform's own values, so it is not repeated here.
+#: SWARM_TASK_ID is what `apps/swarm-ui/src/vitestWorkers.ts` gates on: vitest
+#: sizes its workers to the container's memory only when it is set (#1641).
+#: Without it a claude-code agent's vitest run started one jsdom worker per
+#: node CPU and was OOM-killed at 8 GiB (task_45e9d3b7c0264ef78091). The
+#: worker sets it for this process (`lifecycle._build_child_env`); it is a
+#: task id, never a secret.
 _PLAIN_PASSTHROUGH: tuple[str, ...] = (
     "NO_PROXY",
     "NODE_EXTRA_CA_CERTS",
     *GIT_IDENTITY_ENV,
     *(name for name in AGENT_CACHE_ENV if name != "TMPDIR"),
+    "SWARM_TASK_ID",
 )
 
 #: Substrings that mean "the provider said no, try later".

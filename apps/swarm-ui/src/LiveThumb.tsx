@@ -40,9 +40,9 @@ import { stepState, type Task, type TaskState, type Workflow } from './types'
  *
  * NOTHING SECRET IN THE URL (§5.2). The socket's URL carries only the task id.
  * The console holds no ticket: swarm-api authenticates the connection as it
- * does every route and mints the viewer ticket for itself. Every frame is
- * masked in the pod before it leaves (§5.3); there is no unmasked stream for
- * this to show.
+ * does every route and mints the viewer ticket for itself. Every frame is the
+ * screen as Chromium drew it: the gate redacts no part of it (BGD, 2026-10-25;
+ * part of #2298).
  */
 
 /** §6: "a low-rate (about 1 fps) live thumbnail". The floor between two requests. */
@@ -568,9 +568,9 @@ const STATUS_WORD: Record<Status, string> = {
   unavailable: 'live view unavailable',
 }
 
-const STATUS_NOTE: Record<Status, string> = {
+export const STATUS_NOTE: Record<Status, string> = {
   connecting: 'Opening the live view of this step’s browser.',
-  live: 'The masked live view of this step’s browser, at most one frame a second. Open the Browser tab for the full view.',
+  live: 'The live view of this step’s browser, at most one frame a second. Open the Browser tab for the full view.',
   reconnecting: 'The live view closed; it reconnects on its own.',
   none: 'This step has no live browser session right now. The card checks again on its own.',
   unavailable: 'The live view could not be opened. The agent may have stopped, or this view may not be allowed.',

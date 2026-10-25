@@ -249,6 +249,37 @@ def test_the_pin_moves_with_the_plugin_version():
     )
 
 
+#: The first plugin version whose pinned bridge sends `Accept-Encoding: gzip`
+#: (API-GZIP, #2293; bumped by PLUGIN-BUMP-GZIP, part of #1822).
+_FIRST_GZIP_VERSION = (0, 5, 67)
+
+
+def test_the_pinned_bridge_asks_for_gzip():
+    """An installed bridge runs from the pinned tag, not from main.
+
+    API-GZIP made swarm-api compress responses and the bridge's client ask for
+    it, but the bridge is about 64% of API requests and every installed copy
+    keeps the client of the tag `sc-v<version>` it was fetched at. Until the
+    version passes the one that tags the gzip client, none of those requests
+    is compressed.
+
+    THE MUTATION THIS CATCHES: drop the version back below the gzip release,
+    or remove the header from the client the floor stands for.
+    """
+    client = (_REPO / "apps" / "swarm-mcp" / "swarm_mcp" / "client.py").read_text()
+    assert 'add_header("Accept-Encoding", "gzip")' in client, (
+        "the bridge's client no longer asks for gzip, so the version floor below "
+        "stands for nothing; move or remove it with the client"
+    )
+    version = _manifest().get("version")
+    parts = tuple(int(part) for part in str(version).split("."))
+    assert parts >= _FIRST_GZIP_VERSION, (
+        f"plugin.json is version {version!r}, below "
+        f"{'.'.join(map(str, _FIRST_GZIP_VERSION))}: installed bridges keep a "
+        "client that never asks for a compressed response"
+    )
+
+
 def test_the_pin_is_written_down_exactly_once():
     """The mirrored-copy rule: one ref, in plugin.json, and nowhere else.
 
