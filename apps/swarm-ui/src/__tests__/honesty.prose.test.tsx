@@ -876,7 +876,7 @@ describe('Accounts draws a window with the shared track, not the five-cell bar (
     expect(accountCell('eng:old', '7-day').querySelector('.ctl-util-fill.ov-projected')).not.toBeNull()
   })
 
-  it('draws the window’s track across its half of the sheet, at 1440 and at 390 (mock-up A P3)', async () => {
+  it('draws the window’s track across the sheet, at 1440 and at 390 (mock-up A P3)', async () => {
     renderAccounts(board2())
     await screen.findByText('eng:live', undefined, WAIT)
     const track = accountCell('eng:live', '5-hour').querySelector('.acct-floor > .ctl-util-track')
@@ -889,6 +889,10 @@ describe('Accounts draws a window with the shared track, not the five-cell bar (
     // The window's width (G5-07): a lone fill in a corner is not a share.
     expect(won(track!, 'width', 1440)).toBe('100%')
     expect(won(track!.parentElement!, 'max-width', 1440)).toBe('none')
+    // F4 STACKS THE TWO WINDOWS (mock-up A): one row each, its track the
+    // sheet's width, so the 5-hour and 7-day floors line up one above the other.
+    const wins = track!.closest('.acct-ss-wins')!
+    expect(won(wins, 'grid-template-columns', 1440)).toBe('minmax(0, 1fr)')
     // P3 DRAWS BOTH WINDOWS WITH THEIR FLOORS (#2222): the phone list's cards
     // drop the track for room, but the opened account is the whole screen and
     // keeps its picture, the way `.cap-pools.is-stacked` keeps its own.
