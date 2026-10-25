@@ -112,21 +112,67 @@ def test_another_member_as_last_editor_is_still_refused_and_told_another_member_
     assert _waivers(db) == []
 
 
-def test_a_named_list_holding_the_owner_keeps_the_second_person_rule(client, db):
-    """A named list is unchanged, even a list naming the owner alone."""
+def test_a_named_list_of_the_owner_alone_is_owner_only_and_the_waiver_records_the_list(client, db):
+    """BGD 2026-10-25, "Yes: treat [owner] like owner_only": a named list whose
+    only entry is the platform owner gets the waiver, and its audit row says
+    what the list was, not `owner_only`. Rendered 2026-10-25 (fixture S3):
+    nobody could decide it."""
     item = _merge_tier_item(client, db, last_editor=OWNER, approvers=[OWNER])
 
-    refused = _decide(client, item["approval_id"], "approve", user="root", digest="digest-1")
+    decided = _decide(client, item["approval_id"], "approve", user="root", digest="digest-1")
+
+    # MUTATION: `owner_alone` without the named-list case and this is 403 second_person_required.
+    assert decided.status_code == 200, decided.text
+    (waiver,) = _waivers(db)
+    assert waiver["by"] == OWNER and waiver["detail"]["last_editor"] == OWNER
+    assert waiver["detail"]["waived"] == "second_person_required"
+    assert waiver["detail"]["approvers"] == [OWNER]
+
+
+def test_a_named_list_of_the_owner_written_in_another_case_and_twice_is_the_owner_alone(client, db):
+    """Normalised (strip, lower), the list names one address, the owner's; the
+    audit keeps it as it stands."""
+    written = [" " + OWNER.upper() + " ", OWNER]
+    item = _merge_tier_item(client, db, last_editor=OWNER, approvers=written)
+
+    decided = _decide(client, item["approval_id"], "approve", user="root", digest="digest-1")
+
+    assert decided.status_code == 200, decided.text
+    (waiver,) = _waivers(db)
+    assert waiver["detail"]["approvers"] == written
+
+
+def test_a_named_list_of_the_last_editor_alone_who_is_not_the_owner_keeps_the_rule(client, db):
+    """A non-owner named alone is never waived, and the refusal says nobody may decide."""
+    item = _merge_tier_item(client, db, last_editor=DAVE, approvers=[DAVE])
+
+    refused = _decide(client, item["approval_id"], "approve", user="dave", digest="digest-1")
 
     assert refused.status_code == 403 and refused.json()["code"] == "second_person_required"
     message = refused.json()["message"]
-    # Rendered 2026-10-25: the refusal told the owner that "another of the
-    # schedule's named approvers must: root@example.com" -- the owner himself.
-    # A list naming only the refused member leaves nobody, and says so.
-    assert "named approvers must" not in message and OWNER not in message
+    assert "named approvers must" not in message and DAVE not in message
     assert "names only you" in message and "nobody may decide it" in message
-    assert "another member must" not in message
+    assert "another member must" not in message and "platform owner" not in message
     assert _waivers(db) == []
+
+
+def test_owner_alone_reads_a_named_list_as_the_owner_alone_only_when_it_names_nobody_else():
+    """The crafted lists: case, whitespace and duplicates of the owner are the
+    owner; an alias, a blank entry, anyone else, or no known owner are not."""
+    other = "dave@example.com"
+    assert approvals.owner_alone([OWNER], owner=OWNER)
+    assert approvals.owner_alone([" Root@Example.COM "], owner=OWNER)
+    assert approvals.owner_alone([OWNER, OWNER.upper()], owner=" " + OWNER.upper())
+    assert not approvals.owner_alone([OWNER])  # nobody said who the owner is
+    assert not approvals.owner_alone([OWNER], owner="")
+    assert not approvals.owner_alone([OWNER, other], owner=OWNER)
+    assert not approvals.owner_alone([other], owner=OWNER)
+    assert not approvals.owner_alone(["root+alias@example.com"], owner=OWNER)
+    assert not approvals.owner_alone([OWNER, ""], owner=OWNER)
+    assert not approvals.owner_alone([], owner=OWNER)
+    assert not approvals.owner_alone("members", owner=OWNER)
+    assert not approvals.owner_alone(OWNER, owner=OWNER)  # a bare string is not a list
+    assert approvals.owner_alone("owner_only")
 
 
 def test_a_named_lists_refusal_names_only_the_other_approvers(client, db):
@@ -179,6 +225,51 @@ def test_the_waiver_is_never_returned_to_anyone_but_the_owner():
             merge_tier=True, hold=OWNER_HOLD, owner_waiver=True,
         )
         assert waived is not None and waived["last_editor"] == DAVE
+    finally:
+        approvals.schedaudit.last_editor = original
+
+
+def test_a_named_list_of_one_reaches_the_waiver_only_as_the_owner_it_names():
+    """`check_gate_approver` itself: [dave] is never owner-only, for dave or the owner."""
+
+    class _Tenant:
+        kind = "group"
+
+    class _Store:
+        def get_tenant(self, tenant_id):
+            return _Tenant()
+
+    class _Authenticator:
+        def is_tenant_member(self, email, tenant):
+            return True
+
+    class _Ctx:
+        store = _Store()
+        authenticator = _Authenticator()
+        db = None
+
+    schedule = {"schedule_id": SCHEDULE}
+    original = approvals.schedaudit.last_editor
+    try:
+        approvals.schedaudit.last_editor = lambda db, tenant_id, sched: DAVE
+        with pytest.raises(approvals.ScheduleForbidden) as refused:
+            approvals.check_gate_approver(_Ctx(), "eng", [DAVE], email=DAVE, is_owner=False, schedule=schedule,
+                                          merge_tier=True, owner_waiver=True)
+        assert refused.value.code == "second_person_required"
+        # The owner is not on [dave]'s list, so the owner is not its approver at all.
+        with pytest.raises(approvals.ScheduleForbidden) as refused:
+            approvals.check_gate_approver(_Ctx(), "eng", [DAVE], email=OWNER, is_owner=True, schedule=schedule,
+                                          merge_tier=True, owner_waiver=True)
+        assert refused.value.code == "approver_not_allowed"
+        approvals.schedaudit.last_editor = lambda db, tenant_id, sched: OWNER
+        # [owner] for the owner: waived, the list recorded as it stands.
+        waived = approvals.check_gate_approver(_Ctx(), "eng", [OWNER.upper()], email=OWNER, is_owner=True,
+                                               schedule=schedule, merge_tier=True, owner_waiver=True)
+        assert waived is not None and waived["approvers"] == [OWNER.upper()]
+        # Not asked for, never given.
+        with pytest.raises(approvals.ScheduleForbidden):
+            approvals.check_gate_approver(_Ctx(), "eng", [OWNER], email=OWNER, is_owner=True, schedule=schedule,
+                                          merge_tier=True)
     finally:
         approvals.schedaudit.last_editor = original
 
@@ -312,6 +403,39 @@ def test_the_last_editors_approve_comment_on_an_ordinary_merge_keeps_the_second_
     assert _waivers(db) == []
     (reply,) = _replies(writes, PR)[1:]
     assert "last changed this schedule" in reply and "another member must" in reply
+
+
+def test_the_owners_approve_comment_on_a_named_list_of_the_owner_alone_merges_with_the_waiver(
+    client, db, objects, writes, clock, api_context, switch_on,
+):
+    """BGD 2026-10-25, "Yes: treat [owner] like owner_only", on the comment path:
+    the gate names only the owner, the owner last edited it, no hold."""
+    seed_tenant(db, "eng")
+    seed_schedule(db, owner=OWNER)
+    db.docs[f"schedules/{SCHEDULE}"]["created_by"] = OWNER
+    db.docs[f"schedules/{SCHEDULE}"]["gate"]["approvers"] = [OWNER]
+    _connect(db, OWNER, "root-gh")
+    running = _scheduled_checking(client, db, objects, writes, FULL_PLAN)
+    stored = db.docs[f"issue_runs/{running['id']}"]
+    stored.setdefault("metadata", {})["schedule"] = {"schedule_id": SCHEDULE}
+    stored["approval_hold"] = None
+    stored["merge_approval"] = "required"
+    writes.check(SHA_A, "unit", "success")
+    _read(client, clock, running["id"])
+    _read(client, clock, running["id"])
+    (item,) = _inbox(client, kind="merge", user="root")
+
+    cid = _comment(writes, PR, _command(approvals.merge_digest_text(item["digest"])), login="root-gh", user_id=1000)
+    polled = ghapprove.poll(api_context)
+
+    # MUTATION: `owner_alone` without the named-list case and this is refused second_person_required.
+    assert polled["approved"] == 1, (polled, _replies(writes, PR))
+    assert db.docs[f"approvals/{item['approval_id']}"]["decided_by"] == OWNER
+    (approved,) = [e for e in _audit(db, SCHEDULE) if e["action"] == "approval_approved"]
+    assert approved["detail"]["comment_id"] == cid
+    (waiver,) = _waivers(db)
+    assert waiver["by"] == OWNER and waiver["detail"]["approval_id"] == item["approval_id"]
+    assert waiver["detail"]["approvers"] == [OWNER] and waiver["detail"]["last_editor"] == OWNER
 
 
 # --------------------------------------------------------------------------
