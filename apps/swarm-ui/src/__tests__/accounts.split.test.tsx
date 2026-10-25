@@ -271,6 +271,21 @@ describe('on a phone the account is a page (frame 10, #503)', () => {
     expect(split.classList.contains('is-detail')).toBe(false)
   })
 
+  it('draws the opened account at 390 as the screen, with no card frame round it (mock-up A P3)', async () => {
+    await mount(TWO)
+    fireEvent.click(item('bravo').querySelector('button.acct-open')!)
+    const split = document.querySelector('.acct-split.is-detail')!
+    expect(split, 'choosing a row did not open the account').not.toBeNull()
+    const won = (prop: string | string[], width: number) => cascade(SHEETS, split, prop, { width }).winner?.value ?? null
+    // P3 has the account straight under the app bar: no border, no rounded
+    // inset card, no surface laid over the page.
+    expect(won(['border', 'border-width', 'border-style'], 390)).toBe('0')
+    expect(won(['border-radius'], 390)).toBe('0')
+    expect(won(['background', 'background-color'], 390)).toBe('none')
+    // The list at 390 and every desktop keep the card.
+    expect(won(['border', 'border-width', 'border-style'], 1440)).toBe('1px solid var(--line)')
+  })
+
   it('stacks the split into one column at 390', async () => {
     await mount(TWO)
     const split = document.querySelector('.acct-split')!
