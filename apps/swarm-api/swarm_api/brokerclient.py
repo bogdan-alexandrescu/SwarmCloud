@@ -213,6 +213,8 @@ class AccountPool(Protocol):
         self, account_id: str, *, display_name: str | None
     ) -> dict[str, Any]: ...
 
+    def set_max_agents(self, account_id: str, *, max_agents: int) -> dict[str, Any]: ...
+
     def set_state(self, account_id: str, *, state: str, reason: str) -> dict[str, Any]: ...
 
     # DECLARATIONS ONLY, like every other member of this Protocol.
@@ -518,6 +520,13 @@ class BrokerClient:
             "PUT",
             f"/v1/accounts/{quote(account_id, safe='')}/name",
             payload={"display_name": display_name},
+        )
+
+    def set_max_agents(self, account_id: str, *, max_agents: int) -> dict[str, Any]:
+        return self._call(
+            "PUT",
+            f"/v1/accounts/{quote(account_id, safe='')}/max-agents",
+            payload={"max_agents": max_agents},
         )
 
     def set_state(self, account_id: str, *, state: str, reason: str) -> dict[str, Any]:

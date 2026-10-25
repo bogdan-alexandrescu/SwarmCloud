@@ -159,6 +159,9 @@ class RefreshOutcome:
     refreshed: bool
     reason: str
     expires_at: datetime | None = None
+    #: The organisation the exchange said the credential runs on (#2222), for
+    #: the account document. Not in `as_dict`: it is recorded, not reported.
+    organisation: Any = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -461,7 +464,9 @@ class CredentialRefresher:
             "subscription credential refreshed",
             extra={"tenant_id": tenant_id, "provider": provider, **fresh.redacted()},
         )
-        return RefreshOutcome(tenant_id, provider, True, "refreshed", fresh.expires_at)
+        return RefreshOutcome(
+            tenant_id, provider, True, "refreshed", fresh.expires_at, fresh.organisation
+        )
 
     def refresh_secret(
         self, secret_base: str, *, label: str = "", held: bool = False

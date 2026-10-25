@@ -142,6 +142,9 @@ any lease, its event naming each `{consumer, slot}` under `workspace_secrets`
 and never a secret id. The sweep asks it of EVERY CREDENTIAL_MISSING park,
 the worker's backstop park (`workspace-secret:<slots>`) included, so a task
 is promoted only when its key, its connection and its grants all answer yes.
+A repository's secret fills a slot only for an attempt that clones that
+repository (`attempt_repositories`, the release's set, restated below with
+the id recipes; lane SSC-ADMIT-REPO, part of #2158).
 
 THE MCP SERVERS A TASK NAMES (docs/design/registered-mcp-servers.md §4.10;
 lane MCP-SCHED, part of #1433). The last half again, asked only by admission
@@ -161,13 +164,13 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
-from quota_broker.accounts import Account, Unavailable, accounts_serving
+from quota_broker.accounts import DEFAULT_HOLD_TTL, Account, Hold, Unavailable, accounts_serving
 from quota_broker.accountstore import AccountStore
 from swarm_common.models import Task, Tenant
 from swarm_common.profiles import RunnerProfile, step_model_class
@@ -340,15 +343,30 @@ class AccountPool:
     same collection in the same database, so the parsing is not restated
     either.
 
-    READ LAZILY. Only a keyless tenant's task for a profile that takes a
-    subscription token, on a deployment with a broker, ever needs it. A drain
-    of keyed tenants' work reads nothing extra.
+    READ LAZILY. Only a task for a profile that takes a subscription token, on
+    a deployment with a broker, ever needs it: a keyless tenant's for its
+    credential, and since #2222 any tenant's, because the worker asks the
+    broker whenever an account serves the tenant, key or no key, and admission
+    now asks first (`loop.Scheduler._pool_question`). A drain of work for
+    profiles that take no subscription token reads nothing extra; any other
+    drain reads the collection once.
 
     READ ONCE PER DRAIN. `Scheduler.drain` calls `forget()` first, so a loan
     made or withdrawn between two drains is seen by the second, and every task
     inside one drain, at admission and at dispatch, is judged on the same list.
     That is also why the dispatcher must be handed the Scheduler's instance: a
     second instance would be read on a schedule nobody resets.
+
+    AND IT COUNTS WHAT THIS RUN ALREADY LET THROUGH (#2222, POOL-WAKE-GATE).
+    The list is read once, so `choose()` over it gives the same answer for
+    every task asked about: one freed slot promoted every park waiting on the
+    pool, each to start a container and park again. Every place this run
+    hands an account's slot to a task -- admission's lease, the finish
+    event's wake, the prewarm sweep -- `claim`s it, and `accounts()` shows
+    the claim as a hold, so the next `choose()` sees one slot fewer. Claims
+    are keyed by task and dropped by `forget()`, at the top of every run: they
+    are this run's arithmetic, never a record. The broker's own hold, taken
+    when the worker asks, is the record.
     """
 
     def __init__(
@@ -360,6 +378,8 @@ class AccountPool:
         self._configured = bool(str(broker_url or "").strip())
         self._read = read_accounts
         self._accounts: list[Account] | None = None
+        #: task id -> (account id, the hold it stands for), this run only.
+        self._claims: dict[str, tuple[str, Hold]] = {}
 
     @classmethod
     def for_deployment(cls, settings: Any, db: Any) -> "AccountPool":
@@ -388,19 +408,50 @@ class AccountPool:
         return self._configured
 
     def forget(self) -> None:
-        """Drop what was read. Called at the top of every drain."""
+        """Drop what was read, and this run's claims. Called at the top of every drain."""
         self._accounts = None
+        self._claims = {}
 
     def accounts(self) -> list[Account]:
-        """Every account document, read at most once per drain like `serves`.
+        """Every account document, read at most once per drain like `serves`,
+        with this run's claims shown as holds.
 
-        For the finish event's account wake (`loop.Scheduler.
-        _wake_account_parks`), which asks the broker's own `choose()` over the
-        same list admission reads, so the two cannot disagree within a run.
+        For admission and the two wakes (`loop.Scheduler._admit_one`,
+        `_wake_account_parks`, `_prewarm`), which ask the broker's own
+        `choose()` over the same list, so they cannot disagree within a run --
+        and each sees the slots the others already handed out.
         """
         if self._accounts is None:
             self._accounts = list(self._read())
-        return list(self._accounts)
+        if not self._claims:
+            return list(self._accounts)
+        extra: dict[str, list[Hold]] = {}
+        for account_id, hold in self._claims.values():
+            extra.setdefault(account_id, []).append(hold)
+        return [
+            replace(a, holds=(*a.holds, *extra[a.account_id]),
+                    assigned=a.assigned + len(extra[a.account_id]))
+            if a.account_id in extra else a
+            for a in self._accounts
+        ]
+
+    def claim(self, account_id: str, *, task_id: str, tenant_id: str, now: datetime) -> None:
+        """Count `task_id` as one more agent on `account_id` for the rest of this run.
+
+        One claim per task: a task claimed again (promoted by a wake, then
+        leased by admission) moves its one claim rather than adding a second.
+        """
+        self._claims[task_id] = (account_id, Hold(
+            assignment_id=f"run-claim:{task_id}",
+            tenant_id=tenant_id,
+            expires_at=now + DEFAULT_HOLD_TTL,
+            task_id=task_id,
+            assigned_at=now,
+        ))
+
+    def release_claim(self, task_id: str) -> None:
+        """Drop `task_id`'s claim, so asking about the task does not count it against itself."""
+        self._claims.pop(task_id, None)
 
     def serves(self, tenant_id: str, provider: str, *, model_class: str | None = "") -> bool:
         """Whether an account the tenant may use serves `provider` -- and, when
@@ -492,6 +543,63 @@ def github_repository(repository_url: str | None) -> tuple[str, str] | None:
     if repo.lower().endswith(".git"):
         repo = repo[:-4]
     return (owner, repo) if owner and repo else None
+
+
+#: `swarm_api.repositories.parse_repository`'s pattern: `validation`'s
+#: `_ISSUE_OWNER` / `_ISSUE_REPO`, as GitHub spells owner and repository.
+_OWNER_REPO = re.compile(r"^([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/([A-Za-z0-9._-]{1,100})$")
+#: `swarm_api.workspace_secrets._GITHUB_URL`: the release reads a task's
+#: primary repository from an https GitHub URL only.
+_RELEASE_GITHUB_URL = re.compile(r"^https://github\.com/([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
+
+
+def parse_repository(value: Any) -> tuple[str, str] | None:
+    """`swarm_api.repositories.parse_repository`, answering None where it
+    raises: `owner/repo`, `.git` dropped, never `.`, `..` or a dot-led name."""
+    matched = _OWNER_REPO.match(value) if isinstance(value, str) else None
+    if matched is None:
+        return None
+    owner, repo = matched.group(1), matched.group(2)
+    if repo.lower().endswith(".git"):
+        repo = repo[:-4]
+    if repo in ("", ".", "..") or repo.startswith("."):
+        return None
+    return owner, repo
+
+
+def attempt_repositories(task: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """`swarm_api.workspace_secrets.attempt_repositories`, restated (the
+    scheduler's image does not carry swarm-api; tests/unit/control_plane/
+    test_secret_slot_admission.py holds the two equal): the `repo_id`s an
+    attempt clones, its `repository_url`'s first, then each
+    `additional_repositories` entry's, its `repo_id` recomputed from its
+    `repository` and the task's tenant. None when an entry does not match,
+    which the release answers by withholding every repository secret; `()`
+    for an attempt that clones nothing (secrets-scopes.md §2.2)."""
+    tenant_id = task.get("tenant_id")
+    if not isinstance(tenant_id, str) or not tenant_id:
+        return ()
+    out: list[str] = []
+    url = task.get("repository_url")
+    matched = _RELEASE_GITHUB_URL.match(url.strip()) if isinstance(url, str) else None
+    primary = parse_repository(f"{matched.group(1)}/{matched.group(2)}") if matched else None
+    if primary is not None:
+        out.append(repo_id_for(tenant_id, *primary))
+    extras = task.get("additional_repositories")
+    if extras is None:
+        return tuple(out)
+    if not isinstance(extras, list):
+        return None
+    for entry in extras:
+        if not isinstance(entry, Mapping):
+            return None
+        named = parse_repository(entry.get("repository"))
+        repo_id = entry.get("repo_id")
+        if named is None or not isinstance(repo_id, str) \
+                or repo_id != repo_id_for(tenant_id, *named):
+            return None
+        out.append(repo_id)
+    return tuple(dict.fromkeys(out))
 
 
 def grant_id_for(tenant_id: str, email: str, repo_id: str) -> str:

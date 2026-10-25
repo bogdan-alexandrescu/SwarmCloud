@@ -103,6 +103,28 @@ _PROVIDER_WORDS = {
     ParkReason.PROVIDER_OUTAGE.value: "Provider outage",
 }
 
+#: Why no account of the pool can take an agent, by the broker's reason
+#: (`quota_broker.accounts.Unavailable`), as the waiting line says it (#2222).
+#: Restated: swarm-api does not import the broker. A reason not here is shown
+#: as the broker spelled it.
+_POOL_WORDS = {
+    "accounts_full": "every account with room already holds as many agents as it may",
+    "no_account_available": "every account is under its floor",
+    "no_recent_reading": "no account has a reading recent enough to trust",
+    "pool_paused": "every account is paused, draining or needs a sign-in",
+}
+
+#: `pool_paused` when an account the park names is withheld as a duplicate.
+_POOL_PAUSED_OR_WITHHELD = (
+    "every account is paused, draining, needs a sign-in or is withheld as a duplicate"
+)
+
+#: The accounts a pool park's line names before "and N more".
+POOL_ACCOUNTS_NAMED = 3
+
+#: Window names as the line says them; another provider's is shown as spelled.
+_WINDOW_WORDS = {"five_hour": "5-hour", "seven_day": "7-day"}
+
 _HISTORY_KINDS = {
     EventType.QUEUED: "queued",
     EventType.PARKED: "parked",
@@ -367,6 +389,85 @@ def _ready(task: Task, waiting_for: Mapping[str, Any] | None, line: Mapping[str,
     return {"detail": detail, "summary": summary, "resumes_when": resumes, "since": None}
 
 
+def _pool_other(label: Any) -> str:
+    """The other side of a duplicate pair, as the park recorded it (#2222).
+
+    `scheduler.loop.pool_blockers` writes the label only for the waiting
+    agent's own workspace (BGD, Q2: "only within the same tenant"), and null
+    for another workspace's account, which the line names without one.
+    """
+    return _str(label) or "an account in another workspace"
+
+
+def _pool_account_words(entry: Mapping[str, Any], as_of: datetime) -> str | None:
+    """One account of a pool park, in words: what blocks it and when that clears."""
+    label = _str(entry.get("account"))
+    if label is None:
+        return None
+    parts: list[str] = []
+    state = _str(entry.get("state"))
+    if state:
+        parts.append(state.lower())
+    withheld = entry.get("withheld")
+    if isinstance(withheld, Mapping):
+        other = _pool_other(withheld.get("same_subscription_as"))
+        parts.append(f"withheld: same subscription as {other}")
+    for name, w in sorted(_mapping(entry.get("windows")).items()):
+        if not isinstance(w, Mapping):
+            continue
+        used = w.get("used")
+        pct = f" at {round(float(used) * 100)}%" if isinstance(used, (int, float)) else ""
+        clears = _as_dt(w.get("resets_at"))
+        when = f", clears {_hhmm(clears, as_of)}" if clears is not None else ""
+        parts.append(f"{_WINDOW_WORDS.get(name, name)}{pct}{when}")
+    if _str(entry.get("first_reading")) == "pending":
+        parts.append("taking one agent until its first reading")
+    full = _str(entry.get("full"))
+    if full:
+        parts.append(f"full ({full})")
+    possible = entry.get("possible_duplicate")
+    if isinstance(possible, Mapping):
+        other = _pool_other(possible.get("of"))
+        parts.append(f"possible duplicate of {other} (identical readings)")
+    return f"{label} {'; '.join(parts)}" if parts else label
+
+
+def _pool(task: Task, provider: str | None, facts: dict[str, Any], as_of: datetime,
+          detail: dict[str, Any]) -> dict[str, Any]:
+    """A park on the account pool: no account can take a new agent (#2222).
+
+    Before this it read "Provider quota exhausted", the words for a provider
+    refusing the tenant, while on 2026-10-24 every account had room by its
+    5-hour window and the floor, the cap or a stale reading was what held it.
+    The line says which, and names the accounts the park recorded
+    (`scheduler.loop.pool_blockers`, or the worker's park, which records
+    none), so a reader sees what clears first.
+    """
+    pool_reason = _str(facts.get("account_pool_reason"))
+    words = _POOL_WORDS.get(pool_reason or "", pool_reason or "no account can take it")
+    accounts = [a for a in facts.get("accounts") or () if isinstance(a, Mapping)]
+    withheld = any(isinstance(a.get("withheld"), Mapping) for a in accounts)
+    if pool_reason == "pool_paused" and withheld:
+        # The broker answers `pool_paused` when nothing is assignable and
+        # nothing is dated, and a duplicate it withholds is one of those: the
+        # account is AVAILABLE, so "paused" alone would send a reader to an
+        # account nobody paused.
+        words = _POOL_PAUSED_OR_WITHHELD
+    summary = f"No pool account can take an agent on {provider or 'its provider'}: {words}"
+    named = [w for w in (_pool_account_words(a, as_of) for a in accounts) if w]
+    if named:
+        shown = named[:POOL_ACCOUNTS_NAMED]
+        more = len(named) - len(shown)
+        summary += " (" + "; ".join(shown) + (f"; and {more} more" if more else "") + ")"
+    until = task.next_eligible_at
+    if until is not None:
+        summary += f"; next check {_hhmm(until, as_of)}"
+    detail = {**detail, "accounts": [dict(a) for a in accounts]}
+    resumes = ("an account frees a slot or its window clears, and the scheduler re-admits it; "
+               "an agent finishing wakes it sooner")
+    return {"detail": detail, "summary": summary, "resumes_when": resumes, "since": None}
+
+
 def _provider(task: Task, reason: str, facts: dict[str, Any], account: Mapping[str, Any] | None,
               as_of: datetime) -> dict[str, Any]:
     provider = _str(facts.get("provider")) or task.provider
@@ -383,6 +484,10 @@ def _provider(task: Task, reason: str, facts: dict[str, Any], account: Mapping[s
         "wait_seconds": _int(facts.get("wait_seconds")),
         "until": until,
     }
+    if reason == ParkReason.PROVIDER_QUOTA_EXHAUSTED.value and (
+        facts.get("account_pool_reason") or facts.get("park_phase") == "account_assign"
+    ):
+        return _pool(task, provider, facts, as_of, detail)
     summary = f"{_PROVIDER_WORDS[reason]} on {provider or 'its provider'}"
     if label:
         summary += f" (account {label})"

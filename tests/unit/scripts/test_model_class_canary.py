@@ -113,8 +113,9 @@ def test_the_group_lists_one_check_per_class(tmp_path):
     for cls in MODEL_CLASSES:
         named = [line for line in lines if f"a {cls} step runs its pin" in line]
         assert len(named) == 1, (cls, lines)
-    # The three checks that were there stay.
-    assert len(lines) == 3 + len(MODEL_CLASSES)
+    # The three checks that were there stay, and the test-services pair follows
+    # (TS-ACCEPT; tests/unit/scripts/test_acceptance_test_services.py).
+    assert len(lines) == 3 + len(MODEL_CLASSES) + 2
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +135,7 @@ api_fetch() { printf '%s' "${RUNTIMES}" >"$2"; }
 _cc_check_collect() { :; }
 _cc_check_direct_pr() { :; }
 _cc_check_issue() { :; }
+_cc_check_test_services() { :; }
 _cc_check_model_class() { printf 'JUDGE %s %s %s\n' "$1" "$2" "$(jq -c '.runtimes["claude-code"].models' "$3")"; }
 run_claude_code
 """

@@ -645,3 +645,447 @@ def test_a_form_link_is_single_use_and_bound_to_its_minter(client, seeded):
     first = create(client, "root", "eng", "x-key", fake_value(), link_token=token)
     assert first.status_code == 201 and first.json()["via_link"] is True
     assert create(client, "root", "eng", "y-key", fake_value(), link_token=token).status_code == 403
+
+
+# -- SSC-REPO-SCOPE: a registered repository's secrets for agents -------------------
+#
+# docs/design/secrets-scopes.md §2.1, §2.5 and §6.2 (owner decisions Q2 and Q9
+# of its §11). The GitHub-admin half of Q2 is test_github_repo_admin.py's.
+
+from swarm_api.grant_attest import attested_form  # noqa: E402
+from swarm_api.repositories import repo_id_for  # noqa: E402
+
+WIDGETS = repo_id_for("eng", "acme", "widgets")
+REPO_BASE = f"/v1/repositories/{WIDGETS}/secrets"
+
+
+def register(db: FakeFirestore, tenant_id: str = "eng", owner: str = "acme",
+             repo: str = "widgets") -> str:
+    repo_id = repo_id_for(tenant_id, owner, repo)
+    db.docs[f"repositories/{repo_id}"] = {
+        "repo_id": repo_id, "tenant_id": tenant_id, "forge": "github", "owner": owner,
+        "repo": repo, "repository_url": f"https://github.com/{owner}/{repo}"}
+    return repo_id
+
+
+def repo_create(client, who: str, tenant: str, name: str, value: str, *,
+                base: str = REPO_BASE, **extra):
+    return client.post(base, headers=as_(who, tenant),
+                       json={"name": name, "provider": "other", "kind": "api_key",
+                             "value": value, **extra})
+
+
+def test_a_repository_secret_is_bound_to_its_registration_and_kept_off_the_workspace_list(
+        client, seeded, sm):
+    register(seeded)
+    value = fake_value()
+    response = repo_create(client, "root", "eng", "test-db-password", value)
+    assert response.status_code == 201, response.text
+    body = response.json()["secret"]
+    assert (body["scope"], body["repo_id"], body["repository"]) == \
+        ("repository", WIDGETS, "acme/widgets")
+    assert body["secret_id"].startswith("swarm-tenant-eng-wsec-")
+    assert value not in response.text
+    # The same name may exist once for the workspace and once per repository.
+    assert create(client, "root", "eng", "test-db-password", fake_value("w")).status_code == 201
+    assert [s["name"] for s in listing(client, "root", "eng")["secrets"]] == ["test-db-password"]
+    assert listing(client, "root", "eng")["secrets"][0]["scope"] == "workspace"
+    repo_list = client.get(REPO_BASE, headers=as_("dave", "eng"))
+    assert repo_list.status_code == 200, repo_list.text
+    assert [(s["name"], s["repo_id"]) for s in repo_list.json()["secrets"]] == \
+        [("test-db-password", WIDGETS)]
+    assert repo_list.json()["can_manage"] is False
+    # A second of the same name for the repository is a conflict.
+    again = repo_create(client, "root", "eng", "test-db-password", fake_value("x"))
+    assert again.status_code == 409, again.text
+
+
+def test_another_workspaces_repo_id_is_404_on_every_route(client, seeded, sm):
+    register(seeded)
+    theirs = register(seeded, "research", "acme", "widgets")
+    assert theirs != WIDGETS
+    assert repo_create(client, "root", "eng", "x-key", fake_value()).status_code == 201
+    # bob is research's: eng's registration is not his workspace's, whatever it names.
+    for method, path, body in (
+            ("GET", REPO_BASE, None),
+            ("POST", REPO_BASE, {"name": "y-key", "provider": "other", "kind": "api_key",
+                                 "value": fake_value()}),
+            ("PUT", f"{REPO_BASE}/x-key/value", {"value": fake_value()}),
+            ("PUT", f"{REPO_BASE}/x-key/grants/profile:claude-code", {"enabled": True}),
+            ("DELETE", f"{REPO_BASE}/x-key", {"name": "x-key"}),
+            ("POST", f"{REPO_BASE}/links", {"action": "add"})):
+        response = client.request(method, path, headers=as_("bob", "research"), json=body)
+        assert response.status_code == 404, (method, path, response.text)
+    # And a repo_id that is no registration at all.
+    unknown = client.get(f"/v1/repositories/{repo_id_for('eng', 'acme', 'nope')}/secrets",
+                         headers=as_("root", "eng"))
+    assert unknown.status_code == 404
+
+
+def test_a_member_is_403_and_their_value_never_reaches_secret_manager(client, seeded, sm):
+    """dave is an eng member with no GitHub connection: neither half of Q2."""
+    register(seeded)
+    response = repo_create(client, "dave", "eng", "x-key", fake_value())
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"]["reason"] == "github_not_connected"
+    assert sm.payloads == {}
+    assert repo_create(client, "root", "eng", "x-key", fake_value()).status_code == 201
+    for method, path, body in (
+            ("PUT", f"{REPO_BASE}/x-key/value", {"value": fake_value("z")}),
+            ("PUT", f"{REPO_BASE}/x-key/grants/profile:claude-code", {"enabled": True}),
+            ("DELETE", f"{REPO_BASE}/x-key", {"name": "x-key"}),
+            ("POST", f"{REPO_BASE}/links", {"action": "add"})):
+        refused = client.request(method, path, headers=as_("dave", "eng"), json=body)
+        assert refused.status_code == 403, (method, path, refused.text)
+
+
+def test_a_repository_grant_is_signed_v2_with_its_repository(db, tokens, group_map, objects,
+                                                             clock, sm, pool):
+    key = __import__("secrets").token_urlsafe(32)
+    ctx = build_context(
+        settings=api_settings(console_url=CONSOLE, workspace_grant_key=key), db=db,
+        verifier=StaticTokenVerifier(tokens), groups=StaticGroups(group_map),
+        credentials=InMemoryCredentials(), waker=NullWaker(), metrics=ApiMetrics(),
+        objects=objects, forge_tokens=NoForgeTokens(), now=clock,
+    )
+    app = create_app(ctx)
+    app.state.workspace_secret_writer = sm
+    app.state.account_pool = pool
+    keyed = TestClient(app, raise_server_exceptions=False)
+    seed_tenant(db, "eng")
+    register(db)
+    assert repo_create(keyed, "root", "eng", "x-key", fake_value()).status_code == 201
+    response = keyed.put(f"{REPO_BASE}/x-key/grants/profile:claude-code",
+                         headers=as_("root", "eng"), json={"enabled": True})
+    assert response.status_code == 200, response.text
+    [grant] = [d for p, d in db.docs.items() if p.startswith(f"{GRANTS_COLLECTION}/")]
+    assert grant["repo_id"] == WIDGETS and attested_form(grant) == "v2"
+
+
+def test_an_mcp_server_is_never_granted_a_repository_secret(client, seeded, sm):
+    register(seeded)
+    assert repo_create(client, "root", "eng", "x-key", fake_value()).status_code == 201
+    response = client.put(f"{REPO_BASE}/x-key/grants/mcp:docs", headers=as_("root", "eng"),
+                          json={"enabled": True, "slot": "auth"})
+    assert response.status_code == 422, response.text
+    assert not [p for p in seeded.docs if p.startswith(f"{GRANTS_COLLECTION}/")]
+
+
+def test_enabling_a_repository_grant_without_a_grant_key_is_switched(client, seeded, sm,
+                                                                     monkeypatch):
+    """Off (the default): written, unattested, and inert (the release drops
+    it: test_grant_attest.py). On: 422 grant_key_required, nothing written."""
+    register(seeded)
+    assert repo_create(client, "root", "eng", "x-key", fake_value()).status_code == 201
+    path = f"{REPO_BASE}/x-key/grants/profile:claude-code"
+    monkeypatch.setenv("REFUSAL_GRANT_KEY_REQUIRED", "on")
+    refused = client.put(path, headers=as_("root", "eng"), json={"enabled": True})
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["code"] == "grant_key_required"
+    assert not [p for p in seeded.docs if p.startswith(f"{GRANTS_COLLECTION}/")]
+    monkeypatch.delenv("REFUSAL_GRANT_KEY_REQUIRED")
+    written = client.put(path, headers=as_("root", "eng"), json={"enabled": True})
+    assert written.status_code == 200, written.text
+    [grant] = [d for p, d in seeded.docs.items() if p.startswith(f"{GRANTS_COLLECTION}/")]
+    assert grant["attestation"] is None and grant["repo_id"] == WIDGETS
+
+
+def test_a_repository_secret_is_rotated_and_deleted_on_its_own_path(client, seeded, sm):
+    register(seeded)
+    assert repo_create(client, "root", "eng", "x-key", fake_value()).status_code == 201
+    assert create(client, "root", "eng", "x-key", fake_value("w")).status_code == 201
+    rotated = client.put(f"{REPO_BASE}/x-key/value", headers=as_("root", "eng"),
+                         json={"value": fake_value("r")})
+    assert rotated.status_code == 200, rotated.text
+    assert rotated.json()["secret"]["repo_id"] == WIDGETS
+    gone = client.request("DELETE", f"{REPO_BASE}/x-key", headers=as_("root", "eng"),
+                          json={"name": "x-key"})
+    assert gone.status_code == 200, gone.text
+    # The workspace's own x-key is untouched.
+    assert [s["name"] for s in listing(client, "root", "eng")["secrets"]] == ["x-key"]
+    assert client.get(REPO_BASE, headers=as_("root", "eng")).json()["secrets"] == []
+
+
+def test_a_repository_form_link_is_bound_to_its_repository(client, seeded, sm):
+    register(seeded)
+    minted = client.post(f"{REPO_BASE}/links", headers=as_("root", "eng"),
+                         json={"action": "add"})
+    assert minted.status_code == 201, minted.text
+    assert minted.json()["path"].startswith(f"/config/secrets?scope=repository&repo={WIDGETS}")
+    token = minted.json()["path"].rsplit("t=", 1)[1]
+    # Not for the workspace's own form ...
+    wrong = create(client, "root", "eng", "x-key", fake_value(), link_token=token)
+    assert wrong.status_code == 403, wrong.text
+    # ... and once for the repository's.
+    used = repo_create(client, "root", "eng", "x-key", fake_value(), link_token=token)
+    assert used.status_code == 201 and used.json()["via_link"] is True
+    again = repo_create(client, "root", "eng", "y-key", fake_value(), link_token=token)
+    assert again.status_code == 403
+
+
+def test_disable_grants_turns_a_repositorys_grants_off_for_a_manager_only(client, seeded, sm):
+    register(seeded)
+    assert repo_create(client, "root", "eng", "x-key", fake_value()).status_code == 201
+    assert client.put(f"{REPO_BASE}/x-key/grants/profile:claude-code",
+                      headers=as_("root", "eng"), json={"enabled": True}).status_code == 200
+    path = f"{REPO_BASE}:disable-grants"
+    assert client.post(path, headers=as_("dave", "eng")).status_code == 403
+    answer = client.post(path, headers=as_("root", "eng"))
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["grants_disabled"] == {"x-key": ["profile:claude-code"]}
+    [grant] = [d for p, d in seeded.docs.items() if p.startswith(f"{GRANTS_COLLECTION}/")]
+    assert grant["enabled"] is False
+
+
+# -- SSC-REPO-DELETE: removing a registration disables its secrets' grants ----------
+#
+# secrets-scopes.md §2.1: "A removed registration disables every grant on its
+# secrets in the transaction that removes it." `DELETE /v1/repositories/{id}`
+# disables them and deletes in one transaction (`delete_repository`, lane
+# SSC-REPO-DELETE-TXN below), and fails closed.
+
+from swarm_api.grant_attest import GrantKeys  # noqa: E402
+from swarm_api.workspace_secrets import AUDIT_REPOSITORY_GRANTS_DISABLED, WorkspaceSecrets  # noqa: E402
+
+
+@pytest.fixture
+def grant_key() -> str:
+    return __import__("secrets").token_urlsafe(32)
+
+
+@pytest.fixture
+def keyed(db, tokens, group_map, objects, clock, sm, pool, grant_key) -> TestClient:
+    ctx = build_context(
+        settings=api_settings(console_url=CONSOLE, workspace_grant_key=grant_key), db=db,
+        verifier=StaticTokenVerifier(tokens), groups=StaticGroups(group_map),
+        credentials=InMemoryCredentials(), waker=NullWaker(), metrics=ApiMetrics(),
+        objects=objects, forge_tokens=NoForgeTokens(), now=clock,
+    )
+    app = create_app(ctx)
+    app.state.workspace_secret_writer = sm
+    app.state.account_pool = pool
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def _granted(client, db: FakeFirestore) -> dict:
+    register(db)
+    assert repo_create(client, "root", "eng", "x-key", fake_value()).status_code == 201
+    response = client.put(f"{REPO_BASE}/x-key/grants/profile:claude-code",
+                          headers=as_("root", "eng"), json={"enabled": True})
+    assert response.status_code == 200, response.text
+    [grant] = [d for p, d in db.docs.items() if p.startswith(f"{GRANTS_COLLECTION}/")]
+    assert grant["enabled"] is True
+    return grant
+
+
+def test_deleting_a_registration_disables_its_secrets_grants_re_signed_and_audited(
+        keyed, seeded, sm, grant_key, caplog):
+    _granted(keyed, seeded)
+    with caplog.at_level(logging.INFO, logger="swarm_api.routes.repositories"):
+        response = keyed.delete(f"/v1/repositories/{WIDGETS}", headers=as_("dave", "eng"))
+    assert response.status_code == 204, response.text
+    assert f"repositories/{WIDGETS}" not in seeded.docs
+    [grant] = [d for p, d in seeded.docs.items() if p.startswith(f"{GRANTS_COLLECTION}/")]
+    assert grant["enabled"] is False and grant["repo_id"] == WIDGETS
+    assert grant["changed_by"] == "dave@example.com"
+    assert GrantKeys(grant_key).check(grant) == "valid"
+    [row] = [a for a in audits(seeded) if a.get("action") == AUDIT_REPOSITORY_GRANTS_DISABLED]
+    assert row["detail"]["repo_id"] == WIDGETS
+    assert row["detail"]["grants_disabled"] == ["profile:claude-code"]
+    [line] = [r.getMessage() for r in caplog.records if "repository delete" in r.getMessage()]
+    assert "grants_disabled=1" in line
+    assert not any(v in caplog.text for v in (sm.payloads[k].decode() for k in sm.payloads))
+
+
+def test_re_registering_a_deleted_repository_revives_no_grant(keyed, seeded, sm):
+    _granted(keyed, seeded)
+    assert keyed.delete(f"/v1/repositories/{WIDGETS}",
+                        headers=as_("dave", "eng")).status_code == 204
+    register(seeded)  # the same owner/repo, so the same repo_id
+    listed = keyed.get(REPO_BASE, headers=as_("root", "eng"))
+    assert listed.status_code == 200, listed.text
+    [secret] = listed.json()["secrets"]
+    assert all(g["enabled"] is False for g in secret["grants"]), secret["grants"]
+    assert all(d["enabled"] is False for p, d in seeded.docs.items()
+               if p.startswith(f"{GRANTS_COLLECTION}/"))
+
+
+def test_a_disable_that_raises_leaves_the_registration_and_answers_an_error(
+        keyed, seeded, sm, monkeypatch):
+    _granted(keyed, seeded)
+
+    def broken(self, **kwargs):
+        raise RuntimeError("firestore unavailable")
+
+    monkeypatch.setattr(WorkspaceSecrets, "delete_repository", broken)
+    response = keyed.delete(f"/v1/repositories/{WIDGETS}", headers=as_("dave", "eng"))
+    assert response.status_code >= 500, response.text
+    assert f"repositories/{WIDGETS}" in seeded.docs
+    [grant] = [d for p, d in seeded.docs.items() if p.startswith(f"{GRANTS_COLLECTION}/")]
+    assert grant["enabled"] is True
+
+
+def test_deleting_a_registration_with_no_secrets_answers_204(client, seeded, sm, caplog):
+    register(seeded)
+    with caplog.at_level(logging.INFO, logger="swarm_api.routes.repositories"):
+        response = client.delete(f"/v1/repositories/{WIDGETS}", headers=as_("dave", "eng"))
+    assert response.status_code == 204, response.text
+    assert f"repositories/{WIDGETS}" not in seeded.docs
+    assert "grants_disabled=0" in caplog.text
+    assert not [a for a in audits(seeded) if a.get("action") == AUDIT_REPOSITORY_GRANTS_DISABLED]
+
+
+def test_another_workspaces_repo_id_is_still_404_and_touches_no_grant(keyed, seeded, sm):
+    _granted(keyed, seeded)
+    response = keyed.delete(f"/v1/repositories/{WIDGETS}", headers=as_("bob", "research"))
+    assert response.status_code == 404, response.text
+    assert f"repositories/{WIDGETS}" in seeded.docs
+    [grant] = [d for p, d in seeded.docs.items() if p.startswith(f"{GRANTS_COLLECTION}/")]
+    assert grant["enabled"] is True
+    assert not [a for a in audits(seeded) if a.get("action") == AUDIT_REPOSITORY_GRANTS_DISABLED]
+
+
+# -- SSC-REPO-DELETE-TXN: the disable and the removal are ONE transaction --------
+#
+# secrets-scopes.md §2.1 says "in the transaction that removes it". Two writes
+# left a window: a grant enabled between them survived the delete, and a
+# re-registration of the same repository revived it. Contention is modelled the
+# way `test_cancel_retries_contention.py` models it: the REAL
+# `firestore.transactional` drives a fake whose commit is aborted, and what the
+# other writer committed first is visible to the retry.
+
+from google.api_core import exceptions as gexc  # noqa: E402
+
+from swarm_api.grant_attest import GrantPolicy  # noqa: E402
+
+
+class _RemovalTransaction(RecordingTransaction):
+    """Calls `db.on_removal(self)` before committing any transaction that
+    deletes `repositories/{WIDGETS}`; the hook may raise to abort it."""
+
+    def _commit(self) -> list[Any]:
+        if any(op == "delete" and ref.path == f"repositories/{WIDGETS}"
+               for op, ref, _ in self._buffer):
+            self._db.on_removal(self)
+        return super()._commit()
+
+
+@pytest.fixture
+def removal(seeded, monkeypatch) -> RecordingFirestore:
+    seeded.on_removal = lambda txn: None
+    monkeypatch.setattr(seeded, "transaction", lambda **kw: _RemovalTransaction(seeded))
+    return seeded
+
+
+def _repo_grant(client, name: str, consumer: str) -> None:
+    response = client.put(f"{REPO_BASE}/{name}/grants/{consumer}",
+                          headers=as_("root", "eng"), json={"enabled": True})
+    assert response.status_code == 200, response.text
+
+
+def _grants(db: FakeFirestore) -> list[dict]:
+    return [d for p, d in db.docs.items() if p.startswith(f"{GRANTS_COLLECTION}/")]
+
+
+def test_a_grant_enabled_while_the_delete_commits_is_disabled_by_its_retry(
+        keyed, removal, sm, clock, grant_key):
+    _granted(keyed, removal)
+    store = WorkspaceSecrets(removal, sm, now=clock,
+                             grants=GrantPolicy(keys=GrantKeys(grant_key), required=False))
+    contended: list[int] = []
+
+    def another_manager_wins_the_lock(txn) -> None:
+        # The first commit loses to a manager who enabled a second consumer
+        # on the same secret: their write lands, this commit aborts unapplied.
+        if contended:
+            return
+        contended.append(1)
+        store.set_grant(tenant_id="eng", name="x-key", consumer="profile:codex",
+                        slot=None, enabled=True, by="root@example.com", repo_id=WIDGETS)
+        txn._buffer = []
+        raise gexc.Aborted("another transaction holds the lock")
+
+    removal.on_removal = another_manager_wins_the_lock
+    response = keyed.delete(f"/v1/repositories/{WIDGETS}", headers=as_("dave", "eng"))
+    assert response.status_code == 204, response.text
+    assert contended == [1]
+    assert f"repositories/{WIDGETS}" not in removal.docs
+    grants = _grants(removal)
+    assert sorted(g["consumer"] for g in grants) == ["profile:claude-code", "profile:codex"]
+    assert all(g["enabled"] is False for g in grants), grants
+    assert all(GrantKeys(grant_key).check(g) == "valid" for g in grants)
+    register(removal)  # the same repo_id: nothing comes back
+    assert all(g["enabled"] is False for g in _grants(removal))
+
+
+def test_a_grant_enabled_after_the_delete_committed_is_refused(
+        keyed, removal, sm, clock, grant_key, monkeypatch):
+    """The other order: the delete commits between `set_grant`'s read of the
+    secret and its transaction. The enable re-reads the registration in its
+    transaction, as `create` does, and finds it gone."""
+    _granted(keyed, removal)
+    found = WorkspaceSecrets.find
+    store = WorkspaceSecrets(removal, sm, now=clock,
+                             grants=GrantPolicy(keys=GrantKeys(grant_key), required=False))
+
+    def find_then_lose_the_race(self, tenant_id, name, repo_id=None):
+        doc = found(self, tenant_id, name, repo_id)
+        monkeypatch.setattr(WorkspaceSecrets, "find", found)
+        store.delete_repository(tenant_id="eng", repo_id=WIDGETS, by="dave@example.com")
+        return doc
+
+    monkeypatch.setattr(WorkspaceSecrets, "find", find_then_lose_the_race)
+    response = keyed.put(f"{REPO_BASE}/x-key/grants/profile:codex",
+                         headers=as_("root", "eng"), json={"enabled": True})
+    assert response.status_code == 404, response.text
+    assert f"repositories/{WIDGETS}" not in removal.docs
+    assert all(g["enabled"] is False for g in _grants(removal)), _grants(removal)
+
+
+def test_the_disable_and_the_removal_land_in_one_commit(keyed, removal, sm):
+    _granted(keyed, removal)
+    assert repo_create(keyed, "root", "eng", "y-key", fake_value("y")).status_code == 201
+    _repo_grant(keyed, "y-key", "profile:codex")
+    _repo_grant(keyed, "y-key", "profile:indexer")
+    before = len(removal.commits)
+    response = keyed.delete(f"/v1/repositories/{WIDGETS}", headers=as_("dave", "eng"))
+    assert response.status_code == 204, response.text
+    [commit] = removal.commits[before:]
+    assert f"repositories/{WIDGETS}" in commit
+    grant_paths = sorted(p for p in removal.docs if p.startswith(f"{GRANTS_COLLECTION}/"))
+    assert len(grant_paths) == 3 and set(grant_paths) <= set(commit)
+    assert sum(p.startswith(f"{AUDIT_COLLECTION}/") for p in commit) == 2
+    assert all(g["enabled"] is False for g in _grants(removal))
+    assert f"repositories/{WIDGETS}" not in removal.docs
+
+
+def test_a_removal_that_cannot_commit_leaves_the_grants_and_the_registration(
+        keyed, removal, sm):
+    _granted(keyed, removal)
+    before = {p: dict(d) for p, d in removal.docs.items()}
+
+    def always_contended(txn) -> None:
+        txn._buffer = []
+        raise gexc.Aborted("another transaction holds the lock")
+
+    removal.on_removal = always_contended
+    response = keyed.delete(f"/v1/repositories/{WIDGETS}", headers=as_("dave", "eng"))
+    assert response.status_code >= 500, response.text
+    assert f"repositories/{WIDGETS}" in removal.docs
+    [grant] = _grants(removal)
+    assert grant["enabled"] is True
+    assert removal.docs == before
+
+
+def test_a_removal_over_firestores_write_cap_refuses_whole(keyed, removal, sm, monkeypatch):
+    """One grant, its audit row and the delete are three writes: under a cap
+    of two the removal is a 409 naming the count, and nothing is written."""
+    import swarm_api.workspace_secrets as module
+
+    _granted(keyed, removal)
+    before = {p: dict(d) for p, d in removal.docs.items()}
+    monkeypatch.setattr(module, "MAX_TRANSACTION_WRITES", 2)
+    response = keyed.delete(f"/v1/repositories/{WIDGETS}", headers=as_("dave", "eng"))
+    assert response.status_code == 409, response.text
+    assert "3 documents" in response.text and "disable-grants" in response.text
+    assert removal.docs == before

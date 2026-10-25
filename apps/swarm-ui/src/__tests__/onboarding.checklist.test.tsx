@@ -104,7 +104,9 @@ describe('the Setup page draws the server-derived checklist', () => {
     const { OnboardingScreen } = await load()
     render(<OnboardingScreen />)
     await screen.findByRole('list', { name: 'Setup steps' })
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Setup')
+    // MUTATION: give the part its old "Setup" h1 -> fails. It is a part of Config › Workspace Settings
+    // (WS-SETTINGS-PAGE), whose h1 is the page's, so it draws none of its own.
+    expect(screen.queryByRole('heading', { level: 1 })).toBeNull()
     expect(steps().map((li) => li.dataset.step)).toEqual(['signed_in', 'github_connected', 'app_installed', 'orgs_enabled', 'repos_chosen', 'access_verified', 'ready'])
     expect(steps().map((li) => li.dataset.state)).toEqual(['done', 'todo', 'todo', 'todo', 'todo', 'todo', 'todo'])
     expect(stepEl('github_connected').getAttribute('aria-current')).toBe('step')
@@ -124,22 +126,16 @@ describe('the Setup page draws the server-derived checklist', () => {
     expect(within(stepEl('ready')).queryByRole('link')).toBeNull()
   })
 
-  it('starts the App authorisation from the Connect GitHub step', async () => {
-    const calls = serve((m, url) => {
-      if (m === 'GET' && url === '/v1/onboarding') return { status: 200, body: FRESH }
-      if (m === 'POST' && url === '/v1/onboarding/github/authorize') {
-        return { status: 200, body: { authorize_url: 'https://github.com/login/oauth/authorize?client_id=Iv1.example', expires_in_seconds: 600 } }
-      }
-      return null
-    })
-    const mod = await load()
-    const gh = await import('../GitHubConnect')
-    const assign = vi.spyOn(gh.browser, 'assign').mockImplementation(() => {})
-    render(<mod.OnboardingScreen />)
+  it('links the Connect GitHub step to Config › GitHub access, where the App is connected', async () => {
+    const calls = answer(FRESH)
+    const { OnboardingScreen } = await load()
+    render(<OnboardingScreen />)
     await screen.findByRole('list', { name: 'Setup steps' })
-    fireEvent.click(within(stepEl('github_connected')).getByRole('button', { name: 'Connect GitHub' }))
-    await waitFor(() => expect(assign).toHaveBeenCalledWith('https://github.com/login/oauth/authorize?client_id=Iv1.example'))
-    expect(calls.filter((c) => c.url === '/v1/onboarding/github/authorize')).toEqual([expect.objectContaining({ method: 'POST', body: { surface: 'console' } })])
+    // MUTATION: keep the in-place authorise button (WS-SETTINGS-PAGE moved connecting to GitHub access) -> fails.
+    const connect = within(stepEl('github_connected')).getByRole('link', { name: 'Connect GitHub' })
+    expect(connect.getAttribute('href')).toBe('/config/github')
+    expect(within(stepEl('github_connected')).queryByRole('button', { name: 'Connect GitHub' })).toBeNull()
+    expect(calls.filter((c) => c.url === '/v1/onboarding/github/authorize')).toEqual([])
   })
 
   it("prints a failed step's §2.3 copy word for word, with the GitHub page it names", async () => {
@@ -155,15 +151,16 @@ describe('the Setup page draws the server-derived checklist', () => {
     expect(within(orgs).getByRole('link', { name: 'Open on GitHub' }).getAttribute('href')).toBe('https://github.com/orgs/example-org/sso')
     expect(visible(orgs)).toContain('example-org (sso required)')
     // The fix is on Access, and Re-check is a fresh read.
-    expect(within(orgs).getByRole('link', { name: 'Enable orgs' }).getAttribute('href')).toBe('/access')
+    expect(within(orgs).getByRole('link', { name: 'Enable orgs' }).getAttribute('href')).toBe('/config/github')
     expect(within(orgs).getByRole('button', { name: 'Re-check' })).toBeTruthy()
     // An in-progress step later on also points at Access.
-    expect(within(stepEl('access_verified')).getByRole('link', { name: 'Verify access' }).getAttribute('href')).toBe('/access')
+    expect(within(stepEl('access_verified')).getByRole('link', { name: 'Verify access' }).getAttribute('href')).toBe('/config/github')
     expect(visible(stepEl('repos_chosen'))).toContain('1 granted: octo-dev/example-api (write)')
     expect(visible(stepEl('access_verified'))).toContain('0 passed · 1 not checked yet')
-    // The pending grant is named, with the page its Verify is on (#896).
-    expect(visible(stepEl('access_verified'))).toContain('octo-dev/example-api: press Verify on Access')
-    expect(within(stepEl('access_verified')).getByRole('link', { name: 'Access' }).getAttribute('href')).toBe('/access')
+    // The pending grant is named, with the page its Verify is on (#896): GitHub access since WS-SETTINGS-PAGE.
+    // MUTATION: name the old Access page -> fails.
+    expect(visible(stepEl('access_verified'))).toContain('octo-dev/example-api: press Verify on GitHub access')
+    expect(within(stepEl('access_verified')).getByRole('link', { name: 'GitHub access' }).getAttribute('href')).toBe('/config/github')
   })
 
   it('re-reads the checklist on Re-check', async () => {
@@ -271,7 +268,7 @@ describe('the Setup card on Overview (Entry A)', () => {
     render(<SetupCard />)
     expect(await screen.findByText('Set up SwarmCloud')).toBeTruthy()
     expect(screen.getByText('4 of 7 done')).toBeTruthy()
-    expect(screen.getByRole('link', { name: 'Open setup' }).getAttribute('href')).toBe('/setup')
+    expect(screen.getByRole('link', { name: 'Open setup' }).getAttribute('href')).toBe('/config/workspace/setup')
   })
 
   it('draws nothing once setup is complete', async () => {

@@ -768,6 +768,38 @@ def test_a_stale_pool_parks_until_the_sooner_of_the_poll_and_the_window(
     assert eligible > datetime.now(timezone.utc)
 
 
+@pytest.mark.parametrize("window_in", [None, timedelta(hours=46), timedelta(minutes=2)])
+def test_a_full_pool_parks_minutes_as_quota_never_as_a_missing_credential(
+    db, worker_factory, secrets, window_in
+):
+    """#2222. `accounts_full` is the broker's per-account cap: every account
+    with room already holds its agents. A slot frees when one of them
+    finishes, so the worker waits minutes -- the same as a stale reading, and
+    the sooner of that and any window the broker names -- and it is a quota
+    wait, not an admin's to fix."""
+    from agent_worker.accountlease import ACCOUNTS_FULL
+    from agent_worker.lifecycle import NO_ACCOUNT_RETRY_SECONDS, STALE_READING_RETRY_SECONDS
+
+    clears = None if window_in is None else datetime.now(timezone.utc) + window_in
+    seed_attempt(db, runner_profile="claude-code", task_input={"prompt": "x"})
+    seed_tenant(db, credentials=["anthropic"])
+    worker, _, _ = worker_factory(runner_profile="claude-code", secret_client=secrets)
+    worker._account_broker = FakeBroker(NoAccount(
+        reason=ACCOUNTS_FULL, next_reset_at=clears.isoformat() if clears else None))
+
+    assert worker.run() == ExitCode.PARKED
+    task = db.doc("tasks/task_1")
+    assert task["park_reason"] == ParkReason.PROVIDER_QUOTA_EXHAUSTED.value
+    assert task["blocked_by"][0]["account_pool_reason"] == "accounts_full"
+    poll = datetime.now(timezone.utc) + timedelta(seconds=STALE_READING_RETRY_SECONDS)
+    eligible = task["next_eligible_at"]
+    # MUTATION: treating it as `no_account_available` parks the bare answer
+    # for fifteen minutes and the 46 h row for 46 h.
+    assert eligible <= (min(clears, poll) if clears else poll) + timedelta(seconds=5)
+    assert eligible - datetime.now(timezone.utc) < timedelta(seconds=NO_ACCOUNT_RETRY_SECONDS - 60)
+    assert eligible > datetime.now(timezone.utc)
+
+
 # -- shaping the secret payload -------------------------------------------
 
 
@@ -1273,6 +1305,7 @@ def test_the_worker_and_the_broker_spell_the_reasons_the_same_way():
         al.NO_ACCOUNT_AVAILABLE,
         al.POOL_PAUSED,
         al.NO_RECENT_READING,
+        al.ACCOUNTS_FULL,
     }
 
 

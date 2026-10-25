@@ -697,7 +697,15 @@ class SchedulerStore:
         )
 
     def park(self, task: Task, reason: ParkReason, *, next_eligible_at: datetime | None = None,
-             detail: dict[str, Any] | None = None) -> GuardedWrite:
+             detail: dict[str, Any] | None = None,
+             blocked_by: list[dict[str, Any]] | None = None) -> GuardedWrite:
+        """READY -> PARKED, guarded on the state read.
+
+        `blocked_by`, when given, is written as the task's `blocked_by`, in the
+        shape a worker's park writes it (`lifecycle._park_no_account`): what
+        `loop.account_park_provider` reads to know a park waits on the account
+        pool, and what swarm-api's waiting line reads (#2222).
+        """
         assert_transition(task.state, TaskState.PARKED)
         patch: dict[str, Any] = {
             "state": TaskState.PARKED.value,
@@ -706,6 +714,8 @@ class SchedulerStore:
         }
         if next_eligible_at is not None:
             patch["next_eligible_at"] = next_eligible_at
+        if blocked_by is not None:
+            patch["blocked_by"] = blocked_by
         outcome = self._write_if_unchanged("park", task, patch)
         if outcome.applied:
             self.append_event(task, EventType.PARKED, {"reason": reason.value, **(detail or {})})

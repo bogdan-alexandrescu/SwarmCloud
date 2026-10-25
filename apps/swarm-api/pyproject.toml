@@ -34,6 +34,13 @@ dependencies = [
     # (docs/design/child-tasks.md §3.2, swarm_api.childkey). Imported lazily;
     # declared because images/swarm-api/Dockerfile installs only this package.
     "cryptography>=42",
+    # Seals a GitHub Actions secret to the repository's or environment's
+    # public key (libsodium `crypto_box_seal`, `nacl.public.SealedBox`), the
+    # only form GitHub accepts (docs/design/secrets-scopes.md §3.2, owner
+    # decision Q5 b: swarm-api seals). `cryptography` has no sealed box.
+    # Imported lazily by swarm_api.actions_secrets; declared because the
+    # image installs only this package.
+    "pynacl>=1.5",
 ]
 
 [tool.uv.sources]

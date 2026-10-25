@@ -14,12 +14,22 @@ greps that no other module builds it. The form is a JSON array, fixed order,
 no whitespace, ASCII only:
 
     ["v1", secret_id, tenant_id, consumer, slot or null, enabled]
+    ["v2", secret_id, tenant_id, consumer, slot or null, enabled, repo_id]
 
 Every field the release decides on is in it: the secret, the workspace the
 grant is queried by, the consumer it is matched against, the slot it is
 delivered into, and the checkbox. `"v1"` leads so the form can change: a new
 form gets a new version and its own branch in `_FORMS`, and an attestation
 names the version it was made under (`v1.<base64url MAC>`).
+
+FORM "v2" (SSC-REPO-SCOPE, part of #2158; docs/design/secrets-scopes.md §2.2,
+owner decision Q9) adds the repository a REPOSITORY secret's grant is bound
+to: the registration's `repo_id`, copied from the record when the grant is
+written. A grant document that carries a `repo_id` is signed "v2"; every
+other grant is still signed "v1", so no grant on a workspace or personal
+secret needed re-signing, and a "v1" attestation still verifies. The record
+is tenant-writable and unattested, so the binding the release trusts is the
+one in the grant, under this MAC.
 
 THE KEY is `swarm-workspace-grant-key` (SWARM_WORKSPACE_GRANT_KEY), held by
 swarm-api alone, read as a ring with the previous version during a rotation
@@ -45,8 +55,12 @@ log = logging.getLogger(__name__)
 
 #: The grant document's field this module writes and reads.
 ATTESTATION_FIELD = "attestation"
-#: The canonical form's current version. Also the attestation's prefix.
+#: The canonical form of a grant with no repository. Also the attestation's prefix.
 FORM_VERSION = "v1"
+#: The form of a grant bound to one repository (`repo_id` in the document).
+FORM_REPOSITORY = "v2"
+#: The grant document's field naming the repository it is bound to.
+REPO_ID_FIELD = "repo_id"
 #: Log codes. A grant dropped for its attestation is logged with the first; an
 #: unattested grant released while `grant_attestation_required` is off, with
 #: the second. Neither line carries a MAC or a key.
@@ -65,8 +79,11 @@ class NotCanonical(ValueError):
     or a missing field). It is never attested, and never verifies."""
 
 
-def canonical(secret_id: Any, tenant_id: Any, consumer: Any, slot: Any, enabled: Any) -> bytes:
-    """The bytes a grant's attestation is a MAC of. THE ONLY STATEMENT OF THE FORM."""
+def canonical(secret_id: Any, tenant_id: Any, consumer: Any, slot: Any, enabled: Any,
+              repo_id: Any = None) -> bytes:
+    """The bytes a grant's attestation is a MAC of. THE ONLY STATEMENT OF THE FORM.
+
+    `repo_id` None is form "v1"; text is form "v2", which ends with it."""
     for value in (secret_id, tenant_id, consumer):
         if not isinstance(value, str) or not value:
             raise NotCanonical("a grant names its secret, workspace and consumer as text")
@@ -74,17 +91,49 @@ def canonical(secret_id: Any, tenant_id: Any, consumer: Any, slot: Any, enabled:
         raise NotCanonical("a grant's slot is text or absent")
     if not isinstance(enabled, bool):
         raise NotCanonical("a grant's enabled is a boolean")
-    form = [FORM_VERSION, secret_id, tenant_id, consumer, slot, enabled]
+    if repo_id is not None and (not isinstance(repo_id, str) or not repo_id):
+        raise NotCanonical("a grant's repository is text or absent")
+    if repo_id is None:
+        form: list[Any] = [FORM_VERSION, secret_id, tenant_id, consumer, slot, enabled]
+    else:
+        form = [FORM_REPOSITORY, secret_id, tenant_id, consumer, slot, enabled, repo_id]
     return json.dumps(form, separators=(",", ":"), ensure_ascii=True).encode("ascii")
 
 
 def canonical_of(grant: Mapping[str, Any]) -> bytes:
-    """`canonical` over a grant document's own fields."""
+    """`canonical` over a grant document's own fields, in form "v1": a
+    `repo_id` on the document is NOT covered, so a "v1" attestation never
+    vouches for a repository binding (`form_of`)."""
     return canonical(grant.get("secret_id"), grant.get("tenant_id"), grant.get("consumer"),
                      grant.get("slot"), grant.get("enabled"))
 
 
-_FORMS = {FORM_VERSION: canonical_of}
+def canonical_v2_of(grant: Mapping[str, Any]) -> bytes:
+    """`canonical` over a grant document's own fields, in form "v2". A
+    document with no `repo_id` has no "v2" form: a "v2" attestation on it is
+    invalid, so a binding cannot be stripped off a signed grant."""
+    repo_id = grant.get(REPO_ID_FIELD)
+    if repo_id is None:
+        raise NotCanonical("a v2 grant names its repository")
+    return canonical(grant.get("secret_id"), grant.get("tenant_id"), grant.get("consumer"),
+                     grant.get("slot"), grant.get("enabled"), repo_id)
+
+
+_FORMS = {FORM_VERSION: canonical_of, FORM_REPOSITORY: canonical_v2_of}
+
+
+def form_of(grant: Mapping[str, Any]) -> str:
+    """The form `sign` uses for `grant`: "v2" when it carries a repository."""
+    return FORM_REPOSITORY if grant.get(REPO_ID_FIELD) is not None else FORM_VERSION
+
+
+def attested_form(grant: Mapping[str, Any]) -> str | None:
+    """The version an attestation names ("v1", "v2"), or None. Says nothing
+    about whether it verifies: ask `GrantKeys.check` for that."""
+    presented = grant.get(ATTESTATION_FIELD)
+    if not isinstance(presented, str) or presented.count(".") != 1:
+        return None
+    return presented.split(".")[0] or None
 
 
 def _mac(key: str, message: bytes) -> bytes:
@@ -117,7 +166,8 @@ class GrantKeys:
         key (the grant is then written unattested; see `GrantPolicy`)."""
         if not self.current:
             return None
-        return f"{FORM_VERSION}.{_b64(_mac(self.current, canonical_of(grant)))}"
+        version = form_of(grant)
+        return f"{version}.{_b64(_mac(self.current, _FORMS[version](grant)))}"
 
     def check(self, grant: Mapping[str, Any]) -> str:
         """VALID, MISSING (no attestation at all) or INVALID (present and

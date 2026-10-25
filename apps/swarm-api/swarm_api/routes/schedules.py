@@ -11,6 +11,7 @@
     POST   /v1/schedules/{id}:pause {cancel_live: true, confirm}   and cancel the live runs (§2.11)
     POST   /v1/schedules:pause-all {confirm}       every enabled schedule of the caller's tenant (§2.11)
     GET    /v1/schedules/{id}/firings[/{firing_id}]
+    GET    /v1/schedules/{id}/spans?firing_id=…    one page of firings' work and attempt spans
     GET    /v1/schedules/{id}/audit                newest first
     GET    /v1/admin/schedules                     every tenant's, with the tick's health (§5.3)
     POST   /v1/admin/schedules/{id}:pause | :disable | :enable
@@ -29,6 +30,22 @@ selected workspace (`_member`), checked before anything is read or written. A
 goes through its switch: off, the write goes through and the log names who
 would have been refused. The preview and every read stay open to a viewer.
 The firing itself checks its OWNER's role (`schedulefire.owner_acts_as`).
+
+A PLATFORM-SCOPE SCHEDULE IS A PLATFORM ADMIN'S (BGD, 2026-10-24, "Platform
+admins only"; PLATFORM-SCHED-ADMIN, part of #2157). One whose stored
+`scope.mode` is `platform` reads every workspace's aggregates, so only a
+platform admin may create one (`schedules.check_creator`) -- and, by that
+decision, change one: edit, delete, pause, resume, run, take-ownership and
+lane S5's merge switch are 403 `platform_admin_required` to anyone else,
+workspace admin included (`_platform_only`), and pause-all leaves such a
+schedule as it is for them, listed under `admin_required`. The check reads
+the STORED schedule, before the write and again in its transaction, so a
+body naming another scope cannot dodge it and a scope moved to platform
+between the two reads is still caught. It is raised, not a report-only
+switch: report-only would be the very write the decision forbids, and only
+platform admins create these schedules, so no ordinary flow depends on the
+write going through. Reads stay open; a workspace-scope schedule is managed
+exactly as before.
 
 TENANT-SCOPED (§5.1, invariant 9). The tenant on every route comes from
 `tenant_scope` (a read) or `tenant_for` (a create), never from the body:
@@ -87,7 +104,7 @@ from swarm_common.admission import _snapshot
 from .. import cronexpr, roles, schedulefire, schedules, scheduletypes
 from ..auth import AuthContext
 from ..deps import AppContext, admin_auth, current_auth, get_context, paged_limit, tenant_scope
-from ..errors import Conflict, NoClaudeAccount, NotFound, WorkspaceNotReady
+from ..errors import Conflict, NoClaudeAccount, NotFound, ValidationFailed, WorkspaceNotReady
 from ..issueruns import TERMINAL_RUN_STATES, IssueRuns, RunState
 from ..repositories import COLLECTION as REPOSITORIES
 from ..repositories import Repositories, platform_of
@@ -117,6 +134,22 @@ HISTORY = 50
 #: index, `schedule_id, slot desc`) puts them last. They are read by their own
 #: equality query, at most this many, and merged by `fired_at`.
 RUN_NOW_SCAN = 200
+
+#: THE HISTORY TIMELINE'S PAGE (#1109, SCHED-HISTORY-TIMELINE). schedules.html
+#: detail A's risk note: the timeline needs every firing's work and its
+#: attempts' spans, one read per firing page, and that cost decides the design.
+#: So `/spans` takes the firing ids of ONE page the History tab draws, at most
+#: this many, and never reads a firing it was not asked for.
+SPAN_FIRINGS = 10
+
+#: The tasks one `/spans` call reads, across its firings: each costs an
+#: attempts query. A page whose work is bigger serves the rest as unread, with
+#: that reason, rather than reading without bound.
+SPAN_TASKS = 100
+
+#: Attempts read per task, newest first. A task that retried more than this
+#: says so (`attempts_truncated`); max_attempts is 3 by default.
+SPAN_ATTEMPTS = 20
 
 #: Awaiting-approval firings read for the pending counts. They are documents
 #: a person clears; more than this many pending is itself the news.
@@ -245,6 +278,24 @@ def _member(ctx: AppContext, auth: AuthContext) -> None:
     `role_member_required` for a `viewer`, through its switch."""
     if ctx.roles is not None:
         ctx.roles.require(auth, roles.MEMBER)
+
+
+def _platform_scope(doc: Mapping[str, Any]) -> bool:
+    return (doc.get("scope") or {}).get("mode") == "platform"
+
+
+def _platform_only(auth: AuthContext, doc: Mapping[str, Any], action: str) -> None:
+    """403 `platform_admin_required` when the STORED `doc` is platform-scope and
+    the caller is not a platform admin (BGD, 2026-10-24). Logged with who asked,
+    as `RoleStore.require` logs its refusals; nothing has been written yet."""
+    if not _platform_scope(doc) or auth.is_admin or auth.is_owner:
+        return
+    log.warning("refusal code=platform_admin_required tenant=%s email=%s schedule=%s action=%s",
+                doc.get("tenant_id"), auth.email, doc.get("schedule_id"), action)
+    raise ScheduleForbidden(
+        "platform_admin_required",
+        "only a platform admin may change a platform-scope schedule: it reads every workspace's aggregates",
+    )
 
 
 def _audit(txn: Any, ctx: AppContext, doc: Mapping[str, Any], action: str, by: str, at: datetime,
@@ -698,6 +749,7 @@ def patch_schedule(
     """§7.1 edit, carrying `revision`; a stale one is 409 `schedule_changed`."""
     _member(ctx, auth)
     stored = _read(ctx, tenant_id, schedule_id)
+    _platform_only(auth, stored, "edit")
     patch = schedules.parse_patch(body)
     registered, platform_repository = _registrations(ctx, tenant_id, patch.scope)
     now = _now(ctx)
@@ -726,6 +778,7 @@ def patch_schedule(
     def _apply(txn: Any) -> dict[str, Any]:
         tenant_doc = _snapshot(txn.get(tenant_ref)).to_dict() or {}
         before = _owned(_snapshot(txn.get(ref)), tenant_id, schedule_id)
+        _platform_only(auth, before, "edit")
         existing = _tenant_schedules(ctx, tenant_id, txn)
         doc = edit(before, existing)
         txn.set(ref, doc)
@@ -753,6 +806,7 @@ def delete_schedule(
     work the schedule already made is ordinary work and is not cancelled."""
     _member(ctx, auth)
     stored = _read(ctx, tenant_id, schedule_id)
+    _platform_only(auth, stored, "delete")
     if confirm is None or confirm.strip() != stored["name"]:
         raise ScheduleInvalid("confirmation_required", "type the schedule's name in `confirm` to delete it")
     now = _now(ctx)
@@ -763,6 +817,7 @@ def delete_schedule(
     def _apply(txn: Any) -> None:
         tenant_doc = _snapshot(txn.get(tenant_ref)).to_dict() or {}
         doc = _owned(_snapshot(txn.get(ref)), tenant_id, schedule_id)
+        _platform_only(auth, doc, "delete")
         txn.delete(ref)
         _bump_tenant(txn, tenant_ref, tenant_doc, tenant_id, now)
         _audit(txn, ctx, doc, "delete", auth.email, now, {"name": doc["name"], "type": doc["type"],
@@ -834,13 +889,15 @@ def pause_schedule(
     with the schedule's name, which also cancels the work of its live firings."""
     _member(ctx, auth)
     request = _verb(PauseIn, body)
+    stored = _read(ctx, tenant_id, schedule_id)
+    _platform_only(auth, stored, "pause")
     if request.cancel_live:
-        stored = _read(ctx, tenant_id, schedule_id)
         if request.confirm is None or request.confirm != stored["name"]:
             raise ScheduleInvalid("confirmation_required",
                                   "type the schedule's name in `confirm` to cancel its live runs")
 
     def change(doc: Mapping[str, Any], now: datetime) -> dict[str, Any] | None:
+        _platform_only(auth, doc, "pause")
         if doc["state"] == "disabled":
             if request.cancel_live:
                 # Disabled already makes no firings; what is asked is the cancel.
@@ -935,28 +992,43 @@ def _cancel_live(ctx: AppContext, auth: AuthContext, tenant_id: str, doc: Mappin
 
 
 def _pause_all(ctx: AppContext, tenant_id: str, *, by: str, action: str,
-               reason: str | None) -> dict[str, Any]:
+               reason: str | None, platform_admin: bool) -> dict[str, Any]:
     """§2.11: every `enabled` schedule of the tenant to `paused` with one reason,
     each through `_move` -- its own transaction re-reading its state, its own
-    audit entry. Any other state is left as it is."""
+    audit entry. Any other state is left as it is.
+
+    A platform-scope schedule is a platform admin's (`_platform_only`): for
+    anyone else it is left as it is and listed under `admin_required`, read
+    from the stored schedule in its own transaction. The rest of the tenant's
+    are still paused: refusing the whole brake over one schedule the caller
+    may not touch would leave every other one running."""
     reason = reason or "all of the tenant's schedules were paused"
     paused: list[str] = []
     unchanged: list[str] = []
+    refused: list[str] = []
 
     #: Set on every attempt, so a retried transaction reports what committed.
-    moved: dict[str, bool] = {}
+    moved: dict[str, str] = {}
 
     def change(doc: Mapping[str, Any], now: datetime) -> dict[str, Any] | None:
-        moved[doc["schedule_id"]] = doc["state"] == "enabled"
-        return _paused(by, now, reason) if moved[doc["schedule_id"]] else None
+        if _platform_scope(doc) and not platform_admin:
+            moved[doc["schedule_id"]] = "admin_required"
+            return None
+        moved[doc["schedule_id"]] = "paused" if doc["state"] == "enabled" else "unchanged"
+        return _paused(by, now, reason) if moved[doc["schedule_id"]] == "paused" else None
 
     for row in _tenant_schedules(ctx, tenant_id):
         try:
             _move(ctx, tenant_id, row["schedule_id"], by=by, action=action, change=change)
         except NotFound:
             continue  # deleted since the list was read: nothing left to pause
-        (paused if moved.get(row["schedule_id"]) else unchanged).append(row["schedule_id"])
-    return {"tenant_id": tenant_id, "paused": sorted(paused), "unchanged": sorted(unchanged)}
+        outcome = moved.get(row["schedule_id"])
+        {"paused": paused, "admin_required": refused}.get(outcome or "", unchanged).append(row["schedule_id"])
+    if refused:
+        log.warning("refusal code=platform_admin_required tenant=%s by=%s schedules=%s action=%s",
+                    tenant_id, by, ",".join(sorted(refused)), action)
+    return {"tenant_id": tenant_id, "paused": sorted(paused), "unchanged": sorted(unchanged),
+            "admin_required": sorted(refused)}
 
 
 @router.post("/v1/schedules:pause-all")
@@ -973,7 +1045,8 @@ def pause_all_schedules(
     if request.confirm != tenant_id:
         raise ScheduleInvalid("confirmation_required",
                               "type your tenant's id in `confirm` to pause all of its schedules")
-    return _pause_all(ctx, tenant_id, by=auth.email, action="pause_all", reason=request.reason)
+    return _pause_all(ctx, tenant_id, by=auth.email, action="pause_all", reason=request.reason,
+                      platform_admin=auth.is_admin or auth.is_owner)
 
 
 @router.post("/v1/schedules/{schedule_id}:resume")
@@ -987,6 +1060,7 @@ def resume_schedule(
     _member(ctx, auth)
 
     def change(doc: Mapping[str, Any], now: datetime) -> dict[str, Any] | None:
+        _platform_only(auth, doc, "resume")
         if doc["state"] == "disabled":
             raise ScheduleForbidden("admin_required", "an admin disabled this schedule; only an admin may re-enable it")
         if doc["state"] == "enabled":
@@ -1008,10 +1082,12 @@ def take_ownership(
     """§1.1: the caller becomes the member firings submit as. Audited."""
     _member(ctx, auth)
     stored = _read(ctx, tenant_id, schedule_id)
+    _platform_only(auth, stored, "take_ownership")
     _check_grants(ctx, stored, auth.email)
     _check_file_issues(ctx, stored, auth.email)
 
     def change(doc: Mapping[str, Any], now: datetime) -> dict[str, Any] | None:
+        _platform_only(auth, doc, "take_ownership")
         if doc.get("owner") == auth.email:
             return None
         return {"owner": auth.email}
@@ -1034,6 +1110,7 @@ def run_schedule(
     _member(ctx, auth)
     request = _verb(RunIn, body)
     doc = _read(ctx, tenant_id, schedule_id)
+    _platform_only(auth, doc, "run")
     if doc["state"] == "disabled":
         raise ScheduleConflict("schedule_disabled", "an admin disabled this schedule")
     if not schedulefire.schedules_enabled(ctx.settings):
@@ -1088,6 +1165,162 @@ def get_firing(
     if not row or row.get("tenant_id") != tenant_id or row.get("schedule_id") != schedule_id:
         raise NotFound(f"firing {firing_id[:96]!r} not found")
     return {"firing": firing_to_api(row)}
+
+
+#: Why an item draws a dash instead of bars, in words the UI shows as served.
+_UNREAD_API_ACTION = "an API action runs no attempt: it ended when it was recorded"
+_UNREAD_CAP = f"more work than one page reads ({SPAN_TASKS} tasks): open the item to see it"
+
+
+def _val(v: Any) -> Any:
+    """An enum's value; a stored string or None as it is."""
+    return getattr(v, "value", v)
+
+
+def _span_task(task: Any, step_label: str | None, attempts: list[Any] | None,
+               unread: str | None) -> dict[str, Any]:
+    """One task as the timeline draws it: the fields `lanes.buildLane` reads,
+    and its attempts' spans. Not the input, the spec or the result: the
+    timeline draws when capacity was held, and nothing of what was asked."""
+    shown = None if attempts is None else attempts[:SPAN_ATTEMPTS]
+    return _json({
+        "task_id": task.id,
+        "step_id": task.step_id,
+        "label": step_label or task.step_id or task.runner_profile,
+        "state": _val(task.state),
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+        "completed_at": task.completed_at,
+        "current_generation": task.current_generation,
+        "park_reason": _val(task.park_reason),
+        "next_eligible_at": task.next_eligible_at,
+        "attempts": None if shown is None else [
+            {"attempt_id": a.attempt_id, "task_id": a.task_id, "generation": a.generation,
+             "created_at": a.created_at, "completed_at": a.completed_at, "exit_code": a.exit_code}
+            for a in reversed(shown)  # oldest first, as the lanes draw them
+        ],
+        "attempts_truncated": attempts is not None and len(attempts) > SPAN_ATTEMPTS,
+        "attempts_unread": unread,
+    })
+
+
+def _item_tasks(ctx: AppContext, tenant_id: str, item: Mapping[str, Any]) -> tuple[
+        list[tuple[str, str | None]], dict[str, Any]]:
+    """The tasks one work item ran, as (task_id, label), and the item's own
+    facts: its state and when it last moved, or why it cannot be drawn."""
+    kind, item_id = str(item.get("kind")), str(item.get("id"))
+    if kind == "task":
+        return [(item_id, None)], {}
+    if kind == "workflow":
+        found = ctx.store.workflows_by_id(tenant_id, [item_id], submitted_by=None)
+        if not found:
+            return [], {"unread": "its workflow was not found"}
+        wf = found[0]
+        steps = [(s.task_id, s.step_id) for s in wf.steps if s.task_id]
+        return steps, _json({"state": _val(wf.state), "updated_at": wf.updated_at})
+    if kind == "issue_run":
+        try:
+            run = IssueRuns(ctx.db, now=ctx.now).get(tenant_id, item_id)
+        except NotFound:
+            return [], {"unread": "its issue run was not found"}
+        out: list[tuple[str, str | None]] = []
+        if run.planner_task_id:
+            out.append((run.planner_task_id, "plan"))
+        wf_ids = ([run.workflow_id] if run.workflow_id else []) + list(run.ci_fix_workflows)
+        workflows = {w.workflow_id: w for w in ctx.store.workflows_by_id(tenant_id, wf_ids, submitted_by=None)}
+        for n, wf_id in enumerate(wf_ids):
+            wf = workflows.get(wf_id)
+            prefix = "" if n == 0 and run.workflow_id else f"fix {n if run.workflow_id else n + 1} · "
+            for step in (wf.steps if wf is not None else []):
+                if step.task_id:
+                    out.append((step.task_id, f"{prefix}{step.step_id}"))
+        return out, _json({"state": _val(run.state), "updated_at": run.updated_at})
+    return [], {"unread": _UNREAD_API_ACTION if kind == "api_action" else f"a {kind} has no attempts to read"}
+
+
+@router.get("/v1/schedules/{schedule_id}/spans")
+def list_firing_spans(
+    schedule_id: str,
+    firing_id: list[str] = Query(default=[]),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The work of ONE PAGE of firings and its attempts' spans (#1109).
+
+    The History tab's timeline draws a lane per firing and a bar per task each
+    work item ran; `GET /v1/schedules/{id}` serves the firings and their
+    `work[]`, and this serves what the bars need for the firing ids asked --
+    at most `SPAN_FIRINGS`, never every firing ever. No document is written
+    and no new shape is stored: the firings, issue runs, workflows, tasks and
+    attempts are read as they are.
+
+    TENANT-SCOPED like every route here: the schedule is read under the
+    caller's tenant first (another tenant's is the same 404 as a missing
+    one), a firing is served only if its id is this schedule's and its stored
+    `tenant_id` and `schedule_id` match, and every task, workflow and run is
+    read through the tenant-checked store. A firing id that is not this
+    schedule's is listed in `not_found` and nothing of it is read.
+
+    HONEST GAPS (redesign-v2.md): an item whose tasks or attempts could not be
+    read carries `unread` (or a task its `attempts_unread`) with the reason,
+    so the UI draws a dash and says why, never an empty lane.
+    """
+    _read(ctx, tenant_id, schedule_id)
+    wanted = list(dict.fromkeys(i for i in firing_id if i))
+    if len(wanted) > SPAN_FIRINGS:
+        raise ValidationFailed(
+            f"at most {SPAN_FIRINGS} firings are read at once",
+            detail={"asked": len(wanted), "limit": SPAN_FIRINGS},
+        )
+    ours = [i for i in wanted if i.startswith(f"{schedule_id}:") and "/" not in i]
+    col = ctx.db.collection(schedulefire.FIRINGS)
+    rows: dict[str, dict[str, Any]] = {}
+    if ours:
+        for snap in ctx.db.get_all([col.document(i) for i in ours]):
+            row = snap.to_dict() if snap.exists else None
+            if row and row.get("tenant_id") == tenant_id and row.get("schedule_id") == schedule_id:
+                rows[str(row.get("firing_id"))] = row
+
+    budget = SPAN_TASKS
+    out: list[dict[str, Any]] = []
+    for fid in wanted:
+        row = rows.get(fid)
+        if row is None:
+            continue
+        items: list[dict[str, Any]] = []
+        for item in row.get("work") or []:
+            kind, item_id = str(item.get("kind")), str(item.get("id"))
+            shown: dict[str, Any] = {"kind": kind, "id": item_id, "state": None, "updated_at": None,
+                                     "tasks": [], "unread": None}
+            if budget <= 0 and kind != "api_action":
+                shown["unread"] = _UNREAD_CAP
+                items.append(shown)
+                continue
+            pairs, facts = _item_tasks(ctx, tenant_id, item)
+            shown.update(facts)
+            if len(pairs) > budget:
+                shown["unread"] = _UNREAD_CAP
+                pairs = pairs[:budget]
+            budget -= len(pairs)
+            tasks = ctx.store.tasks_by_id(tenant_id, (t for t, _ in pairs))
+            for task_id, label in pairs:
+                task = tasks.get(task_id)
+                if task is None:
+                    shown["tasks"].append({"task_id": task_id, "label": label, "attempts": None,
+                                           "attempts_unread": "its task was not found"})
+                    continue
+                try:
+                    attempts = ctx.store.list_attempts(tenant_id, task_id, limit=SPAN_ATTEMPTS + 1)
+                except Exception as exc:  # one task's read does not blank the page
+                    log.warning("schedule spans: attempts of %s not read: %s", task_id, type(exc).__name__)
+                    shown["tasks"].append(_span_task(task, label, None, "its attempts could not be read"))
+                    continue
+                shown["tasks"].append(_span_task(task, label, attempts, None))
+            if not pairs and shown["unread"] is None and facts.get("unread") is None:
+                shown["unread"] = "it ran no task yet"
+            items.append(shown)
+        out.append({"firing_id": fid, "items": items})
+    return {"firings": out, "not_found": [i for i in wanted if i not in rows]}
 
 
 @router.get("/v1/schedules/{schedule_id}/audit")
@@ -1281,4 +1514,5 @@ def admin_pause_tenant_schedules(
     if request.confirm != tenant_id:
         raise ScheduleInvalid("confirmation_required",
                               "type the tenant's id in `confirm` to pause all of its schedules")
-    return _pause_all(ctx, tenant_id, by=_admin_by(auth), action="admin_pause_all", reason=request.reason)
+    return _pause_all(ctx, tenant_id, by=_admin_by(auth), action="admin_pause_all", reason=request.reason,
+                      platform_admin=True)

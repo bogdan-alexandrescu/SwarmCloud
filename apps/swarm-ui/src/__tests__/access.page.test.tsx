@@ -153,12 +153,33 @@ function api(extra: Handler = () => null) {
   })
 }
 
-async function mount() {
+/**
+ * Where a case looks (GITHUB-ACCESS-PAGE, part of #2157): GitHub access'
+ * Connection tab, its Choose repositories tab (`?view=choose`), or the
+ * reach-as-you list, which moved to ReachableRepositories.tsx for Config ›
+ * Repositories. `both` is the chooser and the list together, for the phone
+ * rules every Access control keeps wherever it is drawn.
+ */
+async function mount(at: 'mine' | 'choose' | 'grants' | 'both' = 'mine') {
+  if (at === 'choose' || at === 'both') window.history.replaceState(null, '', '/config/github?view=choose')
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
   const { AccessScreen } = await import('../Access')
+  const { ReachableRepositoriesRead } = await import('../ReachableRepositories')
+  if (at === 'grants') return render(<ReachableRepositoriesRead />)
+  if (at === 'both') {
+    return render(
+      <>
+        <AccessScreen />
+        <ReachableRepositoriesRead />
+      </>,
+    )
+  }
   return render(<AccessScreen />)
 }
+
+/** The Connection tab drew: the policy is in it, under the read. */
+const policyDrawn = () => screen.findByRole('heading', { name: 'What SwarmCloud may do as you' })
 
 const row = (repository: string) => document.querySelector(`li.ac-row[data-repo="${repository}"]`) as HTMLElement
 const grantRow = (repository: string) => document.querySelector(`li.ac-grant[data-repo="${repository}"]`) as HTMLElement
@@ -168,14 +189,16 @@ const radio = (el: HTMLElement, name: string) => within(el).getByRole('radio', {
 afterEach(() => {
   vi.unstubAllEnvs()
   // Members is in the address now (RSA-28): one case's click must not open the next case on it.
-  window.history.replaceState(null, '', window.location.pathname)
+  window.history.replaceState(null, '', '/config/github')
 })
 
 describe('the page states what SwarmCloud may do as you', () => {
   it('says Read is enforced by SwarmCloud, there is no workflows write, and verifying only reads', async () => {
     api()
     await mount()
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Access')
+    await policyDrawn()
+    // Config › GitHub access since CONFIG-NAV (part of #2157).
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('GitHub access')
     const d9 = visible(document.querySelector('[data-rule="D9"]'))
     expect(d9).toContain('SwarmCloud enforces it')
     expect(d9).toContain('GitHub itself would let the push through')
@@ -224,7 +247,7 @@ describe('GitHub quota', () => {
 describe('owners (chooser A, left)', () => {
   it('lists every owner with its state and the action it needs', async () => {
     api()
-    await mount()
+    await mount('choose')
     await screen.findByRole('list', { name: 'Owners your connection reaches' })
     expect(visible(owner('octo-dev'))).toContain('your account')
     expect(visible(owner('example-org'))).toContain('2 chosen')
@@ -237,7 +260,7 @@ describe('owners (chooser A, left)', () => {
 
   it('enables an installed owner with POST /v1/access/orgs', async () => {
     const calls = api((m, url) => (m === 'POST' && url === '/v1/access/orgs' ? { status: 200, body: { tenant_id: 'eng', org: ORG('example-lab') } } : null))
-    await mount()
+    await mount('choose')
     await screen.findByRole('list', { name: 'Owners your connection reaches' })
     fireEvent.click(within(owner('example-lab')).getByRole('button', { name: 'Enable' }))
     await waitFor(() => expect(calls.filter((c) => c.method === 'POST' && c.url === '/v1/access/orgs')).toEqual([expect.objectContaining({ body: { owner: 'example-lab' } })]))
@@ -252,7 +275,7 @@ describe('owners (chooser A, left)', () => {
           }
         : null,
     )
-    await mount()
+    await mount('choose')
     await screen.findByRole('list', { name: 'Owners your connection reaches' })
     fireEvent.click(within(owner('example-org')).getByRole('button', { name: 'Remove' }))
     expect(calls.some((c) => c.method === 'DELETE')).toBe(false)
@@ -267,7 +290,7 @@ describe('owners (chooser A, left)', () => {
 describe('repositories (chooser A, right)', () => {
   it("reads the selected owner's first page and shows push ability before Write", async () => {
     api()
-    await mount()
+    await mount('choose')
     await screen.findByRole('list', { name: "example-org's repositories, page 1" })
     expect(owner('example-org').className).toContain('is-selected')
     expect(radio(row('example-org/example-docs'), 'Read').getAttribute('aria-checked')).toBe('true')
@@ -283,7 +306,7 @@ describe('repositories (chooser A, right)', () => {
 
   it('pages with next_page and searches server-side', async () => {
     const calls = api((m, url) => (m === 'GET' && url === '/v1/access/orgs/example-org/repositories?page=1&q=service' ? { status: 200, body: page(1, [REPO(4, 'example-service-ui')], { q: 'service' }) } : null))
-    await mount()
+    await mount('choose')
     await screen.findByRole('list', { name: "example-org's repositories, page 1" })
     fireEvent.click(screen.getByRole('button', { name: 'Next page' }))
     await screen.findByRole('list', { name: "example-org's repositories, page 2" })
@@ -305,7 +328,7 @@ describe('repositories (chooser A, right)', () => {
       if (m === 'DELETE' && url === `/v1/access/grants/${ID(1)}`) return { status: 200, body: { tenant_id: 'eng', repo_id: ID(1), revoked: true, unregistered: false } }
       return null
     })
-    await mount()
+    await mount('choose')
     await screen.findByRole('list', { name: "example-org's repositories, page 1" })
     fireEvent.click(radio(row('example-org/example-service-ui'), 'Write'))
     await waitFor(() =>
@@ -326,7 +349,7 @@ describe('repositories (chooser A, right)', () => {
         ? { status: 422, body: { code: 'access_refused', message: 'GitHub does not let octo-dev push to example-org/example-service-ui', detail: { failure_code: 'PERMISSION_MISSING', recovery: COPY, url: null } } }
         : null,
     )
-    await mount()
+    await mount('choose')
     await screen.findByRole('list', { name: "example-org's repositories, page 1" })
     fireEvent.click(radio(row('example-org/example-service-ui'), 'Write'))
     expect(await screen.findByText(COPY)).toBeTruthy()
@@ -352,7 +375,7 @@ describe('a typed owner/repo', () => {
           }
         : null,
     )
-    await mount()
+    await mount('choose')
     const input = await screen.findByRole('textbox', { name: 'Not listed? Type owner/repo' })
     fireEvent.change(input, { target: { value: 'Example-Org/example-legacy' } })
     fireEvent.click(screen.getByRole('button', { name: 'Grant' }))
@@ -367,7 +390,7 @@ describe('a typed owner/repo', () => {
 
   it('refuses a value that is not owner/repo before calling anything', async () => {
     const calls = api()
-    await mount()
+    await mount('choose')
     const input = await screen.findByRole('textbox', { name: 'Not listed? Type owner/repo' })
     fireEvent.change(input, { target: { value: 'just-a-name' } })
     expect((screen.getByRole('button', { name: 'Grant' }) as HTMLButtonElement).disabled).toBe(true)
@@ -379,7 +402,7 @@ describe('a typed owner/repo', () => {
 describe('the grants, verified (Verify A)', () => {
   it('lists failures first, a read grant needs no push, and a write grant offers the push test', async () => {
     api()
-    await mount()
+    await mount('grants')
     const grid = await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
     const order = [...grid.querySelectorAll('li.ac-grant')].map((li) => (li as HTMLElement).dataset.repo)
     expect(order).toEqual(['example-org/example-service', 'example-org/example-docs', 'octo-dev/example-api'])
@@ -399,7 +422,7 @@ describe('the grants, verified (Verify A)', () => {
         ? { status: 200, body: { tenant_id: 'eng', grant: GRANTS[1], passed: false, failures: [{ check: 'push', code: 'PERMISSION_MISSING', copy: COPY }] } }
         : null,
     )
-    await mount()
+    await mount('grants')
     await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
     fireEvent.click(within(grantRow('example-org/example-service')).getByRole('button', { name: 'Verify' }))
     expect(await screen.findByText(COPY)).toBeTruthy()
@@ -412,7 +435,7 @@ describe('the grants, verified (Verify A)', () => {
       if (m === 'POST' && hit !== null) return { status: 200, body: { tenant_id: 'eng', grant: GRANTS.find((g) => g.repo_id === hit[1]), passed: true, failures: [] } }
       return null
     })
-    await mount()
+    await mount('grants')
     await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
     fireEvent.click(screen.getByRole('button', { name: 'Re-check all' }))
     await waitFor(() => expect(calls.filter((c) => c.url.endsWith('/verify')).map((c) => c.url).sort()).toEqual([ID(1), ID(2), ID(3)].map((id) => `/v1/access/grants/${id}/verify`)))
@@ -420,7 +443,7 @@ describe('the grants, verified (Verify A)', () => {
 
   it('changes a grant from Write to Read with PUT', async () => {
     const calls = api((m, url) => (m === 'PUT' && url === `/v1/access/grants/${ID(3)}` ? { status: 200, body: { tenant_id: 'eng', grant: GRANT(3, 'octo-dev/example-api', 'read'), registered: false, registration_repo_id: ID(3) } } : null))
-    await mount()
+    await mount('grants')
     await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
     fireEvent.click(radio(grantRow('octo-dev/example-api'), 'Read'))
     // Write to Read takes access away, so it asks first (live QA RSA-1).
@@ -434,7 +457,8 @@ describe('not connected', () => {
     const calls = serve((m, url) => (m === 'GET' && url === '/v1/access' ? { status: 200, body: overview({ connection: null, orgs: [], grants: [] }) } : null))
     await mount()
     expect(await screen.findByRole('button', { name: 'Connect GitHub' })).toBeTruthy()
-    expect(screen.queryByText('Choose repositories')).toBeNull()
+    // The chooser is a tab of its own now; it is not mounted for a person with no connection.
+    expect(document.getElementById('ac-choose')).toBeNull()
     expect(calls.map((c) => c.url)).toEqual(['/v1/access'])
   })
 })
@@ -471,7 +495,7 @@ describe('connected but not installed (#780)', () => {
       if (m === 'GET' && url === '/v1/access/orgs') return { status: 200, body: NOWHERE }
       return null
     })
-    await mount()
+    await mount('choose')
     await screen.findByRole('list', { name: 'Owners your connection reaches' })
     const box = notice()
     expect(box).not.toBeNull()
@@ -504,7 +528,7 @@ describe('connected but not installed (#780)', () => {
       if (m === 'GET' && url === '/v1/access/orgs') return { status: 200, body: unnamed }
       return null
     })
-    await mount()
+    await mount('choose')
     await screen.findByRole('list', { name: 'Owners your connection reaches' })
     const box = notice()
     expect(visible(box)).toContain("You're connected as @octo-dev, but the SwarmCloud GitHub App isn't installed anywhere yet.")
@@ -528,7 +552,7 @@ describe('connected but not installed (#780)', () => {
       if (m === 'GET' && url === '/v1/access/orgs') return { status: 200, body: mixed }
       return null
     })
-    await mount()
+    await mount('choose')
     await screen.findByRole('list', { name: 'Owners your connection reaches' })
     expect(notice()).toBeNull()
     expect(within(owner('octo-dev')).getByRole('button', { name: 'Enable' })).toBeTruthy()
@@ -550,7 +574,7 @@ describe('connected but not installed (#780)', () => {
       }
       return null
     })
-    await mount()
+    await mount('choose')
     await screen.findByRole('list', { name: 'Owners your connection reaches' })
     const reads = () => calls.filter((c) => c.method === 'GET' && c.url === '/v1/access/orgs').length
     expect(reads()).toBe(1)
@@ -623,7 +647,7 @@ describe('no value reaches the page', () => {
   it('draws nothing token-shaped even when a response carries one', async () => {
     api((m, url) => (m === 'GET' && url === '/v1/access' ? { status: 200, body: overview({ connection: { ...CONNECTION, leaked: leakedValue() } }) } : null))
     await mount()
-    await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
+    await screen.findByRole('button', { name: 'Disconnect GitHub' })
     expect(tokenShapedIn(document.documentElement.outerHTML)).toEqual([])
   })
 })
@@ -669,7 +693,7 @@ describe('(1) the token expiry counts forward', () => {
         : null,
     )
     await mount()
-    await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
+    await screen.findByRole('button', { name: 'Disconnect GitHub' })
     // The spans are joined by a CSS "·": expires in 7h 58m · renewed automatically.
     const spans = [...document.querySelectorAll('.ac-conn .ur-cmeta')[1]!.children].map((el) => visible(el))
     expect(spans[0]).toMatch(/^Token expires in 7h 5\dm$/)
@@ -682,8 +706,8 @@ describe('(2) the chooser says GitHub is being asked', () => {
   it('shows Asking GitHub for your repositories… while the owners are read, and not after', async () => {
     api()
     const open = hold((m, url) => m === 'GET' && url === '/v1/access/orgs')
-    await mount()
-    const card = (await screen.findByText('Choose repositories')).closest('.ac-choose') as HTMLElement
+    await mount('choose')
+    const card = (await screen.findByRole('heading', { name: 'Choose repositories', level: 2 })).closest('.ac-choose') as HTMLElement
     expect(within(card).getByRole('status').textContent).toBe('Asking GitHub for your repositories…')
     expect(within(card).queryByRole('list', { name: 'Owners your connection reaches' })).toBeNull()
     open()
@@ -710,7 +734,7 @@ describe('(3) Enable, then the repositories', () => {
       return null
     })
     const open = hold((m, url) => m === 'POST' && url === '/v1/access/orgs')
-    await mount()
+    await mount('choose')
     await screen.findByRole('list', { name: 'Owners your connection reaches' })
     const enable = within(owner('example-lab')).getByRole('button', { name: 'Enable' }) as HTMLButtonElement
     fireEvent.click(enable)
@@ -754,7 +778,7 @@ describe('(4) the controls survive a background re-read', () => {
       }
       return null
     })
-    await mount()
+    await mount('choose')
     const input = (await screen.findByRole('textbox', { name: 'Not listed? Type owner/repo' })) as HTMLInputElement
     await screen.findByRole('list', { name: 'Owners your connection reaches' })
     fireEvent.change(input, { target: { value: 'example-org/example-legacy' } })
@@ -791,7 +815,7 @@ describe('(4) the controls survive a background re-read', () => {
       return null
     })
     const open = hold((m) => m === 'POST')
-    await mount()
+    await mount('choose')
     await screen.findByRole('list', { name: 'Owners your connection reaches' })
     const row = owner('example-lab')
     fireEvent.click(within(row).getByRole('button', { name: 'Enable' }))
@@ -835,7 +859,7 @@ describe('visual QA (VQA-L06)', () => {
     // MUTATION: an `auto` track back in `.ac-grid-h, .ac-grant` (each row sized its own
     // column, so nothing lined up with its header).
     api()
-    await mount()
+    await mount('grants')
     await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
     const head = document.querySelector<HTMLElement>('.ac-grid-h')!
     const rows = [...document.querySelectorAll<HTMLElement>('li.ac-grant')]
@@ -857,7 +881,7 @@ describe('visual QA (VQA-L06)', () => {
     // MUTATION: drop `min-width: 0` / `overflow-wrap: anywhere` from the
     // owner's name, or let the chip shrink.
     api()
-    await mount()
+    await mount('choose')
     await screen.findByRole('list', { name: 'Owners your connection reaches' })
     const h = owner('example-org').querySelector<HTMLElement>('.ac-owner-h')!
     const name = h.querySelector<HTMLElement>('.ac-owner-pick')!
@@ -879,6 +903,7 @@ describe('visual QA (VQA-L06)', () => {
     media(true)
     api()
     await mount()
+    await policyDrawn()
     const rules = document.querySelector<HTMLElement>('.ac-rules')!
     expect(rules.classList.contains('is-folded')).toBe(true)
     const folds = [...rules.querySelectorAll<HTMLDetailsElement>('li > details')]
@@ -899,6 +924,7 @@ describe('visual QA (VQA-L06)', () => {
     media(true)
     api()
     await mount()
+    await policyDrawn()
     const rules = document.querySelector<HTMLElement>('.ac-rules.is-folded')!
     const items = [...rules.querySelectorAll<HTMLElement>(':scope > li')]
     expect(items.length).toBe(3)
@@ -921,6 +947,7 @@ describe('visual QA (VQA-L06)', () => {
     media(false)
     api()
     await mount()
+    await policyDrawn()
     const rules = document.querySelector<HTMLElement>('.ac-rules')!
     expect(rules.classList.contains('is-folded')).toBe(false)
     expect(rules.querySelector('details')).toBeNull()
@@ -930,7 +957,7 @@ describe('visual QA (VQA-L06)', () => {
     // MUTATION: drop the `.ac-page` 44px rules, or the `justify-self: start`
     // on a row's segment and chip.
     api()
-    await mount()
+    await mount('both')
     await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
     await waitFor(() => expect(row('example-org/example-tools')).not.toBeNull())
     const segs = [...document.querySelectorAll<HTMLElement>('.ac-page .c-seg')]

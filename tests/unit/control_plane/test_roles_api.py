@@ -485,6 +485,80 @@ def test_a_non_platform_admin_is_never_audited(client, db):
             if r["action"].startswith("platform_admin_")] == []
 
 
+# -- the one-time links are admin writes (LINK-ADMIN-WRITES, part of #2158) ------
+
+#: (route template as the router registers it, concrete path, body)
+LINK_ROUTES = [
+    ("/v1/tenants/me/credentials/links", "/v1/tenants/me/credentials/links",
+     {"provider": "anthropic"}),
+    ("/v1/qa-targets/{target_id}/credential-links", "/v1/qa-targets/qt-1/credential-links", {}),
+]
+
+
+def mint_link(client, path: str, body: dict, *args: str):
+    response = client.post(path, headers=h(*args), json=body)
+    assert response.status_code != 503, response.text
+    return response
+
+
+def platform_rows(db, by: str) -> list[dict]:
+    return [r for r in db.dump("admin_audit/").values()
+            if r["action"].startswith("platform_admin_") and r["by"] == by]
+
+
+def test_every_admin_write_is_a_registered_route(client):
+    """A misspelt template in ADMIN_WRITES matches no request, so its route is
+    quietly audited as a member write: every entry must be a route the app
+    registers, with that method."""
+    registered = {(method.upper(), path)
+                  for path, operations in client.app.openapi()["paths"].items()
+                  for method in operations}
+    assert ("POST", "/v1/tasks") in registered
+    assert sorted(roles.ADMIN_WRITES - registered) == []
+
+
+@pytest.mark.parametrize(("template", "path", "body"), LINK_ROUTES)
+def test_a_link_mint_is_an_admin_write(template, path, body):
+    assert ("POST", template) in roles.ADMIN_WRITES
+    assert roles.required_role("POST", template) == roles.ADMIN
+
+
+@pytest.mark.parametrize(("template", "path", "body"), LINK_ROUTES)
+def test_a_non_member_platform_admins_link_mint_is_audited(client, db, template, path, body):
+    mint_link(client, path, body, "ops", "eng")
+    (row,) = audit_rows(db, "platform_admin_acted")
+    assert (row["by"], row["target_tenant_id"]) == ("ops@example.com", "eng")
+    assert row["detail"]["route"] == template
+    assert row["detail"]["reach"] == "non_member"
+
+
+@pytest.mark.parametrize(("template", "path", "body"), LINK_ROUTES)
+def test_a_member_platform_admin_held_at_member_minting_a_link_is_audited(
+        client, db, template, path, body):
+    """Held at `member` by a grant, the mint passes only because root is a
+    platform admin: the same `platform_admin_acted` row the workspace-secret
+    and provider-key links write."""
+    narrow(client, "root@example.com", "member")
+    mint_link(client, path, body, "root")
+    (row,) = platform_rows(db, "root@example.com")
+    assert row["action"] == "platform_admin_acted"
+    assert (row["target_tenant_id"], row["detail"]["route"], row["detail"]["reach"]) == (
+        "eng", template, "role_below")
+
+
+@pytest.mark.parametrize(("template", "path", "body"), LINK_ROUTES)
+def test_a_link_mint_by_a_member_or_a_workspace_admin_writes_no_row(
+        client, db, template, path, body):
+    name_admin(client, "alice@example.com")
+    narrow(client, "root@example.com", "admin")
+    mint_link(client, path, body, "alice")
+    mint_link(client, path, body, "bob")
+    mint_link(client, path, body, "root")
+    assert [r for r in db.dump("admin_audit/").values()
+            if r["action"].startswith("platform_admin_")
+            and r["by"] != "ops@example.com"] == []
+
+
 # -- /v1/tenants ------------------------------------------------------------------
 
 def test_tenants_mine_carries_role_and_via(client):

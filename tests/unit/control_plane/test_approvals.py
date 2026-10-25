@@ -718,8 +718,13 @@ def test_a_platform_scope_type_that_is_not_owner_only_keeps_the_two_person_rule(
     refused = _switch(client, review, "auto", user="root")
     # MUTATION: exempt every platform-scope schedule (not only an owner-only type) and this is 200.
     assert refused.status_code == 403 and refused.json()["code"] == "second_person_required"
-    switched = _switch(client, review, "auto", user="dave")
-    # MUTATION: refuse a member here (apply the owner-only rule to every platform scope) and this is 403.
+    # A platform-scope schedule is a platform admin's to change (BGD,
+    # 2026-10-24; PLATFORM-SCHED-ADMIN), so the second person is another
+    # platform admin, never a member.
+    member = _switch(client, review, "auto", user="dave")
+    assert member.status_code == 403 and member.json()["code"] == "platform_admin_required"
+    switched = _switch(client, review, "auto", user="erin")
+    # MUTATION: refuse a platform admin here (apply the owner-only rule to every platform scope) and this is 403.
     assert switched.status_code == 200, switched.text
 
 

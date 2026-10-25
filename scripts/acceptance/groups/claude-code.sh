@@ -7,7 +7,8 @@
 # The fixture is tests/acceptance/fixtures/claude-code: calc.py's add()
 # subtracts, and test_calc.py fails because of it. The tasks clone it from the
 # private sandbox (config.sh), where sandbox-sync.sh put the released commit's
-# copy, and run in the smoke tenant.
+# copy, and run in the smoke tenant. The test-services pair below has a
+# fixture of its own.
 
 # Sourced by run.sh after common.sh, testlib.sh and lib.sh: CI shellchecks
 # this file on its own too, where the variables those set and the ones this
@@ -43,6 +44,33 @@ CC_MODEL_CLASSES=(opus fable sonnet haiku)
 CC_HOUSEKEEPING_CLASS="haiku"
 CC_CANARY_PROMPT="Reply with the single word ok. Do not read, edit or run anything."
 
+# THE DECLARED TEST SERVICE (TS-ACCEPT, part of #1627; docs/design/test-services.md
+# §5.3 and §7). The fixture is tests/acceptance/fixtures/test-services: a
+# .swarm/test-services.toml declaring Postgres 16, and test_store.py, which
+# writes a row to it and reads it back, connecting in its pytest fixture. An
+# agent breaks the assertion; the pre-publish gate runs the changed test
+# (graph-pytest) before anything is published. With the declaration the
+# worker has started Postgres after the clone, so the broken test FAILS and
+# gets the fix turn; without it nothing listens, every test errors at setup
+# on 127.0.0.1:5432, and the check is SKIPPED as PR 1606 made it. Both are
+# collect steps: no pull request opens, so the record is read where the
+# runner wrote it, before any publish (result_summary.runner.output.prepublish).
+#
+# The gate reads the declaration at the CLONE'S ROOT, and the sandbox's main
+# holds the fixtures under tests/acceptance/fixtures/, so these tasks clone
+# branches whose root IS the fixture: CC_TS_DECLARED_REF as it is,
+# CC_TS_UNDECLARED_REF the same tree without .swarm/. sandbox-sync.sh puts
+# them on the sandbox; a sandbox without them fails here at the clone, and
+# the failure names the branch.
+# tests/unit/scripts/test_acceptance_test_services.py holds the fixture to the
+# catalogue's parser and the line below to the fixture's test.
+CC_TS_DECLARED_REF="acceptance/test-services"
+CC_TS_UNDECLARED_REF="acceptance/test-services-undeclared"
+CC_TS_TEST="test_store.py"
+CC_TS_ASSERT_LINE='    assert rows == [("kept",)]'
+#: How prepublish._pytest_project's skip begins when nothing declared answers.
+CC_TS_UNREACHABLE="a service the tests need is unreachable (127.0.0.1:5432)"
+
 claude_code_checks() {
   cat <<'EOF'
 claude-code: collect fixes the one-line bug, and the patch applies and replaces exactly that line
@@ -53,6 +81,27 @@ EOF
   for class in "${CC_MODEL_CLASSES[@]}"; do
     printf 'claude-code: a %s step runs its pin: the attempt records it and usage.models agrees\n' "${class}"
   done
+  _cc_ts_check_name declared
+  _cc_ts_check_name undeclared
+}
+
+# _cc_ts_check_name declared|undeclared -> the check's line.
+_cc_ts_check_name() {
+  case "$1" in
+    declared) printf 'claude-code: a declared Postgres 16 runs the broken test before publish: graph-pytest failed, with a fix turn, and no pull request\n' ;;
+    *) printf 'claude-code: the same fixture without .swarm/test-services.toml reports graph-pytest skipped, 127.0.0.1:5432 unreachable\n' ;;
+  esac
+}
+
+_cc_ts_prompt() {
+  printf 'In %s, change "kept" to "lost" on the line that reads: %s -- so that test fails. Change only that line and no other file. Do not run anything and do not commit. Reply with one word: done.' \
+    "${CC_TS_TEST}" "${CC_TS_ASSERT_LINE#    }"
+}
+
+# _cc_ts_extra REF -> a one-attempt collect step on the sandbox at REF.
+_cc_ts_extra() {
+  acc_extra "$(jq -nc --arg u "${ACC_REPOSITORY_URL}" --arg r "$1" \
+    '{repository_url: $u, repository_ref: $r, max_attempts: 1}')"
 }
 
 _cc_fix_prompt() {
@@ -63,6 +112,7 @@ _cc_fix_prompt() {
 run_claude_code() {
   step "Acceptance: claude-code (repository ${ACC_REPOSITORY_URL} @ ${ACC_REF})"
   local collect="" direct="" issue="" issue_declared=0 answer class step runtimes i
+  local ts_declared="" ts_undeclared=""
   # One task id per class, in CC_MODEL_CLASSES' order; "" when not submitted.
   local canary=()
 
@@ -104,9 +154,18 @@ run_claude_code() {
     canary+=("${step}")
   done
 
+  ACC_CHECK="claude-code: test-services declared"
+  acc_submit ts_declared claude-code "$(jq -nc --arg p "$(_cc_ts_prompt)" '{prompt: $p}')" \
+    "$(_cc_ts_extra "${CC_TS_DECLARED_REF}")" || ts_declared=""
+  ACC_CHECK="claude-code: test-services undeclared"
+  acc_submit ts_undeclared claude-code "$(jq -nc --arg p "$(_cc_ts_prompt)" '{prompt: $p}')" \
+    "$(_cc_ts_extra "${CC_TS_UNDECLARED_REF}")" || ts_undeclared=""
+
   _cc_check_collect "${collect}"
   _cc_check_direct_pr "${direct}"
   _cc_check_issue "${issue}" "${issue_declared}"
+  _cc_check_test_services declared "${ts_declared}"
+  _cc_check_test_services undeclared "${ts_undeclared}"
 
   # Read once the other checks have settled, so the pins judged are the ones
   # the steps were dispatched with (R6: a class's pin at dispatch runs). An
@@ -347,5 +406,103 @@ _cc_check_issue() {
     acc_pass "the answer names ${ACC_ISSUE_EXPECT}, which only issue #${ACC_ISSUE}'s text says" "${task}"
   else
     acc_fail "the answer does not name ${ACC_ISSUE_EXPECT}: $(printf '%s' "${content}" | redact | head -c 200)" "${task}"
+  fi
+}
+
+# _cc_check_test_services declared|undeclared TASK -> one half of the pair.
+_cc_check_test_services() {
+  local which="$1" task="$2" ref state summary
+  ref="${CC_TS_DECLARED_REF}"
+  [[ "${which}" == "declared" ]] || ref="${CC_TS_UNDECLARED_REF}"
+  acc_check "$(_cc_ts_check_name "${which}")"
+  [[ -n "${task}" ]] || { acc_fail "not submitted"; return 0; }
+  acc_run_to_end state "${task}" || return 0
+  if [[ "${state}" != "SUCCEEDED" ]]; then
+    acc_fail "ended ${state}: $(task_field "${task}" '.last_error // "no error"' | redact | tr '\n' ' ' | head -c 300) (it clones ${ACC_GITHUB_REPO}@${ref}, which scripts/acceptance/sandbox-sync.sh puts there)" "${task}"
+    return 0
+  fi
+  summary="$(task_field "${task}" '.result_summary // {} | tojson')" || summary=""
+  _cc_judge_test_services "${which}" "${summary}" "${task}"
+}
+
+# _cc_judge_test_services declared|undeclared SUMMARY_JSON TASK
+#
+# The verdict alone, on the task's result_summary, so it can be judged offline
+# against the record a working gate leaves and the record each defect leaves
+# (tests/unit/scripts/test_acceptance_test_services.py). Reads the FIRST
+# round: the one that ran the agent's change as it left it, before any fix
+# turn. Firestore holds a round, a list inside a list, as {"items": [...]}
+# (agent_worker/storable.py); both shapes are read.
+_cc_judge_test_services() {
+  local which="$1" summary="$2" task="$3" record round check status reason services pr
+  if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"${summary}"; then
+    acc_fail "its result_summary could not be read" "${task}"
+    return 0
+  fi
+  record="$(jq -c '.runner.output.prepublish // empty | select(type == "object")' <<<"${summary}")"
+  if [[ -z "${record}" ]]; then
+    if jq -e '.runner.output.truncated == true' >/dev/null <<<"${summary}"; then
+      # MUTATION: reading the preview as "no gate" would hide that the record exists
+      # and was cut; the failure says which.
+      acc_fail "the runner's output was cut to its 8000-character preview (lifecycle._truncate_json), so the pre-publish record cannot be read" "${task}"
+    else
+      # MUTATION: a runner with the gate off (CliAgentSpec.prepublish) records none.
+      acc_fail "the runner recorded no pre-publish gate (result_summary.runner.output.prepublish)" "${task}"
+    fi
+    return 0
+  fi
+  round="$(jq -c '(.rounds // [])[0] // null | if type == "object" then (.items // null) else . end' <<<"${record}")"
+  if [[ "${round}" == "null" ]]; then
+    # MUTATION: a gate skipped for budget or an unknown base runs no round.
+    acc_fail "the gate ran no round: $(jq -c '{skipped: (.skipped // null), base: (.base // null)}' <<<"${record}")" "${task}"
+    return 0
+  fi
+  check="$(jq -c 'map(select(.name == "graph-pytest")) | first // null' <<<"${round}")"
+  if [[ "${check}" == "null" ]]; then
+    # MUTATION: a gate that does not select the changed test file runs no graph-pytest.
+    acc_fail "the first round ran no graph-pytest: $(jq -r 'map("\(.name):\(.status)") | join(" ")' <<<"${round}")" "${task}"
+    return 0
+  fi
+  status="$(jq -r '.status // "none"' <<<"${check}")"
+  reason="$(jq -r '.reason // ""' <<<"${check}")"
+  services="$(jq -r 'map(select(.name == "test-services") | "\(.status) (\(.reason // "no reason"))") | join("; ")' <<<"${round}")"
+  pr="$(jq -r '.git.pull_request.number // empty' <<<"${summary}")"
+  if [[ "${which}" == "declared" ]]; then
+    # MUTATION: a worker that never starts the declared Postgres leaves the test
+    # erroring at setup, and the gate reports `skipped`, the defect #1627 is about.
+    acc_assert_eq "failed" "${status}" "the first round's graph-pytest, with Postgres declared${reason:+ (${reason})}" "${task}"
+    # MUTATION: a declared service that did not start is `test-services: error`, and
+    # the failure above would then not be the test's against a running Postgres.
+    if [[ -z "${services}" ]]; then
+      acc_pass "no test-services outcome: the declared Postgres answered" "${task}"
+    else
+      acc_fail "test-services: ${services}" "${task}"
+    fi
+    # MUTATION: a failed check with no fix turn is reported, never fixed (§5.3 row 2).
+    acc_assert_eq "true" "$(jq -r '.fix_turn == true' <<<"${record}")" "the gate took a fix turn on it (fix_turn)" "${task}"
+  else
+    # MUTATION: a gate that judged an undeclared refusal as the tests' own fault
+    # would report `failed` and spend a fix turn on a service nobody declared.
+    acc_assert_eq "skipped" "${status}" "the first round's graph-pytest, with nothing declared" "${task}"
+    # MUTATION: a skip for another reason (uv missing, no project) says nothing about
+    # the service; only the unreachable address does.
+    if [[ "${reason}" == "${CC_TS_UNREACHABLE}"* ]]; then
+      acc_pass "skipped because ${CC_TS_UNREACHABLE#a service the tests need is }" "${task}"
+    else
+      acc_fail "skipped for another reason: '$(printf '%s' "${reason}" | head -c 200)'" "${task}"
+    fi
+    # MUTATION: with no declaration there is nothing to start or report.
+    if [[ -z "${services}" ]]; then
+      acc_pass "no test-services outcome: nothing is declared" "${task}"
+    else
+      acc_fail "test-services with nothing declared: ${services}" "${task}"
+    fi
+  fi
+  # MUTATION: a collect step that opened a pull request: the record would no longer
+  # show the gate ran before any could open.
+  if [[ -z "${pr}" ]]; then
+    acc_pass "no pull request opened: the gate's record precedes any publish" "${task}"
+  else
+    acc_fail "a collect step opened pull request #${pr}" "${task}"
   fi
 }

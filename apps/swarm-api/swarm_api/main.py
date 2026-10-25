@@ -26,6 +26,7 @@ from swarm_common.states import InvalidTransition
 
 from .access import AccessService, build_access
 from .auth import qa_origin_refused
+from .compression import GzipWholeResponses
 from .deps import AppContext, build_context
 from .errors import ApiError, Conflict, RateLimited, Unauthenticated
 from .forgeapp import ForgeApp, build_forge_app
@@ -87,6 +88,9 @@ from .routes import (
     workspace_secrets,
     workspaces,
 )
+from .routes import repository_secrets
+from .routes import actions_secrets
+from .routes import secrets_overview
 from .qa_identity import QaIdentityOrigin
 from .validation import FORBIDDEN_CALLER_FIELDS
 
@@ -132,6 +136,11 @@ UNCAPTURED_ROUTES = frozenset({
     # a workspace secret's value, on its creation and its replacement;
     "/v1/workspace/secrets",
     "/v1/workspace/secrets/{name}/value",
+    # A repository's secrets (SSC-REPO-SCOPE): the same add and rotate bodies.
+    "/v1/repositories/{repo_id}/secrets",
+    "/v1/repositories/{repo_id}/secrets/{name}/value",
+    # A GitHub Actions secret's value, before it is sealed (SSC-ACTIONS-API).
+    "/v1/repositories/{repo_id}/actions/secrets/{name}",
     # a provider API key, a person's or the workspace's, and the tenant's;
     "/v1/provider-keys/{provider}/user",
     "/v1/provider-keys/{provider}/tenant",
@@ -404,6 +413,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # write-only values, each write audited in its own transaction. The
     # release is SEC-RELEASE's, `attempts_secrets` below.
     app.include_router(workspace_secrets.router)
+    app.include_router(repository_secrets.router)  # SSC-REPO-SCOPE, secrets-scopes.md §6.2
+    app.include_router(actions_secrets.router)  # SSC-ACTIONS-API, secrets-scopes.md §3, §6.2
+    app.include_router(secrets_overview.router)  # SSC-OVERVIEW, secrets-scopes.md §4, §6.2
     # Each workspace's Jev judgment backend -- Internal Jev (the default),
     # Internal Laya or TypeSafe -- its owner's or an admin's to choose,
     # audited (swarm_api.judgment, lane JUDGE-SELECT).
@@ -513,6 +525,13 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # an allow-list that keeps the platform tenant's fields out.
     app.include_router(failurefindings.router)
 
+    # Gzip for a caller that asks (#1822, lane API-GZIP): 3.23 GB left this
+    # API in 48 h uncompressed, a build-board task page averaging 1.43 MB and
+    # `sc overview --json` 1.24 MB. Whole answers only, never a stream or
+    # `text/event-stream` (compression.py says why). Added FIRST so it is the
+    # innermost: `observe` below re-sends every body in parts, and outside it
+    # every answer would look streamed and pass through uncompressed.
+    app.add_middleware(GzipWholeResponses)
     # Inner to `observe`, so a request it refuses is still counted.
     app.add_middleware(FrontDoor, owner=app)
 

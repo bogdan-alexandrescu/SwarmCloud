@@ -31,15 +31,15 @@
         "ready": "main h1"
       },
       {
-        "id": "settings-workspace",
-        "address": "settings/workspace",
-        "path": "/settings/workspace",
+        "id": "config-workspace",
+        "address": "config/workspace",
+        "path": "/config/workspace",
         "ready": "main h1"
       },
       {
-        "id": "settings-mcp-servers",
-        "address": "settings/mcp-servers",
-        "path": "/settings/mcp-servers",
+        "id": "config-mcp-servers",
+        "address": "config/mcp-servers",
+        "path": "/config/mcp-servers",
         "ready": "main h1"
       },
       {
@@ -49,9 +49,9 @@
         "ready": "main h1"
       },
       {
-        "id": "settings-people",
-        "address": "settings/people",
-        "path": "/settings/people",
+        "id": "config-people",
+        "address": "config/people",
+        "path": "/config/people",
         "ready": "main h1"
       }
     ],
@@ -81,23 +81,23 @@
         "ready": "main h1"
       },
       {
-        "id": "repositories",
-        "address": "work/repositories",
-        "path": "/repositories",
+        "id": "config-repositories",
+        "address": "config/repositories",
+        "path": "/config/repositories",
         "ready": "main h1"
       }
     ],
     "work-b": [
       {
-        "id": "setup",
-        "address": "work/setup",
-        "path": "/setup",
+        "id": "config-github",
+        "address": "config/github",
+        "path": "/config/github",
         "ready": "main h1"
       },
       {
-        "id": "access",
-        "address": "work/access",
-        "path": "/access",
+        "id": "config-secrets",
+        "address": "config/secrets",
+        "path": "/config/secrets",
         "ready": "main h1"
       },
       {
@@ -288,7 +288,7 @@
     {
       "id": "repositories-mockup",
       "path": "docs/web-ui/mockups/repositories.html",
-      "compare_with": "repositories"
+      "compare_with": "config-repositories"
     },
     {
       "id": "submit-mockup",

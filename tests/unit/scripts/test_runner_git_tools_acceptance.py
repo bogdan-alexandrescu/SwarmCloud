@@ -451,12 +451,16 @@ def test_the_base_branch_is_one_name_and_outside_swarm():
     assert _shell_value(GROUP, "GIT_TOOLS_PLANTED") == gt.PLANTED
 
 
-def test_sandbox_sync_force_updates_only_the_base_branch():
+def test_sandbox_sync_force_updates_only_the_base_and_test_services_branches():
     code = [line for line in SYNC.read_text().splitlines() if not line.lstrip().startswith("#")]
     forced = [line for line in code if "--force" in line]
     assert forced, "the base branch is never pointed"
     for line in forced:
-        assert 'refs/heads/${GIT_TOOLS_BASE}' in line, line
+        assert 'refs/heads/${GIT_TOOLS_BASE}' in line or 'refs/heads/${branch}' in line, line
+    # ${branch} is ts_branch's argument (TS-ACCEPT), and its only callers name
+    # the two test-services branches: outside swarm/, and never main.
+    calls = [line.split()[1] for line in code if line.startswith("ts_branch ")]
+    assert sorted(calls) == ['"acceptance/test-services"', '"acceptance/test-services-undeclared"'], calls
     # The fixture sync itself still never forces main.
     assert not any("--force" in line and "ACC_REF" in line for line in code)
 

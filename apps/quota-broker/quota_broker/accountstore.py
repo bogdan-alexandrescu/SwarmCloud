@@ -40,6 +40,7 @@ from .accounts import (
     secret_name,
     validate_display_name,
     validate_label,
+    validate_max_agents,
     validate_model_classes,
     windows_to_firestore,
 )
@@ -286,6 +287,24 @@ class AccountStore:
                 # and changing who an account is lent to must not forget the
                 # Name its owner gave it (#1913).
                 display_name=current.display_name,
+                # CARRIED OVER, for the reason the classes are: re-registering
+                # must not lift a cap its owner lowered (#2222).
+                max_agents=current.max_agents,
+                # CARRIED OVER, for the reason the holds are (#2222): changing
+                # who an account is lent to must not forget which organisation
+                # it runs on, or a duplicate would go unseen until the next
+                # refresh. A new sign-in records its own right after this.
+                organisation_id=current.organisation_id,
+                organisation_name=current.organisation_name,
+                organisation_plan=current.organisation_plan,
+                seat_id=current.seat_id,
+                registered_at=current.registered_at,
+                duplicate_of=current.duplicate_of,
+                duplicate_withheld=current.duplicate_withheld,
+                # The identical-readings count too: a re-registration is not
+                # a new reading, so it neither restarts nor clears it.
+                possible_duplicate_of=current.possible_duplicate_of,
+                identical_readings=current.identical_readings,
                 # PRESERVED, never re-derived. An account registered before the
                 # naming rule changed keeps pointing at the secret that holds
                 # its credential; re-deriving here would orphan it on the next
@@ -302,6 +321,9 @@ class AccountStore:
             provider=provider,
             lend_to=lend,
             secret_ref=secret_name(owner_tenant, label),
+            # Which of two registrations of one organisation is the older
+            # (`accounts.duplicates`, #2222).
+            registered_at=self._now(),
         )
         ref.set(account.to_firestore())
         return account
@@ -429,6 +451,22 @@ class AccountStore:
         ref.update({"display_name": stored})
         return self.get(account_id)
 
+    def set_max_agents(self, account_id: str, max_agents: int) -> Account | None:
+        """The owner's cap on how many agents this account holds at once (#2222).
+
+        Validated by `validate_max_agents`. An UPDATE of the one field, as
+        `set_model_classes` is, so the holds and readings moving under it in
+        other transactions are untouched. Lowering it moves no agent: the ones
+        already on the account keep it, and no new one is handed it until
+        enough of them finish. None when no such account exists.
+        """
+        stored = validate_max_agents(max_agents)
+        ref = self._db.collection(COLLECTION).document(account_id)
+        if not getattr(ref.get(), "exists", False):
+            return None
+        ref.update({"max_agents": stored})
+        return self.get(account_id)
+
     def remove(self, account_id: str) -> None:
         """Forget the account. Does NOT delete the secret.
 
@@ -496,6 +534,7 @@ class AccountStore:
         at: datetime,
         reason: str,
         expires_at: datetime | None,
+        organisation: Any = None,
     ) -> bool:
         """Write what the refresh sweep did with this account. False if it is gone.
 
@@ -505,7 +544,12 @@ class AccountStore:
         `token_expires_at` is written only when the outcome carries one. A
         failed exchange says nothing about when the stored token expires, and
         blanking a known expiry on every failure would hide exactly the figure
-        an operator needs while it is failing.
+        an operator needs while it is failing. `organisation` likewise (#2222):
+        written only when the exchange named one, so a refresh that could not
+        say never erases what an earlier one recorded -- and its seat (#2282)
+        only when the exchange named that too: a refresh never changes the
+        login a credential was issued to, so an answer that leaves it unsaid
+        must not erase the seat that tells two Team seats apart.
         """
         ref = self._db.collection(COLLECTION).document(account_id)
         snap = ref.get()
@@ -515,7 +559,73 @@ class AccountStore:
         payload: dict[str, Any] = {"last_refresh_at": at, "last_refresh_reason": reason}
         if expires_at is not None:
             payload["token_expires_at"] = expires_at
+        if organisation is not None:
+            payload["organisation_id"] = organisation.identity
+            payload["organisation_name"] = organisation.name
+            payload["organisation_plan"] = organisation.plan
+            seat = getattr(organisation, "seat", None)
+            if seat is not None:
+                payload["seat_id"] = seat
         ref.update(payload)
+        return True
+
+    def record_organisation(self, account_id: str, organisation: Any) -> Account | None:
+        """Write which organisation this account's credential runs on (#2222).
+
+        `organisation` is an `oauth.Organisation`: an opaque identity, never
+        the provider's id, its display name and plan, and the seat (#2282).
+        None for an account that is gone.
+
+        A NEW SIGN-IN WRITES ITS SEAT EVEN WHEN IT IS None: the credential was
+        replaced, possibly by another login, so the old seat no longer says
+        anything about it. A seatless account pairs only by identical
+        readings (`accounts.one_subscription`).
+        """
+        ref = self._db.collection(COLLECTION).document(account_id)
+        if not getattr(ref.get(), "exists", False):
+            return None
+        ref.update(
+            {
+                "organisation_id": organisation.identity,
+                "organisation_name": organisation.name,
+                "organisation_plan": organisation.plan,
+                "seat_id": getattr(organisation, "seat", None),
+            }
+        )
+        return self.get(account_id)
+
+    def set_duplicate(self, account_id: str, duplicate_of: str | None, withheld: bool) -> bool:
+        """Mark (or clear) this account as one of a pair on one subscription
+        (one organisation and seat, #2282).
+
+        False when the account is gone. Written by the broker from
+        `accounts.duplicates`, never by a caller.
+        """
+        ref = self._db.collection(COLLECTION).document(account_id)
+        if not getattr(ref.get(), "exists", False):
+            return False
+        ref.update({"duplicate_of": duplicate_of, "duplicate_withheld": bool(withheld)})
+        return True
+
+    def set_identical_readings(
+        self,
+        account_id: str,
+        count: Any,
+        possible_duplicate_of: str | None,
+    ) -> bool:
+        """Write (or clear) this account's identical-readings count and the
+        possible duplicate it implies (#2222). `count` is an
+        `accounts.IdenticalReadings` or None. False when the account is gone.
+        Written by the broker from `accounts.identical_reading_pairs`, never
+        by a caller.
+        """
+        ref = self._db.collection(COLLECTION).document(account_id)
+        if not getattr(ref.get(), "exists", False):
+            return False
+        ref.update({
+            "identical_readings": count.to_firestore() if count is not None else None,
+            "possible_duplicate_of": possible_duplicate_of,
+        })
         return True
 
     def secret_for(self, account: Account) -> str:

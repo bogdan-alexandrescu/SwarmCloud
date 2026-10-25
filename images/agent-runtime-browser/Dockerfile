@@ -117,6 +117,14 @@ COPY --chmod=0444 images/agent-runtime-browser/chromium-policy.json /etc/chromiu
 # writable by none: the agent runs it and cannot change what it does.
 COPY --chmod=0555 images/agent-runtime-browser/swarm-handoff /usr/local/bin/swarm-handoff
 
+# The agent's `swarm-test-browsers` (PW-TESTRUNNER, BGD 2026-10-24, part of
+# #2253): runs ONE command -- a repository's `npx playwright test` -- with
+# PLAYWRIGHT_BROWSERS_PATH at the writable directory the claude-code runner
+# seeds in the attempt's cache, so a test process may launch its own headless
+# Chromium while the agent's own default stays the live-browser stub below.
+# Root-owned and read-only, as swarm-handoff is.
+COPY --chmod=0555 images/agent-runtime-browser/swarm-test-browsers /usr/local/bin/swarm-test-browsers
+
 # THE AGENT'S BROWSER IS THE LIVE ONE (BROWSER-ENFORCE, part of #1030;
 # docs/design/live-browser.md §3.2). task_7cda0d5335f049b4b442's agent launched
 # its own hidden headless Chromium, and the person watching saw none of its

@@ -33,9 +33,7 @@ afterEach(() => {
 const PAGES: readonly [string, string][] = [
   ['Profile', '/settings/profile'],
   ['API keys', '/settings/keys'],
-  ['Workspace', '/settings/workspace'],
-  ['MCP servers', '/settings/mcp-servers'],
-  ['People and roles', '/settings/people'],
+  // Workspace, MCP servers and People and roles are Config's since CONFIG-NAV (part of #2157).
 ]
 
 function shell(section: 'profile' | 'work', tab: string, go = vi.fn()) {
@@ -89,17 +87,17 @@ describe('the spine (NAV-PROFILE)', () => {
 })
 
 describe('the Profile panel (NAV-PROFILE)', () => {
-  it('is headed Profile and lists the five settings pages in order, each at its path', () => {
+  it('is headed Profile and lists the two settings pages in order, each at its path', () => {
     shell('profile', 'profile')
     expect(document.querySelector('.sk-panel .sk-pt')?.textContent).toBe('Profile')
     expect(panelRows().map((a) => [a.querySelector('.sk-pl')?.textContent, a.getAttribute('href')])).toEqual(PAGES)
   })
 
-  it('routes a plain click on People and roles to settings/people', () => {
+  it('routes a plain click on API keys to settings/keys', () => {
     const go = vi.fn()
     shell('profile', 'profile', go)
-    fireEvent.click(panelRows().find((a) => a.textContent?.includes('People and roles'))!)
-    expect(go).toHaveBeenCalledWith('settings/people')
+    fireEvent.click(panelRows().find((a) => a.textContent?.includes('API keys'))!)
+    expect(go).toHaveBeenCalledWith('settings/keys')
   })
 
   it('lights API keys on the one-time link address', () => {
@@ -110,14 +108,14 @@ describe('the Profile panel (NAV-PROFILE)', () => {
 
   it('is what the collapsed spine flies out from Profile', () => {
     localStorage.setItem('swarm.shell.collapsed', '1')
-    shell('profile', 'workspace')
+    shell('profile', 'keys')
     fireEvent.focus(spine().querySelector('a[data-sec="profile"]')!)
     const fly = document.querySelector<HTMLElement>('.sk-flyout')
     expect(fly, 'Profile opens no flyout').not.toBeNull()
     expect(fly!.querySelector('b')?.textContent).toBe('Profile')
     const rows = [...fly!.querySelectorAll<HTMLAnchorElement>('a')]
     expect(rows.map((a) => [a.textContent, a.getAttribute('href')])).toEqual(PAGES)
-    expect(rows.filter((a) => a.getAttribute('aria-current') === 'page').map((a) => a.textContent)).toEqual(['Workspace'])
+    expect(rows.filter((a) => a.getAttribute('aria-current') === 'page').map((a) => a.textContent)).toEqual(['API keys'])
   })
 })
 
@@ -126,9 +124,8 @@ describe('each settings address lights Profile and its own page (NAV-PROFILE)', 
     ['/settings/profile', '', 'Profile'],
     ['/settings/keys', '', 'API keys'],
     ['/settings/keys/typesafe', '?scope=user', 'API keys'],
-    ['/settings/workspace', '', 'Workspace'],
-    ['/settings/mcp-servers', '', 'MCP servers'],
-    ['/settings/people', '', 'People and roles'],
+    // `/settings/workspace`, `/settings/mcp-servers` and `/settings/people` land
+    // on Config since CONFIG-NAV (config.nav.test.tsx holds where).
   ]
 
   it.each(ADDRESSES)('routes %s%s to Profile in spineOf', (path, query) => {
@@ -166,8 +163,8 @@ describe('the panel foot (NAV-PROFILE)', () => {
 })
 
 describe('the phone drawer (NAV-PROFILE)', () => {
-  it('holds Profile and, opened on a settings page, its five pages', () => {
-    shell('profile', 'mcp-servers')
+  it('holds Profile and, opened on a settings page, its two pages', () => {
+    shell('profile', 'keys')
     fireEvent.click(document.querySelector<HTMLElement>('.sk-pbar button[aria-label="Open the menu"]')!)
     const app = document.querySelector<HTMLElement>('.sk-app.has-drawer')
     expect(app, 'the drawer did not open').not.toBeNull()

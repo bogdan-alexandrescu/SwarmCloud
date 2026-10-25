@@ -251,7 +251,7 @@ export function segmentName(seq: number): string {
  * server this drops nothing. It is here because a recording is the one thing
  * in this view that outlives the session, and a listing that ever carried
  * another tenant's object -- a server bug, a cache keyed wrong -- would
- * otherwise put that tenant's masked frames in front of this one's member
+ * otherwise put that tenant's frames in front of this one's member
  * (invariant 9, LB-2). Exact equality, not a prefix test, so `..` in a name,
  * an actions file or an object outside `live/` cannot pass.
  */

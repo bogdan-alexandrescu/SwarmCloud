@@ -105,6 +105,9 @@ async function liveApp(hash: string, held = '/v1/admin/tenants'): Promise<{ rele
     const url = String(input)
     if (url.startsWith('/v1/tenants/me')) return json(ME)
     if (url.startsWith(held)) return screenRead
+    // Config › Repositories' second head read (REPOS-PAGE): answered, so the
+    // page's refresh speaks for the held read alone, not a read never answered.
+    if (url === '/v1/access') return json({ connection: null, orgs: [], grants: [], tenant_id: 'u-bogdan' })
     return new Promise<Response>(() => {})
   }) as unknown as typeof fetch
   window.location.hash = hash
@@ -478,14 +481,15 @@ describe('CH-21: a position in the navigation means one thing, at every width', 
     for (const hash of ROUTES) {
       window.history.replaceState(null, '', `/${hash}`)
       const { container, unmount } = render(<App />)
-      // Links since #503 (`a.sk-ri`): Submit, four sections, Help, then
+      // Links since #503 (`a.sk-ri`): Submit, five sections (Config since
+      // CONFIG-NAV, part of #2157), Help, then
       // Profile at the foot (NAV-FOOT, #1672; API reads is a Capacity page
       // now) -- each by its label, as Profile's icon is the person's
       // initials. No Admin (NAV-ADMIN-ROLE; part of #1633): nobody read here
       // is known to administer anything.
       const items = [...container.querySelectorAll('.sk-spine .sk-ri')].map((b) => ((b.querySelector('small') ?? b).textContent ?? '').trim())
       unmount()
-      expect(items.length, `${hash}: the spine holds fewer than Submit, four sections, Help and Profile`).toBe(7)
+      expect(items.length, `${hash}: the spine holds fewer than Submit, five sections, Help and Profile`).toBe(8)
       if (first === null) first = items
       expect(items, `${hash}: the spine is not the one every other route draws`).toEqual(first)
     }

@@ -194,7 +194,15 @@ const BUDGET = {
   // failed read is drawn as in this file's offline fixtures, both run into
   // their neighbours by `textContent`. The figures are a table and cost
   // nothing; no sentence was added.
-  'Pool limits': 42,
+  // RAISED 42 -> 60, 2026-10-25, BY BGD'S S10 RULE FOR EVERY ADMIN PAGE
+  // (proposal E, config-e.html, picked for #2157; lane ADMIN-LEADS): "Every
+  // Admin page opens with what needs an admin now, in one sentence with one
+  // button". Measured 42 before it and 57 with it: this fixture's
+  // `provider:anthropic:tenant:u-bogdan` is at 5 of 5, so the lead is its
+  // longest branch -- the kicker, "Pool <name> is at 100% of its ceiling",
+  // "5 of 5 units in use." and the Open button, 15 tokens. The green lead is 6.
+  // The margin is three tokens: a renamed word fits, a second sentence does not.
+  'Pool limits': 60,
   'Platform counts': 32,
   // THE PLATFORM TICKS, MOVED ONTO PLATFORM COUNTS BY THE OWNER'S DECISION OF
   // 2026-10-13 (SCHED-ONE-PAGE: Admin › Schedules folded into Automate ›

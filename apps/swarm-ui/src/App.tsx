@@ -30,12 +30,13 @@ import {
 } from './fetch'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP as HELP_TOPICS, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, type TopicId } from './help'
-import { GITHUB_CALLBACK_ADDRESS, KEY_LINK_ADDRESS, QA_LINK_ADDRESS, SECRETS_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, keyLinkScope, keyLinkToken, pathToAddress, secretsLinkToken, secretsLinkView } from './paths'
+import { CONFIG_SECRETS_ADDRESS, GITHUB_CALLBACK_ADDRESS, KEY_LINK_ADDRESS, QA_LINK_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, keyLinkScope, keyLinkToken, movedToConfig, pathToAddress, secretsLinkToken, secretsLinkView } from './paths'
 import { GitHubCallbackScreen } from './GitHubConnect'
 import { ProviderKeysScreen } from './ProviderKeys'
-import { WorkspaceSettingsScreen } from './CodeIntelligence'
+import { WorkspaceSettingsScreen, workspacePartOf } from './WorkspaceSettings'
 import { McpServersScreen } from './McpServers'
-import { WorkspaceSecretsEntry, WorkspaceSecretsScreen, secretsLinkOf } from './WorkspaceSecrets'
+import { WorkspaceSecretsScreen, secretsLinkOf, type SecretsLink } from './WorkspaceSecrets'
+import { SetupStrip } from './ConfigSetup'
 import { NotFound, nearestPath } from './NotFound'
 import { fmtLatency } from './panes'
 import { Icon, SkyShell, type SpineSection } from './Spine'
@@ -45,7 +46,7 @@ import { Mark } from './primitives'
 import { HelpScreen, helpPageOf } from './HelpSection'
 import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
-import { OnboardingScreen, SetupCard } from './Onboarding'
+import { SetupCard } from './Onboarding'
 import { AccessScreen } from './Access'
 import { PeopleScreen } from './People'
 import { PlatformCountsScreen } from './PlatformCounts'
@@ -54,7 +55,6 @@ import { ProfilesScreen } from './Profiles'
 import { ProfileScreen } from './Profile'
 import { WorkspacePeopleScreen } from './WorkspacePeople'
 import { WorkspacesYouAdminScreen } from './WorkspacesYouAdmin'
-import { WORKSPACE_PEOPLE_ADDRESS } from './roles'
 import { QuotaDetailScreen } from './QuotaDetail'
 import { tableMode, usePhoneTables } from './capacityPoll'
 import { RuntimesScreen } from './Runtimes'
@@ -62,6 +62,7 @@ import { CountNote, FrameAge, HeadAge, PageHead, RoutedPage, SectionHelp, timeAg
 import { SubmitScreen } from './Submit'
 import { SubmitChooser } from './SubmitChooser'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
+import { QaRunGroupScreen } from './QaRunGroup'
 import { IssueSubmitScreen } from './IssueSubmit'
 import { RunsScreen } from './Runs'
 import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard } from './Schedules'
@@ -325,16 +326,9 @@ export const SECTIONS: SectionDef[] = [
       // with its TAIL INTACT through SECTION_ALIASES rather than landing on
       // this section's first pane. See SECTION_ALIASES and MOVED_PANES below.
       { id: 'timeline', label: 'Timeline' },
-      // repositories.html §1: Work › Repositories, after Runs; the shell draws it after
-      // Timeline, ahead of OB8's Setup and Access below.
-      { id: 'repositories', label: 'Repositories' },
-      // ONBOARDING (#780, OB8; onboarding.html Entry A and Access A, owner pick
-      // D10). Setup is the six-step checklist Overview carries as a card until
-      // it is done -- a tab too, so it is still reachable once the card is
-      // hidden; Access is the steady state: the orgs and repositories
-      // SwarmCloud may reach as the person, Read or Write, verified.
-      { id: 'setup', label: 'Setup' },
-      { id: 'access', label: 'Access' },
+      // REPOSITORIES, SETUP AND ACCESS LEFT FOR CONFIG (CONFIG-NAV; part of
+      // #2157, BGD 2026-10-23): they are about setting a workspace up, not
+      // about its work. `/repositories`, `/setup` and `/access` land there.
       // "Submit a task", not "New agent", and the screen's own copy is why.
       // Submit.tsx creates a TASK at READY or PARKED and then says, in the
       // panel it renders on success, "That is not a running agent" -- because
@@ -463,6 +457,36 @@ export const SECTIONS: SectionDef[] = [
     ],
   },
   {
+    // CONFIG (CONFIG-NAV; part of #2157, BGD's decisions of 2026-10-23 and
+    // his pick of proposal E, docs/web-ui/mockups/config-e.html S1): one
+    // section for everything about setting up and running a workspace, which
+    // was spread across Work › Access, Work › Repositories, Work › Setup and
+    // four Settings pages. Between Capacity and Admin, as S1 draws it. The
+    // tabs are in BGD's order; Workspace setup (Work › Setup until then) is a
+    // part of Workspace Settings rather than a tab, at
+    // `/config/workspace/setup`. Every old address lands here
+    // (paths.ts `MOVED_TO_CONFIG`, `OLD_CONFIG_PATHS`). A LITERAL id, for the
+    // reason given on Work. Every proposal-E page leads with the setup strip
+    // (ConfigSetup.tsx), mounted once by `ConfigPage` below.
+    id: 'config',
+    label: 'Config',
+    question:
+      'What may SwarmCloud reach on GitHub as you, which repositories, secrets and MCP servers does this workspace hold, who has which role in it, and how far is its setup?',
+    tabs: [
+      { id: 'github', label: 'GitHub access' },
+      { id: 'repositories', label: 'Repositories' },
+      // Workspace secrets, moved whole; SECRETS-SCOPES-DESIGN (#2158) designs
+      // its scopes. Its one-time link keeps its path (paths.ts).
+      { id: 'secrets', label: 'Secrets' },
+      { id: 'mcp-servers', label: 'MCP servers' },
+      // This workspace's people: every member reads it, its admins change it
+      // (BGD 2026-10-24 00:31Z). The panel leaves it out of a personal
+      // workspace, which has nobody to invite (S1e).
+      { id: 'people', label: 'People and roles' },
+      { id: 'workspace', label: 'Workspace Settings' },
+    ],
+  },
+  {
     // HISTORY IS GONE AND ITS TWO PANES WENT TO DIFFERENT PLACES, which is the
     // fact the routing below has to survive. Timeline is a pane of Work;
     // Platform counts is here. `#history/timeline` and `#history/counts` both
@@ -582,7 +606,13 @@ const GITHUB_CALLBACK = GITHUB_CALLBACK_ADDRESS
  * address, paths.ts `KEY_LINK_ADDRESS`), which opens the same page.
  *
  * `#settings` and `#settings/<anything else>` still land on Pool limits
- * (LEGACY, MOVED_PANES): only these two exact addresses are this page.
+ * (LEGACY, MOVED_PANES): only these exact addresses are Settings pages.
+ *
+ * SETTINGS KEEPS THE PERSON'S OWN PAGES (CONFIG-NAV; part of #2157, BGD
+ * 2026-10-23): Profile and API keys. Workspace, its Secrets, MCP servers and
+ * People and roles are Config pages now, and their `settings/*` addresses land
+ * there (paths.ts `MOVED_TO_CONFIG`). API keys stays until the secrets design
+ * moves provider keys into Config › Secrets (BGD 2026-10-23T23:57Z).
  */
 const SETTINGS = 'settings'
 const KEYS_TAB = 'keys'
@@ -591,37 +621,6 @@ const KEY_LINK_TAB = KEY_LINK_ADDRESS.slice(SETTINGS.length + 1)
 const SETTINGS_LABEL = 'Settings'
 /** The page's `<h1>` and the second half of its name in the issue forms. */
 const KEYS_LABEL = 'API keys'
-/**
- * SETTINGS › WORKSPACE (CTXQ-UI; docs/design/context-quality.md §4.7): the
- * selected workspace's own settings -- Code intelligence, OFF by default for
- * Jev, and what leaves the platform when it is on. Beside API keys and not a
- * section, for the reason API keys is not one. One exact address, like the
- * keys page: `#settings/<anything else>` still lands on Pool limits.
- */
-const WORKSPACE_TAB = 'workspace'
-/** The page's `<h1>` and the second half of its name in the issue forms. */
-const WORKSPACE_LABEL = 'Workspace'
-/**
- * SETTINGS › WORKSPACE › SECRETS (SEC-UI-LIST, part of #1347;
- * docs/design/workspace-secrets.md §5): the workspace secrets store, a pane
- * of Workspace, entered from a card on it. Its one-time link,
- * `settings/workspace/secrets?action=..`, opens the same page; the token
- * never enters the address (paths.ts `SECRETS_ADDRESS`). Not a SECTIONS tab,
- * so the issue forms' "Where" list is unchanged: a report about it names
- * Settings › Workspace, the page it is a pane of.
- */
-const SECRETS_TAB = SECRETS_ADDRESS.slice(SETTINGS.length + 1)
-/** The page's `<h1>` and the head's crumb. */
-const SECRETS_LABEL = 'Workspace secrets'
-/**
- * SETTINGS › MCP SERVERS (MCP-UI; docs/design/registered-mcp-servers.md
- * §4.11): the workspace's registered MCP servers, which a task names on
- * Submit. A sibling of Workspace and not a section, for the same reason. One
- * exact address: `#settings/<anything else>` still lands on Pool limits.
- */
-const MCP_TAB = 'mcp-servers'
-/** The page's `<h1>` and the head's crumb. */
-const MCP_LABEL = 'MCP servers'
 /**
  * SETTINGS › PROFILE (PROFILE-NAV; docs/design/user-profile.md §2.1, §6):
  * everything about the signed-in person in one place -- who they are, their
@@ -633,17 +632,11 @@ const MCP_LABEL = 'MCP servers'
 const PROFILE_TAB = 'profile'
 /** The page's `<h1>` and the second half of its name in the issue forms. */
 const PROFILE_LABEL = 'Profile'
-/**
- * SETTINGS › PEOPLE AND ROLES (ROLES-UI-PEOPLE; docs/design/workspace-roles.md
- * §4.8): the selected workspace's default role, its people's own roles and
- * its role events, which every member reads (Q7) and its admins change. A
- * sibling of Workspace and not a section, for the same reason -- and not a
- * SECTIONS tab, so the issue forms' "Where" list is unchanged (§4.8). One
- * exact address: `#settings/<anything else>` still lands on Pool limits.
- */
-const PEOPLE_TAB = WORKSPACE_PEOPLE_ADDRESS.slice(SETTINGS.length + 1)
-/** The page's `<h1>` and the head's crumb. */
-const PEOPLE_LABEL = 'People and roles'
+
+/** The Config section's id (CONFIG-NAV), and the two of its tabs this file names by hand. */
+export const CONFIG = 'config'
+const CONFIG_SECRETS_TAB = CONFIG_SECRETS_ADDRESS.slice(CONFIG.length + 1)
+const CONFIG_WORKSPACE_TAB = 'workspace'
 
 /**
  * The utility button's label AND the heading of the screen it opens. One
@@ -965,6 +958,11 @@ export function fromAddress(full: string): Route {
   // `#work/timeline?span=30d`; left on the path, `timeline?span=30d` matched
   // no tab and the Work fallback below read it as a TASK ID, opening an
   // inspector for an agent called "timeline?span=30d".
+  // THE CONFIG PAGES' OLD ADDRESSES (CONFIG-NAV), before anything reads the
+  // head: `#work/access` would otherwise be read as an agent called "access",
+  // and `#settings/people` as the eleven-item nav's Pool limits.
+  const movedTo = movedToConfig(full)
+  if (movedTo !== null) return fromAddress(movedTo)
   const queryAt = full.indexOf('?')
   const hash = queryAt === -1 ? full : full.slice(0, queryAt)
   const query = queryAt === -1 ? '' : full.slice(queryAt + 1)
@@ -1005,15 +1003,20 @@ export function fromAddress(full: string): Route {
   // Settings › API keys and its one-time link, before LEGACY reads `settings`
   // as the eleven-item nav's Pool limits. Only the link's scope is kept.
   if (hash === `${SETTINGS}/${KEYS_TAB}`) return { sectionId: SETTINGS, tab: KEYS_TAB, ...blank }
-  if (hash === `${SETTINGS}/${WORKSPACE_TAB}`) return { sectionId: SETTINGS, tab: WORKSPACE_TAB, ...blank }
-  if (hash === SECRETS_ADDRESS) {
+  if (hash === `${SETTINGS}/${PROFILE_TAB}`) return { sectionId: SETTINGS, tab: PROFILE_TAB, ...blank }
+  if (hash === CONFIG_SECRETS_ADDRESS) {
     // The link's action and name, never a token (`secretsLinkView`).
     const view = secretsLinkView(query)
-    return { sectionId: SETTINGS, tab: SECRETS_TAB, ...blank, ...(view === '' ? {} : { view }) }
+    return { sectionId: CONFIG, tab: CONFIG_SECRETS_TAB, ...blank, ...(view === '' ? {} : { view }) }
   }
-  if (hash === `${SETTINGS}/${MCP_TAB}`) return { sectionId: SETTINGS, tab: MCP_TAB, ...blank }
-  if (hash === `${SETTINGS}/${PROFILE_TAB}`) return { sectionId: SETTINGS, tab: PROFILE_TAB, ...blank }
-  if (hash === `${SETTINGS}/${PEOPLE_TAB}`) return { sectionId: SETTINGS, tab: PEOPLE_TAB, ...blank }
+  // Workspace Settings' parts past Settings: Workspace setup (Work › Setup
+  // until CONFIG-NAV) and a platform admin's Add a new workspace
+  // (WS-SETTINGS-PAGE). The two values of `part` there are, so no other rides
+  // on the address.
+  if (hash === `${CONFIG}/${CONFIG_WORKSPACE_TAB}`) {
+    const part = workspacePartOf(query)
+    if (part !== 'settings') return { sectionId: CONFIG, tab: CONFIG_WORKSPACE_TAB, ...blank, view: `part=${part}` }
+  }
   if (hash === KEY_LINK_ADDRESS) {
     const scope = keyLinkScope(query)
     return { sectionId: SETTINGS, tab: KEY_LINK_TAB, ...blank, ...(scope === null ? {} : { view: `scope=${scope}` }) }
@@ -1095,7 +1098,7 @@ export function fromAddress(full: string): Route {
     }
     // The Workflows list's filters and its open workflow (`wf=<id>`) ride on
     // its address the same way: `/workflows/<id>?owner=me` (paths.ts).
-    if (tab && section.id === WORK && (tab.id === 'workflows' || tab.id === 'runs' || tab.id === 'repositories') && query !== '') {
+    if (tab && ((section.id === WORK && (tab.id === 'workflows' || tab.id === 'runs')) || (section.id === CONFIG && tab.id === 'repositories')) && query !== '') {
       return { sectionId: section.id, tab: tab.id, ...blank, view: query }
     }
     // THE ROW A LINK NAMED rides on Pool limits' address (#134): the Tenants
@@ -1146,6 +1149,8 @@ function keptKeys(sectionId: string, tab: string): readonly string[] {
   // One inbox item rides on the page's address (`/approvals/<id>`, paths.ts),
   // and the inbox's kind filter beside it (AUT-15).
   if (sectionId === AUTOMATE && tab === 'approvals') return ['approval', 'kind']
+  // GitHub access' Mine / Members / Browser logins view (Access.tsx reads it off the bar).
+  if (sectionId === CONFIG && tab === 'github') return ['view']
   if (sectionId !== CAPACITY) return []
   if (tab === 'pools') return ['pool']
   if (tab === 'holders') return ['pool', 'tenant']
@@ -1188,8 +1193,13 @@ export function canonical(r: Route): string {
     const at = r.page === 'outcomes' ? `${WORK}/timeline/outcomes` : `${WORK}/timeline`
     return r.view ? `${at}?${r.view}` : at
   }
-  if (r.sectionId === WORK && (r.tab === 'workflows' || r.tab === 'runs' || r.tab === 'repositories') && r.view) {
+  if (r.sectionId === WORK && (r.tab === 'workflows' || r.tab === 'runs') && r.view) {
     return `${WORK}/${r.tab}?${r.view}`
+  }
+  // A repository, a page of the registry, Secrets' link view and Workspace
+  // setup ride on their tab's query the same way.
+  if (r.sectionId === CONFIG && (r.tab === 'repositories' || r.tab === CONFIG_SECRETS_TAB || r.tab === CONFIG_WORKSPACE_TAB) && r.view) {
+    return `${CONFIG}/${r.tab}?${r.view}`
   }
   // And Pool limits' linked row, for the same reason (#134) -- and Pools' and
   // Holders' (#125, #128).
@@ -1249,18 +1259,18 @@ export function App() {
   // here and handed to that page, never written into a route.
   const keyLink = useRef(typeof window === 'undefined' ? null : keyLinkToken(window.location.pathname, window.location.search))
   // THE SECRETS LINK'S TOKEN (paths.ts `SECRETS_ADDRESS`), read here for the
-  // key link's reason and handed to Settings › Workspace › Secrets, which
+  // key link's reason and handed to Config › Secrets, which
   // sends it once with its first add. Never written into a route or storage.
   const secretsLink = useRef(typeof window === 'undefined' ? null : secretsLinkToken(window.location.pathname, window.location.search))
   // Dropped once that page has mounted with it, as the QA link is below, so a
   // later visit is never handed a token already sent.
-  const onSecretsPage = at.missing == null && at.taskId === null && at.sectionId === SETTINGS && at.tab === SECRETS_TAB
+  const onSecretsPage = at.missing == null && at.taskId === null && at.sectionId === CONFIG && at.tab === CONFIG_SECRETS_TAB
   useEffect(() => {
     if (onSecretsPage) secretsLink.current = null
   }, [onSecretsPage])
   // THE QA CREDENTIAL LINK'S TARGET AND TOKEN (lane VQ6-ROUTE; paths.ts
   // `QA_LINK_ADDRESS`), read here for the key link's reason, before the
-  // normalise effect rewrites the bar to `/repositories?page=qa-targets`.
+  // normalise effect rewrites the bar to `/config/repositories?page=qa-targets`.
   // Handed to the QA targets page as `qaLink` and dropped once that page has
   // mounted with it (the effect below), so a later visit is never handed a
   // used token. Held in this ref alone: never logged, never written into a
@@ -1417,6 +1427,14 @@ export function App() {
 
   const [apiFailuresOnly, setApiFailuresOnly] = useState(false)
 
+  // Replaced in place by the normalise effect, so Back does not return to the
+  // Admin page: Overview for someone who administers nothing (CONFIG-NAV),
+  // Workspaces you admin for a workspace admin on a platform page
+  // (ADMIN-REDIRECT). A setter, never `go`, which would push.
+  const onAdminRedirect = useCallback((to: string) => {
+    setAt((r) => (r.sectionId === ADMIN_SECTION && r.taskId === null ? fromAddress(to) : r))
+  }, [])
+
   const section = sectionOf(at.sectionId)
   // The `?` by the title asks the section's question, except on the Submit
   // chooser and its three forms (V062): their forms are Work tabs, but Work's
@@ -1442,17 +1460,9 @@ export function App() {
         : at.sectionId === GITHUB_CALLBACK
           ? 'Connect GitHub'
           : at.sectionId === SETTINGS
-            ? at.tab === WORKSPACE_TAB
-              ? WORKSPACE_LABEL
-              : at.tab === SECRETS_TAB
-                ? SECRETS_LABEL
-                : at.tab === MCP_TAB
-                  ? MCP_LABEL
-                  : at.tab === PROFILE_TAB
-                    ? PROFILE_LABEL
-                    : at.tab === PEOPLE_TAB
-                      ? PEOPLE_LABEL
-                      : KEYS_LABEL
+            ? at.tab === PROFILE_TAB
+              ? PROFILE_LABEL
+              : KEYS_LABEL
             : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
   const object = at.missing ? null : documentObjectOf(at)
   useEffect(() => {
@@ -1486,6 +1496,12 @@ export function App() {
           // 2A): the two submit forms re-read under the new tenant in place.
           keepOnSwitch={at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow')}
           place={pathFor(at)}
+          // ADMIN IS AN ADMIN'S (CONFIG-NAV; BGD 2026-10-23): someone who
+          // administers nothing, on an Admin address, lands on Overview, and
+          // a workspace admin on a platform page lands on Workspaces you
+          // admin (ADMIN-REDIRECT; BGD 2026-10-24). The shell says so only
+          // once both of its reads have answered.
+          onAdminRedirect={onAdminRedirect}
           // THE BELL (#1206) is the shell's to place: the spine's foot, or the
           // phone header (V178). It was the only thing in a header bar drawn
           // over every page, so a section page carried an empty 48px band.
@@ -1542,21 +1558,8 @@ export function App() {
                   <SubmitChooser go={go} />
                 ) : at.sectionId === GITHUB_CALLBACK ? (
                   <GitHubCallbackScreen go={go} />
-                ) : at.sectionId === SETTINGS && at.tab === WORKSPACE_TAB ? (
-                  // The secrets store is a pane of this page (SEC-UI-LIST):
-                  // its entry card sits under the page's own, at the page's gap.
-                  <div className="pk-page">
-                    <WorkspaceSettingsScreen />
-                    <WorkspaceSecretsEntry />
-                  </div>
-                ) : at.sectionId === SETTINGS && at.tab === SECRETS_TAB ? (
-                  <WorkspaceSecretsScreen link={at.view ? { ...secretsLinkOf(at.view), token: secretsLink.current } : null} />
-                ) : at.sectionId === SETTINGS && at.tab === MCP_TAB ? (
-                  <McpServersScreen />
                 ) : at.sectionId === SETTINGS && at.tab === PROFILE_TAB ? (
                   <ProfileScreen />
-                ) : at.sectionId === SETTINGS && at.tab === PEOPLE_TAB ? (
-                  <WorkspacePeopleScreen />
                 ) : (
                   // Settings › API keys and its one-time link: the last page
                   // that is not a section. API reads was the one after it
@@ -1572,19 +1575,25 @@ export function App() {
                 // own on its refresh control in any case.
                 <RoutedPage.Provider value={true}>
                   <FrameAge.Provider value={at.taskId === null}>
-                  {at.missing ? <NotFound path={at.missing} go={go} /> : <SectionBody
-                    sectionId={section.id}
-                    tab={at.tab}
-                    taskId={at.taskId}
-                    list={at.list ?? null}
-                    onList={onList}
-                    view={at.view ?? null}
-                    page={at.page ?? null}
-                    onView={onView}
-                    go={go}
-                    apiFailuresOnly={apiFailuresOnly}
-                    qaLink={onQaPage ? qaLink.current : null}
-                  />}
+                  {at.missing ? <NotFound path={at.missing} go={go} /> : (() => {
+                    const body = (
+                      <SectionBody
+                        sectionId={section.id}
+                        tab={at.tab}
+                        taskId={at.taskId}
+                        list={at.list ?? null}
+                        onList={onList}
+                        view={at.view ?? null}
+                        page={at.page ?? null}
+                        onView={onView}
+                        go={go}
+                        apiFailuresOnly={apiFailuresOnly}
+                        qaLink={onQaPage ? qaLink.current : null}
+                        secretsLink={onSecretsPage && at.view ? { ...secretsLinkOf(at.view), token: secretsLink.current } : null}
+                      />
+                    )
+                    return section.id === CONFIG ? <ConfigPage go={go}>{body}</ConfigPage> : body
+                  })()}
                   </FrameAge.Provider>
                 </RoutedPage.Provider>
               )}
@@ -1633,6 +1642,8 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
       return 'automate'
     case CAPACITY:
       return 'capacity'
+    case CONFIG:
+      return 'config'
     case ADMIN_SECTION:
       return 'admin'
     case HELP:
@@ -1640,7 +1651,7 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
     case GITHUB_CALLBACK:
       return 'work'
     // EVERY SETTINGS PAGE LIGHTS PROFILE (NAV-PROFILE; part of #1633): its
-    // panel holds them. Only the seven exact addresses are these pages;
+    // panel holds them. Only the three exact addresses are these pages;
     // `#settings/<anything else>` is Pool limits (LEGACY), and lights Admin.
     case SETTINGS:
       return PROFILE_PANEL_TABS.includes(tab) ? 'profile' : null
@@ -1650,7 +1661,7 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
 }
 
 /** The settings tabs Profile's panel lists, and the one-time key link that opens API keys. */
-const PROFILE_PANEL_TABS: readonly string[] = [PROFILE_TAB, KEYS_TAB, KEY_LINK_TAB, WORKSPACE_TAB, SECRETS_TAB, MCP_TAB, PEOPLE_TAB]
+const PROFILE_PANEL_TABS: readonly string[] = [PROFILE_TAB, KEYS_TAB, KEY_LINK_TAB]
 
 /**
  * THE HEAD (§B3): 44px, spanning the work area, above everything routed.
@@ -1899,7 +1910,7 @@ export function documentObjectOf(at: Route): string | null {
   }
   if (!at.view) return null
   const q = new URLSearchParams(at.view)
-  if (at.sectionId === WORK && at.tab === 'repositories') return q.get('repo') || null
+  if (at.sectionId === CONFIG && at.tab === 'repositories') return q.get('repo') || null
   if (at.sectionId === AUTOMATE && at.tab === 'schedules') {
     const id = q.get('schedule')
     return id === NEW_SCHEDULE ? 'New schedule' : id || null
@@ -2088,6 +2099,7 @@ function SectionBody({
   go,
   apiFailuresOnly = false,
   qaLink = null,
+  secretsLink = null,
 }: {
   sectionId: string
   tab: string
@@ -2108,6 +2120,8 @@ function SectionBody({
   apiFailuresOnly?: boolean
   /** The QA credential link App read off the bar, for the QA targets page, or null. */
   qaLink?: QaLink | null
+  /** The secrets one-time link's action, name and token, for Config › Secrets, or null. */
+  secretsLink?: SecretsLink | null
 }) {
   const openAgent = (id: string) => go(`${WORK}/task/${encodeURIComponent(id)}`)
   /*
@@ -2155,6 +2169,10 @@ function SectionBody({
   // to these cases. Nothing in it can move alone.
   // Timeline's second page, Outcomes (`/timeline/outcomes`): today's ledger, unchanged.
   if (`${sectionId}/${tab}` === 'work/timeline' && page === 'outcomes') return <ActivityScreen view={view} onView={onView} />
+  // One QA dispatch's run page (`/qa-runs/<group_id>`, QAENV-UI-RUNPAGE), under
+  // Config › Repositories › QA targets: its address is that tab's `qarun=<id>`.
+  const qarun = `${sectionId}/${tab}` === 'config/repositories' && view !== null ? new URLSearchParams(view).get('qarun') : null
+  if (qarun !== null && qarun !== '') return <QaRunGroupScreen groupId={qarun} go={go} />
   switch (`${sectionId}/${tab}`) {
     case 'overview/now':
       return <OverviewScreen setup={<SetupCard />} waitingOnYou={<WaitingOnYouCard go={go} />} />
@@ -2173,12 +2191,6 @@ function SectionBody({
       return <IssueSubmitScreen go={go} />
     case 'work/runs':
       return <RunsScreen view={view} go={go} />
-    case 'work/repositories':
-      return <RepositoriesScreen view={view} go={go} qaLink={qaLink} />
-    case 'work/setup':
-      return <OnboardingScreen />
-    case 'work/access':
-      return <AccessScreen />
 
     case 'automate/schedules':
       return <SchedulesScreen view={view} go={go} />
@@ -2199,6 +2211,22 @@ function SectionBody({
       return <ReferenceScreen failuresOnly={apiFailuresOnly} />
     case 'capacity/quota':
       return <QuotaDetailScreen />
+
+    // CONFIG-NAV: today's pages, moved whole; each page's body is a later
+    // lane's. Workspace setup, Workspace Settings' second part, is drawn by
+    // `ConfigPage`, which mounts the setup strip over every one of these.
+    case 'config/github':
+      return <AccessScreen />
+    case 'config/repositories':
+      return <RepositoriesScreen view={view} go={go} qaLink={qaLink} />
+    case 'config/secrets':
+      return <WorkspaceSecretsScreen link={secretsLink} />
+    case 'config/mcp-servers':
+      return <McpServersScreen />
+    case 'config/people':
+      return <WorkspacePeopleScreen />
+    case 'config/workspace':
+      return <WorkspaceSettingsScreen part={workspacePartOf(view)} go={go} />
 
     case 'admin/limits':
       return <AdminSettingsScreen />
@@ -2234,6 +2262,26 @@ function SectionBody({
         </div>
       )
   }
+}
+
+/**
+ * A CONFIG PAGE (CONFIG-NAV; part of #2157, proposal E S1-S6): the setup
+ * strip across its top, then the page. The strip is ONE component mounted
+ * here once, so no Config page can be missing it and no two can draw it
+ * differently; it reads what the shell read (ConfigSetup.tsx).
+ *
+ * Workspace Settings draws its own parts (WorkspaceSettings.tsx): Settings,
+ * Workspace setup and, for a platform admin, Add a new workspace. The pages
+ * under the strip are today's, moved whole; each page's own lead and layout
+ * are its page lane's.
+ */
+function ConfigPage({ go, children }: { go: (to: string) => void; children: ReactNode }) {
+  return (
+    <div className="cfg-page">
+      <SetupStrip go={go} />
+      {children}
+    </div>
+  )
 }
 
 /**

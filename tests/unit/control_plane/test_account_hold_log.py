@@ -42,7 +42,7 @@ from quota_broker.main import create_app
 from quota_broker.service import QuotaBroker
 from quota_broker.settings import BrokerSettings
 
-from .conftest import core_settings
+from .conftest import core_settings, measure
 from .fakes import FakeFirestore, FakeTransaction
 
 #: Every instant below is built from the clock at import, never from a calendar
@@ -104,6 +104,7 @@ def broker(db) -> QuotaBroker:
 def accounts(broker) -> AccountStore:
     store = AccountStore(broker.db)
     store.register(ENG, "personal", lend_to=(RESEARCH,))
+    measure(store, f"{ENG}:personal")  # one agent until measured (#2222)
     return store
 
 

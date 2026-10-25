@@ -11,7 +11,7 @@
  * section root -- each turns a case red.
  */
 import { fireEvent, render, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { App } from '../App'
 import { addressToPath, pathToAddress } from '../paths'
@@ -24,11 +24,24 @@ const PHONE: CascadeEnv = { width: 390 }
 afterEach(() => {
   localStorage.clear()
   window.history.replaceState(null, '', '/')
+  document.cookie = 'swarm_qa_persona=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
 })
 
-async function at(path: string): Promise<HTMLElement> {
+/**
+ * The App as a platform admin sees it. Since CONFIG-NAV (part of #2157) an
+ * Admin address sends someone who administers nothing to Overview, and the
+ * fixture's default caller is that member. api.ts reads the persona cookie
+ * once, when it loads, so the App is imported again after setting it.
+ */
+async function adminApp(): Promise<typeof App> {
+  document.cookie = 'swarm_qa_persona=platform-admin; path=/'
+  vi.resetModules()
+  return (await import('../App')).App
+}
+
+async function at(path: string, Shown: typeof App = App): Promise<HTMLElement> {
   window.history.replaceState(null, '', path)
-  const { container } = render(<App />)
+  const { container } = render(<Shown />)
   await waitFor(() => expect(container.querySelector('.sk-spine .sk-av')?.getAttribute('title')).not.toBe('not read'), { timeout: 5000 })
   return container
 }
@@ -78,7 +91,7 @@ describe('R14: a section\'s root opens its first page', () => {
 
   for (const [root, page] of [['/capacity', '/capacity/pools'], ['/admin', '/admin/limits']] as const) {
     it(`lands ${root} on ${page}, never "No page at"`, async () => {
-      const c = await at(root)
+      const c = await at(root, root === '/admin' ? await adminApp() : App)
       await waitFor(() => expect(window.location.pathname).toBe(page))
       expect(c.textContent).not.toContain('No page at')
     })

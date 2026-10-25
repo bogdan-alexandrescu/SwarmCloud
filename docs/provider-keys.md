@@ -23,10 +23,19 @@ decision API, which needs no TypeSafe key and is never sent one -- or TypeSafe.
 when the resolution below finds a key. See
 [design/live-browser.md §3.2.2](design/live-browser.md#322-judgment-backends-judge-select).
 
-**A workspace secrets store is proposed, not built** (#1347):
-[design/workspace-secrets.md](design/workspace-secrets.md) designs any
-credential kept per workspace and granted by checkbox to named consumers, and
-§6.1 there moves this key into it without breaking the readers below.
+**Where these keys sit among the other secrets (built, #1347 and #2158).**
+The workspace secrets store ([design/workspace-secrets.md](design/workspace-secrets.md))
+holds any other credential a workspace keeps, granted by checkbox to named
+consumers. Its §6.1 moves this key into that store without breaking the
+readers below, and that migration is still off. [design/secrets-scopes.md](design/secrets-scopes.md)
+adds a repository scope and a write-only GitHub Actions destination to it,
+and one read of every scope, `GET /v1/secrets/overview`. Config › Secrets
+lists this key under *Keys for agents and MCP*, from `provider_keys/` and
+not from Secret Manager: a status row with who set it and when, never a
+value, a length or `last4`
+(`apps/swarm-api/swarm_api/secrets_overview.py::_provider_key_rows`). That
+console page itself is lane SSC-UI, not built. §7 says what the scopes
+change for these keys.
 
 Code: `apps/swarm-api/swarm_api/provider_keys.py` (record, audit, links,
 resolution) and `apps/swarm-api/swarm_api/routes/provider_keys.py` (routes).
@@ -106,7 +115,7 @@ worker then logs `jev_key_unreadable` and uses the tenant key if one is set.
 Granting the group account on alice's secret gives her key to **every**
 member's agents, so it is never a prefix and never a default. It is one row
 per (group, person) in `terraform/bootstrap/typesafe_user_keys.tf`
-(`typesafe_user_key_readers`), applied by the owner, and the row is the
+(`variable "typesafe_user_key_readers" {`), applied by the owner, and the row is the
 person's consent: the same trade the owner accepted for GitHub user slots
 (#780 D7 U1). A path that acts only for the submitter, with swarm-api reading
 the key on their behalf, would need a route that serves a credential, which
@@ -373,3 +382,36 @@ grace.
 resource type (the header of `provider_keys.tf`). The unit tests run against
 in-memory and fake Secret Manager clients, and the Terraform tests use a mock
 provider. Neither can show what IAM itself answers.
+
+## 7. Secrets scopes: what changes for these keys, and what does not (#2158)
+
+[design/secrets-scopes.md](design/secrets-scopes.md), built 2026-10-24
+(its §12), puts every secret on one Config › Secrets page, at the level it
+belongs to. For the keys in this document:
+
+* **The lookup order of §2 is the order the scopes use.** When a person's, a
+  repository's and a workspace's secret share a name, the person's wins, then
+  the repository's, then the workspace's (BGD's Q1). It is §2's rule, a
+  person's TypeSafe key over the tenant's, widened to the scopes, and for the
+  same reason: a person who sets their own value under a shared name meant it
+  for their own agents.
+* **No tool takes a value (Q8).** A value arrives through a one-time link's
+  console form or a terminal's `--stdin`. The plugin's `swarm_secret_set_link`
+  and `swarm_actions_secret_link` mint links the way `swarm_key_set_link`
+  does, answering `url` and `expires_at` only. The runner key's link (§3,
+  SSC-LINKS) has no tool yet: whether it should is an open owner question on
+  PR 2251. Both link routes in §3 are admin writes in the platform-admin audit
+  (LINK-ADMIN-WRITES, PR 2229).
+* **A repository's GitHub Actions secrets are not a provider key, and none
+  is kept.** SwarmCloud seals such a value in swarm-api with PyNaCl, sends it
+  to GitHub through the existing SwarmCloud App's one-repository,
+  one-permission token, and keeps only the name, who set it and when. The
+  threat model, including the residual risk BGD accepted until
+  user-scoped-secrets step 5 (a repository admin's user token, readable by
+  tenant workers from its `-git-u-` slot, could overwrite that repository's
+  Actions secrets once the App holds Secrets: write), is in
+  [security.md](security.md#secrets-scopes-and-github-actions-secrets).
+* **This key's own guarantees are unchanged.** §4's threat model, §5's
+  destroy-not-disable, and §6's IAM all hold as written. The overview reads
+  `provider_keys/` and never a Secret Manager payload, so it adds no reader of
+  this key.

@@ -152,7 +152,9 @@ def test_an_agent_still_open_is_counted_submitted_and_reports_nothing():
     # MUTATION: count only ended agents and the open one disappears.
     assert row["agents"] == 1 and row["agents_ended"] == 0
     # MUTATION: serve an empty sum as 0 and this is 0.0.
-    assert row["cost"] == {"sum_usd": None, "estimated_usd": None, "agents": 1, "reporting": 0}
+    assert row["cost"] == {
+        "sum_usd": None, "estimated_usd": None, "estimated": 0, "agents": 1, "reporting": 0,
+    }
     assert row["retries"] == 0
 
 

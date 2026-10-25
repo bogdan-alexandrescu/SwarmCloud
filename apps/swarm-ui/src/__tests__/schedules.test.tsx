@@ -32,6 +32,7 @@ import { painted } from './marks'
 import { SECTIONS, fromAddress, canonical, spineOf } from '../App'
 import { addressToPath, pathToAddress } from '../paths'
 import { PANEL_PAGES, approvalsBadge } from '../Spine'
+import { HISTORY_VIEW_KEY } from '../ScheduleHistoryTimeline'
 
 const WAIT = { timeout: 4000 }
 const PHONE: CascadeEnv = { width: 390 }
@@ -140,7 +141,11 @@ const rowOf = (id: string) => document.querySelector<HTMLElement>(`tr[data-sched
 afterEach(() => {
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
+  window.localStorage.removeItem(HISTORY_VIEW_KEY)
 })
+
+/** The firings' table, behind the History tab's toggle since #1109 (Timeline is the default). */
+const tableFirst = () => window.localStorage.setItem(HISTORY_VIEW_KEY, 'table')
 
 describe('the Automate section', () => {
   it('is a literal section between Work and Capacity, with Schedules and Approvals as its tabs', () => {
@@ -239,7 +244,7 @@ describe('the list', () => {
     expect(visible(builtIn)).toContain('Index · example-org/example-api')
     expect(visible(builtIn)).toContain('24 h + on change')
     expect(visible(builtIn)).toContain('at most every 30 min')
-    expect(within(builtIn).getByRole('link', { name: /Settings/ }).getAttribute('href')).toBe('/repositories/repo_a/settings')
+    expect(within(builtIn).getByRole('link', { name: /Settings/ }).getAttribute('href')).toBe('/config/repositories/repo_a/settings')
   })
 
   it('says the built-in rows were not read when the repositories read fails', async () => {
@@ -617,6 +622,7 @@ describe('one schedule', () => {
   })
 
   it('lists its firings, newest first, linking the work each made', async () => {
+    tableFirst()
     const { go } = await mountDetail({
       '/v1/schedules/sch_a': {
         status: 200,
@@ -643,6 +649,7 @@ describe('one schedule', () => {
   })
 
   it('says in plain words why a refused run was not started, under a firing that still succeeded', async () => {
+    tableFirst()
     await mountDetail({
       '/v1/schedules/sch_a': {
         status: 200,
@@ -667,6 +674,7 @@ describe('one schedule', () => {
   })
 
   it('says in plain words why a firing started nothing, on each row (SCHED)', async () => {
+    tableFirst()
     await mountDetail({
       '/v1/schedules/sch_a': {
         status: 200,
@@ -764,6 +772,7 @@ describe('one schedule on a phone', () => {
   it('draws each firing as a record, every cell named, and its facts in one column', async () => {
     // MUTATION: drop the 560px block from schedules.css.
     media(true)
+    tableFirst()
     await mountDetail({
       '/v1/schedules/sch_a': { status: 200, body: { schedule: schedule('sch_a'), firings: [firing('sch_a:1')] } },
     })

@@ -42,6 +42,10 @@ const TOKENS = new Set<string>([
   ...PARK_REASONS.map((r) => String(r).toLowerCase()),
   ...REAL_STATES.map((s) => s.toLowerCase()),
   'reauth_required',
+  // An MCP server's tool, as the server names it: the workspace's data, drawn
+  // on Config › MCP servers, which this sweep reaches since CONFIG-NAV made it
+  // a section tab (part of #2157). The fixture server allows `fetch_page`.
+  'fetch_page',
 ])
 
 const RULES: ReadonlyArray<readonly [string, RegExp]> = [
