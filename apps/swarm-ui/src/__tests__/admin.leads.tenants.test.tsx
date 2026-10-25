@@ -159,7 +159,7 @@ describe('Tenants leads with the workspace waiting to be created (S10d)', () => 
     fireEvent.click(within(l).getByRole('button', { name: 'Open its request' }))
     await waitFor(() => expect(row().classList.contains('is-opened')).toBe(true), WAIT)
     expect(document.querySelector('[data-workspace-id="w-research"]')!.classList.contains('is-opened')).toBe(false)
-    expect(ADMIN_CSS).toMatch(/\.ten-being-created > li\.is-opened\s*\{[^}]*outline:/)
+    expect(ADMIN_CSS).toMatch(/\.ten-being-created > li\.is-opened\[id\]\[tabindex\]\s*\{[^}]*outline:/)
   })
 
   it('names one whose setting up stopped ahead of one being set up', async () => {

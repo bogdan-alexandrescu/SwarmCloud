@@ -863,3 +863,10 @@ table.adm-limits th.pool-name > .ctl-sub > .adm-key-seg {
 .adm-lead.is-warn .ws-lead-k { color: var(--s-warn); }
 .adm-lead.is-unread { background: transparent; border: 1px dashed var(--line); }
 .adm-lead.is-unread .ws-lead-k { color: var(--text-dim); }
+
+/* The record Tenants' lead opened ("Open its request"). Its row takes focus,
+   but a mouse click matches no `:focus-visible`, so without this the reader
+   saw nothing mark what opened (rendered review, 2026-10-25). `[id][tabindex]`
+   lifts it over the shell's `.ctl-scroll [id][tabindex="-1"]:focus { outline:
+   none }` (0,4,0), which erased it on the focused row in the browser. */
+.ten-being-created > li.is-opened[id][tabindex] { outline: 2px solid var(--sk-ac); outline-offset: 6px; border-radius: var(--r-ctl); }

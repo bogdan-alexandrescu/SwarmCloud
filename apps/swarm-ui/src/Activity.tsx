@@ -1759,13 +1759,14 @@ function nameOf(w: AdminWorkspaceView): string {
   return w.workspace_id ?? w.principal ?? 'A workspace'
 }
 
-function WorkspaceLeadView({ lead }: { lead: WorkspaceLead }) {
+function WorkspaceLeadView({ lead, onOpen }: { lead: WorkspaceLead; onOpen: (key: string) => void }) {
   if (lead.kind === 'clear') return <AdminLead tone="ok" kicker="Nothing waiting" title="No workspace is waiting to be created" />
   const w = lead.w
   const open = (label: string) => (
     <Button
       kind="primary"
       onClick={() => {
+        onOpen(recordKey(w))
         const row = document.getElementById(recordRowId(w))
         if (row === null) return
         if (typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' })
@@ -1806,6 +1807,9 @@ function BeingCreated({ owner }: { owner: boolean }) {
   const [rows, setRows] = useState<AdminWorkspaceView[] | null>(null)
   const [unread, setUnread] = useState<ApiError | null>(null)
   const [filing, setFiling] = useState(false)
+  // The record the lead's button opened: marked, since a mouse click focuses
+  // its row with no `:focus-visible` and so no ring (styles/admin.css).
+  const [opened, setOpened] = useState<string | null>(null)
   const now = useNow(AGE_TICK_MS)
   const mounted = useRef(true)
   useEffect(() => {
@@ -1832,7 +1836,7 @@ function BeingCreated({ owner }: { owner: boolean }) {
     {unread !== null ? (
       <UnreadLead what="the workspaces being created" error={unread} />
     ) : (
-      rows !== null && <WorkspaceLeadView lead={workspaceLead(rows, owner)} />
+      rows !== null && <WorkspaceLeadView lead={workspaceLead(rows, owner)} onOpen={setOpened} />
     )}
     <section className="section" data-testid="being-created" aria-labelledby="ten-being-created">
       <div className="ten-bc-head">
@@ -1850,6 +1854,7 @@ function BeingCreated({ owner }: { owner: boolean }) {
             <li
               key={recordKey(w)}
               id={recordRowId(w)}
+              className={opened === recordKey(w) ? 'is-opened' : undefined}
               // Focusable by the lead's button, which opens this record.
               tabIndex={-1}
               data-workspace-id={w.workspace_id ?? undefined}
