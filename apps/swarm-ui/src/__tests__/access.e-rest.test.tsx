@@ -218,7 +218,8 @@ describe('S2b: connected, Where the App is installed is on the Connection tab', 
 
 describe('S2c: the foot bar of Choose repositories', () => {
   it('counts the grants changed and when, and carries the Refresh that left the card head', async () => {
-    api({}, (m, url, body) => {
+    // example-org is the one enabled owner, so the chooser opens on it.
+    api({ orgs: [ORG('example-org')] }, (m, url, body) => {
       if (m === 'PUT' && url === `/v1/access/grants/${ID(4)}`) {
         const b = body as { repository: string; mode: 'read' | 'write' }
         return { status: 200, body: { tenant_id: 'eng', grant: GRANT(4, b.repository, b.mode), registered: true, registration_repo_id: ID(4) } }
@@ -227,11 +228,14 @@ describe('S2c: the foot bar of Choose repositories', () => {
     })
     await mount('/config/github?view=choose')
     const choose = await cardTitled('Choose repositories')
-    const foot = await screen.findByRole('status', { name: 'Changes on this page' })
+    const foot = await screen.findByRole('group', { name: 'Changes on this page' })
     // MUTATION: leave Refresh in the Choose card's head.
-    expect(within(choose).queryByRole('button', { name: 'Refresh' })).toBeNull()
+    expect(within(choose.querySelector('.c-card-h') as HTMLElement).queryByRole('button', { name: 'Refresh' })).toBeNull()
     expect(within(foot).getByRole('button', { name: 'Refresh' })).toBeTruthy()
-    expect(visible(foot)).toContain('No changes saved yet')
+    // The count is the bar's live line, so a saved change is announced.
+    const line = foot.querySelector('[aria-live="polite"]')
+    expect(line).not.toBeNull()
+    expect(visible(line)).toBe('No changes saved yet · choices save as you make them')
 
     await screen.findByRole('list', { name: "example-org's repositories, page 1" })
     const row = document.querySelector('[data-repo="example-org/example-service-ui"]') as HTMLElement
@@ -243,9 +247,9 @@ describe('S2c: the foot bar of Choose repositories', () => {
   })
 
   it('Refresh in the foot bar reads the owners and the overview again', async () => {
-    const calls = api()
+    const calls = api({ orgs: [ORG('example-org')] })
     await mount('/config/github?view=choose')
-    const foot = await screen.findByRole('status', { name: 'Changes on this page' })
+    const foot = await screen.findByRole('group', { name: 'Changes on this page' })
     await screen.findByRole('list', { name: "example-org's repositories, page 1" })
     const before = calls.filter((c) => c.url === '/v1/access/orgs').length
     fireEvent.click(within(foot).getByRole('button', { name: 'Refresh' }))
