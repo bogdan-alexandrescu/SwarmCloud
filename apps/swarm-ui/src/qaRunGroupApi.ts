@@ -1,5 +1,6 @@
 import { USE_FIXTURES, loadArtifactContent, loadWorkflow } from './api'
 import { read, route, type Result } from './fetch'
+import { normQaTarget, type QaTarget } from './qaTargetsApi'
 
 /**
  * ONE QA DISPATCH'S LEGS, READ FOR THE RUN PAGE (lane QAENV-UI-RUNPAGE, part
@@ -14,7 +15,9 @@ import { read, route, type Result } from './fetch'
  *                                            `capture-<g>/manifest.json` and `capture-<g>/found.json`
  *                                            (§3.5), the report's `findings.json`, the file step's `filed.json`
  *   GET /v1/qa-targets/{id}                  the target, whose per-leg `discovered` says which
- *                                            routes one leg has and the other lacks (§5)
+ *                                            routes one leg has and the other lacks (§5), and
+ *                                            whose per-leg `new_since_last_run` is what a run
+ *                                            found that `screens` does not list yet
  *
  * A FIGURE THAT WAS NOT READ IS NEVER A ZERO. Each is a value, or absent with
  * the sentence that says why (a step still running, a file the step did not
@@ -308,15 +311,68 @@ export async function loadQaRunGroup(groupId: string): Promise<Result<QaRunGroup
   return { ...r, data }
 }
 
-/** What the run page reads off the target: its name, each leg's host, and §5's one-leg-only routes. */
+/**
+ * A route a run found that the target does not store as a screen yet (§5):
+ * its legs' `new_since_last_run`, one row per path. `on` names each leg it
+ * was found on; `thisRun` says the route's last sighting (`workflow_id`) is
+ * one of this group's own legs' workflows, so "first seen" can say "this run".
+ */
+export interface NewRoute {
+  id: string
+  path: string
+  on: string[]
+  firstSeen: string | null
+  thisRun: boolean
+}
+
+/**
+ * The routes this group's legs found and `screens` does not list, from the
+ * target's answer: each leg's `new_since_last_run` (`discovery_status`, which
+ * already leaves out a route `screens` lists), or the target's own on a
+ * target served in the one-origin shape. `workflows` maps a leg to its
+ * workflow, so a route last seen by this run says so.
+ */
+export function newRoutesOf(raw: unknown, legs: readonly string[], workflows: Readonly<Record<string, string>> = {}): NewRoute[] {
+  const t = rec(rec(raw).qa_target ?? raw)
+  const ours = new Set(Object.values(workflows))
+  const byPath = new Map<string, NewRoute>()
+  const take = (found: unknown, on: string) => {
+    for (const r of list(found)) {
+      const route = rec(r)
+      const id = str(route.id)
+      const path = str(route.path)
+      if (id === null || path === null) continue
+      const wf = str(route.workflow_id)
+      const was = byPath.get(path)
+      if (was === undefined) {
+        byPath.set(path, { id, path, on: [on], firstSeen: str(route.first_seen), thisRun: wf !== null && ours.has(wf) })
+        continue
+      }
+      if (!was.on.includes(on)) was.on.push(on)
+      if (wf !== null && ours.has(wf)) was.thisRun = true
+    }
+  }
+  const entries = list(t.environments).map(rec)
+  if (entries.length === 0) take(t.new_since_last_run, legs.length === 1 ? legs[0]! : (str(t.host) ?? 'the target'))
+  for (const entry of entries) {
+    const name = str(entry.name)
+    if (name !== null && legs.includes(name)) take(entry.new_since_last_run, name)
+  }
+  return [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path))
+}
+
+/** What the run page reads off the target: its name, each leg's host, §5's one-leg-only routes, and its new routes. */
 export interface TargetFacts {
   name: string | null
   hosts: Record<string, string>
   oneLegOnly: OneLegOnly[]
+  newRoutes: NewRoute[]
+  /** The target as the QA targets page reads it, which Promote's PATCH is built from; null when it is not one. */
+  target: QaTarget | null
 }
 
 /** The target's facts for these legs; read from the target's own answer. */
-export function targetFactsOf(raw: unknown, legs: readonly string[]): TargetFacts {
+export function targetFactsOf(raw: unknown, legs: readonly string[], workflows: Readonly<Record<string, string>> = {}): TargetFacts {
   const t = rec(rec(raw).qa_target ?? raw)
   const hosts: Record<string, string> = {}
   for (const e of list(t.environments)) {
@@ -325,16 +381,26 @@ export function targetFactsOf(raw: unknown, legs: readonly string[]): TargetFact
     const host = str(entry.host)
     if (name !== null && host !== null) hosts[name] = host
   }
-  return { name: str(t.name), hosts, oneLegOnly: oneLegOnlyOf(raw, legs) }
+  return {
+    name: str(t.name),
+    hosts,
+    oneLegOnly: oneLegOnlyOf(raw, legs),
+    newRoutes: newRoutesOf(raw, legs, workflows),
+    target: normQaTarget(t),
+  }
 }
 
 /** The target's facts, or why they were not read. */
-export async function loadTargetFacts(targetId: string, legs: readonly string[]): Promise<Figure<TargetFacts>> {
-  if (USE_FIXTURES) return { kind: 'value', value: targetFactsOf(FIXTURE_TARGET, legs), note: null }
+export async function loadTargetFacts(
+  targetId: string,
+  legs: readonly string[],
+  workflows: Readonly<Record<string, string>> = {},
+): Promise<Figure<TargetFacts>> {
+  if (USE_FIXTURES) return { kind: 'value', value: targetFactsOf(FIXTURE_TARGET, legs, workflows), note: null }
   const r = await read<unknown>(route('/v1/qa-targets/{target_id}', { target_id: targetId }), () => false)
   if (r.status === 'error') return { kind: 'absent', why: `The target was not read: ${r.error.message}` }
   if (r.status !== 'ok' && r.status !== 'stale') return { kind: 'absent', why: 'The target was not read.' }
-  return { kind: 'value', value: targetFactsOf(r.data, legs), note: null }
+  return { kind: 'value', value: targetFactsOf(r.data, legs, workflows), note: null }
 }
 
 async function artifactJson(taskId: string, name: string): Promise<{ ok: true; data: unknown } | { ok: false; why: string }> {
@@ -454,12 +520,27 @@ function fixtureGroup(groupId: string): QaRunGroup {
   }
 }
 
+const fixtureFound = (id: string, path: string, workflow_id: string) => ({ id, path, workflow_id, first_seen: FIXTURE_GROUP.at })
+
 const FIXTURE_TARGET = {
   qa_target: {
+    id: FIXTURE_GROUP.target_id,
     name: 'Studio',
+    screens: [{ id: 'home', path: '/' }, { id: 'settings', path: '/settings' }],
     environments: [
-      { name: 'staging', host: 'staging.app.example.com', discovered: [{ path: '/beta/reports' }, { path: '/settings/labs' }, { path: '/settings' }] },
-      { name: 'production', host: 'app.example.com', discovered: [{ path: '/settings' }, { path: '/legal/imprint' }] },
+      {
+        name: 'staging', host: 'staging.app.example.com',
+        discovered: [{ path: '/beta/reports' }, { path: '/settings/labs' }, { path: '/settings' }],
+        new_since_last_run: [
+          fixtureFound('beta-reports', '/beta/reports', FIXTURE_GROUP.legs[0]!.workflow_id!),
+          fixtureFound('settings-labs', '/settings/labs', FIXTURE_GROUP.legs[0]!.workflow_id!),
+        ],
+      },
+      {
+        name: 'production', host: 'app.example.com',
+        discovered: [{ path: '/settings' }, { path: '/legal/imprint' }],
+        new_since_last_run: [fixtureFound('legal-imprint', '/legal/imprint', FIXTURE_GROUP.legs[1]!.workflow_id!)],
+      },
     ],
   },
 }
