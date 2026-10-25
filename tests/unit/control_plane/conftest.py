@@ -346,6 +346,24 @@ def make_scheduler(db, dispatcher):
     return _make
 
 
+def measure(store: Any, *account_ids: str, utilization: float = 0.1) -> None:
+    """Give each account its first reading: a 5-hour window with room.
+
+    A NEVER-OBSERVED ACCOUNT TAKES ONE AGENT until its first reading (#2222,
+    `quota_broker.accounts.MAX_AGENTS_BEFORE_READING`), so a test that puts
+    several agents on one account measures it first, as the usage poller would.
+    """
+    from quota_broker.accounts import WindowReading
+
+    now = datetime.now(timezone.utc)
+    for account_id in account_ids:
+        store.record_reading(
+            account_id,
+            {"five_hour": WindowReading(utilization, now + timedelta(hours=4))},
+            observed_at=now,
+        )
+
+
 @pytest.fixture
 def broker(db) -> QuotaBroker:
     return QuotaBroker(db, settings=BrokerSettings(core=core_settings(), default_hard_max=50))

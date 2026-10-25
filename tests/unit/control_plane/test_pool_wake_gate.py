@@ -31,7 +31,7 @@ from swarm_common.models import Task
 from swarm_common.profiles import RUNNER_PROFILES
 from swarm_common.states import ParkReason, TaskState
 
-from .conftest import scheduler_settings, seed_pool, seed_task, seed_tenant
+from .conftest import measure, scheduler_settings, seed_pool, seed_task, seed_tenant
 
 BROKER = "https://swarm-quota-broker.example.run.app"
 OWNER = "eng"
@@ -49,6 +49,7 @@ def _world(db, *, accounts: bool = True, max_agents: int | None = None) -> Accou
     store = AccountStore(db)
     if accounts:
         store.register(OWNER, "team")
+        measure(store, TEAM)  # one agent until measured (#2222)
         if max_agents is not None:
             store.set_max_agents(TEAM, max_agents)
     return store

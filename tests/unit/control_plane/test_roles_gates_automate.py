@@ -215,6 +215,7 @@ WRITES: list[tuple[str, str, str, Any]] = [
     ("account lending", "PUT", f"/v1/accounts/{ACCOUNT}/lending", {"lend_to": []}),
     ("account model classes", "PUT", f"/v1/accounts/{ACCOUNT}/model-classes",
      {"model_classes": []}),
+    ("account max agents", "PUT", f"/v1/accounts/{ACCOUNT}/max-agents", {"max_agents": 3}),
     ("account state", "PUT", f"/v1/accounts/{ACCOUNT}/state", {"state": "PAUSED"}),
     ("account delete", "DELETE", f"/v1/accounts/{ACCOUNT}", None),
 ]
@@ -375,6 +376,18 @@ def test_a_non_member_platform_admin_sets_context_audited(client, db, seeded, mo
     assert db.docs[f"repositories/{REPO}"]["context"] == "on"
     acted = [d for d in db.dump("admin_audit/").values() if d["action"] == "platform_admin_acted"]
     assert [a["detail"]["route"] for a in acted] == ["/v1/repositories/{repo_id}"]
+
+
+def test_a_non_member_platform_admin_sets_an_accounts_cap_audited(client, db, seeded, services):
+    """`PUT /v1/accounts/{id}/max-agents` (#2222) lets a platform admin through
+    as the broker does, acting in the owner's workspace, and the write is in
+    the audit log before it reaches the broker, like every account write."""
+    response = client.put(f"/v1/accounts/{ACCOUNT}/max-agents", json={"max_agents": 3},
+                          headers=h("ops", "eng"))
+    assert response.status_code == 200, response.text
+    assert "set_max_agents" in services["pool"].calls
+    acted = [d for d in db.dump("admin_audit/").values() if d["action"] == "platform_admin_acted"]
+    assert [a["detail"]["route"] for a in acted] == ["/v1/accounts/{account_id}/max-agents"]
 
 
 @pytest.mark.parametrize("field,value", [("platform", True), ("merge_policy", "on_merge_verdict")])

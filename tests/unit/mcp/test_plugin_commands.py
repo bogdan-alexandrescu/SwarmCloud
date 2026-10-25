@@ -437,6 +437,7 @@ _DEVELOPER_STATE = frozenset(
         "sc.cmd_context_remove",
         "sc.cmd_account_state",
         "sc.cmd_account_remove",
+        "sc.cmd_account_max_agents",
         "sc.cmd_account_add",
         # #454: creating an issue run submits a planner task, and moving its
         # plan submits a workflow or ends the run. They write to the cluster,

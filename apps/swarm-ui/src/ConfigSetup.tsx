@@ -1,6 +1,7 @@
 import { createContext, useContext, type MouseEvent } from 'react'
 import { routedClick } from './components'
 import type { Result } from './fetch'
+import { configSetupOf, itemName, secretsUnreadReason, type ConfigSetup } from './configSetupApi'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import type { OnboardingDoc, OnboardingStepState } from './types'
 import './styles/config.css'
@@ -21,10 +22,16 @@ import './styles/config.css'
  * each Config page (Spine.tsx), and hands down through `SetupContext` so the
  * strip and the panel's meter never disagree. GitHub connected is its
  * `github_connected` step and Repositories chosen its `repos_chosen`, in the
- * state the server derived. Secrets set and People invited have no read yet --
- * proposal E's "needed, not set" count and an invited-people count are not
- * served by any route -- so they are UNKNOWN, drawn as such, and never count
- * as done. A step the read did not carry is unknown the same way.
+ * state the server derived. Secrets set and People invited are its
+ * `config_setup` field (CONFIG-SETUP-READ, read through configSetupApi.ts;
+ * CONFIG-PANEL-E): Secrets set is done when nothing registered is needed and
+ * not stored, and otherwise names the count and the first item; People
+ * invited is done when someone other than the reader holds a role. A source
+ * the server could not read is UNKNOWN, drawn with the server's reason, and
+ * never counts as done; a step the read did not carry is unknown the same way.
+ *
+ * THE PANEL'S ROW BADGES (S1a) are derived from these same steps
+ * (`configBadges`), so a row can never say what the strip does not.
  */
 
 /** A strip step's state: the onboarding derivation's, or unknown where nothing measured it. */
@@ -63,6 +70,7 @@ function str(v: unknown): string | null {
 
 /** The steps, from the onboarding document (null: not read). Pure, for the tests and both drawings. */
 export function setupSteps(doc: OnboardingDoc | null, personal: boolean): SetupStep[] {
+  const setup = configSetupOf(doc)
   const derived = (name: 'github_connected' | 'repos_chosen') => (doc !== null && Array.isArray(doc.steps) ? doc.steps.find((s) => s.step === name) ?? null : null)
   const measured = (name: 'github_connected' | 'repos_chosen', evidence: (e: Record<string, unknown>) => string | null): Pick<SetupStep, 'state' | 'line'> => {
     const s = derived(name)
@@ -87,11 +95,125 @@ export function setupSteps(doc: OnboardingDoc | null, personal: boolean): SetupS
       to: 'config/repositories',
       ...measured('repos_chosen', (e) => (Array.isArray(e.repositories) ? `${e.repositories.length} chosen` : null)),
     },
-    // No route serves what a workspace still needs set, so this is never measured here.
-    { key: 'secrets', label: 'Secrets set', to: 'config/secrets', state: 'unknown', line: 'not measured yet' },
+    { key: 'secrets', label: 'Secrets set', to: 'config/secrets', ...secretsState(doc, setup) },
   ]
-  if (!personal) steps.push({ key: 'people', label: 'People invited', to: 'config/people', state: 'unknown', line: 'not measured yet' })
+  if (!personal) steps.push({ key: 'people', label: 'People invited', to: 'config/people', ...peopleState(doc, setup) })
   return steps
+}
+
+/** "3 to set: linear and 2 more": the count, and the first item by name. */
+function toSet(n: number, first: string | null): string {
+  if (first === null) return `${n} to set`
+  return n > 1 ? `${n} to set: ${first} and ${n - 1} more` : `1 to set: ${first}`
+}
+
+/** Step 3 from `config_setup.secrets`: done only when the server read every source and found nothing missing. */
+function secretsState(doc: OnboardingDoc | null, setup: ConfigSetup | null): Pick<SetupStep, 'state' | 'line'> {
+  if (doc === null) return { state: 'unknown', line: 'not read' }
+  const s = setup?.secrets ?? null
+  if (s === null) return { state: 'unknown', line: 'not in the setup read' }
+  if (s.needed === null) return { state: 'unknown', line: secretsUnreadReason(s) }
+  if (s.needed === 0) return { state: 'done', line: 'nothing missing' }
+  const first = s.items[0]
+  return { state: 'todo', line: toSet(s.needed, first === undefined ? null : itemName(first)) }
+}
+
+/** Step 4 from `config_setup.people`: done when someone besides the reader holds a role. */
+function peopleState(doc: OnboardingDoc | null, setup: ConfigSetup | null): Pick<SetupStep, 'state' | 'line'> {
+  if (doc === null) return { state: 'unknown', line: 'not read' }
+  const p = setup?.people ?? null
+  if (p === null) return { state: 'unknown', line: 'not in the setup read' }
+  // The server judged this workspace personal while `me` said group: say so rather than guess.
+  if (!p.applies) return { state: 'unknown', line: p.reason ?? 'does not apply here' }
+  if (p.done === null) return { state: 'unknown', line: p.reason ?? 'the roles could not be read' }
+  if (!p.done) return { state: 'todo', line: 'only you so far' }
+  const n = p.holders ?? 0
+  return { state: 'done', line: n === 1 ? '1 other person holds a role' : `${n} other people hold a role` }
+}
+
+/**
+ * A Config panel row's badge (S1a): done, a count, what is missing, or
+ * unknown. `text` is what the row draws; `why` is its title and its name to
+ * a screen reader, so a tick or a bare number is never the whole message.
+ */
+export interface ConfigBadge {
+  /** `note` is something left that is nobody's warning: a lone admin's "only you" (S1a draws it dim). */
+  tone: 'done' | 'count' | 'missing' | 'note' | 'unknown'
+  text: string
+  why: string
+}
+
+const MISSING: Readonly<Record<OnboardingStepState, string>> = {
+  done: 'done',
+  in_progress: 'in progress',
+  failed: 'failed',
+  stale: 're-check',
+  todo: 'not yet',
+}
+
+/** A badge for a strip step, in the step's own state. */
+function stepBadge(step: SetupStep | undefined, todo: string, done: ConfigBadge | null = null): ConfigBadge | null {
+  if (step === undefined) return null
+  if (step.state === 'unknown') return { tone: 'unknown', text: '—', why: `${step.label}: ${step.line}` }
+  if (step.state === 'done') return done ?? { tone: 'done', text: '✓', why: `${step.label}: ${step.line}` }
+  return { tone: 'missing', text: step.state === 'todo' ? todo : MISSING[step.state], why: `${step.label}: ${step.line}` }
+}
+
+/**
+ * Each Config page's badge, keyed by its panel row (Spine.tsx PANEL_PAGES
+ * config), from the SAME steps the strip draws and the same read. Workspace
+ * Settings carries none: its setup part is the strip itself (S1a draws none).
+ */
+export function configBadges(doc: OnboardingDoc | null, personal: boolean): Readonly<Record<string, ConfigBadge>> {
+  const steps = setupSteps(doc, personal)
+  const by = (k: SetupStep['key']) => steps.find((s) => s.key === k)
+  const setup = configSetupOf(doc)
+  const out: Record<string, ConfigBadge> = {}
+  const put = (key: string, b: ConfigBadge | null) => {
+    if (b !== null) out[key] = b
+  }
+  put('github', stepBadge(by('github'), 'not connected'))
+  const repos = by('repositories')
+  const chosen = doc?.steps?.find((s) => s.step === 'repos_chosen')?.evidence?.repositories
+  put('repositories', stepBadge(repos, 'none chosen', Array.isArray(chosen) ? { tone: 'count', text: String(chosen.length), why: `Repositories chosen: ${chosen.length}` } : null))
+  const secrets = by('secrets')
+  const needed = setup?.secrets?.needed ?? null
+  put('secrets', stepBadge(secrets, needed === null ? 'to set' : `${needed} to set`))
+  // MCP servers: the secrets step's MCP source alone, so its count is the
+  // part of Secrets' count that is set from that page.
+  const mcp = setup?.secrets?.sources.mcp_servers
+  if (doc !== null && setup?.secrets != null && mcp !== undefined) {
+    const n = setup.secrets.items.filter((i) => i.kind === 'mcp_server').length
+    put(
+      'mcp-servers',
+      mcp.needed === null
+        ? { tone: 'unknown', text: '—', why: `MCP servers: ${mcp.reason ?? 'not read'}` }
+        : n > 0
+          ? { tone: 'missing', text: `${n} to set`, why: `MCP servers: ${n} need a secret nobody has stored` }
+          : { tone: 'done', text: '✓', why: 'MCP servers: nothing to set' },
+    )
+  } else put('mcp-servers', { tone: 'unknown', text: '—', why: `MCP servers: ${doc === null ? 'not read' : 'not in the setup read'}` })
+  const people = by('people')
+  const holders = setup?.people?.holders ?? null
+  const peopleBadge = stepBadge(people, 'only you', holders === null ? null : { tone: 'count', text: String(holders), why: `People invited: ${people?.line ?? ''}` })
+  put('people', peopleBadge !== null && people?.state === 'todo' ? { ...peopleBadge, tone: 'note' } : peopleBadge)
+  return out
+}
+
+/** The badges for the shell's read, as the panel draws them. */
+export function useConfigBadges(): Readonly<Record<string, ConfigBadge>> {
+  const { doc, personal } = useContext(SetupContext)
+  return configBadges(doc.status === 'ok' || doc.status === 'stale' ? doc.data : null, personal === true)
+}
+
+/** A Config panel row's badge. */
+export function ConfigBadgeMark({ badge }: { badge: ConfigBadge | undefined }) {
+  if (badge === undefined) return null
+  return (
+    <span className={`cfg-badge is-${badge.tone}`} title={badge.why} aria-label={badge.why} role="img">
+      {badge.text}
+    </span>
+  )
 }
 
 /** The first measured step not done: the one the strip calls next. */
@@ -216,4 +338,64 @@ export function SetupMeter() {
       </div>
     </div>
   )
+}
+
+/**
+ * ONE WORKSPACE'S PROGRESS, FOR ADMIN › WORKSPACES YOU ADMIN (S10a): the
+ * strip's count, its segments and its next step, from that workspace's own
+ * read, so an admin of several sees which one is behind. The same steps the
+ * strip draws (`setupSteps`), never a second derivation. `onNext` opens the
+ * next step's page in that workspace; the page decides how (it selects the
+ * workspace first).
+ */
+export function SetupProgress({ name, steps, onNext }: { name: string; steps: readonly SetupStep[]; onNext?: (step: SetupStep, e: MouseEvent) => void }) {
+  const next = nextOf(steps)
+  const nextStep = steps.find((s) => s.key === next) ?? null
+  const { done, of, unknown } = setupCount(steps)
+  return (
+    <div className="cfg-progress" role="group" aria-label={`${name} setup`}>
+      <div className="cfg-progress-h">
+        <b className={`cfg-progress-n${done === of ? ' is-done' : ''}`}>
+          Setup {done} of {of}
+        </b>
+        {unknown > 0 && <small>{unknown} not measured</small>}
+      </div>
+      <div className="cfg-meter-bar">
+        {steps.map((s) => (
+          <i key={s.key} className={`is-${s.state}${s.key === next ? ' is-next' : ''}`} title={`${s.label}: ${s.line}`} />
+        ))}
+      </div>
+      <small className="cfg-progress-next">
+        {nextStep !== null ? (
+          <>
+            Next:{' '}
+            <a href={addressToPath(nextStep.to)} onClick={(e) => onNext?.(nextStep, e)}>
+              {nextStep.label}
+            </a>
+            , {nextStep.line}
+          </>
+        ) : done === of ? (
+          'Setup complete'
+        ) : (
+          `${unknown} not measured: ${steps
+            .filter((s) => s.state === 'unknown')
+            .map((s) => `${s.label}, ${s.line}`)
+            .join('; ')}`
+        )}
+      </small>
+    </div>
+  )
+}
+
+/**
+ * The workspace furthest behind, by steps done, among `read` -- null unless
+ * at least two were read and one has strictly fewer done than another, so
+ * the page never calls a tie "behind".
+ */
+export function behindOf<T extends { steps: readonly SetupStep[] }>(read: readonly T[]): T | null {
+  if (read.length < 2) return null
+  const done = read.map((r) => setupCount(r.steps).done)
+  const min = Math.min(...done)
+  if (min === Math.max(...done)) return null
+  return read[done.indexOf(min)] ?? null
 }

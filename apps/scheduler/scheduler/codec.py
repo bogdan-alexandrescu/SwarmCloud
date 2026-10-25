@@ -22,6 +22,7 @@ from swarm_common.models import (
     SlotPool,
     Task,
     Tenant,
+    check_additional_repositories,
 )
 from swarm_common.states import ParkReason, TaskState
 
@@ -104,11 +105,27 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         # returned) and is a class not known to the pool. Anything but a
         # string is no class.
         model_class=data.get("model_class") if isinstance(data.get("model_class"), str) else None,
+        # Contract request 95 (CODEC-ADDL-REPOS, part of #2158): the
+        # repositories a step reads beside its own, which admission's
+        # repository-secret check (`secret_slots.WorkspaceGrants.repositories`)
+        # reads instead of the task's document. As `forge_credential` above, a
+        # value `check_additional_repositories` refuses decodes as None rather
+        # than failing the whole drain on `Task.__post_init__`: no writer
+        # produces one, and the worker's spec check refuses the task.
+        additional_repositories=_additional_repositories(data.get("additional_repositories")),
     )
 
 
 def _shaped(value: Any, ok: Any) -> str | None:
     return value if isinstance(value, str) and ok(value) else None
+
+
+def _additional_repositories(value: Any) -> list[dict[str, Any]] | None:
+    try:
+        check_additional_repositories(value)
+    except ValueError:
+        return None
+    return [dict(entry) for entry in value] if value is not None else None
 
 
 def _human_wait(value: Any) -> dict[str, Any] | None:

@@ -134,7 +134,21 @@ export function secretsLinkView(query: string): string {
  * `qaCredentialLinkFrom`) before its normalise effect rewrites it.
  */
 export const QA_LINK_ADDRESS = 'config/repositories?page=qa-targets'
-const QA_LINK_PATH = /^\/qa-targets\/[^/]+\/credential$/
+// A `field: "challenge_bypass"` link's `/qa-targets/<id>/challenge-bypass?t=..`
+// lands there too, its form opened by the same capture (#2280).
+const QA_LINK_PATH = /^\/qa-targets\/[^/]+\/(credential|challenge-bypass)$/
+
+/**
+ * ONE QA DISPATCH'S RUN PAGE (lane QAENV-UI-RUNPAGE, part of #2136;
+ * docs/design/qa-environments.md §7): `/qa-runs/<group_id>`, one column per
+ * leg. The API names this path in the issues a leg files (swarm_api
+ * `qaspec._group_sentence`). The page sits under Config › Repositories › QA
+ * targets, as Config proposal E's S9b draws its breadcrumb, so its address
+ * rides on that tab's query as `qarun=<id>`, the way a repository does.
+ */
+export function qaRunAddress(groupId: string): string {
+  return `config/repositories?${new URLSearchParams({ qarun: groupId }).toString()}`
+}
 
 /** The scopes a key link may name; anything else is dropped, not guessed at. */
 export function keyLinkScope(query: string): 'user' | 'tenant' | null {
@@ -467,6 +481,8 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
   // Config › Repositories (repositories.html): the page rides on the tab's query.
   if (bare === 'config/repositories' && query !== '') {
     const q = new URLSearchParams(query)
+    const qarun = q.get('qarun')
+    if (qarun !== null && qarun !== '') return `/qa-runs/${encodeURIComponent(qarun)}`
     const page = q.get('page')
     const repo = q.get('repo')
     if (page === 'register' || page === 'tokens') return `${REPOSITORIES_PATH}/${page}`
@@ -604,6 +620,8 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
     if (kind !== null && kind !== '') q.set('kind', kind)
     return plain(`automate/approvals?${q.toString()}`)
   }
+
+  if (seg[0] === 'qa-runs' && seg.length === 2 && seg[1] !== '') return plain(qaRunAddress(decodeURIComponent(seg[1]!)))
 
   // A repository's pages: `/config/repositories/<id>/...`, and the same tail
   // under `/repositories`, where they were until CONFIG-NAV.

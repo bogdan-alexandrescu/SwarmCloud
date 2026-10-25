@@ -213,6 +213,8 @@ class AccountPool(Protocol):
         self, account_id: str, *, display_name: str | None
     ) -> dict[str, Any]: ...
 
+    def set_max_agents(self, account_id: str, *, max_agents: int) -> dict[str, Any]: ...
+
     def set_state(self, account_id: str, *, state: str, reason: str) -> dict[str, Any]: ...
 
     # DECLARATIONS ONLY, like every other member of this Protocol.
@@ -247,9 +249,11 @@ class AccountPool(Protocol):
         cursor: str | None,
     ) -> dict[str, Any]: ...
 
-    # THE ONE QUOTA ROUTE this API calls (QUOTA-RESET, 2026-10-14): a platform
-    # admin's reset of a tenant's AIMD target, proxied so the broker stays the
-    # only writer of quota documents. Only `routes/admin.py` calls it.
+    # THE TWO QUOTA ROUTES this API calls, both a platform admin's, proxied so
+    # the broker stays the only writer of quota documents: the reset of a
+    # tenant's AIMD target (QUOTA-RESET, 2026-10-14) and the tenant's
+    # configured max (POOL-LIMITS-QUOTA, 2026-10-25). Only `routes/admin.py`
+    # calls them.
     def set_adaptive_target(
         self,
         provider: str,
@@ -260,6 +264,8 @@ class AccountPool(Protocol):
         clear_cooldown: bool,
         requested_by: str,
     ) -> dict[str, Any]: ...
+
+    def set_hard_max(self, provider: str, tenant_id: str, *, hard_max: int) -> dict[str, Any]: ...
 
 
 def urllib_transport(
@@ -520,6 +526,13 @@ class BrokerClient:
             payload={"display_name": display_name},
         )
 
+    def set_max_agents(self, account_id: str, *, max_agents: int) -> dict[str, Any]:
+        return self._call(
+            "PUT",
+            f"/v1/accounts/{quote(account_id, safe='')}/max-agents",
+            payload={"max_agents": max_agents},
+        )
+
     def set_state(self, account_id: str, *, state: str, reason: str) -> dict[str, Any]:
         return self._call(
             "PUT",
@@ -617,6 +630,16 @@ class BrokerClient:
                 # to the identity it verified itself -- this service's.
                 "requested_by": requested_by,
             },
+        )
+
+    def set_hard_max(self, provider: str, tenant_id: str, *, hard_max: int) -> dict[str, Any]:
+        # `{hard_max}` and nothing else: the broker's `HardMaxRequest` forbids
+        # any other field, so who asked and why are audited by swarm-api
+        # (`routes/admin.py` `set_quota_hard_max`), not sent here.
+        return self._call(
+            "PUT",
+            f"/v1/quota/{quote(provider, safe='')}/{quote(tenant_id, safe='')}/hard-max",
+            payload={"hard_max": int(hard_max)},
         )
 
     # ----------------------------------------------------------------- plumbing

@@ -3,13 +3,13 @@
 MEASURED 2026-10-13 11:30-11:40 UTC (task_3458d6bfc7d14db79af1 and
 task_c6bf0368442642f784e3): the owner took control and switched devices
 eight times in about two and a half minutes; afterwards the whole canvas was
-the mask's "unavailable" grey and the strip read "The gate has not reported
+the gate's "unavailable" grey and the strip read "The gate has not reported
 the page's address yet", for good, and a resume after the hand-off came back
 `GateRefused`. The page REPORT had stopped: the gate's own session on the
 agent's page was gone and nothing attached it again.
 
 Each test here drives the real gate (`LiveGate.start_browser`: the proxy, the
-device controller, the page follower and the mask's CDP side) against a
+device controller, the page follower and its CDP session on the page) against a
 scripted Chromium that keeps pages and sessions the way Chromium does -- a
 command on a session that is gone is answered "Session with given id not
 found", and a detach is announced with `Target.detachedFromTarget` -- and can
@@ -250,11 +250,11 @@ class Rig:
         await _until(self.showing)
 
     def showing(self) -> bool:
-        """The mask has a live session on the agent's page, and its origin is reported."""
+        """The gate has a live session on the agent's page, and its origin is reported."""
         pages = self.gate.pages
         return bool(pages is not None and pages.current in self.chromium.pages
                     and pages._session in self.chromium.sessions
-                    and self.gate.mask_state._session and self.gate.origin is not None)
+                    and pages.state == "following" and self.gate.origin is not None)
 
     def events(self) -> list[str]:
         return [str(a.get("event")) for a in self.tunnel.actions if a.get("kind") == "control"]
@@ -298,7 +298,7 @@ def _run(body: Callable[[Rig], Any], tmp_path: Path) -> None:
 def test_a_session_lost_during_a_device_apply_is_attached_again_and_the_screen_comes_back(tmp_path):
     async def body(rig: Rig) -> None:
         chromium = rig.chromium
-        before = len(chromium.methods_on("PAGE1", "Page.addScriptToEvaluateOnNewDocument"))
+        before = len(chromium.methods_on("PAGE1", "Page.getFrameTree"))
         lost: list[bool] = []
 
         def swap(message: dict[str, Any]) -> None:
@@ -311,18 +311,16 @@ def test_a_session_lost_during_a_device_apply_is_attached_again_and_the_screen_c
         assert (device.name, device.orientation) == ("iphone-15", "portrait")
         assert lost, "the scripted swap never ran"
 
-        # The page report and the mask come back on a NEW session on the same page.
+        # The page report and the page watch come back on a NEW session on the same page.
         await _until(rig.showing)
         assert rig.gate.pages.state == "following"
-        assert len(chromium.methods_on("PAGE1", "Page.addScriptToEvaluateOnNewDocument")) > before, \
-            "the observer was not injected again on the re-attached session"
+        assert len(chromium.methods_on("PAGE1", "Page.getFrameTree")) > before, \
+            "the page watch was not installed again on the re-attached session"
         # The device is on the page through a session that is live now.
         applied = [(p, s) for p, s in chromium.methods_on("PAGE1", "Emulation.setDeviceMetricsOverride")
                    if s in chromium.sessions]
         assert applied and applied[-1][0]["width"] == 393
         assert "device_refused" not in rig.events()
-        # Frames are masked again, not the blank "unavailable" grey: the session is up.
-        assert rig.gate.mask_state._session is True
 
     _run(body, tmp_path)
 
@@ -379,18 +377,17 @@ def test_a_switch_that_loses_every_session_still_applies_and_says_nothing_was_re
     _run(body, tmp_path)
 
 
-def test_a_crashed_page_fails_closed_then_comes_back(tmp_path):
+def test_a_crashed_page_is_reconnected_and_comes_back(tmp_path):
     async def body(rig: Rig) -> None:
         chromium = rig.chromium
-        before = len(chromium.methods_on("PAGE1", "Page.addScriptToEvaluateOnNewDocument"))
+        before = len(chromium.methods_on("PAGE1", "Page.getFrameTree"))
         chromium.crash("PAGE1")
         await _until(lambda: rig.gate.pages.state == "reconnecting")
-        assert rig.gate.mask_state._session is False, "a crashed page must not be shown as masked"
         assert "reconnecting_to_page" in rig.events()
         chromium.reload("PAGE1")
         await _until(rig.showing)
         assert rig.gate.pages.state == "following"
-        assert len(chromium.methods_on("PAGE1", "Page.addScriptToEvaluateOnNewDocument")) > before
+        assert len(chromium.methods_on("PAGE1", "Page.getFrameTree")) > before
         # Said from a task the gate spawns as the follower comes back, so it can
         # land a loop turn after the screen does: waited for, not read once.
         await _until(lambda: "page_reconnected" in rig.events())
@@ -464,7 +461,7 @@ def test_the_follower_never_stays_detached_from_a_live_page(tmp_path, cause):
         if cause == "detached":
             chromium.detach_all("PAGE1")
         else:
-            # The attach answers, then the mask's install finds the session gone.
+            # The attach answers, then the install finds the session gone.
             def drop(message: dict[str, Any]) -> None:
                 chromium.during.pop("Runtime.addBinding", None)
                 chromium.detach_all("PAGE1")

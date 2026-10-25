@@ -17,6 +17,7 @@ import { Routed } from './screenroute'
 import type { CascadeEnv } from './cssgate'
 import { painted, resolveColour } from './marks'
 import { contrast } from './spaceprobe'
+import { HISTORY_VIEW_KEY } from '../ScheduleHistoryTimeline'
 import { fixedColumns } from './tablefit'
 
 const WAIT = { timeout: 4000 }
@@ -167,6 +168,7 @@ const rowOf = (id: string) => document.querySelector<HTMLElement>(`tr[data-sched
 afterEach(() => {
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
+  window.localStorage.removeItem(HISTORY_VIEW_KEY)
 })
 
 // ---------------------------------------------------------------------------
@@ -252,6 +254,8 @@ describe('the schedules list on a phone (V173, V235)', () => {
 describe("one schedule's page (V168, V171, V239, V241, V242, V243)", () => {
   it('V168: lets a firing’s partial cost wrap in its cell instead of clipping it and scrolling the table', async () => {
     // MUTATION: `.sc-spend { white-space: nowrap }` back.
+    // The firings' table, behind the History tab's toggle since #1109.
+    window.localStorage.setItem(HISTORY_VIEW_KEY, 'table')
     await mountSchedules('schedule=sch_a', schedulesRoutes())
     const row = await waitFor(() => {
       const el = document.querySelector<HTMLElement>('tr[data-firing="sch_a:1"]')
