@@ -192,6 +192,8 @@ export interface QaTarget {
   /** The last discovery's failure, in the API's own sentence; null after a success. */
   discovery_error: string | null
   discovering: QaDiscovering | null
+  /** The routes the last settled run added, as `discovery_status` serves them on a one-origin target (§5). */
+  new_since_last_run: QaFoundScreen[]
   /** Its entries as served (`environments`), in order; empty for the one-origin shape. */
   environments: QaEnvironment[]
 }
@@ -388,6 +390,7 @@ export function normQaTarget(raw: unknown): QaTarget | null {
     discovered_workflow: str(t.discovered_workflow),
     discovery_error: str(t.discovery_error),
     discovering: normDiscovering(t.discovering),
+    new_since_last_run: normFound(t.new_since_last_run),
     environments: Array.isArray(t.environments) ? t.environments.flatMap((e) => normEnvironment(e) ?? []) : [],
   }
 }
@@ -417,7 +420,7 @@ export function legsOf(t: QaTarget): QaEnvironment[] {
       discovered_at: t.discovered_at,
       discovery_error: t.discovery_error,
       discovering: t.discovering,
-      new_since_last_run: [],
+      new_since_last_run: t.new_since_last_run,
     },
   ]
 }
