@@ -59,6 +59,10 @@
 .ur-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: stretch; }
 .ur-card { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .ur-card > .ur-cacts { margin-top: auto; }
+/* CHOSEN, NOT REGISTERED (REPOS-PAGE, config-e.html S3a): a half-done state
+   drawn in place, so its edge is dashed -- the console's mark for something
+   not there yet -- and the card's surface drops away. */
+.ur-card.is-chosen { border-style: dashed; border-color: var(--ctl-bd); background: transparent; }
 /* The freshness badge's one slot (visual QA run 6, work-a-009): the row
    under the name, from the left edge, on every card at every width. */
 .ur-cbadge { display: flex; flex-wrap: wrap; gap: var(--ctl-s2); align-items: center; justify-content: flex-start; min-width: 0; }
