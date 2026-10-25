@@ -145,6 +145,8 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
       to: 'capacity/accounts',
       kids: [
         { key: 'accounts', label: 'Subscription accounts', to: 'capacity/accounts' },
+        // ACCOUNT-HEALTH-PAGE (part of #2302): what went wrong on each account, after the list.
+        { key: 'account-health', label: 'Account health', to: 'capacity/account-health' },
         { key: 'quota', label: 'Provider quota', to: 'capacity/quota', admin: true },
       ],
     },

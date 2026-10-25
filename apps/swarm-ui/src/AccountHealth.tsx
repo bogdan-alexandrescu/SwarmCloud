@@ -1,0 +1,932 @@
+// CAPACITY › ACCOUNT HEALTH (ACCOUNT-HEALTH-PAGE, part of #2302).
+//
+// BGD asked on 2026-10-25 for "more details about rate limit hits, error rates,
+// error logs and other potential issues with the subscription accounts used and
+// their health overall", and picked frames from four mock-ups
+// (docs/web-ui/mockups/account-health-*.html, PR 2323):
+//
+//   F1  proposal B: four tiles, one per status word, a fifth that says whether
+//       the pool can take work and links to Accounts; then the accounts worst
+//       first with their 24 h counts by family and their newest event.
+//   F3  proposal B: the 7-day swimlane, a lane per account, a mark per event,
+//       limited stretches as bands, and the pool's events per hour on top.
+//   F4  proposal A: the honest states -- no events yet, the record not served
+//       (a dash and its reason, never a zero), an account that needs re-auth,
+//       and a read that failed.
+//   F5  proposal D at 390: the switch, the summary line, then the open
+//       incidents first, each with its fix, then the rest.
+//
+// F2, one account's health, is A's side-sheet section (ACCOUNT-HEALTH-SHEET):
+// every row here opens that account's sheet on Accounts.
+//
+// The arithmetic is in accountHealth.ts; this file draws it.
+
+import { useState, type KeyboardEvent, type ReactNode } from 'react'
+
+import {
+  FAMILIES,
+  FAMILY_OF,
+  HOUR_MS,
+  KIND_LABEL,
+  NOT_SERVED_WHY,
+  SPAN_HOURS,
+  STATUS_HINT,
+  STATUS_WORD,
+  counts24h,
+  familyCount,
+  healthServed,
+  hm,
+  incidentSummary,
+  incidentTitle,
+  laneMarks,
+  limitBands,
+  poolHours,
+  poolIncidents,
+  served7d,
+  span,
+  spanStart,
+  statusOf,
+  tally,
+  when,
+  whenS,
+  windowWord,
+  worstFirst,
+  day,
+  type AccountHealthRecord,
+  type HealthAccount,
+  type HealthFamily,
+  type HealthRead,
+  type HealthStatus,
+  type Incident,
+  type LaneMark,
+  type StatusCell,
+} from './accountHealth'
+import { verdictOf, type PoolAccount } from './accountsPool'
+import { loadAccountHealthBoard, type AccountHealthBoard } from './api'
+import { capacityPoll, paneHref, usePhoneTables } from './capacityPoll'
+import { Screen } from './Shell'
+import './styles/account-health.css'
+
+/**
+ * Every 60 seconds, paused while the tab is hidden (`Screen`), as proposal B
+ * decided: the page is kept open through an incident, and a minute is the
+ * grain its swimlane and its counts can show. `capacityPoll` keeps the phone
+ * at its own 60 s.
+ */
+export const ACCOUNT_HEALTH_POLL_MS = 60_000
+
+/** Where a row, a card or a fix opens the account: its side sheet on Accounts. */
+export function sheetHref(accountId: string): string {
+  return paneHref('capacity/accounts', { account: accountId })
+}
+
+export function AccountHealthScreen() {
+  const phone = usePhoneTables()
+  return (
+    <Screen
+      title="Account health"
+      help="account-health"
+      load={loadAccountHealthBoard}
+      pollMs={capacityPoll(ACCOUNT_HEALTH_POLL_MS)}
+    >
+      {(b) => <AccountHealthBody board={b} now={Date.now()} phone={phone} />}
+    </Screen>
+  )
+}
+
+interface Model {
+  accounts: HealthAccount[]
+  sorted: HealthAccount[]
+  records: Map<string, AccountHealthRecord>
+  cell: (a: HealthAccount) => StatusCell
+  health: HealthRead
+  served: boolean
+  now: number
+  scope: string | null
+  shortfall: number
+}
+
+function modelOf(board: AccountHealthBoard, now: number): Model {
+  const accounts = board.page.accounts as HealthAccount[]
+  const records = new Map<string, AccountHealthRecord>(
+    board.health.kind === 'ok' ? board.health.pool.accounts.map((r) => [r.account_id, r]) : [],
+  )
+  const served = healthServed(accounts, board.health)
+  return {
+    accounts,
+    // Not served: there is no health to sort by, so the order registered.
+    sorted: served ? worstFirst(accounts, records) : [...accounts].sort((x, y) => x.account_id.localeCompare(y.account_id)),
+    records,
+    cell: (a) => statusOf(a, records.get(a.account_id)),
+    health: board.health,
+    served,
+    now,
+    scope: board.page.tenant_id,
+    shortfall: board.page.unreadable_document_count ?? 0,
+  }
+}
+
+export function AccountHealthBody({ board, now, phone }: { board: AccountHealthBoard; now: number; phone: boolean }) {
+  const m = modelOf(board, now)
+  return phone ? <PhoneBody m={m} /> : <DesktopBody m={m} />
+}
+
+function DesktopBody({ m }: { m: Model }) {
+  return (
+    <div className="ah-page" data-layout="desktop">
+      <HealthBanner m={m} />
+      <ReauthCallouts m={m} />
+      <Tiles m={m} />
+      <AccountList m={m} />
+      <Timeline m={m} />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// The status word: an icon AND a word, never colour alone
+// ---------------------------------------------------------------------------
+
+function StatusIcon({ s }: { s: HealthStatus | null }) {
+  const common = { viewBox: '0 0 12 12', 'aria-hidden': true as const, className: 'ah-st-ic' }
+  if (s === 'healthy')
+    return (
+      <svg {...common}>
+        <path d="M2.5 6.3 5 8.6 9.6 3.6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    )
+  if (s === 'limited')
+    return (
+      <svg {...common}>
+        <circle cx="6" cy="6" r="4.6" fill="none" stroke="currentColor" strokeWidth="1.5" />
+        <path d="M6 3.4V6l1.8 1.2" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      </svg>
+    )
+  if (s === 'erroring')
+    return (
+      <svg {...common}>
+        <path d="M6 1.3 11 10.4H1Z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+        <path d="M6 4.6v2.6M6 8.7v.1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      </svg>
+    )
+  if (s === 'reauth_needed')
+    return (
+      <svg {...common}>
+        <circle cx="4" cy="6" r="2.4" fill="none" stroke="currentColor" strokeWidth="1.4" />
+        <path d="M6.4 6H11M9.4 6v2M11 6v1.6" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      </svg>
+    )
+  return (
+    <svg {...common}>
+      <path d="M3 6h6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function StatusChip({ s, extra }: { s: HealthStatus; extra?: string }) {
+  return (
+    <span className={`ah-st is-${s}`} data-status={s}>
+      <StatusIcon s={s} />
+      {STATUS_WORD[s]}
+      {extra ? ` · ${extra}` : ''}
+    </span>
+  )
+}
+
+/** A figure this deployment did not give: a dash, with the reason on it and beside it for a reader. */
+function Dash({ why }: { why: string }) {
+  return (
+    <span className="ah-dash" title={why} aria-label={`not known: ${why}`}>
+      —
+    </span>
+  )
+}
+
+function FamilyMark({ f }: { f: HealthFamily }) {
+  return (
+    <svg className={`ah-fm is-${f}`} viewBox="0 0 10 10" aria-hidden>
+      {f === 'err' ? <circle cx="5" cy="5" r="4.5" /> : f === 'lim' ? <path d="M5 0 10 5 5 10 0 5Z" /> : <rect x=".5" y=".5" width="9" height="9" rx="1.5" />}
+    </svg>
+  )
+}
+
+/** "5-hour until 09:10Z" for a limited account, from its record. */
+function untilWord(record: AccountHealthRecord | undefined, now: number): string {
+  if (record === undefined || record.limited_until === null) return ''
+  const until = Date.parse(record.limited_until)
+  if (!Number.isFinite(until)) return ''
+  const hit = record.events.find((e) => e.kind === 'rate_limit' && e.window !== null)
+  const w = hit === undefined ? '' : `${windowWord(hit.window)} `
+  return `${w}until ${when(until, now)}`
+}
+
+function nameOf(a: HealthAccount): string {
+  return a.display_name || a.label || a.account_id
+}
+
+// ---------------------------------------------------------------------------
+// F4: the deployment does not serve it, or the read failed
+// ---------------------------------------------------------------------------
+
+function HealthBanner({ m }: { m: Model }) {
+  if (!m.served) {
+    const reason = m.health.kind === 'ok' ? '' : m.health.reason
+    return (
+      <div className="ah-callout is-mute" role="status" data-state="not-served">
+        <b>
+          <span className="ah-dash">—</span> This deployment does not serve account health
+        </b>
+        <p>
+          <code>GET /v1/accounts</code> rows carry no <code>health_status</code>, and {reason || NOT_SERVED_WHY} Rate-limit
+          hits, errors and refusals are <b>unknown</b>, not zero. The pool’s capacity is still read, so the last tile stands.
+        </p>
+      </div>
+    )
+  }
+  if (m.health.kind === 'unreadable') {
+    return (
+      <div className="ah-callout is-bad" role="alert" data-state="unreadable">
+        <b>The health read failed</b>
+        <p>
+          {m.health.reason} The statuses and 24 h counts below come from the accounts list; the newest events and the
+          7-day lanes could not be read, and nothing here says the pool was quiet.
+        </p>
+      </div>
+    )
+  }
+  if (m.health.kind === 'not_served') {
+    return (
+      <div className="ah-callout is-mute" role="status" data-state="pool-not-served">
+        <b>
+          <span className="ah-dash">—</span> The newest events and the 7-day lanes are not served here
+        </b>
+        <p>{m.health.reason} The statuses and 24 h counts below come from the accounts list.</p>
+      </div>
+    )
+  }
+  return null
+}
+
+/** F4c: an account that needs re-auth leads with its fix. */
+function ReauthCallouts({ m }: { m: Model }) {
+  const dead = m.sorted.filter((a) => m.cell(a).status === 'reauth_needed')
+  if (dead.length === 0) return null
+  return (
+    <>
+      {dead.map((a) => {
+        const r = m.records.get(a.account_id)
+        const mark = r?.events.find((e) => e.kind === 'reauth' || e.kind === 'auth')
+        const since = mark === undefined ? '' : ` since ${when(Date.parse(mark.at), m.now)}`
+        return (
+          <div key={a.account_id} className="ah-callout is-reauth" data-state="reauth" data-account={a.account_id}>
+            <b>
+              {nameOf(a)} needs re-auth{since}
+            </b>
+            <p>
+              The provider refused its credential. The broker assigns this account nothing until someone signs in again; work
+              that would have used it waits for another account.
+            </p>
+            <div className="ah-acts">
+              <a className="c-btn is-sm is-primary" href={sheetHref(a.account_id)}>
+                Sign in again
+              </a>
+            </div>
+          </div>
+        )
+      })}
+    </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// F1: the tiles
+// ---------------------------------------------------------------------------
+
+const TILE_ORDER: readonly HealthStatus[] = ['healthy', 'limited', 'erroring', 'reauth_needed']
+
+function Tiles({ m }: { m: Model }) {
+  const t = tally(m.accounts, m.records)
+  const v = verdictOf(m.accounts as PoolAccount[], m.scope, m.shortfall)
+  return (
+    <div className="ah-tiles" role="list" aria-label="Accounts by health status">
+      {TILE_ORDER.map((s) => (
+        <div key={s} className={`ah-tile is-${s}`} role="listitem" data-tile={s}>
+          <div className="ah-tile-w">
+            <StatusChip s={s} />
+          </div>
+          <div className="ah-tile-n" data-count={m.served ? t[s] : ''}>
+            {m.served ? t[s] : <Dash why={NOT_SERVED_WHY} />}
+          </div>
+          <small>{m.served ? STATUS_HINT[s] : 'not served'}</small>
+        </div>
+      ))}
+      <div className="ah-tile is-verdict" role="listitem" data-tile="verdict">
+        <div className="ah-tile-w">Can the pool take work now?</div>
+        <div className="ah-tile-n">
+          {v.n === null ? <Dash why="The broker did not say which accounts can take a new agent." /> : v.n > 0 ? 'Yes' : 'No'}
+          {v.n !== null && (
+            <small>
+              {' '}
+              · {v.n} {v.n === 1 ? 'account' : 'accounts'}
+            </small>
+          )}
+        </div>
+        <small>
+          {v.n === null ? 'not said' : `${v.free} free ${v.free === 1 ? 'slot' : 'slots'}`} ·{' '}
+          <a className="ctl-link" href="#capacity/accounts">
+            Accounts ›
+          </a>
+        </small>
+      </div>
+      {m.served && t.unknown > 0 && (
+        <p className="ah-tiles-note" data-unknown={t.unknown}>
+          {t.unknown} {t.unknown === 1 ? 'account has' : 'accounts have'} no status on this read: the broker could not read
+          {t.unknown === 1 ? ' its record' : ' their records'}.
+        </p>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// F1: the accounts, worst first
+// ---------------------------------------------------------------------------
+
+function StatusCellView({ m, a }: { m: Model; a: HealthAccount }) {
+  const c = m.cell(a)
+  if (c.status === null) return <Dash why={c.why} />
+  const extra = c.status === 'limited' ? untilWord(m.records.get(a.account_id), m.now) : ''
+  return <StatusChip s={c.status} extra={extra} />
+}
+
+/** Why a record-derived cell is a dash on this read. */
+function recordWhy(m: Model): string {
+  if (!m.served) return NOT_SERVED_WHY
+  if (m.health.kind === 'not_served') return m.health.reason
+  if (m.health.kind === 'unreadable') return `The health read failed: ${m.health.reason}`
+  return "The broker sent no record for this account."
+}
+
+function LastEvent({ m, a }: { m: Model; a: HealthAccount }) {
+  const r = m.records.get(a.account_id)
+  if (r === undefined) return <Dash why={recordWhy(m)} />
+  const e = r.events[0]
+  if (e === undefined) return <span className="ah-mu">none in 7 days</span>
+  const at = Date.parse(e.at)
+  return (
+    <span className="ah-last">
+      <span className="ah-kd">
+        <FamilyMark f={FAMILY_OF[e.kind]} />
+        {KIND_LABEL[e.kind]}
+      </span>
+      <small>
+        {when(at, m.now)} · {span(m.now - at)} ago
+      </small>
+      <small className="ah-msg">{e.message ?? 'another workspace’s event: details withheld'}</small>
+    </span>
+  )
+}
+
+function FamCell({ m, a, f }: { m: Model; a: HealthAccount; f: HealthFamily }) {
+  const c = counts24h(a, m.records.get(a.account_id))
+  if (c === null) return <td className="ah-num"><Dash why={m.served ? 'The broker sent no 24 h counts for this account.' : NOT_SERVED_WHY} /></td>
+  const n = familyCount(c, f)
+  return <td className={`ah-num${n ? '' : ' ah-mu'}`} data-fam={f}>{n}</td>
+}
+
+function AccountList({ m }: { m: Model }) {
+  return (
+    <section className="ctl-card ah-list">
+      <div className="ctl-card-head">
+        <h2 className="ctl-card-title">Accounts</h2>
+        <span className="ctl-card-note">
+          {m.served ? 'worst first · counts are the last 24 h' : 'in the order registered: there is no health to sort by'}
+        </span>
+      </div>
+      {m.accounts.length === 0 ? (
+        <p className="ah-empty-line">
+          No accounts are registered for this workspace. <a className="ctl-link" href="#capacity/accounts">Add one on Accounts ›</a>
+        </p>
+      ) : (
+        <div className="ctl-table is-scroll">
+          <table aria-label="Accounts, worst first">
+            <thead>
+              <tr>
+                <th>Account</th>
+                <th>Status</th>
+                <th className="ah-num">Limits</th>
+                <th className="ah-num">Provider errors</th>
+                <th className="ah-num">Credential</th>
+                <th>Last event</th>
+                <th aria-label="Open" />
+              </tr>
+            </thead>
+            <tbody>
+              {m.sorted.map((a) => {
+                const s = m.cell(a).status
+                return (
+                  <tr key={a.account_id} data-account={a.account_id} data-status={s ?? 'unknown'}>
+                    <td>
+                      <a className="ah-nm" href={sheetHref(a.account_id)}>
+                        {nameOf(a)}
+                      </a>
+                      <small className="ah-id">{a.account_id}</small>
+                    </td>
+                    <td>
+                      <StatusCellView m={m} a={a} />
+                    </td>
+                    <FamCell m={m} a={a} f="lim" />
+                    <FamCell m={m} a={a} f="err" />
+                    <FamCell m={m} a={a} f="cred" />
+                    <td>
+                      <LastEvent m={m} a={a} />
+                    </td>
+                    <td className="ah-open">
+                      {s === 'reauth_needed' ? (
+                        <a className="ctl-link" href={sheetHref(a.account_id)}>
+                          Sign in again ›
+                        </a>
+                      ) : (
+                        <a className="ctl-link" href={sheetHref(a.account_id)}>
+                          Open ›
+                        </a>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {m.accounts.length > 0 && (
+        <p className="ah-foot">
+          {m.accounts.length} {m.accounts.length === 1 ? 'row' : 'rows'}. Limits are rate-limit hits, exhausted reports and
+          refusals at assignment; provider errors are 529s, 5xx and network failures; credential is 401s, failed refreshes
+          and re-auth marks. A row opens the account on Accounts.
+        </p>
+      )}
+    </section>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// F3: the swimlane
+// ---------------------------------------------------------------------------
+
+const W = 1040
+const GUTTER = 130
+const STRIP_TOP = 22
+const STRIP_H = 72
+const LANE_H = 46
+const LANES_TOP = 112
+
+function MarkShape({ f, x, y, r }: { f: HealthFamily; x: number; y: number; r: number }) {
+  if (f === 'err') return <circle className="ah-mk is-err" cx={x} cy={y} r={r} />
+  if (f === 'lim')
+    return <path className="ah-mk is-lim" d={`M${x} ${y - r - 1} ${x + r + 1} ${y} ${x} ${y + r + 1} ${x - r - 1} ${y}Z`} />
+  return <rect className="ah-mk is-cred" x={x - r} y={y - r} width={2 * r} height={2 * r} rx={1.5} />
+}
+
+function markSay(mk: LaneMark, name: string, now: number): string {
+  const e = mk.event
+  const parts = [`${name}`, whenS(mk.at, now), KIND_LABEL[e.kind]]
+  if (e.window) parts.push(`${windowWord(e.window)} window`)
+  if (e.tenant_id) parts.push(`tenant ${e.tenant_id}`)
+  if (e.message) parts.push(e.message)
+  return parts.join(' · ')
+}
+
+function Timeline({ m }: { m: Model }) {
+  const [picked, setPicked] = useState<LaneMark | null>(null)
+  const head = (
+    <div className="ctl-card-head">
+      <h2 className="ctl-card-title">Hits and errors over time</h2>
+      <span className="ctl-card-note" data-timeline-note="">
+        {m.health.kind === 'ok' ? null : '7 days'}
+      </span>
+    </div>
+  )
+  if (m.health.kind !== 'ok') {
+    return (
+      <section className="ctl-card ah-timeline" data-state={m.health.kind}>
+        {head}
+        <p className="ah-empty-line">
+          <Dash why={recordWhy(m)} /> {recordWhy(m)} The lanes are not drawn: an empty chart would say nothing went wrong.
+        </p>
+      </section>
+    )
+  }
+  const pool = m.health.pool
+  const start = spanStart(pool, m.now)
+  const rows = m.sorted
+    .map((a) => ({ a, r: m.records.get(a.account_id) }))
+    .filter((x): x is { a: HealthAccount; r: AccountHealthRecord } => x.r !== undefined)
+  const marks = rows.flatMap((x) => laneMarks(x.r, start, m.now))
+  const busy = new Set(marks.map((mk) => mk.account_id)).size
+  const counted = served7d(pool)
+  const older = Math.max(0, counted - marks.length)
+  if (marks.length === 0 && counted === 0) {
+    return (
+      <section className="ctl-card ah-timeline" data-state="no-events">
+        {head}
+        <div className="ah-quiet" data-empty="no-events">
+          <p className="ah-quiet-h">
+            <StatusIcon s="healthy" />
+            No events in 7 days
+          </p>
+          <p>
+            No rate-limit hits, refusals, provider errors or credential trouble on any account since {day(start)}{' '}
+            {hm(start)}. The records were read at {hm(m.now)} and are empty: a measured nothing, so there is nothing to
+            draw.
+          </p>
+        </div>
+      </section>
+    )
+  }
+  const bw = (W - GUTTER) / SPAN_HOURS
+  const xOf = (t: number) => GUTTER + ((t - start) / HOUR_MS) * bw
+  const hours = poolHours(pool, start)
+  const mx = Math.max(1, ...hours.map((h) => h.total))
+  const tallest = hours.reduce((best, h) => (h.total > best.total ? h : best), hours[0]!)
+  const H = LANES_TOP + rows.length * LANE_H + 24
+  const nowX = Math.min(W, xOf(m.now))
+  const days: number[] = []
+  for (let t = Math.ceil(start / (24 * HOUR_MS)) * 24 * HOUR_MS; t < start + SPAN_HOURS * HOUR_MS; t += 24 * HOUR_MS) days.push(t)
+  const nameById = new Map(rows.map((x) => [x.a.account_id, nameOf(x.a)]))
+  const pick = (mk: LaneMark) => setPicked((p) => (p !== null && p.event === mk.event ? null : mk))
+  const onKey = (mk: LaneMark) => (ev: KeyboardEvent) => {
+    if (ev.key === 'Enter' || ev.key === ' ') {
+      ev.preventDefault()
+      pick(mk)
+    }
+  }
+  return (
+    <section className="ctl-card ah-timeline" data-state="ok">
+      <div className="ctl-card-head">
+        <h2 className="ctl-card-title">Hits and errors over time</h2>
+        <span className="ctl-card-note" data-timeline-note="" data-marks={marks.length}>
+          {marks.length} {marks.length === 1 ? 'event' : 'events'} on {busy} {busy === 1 ? 'account' : 'accounts'} in 7 days
+        </span>
+      </div>
+      <div className="ah-chart-scroll">
+        <svg
+          className="ah-swim"
+          viewBox={`0 0 ${W} ${H}`}
+          width={W}
+          height={H}
+          role="group"
+          aria-label="Rate-limit hits and errors per account over 7 days"
+        >
+          <text className="ah-ax" x={nowX} y={12} textAnchor="end">
+            now {hm(m.now)}
+          </text>
+          <text className="ah-ax is-nm" x={0} y={34}>
+            Whole pool, per hour
+          </text>
+          <text className="ah-ax" x={0} y={50}>
+            tallest: {tallest.total} at {hm(tallest.at)}
+          </text>
+          {hours.map((h, i) => {
+            if (h.total === 0) return null
+            const x = GUTTER + i * bw + 0.3
+            const w = Math.max(1, bw - 0.6)
+            let y = STRIP_TOP + STRIP_H
+            return (
+              <g key={`h${i}`} data-pool-hour={h.total}>
+                <title>
+                  {`${day(h.at)} ${hm(h.at)}: ${h.lim} limits · ${h.err} provider errors · ${h.cred} credential`}
+                </title>
+                {(['err', 'lim', 'cred'] as const).map((f) => {
+                  if (h[f] === 0) return null
+                  const hh = Math.max(1.5, (h[f] / mx) * STRIP_H)
+                  y -= hh
+                  return <rect key={f} className={`ah-bar is-${f}`} x={x} y={y} width={w} height={hh} />
+                })}
+              </g>
+            )
+          })}
+          <line className="ah-grid" x1={GUTTER} x2={W} y1={STRIP_TOP + STRIP_H} y2={STRIP_TOP + STRIP_H} />
+          {days.map((t) => {
+            const x = xOf(t)
+            const label = day(t)
+            const edge = x + 3 + label.length * 7 > W
+            return (
+              <g key={t}>
+                <line className="ah-grid" x1={x} x2={x} y1={STRIP_TOP} y2={H - 18} />
+                <text className="ah-ax" x={edge ? W : x + 3} y={H - 4} textAnchor={edge ? 'end' : 'start'}>
+                  {label}
+                </text>
+              </g>
+            )
+          })}
+          {rows.map(({ a, r }, i) => {
+            const y = LANES_TOP + i * LANE_H
+            return (
+              <g key={a.account_id} data-lane={a.account_id}>
+                <rect className="ah-lane" x={GUTTER} y={y + 3} width={W - GUTTER} height={LANE_H - 6} rx={4} />
+                <text className="ah-ax is-nm" x={0} y={y + LANE_H / 2 + 4}>
+                  {nameOf(a)}
+                </text>
+                {limitBands(r).map((b) => {
+                  const x0 = Math.max(GUTTER, xOf(b.from))
+                  const x1 = Math.min(W, xOf(b.to))
+                  return (
+                    <g key={`b${b.from}`} data-band={b.window ?? ''}>
+                      <title>{`${nameOf(a)}: ${windowWord(b.window) || 'a'} window · hit ${when(b.from, m.now)} · resets ${when(b.to, m.now)} · ${b.hits} ${b.hits === 1 ? 'hit' : 'hits'}`}</title>
+                      <rect className="ah-band" x={x0} y={y + 3} width={Math.max(3, x1 - x0)} height={LANE_H - 6} />
+                      <line className="ah-band-l" x1={x0} x2={x0} y1={y + 3} y2={y + LANE_H - 3} />
+                      {x1 - x0 > 44 && (
+                        <text className="ah-ax is-band" x={x0 + 4} y={y + 15}>
+                          {windowWord(b.window)}
+                        </text>
+                      )}
+                    </g>
+                  )
+                })}
+                {laneMarks(r, start, m.now).map((mk, j) => {
+                  const x = xOf(mk.at)
+                  const yy = y + LANE_H / 2 + 5 + (mk.family === 'err' ? -8 : mk.family === 'lim' ? 0 : 8)
+                  const say = markSay(mk, nameOf(a), m.now)
+                  const on = picked !== null && picked.event === mk.event
+                  return (
+                    <g
+                      key={`m${j}`}
+                      className={`ah-hit${on ? ' is-on' : ''}`}
+                      data-mark={mk.family}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={say}
+                      aria-pressed={on}
+                      onClick={() => pick(mk)}
+                      onKeyDown={onKey(mk)}
+                    >
+                      <title>{say}</title>
+                      <MarkShape f={mk.family} x={x} y={yy} r={4.5} />
+                    </g>
+                  )
+                })}
+              </g>
+            )
+          })}
+          <line className="ah-now" x1={nowX} x2={nowX} y1={16} y2={H - 18} />
+        </svg>
+      </div>
+      {picked !== null && <PickedEvent mk={picked} name={nameById.get(picked.account_id) ?? picked.account_id} now={m.now} />}
+      <Legend />
+      <p className="ah-foot">
+        One lane per account. A mark is one event: errors sit high, limits on the line, credential low. A band runs from a
+        rate-limit hit to its window’s reset. Hover a mark for its message, or press it for the task.
+        {older > 0 && (
+          <>
+            {' '}
+            <span data-older={older}>
+              {older} older {older === 1 ? 'event counts' : 'events count'} in the strip and the 7-day totals only: each
+              account’s record keeps its last {pool.events_max ?? 50} messages.
+            </span>
+          </>
+        )}
+      </p>
+    </section>
+  )
+}
+
+function PickedEvent({ mk, name, now }: { mk: LaneMark; name: string; now: number }) {
+  const e = mk.event
+  return (
+    <div className="ah-picked" role="status" data-picked="">
+      <b>
+        {name} · {whenS(mk.at, now)}
+      </b>
+      <span className="ah-kd">
+        <FamilyMark f={mk.family} />
+        {KIND_LABEL[e.kind]}
+        {e.window ? ` · ${windowWord(e.window)} window` : ''}
+        {e.reset_at ? ` · resets ${when(Date.parse(e.reset_at), now)}` : ''}
+      </span>
+      <span>{e.tenant_id ? `tenant ${e.tenant_id}` : 'another workspace'}</span>
+      {e.task_id ? (
+        <a className="ctl-link" href={`#work/task/${encodeURIComponent(e.task_id)}`}>
+          {e.task_id}
+        </a>
+      ) : (
+        <span className="ah-mu">no task shown</span>
+      )}
+      <span className="ah-msg">{e.message ?? 'details withheld: another workspace’s event'}</span>
+    </div>
+  )
+}
+
+function Legend() {
+  return (
+    <div className="ah-legend">
+      {FAMILIES.map((f) => (
+        <span key={f.key}>
+          <FamilyMark f={f.key} />
+          {f.label}
+        </span>
+      ))}
+      <span>
+        <i className="ah-band-k" />
+        limited: from the hit to the window’s reset
+      </span>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// F5: the phone (proposal D, P1)
+// ---------------------------------------------------------------------------
+
+function PhoneBody({ m }: { m: Model }) {
+  const [view, setView] = useState<'incidents' | 'accounts'>('incidents')
+  const statusFor = (id: string) => {
+    const a = m.accounts.find((x) => x.account_id === id)
+    return a === undefined ? null : m.cell(a).status
+  }
+  const inc = m.health.kind === 'ok' ? poolIncidents(m.health.pool, statusFor, m.now) : null
+  return (
+    <div className="ah-page" data-layout="phone">
+      <div className="ah-switch" role="group" aria-label="View">
+        <button type="button" aria-pressed={view === 'incidents'} onClick={() => setView('incidents')}>
+          Incidents {inc === null ? <span className="ah-dash">—</span> : `· ${inc.open.length} open`}
+        </button>
+        <button type="button" aria-pressed={view === 'accounts'} onClick={() => setView('accounts')}>
+          Accounts
+        </button>
+      </div>
+      <HealthBanner m={m} />
+      {view === 'incidents' ? (
+        <>
+          <SummaryLine m={m} open={inc?.open ?? null} />
+          {inc === null ? (
+            <p className="ah-empty-line" data-state="no-incidents">
+              <Dash why={recordWhy(m)} /> Incidents cannot be drawn: {recordWhy(m)} An empty list would claim nothing went
+              wrong.
+            </p>
+          ) : (
+            <>
+              <section className="ah-open-list" aria-label="Open incidents" data-section="open">
+                <h2 className="ah-sec-h">Open now · {inc.open.length}</h2>
+                {inc.open.length === 0 && <p className="ah-mu">Nothing is open on any account.</p>}
+                {inc.open.map((x) => (
+                  <IncidentCard key={`${x.account_id}-${x.family}-${x.from}`} x={x} now={m.now} />
+                ))}
+              </section>
+              <section className="ah-closed-list" aria-label="Closed incidents" data-section="closed">
+                <h2 className="ah-sec-h">Closed, 7 days · {inc.closed.length}</h2>
+                {inc.closed.length === 0 ? (
+                  <p className="ah-mu">No closed incidents in the records.</p>
+                ) : (
+                  <ul>
+                    {inc.closed.map((x) => (
+                      <li key={`${x.account_id}-${x.family}-${x.from}`} data-incident={x.family}>
+                        <span className="ah-kd">
+                          <FamilyMark f={x.family} />
+                          {incidentTitle(x)}
+                        </span>
+                        <small>
+                          {when(x.from, m.now)} · {x.events.length} {x.events.length === 1 ? 'event' : 'events'}
+                        </small>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            </>
+          )}
+        </>
+      ) : (
+        <>
+          <ReauthCallouts m={m} />
+          <Tiles m={m} />
+          <AccountCards m={m} />
+          <Timeline m={m} />
+        </>
+      )}
+    </div>
+  )
+}
+
+function SummaryLine({ m, open }: { m: Model; open: Incident[] | null }) {
+  const t = tally(m.accounts, m.records)
+  const v = verdictOf(m.accounts as PoolAccount[], m.scope, m.shortfall)
+  const on = open === null ? null : new Set(open.map((x) => x.account_id)).size
+  return (
+    <div className="ah-sumline" data-summary="">
+      {open !== null && (
+        <span>
+          <b>{open.length} open</b> on {on} {on === 1 ? 'account' : 'accounts'}
+        </span>
+      )}
+      {m.served &&
+        TILE_ORDER.map((s) => (
+          <span key={s} data-sum={s}>
+            <StatusChip s={s} /> {t[s]}
+          </span>
+        ))}
+      <span>
+        {v.n === null ? (
+          'Whether the pool can take work was not said'
+        ) : (
+          <>
+            The pool <b>{v.n > 0 ? 'can take work' : 'cannot take work'}</b>: {v.n} {v.n === 1 ? 'account' : 'accounts'},{' '}
+            {v.free} free {v.free === 1 ? 'slot' : 'slots'}
+          </>
+        )}{' '}
+        <a className="ctl-link" href="#capacity/accounts">
+          (Accounts)
+        </a>
+      </span>
+    </div>
+  )
+}
+
+function IncidentCard({ x, now }: { x: Incident; now: number }) {
+  const last = x.events[x.events.length - 1]!
+  const spanText =
+    x.family === 'lim'
+      ? x.open && x.to !== null
+        ? `since ${when(x.from, now)} · clears ${when(x.to, now)} (in ${span(x.to - now)})`
+        : x.to !== null
+          ? `${when(x.from, now)} – ${when(x.to, now)}`
+          : when(x.from, now)
+      : x.open
+        ? `since ${when(x.from, now)} · last ${span(now - x.last)} ago`
+        : x.events.length > 1
+          ? `${when(x.from, now)} – ${hm(x.last)}`
+          : when(x.from, now)
+  return (
+    <article className={`ah-inc is-${x.family}${x.open ? ' is-open' : ''}`} data-incident={x.family} data-open={x.open}>
+      <div className="ah-inc-h">
+        <FamilyMark f={x.family} />
+        <h3>{incidentTitle(x)}</h3>
+        <span className={`ah-chip${x.open ? ' is-open' : ''}`}>{x.open ? 'open' : 'closed'}</span>
+      </div>
+      <p className="ah-inc-when">{spanText}</p>
+      <p className="ah-inc-sum">{incidentSummary(x)}</p>
+      <p className="ah-msg">{last.message ?? 'details withheld: another workspace’s event'}</p>
+      <div className="ah-acts">
+        {x.family === 'cred' && x.open && (
+          <a className="c-btn is-sm is-primary" href={sheetHref(x.account_id)} data-fix="signin">
+            Sign in again
+          </a>
+        )}
+        {x.family === 'lim' && x.open && x.to !== null && (
+          <span className="ah-fix" data-fix="clears">
+            Clears {when(x.to, now)}
+          </span>
+        )}
+        <a className="c-btn is-sm" href={sheetHref(x.account_id)}>
+          {x.label} ›
+        </a>
+      </div>
+    </article>
+  )
+}
+
+function AccountCards({ m }: { m: Model }): ReactNode {
+  return (
+    <section className="ah-cards" aria-label="Accounts, worst first">
+      {m.sorted.map((a) => {
+        const r = m.records.get(a.account_id)
+        const c = counts24h(a, r)
+        const cell = m.cell(a)
+        const e = r?.events[0]
+        return (
+          <a key={a.account_id} className="ah-acard" href={sheetHref(a.account_id)} data-account={a.account_id}>
+            <span className="ah-acard-top">
+              <span className="ah-nm">{nameOf(a)}</span>
+              {cell.status === null ? <Dash why={cell.why} /> : <StatusChip s={cell.status} />}
+            </span>
+            {cell.status === 'limited' && untilWord(r, m.now) && (
+              <span className="ah-meta">
+                <b>{untilWord(r, m.now)}</b>
+              </span>
+            )}
+            <span className="ah-meta">
+              {c === null ? (
+                <>
+                  24 h: <Dash why={recordWhy(m)} />
+                </>
+              ) : (
+                `24 h: ${familyCount(c, 'lim')} limits · ${familyCount(c, 'err')} provider errors · ${familyCount(c, 'cred')} credential`
+              )}
+            </span>
+            <span className="ah-meta">
+              {r === undefined ? (
+                <>
+                  last: <Dash why={recordWhy(m)} />
+                </>
+              ) : e === undefined ? (
+                'no events in 7 days'
+              ) : (
+                `last: ${KIND_LABEL[e.kind].toLowerCase()}, ${span(m.now - Date.parse(e.at))} ago`
+              )}
+            </span>
+          </a>
+        )
+      })}
+    </section>
+  )
+}

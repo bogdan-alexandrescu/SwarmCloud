@@ -178,6 +178,7 @@ export const FIXED: Readonly<Record<string, string>> = {
   'capacity/catalogue': '/capacity/runtimes',
   'capacity/holders': '/capacity/holders',
   'capacity/accounts': '/capacity/accounts',
+  'capacity/account-health': '/capacity/account-health',
   'capacity/quota': '/capacity/accounts/quota',
   // NAV-FOOT (#1672): API reads, Capacity's last page. It was `/api-reads`
   // at the spine's foot; that path and `/reference` still land here.
