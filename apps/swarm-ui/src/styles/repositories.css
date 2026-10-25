@@ -67,9 +67,13 @@
    on Config › Repositories only (`has-registered`). The same tracks as
    onboarding.css' `.ac-grant`, one more before the actions, and only where
    that grid is columns: under 1080px its rows are records, and the cell
-   carries its own label as every other cell does. */
+   carries its own label as every other cell does. The column is paid for
+   from the Access track, cut to the Read | Write segment it holds (~106px):
+   taken from the name's share alone it broke "example-org/example-web"
+   mid-name at 1440 (review shot light-desktop-01). The actions keep their
+   216px: at 200 Remove wrapped under Verify and Push test (light-desktop-02). */
 @media (min-width: 1080px) {
-  .ac-reach.has-registered .ac-grid-h, .ac-reach.has-registered .ac-grant { grid-template-columns: minmax(0, 1fr) 132px repeat(4, 84px) 112px 216px; }
+  .ac-reach.has-registered .ac-grid-h, .ac-reach.has-registered .ac-grant { grid-template-columns: minmax(0, 1fr) 112px repeat(4, 84px) 104px 216px; }
 }
 /* The freshness badge's one slot (visual QA run 6, work-a-009): the row
    under the name, from the left edge, on every card at every width. */

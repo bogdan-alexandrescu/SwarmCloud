@@ -577,13 +577,17 @@ function RepositoryList({
  */
 function RemoveWords({ r, counts }: { r: RepoRecord; counts: RepoCounts | null }) {
   const n = counts?.secrets ?? null
+  // Zero is said as zero (review shot light-desktop-03): "no grant is
+  // disabled, and registering it again turns none back on" read as a riddle.
   const secrets =
-    n === null ? 'Every grant on its secrets is disabled with it' : n === 0 ? 'It has no secrets, so no grant is disabled' : `Every grant on its ${n === 1 ? 'secret' : `${n} secrets`} is disabled with it`
+    n === 0
+      ? 'It has no secrets, so no secret grant is disabled with it.'
+      : `Every grant on its ${n === null ? 'secrets' : n === 1 ? 'secret' : `${n} secrets`} is disabled with it, and registering it again turns none back on.`
   return (
     <>
       <p>
         {repoName(r)} leaves this workspace's registry: it is no longer indexed, and agents no longer start from its map.{' '}
-        {secrets}, and registering it again turns none back on.
+        {secrets}
       </p>
       <p className="ur-small">
         Your own access to it is not changed: if it is still chosen, it stays in Repositories SwarmCloud may reach as you,
@@ -613,15 +617,29 @@ function toCard(e: MouseEvent, repoId: string) {
   document.getElementById(cardId(repoId))?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
 }
 
-/** A count as a card says it: none for zero, a dash with its reason when unread. */
+/**
+ * A count as a card says it: none for zero, a dash with its reason when
+ * unread. A linked count is linked whole ("QA targets: 1"): a link on the
+ * digit alone was a one-character target on a phone (review shot
+ * dark-phone390-02).
+ */
 function CountLine({ row, label, n, why, to, go }: { row: string; label: string; n: number | null | undefined; why: string; to?: string; go: (to: string) => void }) {
   const words = n === null || n === undefined ? null : n === 0 ? 'none' : String(n)
   return (
     <div className="ur-cmeta" data-row={row}>
-      <span>
-        {label}:{' '}
-        {words === null ? <Dash why={why} /> : to !== undefined ? <UrLink to={to} go={go}>{words}</UrLink> : <b>{words}</b>}
-      </span>
+      {words === null ? (
+        <span>
+          {label}: <Dash why={why} />
+        </span>
+      ) : to !== undefined ? (
+        <UrLink to={to} go={go}>
+          {label}: {words}
+        </UrLink>
+      ) : (
+        <span>
+          {label}: <b>{words}</b>
+        </span>
+      )}
     </div>
   )
 }
