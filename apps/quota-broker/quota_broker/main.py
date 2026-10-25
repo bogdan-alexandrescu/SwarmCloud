@@ -91,7 +91,9 @@ from .accountstore import COLLECTION as ACCOUNTS_COLLECTION
 from .accountstore import MALFORMED_ERRORS, AccountStore, MalformedAccountError
 from .accountstore import (
     HEALTH_ASSIGN_REFUSED,
+    HEALTH_EVENTS_MAX,
     HEALTH_EXHAUSTED,
+    HEALTH_POOL_ACCOUNTS_MAX,
     HEALTH_RATE_LIMIT,
     PROVIDER_ERROR_KINDS,
     health_counts,
@@ -4598,6 +4600,59 @@ def create_app(
             if isinstance(lend_to, (list, tuple))
             else [],
             "holds": [_hold_to_api(h) for h in _live_holds(data, now)],
+            "observed_at": now.isoformat(),
+        }
+
+    @app.get("/v1/accounts/health")
+    def accounts_health(
+        request: Request,
+        tenant_id: str | None = None,
+        bearer: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Every account's health record in ONE answer (ACCOUNT-HEALTH-PAGE,
+        #2302): the record `GET /v1/accounts/{id}/health` serves, for each
+        account `tenant_id` may run on -- owned and lent, `may_serve`, the
+        listing's own rule -- or for every account when the platform names no
+        tenant. Each record also carries `owner_tenant`, `lend_to` and `label`,
+        which is what swarm-api decides each account's viewer from.
+
+        One read for the page, not one per account: Capacity › Account health
+        draws every account's lane over 7 days and polls, and a pool of 30
+        would be 30 reads a poll. BOUNDED like the per-account read: each
+        record holds at most `HEALTH_EVENTS_MAX` events and 168 hourly entries,
+        and at most `HEALTH_POOL_ACCOUNTS_MAX` accounts are served
+        (`truncated` says when more were left out).
+
+        PLATFORM-ONLY, for the per-account read's reason: the events name every
+        tenant and task that met an account.
+        """
+        _platform_only(
+            request,
+            bearer,
+            "only the platform may read accounts' health; it names other "
+            "tenants' work",
+        )
+        store = _accounts(request)
+        listing = store.list_reporting()
+        scope = tenant_id or None
+        accounts = [a for a in listing.accounts if scope is None or a.may_serve(scope)]
+        accounts.sort(key=lambda a: a.account_id)
+        served = accounts[:HEALTH_POOL_ACCOUNTS_MAX]
+        records = store.health_many(a.account_id for a in served)
+        now = datetime.now(timezone.utc)
+        return {
+            "tenant_id": scope,
+            "accounts": [
+                {
+                    **health_to_api(a.account_id, a, records.get(a.account_id), now),
+                    "owner_tenant": a.owner_tenant,
+                    "lend_to": list(a.lend_to),
+                    "label": a.label,
+                }
+                for a in served
+            ],
+            "events_max": HEALTH_EVENTS_MAX,
+            "truncated": len(accounts) > len(served),
             "observed_at": now.isoformat(),
         }
 

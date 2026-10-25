@@ -30,8 +30,9 @@
  * to Overview once both reads say so (`onAdminRedirect`), and since
  * ADMIN-REDIRECT (part of #2157, BGD 2026-10-24: "Redirect, in a later lane")
  * a workspace admin who is not a platform admin, on a platform Admin page, goes
- * to Workspaces you admin, the one Admin page they are shown. A platform admin
- * is never redirected. The API's own refusal of every admin route is unchanged.
+ * to Workspaces you admin. Since ADMIN-PEOPLE-ROLES (part of #2157) People and
+ * roles is theirs too, scoped by the API to the workspaces they administer, so
+ * /admin/people is no longer sent away. A platform admin is never redirected. The API's own refusal of every admin route is unchanged.
  *
  * Production draws a red pill and a 3px red bar across the top; the pill shows
  * only what was measured (`classifyEnvironment`), never a hardcoded word.
@@ -144,6 +145,8 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
       to: 'capacity/accounts',
       kids: [
         { key: 'accounts', label: 'Subscription accounts', to: 'capacity/accounts' },
+        // ACCOUNT-HEALTH-PAGE (part of #2302): what went wrong on each account, after the list.
+        { key: 'account-health', label: 'Account health', to: 'capacity/account-health' },
         { key: 'quota', label: 'Provider quota', to: 'capacity/quota', admin: true },
       ],
     },
@@ -173,8 +176,9 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     { key: 'counts', label: 'Platform counts', icon: 'counts', to: 'admin/counts' },
     // #847 W8 (docs/workspaces.md §6.4): a SECTIONS tab and a route, and
     // missing here, so an admin reached it only by typing /admin/people --
-    // the Runs defect visual QA Q7 caught, again.
-    { key: 'people', label: 'People', icon: 'people', to: 'admin/people' },
+    // the Runs defect visual QA Q7 caught, again. SECTIONS' label, People
+    // and roles, since ADMIN-PEOPLE-ROLES (part of #2157).
+    { key: 'people', label: 'People and roles', icon: 'people', to: 'admin/people' },
     // NAV-ADMIN-ROLE (part of #1633): the group workspaces the person
     // administers, last. The only Admin page a workspace admin who is not a
     // platform admin is shown (`adminPagesFor`).
@@ -209,13 +213,31 @@ export function adminWorkspaces(choices: readonly TenantChoice[]): TenantChoice[
 }
 
 /**
- * The Admin pages a person is shown: all five for a platform admin, only
- * Workspaces you admin for a workspace admin who is not one, and none for
- * anyone else -- which is how the spine knows to draw no Admin item.
+ * The Admin pages a person is shown: all of them for a platform admin, People
+ * and roles and Workspaces you admin for a workspace admin who is not one, and
+ * none for anyone else -- which is how the spine knows to draw no Admin item.
+ *
+ * THIS IS ADMIN-REDIRECT'S LIST: an Admin page that is not here sends a
+ * workspace admin to Workspaces you admin. People and roles joined it with
+ * ADMIN-PEOPLE-ROLES (part of #2157, BGD "Both, by scope"): its read
+ * (`GET /v1/admin/people`) answers a workspace admin with only the workspaces
+ * they administer, so /admin/people is a page of theirs, not one to send them
+ * away from.
  */
+export const WORKSPACE_ADMIN_PAGE_KEYS: ReadonlySet<string> = new Set(['people', WORKSPACES_YOU_ADMIN_TAB])
+
 export function adminPagesFor(platformAdmin: boolean, workspaceAdmin: boolean): readonly PanelPage[] {
   if (platformAdmin) return PANEL_PAGES.admin
-  return workspaceAdmin ? PANEL_PAGES.admin.filter((p) => p.key === WORKSPACES_YOU_ADMIN_TAB) : []
+  return workspaceAdmin ? PANEL_PAGES.admin.filter((p) => WORKSPACE_ADMIN_PAGE_KEYS.has(p.key)) : []
+}
+
+/**
+ * Where Admin lands: a platform admin's first page, and a workspace admin's
+ * Workspaces you admin -- the page ADMIN-REDIRECT sends them to, and the
+ * spine's Admin item opens, as before People and roles was theirs too.
+ */
+export function adminLanding(platformAdmin: boolean, pages: readonly PanelPage[]): PanelPage | null {
+  return (platformAdmin ? undefined : pages.find((p) => p.key === WORKSPACES_YOU_ADMIN_TAB)) ?? pages[0] ?? null
 }
 
 /**
@@ -1379,7 +1401,8 @@ export function SkyShell({
   const adminPages = adminPagesFor(admin, adminWorkspaces(dataOf(mine) ?? []).length > 0)
   // Their names, for the note a workspace admin's Admin panel carries (S1c).
   const adminOf = useMemo(() => nameTenants(adminWorkspaces(dataOf(mine) ?? []), null).map((w) => w.display_name), [mine])
-  const spineItems = SPINE.flatMap((s) => (s.key !== 'admin' ? [s] : adminPages.length === 0 ? [] : [{ ...s, to: adminPages[0]!.to }]))
+  const landing = adminLanding(admin, adminPages)
+  const spineItems = SPINE.flatMap((s) => (s.key !== 'admin' ? [s] : landing === null ? [] : [{ ...s, to: landing.to }]))
   // ADMIN'S ADDRESSES SEND A NON-ADMIN TO OVERVIEW (CONFIG-NAV), and only
   // once both reads have answered: an unread session is not "not an admin".
   const adminDecided = who !== null && (mine.status === 'ok' || mine.status === 'stale' || mine.status === 'empty')
@@ -1388,10 +1411,10 @@ export function SkyShell({
   // panel has: an address that is no page at all keeps its 404.
   const adminRedirect = section !== 'admin' || !adminDecided
     ? null
-    : adminPages.length === 0
+    : landing === null
       ? ''
       : !missing && PANEL_PAGES.admin.some((p) => p.to === `admin/${tab}`) && !adminPages.some((p) => p.to === `admin/${tab}`)
-        ? adminPages[0]!.to
+        ? landing.to
         : null
   useEffect(() => {
     if (adminRedirect !== null) onAdminRedirect?.(adminRedirect)

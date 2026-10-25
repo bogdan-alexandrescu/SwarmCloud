@@ -7,11 +7,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import type { Result } from '../fetch'
-import type { Me, Stats } from '../types'
+import type { Me, Stats, Tenant } from '../types'
 
 const loadStats = vi.hoisted(() => vi.fn<() => Promise<Result<Stats>>>())
 const loadMe = vi.hoisted(() => vi.fn<() => Promise<Result<Me>>>())
-vi.mock('../api', () => ({ loadStats, loadMe }))
+// The workspace roster, read once on mount to price the Over time read
+// (COUNTS-PAGE, BGD 2026-10-24: "Roster on mount").
+const loadTenants = vi.hoisted(() => vi.fn<() => Promise<Result<{ tenants: Tenant[] }>>>())
+vi.mock('../api', () => ({ loadStats, loadMe, loadTenants }))
 
 const { PlatformCountsScreen } = await import('../PlatformCounts')
 
@@ -37,6 +40,12 @@ beforeEach(() => {
   loadStats.mockReset()
   loadMe.mockReset()
   loadMe.mockResolvedValue(session(true))
+  loadTenants.mockReset()
+  loadTenants.mockResolvedValue({
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: { tenants: [{ tenant_id: 'eng' }, { tenant_id: 'smoke' }, { tenant_id: 'ops' }] as unknown as Tenant[] },
+  })
 })
 
 describe('Platform counts before the first run (#135)', () => {
@@ -78,7 +87,31 @@ describe('Platform counts before the first run (#135)', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Run the count · / }))
     await waitFor(() => expect(document.querySelectorAll('.split-row').length).toBeGreaterThan(0))
     expect(document.querySelector('.counts-notrun')).toBeNull()
-    expect(document.body.textContent ?? '').not.toContain('not run yet')
+    // The state cards' placeholder words are gone. Scoped to the cards: the
+    // Over time section below keeps its own not-run card until its own read.
+    expect(document.querySelector('.counts-scopes')?.textContent ?? '').not.toContain('not run yet')
     expect(screen.getAllByRole('heading', { name: /This tenant/ })).toHaveLength(1)
+  })
+
+  it('draws the Over time section below the scope cards and above the ticks (COUNTS-PAGE)', async () => {
+    render(<PlatformCountsScreen />)
+    const scopes = document.querySelector('.counts-scopes')
+    const over = screen.getByRole('region', { name: 'Over time' })
+    const ticks = document.querySelector('.counts-ticks')
+    expect(scopes).not.toBeNull()
+    expect(ticks).not.toBeNull()
+    // MUTATION: drop <PlatformOverTime /> from PlatformCounts.tsx, and the
+    // region lookup above throws.
+    // MUTATION: mount it above the scope cards, and this goes red.
+    expect(scopes!.compareDocumentPosition(over) & Node.DOCUMENT_POSITION_FOLLOWING, 'Over time is not below the scope cards').toBeTruthy()
+    // MUTATION: mount it below the ticks, and this goes red.
+    expect(over.compareDocumentPosition(ticks!) & Node.DOCUMENT_POSITION_FOLLOWING, 'Over time is not above the platform ticks').toBeTruthy()
+    // NOTHING BILLED ON MOUNT: the roster read prices the press, once, and
+    // neither count runs before one.
+    // MUTATION: read the roster on every render, or not at all.
+    await waitFor(() => expect(loadTenants).toHaveBeenCalledTimes(1))
+    expect(loadStats).not.toHaveBeenCalled()
+    // MUTATION: drop the `workspaces` prop, and the price reads per workspace.
+    await waitFor(() => expect(over.textContent ?? '').toMatch(/~[\d,]+ reads(?! a workspace)/))
   })
 })

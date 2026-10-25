@@ -17,6 +17,7 @@ import { AdminSettingsScreen } from './AdminSettings'
 import { AgentsScreen } from './Agents'
 import { TimelineLanesScreen } from './TimelineLanes'
 import { AgentSplit } from './AgentSplit'
+import { AccountHealthScreen } from './AccountHealth'
 import { CapacityScreen } from './Capacity'
 import { Dock } from './Dock'
 import {
@@ -443,6 +444,12 @@ export const SECTIONS: SectionDef[] = [
       // and nobody looks under Settings for that. `#settings/accounts` still
       // works and lands here.
       { id: 'accounts', label: 'Accounts' },
+      // ACCOUNT HEALTH (ACCOUNT-HEALTH-PAGE, part of #2302; BGD's pick of
+      // proposal B, 2026-10-25): what has been going wrong on each
+      // subscription account, where and when -- rate-limit hits, provider
+      // errors, refusals, re-auths. Accounts answers "who can take work";
+      // this answers "what went wrong", so the two are two pages, side by side.
+      { id: 'account-health', label: 'Account health' },
       { id: 'quota', label: 'Provider quota', admin: true },
       // API READS, A PAGE OF CAPACITY SINCE NAV-FOOT (#1672, owner 2026-10-20).
       // It sat at the spine's foot as a utility, "deliberately NOT one of the
@@ -526,8 +533,13 @@ export const SECTIONS: SectionDef[] = [
     // admin is the last tab, and the last clause is its. Admin is no longer
     // only the platform's: a workspace admin reaches this section for that
     // one page, which is why the tab carries no `admin: true` mark.
+    //
+    // PLATFORM COUNTS' CLAUSE ASKS ABOUT TIME SINCE COUNTS-PAGE (part of
+    // #2149, BGD's decisions of 2026-10-23): the page draws how many agents
+    // ran per day, week or month, for how long and at what estimated cost,
+    // below the state counts it always had.
     question:
-      'What is each ceiling set to, who is registered to use this platform, how many agents are in each state, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer?',
+      'What is each ceiling set to, who is registered to use this platform, how many agents are in each state and how many ran over time, for how long and at what estimated cost, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer?',
     tabs: [
       { id: 'limits', label: 'Pool limits', admin: true },
       // SIZES-UI (part of #1689, docs/design/runner-sizes.md §4.6): each
@@ -543,7 +555,10 @@ export const SECTIONS: SectionDef[] = [
       // #847 W8 (docs/workspaces.md §6.4): who has signed in, their workspace
       // requests to approve or deny, each person's ceiling and Claude account,
       // and who is an admin. Admin only, like the three before it.
-      { id: 'people', label: 'People', admin: true },
+      // "People and roles" since ADMIN-PEOPLE-ROLES (part of #2157, S5c):
+      // every person against every workspace, and for a workspace admin who
+      // is not a platform admin only the workspaces they administer.
+      { id: 'people', label: 'People and roles', admin: true },
       // NAV-ADMIN-ROLE: each group workspace whose stored role for the
       // caller is admin, with its four settings pages. Not marked `admin`:
       // it reads `/v1/tenants/mine`, which everyone may, and a workspace
@@ -2001,6 +2016,10 @@ function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: num
 const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
   'automate/schedules': 'schedules',
   'automate/approvals': 'approvals',
+  // Admin › People and roles answers differently by reader (ADMIN-PEOPLE-ROLES):
+  // its topic rides the section's `?` rather than a second glyph by the title,
+  // which the console's glyph ceiling (tests/help.test.ts) has no room for.
+  'admin/people': 'people-and-roles-scope',
 }
 
 function SectionQuestion({ section, topic = null }: { section: SectionQuestionDef; topic?: TopicId | null }) {
@@ -2202,6 +2221,8 @@ function SectionBody({
       return <HoldersScreen />
     case 'capacity/accounts':
       return <AccountsScreen />
+    case 'capacity/account-health':
+      return <AccountHealthScreen />
     case 'capacity/api-reads':
       return <ReferenceScreen failuresOnly={apiFailuresOnly} />
     case 'capacity/quota':

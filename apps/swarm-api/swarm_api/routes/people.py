@@ -3,7 +3,10 @@
 Lane W2 of #847 builds the grant and remove routes; lane W7 extends this file
 with the People list, approvals, limits and loans. Every route here is
 admin-only through `admin_auth`, and none is in `auth.POOL_ADMIN_ROUTES`, so a
-pool admin or the rollup sweeper is refused.
+pool admin or the rollup sweeper is refused. The one exception is the READ of
+the People list (ADMIN-PEOPLE-ROLES; part of #2157, BGD "Both, by scope"):
+`people_scope` also answers a workspace admin, with only the group workspaces
+they administer and the people in them. Every write stays a platform admin's.
 
     PUT    /v1/admin/admins/{email}   grant admin
     DELETE /v1/admin/admins/{email}   remove admin
@@ -62,14 +65,17 @@ from pydantic import Field
 from ..admins import AdminRoles, build_admin_roles
 from ..auth import AuthContext
 from ..brokerclient import AccountPool
-from ..deps import AppContext, admin_auth, get_context
+from ..deps import AppContext, admin_auth, current_auth, get_context
+from .. import roles
 from .. import workspaces as ws
+from ..errors import Forbidden, RoleUnavailable
 from ..groups import MembershipResolver
 from ..people import (
     MAX_CEILING,
     MAX_LOAN_REASON,
     MAX_REASON,
     MIN_CEILING,
+    SCOPE_PLATFORM,
     People,
     name_lookup,
 )
@@ -212,18 +218,100 @@ def people_service(
                       getattr(ctx.settings, "worker_firestore_off_tenants", ()) or ()))
 
 
+def administered_workspaces(ctx: AppContext, auth: AuthContext) -> dict[str, str]:
+    """tenant_id -> group for every GROUP workspace the caller administers by
+    their own stored role: the `/v1/tenants/mine` entries whose role is
+    `admin` (what the console's `adminWorkspaces` reads), each asked FRESH,
+    so a role taken away a moment ago is not read from a cache. Only the
+    caller's verified memberships are asked (`tenant_choices`), never the
+    selected tenant alone and never anything the request names; their own
+    personal workspace and every `u-` id are left out. A workspace whose role
+    could not be read is not administered: an unread role is never a wider
+    one. When NO role was read and none said admin, that is "could not ask",
+    `RoleUnavailable`'s 503, as `require_admin` answers an unread admin
+    lookup: a 403 would tell a real workspace admin they are not one."""
+    store = ctx.roles
+    if store is None:
+        return {}
+    email = (auth.email or "").strip().lower()
+    out: dict[str, str] = {}
+    unread: RoleUnavailable | None = None
+    read = 0
+    for tenant_id, principal in auth.tenant_choices:
+        if principal == email or tenant_id.startswith("u-"):
+            continue
+        try:
+            role = store.person_role(tenant_id, email, fresh=True).role
+        except RoleUnavailable as exc:
+            unread = exc
+            continue
+        read += 1
+        if role == roles.ADMIN:
+            out[tenant_id] = principal
+    if not out and read == 0 and unread is not None:
+        raise unread
+    return out
+
+
+def people_scope(request: Request, auth: AuthContext = Depends(current_auth),
+                 ctx: AppContext = Depends(get_context)) -> dict[str, str] | None:
+    """WHO MAY READ ADMIN › PEOPLE AND ROLES (ADMIN-PEOPLE-ROLES; part of
+    #2157). None for a platform admin, who reads everything, exactly as
+    `admin_auth` decides it (its 503 while Cloud Identity does not answer
+    included). Otherwise the group workspaces the caller administers, which
+    is the whole of what they read; and when they administer none -- a member,
+    a viewer, someone in no group -- `admin_auth`'s own 403. A pool admin, a
+    listed service account and the platform's own identities are refused as
+    before: none of them holds a person's role."""
+    try:
+        admin_auth(request, auth)
+        return None
+    except Forbidden:
+        if (auth.is_pool_admin or auth.is_rollup_sweeper or auth.is_schedule_tick
+                or auth.member_scope or auth.tenant_member
+                or ws.is_service_identity(auth.email)):
+            raise
+        administered = administered_workspaces(ctx, auth)
+        if not administered:
+            raise
+        return administered
+
+
 @router.get("/people")
 def list_people(
     request: Request,
-    auth: AuthContext = Depends(admin_auth),
+    scope: dict[str, str] | None = Depends(people_scope),
+    auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
     people: People = Depends(people_service),
 ) -> dict:
     """§6.4: everyone who has signed in, pending requests first, the last 50
     audit entries, and the accounts this admin may lend. The lendable list
     comes from the quota broker; when it does not answer, the rest of the
-    page is still served and `lendable_accounts` is null with the reason."""
+    page is still served and `lendable_accounts` is null with the reason.
+
+    THE PERSON × WORKSPACE GRID (S5c, S5f): `workspaces` is one column per
+    group workspace and each row's `roles` its cell in each. A platform admin
+    (`scope: platform`) is served every registered group workspace and
+    everything above. A workspace admin (`scope: workspaces`) is served only
+    the workspaces they administer and the people in them, and none of the
+    rest (`People.in_workspaces`). Every write on this router stays a
+    platform admin's (`admin_auth`)."""
+    if scope is not None:
+        return people.in_workspaces(ctx.roles, scope)
     body = people.everyone(store=ctx.store)
+    body["scope"] = SCOPE_PLATFORM
+    # The grid's columns fail alone, like the two sections below: a registry
+    # that cannot be read leaves the list served and says why.
+    try:
+        columns, grants = people.role_columns(
+            ctx.roles, ctx.authenticator.registered_group_workspaces())
+        people.add_roles(body["people"], columns, grants)
+        body["workspaces"] = columns
+        body["workspaces_error"] = None
+    except Exception as exc:  # noqa: BLE001 - one section, never the page
+        body["workspaces"] = None
+        body["workspaces_error"] = getattr(exc, "code", None) or type(exc).__name__
     try:
         pool = account_pool(request, ctx)
         body["lendable_accounts"] = people.lendable(pool, admin_email=auth.email,

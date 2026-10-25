@@ -16,7 +16,18 @@ import type { Me, Stats } from '../types'
 
 const loadStats = vi.hoisted(() => vi.fn<() => Promise<Result<Stats>>>())
 const loadMe = vi.hoisted(() => vi.fn<() => Promise<Result<Me>>>())
-vi.mock('../api', () => ({ loadStats, loadMe }))
+// The workspace roster the page reads once on mount to price its Over time
+// read (COUNTS-PAGE, #2149). Refused here, so the price stays per workspace
+// and nothing this file pins moves.
+const loadTenants = vi.hoisted(() =>
+  vi.fn(() =>
+    Promise.resolve({
+      status: 'error' as const,
+      error: { kind: 'admin_required' as const, httpStatus: 403, code: null, message: 'not an admin' },
+    }),
+  ),
+)
+vi.mock('../api', () => ({ loadStats, loadMe, loadTenants }))
 
 const COUNTS: Record<string, number> = {
   READY: 2, PARKED: 1, LEASED: 0, DISPATCHED: 0, STARTING: 1,
