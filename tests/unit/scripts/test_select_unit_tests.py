@@ -155,6 +155,69 @@ def test_changed_guards_selection_is_included_and_an_unknown_one_runs_everything
 
 
 # --------------------------------------------------------------------------
+# A doc between a changed path and its test (#2299). PR #2267 moved
+# `function PushTestCell(` out of apps/swarm-ui/src/Access.tsx while
+# docs/onboarding.md still cited it there; test_onboarding_migration and
+# test_onboarding_docs_and_mockup resolve that citation but name only
+# onboarding.md, so the pull_request run was green and main's push shards 4
+# and 5 went red. A doc citing a changed path by its full path counts as
+# changed, one level deep.
+# --------------------------------------------------------------------------
+DOC_CITES = {
+    "docs/x.md": "The cell (`apps/swarm-ui/src/A.tsx` (`function F(`)).\n",
+    "apps/swarm-ui/src/A.tsx": "export function F() {}\n",
+    "tests/unit/scripts/test_x_docs.py": 'DOC = REPO / "docs" / "x.md"\n',
+    # The control: another doc, citing another file, read by another test.
+    "docs/y.md": "The other cell (`apps/swarm-ui/src/B.tsx` (`function G(`)).\n",
+    "apps/swarm-ui/src/B.tsx": "export function G() {}\n",
+    "tests/unit/scripts/test_y_docs.py": 'DOC = REPO / "docs" / "y.md"\n',
+}
+
+
+def test_a_doc_that_cites_a_changed_path_selects_the_tests_that_read_the_doc(tmp_path):
+    root = _tree(tmp_path, {**FILLER, **DOC_CITES})
+    out = sel.select(root, ["apps/swarm-ui/src/A.tsx"])
+    assert out["python"] == "selected", out
+    # MUTATION: drop doc_closure from select() and this is red (#2299).
+    assert "tests/unit/scripts/test_x_docs.py" in out["tests"], out
+    assert "tests/unit/scripts/test_y_docs.py" not in out["tests"], out
+    assert sel.doc_closure(root, ["apps/swarm-ui/src/A.tsx"]) == ["apps/swarm-ui/src/A.tsx", "docs/x.md"]
+
+
+def test_a_doc_naming_only_the_basename_does_not_select_its_readers(tmp_path):
+    # App.tsx, main.py, common.sh: a basename is shared by too many files for a
+    # doc that names one to be citing THIS one. Full path only.
+    root = _tree(tmp_path, {
+        **FILLER, **DOC_CITES,
+        "docs/z.md": "Some other `A.tsx` (`function F(`), in another package.\n",
+        "tests/unit/scripts/test_z_docs.py": 'DOC = REPO / "docs" / "z.md"\n',
+    })
+    out = sel.select(root, ["apps/swarm-ui/src/A.tsx"])
+    # MUTATION: match a doc on the changed path's basename and this is red.
+    assert "tests/unit/scripts/test_z_docs.py" not in out["tests"], out
+    assert "tests/unit/scripts/test_x_docs.py" in out["tests"], out
+
+
+def test_the_doc_closure_is_one_level_deep(tmp_path):
+    root = _tree(tmp_path, {
+        **FILLER, **DOC_CITES,
+        # w.md cites x.md, which cites A.tsx: two hops from the change.
+        "docs/w.md": "See `docs/x.md`.\n",
+        "tests/unit/scripts/test_w_docs.py": 'DOC = REPO / "docs" / "w.md"\n',
+    })
+    # A changed doc is not expanded: a doc citing it is not changed with it.
+    out = sel.select(root, ["docs/x.md"])
+    assert "tests/unit/scripts/test_x_docs.py" in out["tests"], out
+    # MUTATION: let the closure take docs/ paths as sources and this is red.
+    assert "tests/unit/scripts/test_w_docs.py" not in out["tests"], out
+    assert sel.doc_closure(root, ["docs/x.md"]) == ["docs/x.md"]
+    # Nor is a doc the closure added: A.tsx reaches x.md and stops there.
+    out = sel.select(root, ["apps/swarm-ui/src/A.tsx"])
+    assert "tests/unit/scripts/test_x_docs.py" in out["tests"], out
+    assert "tests/unit/scripts/test_w_docs.py" not in out["tests"], out
+
+
+# --------------------------------------------------------------------------
 # The repository-wide guard set, always (CI-GUARDS-ALWAYS, part of #1822).
 # Main went red for 19 commits on test_collection_stays_cheap and for 6 on
 # test_awaiting_input_readers: whole-tree tests no changed path names, so no

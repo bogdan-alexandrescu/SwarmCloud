@@ -270,6 +270,63 @@ def test_the_tests_run_in_the_callers_environment_not_common_sh_s(tmp_path: Path
     assert recorded["VIRTUAL_ENV"] == str(python.parent.parent)
 
 
+# A doc between a changed path and its test (#2299): PR #2267 moved `function
+# PushTestCell(` out of apps/swarm-ui/src/Access.tsx while docs/onboarding.md
+# cited it there, and the tests that resolve that citation name only
+# onboarding.md -- so neither this script nor the pull_request run selected
+# them, and main's push shards 4 and 5 went red. A doc citing a changed path
+# by its full path counts as changed.
+def _doc_repo(tmp_path: Path, docs: dict[str, str]) -> Path:
+    (tmp_path / "scripts" / "lib").mkdir(parents=True)
+    shutil.copy(SCRIPT, tmp_path / "scripts" / "changed-guards.sh")
+    shutil.copy(REPO / "scripts" / "lib" / "common.sh", tmp_path / "scripts" / "lib" / "common.sh")
+    files = {
+        **{guard: "" for guard in GUARDS},
+        "apps/swarm-ui/src/A.tsx": "export function F() {}\n",
+        "tests/unit/scripts/test_x_docs.py": 'DOC = REPO / "docs" / "x.md"\n',
+        "tests/unit/scripts/test_y_docs.py": 'DOC = REPO / "docs" / "y.md"\n',
+        **docs,
+    }
+    for rel, text in files.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text)
+    return tmp_path
+
+
+def _list_fake(root: Path, changed: str) -> subprocess.CompletedProcess[str]:
+    env = {k: v for k, v in os.environ.items() if k not in {"REPO_ROOT", "SWARM_CLONE_BASE"}}
+    env.update(NO_COLOR="1", SWARM_ENV_FILE=str(root / "no.env"))
+    return subprocess.run(
+        ["bash", str(root / "scripts" / "changed-guards.sh"), "--list", "--files", "-"],
+        cwd=root, env=env, input=changed + "\n", capture_output=True, text=True, timeout=120,
+    )
+
+
+def test_a_doc_that_cites_a_changed_path_lists_the_tests_that_read_the_doc(tmp_path: Path):
+    root = _doc_repo(tmp_path, {
+        "docs/x.md": "The cell (`apps/swarm-ui/src/A.tsx` (`function F(`)).\n",
+        # The control: a doc citing another file, read by another test.
+        "docs/y.md": "The other cell (`apps/swarm-ui/src/B.tsx` (`function G(`)).\n",
+    })
+    result = _list_fake(root, "apps/swarm-ui/src/A.tsx")
+    assert result.returncode == 0, result.stderr
+    selected = _selected(result.stdout)
+    # MUTATION: drop the doc closure from changed-guards.sh and this is red.
+    assert "tests/unit/scripts/test_x_docs.py" in selected, result.stdout
+    assert "tests/unit/scripts/test_y_docs.py" not in selected, result.stdout
+
+
+def test_a_doc_naming_only_the_basename_lists_no_reader(tmp_path: Path):
+    root = _doc_repo(tmp_path, {
+        "docs/x.md": "Some other `A.tsx` (`function F(`), in another package.\n",
+        "docs/y.md": "Nothing cited.\n",
+    })
+    result = _list_fake(root, "apps/swarm-ui/src/A.tsx")
+    assert result.returncode == 0, result.stderr
+    # MUTATION: match a doc on the changed path's basename and this is red.
+    assert sorted(_selected(result.stdout)) == sorted(GUARDS), result.stdout
+
+
 def test_ci_doc_and_claude_md_name_it_as_the_pre_finish_command():
     assert "scripts/changed-guards.sh" in (REPO / "docs" / "ci.md").read_text()
     claude = (REPO / "CLAUDE.md").read_text()
