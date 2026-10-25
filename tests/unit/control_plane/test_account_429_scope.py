@@ -247,6 +247,26 @@ def test_an_account_lent_to_the_tenant_with_room_keeps_the_target(db, broker):
     assert _target(broker) == HARD_MAX // 2
 
 
+def test_a_lent_account_this_tenant_cannot_read_is_no_room(db, broker):
+    """`choose()` never hands eng a lent account eng found unreadable, so it
+    must not keep eng from being halved when eng's own accounts are spent."""
+    store = AccountStore(db)
+    store.register(ENG, "first")
+    store.register(RESEARCH, "lent", lend_to=(ENG,))
+    _read(store, FIRST)
+    _read(store, LENT)
+    db.docs[f"accounts/{LENT}"]["unreadable_by"] = {ENG: _now()}
+    client = TestClient(create_app(broker, identity=_Identity(), account_store=store),
+                        raise_server_exceptions=False)
+    own = _hold(client, "task_1")
+    assert own["account_id"] == FIRST
+
+    r = _rate_limit(client, own, retry_after_seconds=600)
+
+    assert r.json()["scope"] == "pool_exhausted", r.text
+    assert _target(broker) == HARD_MAX // 2
+
+
 def test_successes_still_climb_the_target_after_an_account_429(db, store):
     broker = QuotaBroker(
         db,
