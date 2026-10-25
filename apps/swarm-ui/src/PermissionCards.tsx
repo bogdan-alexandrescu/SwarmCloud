@@ -475,7 +475,8 @@ function GrantsTable({ rows }: { rows: readonly GrantRow[] }) {
               </td>
               <td className="fp-for">
                 <span className="fp-words">{r.neededFor}</span>
-                {r.capabilities.length > 0 && <small className="fp-caps">{r.capabilities.map((c) => CAPABILITY_WORD[c] ?? c).join(', ')}</small>}
+                {/* A span, not a <small>: the table is already --t-micro, and a <small> drew these at 10px. */}
+                {r.capabilities.length > 0 && <span className="fp-caps">{r.capabilities.map((c) => CAPABILITY_WORD[c] ?? c).join(', ')}</span>}
               </td>
             </tr>
           ))}
