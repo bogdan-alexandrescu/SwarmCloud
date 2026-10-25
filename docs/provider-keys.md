@@ -34,7 +34,8 @@ lists this key under *Keys for agents and MCP*, from `provider_keys/` and
 not from Secret Manager: a status row with who set it and when, never a
 value, a length or `last4`
 (`apps/swarm-api/swarm_api/secrets_overview.py::_provider_key_rows`). That
-console page itself is lane SSC-UI, not built. §7 says what the scopes
+console page is lane SSC-UI's, built 2026-10-25: Settings › API keys moved
+there, and `/settings/keys` lands on it. §7 says what the scopes
 change for these keys.
 
 Code: `apps/swarm-api/swarm_api/provider_keys.py` (record, audit, links,
@@ -228,8 +229,8 @@ value arrives only through the console form a link opens, or a terminal's
   `KEY_LINK_INVALID`, off at ship; off, it is logged without the token and
   the write goes on. A write that sends no link, a terminal's `--stdin`, is
   unchanged.
-* The form itself is Config › Secrets' (lane SSC-UI); until it ships, the link
-  opens a page that does not offer it yet.
+* The form itself is Config › Secrets' (lane SSC-UI): the link lands on the
+  scope its key is in and opens this form with the link's token.
 
 ## 4. Threat model
 

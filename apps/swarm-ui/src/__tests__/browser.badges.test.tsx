@@ -266,7 +266,8 @@ describe('3. each badge explains itself on hover and on focus', () => {
     const c = card(b).textContent ?? ''
     expect(c).toMatch(/sends page text to TypeSafe/)
     expect(c).toMatch(/your own TypeSafe key/)
-    expect(c).toMatch(/Settings › API keys/)
+    // Settings › API keys moved to Config › Secrets (SSC-UI, part of #2158).
+    expect(c).toMatch(/Config › Secrets/)
     expect(c).toMatch(/Last browser action: Jev, 30s ago/)
   })
 

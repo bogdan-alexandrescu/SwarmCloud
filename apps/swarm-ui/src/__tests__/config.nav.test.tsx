@@ -145,7 +145,8 @@ describe('the Config section (CONFIG-NAV)', () => {
     expect(within(strip).getAllByRole('listitem')).toHaveLength(3)
   })
 
-  it('takes Repositories, Setup and Access out of Work, and leaves Settings only Profile and API keys', async () => {
+  // API keys went too: Config › Secrets' keys since SSC-UI (part of #2158; BGD 2026-10-23T23:57Z).
+  it('takes Repositories, Setup and Access out of Work, and leaves Settings only Profile', async () => {
     const { App } = await routing()
     const work = App.SECTIONS.find((s) => s.id === 'work')!
     // MUTATION: leave Access in Work -> fails.
@@ -155,7 +156,7 @@ describe('the Config section (CONFIG-NAV)', () => {
     // MUTATION: leave Setup in the Work panel -> fails.
     expect(PANEL_PAGES.work.map((p) => p.key)).toEqual(['agents', 'workflows', 'runs', 'timeline'])
     // MUTATION: leave MCP servers under Profile -> fails.
-    expect(PANEL_PAGES.profile.map((p) => p.label)).toEqual(['Profile', 'API keys'])
+    expect(PANEL_PAGES.profile.map((p) => p.label)).toEqual(['Profile'])
   })
 })
 

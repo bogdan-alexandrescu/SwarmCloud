@@ -14,7 +14,7 @@ import './styles/keys.css'
  *     the platform's own index. Nothing leaves the platform. Each repository's
  *     Settings tab can turn it on or off, or inherit;
  *   * sending code to Jev -- excerpts of this workspace's code go to Jev for
- *     ranking and judging, at the backend chosen on Settings › API keys. THIS
+ *     ranking and judging, at the backend chosen on Config › Secrets. THIS
  *     IS OFF BY DEFAULT for every workspace (owner decision, §4.7), and the
  *     card says what is sent and what never is before anyone turns it on.
  *
@@ -111,7 +111,7 @@ function JevSwitch({
     onChange()
   }
 
-  const where = backend === null ? "this workspace's Jev backend (Settings › API keys)" : DESTINATION[backend]
+  const where = backend === null ? "this workspace's Jev backend (Config › Secrets)" : DESTINATION[backend]
   return (
     <div className="jb-choice">
       <label className={`jb-option${picked ? ' is-on' : ''}${!canEdit ? ' is-off' : ''}`}>

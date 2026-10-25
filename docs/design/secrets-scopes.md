@@ -1,10 +1,11 @@
 # Secrets scopes: workspace, person and repository on one Config › Secrets page, and GitHub Actions as a write-only destination
 
 **Status: built 2026-10-24 (lane SSC-DOCS, part of #2158), except phase 0
-and the console.** Designed 2026-10-23 (lane SECRETS-SCOPES-DESIGN, PR 2159);
+and the console's GitHub Actions pane.** Designed 2026-10-23 (lane SECRETS-SCOPES-DESIGN, PR 2159);
 BGD answered §10 the same evening (§11), and **§11 overrides this document
-wherever the two differ**. Every §9 lane but three has merged, each marked
-built with its PR in §9, and §12 records what each one built, the five lanes
+wherever the two differ**. Every §9 lane but two is built, each marked
+built with its PR in §9 (SSC-UI with its lane until its PR's number is
+written in), and §12 records what each one built, the five lanes
 added during the build, and where the code departs from the text above:
 
 * **SSC-SECRETS-APP (phase 0) is not built and will not be**: Q3 put the
@@ -14,9 +15,11 @@ added during the build, and where the code departs from the text above:
   GitHub, written in `docs/runbooks/github-app.md` ("Writing GitHub Actions
   secrets"). §3.5's second App, and every "under Q5 a" sentence, describe
   the design BGD declined.
-* **SSC-UI and SSC-UI-ACTIONS are not built.** They wait for #2157's Config
-  section. Until they ship, the routes, the one-time links and the `/sc`
-  tools are built and a link opens a page that does not offer its form yet.
+* **SSC-UI is built (2026-10-25, §12); SSC-UI-ACTIONS is not.** Config ›
+  Secrets draws the GitHub Actions destination's switch and leaves its pane
+  to SSC-UI-ACTIONS, so until that lane ships an Actions link opens the
+  repository's GitHub Actions position with SwarmCloud's record of its writes
+  and the `/sc` command, not the Set form.
 * **Not yet live:** the Actions writes are refused (`secrets_not_granted`)
   until BGD grants the App Secrets and Environments and each installation
   accepts them; Admin › Platform secrets reads `unreadable` until BGD sets
@@ -712,7 +715,7 @@ what it built.
 | 1 | **SSC-OVERVIEW** (built, PR 2248) | `apps/swarm-api/swarm_api/secrets_overview.py` (new), `routes/secrets_overview.py` (new), `tests/unit/control_plane/test_secrets_overview.py` (new) | every §4 store is present in its scope; no row carries a value, a length or `last4`; personal rows are only the caller's; TypeSafe rows are read from `provider_keys`; shadowing is reported |
 | 1 | **SSC-LINKS** (built, PR 2219) | `apps/swarm-api/swarm_api/qatargets.py`, `routes/qatargets.py`, `routes/tenants.py` (the runner-key link), their tests | the bypass `PUT` without a link token is refused once the switch is on and logged while off; a runner-key link is single use and bound to the caller and the provider |
 | 1 | **SSC-PLATFORM-STATUS** (built, PR 2218; PR 2221 fixed its 500) | `apps/swarm-api/swarm_api/platform_secrets.py` (new), its route in `routes/admin.py`, `terraform/bootstrap/platform_secret_status.tf` (new), `tests/terraform/platform_secret_status.tftest.hcl` (new), `tests/unit/control_plane/test_platform_secrets.py` (new) | a non-admin is 403; the reader never calls `versions.access`; the role holds exactly `secrets.get` and `versions.list`; the condition refuses a name outside `swarm-` and another project |
-| 2 | **SSC-UI** (not built: after #2157's Config lane merges `App.tsx`) | `apps/swarm-ui/src/Secrets.tsx` (new, absorbing `WorkspaceSecrets.tsx`), `AdminPlatformSecrets.tsx` (new), `App.tsx`, `paths.ts`, `api.ts`, `types.ts`, `.github/ISSUE_TEMPLATE/*` (the Where list, held by `test_issue_forms.py`), vitest files | the old addresses redirect with their link tokens; no value is rendered after save; the Platform secrets tab is absent for a non-admin; the repository scope lists only registered repositories; a shadowed row shows its winner |
+| 2 | **SSC-UI** (built, lane SSC-UI, 2026-10-25, to Config proposal E; §12) | `apps/swarm-ui/src/Secrets.tsx` (new, absorbing `WorkspaceSecrets.tsx`), `AdminPlatformSecrets.tsx` (new), `App.tsx`, `paths.ts`, `api.ts`, `types.ts`, `.github/ISSUE_TEMPLATE/*` (the Where list, held by `test_issue_forms.py`), vitest files | the old addresses redirect with their link tokens; no value is rendered after save; the Platform secrets tab is absent for a non-admin; the repository scope lists only registered repositories; a shadowed row shows its winner |
 | 3 | **SSC-UI-ACTIONS** (not built: after SSC-UI, same `Secrets.tsx` and `api.ts`) | `apps/swarm-ui/src/SecretsActions.tsx` (new), the import line in `Secrets.tsx`, `api.ts`; under Q5 a, `apps/swarm-ui/package.json` and its lock (libsodium); vitest files | the request body carries `encrypted_value` and never the value; the field is empty before the request leaves; writing into an any-branch environment needs the typed name; the install link appears when the App is not installed |
 | 2 | **SSC-SC** (built, PR 2251) | `apps/swarm-mcp/swarm_mcp/secrets.py` (new), `apps/swarm-mcp/swarm_mcp/server.py`, `apps/swarm-mcp/swarm_mcp/qatargets.py` (its `field`), `plugin/skills/sc/SKILL.md`, `tests/unit/mcp/test_secret_links.py` (new) | no tool's schema accepts a value field; each link tool returns a URL and its expiry and nothing else; `url` is null without a console origin; `swarm_platform_secrets` passes the route's 403 through |
 | each | **SSC-DOCS** (built: this status, §12, `docs/security.md` and `docs/provider-keys.md`) | this file, `docs/design/workspace-secrets.md` (status line), `docs/security.md`, `docs/provider-keys.md` | `test_docs_describe_what_was_built` |
@@ -964,6 +967,31 @@ secrets link`. No tool's input schema has a value field. A link tool answers
 runner-key link has no tool yet; whether it should is an open owner
 question on PR 2251.
 
+**SSC-UI (lane SSC-UI, 2026-10-25, part of #2158).** §6.1 drawn as Config
+proposal E's S4 and S7 (BGD's pick of 2026-10-24): Config › Secrets
+(`apps/swarm-ui/src/Secrets.tsx`) with the scope picker Workspace · Yours ·
+Repository on `?scope=..&repo=..&dest=..`, each scope's sections in §6.1's
+order from one `GET /v1/secrets/overview` read, shadowing drawn as the
+overview reports it (the winner and on whose agents, or what a winner
+hides), and Add a secret as one side sheet of four steps (scope,
+destination, who reads it, the one-time form). The store's list and grant
+matrix are today's (`apps/swarm-ui/src/WorkspaceSecrets.tsx::WorkspaceSecretsScreen`,
+mounted `embedded`, for the workspace or one registered repository), and
+Settings › API keys is its *Keys for agents and MCP* (BGD 2026-10-23
+23:57Z): `/settings/keys` and the TypeSafe link land there with the link's
+token. Admin › Platform secrets is
+`apps/swarm-ui/src/AdminPlatformSecrets.tsx::AdminPlatformSecretsScreen`,
+a platform admin's tab alone. **Departures, each for a reason:** every Set
+mints its one-time link first and the form sends that token once, so even
+Rotate on the store's own list goes through a link; a Yours secret is added
+and rotated in the person's own workspace, because the store's routes act in
+the selected one, so from a group workspace the page offers the switch; a QA
+sign-in's Set opens the target's own form on Config › Repositories › QA
+targets, and a browser session is removed on GitHub access › Saved logins,
+whose `access?view=logins` address is not redirected; the lead counts what
+is *not set*, not proposal E's "needed, not set", which no route serves; and
+the GitHub Actions pane is SSC-UI-ACTIONS'.
+
 **Lanes the build added (each answered on #2158 from §2.1's rule, "a
 removed registration disables every grant on its secrets in the transaction
 that removes it"):**
@@ -1013,7 +1041,8 @@ for exactly this reason. `docs/security.md` ("Secrets scopes and GitHub
 Actions secrets") carries the threat model.
 
 **The done check (§9) is not met yet.** It needs BGD's App permission step
-and the console (SSC-UI, SSC-UI-ACTIONS). Until both land, the same write is
+and the console's GitHub Actions pane (SSC-UI-ACTIONS; SSC-UI built the page
+around it). Until both land, the same write is
 reachable as `PUT /v1/repositories/{repo_id}/actions/secrets/{name}` from a
 one-time link's form, or from a terminal, and `/sc secrets link repository
 MERGE_APP_PRIVATE_KEY --repo bogdan-alexandrescu/SwarmCloud --actions --env

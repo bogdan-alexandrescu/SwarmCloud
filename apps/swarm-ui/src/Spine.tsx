@@ -97,7 +97,8 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
   // MCP servers and People and roles are Config's.
   profile: [
     { key: 'profile', label: 'Profile', icon: 'people', to: 'settings/profile' },
-    { key: 'keys', label: 'API keys', icon: 'key', to: 'settings/keys' },
+    // API keys was the second row until SSC-UI (part of #2158) moved its keys
+    // to Config › Secrets (BGD 2026-10-23T23:57Z: "Settings keeps only Profile").
   ],
   work: [
     {
@@ -168,6 +169,9 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     { key: 'runner-sizes', label: 'Runner sizes', icon: 'runtimes', to: 'admin/runner-sizes' },
     { key: 'tenants', label: 'Tenants', icon: 'tenants', to: 'admin/tenants' },
     { key: 'counts', label: 'Platform counts', icon: 'counts', to: 'admin/counts' },
+    // SSC-UI (part of #2158; secrets-scopes.md §5.3): a platform admin's
+    // alone, so `adminPagesFor` never hands it to a workspace admin.
+    { key: 'platform-secrets', label: 'Platform secrets', icon: 'key', to: 'admin/platform-secrets' },
     // #847 W8 (docs/workspaces.md §6.4): a SECTIONS tab and a route, and
     // missing here, so an admin reached it only by typing /admin/people --
     // the Runs defect visual QA Q7 caught, again.

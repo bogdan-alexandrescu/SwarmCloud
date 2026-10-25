@@ -564,7 +564,7 @@ function keyWords(s: ProfileKeyStatus): string {
 function TypeSafeCard({ p }: { p: Profile }) {
   const ts = p.connections.typesafe
   return (
-    <Card title="TypeSafe key" action={<CardLink href="/settings/keys">Settings › API keys</CardLink>}>
+    <Card title="TypeSafe key" action={<CardLink href="/config/secrets?scope=personal">Config › Secrets</CardLink>}>
       {ts === undefined || p.unavailable.includes('typesafe') ? (
         <Unreadable what="Your TypeSafe key status" />
       ) : (

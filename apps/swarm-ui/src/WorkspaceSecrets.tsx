@@ -4,6 +4,7 @@ import {
   deleteWorkspaceSecret,
   loadWorkspaceSecretCatalogue,
   loadWorkspaceSecrets,
+  mintWorkspaceSecretLink,
   rotateWorkspaceSecret,
   setWorkspaceSecretGrant,
   type WorkspaceSecret,
@@ -59,6 +60,17 @@ import './styles/keys.css'
  * refuses; a running attempt keeps what it was released (§4.3), so the page
  * says the change takes effect at the next attempt.
  *
+ * CONFIG › SECRETS MOUNTS IT (SSC-UI, part of #2158; secrets-scopes.md
+ * §6.1): `embedded` draws it as the page's "For agents" section, with no
+ * head of its own, for the workspace (`repoId` null) or for one registered
+ * repository (`GET /v1/repositories/{repo_id}/secrets`, the store's shapes).
+ * Embedded, EVERY SET OPENS A ONE-TIME FORM: Rotate mints the store's link
+ * for that one name first (`POST .../links`) and the form sends its token
+ * once, so a value is never written by a form that no link opened; adding
+ * is the page's Add a secret wizard, and the add form here is drawn only
+ * for an add link. `shadow` draws, under a name, what Config › Secrets'
+ * overview says about it (Q1): the secret that wins it, or what it hides.
+ *
  * WHO MAY MANAGE is the API's `can_manage` (`workspace_secrets.require_manager`:
  * a personal workspace's person; a group workspace's admin or a platform
  * admin). Only an explicit true offers Add, Rotate, Delete or a live box; the
@@ -66,6 +78,7 @@ import './styles/keys.css'
  */
 
 const LIST_ROUTE = 'GET /v1/workspace/secrets'
+const REPO_LIST_ROUTE = 'GET /v1/repositories/{repo_id}/secrets'
 const CATALOGUE_ROUTE = 'GET /v1/workspace/secrets/consumers'
 
 /** The link as the route carries it; `token` is App's capture, absent when rendered alone. */
@@ -95,7 +108,7 @@ function dropLinkToken(): void {
  * Built from pairs rather than `name: '...'` lines: the worker's publish-time
  * credential scan reads a line like that as a key assignment.
  */
-const KIND_WORDS: Readonly<Record<string, string>> = Object.fromEntries([
+export const KIND_WORDS: Readonly<Record<string, string>> = Object.fromEntries([
   ['api_key', 'API key'],
   ['bearer_token', 'Bearer token'],
   ['basic_auth', 'Username and password'],
@@ -108,7 +121,7 @@ const KIND_WORDS: Readonly<Record<string, string>> = Object.fromEntries([
  * key the API takes, the label, and whether the field is masked. The first of
  * each pair names an identity, the second is the secret part.
  */
-const STRUCTURED: Readonly<Record<string, readonly [StructuredField, StructuredField]>> = {
+export const STRUCTURED: Readonly<Record<string, readonly [StructuredField, StructuredField]>> = {
   basic_auth: [
     { key: 'username', label: 'Username', masked: false },
     { key: 'password', label: 'Password', masked: true },
@@ -119,7 +132,7 @@ const STRUCTURED: Readonly<Record<string, readonly [StructuredField, StructuredF
   ],
 }
 
-interface StructuredField {
+export interface StructuredField {
   key: string
   label: string
   masked: boolean
@@ -158,8 +171,21 @@ export function WorkspaceSecretsEntry() {
   )
 }
 
-export function WorkspaceSecretsScreen({ link }: { link: SecretsLink | null }) {
-  const list = useUrRead(loadWorkspaceSecrets, 'workspace-secrets')
+export function WorkspaceSecretsScreen({
+  link,
+  repoId = null,
+  embedded = false,
+  shadow,
+}: {
+  link: SecretsLink | null
+  /** A registration's id: that repository's secrets for agents. Null is the workspace's. */
+  repoId?: string | null
+  /** Drawn as Config › Secrets' "For agents" section: no head, Rotate through a link. */
+  embedded?: boolean
+  /** What the overview says about a name's shadowing, drawn under it; nothing for none. */
+  shadow?: (name: string) => ReactNode
+}) {
+  const list = useUrRead(() => loadWorkspaceSecrets(repoId), repoId === null ? 'workspace-secrets' : `repository-secrets:${repoId}`)
   const catalogue = useUrRead(loadWorkspaceSecretCatalogue, 'workspace-secret-catalogue')
   // The link's token, read once; null once it has been sent. A ref, never
   // state or a prop of anything drawn: nothing renders it.
@@ -174,20 +200,44 @@ export function WorkspaceSecretsScreen({ link }: { link: SecretsLink | null }) {
   }, [link])
   // The token goes with the write its link was minted for, once: an add link
   // with the first add, a rotate link with the rotate of the name it names.
+  // A link this page minted for itself (embedded Rotate): its token, for that one name.
+  const minted = useRef<{ name: string; token: string } | null>(null)
   const takeToken = (action: 'add' | 'rotate', name: string | null = null) => {
+    if (action === 'rotate' && minted.current !== null && minted.current.name === name) {
+      const own = minted.current.token
+      minted.current = null
+      return own
+    }
     if (link === null || link.action !== action || (action === 'rotate' && link.name !== name)) return null
     const t = token.current ?? null
     token.current = null
     return t
+  }
+  /**
+   * Embedded, Rotate opens only through a one-time link: the link's own, or
+   * one minted here for that name. The answer says why when none could be
+   * minted, and no form opens.
+   */
+  const openRotate = async (name: string): Promise<string | null> => {
+    if (!embedded) return null
+    if (link !== null && link.action === 'rotate' && link.name === name && token.current) return null
+    const r = await mintWorkspaceSecretLink('rotate', name, repoId)
+    if (r.status === 'error') return `${name}: no one-time form was opened: ${r.error.message}`
+    const t = r.status === 'ok' ? r.data.token : null
+    if (t === null) return `${name}: no one-time form was opened: the link came back without a token.`
+    minted.current = { name, token: t }
+    return null
   }
   const manages = (list.state.status === 'ok' || list.state.status === 'stale') && list.state.data.can_manage
   const rotateFirst = link !== null && link.action === 'rotate' ? link.name : null
 
   return (
     <div className="pk-page">
-      <PageHead title="Secrets">
-        <UrRefresh reads={[list, catalogue]} ageOf={[list]} />
-      </PageHead>
+      {!embedded && (
+        <PageHead title="Secrets">
+          <UrRefresh reads={[list, catalogue]} ageOf={[list]} />
+        </PageHead>
+      )}
       {link !== null && link.action === 'add' && (
         <Banner tone="info" title="Opened from a one-time link">
           Paste the value into the form below: the /sc command and this page&rsquo;s address never see it. The link
@@ -200,27 +250,36 @@ export function WorkspaceSecretsScreen({ link }: { link: SecretsLink | null }) {
           The link works once, for ten minutes, and only for the secret it names.
         </Banner>
       )}
-      <Card title="Secrets">
-        <p className="pk-lead">
-          The credentials this workspace stores for its agents, tools and platform components, and who each one is
-          granted to. A value is stored write-only: no page and no API route shows it, its length or any of its
-          characters again. Back to <SettingsLink address="settings/workspace">Settings › Workspace</SettingsLink>.
-        </p>
-        <UrRegion state={list.state} route={LIST_ROUTE} what="The workspace's secrets" plural onRetry={list.reload}>
-          {(d) => <SecretList data={d} onChange={list.reload} rotateFirst={rotateFirst} takeToken={takeToken} />}
+      <Card title={embedded ? 'For agents' : 'Secrets'}>
+        {embedded ? (
+          <p className="pk-lead">
+            {repoId === null
+              ? 'Released to the profiles, tools and components in Granted to.'
+              : 'Read only by the profiles, tools and components in Granted to, on the agents the line above names.'}{' '}
+            A value is stored write-only: no page and no API route shows it, its length or any of its characters again.
+          </p>
+        ) : (
+          <p className="pk-lead">
+            The credentials this workspace stores for its agents, tools and platform components, and who each one is
+            granted to. A value is stored write-only: no page and no API route shows it, its length or any of its
+            characters again. Back to <SettingsLink address="settings/workspace">Settings › Workspace</SettingsLink>.
+          </p>
+        )}
+        <UrRegion state={list.state} route={repoId === null ? LIST_ROUTE : REPO_LIST_ROUTE} what={repoId === null ? "The workspace's secrets" : "The repository's secrets"} plural onRetry={list.reload}>
+          {(d) => <SecretList data={d} onChange={list.reload} rotateFirst={rotateFirst} takeToken={takeToken} repoId={repoId} openRotate={embedded ? openRotate : null} shadow={shadow} />}
         </UrRegion>
       </Card>
       {(list.state.status === 'ok' || list.state.status === 'stale') && (
-        <Card title="Grants">
+        <Card title={embedded ? 'Who it is granted to' : 'Grants'}>
           <UrRegion state={catalogue.state} route={CATALOGUE_ROUTE} what="The consumers a secret may be granted to" plural onRetry={catalogue.reload}>
-            {(c) => <GrantMatrix data={list.state.status === 'ok' || list.state.status === 'stale' ? list.state.data : null} catalogue={c} onChange={list.reload} />}
+            {(c) => <GrantMatrix data={list.state.status === 'ok' || list.state.status === 'stale' ? list.state.data : null} catalogue={c} onChange={list.reload} repoId={repoId} />}
           </UrRegion>
         </Card>
       )}
-      {manages && (
+      {manages && (!embedded || (link !== null && link.action === 'add')) && (
         <Card title="Add a secret">
           <UrRegion state={catalogue.state} route={CATALOGUE_ROUTE} what="The kinds and providers a secret is stored as" plural onRetry={catalogue.reload}>
-            {(c) => <AddSecret catalogue={c} takeToken={() => takeToken('add')} onAdded={list.reload} />}
+            {(c) => <AddSecret catalogue={c} takeToken={() => takeToken('add')} onAdded={list.reload} repoId={repoId} />}
           </UrRegion>
         </Card>
       )}
@@ -245,17 +304,25 @@ function SecretList({
   onChange,
   rotateFirst,
   takeToken,
+  repoId = null,
+  openRotate = null,
+  shadow,
 }: {
   data: WorkspaceSecretList
   onChange: () => void
   /** A rotate link's name: its Rotate form opens on load. */
   rotateFirst: string | null
   takeToken: (action: 'rotate', name: string) => string | null
+  repoId?: string | null
+  /** Embedded: mint the one-time link a Rotate form opens through; the refusal's words, or null. */
+  openRotate?: ((name: string) => Promise<string | null>) | null
+  shadow?: (name: string) => ReactNode
 }) {
   const [deleting, setDeleting] = useState<string | null>(null)
   const [deleted, setDeleted] = useState<string | null>(null)
   const [rotating, setRotating] = useState<string | null>(rotateFirst)
   const [rotated, setRotated] = useState<string | null>(null)
+  const [opening, setOpening] = useState<string | null>(null)
   const target = deleting === null ? undefined : data.secrets.find((s) => s.name === deleting)
   const turning = rotating === null || !data.can_manage ? undefined : data.secrets.find((s) => s.name === rotating && !isForge(s))
   return (
@@ -299,7 +366,7 @@ function SecretList({
               const on = s.grants.filter((g) => g.enabled).map((g) => g.consumer)
               return (
                 <tr key={s.name}>
-                  <th scope="row" data-label="Name"><code>{s.name}</code></th>
+                  <th scope="row" data-label="Name"><code>{s.name}</code>{shadow?.(s.name)}</th>
                   <td data-label="Provider">{s.provider || 'not said'}</td>
                   <td data-label="Kind">{KIND_WORDS[s.kind] ?? (s.kind || 'not said')}</td>
                   <td data-label="Set" title={s.set_at ?? undefined}>{setWords(s)}</td>
@@ -315,9 +382,19 @@ function SecretList({
                         <span className="jb-note">Set under Access and Git tokens</span>
                       ) : (
                         <span className="pk-form-row">
-                          <Button kind="secondary" size="sm" aria-label={`Rotate ${s.name}`} onClick={() => {
+                          <Button kind="secondary" size="sm" aria-label={`Rotate ${s.name}`} busy={opening === s.name ? 'Opening…' : false} onClick={() => {
                             setRotated(null)
-                            setRotating(s.name)
+                            if (openRotate === null) {
+                              setRotating(s.name)
+                              return
+                            }
+                            setOpening(s.name)
+                            setRotating(null)
+                            void openRotate(s.name).then((refused) => {
+                              setOpening(null)
+                              if (refused === null) setRotating(s.name)
+                              else setRotated(refused)
+                            })
                           }}>
                             Rotate
                           </Button>
@@ -341,6 +418,8 @@ function SecretList({
         <RotateSecret
           key={turning.name}
           secret={turning}
+          repoId={repoId}
+          oneTime={openRotate !== null}
           takeToken={() => takeToken('rotate', turning.name)}
           onCancel={() => setRotating(null)}
           onDone={(words) => {
@@ -353,6 +432,7 @@ function SecretList({
       {target !== undefined && (
         <DeleteSecret
           secret={target}
+          repoId={repoId}
           onKeep={() => setDeleting(null)}
           onDone={() => {
             setDeleting(null)
@@ -372,7 +452,7 @@ function SecretList({
  * off, and says what it does not reach: an attempt already running keeps
  * the copy it was released (§4.3).
  */
-function DeleteSecret({ secret, onKeep, onDone }: { secret: WorkspaceSecret; onKeep: () => void; onDone: () => void }) {
+function DeleteSecret({ secret, repoId = null, onKeep, onDone }: { secret: WorkspaceSecret; repoId?: string | null; onKeep: () => void; onDone: () => void }) {
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
   const on = secret.grants.filter((g) => g.enabled).map((g) => g.consumer)
@@ -381,7 +461,7 @@ function DeleteSecret({ secret, onKeep, onDone }: { secret: WorkspaceSecret; onK
     if (busy) return
     setBusy(true)
     setFailed(null)
-    const r = await deleteWorkspaceSecret(secret.name)
+    const r = await deleteWorkspaceSecret(secret.name, repoId)
     setBusy(false)
     if (r.status === 'error') {
       setFailed(`${secret.name} was not deleted: ${r.error.message}`)
@@ -485,7 +565,7 @@ const cellKey = (name: string, consumer: string) => `${name}\u0000${consumer}`
  * box at once and writes ONE grant; a refusal puts it back and says why.
  * A wide matrix scrolls inside its own `.table-wrap`, so the page does not.
  */
-function GrantMatrix({ data, catalogue, onChange }: { data: WorkspaceSecretList | null; catalogue: WorkspaceSecretCatalogue; onChange: () => void }) {
+function GrantMatrix({ data, catalogue, onChange, repoId = null }: { data: WorkspaceSecretList | null; catalogue: WorkspaceSecretCatalogue; onChange: () => void; repoId?: string | null }) {
   const id = useId()
   // The boxes moved since the list was last read: what was ticked, or what
   // the API answered. Cleared when the list is read again, which then says.
@@ -508,7 +588,7 @@ function GrantMatrix({ data, catalogue, onChange }: { data: WorkspaceSecretList 
     setMoved((m) => ({ ...m, [key]: next }))
     setBusy((b) => ({ ...b, [key]: true }))
     setSaid(null)
-    const r = await setWorkspaceSecretGrant(secret.name, c.consumer, next, cell.slot)
+    const r = await setWorkspaceSecretGrant(secret.name, c.consumer, next, cell.slot, repoId)
     setBusy((b) => {
       const { [key]: _done, ...rest } = b
       return rest
@@ -595,11 +675,16 @@ function GrantMatrix({ data, catalogue, onChange }: { data: WorkspaceSecretList 
  */
 function RotateSecret({
   secret,
+  repoId = null,
+  oneTime = false,
   takeToken,
   onCancel,
   onDone,
 }: {
   secret: WorkspaceSecret
+  repoId?: string | null
+  /** Opened through a one-time link the page minted: the form says so. */
+  oneTime?: boolean
   takeToken: () => string | null
   onCancel: () => void
   onDone: (words: string) => void
@@ -631,7 +716,7 @@ function RotateSecret({
       : { fields: { [structured[0].key]: read[0]!, [structured[1].key]: read[1]! } }
     setBusy(true)
     setFailed(null)
-    const r = await rotateWorkspaceSecret(secret.name, body, takeToken())
+    const r = await rotateWorkspaceSecret(secret.name, body, takeToken(), repoId)
     setBusy(false)
     if (r.status === 'error') {
       setFailed(r.error.code === 'SECRET_LINK_INVALID'
@@ -649,6 +734,7 @@ function RotateSecret({
         <p className="pk-lead">
           A new version of <code>{secret.name}</code>. Attempts that start after this read the new value; the
           previous one stays enabled for 24 hours, for attempts already running.
+          {oneTime && ' A one-time form: it works once, for ten minutes, and is never prefilled.'}
         </p>
         {structured === undefined ? (
           <SecretField id={`${id}-value`} label="New value" masked input={value} onInput={recheck} />
@@ -686,8 +772,10 @@ function AddSecret({
   catalogue,
   takeToken,
   onAdded,
+  repoId = null,
 }: {
   catalogue: WorkspaceSecretCatalogue
+  repoId?: string | null
   /** The one-time link's token, handed over once; null after, or without a link. */
   takeToken: () => string | null
   onAdded: () => void
@@ -736,7 +824,7 @@ function AddSecret({
     setAdded(null)
     setFailed(null)
     // The link is consumed before the write, so it is sent once.
-    const r = await createWorkspaceSecret(body, takeToken())
+    const r = await createWorkspaceSecret(body, takeToken(), repoId)
     setBusy(false)
     if (r.status === 'error') {
       setFailed(refusalWords(r.error, named))
@@ -807,7 +895,7 @@ function AddSecret({
  * an attribute; never prefilled; autocomplete off. Its identity half (a
  * username, a client id) is drawn plain, the secret half masked.
  */
-function SecretField({
+export function SecretField({
   id,
   label,
   masked,

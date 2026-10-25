@@ -73,7 +73,8 @@ describe('Settings › Profile', () => {
   })
 
   it('leaves API keys and the old hashes where they were; Workspace and MCP servers are Config\'s (CONFIG-NAV)', () => {
-    expect(fromAddress('settings/keys')).toMatchObject({ sectionId: 'settings', tab: 'keys' })
+    // API keys moved to Config › Secrets (SSC-UI, part of #2158).
+    expect(fromAddress('settings/keys')).toMatchObject({ sectionId: 'config', tab: 'secrets', view: 'scope=workspace' })
     expect(fromAddress('settings/workspace')).toMatchObject({ sectionId: 'config', tab: 'workspace' })
     expect(fromAddress('settings/mcp-servers')).toMatchObject({ sectionId: 'config', tab: 'mcp-servers' })
     expect(fromAddress('settings/anything-else')).toMatchObject({ sectionId: 'admin', tab: 'limits' })

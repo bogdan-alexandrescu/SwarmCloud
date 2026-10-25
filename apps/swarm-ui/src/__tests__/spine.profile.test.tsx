@@ -8,7 +8,8 @@
  * person's avatar -- under the Hive until NAV-FOOT (#1672, owner
  * 2026-10-20) moved it to the spine's foot, the last item, below Help; its
  * panel lists Profile, API keys, Workspace, MCP servers and People and
- * roles. The foot keeps the name (a link to Profile since NAV-FOOT), the
+ * roles (Profile alone since CONFIG-NAV and SSC-UI moved the rest to
+ * Config). The foot keeps the name (a link to Profile since NAV-FOOT), the
  * admin tag, Sign out, the email and the theme. The addresses are unchanged.
  *
  * MUTATION: drop the Profile item from the spine, or draw it above Help,
@@ -32,8 +33,8 @@ afterEach(() => {
 
 const PAGES: readonly [string, string][] = [
   ['Profile', '/settings/profile'],
-  ['API keys', '/settings/keys'],
-  // Workspace, MCP servers and People and roles are Config's since CONFIG-NAV (part of #2157).
+  // Workspace, MCP servers and People and roles are Config's since CONFIG-NAV
+  // (part of #2157); API keys is Config › Secrets' since SSC-UI (part of #2158).
 ]
 
 function shell(section: 'profile' | 'work', tab: string, go = vi.fn()) {
@@ -87,45 +88,39 @@ describe('the spine (NAV-PROFILE)', () => {
 })
 
 describe('the Profile panel (NAV-PROFILE)', () => {
-  it('is headed Profile and lists the two settings pages in order, each at its path', () => {
+  it('is headed Profile and lists the settings page at its path', () => {
     shell('profile', 'profile')
     expect(document.querySelector('.sk-panel .sk-pt')?.textContent).toBe('Profile')
     expect(panelRows().map((a) => [a.querySelector('.sk-pl')?.textContent, a.getAttribute('href')])).toEqual(PAGES)
   })
 
-  it('routes a plain click on API keys to settings/keys', () => {
-    const go = vi.fn()
-    shell('profile', 'profile', go)
-    fireEvent.click(panelRows().find((a) => a.textContent?.includes('API keys'))!)
-    expect(go).toHaveBeenCalledWith('settings/keys')
-  })
-
-  it('lights API keys on the one-time link address', () => {
-    shell('profile', 'keys/typesafe')
-    const on = panelRows().filter((a) => a.classList.contains('is-on'))
-    expect(on.map((a) => a.querySelector('.sk-pl')?.textContent)).toEqual(['API keys'])
+  // BGD 2026-10-23T23:57Z: "Settings keeps only Profile; the old addresses redirect."
+  it('has no API keys row: its keys are Config › Secrets\'', () => {
+    shell('profile', 'profile')
+    // MUTATION: put the API keys row back in PANEL_PAGES.profile -> fails.
+    expect(panelRows().some((a) => a.textContent?.includes('API keys'))).toBe(false)
   })
 
   it('is what the collapsed spine flies out from Profile', () => {
     localStorage.setItem('swarm.shell.collapsed', '1')
-    shell('profile', 'keys')
+    shell('profile', 'profile')
     fireEvent.focus(spine().querySelector('a[data-sec="profile"]')!)
     const fly = document.querySelector<HTMLElement>('.sk-flyout')
     expect(fly, 'Profile opens no flyout').not.toBeNull()
     expect(fly!.querySelector('b')?.textContent).toBe('Profile')
     const rows = [...fly!.querySelectorAll<HTMLAnchorElement>('a')]
     expect(rows.map((a) => [a.textContent, a.getAttribute('href')])).toEqual(PAGES)
-    expect(rows.filter((a) => a.getAttribute('aria-current') === 'page').map((a) => a.textContent)).toEqual(['API keys'])
+    expect(rows.filter((a) => a.getAttribute('aria-current') === 'page').map((a) => a.textContent)).toEqual(['Profile'])
   })
 })
 
 describe('each settings address lights Profile and its own page (NAV-PROFILE)', () => {
   const ADDRESSES: readonly [string, string, string][] = [
     ['/settings/profile', '', 'Profile'],
-    ['/settings/keys', '', 'API keys'],
-    ['/settings/keys/typesafe', '?scope=user', 'API keys'],
     // `/settings/workspace`, `/settings/mcp-servers` and `/settings/people` land
-    // on Config since CONFIG-NAV (config.nav.test.tsx holds where).
+    // on Config since CONFIG-NAV (config.nav.test.tsx holds where), and
+    // `/settings/keys` and its link on Config › Secrets since SSC-UI
+    // (secrets.routes.test.ts).
   ]
 
   it.each(ADDRESSES)('routes %s%s to Profile in spineOf', (path, query) => {
@@ -163,8 +158,8 @@ describe('the panel foot (NAV-PROFILE)', () => {
 })
 
 describe('the phone drawer (NAV-PROFILE)', () => {
-  it('holds Profile and, opened on a settings page, its two pages', () => {
-    shell('profile', 'keys')
+  it('holds Profile and, opened on a settings page, its page', () => {
+    shell('profile', 'profile')
     fireEvent.click(document.querySelector<HTMLElement>('.sk-pbar button[aria-label="Open the menu"]')!)
     const app = document.querySelector<HTMLElement>('.sk-app.has-drawer')
     expect(app, 'the drawer did not open').not.toBeNull()

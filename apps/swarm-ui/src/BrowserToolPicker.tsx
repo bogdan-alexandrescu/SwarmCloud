@@ -181,9 +181,10 @@ export function withBrowserTool(input: Record<string, unknown>, tool: string): R
   return out
 }
 
-const KEYS_ADDRESS = 'settings/keys'
+// Config › Secrets' keys since SSC-UI moved Settings › API keys there.
+const KEYS_ADDRESS = 'config/secrets?scope=workspace'
 
-/** Settings › API keys, routed in-app like the panel's own link (Spine.tsx). */
+/** Config › Secrets, routed in-app like the panel's own link (Spine.tsx). */
 function KeysLink() {
   const go = (e: MouseEvent<HTMLAnchorElement>) => {
     if (!routedClick(e)) return
@@ -191,7 +192,7 @@ function KeysLink() {
     window.history.pushState(null, '', addressToPath(KEYS_ADDRESS))
     window.dispatchEvent(new PopStateEvent('popstate'))
   }
-  return <a href={addressToPath(KEYS_ADDRESS)} onClick={go}>Settings › API keys</a>
+  return <a href={addressToPath(KEYS_ADDRESS)} onClick={go}>Config › Secrets</a>
 }
 
 function JevOff({ typesafe, judgment }: { typesafe: TypesafeKey; judgment: JevJudgment }) {

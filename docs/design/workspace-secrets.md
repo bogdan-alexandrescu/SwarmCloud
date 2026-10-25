@@ -23,8 +23,8 @@ the repository's. The store also gained a write-only destination it does not
 keep, a repository's GitHub Actions secrets, and one read of every scope,
 `GET /v1/secrets/overview`. §4 and §5 here record what SSC-REPO-SCOPE,
 SSC-ADMIT-REPO and SSC-OVERVIEW built inside this store; secrets-scopes.md
-§12 records the rest. This store's console moves to Config › Secrets with
-lane SSC-UI, which is not built.
+§12 records the rest. This store's console moved to Config › Secrets with
+lane SSC-UI (2026-10-25), its list and grant matrix mounted there whole.
 
 **Amended 2026-10-19 (ROLES-DOCS, part of #1518): Q4 is superseded.** A
 group workspace's secrets are managed by its workspace `admin`, a role that

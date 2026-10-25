@@ -2051,9 +2051,14 @@ SSC_BUILT = "## 12. What was built (2026-10-24, lane SSC-DOCS, part of #2158)"
 SSC_SECURITY = "## Secrets scopes and GitHub Actions secrets"
 SSC_KEYS = "## 7. Secrets scopes: what changes for these keys, and what does not (#2158)"
 #: §9's lanes that are not built, each for a reason the status line gives:
-#: phase 0 because Q3 declined the second App, the console rows because they
-#: wait for #2157's Config section.
-SSC_UNBUILT = ("SSC-SECRETS-APP", "SSC-UI", "SSC-UI-ACTIONS")
+#: phase 0 because Q3 declined the second App, the Actions pane because it
+#: follows SSC-UI's `Secrets.tsx`.
+SSC_UNBUILT = ("SSC-SECRETS-APP", "SSC-UI-ACTIONS")
+#: Lanes built whose PR's number is not known to the lane that wrote them (a
+#: SwarmCloud lane's PR is opened by the worker after it finishes): §9 and
+#: §12 name the lane until a docs follow-up writes the number in. Each is
+#: held to the file it built.
+SSC_BUILT_BY_LANE = {"SSC-UI": "apps/swarm-ui/src/Secrets.tsx"}
 #: Lanes the build added, each answered on #2158 from §2.1's rule.
 SSC_ADDED = {"SSC-REPO-DELETE": 2239, "SSC-REPO-DELETE-TXN": 2245, "SSC-UNREGISTER-TXN": 2249,
              "LINK-ADMIN-WRITES": 2229, "PLATFORM-SECRETS-500": 2221}
@@ -2097,6 +2102,11 @@ def _check_ssc_lanes(text: str) -> None:
         if lane in SSC_UNBUILT:
             assert cell.strip().startswith("(not built"), f"§9 does not mark {lane} not built"
             continue
+        if lane in SSC_BUILT_BY_LANE and not re.match(r"\s*\(built, PR \d+", cell):
+            assert cell.strip().startswith(f"(built, lane {lane}"), f"§9 does not mark {lane} built: {cell!r}"
+            assert f"**{lane} (lane {lane}" in built, f"§12 has no entry for {lane}"
+            assert (REPO / SSC_BUILT_BY_LANE[lane]).exists(), f"§9 marks {lane} built but {SSC_BUILT_BY_LANE[lane]} is absent"
+            continue
         if lane == "SSC-DOCS":
             assert cell.strip().startswith("(built"), cell
             continue
@@ -2105,9 +2115,9 @@ def _check_ssc_lanes(text: str) -> None:
         assert f"**{lane} (PR {pr.group(1)}" in built, f"§12 has no entry for {lane} with PR {pr.group(1)}"
     for lane, pr in SSC_ADDED.items():
         assert f"**{lane} (PR {pr})" in built or f"PR {pr} ({lane})" in built, lane
-    # The console rows stay unbuilt only while their files are absent.
-    if (REPO / "apps" / "swarm-ui" / "src" / "Secrets.tsx").exists():
-        raise AssertionError("SSC-UI's Secrets.tsx exists: mark SSC-UI built in §9 and §12")
+    # The Actions pane stays unbuilt only while its file is absent.
+    if (REPO / "apps" / "swarm-ui" / "src" / "SecretsActions.tsx").exists():
+        raise AssertionError("SSC-UI-ACTIONS' SecretsActions.tsx exists: mark it built in §9 and §12")
 
 
 def _check_ssc_code(text: str) -> None:
@@ -2180,7 +2190,7 @@ def _check_ssc_provider_keys(text: str) -> None:
     assert "**A workspace secrets store is proposed, not built**" not in text
     head = _flat(text.split("## 1. Routes", 1)[0])
     assert "`apps/swarm-api/swarm_api/secrets_overview.py::_provider_key_rows`" in head
-    assert "lane SSC-UI, not built" in head
+    assert "lane SSC-UI's, built" in head
     body = _flat(_section(text, SSC_KEYS))
     assert "the person's wins, then the repository's, then the workspace's" in body
     assert "PyNaCl" in body and "security.md#secrets-scopes-and-github-actions-secrets" in body
@@ -2210,8 +2220,10 @@ _SSC_MUTATIONS = [
     ("lanes", "| 1 | **SSC-OVERVIEW** (built, PR 2248) |", "| 1 | **SSC-OVERVIEW** |"),
     ("lanes", "**SSC-OVERVIEW (PR 2248).** §4 and §6.2: `GET /v1/secrets/overview` reads",
      "**SSC-OVERVIEW.** §4 and §6.2: `GET /v1/secrets/overview` reads"),
-    ("status", "and the console.** Designed 2026-10-23 (lane SECRETS-SCOPES-DESIGN, PR 2159);",
-     "and the console.** Nothing in this document is built (lane SECRETS-SCOPES-DESIGN, PR 2159);"),
+    ("status", "and the console's GitHub Actions pane.** Designed 2026-10-23 (lane SECRETS-SCOPES-DESIGN, PR 2159);",
+     "and the console's GitHub Actions pane.** Nothing in this document is built (lane SECRETS-SCOPES-DESIGN, PR 2159);"),
+    ("lanes", "| 2 | **SSC-UI** (built, lane SSC-UI, 2026-10-25, to Config proposal E; §12) |",
+     "| 2 | **SSC-UI** |"),
     ("code", "| `grant_key_required` | a repository grant is written unattested, and the release drops it, "
      "because a repository grant is released only when attested (§2.2) | every environment holds the grant key |",
      ""),

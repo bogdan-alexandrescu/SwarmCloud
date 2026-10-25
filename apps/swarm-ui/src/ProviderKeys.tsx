@@ -102,7 +102,13 @@ function useWho(): Who | null {
   return who
 }
 
-export function ProviderKeysScreen({ link }: { link: KeyLink | null }) {
+/**
+ * `embedded`: drawn inside Config › Secrets' "Keys for agents and MCP"
+ * (SSC-UI, part of #2158), where Settings › API keys moved (BGD
+ * 2026-10-23T23:57Z): no head of its own and no Jev backend card (the page
+ * draws that once), the same form and rules.
+ */
+export function ProviderKeysScreen({ link, embedded = false }: { link: KeyLink | null; embedded?: boolean }) {
   const keys = useUrRead(() => loadProviderKeys(PROVIDER), PROVIDER)
   const who = useWho()
   // The link's token, read once; null once it has been sent.
@@ -120,9 +126,11 @@ export function ProviderKeysScreen({ link }: { link: KeyLink | null }) {
 
   return (
     <div className="pk-page">
-      <PageHead title="API keys">
-        <UrRefresh reads={[keys]} />
-      </PageHead>
+      {!embedded && (
+        <PageHead title="API keys">
+          <UrRefresh reads={[keys]} />
+        </PageHead>
+      )}
       {link !== null && (
         <Banner tone="info" title="Opened from a one-time link">
           Paste the key below. It goes from this page to the platform&rsquo;s secret store and nowhere else: Claude, the
@@ -132,7 +140,7 @@ export function ProviderKeysScreen({ link }: { link: KeyLink | null }) {
       )}
       {/* Which backend Jev judges with (JUDGE-SELECT): a TypeSafe key below is
           needed only when it is TypeSafe. */}
-      <JevBackendCard />
+      {!embedded && <JevBackendCard />}
       <Card title="TypeSafe">
         <p className="pk-lead">
           TypeSafe serves the Jev judgment models. A key saved here is write-only: no page, route or log can show it

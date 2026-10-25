@@ -6,7 +6,7 @@
 //     not declare it refuses the key with 422 `invalid_input`;
 //   * Auto is the default and sends nothing; any other pick sends
 //     `input.browser_tool`;
-//   * Jev is disabled, with a link to Settings › API keys, when
+//   * Jev is disabled, with a link to Config › Secrets (Settings › API keys until SSC-UI), when
 //     `GET /v1/provider-keys/typesafe` says no key would be used, and picking
 //     it prints the TypeSafe data notice inline;
 //   * the read-only Network row is drawn from the profile's served `egress`,
@@ -201,14 +201,15 @@ describe('what the click sends', () => {
 })
 
 describe('Jev and the TypeSafe key', () => {
-  it('is disabled, with a link to Settings › API keys, when no key would be used', async () => {
+  // Settings › API keys moved to Config › Secrets (SSC-UI, part of #2158).
+  it('is disabled, with a link to Config › Secrets, when no key would be used', async () => {
     api.loadProviderKeys.mockResolvedValue(keys('none'))
     api.loadCapacity.mockResolvedValue(await capacity({ declare: true }))
     const c = await browserForm()
     await waitFor(() => expect((tool(/^Jev/) as HTMLInputElement).disabled).toBe(true), WAIT)
     const why = c.querySelector<HTMLElement>('.btp-jev-off')!
-    expect(visible(why)).toBe('Add a TypeSafe key in Settings › API keys')
-    expect(within(why).getByRole('link', { name: 'Settings › API keys' }).getAttribute('href')).toBe('/settings/keys')
+    expect(visible(why)).toBe('Add a TypeSafe key in Config › Secrets')
+    expect(within(why).getByRole('link', { name: 'Config › Secrets' }).getAttribute('href')).toBe('/config/secrets?scope=workspace')
     expect(api.loadProviderKeys).toHaveBeenCalledWith('typesafe')
   })
 

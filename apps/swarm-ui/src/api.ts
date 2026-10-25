@@ -7047,6 +7047,9 @@ const FIXTURE_READS: Readonly<Record<string, (url: string) => FixtureBody | unde
   '/v1/admin/runner-sizes/versions': () => (fixtureIsAdmin ? { body: fixtureRunnerSizeVersions() } : 'admin'),
   // Setup and Access (QAFIX6-FIXTURE d): the checklist, the GitHub card and the grants table.
   '/v1/onboarding': () => ({ body: fixtureOnboarding() }),
+  // Config › Secrets and Admin › Platform secrets (SSC-UI).
+  '/v1/secrets/overview': (url) => ({ body: fixtureSecretsOverview(url) }),
+  '/v1/admin/platform-secrets': () => (fixtureIsAdmin ? { body: fixturePlatformSecrets() } : 'admin'),
   '/v1/forge/permissions': () => ({ body: fixtureForgePermissions() }),
   '/v1/access': () => ({ body: fixtureAccess() }),
   '/v1/access/orgs': () => ({ body: fixtureAccessOwners() }),
@@ -7398,6 +7401,8 @@ export interface WorkspaceSecret {
 /** `GET /v1/workspace/secrets`, as the page reads it. */
 export interface WorkspaceSecretList {
   tenant_id: string
+  /** `owner/repo` on a repository's list (`GET /v1/repositories/{repo_id}/secrets`); null on the workspace's. */
+  repository: string | null
   /** Only an explicit true: an unread flag offers no write. */
   can_manage: boolean
   secrets: WorkspaceSecret[]
@@ -7474,6 +7479,7 @@ function normWorkspaceSecretList(raw: unknown): WorkspaceSecretList {
   const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
   return {
     tenant_id: wsText(r.tenant_id) ?? '',
+    repository: wsText(r.repository),
     can_manage: r.can_manage === true,
     secrets: (Array.isArray(r.secrets) ? r.secrets : []).map(normWorkspaceSecret).filter((s): s is WorkspaceSecret => s !== null),
   }
@@ -7507,10 +7513,26 @@ function normWorkspaceSecretConsumers(raw: unknown): WorkspaceSecretConsumer[] {
  * owner manages, granted to two consumers and not a third. No value: the API
  * serves none.
  */
-async function fixtureWorkspaceSecrets(target: ApiRoute): Promise<Result<WorkspaceSecretList>> {
+async function fixtureWorkspaceSecrets(target: ApiRoute, repoId: string | null = null): Promise<Result<WorkspaceSecretList>> {
   await new Promise((r) => setTimeout(r, 80))
   noteFixtureProbe(target, 80, true)
   const at = new Date(Date.now() - 2 * 86_400_000).toISOString()
+  if (repoId !== null) {
+    // A repository's secrets for agents: one, granted to one profile.
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: normWorkspaceSecretList({
+        tenant_id: FIXTURE_TENANT,
+        can_manage: true,
+        secrets: [{
+          name: 'test-db-password', provider: 'other', kind: 'opaque', current_version: '1',
+          created_at: at, created_by: 'alice@example.com', rotated_at: null, rotated_by: null,
+          grants: [{ consumer: 'profile:claude-code', enabled: true }],
+        }],
+      }),
+    }
+  }
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -7539,10 +7561,15 @@ function fixtureSecretsNotServed(target: ApiRoute): Result<unknown> {
   }
 }
 
-/** `GET /v1/workspace/secrets`: the selected workspace's secrets and grants, and whether this caller manages them. */
-export async function loadWorkspaceSecrets(): Promise<Result<WorkspaceSecretList>> {
-  const target = route('/v1/workspace/secrets')
-  if (USE_FIXTURES) return fixtureWorkspaceSecrets(target)
+/**
+ * `GET /v1/workspace/secrets`: the selected workspace's secrets and grants,
+ * and whether this caller manages them. With `repoId`, the same list for
+ * that registration's secrets (`GET /v1/repositories/{repo_id}/secrets`,
+ * SSC-REPO-SCOPE): the store's shapes, `scope: repository` implied by the path.
+ */
+export async function loadWorkspaceSecrets(repoId: string | null = null): Promise<Result<WorkspaceSecretList>> {
+  const target = repoId === null ? route('/v1/workspace/secrets') : route('/v1/repositories/{repo_id}/secrets', { repo_id: repoId })
+  if (USE_FIXTURES) return fixtureWorkspaceSecrets(target, repoId)
   const r = await read<unknown>(target, () => false)
   if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normWorkspaceSecretList(r.data) }
   return r
@@ -7587,8 +7614,8 @@ export async function loadWorkspaceSecretCatalogue(): Promise<Result<WorkspaceSe
  * authorises nothing (the caller's session does). The answer is not handed
  * back: it is a record, and the page reads the list again.
  */
-export async function createWorkspaceSecret(body: WorkspaceSecretCreate, linkToken: string | null): Promise<Result<null>> {
-  const target = route('/v1/workspace/secrets')
+export async function createWorkspaceSecret(body: WorkspaceSecretCreate, linkToken: string | null, repoId: string | null = null): Promise<Result<null>> {
+  const target = repoId === null ? route('/v1/workspace/secrets') : route('/v1/repositories/{repo_id}/secrets', { repo_id: repoId })
   if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<null>
   const r = await write(target, 'POST', linkToken === null ? body : { ...body, link_token: linkToken })
   return r.status === 'error' ? r : { status: 'ok', fetchedAt: Date.now(), data: null }
@@ -7609,8 +7636,10 @@ export type WorkspaceSecretRotate = { value: string } | { fields: Record<string,
  * so the API can consume it. The answer is the record from the allow-list
  * (never a value), or null when it carried none.
  */
-export async function rotateWorkspaceSecret(name: string, body: WorkspaceSecretRotate, linkToken: string | null): Promise<Result<WorkspaceSecret | null>> {
-  const target = route('/v1/workspace/secrets/{name}/value', { name })
+export async function rotateWorkspaceSecret(name: string, body: WorkspaceSecretRotate, linkToken: string | null, repoId: string | null = null): Promise<Result<WorkspaceSecret | null>> {
+  const target = repoId === null
+    ? route('/v1/workspace/secrets/{name}/value', { name })
+    : route('/v1/repositories/{repo_id}/secrets/{name}/value', { repo_id: repoId, name })
   if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<null>
   const r = await write(target, 'PUT', linkToken === null ? body : { ...body, link_token: linkToken })
   if (r.status === 'error') return r
@@ -7624,8 +7653,10 @@ export async function rotateWorkspaceSecret(name: string, body: WorkspaceSecretR
  * only for a consumer that declares several. The answer is the record's
  * grants after the write, or null when it carried none.
  */
-export async function setWorkspaceSecretGrant(name: string, consumer: string, enabled: boolean, slot: string | null = null): Promise<Result<WorkspaceSecret | null>> {
-  const target = route('/v1/workspace/secrets/{name}/grants/{consumer}', { name, consumer })
+export async function setWorkspaceSecretGrant(name: string, consumer: string, enabled: boolean, slot: string | null = null, repoId: string | null = null): Promise<Result<WorkspaceSecret | null>> {
+  const target = repoId === null
+    ? route('/v1/workspace/secrets/{name}/grants/{consumer}', { name, consumer })
+    : route('/v1/repositories/{repo_id}/secrets/{name}/grants/{consumer}', { repo_id: repoId, name, consumer })
   if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<null>
   const r = await write(target, 'PUT', slot === null ? { enabled } : { enabled, slot })
   if (r.status === 'error') return r
@@ -7633,10 +7664,335 @@ export async function setWorkspaceSecretGrant(name: string, consumer: string, en
 }
 
 /** `DELETE /v1/workspace/secrets/{name}`: destroy every version and disable every grant; the body repeats the name. */
-export async function deleteWorkspaceSecret(name: string): Promise<Result<unknown>> {
-  const target = route('/v1/workspace/secrets/{name}', { name })
+export async function deleteWorkspaceSecret(name: string, repoId: string | null = null): Promise<Result<unknown>> {
+  const target = repoId === null
+    ? route('/v1/workspace/secrets/{name}', { name })
+    : route('/v1/repositories/{repo_id}/secrets/{name}', { repo_id: repoId, name })
   if (USE_FIXTURES) return fixtureSecretsNotServed(target)
   return write(target, 'DELETE', { name })
+}
+
+// ---------------------------------------------------------------------------
+// Config › Secrets (SSC-UI, part of #2158; docs/design/secrets-scopes.md §4,
+// §6.1-§6.3). Secrets.tsx and AdminPlatformSecrets.tsx are the callers.
+//
+// ONE READ PER SCOPE, NEVER A VALUE. `GET /v1/secrets/overview` (SSC-OVERVIEW)
+// is copied row by row from an allow-list (`normSecretsRow`): a value, a
+// length, `last4` or a version name a response carried by mistake is dropped
+// before any screen sees it, as `normWorkspaceSecret` drops them.
+//
+// A LINK'S TOKEN IS KEPT, NOT ITS URL. Every mint answers `{url, path,
+// expires_at}`; only the `t` of its path is handed back, for the caller to
+// hold in memory and send once with the write it was minted for. The URL is
+// never kept, drawn or logged: it carries the token.
+// ---------------------------------------------------------------------------
+
+/** The overview's three scopes (`secrets_overview.SCOPES`). */
+export type SecretsScope = 'workspace' | 'personal' | 'repository'
+
+/** One other secret a row's name meets (§2.4): who wins, or what the winner hides, and where. */
+export interface SecretsShadow {
+  scope: SecretsScope
+  /** "agents of dana@example.com", "agents that clone example-org/example-api", "agents of this workspace". */
+  where: string
+  slot: string
+  person: string | null
+  repository: string | null
+}
+
+/** One overview row (`secrets_overview._secret_row` and its siblings): status only. */
+export interface SecretsRow {
+  /** agents · keys · browser_sessions · qa_sign_in · github · actions · accounts */
+  section: string
+  store: string
+  name: string
+  /** set · unset, or a store's own state (a token's `active`, a login's `saved`). */
+  status: string
+  set_at: string | null
+  set_by: string | null
+  consumers: string[]
+  can_manage: boolean
+  kind: string | null
+  provider: string | null
+  /** The record's scope on a store row; a GitHub token's scope on a token row. */
+  scope: string | null
+  /** The secrets that win this row's name, on whose agents (Q1). */
+  shadowed_by: SecretsShadow[]
+  /** The secrets this row's name hides, on whose agents. */
+  shadows: SecretsShadow[]
+  /** A personal secret's opt-in to the selected group workspace; null where it does not apply. */
+  opted_in: boolean | null
+  /** An MCP server row: the store secrets granted to it. */
+  secrets: string[]
+  /** A QA row's target, environment and field; an Actions row's environment. */
+  target_id: string | null
+  environment: string | null
+  field: string | null
+  /** A GitHub token row's login, verification and expiry; a browser session's expiry. */
+  forge_login: string | null
+  verified_at: string | null
+  expires_at: string | null
+  /** A row managed elsewhere: the console path it is managed on. */
+  page: string | null
+}
+
+/** `GET /v1/secrets/overview?scope=..[&repo_id=..]`. */
+export interface SecretsOverview {
+  tenant_id: string
+  scope: SecretsScope
+  repo_id: string | null
+  repository: string | null
+  /** The caller's own personal workspace, on the personal scope; null when they have none. */
+  personal_tenant_id: string | null
+  /** Only an explicit true. */
+  can_manage: boolean
+  rows: SecretsRow[]
+}
+
+const SECRETS_SCOPES: readonly SecretsScope[] = ['workspace', 'personal', 'repository']
+
+function normShadows(raw: unknown): SecretsShadow[] {
+  return (Array.isArray(raw) ? raw : []).flatMap((e): SecretsShadow[] => {
+    if (typeof e !== 'object' || e === null) return []
+    const r = e as Record<string, unknown>
+    const scope = SECRETS_SCOPES.find((s) => s === r.scope)
+    const where = wsText(r.where)
+    if (scope === undefined || where === null) return []
+    return [{ scope, where, slot: wsText(r.slot) ?? '', person: wsText(r.person), repository: wsText(r.repository) }]
+  })
+}
+
+function normSecretsRow(raw: unknown): SecretsRow | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const r = raw as Record<string, unknown>
+  const section = wsText(r.section)
+  const name = wsText(r.name)
+  if (section === null || name === null) return null
+  return {
+    section,
+    store: wsText(r.store) ?? '',
+    name,
+    status: wsText(r.status) ?? '',
+    set_at: wsText(r.set_at),
+    set_by: wsText(r.set_by),
+    consumers: wsStrings(r.consumers),
+    can_manage: r.can_manage === true,
+    kind: wsText(r.kind),
+    provider: wsText(r.provider),
+    scope: wsText(r.scope),
+    shadowed_by: normShadows(r.shadowed_by),
+    shadows: normShadows(r.shadows),
+    opted_in: typeof r.opted_in === 'boolean' ? r.opted_in : null,
+    secrets: wsStrings(r.secrets),
+    target_id: wsText(r.target_id),
+    environment: wsText(r.environment),
+    field: wsText(r.field),
+    forge_login: wsText(r.forge_login),
+    verified_at: wsText(r.verified_at),
+    expires_at: wsText(r.expires_at),
+    page: wsText(r.page),
+  }
+}
+
+export function normSecretsOverview(raw: unknown): SecretsOverview {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  return {
+    tenant_id: wsText(r.tenant_id) ?? '',
+    scope: SECRETS_SCOPES.find((s) => s === r.scope) ?? 'workspace',
+    repo_id: wsText(r.repo_id),
+    repository: wsText(r.repository),
+    personal_tenant_id: wsText(r.personal_tenant_id),
+    can_manage: r.can_manage === true,
+    rows: (Array.isArray(r.rows) ? r.rows : []).map(normSecretsRow).filter((x): x is SecretsRow => x !== null),
+  }
+}
+
+/** The fixture build's overview: a few rows of each scope, one shadowed name, nothing of a value. */
+function fixtureSecretsOverview(url: string): unknown {
+  const q = new URLSearchParams(url.slice(url.indexOf('?') + 1))
+  const scope = q.get('scope') ?? 'workspace'
+  const at = (days: number) => fixtureAgo(days * 24 * FIXTURE_HOUR)
+  const base = { set_at: null, set_by: null, consumers: [], can_manage: true, shadowed_by: [], shadows: [] }
+  const you = { scope: 'personal', person: 'alice@example.com', where: 'agents of alice@example.com', slot: 'files' }
+  if (scope === 'repository') {
+    const repoId = q.get('repo_id') ?? ''
+    const r = FIXTURE_REPOS.find((x) => x.repo_id === repoId)
+    return {
+      tenant_id: FIXTURE_TENANT, scope, repo_id: repoId, repository: r === undefined ? null : `example-org/${r.repo}`, can_manage: true,
+      rows: [
+        { ...base, section: 'agents', store: 'workspace_secrets', name: 'test-db-password', kind: 'opaque', provider: 'other', scope: 'repository', status: 'set', set_at: at(5), set_by: 'alice@example.com', consumers: ['profile:claude-code'] },
+        { ...base, section: 'qa_sign_in', store: 'qa_targets', name: 'Studio', target_id: 'qat_1', environment: 'staging', field: 'credential', status: 'set', set_at: at(2), set_by: 'alice@example.com' },
+        { ...base, section: 'qa_sign_in', store: 'qa_targets', name: 'Studio', target_id: 'qat_1', environment: 'production', field: 'credential', status: 'unset' },
+        { ...base, section: 'actions', store: 'actions_secret_writes', name: 'MERGE_APP_PRIVATE_KEY', environment: 'repo-secrets', status: 'set', set_at: at(2), set_by: 'alice@example.com' },
+      ],
+    }
+  }
+  if (scope === 'personal') {
+    return {
+      tenant_id: FIXTURE_TENANT, scope, personal_tenant_id: FIXTURE_TENANT, can_manage: true,
+      rows: [
+        { ...base, section: 'agents', store: 'workspace_secrets', name: 'typesafe-key', kind: 'api_key', provider: 'typesafe', scope: 'personal', status: 'set', set_at: at(2), set_by: 'alice@example.com', consumers: ['tool:jev-browser', 'component:judge'], opted_in: null },
+        { ...base, section: 'keys', store: 'provider_keys', name: 'typesafe', status: 'set', set_at: at(6), set_by: 'alice@example.com' },
+        { ...base, section: 'browser_sessions', store: 'browser_logins', name: 'studio-staging', status: 'saved', set_at: at(2), set_by: 'alice@example.com', expires_at: new Date(Date.now() + 5 * 24 * FIXTURE_HOUR).toISOString() },
+      ],
+    }
+  }
+  return {
+    tenant_id: FIXTURE_TENANT, scope, can_manage: true,
+    rows: [
+      { ...base, section: 'agents', store: 'workspace_secrets', name: 'typesafe-key', kind: 'api_key', provider: 'typesafe', scope: 'workspace', status: 'set', set_at: at(2), set_by: 'alice@example.com', consumers: ['tool:jev-browser', 'component:judge'], shadowed_by: [you] },
+      { ...base, section: 'keys', store: 'provider_keys', name: 'typesafe', status: 'unset' },
+      { ...base, section: 'keys', store: 'runner_provider_keys', name: 'anthropic', status: 'set', consumers: ['profile:claude-code'] },
+      { ...base, section: 'accounts', store: 'pool_accounts', name: 'subscription accounts', status: 'elsewhere', can_manage: false, page: '/capacity/accounts' },
+      { ...base, section: 'github', store: 'git_tokens', name: 'swarm-tenant-x-git', scope: 'tenant', status: 'active', kind: 'app_user', forge_login: 'operator', verified_at: new Date(Date.now() - 3 * 60_000).toISOString(), expires_at: new Date(Date.now() + 7 * FIXTURE_HOUR).toISOString(), can_manage: false, page: '/repositories/tokens' },
+    ],
+  }
+}
+
+/**
+ * `GET /v1/secrets/overview`: every store of one scope in one read (§6.2).
+ * `repoId` with `repository`, and only then: the route refuses the other two.
+ */
+export async function loadSecretsOverview(scope: SecretsScope, repoId: string | null = null): Promise<Result<SecretsOverview>> {
+  const q = new URLSearchParams({ scope })
+  if (scope === 'repository' && repoId !== null) q.set('repo_id', repoId)
+  return readAs(route('/v1/secrets/overview', {}, q), normSecretsOverview)
+}
+
+/** A minted link's token, from its `path`; null when the answer carried none. Never its URL. */
+function linkTokenOf(r: Result<unknown>): { token: string | null; expires_at: string | null } {
+  const data = r.status === 'ok' || r.status === 'stale' ? r.data : null
+  const body = (typeof data === 'object' && data !== null ? data : {}) as Record<string, unknown>
+  const path = typeof body.path === 'string' ? body.path : ''
+  const q = path.indexOf('?')
+  const t = q === -1 ? null : new URLSearchParams(path.slice(q + 1)).get('t')
+  return { token: t === null || t === '' ? null : t, expires_at: wsText(body.expires_at) }
+}
+
+/** A minted link: its token, for the page to hold in memory, and its expiry. */
+export type MintedLink = { token: string | null; expires_at: string | null }
+
+async function mint(target: ApiRoute, body: unknown): Promise<Result<MintedLink>> {
+  if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<MintedLink>
+  const r = await write(target, 'POST', body)
+  if (r.status === 'error') return r
+  return { status: 'ok', fetchedAt: Date.now(), data: linkTokenOf(r) }
+}
+
+/**
+ * `POST /v1/workspace/secrets/links`, or `/v1/repositories/{repo_id}/secrets/links`:
+ * the store's one-time add or rotate link, which the page mints for itself
+ * when Set is pressed (§6.1: "a link the page mints for itself on click").
+ */
+export async function mintWorkspaceSecretLink(action: 'add' | 'rotate', name: string | null, repoId: string | null = null): Promise<Result<MintedLink>> {
+  const target = repoId === null
+    ? route('/v1/workspace/secrets/links')
+    : route('/v1/repositories/{repo_id}/secrets/links', { repo_id: repoId })
+  return mint(target, action === 'rotate' ? { action, name } : { action })
+}
+
+/** `POST /v1/provider-keys/{provider}/links`: the provider-key form's one-time link, for one scope. */
+export async function mintProviderKeyLink(provider: string, scope: ProviderKeyScope): Promise<Result<MintedLink>> {
+  return mint(route('/v1/provider-keys/{provider}/links', { provider }), { scope })
+}
+
+/** `POST /v1/tenants/me/credentials/links` (SSC-LINKS): the runner-key form's one-time link, for one provider. */
+export async function mintRunnerKeyLink(provider: string): Promise<Result<MintedLink>> {
+  return mint(route('/v1/tenants/me/credentials/links'), { provider })
+}
+
+/**
+ * `POST /v1/tenants/me/credentials`: the selected workspace's runner LLM key,
+ * its value once, in this one request's body. `linkToken` is the `t` of the
+ * runner-key link it was opened with, consumed before the write.
+ */
+export async function putRunnerKey(provider: string, apiKey: string, linkToken: string | null): Promise<Result<unknown>> {
+  const target = route('/v1/tenants/me/credentials')
+  if (USE_FIXTURES) return fixtureSecretsNotServed(target)
+  return write(target, 'POST', linkToken === null ? { provider, api_key: apiKey } : { provider, api_key: apiKey, link_token: linkToken })
+}
+
+/** One Admin › Platform secrets row (`platform_secrets._status_row`): status only. */
+export interface PlatformSecretRow {
+  secret_id: string
+  /** set · not_set · not_declared · unreadable */
+  status: string
+  /** Why it is unreadable: `permission_denied` or `read_failed`. */
+  reason: string | null
+  enabled_versions: number | null
+  newest_enabled_at: string | null
+  rotation_in_grace: boolean
+  managed_by: string
+  written_by: string
+  /** platform · account */
+  family: string
+  owner_tenant: string | null
+  label: string | null
+  half: string | null
+}
+
+/** `GET /v1/admin/platform-secrets`. */
+export interface PlatformSecrets {
+  secrets: PlatformSecretRow[]
+  accounts_unread: boolean
+  accounts_refused: number
+  accounts_truncated: boolean
+  read_at: string | null
+}
+
+function normPlatformSecrets(raw: unknown): PlatformSecrets {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const rows = (Array.isArray(r.secrets) ? r.secrets : []).flatMap((e): PlatformSecretRow[] => {
+    if (typeof e !== 'object' || e === null) return []
+    const x = e as Record<string, unknown>
+    const id = wsText(x.secret_id)
+    if (id === null) return []
+    return [{
+      secret_id: id,
+      status: wsText(x.status) ?? 'unreadable',
+      reason: wsText(x.reason),
+      enabled_versions: typeof x.enabled_versions === 'number' ? x.enabled_versions : null,
+      newest_enabled_at: wsText(x.newest_enabled_at),
+      rotation_in_grace: x.rotation_in_grace === true,
+      managed_by: wsText(x.managed_by) ?? '',
+      written_by: wsText(x.written_by) ?? '',
+      family: wsText(x.family) ?? 'platform',
+      owner_tenant: wsText(x.owner_tenant),
+      label: wsText(x.label),
+      half: wsText(x.half),
+    }]
+  })
+  return {
+    secrets: rows,
+    accounts_unread: r.accounts_unread === true,
+    accounts_refused: typeof r.accounts_refused === 'number' ? r.accounts_refused : 0,
+    accounts_truncated: r.accounts_truncated === true,
+    read_at: wsText(r.read_at),
+  }
+}
+
+/** The fixture build's catalogue: one secret mid-rotation, one not declared, one pool account. */
+function fixturePlatformSecrets(): unknown {
+  const at = (days: number) => fixtureAgo(days * 24 * FIXTURE_HOUR)
+  const row = (secret_id: string, managed_by: string, written_by: string, over: Record<string, unknown> = {}) => ({
+    secret_id, managed_by, written_by, status: 'set', reason: null, enabled_versions: 1, newest_enabled_at: at(30), rotation_in_grace: false, family: 'platform', ...over,
+  })
+  return {
+    secrets: [
+      row('swarm-github-app-private-key', 'terraform', 'scripts/create-secrets.sh --github-app private-key --stdin', { newest_enabled_at: at(41) }),
+      row('swarm-github-app-webhook-secret', 'terraform', 'scripts/create-secrets.sh --github-app-webhook-secret --stdin', { newest_enabled_at: at(41) }),
+      row('swarm-search-api-key', 'scripts/create-secrets.sh', 'scripts/create-secrets.sh --search-api-key --stdin', { enabled_versions: 2, rotation_in_grace: true, newest_enabled_at: fixtureAgo(6 * FIXTURE_HOUR) }),
+      row('swarm-live-key', 'terraform', 'scripts/create-secrets.sh --live-key', { status: 'not_declared', enabled_versions: null, newest_enabled_at: null }),
+      row('swarm-workspace-grant-key', 'terraform', 'scripts/create-secrets.sh --workspace-grant-key', { newest_enabled_at: at(23) }),
+      row('swarm-account-team--main', 'quota-broker', 'the quota broker (Capacity › Accounts)', { family: 'account', owner_tenant: 'team', label: 'main', half: 'access', newest_enabled_at: at(2) }),
+    ],
+    accounts_unread: false, accounts_refused: 0, accounts_truncated: false, read_at: fixtureAgo(40_000),
+  }
+}
+
+/** `GET /v1/admin/platform-secrets` (SSC-PLATFORM-STATUS): a platform admin's alone; anyone else is the route's 403. */
+export async function loadPlatformSecrets(): Promise<Result<PlatformSecrets>> {
+  return readAs(route('/v1/admin/platform-secrets'), normPlatformSecrets, (d) => d.secrets.length === 0)
 }
 
 // ---------------------------------------------------------------------------

@@ -172,7 +172,7 @@ function lastAction(s: LiveBrowserTools, now: number): string {
 }
 
 const JEV_WHY: Record<NonNullable<LiveBrowserTools['jev']['reason']>, string> = {
-  no_key: 'Jev is off: there is no TypeSafe key for this agent. Add one in Settings › API keys.',
+  no_key: 'Jev is off: there is no TypeSafe key for this agent. Add one in Config › Secrets.',
   not_installed: 'Jev is off: this runner image does not carry it.',
   not_selected: 'Jev is off: it was not chosen for this agent.',
   no_route:
@@ -295,7 +295,7 @@ export function BrowserBadges({
           </span>
           <span className="bb-line">{lastAction(status, now)}</span>
           <span className="bb-line bb-how">
-            Keys live in Settings › API keys; pick another tool with Browser tool on Submit.
+            Keys live in Config › Secrets; pick another tool with Browser tool on Submit.
           </span>
         </Badge>
       ) : null}
