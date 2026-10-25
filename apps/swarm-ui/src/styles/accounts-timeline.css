@@ -1,0 +1,301 @@
+/* CAPACITY › ACCOUNTS, THE TIMELINE VIEW (#2222; docs/web-ui/mockups/accounts-b.html,
+   B1-B6). One lane per account on a split axis, each window a band against its
+   floor. Imported by AccountsTimeline.tsx. Type from the scale tokens only;
+   colour from the shell's, so dark follows without a second sheet. */
+
+/* ---- the toggle, beside the verdict ---- */
+.acct-viewbar {
+  display: flex;
+  align-items: center;
+  gap: 8px 16px;
+  flex-wrap: wrap;
+  margin: -4px 0 12px;
+}
+.acct-viewbar > .acct-rule { margin: 0; flex: 1 1 320px; min-width: 0; }
+.acct-viewbar > .acct-view { align-self: center; }
+
+/* ---- the frame ---- */
+.acct-tl {
+  margin: 0 12px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.acct-tl-row {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  border-bottom: 1px solid var(--line-soft);
+}
+.acct-tl-lab {
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  border-right: 1px solid var(--line-soft);
+  font-size: var(--t-meta);
+  line-height: var(--lh-meta);
+}
+.acct-tl-trk { position: relative; padding: 10px 12px 10px 0; min-width: 0; }
+.acct-tl-in { position: relative; display: flex; flex-direction: column; gap: 6px; }
+.acct-tl-hl, .acct-tl-org, .acct-tl-clr { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.acct-tl-clr b { color: var(--text); }
+.acct-tl-dim { color: var(--text-dim); font-weight: 400; }
+.acct-tl-stale { color: var(--warn-ink); }
+
+.acct-tl-row.is-axis { background: var(--surface-2); }
+.acct-tl-row.is-axis .acct-tl-lab,
+.acct-tl-row.is-axis .acct-tl-trk { padding-top: 8px; padding-bottom: 8px; }
+.acct-tl-row.is-pool { background: color-mix(in srgb, var(--surface-2) 55%, var(--surface)); }
+.acct-tl-row.is-dup { background: color-mix(in srgb, var(--paused) 5%, var(--surface)); box-shadow: inset 4px 0 0 var(--paused); }
+.acct-tl-row.is-chosen { box-shadow: inset 3px 0 0 var(--info); }
+.acct-tl-row.is-dup.is-chosen { box-shadow: inset 4px 0 0 var(--paused), inset 7px 0 0 var(--info); }
+/* A STALE READING IS PALE (B3): its bands only; its words stay readable. */
+.acct-tl-row.is-stale .acct-tl-ar { opacity: 0.55; }
+
+/* ---- a lane's words ---- */
+.acct-tl-nm { display: flex; gap: 4px 8px; align-items: baseline; flex-wrap: wrap; }
+.acct-tl-name {
+  font: inherit;
+  font-size: var(--t-body);
+  font-weight: 650;
+  color: var(--info);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.acct-tl-name:hover { text-decoration: underline; }
+.acct-tl-name[aria-current='true'] { color: var(--text); }
+.acct-tl-why { font-weight: 600; }
+.acct-tl-why.is-ok { color: var(--ok-ink); }
+.acct-tl-why.is-warn { color: var(--warn-ink); }
+.acct-tl-why.is-bad { color: var(--bad-ink); }
+.acct-tl-why.is-park { color: var(--paused-ink); }
+.acct-tl-why.is-neu { color: var(--text-dim); }
+.acct-tl-dupc {
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--paused) 12%, var(--surface));
+  color: var(--paused-ink);
+}
+
+/* ---- the axis ---- */
+.acct-tl-ax { position: relative; height: 36px; }
+.acct-tl-tk {
+  position: absolute;
+  top: 0;
+  height: 18px;
+  border-left: 1px solid var(--line);
+  padding-left: 4px;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.acct-tl-tk b { color: var(--text); font-weight: 600; }
+/* A midnight inside the next 12 hours sits by the break: its label ends short of the hatch. */
+.acct-tl-tk.is-before { border-left: 0; padding: 0; transform: translateX(calc(-100% - 8px)); }
+.acct-tl-brk {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 8px;
+  margin-left: -4px;
+  background: repeating-linear-gradient(115deg, transparent 0 3px, var(--ctl-bd) 3px 4px);
+  opacity: 0.8;
+}
+.acct-tl-zone { position: absolute; bottom: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-faint); white-space: nowrap; }
+
+/* ---- a window as a band: its words on a line above it ---- */
+.acct-tl-win { display: flex; flex-direction: column; gap: 2px; align-items: stretch; }
+.acct-tl-band {
+  position: relative;
+  height: 30px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--line) 35%, var(--surface));
+}
+.acct-tl-band.is-five { height: 24px; }
+.acct-tl-band.is-unknown,
+.acct-tl-band.is-empty {
+  height: 14px;
+  background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--line) 40%, var(--surface)) 0 5px, var(--surface) 5px 10px);
+}
+.acct-tl-ar { position: absolute; bottom: 0; border-radius: 3px 3px 0 0; }
+.acct-tl-ar.is-bk { background: color-mix(in srgb, var(--bad-ink) 38%, var(--surface)); box-shadow: inset 0 2px 0 var(--bad-ink); }
+.acct-tl-ar.is-ok { background: color-mix(in srgb, var(--ok) 26%, var(--surface)); box-shadow: inset 0 2px 0 var(--ok); }
+.acct-tl-ar.is-st { background: color-mix(in srgb, var(--warn-ink) 26%, var(--surface)); box-shadow: inset 0 2px 0 var(--warn-ink); }
+.acct-tl-ar.is-af {
+  background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--ok) 13%, var(--surface)) 0 6px, color-mix(in srgb, var(--ok) 6%, var(--surface)) 6px 12px);
+}
+.acct-tl-fl { position: absolute; left: 0; right: 0; border-top: 1.5px dashed var(--text-dim); opacity: 0.85; }
+.acct-tl-pace { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; z-index: 2; }
+.acct-tl-pace polyline { fill: none; stroke: var(--info); stroke-width: 2.5; stroke-dasharray: 3 3; }
+/* THE WORDS NEVER SIT UNDER A LINE (B's review fix): an opaque chip above the
+   band, drawn over the next-free-slot line, which passes through every lane. */
+.acct-tl-tx {
+  position: relative;
+  z-index: 5;
+  align-self: flex-start;
+  max-width: 100%;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  padding: 0 4px;
+  margin-left: 2px;
+  border-radius: 3px;
+  color: var(--text);
+  background: var(--surface);
+}
+.acct-tl-tx b { font-weight: 650; }
+.acct-tl-rlw { display: none; }
+.acct-tl-rs {
+  position: absolute;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  margin: -6px 0 0 -6px;
+  transform: rotate(45deg);
+  background: var(--surface);
+  border: 2px solid var(--text-dim);
+  z-index: 3;
+}
+.acct-tl-rs.is-clr { border-color: var(--ok); background: var(--ok); }
+.acct-tl-rl {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-left: 10px;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  padding: 0 4px;
+  border-radius: 3px;
+  white-space: nowrap;
+  color: var(--text-dim);
+  background: var(--surface);
+  z-index: 5;
+}
+.acct-tl-rl.is-clr { color: var(--ok-ink); font-weight: 600; }
+.acct-tl-rl.is-lft { margin-left: 0; transform: translate(calc(-100% - 10px), -50%); }
+
+.acct-tl-pending { margin: 0; padding: 6px 0 6px 10px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); position: relative; z-index: 5; background: inherit; }
+.acct-tl-pending b { color: var(--text); }
+
+/* ---- holds ---- */
+.acct-tl-holds { display: block; padding-left: 8px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); position: relative; z-index: 5; }
+.acct-tl-holds b { color: var(--text); font-weight: 600; }
+.acct-tl-holds > span:last-child { background: var(--surface); padding: 0 4px; border-radius: 3px; }
+.acct-tl-pips { display: inline-flex; vertical-align: middle; margin-right: 6px; gap: 3px; background: var(--surface); padding: 2px 4px 2px 6px; border-radius: 3px; }
+.acct-tl-pips > i { width: 10px; height: 14px; border-radius: 2px; border: 1.5px dashed var(--ctl-bd); }
+.acct-tl-pips > i.is-held { border: 0; background: color-mix(in srgb, var(--info) 55%, var(--surface)); box-shadow: inset 0 0 0 1.5px var(--info); }
+
+/* ---- the next free slot ---- */
+.acct-tl-nx { position: absolute; top: -11px; bottom: -11px; width: 0; border-left: 2px solid var(--info); z-index: 4; pointer-events: none; }
+
+/* ---- the pool rows ---- */
+.acct-tl-pl { position: relative; height: 26px; }
+.acct-tl-row.is-pace .acct-tl-pl { height: 22px; }
+.acct-tl-sg {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-right: 1px solid var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--t-micro);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  color: var(--ok-ink);
+  background: color-mix(in srgb, var(--ok) 20%, var(--surface));
+}
+.acct-tl-sg.is-first { min-width: 20px; z-index: 1; }
+.acct-tl-sg.is-zero {
+  min-width: 20px;
+  z-index: 1;
+  color: var(--bad-ink);
+  background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--bad-ink) 22%, var(--surface)) 0 5px, color-mix(in srgb, var(--bad-ink) 10%, var(--surface)) 5px 10px);
+}
+.acct-tl-row.is-pace .acct-tl-sg { background: transparent; border: 1.5px dotted var(--info); color: var(--info-ink); }
+.acct-tl-row.is-pace .acct-tl-sg.is-zero {
+  border-color: var(--bad-ink);
+  color: var(--bad-ink);
+  background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--bad-ink) 16%, var(--surface)) 0 5px, transparent 5px 10px);
+}
+/* A stretch under 1% of the track is drawn, but not boxed: a run of them was a comb. */
+.acct-tl-row.is-pace .acct-tl-sg.is-thin { border-left: 0; border-right: 0; }
+.acct-tl-plk { padding-left: 8px; display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.acct-tl-plk b { color: var(--text); }
+
+/* ---- the queue ---- */
+.acct-tl-qp { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; position: relative; z-index: 5; }
+.acct-tl-qq {
+  margin-left: var(--x, 0%);
+  max-width: calc(100% - var(--x, 0%));
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+  padding: 4px 10px 4px 8px;
+  border-radius: 0 10px 10px 0;
+  background: color-mix(in srgb, var(--info) 11%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--info) 40%, var(--line));
+  border-left: 3px solid var(--info);
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  color: var(--info-ink);
+}
+.acct-tl-qq b { color: var(--text); }
+.acct-tl-qq.is-now { background: var(--surface-2); color: var(--text-dim); border-color: var(--line); border-left-color: var(--text); }
+/* A pill on the next-slot line starts at it, not on top of it. */
+.acct-tl-qq:not(.is-now) { margin-left: calc(var(--x, 0%) + 1px); }
+
+/* ---- the empty pool ---- */
+.acct-tl-row.is-none .acct-tl-trk { padding: 12px 12px 12px 18px; }
+.acct-tl-row.is-none .acct-empty { margin: 0; padding: 0; text-align: left; align-items: flex-start; }
+
+/* ---- the legend ---- */
+.acct-tl-lg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  color: var(--text-dim);
+  padding: 10px 14px;
+  background: var(--surface);
+}
+.acct-tl-lg > span { display: inline-flex; align-items: center; gap: 6px; }
+.acct-tl-sw { width: 18px; height: 12px; border-radius: 3px; display: inline-block; }
+.acct-tl-sw.is-bk { background: color-mix(in srgb, var(--bad-ink) 38%, var(--surface)); box-shadow: inset 0 2px 0 var(--bad-ink); }
+.acct-tl-sw.is-ok { background: color-mix(in srgb, var(--ok) 26%, var(--surface)); box-shadow: inset 0 2px 0 var(--ok); }
+.acct-tl-sw.is-st { background: color-mix(in srgb, var(--warn-ink) 26%, var(--surface)); box-shadow: inset 0 2px 0 var(--warn-ink); }
+.acct-tl-sw.is-af {
+  background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--ok) 13%, var(--surface)) 0 6px, color-mix(in srgb, var(--ok) 6%, var(--surface)) 6px 12px);
+  border: 1px solid var(--line);
+}
+.acct-tl-sw.is-fl { height: 0; border-top: 1.5px dashed var(--text-dim); border-radius: 0; }
+.acct-tl-sw.is-nx { width: 0; height: 14px; border-left: 2px solid var(--info); border-radius: 0; }
+.acct-tl-sw.is-fc { height: 0; border-top: 2px dotted var(--info); border-radius: 0; }
+.acct-tl-dm { width: 10px; height: 10px; transform: rotate(45deg); background: var(--ok); display: inline-block; margin: 0 3px; }
+
+/* ---- a phone: each lane's words above its track, the track the full width (B1p-B6p) ---- */
+.acct-tl.is-phone { margin: 0 8px 12px; }
+.acct-tl.is-phone .acct-tl-row { grid-template-columns: minmax(0, 1fr); }
+.acct-tl.is-phone .acct-tl-lab { border-right: 0; padding: 10px 12px 2px; }
+.acct-tl.is-phone .acct-tl-row.is-axis .acct-tl-lab,
+.acct-tl.is-phone .acct-tl-row.is-queue .acct-tl-lab { display: none; }
+.acct-tl.is-phone .acct-tl-trk { padding: 6px 12px 10px; }
+.acct-tl.is-phone .acct-tl-rl { display: none; }
+.acct-tl.is-phone .acct-tl-rlw { display: inline; }
+.acct-tl.is-phone .acct-tl-tk.is-minor,
+/* On a 330px track the label left of a near midnight meets `now`; the zone label marks the break. */
+.acct-tl.is-phone .acct-tl-tk.is-before { display: none; }
+.acct-tl.is-phone .acct-tl-nx { top: -4px; bottom: -10px; }
+.acct-tl.is-phone .acct-tl-tx { margin-left: 8px; max-width: calc(100% - 8px); }
+/* A dark stretch keeps a visible width on a phone without covering its neighbour's count. */
+.acct-tl.is-phone .acct-tl-sg.is-zero:not(.is-first) { min-width: 6px; }

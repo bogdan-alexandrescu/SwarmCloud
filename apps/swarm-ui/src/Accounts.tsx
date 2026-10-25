@@ -27,7 +27,8 @@ import { TaskRef } from './TaskRef'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { AccountsTable } from './AccountsTable'
 import { AcctState } from './AccountState'
-import { DuplicateBanner, Forecast, RuleLine, Verdict, usePoolWaiting } from './AccountsVerdict'
+import { DuplicateBanner, Forecast, RuleLine, Verdict, usePoolWaiting, type WaitRead } from './AccountsVerdict'
+import { AccountsTimeline, ViewToggle, useAccountsView, type AccountsView } from './AccountsTimeline'
 import { agoPastDay, type PoolAccount } from './accountsPool'
 import {
   FIVE_HOUR,
@@ -351,9 +352,14 @@ function Body({
   // account can be linked to and a reload reopens it. The address wins over
   // the held choice, which is what a followed link means.
   const linked = useLinkedParam('account')
+  // TABLE OR TIMELINE (#2222, BGD "Table default, remembered"): the address's
+  // `view`, else this browser's last choice, else Table. A chosen account
+  // keeps the view in the address, so the link reopens both.
+  const [shape, setShape] = useAccountsView()
   const choose = (id: string | null) => {
     patch((p) => ({ ...p, chosen: id, adding: p.signin.kind === 'idle' ? false : p.adding }))
-    if (typeof window !== 'undefined') followHash(paneHref('capacity/accounts', { account: id }))
+    if (typeof window !== 'undefined')
+      followHash(paneHref('capacity/accounts', { account: id, view: shape === 'timeline' ? 'timeline' : null }))
   }
   const view = linked !== null ? { ...ui, chosen: linked } : ui
   // THE ANSWER FIRST (#2222, proposal A): can the pool take another agent,
@@ -364,7 +370,12 @@ function Body({
   return (
     <>
       <Verdict accounts={pool} scope={scope} shortfall={shortfall(board)} now={Date.now()} waiting={waiting} />
-      {accounts.length > 0 && <RuleLine accounts={pool} />}
+      {/* THE TOGGLE SITS BESIDE THE VERDICT (BGD), on the rule's line: both
+          are about how to read the answer above them. */}
+      <div className="acct-viewbar">
+        <ViewToggle view={shape} onChange={setShape} />
+        {accounts.length > 0 && <RuleLine accounts={pool} />}
+      </div>
       <DuplicateBanner accounts={pool} scope={scope} onOpen={choose} />
       <Broken accounts={accounts} scope={board.page.tenant_id} onOpen={choose} />
       {/* A LINK TO AN ACCOUNT THIS READ DOES NOT HAVE IS SAID (live QA
@@ -386,6 +397,8 @@ function Body({
         patch={patch}
         reload={reload}
         choose={choose}
+        shape={shape}
+        waiting={waiting}
         addForm={<AddAccount board={board} accounts={accounts} ui={ui} patch={patch} reload={reload} />}
       />
       <HelpLinks topics={ACCOUNT_TOPICS} />
@@ -597,6 +610,8 @@ function Pool({
   patch,
   reload,
   choose,
+  shape,
+  waiting,
   addForm,
 }: {
   board: AccountsBoard
@@ -605,6 +620,8 @@ function Pool({
   patch: Patch
   reload: () => void
   choose: (id: string | null) => void
+  shape: AccountsView
+  waiting: WaitRead
   addForm: ReactNode
 }) {
   // One clock for the whole render. Reading Date.now() per item would let two
@@ -645,6 +662,37 @@ function Pool({
   }, [opened])
 
   if (shown === null) {
+    const emptyState = (
+      <div className="state acct-empty" role="status">
+        {/* A REAL ZERO, SAID AS ONE, on the surface. What the zero COSTS --
+            that work waits rather than fails, quietly -- is the topic. */}
+        {/* ONE OF THIS SCREEN'S TWO `?` (B7.4), AND IT IS THE ONE THAT
+            RENDERS WHEN THE POOL IS EMPTY -- the other sits on the list's
+            foot, which this branch does not draw. What it holds is the only
+            thing an empty pool cannot show: the COST of the zero. Nothing on
+            this panel says that work submitted now parks and waits instead of
+            failing, and an operator who assumes the second will go looking
+            for an error that was never raised.
+            `honesty.prose.test.tsx` pins a `?` to this panel. */}
+        <h3>
+          No accounts registered
+          <HelpCard topic="park-on-missing-credential" />
+        </h3>
+        {/* B4.4: THE MARK IS THE CLAIM. `.ctl-mark.is-zero` says "the read
+            succeeded and returned nothing" in two words, in the fixed
+            vocabulary every other screen uses for the same kind of nothing. */}
+        <p className="acct-flags">
+          <Mark kind="zero" say="The account read succeeded and this pool has no accounts yet." />
+          <span>{phone ? 'add the first one below' : 'add the first one beside this list'}</span>
+        </p>
+        {/* WHICH ORGANISATION (#2222): one login can hold two, and the
+            sign-in takes the one selected in that browser. */}
+        <p className="muted small">
+          Sign in to the organisation you mean: one claude.ai login can hold two, and the sign-in takes the one that is
+          selected.
+        </p>
+      </div>
+    )
     return (
       /* THE EMPTY POOL IS THE SAME CARD (visual QA V072, 2026-10-11). The
          heading sat on the page above a bordered panel and the add form floated
@@ -652,40 +700,27 @@ function Pool({
          and the zero, and the pane half the form -- the layout a pool with
          accounts has, so nothing moves when the first one lands. `is-adding`
          keeps the form's pane drawn on a phone. */
-      <div className="acct-split is-adding is-empty">
+      // A TIMELINE NEEDS THE WIDTH (B6): the empty pool's axis takes the
+      // page's width, as the ranked table does, with the form under it.
+      <div className={`acct-split is-adding is-empty${shape === 'timeline' ? ' is-ranked' : ''}`}>
         <section className="section panel acct-list" aria-label="Subscription accounts">
           <div className="acct-list-head">
             <h2>Subscription accounts</h2>
           </div>
-          <div className="state acct-empty" role="status">
-            {/* A REAL ZERO, SAID AS ONE, on the surface. What the zero COSTS --
-                that work waits rather than fails, quietly -- is the topic. */}
-            {/* ONE OF THIS SCREEN'S TWO `?` (B7.4), AND IT IS THE ONE THAT
-                RENDERS WHEN THE POOL IS EMPTY -- the other sits on the list's
-                foot, which this branch does not draw. What it holds is the only
-                thing an empty pool cannot show: the COST of the zero. Nothing on
-                this panel says that work submitted now parks and waits instead of
-                failing, and an operator who assumes the second will go looking
-                for an error that was never raised.
-                `honesty.prose.test.tsx` pins a `?` to this panel. */}
-            <h3>
-              No accounts registered
-              <HelpCard topic="park-on-missing-credential" />
-            </h3>
-            {/* B4.4: THE MARK IS THE CLAIM. `.ctl-mark.is-zero` says "the read
-                succeeded and returned nothing" in two words, in the fixed
-                vocabulary every other screen uses for the same kind of nothing. */}
-            <p className="acct-flags">
-              <Mark kind="zero" say="The account read succeeded and this pool has no accounts yet." />
-              <span>{phone ? 'add the first one below' : 'add the first one beside this list'}</span>
-            </p>
-            {/* WHICH ORGANISATION (#2222): one login can hold two, and the
-                sign-in takes the one selected in that browser. */}
-            <p className="muted small">
-              Sign in to the organisation you mean: one claude.ai login can hold two, and the sign-in takes the one that is
-              selected.
-            </p>
-          </div>
+          {shape === 'timeline' ? (
+            <AccountsTimeline
+              accounts={[]}
+              scope={board.page.tenant_id}
+              now={now}
+              waiting={waiting}
+              chosen={null}
+              phone={phone}
+              onChoose={choose}
+              empty={emptyState}
+            />
+          ) : (
+            emptyState
+          )}
         </section>
         {/* The form with no click: on an empty pool it is the one fix. */}
         <div className="acct-pane">{addForm}</div>
@@ -717,17 +752,40 @@ function Pool({
             desktop, a card each on a phone. The name is the `acct-open`
             button the list was, so choosing one opens the same detail under
             it, with every control the page had. */}
-        <p className="acct-rank-note">Ranked by when each can take a new agent. Times are UTC.</p>
-        <AccountsTable
-          accounts={accounts as PoolAccount[]}
-          scope={board.page.tenant_id}
-          now={now}
-          // A PHONE MARKS ONLY WHAT IT OPENED (visual QA V067): the default
-          // account is a desktop convenience, shown in the pane under the table.
-          chosen={shown.explicit || !phone ? a.account_id : null}
-          phone={phone}
-          onChoose={(id) => choose(id)}
-        />
+        {shape === 'timeline' ? (
+          <>
+            {/* THE TIMELINE (#2222, proposal B's B1-B6): the same accounts in
+                the table's order, one lane each on a shared axis. Opening a
+                lane is the same `?account=` choice, so the detail under it is
+                the table's, with every control. */}
+            <p className="acct-rank-note">
+              One lane per account, in the table&rsquo;s order, from now to seven days out. Times are UTC.
+            </p>
+            <AccountsTimeline
+              accounts={accounts as PoolAccount[]}
+              scope={board.page.tenant_id}
+              now={now}
+              waiting={waiting}
+              chosen={shown.explicit || !phone ? a.account_id : null}
+              phone={phone}
+              onChoose={(id) => choose(id)}
+            />
+          </>
+        ) : (
+          <>
+            <p className="acct-rank-note">Ranked by when each can take a new agent. Times are UTC.</p>
+            <AccountsTable
+              accounts={accounts as PoolAccount[]}
+              scope={board.page.tenant_id}
+              now={now}
+              // A PHONE MARKS ONLY WHAT IT OPENED (visual QA V067): the default
+              // account is a desktop convenience, shown in the pane under the table.
+              chosen={shown.explicit || !phone ? a.account_id : null}
+              phone={phone}
+              onChoose={(id) => choose(id)}
+            />
+          </>
+        )}
         <PoolFindings
           accounts={accounts}
           scope={board.page.tenant_id}
