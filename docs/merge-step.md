@@ -79,7 +79,13 @@ defaulted to 0. What this lane changed, and why:
   claimed, or the step woken, in the same tick: the refusal costs one
   request, not a wait.
   While GitHub still serves the very runs that were re-run, the tick waits,
-  at most `RERUN_SETTLE_SECONDS` (10 min).
+  at most `RERUN_SETTLE_SECONDS` (10 min). A wake inside that window parks
+  the step `ci_rerun_pending` only while EVERY failing check is a job the
+  re-run asked for (`merge._rerun_settling`): a red check it did not re-run
+  -- another job, a commit status, or one re-run job's own red answer while
+  another still settles -- is a failure no waiting changes, so it is
+  `checks_failed` at once rather than up to 10 min of parked wakes later
+  (PR 2268 re-review).
 * **Each round is a step of the lane's workflow.** The round is still its
   own one-step continuation workflow (it must be: it is submitted, signed and
   admitted like any other). After it is submitted the tick appends a step to
