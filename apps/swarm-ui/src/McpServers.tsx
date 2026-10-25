@@ -3,7 +3,7 @@ import { USE_FIXTURES, loadCapacity } from './api'
 import { Banner, Button, ButtonLink, Card, routedClick } from './components'
 import { SetupContext } from './ConfigSetup'
 import { noteFixtureProbe, read, route, write, type ApiError, type ApiRoute, type Result } from './fetch'
-import { CONFIG_SECRETS_ADDRESS, addressToPath } from './paths'
+import { addressToPath, secretsAddAddress } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { timeAgo, type RunnerProfile } from './types'
@@ -270,11 +270,16 @@ function routedTo(address: string) {
 }
 
 /**
- * Where a missing credential is set: Config › Secrets, whose Add a secret card
- * an admin always sees. Never `?action=add`: that is the /sc one-time link's
- * address, and the page then says it was opened from one (CONFIG-S5-LEADS review).
+ * Where a missing credential is set: Config › Secrets' Add a secret, the
+ * server's consumer ticked (MCP-LEAD-FORM, BGD 2026-10-25: "Open the form,
+ * consumer picked"). Several servers missing theirs open it with none ticked:
+ * one secret is one server's credential. Never `?action=add`: that is the /sc
+ * one-time link's address, and the page then says it was opened from one
+ * (CONFIG-S5-LEADS review).
  */
-const SET_CREDENTIAL_ADDRESS = CONFIG_SECRETS_ADDRESS
+function setCredentialAddress(names: readonly string[]): string {
+  return secretsAddAddress(names.length === 1 ? `mcp:${names[0]}` : null)
+}
 
 /** What the lead says, from the setup read's secrets step. Pure, for the tests' reasons. */
 export type McpLead =
@@ -343,7 +348,7 @@ function McpServersLead() {
         </b>
       </div>
       <div className="ws-lead-a">
-        <ButtonLink kind="primary" size="sm" href={addressToPath(SET_CREDENTIAL_ADDRESS)} onClick={routedTo(SET_CREDENTIAL_ADDRESS)}>
+        <ButtonLink kind="primary" size="sm" href={addressToPath(setCredentialAddress(lead.names))} onClick={routedTo(setCredentialAddress(lead.names))}>
           {n === 1 ? `Set ${lead.names[0]}’s credential` : 'Set their credentials'}
         </ButtonLink>
       </div>

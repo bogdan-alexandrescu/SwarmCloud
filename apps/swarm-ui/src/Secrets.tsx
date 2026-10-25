@@ -55,7 +55,9 @@ import './styles/secrets.css'
  * THE ADDRESS IS THE PAGE (`/config/secrets?scope=..&repo=..&dest=..`, paths.ts
  * `secretsLinkView`): the scope picker, the repository and its destination,
  * and which one-time form is open. A copied address opens the same view. The
- * link's token is never part of it.
+ * link's token is never part of it. `add=secret&consumer=..` (paths.ts
+ * `secretsAddAddress`, MCP-LEAD-FORM) opens Add a secret with that consumer
+ * ticked, for a reader who may add one, and never reads as a one-time link.
  *
  * SHADOWING (Q1: the person's, then the repository's, then the workspace's)
  * is drawn as the overview reports it, beside the row it concerns: a loser
@@ -88,6 +90,9 @@ interface SecretsAt {
   env: string | null
   runnerKey: string | null
   key: 'typesafe' | null
+  /** `add=secret`: Add a secret open (MCP-LEAD-FORM), with `consumer` to tick if the catalogue lists it. */
+  add: boolean
+  consumer: string | null
 }
 
 export function parseSecretsView(view: string | null): SecretsAt {
@@ -103,6 +108,8 @@ export function parseSecretsView(view: string | null): SecretsAt {
     env: q.get('env'),
     runnerKey: q.get('runner_key'),
     key: q.get('key') === 'typesafe' ? 'typesafe' : null,
+    add: q.get('add') === 'secret',
+    consumer: q.get('consumer'),
   }
 }
 
@@ -117,6 +124,8 @@ function viewOf(at: Partial<SecretsAt>): string {
   if (at.env) q.set('env', at.env)
   if (at.runnerKey) q.set('runner_key', at.runnerKey)
   if (at.key) q.set('key', at.key)
+  if (at.add) q.set('add', 'secret')
+  if (at.add && at.consumer) q.set('consumer', at.consumer)
   return secretsLinkView(q.toString())
 }
 
@@ -256,11 +265,29 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
 
   const canManage = ov?.can_manage === true
   const formOpen = isForm(at)
+  const mayAdd = canManage || at.scope === 'personal'
+  // ADD A SECRET FROM ITS ADDRESS (MCP-LEAD-FORM): once the overview says the
+  // reader may add one and the catalogue has answered, open the sheet with
+  // the address's consumer ticked if the catalogue lists it, and nothing
+  // ticked otherwise. Once per arrival at the address, so closing it holds.
+  const addOpened = useRef(false)
+  const catalogueSettled = catalogue.state.status !== 'loading'
+  const catalogueData = dataOf(catalogue.state)
+  useEffect(() => {
+    if (!at.add) {
+      addOpened.current = false
+      return
+    }
+    if (addOpened.current || formOpen || !mayAdd || !catalogueSettled) return
+    addOpened.current = true
+    const listed = at.consumer !== null && (catalogueData?.consumers ?? []).some((c) => c.consumer === at.consumer)
+    setWizard({ scope: at.scope, repo: repoId, consumer: listed ? at.consumer : null })
+  }, [at.add, at.consumer, at.scope, repoId, formOpen, mayAdd, catalogueSettled, catalogueData])
   return (
     <div className="pk-page sec-page">
       <PageHead title="Secrets">
         <UrRefresh reads={[overview, repos]} ageOf={[overview]} />
-        {!formOpen && (canManage || at.scope === 'personal') && (
+        {!formOpen && mayAdd && (
           <Button kind="primary" size="sm" onClick={() => setWizard({ scope: at.scope, repo: repoId, consumer: null })}>
             Add a secret
           </Button>
@@ -339,7 +366,11 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
           tenant={ov?.tenant_id ?? null}
           personalSelected={at.scope === 'personal' ? personalSelected : null}
           catalogue={dataOf(catalogue.state)}
-          onClose={() => setWizard(null)}
+          onClose={() => {
+            setWizard(null)
+            // Leave Add a secret's address, so a reload does not reopen it.
+            if (at.add) go({ scope: at.scope, repo: repoId, dest: at.dest })
+          }}
           onOpen={(d) => {
             setWizard(null)
             setDraft(d)
