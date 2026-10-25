@@ -180,9 +180,12 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["apps/swarm-github-hooks/swarm_github_hooks/receiver.py"], {"swarm-github-hooks"}),
         (["apps/swarm-github-hooks/uv.lock"], {"swarm-github-hooks"}),
         (["apps/swarm-github-hooks/Dockerfile"], {"swarm-github-hooks"}),
+        # The quota broker redacts account health messages on write, so its
+        # image and the scheduler's (which installs the broker's package)
+        # copy apps/redaction in too (ACCOUNT-429-FOLLOWUP).
         (["apps/redaction/redaction/scan.py"],
          WORKER | {"swarm-api", "swarm-egress", "swarm-typesafe-fwd", "swarm-graph",
-                   "swarm-github-hooks"}),
+                   "swarm-github-hooks", "swarm-quota-broker", "swarm-scheduler"}),
         (["apps/agent-worker/worker/main.py"], WORKER | {"swarm-graph"}),
         (["apps/quota-broker/quota_broker/app.py"], {"swarm-quota-broker", "swarm-scheduler", "workspace-apply"}),
         (["apps/swarm-ui/src/App.tsx"], {"swarm-ui"}),
