@@ -33,7 +33,7 @@ and asked Chromium to stretch the view with the override's `scale: 3`; the
 stretch magnified the page's content but not the clip, so the frame was an
 852 x 393 corner of the page at 3x ("This dom", clipped) beside 2556 x 1267
 of empty window: the defect LB-R3 fixes. So `SCREEN_SCALE` is 1, the page
-area is the CSS viewport exactly, and `livegate.mask` and touch.py map CSS to
+area is the CSS viewport exactly, and touch.py and the pointer map CSS to
 the screen by `screen_scale`, never by the device scale factor. The page sits
 at the bottom-left of the frame with the tab strip and the address bar in the
 band above it, which stay visible because they are part of the anti-phishing
@@ -47,7 +47,7 @@ only the page: the console's origin strip reads the top frame's origin over
 CDP (section 5.7, point 1), so the URL is still on screen, and still outside
 anything a page can draw. The display and the window are NOT changed for it:
 Chromium still draws its UI band above the page, the agent's CDP targets are
-the same, and the mask still places the page from the bottom edge. Only the
+the same, and the page is still placed from the bottom edge. Only the
 captured frame is cut, from `Device.frame_top` (the page's first row on a
 mobile preset, 0 on the desktop) to the display's bottom, and the person's
 pointer, which arrives in that frame's coordinates, is moved back down by
@@ -58,8 +58,8 @@ keeps its tab strip and address bar, which section 5.7 point 3 relies on.
 the window to the first page row, with `--disable-infobars` (without it the
 Chrome-for-Testing infobar takes 56 more rows of the page). If a new Chromium
 changes it, too small clips the page at the bottom by the difference and too
-large shows a strip of white below it. Neither leaks, because the mask places
-the page from the bottom edge and blanks what it cannot place.
+large shows a strip of white below it. Either is a cosmetic fault only: the
+frame is the screen as drawn (nothing is painted over it, §5.3).
 
 The user agents are the strings each device's own browser sends (Safari on
 iOS and iPadOS, Chrome on Android in its reduced form, where the model is in
@@ -198,7 +198,7 @@ class Device:
 
     @property
     def screen_scale(self) -> float:
-        """Screen pixels per CSS pixel in the frame (`SCREEN_SCALE`), which the mask and touch map by."""
+        """Screen pixels per CSS pixel in the frame (`SCREEN_SCALE`), which touch and the pointer map by."""
         return SCREEN_SCALE
 
     @property
@@ -220,7 +220,7 @@ class Device:
 
     @property
     def page_top(self) -> int:
-        """The screen row the page starts on: the page is anchored at the bottom, as the mask places it."""
+        """The screen row the page starts on: the page is anchored at the bottom of the display."""
         return self.display_height - self.page_height
 
     @property
