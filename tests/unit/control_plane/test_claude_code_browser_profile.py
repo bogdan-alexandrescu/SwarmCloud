@@ -193,6 +193,20 @@ def test_the_pod_carries_what_the_browser_image_needs(tenant):
 # --- the runner ---------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _not_a_live_browser_runner(monkeypatch):
+    """Each case starts from no live browser, whatever machine runs it. On a
+    live-browser runner SWARM_HANDOFF, SWARM_CDP_ENDPOINT and
+    SWARM_TEST_BROWSERS_PATH are set, and the cases that do not set them read
+    the runner's own: a live attempt, or a prompt with the test-runner note,
+    there only. A case that wants them sets them itself."""
+    from agent_worker.runners import claude_code
+
+    monkeypatch.delenv(claude_code.HANDOFF_ENV, raising=False)
+    monkeypatch.delenv(claude_code.CDP_ENDPOINT_ENV, raising=False)
+    monkeypatch.delenv(claude_code.TEST_BROWSERS_ENV, raising=False)
+
+
 def _run_body(monkeypatch, tmp_path, browsers: str | None) -> dict[str, Any]:
     from agent_worker.runners import claude_code
     from agent_worker.runners.base import RunnerContext
@@ -222,8 +236,13 @@ def _run_body(monkeypatch, tmp_path, browsers: str | None) -> dict[str, Any]:
 
 
 def test_the_runner_hands_the_agent_the_browser(monkeypatch, tmp_path):
+    from agent_worker.runners import claude_code
     from agent_worker.runners.claude_code import BROWSER_NOTE
 
+    # The browser note alone: no test-runner directory. On a runner where
+    # /opt/playwright exists, `prepare_test_browsers` seeds one and the
+    # prompt ends with TEST_RUNNER_NOTE instead (its own cases cover that).
+    monkeypatch.setattr(claude_code, "prepare_test_browsers", lambda *a, **k: None)
     seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
     assert seen["env"]["PLAYWRIGHT_BROWSERS_PATH"] == "/opt/playwright"
     assert seen["prompt"].startswith("Screenshot the settings page.")
