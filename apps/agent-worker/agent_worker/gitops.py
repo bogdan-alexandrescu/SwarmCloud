@@ -1506,6 +1506,14 @@ class WorkSummary:
     #: "no files"; an empty tuple is a measured empty diff.
     files: tuple[FileChange, ...] | None = None
     files_truncated: bool = False
+    #: The paths this step's OWN work changed (#2337): every non-merge commit
+    #: on HEAD's first-parent line since `base`, each against its first
+    #: parent, and the uncommitted work. A `git merge origin/main` (or of
+    #: another lane's branch) puts that branch's files in `files` and in the
+    #: patch, but none of them here. At most `MAX_FILES_LISTED`; None when
+    #: not measured (no base, or git could not list it), never a guess.
+    own_files: tuple[str, ...] | None = None
+    own_files_truncated: bool = False
 
     @property
     def is_empty(self) -> bool:
@@ -2116,6 +2124,14 @@ def summarize_work(
         else:
             logger.warning("could not list the changed files against the clone base", base=base)
 
+    def run_full(argv: list[str], slug: str) -> tuple[int, str, bool]:
+        return _git_text_full(
+            argv, repo=repo, private_dir=private_dir, logs_dir=logs_dir, slug=slug,
+            timeout_seconds=timeout_seconds, logger=logger,
+        )
+
+    own_files, own_files_truncated = _own_files(run_full, g, base, head)
+
     patch_name: str | None = None
     patch_bytes = 0
     omitted = False
@@ -2169,7 +2185,59 @@ def summarize_work(
         deletions=dels,
         files=files,
         files_truncated=files_truncated,
+        own_files=own_files,
+        own_files_truncated=own_files_truncated,
     )
+
+
+def _own_files(
+    run: Any, g: list[str], base: str | None, head: str | None
+) -> tuple[tuple[str, ...] | None, bool]:
+    """`(paths, truncated)` this step's own work changed since `base` (#2337).
+
+    The commits are HEAD's FIRST-PARENT line back to `base`, merges left
+    out: a merge's second parent is the branch merged in, so main's commits
+    and another lane's never reach the walk, and the merge commit itself is
+    skipped, so what it brought in counts for nothing. Each kept commit is
+    diffed against its first parent (`git log --name-only`), `--no-renames`
+    so a file moved out of the UI still names its UI path. The uncommitted
+    work (`git diff HEAD`, after the harvest's `--intent-to-add`) is the
+    step's own too. A lane that fast-forwarded onto main has main's commits
+    on its first-parent line: those count as its own, which gates more, never
+    less. `(None, False)` when either listing fails: not measured.
+    `run` is `_git_text_full` bound to the repository.
+    """
+    if not base or not head:
+        return None, False
+    found: dict[str, None] = {}
+    cut = False
+    if base != head:
+        code, text, log_cut = run(
+            [*g, "log", "--first-parent", "--no-merges", "--no-renames", "--name-only",
+             "--no-color", "--no-ext-diff", "--no-textconv", "--format=", "-z",
+             f"{base}..HEAD", "--"],
+            "harvest-own-files",
+        )
+        if code != 0:
+            return None, False
+        found.update(dict.fromkeys(_nul_paths(text)))
+        cut = log_cut
+    code, text, diff_cut = run(
+        [*g, "diff", "--name-only", "--no-renames", "--no-color", "--no-ext-diff",
+         "--no-textconv", "-z", "HEAD", "--"],
+        "harvest-own-dirty",
+    )
+    if code != 0:
+        return None, False
+    found.update(dict.fromkeys(_nul_paths(text)))
+    paths = list(found)
+    # A capture cut at its byte cap ends mid-list: true rows, not all of them.
+    return tuple(paths[:MAX_FILES_LISTED]), len(paths) > MAX_FILES_LISTED or cut or diff_cut
+
+
+def _nul_paths(text: str) -> list[str]:
+    """The paths of a `-z` name listing; `git log` puts a newline between commits."""
+    return [piece.lstrip("\n") for piece in text.split("\0") if piece.lstrip("\n")]
 
 
 def hide_from_git(
