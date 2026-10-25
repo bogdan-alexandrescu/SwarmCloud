@@ -398,6 +398,67 @@ def test_a_rerun_of_other_jobs_does_not_hold_the_refusal(tmp_path):
     assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
 
 
+LINT = "lint"
+
+
+def _second_required(world: MergeWorld, **run: Any) -> None:
+    """A second required check, `lint`, whose one run is `run`."""
+    world.rules[0]["parameters"]["required_status_checks"].append(
+        {"context": LINT, "integration_id": None})
+    if run:
+        world.runs.append({"name": LINT, "status": "completed", "conclusion": "failure",
+                           "app": {"id": merge_world.ACTIONS_APP}, **run})
+
+
+@pytest.mark.parametrize("second", [
+    pytest.param(lambda w: _second_required(w, id=30), id="a-job-it-did-not-re-run"),
+    pytest.param(lambda w: (_second_required(w), w.statuses.append(
+        {"context": LINT, "state": "failure"})), id="a-red-commit-status"),
+])
+def test_a_red_check_the_tick_did_not_re_run_is_not_held_by_a_settling_rerun(tmp_path, second):
+    """PR 2268 re-review: the hold is for a reading made only of the jobs the
+    tick re-ran (its `_rerunnable` asks every failing check to be one). A
+    second red check beside job 7 -- another job, or a commit status, which
+    no re-run replaces -- is a real failure: it refuses at once, not after
+    RERUN_SETTLE_SECONDS of `ci_rerun_pending`."""
+    world = MergeWorld(tmp_path)
+    _red(world)
+    _rerun(world)
+    second(world)
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+    assert LINT in outcome.summary["refusal"]["message"]
+
+
+def test_a_rerun_answered_red_on_one_job_is_not_held_by_another_still_settling(tmp_path):
+    """Jobs 7 and 30 were re-run; 30's re-run (new id 31) answered red while
+    7 is still the old reading. The re-run is once per head, so 31 red is
+    final: the step refuses rather than waiting on 7."""
+    world = MergeWorld(tmp_path)
+    _red(world)
+    _second_required(world, id=31)
+    _rerun(world, jobs=[7, 30])
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+
+
+def test_every_failing_check_a_job_the_tick_re_ran_still_parks(tmp_path):
+    """The control for the two above: both red checks are jobs the tick
+    re-ran and neither has answered, so the step waits for the re-run."""
+    world = MergeWorld(tmp_path)
+    _red(world)
+    _second_required(world, id=30)
+    _rerun(world, jobs=[7, 30])
+
+    outcome = merge.run_merge(world.context())
+
+    _parked(outcome, merge.CI_RERUN_PENDING, PINNED)
+
+
 def _future(world: MergeWorld) -> None:
     _rerun(world, ago=-3600)
 
