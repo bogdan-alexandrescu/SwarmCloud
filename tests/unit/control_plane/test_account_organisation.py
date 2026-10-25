@@ -55,7 +55,6 @@ from quota_broker.credentials import RefreshOutcome
 from quota_broker.main import _sweep_account_pool, account_to_api, acquire_hold
 from quota_broker.oauth import (
     Credential,
-    Organisation,
     organisation_from_payload,
     organisation_identity,
     read_organisation,
