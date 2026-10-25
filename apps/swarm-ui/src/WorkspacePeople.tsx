@@ -266,7 +266,10 @@ function Overrides({ people, canManage, onClear }: {
 }) {
   const [busy, setBusy] = useState<string | null>(null)
   return (
-    <table role="table" aria-label="People with their own role">
+    // keys.css's stacking table (#1680): at 390 px this roster was 589 px wide
+    // in the content scroller (CONFIG-S5-LEADS review), so below 720 px each
+    // person is a card, each value under its column's `data-label`.
+    <table role="table" className="mcp-servers" aria-label="People with their own role">
       <thead>
         <tr>
           <th scope="col">Person</th>
@@ -280,13 +283,13 @@ function Overrides({ people, canManage, onClear }: {
       <tbody>
         {people.map((p) => (
           <tr key={p.email}>
-            <th scope="row">{p.email}</th>
-            <td>{p.role}</td>
-            <td>{p.granted_by}{p.granted_via === 'platform_admin' ? ' (platform admin)' : ''}</td>
-            <td title={p.granted_at}>{p.granted_at === '' ? '' : timeAgo(p.granted_at)}</td>
-            <td>{p.reason}</td>
+            <th scope="row" data-label="Person">{p.email}</th>
+            <td data-label="Role">{p.role}</td>
+            <td data-label="Given by">{p.granted_by}{p.granted_via === 'platform_admin' ? ' (platform admin)' : ''}</td>
+            <td data-label="When" title={p.granted_at}>{p.granted_at === '' ? '' : timeAgo(p.granted_at)}</td>
+            <td data-label="Reason">{p.reason}</td>
             {canManage && (
-              <td>
+              <td data-label="Actions">
                 <Button size="sm" aria-label={`Return ${p.email} to the default`} busy={busy === p.email}
                   disabled={busy !== null && busy !== p.email}
                   onClick={() => {
