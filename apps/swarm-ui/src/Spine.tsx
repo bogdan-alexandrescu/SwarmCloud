@@ -27,8 +27,11 @@
  * administers nothing was shown four pages they could never use. The routes
  * stay, but since CONFIG-NAV (part of #2157, BGD 2026-10-23: "Admin is shown
  * only to admins") a direct link from someone who administers nothing goes
- * to Overview once both reads say so (`onNoAdmin`); the API's own refusal of
- * every admin route is unchanged.
+ * to Overview once both reads say so (`onAdminRedirect`), and since
+ * ADMIN-REDIRECT (part of #2157, BGD 2026-10-24: "Redirect, in a later lane")
+ * a workspace admin who is not a platform admin, on a platform Admin page, goes
+ * to Workspaces you admin, the one Admin page they are shown. A platform admin
+ * is never redirected. The API's own refusal of every admin route is unchanged.
  *
  * Production draws a red pill and a 3px red bar across the top; the pill shows
  * only what was measured (`classifyEnvironment`), never a hardcoded word.
@@ -1266,11 +1269,13 @@ export interface ShellProps {
    */
   place?: string
   /**
-   * The open page is an Admin page and both reads say this person
-   * administers nothing (CONFIG-NAV): App sends them to Overview. Called once
-   * the reads have landed, never while either is in flight.
+   * The open page is an Admin page this person is not shown, once both reads
+   * have landed and never while either is in flight: `''` (Overview) for
+   * someone who administers nothing (CONFIG-NAV), and `admin/workspaces` for
+   * a workspace admin on a platform page (ADMIN-REDIRECT). App rewrites the
+   * bar in place.
    */
-  onNoAdmin?: () => void
+  onAdminRedirect?: (to: string) => void
   children: ReactNode
 }
 
@@ -1301,7 +1306,7 @@ export function SkyShell({
   dock,
   keepOnSwitch = false,
   place = '',
-  onNoAdmin,
+  onAdminRedirect,
   children,
 }: ShellProps) {
   // THE CHOSEN TENANT (fetch.ts), null for the default. Every read sends it;
@@ -1335,10 +1340,19 @@ export function SkyShell({
   // ADMIN'S ADDRESSES SEND A NON-ADMIN TO OVERVIEW (CONFIG-NAV), and only
   // once both reads have answered: an unread session is not "not an admin".
   const adminDecided = who !== null && (mine.status === 'ok' || mine.status === 'stale' || mine.status === 'empty')
-  const noAdmin = section === 'admin' && adminDecided && adminPages.length === 0
+  // A WORKSPACE ADMIN'S PLATFORM ADDRESS SENDS THEM TO WORKSPACES YOU ADMIN
+  // (ADMIN-REDIRECT): an Admin page that is not among theirs. Only a page the
+  // panel has: an address that is no page at all keeps its 404.
+  const adminRedirect = section !== 'admin' || !adminDecided
+    ? null
+    : adminPages.length === 0
+      ? ''
+      : !missing && PANEL_PAGES.admin.some((p) => p.to === `admin/${tab}`) && !adminPages.some((p) => p.to === `admin/${tab}`)
+        ? adminPages[0]!.to
+        : null
   useEffect(() => {
-    if (noAdmin) onNoAdmin?.()
-  }, [noAdmin, onNoAdmin])
+    if (adminRedirect !== null) onAdminRedirect?.(adminRedirect)
+  }, [adminRedirect, onAdminRedirect])
   // THE WORKSPACE IN HAND IS THE PERSON'S OWN (S1e): no People and roles, and
   // a three-step strip. Read off `me`'s tenant kind, which is what the People
   // page itself reads: `/v1/tenants/mine` answers empty for someone in no
