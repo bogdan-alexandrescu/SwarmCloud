@@ -126,6 +126,15 @@ each told its steps in `row_share`; the first reports the finished steps.
 `--per-step` or `--summary` after it is refused with a pointer to `rows`
 (SC-ATTACH-SUFFIX-DROP).
 
+THE PANE LAYOUT (SC-BROWSER-BUILD, #2318; BGD picked proposal B on
+2026-10-25). With this project's layout set to `pane` (`/sc layout pane`, or
+the plugin's `layout` option; `layout.row_mode` reads both, the saved choice
+first), every copy for a workflow says `rows: "pane"`: ONE sc:finish row per
+workflow, whose only job is to notice the finish -- it holds each follow
+until the workflow's stage changes -- while the SwarmCloud pane beside the
+chat browses stages, agents and details with direct MCP calls and no model
+tokens. A batch of single tasks keeps its one summary row.
+
 THE SPEC TRAVELS BY HANDLE (SC-LAUNCH-SPEC, #2034). Measured 2026-10-23
 ~01:35Z, lane SCAN-FP (wf_053776f6-dcb): the spec embedded in a launch's
 args reached `swarm_workflow` retyped by the `sc:workflow` agent, ~23 KB of
@@ -158,7 +167,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import checkout, config, details, workflows
+from . import checkout, config, details, layout, workflows
 from .client import SwarmClient, SwarmError, _repo_root
 
 PLUGIN_ROOT_ENV = "SWARM_SC_PLUGIN_ROOT"
@@ -749,11 +758,15 @@ def for_spec(
     steps = len(spec["steps"])
     name = workflows.title_name(title=spec["title"], label=spec["label"])
     title = workflows.workflow_title(name, steps)
-    mode = config.rows_mode()
+    mode = layout.row_mode(None)
     description = (
         f"{title}: each step runs in SwarmCloud and is shown here as one [SwarmCloud] row, "
         "by the console's stage, with its console link"
     ) if mode == config.ROWS_PER_STEP else (
+        f"{title}: each step runs in SwarmCloud; ONE quiet [SwarmCloud] row notices the "
+        "workflow's finish, a line each time its stage changes, and the SwarmCloud pane "
+        "browses its stages"
+    ) if mode == config.ROWS_PANE else (
         f"{title}: each step runs in SwarmCloud, and the whole workflow is shown here as ONE "
         "[SwarmCloud] summary row, a line each time its step counts change, with its console link"
     )
@@ -861,14 +874,14 @@ def _attach_launches(
     labels (`details.account_labels`). `repository`, the URL it clones (else
     read off `envelope`'s tasks), goes to the record as `host/owner/repo`.
 
-    `rows`, the mode (`config.rows_mode()` when None): `summary` is ONE copy
+    `rows`, the mode (`layout.row_mode` when None): `summary` is ONE copy
     whose run follows the whole workflow with one row; `per-step` is one row
     per unfinished step, at most `budget` of them (`max_live_rows()` when
     None), in copies of at most `rows_per_run()` rows each when there are more
     -- each copy's `row_share` names its steps and the other copies' (so the
     first, and only the first, reports the steps finished at launch). A
     per-step attach with no envelope cannot split, and is one copy."""
-    mode = rows or config.rows_mode()
+    mode = layout.row_mode(rows)
     if repository is None and envelope is not None:
         repository = next((t.get("repository_url") for t in envelope.get("tasks") or []
                            if isinstance(t, dict) and t.get("repository_url")), None)
@@ -911,6 +924,15 @@ def _shaped(
 ) -> tuple[list[dict[str, Any]], list[str], int]:
     """`_attach_launches`' copies, written by `copy(title, description,
     share)`, in `mode`'s shape."""
+    if mode == config.ROWS_PANE:
+        # THE PANE LAYOUT (SC-BROWSER-BUILD, #2318): one sc:finish row per
+        # workflow, whose only job is to notice the finish; the pane browses.
+        description = (
+            f"{title}: attached to SwarmCloud workflow {workflow_id}; ONE quiet [SwarmCloud] row "
+            "notices its finish, a line each time its stage changes, and the SwarmCloud pane "
+            "browses its stages. Nothing is submitted"
+        )
+        return [copy(title, description)], [], 1
     if mode == config.ROWS_SUMMARY:
         description = (
             f"{title}: attached to SwarmCloud workflow {workflow_id}; the whole workflow is shown "
@@ -1064,11 +1086,15 @@ def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None, 
     that cannot be written still leaves the record. `for_all` attaches tasks
     already running and says False.
 
-    `rows`, the mode (`config.rows_mode()` when None): `for_all` hands on
+    `rows`, the mode (`layout.row_mode` when None): `for_all` hands on
     the one its caller asked for."""
     cap = max_live_rows()
     # `rows`: the mode, read before the name is reused for the task rows.
-    mode = rows or config.rows_mode()
+    mode = layout.row_mode(rows)
+    if mode == config.ROWS_PANE:
+        # A batch of single tasks has no stages to follow: the pane layout
+        # shows it as the one summary row it already is.
+        mode = config.ROWS_SUMMARY
     wanted = [e for e in entries if isinstance(e, dict) and e.get("task_id")]
     if dispatched:
         for entry in wanted:
@@ -1308,7 +1334,7 @@ def for_all(
     # the cap counts workflows; per-step rows count steps, so the cap is a
     # budget the workflows spend in board order, and a workflow it does not
     # reach is not followed.
-    mode = rows or config.rows_mode()
+    mode = layout.row_mode(rows)
     budget = cap
     unreached: list[dict[str, Any]] = []
     steps_left: list[dict[str, Any]] = []
