@@ -33,6 +33,7 @@ from swarm_common.identity import (
 
 from .errors import (
     Forbidden,
+    MembershipUnavailable,
     PreferencesUnavailable,
     Unauthenticated,
     UpstreamUnavailable,
@@ -40,6 +41,7 @@ from .errors import (
 )
 from .gitidentity import clean_name, is_service_account
 from .groups import GroupLookupError, MembershipResolver
+from .memberships import is_person
 from .registry import EMPTY as EMPTY_REGISTRY
 from .registry import RegistrySnapshot, WorkspaceRegistry
 from .settings import ApiSettings
@@ -47,6 +49,7 @@ from .store import TENANTS
 from .workspaces import READY, WORKSPACES, is_service_identity, state_of
 
 if TYPE_CHECKING:  # the context only carries what `preferences` read
+    from .memberships import MembershipStore
     from .preferences import Preferences, StoredPreferences
 
 log = logging.getLogger(__name__)
@@ -103,6 +106,13 @@ TENANT_QUERY_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/v1/tasks/{task_id}/live/recordings/raw"),
     ("GET", "/v1/tasks/{task_id}/attempts/{attempt_id}/live/recordings/{seq}"),
 })
+
+
+#: `GET /v1/tenants/mine`'s `via` for a group workspace the person reaches by
+#: a platform-side membership, not its Google group (docs/design/
+#: join-requests.md §4.5 step 3), beside `roles.VIA_MEMBER`, `VIA_PERSONAL`
+#: and `VIA_PLATFORM_ADMIN`.
+VIA_PLATFORM_MEMBER = "platform_member"
 
 
 class TenantNotMember(Forbidden):
@@ -247,6 +257,26 @@ class AuthContext:
     #: §4.2.4 audits), "" otherwise -- a membership, their own personal
     #: workspace, or the default.
     tenant_via: str = ""
+    #: The registered GROUP workspaces this person joined by an approved
+    #: request rather than through the Google group: a signed
+    #: `workspace_memberships` grant (docs/design/join-requests.md §4.5 step
+    #: 1, lane JOIN-RESOLVE), as (tenant_id, group email) in the grants' `at`
+    #: order. Every entry is ALSO in `tenant_choices`, appended after the
+    #: confirmed groups -- this list says which choices came from a
+    #: membership, for `GET /v1/tenants/mine`'s `via: "platform_member"`.
+    #: Empty unless `ApiSettings.platform_memberships` is on and the caller
+    #: is a person (`Authenticator._special` is false). Never an id already
+    #: among the confirmed groups (the Google answer wins), never a `u-` id,
+    #: and never a group that is not, on this request, the registered group
+    #: its id selects (`MembershipRead.counted` over `_reachable_groups`).
+    platform_memberships: tuple[tuple[str, str], ...] = ()
+    #: The switch is on and this person's memberships could not be read
+    #: (Firestore failed, or the bounded read ended first; §4.4). Their
+    #: groups and personal workspace are offered as usual; a header naming
+    #: any other non-`u-` id answers 503 `membership_unavailable` rather than
+    #: `tenant_not_member`, because the unread membership could have changed
+    #: the answer.
+    memberships_unread: bool = False
 
     @property
     def email(self) -> str:
@@ -602,6 +632,7 @@ class Authenticator:
         personal: "PersonalTenants | None" = None,
         preferences: "Preferences | None" = None,
         registry: WorkspaceRegistry | None = None,
+        memberships: "MembershipStore | None" = None,
     ) -> None:
         self._settings = settings
         self._verifier = verifier
@@ -625,6 +656,12 @@ class Authenticator:
         # authenticator in a test) registers no group and admits no account,
         # which is exactly the behaviour before the registry.
         self._registry = registry
+        # Platform-side workspace memberships (docs/design/join-requests.md
+        # §4.5). Read only while `platform_memberships` is on; None (a
+        # hand-built authenticator in a test, or a deployment that has not
+        # wired the store) reads nothing and admits nobody by membership,
+        # which is exactly the behaviour before join requests.
+        self._memberships = memberships
         # Read once, here, at process start: an address on two lists is
         # refused before the service takes a request (`schedule_tick_users`).
         self._schedule_tick_users = frozenset(schedule_tick_users(settings))
@@ -1249,10 +1286,90 @@ class Authenticator:
             display_name=clean_name(claims.get("name")) or clean_name(email.split("@", 1)[0]),
             is_owner=is_owner,
         )
+        # Then the platform memberships (docs/design/join-requests.md §4.5),
+        # APPENDED after the confirmed groups, so they can only add: the
+        # groups' order, `principal.groups` and -- unless there was no choice
+        # at all -- the default tenant are exactly as before. Before the
+        # reach, so a platform admin who joined a workspace by request
+        # selects it as a member, as one in its group does.
+        ctx = self._with_platform_memberships(ctx, tenant_groups)
         # Last, from the finished context, so it can only ADD a separate list:
         # the tenant, the choices and `principal.groups` above are exactly as
         # they were before the reach existed.
         return replace(ctx, platform_reach=self._platform_reach(ctx, tenant_groups))
+
+    @property
+    def memberships(self) -> "MembershipStore | None":
+        """The membership store this authenticator reads, or None. A route
+        that writes a membership writes through this same instance, so the
+        write's cache eviction is the one the next request's read sees."""
+        return self._memberships
+
+    def _memberships_enabled(self) -> bool:
+        # getattr because hand-built settings in tests predate the field,
+        # exactly as `platform_admin_reach` above.
+        return bool(getattr(self._settings, "platform_memberships", False)) \
+            and self._memberships is not None
+
+    def _with_platform_memberships(
+        self, ctx: AuthContext, tenant_groups: tuple[str, ...]
+    ) -> AuthContext:
+        """Append the person's counted platform memberships to
+        `tenant_choices` (§4.5 steps 1-2).
+
+        NOTHING IS READ unless `platform_memberships` is on, a store is
+        wired, and the caller is a person: not the tick, the sweeper, a
+        listed account or any service identity (`_special`), and an address
+        `memberships.is_person` accepts. Off, the context is returned as it
+        came, so every request is answered exactly as before join requests.
+
+        A membership COUNTS only for the group it names, and only while that
+        group is the registered group its id selects on THIS request:
+        `registered` is `_reachable_groups` over the same `tenant_groups`
+        every walk in `_from_claims` used (admin order, first group per id,
+        no `u-` id). A group replaced in TENANT_GROUPS, or a job-made record
+        no longer `ready`, admits nobody through an old membership. The
+        grant's signature, shape and newest-per-tenant rule are the store's
+        (`MembershipStore.read`): a forged, replayed or overwritten grant
+        never reaches this list.
+
+        An id already among the confirmed groups is skipped: the Google
+        answer wins, and the choice is not listed twice. Asks Cloud Identity
+        nothing -- the read is one Firestore query per person, cached for
+        the role cache's 15 s.
+
+        When there was no choice at all (no confirmed group; the personal
+        workspace is applied after this, and goes first when ready) the
+        first membership becomes the default: `tenant_id` and
+        `tenant_principal` are replaced TOGETHER from that entry, as
+        `_with_own_workspace` replaces the frozen default, so "when it is
+        non-empty its first entry IS the default tenant" still holds.
+
+        A FAILED READ NEVER STOPS A GROUP MEMBER (§4.4): the choices are left
+        as they are and `memberships_unread` is set, which `_select_tenant`
+        turns into a 503 only for a header the memberships could have
+        answered.
+        """
+        if not self._memberships_enabled() or self._special(ctx) or not is_person(ctx.email):
+            return ctx
+        registered = dict(self._reachable_groups(tenant_groups))
+        try:
+            counted = self._memberships.counted(  # type: ignore[union-attr]
+                ctx.email, registered)
+        except MembershipUnavailable:
+            return replace(ctx, memberships_unread=True)
+        chosen = {tenant_id for tenant_id, _ in ctx.tenant_choices}
+        joined = tuple(
+            (tenant_id, group) for tenant_id, group in counted
+            if tenant_id not in chosen and not tenant_id.startswith("u-")
+        )
+        if not joined:
+            return ctx
+        if not ctx.tenant_choices:
+            ctx = replace(ctx, tenant_id=joined[0][0], tenant_principal=joined[0][1])
+        return replace(
+            ctx, tenant_choices=(*ctx.tenant_choices, *joined), platform_memberships=joined,
+        )
 
     def _tenant_groups(self, registry: RegistrySnapshot) -> tuple[str, ...]:
         """`TENANT_GROUPS`, then every registered group not already in it."""
@@ -1474,6 +1591,12 @@ class Authenticator:
         Identity about its ONE stored group, the same per-group check every
         request's tenant resolution makes; a personal tenant is its own
         address. A lookup that fails is a 503, never a guess either way.
+
+        With `platform_memberships` on, a person the group does not list is
+        still a member while they hold a membership that admits them there
+        (`_platform_member`, docs/design/join-requests.md §4.5 step 5), read
+        fresh when `fresh` is: a schedule a platform member owns keeps firing
+        until they are removed, and the removal is what stops it.
         """
         email = (email or "").strip().lower()
         if not email:
@@ -1494,7 +1617,28 @@ class Authenticator:
             raise UpstreamUnavailable(
                 "group membership could not be resolved; retry shortly"
             ) from None
-        return principal in {g.lower() for g in held}
+        if principal in {g.lower() for g in held}:
+            return True
+        return self._platform_member(email, tenant, principal, fresh=fresh)
+
+    def _platform_member(self, email: str, tenant: Any, principal: str, *, fresh: bool) -> bool:
+        """`is_tenant_member`'s second half (§4.5 step 5): whether a person the
+        group does not list holds a membership that admits them to this
+        group tenant now. Read only with the switch on, for a person
+        (`is_person`, and none of the stored identities `_reach_excluded`
+        keeps out), for a non-`u-` id that is the registered group its id
+        selects (`_registered_reach`). `fresh` reads past the store's cache.
+        A read that cannot answer raises `MembershipUnavailable`, a 503, as
+        a failed group lookup does -- never a guess either way."""
+        if not self._memberships_enabled() or not is_person(email) or self._reach_excluded(email):
+            return False
+        tenant_id = (getattr(tenant, "tenant_id", "") or "").strip()
+        if not tenant_id or tenant_id.startswith("u-") or not principal:
+            return False
+        if not self._registered_reach(tenant_id, principal):
+            return False
+        return self._memberships.is_member(  # type: ignore[union-attr]
+            email, tenant_id, {tenant_id: principal}, fresh=fresh)
 
     def _tenant_choices(
         self, member_groups: tuple[str, ...], tenant_groups: tuple[str, ...]
@@ -1533,7 +1677,12 @@ class Authenticator:
         verified identity produced: the caller's confirmed groups and, when it
         is ready, the caller's OWN personal workspace (`_with_own_workspace`),
         or a service account's own service tenant when the header named it
-        (`_with_own_service_tenant`).
+        (`_with_own_service_tenant`), or -- with `platform_memberships` on --
+        a group workspace the person joined by an approved request
+        (`_with_platform_memberships`), selected as a member, with the
+        registered group as `tenant_principal` and `tenant_via` left "".
+        When those memberships could not be read, any non-`u-` id outside
+        the choices is 503 `membership_unavailable`, not 403.
         Everything else -- another group's tenant, another person's `u-`
         tenant, the caller's own `u-` tenant before its workspace is ready, an
         admin group, a tenant that does not exist -- is one 403, raised here,
@@ -1583,6 +1732,14 @@ class Authenticator:
             log.info("%s unresolved for %s: admin lookup did not answer", TENANT_HEADER, ctx.email)
             raise UpstreamUnavailable(
                 "admin membership could not be resolved, and it decides whether "
+                f"you may select this tenant; retry shortly, or send no {TENANT_HEADER}"
+            )
+        if ctx.memberships_unread and not requested.startswith("u-"):
+            # Any non-`u-` id, registered or not, so the outage does not say
+            # which ids exist; a `u-` id is never a platform membership.
+            log.info("%s unresolved for %s: memberships unread", TENANT_HEADER, ctx.email)
+            raise MembershipUnavailable(
+                "your workspace memberships could not be read, and they decide whether "
                 f"you may select this tenant; retry shortly, or send no {TENANT_HEADER}"
             )
         # The value is caller-supplied and arbitrary; it is not logged.
