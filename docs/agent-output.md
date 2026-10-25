@@ -367,7 +367,7 @@ claude-code or codex agent whose agent starts in a checkout gets, after the
 deliverables line and the questions sentence:
 
 ```
-You do not push or open a pull request; the worker publishes your committed branch. Commit your work. Write the pull request's title (one line) to $SWARM_ARTIFACTS_DIR/pr-title.txt and its body to $SWARM_ARTIFACTS_DIR/pr-body.md. Do not say in your answer that no pull request exists because you lack GitHub credentials: the worker opens it after you finish.
+You do not push or open a pull request; the worker publishes your committed branch. Commit your work. Write the pull request's title (one line) to $SWARM_ARTIFACTS_DIR/pr-title.txt and its body to $SWARM_ARTIFACTS_DIR/pr-body.md. Do not say in your answer that no pull request exists because you lack GitHub credentials: the worker opens it after you finish. Keep your commits on the branch you were cloned onto: to build on another branch, fetch it and merge it in (git merge FETCH_HEAD); never git checkout -B, git switch or git reset onto another line, because commits that do not descend from the commit you started on are discarded.
 ```
 
 It is `cliagent.PUBLISH_PARAGRAPH`, appended once in `run_cli_agent` for both
@@ -376,6 +376,13 @@ or credential markers a CLI that echoes its prompt would trip. An agent with no
 repository does not get it, and neither does a resumed session, which already
 holds it. It goes to every step with a repository, a review included: the
 worker's strategy, not the agent, decides whether anything is pushed.
+The last sentence is there because the worker discards a moved HEAD that does
+not descend from the commit the step was cloned at (`_moved_head_result`), and
+the paragraph used to say only that the worker publishes the committed branch:
+in #2277 an agent ran `git checkout -B fix-516 FETCH_HEAD`, committed there for
+85 turns, and every commit was dropped. The discard is right -- a branch that
+does not descend from the step's start is not this step's work -- so the
+prompt states the rule instead: merge another branch in, never move onto it.
 
 **Proposal B: an issue step is asked for its title, and a missing one is
 visible.** `pr-title.txt` is now an expected output of every step that opens a

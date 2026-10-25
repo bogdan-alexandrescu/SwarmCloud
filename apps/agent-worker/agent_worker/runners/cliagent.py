@@ -1055,6 +1055,10 @@ def credential_lines(repo: Path) -> tuple[list[str], str | None]:
 #: agent exits. Fixed text, so it is the same in every prompt and a test can
 #: hold it; it carries no rate-limit or credential marker
 #: (`_RATE_LIMIT_MARKERS`, `_CREDENTIAL_MARKERS`) for a CLI that echoes it.
+#: Its last sentence is the descent rule (#2277): fix-h9 lost 85 turns to a
+#: `git checkout -B fix-516 FETCH_HEAD`, because the harvest discards a HEAD that
+#: does not descend from the step's start (`lifecycle._moved_head_result`), and
+#: nothing had told the agent so.
 PUBLISH_PARAGRAPH = (
     "You do not push or open a pull request; the worker publishes your committed "
     "branch. Commit your work. Write the pull request's title (one line) to "
@@ -1062,6 +1066,10 @@ PUBLISH_PARAGRAPH = (
     "$SWARM_ARTIFACTS_DIR/pr-body.md. Do not say in your answer that no pull "
     "request exists because you lack GitHub credentials: the worker opens it "
     "after you finish."
+    " Keep your commits on the branch you were cloned onto: to build on another "
+    "branch, fetch it and merge it in (git merge FETCH_HEAD); never git checkout "
+    "-B, git switch or git reset onto another line, because commits that do not "
+    "descend from the commit you started on are discarded."
 )
 
 
