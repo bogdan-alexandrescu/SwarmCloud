@@ -174,6 +174,24 @@ function ShadowNotes({ row }: { row: SecretsRow | undefined }) {
   )
 }
 
+/** A time in the reader's words: "in 7 h" ahead, "2d ago" behind. */
+function when(iso: string): string {
+  const ms = Date.parse(iso)
+  if (Number.isNaN(ms)) return iso
+  const ahead = ms - Date.now()
+  if (ahead <= 0) return timeAgo(iso)
+  const h = ahead / 3_600_000
+  return h < 1 ? `in ${Math.max(1, Math.round(ahead / 60_000))} min` : h < 48 ? `in ${Math.round(h)} h` : `in ${Math.round(h / 24)} d`
+}
+
+/** A GitHub token's kind, as git_tokens records it, in words. */
+const TOKEN_KINDS: Readonly<Record<string, string>> = Object.fromEntries([
+  ['app_user', 'GitHub App user token'],
+  ['app_installation', 'GitHub App installation token'],
+  ['pat', 'personal access token'],
+  ['fine_grained_pat', 'fine-grained personal access token'],
+])
+
 function setWords(row: Pick<SecretsRow, 'set_at' | 'set_by'>): string {
   if (row.set_at === null) return row.set_by === null ? 'set' : `set by ${row.set_by}`
   return row.set_by === null ? `set ${timeAgo(row.set_at)}` : `set ${timeAgo(row.set_at)} by ${row.set_by}`
@@ -495,9 +513,9 @@ function NeedLead({ rows, manages, scope, go, onAdd }: { rows: SecretsRow[]; man
         {n === 1 ? `${name(rows[0]!).replace(/^./, (c) => c.toUpperCase())} is not set` : `${n} secrets are needed and not set`}
       </b>
       <span>
-        {rows.map(name).join('; ')}.{' '}
+        {n === 1 ? '' : `${rows.map(name).join('; ')}. `}
         {manages
-          ? 'Each stays off until it is set.'
+          ? (n === 1 ? (rows[0]!.section === 'qa_sign_in' ? 'QA runs there stay off until it is set.' : `Every call to ${rows[0]!.name} fails until a secret is granted to ${rows[0]!.consumer ?? `mcp:${rows[0]!.name}`}.`) : 'Each stays off until it is set.')
           : 'A workspace admin sets them. You can set your own under Yours; yours win for your agents.'}
       </span>
       <span className="sec-acts">
@@ -683,7 +701,7 @@ function BrowserCard({ rows, removable, onChange }: { rows: SecretsRow[]; remova
               <tr key={r.name}>
                 <th scope="row" data-label="Session"><code>{r.name}</code>{r.site !== null && <span className="sec-notes"><span className="sec-chip">{r.site}</span></span>}</th>
                 <td data-label="Saved">{r.set_at === null ? 'not said' : timeAgo(r.set_at)}</td>
-                <td data-label="Expires">{r.expires_at === null ? 'not said' : r.expires_at}</td>
+                <td data-label="Expires" title={r.expires_at ?? undefined}>{r.expires_at === null ? 'not said' : when(r.expires_at)}</td>
                 {removable && (
                   <td data-label="Actions">
                     <Button kind="danger" size="sm" aria-label={`Remove ${r.name}`} onClick={() => setRemoving(r.name)}>Remove</Button>
@@ -731,7 +749,7 @@ function KeysCard({ rows, scope, go, onChange, onAdd }: { rows: SecretsRow[]; sc
         reads: scope === 'personal' ? 'your own submissions' : 'Jev and browser agents',
         state: r.status === 'set' ? <span className="sec-state is-ok">{setWords(r)}</span> : <span className="sec-chip is-warn">not set</span>,
         act: r.can_manage ? (
-          <span className="pk-form-row">
+          <span className="sec-acts">
             <Button kind={r.status === 'set' ? 'secondary' : 'primary'} size="sm" aria-label={`${r.status === 'set' ? 'Replace' : 'Set'} the ${label}`}
               onClick={() => go({ scope, key: 'typesafe' })}>{r.status === 'set' ? 'Replace' : 'Set'}</Button>
             {r.status === 'set' && <Button kind="danger" size="sm" aria-label={`Delete the ${label}`} onClick={() => setDeleting(r)}>Delete</Button>}
@@ -753,7 +771,7 @@ function KeysCard({ rows, scope, go, onChange, onAdd }: { rows: SecretsRow[]; sc
         reads: r.consumer ?? `mcp:${r.name}`,
         state: r.status === 'set'
           ? <span className="sec-state is-ok">reads {r.secrets.join(', ')}</span>
-          : <span className="sec-chip is-warn">needs a secret, not set</span>,
+          : <span className="sec-chip is-warn">not set</span>,
         act: r.can_manage && r.status !== 'set' ? <Button kind="primary" size="sm" onClick={() => onAdd(r.consumer)}>Add one</Button> : null,
       }
     }
@@ -803,11 +821,11 @@ function GitCard({ rows, empty }: { rows: SecretsRow[]; empty: string }) {
     <Card title="GitHub token">
       {rows.length === 0 ? <p className="ur-small">{empty}</p> : rows.map((r) => (
         <dl key={r.name} className="sec-kv">
-          <dt>Kind</dt><dd>{r.kind ?? 'not said'}{r.token_scope === null ? '' : ` · ${r.token_scope} token`}</dd>
+          <dt>Kind</dt><dd>{r.kind === null ? 'not said' : (TOKEN_KINDS[r.kind] ?? r.kind)}{r.token_scope === null ? '' : ` · ${r.token_scope === 'tenant' ? 'workspace' : r.token_scope === 'user' ? 'yours' : r.token_scope}`}</dd>
           <dt>State</dt><dd><span className={`sec-state${r.status === 'active' ? ' is-ok' : ''}`}>{r.status}</span></dd>
           <dt>GitHub login</dt><dd>{r.forge_login === null ? 'not said' : `@${r.forge_login}`}</dd>
           <dt>Verified</dt><dd>{r.verified_at === null ? 'never' : timeAgo(r.verified_at)}</dd>
-          <dt>Expires</dt><dd>{r.expires_at === null ? 'not said' : r.expires_at}</dd>
+          <dt>Expires</dt><dd title={r.expires_at ?? undefined}>{r.expires_at === null ? 'not said' : when(r.expires_at)}</dd>
         </dl>
       ))}
       <p className="sec-hint">
@@ -1194,6 +1212,7 @@ function OneTimeForm({
         target={target}
         catalogue={catalogue}
         draft={draft !== null && sameTarget(draft.target, target) ? draft : null}
+        repository={at.scope === 'repository' ? overview?.repository ?? null : null}
         takeLink={takeLink}
         onBack={onBack}
         onDone={done}
@@ -1232,8 +1251,8 @@ function Opening({ state, onBack }: { state: Minted; onBack?: () => void }) {
   return null
 }
 
-function whereWords(at: SecretsAt, target: SecretStoreTarget): string {
-  return target.scope === 'repository' ? 'this repository, for agents' : at.scope === 'personal' ? 'yours' : 'the workspace'
+function whereWords(at: SecretsAt, target: SecretStoreTarget, repository: string | null): string {
+  return target.scope === 'repository' ? `${repository ?? 'this repository'}, for agents that clone it` : at.scope === 'personal' ? 'yours' : 'the workspace'
 }
 
 function StoreForm({
@@ -1245,11 +1264,13 @@ function StoreForm({
   onBack,
   onDone,
   written,
+  repository,
 }: {
   at: SecretsAt
   target: SecretStoreTarget
   catalogue: WorkspaceSecretCatalogue | null
   draft: Draft | null
+  repository: string | null
   takeLink: () => string | null
   onBack: () => void
   onDone: (words: string) => void
@@ -1265,7 +1286,7 @@ function StoreForm({
     const secret = dataOf(list.state)?.secrets.find((s) => s.name === at.name)
     return (
       <Card title={at.name ?? 'Rotate'}>
-        <dl className="sec-kv"><dt>Where</dt><dd>{whereWords(at, target)}</dd><dt>Name</dt><dd><code>{at.name}</code> <span className="sec-hint">(fixed by the link)</span></dd></dl>
+        <dl className="sec-kv"><dt>Where</dt><dd>{whereWords(at, target, repository)}</dd><dt>Name</dt><dd><code>{at.name}</code> <span className="sec-hint">(fixed by the link)</span></dd></dl>
         {secret === undefined
           ? <UrRegion state={list.state} route="GET secrets" what="The secret to rotate" onRetry={list.reload}>{() => <p className="ur-small">No secret of that name is stored here.</p>}</UrRegion>
           : <RotateSecret secret={secret} store={store} takeToken={take} onCancel={onBack} onDone={onDone} />}
@@ -1286,7 +1307,10 @@ function StoreForm({
   }
   return (
     <Card title={draft?.name ?? 'Add a secret'}>
-      <dl className="sec-kv"><dt>Where</dt><dd>{whereWords(at, target)}</dd></dl>
+      <dl className="sec-kv">
+        <dt>Where</dt><dd>{whereWords(at, target, repository)}</dd>
+        {draft !== null && <><dt>Granted to</dt><dd>{draft.consumers.length === 0 ? 'nothing yet: grant it from the matrix' : draft.consumers.join(', ')}</dd></>}
+      </dl>
       {catalogue === null ? (
         <p className="ur-small">Reading the kinds a secret may be stored as…</p>
       ) : (

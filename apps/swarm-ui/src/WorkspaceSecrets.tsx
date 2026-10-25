@@ -639,19 +639,24 @@ export function AddSecret({
         <span id={`${id}-name-why`} className="jb-note">
           What grants name: lower-case letters, digits and hyphens, starting with a letter or a digit. Never the value.
         </span>
+        {/* Each label with its control, so a narrow form wraps a pair, never a label from its select. */}
         <div className="pk-form-row">
-          <label htmlFor={`${id}-provider`}>Provider</label>
-          <select id={`${id}-provider`} value={provider} onChange={(e) => setProvider(e.target.value)}>
-            {providers.map((p) => <option key={p} value={p}>{p}</option>)}
-          </select>
-          <label htmlFor={`${id}-kind`}>Kind</label>
-          <select id={`${id}-kind`} value={kind} onChange={(e) => {
-            setKind(e.target.value)
-            // The value fields are drawn afresh for the new kind, empty.
-            setFilled(false)
-          }}>
-            {kinds.map((k) => <option key={k} value={k}>{KIND_WORDS[k] ?? k}</option>)}
-          </select>
+          <span className="pk-form-row">
+            <label htmlFor={`${id}-provider`}>Provider</label>
+            <select id={`${id}-provider`} value={provider} onChange={(e) => setProvider(e.target.value)}>
+              {providers.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </span>
+          <span className="pk-form-row">
+            <label htmlFor={`${id}-kind`}>Kind</label>
+            <select id={`${id}-kind`} value={kind} onChange={(e) => {
+              setKind(e.target.value)
+              // The value fields are drawn afresh for the new kind, empty.
+              setFilled(false)
+            }}>
+              {kinds.map((k) => <option key={k} value={k}>{KIND_WORDS[k] ?? k}</option>)}
+            </select>
+          </span>
         </div>
           </>
         )}
