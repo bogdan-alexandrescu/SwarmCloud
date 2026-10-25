@@ -19,7 +19,7 @@
 // `accountPaceOf` -- the pace case moves.
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AccountsBoard } from '../api'
 import type { Result } from '../fetch'
@@ -229,6 +229,55 @@ describe('a duplicate says what to do, naming only this workspace’s accounts',
     expect(dup.querySelector('h4')!.textContent).toBe('Possibly one subscription, registered twice')
     expect(dup.textContent).toContain('devops-team and an account in another workspace read identically')
     expect(dup.textContent).toContain('The pool still hands out both')
+  })
+})
+
+describe('on a phone the opened account is the whole screen (mock-up A P3)', () => {
+  /** jsdom has no `matchMedia`: `phone` matches the 560px query. */
+  const media = (phone: boolean) =>
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: phone && query.includes('560'),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }))
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+  const dup = () => [
+    account({ account_id: 'eng:saga-personal', label: 'saga-personal' }),
+    account({
+      account_id: 'eng:team',
+      label: 'team',
+      duplicate_of: 'eng:saga-personal',
+      duplicate_reason: 'registered on the same organisation as eng:saga-personal',
+      can_take_new_agent: false,
+      blocked_by: [{ duplicate_of: 'eng:saga-personal', reason: 'registered on the same organisation as eng:saga-personal' }],
+    }),
+  ]
+
+  it('draws no verdict, rule line or banner above the sheet at 390, only ‹ Accounts and the account', async () => {
+    media(true)
+    const sheet = await open(dup(), 'eng:team')
+    expect(sheet.getAttribute('aria-label')).toBe('Account team')
+    expect(document.querySelector('.acct-dup'), 'the page’s duplicate banner is still above the sheet').toBeNull()
+    expect(document.querySelector('.acct-verdict, .acct-rule')).toBeNull()
+    expect(sheet.querySelector('.acct-back')).not.toBeNull()
+    // The account's own duplicate advice is in the sheet, so nothing is lost.
+    expect(sheet.querySelector('.acct-ss-dup')).not.toBeNull()
+    // Back brings the page's lead back.
+    fireEvent.click(sheet.querySelector<HTMLButtonElement>('.acct-back')!)
+    await waitFor(() => expect(document.querySelector('.acct-dup')).not.toBeNull(), WAIT)
+  })
+
+  it('keeps the lead beside the sheet on a desktop, where the table is still the page', async () => {
+    media(false)
+    await open(dup(), 'eng:team')
+    expect(document.querySelector('.acct-dup')).not.toBeNull()
   })
 })
 
