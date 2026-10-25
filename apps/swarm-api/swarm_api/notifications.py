@@ -83,11 +83,19 @@ from swarm_common.admission import _snapshot
 from swarm_common.states import ParkReason, TaskState
 
 from . import approvals, schedulefire
-from .agent_questions import blocking_unanswered, current_wait, parked_wait, unanswered
+from .agent_questions import (
+    OWNER_QUESTIONS_PARK_KEY,
+    blocking_unanswered,
+    current_wait,
+    owner_questions_hold,
+    parked_wait,
+    unanswered,
+)
 from . import workspaces as ws
 from .forgeapp import CONNECTIONS, REFRESH_FAILED, connection_id_for, user_hash
 from .gittokens import COLLECTION as GIT_TOKENS
 from .issueruns import IssueRuns
+from .codec import owner_answers_by_index
 from .people import LOAN_DECLINED
 from .preferences import DEFAULT_REMINDER
 from .preferences import TOPICS as TOPICS  # re-exported: the bell's topics are these
@@ -393,6 +401,8 @@ def handoffs(reading: Reading) -> list[dict[str, Any]]:
     task holding a hand-off (`Task.human_wait`, docs/design/live-browser.md
     §4.1), and one of the caller's PARKED `HUMAN_REQUIRED` after its hold
     expired (§4.3), which only a person promotes. Both link to the Browser tab.
+    A PARKED merge step held by owner questions is no hand-off: its item, if
+    it has one, is `_held_merge_item`'s, linked to Details (#2313).
 
     An open hand-off is "Agent needs you" for everyone who may take control
     of it (`handoff.may_control`, §5.1): its submitter, and the tenant's
@@ -423,14 +433,126 @@ def handoffs(reading: Reading) -> list[dict[str, Any]]:
             f"task:handoff:{task.id}:{generation}{suffix}", TASK, True, HANDOFF_TITLE,
             wait.get("reason"), f"/agents/live/{task.id}/browser",
             wait.get("requested_at") or task.updated_at, topic=T_QUESTION))
+    asked: dict[str, set[int]] | None = None
     for task in _own_in_state(reading, TaskState.PARKED):
         if task.park_reason != ParkReason.HUMAN_REQUIRED:
+            continue
+        hold = _owner_questions_hold(task)
+        if hold is not None:
+            if asked is None:
+                asked = _asked_indices(reading)
+            item = _held_merge_item(reading, task, hold, asked)
+            if item is not None:
+                items.append(item)
             continue
         items.append(_item(
             f"task:handoff:{task.id}:{task.current_generation}", TASK, True,
             "Your agent parked until you take over its browser", f"Task {task.id}",
             f"/agents/waiting/{task.id}/browser", task.updated_at, topic=T_QUESTION))
     return items
+
+
+#: The merge step's owner-question hold, as its park records it in
+#: `blocked_by` (`agent_worker.lifecycle._park_for_owner_questions`); the
+#: same spelling `waiting_detail.OWNER_QUESTIONS_PHASE` reads.
+OWNER_QUESTIONS_PHASE = "owner_questions"
+
+
+def _owner_questions_hold(task: Any) -> Mapping[str, Any] | None:
+    """The owner-question hold this HUMAN_REQUIRED park records, else None (a hand-off)."""
+    for entry in task.blocked_by or ():
+        if (isinstance(entry, Mapping) and entry.get("reason") == ParkReason.HUMAN_REQUIRED.value
+                and entry.get("park_phase") == OWNER_QUESTIONS_PHASE):
+            hold = entry.get(OWNER_QUESTIONS_PARK_KEY)
+            return hold if isinstance(hold, Mapping) else {}
+    return None
+
+
+def _asked_indices(reading: Reading) -> dict[str, set[int]]:
+    """Which questions already ring from the task that asked them: each
+    task `agent_questions` lists, with the indices its item stands for."""
+    asked: dict[str, set[int]] = {}
+    for task in reading.own_tasks():
+        found = _asked_item(reading, task)
+        if found is not None:
+            asked[task.id] = found[1]
+    return asked
+
+
+def _lane_label(task: Any) -> str:
+    """What the owner calls a workflow: its label, which `submit` stores on
+    every step as `metadata.unit` (`swarm_mcp.workflows.stored_names`), then
+    its title, then the step's own name."""
+    metadata = task.metadata if isinstance(task.metadata, Mapping) else {}
+    for key in ("unit", "title"):
+        value = " ".join(str(metadata.get(key) or "").split())
+        if value:
+            return value
+    return task.step_id or task.runner_profile
+
+
+def _held_merge_item(reading: Reading, task: Any, hold: Mapping[str, Any],
+                     asked: dict[str, set[int]]) -> dict[str, Any] | None:
+    """A merge step held by owner questions (#2070), not a browser hand-off
+    (MERGE-PARK-BELL, part of #2313; BGD 2026-10-25).
+
+    ONE ITEM PER OPEN QUESTION, NEVER TWO AND NEVER NONE. A question the
+    hold names rings already when the step that asked it is listed by
+    `agent_questions` for this reader with that index open (`asked`): the
+    merge leaves it to that item. A question still open that rings nowhere
+    -- its step ended past `WINDOW`, reported fewer questions, is someone
+    else's or lies outside the merge's workflow -- is counted here, and the
+    merge's own item, "<lane> needs your answers to N questions to merge",
+    opens the merge's Details, where the held-questions card lists every
+    one with its answer control. Not `/browser`: a merge step has none.
+
+    A hold every open question of which rings elsewhere is no item. So is
+    one whose every question is answered: the answer that clears the last
+    one returns the merge to READY in its own transaction
+    (`agent_questions._hold_cleared`). A hold that cannot be read whole
+    (`owner_questions_hold` is None: an `unreadable` count, a malformed
+    entry) is always an item, because no answer wakes it and only a
+    person's re-run does; its entries that cannot be read count as open.
+    """
+    named = owner_questions_hold({"state": TaskState.PARKED.value,
+                                  "park_reason": ParkReason.HUMAN_REQUIRED.value,
+                                  "blocked_by": [{"reason": ParkReason.HUMAN_REQUIRED.value,
+                                                  OWNER_QUESTIONS_PARK_KEY: dict(hold)}]})
+    readable = named is not None
+    unreadable = 0
+    if named is None:
+        named = []
+        raw = hold.get("questions")
+        for q in raw if isinstance(raw, list) else ():
+            asker = q.get("task_id") if isinstance(q, Mapping) else None
+            index = q.get("question_index") if isinstance(q, Mapping) else None
+            if (isinstance(asker, str) and asker and not isinstance(index, bool)
+                    and isinstance(index, int) and index >= 0):
+                named.append((asker, index))
+            else:
+                unreadable += 1
+        recorded = hold.get("unreadable")
+        if not isinstance(recorded, bool) and isinstance(recorded, int) and recorded > 0:
+            unreadable += recorded
+    askers = reading.store.tasks_by_id(reading.viewer.tenant_id, {t for t, _ in named})
+    rings_nowhere = 0
+    for asker_id, index in dict.fromkeys(named):
+        asker = askers.get(asker_id)
+        if (asker is not None and asker.workflow_id == task.workflow_id
+                and index in owner_answers_by_index(asker.metadata)):
+            continue
+        if index not in asked.get(asker_id, ()):
+            rings_nowhere += 1
+    count = rings_nowhere + unreadable
+    if readable and count == 0:
+        return None
+    count = max(count, 1)
+    return _item(
+        f"task:handoff:{task.id}:{task.current_generation}", TASK, True,
+        f"{_lane_label(task)} needs your answers to {count} "
+        f"question{'s' if count != 1 else ''} to merge",
+        f"{task.step_id or task.runner_profile} · Task {task.id}",
+        f"/agents/waiting/{task.id}/details", task.updated_at, topic=T_QUESTION)
 
 
 #: The bell's title for a waiting step, by its declared form (§4.1).
@@ -520,33 +642,44 @@ def agent_questions(reading: Reading) -> list[dict[str, Any]]:
     the last blocking answer resumes the agent and the item goes."""
     items = []
     for task in reading.own_tasks():
-        wait = parked_wait(task)
-        if wait is not None:
-            _, adopted = current_wait(task)
-            open_ = blocking_unanswered(wait, task.metadata if adopted else None)
-            if not open_:
-                continue
-            items.append(_item(
-                f"task:questions:{task.id}", TASK, True,
-                f"Your agent is waiting for your answer to {len(open_)} "
-                f"question{'s' if len(open_) != 1 else ''}",
-                f"{task.step_id or task.runner_profile} · Task {task.id}",
-                f"/agents/recent/{task.id}#questions", task.updated_at, topic=T_QUESTION))
-            continue
-        count = _question_count(task)
-        if count <= 0 or task.state not in _ENDED:
-            continue
-        if unanswered(count, task.metadata) == 0:
-            continue
-        ended = task.completed_at or task.updated_at
-        if not _recent(reading, ended):
-            continue
-        items.append(_item(
-            f"task:questions:{task.id}", TASK, True,
-            f"Your agent asked {count} question{'s' if count != 1 else ''}",
-            f"{task.step_id or task.runner_profile} · Task {task.id}",
-            f"/agents/recent/{task.id}#questions", ended, topic=T_QUESTION))
+        found = _asked_item(reading, task)
+        if found is not None:
+            items.append(found[0])
     return items
+
+
+def _asked_item(reading: Reading, task: Any) -> tuple[dict[str, Any], set[int]] | None:
+    """`task`'s questions item, with the question indices it stands for, else
+    None: the one rule `agent_questions` lists by and `handoffs` counts a
+    held merge's questions by, so the two never disagree about which
+    question already rings."""
+    wait = parked_wait(task)
+    if wait is not None:
+        _, adopted = current_wait(task)
+        open_ = blocking_unanswered(wait, task.metadata if adopted else None)
+        if not open_:
+            return None
+        return _item(
+            f"task:questions:{task.id}", TASK, True,
+            f"Your agent is waiting for your answer to {len(open_)} "
+            f"question{'s' if len(open_) != 1 else ''}",
+            f"{task.step_id or task.runner_profile} · Task {task.id}",
+            f"/agents/recent/{task.id}#questions", task.updated_at, topic=T_QUESTION), set(open_)
+    count = _question_count(task)
+    if count <= 0 or task.state not in _ENDED:
+        return None
+    if unanswered(count, task.metadata) == 0:
+        return None
+    ended = task.completed_at or task.updated_at
+    if not _recent(reading, ended):
+        return None
+    answered = owner_answers_by_index(task.metadata)
+    return _item(
+        f"task:questions:{task.id}", TASK, True,
+        f"Your agent asked {count} question{'s' if count != 1 else ''}",
+        f"{task.step_id or task.runner_profile} · Task {task.id}",
+        f"/agents/recent/{task.id}#questions", ended,
+        topic=T_QUESTION), {i for i in range(count) if i not in answered}
 
 
 # --------------------------------------------------------------------------
