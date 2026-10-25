@@ -32,8 +32,8 @@ afterEach(() => {
 
 const PAGES: readonly [string, string][] = [
   ['Profile', '/settings/profile'],
-  ['API keys', '/settings/keys'],
-  // Workspace, MCP servers and People and roles are Config's since CONFIG-NAV (part of #2157).
+  // Workspace, MCP servers and People and roles are Config's since CONFIG-NAV
+  // (part of #2157), and API keys is Config › Secrets since SSC-UI (part of #2158).
 ]
 
 function shell(section: 'profile' | 'work', tab: string, go = vi.fn()) {
@@ -87,45 +87,33 @@ describe('the spine (NAV-PROFILE)', () => {
 })
 
 describe('the Profile panel (NAV-PROFILE)', () => {
-  it('is headed Profile and lists the two settings pages in order, each at its path', () => {
+  it('is headed Profile and lists its one settings page at its path (API keys is Config › Secrets since SSC-UI)', () => {
     shell('profile', 'profile')
     expect(document.querySelector('.sk-panel .sk-pt')?.textContent).toBe('Profile')
+    // MUTATION: put API keys back under Profile -> fails.
     expect(panelRows().map((a) => [a.querySelector('.sk-pl')?.textContent, a.getAttribute('href')])).toEqual(PAGES)
-  })
-
-  it('routes a plain click on API keys to settings/keys', () => {
-    const go = vi.fn()
-    shell('profile', 'profile', go)
-    fireEvent.click(panelRows().find((a) => a.textContent?.includes('API keys'))!)
-    expect(go).toHaveBeenCalledWith('settings/keys')
-  })
-
-  it('lights API keys on the one-time link address', () => {
-    shell('profile', 'keys/typesafe')
-    const on = panelRows().filter((a) => a.classList.contains('is-on'))
-    expect(on.map((a) => a.querySelector('.sk-pl')?.textContent)).toEqual(['API keys'])
   })
 
   it('is what the collapsed spine flies out from Profile', () => {
     localStorage.setItem('swarm.shell.collapsed', '1')
-    shell('profile', 'keys')
+    shell('profile', 'profile')
     fireEvent.focus(spine().querySelector('a[data-sec="profile"]')!)
     const fly = document.querySelector<HTMLElement>('.sk-flyout')
     expect(fly, 'Profile opens no flyout').not.toBeNull()
     expect(fly!.querySelector('b')?.textContent).toBe('Profile')
     const rows = [...fly!.querySelectorAll<HTMLAnchorElement>('a')]
     expect(rows.map((a) => [a.textContent, a.getAttribute('href')])).toEqual(PAGES)
-    expect(rows.filter((a) => a.getAttribute('aria-current') === 'page').map((a) => a.textContent)).toEqual(['API keys'])
+    expect(rows.filter((a) => a.getAttribute('aria-current') === 'page').map((a) => a.textContent)).toEqual(['Profile'])
   })
 })
 
 describe('each settings address lights Profile and its own page (NAV-PROFILE)', () => {
   const ADDRESSES: readonly [string, string, string][] = [
     ['/settings/profile', '', 'Profile'],
-    ['/settings/keys', '', 'API keys'],
-    ['/settings/keys/typesafe', '?scope=user', 'API keys'],
     // `/settings/workspace`, `/settings/mcp-servers` and `/settings/people` land
-    // on Config since CONFIG-NAV (config.nav.test.tsx holds where).
+    // on Config since CONFIG-NAV (config.nav.test.tsx holds where), and
+    // `/settings/keys` and its link on Config › Secrets since SSC-UI
+    // (secrets.routes.test.tsx).
   ]
 
   it.each(ADDRESSES)('routes %s%s to Profile in spineOf', (path, query) => {

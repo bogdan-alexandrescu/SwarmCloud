@@ -296,6 +296,7 @@ from .procman import ChildProcess, ChildResult, reap_foreign_processes
 from .quota import QuotaDecision, decide, read_runner_signal, signal_from_control
 from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED, SPEND_KEYS
 from .runners.cliagent import (
+    ACCOUNT_ERROR_KINDS,
     ACCOUNT_MOVE_ENV,
     ACCOUNT_STREAM_ENV,
     RESUME_MOVED,
@@ -1561,6 +1562,15 @@ class Worker:
                 # holds the replacement; re-reading it costs one API call and
                 # saves the attempt.
                 refusal = self._credential_refusal()
+                if refusal is not None and self._account is not None:
+                    # An auth error on the held account, for its health record
+                    # (#2302); every refusal, the reloaded ones included.
+                    self.control.report_account_error(
+                        provider=str(refusal.get("provider") or self.cfg.provider or ""),
+                        account=self._account,
+                        kind="auth",
+                        message="the provider refused the account's credential",
+                    )
                 if refusal is not None and credential_reloads < MAX_CREDENTIAL_RELOADS:
                     credential_reloads += 1
                     # RESUMED, NOT STARTED AGAIN (#626). A restart from the
@@ -1661,6 +1671,10 @@ class Worker:
                 state=quota.state,
                 retry_after_seconds=quota.retry_after_seconds,
                 reset_at=quota.reset_at,
+                # The pool account the runner was refused on, when it held
+                # one (#2302): the 429 is that account's, not the tenant's.
+                account=self._account,
+                message=quota.detail,
             )
             if decision.park or attempt_number > MAX_IN_WORKER_RETRIES:
                 return self._park_for_quota(decision, source="runner")
@@ -6938,6 +6952,15 @@ class Worker:
         bound with no UI path in it, or a `builds_on` step that cannot be
         read, is [] -- gated, naming no path -- because a review that could
         not be told what it reviews is not one that saw it.
+
+        ONLY WHAT THE LANE ITSELF CHANGED IS ITS UI CHANGE (#2337). A lane
+        started from another PR's branch that merged origin/main carries
+        their UI files in its patch, and its code-only review was forced to
+        NOT_YET. So an upstream's `swarm-work.patch`, and a `builds_on`
+        step's list, are judged by the paths its own commits changed
+        (`result_summary.git.own_files`) when it recorded them; a step
+        recorded without them, or one whose document cannot be read, is
+        judged by the whole patch, as before.
         """
         if not owner_questions_mod.is_review(task.get("metadata")):
             return None
@@ -6947,6 +6970,12 @@ class Worker:
         unknown = False
         for item in staged:
             if not item.filename.endswith(verdict_mod.PATCH_SUFFIX):
+                continue
+            own = self._own_ui_paths(item)
+            if own is not None:
+                paths, cut = own
+                found.update(dict.fromkeys(paths))
+                unknown = unknown or cut
                 continue
             try:
                 text = (ws.work / item.path).read_text(encoding="utf-8", errors="replace")
@@ -6975,6 +7004,24 @@ class Worker:
             runner_profile=self.cfg.runner_profile,
         )
         return list(found)
+
+    def _own_ui_paths(self, item: inputs_mod.StagedInput) -> tuple[list[str], bool] | None:
+        """The UI paths the step that made this staged patch changed itself (#2337).
+
+        Only for its harvested `swarm-work.patch`, the one `own_files`
+        describes; any other `.patch` it wrote is read as a patch. None
+        when the step recorded no own list or its document cannot be read.
+        """
+        if item.filename != PATCH_NAME:
+            return None
+        try:
+            upstream = inputs_mod.fetch_upstream_task(
+                self.db, upstream_task_id=item.upstream_task_id, tenant_id=self.cfg.tenant_id,
+                call_options=self.control.call_options(),
+            )
+        except InputUnavailable:
+            return None
+        return verdict_mod.ui_paths_in_own_files(upstream.get("result_summary"))
 
     def _hold_ui_review_to_rendered(self) -> None:
         """Rewrite this UI-gated review's MERGE to NOT_YET unless it rendered (#2184)."""
@@ -9532,6 +9579,8 @@ class Worker:
         self._note_session(data.get("session_id"))
         # AT THE LATEST AT THE END OF THE RUN, every window not yet sent.
         self._forward_readings(data.get("readings"), final=True)
+        # Before any move: the error belongs to the account the run was on.
+        self._report_runner_error(data.get("error"))
         stopped_for = data.get("stopped_for")
         just_swapped, self._just_swapped = self._just_swapped, False
         reason: str | None = None
@@ -9559,6 +9608,31 @@ class Worker:
                 )
             return None
         return self._swap_account(reason)
+
+    def _report_runner_error(self, error: Any) -> None:
+        """The provider error the runner classified, on the held account's
+        health record (RUNNER-ERROR-KINDS, #2302). Never raises.
+
+        An overloaded 529, a 5xx or a network failure the CLI gave up on
+        (`cliagent.classify_account_error`). Health only: the broker's
+        `/account-error` route never touches AIMD, and the run itself fails
+        exactly as before. An `auth` error is not read from here; the
+        credential path reports it (`_credential_refusal`). The message was
+        redacted by the runner and is again by `report_account_error`.
+        """
+        account = self._account
+        if account is None or not isinstance(error, dict):
+            return
+        kind = error.get("kind")
+        if kind not in ACCOUNT_ERROR_KINDS:
+            return
+        message = error.get("message")
+        self.control.report_account_error(
+            provider=str(self.cfg.provider or ""),
+            account=account,
+            kind=str(kind),
+            message=message if isinstance(message, str) else "",
+        )
 
     def _swap_account(self, reason: str) -> dict[str, str] | Outcome | None:
         """Move the hold through the broker and rebuild the child's environment.
@@ -10294,11 +10368,19 @@ class Worker:
                 state = ProviderState(str(decision.detail.get("provider_state", "EXHAUSTED")))
             except ValueError:
                 state = ProviderState.EXHAUSTED
+            # The account this attempt still holds -- it is given back on the
+            # way out, in `_cleanup` -- so a park on an account's 429 names it
+            # (#2302). Only a RUNNER's 429 is the account's: a stop read from
+            # the broker (preflight, backpressure) was no account's refusal.
+            # The park itself is unchanged (invariant 4).
+            from_runner = decision.detail.get("source") == "runner"
             self.control.update_quota_state(
                 provider=provider,
                 state=state,
                 retry_after_seconds=decision.wait_seconds,
                 reset_at=decision.next_eligible_at,
+                account=self._account if from_runner else None,
+                message=str(decision.detail.get("signal_detail") or ""),
             )
         # `source` is where the signal was OBSERVED (the runner's 429, the
         # control plane's aggregate, the pre-flight check); `decision.detail`
@@ -12540,6 +12622,13 @@ class Worker:
             # [] would claim a measured empty diff.
             out["files"] = [f.as_record(self._scrub) for f in work.files]
             out["files_truncated"] = work.files_truncated
+        if work.own_files is not None:
+            # The paths this step's own commits and uncommitted work changed,
+            # a merge of main or of another branch left out (#2337): what a
+            # review's rendered gate judges. Absent when not measured, so the
+            # gate falls back to `files` and the patch rather than to [].
+            out["own_files"] = [self._scrub(path) for path in work.own_files]
+            out["own_files_truncated"] = work.own_files_truncated
         if work.patch_omitted:
             out["patch_note"] = (
                 f"the diff was {work.patch_bytes} bytes, over the "

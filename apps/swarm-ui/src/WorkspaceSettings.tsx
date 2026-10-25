@@ -1,6 +1,7 @@
-import { useContext, useState, type MouseEvent, type ReactNode } from 'react'
-import { loadProfile } from './api'
+import { useContext, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react'
+import { loadMe, loadProfile, renameWorkspace } from './api'
 import { CodeIntelligenceCard } from './CodeIntelligence'
+import type { ApiError } from './fetch'
 import { Button, ButtonLink, Card, Tabs, routedClick } from './components'
 import { SetupContext } from './ConfigSetup'
 import { NewWorkspaceDialog } from './NewWorkspace'
@@ -127,17 +128,100 @@ function SetupLead({ part, go }: { part: 'settings' | 'setup'; go?: (to: string)
   )
 }
 
+/** `workspaces.MAX_DISPLAY_NAME`; the API refuses a longer name as 422. */
+const MAX_WORKSPACE_NAME = 60
+
+/**
+ * RENAME (WORKSPACE-ADMIN-FIELDS, part of #2157; config-e.html S6a): the workspace's display name, never its id. Offered
+ * to the workspace's admins in a group workspace -- a personal workspace is always "Your workspace" in the switcher --
+ * and the API is the gate: anyone else is refused 403 with nothing written. Every rule on the name is the API's (1-60
+ * characters, no control or invisible character), drawn as its code and sentence. A rename tells the shell
+ * (`WORKSPACE_RENAMED_EVENT`), which reads its name again, so the switcher and the headers follow.
+ */
+function RenameForm({ tenantId, current, onDone, onCancel }: { tenantId: string; current: string; onDone: (name: string) => void; onCancel: () => void }) {
+  const [name, setName] = useState(current)
+  const [saving, setSaving] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+  const typed = name.trim()
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (saving || typed === '') return
+    if (typed === current) {
+      onCancel()
+      return
+    }
+    setSaving(true)
+    setRefused(null)
+    const r = await renameWorkspace(tenantId, typed)
+    setSaving(false)
+    if (r.status === 'ok' || r.status === 'stale') onDone(r.data.display_name)
+    else if (r.status === 'error') setRefused(r.error)
+  }
+  return (
+    <form className="ws-rename" aria-label="Rename this workspace" onSubmit={(e) => void submit(e)}>
+      <label className="c-field">
+        <span className="c-lbl">New name</span>
+        <input
+          className="c-inp"
+          type="text"
+          value={name}
+          maxLength={MAX_WORKSPACE_NAME}
+          autoComplete="off"
+          autoFocus
+          disabled={saving}
+          onChange={(e) => setName(e.target.value)}
+        />
+      </label>
+      <p className="ur-hint">
+        Changes the name everyone in it sees. The id <code>{tenantId}</code> stays as it is.
+      </p>
+      {refused !== null && (
+        <p className="ur-small ob-issue" role="alert" data-code={refused.code ?? undefined}>
+          {refused.code !== null && <b className="ur-bad">{refused.code}</b>} {refused.message}
+        </p>
+      )}
+      <div className="ws-rename-a">
+        <Button kind="primary" size="sm" type="submit" busy={saving ? 'Saving…' : false} disabled={typed === ''}>
+          Save name
+        </Button>
+        <Button size="sm" disabled={saving} onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  )
+}
+
+/** The acting workspace's name as the shell draws it: `/v1/tenants/me`'s, which a rename changes. */
+const loadThisMe = () => loadMe()
+
 /** The workspace these settings are about: the profile's acting workspace. */
 function ThisWorkspace({ profile }: { profile: Profile }) {
   const ws = profile.workspaces.find((w) => w.is_acting) ?? null
+  const me = useUrRead(loadThisMe, `me:${ws?.tenant_id ?? ''}`)
+  const [renamed, setRenamed] = useState<string | null>(null)
+  const [renaming, setRenaming] = useState(false)
+  const read = me.state.status === 'ok' || me.state.status === 'stale' ? me.state.data : null
+  const stored = read !== null && ws !== null && read.tenant.tenant_id === ws.tenant_id ? read.tenant.display_name || null : null
+  const name = renamed ?? stored ?? ws?.display_name ?? ''
+  const mayRename = ws !== null && ws.kind === 'group' && ws.role.name === 'admin'
   return (
-    <Card title="This workspace">
+    <Card
+      title="This workspace"
+      action={
+        mayRename && !renaming ? (
+          <Button size="sm" onClick={() => setRenaming(true)}>
+            Rename
+          </Button>
+        ) : undefined
+      }
+    >
       {ws === null ? (
         <p className="ur-hint">The profile read names no acting workspace.</p>
       ) : (
         <dl className="ws-kv">
           <dt>Name</dt>
-          <dd>{ws.display_name}</dd>
+          <dd>{name}</dd>
           <dt>Id</dt>
           <dd>
             <code>{ws.tenant_id}</code>
@@ -147,6 +231,17 @@ function ThisWorkspace({ profile }: { profile: Profile }) {
           <dt>Your role</dt>
           <dd>{ws.role.name || 'unknown'}</dd>
         </dl>
+      )}
+      {ws !== null && renaming && (
+        <RenameForm
+          tenantId={ws.tenant_id}
+          current={name}
+          onCancel={() => setRenaming(false)}
+          onDone={(next) => {
+            setRenamed(next)
+            setRenaming(false)
+          }}
+        />
       )}
     </Card>
   )
@@ -170,7 +265,8 @@ function AddWorkspace() {
       />
       <Card title="What creating it does">
         <p className="ur-hint">
-          The form asks for the kind, one address and an optional display name, and posts them to{' '}
+          The form asks for the kind, one address, an optional display name and, for a group, an optional first admin, and
+          posts them to{' '}
           <code>POST /v1/admin/workspaces</code>, the route Admin › Tenants › New workspace uses. The workspace job then
           gives it its own worker account, IAM, storage prefix, namespace and pool, and the form ticks each step as the job
           checks it.

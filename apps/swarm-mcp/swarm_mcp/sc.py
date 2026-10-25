@@ -1228,6 +1228,8 @@ def session_start_context(
     *,
     watch_minutes: int | None = None,
     watch_off: bool = False,
+    project: str | None = None,
+    layout: str = "rows",
 ) -> str | None:
     """What the SessionStart hook tells the session, or None when nothing runs.
 
@@ -1245,6 +1247,12 @@ def session_start_context(
     for the project. Otherwise, when something runs and no interval was ever
     saved, the context asks the session to arm the watch at the default --
     CronList first, so a session that already has one makes no second.
+
+    `project` (SC-BROWSER-FOLLOWUP, BGD 2026-10-25): this checkout's origin
+    repository, `host/owner/repo`, when the listings were widened to the
+    project's running work (`own_or_project`): entries another session
+    started say so, and the attach asked for is `/sc attach --all --project`
+    -- or, in the pane `layout`, none for them: the pane lists them once read.
     """
     from . import watch
 
@@ -1263,7 +1271,7 @@ def session_start_context(
             label = f' "{entry["label"]}"' if entry.get("label") else ""
             named.append(
                 f"{entry.get('workflow_id')}{label} ({entry.get('state')}; {_steps_text(entry)}; "
-                f"{_age_text(entry.get('age_seconds'))}{_workspace_clause(entry)})"
+                f"{_age_text(entry.get('age_seconds'))}{_workspace_clause(entry)}{_started_clause(entry)})"
             )
         if count > SESSION_START_NAMED:
             named.append(f"and {count - SESSION_START_NAMED} more")
@@ -1280,7 +1288,7 @@ def session_start_context(
             label = f' "{entry["label"]}"' if entry.get("label") else ""
             named.append(
                 f"{entry.get('task_id')}{label} ({entry.get('state')}; "
-                f"{_age_text(entry.get('age_seconds'))}{_workspace_clause(entry)})"
+                f"{_age_text(entry.get('age_seconds'))}{_workspace_clause(entry)}{_started_clause(entry)})"
             )
         if count > SESSION_START_TASKS_NAMED:
             named.append(f"and {count - SESSION_START_TASKS_NAMED} more")
@@ -1291,22 +1299,97 @@ def session_start_context(
     from . import config
 
     cap = config.max_live_rows()
-    text = (
-        " ".join(parts)
-        + " Each was started by this Claude Code session (SC-SESSION-SCOPE): other sessions' work "
-        "in the tenant, and untagged work, is not named."
-        + " Before anything else, run `/sc attach --all` to show them as live "
-        "[SwarmCloud] rows: it submits nothing, starts one slim row per unfinished "
+    rows_text = (
+        "it submits nothing, starts one slim row per unfinished "
         f"workflow step and one per single task, and follows at most {cap} workflows "
-        f"and {cap} single tasks (the plugin's `max_live_rows`). (This notice comes "
-        "from the sc plugin's SessionStart hook; turn off its `auto_attach` option "
-        "to stop it.)"
+        f"and {cap} single tasks (the plugin's `max_live_rows`)."
     )
+    hook_text = (
+        " (This notice comes from the sc plugin's SessionStart hook; turn off its "
+        "`auto_attach` option to stop it.)"
+    )
+    own = [e for e in [*running, *singles] if e.get("this_session", True)]
+    if not project:
+        text = (
+            " ".join(parts)
+            + " Each was started by this Claude Code session (SC-SESSION-SCOPE): other sessions' work "
+            "in the tenant, and untagged work, is not named."
+            + " Before anything else, run `/sc attach --all` to show them as live "
+            "[SwarmCloud] rows: " + rows_text + hook_text
+        )
+        attaching = True
+    else:
+        text = (
+            " ".join(parts)
+            + " Named: the work this Claude Code session started, and the work still running for "
+            f"this project (repository {project}) whichever session started it -- at session start "
+            "only (BGD, 2026-10-25); another repository's work from another session, and untagged "
+            "work outside this project, is not named. `/sc check` and the watch stay scoped to "
+            "this session."
+        )
+        if layout == "pane":
+            text += (
+                " This project's layout is the SwarmCloud pane, which the plugin opens beside the chat "
+                "at session start, not read yet (`/sc-pane` opens it; it needs Claude Code's function "
+                "hooks): its Refresh lists all of these with one direct call and no model tokens -- "
+                "that is where this project's work is tracked, with no model row."
+            )
+            attaching = bool(own)
+            if attaching:
+                text += (
+                    " Before anything else, run `/sc attach --all`: it gives each workflow this session "
+                    "started its ONE quiet /workflows row that notices its finish, and submits nothing."
+                )
+        else:
+            text += (
+                " Before anything else, run `/sc attach --all --project` to show them as live "
+                "[SwarmCloud] rows tracked in this session: " + rows_text
+            )
+            attaching = True
+        text += hook_text
     if watch_minutes:
         text += " Then: " + watch.rearm_sentence(watch_minutes)
-    elif not watch_off:
+    elif not watch_off and attaching:
         text += " " + watch.arm_sentence()
     return text
+
+
+def project_key() -> str | None:
+    """This checkout's origin repository, `host/owner/repo`, or None when it
+    has no origin naming one: then nothing widens to a project (SC-BROWSER-
+    FOLLOWUP) -- "no origin" is never read as "every repository"."""
+    from .check import resolve_scope
+
+    try:
+        return resolve_scope("origin")["key"]
+    except Exception:  # noqa: BLE001 - a scope that cannot be read widens nothing
+        return None
+
+
+def own_or_project(listing: dict[str, Any] | None, key: str, sid: str | None,
+                   repository: str | None) -> dict[str, Any] | None:
+    """`listing` (`running_workflows` or `running_tasks`) with the entries
+    under `key` this session started and -- the session start's widening
+    (SC-BROWSER-FOLLOWUP, BGD 2026-10-25) -- those that clone `repository`,
+    whichever session started them; each kept entry marked `this_session`.
+    `repository` None keeps this session's alone (`own_only`)."""
+    from .check import repo_key
+
+    if listing is None:
+        return None
+    kept = []
+    for entry in listing.get(key) or []:
+        if not isinstance(entry, dict):
+            continue
+        own = session.ownership(session.owner_of(entry), sid) == "own"
+        if own or (repository is not None and repo_key(entry.get("repository_url")) == repository):
+            kept.append({**entry, "this_session": own})
+    return {**listing, key: kept, "count": len(kept)}
+
+
+def _started_clause(entry: dict[str, Any]) -> str:
+    """`; another session's` for a project entry this session did not start."""
+    return "; started by another Claude Code session" if entry.get("this_session") is False else ""
 
 
 def own_only(listing: dict[str, Any] | None, key: str, sid: str | None) -> dict[str, Any] | None:
@@ -1393,11 +1476,20 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
                 # hook hands over the session id it read on stdin, and work
                 # another session started -- or nobody tagged -- is not named.
                 sid = session.current()
+                # AND THIS PROJECT'S RUNNING WORK (SC-BROWSER-FOLLOWUP, BGD
+                # 2026-10-25), at session start only: whatever clones this
+                # checkout's origin repository, whichever session started it.
+                # `/sc check` and the watch stay this session's.
+                from . import layout
+
+                project = project_key()
                 context = session_start_context(
-                    own_only(workflows_read.result(), "workflows", sid),
-                    own_only(tasks_read.result(), "tasks", sid),
+                    own_or_project(workflows_read.result(), "workflows", sid, project),
+                    own_or_project(tasks_read.result(), "tasks", sid, project),
                     watch_minutes=rearm_minutes(),
                     watch_off=handed_off(),
+                    project=project,
+                    layout=layout.current()["layout"],
                 )
         except Exception:  # noqa: BLE001 - nothing may stop a session starting
             return EXIT_OK

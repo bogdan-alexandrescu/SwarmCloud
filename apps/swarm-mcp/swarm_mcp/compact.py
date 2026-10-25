@@ -984,3 +984,165 @@ def watch_summary(
         "since": f"{body}.{_checksum(body)}",
         "tasks": reply["tasks"],
     }
+
+
+# --------------------------------------------------------------------------
+# `format: "stage"`: the sc:finish row's stage line (SC-BROWSER-BUILD, #2318)
+# --------------------------------------------------------------------------
+
+#: The census words a stage line counts, in the order it says them: failures
+#: first (stageCensus in apps/swarm-ui/src/dag.ts leads with them too), then
+#: what holds capacity, then what waits. A success is not news on a row whose
+#: job is to notice the finish, so the line leaves it out; the pane counts it.
+#: run.js's STAGE_WORDS say the same, and a unit test holds the two equal
+#: (test_sc_browser_rows.py).
+STAGE_WORDS = ("failed", "running", "parked", "waiting")
+
+
+def stage_word(state: Any) -> str:
+    """Which census word a state adds to; `succeeded` for a success."""
+    if state in SUMMARY_DONE:
+        return "succeeded"
+    if state in SUMMARY_FAILED:
+        return "failed"
+    if state in SUMMARY_RUNNING:
+        return "running"
+    if state == "PARKED":
+        return "parked"
+    return "waiting"
+
+
+def stage_line(stages: dict[str, int], states: dict[str, Any]) -> tuple[str, str]:
+    """`(key, line)` for a workflow whose tasks sit in `stages` (task id ->
+    the console's stage number, `levelsOf` + 1) at `states`.
+
+    The key is `stage <n>` -- the lowest stage still holding an unfinished
+    task -- or `done` once every task has finished; the line says the key's
+    stage and its census (`stage 2 · 1 failed · 3 running · 1 parked`), or
+    how it finished (`succeeded · 3/3 stages`, `finished · 1 failed · 2/3
+    stages`). A row writes the line only when the KEY changes."""
+    total = max(stages.values(), default=0)
+    by_stage: dict[int, list[Any]] = {}
+    for task_id, number in stages.items():
+        by_stage.setdefault(number, []).append(states.get(task_id))
+    done = sum(1 for number in range(1, total + 1)
+               if all(state in TERMINAL for state in by_stage.get(number, [])))
+    unfinished = sorted(n for n, held in by_stage.items() if any(s not in TERMINAL for s in held))
+    if not unfinished:
+        failed = sum(1 for state in states.values() if state in SUMMARY_FAILED)
+        if failed:
+            return "done", f"finished · {failed} failed · {done}/{total} stages"
+        return "done", f"succeeded · {done}/{total} stages"
+    current = unfinished[0]
+    counts = {word: 0 for word in STAGE_WORDS}
+    for state in by_stage[current]:
+        word = stage_word(state)
+        if word in counts:
+            counts[word] += 1
+    census = [f"{counts[word]} {word}" for word in STAGE_WORDS if counts[word]]
+    return f"stage {current}", " · ".join([f"stage {current}"] + census)
+
+
+def read_stage_of(given: Any) -> dict[str, Any]:
+    """`stage_of`, checked: what run.js's prompt hands the sc:finish row and
+    the row passes back unchanged -- `stages`, every task of the workflow
+    mapped to its console stage; `states`, the tasks it does NOT follow
+    (finished before the row) at their states; and `key`, the stage key the
+    workflow last wrote."""
+    if not isinstance(given, dict):
+        raise SwarmError(
+            "`format: \"stage\"` needs `stage_of`: the object the row's prompt gives on its "
+            "`stage_of:` line, passed unchanged. Without it the bridge cannot tell one stage "
+            "from the next"
+        )
+    stages = given.get("stages")
+    if not isinstance(stages, dict) or not stages or not all(
+        isinstance(n, int) and not isinstance(n, bool) and n >= 1 for n in stages.values()
+    ):
+        raise SwarmError("`stage_of.stages` maps every task id of the workflow to its stage, 1 or more")
+    states = given.get("states") if given.get("states") is not None else {}
+    if not isinstance(states, dict):
+        raise SwarmError("`stage_of.states` maps the tasks the row does not follow to their states")
+    key = given.get("key")
+    return {"stages": {str(k): v for k, v in stages.items()},
+            "states": {str(k): v for k, v in states.items()},
+            "key": key if isinstance(key, str) else ""}
+
+
+def _stage_said(token: Any) -> str | None:
+    payload = _payload(token)
+    if payload is None or payload.get("fmt") != _FORMAT or not isinstance(payload.get("sg"), str):
+        return None
+    return payload["sg"]
+
+
+def watch_stage(
+    client: SwarmClient,
+    task_ids: list[str],
+    stage_of: Any,
+    *,
+    since: Any = None,
+    wait_seconds: float = 0,
+    max_wait: float = MAX_WAIT_SECONDS,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+) -> dict[str, Any]:
+    """`{key, line, stage_changed, stop, since, tasks}`: the sc:finish row's
+    follow, the cheapest row there is (SC-BROWSER-BUILD, #2318).
+
+    The row's only job is to notice the workflow's finish, so the call HOLDS
+    through every step change that leaves the workflow's stage where it was:
+    it follows the unfinished tasks exactly as `watch_progress` does, again
+    and again, until the stage key (`stage_line`) differs from the one the
+    last reply returned -- the prompt's `stage_of.key` before the first --,
+    every task has finished or been given up on, or `wait_seconds` (at most
+    `max_wait`) has passed. A thirteen-step stage is then one call per stage
+    and per half hour, not one per step that starts, opens a PR or finishes.
+    The first call returns at once. `tasks` holds each followed task's latest
+    row (state, park reason, outcome once finished); a task the token already
+    saw finish is not read again."""
+    given = read_stage_of(stage_of)
+    task_ids = [str(t) for t in task_ids]
+    first_call = since in (None, "")
+    before = _stage_said(since)
+    before = before if before is not None else given["key"]
+    wait = max(0.0, min(float(wait_seconds or 0), max_wait, MAX_WAIT_SECONDS))
+    deadline = clock() + wait
+    token = since
+    latest: dict[str, dict[str, Any]] = {}
+    transitions: list[str] = []
+    while True:
+        states, _keys, _failures = decode_since(token)
+        open_ids = [t for t in task_ids if states.get(t) not in TERMINAL]
+        if open_ids:
+            remaining = 0.0 if first_call else max(0.0, deadline - clock())
+            reply = watch_progress(client, open_ids, since=token, wait_seconds=remaining, max_wait=max_wait,
+                                   sleep=sleep, clock=clock, now=now)
+        else:
+            reply = {"transitions": [], "stop": True, "tasks": [],
+                     "since": token if token not in (None, "") else encode_since({}, {}, {})}
+        token = reply["since"]
+        transitions.extend(reply["transitions"])
+        for row in reply["tasks"]:
+            latest[row["task_id"]] = row
+        states, _keys, _failures = decode_since(token)
+        key, line = stage_line(given["stages"], {**given["states"], **states})
+        stop = bool(reply["stop"])
+        if first_call or stop or key != before or clock() >= deadline:
+            break
+    states, keys, failures = decode_since(token)
+    resealed = encode_since(states, keys, failures, llm_said(token))
+    payload = _payload(resealed) or {}
+    payload["sg"] = key
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    body = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    return {
+        "key": key,
+        "line": line,
+        "stage_changed": key != before,
+        "transitions": transitions,
+        "stop": stop,
+        "since": f"{body}.{_checksum(body)}",
+        "tasks": [latest[t] for t in task_ids if t in latest],
+    }

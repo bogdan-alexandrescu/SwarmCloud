@@ -724,7 +724,7 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "format": {
                     "type": "string",
-                    "enum": ["json", "lines", "progress", "summary"],
+                    "enum": ["json", "lines", "progress", "summary", "stage"],
                     "default": "json",
                     "description": (
                         "`json` (default): the full report. `lines`: short "
@@ -735,7 +735,22 @@ TOOLS: list[dict[str, Any]] = [
                         "shape a workflow step's row reads. `summary`: the "
                         "sc:summary row's -- `progress`'s hold and rows, no "
                         "per-task line, and `line`, the whole workflow's count "
-                        "line, with `line_changed`; needs `summary_of`."
+                        "line, with `line_changed`; needs `summary_of`. `stage`: "
+                        "the sc:finish row's (the pane layout's one row per "
+                        "workflow) -- the call holds through every step change "
+                        "that leaves the workflow's stage where it was, and "
+                        "answers `key`, `line` and `stage_changed`; needs `stage_of`."
+                    ),
+                },
+                "stage_of": {
+                    "type": "object",
+                    "description": (
+                        "With `format: \"stage\"` only, and required there: the "
+                        "object the sc:finish row's prompt gives on its `stage_of:` "
+                        "line, passed UNCHANGED on every call -- `stages` (every "
+                        "task id of the workflow to its console stage), `states` "
+                        "(the tasks not followed, at their states) and `key`, the "
+                        "stage key last written."
                     ),
                 },
                 "summary_of": {
@@ -1465,11 +1480,13 @@ TOOLS: list[dict[str, Any]] = [
                 "attach": {"type": "string", "description": "A workflow id, or \"all\"."},
                 "rows": {
                     "type": "string",
-                    "enum": ["summary", "per-step"],
+                    "enum": ["summary", "per-step", "pane"],
                     "description": (
                         "With `attach` only: `summary`, one row per workflow (and per batch of "
-                        "single tasks), or `per-step`, a row per step split over runs. Unset, "
-                        "the sc plugin's `rows` setting decides."
+                        "single tasks), `per-step`, a row per step split over runs, or `pane`, "
+                        "one quiet sc:finish row per workflow that notices its finish (the "
+                        "pane layout's). Unset, this project's layout (`/sc layout`) and then "
+                        "the sc plugin's `rows` setting decide."
                     ),
                 },
                 "repository": {
@@ -1479,6 +1496,18 @@ TOOLS: list[dict[str, Any]] = [
                         "tasks that clone this repository -- a URL, `owner/repo`, \"origin\" "
                         "(this checkout's remote) or \"all\". `repository_unread` lists those "
                         "whose repository could not be read, with the command for each."
+                    ),
+                },
+                "project": {
+                    "type": "boolean",
+                    "description": (
+                        "With attach \"all\" only, AT SESSION START (`/sc attach --all --project`, "
+                        "what the sc plugin's SessionStart hook asks for in the rows layout; "
+                        "SC-BROWSER-FOLLOWUP): this session's work AND every workflow and single task "
+                        "still running that clones this checkout's origin repository (`repository` "
+                        "names another), whichever Claude Code session started it; `project` in the "
+                        "reply says how many came from other sessions. `/sc check`, the watch and the "
+                        "plain attach-all stay this session's."
                     ),
                 },
                 "new_only": {
@@ -1693,6 +1722,58 @@ TOOLS: list[dict[str, Any]] = [
                 "interval": {"type": "string", "description": "`30m`, `45`, `1h`, `1h30m`. Default 30m."},
                 "off": {"type": "boolean", "description": "true: turn the watch off for this project."},
             },
+        },
+    },
+    {
+        "name": "swarm_browse",
+        "description": (
+            "The sc plugin's SwarmCloud pane's reads (SC-BROWSER-BUILD), one per click, "
+            "read-only. `level`: `workflows` -- THIS Claude Code session's workflows, "
+            "finished ones too, each with its derived state, its steps (id, depends_on, "
+            "state), duration_s, tokens (finished steps' result usage, every kind) and "
+            "cost_usd, and this session's running single tasks; `stages` with "
+            "`workflow_id` -- that workflow, read fresh, in the same shape; `agents` with "
+            "`task_ids` -- each task's step_id, state and a one-line note; `agent` with "
+            "`task_id` -- its state, attempts, duration, cost, tokens, last error, pull "
+            "request, artifact names and console link. A figure nobody recorded is null "
+            "with a `*_because`, never 0. The pane calls it directly, so browsing costs no "
+            "model tokens; a session reads SwarmCloud with the other tools."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "level": {"type": "string", "enum": ["workflows", "stages", "agents", "agent"]},
+                "project": {
+                    "type": "boolean",
+                    "description": (
+                        "With `workflows`: also this project's running work -- every workflow and "
+                        "single task still running that clones this checkout's origin repository, "
+                        "whichever session started it, marked `this_session: false`. The pane asks "
+                        "for it after session start, which tracks the project's running work."
+                    ),
+                },
+                "workflow_id": {"type": "string", "description": "With `stages`."},
+                "task_ids": {"type": "array", "items": {"type": "string"}, "description": "With `agents`."},
+                "task_id": {"type": "string", "description": "With `agent`."},
+            },
+            "required": ["level"],
+        },
+    },
+    {
+        "name": "swarm_layout",
+        "description": (
+            "How THIS PROJECT follows SwarmCloud work in Claude Code (`/sc layout`): "
+            "`rows` -- today's /workflows rows, as the plugin's `rows` setting says -- or "
+            "`pane` -- the SwarmCloud pane beside the chat plus ONE quiet row per "
+            "workflow that notices its finish. No argument reads it: `{layout, source, "
+            "project}`. `{layout: \"rows\"|\"pane\"}` saves it for this project (it "
+            "outranks the plugin's `layout` option) and takes effect at the next launch "
+            "or `/sc attach --all`, without restarting the session; rows already running "
+            "keep going. Reads and writes nothing in SwarmCloud."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"layout": {"type": "string", "enum": ["rows", "pane"]}},
         },
     },
     {
@@ -4502,6 +4583,18 @@ def _follow_rows(
     """A `lines`, `progress` or `summary` follow's reply, read from
     `args["since"]` -- a full token by now: `_call` has already resolved any
     handle."""
+    if args.get("format") == "stage":
+        # The sc:finish row's view (SC-BROWSER-BUILD, #2318): held until the
+        # workflow's stage changes, so the pane layout's one row per workflow
+        # spends a turn per stage, not per step.
+        return compact.watch_stage(
+            client,
+            list(args["task_ids"]),
+            args.get("stage_of"),
+            since=args.get("since"),
+            wait_seconds=_int_arg(args, "wait_seconds", 0),
+            max_wait=compact.MAX_WAIT_SECONDS if keepalive else compact.SILENT_MAX_WAIT_SECONDS,
+        )
     if args.get("format") == "summary":
         # The sc:summary row's view (PLUGIN-ROW-SPLIT-2, owner 2026-10-21):
         # `progress`'s hold over the unfinished tasks, and the count line
@@ -4879,10 +4972,10 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         if len(fmt) >= 2 and fmt[0] == fmt[-1] and fmt[0] in "\"'":
             fmt = fmt[1:-1]
         args = {**args, "format": fmt or None}
-    if name == "swarm_follow" and (args.get("format") or "json") not in ("json", "lines", "progress", "summary"):
+    if name == "swarm_follow" and (args.get("format") or "json") not in ("json", "lines", "progress", "summary", "stage"):
         raise SwarmError(
             f"unknown format {format_received!r}; "
-            "swarm_follow takes json, lines, progress or summary"
+            "swarm_follow takes json, lines, progress, summary or stage"
         )
 
     if name == "swarm_follow" and args.get("since") not in (None, "") and args.get("cursor"):
@@ -4913,7 +5006,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         if len(args.get("task_ids") or []) != 1:
             raise SwarmError("`parents` names the parents of ONE task; follow one task with it")
 
-    if name == "swarm_follow" and args.get("format") in ("lines", "progress", "summary"):
+    if name == "swarm_follow" and args.get("format") in ("lines", "progress", "summary", "stage"):
         # THE HANDLE (owner decision, 2026-10-05, `progress.Handles`): the row
         # passes back a short handle, an old full token, or -- having dropped
         # it -- nothing, which for tasks this process already answered resumes
@@ -4926,7 +5019,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         reply["since"] = progress.HANDLES.issue(follower, reply["since"])
         if since_note:
             reply["since_note"] = since_note
-        if args["format"] in ("progress", "summary"):
+        if args["format"] in ("progress", "summary", "stage"):
             return json.dumps(reply, separators=(",", ":"), ensure_ascii=False, default=str)
         return json.dumps(reply, indent=1, default=str)
 
@@ -5155,7 +5248,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                 f"swarm_workflow_launch takes exactly one of `spec`, `spec_path` or `attach`; "
                 f"it was given {given or 'none'}. Nothing was written"
             )
-        filters = sorted(k for k in ("repository", "new_only", "exclude") if args.get(k) is not None)
+        filters = sorted(k for k in ("repository", "new_only", "exclude", "project") if args.get(k) is not None)
         target = _text_arg(args, "attach", name) if args.get("attach") is not None else None
         if filters and target not in ("all", "--all"):
             raise SwarmError(
@@ -5166,9 +5259,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # or an attach-all alike. A spec's run reads the setting.
         rows = args.get("rows")
         if rows is not None:
-            if rows not in config.ROWS_MODES:
+            if rows not in (*config.ROWS_MODES, config.ROWS_PANE):
                 raise SwarmError(
-                    f"swarm_workflow_launch: `rows` is one of {list(config.ROWS_MODES)}; it was "
+                    f"swarm_workflow_launch: `rows` is one of {[*config.ROWS_MODES, config.ROWS_PANE]}; it was "
                     f"{rows!r}. Nothing was written"
                 )
             if target is None:
@@ -5197,6 +5290,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                         new_only=_flag(args, "new_only"),
                         exclude=exclude,
                         rows=rows,
+                        project=_flag(args, "project"),
                     )
                 attached.update(watch.arm_fields(bool(attached.get("launches"))))
                 return json.dumps(attached, indent=2, default=str)
@@ -5475,6 +5569,18 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         from . import watch
 
         return json.dumps(watch.tool(args), indent=2)
+
+    if name == "swarm_browse":
+        from . import browse
+
+        return json.dumps(browse.read(client, args), separators=(",", ":"), ensure_ascii=False, default=str)
+
+    if name == "swarm_layout":
+        from . import layout
+
+        if args.get("layout") is None:
+            return json.dumps(layout.current(), indent=2)
+        return json.dumps({**layout.save(args["layout"]), "note": layout.SWITCH_NOTE}, indent=2)
 
     if name == "swarm_workflows":
         from . import session

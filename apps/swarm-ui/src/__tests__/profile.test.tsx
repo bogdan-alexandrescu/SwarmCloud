@@ -169,8 +169,8 @@ describe('Settings › Profile', () => {
     const connections = region('Your connections')
     expect(connections.querySelectorAll('section.c-card')).toHaveLength(2)
     expect(visible(document.body)).not.toMatch(/swarmcloud api key/i)
-    // The one link to Settings › API keys is the TypeSafe card's own: it is that key's page.
-    const keyLinks = Array.from(document.querySelectorAll('a[href^="/settings/keys"]'))
+    // The one link to Config › Secrets (Settings › API keys until SSC-UI) is the TypeSafe card's own: it is that key's page.
+    const keyLinks = Array.from(document.querySelectorAll('a[href^="/config/secrets"]'))
     expect(keyLinks).toHaveLength(1)
     expect(keyLinks[0]?.closest('section')?.querySelector('h2')?.textContent).toBe('TypeSafe key')
   })
@@ -210,7 +210,7 @@ describe('Settings › Profile', () => {
     await drawn()
     const link = (name: string) => within(region(name)).getAllByRole('link').map((a) => a.getAttribute('href'))
     expect(link('You and your workspaces')).toContain('/config/workspace/setup')
-    expect(link('Your connections')).toEqual(expect.arrayContaining(['/config/github', '/settings/keys']))
+    expect(link('Your connections')).toEqual(expect.arrayContaining(['/config/github', '/config/secrets']))
     expect(link('Claude accounts')).toContain('/capacity/accounts')
   })
 

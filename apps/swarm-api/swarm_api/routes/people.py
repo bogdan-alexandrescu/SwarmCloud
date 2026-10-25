@@ -36,7 +36,8 @@ Lane WK-RECORD (docs/design/workspace-kinds.md §4.2.2):
 
     POST /v1/admin/workspaces                    file a personal, group or service
                                                  workspace; body {kind, principal,
-                                                 display_name?, limits?}
+                                                 display_name?, limits?,
+                                                 first_admin?}
     GET  /v1/admin/workspaces?kind=&state=       records, newest first, at most 200
     GET  /v1/admin/workspaces/{workspace_id}     one record, for the progress view
 
@@ -68,7 +69,7 @@ from ..brokerclient import AccountPool
 from ..deps import AppContext, admin_auth, current_auth, get_context
 from .. import roles
 from .. import workspaces as ws
-from ..errors import Forbidden, RoleUnavailable
+from ..errors import ApiError, Forbidden, RoleUnavailable, ValidationFailed
 from ..groups import MembershipResolver
 from ..people import (
     MAX_CEILING,
@@ -83,6 +84,7 @@ from ..publish_workspace import WorkspacePublisher, publisher_for
 from ..schemas import StrictModel
 from ..specsigning import signer_from_settings
 from .accounts import account_pool
+from .roles import _member as group_member
 
 router = APIRouter(prefix="/v1/admin", tags=["people"])
 
@@ -163,6 +165,11 @@ class NewWorkspaceRequest(StrictModel):
     principal: str = Field(min_length=3, max_length=254)
     display_name: str | None = Field(default=None, max_length=ws.MAX_DISPLAY_NAME)
     limits: RequestLimits | None = None
+    #: A GROUP workspace's first admin (WORKSPACE-ADMIN-FIELDS, part of #2157;
+    #: docs/design/workspace-roles.md §4.6, §8): one person's address, granted
+    #: `admin` in this workspace and no other. Checked by
+    #: `roles.subject_for_write` before anything is created.
+    first_admin: str | None = Field(default=None, max_length=320)
 
 
 def workspace_directory(request: Request,
@@ -352,6 +359,54 @@ def sweep_workspaces(
     return {**people.sweep(pool), "loans_error": pool_error}
 
 
+#: A record in one of these states is still being created, so naming its
+#: first admin is part of adding it; a `ready` one already has its people.
+BEING_CREATED = frozenset({ws.REQUESTED, ws.APPROVED, ws.APPLYING, ws.NEEDS_OWNER})
+FIRST_ADMIN_REASON = "first admin, named when the workspace was added"
+
+
+def name_first_admin(ctx: AppContext, record: dict[str, Any], email: str, *,
+                     by: str) -> dict[str, Any]:
+    """Grant `email` admin in the workspace `record` is, and nowhere else,
+    through the signed, append-only override and its `admin_audit` row
+    (`roles.RoleStore.write`, the write `PUT /v1/admin/workspaces/{id}/roles/
+    person` makes). The tenant id is the stored record's, which
+    `People.create` derived from the group's address. A person not yet in
+    the group still gets the grant; it applies once they are in it (§4.6),
+    and `member` says which. A grant already standing is not written again,
+    so a repeated request is idempotent. A record no longer being created is
+    answered `granted: false`: its admins are People and roles' to change. A
+    write that fails leaves the workspace filed and says why; the request
+    repeated while it is being created writes the grant then."""
+    tenant_id = str(record.get("tenant_id") or "")
+    group = str(record.get("principal") or "")
+    answer: dict[str, Any] = {"email": email, "role": roles.ADMIN}
+    if ws.state_of(record) not in BEING_CREATED:
+        return {**answer, "granted": False, "reason": "workspace_exists"}
+    store = ctx.roles
+    if store is None:
+        return {**answer, "granted": False, "reason": "role_unavailable"}
+    try:
+        current = store.newest_valid(tenant_id, email, fresh=True)
+        member = group_member(ctx, email, tenant_id, group)
+        if current is not None and current.role == roles.ADMIN:
+            return {**answer, "granted": True, "member": member}
+        if current is not None and current.role is not None:
+            previous, from_source = current.role, roles.SOURCE_OVERRIDE
+        else:
+            previous, from_source = store.default_role(tenant_id, fresh=True)[0], \
+                roles.SOURCE_DEFAULT
+        store.write(
+            tenant_id=tenant_id, subject=email, role=roles.ADMIN, by=by,
+            via=roles.VIA_PLATFORM_ADMIN, reason=FIRST_ADMIN_REASON, previous=current,
+            action=roles.AUDIT_GRANTED,
+            detail={"from": previous, "to": roles.ADMIN, "from_source": from_source,
+                    "member": member, "first_admin": True})
+    except ApiError as exc:
+        return {**answer, "granted": False, "reason": exc.code}
+    return {**answer, "granted": True, "member": member}
+
+
 @router.post("/workspaces")
 def create_workspace(
     body: NewWorkspaceRequest,
@@ -361,13 +416,29 @@ def create_workspace(
 ) -> JSONResponse:
     """File a workspace of any kind (docs/design/workspace-kinds.md §4.2).
     202 with the record when this call created it (already `approved` when
-    the requester may approve it), 200 when it already stood."""
+    the requester may approve it), 200 when it already stood.
+
+    `first_admin` (a group workspace's only) is checked BEFORE anything is
+    created -- one person's address, never a service account -- and granted
+    after (`name_first_admin`), its outcome served as `first_admin`."""
+    first_admin = None
+    if body.first_admin is not None:
+        if body.kind != ws.GROUP:
+            raise ValidationFailed(
+                "first_admin names a group workspace's first admin: a personal "
+                "workspace's person is its admin, and a service workspace has no people",
+                detail={"field": "first_admin"})
+        first_admin = roles.subject_for_write(body.first_admin)
     status, record = people.create(
         ctx.submissions.workspaces, kind=body.kind, principal=body.principal,
         display_name=body.display_name,
         limits=body.limits.model_dump(exclude_none=True) if body.limits else None,
         by=auth.email, is_owner=bool(auth.is_owner))
-    return JSONResponse(status_code=status, content=people.admin_view(record))
+    content = people.admin_view(record)
+    if first_admin is not None:
+        content["first_admin"] = name_first_admin(
+            ctx, record, first_admin, by=(auth.email or "").strip().lower())
+    return JSONResponse(status_code=status, content=content)
 
 
 @router.get("/workspaces")
