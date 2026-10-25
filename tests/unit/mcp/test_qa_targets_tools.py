@@ -183,9 +183,10 @@ def test_each_qa_tool_is_advertised_with_no_field_a_credential_fits_in(name):
     # MUTATION: add a `password` (or `username`) property to any of the three schemas.
     assert [p for p in properties if _CREDENTIALISH.search(p)] == []
     # `browser_tool` is an enum of two tool names (lane QA-RUN-TOOL), and
-    # `environments`/`environment` are entry names (QAENV-SC): no credential fits.
+    # `environments`/`environment` are entry names (QAENV-SC), and `field` an enum
+    # of the two forms a credential link opens (SSC-SC): no credential fits.
     assert set(properties) <= {"target", "repository", "screens", "file", "browser_tool",
-                               "environments", "environment"}, sorted(properties)
+                               "environments", "environment", "field"}, sorted(properties)
 
 
 def test_an_undeclared_credential_argument_is_refused_with_nothing_sent():

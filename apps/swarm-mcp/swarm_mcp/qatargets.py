@@ -75,6 +75,12 @@ ENTRY_FIELDS = ("name", "environment", "base_url", "host", "host_state")
 MAX_ENVIRONMENTS = 8
 ENVIRONMENT_NAME = re.compile(r"^[a-z0-9-]{1,20}$")
 
+#: `LinkBody.field` in routes/qatargets.py (SSC-LINKS): which form a
+#: credential link opens, the sign-in's or the challenge bypass's value's.
+#: Left out of the body when the caller names none, so the API's default
+#: (`credential`) decides, as before the field.
+LINK_FIELDS = ("credential", "challenge_bypass")
+
 #: What `:run` answers that a caller follows: the run group, and its one-leg
 #: fields, which the API keeps beside the group for a run of one leg.
 RUN_FIELDS = ("group_id", "workflow_id", "file", "browser_steps")
@@ -273,18 +279,26 @@ def qa_run(client: Any, target: Any, *, screens: Any = None, file: Any = "issues
     }
 
 
-def credential_link(client: Any, target: Any, environment: Any = None) -> dict[str, Any]:
+def credential_link(client: Any, target: Any, environment: Any = None,
+                    field: Any = None) -> dict[str, Any]:
     """`POST /v1/qa-targets/{id}/credential-links`: the console URL and its
     expiry, nothing else (§2.1), as `keys.key_set_link` answers. The link is
     bound to one entry (qa-environments.md §1.4): `environment` names it, and
-    a target of several entries needs it named.
+    a target of several entries needs it named. `field` picks the form
+    (secrets-scopes.md §6.2, §6.4): `credential` (the API's default) or
+    `challenge_bypass`, whose value also arrives only through its link.
 
     `url` is null when the deployment has no console origin configured; the
     `path` the API also returns is NOT handed out then, because it carries the
     link's token and a bare path is not something a person can open."""
-    payload = None
+    payload: dict[str, Any] | None = None
+    if field is not None:
+        if field not in LINK_FIELDS:
+            # NOT REPEATED: a value pasted into the wrong place must not be echoed.
+            raise SwarmError(f"field must be one of {list(LINK_FIELDS)}; nothing was sent")
+        payload = {"field": field}
     if environment is not None:
-        payload = {"environment": _environment_names([environment])[0]}
+        payload = {**(payload or {}), "environment": _environment_names([environment])[0]}
     target_id = resolve_target(client, target)
     answer = client.request("POST", f"/v1/qa-targets/{target_id}/credential-links",
                             payload=payload)
@@ -295,7 +309,8 @@ def credential_link(client: Any, target: Any, environment: Any = None) -> dict[s
         reply["note"] = (
             "this deployment has no console address configured (SWARM_CONSOLE_URL on "
             "swarm-api), so the API could not make a link. A workspace admin sets the "
-            "credential from the console's Repositories > QA targets page instead"
+            "credential (or the challenge bypass's value) from the console's "
+            "Repositories > QA targets page instead"
         )
     return reply
 

@@ -430,3 +430,168 @@ def test_the_attest_route_without_a_key_writes_nothing(db, sm, world):
     answer = world().post(ATTEST_ROUTE, headers=auth_header("root"))
     assert answer.status_code == 503, answer.text
     assert json.dumps(db.docs, default=str, sort_keys=True) == before
+
+
+# --------------------------------------------------------------------------
+# SSC-REPO-SCOPE: form "v2" binds a repository secret's grant to its
+# repository (docs/design/secrets-scopes.md §2.2, owner decision Q9)
+# --------------------------------------------------------------------------
+
+from swarm_api.grant_attest import attested_form  # noqa: E402
+from swarm_api.repositories import repo_id_for  # noqa: E402
+from swarm_api.workspace_secrets import SECRETS_COLLECTION  # noqa: E402
+
+
+def test_form_v2_ends_with_the_repository_and_v1_is_unchanged():
+    assert canonical("s", "t", "c", None, True, "repo_0123456789abcdef") == \
+        b'["v2","s","t","c",null,true,"repo_0123456789abcdef"]'
+    assert canonical("s", "t", "c", None, True) == b'["v1","s","t","c",null,true]'
+    for bad in ("", 7):
+        with pytest.raises(ValueError):
+            canonical("s", "t", "c", None, True, bad)
+
+
+def test_a_v1_grant_still_verifies_and_a_repository_grant_is_signed_v2(keys):
+    plain = {"secret_id": "s", "tenant_id": "eng", "consumer": "profile:claude-code",
+             "slot": "files", "enabled": True}
+    plain[ATTESTATION_FIELD] = GrantKeys(keys["one"]).sign(plain)
+    assert attested_form(plain) == "v1"
+    assert GrantKeys(keys["one"]).check(plain) == VALID
+
+    bound = {**plain, "repo_id": "repo_0123456789abcdef"}
+    bound[ATTESTATION_FIELD] = GrantKeys(keys["one"]).sign(bound)
+    assert attested_form(bound) == "v2"
+    assert GrantKeys(keys["one"]).check(bound) == VALID
+
+
+@pytest.mark.parametrize("rewrite", ["other_repo", "strip_repo", "relabel_v1", "drop_mac"])
+def test_a_repository_grants_binding_cannot_be_rewritten(keys, rewrite):
+    grant = {"secret_id": "s", "tenant_id": "eng", "consumer": "profile:claude-code",
+             "slot": "files", "enabled": True, "repo_id": "repo_0123456789abcdef"}
+    grant[ATTESTATION_FIELD] = GrantKeys(keys["one"]).sign(grant)
+    if rewrite == "other_repo":
+        grant["repo_id"] = "repo_fedcba9876543210"
+    elif rewrite == "strip_repo":
+        del grant["repo_id"]
+    elif rewrite == "relabel_v1":
+        grant[ATTESTATION_FIELD] = "v1." + grant[ATTESTATION_FIELD].split(".")[1]
+    else:
+        grant[ATTESTATION_FIELD] = None
+    assert GrantKeys(keys["one"]).check(grant) != VALID
+
+
+def _repo_world(db, sm, keys) -> dict[str, Any]:
+    """eng's registration of acme/widgets and its secret `widgets-db`,
+    granted to the profile and signed under key `one`."""
+    repo_id = repo_id_for("eng", "acme", "widgets")
+    registration = {"repo_id": repo_id, "tenant_id": "eng", "owner": "acme",
+                    "repo": "widgets", "repository_url": "https://github.com/acme/widgets"}
+    db.docs[f"repositories/{repo_id}"] = registration
+    writer = store(db, sm, keys["one"])
+    writer.create(tenant=_tenant(db, "eng"), name="widgets-db", provider="other",
+                  kind="api_key", payload=fake_value("r").encode(), by=ROOT, via_link=False,
+                  repository=registration)
+    writer.set_grant(tenant_id="eng", name="widgets-db", consumer="profile:claude-code",
+                     slot=None, enabled=True, by=ROOT, repo_id=repo_id)
+    return registration
+
+
+def _repo_grant(db, sm, repo_id: str) -> dict[str, Any]:
+    secret_id = store(db, sm).find("eng", "widgets-db", repo_id)["secret_id"]
+    return grant_doc(db, secret_id, "profile:claude-code")
+
+
+def test_a_repository_grant_written_by_set_grant_is_bound_and_released(db, sm, world, keys):
+    registration = _repo_world(db, sm, keys)
+    grant = _repo_grant(db, sm, registration["repo_id"])
+    assert grant["repo_id"] == registration["repo_id"]
+    assert attested_form(grant) == "v2" and GrantKeys(keys["one"]).check(grant) == VALID
+    client = world(workspace_grant_key=keys["one"])
+    attempt = running(client, db, repository_url=registration["repository_url"])
+    assert names(release(client, attempt)) == ["widgets-db"]
+
+
+def test_an_unattested_repository_grant_is_dropped_with_attestation_not_required(
+        db, sm, world, keys):
+    """grant_attestation_required is off, which releases an unattested
+    WORKSPACE grant; a repository grant is never released unattested."""
+    registration = _repo_world(db, sm, keys)
+    _repo_grant(db, sm, registration["repo_id"])[ATTESTATION_FIELD] = None
+    client = world(workspace_grant_key=keys["one"], grant_attestation_required=False)
+    attempt = running(client, db, repository_url=registration["repository_url"])
+    assert names(release(client, attempt)) == []
+
+
+def test_a_repository_grant_relabelled_v1_is_dropped(db, sm, world, keys):
+    registration = _repo_world(db, sm, keys)
+    grant = _repo_grant(db, sm, registration["repo_id"])
+    # A v1 MAC over the same fields, which omits repo_id: as an agent holding
+    # an old v1 grant on this secret could present it.
+    grant[ATTESTATION_FIELD] = GrantKeys(keys["one"]).sign(
+        {k: v for k, v in grant.items() if k != "repo_id"})
+    assert attested_form(grant) == "v1" and GrantKeys(keys["one"]).check(grant) == VALID
+    client = world(workspace_grant_key=keys["one"])
+    attempt = running(client, db, repository_url=registration["repository_url"])
+    assert names(release(client, attempt)) == []
+
+
+@pytest.mark.parametrize("rewrite", ["to_sibling", "to_workspace", "drop_repo_id"])
+def test_a_record_whose_repo_id_was_rewritten_is_dropped(db, sm, world, keys, rewrite):
+    """The agent rewrites the record (unattested) to widen the secret to an
+    attempt on a sibling repository, or to make it look like a workspace
+    secret: the signed grant still names acme/widgets, so nothing is released."""
+    registration = _repo_world(db, sm, keys)
+    sibling = repo_id_for("eng", "acme", "gadgets")
+    db.docs[f"repositories/{sibling}"] = {**registration, "repo_id": sibling, "repo": "gadgets",
+                                          "repository_url": "https://github.com/acme/gadgets"}
+    secret_id = store(db, sm).find("eng", "widgets-db", registration["repo_id"])["secret_id"]
+    record = db.docs[f"{SECRETS_COLLECTION}/{secret_id}"]
+    if rewrite == "to_sibling":
+        record["repo_id"] = sibling
+    elif rewrite == "to_workspace":
+        record["scope"] = "workspace"
+        record["repo_id"] = None
+    else:
+        del record["repo_id"]
+    client = world(workspace_grant_key=keys["one"])
+    attempt = running(client, db, repository_url="https://github.com/acme/gadgets")
+    assert names(release(client, attempt)) == []
+    if rewrite == "to_workspace":
+        # Nor on its own repository: the grant's binding is not the record's.
+        again = running(client, db, Attempt(task="task-two", attempt="att-two", lease="lease-two"),
+                        repository_url=registration["repository_url"])
+        assert names(release(client, again)) == []
+
+
+def test_a_repository_secret_rewritten_to_look_like_the_workspaces_is_not_released(
+        db, sm, world, keys):
+    """The review's attack: with grant_attestation_required OFF (which releases
+    an unattested workspace grant), an agent strips `scope` and `repo_id` from
+    the record and writes itself a fresh unattested grant with no repository.
+    The secret's id still says it is a repository secret, so neither the
+    release nor any other reader takes it as the workspace's."""
+    registration = _repo_world(db, sm, keys)
+    secret_id = store(db, sm).find("eng", "widgets-db", registration["repo_id"])["secret_id"]
+    record = db.docs[f"{SECRETS_COLLECTION}/{secret_id}"]
+    record.pop("repo_id")
+    record["scope"] = "workspace"
+    record.pop("repository")
+    db.docs[f"{GRANTS_COLLECTION}/{secret_id}~profile:claude-code"] = {
+        "secret_id": secret_id, "tenant_id": "eng", "consumer": "profile:claude-code",
+        "slot": "files", "enabled": True}
+    client = world(workspace_grant_key=keys["one"], grant_attestation_required=False)
+    for n, url in enumerate(("https://github.com/acme/gadgets", registration["repository_url"])):
+        attempt = running(client, db, Attempt(task=f"task-{n}", attempt=f"att-{n}",
+                                              lease=f"lease-{n}"), repository_url=url)
+        assert names(release(client, attempt)) == []
+
+
+def test_a_repository_secrets_id_says_what_it_is_and_a_workspace_ones_never_does():
+    from swarm_api.workspace_secrets import (
+        is_repository_secret_id,
+        repository_hex,
+        workspace_hex,
+    )
+    for _ in range(200):
+        assert is_repository_secret_id(f"swarm-tenant-eng-wsec-{repository_hex()}")
+        assert not is_repository_secret_id(f"swarm-tenant-eng-wsec-{workspace_hex()}")

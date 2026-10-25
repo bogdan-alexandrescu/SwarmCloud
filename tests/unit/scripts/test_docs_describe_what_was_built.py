@@ -31,7 +31,7 @@ import pytest
 
 from swarm_common.profiles import RUNNER_PROFILES, RunnerProfile
 
-from .test_docs_spec_amendments import _assert_cites_resolve, _cited_anchor, _cited_symbol
+from .test_docs_spec_amendments import _ROOTS, _assert_cites_resolve, _cited_anchor, _cited_symbol
 
 REPO = Path(__file__).resolve().parents[3]
 DOCS = REPO / "docs"
@@ -1668,3 +1668,563 @@ def test_locals_tf_says_its_class_table_is_the_cloud_run_default():
 @pytest.mark.parametrize("doc", (ARCHITECTURE, K8S_README), ids=lambda p: p.name)
 def test_runner_sizes_docs_cite_only_what_resolves(doc: Path):
     _assert_cites_resolve(doc)
+
+
+# --------------------------------------------------------------------------
+# Test services: docs/design/test-services.md §11 (TS-DOCS-GUARDS, part of #1627)
+# --------------------------------------------------------------------------
+#
+# TS-DOCS (PR 2214) wrote §11, what each lane of §7 built and where the code
+# departs from the design, docs/test-services.md, the page a repository reads
+# to write `.swarm/test-services.toml`, and the test-services paragraph of
+# docs/agent-output.md's pre-publish section. Every file, symbol, test, value
+# and message they state is read from the tree here. Each check takes the
+# document's text, so the mutation tests below hand it a one-line edit of the
+# real text and hold that it fails: the proof a check can go red, kept in CI.
+
+TS_DESIGN = DOCS / "design" / "test-services.md"
+TS_DOC = DOCS / "test-services.md"
+TS_PY = "apps/agent-worker/agent_worker/testservices.py"
+TS_PREPUBLISH_PY = "apps/agent-worker/agent_worker/prepublish.py"
+TS_DOCKERFILE = "images/agent-runtime-base/Dockerfile"
+TS_PLAN = "## 7. Cost and the build plan"
+TS_BUILT = "## 11. What was built"
+TS_NOT_BUILT = "### 11.8 Not built"
+TS_ROWS = "### 5.3 `skipped`, `failed`, `error` once a service is declared"
+TS_AGENT_OUTPUT = "**A service the tests need**"
+#: Lanes §10 and §11 added after §7's table was written (BGD, 2026-10-24).
+TS_ADDED_LANES = ("TS-CLOUDRUN-REFUSE",)
+#: A backticked citation into the tree, with or without `::qualname`.
+_TS_CITE = re.compile(rf"`({_ROOTS}[\w./-]*?)(?:::([\w.]+))?`")
+
+
+def _ts_lanes(text: str) -> list[str]:
+    plan = text[text.index(TS_PLAN): text.index("\n## 8. ")]
+    lanes = re.findall(r"^\|[^|\n]*\| \*\*(TS-[A-Z-]+)\*\*", plan, flags=re.M)
+    assert len(lanes) >= 7 and "TS-DOCS" in lanes, lanes
+    return lanes + list(TS_ADDED_LANES)
+
+
+def _ts_built(lane: str) -> bool:
+    """Whether the lane's work is on this tree, read from the files its §7 row names."""
+    from agent_worker import testservices
+
+    accept = [p for p in (REPO / "tests" / "acceptance").rglob("*")
+              if p.is_file() and testservices.DECLARATION_PATH in p.read_text(errors="replace")]
+    marks = {
+        "TS-IMAGE": "ARG POSTGRES_MAJOR=16" in _text(REPO / TS_DOCKERFILE),
+        "TS-CATALOGUE": (REPO / "tests/unit/worker/test_testservices_declaration.py").is_file(),
+        "TS-RUN": (REPO / "tests/unit/worker/test_testservices_process.py").is_file(),
+        "TS-CLOUDRUN-REFUSE": hasattr(testservices, "NO_CACHE_VOLUME"),
+        "TS-GATE": (REPO / "tests/unit/worker/test_prepublish_test_services.py").is_file(),
+        "TS-ACCEPT": bool(accept),
+        "TS-DOCS": True,
+        # §7: "the pre-publish record's skipped addresses counted by port".
+        "TS-SIGNAL": "skipped_addresses" in _text(REPO / TS_PREPUBLISH_PY),
+    }
+    assert lane in marks, f"§7 names a lane {lane} this test does not know how to read"
+    return marks[lane]
+
+
+def _ts_section_11(text: str) -> str:
+    start = text.index(TS_BUILT)
+    end = text.find("\n## ", start + 1)
+    return text[start:] if end < 0 else text[start:end]
+
+
+def _ts_subsections(text: str) -> dict[str, str]:
+    """§11's `### 11.N` subsections, by heading."""
+    parts = re.split(r"^(### 11\.\d+ .*)$", _ts_section_11(text), flags=re.M)
+    subs = dict(zip(parts[1::2], parts[2::2]))
+    assert len(subs) >= 8, list(subs)
+    return subs
+
+
+def _ts_entry(text: str, lane: str) -> str:
+    return next(body for heading, body in _ts_subsections(text).items()
+                if heading.endswith(f" What {lane} built"))
+
+
+def _check_ts_lanes(text: str) -> None:
+    head = _flat(text.split("\n---\n", 1)[0])
+    subs = _ts_subsections(text)
+    not_built = subs[TS_NOT_BUILT]
+    lanes = _ts_lanes(text)
+    built = [lane for lane in lanes if _ts_built(lane)]
+    unbuilt = [lane for lane in lanes if lane not in built]
+    for lane in built:
+        assert any(h.endswith(f" What {lane} built") for h in subs), (
+            f"{lane} is on this tree; §11 has no 'What {lane} built'")
+        assert f"**{lane} (not built" not in not_built, f"{lane} is on this tree; §11.8 says it is not"
+        if lane != "TS-DOCS":
+            assert lane in head, f"{lane} is on this tree; the status line does not name it"
+    for lane in unbuilt:
+        assert f"**{lane} (not built" in not_built, f"{lane} is not on this tree; §11.8 must say so"
+        assert not any(h.endswith(f" What {lane} built") for h in subs), lane
+    named = " and ".join(unbuilt)
+    assert f"{named} are not built" in head or f"{named} is not built" in head, head[:400]
+    assert "**Status: designed 2026-10-23" in head and "§11 records" in head
+
+
+def test_test_services_design_records_what_every_lane_built():
+    _check_ts_lanes(_text(TS_DESIGN))
+
+
+def _cited_source(path: str) -> str:
+    target = REPO / path
+    return target.read_text(encoding="utf-8") if target.is_file() else ""
+
+
+def _check_ts_entries_name_what_exists(text: str) -> None:
+    from agent_worker import cachedirs, prepublish, testservices
+
+    env = set(prepublish.service_env([testservices.DeclaredService("postgres", 16, ("x",))]))
+    cited: set[str] = set()
+    for heading, body in _ts_subsections(text).items():
+        for path, qualname in _TS_CITE.findall(body):
+            assert (REPO / path).exists(), f"{heading} names {path}, which does not exist"
+            if qualname:
+                _cited_symbol(path, qualname)
+            cited.add(path)
+    # A bare name (`unreachable_services`, `PGDG_KEY_FINGERPRINT`) is one a file
+    # §11 cites holds, or a variable the code sets.
+    sources = "\n".join(_cited_source(path) for path in sorted(cited))
+    for name in set(re.findall(r"`([A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+|[A-Z]{4,})`", _ts_section_11(text))):
+        assert name in sources or name in env or name == cachedirs.CACHE_ROOT_ENV, (
+            f"§11 names `{name}`, which no file it cites holds")
+    subs = _ts_subsections(text)
+    # The tests each entry says hold its rule are tests on main.
+    image = _text(REPO / "tests/unit/scripts/test_agent_toolbox_image.py")
+    image_tests = re.findall(r"^def (test_\w+)", image, flags=re.M)
+    entry = _flat(_ts_entry(text, "TS-IMAGE"))
+    assert "the PGDG, fingerprint, layer and smoke-step tests in" in entry
+    for word in ("pgdg", "fingerprint", "layer", "smoke_step"):
+        assert any(word in t for t in image_tests), word
+    process = _text(REPO / "tests/unit/worker/test_testservices_process.py")
+    assert "the cache-volume tests in" in _flat(_ts_entry(text, "TS-CLOUDRUN-REFUSE"))
+    assert re.search(r"^def test_\w*cache_volume", process, flags=re.M)
+    gate = _text(REPO / "tests/unit/worker/test_prepublish_test_services.py")
+    rows = [ln for ln in _section(text, TS_ROWS).splitlines() if ln.startswith("| ") and "---" not in ln][1:]
+    assert len(rows) == 8, rows
+    assert "one test per row and the issue's acceptance pair" in _flat(_ts_entry(text, "TS-GATE"))
+    for n in range(1, len(rows) + 1):
+        assert re.search(rf"^def test_row{n}_", gate, flags=re.M), f"no test for §5.3 row {n}"
+    assert re.search(r"^def test_acceptance_", gate, flags=re.M)
+    assert "offline acceptance pair in `tests/unit/worker/test_prepublish_test_services.py`" in _flat(
+        subs[TS_NOT_BUILT])
+
+
+def test_test_services_design_11_names_only_what_is_on_main():
+    _check_ts_entries_name_what_exists(_text(TS_DESIGN))
+
+
+def _check_ts_entries_state_the_code(text: str) -> None:
+    from pathlib import PurePath
+
+    from agent_worker import prepublish, testservices as ts
+
+    catalogue = _flat(_ts_entry(text, "TS-CATALOGUE"))
+    assert set(ts.CATALOGUE) == {"postgres"} and f"`postgres`, versions `{ts.CATALOGUE['postgres'].versions}`" in catalogue
+    keys = ", ".join(f"`{k}`" for k in ts.ALLOWED_KEYS)
+    assert f"`{TS_PY}::ALLOWED_KEYS` ({keys})" in catalogue
+    run = _flat(_ts_entry(text, "TS-RUN"))
+    argv = ts.initdb_argv(16, PurePath("data"))
+    for flag in re.findall(r"`(--[\w=-]+)`", run):
+        assert flag in argv, f"§11.3 names {flag}; initdb_argv does not pass it"
+    assert f"`{TS_PY}::OOM_SCORE_ADJ` ({ts.OOM_SCORE_ADJ})" in run
+    assert f"every {ts.READY_INTERVAL_SECONDS:g} s" in run
+    assert f"last {ts.LOG_TAIL_LINES} log lines" in run
+    assert f"kills after {ts.STOP_GRACE_SECONDS:g} s" in run
+    assert len(ts.INITDB_DATABASES) == 3 and "the three `initdb` makes itself" in run
+    assert f"`listen_addresses={ts.LISTEN_HOST}`" in run
+    refuse = _flat(_ts_entry(text, "TS-CLOUDRUN-REFUSE"))
+    assert f"`postgres: service not started: {ts.NO_CACHE_VOLUME}`" in refuse
+    gate = _flat(_ts_entry(text, "TS-GATE"))
+    assert prepublish.TEST_SERVICES_CHECK == "test-services" and "a `test-services` check" in gate
+    assert "graph-pytest" in prepublish.SERVICE_CHECKS and "(`graph-pytest` and the guards script)" in gate
+    probe = " ".join(prepublish.probe_argv(ts.DeclaredService("postgres", 16, ("x",))))
+    assert f"-h {ts.LISTEN_HOST} -p {ts.LISTEN_PORT}" in probe
+    assert f"`pg_isready` over TCP on `{ts.LISTEN_HOST}:{ts.LISTEN_PORT}`" in gate
+    env = prepublish.service_env([ts.DeclaredService("postgres", 16, ("x",))])
+    named = ", ".join(f"`{k}`" for k in env)
+    assert f"{named.rsplit(', ', 1)[0]} and {named.rsplit(', ', 1)[1]}" in gate, named
+    assert 'prefix="pp-svc-"' in _cited_symbol(TS_PREPUBLISH_PY, "Gate._services")
+    assert "under a `pp-svc-` directory" in gate
+    assert "(error, not the change's)" in _cited_symbol(TS_PREPUBLISH_PY, "advisory_section")
+    assert '"test-services (error, not the change\'s)"' in gate
+    assert "and not declared in" in _cited_symbol(TS_PREPUBLISH_PY, "_pytest_project")
+    assert f'"and not declared in {ts.DECLARATION_PATH}"' in gate
+
+
+def test_test_services_design_11_states_what_the_code_holds():
+    _check_ts_entries_state_the_code(_text(TS_DESIGN))
+
+
+def _check_ts_doc(text: str) -> None:
+    from agent_worker import prepublish, testservices as ts
+
+    assert text.startswith(f"# Declaring the services your tests need: `{ts.DECLARATION_PATH}`")
+    body = _flat(text)
+    # Sliced, not `_section`: the example's own `# ...` comments read as headings.
+    the_file = text[text.index("## The file"): text.index("## The catalogue")]
+    example = re.search(r"^```toml\n(.*?)^```", the_file, flags=re.M | re.S)
+    assert example, "the page has no example declaration"
+    declared = ts.parse_declaration(example.group(1).encode())
+    assert declared.valid and declared.declared, declared.report()
+    assert f"a list of 1 to {ts.MAX_DATABASES} names, each matching `{ts.DATABASE_NAME.pattern}`" in body
+    assert f"at most {ts.MAX_DECLARATION_BYTES} bytes" in body
+    assert f"with versions `{ts.CATALOGUE['postgres'].versions}` and nothing else" in body
+    settings = dict(ts.POSTGRES_SETTINGS)
+    for name, value in re.findall(r"`(\w+)=(\w+)`", _section(text, "## The catalogue: PostgreSQL 16, one entry")):
+        assert settings.get(name) == value, f"the page says {name}={value}; POSTGRES_SETTINGS says {settings.get(name)}"
+    # The refused keys: the same set, each row the code's reason without its § reference.
+    refused = _section(text, "## The keys that are refused")
+    rows = re.findall(r"^\| ((?:`\w+`(?:, )?)+) \| (.+) \|$", refused, flags=re.M)
+    seen: set[str] = set()
+    for keys, why in rows:
+        names = re.findall(r"`(\w+)`", keys)
+        seen |= set(names)
+        reasons = {re.sub(r" \(§[\d.]+\)", "", ts._REFUSED_BECAUSE[k]).replace("127.0.0.1:5432", "`127.0.0.1:5432`")
+                   for k in names if k in ts._REFUSED_BECAUSE}
+        assert why in reasons, f"the page refuses {names} because {why!r}; the code says {reasons}"
+    assert seen == set(ts._REFUSED_BECAUSE), sorted(seen ^ set(ts._REFUSED_BECAUSE))
+    # The example refusals are what the worker prints.
+    shown = re.search(r"^```text\n(.*?)^```", refused, flags=re.M | re.S)
+    assert shown, "the page has no example refusal"
+    printed = ts.validate({"postgres": {"image": "x", "version": 15, "databases": ["app_test"]}}).report()
+    assert shown.group(1).strip() == printed
+    # The checks' environment.
+    env = prepublish.service_env([ts.DeclaredService("postgres", 16, ("<first database>",))])
+    table = {k: v for k, v in re.findall(r"^\| `(\w+)` \| (.+) \|$", _section(text, "## What your repository gets"),
+                                         flags=re.M)}
+    assert set(table) == set(env), sorted(set(table) ^ set(env))
+    for name in ("PGHOST", "PGPORT", "PGUSER", "DATABASE_URL"):
+        assert table[name] == f"`{env[name]}`", (name, table[name])
+    assert "the first database in `databases`" in table["PGDATABASE"]
+    assert f"postgres: service not started: {ts.NO_CACHE_VOLUME}" in body
+
+
+def test_test_services_page_states_what_the_code_holds():
+    _check_ts_doc(_text(TS_DOC))
+
+
+def _ts_agent_output_part(text: str) -> str:
+    """The test-services paragraph of agent-output.md's pre-publish section."""
+    section = _section(text, "## Before the worker publishes: a rebase and the repository's own checks (SPEED-D1)")
+    start = section.index(TS_AGENT_OUTPUT)
+    return section[start: section.index("\n\n", start)]
+
+
+def _check_ts_agent_output(text: str) -> None:
+    from agent_worker import prepublish, testservices as ts
+
+    raw = _ts_agent_output_part(text)
+    body = _flat(raw)
+    assert "(#1605, #1627)" in body
+    assert "[test-services.md](test-services.md)" in raw
+    assert "[design/test-services.md](design/test-services.md) §11" in raw
+    # The skipped text, as `_pytest_project` builds it.
+    source = _cited_symbol(TS_PREPUBLISH_PY, "_pytest_project")
+    assert '"every selected test errored at setup connecting to it; CI runs it"' in source
+    assert ("a service the tests need is unreachable (127.0.0.1:5432); every selected test "
+            "errored at setup connecting to it; CI runs it") in body
+    assert f'"and not declared in {ts.DECLARATION_PATH}"' in body
+    env = list(prepublish.service_env([ts.DeclaredService("postgres", 16, ("x",))]))
+    assert ", ".join(f"`{k}`" for k in env[:-1]) + f" and `{env[-1]}`" in body, env
+    assert f"`{ts.DECLARATION_PATH}`" in body and f"`{prepublish.TEST_SERVICES_CHECK}` check" in body
+
+
+def test_agent_output_describes_test_services_from_the_code():
+    _check_ts_agent_output(_text(AGENT_OUTPUT))
+
+
+#: Each doc, and the part of it that is the test-services doc's.
+_TS_CITED = {
+    "design-test-services.md": (TS_DESIGN, lambda t: t),
+    "test-services.md": (TS_DOC, lambda t: t),
+    "agent-output.md": (AGENT_OUTPUT, _ts_agent_output_part),
+}
+
+
+def _ts_assert_cites_resolve(text: str, scratch: Path) -> None:
+    """The file's own `_assert_cites_resolve`, on a scratch copy of `text`,
+    after holding that the copy cites something: an empty pass is not one."""
+    assert _TS_CITE.search(text), f"{scratch.name}: no citation found, so nothing was checked"
+    scratch.write_text(text, encoding="utf-8")
+    _assert_cites_resolve(scratch)
+
+
+@pytest.mark.parametrize("doc", sorted(_TS_CITED))
+def test_test_services_docs_cite_only_what_resolves(doc: str, tmp_path: Path):
+    path, part = _TS_CITED[doc]
+    _ts_assert_cites_resolve(part(_text(path)), tmp_path / doc)
+
+
+# The proof each check above can fail: a one-line edit of the real text,
+# handed to the same check, must be refused. The docs are never edited.
+_TS_MUTATIONS = [
+    # check, the doc it reads, the one line to change, what to change it to
+    ("lanes", TS_DESIGN, "### 11.3 What TS-RUN built", "### 11.3 What TS-RUN started"),
+    ("lanes", TS_DESIGN, "* **TS-SIGNAL (not built).** Nothing counts skipped addresses by port yet;",
+     "* **TS-SIGNAL.** Nothing counts skipped addresses by port yet;"),
+    ("lanes", TS_DESIGN, "and where the code departs from this design; TS-SIGNAL is not built.**",
+     "and where the code departs from this design.**"),
+    ("exists", TS_DESIGN, "`tests/unit/worker/test_testservices_declaration.py`.",
+     "`tests/unit/worker/test_testservices_declarations.py`."),
+    ("exists", TS_DESIGN, "`apps/agent-worker/agent_worker/prepublish.py::declared_services`): one a",
+     "`apps/agent-worker/agent_worker/prepublish.py::declare_services`): one a"),
+    ("exists", TS_DESIGN, "refused addresses `unreachable_services` returns against the ports of the",
+     "refused addresses `unreachable_addresses` returns against the ports of the"),
+    ("exists", TS_DESIGN, "`tests/unit/scripts/test_agent_toolbox_image.py`.",
+     "`tests/unit/scripts/test_agent_image.py`."),
+    ("code", TS_DESIGN, "5. readiness by `pg_isready` on the socket every 0.1 s, up to",
+     "5. readiness by `pg_isready` on the socket every 0.5 s, up to"),
+    ("code", TS_DESIGN, "`apps/agent-worker/agent_worker/testservices.py::OOM_SCORE_ADJ` (1000) on the",
+     "`apps/agent-worker/agent_worker/testservices.py::OOM_SCORE_ADJ` (500) on the"),
+    ("code", TS_DESIGN, "  `PGPORT`, `PGUSER`, `PGDATABASE`, `DATABASE_URL` and `SWARM_TEST_SERVICES`.",
+     "  `PGPORT`, `PGUSER`, `PGDATABASE` and `DATABASE_URL`."),
+    ("page", TS_DOC, "| `databases` | a list of 1 to 8 names, each matching `[a-z_][a-z0-9_]{0,62}`, no duplicates;"
+     " each is created empty, owned by `postgres`. The first is the default database |",
+     "| `databases` | a list of 1 to 16 names, each matching `[a-z_][a-z0-9_]{0,62}`, no duplicates;"
+     " each is created empty, owned by `postgres`. The first is the default database |"),
+    ("page", TS_DOC, "| `user` | the platform owns the service's user |", ""),
+    ("page", TS_DOC, "postgres.version: 15 is not offered: version is an integer, one of 16",
+     "postgres.version: 15 is not offered"),
+    ("page", TS_DOC, "  memory (`shared_buffers=64MB`, `max_connections=50`) and no durability",
+     "  memory (`shared_buffers=128MB`, `max_connections=50`) and no durability"),
+    ("page", TS_DOC, "| `PGPORT` | `5432` |", "| `PGPORT` | `5433` |"),
+    ("agent-output", AGENT_OUTPUT, "   .swarm/test-services.toml\"; and a server that stopped during the run makes",
+     "   .swarm/test-services.yml\"; and a server that stopped during the run makes"),
+    ("agent-output", AGENT_OUTPUT, "   `PGHOST`, `PGPORT`, `PGUSER`, `PGDATABASE`, `DATABASE_URL` and",
+     "   `PGHOST`, `PGPORT`, `PGUSER`, `DATABASE_URL` and"),
+    ("cites", TS_DESIGN, "(`apps/agent-worker/agent_worker/testservices.py::child_env`): no worker",
+     "(`apps/agent-worker/agent_worker/testservices.py::child_environ`): no worker"),
+    ("cites", TS_DESIGN, "(`images/agent-runtime-base/Dockerfile` (`ARG POSTGRES_MAJOR=16`)):",
+     "(`images/agent-runtime-base/Dockerfile` (`ARG POSTGRES_MAJOR=17`)):"),
+    ("cites", TS_DOC, "(`apps/scheduler/scheduler/dispatch.py::CACHE_MOUNT`); every profile that runs",
+     "(`apps/scheduler/scheduler/dispatch.py::CACHE_MOUNTS`); every profile that runs"),
+    ("cites", AGENT_OUTPUT, "   (`apps/agent-worker/agent_worker/prepublish.py::unreachable_services`). A",
+     "   (`apps/agent-worker/agent_worker/prepublish.py::unreachable_service`). A"),
+]
+
+
+def _ts_run_check(check: str, doc: Path, text: str, tmp_path: Path) -> None:
+    if check == "cites":
+        name = next(k for k, (path, _) in _TS_CITED.items() if path == doc)
+        _ts_assert_cites_resolve(_TS_CITED[name][1](text), tmp_path / name)
+        return
+    {"lanes": _check_ts_lanes, "exists": _check_ts_entries_name_what_exists,
+     "code": _check_ts_entries_state_the_code, "page": _check_ts_doc,
+     "agent-output": _check_ts_agent_output}[check](text)
+
+
+@pytest.mark.parametrize("check,doc,old,new", _TS_MUTATIONS,
+                         ids=[f"{m[0]}-{i}" for i, m in enumerate(_TS_MUTATIONS)])
+def test_test_services_checks_fail_on_a_one_line_mutation(check, doc, old, new, tmp_path: Path):
+    text = _text(doc)
+    assert "\n" not in old and text.count(old) == 1, f"the mutation's line is not once in {doc.name}: {old!r}"
+    # The unmutated text passes, so the failure below is the mutation's.
+    _ts_run_check(check, doc, text, tmp_path)
+    with pytest.raises(AssertionError):
+        _ts_run_check(check, doc, text.replace(old, new), tmp_path)
+
+
+# --------------------------------------------------------------------------
+# SSC-DOCS (part of #2158): a secret is the workspace's, a person's or a
+# repository's, and GitHub Actions is a write-only destination
+# --------------------------------------------------------------------------
+#
+# docs/design/secrets-scopes.md was written before any lane built it, and its
+# §11 (BGD's answers of 2026-10-23) overrode §3 on the App, the environments
+# and the seal. Its status line and §9 say which lanes are built, with their
+# PRs; §12 records what each built and where the code departs from §2-§6.
+# workspace-secrets.md's status line points at the extension, security.md
+# carries the threat model and the accepted residual risk (Q3), and
+# provider-keys.md §7 what the scopes change for its keys. Every permission,
+# switch, limit and binding they state is read from the code here, so a
+# switch turned on, a permission widened or step 5 shipping fails until the
+# documents follow.
+
+SSC_DESIGN = DOCS / "design" / "secrets-scopes.md"
+PROVIDER_KEYS = DOCS / "provider-keys.md"
+SSC_BUILT = "## 12. What was built (2026-10-24, lane SSC-DOCS, part of #2158)"
+SSC_SECURITY = "## Secrets scopes and GitHub Actions secrets"
+SSC_KEYS = "## 7. Secrets scopes: what changes for these keys, and what does not (#2158)"
+#: §9's lanes that are not built, each for a reason the status line gives:
+#: phase 0 because Q3 declined the second App, the console rows because they
+#: wait for #2157's Config section.
+SSC_UNBUILT = ("SSC-SECRETS-APP", "SSC-UI", "SSC-UI-ACTIONS")
+#: Lanes the build added, each answered on #2158 from §2.1's rule.
+SSC_ADDED = {"SSC-REPO-DELETE": 2239, "SSC-REPO-DELETE-TXN": 2245, "SSC-UNREGISTER-TXN": 2249,
+             "LINK-ADMIN-WRITES": 2229, "PLATFORM-SECRETS-500": 2221}
+#: The new refusals the lanes shipped off (refusals.SWITCHES).
+SSC_SWITCHES = ("github_admin_required", "grant_key_required", "qa_bypass_link_required")
+SSC_ACTIONS_PY = "apps/swarm-api/swarm_api/forge_installation.py"
+SSC_STEP5 = 'resource "google_project_iam_member" "forge_slot_reader" {'
+
+
+def _ssc_head(text: str) -> str:
+    return _flat(text.split("\n---\n", 1)[0])
+
+
+def _ssc_plan(text: str) -> dict[str, str]:
+    """§9's rows: lane -> the text of its lane cell after the name."""
+    plan = _section(text, "## 9. Build plan")
+    rows = dict(re.findall(r"^\|[^|\n]*\| \*\*(SSC-[A-Z-]+)\*\*([^|\n]*)\|", plan, flags=re.M))
+    assert len(rows) >= 11 and "SSC-DOCS" in rows, rows
+    return rows
+
+
+def _check_ssc_status(text: str) -> None:
+    head = _ssc_head(text)
+    assert "Nothing in this document is built" not in head
+    assert "**Status: built 2026-10-24" in head and "§12" in head
+    assert "§11 overrides this document" in head
+    for lane in SSC_UNBUILT:
+        assert lane in head, f"the status line does not say {lane} is not built"
+    # Q3: no second App, so neither its key nor its setting exists.
+    assert "no `swarm-github-secrets-app-private-key`" in head
+    assert not (REPO / "terraform" / "infra" / "github_secrets_app.tf").exists()
+    from swarm_api import settings
+
+    assert "GITHUB_SECRETS_APP_ID" not in _text(Path(settings.__file__))
+
+
+def _check_ssc_lanes(text: str) -> None:
+    rows = _ssc_plan(text)
+    built = _section(text, SSC_BUILT)
+    for lane, cell in rows.items():
+        if lane in SSC_UNBUILT:
+            assert cell.strip().startswith("(not built"), f"§9 does not mark {lane} not built"
+            continue
+        if lane == "SSC-DOCS":
+            assert cell.strip().startswith("(built"), cell
+            continue
+        pr = re.match(r"\s*\(built, PR (\d+)", cell)
+        assert pr, f"§9 does not mark {lane} built with its PR: {cell!r}"
+        assert f"**{lane} (PR {pr.group(1)}" in built, f"§12 has no entry for {lane} with PR {pr.group(1)}"
+    for lane, pr in SSC_ADDED.items():
+        assert f"**{lane} (PR {pr})" in built or f"PR {pr} ({lane})" in built, lane
+    # The console rows stay unbuilt only while their files are absent.
+    if (REPO / "apps" / "swarm-ui" / "src" / "Secrets.tsx").exists():
+        raise AssertionError("SSC-UI's Secrets.tsx exists: mark SSC-UI built in §9 and §12")
+
+
+def _check_ssc_code(text: str) -> None:
+    from swarm_api import refusals, workspace_secrets
+    from swarm_api.forge_installation import ACTIONS_PERMISSIONS
+    from swarm_api.grant_attest import FORM_REPOSITORY
+
+    raw = _section(text, SSC_BUILT)
+    body = _flat(raw)
+    # Q3/Q4: one permission per mint, the ones §12 names, never administration.
+    assert f"`{SSC_ACTIONS_PY}::ACTIONS_PERMISSIONS`" in raw
+    granted = {(k, v) for perm in ACTIONS_PERMISSIONS.values() for k, v in perm.items()}
+    assert all(len(perm) == 1 for perm in ACTIONS_PERMISSIONS.values())
+    assert not any(k == "administration" for k, _ in granted) and "Never `administration`" in body
+    for name, level in granted:
+        assert f"`{name}: {level}`" in body or "read levels for the name lists" in body, (name, level)
+    assert ("secrets", "write") in granted and ("environments", "write") in granted
+    assert "`secrets: write`" in body and "`environments: write`" in body and "`actions: read`" in body
+    # Q5: sealed in swarm-api, with PyNaCl, which swarm-api depends on.
+    assert "pynacl" in _text(REPO / "apps" / "swarm-api" / "pyproject.toml").lower()
+    assert "SealedBox" in _cited_symbol("apps/swarm-api/swarm_api/actions_secrets.py", "seal")
+    assert FORM_REPOSITORY == "v2" and 'form `"v2"`' in body
+    # One transaction, refused whole above the limit.
+    assert workspace_secrets.MAX_TRANSACTION_WRITES == 500 and "about 33" in body
+    for code in SSC_SWITCHES:
+        assert refusals.SWITCHES[code].default is False, code
+        assert f"| `{code}` |" in raw, f"§12 does not say {code} ships off"
+    # Platform secrets: off until BGD's bootstrap apply.
+    tf = _text(REPO / "terraform" / "bootstrap" / "platform_secret_status.tf")
+    assert re.search(r'variable "enable_platform_secret_status" \{.*?default\s*=\s*false', tf, flags=re.S)
+    if "enable_platform_secret_status" not in _text(REPO / "terraform" / "bootstrap" / "terraform.tfvars"):
+        assert "**It is off:**" in body
+    # Q3's residual risk is open exactly while workers can read the slots.
+    if SSC_STEP5 in _text(REPO / "terraform" / "bootstrap" / "forge_user_slots.tf"):
+        assert "**The residual risk BGD accepted (Q3) is live.**" in body
+        assert f"`terraform/bootstrap/forge_user_slots.tf`\n(`{SSC_STEP5}`)" in raw
+    assert "**The done check (§9) is not met yet.**" in body
+
+
+def _check_ssc_workspace_secrets(text: str) -> None:
+    head = _ssc_head(text)
+    assert "The release (SEC-RELEASE), the console (SEC-UI) and the migrations are not built" not in head
+    assert "turns on when SEC-RELEASE merges" not in head
+    assert "[secrets-scopes.md](secrets-scopes.md)" in head and "**repository**" in head
+    assert "SEC-UI-LIST" in head and "SEC-RELEASE" in head
+    tfvars = _text(REPO / "terraform" / "bootstrap" / "terraform.tfvars")
+    assert "enable_workspace_secrets = true" in tfvars and "`enable_workspace_secrets = true`" in head
+
+
+def _check_ssc_security(text: str) -> None:
+    raw = _section(text, SSC_SECURITY)
+    body = _flat(raw)
+    assert "design/secrets-scopes.md" in body
+    assert "`apps/swarm-api/swarm_api/workspace_secrets.py::attempt_repositories`" in raw
+    assert "`apps/swarm-api/swarm_api/grant_attest.py::FORM_REPOSITORY`" in raw
+    assert f"`{SSC_ACTIONS_PY}::ACTIONS_PERMISSIONS`" in raw and "No mint asks `administration`" in body
+    assert "**Accepted residual risk (BGD, Q3" in body and "step 5" in body
+    assert "`MERGE_APP_PRIVATE_KEY`" in body and "cannot read one" in body
+    if SSC_STEP5 in _text(REPO / "terraform" / "bootstrap" / "forge_user_slots.tf"):
+        assert "tenant workers can still read" in body
+    assert "keeps no value, no ciphertext and no token" in body
+    assert "`secretmanager.secrets.get` and `secretmanager.versions.list`" in body
+    # Credential theft still counts two payload-serving routes.
+    theft = _flat(_section(text, "## Credential theft"))
+    assert "Exactly two routes serve credential material" in theft
+    assert "take a value in and serve none, so they are not a third" in theft
+
+
+def _check_ssc_provider_keys(text: str) -> None:
+    assert "**A workspace secrets store is proposed, not built**" not in text
+    head = _flat(text.split("## 1. Routes", 1)[0])
+    assert "`apps/swarm-api/swarm_api/secrets_overview.py::_provider_key_rows`" in head
+    assert "lane SSC-UI, not built" in head
+    body = _flat(_section(text, SSC_KEYS))
+    assert "the person's wins, then the repository's, then the workspace's" in body
+    assert "PyNaCl" in body and "security.md#secrets-scopes-and-github-actions-secrets" in body
+
+
+_SSC_CHECKS = {
+    "status": (SSC_DESIGN, _check_ssc_status), "lanes": (SSC_DESIGN, _check_ssc_lanes),
+    "code": (SSC_DESIGN, _check_ssc_code), "workspace-secrets": (SECRETS_DESIGN, _check_ssc_workspace_secrets),
+    "security": (SECURITY, _check_ssc_security), "provider-keys": (PROVIDER_KEYS, _check_ssc_provider_keys),
+}
+
+
+@pytest.mark.parametrize("check", sorted(_SSC_CHECKS))
+def test_secrets_scopes_docs_describe_what_was_built(check: str):
+    doc, run = _SSC_CHECKS[check]
+    run(_text(doc))
+
+
+@pytest.mark.parametrize("doc", (SSC_DESIGN, SECRETS_DESIGN, SECURITY, PROVIDER_KEYS), ids=lambda p: p.name)
+def test_secrets_scopes_docs_cite_only_what_resolves(doc: Path):
+    _assert_cites_resolve(doc)
+
+
+#: One-line mutations, each a way the documents could drift: each must fail
+#: its check, so the checks above are shown to catch what they claim to.
+_SSC_MUTATIONS = [
+    ("lanes", "| 1 | **SSC-OVERVIEW** (built, PR 2248) |", "| 1 | **SSC-OVERVIEW** |"),
+    ("lanes", "**SSC-OVERVIEW (PR 2248).** §4 and §6.2: `GET /v1/secrets/overview` reads",
+     "**SSC-OVERVIEW.** §4 and §6.2: `GET /v1/secrets/overview` reads"),
+    ("status", "and the console.** Designed 2026-10-23 (lane SECRETS-SCOPES-DESIGN, PR 2159);",
+     "and the console.** Nothing in this document is built (lane SECRETS-SCOPES-DESIGN, PR 2159);"),
+    ("code", "| `grant_key_required` | a repository grant is written unattested, and the release drops it, "
+     "because a repository grant is released only when attested (§2.2) | every environment holds the grant key |",
+     ""),
+    ("code", "**The residual risk BGD accepted (Q3) is live.** User-scoped-secrets step 5",
+     "**The residual risk BGD accepted (Q3) is closed.** User-scoped-secrets step 5"),
+]
+
+
+@pytest.mark.parametrize("check,old,new", _SSC_MUTATIONS, ids=[f"{m[0]}-{i}" for i, m in enumerate(_SSC_MUTATIONS)])
+def test_secrets_scopes_checks_fail_on_a_one_line_mutation(check: str, old: str, new: str):
+    doc, run = _SSC_CHECKS[check]
+    text = _text(doc)
+    assert "\n" not in old and text.count(old) == 1, f"the mutation's line is not once in {doc.name}: {old!r}"
+    run(text)
+    with pytest.raises(AssertionError):
+        run(text.replace(old, new))

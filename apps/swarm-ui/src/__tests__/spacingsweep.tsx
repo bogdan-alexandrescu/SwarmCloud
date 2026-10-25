@@ -176,7 +176,7 @@ const SECTION_SHEETS = Object.values(
 )
 const SHEET = [...SECTION_SHEETS, STYLES].join('\n')
 
-async function sweep(routes: readonly string[]): Promise<Record<Theme, Report>> {
+async function sweep(routes: readonly string[], Shown: typeof App = App): Promise<Record<Theme, Report>> {
   const sheets: Record<Theme, string> = {
     // Every shipped sheet: SHEET holds src/styles/*.css (the canonical
     // components' rules in components.css among them) as well as styles.css.
@@ -188,7 +188,7 @@ async function sweep(routes: readonly string[]): Promise<Record<Theme, Report>> 
   const snapshots: { el: HTMLElement; local: { el: Element; source: string }[] }[] = []
   for (const route of routes) {
     window.location.hash = `#${route}`
-    const { container, unmount } = render(<App />)
+    const { container, unmount } = render(<Shown />)
     await settle()
     const snap = container.cloneNode(true) as HTMLElement
     unmount()
@@ -214,6 +214,7 @@ async function sweep(routes: readonly string[]): Promise<Record<Theme, Report>> 
   for (const s of snapshots) {
     for (const { el, source } of s.local) el.textContent = resolveVars(stripComments(source), tables.dark)
     document.body.appendChild(s.el)
+    unpainted(s.el)
     const r = probe(s.el)
     dark.push(r)
     borders.push(r.bordered)
@@ -231,6 +232,50 @@ async function sweep(routes: readonly string[]): Promise<Record<Theme, Report>> 
   style.remove()
   window.location.hash = ''
   return { dark: merge(dark), light: merge(light) }
+}
+
+/**
+ * WHAT THIS WIDTH DOES NOT PAINT IS NOT MEASURED. jsdom applies no `@media`
+ * rule, so the sweep paints the desktop sheet, where the phone bar
+ * (`.sk-pbar`) is `display: none` -- but `probe` asks only whether a box is
+ * hidden itself, so the bar's children were measured against the page surface
+ * behind a bar that is not there. Its workspace chip (`.sk-tchip`), drawn for
+ * someone who can switch, read 1.26:1 against the light page it never sits
+ * on, once Admin's slice rendered as a platform admin. The subtree goes
+ * before the dark pass, and the light pass reuses the pruned snapshot.
+ *
+ * ONLY WHAT A RULE COULD HIDE IS ASKED. A jsdom cascade costs about 100ms an
+ * element, and asking every element of the admin slice added 236 s to it. So
+ * the candidates are the boxes a top-level `display: none` rule matches, and
+ * any `[hidden]`, and the cascade then confirms each, so a later rule that
+ * shows the box again still wins.
+ */
+function unpainted(root: HTMLElement): void {
+  const selectors = new Set<string>(['[hidden]'])
+  for (const sheet of [...document.styleSheets]) {
+    let rules: CSSRuleList
+    try {
+      rules = sheet.cssRules
+    } catch {
+      continue
+    }
+    for (const r of rules) {
+      if (r.constructor.name !== 'CSSStyleRule') continue
+      const rule = r as CSSStyleRule
+      if (rule.style.getPropertyValue('display').trim() === 'none') selectors.add(rule.selectorText)
+    }
+  }
+  const candidates = new Set<Element>()
+  for (const sel of selectors) {
+    try {
+      for (const el of root.querySelectorAll(sel)) candidates.add(el)
+    } catch {
+      // A selector jsdom cannot parse matches nothing it renders either.
+    }
+  }
+  for (const el of candidates) {
+    if (el.isConnected && root.contains(el) && getComputedStyle(el).display === 'none') el.remove()
+  }
 }
 
 /**
@@ -335,6 +380,14 @@ export interface SpacingGroup {
    * as `CENTRED_SIDEWAYS` asks, and held beside it by the same equality.
    */
   centred?: readonly string[]
+  /**
+   * The fixture caller the slice renders as (the `swarm_qa_persona` cookie
+   * api.ts reads once, when it loads). Admin's slice needs `platform-admin`:
+   * since CONFIG-NAV (part of #2157) an Admin address sends someone who
+   * administers nothing to Overview, and the default caller is that member,
+   * so the slice swept Overview six times.
+   */
+  persona?: 'platform-admin'
 }
 
 /**
@@ -374,7 +427,12 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   },
   // Automate › Schedules (docs/schedules.md §6.1) rides with Work's setup pages:
   // one route, and a slice is a file of its own (the slice test).
-  { name: 'setup', routes: ['work/repositories', 'work/setup', 'work/access', 'automate/schedules', 'automate/approvals'], floor: 90 },
+  // CONFIG-NAV (part of #2157): Repositories and Access left Work for Config;
+  // the first two Config pages keep their place in this walk, and the other
+  // four are the `config` slice. Workspace setup (Work › Setup until then) is
+  // a part of Workspace Settings with no tab of its own, so no slice reaches it.
+  { name: 'setup', routes: ['config/github', 'config/repositories', 'automate/schedules', 'automate/approvals'], floor: 90 },
+  { name: 'config', routes: ['config/secrets', 'config/mcp-servers', 'config/people', 'config/workspace'], floor: 60 },
   { name: 'capacity', routes: ['capacity/pools', 'capacity/catalogue', 'capacity/profiles'], floor: 140 },
   // API reads is Capacity's last page since NAV-FOOT (#1672), so it closes this walk.
   { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/quota', 'capacity/api-reads'], floor: 160 },
@@ -386,9 +444,19 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // to sit -- the submit slice's case exactly: the "?" is centred in a fixed
   // 14px with no border of its own, so there is no edge for that ink to
   // crowd, and the card's inset is measured off the heading beside it.
+  // THE PEOPLE ROW'S AVATAR (#847 W8), reached once the slice renders as a
+  // platform admin (the member is refused `/v1/admin/people` and draws no
+  // row): a 24px disc with a 1px border around ONE capital at `--t-meta`
+  // (13px, weight 600). A wide capital ("W", "M") advances about 12px there,
+  // so the ink clears the border by (24 - 2 - 12) / 2 = 5px a side, over the
+  // 4px `textInset` floor; a typical initial clears it by more.
   {
     name: 'admin', routes: ['admin/limits', 'admin/runner-sizes', 'admin/tenants', 'admin/counts', 'admin/people', 'admin/workspaces'], floor: 120,
-    centred: ['button.help-glyph [left] width 14px, centred', 'button.help-glyph [right] width 14px, centred'],
+    centred: [
+      'button.help-glyph [left] width 14px, centred', 'button.help-glyph [right] width 14px, centred',
+      'span.pp-avatar [left] width 24px, centred', 'span.pp-avatar [right] width 24px, centred',
+    ],
+    persona: 'platform-admin',
   },
 ]
 
@@ -401,15 +469,22 @@ export function spacingGroup(name: string): void {
   if (group === undefined) throw new Error(`no spacing group named ${name}`)
 
   describe(`spacing: ${group.name}`, () => {
-    beforeAll(() => {
+    let Shown: typeof App = App
+    beforeAll(async () => {
+      if (group.persona !== undefined) {
+        document.cookie = `swarm_qa_persona=${group.persona}; path=/`
+        vi.resetModules()
+        Shown = (await import('../App')).App
+      }
       vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
     })
     afterAll(() => {
       vi.useRealTimers()
+      document.cookie = 'swarm_qa_persona=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
     })
 
     it('finds nothing touching, nothing under the divider floors, no corner off the scale', async () => {
-      const r = await sweep(group.routes)
+      const r = await sweep(group.routes, Shown)
 
       // PRINTED BEFORE ANYTHING IS ASSERTED. Four assertions follow and the
       // first one to fail hides the rest, which is the wrong shape for a probe:

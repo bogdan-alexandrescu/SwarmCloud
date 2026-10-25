@@ -113,7 +113,10 @@ from ..codeintel import require_owner_or_admin
 from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
 from ..forgeapp import Caller
 from .access import get_access
+from .workspace_secrets import SecretWriter, secret_writer
 from ..errors import ValidationFailed
+from ..grant_attest import GrantPolicy
+from ..workspace_secrets import WorkspaceSecrets
 from ..forge import FirestoreSlotIndex, ForgeReadError, service_credential_view
 from ..impact import (
     DEPTH_MAX,
@@ -202,6 +205,11 @@ def _platform_admin(fields: set[str], auth: AuthContext, field: str = "platform"
         return None
     require_admin(auth)
     return auth.email
+
+
+#: The `authority` the grants-disabled audit row records for a delete: the
+#: member rule (`_member`) let it through, not a manager's.
+REPOSITORY_DELETE = "repository_delete"
 
 
 def _member(ctx: AppContext, auth: AuthContext) -> None:
@@ -382,10 +390,24 @@ def delete_repository(
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
+    writer: SecretWriter = Depends(secret_writer),
 ) -> Response:
+    """Unregister. Every grant on the registration's secrets is disabled,
+    re-signed off with its audit row, in the transaction that removes it
+    (secrets-scopes.md §2.1), so a re-registration (the same `repo_id`)
+    revives nothing and a grant enabled at the same moment cannot outlive it.
+    When that transaction fails, neither the grants nor the registration
+    change and the error is the answer. Only the caller's own workspace's
+    registration and secrets are read, so another workspace's `repo_id`
+    disables nothing and is the 404 it always was."""
     _member(ctx, auth)
-    _store(ctx).delete(tenant_id, repo_id)
-    log.info("repository delete tenant=%s repo_id=%s by=%s", tenant_id, repo_id, auth.email)
+    disabled = WorkspaceSecrets(
+        ctx.db, writer, now=ctx.now, grants=GrantPolicy.from_settings(ctx.settings),
+        authority=REPOSITORY_DELETE,
+    ).delete_repository(tenant_id=tenant_id, repo_id=repo_id, by=auth.email)
+    log.info("repository delete tenant=%s repo_id=%s by=%s grants_disabled=%d",
+             tenant_id, repo_id, auth.email,
+             sum(len(c) for c in disabled["grants_disabled"].values()))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

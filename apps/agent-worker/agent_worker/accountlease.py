@@ -154,6 +154,12 @@ POOL_PAUSED = "pool_paused"
 #: fallback as a genuinely exhausted pool.
 NO_RECENT_READING = "no_recent_reading"
 
+#: Accounts have room by their windows and every one already holds as many
+#: agents as it may (the broker's per-account cap, #2222). A slot frees when an
+#: agent on it finishes, which no instant predicts, so -- like a stale reading
+#: and unlike a spent window -- it is minutes away, not hours.
+ACCOUNTS_FULL = "accounts_full"
+
 #: Client-side, never from the broker: the pool is configured and refused us.
 BROKER_REFUSED = "broker_refused"
 
@@ -683,6 +689,7 @@ def credential_env_from_account(
 
 
 __all__ = [
+    "ACCOUNTS_FULL",
     "ACCOUNT_TOKEN_ENV",
     "ACCOUNT_UNREADABLE",
     "BROKER_REFUSED",

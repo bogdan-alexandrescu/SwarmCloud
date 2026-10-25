@@ -31,6 +31,14 @@
 #     its own planted.txt, so its pull request conflicts with main -- the
 #     conflict the rebase check resolves (docs/acceptance.md, "git-tools").
 #     No commit is made for it: the base is main's own history.
+#   * the claude-code group's test-services branches (TS-ACCEPT, #1627):
+#     acceptance/test-services, one parentless commit whose root IS
+#     tests/acceptance/fixtures/test-services, and
+#     acceptance/test-services-undeclared, the same tree without .swarm/.
+#     The pre-publish gate reads .swarm/test-services.toml at the clone's
+#     root only, so a fixture under main's tests/ cannot declare anything.
+#     Force-updated (refs outside swarm/, which no task can push) only when
+#     the tree differs.
 #
 # THE TOKEN never reaches argv, a URL or a log: git asks for it through
 # GIT_ASKPASS, which reads it from the environment, and curl reads its header
@@ -146,6 +154,44 @@ else
   fi
   ok "pushed ${FIXTURES}/ as of ${source_sha} to ${ACC_GITHUB_REPO}@${ACC_REF} (${pushed})"
 fi
+
+# --- 2b. The test-services branches -------------------------------------------
+# Built from the tree just pushed to ACC_REF, with git's plumbing: no working
+# tree is touched. The undeclared tree is the declared one with its .swarm
+# entry left out, so the two differ by the declaration and nothing else.
+TS_FIXTURE="${FIXTURES}/test-services"
+ts_declared="$(git -C "${clone}" rev-parse -q --verify "HEAD:${TS_FIXTURE}" 2>/dev/null)" \
+  || die "${TS_FIXTURE} is not on ${ACC_GITHUB_REPO}@${ACC_REF} after the sync: the test-services fixture is missing from this checkout"
+git -C "${clone}" ls-tree "${ts_declared}" >"${WORK}/ts-tree.out" 2>"${WORK}/git.err" \
+  || die "could not list ${TS_FIXTURE} (git ls-tree): $(redact <"${WORK}/git.err" | tail -n 1)"
+grep -q $'\t.swarm$' "${WORK}/ts-tree.out" \
+  || die "${TS_FIXTURE} has no .swarm/ on ${ACC_GITHUB_REPO}@${ACC_REF}: the declared branch would declare nothing"
+ts_undeclared="$(grep -v $'\t.swarm$' "${WORK}/ts-tree.out" | git -C "${clone}" mktree 2>"${WORK}/git.err")" \
+  || die "could not build the undeclared test-services tree (git mktree): $(redact <"${WORK}/git.err" | tail -n 1)"
+
+# What the sandbox holds now, both branches in one fetch: a glob refspec
+# fetches the ones that exist and fails only when git cannot reach the
+# sandbox. Each branch is one parentless commit, so no --depth is needed.
+git -C "${clone}" fetch --quiet --prune origin "+refs/heads/acceptance/test-services*:refs/remotes/origin/acceptance/test-services*" 2>"${WORK}/git.err" \
+  || die "could not read the test-services branches on ${ACC_GITHUB_REPO} (git fetch): $(redact <"${WORK}/git.err" | tail -n 1)"
+
+# ts_branch BRANCH TREE -> BRANCH on the sandbox is one commit of TREE.
+ts_branch() {
+  local branch="$1" tree="$2" current commit
+  current="$(git -C "${clone}" rev-parse -q --verify "refs/remotes/origin/${branch}^{tree}" 2>/dev/null || true)"
+  if [[ "${current}" == "${tree}" ]]; then
+    ok "${branch} on ${ACC_GITHUB_REPO} already holds ${TS_FIXTURE} as of this commit"
+    return 0
+  fi
+  commit="$(git -C "${clone}" -c user.name="swarm-acceptance" -c user.email="swarm-acceptance@users.noreply.github.com" \
+    commit-tree "${tree}" -m "Acceptance test-services fixture (${branch}) as of $(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || printf 'unknown')" 2>"${WORK}/git.err")" \
+    || die "could not commit the ${branch} tree (git commit-tree): $(redact <"${WORK}/git.err" | tail -n 1)"
+  git -C "${clone}" push --quiet --force origin "${commit}:refs/heads/${branch}" 2>"${WORK}/git.err" \
+    || die "could not point ${branch} at ${commit:0:12} on ${ACC_GITHUB_REPO}: $(redact <"${WORK}/git.err" | head -n 3 | tr '\n' ' ')"
+  ok "pointed ${branch} on ${ACC_GITHUB_REPO} at ${commit:0:12}: ${TS_FIXTURE} at its root"
+}
+ts_branch "acceptance/test-services" "${ts_declared}"
+ts_branch "acceptance/test-services-undeclared" "${ts_undeclared}"
 
 # --- 3. The git-tools base branch ---------------------------------------------
 # The parent of the newest commit that ADDED planted.txt has no planted.txt,

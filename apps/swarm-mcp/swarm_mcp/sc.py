@@ -8,10 +8,12 @@ without reading the flags first, which is the only way a status command gets
 used at the moment it is needed.
 
 THE ONE EXCEPTION IS `sc account ...` (S10, owner decision 2026-10-01): pause,
-resume, drain and remove one of your own accounts, and add one through the
-API's browser sign-in. The API served those routes and nothing reached them.
-They are a separate subcommand, never a view, held out of every skill's grant
-by `test_plugin_commands.py`, and `remove` takes the label typed back.
+resume, drain and remove one of your own accounts, set how many agents it may
+hold (`max-agents`, #2222), and add one through the API's browser sign-in. The
+API served those routes and nothing reached them. They are a separate
+subcommand, never a view, held out of every skill's grant by
+`test_plugin_commands.py`, and `remove` and `max-agents` take the label typed
+back.
 
 THE SECOND IS THE ISSUE RUN (#454): `sc run --issue owner/repo#N` creates a
 run -- one planner task -- and `sc plan approve|edit|reject <run>` moves its
@@ -1524,7 +1526,10 @@ def _dump(snap: Snapshot, out) -> None:
         "capacity_error": snap.capacity_error,
         "accounts": (
             None if snap.accounts is None
-            else [render.public_account(a) for a in snap.accounts]
+            else [
+                render.public_account(a, render.listing_tenant(snap.accounts))
+                for a in snap.accounts
+            ]
         ),
         "accounts_error": snap.accounts_error,
         "accounts_absent": snap.accounts_absent,
@@ -1647,6 +1652,14 @@ def remove_account(client: SwarmClient, account: dict[str, Any]) -> Any:
     return client.request("DELETE", f"/v1/accounts/{account_id}")
 
 
+def set_account_max_agents(client: SwarmClient, account: dict[str, Any], max_agents: int) -> Any:
+    """`PUT /v1/accounts/{id}/max-agents`: the API's answer, as it gave it."""
+    account_id = urllib.parse.quote(str(account["account_id"]), safe="")
+    return client.request(
+        "PUT", f"/v1/accounts/{account_id}/max-agents", payload={"max_agents": max_agents}
+    )
+
+
 def change_account_state(client: SwarmClient, ref: str, verb: str, reason: str = "") -> dict[str, Any]:
     """One state verb, end to end: resolve, one PUT, and what came back.
 
@@ -1688,6 +1701,48 @@ def cmd_account_state(client: SwarmClient, args, out) -> int:
     out.write(json.dumps(done["broker_answer"], indent=2, default=str) + "\n")
     if "what_draining_does" in done:
         out.write(done["what_draining_does"] + "\n")
+    return EXIT_OK
+
+
+def cmd_account_max_agents(client: SwarmClient, args, out) -> int:
+    """How many agents one of your accounts may hold at once (#2222), after its
+    label is TYPED back, as `remove` is.
+
+    SWARM_ASSUME_YES IS IGNORED. Lowering the cap is how an owner takes
+    capacity out of a pool other workspaces may be running on, and raising it
+    spends a shared subscription faster; either is one number away from a
+    typo. The API refuses anything but 1 to 50 before the broker is asked, so
+    this sends the number as typed and prints the refusal in its words.
+    """
+    text = str(args.max_agents).strip()
+    if not text.lstrip("-").isdigit():
+        raise SwarmError(f"an account's max_agents is a whole number, not {text!r}; nothing was sent")
+    max_agents = int(text)
+    account = resolve_account(client, args.account)
+    label = str(account.get("label") or "")
+    before = account.get("max_agents")
+    if os.environ.get("SWARM_ASSUME_YES", "").strip():
+        sys.stderr.write("sc: SWARM_ASSUME_YES is ignored here; an account's cap is typed\n")
+    was = f" (now {before})" if isinstance(before, int) else ""
+    typed = _ask(
+        f"let {label} ({account.get('account_id')}) hold at most {max_agents} agents{was}? "
+        "Type its label to confirm: "
+    )
+    if not label or typed.strip() != label:
+        raise SwarmError(f"the label typed was not {label!r}; nothing was changed")
+    answer = set_account_max_agents(client, account, max_agents)
+    if args.json:
+        out.write(json.dumps({"account_id": account.get("account_id"), "label": label,
+                              "requested_max_agents": max_agents,
+                              "answer": answer}, indent=2, default=str) + "\n")
+        return EXIT_OK
+    served = answer.get("account") if isinstance(answer, dict) else None
+    now = served.get("max_agents") if isinstance(served, dict) else None
+    out.write(
+        f"{label} ({account.get('account_id')}) may hold at most "
+        f"{now if isinstance(now, int) else max_agents} agents at once; agents already "
+        "on it stay, and the cap applies from the next assignment\n"
+    )
     return EXIT_OK
 
 
@@ -1916,6 +1971,11 @@ def cmd_account_add(client: SwarmClient, args, out) -> int:
     out.write(f"label       {account.get('label') or '(not reported)'}\n")
     out.write(f"account     {account.get('account_id') or '(not reported)'}\n")
     out.write(f"state       {account.get('state') or '(not reported)'}\n")
+    # WHICH ORGANISATION THE SIGN-IN AUTHORISED (#2222): the selected one on
+    # claude.ai, which may not be the one meant. Said here so a wrong pick
+    # shows at once rather than in the week's figures two days later.
+    registered = created.get("registered") if isinstance(created, dict) else None
+    out.write(f"{registered or 'registered: (organisation not reported)'}\n")
     if isinstance(created, dict) and created.get("note"):
         out.write(f"note        {created['note']}\n")
     return EXIT_OK
@@ -2843,7 +2903,7 @@ def run_setup(
     _emit(setup_checklist(view), out)
     if view.get("next_step") is None:
         out.write(
-            f"Change this any time with `{terminal_command('sc access')}` or Work › Access.\n"
+            f"Change this any time with `{terminal_command('sc access')}` or Config › GitHub access.\n"
         )
         return EXIT_OK
     out.write(f"Setup paused at {view.get('next_step')}. Run "
@@ -4345,7 +4405,7 @@ def roles_change() -> str:
                       "sc roles default <viewer|member>")
     )
     return (
-        "a workspace admin changes roles in the console (Settings › People) or in "
+        "a workspace admin changes roles in the console (Config › People and roles) or in "
         f"their own terminal: {commands}, each typed back to confirm. No MCP tool "
         "changes a role"
     )
@@ -4869,7 +4929,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- the account verbs: WRITE to the pool (see `ACCOUNT_VERBS`) -------
     ac = sub.add_parser(
-        "account", help="change one of your accounts: add, pause, resume, drain, remove"
+        "account", help="change one of your accounts: add, pause, resume, drain, remove, max-agents"
     )
     ac_sub = ac.add_subparsers(dest="account_command", required=True)
     for verb, state in ACCOUNT_VERBS.items():
@@ -4882,6 +4942,15 @@ def build_parser() -> argparse.ArgumentParser:
     ar.add_argument("account", help="its label or id")
     _common(ar, root=False)
     ar.set_defaults(func=cmd_account_remove)
+    am = ac_sub.add_parser(
+        "max-agents", help="how many agents your account may hold at once (type its label to confirm)"
+    )
+    am.add_argument("account", help="its label or id")
+    # A string, read by the handler: the number's refusal is a SwarmError in
+    # this command's words, and nothing is resolved or asked before it.
+    am.add_argument("max_agents", metavar="N", help="1 to 50")
+    _common(am, root=False)
+    am.set_defaults(func=cmd_account_max_agents)
     aa = ac_sub.add_parser("add", help="add an account by signing in to Claude in your browser")
     aa.add_argument("--label", required=True, help="the account's name in the pool")
     aa.add_argument(

@@ -1,12 +1,30 @@
 # Workspace secrets: one store, granted per consumer by checkbox
 
-**Status: designed 2026-10-15 (lane SECRETS-DESIGN, part of #1347).** Built so
-far: §3.3's IAM (lane SEC-IAM, `terraform/bootstrap/workspace_secrets.tf`, not
-yet applied: `enable_workspace_secrets` turns on when SEC-RELEASE merges) and
-phase 1's management API (lane SEC-STORE-API, §5 "What SEC-STORE-API built").
-The release (SEC-RELEASE), the console (SEC-UI) and the migrations are not
-built. The owner's answers are in §10; where they differ from §9's
+**Status: designed 2026-10-15 (lane SECRETS-DESIGN, part of #1347); the
+store, its grants, the release and the console are built.** Built: §3.3's IAM
+(lane SEC-IAM, `terraform/bootstrap/workspace_secrets.tf`, applied
+2026-10-15 with `enable_workspace_secrets = true`), phase 1's management API
+(SEC-STORE-API, §5), the release and its admission park (SEC-RELEASE,
+SEC-ADMIT-PARK, §4), grant attestation (SEC-GRANT-ATTEST), the TypeSafe
+forwarder (SEC-INJECT-A, SEC-INJECT-B, §3.5) and the console pane (SEC-UI-LIST,
+SEC-UI-GRANTS, `apps/swarm-ui/src/WorkspaceSecrets.tsx`). Not built: the
+migrations and the retirement of §8's phases 4 and 5 are partial or open.
+SEC-MIGRATE-TYPESAFE is built behind `SWARM_TYPESAFE_INJECT`, which is off
+(§3.5 says what remains), and SEC-MIGRATE-FORGE and SEC-RETIRE are not
+built. Forge tokens appear only as Config › Secrets' status rows (SSC-OVERVIEW). The owner's answers are in §10; where they differ from §9's
 recommendation (Q5, Q8), the answer wins.
+
+**Extended 2026-10-24 by [secrets-scopes.md](secrets-scopes.md) (#2158).**
+A secret now has a third scope, **repository**: an ordinary `-wsec-` secret of
+this store, bound to one registered repository and released only to attempts
+that clone it, under a grant signed form `"v2"`. When a person's, a
+repository's and the workspace's secret share a name, the person's wins, then
+the repository's. The store also gained a write-only destination it does not
+keep, a repository's GitHub Actions secrets, and one read of every scope,
+`GET /v1/secrets/overview`. §4 and §5 here record what SSC-REPO-SCOPE,
+SSC-ADMIT-REPO and SSC-OVERVIEW built inside this store; secrets-scopes.md
+§12 records the rest. This store's console moves to Config › Secrets with
+lane SSC-UI, which is not built.
 
 **Amended 2026-10-19 (ROLES-DOCS, part of #1518): Q4 is superseded.** A
 group workspace's secrets are managed by its workspace `admin`, a role that
@@ -860,7 +878,7 @@ required slot has an enabled grant. Held by
 * **A grant counts when it is enabled** and its own document names the agent's
   workspace. A grant naming no slot fills its consumer's only slot. **The
   release, not admission, is where a grant is proven:** admission reads no
-  secret record of the workspace's own and no `attestation`, so a forged
+  record of a workspace secret and no `attestation`, so a forged
   grant can at worst admit an agent that the worker's backstop then parks.
 * **Q3 at admission.** A group agent counts the submitter's personal secret
   under the release's rule: the personal tenant names them, and the record is
@@ -1071,6 +1089,171 @@ Where the build differs from the sketch, and why:
   disables every grant and frees the name. A refused form link is a 403
   `SECRET_LINK_INVALID` outright: these routes are new, so no switch is
   needed to keep an older behaviour.
+
+### What SSC-REPO-SCOPE built (2026-10-24, part of #2158)
+
+The repository scope of [secrets-scopes.md](secrets-scopes.md) §2, with the
+owner's answers of its §11 (Q1, Q2, Q9). It is built in this store, not
+beside it: `apps/swarm-api/swarm_api/workspace_secrets.py`,
+`grant_attest.py`, `routes/attempts_secrets.py`, the new
+`routes/repository_secrets.py` and `github_repo_admin.py`, held by
+`tests/unit/control_plane/test_workspace_secrets.py`, `test_grant_attest.py`,
+`test_secret_release.py` and `test_github_repo_admin.py`.
+
+* **A repository is a field of the record, not a consumer (Q9).** A
+  repository secret is an ordinary `-wsec-` secret of the workspace, with
+  `scope: repository`, the registration's `repo_id` and `repository`
+  (`owner/repo`, for display). Its name is unique per (workspace,
+  repository): the name index key is `<tenant>~<repo_id>~<name>`. The
+  workspace's own list (`GET /v1/workspace/secrets`) no longer shows
+  repository secrets; `GET /v1/repositories/{repo_id}/secrets` does.
+  `SECRET_CONSUMER_KINDS` and everything under `apps/common/swarm_common/`
+  are unchanged.
+* **Grant form `"v2"`.** A grant on a repository secret copies the
+  record's `repo_id` and is signed
+  `["v2", secret_id, tenant_id, consumer, slot, enabled, repo_id]`; every
+  other grant is still signed `"v1"`, and a `"v1"` attestation still
+  verifies. The release takes a repository grant only when its `"v2"`
+  attestation verifies **whatever `grant_attestation_required` says**, its
+  `repo_id` is the record's, and the attempt clones that repository. A `"v1"`
+  MAC never vouches for a binding: it does not cover `repo_id`. With no grant
+  key, enabling such a grant is `grant_key_required` (422, behind its switch;
+  off, the grant is written unattested and the release drops it).
+* **Which repositories an attempt clones** is `attempt_repositories`, from
+  the signed spec: `repository_url`'s registration id, then each
+  `additional_repositories` entry's, whose `repo_id` is recomputed from its
+  `repository` and the attempt's tenant. One mismatch withholds every repository
+  secret of that attempt (`repository_binding_mismatch`, logged). A
+  repository secret whose registration is gone is withheld too.
+* **One `(slot, name)` in several scopes is released once (Q1)**: the
+  person's, then the repository's (the primary repository's before an
+  additional one's), then the workspace's. Each other item is in `withheld`
+  with `shadowed_by_personal`, `shadowed_by_repository` or
+  `shadowed_by_workspace`, so the worker never receives one file twice.
+* **Who may write (Q2).** `require_manager` as before (a workspace admin, a
+  platform admin, or a personal workspace's person), **or** a member whom
+  GitHub calls admin of that repository, asked at each write with that
+  person's own GitHub user token (`github_repo_admin.check`, through
+  `AccessService.user_token`), never with the App's installation token or
+  the tenant's forge token, and never from a stored role. No connection, an
+  expired token, a 404, a refusal or a GitHub error is a 403 with
+  `detail.reason` (`github_not_connected`, `github_token_expired`,
+  `repository_not_visible`, `github_not_admin`, `github_unavailable`); its
+  code is `github_admin_required` with that switch on and `forbidden` while
+  it is off. Every audit row names the rule that let the writer through
+  (`detail.authority`: `workspace_admin` or `github_repo_admin`; a
+  registration's removal, `repository_delete`).
+* **What it refuses.** Another workspace's `repo_id` is 404 on every route,
+  and so is a registration whose `owner/repo` no longer derives its id. An
+  MCP server is never granted a repository secret (422): `mcp:attach` matches
+  no repository, so such a grant would reach every repository's attempts.
+* **A removed registration.** The release withholds its secrets while the
+  registration is gone. That stops an honest removal, not an agent, which can
+  write the registration document back.
+  `POST /v1/repositories/{repo_id}/secrets:disable-grants` (a manager) turns
+  every grant on them off, re-signed off, so re-registering the same
+  repository revives nothing. `DELETE /v1/repositories/{repo_id}` (a
+  member, as before) runs the same disable before it deletes, and keeps the
+  registration when the disable fails (SSC-REPO-DELETE); its audit rows say
+  `detail.authority: repository_delete`.
+* **What a repository secret IS does not rest on its record.** Its Secret
+  Manager id is marked: of the 16 hex in `-wsec-<16 hex>`, the last 8 are
+  sha256 over a fixed tag and the first 8 (`repository_hex`), and a workspace
+  secret's id is drawn until it is not marked. An agent cannot create a
+  Secret Manager secret, so stripping `scope` and `repo_id` from a record and
+  writing itself an unattested grant (released for a workspace secret while
+  `grant_attestation_required` is off) releases nothing: `owned_by` keeps a
+  marked id off the workspace path, the person's opt-in and `mcp:attach`.
+
+### What SSC-ADMIT-REPO built (2026-10-24, part of #2158)
+
+The admission half of [secrets-scopes.md](secrets-scopes.md) §2.3:
+SEC-ADMIT-PARK's pre-lease park counts a repository secret only for an agent
+that clones its repository, so a required slot filled only by another
+repository's secret parks `CREDENTIAL_MISSING` before any lease, holding no
+capacity (invariant 1). Built in `apps/scheduler/scheduler/secret_slots.py`
+and `credentials.py`, held by
+`tests/unit/control_plane/test_secret_slot_admission.py`.
+
+* **The repository set is the release's.** `credentials.attempt_repositories`
+  restates swarm-api's `attempt_repositories` (the scheduler's image does not
+  carry swarm-api): the https `repository_url`'s registration id, then each
+  `additional_repositories` entry's, its `repo_id` recomputed from
+  `repository` and the tenant, and one mismatch counts no repository secret
+  at all. A test holds the two equal over the same task documents. The
+  scheduler's codec does not decode `additional_repositories`, so
+  `WorkspaceGrants` reads them from the agent's own document, by id, once per
+  pass, and only for an agent whose workspace has a repository-bound grant.
+* **A repository grant counts when the release would take it, less the
+  MAC.** The grant carries a `repo_id` in that set; its secret id carries the
+  repository mark (`is_repository_secret_id`, restated and held to
+  swarm-api's); the record is this workspace's, `active`, `scope: repository`
+  and bound to the same `repo_id`; and `repositories/{repo_id}` still names
+  this workspace. The `"v2"` attestation is still the release's alone. A grant
+  carrying a `repo_id`, or on a marked id, never counts as the workspace's
+  own or as a person's opt-in, so admission now reads a secret record for a
+  repository grant (and its registration), never for a workspace one.
+* **Q1's order** (§11): the person's, then the repository's, then the
+  workspace's. `WorkspaceGrants.missing` asks each scope only while a required
+  slot is still empty. The order decides which scope the release delivers
+  into the slot, never whether the slot is filled: shadowing keeps one item
+  per `(slot, name)` and the worker counts a slot filled by any item in it.
+* No catalogue slot is required yet (request 80), so this changes no
+  admission today; it is built so the first required slot does not admit
+  wrongly.
+
+### What SSC-OVERVIEW built (2026-10-24, part of #2158)
+
+Config › Secrets' one read, [secrets-scopes.md](secrets-scopes.md) §4 and
+§6.2, with the owner's Q1 of its §11: `GET /v1/secrets/overview?scope=
+workspace|personal|repository[&repo_id=..]`, in
+`apps/swarm-api/swarm_api/secrets_overview.py` and
+`routes/secrets_overview.py`, held by
+`tests/unit/control_plane/test_secrets_overview.py`.
+
+* **A view, not a store.** No store migrates. Each row names its `store`,
+  its console `section`, and the API route that writes it (`writer`) or the
+  page it is still managed on (`page`). The route reads Firestore only: no
+  Secret Manager payload, no broker and no forge call.
+* **What each scope lists.** *Workspace*: this store's own secrets, the
+  TypeSafe tenant key read from `provider_keys` (the tenant's `credentials`
+  never lists it), the runner LLM keys the tenant document lists, each MCP
+  server in `workspace_secret` mode with the store secrets granted to it,
+  one "subscription accounts" line linking to Capacity › Accounts, and the
+  tenant's GitHub token. *Personal*: the caller's own store secrets
+  (`opted_in` to the selected workspace or not), their TypeSafe key, their
+  saved browser logins and their GitHub user slots. *Repository*: that
+  repository's secrets for agents, each of its QA targets' sign-in
+  credential (and challenge bypass, where one is configured) per
+  environment, its `-git-r-` token, and SwarmCloud's own record of the
+  Actions secrets it wrote there (`actions_secret_writes`; GitHub's live list
+  stays `GET /v1/repositories/{repo_id}/actions/secrets`). Not listed, as §4
+  says: `dispatch`-mode MCP credentials, QA identity grants and platform
+  secrets. The answer's `not_listed` names them.
+* **Never a value, a length or `last4`.** Every row is an allow-list of
+  fields. A git token row carries kind, state, login, verified and expiry
+  times, never `last4`. No row carries a Secret Manager version name.
+* **Personal rows are only the caller's.** The personal scope reads the
+  personal workspace derived from the caller's verified email and confirmed
+  by its tenant document (`own_personal_tenant`). A narrowed session
+  (`member_scope`) has none here. Another person appears only as the winner
+  on a workspace or repository row, for a secret they opted in to this
+  workspace.
+* **Shadowing (Q1).** Two secrets of one name shadow where an enabled grant
+  of each delivers into the same slot (the release's `_deliverable`, less the
+  attestation check). The order is the person's, then the repository's, then
+  the workspace's. The loser carries `shadowed_by`, the winner `shadows`, each
+  entry with its `slot` and `where` ("agents of <person>", "agents that clone
+  <owner/repo>"). Two repositories' secrets of one name are not compared,
+  because which one wins depends on the order the attempt clones them in.
+* **Who reads.** Every member of the workspace reads the workspace and
+  repository scopes (§2.5). `can_manage` is per row: the manager rule
+  (`can_manage`) for the workspace's and the repository's rows, true for
+  the caller's own personal rows, and false for the status-only rows (GitHub
+  tokens, subscription accounts). Each writer stays the gate. Another workspace's
+  `repo_id` is 404. A `repo_id` without `scope=repository`, or
+  `scope=repository` without one, is 422, and so is any query parameter
+  other than `scope` and `repo_id`.
 
 ---
 

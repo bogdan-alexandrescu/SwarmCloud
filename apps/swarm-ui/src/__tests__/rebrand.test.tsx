@@ -290,7 +290,7 @@ describe('the Sky spine shell', () => {
     // The fixture caller administers nothing, so no Admin (NAV-ADMIN-ROLE).
     render(<App />)
     // MUTATION: draw Profile under the Hive again, or API reads in the foot.
-    expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Help', 'Profile'])
+    expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Help', 'Profile'])
   })
 
   it('draws Admin after Capacity for a platform admin', async () => {
@@ -298,7 +298,7 @@ describe('the Sky spine shell', () => {
     const { LiveApp } = await liveApp()
     render(<LiveApp />)
     // MUTATION: move `admin` in SPINE and it leaves its place after Capacity.
-    await waitFor(() => expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Admin', 'Help', 'Profile']))
+    await waitFor(() => expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Admin', 'Help', 'Profile']))
   })
 
   it('lists the open section\'s pages in the panel, with the open page\'s children', async () => {

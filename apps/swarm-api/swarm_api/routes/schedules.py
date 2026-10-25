@@ -30,6 +30,22 @@ goes through its switch: off, the write goes through and the log names who
 would have been refused. The preview and every read stay open to a viewer.
 The firing itself checks its OWNER's role (`schedulefire.owner_acts_as`).
 
+A PLATFORM-SCOPE SCHEDULE IS A PLATFORM ADMIN'S (BGD, 2026-10-24, "Platform
+admins only"; PLATFORM-SCHED-ADMIN, part of #2157). One whose stored
+`scope.mode` is `platform` reads every workspace's aggregates, so only a
+platform admin may create one (`schedules.check_creator`) -- and, by that
+decision, change one: edit, delete, pause, resume, run, take-ownership and
+lane S5's merge switch are 403 `platform_admin_required` to anyone else,
+workspace admin included (`_platform_only`), and pause-all leaves such a
+schedule as it is for them, listed under `admin_required`. The check reads
+the STORED schedule, before the write and again in its transaction, so a
+body naming another scope cannot dodge it and a scope moved to platform
+between the two reads is still caught. It is raised, not a report-only
+switch: report-only would be the very write the decision forbids, and only
+platform admins create these schedules, so no ordinary flow depends on the
+write going through. Reads stay open; a workspace-scope schedule is managed
+exactly as before.
+
 TENANT-SCOPED (§5.1, invariant 9). The tenant on every route comes from
 `tenant_scope` (a read) or `tenant_for` (a create), never from the body:
 `ScheduleCreate` refuses `tenant_id` and `owner` by name. Every read compares
@@ -245,6 +261,24 @@ def _member(ctx: AppContext, auth: AuthContext) -> None:
     `role_member_required` for a `viewer`, through its switch."""
     if ctx.roles is not None:
         ctx.roles.require(auth, roles.MEMBER)
+
+
+def _platform_scope(doc: Mapping[str, Any]) -> bool:
+    return (doc.get("scope") or {}).get("mode") == "platform"
+
+
+def _platform_only(auth: AuthContext, doc: Mapping[str, Any], action: str) -> None:
+    """403 `platform_admin_required` when the STORED `doc` is platform-scope and
+    the caller is not a platform admin (BGD, 2026-10-24). Logged with who asked,
+    as `RoleStore.require` logs its refusals; nothing has been written yet."""
+    if not _platform_scope(doc) or auth.is_admin or auth.is_owner:
+        return
+    log.warning("refusal code=platform_admin_required tenant=%s email=%s schedule=%s action=%s",
+                doc.get("tenant_id"), auth.email, doc.get("schedule_id"), action)
+    raise ScheduleForbidden(
+        "platform_admin_required",
+        "only a platform admin may change a platform-scope schedule: it reads every workspace's aggregates",
+    )
 
 
 def _audit(txn: Any, ctx: AppContext, doc: Mapping[str, Any], action: str, by: str, at: datetime,
@@ -698,6 +732,7 @@ def patch_schedule(
     """§7.1 edit, carrying `revision`; a stale one is 409 `schedule_changed`."""
     _member(ctx, auth)
     stored = _read(ctx, tenant_id, schedule_id)
+    _platform_only(auth, stored, "edit")
     patch = schedules.parse_patch(body)
     registered, platform_repository = _registrations(ctx, tenant_id, patch.scope)
     now = _now(ctx)
@@ -726,6 +761,7 @@ def patch_schedule(
     def _apply(txn: Any) -> dict[str, Any]:
         tenant_doc = _snapshot(txn.get(tenant_ref)).to_dict() or {}
         before = _owned(_snapshot(txn.get(ref)), tenant_id, schedule_id)
+        _platform_only(auth, before, "edit")
         existing = _tenant_schedules(ctx, tenant_id, txn)
         doc = edit(before, existing)
         txn.set(ref, doc)
@@ -753,6 +789,7 @@ def delete_schedule(
     work the schedule already made is ordinary work and is not cancelled."""
     _member(ctx, auth)
     stored = _read(ctx, tenant_id, schedule_id)
+    _platform_only(auth, stored, "delete")
     if confirm is None or confirm.strip() != stored["name"]:
         raise ScheduleInvalid("confirmation_required", "type the schedule's name in `confirm` to delete it")
     now = _now(ctx)
@@ -763,6 +800,7 @@ def delete_schedule(
     def _apply(txn: Any) -> None:
         tenant_doc = _snapshot(txn.get(tenant_ref)).to_dict() or {}
         doc = _owned(_snapshot(txn.get(ref)), tenant_id, schedule_id)
+        _platform_only(auth, doc, "delete")
         txn.delete(ref)
         _bump_tenant(txn, tenant_ref, tenant_doc, tenant_id, now)
         _audit(txn, ctx, doc, "delete", auth.email, now, {"name": doc["name"], "type": doc["type"],
@@ -834,13 +872,15 @@ def pause_schedule(
     with the schedule's name, which also cancels the work of its live firings."""
     _member(ctx, auth)
     request = _verb(PauseIn, body)
+    stored = _read(ctx, tenant_id, schedule_id)
+    _platform_only(auth, stored, "pause")
     if request.cancel_live:
-        stored = _read(ctx, tenant_id, schedule_id)
         if request.confirm is None or request.confirm != stored["name"]:
             raise ScheduleInvalid("confirmation_required",
                                   "type the schedule's name in `confirm` to cancel its live runs")
 
     def change(doc: Mapping[str, Any], now: datetime) -> dict[str, Any] | None:
+        _platform_only(auth, doc, "pause")
         if doc["state"] == "disabled":
             if request.cancel_live:
                 # Disabled already makes no firings; what is asked is the cancel.
@@ -935,28 +975,43 @@ def _cancel_live(ctx: AppContext, auth: AuthContext, tenant_id: str, doc: Mappin
 
 
 def _pause_all(ctx: AppContext, tenant_id: str, *, by: str, action: str,
-               reason: str | None) -> dict[str, Any]:
+               reason: str | None, platform_admin: bool) -> dict[str, Any]:
     """§2.11: every `enabled` schedule of the tenant to `paused` with one reason,
     each through `_move` -- its own transaction re-reading its state, its own
-    audit entry. Any other state is left as it is."""
+    audit entry. Any other state is left as it is.
+
+    A platform-scope schedule is a platform admin's (`_platform_only`): for
+    anyone else it is left as it is and listed under `admin_required`, read
+    from the stored schedule in its own transaction. The rest of the tenant's
+    are still paused: refusing the whole brake over one schedule the caller
+    may not touch would leave every other one running."""
     reason = reason or "all of the tenant's schedules were paused"
     paused: list[str] = []
     unchanged: list[str] = []
+    refused: list[str] = []
 
     #: Set on every attempt, so a retried transaction reports what committed.
-    moved: dict[str, bool] = {}
+    moved: dict[str, str] = {}
 
     def change(doc: Mapping[str, Any], now: datetime) -> dict[str, Any] | None:
-        moved[doc["schedule_id"]] = doc["state"] == "enabled"
-        return _paused(by, now, reason) if moved[doc["schedule_id"]] else None
+        if _platform_scope(doc) and not platform_admin:
+            moved[doc["schedule_id"]] = "admin_required"
+            return None
+        moved[doc["schedule_id"]] = "paused" if doc["state"] == "enabled" else "unchanged"
+        return _paused(by, now, reason) if moved[doc["schedule_id"]] == "paused" else None
 
     for row in _tenant_schedules(ctx, tenant_id):
         try:
             _move(ctx, tenant_id, row["schedule_id"], by=by, action=action, change=change)
         except NotFound:
             continue  # deleted since the list was read: nothing left to pause
-        (paused if moved.get(row["schedule_id"]) else unchanged).append(row["schedule_id"])
-    return {"tenant_id": tenant_id, "paused": sorted(paused), "unchanged": sorted(unchanged)}
+        outcome = moved.get(row["schedule_id"])
+        {"paused": paused, "admin_required": refused}.get(outcome or "", unchanged).append(row["schedule_id"])
+    if refused:
+        log.warning("refusal code=platform_admin_required tenant=%s by=%s schedules=%s action=%s",
+                    tenant_id, by, ",".join(sorted(refused)), action)
+    return {"tenant_id": tenant_id, "paused": sorted(paused), "unchanged": sorted(unchanged),
+            "admin_required": sorted(refused)}
 
 
 @router.post("/v1/schedules:pause-all")
@@ -973,7 +1028,8 @@ def pause_all_schedules(
     if request.confirm != tenant_id:
         raise ScheduleInvalid("confirmation_required",
                               "type your tenant's id in `confirm` to pause all of its schedules")
-    return _pause_all(ctx, tenant_id, by=auth.email, action="pause_all", reason=request.reason)
+    return _pause_all(ctx, tenant_id, by=auth.email, action="pause_all", reason=request.reason,
+                      platform_admin=auth.is_admin or auth.is_owner)
 
 
 @router.post("/v1/schedules/{schedule_id}:resume")
@@ -987,6 +1043,7 @@ def resume_schedule(
     _member(ctx, auth)
 
     def change(doc: Mapping[str, Any], now: datetime) -> dict[str, Any] | None:
+        _platform_only(auth, doc, "resume")
         if doc["state"] == "disabled":
             raise ScheduleForbidden("admin_required", "an admin disabled this schedule; only an admin may re-enable it")
         if doc["state"] == "enabled":
@@ -1008,10 +1065,12 @@ def take_ownership(
     """§1.1: the caller becomes the member firings submit as. Audited."""
     _member(ctx, auth)
     stored = _read(ctx, tenant_id, schedule_id)
+    _platform_only(auth, stored, "take_ownership")
     _check_grants(ctx, stored, auth.email)
     _check_file_issues(ctx, stored, auth.email)
 
     def change(doc: Mapping[str, Any], now: datetime) -> dict[str, Any] | None:
+        _platform_only(auth, doc, "take_ownership")
         if doc.get("owner") == auth.email:
             return None
         return {"owner": auth.email}
@@ -1034,6 +1093,7 @@ def run_schedule(
     _member(ctx, auth)
     request = _verb(RunIn, body)
     doc = _read(ctx, tenant_id, schedule_id)
+    _platform_only(auth, doc, "run")
     if doc["state"] == "disabled":
         raise ScheduleConflict("schedule_disabled", "an admin disabled this schedule")
     if not schedulefire.schedules_enabled(ctx.settings):
@@ -1281,4 +1341,5 @@ def admin_pause_tenant_schedules(
     if request.confirm != tenant_id:
         raise ScheduleInvalid("confirmation_required",
                               "type the tenant's id in `confirm` to pause all of its schedules")
-    return _pause_all(ctx, tenant_id, by=_admin_by(auth), action="admin_pause_all", reason=request.reason)
+    return _pause_all(ctx, tenant_id, by=_admin_by(auth), action="admin_pause_all", reason=request.reason,
+                      platform_admin=True)

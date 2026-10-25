@@ -157,6 +157,24 @@ WORKFLOW_FILES_REQUIREMENT = Requirement(
     "workflow-file pushes fall back to workflow-lines.patch (Workflows: not granted)",
     ("workflow_files",))
 
+#: What writing a GitHub Actions secret needs besides `REQUIRED`
+#: (SSC-ACTIONS-API, part of #2158; secrets-scopes.md §3.1 and §11 Q3/Q4):
+#: the existing App gains "Secrets: Read and write" and "Environments: Read
+#: and write" (docs/runbooks/github-app.md, "Writing GitHub Actions
+#: secrets"), each installation's owner accepts them, and until then every
+#: write is refused with the installation's `review_url`. Reading an
+#: environment's branch rule is Actions: read, already in `REQUIRED`.
+#: Never `administration`: no environment is created or changed (Q4). Not
+#: part of `REQUIRED`, so no repository's existing capabilities change.
+ACTIONS_SECRETS_REQUIREMENTS: tuple[Requirement, ...] = (
+    Requirement("secrets", "write",
+                "SwarmCloud can't write the repository's GitHub Actions secrets",
+                ("actions_secrets",)),
+    Requirement("environments", "write",
+                "SwarmCloud can't write a GitHub Actions environment's secrets",
+                ("actions_secrets",)),
+)
+
 #: GitHub's access levels, least first. Anything else (absent) is none.
 _RANK = {"read": 1, "write": 2, "admin": 3}
 

@@ -187,6 +187,12 @@ No access):
   granted" on a switched-on repository, and its pushes fall back to
   `workflow-lines.patch`. Why off by default: a workflow on a pushed branch
   runs with that repository's secrets before any merge hold.
+* Secrets: Read and write, and Environments: Read and write -- added for
+  writing GitHub Actions secrets (SSC-ACTIONS-API, #2158; BGD's Q3 of
+  secrets-scopes.md §11: the existing App, no second one). Steps and the
+  reasoning: [Writing GitHub Actions secrets](#writing-github-actions-secrets).
+  **Not Administration**: SwarmCloud creates, edits and deletes no
+  environment until user-scoped-secrets step 5 (Q4).
 
 **Organization permissions** and **Account permissions**: none. **Subscribe
 to events**: none at registration; Step 9 subscribes `push` and nothing else.
@@ -472,6 +478,71 @@ command, and the receiver reads it on the first delivery that fails to verify
 (at most one re-read a minute). A delivery lost in between is caught by the
 next five-minute poll. Then disable the old version by hand
 (`gcloud secrets versions disable <N> --secret <secret>`).
+
+## Writing GitHub Actions secrets
+
+swarm-api writes a repository's or an environment's GitHub Actions secret
+for a workspace manager whom GitHub calls admin of that repository
+(`apps/swarm-api/swarm_api/actions_secrets.py`,
+`routes/actions_secrets.py`; design: `docs/design/secrets-scopes.md` §3,
+with BGD's answers in its §11). It mints from **this** App, per call, a
+token for ONE repository and the ONE permission that call needs
+(`forge_installation.ACTIONS_PERMISSIONS`), seals the value to GitHub's
+public key with PyNaCl, PUTs it, and keeps only the name, who and when.
+Until the App holds the permissions below and an installation has accepted
+them, every write to that installation's repositories is refused, 409 with
+`detail.reason` `secrets_not_granted` (or `environments_not_granted`) and
+`detail.review_url`, the installation's page to accept them, and nothing is
+written.
+
+What BGD does on GitHub, once:
+
+1. **Settings → Developer settings → GitHub Apps → SwarmCloud → Permissions
+   & events → Repository permissions.**
+2. Set **Secrets** to **Read and write**. A repository secret's public key,
+   its PUT and its DELETE need it (GitHub's "Permissions required for GitHub
+   Apps": Secrets).
+3. Set **Environments** to **Read and write**. An environment secret's public
+   key needs read; its PUT and DELETE need **write** (the same page lists
+   them under Environments, not Secrets).
+4. Leave **Administration** at **No access**, and every other permission as
+   [Step 3](#step-3-register-the-app-at-github) lists it. Actions: Read is
+   already held; it is what reads an environment and its deployment branch
+   rules for **Check rule**.
+5. **Save changes.** GitHub asks whether to notify installations: yes. The
+   App's settings now request the two permissions; no installation has
+   them yet.
+
+Then, on **each installation** whose repositories should take a secret
+(`GET /v1/forge/permissions` lists them, each with its `review_url` and
+`pending_update: true` until accepted):
+
+6. Open the installation's `review_url` (an org's is
+   `https://github.com/organizations/<org>/settings/installations/<id>/permissions/update`;
+   a personal account's is under `https://github.com/settings/installations/<id>`).
+   Only the org's owner (or the account itself) can accept.
+7. Review the request for **Secrets: Read and write** and **Environments:
+   Read and write**, and **Accept new permissions**.
+8. Prove it: `GET /v1/repositories/<repo_id>/actions/secrets` lists the
+   repository's secret names (GitHub serves no value) instead of refusing
+   with `secrets_not_granted`.
+
+**Environments are created by a person, on GitHub (Q4).** SwarmCloud never
+creates, edits or deletes one: a write into an environment that does not
+exist is refused with GitHub's page to create it
+(`https://github.com/<owner>/<repo>/settings/environments/new`). Create it
+there with **Deployment branches and tags → Selected branches and tags** and
+one rule, the default branch (`main`). `GET
+/v1/repositories/<repo_id>/actions/environments/<name>/rule` then answers
+`main_only: true`. A write into an environment whose rule is anything else
+(no rule, protected branches, or more than that one branch) is refused unless
+the request types the environment's name in `confirm_environment`, because a
+secret there reaches every workflow those branches run.
+
+**The risk BGD accepted with Q3.** A repository admin's App user token sits
+in a `-git-u-` slot tenant workers can read until user-scoped-secrets step 5,
+and with Secrets: write on the App such a token can overwrite that
+repository's Actions secrets. Step 5 closes that; Administration waits for it.
 
 ## Rotating
 

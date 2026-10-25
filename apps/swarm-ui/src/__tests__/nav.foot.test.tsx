@@ -79,9 +79,7 @@ afterEach(() => {
 const PROFILE_PAGES: readonly [string, string][] = [
   ['Profile', '/settings/profile'],
   ['API keys', '/settings/keys'],
-  ['Workspace', '/settings/workspace'],
-  ['MCP servers', '/settings/mcp-servers'],
-  ['People and roles', '/settings/people'],
+  // Workspace, MCP servers and People and roles are Config's since CONFIG-NAV (part of #2157).
 ]
 
 const spine = () => document.querySelector<HTMLElement>('.sk-spine')!
@@ -99,7 +97,7 @@ describe('the spine order (NAV-FOOT)', () => {
     render(<App />)
     // MUTATION: draw `sectionLink(PROFILE_ITEM)` under the Hive again (NAV-PROFILE's place) and Profile is first, not last.
     // MUTATION: put the API reads link back in App's `ctl-nav-util` foot and 'API reads' appears between Help and Profile.
-    expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Help', 'Profile'])
+    expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Help', 'Profile'])
     // MUTATION: draw Profile above `{foot}` and Help's link is the last control.
     expect(lastControl().getAttribute('data-sec')).toBe('profile')
     expect(lastControl().getAttribute('href')).toBe('/settings/profile')
@@ -108,16 +106,16 @@ describe('the spine order (NAV-FOOT)', () => {
   it('draws Admin in its place, after Capacity, for a platform admin', async () => {
     await liveShell('work', 'running', vi.fn(), true)
     // MUTATION: drop NAV-ADMIN-ROLE's filter, or move `admin` in SPINE, and the order changes.
-    await waitFor(() => expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Admin', 'Help', 'Profile']))
+    await waitFor(() => expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Admin', 'Help', 'Profile']))
     expect(lastControl().getAttribute('data-sec')).toBe('profile')
   })
 
-  it('keeps Profile last on the collapsed spine, below Help, and flies out its five pages', () => {
+  it('keeps Profile last on the collapsed spine, below Help, and flies out its two pages', () => {
     localStorage.setItem('swarm.shell.collapsed', '1')
     render(<App />)
     expect(document.querySelector('.sk-app.is-collapsed')).not.toBeNull()
     // MUTATION: draw Profile before the collapsed spine's expand control or Sign out, and another control is last.
-    expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Help', 'Profile'])
+    expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Help', 'Profile'])
     expect(lastControl().getAttribute('data-sec')).toBe('profile')
     fireEvent.focus(spine().querySelector('a[data-sec="profile"]')!)
     const fly = document.querySelector<HTMLElement>('.sk-flyout')
@@ -127,14 +125,14 @@ describe('the spine order (NAV-FOOT)', () => {
     expect([...fly!.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')])).toEqual(PROFILE_PAGES)
   })
 
-  it('keeps Profile last in the phone drawer, and its panel lists the five pages', () => {
+  it('keeps Profile last in the phone drawer, and its panel lists the two pages', () => {
     phoneWidth()
-    window.history.replaceState(null, '', '/settings/workspace')
+    window.history.replaceState(null, '', '/settings/keys')
     render(<App />)
     fireEvent.click(document.querySelector<HTMLElement>('.sk-pbar button[aria-label="Open the menu"]')!)
     expect(document.querySelector('.sk-app.has-drawer'), 'the drawer did not open').not.toBeNull()
     // MUTATION: draw Profile under the Hive again and the drawer's spine starts with it.
-    expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Help', 'Profile'])
+    expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Help', 'Profile'])
     expect(lastControl().getAttribute('data-sec')).toBe('profile')
     expect(lastControl().classList.contains('is-on')).toBe(true)
     // MUTATION: drop a PANEL_PAGES.profile row and the drawer's panel loses it.

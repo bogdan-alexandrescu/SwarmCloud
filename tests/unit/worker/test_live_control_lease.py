@@ -37,7 +37,7 @@ from test_live_cdp_proxy import World
 from test_livegate_main import Rig, _started, _until, short_tmp  # noqa: F401  (fixture)
 
 from agent_worker.livegate import __main__ as gate_main
-from agent_worker.livegate import cdpproxy, tunnel
+from agent_worker.livegate import cdpproxy, rfb, tunnel
 
 #: The production lease (read by name, so this file imports before it exists).
 LEASE = getattr(gate_main, "CONTROL_LEASE_SECONDS", 50.0)
@@ -283,3 +283,92 @@ def test_a_gate_cancelled_while_a_person_holds_control_finishes(short_tmp):
     finally:
         loop.close()
     assert still_running == [], "still running after the cancel"
+
+
+def test_a_gate_cancelled_mid_grant_still_ends_control(short_tmp):
+    """FLAKE-LIVEGATE (part of #2230), the interleaving the test above lost
+    intermittently (runs 40086650895 and 40090460194: `assert 'v1' is None`).
+    The relay's CONTROL is handled on the tunnel task, and `_grant` named the
+    controller, then waited on Chromium to bring the page to the front, and
+    only then opened the episode. `_until` saw the controller and the test
+    cancelled while that reply was in flight: the tunnel task's cleanup found
+    no episode, released nothing, and the controller outlived the gate.
+
+    Forced here, not timed: `Target.activateTarget` is never answered, so the
+    cancel lands in exactly that window every run."""
+
+    async def body() -> list[str]:
+        rig, records = _rig(short_tmp, lease=LEASE)
+        stop, task = await _started(rig)
+        gate = rig.gate
+        # The proxy's own writer to the pipe (it holds Chromium's `send`).
+        answer = gate.proxy._send
+        in_flight = asyncio.Event()
+
+        async def unanswered_activate(message: dict[str, Any]) -> None:
+            if message["method"] == "Target.activateTarget":
+                in_flight.set()
+                return
+            await answer(message)
+
+        gate.proxy._send = unanswered_activate  # type: ignore[method-assign]
+        await gate.open_tunnel({"ticket": "t." + secrets.token_urlsafe(8)})
+        rig.relay.push(tunnel.OP_OPEN, "v1")
+        await _until(lambda: gate.viewers == 1)
+        rig.relay.push(tunnel.OP_CONTROL, "v1")
+        await asyncio.wait_for(in_flight.wait(), 5)
+        assert gate.control.controller == "v1", "the grant is waiting on the page, control already named"
+        task.cancel()
+        left = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        for t in left:
+            t.cancel()
+        _, pending = await asyncio.wait(left, timeout=GATE_FINISHES_SECONDS)
+        assert task.cancelled()
+        assert gate.control.controller is None
+        assert ("control_ended", {"cause": "tunnel_closed"}) in records
+        return sorted(t.get_coro().__qualname__ for t in pending)
+
+    loop = asyncio.new_event_loop()
+    try:
+        still_running = loop.run_until_complete(body())
+    finally:
+        loop.close()
+    assert still_running == [], "still running after the cancel"
+
+
+class UnansweredRelease:
+    """An injector whose `release_all` never returns: the lift a closed
+    connection sends over a pipe whose reader was cancelled with the gate."""
+
+    def __init__(self) -> None:
+        self.releasing = asyncio.Event()
+
+    async def release_all(self) -> None:
+        self.releasing.set()
+        await asyncio.Event().wait()
+
+
+def test_a_revoke_ends_control_while_a_closed_connections_release_holds_the_lock():
+    """FLAKE-LIVEGATE (part of #2230), the interleaving the issue named. The
+    controller's stream ends first, and `connection_closed` holds the control
+    lock across a release nothing answers; `_release` then revokes, bounded.
+    `revoke` cleared the controller only once it had the lock, so the bound
+    cut it off still waiting and control outlived the revoke. Forced: the
+    release never returns, so `revoke` meets a held lock every run."""
+
+    async def body() -> None:
+        injector = UnansweredRelease()
+        control = rfb.ControlState(injector)  # type: ignore[arg-type]
+        await control.grant("v1")
+        closing = asyncio.create_task(control.connection_closed("v1"))
+        await asyncio.wait_for(injector.releasing.wait(), 5)
+        try:
+            await asyncio.wait_for(control.revoke(), 0.05)
+        except TimeoutError:
+            pass  # the release behind the lock is still unanswered; control must be gone anyway
+        assert control.controller is None
+        assert not control.holds("v1"), "no input from the old controller reaches the display"
+        closing.cancel()
+        await asyncio.gather(closing, return_exceptions=True)
+
+    asyncio.run(body())

@@ -56,7 +56,8 @@ import {
   type Workflow,
 } from './types'
 import './styles/submit.css'
-import { Button } from './components'
+import { Button, buttonClass } from './components'
+import { QA_LINK_ADDRESS, addressToPath } from './paths'
 
 /**
  * Build a multi-step workflow -- the only WRITE screen in this UI besides
@@ -511,6 +512,32 @@ export function OnFailureChoice({ value, onChange }: {
   )
 }
 
+/**
+ * "VISUAL QA OF A REGISTERED APP" (docs/design/qa-environments.md §7; lane
+ * QAENV-UI-RUNPAGE, part of #2136). A visual-QA run is not laid out step by
+ * step here: swarm-api renders it from the app's QA target, one workflow per
+ * environment, and a member names only the target and its environments
+ * (invariant 10). So this entry sends the member to the target's card on
+ * Config › Repositories › QA targets, where its Run form is, and there is
+ * ONE form. It carries no control of its own.
+ */
+export function VisualQaEntry() {
+  return (
+    <div className="sb-card" data-entry="visual-qa" style={{ marginBottom: 12 }}>
+      <b>Visual QA of a registered app</b>
+      <p className="sb-note">
+        Runs from the app&rsquo;s QA target: tick its environments on the target&rsquo;s card, and each runs as its own
+        workflow, shown together on one run page.
+      </p>
+      <span className="sb-row">
+        <a className={buttonClass({ size: 'sm' })} href={addressToPath(QA_LINK_ADDRESS)}>
+          Open QA targets
+        </a>
+      </span>
+    </div>
+  )
+}
+
 /** The plan an untouched form starts from, and the one "Submit another" returns to. */
 const firstSteps = (): StepDraft[] => [{
   key: 1, id: autoId('', new Set()), profile: '', stage: 0,
@@ -798,6 +825,7 @@ function Form({ sources }: { sources: FormSources }) {
   return (
     <div className="sbf">
       <div className="sbf-build">
+        <VisualQaEntry />
 
         {/* THIS SCREEN'S ONE `?` (B7.4), AND IT OPENS WHAT THE STEP LAYS OUT
             (#120). It opened runner naming, a rule about what the form may not

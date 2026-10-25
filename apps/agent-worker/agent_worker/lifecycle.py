@@ -174,6 +174,7 @@ from . import standalone_outputs as standalone_mod
 from . import verdict as verdict_mod
 from . import workspace as workspace_mod
 from .accountlease import (
+    ACCOUNTS_FULL,
     ACCOUNT_TOKEN_ENV,
     ACCOUNT_UNREADABLE,
     BROKER_REFUSED,
@@ -241,6 +242,7 @@ from .gitops import (
     MergeOutcome,
     PeerPin,
     PushRejected,
+    base_merge_tip,
     branch_commits,
     clone_at_commit,
     commit_dirty,
@@ -259,6 +261,7 @@ from .gitops import (
     read_head_as_data,
     read_head_branch_as_data,
     read_origin_ref_as_data,
+    replay_onto_tip,
     retry_clone,
     shallow_clone,
     summarize_work,
@@ -537,6 +540,13 @@ PUBLISH_UNREACHABLE_FIELD = "forge_unreachable"
 #: task_6a0c9afdbaea449eb53d: "push failed with exit 1", state SUCCEEDED, the
 #: workflow green, and the work found in `swarm-work.patch` six hours later.
 PUBLISH_FAILED_FIELD = "publish_failed"
+#: The `result_summary.git` key `_publish_git` sets when a continued branch
+#: moved only by merges of the default branch already holds every change this
+#: round made (#2179: PR #2093's GitHub update carried main's identical fix).
+#: Its value is the reason, naming the moved tip; nothing was pushed. Read by
+#: `_no_change_after_publish`: the attempt ends `no_change`, not
+#: `publish_failed`.
+BASE_MERGE_NO_CHANGE_FIELD = "base_merge_no_change"
 #: The paths a push may touch only with the `workflow` scope (AU-3,
 #: docs/design/agent-autonomy.md §3.3): `_publish_git` hands a branch whose
 #: new commits touch either to swarm-api's `git_push_branch`. Restated from
@@ -856,6 +866,15 @@ class Worker:
         # run the schedule without waiting it out.
         self.startup_sleep: Callable[[float], Any] = time.sleep
         self.startup_clock: Callable[[], float] = time.monotonic
+        # What a beat and `_heartbeat_meanwhile`'s thread read the time from,
+        # and what that thread waits with (`wait(stop, seconds)`, True once
+        # stopped). Replaceable so a test runs the thread on a virtual clock:
+        # on real sleeps a busy runner scheduled one beat 0.01 s past its
+        # band with nothing wrong in the thread (#2233). A replacement holds
+        # for those two only; the loop and the lease's outage check read
+        # `time.monotonic`, so a test that swaps it runs no loop.
+        self.heartbeat_clock: Callable[[], float] = time.monotonic
+        self.heartbeat_wait: Callable[[threading.Event, float], bool] = threading.Event.wait
         # The egress probe (#721 (a), `agent_worker.egress`): started at the
         # top of `run`, waited for by the clone only, stopped when the startup
         # window closes. The connect, cap and interval are replaceable so a
@@ -4256,6 +4275,9 @@ class Worker:
             summary,
             self._publish_withheld(ran_clean, missing=missing, title_refused=title_refused),
         )
+        if ran_clean and self._no_change_after_publish(summary):
+            self.log.info("nothing to change: the moved branch already holds this round's change",
+                          reason=summary.get(NO_CHANGE_REASON_SUMMARY_KEY))
         if self._pushed_branch is not None:
             # The branch this attempt actually pushed, read from git after the
             # push (#667, observer P11): a step summary can be checked against
@@ -6464,6 +6486,25 @@ class Worker:
         if len(encoded) > NO_CHANGE_REASON_MAX_BYTES:
             reason = encoded[:NO_CHANGE_REASON_MAX_BYTES].decode("utf-8", "ignore").rstrip() + "..."
         return reason
+
+    def _no_change_after_publish(self, summary: dict[str, Any]) -> bool:
+        """Mark `summary` as the `no_change` result when the publish found the
+        continued branch already holding this round's change; True when it did.
+
+        Decided at the publish, not by the harvest's diff (#2179): the round
+        did change its clone, but the branch it continues moved by a merge of
+        the default branch (`_push_onto_base_merge`) to a tip that already
+        holds every change, the PR #2093 case. The work is on the branch, so
+        it is the `no_change` result rather than `publish_failed`, with the
+        moved tip named in the reason.
+        """
+        git = summary.get("git")
+        reason = git.get(BASE_MERGE_NO_CHANGE_FIELD) if isinstance(git, dict) else None
+        if not reason or git.get(PUBLISH_FAILED_FIELD) is True:
+            return False
+        summary[expected_mod.NO_CHANGE_SUMMARY_KEY] = True
+        summary[NO_CHANGE_REASON_SUMMARY_KEY] = str(reason)
+        return True
 
     def _upstream_left(self, task_id: str) -> str | None:
         """`expected_mod.left_nothing` of one upstream, read through the
@@ -9849,6 +9890,10 @@ class Worker:
             that nobody has looked lately, and the broker's usage poll looks
             every sweep. Minutes, not a quarter of an hour -- or the broker's
             instant, when a window clears sooner than that;
+          * `accounts_full` -- every account with room already holds its cap
+            of agents (#2222). A slot frees when one of them finishes, which
+            no clock says, so the same minutes as a stale reading -- or a
+            window instant, when one clears sooner;
           * `pool_paused` -- waiting on a PERSON. There is no instant to wake
             at, so the long fallback;
           * `broker_refused` / `account_unreadable` -- a configuration error.
@@ -9858,14 +9903,17 @@ class Worker:
         """
         reason = exc.decision.reason
         configuration_error = reason in (BROKER_REFUSED, ACCOUNT_UNREADABLE)
+        # Both undated waits that clear in minutes: a usage poll, or an agent
+        # on a full account finishing.
+        undated_soon = reason in (NO_RECENT_READING, ACCOUNTS_FULL)
         fallback_seconds = (
             STALE_READING_RETRY_SECONDS
-            if reason == NO_RECENT_READING
+            if undated_soon
             else NO_ACCOUNT_RETRY_SECONDS
         )
         fallback = utcnow() + timedelta(seconds=fallback_seconds)
         reset = _parse_iso(exc.decision.next_reset_at)
-        if reason == NO_RECENT_READING:
+        if undated_soon:
             # THE SOONER OF THE TWO (#1885). The broker answers
             # `no_recent_reading` when ANY candidate waits on its next usage
             # poll, and still sends the earliest window instant it knows.
@@ -9883,6 +9931,7 @@ class Worker:
                 "an administrator" if configuration_error
                 else "a person" if reason == POOL_PAUSED
                 else "the broker's next usage poll" if reason == NO_RECENT_READING
+                else "an agent on a full account to finish" if reason == ACCOUNTS_FULL
                 else "a quota window"
             ),
             next_eligible_at=next_eligible.isoformat(),
@@ -10065,7 +10114,7 @@ class Worker:
         # Read BEFORE the beat: the lease's new expiry is computed from the
         # time the beat started, and a beat that retried for most of its
         # budget must not be credited with that time again.
-        started = time.monotonic()
+        started = self.heartbeat_clock()
         if self.control.heartbeat() is not False:
             # Landed: the lease is live for one more extension from when the
             # beat started (#70). A refused beat (False) extends nothing, and
@@ -11194,13 +11243,14 @@ class Worker:
         from .config import HEARTBEAT_MEANWHILE_BOUND_LEASE_TIMEOUTS
 
         stop = threading.Event()
+        clock, wait = self.heartbeat_clock, self.heartbeat_wait
         interval = self.cfg.heartbeat_interval_seconds
         bound = self.cfg.heartbeat_meanwhile_max_seconds
         ceiling_seconds = max(bound, self.cfg.heartbeat_meanwhile_ceiling_seconds)
         # One lease timeout: the longest the block may go without progress
         # past the bound before it is treated as wedged.
         stall = bound / HEARTBEAT_MEANWHILE_BOUND_LEASE_TIMEOUTS
-        opened = time.monotonic()
+        opened = clock()
         deadline = opened + bound
         ceiling = opened + ceiling_seconds
         # What the extension saw, for its one log event: the reading at the
@@ -11258,17 +11308,17 @@ class Worker:
 
         def beat() -> None:
             while True:
-                now = time.monotonic()
+                now = clock()
                 until = limit(now)
                 if until is None:
                     return
-                if stop.wait(max(0.0, min(due() - now, until - now))):
+                if wait(stop, max(0.0, min(due() - now, until - now))):
                     return
-                if time.monotonic() >= until:
+                if clock() >= until:
                     continue  # the top of the loop re-reads and decides
-                if time.monotonic() < due():
+                if clock() < due():
                     continue  # another beat landed meanwhile; wait for the next
-                asked[:] = [time.monotonic()]
+                asked[:] = [clock()]
                 try:
                     signals = self.control.poll()
                     if signals.is_fenced(self.cfg.generation):
@@ -12501,6 +12551,167 @@ class Worker:
         )
         return pushed
 
+    def _push_onto_base_merge(
+        self,
+        publish_repo: Path,
+        rejected: PushRejected,
+        *,
+        url: str,
+        token: str,
+        branch: str,
+        protected: tuple[str, ...],
+        default_branch: str | None,
+        author_name: str,
+        author_email: str,
+        out: dict[str, Any],
+    ) -> str | None:
+        """Publish onto a continued branch moved only by merges of the default branch (#2179).
+
+        MEASURED 2026-10-23 (task_045fda9399ba47289b3a): a CI-fix round for
+        PR #2093 cloned its branch at bfdc51ad and made one commit; GitHub's
+        "Update branch" meanwhile put a merge of main on the branch
+        (c903caca, parents bfdc51ad and main's 3c6bba9b). The push, never
+        forced, was a non-fast-forward, and the only recovery,
+        `_push_over_own_earlier_attempt`, refuses a branch this task
+        continues, so the round failed publish_failed although the moved tip
+        was only main merged in -- and already carried the same fix.
+
+        When every commit the fetched tip adds over the clone base is such a
+        merge (`gitops.base_merge_tip`), this attempt's commits are replayed
+        onto it (`gitops.replay_onto_tip`), the checks that ran before the
+        first push run again over the replayed span -- worker authorship,
+        the added-text leak scan, and the workflow paths, which this route
+        may not newly reach -- and the branch is pushed with no lease: a
+        fast-forward over the fetched tip, so it is still never forced, and
+        anything that moved it again is refused as before. Returns the
+        pushed sha; None when the moved tip already holds every change, with
+        `BASE_MERGE_NO_CHANGE_FIELD` set in `out` (the attempt's `no_change`,
+        `_no_change_after_publish`). Any other mover re-raises `rejected`; a
+        replay that conflicts, or fails a check, raises its own GitError
+        naming the base merge. Nothing is pushed in either case.
+        """
+        cfg = self.cfg
+        ws = self.ws
+        assert ws is not None
+        base = self._publish_base
+        tip, why = base_merge_tip(
+            repo=publish_repo,
+            url=url,
+            branch=branch,
+            default_branch=default_branch or "",
+            token=token,
+            base=base,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=cfg.git_clone_timeout_seconds,
+            logger=self.log,
+            branch_prefix=cfg.git_branch_prefix,
+        )
+        if tip is None or base is None:
+            self.log.warning(
+                "the push was refused and the branch did not move by a merge of the "
+                "default branch alone; publishing nothing",
+                branch=branch,
+                reason=str(self._scrub(why)),
+            )
+            raise rejected
+        moved = (
+            f"{branch} moved to {tip[:12]} by a base merge of "
+            f"{default_branch or 'the default branch'} only"
+        )
+        try:
+            head = replay_onto_tip(
+                repo=publish_repo,
+                base=base,
+                tip=tip,
+                author_name=author_name,
+                author_email=author_email,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_harvest_timeout_seconds,
+                logger=self.log,
+            )
+        except GitError as exc:
+            raise GitError(
+                f"the push was refused: {moved}, and replaying this round's commits onto "
+                f"it conflicted or failed ({str(self._scrub(str(exc)[:200]))}); nothing was "
+                "pushed or forced"
+            ) from rejected
+        out["base_merge_from"] = base
+        out["base_merge_tip"] = tip
+        if head is None:
+            out[BASE_MERGE_NO_CHANGE_FIELD] = (
+                f"no_change: {moved}, which already holds every change this round "
+                "made; nothing was pushed"
+            )
+            self.log.info("the moved tip already holds this round's change; nothing to push",
+                          branch=branch, tip=tip)
+            return None
+        # The same checks the first push passed, over the span the push now
+        # adds: the moved tip is the base from here on.
+        verify_worker_authorship(
+            repo=publish_repo,
+            base=tip,
+            author_name=author_name,
+            author_email=author_email,
+            also_own=((cfg.git_author_name, cfg.git_author_email),),
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=cfg.git_harvest_timeout_seconds,
+            logger=self.log,
+        )
+        leak = final_tree_leak(
+            repo=publish_repo,
+            base=tip,
+            leaks=self._leaks_in_added_text,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=cfg.git_harvest_timeout_seconds,
+            logger=self.log,
+            overlap=self._scan_overlap(),
+        )
+        if leak is not None:
+            raise GitError(
+                f"the push was refused: {moved}, and the replay onto it failed the leak "
+                f"check: {str(self._scrub(leak))}; nothing was pushed"
+            )
+        self._publish_base = tip
+        workflow_paths = self._workflow_paths(publish_repo, floor=None)
+        if workflow_paths:
+            # The first push carried none, or it went to the broker; a replay
+            # that reaches `.github/workflows/` is not this route's to push.
+            self._publish_base = base
+            self.log.warning("the replay onto the moved tip touches workflow files; "
+                             "publishing nothing", branch=branch)
+            raise rejected
+        try:
+            # No lease: HEAD descends from the tip just fetched, so this is
+            # a fast-forward, and a branch moved again is refused.
+            pushed = push_branch(
+                repo=publish_repo,
+                url=url,
+                branch=branch,
+                token=token,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_clone_timeout_seconds,
+                logger=self.log,
+                branch_prefix=cfg.git_branch_prefix,
+                protected=protected,
+            )
+        except GitError:
+            self._publish_base = base
+            raise
+        self.log.info(
+            "the continued branch moved only by a merge of the default branch; "
+            "pushed this round's commits onto it as a fast-forward",
+            branch=branch,
+            moved_tip=tip,
+            head=pushed or "unknown",
+            how="fast_forward",
+        )
+        return pushed
+
     def _publish_git(
         self,
         *,
@@ -13129,11 +13340,29 @@ class Worker:
                             branch=branch, tool_tip=tool_tip,
                         )
                         raise
-                    pushed = self._push_over_own_earlier_attempt(
-                        publish_repo, rejected, url=url, token=token, branch=branch,
-                        protected=protected, author_name=author_name,
-                        author_email=author_email,
-                    )
+                    if branch == f"{cfg.git_branch_prefix}{cfg.task_id}":
+                        pushed = self._push_over_own_earlier_attempt(
+                            publish_repo, rejected, url=url, token=token, branch=branch,
+                            protected=protected, author_name=author_name,
+                            author_email=author_email,
+                        )
+                    else:
+                        # A branch this task continues (#2179): GitHub's
+                        # "Update branch" merging the default branch into
+                        # it mid-run is the measured mover. Only that mover
+                        # is taken, as a fast-forward onto it; see
+                        # `_push_onto_base_merge`.
+                        pushed = self._push_onto_base_merge(
+                            publish_repo, rejected, url=url, token=token, branch=branch,
+                            protected=protected, default_branch=access.default_branch,
+                            author_name=author_name, author_email=author_email,
+                            out=out,
+                        )
+                        if pushed is None:
+                            out["published"] = False
+                            out["auto_committed"] = auto_committed
+                            out["publish_reason"] = out[BASE_MERGE_NO_CHANGE_FIELD]
+                            return out
         except GitError as exc:
             out["published"] = False
             out["auto_committed"] = auto_committed

@@ -1,7 +1,7 @@
 ---
 name: sc
-description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 100 followed, closest to finish first, the plugin's `max_live_rows`) and gives each of your running single tasks — dispatched with swarm_dispatch, in no workflow — one row (at most 100), every run's and row's expanded details naming the workspace it runs in, who started it and its LLM account; `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. `check` reads which of this project's SwarmCloud workflows and tasks are stuck or stale (swarm_check, read-only) and then gives every running workflow of the project that has no row in this session its live rows; `watch [interval]` runs that `check` every interval (default 30m, at least 5m) with Claude Code's CronCreate and remembers it for the project; the watch also arms itself (CronList first, never a second job) whenever this session attaches to or starts SwarmCloud work, and `watch off` stops it and keeps it off for the project until `watch` again. `build-board` refreshes this project's local build board (`.claude/build-board/index.html`, git-ignored, never committed) and opens it in the browser. `keys` says whether a TypeSafe key is set for you and your tenant and which one a task would use; `keys set <provider> [--tenant]` gives the developer a one-time console link to paste the key into themselves — the key never passes through this session. `roles` shows the roles of the workspace this session acts in (read-only); a role is changed only by the developer, typed at their own terminal. Use when asked "is my TypeSafe key set", "set my TypeSafe key", "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
-argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | check | inputs | answer <wf_id> <step_id> [file ...] | build-board | watch [interval] | watch off | run <spec path|JSON> | run --issue owner/repo#N | runs | plan show|approve|edit|reject <run> | keys | keys set <provider> [--tenant] | roles]"
+description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 100 followed, closest to finish first, the plugin's `max_live_rows`) and gives each of your running single tasks — dispatched with swarm_dispatch, in no workflow — one row (at most 100), every run's and row's expanded details naming the workspace it runs in, who started it and its LLM account; `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. `check` reads which of this project's SwarmCloud workflows and tasks are stuck or stale (swarm_check, read-only) and then gives every running workflow of the project that has no row in this session its live rows; `watch [interval]` runs that `check` every interval (default 30m, at least 5m) with Claude Code's CronCreate and remembers it for the project; the watch also arms itself (CronList first, never a second job) whenever this session attaches to or starts SwarmCloud work, and `watch off` stops it and keeps it off for the project until `watch` again. `build-board` refreshes this project's local build board (`.claude/build-board/index.html`, git-ignored, never committed) and opens it in the browser. `keys` says whether a TypeSafe key is set for you and your tenant and which one a task would use; `keys set <provider> [--tenant]` gives the developer a one-time console link to paste the key into themselves — the key never passes through this session. `secrets list` shows Config › Secrets' names and status for one scope (workspace, personal or a repository; never a value), and `secrets link` gives the developer a one-time console link to set a secret — in the workspace, personal or repository store, or as a repository's GitHub Actions secret with `--actions` — whose value they type into the form themselves; no tool takes a value. `roles` shows the roles of the workspace this session acts in (read-only); a role is changed only by the developer, typed at their own terminal. Use when asked "is my TypeSafe key set", "set my TypeSafe key", "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
+argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | check | inputs | answer <wf_id> <step_id> [file ...] | build-board | watch [interval] | watch off | run <spec path|JSON> | run --issue owner/repo#N | runs | plan show|approve|edit|reject <run> | keys | keys set <provider> [--tenant] | secrets list [scope] [--repo owner/repo] | secrets link <scope> [name] [--repo owner/repo] [--actions [--env name]] | roles]"
 arguments:
   - verb
   - target
@@ -85,6 +85,8 @@ one action — never a second one the developer did not ask for:
 | `plan approve\|edit\|reject <run>` | acts on that plan, with the digest the developer was shown | **yes** |
 | `keys` | whether a TypeSafe key is set for you and for your tenant, and which one your tasks would use: `swarm_keys`. Never a value | no |
 | `keys set <provider> [--tenant]` | a one-time console link where the developer pastes the key themselves: `swarm_key_set_link`. The key never passes through this session | mints a link; stores nothing |
+| `secrets list [workspace\|personal\|repository] [--repo owner/repo]` | Config › Secrets' names and status for one scope (default `workspace`): `swarm_secrets`. Never a value | no |
+| `secrets link <workspace\|personal\|repository> [name] [--repo owner/repo] [--actions [--env name]]` | a one-time console link where the developer types a secret's value themselves: `swarm_secret_set_link`, or `swarm_actions_secret_link` with `--actions`. No tool takes a value | mints a link; stores nothing |
 | `roles` | the roles of the workspace this session acts in: its default, the overrides, your own role and how you reach it, the recent role events: `swarm_roles` | no |
 | `roles set\|clear\|default ...` | not run here: tell the developer the `sc roles` command for their own terminal (see `roles`) | no (the developer's, typed) |
 | a view name (`accounts`, `agents`, `capacity`, `trouble`, `task <id>`, `whoami`, `config`, `debug <id>`) | that view, as in "Which view" below | no |
@@ -529,6 +531,47 @@ prompt and prints only `stored: version N`. Tell them the command; never run
 it — it is not granted to this skill, and it would put the key in front of
 you.
 
+### `secrets list [scope] [--repo owner/repo]`
+
+ONE call to `swarm_secrets` with `{scope}` (`workspace` when none is given;
+`personal`; or `repository` with `repository: "owner/repo"` from `--repo`,
+which that scope needs and no other takes), and show its `text`: each row's
+section, name, status, who set it and when, and what it is granted to.
+Status only — there is no value to show and never a reason to ask for one.
+`shadowed_by` on a row means another scope's secret of the same name wins
+where it says (the person's, then the repository's, then the workspace's);
+say where. A row with a `page` is managed on that console page, not here.
+Platform secrets are not in any scope: they are Admin's, and
+`swarm_platform_secrets` reads them for a platform admin only — anyone else
+gets the API's 403, which is the answer; report it verbatim.
+
+### `secrets link <scope> [name] [--repo owner/repo] [--actions [--env name]]`
+
+**A SECRET'S VALUE NEVER PASSES THROUGH THIS SESSION** (BGD, Q8 of
+docs/design/secrets-scopes.md §11): not in chat, not as a tool argument, not
+in a command line. Never ask the developer for it, and if they paste one
+anyway, do not repeat it, do not pass it to any tool or command, and tell them
+to rotate it where it came from, since it is now in this transcript.
+
+* Without `--actions`: call `swarm_secret_set_link` with `{scope, action}` —
+  `action: "rotate"` with `name` when a name is given (a secret
+  `/sc secrets list` shows), else `action: "add"` and no name: the form asks
+  for it. `scope` is `workspace`, `personal` (the developer's own personal
+  workspace; tell them to open the link with that workspace selected) or
+  `repository`, which needs `--repo` as `repository`.
+* With `--actions`: `scope` must be `repository`, and `name` and `--repo` are
+  required. Call `swarm_actions_secret_link` with `{repository, name}`, plus
+  `environment` from `--env`. The form sends the value to GitHub, sealed;
+  SwarmCloud keeps only the name, who set it and when.
+
+Either answers only `url` and `expires_at`. Give the developer the `url` and
+tell them to **open it and type the value into the console's form**; it works
+once, for ten minutes, and only in their own console session. A `null` url
+comes with a `note`: show it verbatim. An error is the API's: report it
+verbatim (403 means they may not set that scope: an admin of the workspace,
+or for a repository a person GitHub calls its admin; 404 means the
+repository is not registered in this workspace).
+
 ### `roles`
 
 ONE call to `swarm_roles`, and show its `text`: the workspace this session
@@ -550,7 +593,7 @@ developer wants one changed, tell them the command to run in their own
 terminal — `sc roles set <email> <role>`, `sc roles clear <email>` (back to
 the default) or `sc roles default <viewer|member>` — which asks them to type
 the email and the role back at the terminal and sends nothing otherwise; or
-the console's Settings › People. It needs `admin` in that workspace
+the console's Config › People and roles. It needs `admin` in that workspace
 (`can_manage`). Never run it: it is not granted to this skill, and a
 confirmation it could read from you would not be the developer's.
 
@@ -747,12 +790,15 @@ report is still good.
 
 ## Changing an account is the developer's to do
 
-`uv run sc account pause <label>`, `resume`, `drain`, `remove` and `add` WRITE
-to the shared account pool, and this skill is not granted them. Tell the
-developer the command and let them run it: `drain` stops new assignments and
-moves running agents to another account at their next turn boundary; `remove`
-asks them to type the account's label back; `add` opens a browser for them to
-sign in to Claude and asks them to paste a code, which only they can do.
+`uv run sc account pause <label>`, `resume`, `drain`, `remove`,
+`max-agents <label> <n>` and `add` WRITE to the shared account pool, and this
+skill is not granted them. Tell the developer the command and let them run it:
+`drain` stops new assignments and moves running agents to another account at
+their next turn boundary; `remove` asks them to type the account's label back;
+`max-agents` sets how many agents the account may hold at once (1 to 50; the
+agents already on it stay) and asks for the label typed back too; `add` opens a
+browser for them to sign in to Claude and asks them to paste a code, which only
+they can do.
 
 The task view says what the agent produced before its code: each artifact by
 name and size, the runner's own summary, the exit code, the duration, and the

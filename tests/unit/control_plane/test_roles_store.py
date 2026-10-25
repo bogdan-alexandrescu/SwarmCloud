@@ -332,6 +332,12 @@ def test_a_failed_read_is_unavailable_not_a_guess(store, db):
     ("POST", "/v1/tasks/{task_id}/cancel", "member"),
     ("POST", "/v1/workspace/secrets", "admin"),
     ("POST", "/v1/tenants/me/credentials", "admin"),
+    # The one-time links to the console's forms (SSC-LINKS): admin writes,
+    # like the workspace-secret and provider-key links (LINK-ADMIN-WRITES).
+    ("POST", "/v1/workspace/secrets/links", "admin"),
+    ("POST", "/v1/provider-keys/{provider}/links", "admin"),
+    ("POST", "/v1/tenants/me/credentials/links", "admin"),
+    ("POST", "/v1/qa-targets/{target_id}/credential-links", "admin"),
     ("PUT", "/v1/workspace/roles/person", "admin"),
     ("POST", "/v1/a/route/added/tomorrow", "member"),
     ("PUT", "/v1/admin/limits/runner/{runner_profile}", None),

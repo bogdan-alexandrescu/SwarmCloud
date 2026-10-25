@@ -252,6 +252,14 @@ _REGISTRATION_OR_STORE = {
 }
 
 
+#: SSC-SC's tools: each mints a one-time console link or reads status, and
+#: none has a field a value fits in (tests/unit/mcp/test_secret_links.py).
+_SECRET_LINK_AND_READ_TOOLS = frozenset({
+    "swarm_secret_set_link", "swarm_actions_secret_link", "swarm_secrets",
+    "swarm_platform_secrets",
+})
+
+
 def test_no_tool_schema_accepts_a_registration_or_a_store_value():
     credential_paths = []
     for tool in server.TOOLS:
@@ -260,6 +268,10 @@ def test_no_tool_schema_accepts_a_registration_or_a_store_value():
             assert leaf not in _REGISTRATION_OR_STORE, f"{tool['name']} takes `{path}`"
             if leaf == "value" or "mcp_credentials" in path:
                 credential_paths.append(f"{tool['name']}:{path}")
+        # Config › Secrets' link and read tools (SSC-SC, secrets-scopes.md §6.4)
+        # are named for secrets and take no value: test_secret_links holds them.
+        if tool["name"] in _SECRET_LINK_AND_READ_TOOLS:
+            continue
         assert not re.search(r"mcp.*(register|create|update|set)|secret", tool["name"]), tool["name"]
     # The one credential a tool takes is the per-run map, passed to the API.
     assert sorted(credential_paths) == sorted([
@@ -278,12 +290,15 @@ def test_no_tool_schema_accepts_a_registration_or_a_store_value():
 def test_the_bridge_only_reads_the_mcp_server_registry_and_never_writes_a_workspace_secret():
     """Read off the source, because a write could hide behind any tool: the
     package names `/v1/mcp-servers` only in a GET, and the workspace secret
-    store not at all."""
+    store only as its one-time link mint (SSC-SC, secrets-scopes.md §6.4),
+    which takes no value: never a route that stores one."""
     sources = {p.name: p.read_text(encoding="utf-8") for p in _PACKAGE.glob("*.py")}
     reads = [name for name, text in sources.items() if "/v1/mcp-servers" in text]
     assert reads == ["sc.py"], reads
     assert re.findall(r'request\(\s*"(\w+)",\s*"/v1/mcp-servers', sources["sc.py"]) == ["GET"]
-    assert not [name for name, text in sources.items() if "/v1/workspace/secrets" in text]
+    named = {name: sorted(set(re.findall(r"/v1/workspace/secrets[^\"'\s]*", text)))
+             for name, text in sources.items() if "/v1/workspace/secrets" in text}
+    assert named == {"secrets.py": ["/v1/workspace/secrets/links"]}, named
 
 
 def test_swarm_mcp_servers_lists_by_name_and_reads_only():
