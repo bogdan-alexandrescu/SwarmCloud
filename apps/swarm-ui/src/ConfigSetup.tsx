@@ -323,7 +323,8 @@ export function SetupStrip({ go }: { go: (to: string) => void }) {
   const [shown, setShown] = useState(readShowSteps)
   const next = nextOf(steps)
   const { done, of, unknown } = setupCount(steps)
-  // Only a step drawn from a read has a reading to age; "not read" has none.
+  // Only a step drawn from a read has a reading to age; "not read" has none,
+  // and a step the read did not measure draws no age on its line either.
   const age = data === null ? null : readingAge(data.derived_at, now)
   const complete = of > 0 && done === of
   const show = (v: boolean) => {
@@ -406,8 +407,9 @@ export function SetupStrip({ go }: { go: (to: string) => void }) {
                 {i + 1}. {s.label}
               </b>
               <small>{s.key === next ? `Next: ${s.line}` : s.line}</small>
-              {/* Its own line, so the step's line stays word for word what the panel's badge names. */}
-              {age !== null && (
+              {/* Its own line, so the step's line stays word for word what the panel's badge names.
+                  Only a measured step has a reading to age: an unknown one's line already says why. */}
+              {age !== null && s.state !== 'unknown' && (
                 <small className="cfg-step-age">
                   <Checked age={age} />
                 </small>

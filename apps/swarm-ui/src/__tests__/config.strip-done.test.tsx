@@ -196,6 +196,17 @@ describe('each step line names its reading\'s age', () => {
     expect(within(list).getAllByRole('listitem')[0]!.querySelector('small')?.textContent).toBe('@ana')
   })
 
+  it('draws no age on a step the read did not measure', async () => {
+    const unread: Json = { needed: null, done: null, items: [], sources: { ...SOURCES, mcp_servers: { needed: null, reason: 'the MCP registry could not be read' } } }
+    serve(ME(), [PERSONAL, GROUP], onboarding({ secrets: unread }))
+    await app('/config/secrets')
+    const list = await screen.findByRole('list', { name: 'Workspace setup steps' })
+    await waitFor(() => expect(within(list).getAllByRole('listitem')[0]!.textContent).toContain('@ana'))
+    const items = within(list).getAllByRole('listitem')
+    // MUTATION: age every step line -> the unmeasured Secrets step reads "checked 5m ago" and this fails.
+    expect(items.map((li) => li.querySelector('.cfg-step-age')?.textContent ?? null)).toEqual(['checked 5m ago', 'checked 5m ago', null, 'checked 5m ago'])
+  })
+
   it('draws a dash with its reason where the read carried no `derived_at`, never "just now"', async () => {
     serve(ME(), [PERSONAL, GROUP], onboarding({ secrets: SECRETS_ONE, derived: undefined }))
     await app('/config/secrets')
