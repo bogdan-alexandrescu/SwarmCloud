@@ -901,6 +901,23 @@ describe('Accounts draws a window with the shared track, not the five-cell bar (
   })
 })
 
+describe('the sheet’s action sections space their first line as every section does (#2222)', () => {
+  it('puts no extra margin between an action’s heading and its note', async () => {
+    // `.muted.small`'s 10px top margin stacked on the grid gap and the h4's
+    // own 6px, so "Replace the credential" alone stood 24px over its note
+    // (light-desktop-02).
+    renderAccounts([account({ account_id: 'eng:live', label: 'live', provider: 'anthropic', observed_at: new Date().toISOString() })])
+    await screen.findByText('eng:live', undefined, WAIT)
+    chooseAccount('eng:live')
+    const h = [...document.querySelectorAll('.acct-sheet .acct-action > h4')].find((x) => x.textContent === 'Replace the credential')
+    expect(h, 'the sheet has no Replace the credential section').toBeTruthy()
+    const note = h!.nextElementSibling!
+    expect(note.matches('p.muted.small')).toBe(true)
+    const r = cascade(`${STYLES}\n${RANKED}`, note, ['margin-top', 'margin'], { width: 1440 })
+    expect(r.winner?.value ?? null).toBe('0')
+  })
+})
+
 describe('the Accounts foot says how old the readings are (CP-26)', () => {
   afterEach(() => {
     vi.useRealTimers()
