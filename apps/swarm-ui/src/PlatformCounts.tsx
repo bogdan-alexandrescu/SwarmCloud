@@ -1,8 +1,9 @@
 import { useContext, useEffect, useRef, useState } from 'react'
-import { loadMe, loadStats } from './api'
+import { loadMe, loadStats, loadTenants } from './api'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
 import { HelpCard, HelpLinks } from './HelpCard'
+import { PlatformOverTime } from './PlatformOverTime'
 import { Mark } from './primitives'
 import { FrameAge, PageHead, timeAgo, useClaimPageAge } from './Shell'
 import { NEVER_WRITTEN, REAL_STATES, pluralise, type Stats } from './types'
@@ -143,11 +144,32 @@ export function PlatformCountsScreen() {
   // screen claims the age and the head prints none.
   useClaimPageAge(useContext(FrameAge))
 
+  /**
+   * HOW MANY WORKSPACES THE OVER TIME READ COVERS, from the roster read once
+   * on mount (BGD, 2026-10-24, #2149: "Roster on mount"). That read is billed
+   * by the days it covers in each workspace, so its price is a total only once
+   * the page knows how many there are; before, the view prices it per
+   * workspace. One request, never on a timer. A refused or failed read leaves
+   * `null`, and the price stays per workspace rather than guessing a count.
+   *
+   * IT CANNOT TAKE THE PAGE DOWN. The roster prices one button and nothing
+   * else on this page depends on it, so whatever goes wrong with it -- a
+   * refusal, a loader that throws, one that hands back no promise -- ends in
+   * the per-workspace price, never in an error boundary over the counts.
+   */
+  const [workspaces, setWorkspaces] = useState<number | null>(null)
+
   useEffect(() => {
     let live = true
     loadMe().then((r) => {
       if (live && (r.status === 'ok' || r.status === 'stale')) setSessionAdmin(r.data.principal.is_admin)
     })
+    Promise.resolve()
+      .then(() => loadTenants())
+      .then((r) => {
+        if (live && (r.status === 'ok' || r.status === 'stale')) setWorkspaces(r.data.tenants.length)
+      })
+      .catch(() => undefined)
     return () => {
       live = false
     }
@@ -298,6 +320,13 @@ export function PlatformCountsScreen() {
           )}
         </div>
       )}
+      {/* OVER TIME (COUNTS-PAGE, #2149): how many agents ran per day, week
+          or month, for how long and at what estimated cost -- the view BGD
+          picked (counts-a.html F2 to F6). Below the state counts, which are
+          a snapshot of now, and above the ticks, which read nothing. It is
+          drawn whether or not the count has run: it has its own priced Run,
+          and nothing in it is read before that press. */}
+      <PlatformOverTime workspaces={workspaces} />
       {/* THE PLATFORM TICKS (§8.4), moved here from Admin › Schedules
           (SCHED-ONE-PAGE, 2026-10-13). Static: nothing here is billed or
           read, so it is drawn whether or not the count has run. */}

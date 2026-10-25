@@ -61,9 +61,10 @@ QUOTA = "quota"
 POOLS = "pools"
 TENANTS = "tenants"
 #: One append-only document per admin change to a quota document, written in
-#: the change's own transaction (`_mutate(audit=...)`). The broker had no audit
-#: trail before QUOTA-RESET: `set_hard_max` records nothing, and every other
-#: write here is a provider's signal rather than a person's decision.
+#: the change's own transaction (`_mutate(audit=...)`): a target reset
+#: (`adaptive_target_reset`, QUOTA-RESET) and a configured-max change
+#: (`hard_max_set`, ACCOUNT-429-FOLLOWUP). Every other write here is a
+#: provider's signal rather than a person's decision.
 QUOTA_AUDIT = "quota_audit"
 
 #: Every provider state that means "start nothing new right now".
@@ -271,24 +272,74 @@ class QuotaBroker:
                 )
         return state
 
-    def set_hard_max(self, provider: str, tenant_id: str, hard_max: int) -> QuotaState:
+    def set_hard_max(
+        self,
+        provider: str,
+        tenant_id: str,
+        hard_max: int,
+        *,
+        requested_by: str = "",
+        reason: str = "",
+        caller: str = "",
+    ) -> QuotaState:
         """An admin's ceiling. Clamps the adaptive target down immediately.
 
         Lowering the hard max below the current adaptive target must take effect
         at once, or the invariant `adaptive_target <= configured_hard_max` would
         be violated for however long it took the next 429 to arrive.
+
+        AUDITED in `quota_audit` in the change's own transaction, as a target
+        reset is (BGD, 2026-10-25, "Yes, follow-up in the broker"): who asked
+        (`requested_by`, the person the platform caller acts for; `caller`,
+        the identity the broker verified), why, and the max and target before
+        and after. swarm-api keeps its own `admin_audit` entry as well; this
+        one is the record that holds for any platform caller, not only the
+        console.
         """
         if hard_max < 0:
             raise ValueError("configured_hard_max cannot be negative")
 
+        # `_change` edits the committed state IN PLACE, so `stored` and
+        # `changed` are one object by the time `_audit` runs: the values
+        # before are taken here, on each run of the transaction.
+        before: dict[str, Any] = {}
+
         def _change(state: QuotaState) -> QuotaState:
+            before["hard_max"] = state.configured_hard_max
+            before["target"] = state.adaptive_target
             state.configured_hard_max = int(hard_max)
             if state.adaptive_target is not None:
                 state.adaptive_target = min(state.adaptive_target, int(hard_max))
             state.updated_at = self._now()
             return state
 
-        return self._mutate(provider, tenant_id, _change)
+        def _audit(stored: QuotaState, changed: QuotaState) -> dict[str, Any]:
+            return {
+                "action": "hard_max_set",
+                "provider": provider,
+                "tenant_id": tenant_id,
+                "requested_by": requested_by or None,
+                "caller": caller or None,
+                "reason": (reason or "").strip()[:500] or None,
+                "from_hard_max": before.get("hard_max"),
+                "to_hard_max": changed.configured_hard_max,
+                # The name a target reset's record uses, so one reader of
+                # `quota_audit` reads the ceiling the same way from both.
+                "configured_hard_max": changed.configured_hard_max,
+                "from_target": before.get("target"),
+                "to_target": changed.adaptive_target,
+                "at": self._now(),
+            }
+
+        state = self._mutate(provider, tenant_id, _change, audit=_audit)
+        log.info(
+            "configured hard max for %s:%s set to %s by %s",
+            provider,
+            tenant_id,
+            int(hard_max),
+            requested_by or caller or "an unnamed platform caller",
+        )
+        return state
 
     def reset_adaptive_target(
         self,

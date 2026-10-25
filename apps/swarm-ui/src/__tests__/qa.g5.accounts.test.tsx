@@ -83,7 +83,7 @@ async function openRow(a: Account) {
   api.loadAccountsBoard.mockResolvedValue(ok(board(a)))
   render(<AccountsScreen />)
   await screen.findByText('Subscription accounts', undefined, WAIT)
-  const open = document.querySelector<HTMLButtonElement>('.acct-li > button.acct-open')!
+  const open = document.querySelector<HTMLButtonElement>('button.acct-open')!
   if (open.getAttribute('aria-current') !== 'true') fireEvent.click(open)
 }
 
@@ -128,12 +128,13 @@ describe('G5-07: a window tile draws its track across the tile, in a colour the 
 describe('G5-17: the chosen row keeps its muted clauses at 4.5:1 in both themes', () => {
   const hosts: HTMLElement[] = []
   // The three the QA pass measured -- "5h", "eng:team", "given out 3m ago" --
-  // and the state note that shares their line.
+  // and the state note that shared their line, on the ranked table's chosen
+  // row (#2222): the id, the organisation, the reading's age and given out.
   const CLAUSES = [
-    'li.acct-li.is-chosen > button.acct-open > small.acct-li-line > span.acct-clears > span.acct-clears-win',
-    'li.acct-li.is-chosen > span.acct-li-meta > span.raw',
-    'li.acct-li.is-chosen > span.acct-li-meta > span.acct-given',
-    'li.acct-li.is-chosen > span.acct-li-meta > span.acct-why',
+    'table > tbody > tr.acct-rank-row.is-chosen > td > small.raw',
+    'table > tbody > tr.acct-rank-row.is-chosen > td > small.acct-age',
+    'table > tbody > tr.acct-rank-row.is-chosen > td > small.acct-given',
+    'table > tbody > tr.acct-rank-row.is-chosen > td.acct-clr > small',
   ]
   for (const theme of THEMES) {
     for (const selector of CLAUSES) {
@@ -147,7 +148,7 @@ describe('G5-17: the chosen row keeps its muted clauses at 4.5:1 in both themes'
           ink = painted(at, 'color', env)
           at = at.parentElement
         }
-        const row = el.closest('li')!
+        const row = el.closest('td')!
         const bg = resolveColour(painted(row, ['background', 'background-color'], env)!, theme)
         const fg = over(resolveColour(ink!, theme), bg)
         // MUTATION: drop the `--text-dim-on-selected` rule: dark reads 4.33.
@@ -191,7 +192,6 @@ describe('G5-16: Holding now is the mock-up’s Agent · Attempt · Since table'
       ok({ id: 'task_0123456789abcdef', step_id: 'fix-lease-heartbeat', runner_profile: 'claude-code' } as Task),
     )
     await openRow(account())
-    fireEvent.click(await screen.findByRole('tab', { name: 'Holding now (2)' }, WAIT))
 
     const link = await screen.findByRole('link', { name: 'fix-lease-heartbeat' }, WAIT)
     expect(link.getAttribute('href')).toBe('#work/task/task_0123456789abcdef')
@@ -207,7 +207,8 @@ describe('G5-16: Holding now is the mock-up’s Agent · Attempt · Since table'
     expect(rows[0]).toEqual(['fix-lease-heartbeat', '1', `${hhmm(since)} (21m)`])
     // A hold that named no task still says so, and has no attempt to give.
     expect(rows[1]).toEqual(['agent not recorded', '—', `${hhmm(since)} (21m)`])
-    expect(screen.getByRole('heading', { name: 'Holding now · 2' })).toBeTruthy()
+    // Under the sheet's `Agents on it` (#2222), the table is named by its count.
+    expect(screen.getByRole('table', { name: 'Holding now · 2' })).toBeTruthy()
   })
 
   it('keeps the id as the agent when the task cannot be read', async () => {
@@ -226,7 +227,6 @@ describe('G5-16: Holding now is the mock-up’s Agent · Attempt · Since table'
       error: { kind: 'not_found', httpStatus: 404, code: 'not_found', message: 'gone' },
     })
     await openRow(account({ assigned: 1 }))
-    fireEvent.click(await screen.findByRole('tab', { name: 'Holding now (1)' }, WAIT))
     const link = await screen.findByRole('link', { name: 'task_gone' }, WAIT)
     expect(link.getAttribute('href')).toBe('#work/task/task_gone')
   })
@@ -242,14 +242,19 @@ describe('G5-16: Holding now is the mock-up’s Agent · Attempt · Since table'
       noon.setHours(12, 0, 0, 0)
       vi.setSystemTime(noon)
       const at = new Date(Date.now() - 3 * 60 * MINUTES).toISOString()
+      // The sheet reads who holds it as it opens (#2222): nobody, here.
+      reads.read.mockResolvedValue(
+        ok({ account_id: 'eng:laptop', viewer: 'owner', total: 0, holders: [], others: 0 } satisfies AccountHolders),
+      )
       await openRow(account({ last_assigned_at: at }))
-      const tile = [...document.querySelectorAll('.acct-tiles > .acct-tile')].find(
-        (t) => t.querySelector('small')?.textContent === 'Last given out',
+      // The sheet's facts (#2222): `last given out 09:00 (3h ago)`.
+      const fact = [...document.querySelectorAll('.acct-facts > .ctl-fact')].find(
+        (t) => t.querySelector('b')?.textContent === 'last given out',
       )!
+      const value = fact.querySelector('span')!
       // MUTATION: print `timeAgo` as the figure again.
-      expect(tile.querySelector('b')!.textContent).toBe(hhmm(at))
-      expect(tile.querySelector('i')!.textContent).toBe('3h ago')
-      expect(tile.querySelector('b')!.getAttribute('title')).toBe(new Date(at).toLocaleString())
+      expect(value.textContent).toBe(`${hhmm(at)} (3h ago)`)
+      expect(value.getAttribute('title')).toBe(new Date(at).toLocaleString())
     } finally {
       vi.useRealTimers()
     }

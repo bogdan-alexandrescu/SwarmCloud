@@ -51,10 +51,13 @@ worker's way, unchanged:
 
   * its dispatch block is `integrate`'s integrator, gated on a review it
     depends on, `builds_on` the implementer, and integrates exactly that one
-    contributor, continuing nothing and publishing onto no existing pull
-    request (`publish_to_pr`, #2183: the worker's fast-forward push), with
+    contributor. The implementer is a step it depends on, or (#2322, the
+    lane template's shape) one its review depends on AND builds on, read
+    from the review's own verified spec (`_reached_through_review`). It
+    continues nothing and publishes onto no existing pull request (`publish_to_pr`, #2183: the worker's fast-forward push), with
     no `input.issue` (whose title the worker makes);
-  * every step it depends on SUCCEEDED, in its own tenant and workflow;
+  * every step it depends on SUCCEEDED, in its own tenant and workflow,
+    and so did an implementer reached through the review;
   * the review's verdict file -- the `input_from` name the step stages from
     it -- reads as a verdict OUTSIDE the gate's `verdict_in`, and has no
     finding marked minor (filing those on the wave epic is the worker's,
@@ -146,7 +149,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Mapping
+from typing import Any, Collection, Mapping
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -619,8 +622,14 @@ def _read_text(ctx: Any, tenant_id: str, task_id: str, name: str, *, limit: int,
     return content if isinstance(content, str) else ""
 
 
-def _dispatch_facts(doc: Mapping[str, Any]) -> tuple[str, tuple[str, ...], str]:
-    """(the review task, the verdicts that run the agent, the implementer task)."""
+def _dispatch_facts(doc: Mapping[str, Any], *, through_review: Collection[str] = ()
+                    ) -> tuple[str, tuple[str, ...], str]:
+    """(the review task, the verdicts that run the agent, the implementer task).
+
+    `through_review` is what `_reached_through_review` found: the implementer
+    the step builds on, when it is upstream through the gate's review rather
+    than a direct dependency (#2322).
+    """
     metadata = _mapping(doc.get("metadata"))
     block = _mapping(metadata.get(DISPATCH_METADATA_KEY))
     gate = _mapping(block.get("verdict_gate"))
@@ -637,7 +646,8 @@ def _dispatch_facts(doc: Mapping[str, Any]) -> tuple[str, tuple[str, ...], str]:
     )
     if not normalised or len(normalised) != len(verdicts):
         raise Decline("gate", "the verdict gate names no verdict this platform reads")
-    if not isinstance(builds_on, str) or builds_on not in depends_on:
+    if not isinstance(builds_on, str) or (builds_on not in depends_on
+                                          and builds_on not in through_review):
         raise Decline("contributors", "the step builds on no upstream branch")
     if not isinstance(integrates, list) or integrates != [builds_on]:
         count = len(integrates) if isinstance(integrates, list) else 0
@@ -657,6 +667,54 @@ def _dispatch_facts(doc: Mapping[str, Any]) -> tuple[str, tuple[str, ...], str]:
     if doc.get("cancel_requested"):
         raise Decline("cancel_requested", "the step's cancellation was requested")
     return review, normalised, builds_on
+
+
+def _reached_through_review(
+    ctx: Any, tenant_id: str, doc: Mapping[str, Any], parents: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Mapping[str, Any]]:
+    """The implementer the step builds on through its review, read; {} when there is none.
+
+    #2322: the lane template makes the fix depend on the review alone, and
+    the review depends on and builds on the implementer. Measured 2026-10-24/25,
+    all 69 MERGE fix steps were declined "the step builds on no upstream
+    branch" for that, and each started a worker pod that ran no agent. The
+    review's clone WAS the implementer's branch, so the implementer is as
+    upstream of the fix as it is when the fix names it directly, and the
+    tip published is the one the review read.
+
+    Accepted only when every link is signed and of this step's own world:
+    the gate's review is a direct dependency (already SUCCEEDED in `parents`,
+    and checked to be of this workflow by `_publish`), the review's own spec
+    verifies by the id it was read by, and that verified spec both depends on
+    and builds on exactly the task the step builds on. The implementer is
+    then read by id and must be this tenant's and SUCCEEDED; `_publish`
+    checks its workflow as it checks a direct parent's. Anything else
+    returns {} (today's `contributors` decline) or declines with why.
+    """
+    block = _mapping(_mapping(doc.get("metadata")).get(DISPATCH_METADATA_KEY))
+    builds_on = block.get("builds_on")
+    review = _mapping(block.get("verdict_gate")).get("task_id")
+    depends_on = doc.get("depends_on") or []
+    if (not isinstance(builds_on, str) or not builds_on or builds_on in depends_on
+            or not isinstance(review, str) or review == builds_on or review not in parents):
+        return {}
+    reviewer = parents[review]
+    review_block = _mapping(_mapping(reviewer.get("metadata")).get(DISPATCH_METADATA_KEY))
+    if (review_block.get("builds_on") != builds_on
+            or builds_on not in (reviewer.get("depends_on") or [])):
+        return {}
+    # Its depends_on and dispatch block were read above only to pick this
+    # path; they are trusted for it only once the review's spec verifies.
+    unverified = spec_refusal(ctx.settings, reviewer, review)
+    if unverified:
+        raise Decline("credential", f"the review the step builds through: {unverified}")
+    snap = ctx.store.db.collection(TASKS).document(builds_on).get()
+    data = snap.to_dict() if snap.exists else None
+    if (data is None or data.get("tenant_id") != tenant_id
+            or data.get("state") != TaskState.SUCCEEDED.value):
+        raise Decline("contributors",
+                      "the task the step builds on through its review has not succeeded")
+    return {builds_on: data}
 
 
 def _implementer_head(implementer: Mapping[str, Any], builds_on: str) -> str:
@@ -842,7 +900,9 @@ def _publish(ctx: Any, tenant: Any, doc: Mapping[str, Any],
     unverified = spec_refusal(ctx.settings, doc, task_id)
     if unverified:
         raise Decline("credential", unverified)
-    review, verdict_in, builds_on = _dispatch_facts(doc)
+    reached = _reached_through_review(ctx, tenant_id, doc, parents)
+    parents = {**parents, **reached}
+    review, verdict_in, builds_on = _dispatch_facts(doc, through_review=tuple(reached))
     ref = _repository(doc.get("repository_url"))
     workflow_id = doc.get("workflow_id")
     for parent in (review, builds_on):

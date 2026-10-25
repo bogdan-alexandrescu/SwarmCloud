@@ -126,6 +126,15 @@ each told its steps in `row_share`; the first reports the finished steps.
 `--per-step` or `--summary` after it is refused with a pointer to `rows`
 (SC-ATTACH-SUFFIX-DROP).
 
+THE PANE LAYOUT (SC-BROWSER-BUILD, #2318; BGD picked proposal B on
+2026-10-25). With this project's layout set to `pane` (`/sc layout pane`, or
+the plugin's `layout` option; `layout.row_mode` reads both, the saved choice
+first), every copy for a workflow says `rows: "pane"`: ONE sc:finish row per
+workflow, whose only job is to notice the finish -- it holds each follow
+until the workflow's stage changes -- while the SwarmCloud pane beside the
+chat browses stages, agents and details with direct MCP calls and no model
+tokens. A batch of single tasks keeps its one summary row.
+
 THE SPEC TRAVELS BY HANDLE (SC-LAUNCH-SPEC, #2034). Measured 2026-10-23
 ~01:35Z, lane SCAN-FP (wf_053776f6-dcb): the spec embedded in a launch's
 args reached `swarm_workflow` retyped by the `sc:workflow` agent, ~23 KB of
@@ -158,7 +167,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import checkout, config, details, workflows
+from . import checkout, config, details, layout, workflows
 from .client import SwarmClient, SwarmError, _repo_root
 
 PLUGIN_ROOT_ENV = "SWARM_SC_PLUGIN_ROOT"
@@ -749,11 +758,15 @@ def for_spec(
     steps = len(spec["steps"])
     name = workflows.title_name(title=spec["title"], label=spec["label"])
     title = workflows.workflow_title(name, steps)
-    mode = config.rows_mode()
+    mode = layout.row_mode(None)
     description = (
         f"{title}: each step runs in SwarmCloud and is shown here as one [SwarmCloud] row, "
         "by the console's stage, with its console link"
     ) if mode == config.ROWS_PER_STEP else (
+        f"{title}: each step runs in SwarmCloud; ONE quiet [SwarmCloud] row notices the "
+        "workflow's finish, a line each time its stage changes, and the SwarmCloud pane "
+        "browses its stages"
+    ) if mode == config.ROWS_PANE else (
         f"{title}: each step runs in SwarmCloud, and the whole workflow is shown here as ONE "
         "[SwarmCloud] summary row, a line each time its step counts change, with its console link"
     )
@@ -861,14 +874,14 @@ def _attach_launches(
     labels (`details.account_labels`). `repository`, the URL it clones (else
     read off `envelope`'s tasks), goes to the record as `host/owner/repo`.
 
-    `rows`, the mode (`config.rows_mode()` when None): `summary` is ONE copy
+    `rows`, the mode (`layout.row_mode` when None): `summary` is ONE copy
     whose run follows the whole workflow with one row; `per-step` is one row
     per unfinished step, at most `budget` of them (`max_live_rows()` when
     None), in copies of at most `rows_per_run()` rows each when there are more
     -- each copy's `row_share` names its steps and the other copies' (so the
     first, and only the first, reports the steps finished at launch). A
     per-step attach with no envelope cannot split, and is one copy."""
-    mode = rows or config.rows_mode()
+    mode = layout.row_mode(rows)
     if repository is None and envelope is not None:
         repository = next((t.get("repository_url") for t in envelope.get("tasks") or []
                            if isinstance(t, dict) and t.get("repository_url")), None)
@@ -911,6 +924,15 @@ def _shaped(
 ) -> tuple[list[dict[str, Any]], list[str], int]:
     """`_attach_launches`' copies, written by `copy(title, description,
     share)`, in `mode`'s shape."""
+    if mode == config.ROWS_PANE:
+        # THE PANE LAYOUT (SC-BROWSER-BUILD, #2318): one sc:finish row per
+        # workflow, whose only job is to notice the finish; the pane browses.
+        description = (
+            f"{title}: attached to SwarmCloud workflow {workflow_id}; ONE quiet [SwarmCloud] row "
+            "notices its finish, a line each time its stage changes, and the SwarmCloud pane "
+            "browses its stages. Nothing is submitted"
+        )
+        return [copy(title, description)], [], 1
     if mode == config.ROWS_SUMMARY:
         description = (
             f"{title}: attached to SwarmCloud workflow {workflow_id}; the whole workflow is shown "
@@ -1064,11 +1086,15 @@ def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None, 
     that cannot be written still leaves the record. `for_all` attaches tasks
     already running and says False.
 
-    `rows`, the mode (`config.rows_mode()` when None): `for_all` hands on
+    `rows`, the mode (`layout.row_mode` when None): `for_all` hands on
     the one its caller asked for."""
     cap = max_live_rows()
     # `rows`: the mode, read before the name is reused for the task rows.
-    mode = rows or config.rows_mode()
+    mode = layout.row_mode(rows)
+    if mode == config.ROWS_PANE:
+        # A batch of single tasks has no stages to follow: the pane layout
+        # shows it as the one summary row it already is.
+        mode = config.ROWS_SUMMARY
     wanted = [e for e in entries if isinstance(e, dict) and e.get("task_id")]
     if dispatched:
         for entry in wanted:
@@ -1194,6 +1220,47 @@ def _own(entries: list[dict[str, Any]], sid: str | None, left_out: dict[str, int
     return kept
 
 
+def _own_or_project(entries: list[dict[str, Any]], sid: str | None, repository: str | None,
+                    left_out: dict[str, int]) -> list[dict[str, Any]]:
+    """The entries tagged with session `sid`, and -- `/sc attach --all
+    --project`, at session start (SC-BROWSER-FOLLOWUP, BGD 2026-10-25) --
+    those that clone `repository`, whichever session started them; each kept
+    entry marked `this_session`. The rest counted in `left_out` by why."""
+    from . import session
+    from .check import repo_key
+
+    kept = []
+    for entry in entries:
+        kind = session.ownership(session.owner_of(entry), sid)
+        if kind == "own" or (repository is not None and repo_key(entry.get("repository_url")) == repository):
+            kept.append({**entry, "this_session": kind == "own"})
+        else:
+            left_out[kind] += 1
+    return kept
+
+
+def _merged_listings(listings: list[dict[str, Any]]) -> dict[str, Any]:
+    """Several `sc.running_workflows` answers as one: each workflow once, in
+    board order again; incomplete when any was."""
+    from . import sc
+
+    seen: set[str] = set()
+    found: list[dict[str, Any]] = []
+    for listing in listings:
+        for entry in listing.get("workflows") or []:
+            ident = str(entry.get("workflow_id") or "")
+            if isinstance(entry, dict) and ident and ident not in seen:
+                seen.add(ident)
+                found.append(entry)
+    out: dict[str, Any] = {"workflows": sc.group_by_workspace(found), "count": len(found),
+                           "tenant_id": next((l.get("tenant_id") for l in listings if l.get("tenant_id")), None),
+                           "complete": all(l.get("complete") is not False for l in listings)}
+    reasons = [l["incomplete_because"] for l in listings if l.get("incomplete_because")]
+    if reasons:
+        out["incomplete_because"] = "; ".join(reasons)
+    return out
+
+
 def _read_workflows(client: SwarmClient, workflow_ids: list[str]) -> dict[str, dict[str, Any]]:
     """`{workflow_id: envelope}` for each id whose `GET /v1/workflows/{id}`
     answered, at most eight reads at a time."""
@@ -1218,6 +1285,7 @@ def for_all(
     new_only: bool = False,
     exclude: list[str] | None = None,
     rows: str | None = None,
+    project: bool = False,
 ) -> dict[str, Any]:
     """One titled copy per running workflow, closest to finish first in
     workspace blocks (`sc.group_by_workspace`, `board.order`), up to the
@@ -1233,15 +1301,24 @@ def for_all(
     ids the caller names -- rows it can see live. Without them, unchanged.
 
     `rows` (`swarm_workflow_launch`'s argument, PLUGIN-ROW-SPLIT-2) is the
-    mode for every copy, the single tasks' too; None reads the setting."""
+    mode for every copy, the single tasks' too; None reads the setting.
+
+    `project` (`/sc attach --all --project`, SC-BROWSER-FOLLOWUP, BGD
+    2026-10-25): what the SessionStart hook asks for in the rows layout --
+    this session's work AND every workflow and single task still running that
+    clones this checkout's origin repository (`repository` names another),
+    whichever Claude Code session started it. At session start only: the
+    plain attach-all, `/sc check` and the watch stay this session's. With no
+    origin naming a repository it widens to nothing and says so."""
     from . import sc, session
 
-    filtering = repository is not None or new_only or bool(exclude)
+    filtering = (repository is not None or new_only or bool(exclude)) and not project
     scope = None
-    if repository is not None:
+    if repository is not None or project:
         from .check import resolve_scope
 
-        scope = resolve_scope(repository)
+        scope = resolve_scope(repository if repository is not None else "origin")
+    project_repo = scope["key"] if project and scope else None
     skip = frozenset((attached() if new_only else frozenset()) | {str(i) for i in exclude or [] if i})
 
     # The single tasks first, and on their own: a failure to read them is
@@ -1260,8 +1337,15 @@ def for_all(
 
     sid = session.current()
     record = session.project_record()
-    listing = sc.running_workflows(
-        client, **server_scope(scope and scope["key"], sid, record))
+    if project:
+        # Two reads the API can filter, each a page or two: this session's
+        # work, and the project's repository's.
+        listing = _merged_listings(
+            ([sc.running_workflows(client, claude_session=sid)] if sid else [])
+            + ([sc.running_workflows(client, repository=project_repo)] if project_repo else []))
+    else:
+        listing = sc.running_workflows(
+            client, **server_scope(scope and scope["key"], sid, record))
     names = workflows.workspace_names(client)
     cap = max_live_rows()
     entries = sc.group_by_workspace(named_workspaces(
@@ -1276,11 +1360,23 @@ def for_all(
     by_api = (listing.get("filtered_by_api") or {}).get("left_out") or {}
     for kind in ("other_session", "untagged"):
         left_out["workflows"][kind] += int(by_api.get(kind) or 0)
-    entries = _own(entries, sid, left_out["workflows"])
-    if singles:
-        singles = {**singles, "tasks": _own(singles["tasks"], sid, left_out["single_tasks"])}
     already: list[str] = []
     unread: list[dict[str, Any]] = []
+    if project:
+        entries = _own_or_project(entries, sid, project_repo, left_out["workflows"])
+        if singles:
+            singles = {**singles, "tasks": _own_or_project(singles["tasks"], sid, project_repo,
+                                                           left_out["single_tasks"])}
+        if skip:
+            already = [str(e.get("workflow_id")) for e in entries if str(e.get("workflow_id")) in skip]
+            entries = [e for e in entries if str(e.get("workflow_id")) not in skip]
+            if singles:
+                already += [str(t.get("task_id")) for t in singles["tasks"] if str(t.get("task_id")) in skip]
+                singles = {**singles, "tasks": [t for t in singles["tasks"] if str(t.get("task_id")) not in skip]}
+    else:
+        entries = _own(entries, sid, left_out["workflows"])
+        if singles:
+            singles = {**singles, "tasks": _own(singles["tasks"], sid, left_out["single_tasks"])}
     if filtering:
         # THIS SESSION'S WORK, WITHIN THE PROJECT (SC-TITLES, owner
         # 2026-10-18): work in the project's record is kept whatever
@@ -1308,7 +1404,7 @@ def for_all(
     # the cap counts workflows; per-step rows count steps, so the cap is a
     # budget the workflows spend in board order, and a workflow it does not
     # reach is not followed.
-    mode = rows or config.rows_mode()
+    mode = layout.row_mode(rows)
     budget = cap
     unreached: list[dict[str, Any]] = []
     steps_left: list[dict[str, Any]] = []
@@ -1366,6 +1462,19 @@ def for_all(
         "for your running single tasks (args `attach_tasks`)"
     )
     out["session"] = {**session.describe(sid), "left_out": left_out}
+    if project:
+        out["project"] = {
+            "repository": project_repo,
+            "from_other_sessions": sum(1 for e in [*entries, *((singles or {}).get("tasks") or [])]
+                                       if e.get("this_session") is False),
+            "scope": ("this session's work and this project's running work, whichever session started "
+                      "it -- at session start only; /sc check and the watch stay this session's"),
+        }
+        if project_repo is None:
+            out["project"]["note"] = ("this checkout has no origin remote naming a repository, so "
+                                      "only this session's work was attached")
+        if skip:
+            out["already_attached"] = already
     if filtering:
         out["repository"] = scope["key"] if scope else None
         if scope and scope.get("note"):

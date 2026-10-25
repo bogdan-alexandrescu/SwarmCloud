@@ -160,6 +160,22 @@ MAX_AGENTS_BEFORE_READING = 1
 #: per subscription, so two subscriptions agree on it only by coincidence;
 #: five seconds allows for the provider's own rounding and nothing more.
 IDENTICAL_RESET_SKEW = timedelta(seconds=5)
+
+#: How close a window's `resets_at` must be to a recorded 429's reset to be the
+#: SAME window instance. The provider reports both from one clock, so two
+#: minutes is slack for transit, not for a different window. Shared by
+#: `accountstore.refusing_window` (which window a 429 names) and
+#: `Account.with_reading` (whether a reading shows that window reset).
+LIMIT_RESET_SKEW = timedelta(minutes=2)
+
+#: The longest a 429 naming one of these windows may hold its account
+#: (`accountstore.limited_until_for`): the window's own length. A five-hour
+#: window cannot refuse for longer than five hours, so a report that says it
+#: will is a bad report, and it must not take the account out for a week.
+LIMIT_WINDOW_HORIZON = {
+    "five_hour": timedelta(hours=5),
+    "seven_day": timedelta(days=7),
+}
 #: How many consecutive polls of BOTH accounts must agree before the pair is a
 #: `possible_duplicate`. One agreement can be a coincidence -- two accounts
 #: whose figures happen to round alike once; two independent pairs of
@@ -628,6 +644,17 @@ class Account:
     #: The count behind it, kept between passes.
     identical_readings: IdenticalReadings | None = None
 
+    #: Until when a 429 recorded against this account keeps it from a NEW
+    #: agent, and the window that 429 named (`accountstore.HEALTH_WINDOWS`, or
+    #: "other"). Mirrored from the account's health record by the transaction
+    #: that records the rate-limit or exhausted report
+    #: (`AccountStore.record_health`), so assignment reads it from the
+    #: document it already has and never reads a health record per candidate.
+    #: None is "no 429 holds it", which is every document written before
+    #: these fields. See `is_limited` for why this second hold exists.
+    limited_until: datetime | None = None
+    limited_window: str | None = None
+
     def serves_class(self, model_class: str | None) -> bool:
         """Whether a step of `model_class` may run on this account.
 
@@ -783,6 +810,30 @@ class Account:
             if not w.is_reset(now) and w.remaining() * factor < window_floor(name, floor)
         }
 
+    def is_limited(self, now: datetime) -> bool:
+        """Whether a recorded 429 still holds this account (`limited_until`).
+
+        A SECOND HOLD, NEXT TO THE WINDOW READINGS, because the readings do not
+        explain every 429. ACCOUNT-429-SCOPE (PR 2305) stopped an account's
+        429 halving the tenant and recorded it on the account, but `choose()`
+        asked only the readings, and a reading taken minutes before the refusal
+        still showed room -- so the next agent was handed the account the
+        provider had just refused, met the same 429, and parked (its review,
+        2026-10-25; BGD, "choose() honours limited_until"). This holds the
+        account until the provider's own reset, or until a reading of the
+        window the 429 named shows that window reset (`with_reading`), or an
+        operator's resume (`AccountStore.set_state`) -- whichever is first.
+
+        IT NEVER TOUCHES ADMISSION'S ARITHMETIC OR THE TENANT'S TARGET. It
+        takes one account out of `choose()`'s candidates, exactly as a window
+        under its floor does, and nothing else: no pool cap, no
+        `adaptive_target`, no lease moves. A pool whose every account it holds
+        is the one case the tenant is halved
+        (`AccountStore.every_account_limited`), which is PR 2305's rule, and
+        the parked task is dated by its end (`next_reset`).
+        """
+        return self.limited_until is not None and now < _aware(self.limited_until)
+
     def assignable(
         self,
         now: datetime,
@@ -790,7 +841,10 @@ class Account:
         floor: float | None = None,
         stale_after: timedelta = DEFAULT_STALE_AFTER,
     ) -> bool:
-        """Whether a NEW agent may be handed this account: no window blocks it."""
+        """Whether a NEW agent may be handed this account: no window blocks it,
+        and no recorded 429 holds it (`is_limited`)."""
+        if self.is_limited(now):
+            return False
         return not self.blocking_windows(now, floor=floor, stale_after=stale_after)
 
     def is_stale(
@@ -851,7 +905,13 @@ class Account:
             for name, w in self.windows.items()
             if not w.is_reset(now) and w.remaining() < window_floor(name, floor)
         ]
-        return min(blocking) if blocking else None
+        clear = min(blocking) if blocking else None
+        if self.is_limited(now) and self.limited_until is not None:
+            # A recorded 429 is a clock too: the account is back when it ends,
+            # and not before a window that also blocks it clears.
+            until = _aware(self.limited_until)
+            return max(until, clear) if clear is not None else until
+        return clear
 
     def with_reading(
         self, windows: dict[str, WindowReading], observed_at: datetime
@@ -894,7 +954,34 @@ class Account:
         newest = observed_at
         if self.observed_at is not None and self.observed_at > newest:
             newest = self.observed_at
-        return replace(self, windows=merged, observed_at=newest)
+        limit: dict[str, Any] = {}
+        if self._reading_clears_limit(windows, merged, observed_at):
+            limit = {"limited_until": None, "limited_window": None}
+        return replace(self, windows=merged, observed_at=newest, **limit)
+
+    def _reading_clears_limit(
+        self,
+        windows: dict[str, WindowReading],
+        merged: dict[str, WindowReading],
+        observed_at: datetime,
+    ) -> bool:
+        """Whether this reading shows the window a recorded 429 named has reset.
+
+        Only a reading OF THAT WINDOW, accepted as the newest of it, can. Its
+        `resets_at` within `LIMIT_RESET_SKEW` of the hold's end is the same
+        window instance the provider refused, read again -- the case this hold
+        exists for, so it stays. Any other `resets_at` is the provider saying
+        the window is not the one that refused: later, it rolled over; earlier,
+        the hold was longer than the window it named. A 429 naming no window
+        ("other") is cleared by time alone.
+        """
+        name = self.limited_window
+        if self.limited_until is None or not name or name not in windows:
+            return False
+        reading = merged.get(name)
+        if reading is None or reading.observed_at != observed_at:
+            return False
+        return abs(_aware(reading.resets_at) - _aware(self.limited_until)) > LIMIT_RESET_SKEW
 
     @property
     def secret(self) -> str:
@@ -953,6 +1040,8 @@ class Account:
             "identical_readings": (
                 self.identical_readings.to_firestore() if self.identical_readings else None
             ),
+            "limited_until": self.limited_until,
+            "limited_window": self.limited_window,
         }
 
     @classmethod
@@ -1026,6 +1115,11 @@ class Account:
             possible_duplicate_of=_optional_text(data.get("possible_duplicate_of")),
             identical_readings=IdenticalReadings.from_firestore(
                 data.get("identical_readings")),
+            # Descriptive, unlike `max_agents`: a malformed hold reads as no
+            # hold. Raising would take the account out of the pool for good
+            # over a field whose whole job is to take it out for a while.
+            limited_until=_optional_instant(data.get("limited_until")),
+            limited_window=_optional_text(data.get("limited_window")),
         )
 
 
@@ -1562,6 +1656,12 @@ def choose(
     AND A NEVER-MEASURED ACCOUNT TAKES ONE AGENT (`awaits_first_reading`):
     it is skipped while it holds one and has no reading, and is an ordinary
     candidate from its first reading on.
+
+    A RECORDED 429 HOLDS AN ACCOUNT LIKE A WINDOW DOES (`Account.is_limited`,
+    asked through `assignable`): an account whose `limited_until` is still
+    ahead is no candidate, for assign and swap alike, until the time passes
+    or a reading shows the refusing window reset. It removes candidates and
+    nothing else, so it cannot hand an account out twice.
     """
     skip = {str(a) for a in exclude}
     accounts = list(accounts)

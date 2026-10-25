@@ -1295,6 +1295,27 @@ export async function write(
 
   const isJson = (res.headers.get('content-type') ?? '').includes('application/json')
 
+  // A SUCCESS WITH NOTHING IN IT IS STILL A SUCCESS. FastAPI's
+  // `Response(status_code=204)` carries no body and no content-type, and so
+  // does every removal route here (`DELETE /v1/qa-targets/{id}`,
+  // `DELETE /v1/repositories/{id}`); reading it as the sign-in page below told
+  // the person their removal was NOT saved when it was. An expired sign-in
+  // arrives as a page, which is never empty, so it still reaches that check.
+  if (res.ok && !isJson) {
+    let empty = res.status === 204 || res.status === 205
+    if (!empty) {
+      try {
+        empty = (await res.text()).trim() === ''
+      } catch {
+        // Unreadable is not empty: it falls through to the page check.
+      }
+    }
+    if (empty) {
+      note(res.status, null, true)
+      return { status: 'ok', data: null, fetchedAt: Date.now() }
+    }
+  }
+
   if (res.ok && !isJson) {
     note(res.status, 'session_expired', false)
     return {

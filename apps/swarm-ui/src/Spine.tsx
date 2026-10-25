@@ -30,15 +30,16 @@
  * to Overview once both reads say so (`onAdminRedirect`), and since
  * ADMIN-REDIRECT (part of #2157, BGD 2026-10-24: "Redirect, in a later lane")
  * a workspace admin who is not a platform admin, on a platform Admin page, goes
- * to Workspaces you admin, the one Admin page they are shown. A platform admin
- * is never redirected. The API's own refusal of every admin route is unchanged.
+ * to Workspaces you admin. Since ADMIN-PEOPLE-ROLES (part of #2157) People and
+ * roles is theirs too, scoped by the API to the workspaces they administer, so
+ * /admin/people is no longer sent away. A platform admin is never redirected. The API's own refusal of every admin route is unchanged.
  *
  * Production draws a red pill and a 3px red bar across the top; the pill shows
  * only what was measured (`classifyEnvironment`), never a hardcoded word.
  */
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { AGENT_TABS, type AgentTab } from './agentlist'
-import { USE_FIXTURES, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadOnboarding, loadStats, type TenantChoice } from './api'
+import { USE_FIXTURES, WORKSPACE_RENAMED_EVENT, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadOnboarding, loadStats, type NotificationFeed, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
 import { Banner, Button, NamedMark, Toaster, acknowledge, routedClick } from './components'
 import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, preferencesUnavailableSnapshot, probeSnapshot, read, route, subscribePreferencesUnavailable, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
@@ -53,6 +54,7 @@ import { iapFronted, signingOut } from './signoutState'
 import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppStates'
 import { feedData, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
 import { firstName } from './PersonName'
+import { NEAR_CEILING } from './AdminSettings'
 import { roleOf } from './roles'
 import { ConfigBadgeMark, SetupContext, SetupMeter, setupSteps, setupUnfinished, useConfigBadges, type SetupRead } from './ConfigSetup'
 
@@ -98,9 +100,11 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
   // issue forms already name each page as Settings › <page>. THE PERSON'S OWN
   // PAGES ONLY since CONFIG-NAV (part of #2157, BGD 2026-10-23): Workspace,
   // MCP servers and People and roles are Config's.
+  // API keys left this list for Config › Secrets' Keys for agents and MCP
+  // (SSC-UI, part of #2158; BGD 2026-10-23 23:57Z, proposal E S1: Settings
+  // keeps only Profile). `/settings/keys` still lands there (paths.ts).
   profile: [
     { key: 'profile', label: 'Profile', icon: 'people', to: 'settings/profile' },
-    { key: 'keys', label: 'API keys', icon: 'key', to: 'settings/keys' },
   ],
   work: [
     {
@@ -171,10 +175,15 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     { key: 'runner-sizes', label: 'Runner sizes', icon: 'runtimes', to: 'admin/runner-sizes' },
     { key: 'tenants', label: 'Tenants', icon: 'tenants', to: 'admin/tenants' },
     { key: 'counts', label: 'Platform counts', icon: 'counts', to: 'admin/counts' },
+    // SSC-UI (part of #2158; docs/design/secrets-scopes.md §5, proposal E S7):
+    // status only, a platform admin's alone, so under Platform and never in
+    // a workspace admin's `adminPagesFor`.
+    { key: 'platform-secrets', label: 'Platform secrets', icon: 'key', to: 'admin/platform-secrets' },
     // #847 W8 (docs/workspaces.md §6.4): a SECTIONS tab and a route, and
     // missing here, so an admin reached it only by typing /admin/people --
-    // the Runs defect visual QA Q7 caught, again.
-    { key: 'people', label: 'People', icon: 'people', to: 'admin/people' },
+    // the Runs defect visual QA Q7 caught, again. SECTIONS' label, People
+    // and roles, since ADMIN-PEOPLE-ROLES (part of #2157).
+    { key: 'people', label: 'People and roles', icon: 'people', to: 'admin/people' },
     // NAV-ADMIN-ROLE (part of #1633): the group workspaces the person
     // administers, last. The only Admin page a workspace admin who is not a
     // platform admin is shown (`adminPagesFor`).
@@ -209,13 +218,31 @@ export function adminWorkspaces(choices: readonly TenantChoice[]): TenantChoice[
 }
 
 /**
- * The Admin pages a person is shown: all five for a platform admin, only
- * Workspaces you admin for a workspace admin who is not one, and none for
- * anyone else -- which is how the spine knows to draw no Admin item.
+ * The Admin pages a person is shown: all of them for a platform admin, People
+ * and roles and Workspaces you admin for a workspace admin who is not one, and
+ * none for anyone else -- which is how the spine knows to draw no Admin item.
+ *
+ * THIS IS ADMIN-REDIRECT'S LIST: an Admin page that is not here sends a
+ * workspace admin to Workspaces you admin. People and roles joined it with
+ * ADMIN-PEOPLE-ROLES (part of #2157, BGD "Both, by scope"): its read
+ * (`GET /v1/admin/people`) answers a workspace admin with only the workspaces
+ * they administer, so /admin/people is a page of theirs, not one to send them
+ * away from.
  */
+export const WORKSPACE_ADMIN_PAGE_KEYS: ReadonlySet<string> = new Set(['people', WORKSPACES_YOU_ADMIN_TAB])
+
 export function adminPagesFor(platformAdmin: boolean, workspaceAdmin: boolean): readonly PanelPage[] {
   if (platformAdmin) return PANEL_PAGES.admin
-  return workspaceAdmin ? PANEL_PAGES.admin.filter((p) => p.key === WORKSPACES_YOU_ADMIN_TAB) : []
+  return workspaceAdmin ? PANEL_PAGES.admin.filter((p) => WORKSPACE_ADMIN_PAGE_KEYS.has(p.key)) : []
+}
+
+/**
+ * Where Admin lands: a platform admin's first page, and a workspace admin's
+ * Workspaces you admin -- the page ADMIN-REDIRECT sends them to, and the
+ * spine's Admin item opens, as before People and roles was theirs too.
+ */
+export function adminLanding(platformAdmin: boolean, pages: readonly PanelPage[]): PanelPage | null {
+  return (platformAdmin ? undefined : pages.find((p) => p.key === WORKSPACES_YOU_ADMIN_TAB)) ?? pages[0] ?? null
 }
 
 /**
@@ -714,7 +741,7 @@ const FRAME_RETRIES: ReadonlySet<string> = new Set(['unreachable', 'tenant_unres
 export const FRAME_RETRY_MS = 20_000
 const FRAME_RETRY_MAX_MS = 5 * 60_000
 
-function useFrameRead<T>(load: () => Promise<Result<T>>, everyMs: number | null, rereadOn = '', retry = false): [Result<T>, () => void] {
+function useFrameRead<T>(load: () => Promise<Result<T>>, everyMs: number | null, rereadOn = '', retry = false): [Result<T>, () => void, () => void] {
   const [r, setR] = useState<Result<T>>({ status: 'loading', since: Date.now() })
   const [nonce, setNonce] = useState(0)
   useEffect(() => {
@@ -756,7 +783,10 @@ function useFrameRead<T>(load: () => Promise<Result<T>>, everyMs: number | null,
     setR({ status: 'loading', since: Date.now() })
     setNonce((n) => n + 1)
   }, [])
-  return [r, again]
+  // Read again KEEPING what is drawn until the answer lands: a rename changes
+  // one name, and a shell that blanked to loading for it would flash.
+  const refresh = useCallback(() => setNonce((n) => n + 1), [])
+  return [r, again, refresh]
 }
 
 /*
@@ -895,6 +925,8 @@ export interface PanelCount {
   why?: string
   /** An amber count: something on that page needs a look. */
   alert?: boolean
+  /** Drawn instead of the bare number, "1 near ceiling" (S1b); `n` stays the count. */
+  text?: string
 }
 
 /**
@@ -1001,6 +1033,89 @@ export function panelCounts(
   return out
 }
 
+/** A count the feed serves as a number, or null when it is absent (an older API) or not one. */
+function feedCount(feed: NotificationFeed | null, key: 'admin_pending' | 'tenants_waiting' | 'platform_secrets_unset'): number | null {
+  const v = feed === null ? undefined : (feed as unknown as Record<string, unknown>)[key]
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null
+}
+
+/**
+ * How many pools are near their ceiling: Pool limits' own rule (AdminSettings
+ * `poolLead`, `NEAR_CEILING`). A paused pool, one with no ceiling set, and a
+ * ceiling of 0 with nothing in use are not ranked there and not counted here.
+ */
+export function nearCeilingCount(pools: Capacity['pools']): number {
+  return pools.filter((p) => {
+    if (p.enabled === false || p.effective_limit === null) return false
+    if (p.effective_limit <= 0) return p.active > 0
+    return p.active / p.effective_limit >= NEAR_CEILING
+  }).length
+}
+
+/**
+ * THE ADMIN PANEL'S BADGES (CONFIG-ADMIN-POLISH; part of #2157, proposal E
+ * S1b, S1c), each from a read the shell already makes -- never a poll of
+ * the page's own:
+ *
+ *   People and roles      the feed's `admin_pending`, the requests waiting
+ *                         on a platform admin (amber)
+ *   Workspaces you admin  how many group workspaces `/v1/tenants/mine`
+ *                         names the person admin of (dim: a count, not a task)
+ *   Pool limits           "N near ceiling", from the capacity read the
+ *                         meter makes, by Pool limits' own rule
+ *   Tenants               "N waiting", the feed's `tenants_waiting`
+ *   Platform secrets      "N", the feed's `platform_secrets_unset`
+ *
+ * A COUNT THAT WAS NOT READ DRAWS NO BADGE, NEVER 0: a read in flight or
+ * failed, or a feed from an API that does not serve the count (null or
+ * absent). A measured zero of something waiting is no badge either, the way
+ * Approvals' is (`approvalsBadge`). A WORKSPACE ADMIN WHO IS NOT A PLATFORM
+ * ADMIN IS COUNTED ONLY WHAT IS THEIRS (S1c): `admin_pending` is the
+ * platform's requests, so it is no badge of theirs, and the platform pages
+ * are not in their panel at all.
+ */
+export function adminPanelCounts(
+  platformAdmin: boolean,
+  feed: NotificationFeed | null,
+  cap: Result<Capacity>,
+  mine: Result<TenantChoice[]>,
+): Readonly<Record<string, PanelCount>> {
+  const out: Record<string, PanelCount> = {}
+  const choices = dataOf(mine) ?? (mine.status === 'empty' ? [] : null)
+  if (choices !== null) {
+    const n = adminWorkspaces(choices).length
+    out[WORKSPACES_YOU_ADMIN_TAB] = { n, why: `${n} group workspace${n === 1 ? '' : 's'} you administer` }
+  }
+  if (!platformAdmin) return out
+  const pending = feedCount(feed, 'admin_pending')
+  if (pending !== null && pending > 0) out.people = { n: pending, alert: true, why: `${pending} request${pending === 1 ? '' : 's'} waiting on an admin` }
+  const c = dataOf(cap)
+  const near = c === null ? 0 : nearCeilingCount(c.pools)
+  if (near > 0) out.limits = { n: near, alert: true, text: `${near} near ceiling`, why: `${near} pool${near === 1 ? ' is' : 's are'} at ${Math.round(NEAR_CEILING * 100)}% of the ceiling or more` }
+  const waiting = feedCount(feed, 'tenants_waiting')
+  if (waiting !== null && waiting > 0) out.tenants = { n: waiting, alert: true, text: `${waiting} waiting`, why: `${waiting} workspace${waiting === 1 ? '' : 's'} waiting to be created` }
+  const unset = feedCount(feed, 'platform_secrets_unset')
+  if (unset !== null && unset > 0) out['platform-secrets'] = { n: unset, alert: true, why: `${unset} platform secret${unset === 1 ? ' has' : 's have'} no enabled version` }
+  return out
+}
+
+/**
+ * THE PANEL FOOT'S ROLE LINE (S1a): who the person is here, in place of the
+ * email (which stays in its title). "Platform admin", else "Workspace admin"
+ * when `/v1/tenants/mine` names them admin of a group workspace, else
+ * "Viewer" when the group workspace in hand holds them as one -- "Member"
+ * there would claim a wider role than the server stores -- else "Member".
+ * Null until both reads have answered: an unread list is not "not an admin".
+ */
+export function roleLine(platformAdmin: boolean, mine: Result<TenantChoice[]>, tenantId: string | null): string | null {
+  if (platformAdmin) return 'Platform admin'
+  const choices = dataOf(mine) ?? (mine.status === 'empty' ? [] : null)
+  if (choices === null) return null
+  if (adminWorkspaces(choices).length > 0) return 'Workspace admin'
+  const here = choices.find((c) => c.tenant_id === tenantId)
+  return here !== undefined && here.kind === 'group' && roleOf(here) === 'viewer' ? 'Viewer' : 'Member'
+}
+
 function CountMark({ c }: { c: PanelCount | undefined }) {
   if (c === undefined) return null
   if (c.n === null) {
@@ -1012,7 +1127,7 @@ function CountMark({ c }: { c: PanelCount | undefined }) {
   }
   return (
     <span className={`sk-cnt${c.alert === true ? ' is-alert' : ''}`} title={c.why}>
-      {c.n}
+      {c.text ?? c.n}
     </span>
   )
 }
@@ -1355,12 +1470,23 @@ export function SkyShell({
   // again under the new tenant rather than showing the old one's rows -- all
   // but an unsent form (`keepOnSwitch`), which is kept.
   const tenant = useSyncExternalStore(subscribeTenant, chosenTenant, chosenTenant)
-  const [me, rereadMe] = useFrameRead(loadFrameMe, null, tenant ?? '', true)
+  const [me, rereadMe, refreshMe] = useFrameRead(loadFrameMe, null, tenant ?? '', true)
   const [cap] = useFrameRead(loadFrameCapacity, 30_000, tenant ?? '')
   const fromList = useSyncExternalStore(subscribeListCounts, listCountsSnapshot, listCountsSnapshot)
   // A capped list re-reads the stats with each of its own reads (D27).
   const [stats] = useFrameRead(loadFrameStats, 30_000, `${tenant ?? ''}:${fromList !== null && !fromList.whole ? fromList.at : ''}`)
-  const [mine, rereadMine] = useFrameRead(loadFrameTenants, null)
+  const [mine, rereadMine, refreshMine] = useFrameRead(loadFrameTenants, null)
+  // A WORKSPACE RENAMED on Config › Workspace Settings (WORKSPACE-ADMIN-FIELDS,
+  // part of #2157): the name the switcher and every header draw is `me`'s, so
+  // both reads are asked again and the new name lands without a reload.
+  useEffect(() => {
+    const again = () => {
+      refreshMe()
+      refreshMine()
+    }
+    globalThis.addEventListener?.(WORKSPACE_RENAMED_EVENT, again)
+    return () => globalThis.removeEventListener?.(WORKSPACE_RENAMED_EVENT, again)
+  }, [refreshMe, refreshMine])
   // A headerless request refused because the default is unknown (Q9): said
   // beside the switcher, where naming a workspace is the next action.
   const prefsDown = useSyncExternalStore(subscribePreferencesUnavailable, preferencesUnavailableSnapshot, preferencesUnavailableSnapshot)
@@ -1379,7 +1505,8 @@ export function SkyShell({
   const adminPages = adminPagesFor(admin, adminWorkspaces(dataOf(mine) ?? []).length > 0)
   // Their names, for the note a workspace admin's Admin panel carries (S1c).
   const adminOf = useMemo(() => nameTenants(adminWorkspaces(dataOf(mine) ?? []), null).map((w) => w.display_name), [mine])
-  const spineItems = SPINE.flatMap((s) => (s.key !== 'admin' ? [s] : adminPages.length === 0 ? [] : [{ ...s, to: adminPages[0]!.to }]))
+  const landing = adminLanding(admin, adminPages)
+  const spineItems = SPINE.flatMap((s) => (s.key !== 'admin' ? [s] : landing === null ? [] : [{ ...s, to: landing.to }]))
   // ADMIN'S ADDRESSES SEND A NON-ADMIN TO OVERVIEW (CONFIG-NAV), and only
   // once both reads have answered: an unread session is not "not an admin".
   const adminDecided = who !== null && (mine.status === 'ok' || mine.status === 'stale' || mine.status === 'empty')
@@ -1388,10 +1515,10 @@ export function SkyShell({
   // panel has: an address that is no page at all keeps its 404.
   const adminRedirect = section !== 'admin' || !adminDecided
     ? null
-    : adminPages.length === 0
+    : landing === null
       ? ''
       : !missing && PANEL_PAGES.admin.some((p) => p.to === `admin/${tab}`) && !adminPages.some((p) => p.to === `admin/${tab}`)
-        ? adminPages[0]!.to
+        ? landing.to
         : null
   useEffect(() => {
     if (adminRedirect !== null) onAdminRedirect?.(adminRedirect)
@@ -1428,6 +1555,8 @@ export function SkyShell({
   const meter = meterOf(dataOf(cap))
   // The Approvals page carries the inbox count the Automate section does (§6.1).
   const counts = waiting === null ? panelCounts(stats, cap, fromList) : { ...panelCounts(stats, cap, fromList), approvals: waiting }
+  const adminCounts = adminPanelCounts(admin, feedData(notes), cap, mine)
+  const role = who === null ? null : roleLine(admin, mine, who.tenant.tenant_id)
   const online = useOnline()
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
   const fault = wholeAppFault(me, probes)
@@ -1927,8 +2056,10 @@ export function SkyShell({
         adminPages={adminPages}
         adminOf={adminOf}
         configPages={configPages}
+        personal={personal === true}
         nav={nav}
         counts={counts}
+        adminCounts={adminCounts}
         helpGroup={helpGroup}
         apiFailuresOnly={apiFailuresOnly}
         onApiFilter={onApiFilter}
@@ -1990,8 +2121,13 @@ export function SkyShell({
           {admin && <span className="sk-adm">admin</span>}
           {canSignOut && <SignOutButton email={who.principal.email} />}
         </span>
-        {/* One line each, cut, whole in the title (styles.css `.sk-pfoot`, V054). */}
-        {who !== null && <small title={who.principal.email}>{who.principal.email}</small>}
+        {/* THE ROLE, NOT THE EMAIL (S1a): the address is in its title. One
+            line each, cut, whole in the title (styles.css `.sk-pfoot`, V054). */}
+        {who !== null && (
+          <small className="sk-role" title={who.principal.email}>
+            {role ?? 'reading role…'}
+          </small>
+        )}
         {/* No Settings links here since NAV-PROFILE (part of #1633): the
             four that stacked under the name are the Profile panel's pages. */}
         <ThemeToggle />
@@ -2730,8 +2866,10 @@ function PanelPages({
   adminPages,
   adminOf = [],
   configPages,
+  personal = false,
   nav,
   counts,
+  adminCounts = {},
   helpGroup,
   apiFailuresOnly,
   onApiFilter,
@@ -2747,8 +2885,12 @@ function PanelPages({
   adminOf?: readonly string[]
   /** Config's pages for the workspace in hand (`configPagesFor`). */
   configPages: readonly PanelPage[]
+  /** The workspace in hand is the person's own (S1e): Config says why People and roles is missing. */
+  personal?: boolean
   nav: (to: string) => void
   counts: Readonly<Record<string, PanelCount>>
+  /** The Admin rows' badges (`adminPanelCounts`, S1b, S1c). */
+  adminCounts?: Readonly<Record<string, PanelCount>>
   helpGroup: string | null
   apiFailuresOnly: boolean
   onApiFilter?: (failuresOnly: boolean) => void
@@ -2841,9 +2983,11 @@ function PanelPages({
       {groups.map((g) => (
         <div key={g.key} className="sk-pgrp" role={g.title === null ? undefined : 'group'} aria-label={g.title ?? undefined}>
           {g.title !== null && <div className="sk-pg">{g.title}</div>}
-          <PanelRows sec={sec} rows={g.rows} lit={lit} nav={nav} counts={counts} apiFailuresOnly={apiFailuresOnly} onApiFilter={onApiFilter} />
+          <PanelRows sec={sec} rows={g.rows} lit={lit} nav={nav} counts={sec === 'admin' ? adminCounts : counts} apiFailuresOnly={apiFailuresOnly} onApiFilter={onApiFilter} />
         </div>
       ))}
+      {/* S1e: why a personal workspace's Config has no People and roles. */}
+      {sec === 'config' && personal && <p className="sk-pnote">A personal workspace has no People and roles: nobody else is in it.</p>}
       {/* A WORKSPACE ADMIN IS TOLD WHOSE PAGES THESE ARE (S1c), and that the
           platform's are not hidden behind a lock but simply not theirs. */}
       {sec === 'admin' && !platformAdmin && (

@@ -24,7 +24,7 @@
 // Fixtures only; no network. Nothing here is credential-shaped.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 import type { CascadeEnv } from './cssgate'
 import { THEMES, painted, resolveColour, tokensIn, type Theme } from './marks'
@@ -100,6 +100,8 @@ async function mountMcp(cap: Json | null = capacity('unserved')): Promise<void> 
   const { McpServersScreen } = await import('../McpServers')
   render(<McpServersScreen />)
   await screen.findByRole('table', { name: 'Registered MCP servers' })
+  // The register form opens from the card head's Register (MCP-ROWS, S5a).
+  fireEvent.click(screen.getByRole('button', { name: 'Register an MCP server' }))
 }
 
 const TOPICS = ['approval', 'waiting_step', 'question', 'failed', 'finished', 'account', 'admin']

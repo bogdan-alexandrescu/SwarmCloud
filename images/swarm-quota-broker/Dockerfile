@@ -76,12 +76,16 @@ WORKDIR /src
 # still copies only the packages this image ships.
 COPY pyproject.toml uv.lock /src/
 COPY apps/common/ /src/apps/common/
+# The credential patterns the broker redacts every account health message
+# with before it is stored (`quota_broker.accountstore.health_message`).
+COPY apps/redaction/ /src/apps/redaction/
 COPY apps/quota-broker/ /src/apps/quota-broker/
 
 # Build our own packages into a local wheelhouse. No index has ever heard of
 # them, and the install below never asks one: it reads them from /wheels with
 # `--no-index` (#663).
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
+ && uv build --wheel --out-dir /wheels /src/apps/redaction \
  && uv build --wheel --out-dir /wheels /src/apps/quota-broker
 
 # `--without-pip`: the stdlib venv otherwise seeds pip, setuptools and wheel,
@@ -94,13 +98,13 @@ RUN python -m venv --without-pip /opt/venv
 # Third-party dependencies, exported from uv.lock for this service alone. The
 # root project depends on every app, so the export prunes the internal packages
 # swarm-quota-broker does not depend on (`swarm-agent-worker`, `swarm-api`,
-# `swarm-mcp`, `swarm-reconciler`, `swarm-redaction`, `swarm-scheduler`), and
+# `swarm-mcp`, `swarm-reconciler`, `swarm-scheduler`), and
 # the third-party packages only they need go with them. `--no-emit-local`
 # leaves our own packages out of the file: they come from /wheels, below. The
 # export carries a hash for every file; `--no-hashes` must never be added here.
 RUN uv export --frozen --no-dev --no-emit-local --no-editable \
       --prune swarm-agent-worker --prune swarm-api --prune swarm-mcp \
-      --prune swarm-reconciler --prune swarm-redaction \
+      --prune swarm-reconciler \
       --prune swarm-scheduler --prune swarm-workflow-rollup \
       > /tmp/requirements.txt
 
@@ -121,7 +125,7 @@ RUN uv pip install --python /opt/venv/bin/python --require-hashes --no-deps -r /
 # is ever asked for them; `--no-deps` because their third-party dependencies
 # are already installed above, by hash.
 RUN uv pip install --python /opt/venv/bin/python --no-index --find-links /wheels --no-deps \
-      swarm-common swarm-quota-broker
+      swarm-common swarm-redaction swarm-quota-broker
 
 # With `--no-deps` on both installs nothing above notices a dependency the
 # export left out. `uv pip check` does, here, instead of an ImportError at the

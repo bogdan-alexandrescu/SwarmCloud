@@ -338,6 +338,15 @@ class _SweepBroker:
                     "end": "released", "hold_expires_at": at.isoformat(),
                 }], "next_cursor": None}
 
+    def account_health(self, account_id: str) -> dict[str, Any]:
+        # #2302: an event's message and task id are where a secret would ride.
+        at = datetime.now(timezone.utc)
+        return {"account_id": account_id, "status": "limited", "counts": {}, "hourly": [],
+                "events": [{"at": at.isoformat(), "kind": "rate_limit", "tenant_id": "eng",
+                            "task_id": f"task_mine {OPENAI}", "window": "five_hour",
+                            "reset_at": None, "message": f"{OPENAI} DB_PASSWORD={BARE}"}],
+                "observed_at": at.isoformat()}
+
 
 def test_no_get_route_serves_a_planted_secret_inside_an_input_or_metadata(client, db, objects):
     """Swept, not listed: a route added tomorrow is covered the day it exists,
@@ -463,6 +472,7 @@ def test_no_get_route_serves_a_planted_secret_inside_an_input_or_metadata(client
         "/v1/tasks/{task_id}/logs", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/files/{path:path}",
         "/v1/attempts", "/v1/workflows/{workflow_id}",
         "/v1/accounts/{account_id}/holders", "/v1/accounts/{account_id}/history",
+        "/v1/accounts/{account_id}/health",
     ):
         assert template in served_ok, f"{template} never answered 200, so the sweep proved nothing there"
 

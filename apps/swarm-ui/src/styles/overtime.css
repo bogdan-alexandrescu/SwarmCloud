@@ -1,0 +1,169 @@
+/* ADMIN › PLATFORM COUNTS, OVER TIME (PlatformOverTime.tsx, COUNTS-TIME-VIEW,
+   #2149). Built to BGD's pick, Counts proposal A (docs/web-ui/mockups/
+   counts-a.html, F2 to F6): a row of five tiles, the agents chart, the cost
+   card and the breakdown table. Every colour is a token; agents are
+   `--series-1` and retries `--series-5` on their own lane, with a legend
+   naming both (design-system.md §1.6). */
+
+.pot { display: flex; flex-direction: column; gap: var(--ctl-s3); margin-top: var(--ctl-s5); min-width: 0; }
+.pot-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--ctl-s1) var(--ctl-s3); }
+.pot-title { margin: 0; font: 600 var(--t-title)/var(--lh-title) var(--font); color: var(--text); }
+.pot-sub,
+.pot-note,
+.pot-card-sub { margin: 0; font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); }
+.pot-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2) var(--ctl-s3); }
+.pot-seg-span { font: normal 400 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+.pot-run { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); margin-left: auto; }
+.pot-prov { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.pot-price { font-family: var(--mono); }
+
+/* THE BREAKDOWN MENU (F6): every option names what it groups by. */
+.pot-menu-host { position: relative; display: inline-flex; }
+.pot-pick { font-weight: 600; color: var(--text); }
+.pot-menu {
+  position: absolute; z-index: 30; top: calc(100% + 4px); left: 0;
+  width: min(360px, calc(100vw - 32px));
+  display: flex; flex-direction: column; padding: var(--ctl-s1);
+  border: 1px solid var(--line); border-radius: var(--r-card);
+  background: var(--surface); box-shadow: 0 10px 30px rgba(0, 0, 0, .18);
+}
+.pot-menu-item {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left;
+  padding: var(--ctl-s2); border: 0; border-radius: 8px; background: none; cursor: pointer; color: var(--text);
+}
+.pot-menu-item:hover { background: var(--surface-2); }
+.pot-menu-item:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: -2px; }
+.pot-menu-item[aria-checked='true'] { background: var(--sk-acs); }
+.pot-menu-item[aria-checked='true'] .pot-menu-name { color: var(--sk-ac); }
+.pot-menu-name { font: 600 var(--t-body)/var(--lh-body) var(--font); }
+.pot-menu-says,
+.pot-menu-foot { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.pot-menu-foot { margin: var(--ctl-s1) var(--ctl-s2); }
+.pot-menu-head { margin: var(--ctl-s1) var(--ctl-s2); font: 600 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); }
+
+/* THE TILES: five across where they fit, two on a phone with the cost tile
+   the full width (F7). */
+.pot-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); gap: var(--ctl-s3); }
+.pot-tile { min-width: 0; padding: var(--ctl-s3); border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); }
+.pot-tile p { margin: 0; }
+.pot-tile-label { font: 600 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); }
+.pot-tile-value { font: 650 var(--t-figure)/var(--lh-figure) var(--font); color: var(--text); margin: var(--ctl-s1) 0 !important; font-variant-numeric: tabular-nums; }
+.pot-tile-value.is-absent { color: var(--text-faint); display: flex; align-items: center; gap: var(--ctl-s2); }
+.pot-tile-move { font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text); }
+.pot-tile-foot { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); margin-top: var(--ctl-s1) !important; }
+.pot-spark { display: block; width: 100%; max-width: 160px; height: 26px; margin: var(--ctl-s1) 0; }
+.pot-spark polyline { fill: none; stroke: var(--series-1); stroke-width: 1.5; stroke-linejoin: round; }
+.pot-spark circle.is-open { fill: var(--surface); stroke: var(--series-1); stroke-width: 1.5; }
+@media (max-width: 560px) {
+  .pot-tiles { grid-template-columns: 1fr 1fr; gap: var(--ctl-s2); }
+  .pot-tile.is-cost { grid-column: 1 / -1; }
+  .pot-run { margin-left: 0; }
+  /* The span words go on a phone, so the three buckets are one row; the note
+     under the controls names the span. */
+  .pot-seg-span { display: none; }
+  /* THE PICKER IS A BOTTOM SHEET ON A PHONE (F6): dropped from the button, at
+     the right of a 390 row, it ran 160px past the screen and the page
+     scrolled sideways (review, 2026-10-24). */
+  .pot-menu {
+    position: fixed; top: auto; left: 0; right: 0; bottom: 0; width: auto;
+    max-height: 80vh; overflow-y: auto;
+    border-radius: var(--r-card) var(--r-card) 0 0; padding: var(--ctl-s2) var(--ctl-s2) var(--ctl-s5);
+  }
+}
+
+/* THE CARDS */
+.pot-card { padding: var(--ctl-s3) var(--ctl-s3) var(--ctl-s3); gap: var(--ctl-s2); }
+.pot-card-head { display: flex; flex-direction: column; gap: 2px; }
+.pot-card-title { margin: 0; font: 600 var(--t-lead)/var(--lh-lead) var(--font); color: var(--text); }
+.pot-notrun p { margin: 0; font: var(--t-body)/var(--lh-body) var(--font); color: var(--text-dim); }
+.pot-notrun b { color: var(--text); }
+.pot-notrun-list { margin: var(--ctl-s2) 0 0; padding-left: 18px; font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); }
+
+/* THE CHARTS, EACH DRAWN AT ITS OWN WIDTHS AND NEVER SCALED DOWN
+   (charts/README.md, AG-20): the container shows the widest drawing it holds
+   at full size, and lets it grow at most a fifth past it. */
+.pot-chart { container: pot-chart / inline-size; min-width: 0; outline-offset: 4px; }
+.pot-chart:focus-visible { outline: 2px solid var(--sk-ac); }
+.pot-svg { display: none; height: auto; overflow: visible; }
+.pot-svg.is-narrow { display: block; width: 100%; min-width: 300px; max-width: 360px; }
+@container pot-chart (min-width: 640px) {
+  .pot-svg.is-narrow { display: none; }
+  .pot-svg.is-wide { display: block; width: 100%; min-width: 640px; max-width: 768px; }
+}
+@container pot-chart (min-width: 1040px) {
+  .pot-chart:not(.is-cost) .pot-svg.is-wide { display: none; }
+  .pot-svg.is-xl { display: block; width: 100%; min-width: 1040px; max-width: 1248px; }
+}
+.pot-lane,
+.pot-x { fill: var(--text-faint); font: var(--t-micro)/var(--lh-micro) var(--mono); }
+.pot-base { stroke: var(--line); stroke-width: 1; }
+.pot-bar-agents { fill: var(--series-1); }
+/* RETRIES ARE THE NEUTRAL SLOT, as the mock-up draws them. A tint of
+   --series-1 light enough to read as "lighter" falls under 3:1 on white, and
+   as an opacity it went darker, not lighter, on the dark surface (review,
+   2026-10-24). --series-5 clears 3:1 on every surface in both themes
+   (design-system.md §1.6); the lane, its label and the legend say which is
+   which, never the hue alone. */
+.pot-bar-retries { fill: var(--series-5); }
+.pot-wash { fill: var(--surface-2); }
+.pot-unread { opacity: .7; }
+.pot-picked { fill: none; stroke: var(--sk-ac); stroke-width: 1.5; rx: 3; }
+.pot-hit { fill: transparent; cursor: pointer; }
+.pot-cost-line { fill: none; stroke: var(--text); stroke-width: 1.5; stroke-linejoin: round; }
+.pot-dot { fill: var(--text); stroke: var(--text); stroke-width: 1.5; }
+.pot-dot.is-open { fill: var(--surface); }
+.pot-cover.is-full { fill: var(--text); }
+.pot-cover.is-some { fill: var(--surface); stroke: var(--text); stroke-width: 1; }
+.pot-cost-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ctl-s3); }
+@media (min-width: 1200px) { .pot-cost-grid { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); } }
+.pot-cost-fig { margin: 0; min-width: 0; }
+.pot-fig-title { margin-bottom: var(--ctl-s1); font: 600 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
+
+/* THE LEGEND: swatch and words, never a colour alone. */
+.pot-legend { display: flex; flex-wrap: wrap; gap: var(--ctl-s1) var(--ctl-s3); margin: 0; padding: 0; list-style: none; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.pot-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.pot-key { display: inline-block; width: 12px; height: 12px; border-radius: 2px; flex: none; }
+.pot-key-agents { background: var(--series-1); }
+.pot-key-retries { background: var(--series-5); }
+.pot-key-wash { background: var(--surface-2); border: 1px solid var(--line); }
+.pot-key-unread { background: var(--ctl-hatch); border: 1px solid var(--line); }
+.pot-key-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text); border: 1.5px solid var(--text); }
+.pot-key-dot.is-open { background: var(--surface); }
+
+/* THE READOUT, pinned under the chart (F6, phone): it never covers a mark. */
+.pot-readout { padding: var(--ctl-s2) var(--ctl-s3); border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface-2); }
+.pot-readout-head { display: flex; align-items: baseline; gap: var(--ctl-s2); margin: 0 0 var(--ctl-s1); font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); }
+.pot-readout-head b { color: var(--text); }
+.pot-readout-close { margin-left: auto; min-width: 32px; min-height: 32px; border: 0; background: none; color: var(--text-dim); cursor: pointer; font: var(--t-lead)/var(--lh-flush) var(--font); }
+.pot-readout-none { margin: 0; font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); }
+.pot-readout-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: var(--ctl-s2) var(--ctl-s3); margin: 0; }
+.pot-readout-row dt { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.pot-readout-row dd { margin: 0; display: flex; flex-direction: column; }
+
+/* A FIGURE AND ITS COVERAGE, in the table and the readout. */
+.pot-fig { font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; }
+.pot-fig.is-absent { color: var(--text-faint); font-style: italic; white-space: normal; }
+.pot-cov { display: block; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); white-space: nowrap; }
+.pot-table td,
+.pot-table th { vertical-align: top; }
+.pot-cell { display: flex; flex-direction: column; min-width: 0; }
+.pot-name { display: block; }
+.pot-row-total th,
+.pot-row-total td { font-weight: 600; }
+/* The rule over the total is the desktop table's: in a phone record every
+   field is a cell, and it ruled a line between each (review, 2026-10-24). */
+.is-scroll .pot-row-total > th,
+.is-scroll .pot-row-total > td { border-top: 1px solid var(--line); }
+.pot-row-unread td { color: var(--text-dim); white-space: normal; }
+.pot-fold { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); margin: 0; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.pot-body { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
+/* THE TABLE FITS A 1440 PAGE (review, 2026-10-24): with every head on one
+   line it was ~1,300px in a 1,030px card, and the cost column -- the one BGD
+   asked for -- sat past the scroll edge. A head wraps rather than set its
+   column's width; the figures keep the table's mono (`.ctl-table td.is-num`). */
+.pot-table .ctl-table th[role='columnheader'] { white-space: normal; min-width: 64px; vertical-align: bottom; }
+.pot-table .ctl-table th[role='columnheader']:last-child { min-width: 150px; }
+.pot-atleast { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.pot-table td[data-col='cost'] .pot-cov { white-space: normal; text-wrap: balance; }
+.pot-tile-floor { display: block; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.pot-table th[role='rowheader'] .pot-cov { white-space: normal; max-width: 22ch; }

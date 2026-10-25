@@ -8,7 +8,7 @@
 //   QA-050  At 390 the Add button gives way, not the `6 accounts` count.
 //   QA-051  A reset binding window reads `cleared · 5h`, never `clears cleared`.
 
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AccountsBoard } from '../api'
@@ -107,6 +107,8 @@ describe('QA-049: the partial mark draws its dashed edge straight', () => {
 describe('QA-049, scoped to Accounts (owner 2026-10-20): the account\'s own partial mark is squared too', () => {
   it('squares the dashed side of the `partial` beside a stale reading on the chosen account', async () => {
     await mount([account({ stale: true, observed_at: new Date(Date.now() - 3 * 86_400_000).toISOString() })])
+    // The account's own mark is in its sheet, beside its reading's age (#2222).
+    fireEvent.click(document.querySelector<HTMLButtonElement>('button.acct-open')!)
     const marks = [...document.querySelectorAll<HTMLElement>('.acct-split .ctl-mark.is-partial')]
     expect(marks.length, 'no partial mark on the stale account').toBeGreaterThan(0)
     for (const mark of marks) {
@@ -146,22 +148,19 @@ describe('QA-051: a window that already reset reads `cleared`, not `clears clear
     windows: { five_hour: { utilization: 0.4, resets_at: new Date(Date.now() - 5 * 3_600_000).toISOString(), reset: true } },
   })
 
-  it('drops the countdown label before the past tense, and keeps it on a countdown', async () => {
+  it('says the reset in the past tense, in the row and in the opened account', async () => {
     const LIVE = account({
       account_id: 'eng:alice-personal',
       observed_at: new Date().toISOString(),
       windows: { five_hour: { utilization: 0.4, resets_at: new Date(Date.now() + 80 * 60_000).toISOString(), reset: false } },
     })
     await mount([RESET, LIVE])
-    const lines = [...document.querySelectorAll<HTMLElement>('.acct-clears')]
-    const reset = lines.find((l) => l.closest('li, [data-account]')?.textContent?.includes('retired-laptop'))!
-    // MUTATION: put `clears ` back unconditionally in ClearsLine -- the row
-    // reads `clears cleared · 5h` again.
-    expect(reset.textContent).toBe('cleared · 5h')
-    expect(reset.textContent).not.toMatch(/clears cleared/)
-    // MUTATION: drop `clears ` for every value -- a countdown loses its label.
-    const live = lines.find((l) => l !== reset && /\dh|\dm/.test(l.textContent ?? ''))!
-    expect(live.textContent).toMatch(/^clears \d/)
+    // #2222: the ranked row and the sheet both say `reset HH:MMZ · nothing
+    // read since`; no countdown label stands before a past tense anywhere.
+    fireEvent.click(document.querySelector<HTMLButtonElement>('button.acct-open[data-account="eng:retired-laptop"]')!)
+    const win = document.querySelector<HTMLElement>('.acct-sheet .acct-ss-wins > .acct-win .acct-win-l')!
+    expect(win.textContent).toMatch(/^5-hour reset (\w{3} \d{1,2} )?\d\d:\d\dZ$/)
+    expect(document.body.textContent).not.toMatch(/clears cleared/)
   })
 })
 
@@ -173,8 +172,9 @@ describe('QA-051: a window that already reset reads `cleared`, not `clears clear
 describe('QA-049 (run 2): the partial mark\'s dashed side on Accounts is a rule of even dashes', () => {
   it('draws the right edge as a 2px-on, 2px-off pattern down the mark\'s full height', async () => {
     await mount([account({ stale: true, observed_at: new Date(Date.now() - 3 * 86_400_000).toISOString() })], 1)
+    fireEvent.click(document.querySelector<HTMLButtonElement>('button.acct-open')!)
     const marks = [...document.querySelectorAll<HTMLElement>('.acct-page .ctl-mark.is-partial')]
-    // `unread docs` in the footer and `last read 3d ago` in the detail pane.
+    // `unread docs` in the footer and the old reading's age in the sheet.
     expect(marks.length, 'no partial marks on Accounts').toBeGreaterThanOrEqual(2)
     for (const mark of marks) {
       // MUTATION: leave the right border dashed in currentColor -- the browser's

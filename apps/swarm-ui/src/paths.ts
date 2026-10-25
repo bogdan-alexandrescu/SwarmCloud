@@ -54,8 +54,8 @@ export const GITHUB_CALLBACK_PATH = '/onboarding/github/callback'
  * in the console links to it and the not-found page must never offer it.
  * ITS TOKEN IS NEVER PART OF THE ADDRESS, exactly like the GitHub callback's
  * `code`: the address is what the router writes back into the bar, so the
- * token is dropped here and only `scope` is kept. The form reads the token off
- * the bar once, itself (ProviderKeys.tsx `takeLinkToken`).
+ * token is dropped here and only `scope` is kept. App reads the token off the
+ * bar once (`secretsLinkToken`) and hands it to Config › Secrets' key form.
  */
 export const KEY_LINK_ADDRESS = 'settings/keys/typesafe'
 export const KEY_LINK_PATH = '/settings/keys/typesafe'
@@ -94,27 +94,88 @@ export const SECRETS_LINK_PATH = '/settings/workspace/secrets'
 export const CONFIG_SECRETS_ADDRESS = 'config/secrets'
 export const CONFIG_SECRETS_PATH = '/config/secrets'
 
-/** The link's token, read off a location: only on the secrets page's two paths, as `keyLinkToken`. */
+/**
+ * The link's token, read off a location: only on the secrets page's paths, as
+ * `keyLinkToken`. Since SSC-UI (part of #2158) that includes the TypeSafe key
+ * link's old path, which lands on Config › Secrets with its token: Settings ›
+ * API keys moved into Keys for agents and MCP (BGD 2026-10-23 23:57Z).
+ */
 export function secretsLinkToken(pathname: string, search: string): string | null {
   const path = pathname.replace(/\/+$/, '')
-  if (path !== SECRETS_LINK_PATH && path !== CONFIG_SECRETS_PATH) return null
+  if (path !== SECRETS_LINK_PATH && path !== CONFIG_SECRETS_PATH && path !== KEY_LINK_PATH) return null
   const t = new URLSearchParams(search).get('t')
   return t === null || t === '' ? null : t
 }
 
 /**
- * The part of a secrets-page query the route keeps: a known `action`, and a
- * `name` only on a rotate (an add link names no secret). Never `t`, and
- * nothing else: an unknown key is dropped, not carried. '' for none.
+ * THE PART OF A SECRETS-PAGE QUERY THE ROUTE KEEPS (SSC-UI, part of #2158;
+ * docs/design/secrets-scopes.md §6.1): the scope picker's
+ * `scope=workspace|personal|repository`, a repository's `repo` and its
+ * destination `dest=agents|actions`; a form's `action=add|rotate` and, on a
+ * rotate, `name` (an add link names no secret); the GitHub Actions link's
+ * `name` and `env` (swarm_api `actions_secrets`); the runner-key link's
+ * `runner_key=<provider>` (SSC-LINKS, BGD 2026-10-24); and `key=typesafe`,
+ * the TypeSafe key form Settings › API keys used to be; and, when none of
+ * those forms is named, `add=secret` with an optional `consumer` (Add a
+ * secret, a consumer picked: `secretsAddAddress`). NEVER `t`, and
+ * nothing else: an unknown key, or a value of the wrong shape, is dropped,
+ * not carried. Always in this order, so one view has one spelling. '' for none.
  */
 export function secretsLinkView(query: string): string {
   const given = new URLSearchParams(query)
-  const action = given.get('action')
-  if (action !== 'add' && action !== 'rotate') return ''
-  const kept = new URLSearchParams({ action })
-  const name = given.get('name')
-  if (action === 'rotate' && name !== null && name !== '') kept.set('name', name)
+  const kept = new URLSearchParams()
+  const take = (key: string, ok: (v: string) => boolean): string | null => {
+    const v = given.get(key)
+    if (v === null || v === '' || !ok(v)) return null
+    kept.set(key, v)
+    return v
+  }
+  const scope = take('scope', (v) => v === 'workspace' || v === 'personal' || v === 'repository')
+  const repo = scope === 'repository' ? take('repo', (v) => SECRETS_ID.test(v)) : null
+  const dest = repo !== null ? take('dest', (v) => v === 'agents' || v === 'actions') : null
+  if (dest === 'actions') {
+    take('name', (v) => SECRETS_NAME.test(v))
+    take('env', (v) => v.length <= 255)
+    return kept.toString()
+  }
+  const action = take('action', (v) => v === 'add' || v === 'rotate')
+  if (action === 'rotate') take('name', (v) => SECRETS_NAME.test(v))
+  let form = action !== null
+  if (action === null && scope !== 'repository') {
+    form = take('runner_key', (v) => SECRETS_ID.test(v)) !== null || take('key', (v) => v === 'typesafe') !== null
+  }
+  if (!form && take('add', (v) => v === 'secret') !== null) take('consumer', (v) => SECRETS_CONSUMER.test(v))
   return kept.toString()
+}
+
+/** A catalogue consumer's name, `<kind>:<name>` (`mcp:kb`, `profile:claude-code`); the page checks it against the catalogue. */
+const SECRETS_CONSUMER = /^[a-z][a-z_-]{0,31}:[A-Za-z0-9_.-]{1,128}$/
+
+/**
+ * ADD A SECRET, A CONSUMER PICKED (lane MCP-LEAD-FORM, part of #2157; BGD
+ * 2026-10-25, "Open the form, consumer picked"; proposal E S5a: the MCP
+ * servers lead's button "opens setting it"). Config › Secrets with its Add a
+ * secret sheet open and `consumer` ticked at Who reads it. NEVER
+ * `?action=add`: that is the /sc one-time link's form, and the page then says
+ * it was opened from one. Through `secretsLinkView`, so a bookmark survives;
+ * a consumer the catalogue does not list opens the sheet with nothing ticked,
+ * and a reader who may not add secrets gets the page with no sheet.
+ */
+export function secretsAddAddress(consumer: string | null): string {
+  const q = new URLSearchParams({ add: 'secret' })
+  if (consumer !== null) q.set('consumer', consumer)
+  return `${CONFIG_SECRETS_ADDRESS}?${secretsLinkView(q.toString())}`
+}
+
+/** A registration id or a provider name, as the API mints them. */
+const SECRETS_ID = /^[A-Za-z0-9_-]{1,64}$/
+/** A store secret's or a GitHub Actions secret's name (the API checks it again). */
+const SECRETS_NAME = /^[A-Za-z0-9_.-]{1,128}$/
+
+/** The TypeSafe key link's old address (`settings/keys/typesafe?scope=user|tenant`) as its Config › Secrets view. */
+function keyLinkView(query: string): string {
+  const scope = keyLinkScope(query)
+  return scope === null ? 'key=typesafe' : `scope=${scope === 'user' ? 'personal' : 'workspace'}&key=typesafe`
 }
 
 /**
@@ -187,6 +248,9 @@ export const FIXED: Readonly<Record<string, string>> = {
   'admin/runner-sizes': '/admin/runner-sizes',
   'admin/tenants': '/admin/tenants',
   'admin/counts': '/admin/counts',
+  // SSC-UI (part of #2158; docs/design/secrets-scopes.md §5): Admin › Platform
+  // secrets, a platform admin's alone, status only.
+  'admin/platform-secrets': '/admin/platform-secrets',
   // #847 W8: Admin › People, everyone who has signed in and their workspace requests.
   'admin/people': '/admin/people',
   // NAV-ADMIN-ROLE (part of #1633): Admin › Workspaces you admin, the group
@@ -207,14 +271,12 @@ export const FIXED: Readonly<Record<string, string>> = {
   'config/mcp-servers': '/config/mcp-servers',
   'config/people': '/config/people',
   'config/workspace': '/config/workspace',
-  // KEYS-UI: Settings › API keys, the person's own provider keys and, for an
-  // admin, the tenant's. Not a section: reached from the panel's foot by the
-  // person's name. Its one-time link is KEY_LINK_PATH, above.
-  'settings/keys': '/settings/keys',
+  // Settings › API keys was here (KEYS-UI) until SSC-UI (part of #2158) moved
+  // it into Config › Secrets as Keys for agents and MCP (BGD 2026-10-23
+  // 23:57Z); `/settings/keys` and its link land there (OLD_CONFIG_PATHS).
   // PROFILE-NAV: Settings › Profile, the person's own identity, workspaces,
-  // connections, bell and Claude accounts (docs/design/user-profile.md). About
-  // the person rather than a workspace, so beside API keys, for the same reason.
-  // Settings keeps these two and nothing else since CONFIG-NAV.
+  // connections, bell and Claude accounts (docs/design/user-profile.md).
+  // Settings keeps it and nothing else since SSC-UI.
   'settings/profile': '/settings/profile',
   [HELP_ROUTE]: '/help',
 }
@@ -246,6 +308,9 @@ const MOVED_TO_CONFIG: Readonly<Record<string, string>> = {
   [SECRETS_ADDRESS]: CONFIG_SECRETS_ADDRESS,
   'settings/mcp-servers': 'config/mcp-servers',
   'settings/people': 'config/people',
+  // Settings › API keys and its TypeSafe link (SSC-UI): Keys for agents and MCP.
+  'settings/keys': CONFIG_SECRETS_ADDRESS,
+  [KEY_LINK_ADDRESS]: CONFIG_SECRETS_ADDRESS,
 }
 
 /** An old Config page's address, rewritten to its new one; null for any other address. */
@@ -255,10 +320,11 @@ export function movedToConfig(address: string): string | null {
   const query = q === -1 ? '' : address.slice(q + 1)
   const to = MOVED_TO_CONFIG[bare]
   if (to === undefined) return null
-  if (bare === SECRETS_ADDRESS) {
+  if (bare === SECRETS_ADDRESS || bare === 'settings/keys') {
     const view = secretsLinkView(query)
     return view === '' ? to : `${to}?${view}`
   }
+  if (bare === KEY_LINK_ADDRESS) return `${to}?${keyLinkView(query)}`
   return query === '' || to.includes('?') ? to : `${to}?${query}`
 }
 
@@ -276,6 +342,7 @@ const OLD_CONFIG_PATHS: Readonly<Record<string, string>> = {
   '/settings/workspace': 'config/workspace',
   '/settings/mcp-servers': 'config/mcp-servers',
   '/settings/people': 'config/people',
+  '/settings/keys': CONFIG_SECRETS_ADDRESS,
 }
 
 /**
@@ -291,9 +358,9 @@ export const SECTION_ROOTS: Readonly<Record<string, string>> = {
   '/capacity': 'capacity/pools',
   '/admin': 'admin/limits',
   '/config': 'config/github',
-  // Not a section, but `/settings` is the head of its two paths, and a person
+  // Not a section, but `/settings` is the head of Profile's path, and a person
   // trimming the link back to it should land on the page rather than a 404.
-  '/settings': 'settings/keys',
+  '/settings': 'settings/profile',
 }
 
 const GROUP_IDS: readonly string[] = HELP_GROUPS.map((g) => g.id)
@@ -466,7 +533,10 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     if (qarun !== null && qarun !== '') return `/qa-runs/${encodeURIComponent(qarun)}`
     const page = q.get('page')
     const repo = q.get('repo')
-    if (page === 'register' || page === 'tokens') return `${REPOSITORIES_PATH}/${page}`
+    // Register keeps the repository a dashed card picked (REPOS-FOLLOWUPS), so
+    // a reload or a shared link opens it on the same repository.
+    if (page === 'register') return repo === null || repo === '' ? `${REPOSITORIES_PATH}/register` : `${REPOSITORIES_PATH}/register?${new URLSearchParams({ repo }).toString()}`
+    if (page === 'tokens') return `${REPOSITORIES_PATH}/tokens`
     if (page === 'permissions') return `${REPOSITORIES_PATH}/tokens/permissions`
     if (repo !== null && repo !== '') {
       const tab = q.get('tab')
@@ -489,11 +559,6 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     return group === null ? `/help/${tail}` : `/help/${group}#${tail}`
   }
   if (bare === GITHUB_CALLBACK_ADDRESS) return GITHUB_CALLBACK_PATH
-  // The key link keeps its scope and nothing else (`pathToAddress` dropped the token).
-  if (bare === KEY_LINK_ADDRESS) {
-    const scope = keyLinkScope(query)
-    return scope === null ? KEY_LINK_PATH : `${KEY_LINK_PATH}?scope=${scope}`
-  }
   // The secrets page keeps its action and name and nothing else, so an
   // address that carries a `t` by hand still writes no token into the bar.
   if (bare === CONFIG_SECRETS_ADDRESS) {
@@ -609,7 +674,10 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
   const repoTail = seg[0] === 'repositories' ? seg.slice(1) : seg[0] === 'config' && seg[1] === 'repositories' ? seg.slice(2) : []
   if (repoTail.length >= 1) {
     const at = (q: Record<string, string>) => plain(`config/repositories?${new URLSearchParams(q).toString()}`)
-    if (repoTail[0] === 'register' && repoTail.length === 1) return at({ page: 'register' })
+    if (repoTail[0] === 'register' && repoTail.length === 1) {
+      const picked = new URLSearchParams(query).get('repo')
+      return picked === null || picked === '' ? at({ page: 'register' }) : at({ page: 'register', repo: picked })
+    }
     if (repoTail[0] === 'tokens') return repoTail[1] === 'permissions' ? at({ page: 'permissions' }) : at({ page: 'tokens' })
     const repo = decodeURIComponent(repoTail[0] ?? '')
     const tab = repoTail[1]
@@ -633,11 +701,10 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
   // route never holds it and the router's normalise writes a bare path.
   if (path === GITHUB_CALLBACK_PATH) return plain(GITHUB_CALLBACK_ADDRESS)
   // THE KEY LINK'S TOKEN (`t`) IS DROPPED HERE, for the same reason: only the
-  // scope enters the route, so no address the router writes can carry it.
-  if (path === KEY_LINK_PATH) {
-    const scope = keyLinkScope(query)
-    return plain(scope === null ? KEY_LINK_ADDRESS : `${KEY_LINK_ADDRESS}?scope=${scope}`)
-  }
+  // scope enters the route, so no address the router writes can carry it. It
+  // lands on Config › Secrets' TypeSafe key form (SSC-UI); App has read the
+  // token off the bar first (`secretsLinkToken`).
+  if (path === KEY_LINK_PATH) return plain(`${CONFIG_SECRETS_ADDRESS}?${keyLinkView(query)}`)
 
   // THE SECRETS LINK'S TOKEN (`t`) IS DROPPED HERE, for the key link's reason,
   // on the path the API mints and on the page's own.

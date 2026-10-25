@@ -20,7 +20,7 @@
  * cases below assert the attribute that makes a browser drop focus as well as
  * `document.activeElement`.
  */
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AccountsBoard } from '../api'
@@ -254,6 +254,12 @@ function refreshed(): Result<RefreshResponse> {
   }
 }
 
+/** The refresh is in the account's side sheet (#2222), which opens on its row. */
+async function openAccount(): Promise<void> {
+  await waitFor(() => expect(document.querySelector('button.acct-open')).not.toBeNull(), WAIT)
+  fireEvent.click(document.querySelector<HTMLButtonElement>('button.acct-open')!)
+}
+
 describe('a11y-keyboard-001: Accounts keeps focus on the account refresh', () => {
   it('keeps focus on Refresh this account while it exchanges, and puts it back after the reload remounts it', async () => {
     const exchange = deferred<Result<RefreshResponse>>()
@@ -261,6 +267,7 @@ describe('a11y-keyboard-001: Accounts keeps focus on the account refresh', () =>
     api.loadAccountsBoard.mockResolvedValueOnce(board()).mockReturnValueOnce(reread.promise)
     api.refreshAccount.mockReturnValueOnce(exchange.promise)
     render(<AccountsScreen />)
+    await openAccount()
     const button = await screen.findByRole('button', { name: 'Refresh this account' }, WAIT)
     press(button)
     await screen.findByRole('button', { name: 'exchanging…' }, WAIT)
@@ -288,11 +295,15 @@ describe('a11y-keyboard-001: Accounts keeps focus on the account refresh', () =>
     api.loadAccountsBoard.mockResolvedValue(board())
     api.refreshAccount.mockResolvedValueOnce(failed(failure('server_error'))).mockReturnValueOnce(second.promise)
     render(<AccountsScreen />)
-    press(await screen.findByRole('button', { name: 'Refresh this account' }, WAIT))
-    const retry = await screen.findByRole('button', { name: 'Try again' }, WAIT)
+    await openAccount()
+    const refresh = await screen.findByRole('button', { name: 'Refresh this account' }, WAIT)
+    press(refresh)
+    // The refresh's own Try again: the sheet's holds read draws one as well.
+    const action = refresh.closest<HTMLElement>('.acct-action')!
+    const retry = await within(action).findByRole('button', { name: 'Try again' }, WAIT)
     press(retry)
     const sending = await screen.findByRole('button', { name: 'exchanging…' }, WAIT)
-    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
+    expect(within(action).queryByRole('button', { name: 'Try again' })).toBeNull()
     // MUTATION: `run` without moving focus to the account's refresh button:
     // Try again unmounts with its panel and focus is <body>.
     expect(document.activeElement).toBe(sending)

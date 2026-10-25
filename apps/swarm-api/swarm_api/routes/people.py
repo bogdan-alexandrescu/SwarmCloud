@@ -3,7 +3,10 @@
 Lane W2 of #847 builds the grant and remove routes; lane W7 extends this file
 with the People list, approvals, limits and loans. Every route here is
 admin-only through `admin_auth`, and none is in `auth.POOL_ADMIN_ROUTES`, so a
-pool admin or the rollup sweeper is refused.
+pool admin or the rollup sweeper is refused. The one exception is the READ of
+the People list (ADMIN-PEOPLE-ROLES; part of #2157, BGD "Both, by scope"):
+`people_scope` also answers a workspace admin, with only the group workspaces
+they administer and the people in them. Every write stays a platform admin's.
 
     PUT    /v1/admin/admins/{email}   grant admin
     DELETE /v1/admin/admins/{email}   remove admin
@@ -33,7 +36,8 @@ Lane WK-RECORD (docs/design/workspace-kinds.md §4.2.2):
 
     POST /v1/admin/workspaces                    file a personal, group or service
                                                  workspace; body {kind, principal,
-                                                 display_name?, limits?}
+                                                 display_name?, limits?,
+                                                 first_admin?}
     GET  /v1/admin/workspaces?kind=&state=       records, newest first, at most 200
     GET  /v1/admin/workspaces/{workspace_id}     one record, for the progress view
 
@@ -62,14 +66,17 @@ from pydantic import Field
 from ..admins import AdminRoles, build_admin_roles
 from ..auth import AuthContext
 from ..brokerclient import AccountPool
-from ..deps import AppContext, admin_auth, get_context
+from ..deps import AppContext, admin_auth, current_auth, get_context
+from .. import roles
 from .. import workspaces as ws
+from ..errors import ApiError, Forbidden, RoleUnavailable, ValidationFailed
 from ..groups import MembershipResolver
 from ..people import (
     MAX_CEILING,
     MAX_LOAN_REASON,
     MAX_REASON,
     MIN_CEILING,
+    SCOPE_PLATFORM,
     People,
     name_lookup,
 )
@@ -77,6 +84,7 @@ from ..publish_workspace import WorkspacePublisher, publisher_for
 from ..schemas import StrictModel
 from ..specsigning import signer_from_settings
 from .accounts import account_pool
+from .roles import _member as group_member
 
 router = APIRouter(prefix="/v1/admin", tags=["people"])
 
@@ -157,6 +165,11 @@ class NewWorkspaceRequest(StrictModel):
     principal: str = Field(min_length=3, max_length=254)
     display_name: str | None = Field(default=None, max_length=ws.MAX_DISPLAY_NAME)
     limits: RequestLimits | None = None
+    #: A GROUP workspace's first admin (WORKSPACE-ADMIN-FIELDS, part of #2157;
+    #: docs/design/workspace-roles.md §4.6, §8): one person's address, granted
+    #: `admin` in this workspace and no other. Checked by
+    #: `roles.subject_for_write` before anything is created.
+    first_admin: str | None = Field(default=None, max_length=320)
 
 
 def workspace_directory(request: Request,
@@ -212,18 +225,100 @@ def people_service(
                       getattr(ctx.settings, "worker_firestore_off_tenants", ()) or ()))
 
 
+def administered_workspaces(ctx: AppContext, auth: AuthContext) -> dict[str, str]:
+    """tenant_id -> group for every GROUP workspace the caller administers by
+    their own stored role: the `/v1/tenants/mine` entries whose role is
+    `admin` (what the console's `adminWorkspaces` reads), each asked FRESH,
+    so a role taken away a moment ago is not read from a cache. Only the
+    caller's verified memberships are asked (`tenant_choices`), never the
+    selected tenant alone and never anything the request names; their own
+    personal workspace and every `u-` id are left out. A workspace whose role
+    could not be read is not administered: an unread role is never a wider
+    one. When NO role was read and none said admin, that is "could not ask",
+    `RoleUnavailable`'s 503, as `require_admin` answers an unread admin
+    lookup: a 403 would tell a real workspace admin they are not one."""
+    store = ctx.roles
+    if store is None:
+        return {}
+    email = (auth.email or "").strip().lower()
+    out: dict[str, str] = {}
+    unread: RoleUnavailable | None = None
+    read = 0
+    for tenant_id, principal in auth.tenant_choices:
+        if principal == email or tenant_id.startswith("u-"):
+            continue
+        try:
+            role = store.person_role(tenant_id, email, fresh=True).role
+        except RoleUnavailable as exc:
+            unread = exc
+            continue
+        read += 1
+        if role == roles.ADMIN:
+            out[tenant_id] = principal
+    if not out and read == 0 and unread is not None:
+        raise unread
+    return out
+
+
+def people_scope(request: Request, auth: AuthContext = Depends(current_auth),
+                 ctx: AppContext = Depends(get_context)) -> dict[str, str] | None:
+    """WHO MAY READ ADMIN › PEOPLE AND ROLES (ADMIN-PEOPLE-ROLES; part of
+    #2157). None for a platform admin, who reads everything, exactly as
+    `admin_auth` decides it (its 503 while Cloud Identity does not answer
+    included). Otherwise the group workspaces the caller administers, which
+    is the whole of what they read; and when they administer none -- a member,
+    a viewer, someone in no group -- `admin_auth`'s own 403. A pool admin, a
+    listed service account and the platform's own identities are refused as
+    before: none of them holds a person's role."""
+    try:
+        admin_auth(request, auth)
+        return None
+    except Forbidden:
+        if (auth.is_pool_admin or auth.is_rollup_sweeper or auth.is_schedule_tick
+                or auth.member_scope or auth.tenant_member
+                or ws.is_service_identity(auth.email)):
+            raise
+        administered = administered_workspaces(ctx, auth)
+        if not administered:
+            raise
+        return administered
+
+
 @router.get("/people")
 def list_people(
     request: Request,
-    auth: AuthContext = Depends(admin_auth),
+    scope: dict[str, str] | None = Depends(people_scope),
+    auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
     people: People = Depends(people_service),
 ) -> dict:
     """§6.4: everyone who has signed in, pending requests first, the last 50
     audit entries, and the accounts this admin may lend. The lendable list
     comes from the quota broker; when it does not answer, the rest of the
-    page is still served and `lendable_accounts` is null with the reason."""
+    page is still served and `lendable_accounts` is null with the reason.
+
+    THE PERSON × WORKSPACE GRID (S5c, S5f): `workspaces` is one column per
+    group workspace and each row's `roles` its cell in each. A platform admin
+    (`scope: platform`) is served every registered group workspace and
+    everything above. A workspace admin (`scope: workspaces`) is served only
+    the workspaces they administer and the people in them, and none of the
+    rest (`People.in_workspaces`). Every write on this router stays a
+    platform admin's (`admin_auth`)."""
+    if scope is not None:
+        return people.in_workspaces(ctx.roles, scope)
     body = people.everyone(store=ctx.store)
+    body["scope"] = SCOPE_PLATFORM
+    # The grid's columns fail alone, like the two sections below: a registry
+    # that cannot be read leaves the list served and says why.
+    try:
+        columns, grants = people.role_columns(
+            ctx.roles, ctx.authenticator.registered_group_workspaces())
+        people.add_roles(body["people"], columns, grants)
+        body["workspaces"] = columns
+        body["workspaces_error"] = None
+    except Exception as exc:  # noqa: BLE001 - one section, never the page
+        body["workspaces"] = None
+        body["workspaces_error"] = getattr(exc, "code", None) or type(exc).__name__
     try:
         pool = account_pool(request, ctx)
         body["lendable_accounts"] = people.lendable(pool, admin_email=auth.email,
@@ -264,6 +359,54 @@ def sweep_workspaces(
     return {**people.sweep(pool), "loans_error": pool_error}
 
 
+#: A record in one of these states is still being created, so naming its
+#: first admin is part of adding it; a `ready` one already has its people.
+BEING_CREATED = frozenset({ws.REQUESTED, ws.APPROVED, ws.APPLYING, ws.NEEDS_OWNER})
+FIRST_ADMIN_REASON = "first admin, named when the workspace was added"
+
+
+def name_first_admin(ctx: AppContext, record: dict[str, Any], email: str, *,
+                     by: str) -> dict[str, Any]:
+    """Grant `email` admin in the workspace `record` is, and nowhere else,
+    through the signed, append-only override and its `admin_audit` row
+    (`roles.RoleStore.write`, the write `PUT /v1/admin/workspaces/{id}/roles/
+    person` makes). The tenant id is the stored record's, which
+    `People.create` derived from the group's address. A person not yet in
+    the group still gets the grant; it applies once they are in it (§4.6),
+    and `member` says which. A grant already standing is not written again,
+    so a repeated request is idempotent. A record no longer being created is
+    answered `granted: false`: its admins are People and roles' to change. A
+    write that fails leaves the workspace filed and says why; the request
+    repeated while it is being created writes the grant then."""
+    tenant_id = str(record.get("tenant_id") or "")
+    group = str(record.get("principal") or "")
+    answer: dict[str, Any] = {"email": email, "role": roles.ADMIN}
+    if ws.state_of(record) not in BEING_CREATED:
+        return {**answer, "granted": False, "reason": "workspace_exists"}
+    store = ctx.roles
+    if store is None:
+        return {**answer, "granted": False, "reason": "role_unavailable"}
+    try:
+        current = store.newest_valid(tenant_id, email, fresh=True)
+        member = group_member(ctx, email, tenant_id, group)
+        if current is not None and current.role == roles.ADMIN:
+            return {**answer, "granted": True, "member": member}
+        if current is not None and current.role is not None:
+            previous, from_source = current.role, roles.SOURCE_OVERRIDE
+        else:
+            previous, from_source = store.default_role(tenant_id, fresh=True)[0], \
+                roles.SOURCE_DEFAULT
+        store.write(
+            tenant_id=tenant_id, subject=email, role=roles.ADMIN, by=by,
+            via=roles.VIA_PLATFORM_ADMIN, reason=FIRST_ADMIN_REASON, previous=current,
+            action=roles.AUDIT_GRANTED,
+            detail={"from": previous, "to": roles.ADMIN, "from_source": from_source,
+                    "member": member, "first_admin": True})
+    except ApiError as exc:
+        return {**answer, "granted": False, "reason": exc.code}
+    return {**answer, "granted": True, "member": member}
+
+
 @router.post("/workspaces")
 def create_workspace(
     body: NewWorkspaceRequest,
@@ -273,13 +416,29 @@ def create_workspace(
 ) -> JSONResponse:
     """File a workspace of any kind (docs/design/workspace-kinds.md §4.2).
     202 with the record when this call created it (already `approved` when
-    the requester may approve it), 200 when it already stood."""
+    the requester may approve it), 200 when it already stood.
+
+    `first_admin` (a group workspace's only) is checked BEFORE anything is
+    created -- one person's address, never a service account -- and granted
+    after (`name_first_admin`), its outcome served as `first_admin`."""
+    first_admin = None
+    if body.first_admin is not None:
+        if body.kind != ws.GROUP:
+            raise ValidationFailed(
+                "first_admin names a group workspace's first admin: a personal "
+                "workspace's person is its admin, and a service workspace has no people",
+                detail={"field": "first_admin"})
+        first_admin = roles.subject_for_write(body.first_admin)
     status, record = people.create(
         ctx.submissions.workspaces, kind=body.kind, principal=body.principal,
         display_name=body.display_name,
         limits=body.limits.model_dump(exclude_none=True) if body.limits else None,
         by=auth.email, is_owner=bool(auth.is_owner))
-    return JSONResponse(status_code=status, content=people.admin_view(record))
+    content = people.admin_view(record)
+    if first_admin is not None:
+        content["first_admin"] = name_first_admin(
+            ctx, record, first_admin, by=(auth.email or "").strip().lower())
+    return JSONResponse(status_code=status, content=content)
 
 
 @router.get("/workspaces")

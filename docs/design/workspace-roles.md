@@ -830,7 +830,7 @@ disabling) are unchanged and out of its scope.
 |---|---|---|
 | set or clear a person's role in a group workspace | that workspace's `admin`s; platform admins (from the workspace, or through `/v1/admin/workspaces/{t}/roles`) | `role_admin_required` |
 | set a group workspace's default (`viewer` or `member`) | the same | the same; `admin` is 409 `default_role_not_allowed` |
-| name the **first** admin of a group workspace | a platform admin, in Admin › People (Q2), audited `granted_via: "platform_admin"`. A workspace has no workspace admin until one is granted, because the default can never be `admin` | |
+| name the **first** admin of a group workspace | a platform admin, in Admin › People (Q2), audited `granted_via: "platform_admin"`, or when adding the workspace, through `first_admin` on `POST /v1/admin/workspaces` (§8, WORKSPACE-ADMIN-FIELDS). A workspace has no workspace admin until one is granted, because the default can never be `admin` | `role_person_required` for a service account; 422 for anything that is not one address, or for a personal or service workspace |
 | demote or remove oneself | allowed. The last workspace admin may step down, because platform admins are always admin there and can name another. That is why there is no `last_workspace_admin` refusal (see `admins.py`'s `LAST_ADMIN` for the platform-wide case, where nobody is above) | |
 | raise oneself | not a case: only an `admin` can write a role, and `admin` is the top | |
 | any role change in a personal workspace | nobody | `personal_workspace_roles_fixed` |
@@ -1076,7 +1076,7 @@ role events are written in the same transaction as their grant.
 
 | action | when | `detail` |
 |---|---|---|
-| `workspace_role_granted` | a person's override is set | `{from, to, from_source, via, reason, member}` |
+| `workspace_role_granted` | a person's override is set | `{from, to, from_source, via, reason, member}`, and `first_admin: true` when it was named on Add a new workspace |
 | `workspace_role_cleared` | a person returns to the default | `{from, to: <default>, via, reason}` |
 | `workspace_default_role_set` | the default changes | `{from, to, via, reason}` |
 | `workspace_role_grant_invalid` | the reader skipped an invalid grant (once per document per instance, so a flood writes at most 60 rows per read) | `{tenant_id, subject, reason: "mac" \| "shape"}`, **no document id** |
@@ -1405,6 +1405,40 @@ Departures:
   walk `Authenticator._reachable_groups` makes" is true only of Terraform's
   groups.
 
+**WORKSPACE-ADMIN-FIELDS (2026-10-25, part of #2157; config-e.html S6c).**
+`POST /v1/admin/workspaces` takes an optional `first_admin`, a platform
+admin's only (`admin_auth`, as the rest of the body). It is checked before
+anything is created: a group workspace only, one person's address through
+`roles.subject_for_write`, so a service account is `role_person_required`
+and anything else malformed is 422 with no record written. After the record
+is filed, `apps/swarm-api/swarm_api/routes/people.py::name_first_admin` writes
+the ordinary signed override with `RoleStore.write`: `admin`, `via:
+platform_admin`, its `workspace_role_granted` row carrying `first_admin:
+true`. The tenant id is the stored record's, derived from the group's address,
+so the grant lands in that workspace and in no other. Membership stays the
+group's. A person not yet in the group still gets the grant, the response
+says `member: false`, and the console says the role takes effect once they
+are in the group: tenant resolution still checks membership per registered
+group, and a grant never admits anyone (§4.6). Three departures from a plain
+role write:
+
+* **Only while the workspace is being created.** For a record that is already
+  `ready`, `denied` or `failed`, nothing is written and the answer is
+  `granted: false, reason: workspace_exists`. Its admins are then People and
+  roles' to change, so `first_admin` is never a second door to an
+  established workspace.
+* **Idempotent.** A repeated request finds the grant standing and writes
+  nothing.
+* **A failed grant does not undo the record.** The answer is `granted:
+  false` with the refusal's code. Repeating the request while the workspace
+  is still being created writes the grant.
+
+The same lane added `PUT /v1/workspaces/{tenant_id}/name`
+(`apps/swarm-api/swarm_api/routes/workspace_name.py`). It is an admin-level
+write in `ADMIN_WRITES` for the workspace's admins and platform admins,
+asked of the verified membership and never of the tenant document, and it
+writes a `workspace_renamed` audit row. It changes the display name only.
+
 **ROLES-ADMIN-LIST (owner, 2026-10-19).** Admin › People's Workspace roles
 card reads `GET /v1/admin/workspaces/roles`,
 `apps/swarm-api/swarm_api/routes/admin.py::list_workspace_roles`, a page of
@@ -1481,8 +1515,9 @@ Departure: the typed phrase is `<email> <role>` for `set`, `<email> default`
 for `clear` and `default <role>` for `default`, not always an email and a
 role.
 
-**ROLES-UI-PEOPLE (phase 4).** `#settings/people`
-(`apps/swarm-ui/src/roles.ts` (`export const WORKSPACE_PEOPLE_ADDRESS = 'settings/people'`)),
+**ROLES-UI-PEOPLE (phase 4).** `#settings/people`, Config › People and roles
+since CONFIG-NAV (`apps/swarm-ui/src/roles.ts`
+(`export const WORKSPACE_PEOPLE_ADDRESS = 'config/people'`), CONFIG-ADMIN-POLISH),
 in `apps/swarm-ui/src/WorkspacePeople.tsx`: the roster, what each role
 permits and the recent events for every role, controls for an `admin`, a
 default selector offering `viewer` and `member` only, and the
