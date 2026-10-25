@@ -70,6 +70,7 @@ import { SCOPE_WORDS, SHORTCUTS, shortcut } from './shortcuts'
  */
 export type TopicId =
   | 'absent-vs-zero'
+  | 'account-health'
   | 'account-label-rules'
   | 'account-owned-by-one-tenant'
   | 'account-removal-is-reversible'
@@ -1327,6 +1328,19 @@ const SPECS: Record<TopicId, TopicSpec> = {
     ],
   },
 
+  'account-health': {
+    group: 'an-account',
+    title: 'An account’s health is the broker’s word, counted',
+    short:
+      'Each subscription account keeps a record of its rate-limit hits, provider errors, refusals and re-auths over 7 days. Its status (healthy, limited, erroring, needs re-auth) is the broker’s, and this page only counts and sorts it. A dash is a figure this deployment did not give, never a zero.',
+    long: [
+      'The broker decides the status, first match wins: needs re-auth when the credential was refused; limited while a recorded rate-limit hit has not reset or the window readings keep the account from a new agent; erroring with three or more errors in the last hour; healthy otherwise. Erroring accounts are still assigned work; limited and re-auth ones are withheld.',
+      'The timeline draws one mark per event the record still holds, the last 50 per account. Older events still count in the hourly strip and the 7-day totals, and the page says how many when there are any.',
+      'On a phone the events are grouped into incidents: a rate-limit hit opens one that later limit events join until its window resets; errors or credential events of one family within 45 minutes of each other are one incident; a refusal that names no window belongs to the re-auth incident. Open ones come first, each with its fix.',
+    ],
+    see: ['absent-vs-zero', 'account-states'],
+  },
+
   lending: {
     group: 'an-account',
     title: 'What lending an account does',
@@ -1746,6 +1760,7 @@ export const HELP_PLACES = {
   'capacity/catalogue': 'Runtimes',
   'capacity/holders': 'Holders',
   'capacity/accounts': 'Subscription accounts',
+  'capacity/account-health': 'Account health',
   'capacity/quota': 'Provider quota',
   'admin/limits': 'Pool limits',
   'admin/tenants': 'Tenants',
@@ -2128,6 +2143,10 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   'account-owned-by-one-tenant': {
     subject: 'Account ownership',
     act: { say: 'Check the tenant the session names before starting a sign-in.', at: 'capacity/accounts' },
+  },
+  'account-health': {
+    subject: 'Account health',
+    act: { say: 'Open the worst account first: sign in again where re-auth is needed, and wait out a limit until its window resets.', at: 'capacity/account-health' },
   },
   lending: {
     subject: 'Lending an account',
