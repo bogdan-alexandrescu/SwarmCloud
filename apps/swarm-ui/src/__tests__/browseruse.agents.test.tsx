@@ -17,7 +17,11 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
 import type { BrowserUse, Task, TaskPage } from '../types'
+import type { CascadeEnv } from './cssgate'
+import { painted } from './marks'
 import { at, task as runTask } from './runfixture'
+
+const WIDE: CascadeEnv = { width: 1440 }
 
 const api = vi.hoisted(() => ({
   loadTasks: vi.fn(),
@@ -111,6 +115,21 @@ describe('the Agents list draws whether a browser runtime used its browser', () 
     }
   })
 
+  it('a browser row keeps its owner and run time: the line wraps between its facts at every width', async () => {
+    const { container } = await list([UNUSED(), PLAIN()])
+    const sub = rowOf(container, 'review-unused').querySelector<HTMLElement>('.cr-sub')!
+    // REVIEW (dark-desktop-02-inspector-used): beside the inspector the mark
+    // pushed the owner and the run time past the one line's ellipsis.
+    // MUTATION: leave the browser row one cut line on a wide screen.
+    expect(sub.className).toMatch(/\bhas-bu\b/)
+    expect(painted(sub, 'white-space', WIDE)).toBe('normal')
+    for (const fact of sub.querySelectorAll(':scope > *')) expect(painted(fact, 'white-space', WIDE)).toBe('nowrap')
+    // A row with no browser mark keeps the one line it had.
+    const plain = rowOf(container, 'implement-plain').querySelector<HTMLElement>('.cr-sub')!
+    expect(plain.className).not.toMatch(/\bhas-bu\b/)
+    expect(painted(plain, 'white-space', WIDE)).toBe('nowrap')
+  })
+
   it('a task on a runtime with no browser draws nothing', async () => {
     const { container } = await list([PLAIN()])
     // MUTATION: flag every claude-code task "browser not used".
@@ -171,5 +190,20 @@ describe('the link from Platform counts filters the Agents list', () => {
     expect(steps()).toHaveLength(5)
     expect(onList).toHaveBeenLastCalledWith({ tab: 'recent', state: null })
     expect(screen.queryByText(/browser not used/, { selector: '[data-filter] *' })).toBeNull()
+  })
+
+  it('the Recent state counts count what the filter lets through', async () => {
+    const failedUnused = () => ended({ step_id: 'review-unused-failed', state: 'FAILED', runner_profile: BROWSER, browser_used: false, browser_use: counts() })
+    await list([USED(), UNUSED(), failedUnused(), CUT(), OLD(), PLAIN()], { list: { tab: 'recent', state: null, browserUnused: true } })
+    const seg = () => screen.getByRole('group', { name: 'Recent, by state' })
+    const count = (word: string) => {
+      const b = within(seg()).getAllByRole('button').find((x) => (x.textContent ?? '').startsWith(word))!
+      return Number((b.textContent ?? '').replace(/\D+/g, ''))
+    }
+    // REVIEW (light-desktop-03-filtered): `all 6 · succeeded 6` over the two
+    // rows drawn. MUTATION: leave the browser filter out of `stateCounts`.
+    expect(count('all')).toBe(2)
+    expect(count('failed')).toBe(1)
+    expect(count('succeeded')).toBe(1)
   })
 })

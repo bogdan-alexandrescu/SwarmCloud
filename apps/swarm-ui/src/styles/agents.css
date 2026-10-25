@@ -1215,6 +1215,12 @@
    still tells them apart. In the inspector the fact is a disclosure: a plain
    button that looks like the line's words, its counts after it when open. */
 .bu-mark { white-space: nowrap; }
+/* A ROW CARRYING THE MARK WRAPS BETWEEN ITS FACTS, AS AT 390, ON EVERY WIDTH
+   (review, dark-desktop-02-inspector-used): in the split list beside the
+   inspector the mark pushed the owner and the run time past the one line's
+   ellipsis, which a row without it still shows. Each fact stays whole. */
+.row.is-compact > .cr-sub.has-bu { white-space: normal; }
+.row.is-compact > .cr-sub.has-bu > * { white-space: nowrap; }
 .bu-mark.is-unused { color: var(--warn-ink); }
 .bu-fact { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s1); min-width: 0; }
 .bu-toggle {

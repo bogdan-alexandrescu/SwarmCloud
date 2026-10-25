@@ -15,6 +15,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import type { BrowserUsage, PlatformTime, UsageBucket, UsageFigures } from '../platformTimeApi'
+import { painted } from './marks'
 
 const loadPlatformTime = vi.hoisted(() => vi.fn<(q: URLSearchParams) => Promise<Result<PlatformTime>>>())
 vi.mock('../platformTimeApi', async (importOriginal) => ({
@@ -104,6 +105,20 @@ describe('Platform counts: unused browser time for the range', () => {
     // BESIDE THE RUN-TIME FIGURES: the tile after Run hours.
     const names = [...document.querySelectorAll('.pot-tile')].map((e) => e.getAttribute('data-tile'))
     expect(names.indexOf('Unused browser time')).toBe(names.indexOf('Run hours') + 1)
+  })
+
+  it('six tiles are two even rows of three on a wide screen, not five and a stray', async () => {
+    loadPlatformTime.mockResolvedValue(payload(figures(100, browser()), [bucket(...W1, figures(100, browser()))]))
+    render(<PlatformOverTime workspaces={1} />)
+    await run()
+    const grid = document.querySelector<HTMLElement>('.pot-tiles')!
+    expect(grid.querySelectorAll('.pot-tile')).toHaveLength(6)
+    // REVIEW (light-desktop-04-counts-tile): the five-wide auto-fit grid put
+    // Estimated cost alone on a second row with a four-tile hole at 1440.
+    // MUTATION: drop the six-tile layout and leave the auto-fit grid.
+    expect(painted(grid, 'grid-template-columns', { width: 1440 })).toBe('repeat(3, minmax(0, 1fr))')
+    // The phone keeps its two columns, tokens and cost on rows of their own.
+    expect(painted(grid, 'grid-template-columns', { width: 390, height: 844 })).toBe('1fr 1fr')
   })
 
   it('is a floor when some browser agents have no verdict', async () => {

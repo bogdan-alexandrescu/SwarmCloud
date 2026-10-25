@@ -602,7 +602,7 @@ function Tiles({ data, unread, unit }: { data: PlatformTime; unread: number; uni
     { name: 'Estimated cost', value: cost.text, tone: cost.tone, series: (b) => b.cost.sum_usd, floor: (b) => costCell(b).tone === 'floor', foot: ['list price, not a bill', cost.cover.join(' · ')] },
   ]
   return (
-    <div className="pot-tiles">
+    <div className={`pot-tiles${tiles.length === 6 ? ' is-six' : ''}`}>
       {tiles.map((tile) => {
         const moved = change(u.buckets, tile.series, tile.floor, unit)
         return (

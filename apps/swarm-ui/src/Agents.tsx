@@ -671,16 +671,23 @@ function AgentsBody({
   // The segment's counts, from the loaded Recent rows, like the tab badges --
   // UNDER THE PROFILE FILTER (live QA WA-9): with `indexer` chosen and 15 rows
   // on screen the segment read `all 181+`, the count of every profile's rows.
-  // A count beside a filter counts what that filter lets through.
+  // A count beside a filter counts what that filter lets through -- the
+  // browser filter too (review, light-desktop-03-filtered: `all 6` over the
+  // two rows `?browser=unused` drew).
   const stateCounts = useMemo(() => {
-    const recent = page.tasks.filter((t) => tabOf(t) === 'recent' && (profile === '' || t.runner_profile === profile))
+    const recent = page.tasks.filter(
+      (t) =>
+        tabOf(t) === 'recent' &&
+        (profile === '' || t.runner_profile === profile) &&
+        (!browserUnused || browserUseOf(t)?.kind === 'unused'),
+    )
     return {
       all: recent.length,
       failed: recent.filter((t) => t.state === RECENT_STATE_OF.failed).length,
       cancelled: recent.filter((t) => t.state === RECENT_STATE_OF.cancelled).length,
       succeeded: recent.filter((t) => t.state === RECENT_STATE_OF.succeeded).length,
     }
-  }, [page.tasks, profile])
+  }, [page.tasks, profile, browserUnused])
 
   // EVERY REPORT CARRIES THE TOGGLES (G2-22): a tab click that wrote only
   // `{ tab, state }` would clear `group=wf` from the address, and the
@@ -2037,7 +2044,10 @@ function CompactRow({
       <span className={`when${el.ticking && endedAt === null ? ' ticking' : ''}`} title={whenTitle}>
         {whenText}
       </span>
-      <span className="cr-sub">
+      {/* A BROWSER ROW WRAPS BETWEEN ITS FACTS AT EVERY WIDTH (review,
+          dark-desktop-02-inspector-used): beside the inspector its mark cut
+          the owner and the run time off the one line (agents.css `.has-bu`). */}
+      <span className={`cr-sub${browserMark !== null ? ' has-bu' : ''}`}>
         {task.state === 'RUNNING' && isLiveBrowser(task) && <DeviceThumb taskId={task.id} />}
         {/* A LIVE ROW LEADS WITH WHERE IT IS (visual QA run 2, work-a-007):
             the line is one line cut at its end (agents.css `.cr-sub`), and
