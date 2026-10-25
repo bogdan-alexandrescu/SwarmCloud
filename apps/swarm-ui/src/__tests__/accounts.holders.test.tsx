@@ -109,7 +109,7 @@ async function openRow(a: Account, tenant = 'eng') {
   // The list item, not any button naming the account: the pane opens the
   // first account on its own now (#503), and its controls name it too.
   await screen.findByText('Subscription accounts', undefined, WAIT)
-  const open = document.querySelector<HTMLButtonElement>('.acct-li > button.acct-open')!
+  const open = document.querySelector<HTMLButtonElement>('button.acct-open')!
   if (open.getAttribute('aria-current') !== 'true') fireEvent.click(open)
 }
 

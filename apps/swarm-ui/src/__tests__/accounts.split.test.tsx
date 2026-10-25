@@ -99,11 +99,12 @@ function shown(): string[] {
   return [...document.querySelectorAll('.acct-pane-detail')].map((s) => s.getAttribute('aria-label') ?? '')
 }
 
+/** An account's row in the ranked table (#2222), by the name on its button. */
 function item(label: string): HTMLElement {
-  const li = [...document.querySelectorAll('.acct-li')].find(
-    (el) => el.querySelector('.acct-li-name')?.textContent === label,
+  const li = [...document.querySelectorAll('tr.acct-rank-row')].find(
+    (el) => el.querySelector('button.acct-open')?.textContent === label,
   )
-  expect(li, `no list item for ${label}`).toBeTruthy()
+  expect(li, `no row for ${label}`).toBeTruthy()
   return li as HTMLElement
 }
 
@@ -136,7 +137,7 @@ describe('the pane opens an account without being asked (#503)', () => {
   })
 })
 
-describe('the list is A1’s compact list, with Add account in its header (#503)', () => {
+describe('the list is the ranked table, with Add account in its header (#503, #2222)', () => {
   it('puts Add account in the list header row, beside the title', async () => {
     await mount(TWO)
     const head = document.querySelector('.acct-list .acct-list-head')
@@ -147,16 +148,17 @@ describe('the list is A1’s compact list, with Add account in its header (#503)
     expect(document.querySelector('.acct-add-bar')).toBeNull()
   })
 
-  it('is one item per account, not a table with five column heads', async () => {
+  // #2222 (proposal A, BGD 2026-10-24): one table ranked by when each account
+  // can take a new agent replaced A1's compact list.
+  it('is one ranked row per account, under the group it ranks in', async () => {
     await mount(TWO)
-    expect(document.querySelector('.acct-list table')).toBeNull()
-    expect(document.querySelectorAll('.acct-list [role="columnheader"]').length).toBe(0)
-    expect(document.querySelectorAll('.acct-list li.acct-li').length).toBe(2)
-    // The foot says what the tilde means, as the frame's does.
+    expect(document.querySelectorAll('.acct-list tr.acct-rank-row').length).toBe(2)
+    // These rows carry none of the pool's fields (an older broker), and are said as that.
+    expect(document.querySelector('.acct-list tr.acct-rank-grp')?.textContent).toBe('The broker does not say · 2')
     expect(document.querySelector('.acct-list .provenance')).not.toBeNull()
   })
 
-  it('draws the 5h figure on the item: an em dash unmeasured, ~ when projected', async () => {
+  it('draws a window as an em dash unmeasured, and an old reading pale with its age', async () => {
     const t = Date.now()
     await mount([
       account({ account_id: 'eng:a', label: 'alpha' }),
@@ -168,15 +170,13 @@ describe('the list is A1’s compact list, with Add account in its header (#503)
         windows: { five_hour: { utilization: 0.64, resets_at: new Date(t + 3_600_000).toISOString(), reset: false } },
       }),
     ])
-    const a = item('alpha').querySelector('.acct-window')!
-    expect(a.classList.contains('acct-unmeasured')).toBe(true)
-    // The figure, then the window it is (QA G5-23: `— 5h`, `~64% 5h`).
-    expect(a.querySelector('.acct-pct')!.textContent).toBe('—')
-    expect(a.querySelector('.acct-pct-win')!.textContent).toBe(' 5h')
-    const b = item('bravo').querySelector('.acct-window')!
-    expect(b.querySelector('.acct-pct')!.textContent).toBe('~64%')
-    expect(b.textContent).toBe('~64% 5h')
-    expect(b.querySelector('.acct-tilde')).not.toBeNull()
+    const a = item('alpha').querySelector('.acct-fig')!
+    expect(a.textContent).toBe('5-hour —no reading yet')
+    expect(a.querySelector('.acct-bar')).toBeNull()
+    const row = item('bravo')
+    expect(row.classList.contains('is-stale')).toBe(true)
+    expect(row.querySelector('.acct-fig')!.textContent).toContain('36% left')
+    expect(row.querySelector('.acct-age')!.textContent).toContain('counts at half')
   })
 })
 
@@ -189,15 +189,15 @@ describe('an account state is not a task state (brand §3, #503)', () => {
   ]
   const mark = (label: string) => item(label).querySelector<HTMLElement>('.acct-state')!
 
-  it('draws available and draining grey with no hue mark', async () => {
+  // AVAILABLE draws no state at all now (#2222): "available" was the word the
+  // page read as "can take an agent" while every account was under its floor.
+  it('draws draining grey with no hue mark, and available as no state', async () => {
     await mount(STATES)
-    for (const label of ['s1', 's3']) {
-      const m = mark(label)
-      expect(m.getAttribute('data-hue'), `${label} took a hue`).toBe('neu')
-      expect(m.querySelector('svg'), `${label} drew a task-state glyph`).toBeNull()
-    }
-    expect(mark('s1').textContent).toBe('available')
-    expect(mark('s3').textContent).toBe('draining')
+    expect(item('s1').querySelector('.acct-state')).toBeNull()
+    const m = mark('s3')
+    expect(m.getAttribute('data-hue')).toBe('neu')
+    expect(m.querySelector('svg'), 'draining drew a task-state glyph').toBeNull()
+    expect(m.textContent).toBe('draining')
   })
 
   it('draws paused with the park hue’s pause bars', async () => {
@@ -263,14 +263,15 @@ describe('on a phone the account is a page (frame 10, #503)', () => {
   })
 })
 
-describe('the head says how many accounts can serve (frame 7)', () => {
-  it('counts accounts, the available ones and the ones needing a sign-in', async () => {
+describe('the head says how many accounts there are (frame 7, #2222)', () => {
+  it('counts accounts and the ones needing a sign-in, and no longer says available', async () => {
     await mount([
       account({ account_id: 'eng:1', label: 's1' }),
       account({ account_id: 'eng:2', label: 's2', state: 'PAUSED' }),
       account({ account_id: 'eng:3', label: 's3', state: 'REAUTH_REQUIRED' }),
     ])
-    expect(document.body.textContent).toContain('3 accounts · 1 available · 1 needs a sign-in')
+    expect(document.body.textContent).toContain('3 accounts · 1 needs a sign-in')
+    expect(document.body.textContent).not.toMatch(/\bavailable\b/)
   })
 })
 
