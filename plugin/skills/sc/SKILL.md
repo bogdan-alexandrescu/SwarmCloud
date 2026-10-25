@@ -1,7 +1,7 @@
 ---
 name: sc
 description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 100 followed, closest to finish first, the plugin's `max_live_rows`) and gives each of your running single tasks — dispatched with swarm_dispatch, in no workflow — one row (at most 100), every run's and row's expanded details naming the workspace it runs in, who started it and its LLM account; `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. `check` reads which of this project's SwarmCloud workflows and tasks are stuck or stale (swarm_check, read-only) and then gives every running workflow of the project that has no row in this session its live rows; `watch [interval]` runs that `check` every interval (default 30m, at least 5m) with Claude Code's CronCreate and remembers it for the project; the watch also arms itself (CronList first, never a second job) whenever this session attaches to or starts SwarmCloud work, and `watch off` stops it and keeps it off for the project until `watch` again. `build-board` refreshes this project's local build board (`.claude/build-board/index.html`, git-ignored, never committed) and opens it in the browser. `keys` says whether a TypeSafe key is set for you and your tenant and which one a task would use; `keys set <provider> [--tenant]` gives the developer a one-time console link to paste the key into themselves — the key never passes through this session. `secrets list` shows Config › Secrets' names and status for one scope (workspace, personal or a repository; never a value), and `secrets link` gives the developer a one-time console link to set a secret — in the workspace, personal or repository store, or as a repository's GitHub Actions secret with `--actions` — whose value they type into the form themselves; no tool takes a value. `roles` shows the roles of the workspace this session acts in (read-only); a role is changed only by the developer, typed at their own terminal. Use when asked "is my TypeSafe key set", "set my TypeSafe key", "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
-argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | check | inputs | answer <wf_id> <step_id> [file ...] | build-board | watch [interval] | watch off | layout [rows|pane] | run <spec path|JSON> | run --issue owner/repo#N | runs | plan show|approve|edit|reject <run> | keys | keys set <provider> [--tenant] | secrets list [scope] [--repo owner/repo] | secrets link <scope> [name] [--repo owner/repo] [--actions [--env name]] | roles]"
+argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | attach --all --project | check | inputs | answer <wf_id> <step_id> [file ...] | build-board | watch [interval] | watch off | layout [rows|pane] | run <spec path|JSON> | run --issue owner/repo#N | runs | plan show|approve|edit|reject <run> | keys | keys set <provider> [--tenant] | secrets list [scope] [--repo owner/repo] | secrets link <scope> [name] [--repo owner/repo] [--actions [--env name]] | roles]"
 arguments:
   - verb
   - target
@@ -72,6 +72,7 @@ one action — never a second one the developer did not ask for:
 | `workflows` | lists your tenant's workflows still running in SwarmCloud, marking `[this session]` the ones this Claude Code session started | no |
 | `attach <wf_id>` | re-attaches live rows to a workflow running in SwarmCloud | no |
 | `attach --all` | live rows for every running workflow THIS Claude Code session started (at most 100), and one per running single task it dispatched (at most 100); `max_live_rows` moves both, 1-200 | no |
+| `attach --all --project` | at session start only, what the SessionStart hook asks for: the same, plus every workflow and single task still running for THIS PROJECT (this checkout's origin repository), whichever session started it. See "Session start" | no |
 | `check` | which of THIS SESSION's workflows and tasks in THIS PROJECT are stuck or stale, stuck first, each with its reason, evidence, console link and next command: `swarm_check`. Then live rows for every running workflow and single task of the project that has none in this session | no (attaching submits nothing) |
 | `watch [interval]` | a `check` every interval (default `30m`, at least `5m`) in this session, through Claude Code's CronCreate, remembered for this project so the next session re-arms it: `swarm_check_schedule`. It also arms itself when this session attaches or starts work (see "Arming the watch") | schedules a prompt in this session; nothing in SwarmCloud |
 | `build-board` | refreshes this project's build board, `.claude/build-board/index.html`, and opens it in the browser: `swarm_build_board` | writes the local page only (git-ignored); nothing in SwarmCloud |
@@ -275,6 +276,38 @@ after a reload — or whenever a task started outside this session — run it
 by hand; it submits nothing either way. Last, the mandatory final step when
 it launched at least one run: [Arming the watch](#arming-the-watch), with the
 reply's `arm_watch` (null when nothing was launched).
+
+### Session start: this session's work, and the project's running work
+
+At session start the plugin's SessionStart hook names the SwarmCloud work
+still running that this session should track -- and here, at session start
+only, it is WIDER than every other verb (BGD, 2026-10-25: "at start also try
+to run attach and see if there are any workflows that the project its
+starting in has any work running in sc that needs to be attached and tracked
+here"). It names this Claude Code session's own work AND the work still
+running for THIS PROJECT: every workflow and single task that clones this
+checkout's `origin` repository, whichever Claude Code session started it.
+Another repository's work from another session is never named; with no
+`origin` naming a repository nothing widens, and only this session's work is
+named.
+
+* In the **rows** layout the hook asks for **`/sc attach --all --project`**:
+  one `swarm_workflow_launch` call with `{attach: "all", project: true}`,
+  launched exactly as `attach --all` launches (every entry of `launches`,
+  then [Arming the watch](#arming-the-watch)). Its `project` says the
+  repository and how many came from other sessions (`from_other_sessions`);
+  say that in one line. Entries another session started are marked
+  `this_session: false`.
+* In the **pane** layout the pane opens at session start, not read yet (see
+  "Two layouts"), and its Refresh lists the project's running work beside
+  this session's (`swarm_browse {level: "workflows", project: true}`) with
+  no model row for it; the hook asks for the plain `/sc attach --all` only
+  when this session has work of its own, for its quiet finish rows.
+
+WHICH IS WHICH: the widening is **at session start only**. `/sc check` and the watch stay scoped to this session -- they check and attach only
+work this Claude Code session started (owner decision 2026-10-14) -- and so
+does the plain `/sc attach --all`. Never pass `project: true` for anything
+but the session start's attach.
 
 ### `check`
 
@@ -507,9 +540,15 @@ restarting the session:
   is a model agent that polls for as long as its work runs.
 * **`pane`** -- the **SwarmCloud pane** beside the chat, opened with
   `/sc-pane` (or by `/sc layout pane`), plus ONE quiet `sc:finish` row per
-  workflow in /workflows, labelled `SC · <name>`. The pane is drawn as B
-  draws it: Level 1 this session's workflows (state, stages done of total,
-  duration, tokens) with Refresh; open one and its **stages** are on the
+  workflow in /workflows, labelled `SC · <name>`. At session start the pane
+  opens by itself, drawing "not read yet" with Refresh, after ONE
+  `swarm_layout` call and no list read (BGD, 2026-10-25: "open it with no
+  read"); the engine seats a pane nobody asked for only from 144 terminal
+  columns, so on a narrower terminal it waits, a one-line toast says so, and
+  `/sc-pane` opens it. The pane is drawn as B
+  draws it: Level 1 this session's workflows -- and, after session start,
+  this project's running work too (see "Session start") -- (state, stages
+  done of total, duration, tokens) with Refresh; open one and its **stages** are on the
   left -- the console's own, `Stage N` being a step's dependency level plus
   one (`levelsOf`), with the console's page-head shape (`15 steps in 3 stages
   (1 → 13 → 1)`) -- and the selected stage's census on the right; open a
@@ -533,12 +572,18 @@ The toggle: **`/sc layout rows`** or **`/sc layout pane`** -- one
 `swarm_layout {layout}` call, which saves the choice for this project under
 the bridge's config directory (it outranks the plugin's `layout` option) --
 or the pane's own `[Layout]` control. Bare `/sc layout` says which is set
-(`swarm_layout {}`). With function hooks on, the pane answers `/sc layout`
-itself, with no model turn; otherwise make that one call and say its reply.
-The switch takes effect at the next launch or `/sc attach --all`: rows
-already running keep going until they end (a plugin cannot stop a running
-/workflows row), so after switching offer `/sc attach --all` for the
-running workflows. Say so; never claim the rows changed at once.
+(`swarm_layout {}`). A switch ALSO RE-ATTACHES (BGD, 2026-10-25: "Also
+re-attach automatically"): once `/sc layout rows|pane` (or the pane's
+`[Layout]` control) saves the choice, it queues `/sc attach --all`, one chat
+turn, so rows in the new layout start beside the old ones, which keep running
+until they end (a plugin cannot stop a running /workflows row). With function
+hooks on, the pane answers `/sc layout` itself and the same run goes on as
+`/sc attach --all`; otherwise make the `swarm_layout {layout}` call, say its
+reply, then queue the re-attach by doing `attach --all` in the same turn.
+Say both: the old rows keep going, and the attach starts the new ones; never
+claim the rows changed at once. `/sc layout rows` returns to whatever the
+plugin's `rows` setting says (`summary` or `per-step`). Bare `/sc layout`
+saves nothing and attaches nothing.
 
 The pane needs Claude Code's **function hooks**, early access in this build
 (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`). Where they are off the pane does not

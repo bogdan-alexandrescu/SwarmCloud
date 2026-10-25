@@ -47,10 +47,16 @@ run them here: `sc` has no such view. It is the `sc` skill's toggle between
 the two layouts (its "Two layouts" section): `/sc layout rows` or
 `/sc layout pane` is one `swarm_layout {layout}` call, which saves the choice
 for this project; bare `/sc layout` is `swarm_layout {}`, which says which is
-set. Say the reply's note: rows already running keep going, and the next
-launch or `/sc attach --all` starts rows in the new layout. With Claude
-Code's function hooks on, the plugin's pane module answers `/sc layout`
-before this file is read, and spends no model turn.
+set and saves nothing. After `/sc layout rows` or `/sc layout pane` saves,
+then queue the re-attach: do the skill's `attach --all` in this same turn, so
+rows in the new layout start beside the old ones, which keep running until
+they end -- say both. With Claude Code's function hooks on, the plugin's pane
+module answers `/sc layout` before this file is read, and the same run goes
+on as `/sc attach --all` (one chat turn).
+
+If the arguments are `attach --all --project`, it is the SessionStart hook's
+ask, at session start only: the skill's `attach --all` with `project: true`
+(its "Session start" section). `/sc check` and the watch stay this session's.
 
 If the arguments are `inputs` or `answer <wf_id> <step_id> [file ...]`, do
 **not** run them here: `sc` has no such view. `inputs` is one `swarm_inputs`

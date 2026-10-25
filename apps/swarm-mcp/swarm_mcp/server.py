@@ -1498,6 +1498,18 @@ TOOLS: list[dict[str, Any]] = [
                         "whose repository could not be read, with the command for each."
                     ),
                 },
+                "project": {
+                    "type": "boolean",
+                    "description": (
+                        "With attach \"all\" only, AT SESSION START (`/sc attach --all --project`, "
+                        "what the sc plugin's SessionStart hook asks for in the rows layout; "
+                        "SC-BROWSER-FOLLOWUP): this session's work AND every workflow and single task "
+                        "still running that clones this checkout's origin repository (`repository` "
+                        "names another), whichever Claude Code session started it; `project` in the "
+                        "reply says how many came from other sessions. `/sc check`, the watch and the "
+                        "plain attach-all stay this session's."
+                    ),
+                },
                 "new_only": {
                     "type": "boolean",
                     "description": (
@@ -1731,6 +1743,15 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "level": {"type": "string", "enum": ["workflows", "stages", "agents", "agent"]},
+                "project": {
+                    "type": "boolean",
+                    "description": (
+                        "With `workflows`: also this project's running work -- every workflow and "
+                        "single task still running that clones this checkout's origin repository, "
+                        "whichever session started it, marked `this_session: false`. The pane asks "
+                        "for it after session start, which tracks the project's running work."
+                    ),
+                },
                 "workflow_id": {"type": "string", "description": "With `stages`."},
                 "task_ids": {"type": "array", "items": {"type": "string"}, "description": "With `agents`."},
                 "task_id": {"type": "string", "description": "With `agent`."},
@@ -3882,6 +3903,11 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     totals = progress.spend_totals(client, task, read_attempts=False)
     described.update(totals)
     described["cost"] = progress.cost_words(totals)
+    # WHETHER ITS BROWSER WAS USED (BROWSER-USE-FLAG, part of #2322), as the
+    # task read served it: no key for a task that is not a browser runtime.
+    browser = progress.browser_words(task)
+    if browser is not None:
+        described["browser"] = browser
     # Where to watch it: the API's link, as served, or no key (`console_link`).
     return with_console(described, task)
 
@@ -5222,7 +5248,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                 f"swarm_workflow_launch takes exactly one of `spec`, `spec_path` or `attach`; "
                 f"it was given {given or 'none'}. Nothing was written"
             )
-        filters = sorted(k for k in ("repository", "new_only", "exclude") if args.get(k) is not None)
+        filters = sorted(k for k in ("repository", "new_only", "exclude", "project") if args.get(k) is not None)
         target = _text_arg(args, "attach", name) if args.get("attach") is not None else None
         if filters and target not in ("all", "--all"):
             raise SwarmError(
@@ -5264,6 +5290,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                         new_only=_flag(args, "new_only"),
                         exclude=exclude,
                         rows=rows,
+                        project=_flag(args, "project"),
                     )
                 attached.update(watch.arm_fields(bool(attached.get("launches"))))
                 return json.dumps(attached, indent=2, default=str)
