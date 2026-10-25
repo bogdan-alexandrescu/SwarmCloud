@@ -124,8 +124,8 @@ describe('Platform counts: unused browser time for the range', () => {
     expect(value.textContent).toBe('—')
     expect(value.className).toMatch(/is-absent/)
     expect(tile().textContent).toMatch(/not in this read/)
-    // Nothing to filter by when nothing was read.
-    expect(tile().querySelector('a')).toBeNull()
+    // Nothing to filter by when nothing was read; what the figure means still links.
+    expect([...tile().querySelectorAll('a')].map((l) => l.getAttribute('href'))).toEqual(['#help/browser-not-used'])
   })
 
   it('no browser agent with a measured run is a dash that says so', async () => {
@@ -141,9 +141,9 @@ describe('Platform counts: unused browser time for the range', () => {
     loadPlatformTime.mockResolvedValue(payload(figures(100, browser()), [bucket(...W1, figures(100, browser()))]))
     render(<PlatformOverTime workspaces={1} />)
     await run()
-    const link = tile().querySelector('a')!
+    const links = [...tile().querySelectorAll('a')].map((l) => l.getAttribute('href'))
     // MUTATION: link to the plain Agents list, or to the Browsers switch.
-    expect(link.getAttribute('href')).toBe('/agents/recent?browser=unused')
+    expect(links).toEqual(['/agents/recent?browser=unused', '#help/browser-not-used'])
   })
 })
 

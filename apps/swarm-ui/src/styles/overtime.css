@@ -56,7 +56,8 @@
 .pot-spark circle.is-open { fill: var(--surface); stroke: var(--series-1); stroke-width: 1.5; }
 @media (max-width: 560px) {
   .pot-tiles { grid-template-columns: 1fr 1fr; gap: var(--ctl-s2); }
-  .pot-tile.is-cost { grid-column: 1 / -1; }
+  .pot-tile.is-cost,
+  .pot-tile.is-tokens { grid-column: 1 / -1; }
   .pot-run { margin-left: 0; }
   /* The span words go on a phone, so the three buckets are one row; the note
      under the controls names the span. */

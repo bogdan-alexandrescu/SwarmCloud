@@ -1208,3 +1208,29 @@
 .ag-device.is-unknown { width: 12px; height: 10px; border-style: dashed; }
 
 .ag-theater-all { white-space: nowrap; font-size: var(--t-meta); }
+
+/* WHETHER A BROWSER RUNTIME USED ITS BROWSER (BROWSER-USE-UI, #2322;
+   BrowserUse.tsx). The mark carries the tone -- warning for "not used", the
+   ring for a dash -- so the words stay the line's own colour and greyscale
+   still tells them apart. In the inspector the fact is a disclosure: a plain
+   button that looks like the line's words, its counts after it when open. */
+.bu-mark { white-space: nowrap; }
+.bu-mark.is-unused { color: var(--warn-ink); }
+.bu-fact { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s1); min-width: 0; }
+.bu-toggle {
+  display: inline-flex; align-items: center; padding: 0; border: 0; background: none;
+  color: inherit; font: inherit; cursor: pointer;
+}
+.bu-toggle[aria-expanded='true'] { text-decoration: underline; text-underline-offset: 2px; }
+.bu-fact.is-unused .bu-toggle { color: var(--warn-ink); }
+.bu-detail { color: var(--text-dim); }
+.bu-filter { display: inline-flex; align-items: center; gap: var(--ctl-s1); white-space: nowrap; font-size: var(--t-meta); }
+.bu-filter-clear {
+  padding: 0 var(--ctl-s1); border: 0; background: none; color: var(--text-dim);
+  font: inherit; cursor: pointer;
+}
+.bu-filter-clear:hover { color: var(--text); }
+@media (max-width: 560px) {
+  /* The phone's touch target (styles.css holds the rest of the list to it). */
+  .bu-filter-clear { min-width: 44px; min-height: 44px; }
+}
