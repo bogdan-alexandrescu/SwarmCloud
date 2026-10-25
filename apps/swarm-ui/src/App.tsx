@@ -526,8 +526,13 @@ export const SECTIONS: SectionDef[] = [
     // admin is the last tab, and the last clause is its. Admin is no longer
     // only the platform's: a workspace admin reaches this section for that
     // one page, which is why the tab carries no `admin: true` mark.
+    //
+    // PLATFORM COUNTS' CLAUSE ASKS ABOUT TIME SINCE COUNTS-PAGE (part of
+    // #2149, BGD's decisions of 2026-10-23): the page draws how many agents
+    // ran per day, week or month, for how long and at what estimated cost,
+    // below the state counts it always had.
     question:
-      'What is each ceiling set to, who is registered to use this platform, how many agents are in each state, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer?',
+      'What is each ceiling set to, who is registered to use this platform, how many agents are in each state and how many ran over time, for how long and at what estimated cost, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer?',
     tabs: [
       { id: 'limits', label: 'Pool limits', admin: true },
       // SIZES-UI (part of #1689, docs/design/runner-sizes.md §4.6): each
