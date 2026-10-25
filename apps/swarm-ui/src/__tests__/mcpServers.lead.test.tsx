@@ -4,7 +4,8 @@
 // WHAT EACH CASE HOLDS:
 //   * the lead names the MCP server whose credential is missing, read from
 //     the setup read's `config_setup.secrets` items of kind `mcp_server`
-//     (CONFIG-SETUP-READ), with ONE button, to Config › Secrets' Add;
+//     (CONFIG-SETUP-READ), with ONE button, to Config › Secrets, where Add a secret is drawn (never
+//     `?action=add`, the one-time link's address);
 //   * every credential present reads the green "nothing waiting" lead, with
 //     no button;
 //   * a source that could not be read is "—" and its reason, never green;
@@ -81,7 +82,9 @@ describe('Config › MCP servers: its lead (S5a)', () => {
     expect(visible(lead)).not.toContain('docs-search')
     const buttons = within(lead).getAllByRole('link')
     expect(buttons).toHaveLength(1)
-    expect(buttons[0]!.getAttribute('href')).toBe('/config/secrets?action=add')
+    // Config › Secrets itself, where Add a secret is drawn: `?action=add` is the
+    // /sc one-time link's address, and the page then says it was opened from one.
+    expect(buttons[0]!.getAttribute('href')).toBe('/config/secrets')
     expect(lead.classList.contains('is-ok')).toBe(false)
   })
 
