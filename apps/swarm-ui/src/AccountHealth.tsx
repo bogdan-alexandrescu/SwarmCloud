@@ -21,7 +21,7 @@
 //
 // The arithmetic is in accountHealthModel.ts; this file draws it.
 
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 
 import {
   FAMILIES,
@@ -237,7 +237,13 @@ function nameOf(a: HealthAccount): string {
 // F4: the deployment does not serve it, or the read failed
 // ---------------------------------------------------------------------------
 
-function HealthBanner({ m }: { m: Model }) {
+/** A server's message ends with a full stop before the page's next sentence follows it. */
+function sentence(s: string): string {
+  const t = s.trim()
+  return t === '' || /[.!?…]$/.test(t) ? t : `${t}.`
+}
+
+function HealthBanner({ m, tiles = true }: { m: Model; tiles?: boolean }) {
   if (!m.served) {
     const reason = m.health.kind === 'ok' ? '' : m.health.reason
     return (
@@ -246,8 +252,9 @@ function HealthBanner({ m }: { m: Model }) {
           <span className="ah-dash">—</span> This deployment does not serve account health
         </b>
         <p>
-          <code>GET /v1/accounts</code> rows carry no <code>health_status</code>, and {reason || NOT_SERVED_WHY} Rate-limit
-          hits, errors and refusals are <b>unknown</b>, not zero. The pool’s capacity is still read, so the last tile stands.
+          <code>GET /v1/accounts</code> rows carry no <code>health_status</code>, and {sentence(reason || NOT_SERVED_WHY)} Rate-limit
+          hits, errors and refusals are <b>unknown</b>, not zero. The pool’s capacity is still read, so{' '}
+          {tiles ? 'the last tile stands' : 'the summary’s last line stands'}.
         </p>
       </div>
     )
@@ -257,7 +264,7 @@ function HealthBanner({ m }: { m: Model }) {
       <div className="ah-callout is-bad" role="alert" data-state="unreadable">
         <b>The health read failed</b>
         <p>
-          {m.health.reason} The statuses and 24 h counts below come from the accounts list; the newest events and the
+          {sentence(m.health.reason)} The statuses and 24 h counts below come from the accounts list; the newest events and the
           7-day lanes could not be read, and nothing here says the pool was quiet.
         </p>
       </div>
@@ -269,7 +276,7 @@ function HealthBanner({ m }: { m: Model }) {
         <b>
           <span className="ah-dash">—</span> The newest events and the 7-day lanes are not served here
         </b>
-        <p>{m.health.reason} The statuses and 24 h counts below come from the accounts list.</p>
+        <p>{sentence(m.health.reason)} The statuses and 24 h counts below come from the accounts list.</p>
       </div>
     )
   }
@@ -372,7 +379,7 @@ function StatusCellView({ m, a }: { m: Model; a: HealthAccount }) {
 function recordWhy(m: Model): string {
   if (!m.served) return NOT_SERVED_WHY
   if (m.health.kind === 'not_served') return m.health.reason
-  if (m.health.kind === 'unreadable') return `The health read failed: ${m.health.reason}`
+  if (m.health.kind === 'unreadable') return `The health read failed: ${sentence(m.health.reason)}`
   return "The broker sent no record for this account."
 }
 
@@ -391,7 +398,9 @@ function LastEvent({ m, a }: { m: Model; a: HealthAccount }) {
       <small>
         {when(at, m.now)} · {span(m.now - at)} ago
       </small>
-      <small className="ah-msg">{e.message ?? 'another workspace’s event: details withheld'}</small>
+      <small className="ah-msg is-one-line" title={e.message ?? undefined}>
+        {e.message ?? 'another workspace’s event: details withheld'}
+      </small>
     </span>
   )
 }
@@ -447,7 +456,7 @@ function AccountList({ m }: { m: Model }) {
                     <FamCell m={m} a={a} f="lim" />
                     <FamCell m={m} a={a} f="err" />
                     <FamCell m={m} a={a} f="cred" />
-                    <td>
+                    <td className="ah-last-td">
                       <LastEvent m={m} a={a} />
                     </td>
                     <td className="ah-open">
@@ -483,8 +492,10 @@ function AccountList({ m }: { m: Model }) {
 // F3: the swimlane
 // ---------------------------------------------------------------------------
 
-const W = 1040
-const GUTTER = 130
+/** The chart's width before its box is measured (and under a test DOM, which has no layout). */
+const W_DEFAULT = 1040
+/** Below this the chart stops shrinking and its box scrolls: an hour narrower than ~1 px merges marks. */
+const W_MIN = 320
 const STRIP_TOP = 22
 const STRIP_H = 72
 const LANE_H = 46
@@ -499,8 +510,31 @@ function markSay(mk: LaneMark, name: string, now: number): string {
   return parts.join(' · ')
 }
 
+/**
+ * The width of the box the chart is drawn into, followed as it resizes. The
+ * chart is DRAWN TO FIT that box rather than at a fixed width inside a
+ * scroller: at a fixed 1040 px the newest hours (and the now line) sat past the
+ * card's edge at 1440 and only one day of seven showed at 390, so the lanes
+ * read as quieter than the counts beside them.
+ */
+function useBoxWidth(el: HTMLElement | null): number | null {
+  const [w, setW] = useState<number | null>(null)
+  useEffect(() => {
+    if (el === null) return
+    const measure = () => setW(el.clientWidth > 0 ? el.clientWidth : null)
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const watch = new ResizeObserver(measure)
+    watch.observe(el)
+    return () => watch.disconnect()
+  }, [el])
+  return w
+}
+
 function Timeline({ m }: { m: Model }) {
   const [picked, setPicked] = useState<LaneMark | null>(null)
+  const [fit, setFit] = useState<HTMLDivElement | null>(null)
+  const boxW = useBoxWidth(fit)
   const head = (
     <div className="ctl-card-head">
       <h2 className="ctl-card-title">Hits and errors over time</h2>
@@ -546,6 +580,14 @@ function Timeline({ m }: { m: Model }) {
       </section>
     )
   }
+  const W = boxW === null ? W_DEFAULT : Math.max(W_MIN, Math.floor(boxW))
+  const narrow = W < 640
+  const GUTTER = narrow ? 88 : 130
+  // A lane name longer than the gutter is cut with an ellipsis; its full name is the lane's title.
+  const fitName = (n: string) => {
+    const most = Math.floor((GUTTER - 8) / 6.5)
+    return n.length <= most ? n : `${n.slice(0, most - 1)}…`
+  }
   const bw = (W - GUTTER) / SPAN_HOURS
   const xOf = (t: number) => GUTTER + ((t - start) / HOUR_MS) * bw
   const hours = poolHours(pool, start)
@@ -555,6 +597,8 @@ function Timeline({ m }: { m: Model }) {
   const nowX = Math.min(W, xOf(m.now))
   const days: number[] = []
   for (let t = Math.ceil(start / (24 * HOUR_MS)) * 24 * HOUR_MS; t < start + SPAN_HOURS * HOUR_MS; t += 24 * HOUR_MS) days.push(t)
+  // A day narrower than its label labels every other day (the phone); the grid line still marks each.
+  const labelEvery = 24 * bw < 52 ? 2 : 1
   const nameById = new Map(rows.map((x) => [x.a.account_id, nameOf(x.a)]))
   const pick = (mk: LaneMark) => setPicked((p) => (p !== null && p.event === mk.event ? null : mk))
   return (
@@ -565,8 +609,8 @@ function Timeline({ m }: { m: Model }) {
           {marks.length} {marks.length === 1 ? 'event' : 'events'} on {busy} {busy === 1 ? 'account' : 'accounts'} in 7 days
         </span>
       </div>
-      <div className="ah-chart-scroll">
-        <div className="ah-swim-box" style={{ width: W, height: H }}>
+      <div className="ah-chart-scroll" ref={setFit}>
+        <div className="ah-swim-box" style={{ width: W, height: H }} data-chart-width={W}>
           <svg
             className="ah-swim"
             viewBox={`0 0 ${W} ${H}`}
@@ -579,10 +623,10 @@ function Timeline({ m }: { m: Model }) {
               now {hm(m.now)}
             </text>
             <text className="ah-ax is-nm" x={0} y={34}>
-              Whole pool, per hour
+              {narrow ? 'Pool, per hour' : 'Whole pool, per hour'}
             </text>
             <text className="ah-ax" x={0} y={50}>
-              tallest: {tallest.total} at {hm(tallest.at)}
+              {narrow ? `top ${tallest.total} at ${hm(tallest.at)}` : `tallest: ${tallest.total} at ${hm(tallest.at)}`}
             </text>
             {hours.map((h, i) => {
               if (h.total === 0) return null
@@ -604,16 +648,18 @@ function Timeline({ m }: { m: Model }) {
               )
             })}
             <line className="ah-grid" x1={GUTTER} x2={W} y1={STRIP_TOP + STRIP_H} y2={STRIP_TOP + STRIP_H} />
-            {days.map((t) => {
+            {days.map((t, i) => {
               const x = xOf(t)
               const label = day(t)
               const edge = x + 3 + label.length * 7 > W
               return (
                 <g key={t}>
                   <line className="ah-grid" x1={x} x2={x} y1={STRIP_TOP} y2={H - 18} />
-                  <text className="ah-ax" x={edge ? W : x + 3} y={H - 4} textAnchor={edge ? 'end' : 'start'}>
-                    {label}
-                  </text>
+                  {(days.length - 1 - i) % labelEvery === 0 && (
+                    <text className="ah-ax" x={edge ? W : x + 3} y={H - 4} textAnchor={edge ? 'end' : 'start'}>
+                      {label}
+                    </text>
+                  )}
                 </g>
               )
             })}
@@ -623,7 +669,8 @@ function Timeline({ m }: { m: Model }) {
                 <g key={a.account_id} data-lane={a.account_id}>
                   <rect className="ah-lane" x={GUTTER} y={y + 3} width={W - GUTTER} height={LANE_H - 6} rx={4} />
                   <text className="ah-ax is-nm" x={0} y={y + LANE_H / 2 + 4}>
-                    {nameOf(a)}
+                    <title>{nameOf(a)}</title>
+                    {fitName(nameOf(a))}
                   </text>
                   {limitBands(r).map((b) => {
                     const x0 = Math.max(GUTTER, xOf(b.from))
@@ -751,7 +798,15 @@ function PhoneBody({ m }: { m: Model }) {
     const a = m.accounts.find((x) => x.account_id === id)
     return a === undefined ? null : m.cell(a).status
   }
-  const inc = m.health.kind === 'ok' ? poolIncidents(m.health.pool, statusFor, m.now) : null
+  const inc =
+    m.health.kind === 'ok'
+      ? poolIncidents(
+          m.health.pool,
+          statusFor,
+          m.now,
+          m.accounts.map((a) => ({ account_id: a.account_id, label: nameOf(a) })),
+        )
+      : null
   return (
     <div className="ah-page" data-layout="phone">
       <div className="ah-switch" role="group" aria-label="View">
@@ -762,7 +817,7 @@ function PhoneBody({ m }: { m: Model }) {
           Accounts
         </button>
       </div>
-      <HealthBanner m={m} />
+      <HealthBanner m={m} tiles={view === 'accounts'} />
       {view === 'incidents' ? (
         <>
           <SummaryLine m={m} open={inc?.open ?? null} />
@@ -851,9 +906,11 @@ function SummaryLine({ m, open }: { m: Model; open: Incident[] | null }) {
 }
 
 function IncidentCard({ x, now }: { x: Incident; now: number }) {
-  const last = x.events[x.events.length - 1]!
+  const last = x.events[x.events.length - 1]
   const spanText =
-    x.family === 'lim'
+    last === undefined
+      ? 'since before the served events'
+      : x.family === 'lim'
       ? x.open && x.to !== null
         ? `since ${when(x.from, now)} · clears ${when(x.to, now)} (in ${span(x.to - now)})`
         : x.to !== null
@@ -872,8 +929,17 @@ function IncidentCard({ x, now }: { x: Incident; now: number }) {
         <span className={`ah-chip${x.open ? ' is-open' : ''}`}>{x.open ? 'open' : 'closed'}</span>
       </div>
       <p className="ah-inc-when">{spanText}</p>
-      <p className="ah-inc-sum">{incidentSummary(x)}</p>
-      <p className="ah-msg">{last.message ?? 'details withheld: another workspace’s event'}</p>
+      {last === undefined ? (
+        <p className="ah-msg" data-state="no-cred-event">
+          The account’s status is re-auth needed, but its credential event is not among the events served (older than 7
+          days, or past the newest 50).
+        </p>
+      ) : (
+        <>
+          <p className="ah-inc-sum">{incidentSummary(x)}</p>
+          <p className="ah-msg">{last.message ?? 'details withheld: another workspace’s event'}</p>
+        </>
+      )}
       <div className="ah-acts">
         {x.family === 'cred' && x.open && (
           <a className="c-btn is-sm is-primary" href={sheetHref(x.account_id)} data-fix="signin">

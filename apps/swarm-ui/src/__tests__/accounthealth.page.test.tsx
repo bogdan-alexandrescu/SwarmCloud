@@ -14,10 +14,10 @@
 // case below turns red.
 
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AccountHealthBody } from '../AccountHealth'
-import type { AccountHealthBoard } from '../api'
+import { loadAccountHealthBoard, type AccountHealthBoard } from '../api'
 import {
   HEALTH_KINDS,
   type AccountHealthRecord,
@@ -341,5 +341,64 @@ describe('F5: the phone groups open problems first', () => {
 
     const sw = screen.getByRole('button', { name: /Incidents/ })
     expect(sw.textContent).toBe('Incidents —')
+  })
+})
+
+describe('review fixes: the phone, the swimlane, the list and the development pool', () => {
+  it('gives an account that needs re-auth but has no credential event an open card with Sign in again', () => {
+    const { accounts, events } = pool()
+    // Its re-auth is older than 7 days: the record holds no events at all.
+    events.set('eng:ai-eng-3', [])
+    const { container } = render(<AccountHealthBody board={board(accounts, events)} now={NOW} phone />)
+
+    expect(screen.getByRole('button', { name: /Incidents · 4 open/ })).toBeTruthy()
+    const card = container.querySelector<HTMLElement>('[data-section="open"] [data-incident="cred"]')!
+    expect(card.dataset.open).toBe('true')
+    expect(card.textContent).toContain('ai-eng-3 needs re-auth')
+    expect(card.querySelector('[data-state="no-cred-event"]')).not.toBeNull()
+    expect(within(card).getByRole('link', { name: 'Sign in again' }).getAttribute('href')).toContain('ai-eng-3')
+    expect(container.textContent).not.toContain('Nothing is open on any account')
+  })
+
+  it('draws the 7 days to fit the chart’s box: the now line and every mark sit inside it', () => {
+    const box = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(352)
+    try {
+      const { accounts, events } = pool()
+      const { container } = desktop(board(accounts, events))
+
+      const chart = container.querySelector<HTMLElement>('.ah-swim-box')!
+      expect(chart.dataset.chartWidth).toBe('352')
+      expect(container.querySelector('svg.ah-swim')!.getAttribute('viewBox')).toBe(`0 0 352 ${chart.style.height.replace('px', '')}`)
+      const nowX = Number(container.querySelector('.ah-now')!.getAttribute('x1'))
+      expect(nowX).toBeLessThanOrEqual(352)
+      expect(nowX).toBeGreaterThan(340)
+      const lefts = [...container.querySelectorAll<HTMLElement>('[data-mark]')].map((b) => parseFloat(b.style.left))
+      expect(lefts.length).toBeGreaterThan(0)
+      expect(lefts.every((l) => l >= 0 && l + 6 <= 352)).toBe(true)
+    } finally {
+      box.mockRestore()
+    }
+  })
+
+  it('cuts the Last event message to one line with the whole of it as its title', () => {
+    const { accounts, events } = pool()
+    const long = 'x'.repeat(30) + ' a provider message long enough to widen the column past its card'
+    events.set('eng:saga-team', [ev(600, 'network', { message: long })])
+    const { container } = desktop(board(accounts, events))
+
+    const cell = container.querySelector('tr[data-account="eng:saga-team"] td.ah-last-td')!
+    const msg = cell.querySelector<HTMLElement>('.ah-msg.is-one-line')!
+    expect(msg.getAttribute('title')).toBe(long)
+  })
+
+  it('tells the development pool’s re-auth story on the account whose state is REAUTH_REQUIRED', async () => {
+    const r = await loadAccountHealthBoard()
+    expect(r.status).toBe('ok')
+    if (r.status !== 'ok' || r.data.health.kind !== 'ok') throw new Error('the fixture board did not load')
+    const reauth = r.data.health.pool.accounts.filter((x) => x.status === 'reauth_needed')
+    expect(reauth.length).toBeGreaterThan(0)
+    for (const x of reauth) expect(x.events.some((e) => e.kind === 'reauth' || e.kind === 'auth')).toBe(true)
+    const healthy = r.data.health.pool.accounts.filter((x) => x.status === 'healthy')
+    for (const x of healthy) expect(x.events.some((e) => e.kind === 'reauth')).toBe(false)
   })
 })

@@ -479,16 +479,35 @@ export function incidents(record: AccountHealthRecord, status: HealthStatus | nu
 /** Open first, worst first: credential, then errors, then limits; newer first within each. */
 export const OPEN_ORDER: Readonly<Record<HealthFamily, number>> = { cred: 0, err: 1, lim: 2 }
 
+/**
+ * Every account in the pool's incidents, open and closed. An account whose
+ * status is `reauth_needed` always has an open credential incident: when its
+ * served events hold none (the record is empty, the re-auth is older than 7
+ * days, or 50 newer events pushed it out) the incident is drawn with no events
+ * (`events: []`, `from` and `last` NaN), so the phone never says "nothing is
+ * open" beside a summary counting an account that needs re-auth.
+ */
 export function poolIncidents(
   pool: PoolHealth,
   statusFor: (id: string) => HealthStatus | null,
   now: number,
+  accounts: readonly { account_id: string; label: string }[] = [],
 ): { open: Incident[]; closed: Incident[] } {
   const all = pool.accounts.flatMap((r) => incidents(r, statusFor(r.account_id), now))
+  const labels = new Map<string, string>(pool.accounts.map((r) => [r.account_id, r.label || r.account_id]))
+  for (const a of accounts) if (!labels.has(a.account_id)) labels.set(a.account_id, a.label || a.account_id)
+  for (const [id, label] of labels) {
+    if (statusFor(id) !== 'reauth_needed') continue
+    if (all.some((x) => x.account_id === id && x.family === 'cred' && x.open)) continue
+    all.push({ account_id: id, label, family: 'cred', events: [], from: NaN, last: NaN, to: null, window: null, open: true })
+  }
+  // An undated incident (NaN) sorts as the oldest of its family.
+  const t = (x: Incident) => (Number.isFinite(x.from) ? x.from : -Infinity)
+  const newer = (x: Incident, y: Incident) => (t(y) === t(x) ? 0 : t(y) > t(x) ? 1 : -1)
   const open = all
     .filter((x) => x.open)
-    .sort((x, y) => OPEN_ORDER[x.family] - OPEN_ORDER[y.family] || y.from - x.from)
-  const closed = all.filter((x) => !x.open).sort((x, y) => y.from - x.from)
+    .sort((x, y) => OPEN_ORDER[x.family] - OPEN_ORDER[y.family] || newer(x, y))
+  const closed = all.filter((x) => !x.open).sort(newer)
   return { open, closed }
 }
 

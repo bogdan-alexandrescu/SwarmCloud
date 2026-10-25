@@ -6095,7 +6095,9 @@ function fixtureAccountHealth(): PoolHealth {
       [-52 * H, 'rate_limit', { w: 'five_hour', r: -48 * H }],
       [-120 * H, 'rate_limit', { w: 'five_hour', r: -117 * H }],
     ],
-    'eng:shared': [
+    // The re-auth story sits on the account whose state IS REAUTH_REQUIRED, so
+    // its row, its callout and the phone's re-auth card tell one story.
+    'u-bogdan:retired-laptop': [
       [-30 * H, 'refresh_failed', { m: 'the credential refresh was refused · credential [redacted]' }],
       [-70 * M, 'refresh_failed', { m: 'the credential refresh was refused · credential [redacted]' }],
       [-62 * M, 'auth', { m: '401 from the provider: the sign-in expired · credential [redacted]' }],

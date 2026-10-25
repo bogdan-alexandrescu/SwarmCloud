@@ -151,3 +151,47 @@ describe('the pool: open problems first, worst first', () => {
     expect(NOW - got.closed[0]!.from).toBe(3 * 24 * H)
   })
 })
+
+describe('the pool: an account that needs re-auth always has an open credential incident', () => {
+  it('opens one with no events when the served events hold no credential event, or the pool has no record', () => {
+    const pool: PoolHealth = {
+      tenant_id: 'eng',
+      events_max: 50,
+      truncated: false,
+      observed_at: null,
+      accounts: [
+        // Re-auth older than 7 days: the record is empty.
+        record('eng:empty', []),
+        // The credential event was pushed out of the newest 50 by limit events.
+        record('eng:pushed', [ev(20, 'rate_limit', { window: 'five_hour', resetIn: 30 })]),
+        record('eng:quiet', []),
+      ],
+    }
+    const status = { 'eng:empty': 'reauth_needed', 'eng:pushed': 'reauth_needed', 'eng:quiet': 'healthy', 'eng:gone': 'reauth_needed' } as const
+    const got = poolIncidents(pool, (id) => status[id as keyof typeof status] ?? null, NOW, [
+      { account_id: 'eng:gone', label: 'gone' },
+      { account_id: 'eng:quiet', label: 'quiet' },
+    ])
+
+    const cred = got.open.filter((x) => x.family === 'cred')
+    expect(cred.map((x) => x.account_id).sort()).toEqual(['eng:empty', 'eng:gone', 'eng:pushed'])
+    expect(cred.every((x) => x.events.length === 0)).toBe(true)
+    // Credential first, before the open limit.
+    expect(got.open.map((x) => x.family)).toEqual(['cred', 'cred', 'cred', 'lim'])
+    expect(got.open.some((x) => x.account_id === 'eng:quiet')).toBe(false)
+  })
+
+  it('does not add a second one when the served events already hold the open credential incident', () => {
+    const pool: PoolHealth = {
+      tenant_id: 'eng',
+      events_max: 50,
+      truncated: false,
+      observed_at: null,
+      accounts: [record('eng:cred', [ev(10, 'auth'), ev(9, 'reauth')])],
+    }
+    const got = poolIncidents(pool, () => 'reauth_needed', NOW, [{ account_id: 'eng:cred', label: 'cred' }])
+
+    expect(got.open).toHaveLength(1)
+    expect(got.open[0]!.events).toHaveLength(2)
+  })
+})
