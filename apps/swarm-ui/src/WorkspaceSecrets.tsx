@@ -13,7 +13,7 @@ import {
   type WorkspaceSecretList,
   type WorkspaceSecretRotate,
 } from './api'
-import { BrowserLoginsPane } from './BrowserLogins'
+import { BrowserLoginsPane, isPersonalTenant } from './BrowserLogins'
 import { Banner, Button, Card, Tabs, TypedConfirm, routedClick, type TabDef } from './components'
 import type { ApiError } from './fetch'
 import { SECRETS_ADDRESS, SECRETS_LOGINS_VIEW, addressToPath, secretsLinkToken } from './paths'
@@ -223,17 +223,21 @@ export function WorkspaceSecretsScreen({ link }: { link: SecretsLink | null }) {
 
   return (
     <div className="pk-page">
-      <PageHead title="Secrets">
-        <UrRefresh reads={[list, catalogue]} ageOf={[list]} />
-      </PageHead>
+      {/* The head's Refresh is the secrets' read, so the logins tab, whose
+          list is read by its own pane, does not offer it (rendered review). */}
+      <PageHead title="Secrets">{view === 'secrets' && <UrRefresh reads={[list, catalogue]} ageOf={[list]} />}</PageHead>
       {/* `cfg-parts` (config.css): the Config pages' tab strip, as GitHub access draws it. */}
       <Tabs tabs={SECRETS_TABS} current={view} label="Secrets" className="cfg-parts" onSelect={(k) => setView(k === SECRETS_LOGINS_VIEW ? 'logins' : 'secrets')} />
       {view === 'logins' ? (
         <>
-          <p className="ur-sub">
-            The browser sessions you saved from a live browser in your workspace, by name and site, with when each
-            expires. An agent names one to start signed in.
-          </p>
+          {/* In a group workspace the pane says where logins live instead, so
+              a lede promising "the sessions you saved" would contradict it. */}
+          {(listed === null || isPersonalTenant(listed.tenant_id)) && (
+            <p className="ur-sub">
+              The browser sessions you saved from a live browser in your workspace, by name and site, with when each
+              expires. An agent names one to start signed in.
+            </p>
+          )}
           <BrowserLoginsPane tenantId={listed?.tenant_id || null} />
         </>
       ) : (

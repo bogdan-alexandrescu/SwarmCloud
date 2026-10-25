@@ -33,7 +33,6 @@ import { lengthPx, nowrap, paddingX, textPx } from './tablefit'
 
 const WAIT = { timeout: 4000 }
 const WIDE: CascadeEnv = { width: 1440 }
-const PHONE: CascadeEnv = { width: 390 }
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -222,7 +221,11 @@ describe("c: Access's head at 390 (6:work-b-003)", () => {
 
   // GA-MOVE-VIEWS (part of #2157): the Mine / Members / Browser logins switch
   // left the head for People and roles and Secrets, so Refresh is its one action.
-  it('the actions take the row under the title from the left edge, Refresh alone in them', async () => {
+  // The phone rule that gave the switch's group a row of its own
+  // (`.ac-page > .c-phead > .c-acts`, repositories.css) is not asserted here:
+  // with Refresh alone it is dead, and its removal is asked in GA-MOVE-VIEWS'
+  // questions.json, outside that lane's territory.
+  it('the head\'s actions are Refresh alone', async () => {
     await mountAccess()
     const acts = document.querySelector<HTMLElement>('.ac-page > .c-phead > .c-acts')!
     expect(acts, 'the page head draws its actions').not.toBeNull()
@@ -232,10 +235,6 @@ describe("c: Access's head at 390 (6:work-b-003)", () => {
     // MUTATION: put the UrRadio "Whose access" back in Access.tsx's PageHead.
     expect(screen.queryByRole('radiogroup', { name: 'Whose access' })).toBeNull()
     expect(acts.querySelector('.ur-acts')).toBeNull()
-    // MUTATION: drop the phone rule `.ac-page > .c-phead > .c-acts { ... }` from repositories.css.
-    expect(painted(acts, ['flex', 'flex-basis'], PHONE) ?? '', 'the actions take the row under the title').toMatch(/100%/)
-    expect(painted(acts, ['margin-left', 'margin'], PHONE)).toBe('0')
-    expect(painted(acts, 'justify-content', PHONE), 'the actions are aligned to the left edge').toBe('flex-start')
   })
 
   it('at 1440 the head keeps its actions right, on one row', async () => {
