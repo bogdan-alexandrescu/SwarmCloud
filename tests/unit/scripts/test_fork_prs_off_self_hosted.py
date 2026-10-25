@@ -67,6 +67,7 @@ head. Do not move such a job to self-hosted without that check.
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 from pathlib import Path
@@ -158,8 +159,25 @@ def _trigger_names(doc: dict) -> set[str]:
     return {str(e) for e in (on or {})}
 
 
+#: The C loader where PyYAML was built with libyaml; the same YAML 1.1 rules.
+_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
+@functools.lru_cache(maxsize=None)
+def _doc(path: Path) -> dict:
+    """Each workflow file, parsed once per run and shared read-only.
+
+    Every test here and each parametrized case re-parsed every workflow with the
+    pure-Python loader: 13.0 CI-seconds on main (run 40171974036), when this file
+    is one of the guard walkers held under 5 (test_select_unit_tests.py
+    `test_the_walkers_of_github_and_images_stay_cheap`). Nothing here mutates a
+    parsed document, so one parse serves them all.
+    """
+    return yaml.load(path.read_text(), Loader=_LOADER) or {}
+
+
 def _file_triggers(filename: str) -> set[str]:
-    return _trigger_names(yaml.safe_load((WORKFLOWS / filename).read_text()))
+    return _trigger_names(_doc(WORKFLOWS / filename))
 
 
 def _short_form_allowed(filename: str | None, triggers: set[str] | None) -> str | None:
@@ -229,7 +247,7 @@ def _jobs():
     files = sorted([*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")])
     assert files, f"no workflows found under {WORKFLOWS}"  # the scan saw something
     for path in files:
-        doc = yaml.safe_load(path.read_text())
+        doc = _doc(path)
         for name, job in (doc.get("jobs") or {}).items():
             yield f"{path.name}:{name}", job
 
@@ -618,7 +636,7 @@ def _workflow_jobs():
     """(file:job, job, the workflow's own top-level permissions)."""
     files = sorted([*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")])
     for path in files:
-        doc = yaml.safe_load(path.read_text())
+        doc = _doc(path)
         for name, job in (doc.get("jobs") or {}).items():
             yield f"{path.name}:{name}", job, doc.get("permissions")
 

@@ -1,4 +1,4 @@
-"""A portrait device draws the live screen, not the grey "masking unavailable" frame (QA12-01).
+"""A portrait device draws the live screen, never a grey frame (QA12-01, LIVE-NOMASK).
 
 THE DEFECT. Live-browser QA p12 on 2026-10-13 (task_4defa61c5eea4a5c87f5):
 switching to iPhone 15 (393 x 852) or iPad portrait (810 x 1080) left the live
@@ -21,11 +21,11 @@ Every device narrower than the page's layout width did it: iPad landscape
 arithmetic shrank the page area under a pinch zoom (innerWidth 196 at scale
 2), so a field outside that shrunken box went unmasked.
 
-THE FIX (mask.py, observer.js): the page's size on screen is its visible size
-in CSS px times the page scale (`visualViewport.width * scale`), which is the
-device's viewport however the page is zoomed. A page drawn at the window's
-own metrics before the override (wider than the device at scale 1) is still
-larger than the frame, and still unavailable.
+THE FIX (mask.py, observer.js, 2026-10-13) sized the page from the visual
+viewport. Since LIVE-NOMASK (BGD, 2026-10-25, design §5.3) the gate paints
+nothing at all, so no device, zoom or page width can turn a frame grey:
+what is held here is that the framebuffer, the window and the emulation
+agree, and that the capture loop publishes the device's frame as captured.
 
 The expected values below are written out, not computed from presets.py.
 """
@@ -33,8 +33,6 @@ The expected values below are written out, not computed from presets.py.
 from __future__ import annotations
 
 import asyncio
-import json
-import math
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +41,6 @@ import pytest
 from agent_worker.livegate import __main__ as gate_main
 from agent_worker.livegate.capture import Frame
 from agent_worker.livegate.device import DeviceController, captured
-from agent_worker.livegate.mask import MASK_RGB, MaskState, Outcome, observer_source
 from agent_worker.livegate.presets import MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH
 
 #: (preset, orientation) -> emulated CSS width x height, the Xvfb display, the
@@ -64,7 +61,6 @@ GEOMETRY: dict[tuple[str, str], tuple[tuple[int, int], tuple[int, int], tuple[in
 }
 
 WHITE = (0xFF, 0xFF, 0xFF)
-UNAVAILABLE = (0x55, 0x55, 0x55)
 
 
 class GateCdp:
@@ -96,35 +92,22 @@ class Display:
         self.sizes.append((width, height))
 
 
-def _selected(name: str, orientation: str) -> tuple[DeviceController, GateCdp, Display, MaskState]:
+def _selected(name: str, orientation: str) -> tuple[DeviceController, GateCdp, Display]:
     cdp, display = GateCdp(), Display()
-    state = MaskState()
-    state.session_up()
-    state.frame_attached("TOP", None)
-    state.navigated("TOP", "https://login.example.test/")
-    controller = DeviceController(cdp, display, state, record=lambda k, f: None)
+    controller = DeviceController(cdp, display, record=lambda k, f: None)
 
     async def main() -> None:
         await controller.start()
         await controller.select(name, orientation)
 
     asyncio.run(main())
-    return controller, cdp, display, state
-
-
-def _report(viewport: list[float], fields: list[dict[str, Any]] = ()) -> str:  # type: ignore[assignment]
-    return json.dumps({"v": 1, "k": "report", "doc": "D1", "e": 1, "vp": viewport,
-                       "f": list(fields), "t": [], "o": [], "tr": False})
-
-
-def _password(x: float, y: float, w: float, h: float) -> dict[str, Any]:
-    return {"id": 1, "type": "password", "ac": "", "ever": False, "r": [x, y, w, h]}
+    return controller, cdp, display
 
 
 @pytest.mark.parametrize(("name", "orientation"), sorted(GEOMETRY))
 def test_the_framebuffer_the_window_and_the_emulation_agree(name: str, orientation: str):
     (css_w, css_h), display_size, frame_size, _layout = GEOMETRY[(name, orientation)]
-    controller, cdp, display, state = _selected(name, orientation)
+    controller, cdp, display = _selected(name, orientation)
     device = controller.device
 
     # Xvfb: the CSS viewport plus the browser's UI band, inside what Xvfb starts at.
@@ -141,93 +124,16 @@ def test_the_framebuffer_the_window_and_the_emulation_agree(name: str, orientati
     # The captured frame, cut from a framebuffer that kept Xvfb's starting size.
     frame = captured(Frame.blank(MAX_DISPLAY_WIDTH, MAX_DISPLAY_HEIGHT, WHITE), device)
     assert (frame.width, frame.height) == frame_size
-    # And the mask places a page that fills the emulated viewport on that frame.
-    state.on_message("TOP", _report([css_w, css_h, 0, 0, 1, css_w, css_h]))
-    assert state.apply(frame) is Outcome.MASKED
     assert frame.rgb_at(0, frame.height - 1) == WHITE
 
 
-@pytest.mark.parametrize(("name", "orientation"), sorted(GEOMETRY))
-def test_a_page_zoomed_out_to_fit_the_device_draws_and_is_masked_where_it_is(name: str, orientation: str):
-    """The QA's own case: a page laid out at 980 CSS px, which a phone or a portrait tablet zooms out."""
-    (css_w, css_h), _display, frame_size, layout = GEOMETRY[(name, orientation)]
-    controller, _cdp, _display_, state = _selected(name, orientation)
-    page_scale = css_w / layout
-    visible_h = css_h / page_scale
-    # A password field in the middle of the layout, 200 x 40 CSS px.
-    fx, fy = layout / 2 - 100, visible_h / 2 - 20
-    # What Chromium's observer reports for that page: innerWidth x innerHeight
-    # are the visible area in CSS px (integers), visualViewport the same in
-    # floats and the page scale that fits it onto the device.
-    state.on_message("TOP", _report([layout, math.floor(visible_h), 0, 0, page_scale, layout, visible_h],
-                                    [_password(fx, fy, 200, 40)]))
-    frame = captured(Frame.blank(MAX_DISPLAY_WIDTH, MAX_DISPLAY_HEIGHT, WHITE), controller.device)
-    assert (frame.width, frame.height) == frame_size
-
-    assert state.apply(frame) is Outcome.MASKED, "the zoomed-out page is placed, not a grey frame"
-    assert frame.rgb_at(0, 0) != UNAVAILABLE
-    page_top = frame.height - css_h
-    cx, cy = (fx + 100) * page_scale, page_top + (fy + 20) * page_scale
-    assert frame.rgb_at(int(cx), int(cy)) == MASK_RGB, "the field is covered where the zoomed page draws it"
-    assert frame.rgb_at(int((fx + 200) * page_scale) + 9, int(cy)) == WHITE, "and nothing far right of it"
-    assert frame.rgb_at(int(cx), page_top + int((fy + 40) * page_scale) + 9) == WHITE
-
-
-@pytest.mark.parametrize(("name", "orientation"), [k for k, v in sorted(GEOMETRY.items()) if v[3] > v[0][0]])
-def test_a_zoomed_out_page_draws_from_the_integer_viewport_alone(name: str, orientation: str):
-    """A report carrying only `innerWidth` x `innerHeight` and the scale still places the page."""
-    (css_w, css_h), _display, _frame, layout = GEOMETRY[(name, orientation)]
-    controller, _cdp, _display_, state = _selected(name, orientation)
-    page_scale = css_w / layout
-    state.on_message("TOP", _report([layout, math.floor(css_h / page_scale), 0, 0, page_scale]))
-    frame = captured(Frame.blank(MAX_DISPLAY_WIDTH, MAX_DISPLAY_HEIGHT, WHITE), controller.device)
-    assert state.apply(frame) is Outcome.MASKED
-
-
-def test_a_pinch_zoomed_phone_masks_a_field_across_the_whole_page():
-    """Pinch 2x on iPhone 15 portrait: innerWidth is half the device, and the page is still all of it."""
-    controller, _cdp, _display, state = _selected("iphone-15", "portrait")
-    # Scrolled (50, 100) CSS px into the layout; a field at (180, 400) is drawn
-    # at ((180-50)*2, (400-100)*2) = (260, 600) on the 393 x 852 page.
-    state.on_message("TOP", _report([196, 426, 50, 100, 2, 196.5, 426],
-                                    [_password(180, 400, 40, 20)]))
-    frame = captured(Frame.blank(MAX_DISPLAY_WIDTH, MAX_DISPLAY_HEIGHT, WHITE), controller.device)
-    assert state.apply(frame) is Outcome.MASKED
-    assert frame.rgb_at(270, 610) == MASK_RGB, "a field in the lower half of a pinch-zoomed page is masked"
-    assert frame.rgb_at(339, 639) == MASK_RGB
-    assert frame.rgb_at(100, 100) == WHITE
-
-
-@pytest.mark.parametrize("name", ["iphone-15", "pixel-8", "iphone-se"])
-def test_a_page_still_at_the_windows_metrics_is_unavailable(name: str):
-    """Before the override lands the page has the window's size at scale 1: it fails closed, as before.
-
-    A portrait phone's window is held at Chromium's 500 px minimum, wider than
-    its display. (A window that fits is one pixel past its display, which the
-    mask's one-pixel tolerance places, as it always has.)
-    """
-    controller, _cdp, _display, state = _selected(name, "portrait")
-    device = controller.device
-    window_w, window_h = max(device.display_width + 1, 500), device.display_height + 1 - 87
-    state.on_message("TOP", _report([window_w, window_h, 0, 0, 1, window_w, window_h]))
-    frame = captured(Frame.blank(MAX_DISPLAY_WIDTH, MAX_DISPLAY_HEIGHT, WHITE), device)
-    assert state.apply(frame) is Outcome.UNAVAILABLE
-
-
-def test_the_observer_reports_the_visual_viewports_size():
-    """The mask sizes the page from the visual viewport, so the observer must send it."""
-    source = observer_source()
-    assert "vv.width" in source and "vv.height" in source
-
-
 def test_the_gate_draws_a_zoomed_out_iphone_15_portrait_end_to_end(tmp_path: Path):
-    """One pass of the gate's capture loop on the QA's device, with the QA's kind of page."""
+    """One pass of the gate's capture loop on the QA's device: the device's frame, as captured."""
     cfg = gate_main.GateConfig(ctl_path=str(tmp_path / "ctl.sock"), profile_dir=tmp_path / "profile",
                                downloads_dir=tmp_path / "d", uploads_dir=tmp_path / "u",
                                cdp_host="127.0.0.1", cdp_port=9222, relay_url="ws://relay.test/v1/tunnel")
     gate = gate_main.LiveGate(cfg, record=lambda kind, fields: None)
-    controller, _cdp, _display, state = _selected("iphone-15", "portrait")
-    state.on_message("TOP", _report([980, 2124, 0, 0, 393 / 980, 980, 852 * 980 / 393]))
+    controller, _cdp, _display = _selected("iphone-15", "portrait")
 
     class Screen:
         grabs = 0
@@ -237,7 +143,6 @@ def test_the_gate_draws_a_zoomed_out_iphone_15_portrait_end_to_end(tmp_path: Pat
             return Frame.blank(MAX_DISPLAY_WIDTH, MAX_DISPLAY_HEIGHT, WHITE)
 
     gate.devices = controller  # type: ignore[assignment]
-    gate.mask_state = state
     gate.framebuffer = Screen()  # type: ignore[assignment]
 
     async def main() -> None:
@@ -252,7 +157,8 @@ def test_the_gate_draws_a_zoomed_out_iphone_15_portrait_end_to_end(tmp_path: Pat
             pass
 
     asyncio.run(main())
-    frame, outcome = gate.hub.current.frame, gate.hub.current.outcome
+    frame, reason = gate.hub.current.frame, gate.hub.current.reason
     assert (frame.width, frame.height) == (393, 852)
-    assert outcome is Outcome.MASKED, "the live screen draws instead of a grey #555 canvas"
-    assert frame.rgb_at(196, 426) == WHITE
+    assert reason is None
+    assert all(frame.rgb_at(x, y) == WHITE for x in range(0, 393, 7) for y in range(0, 852, 11)), \
+        "the live screen draws instead of a grey #555 canvas"
