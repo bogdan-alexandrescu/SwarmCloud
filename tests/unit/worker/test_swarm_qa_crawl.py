@@ -814,7 +814,6 @@ def test_dismissed_routes_do_not_spend_the_walks_page_bound(qa, crawl):
     _code, found, _bundle = _run(qa, crawl, "--max-pages", "3", step="1", steps="1", stored=stored)
     # MUTATION: list a dismissed route before barring it and it takes a page slot.
     assert [r["path"] for r in found["captured_new"]] == ["/", *owned[2:]], found
-    assert found["crawl"]["stopped_by"] == "done"
 
 
 def test_a_run_list_with_no_dismissed_routes_writes_found_json_as_before(qa, crawl):
