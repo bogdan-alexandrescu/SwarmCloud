@@ -25,6 +25,10 @@
  * `GET /v1/schedules/{id}` as the working tenant: any other tenant's row says
  * to switch tenant first, rather than linking to a page that would 404.
  *
+ * Every word a reader sees says workspace, never tenant (VQ-056, BGD
+ * 2026-10-26); the routes, `tenant_id` and `data-col="tenant"` (a CSS hook)
+ * keep their names.
+ *
  * A pause never cancels a tenant's live runs from here: that is the tenant's
  * `:pause` with `cancel_live`, or an admin's ordinary cancel of the work.
  */
@@ -51,9 +55,9 @@ type Action = 'pause' | 'disable' | 'enable'
 const ACTION_WORD: Readonly<Record<Action, string>> = { pause: 'Pause', disable: 'Disable', enable: 'Re-enable' }
 
 const ACTION_SAYS: Readonly<Record<Action, string>> = {
-  pause: 'It stops firing until its tenant resumes it. Live work is not cancelled.',
-  disable: 'It stops firing, and only an admin can enable it again; its tenant cannot resume it. Live work is not cancelled.',
-  enable: 'It fires again from its next slot. Only a disabled schedule is re-enabled here: a tenant’s own pause is the tenant’s to lift.',
+  pause: 'It stops firing until its workspace resumes it. Live work is not cancelled.',
+  disable: 'It stops firing, and only an admin can enable it again; its workspace cannot resume it. Live work is not cancelled.',
+  enable: 'It fires again from its next slot. Only a disabled schedule is re-enabled here: a workspace’s own pause is the workspace’s to lift.',
 }
 
 /** The actions a row offers in its state (§1.3, §5.3). */
@@ -127,7 +131,7 @@ function ActionDialog({ row, action, onClose, onDone }: { row: AdminScheduleRow;
       </p>
       {action !== 'enable' && (
         <label className="c-field">
-          <span className="c-lbl">Reason (shown to the tenant)</span>
+          <span className="c-lbl">Reason (shown to the workspace)</span>
           <input className="c-inp" maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
         </label>
       )}
@@ -159,7 +163,7 @@ function PauseTenant({ tenants, onDone }: { tenants: string[]; onDone: () => voi
   return (
     <div className="as-tenant">
       <label className="c-field">
-        <span className="c-lbl">Pause every enabled schedule of one tenant</span>
+        <span className="c-lbl">Pause every enabled schedule of one workspace</span>
         <select className="c-inp" value={tenant} onChange={(e) => setTenant(e.target.value)}>
           {tenants.map((t) => (
             <option key={t} value={t}>
@@ -215,7 +219,7 @@ function Rows({ rows, onChanged, go }: { rows: AdminScheduleRow[]; onChanged: ()
       <table className="sc-table is-admin">
         <thead>
           <tr>
-            <th scope="col" data-col="tenant">Tenant</th>
+            <th scope="col" data-col="tenant">Workspace</th>
             <th scope="col" data-col="name">Name · type</th>
             <th scope="col" data-col="when">When</th>
             <th scope="col" data-col="next">Next run</th>
@@ -229,14 +233,14 @@ function Rows({ rows, onChanged, go }: { rows: AdminScheduleRow[]; onChanged: ()
         <tbody>
           {rows.map((s) => (
             <tr key={s.schedule_id} className="sc-row" data-schedule={s.schedule_id}>
-              <td data-label="Tenant"><span className="mono">{s.tenant_id}</span></td>
+              <td data-label="Workspace"><span className="mono">{s.tenant_id}</span></td>
               <td data-label="Name · type">
                 {s.tenant_id === working ? (
                   <InApp go={go} to={scheduleAddress(s.schedule_id)} className="sc-cut sc-name">{s.name}</InApp>
                 ) : (
                   <span
                     className="sc-cut sc-name"
-                    title={`${s.schedule_id} · switch the console to tenant ${s.tenant_id} to open this schedule's page`}
+                    title={`${s.schedule_id} · switch the console to workspace ${s.tenant_id} to open this schedule's page`}
                   >
                     {s.name}
                   </span>
@@ -338,10 +342,10 @@ function AdminSchedulesBody({
       <div className="c-acts sc-acts">{scopeSwitch}</div>
       <h2 className="sc-h2">The schedule tick</h2>
       <TickHealth tick={first.tick} />
-      <h2 className="sc-h2">Every tenant’s schedules</h2>
+      <h2 className="sc-h2">Every workspace’s schedules</h2>
       {rows.length === 0 ? (
-        <Absent kind="zero" heading="No schedules in any tenant" say="The admin list was read and no tenant has a schedule.">
-          A tenant’s schedules are listed here once it makes one under Automate › Schedules.
+        <Absent kind="zero" heading="No schedules in any workspace" say="The admin list was read and no workspace has a schedule.">
+          A workspace’s schedules are listed here once it makes one under Automate › Schedules.
         </Absent>
       ) : (
         <>
@@ -374,7 +378,7 @@ export function AllTenantsSchedules({ go, scopeSwitch }: { go: (to: string) => v
       key={`all-tenants-schedules:${round}`}
       title="Schedules"
       load={() => loadAdminSchedules()}
-      summary={(d) => `${pluralise(d.schedules.length, 'schedule')}${d.next_page_token === null ? '' : ' on the first page'} · every tenant`}
+      summary={(d) => `${pluralise(d.schedules.length, 'schedule')}${d.next_page_token === null ? '' : ' on the first page'} · every workspace`}
     >
       {(d) => <AdminSchedulesBody first={d} onChanged={() => setRound((n) => n + 1)} go={go} scopeSwitch={scopeSwitch} />}
     </Screen>
