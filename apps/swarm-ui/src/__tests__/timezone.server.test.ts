@@ -323,3 +323,73 @@ describe('normProfile and the save carry the zone', () => {
     if (r.status === 'ok') expect(r.data).toMatchObject({ time_zone: LA, time_zone_source: 'profile', revision: 8 })
   })
 })
+
+describe('a zone pick does not leave Profile’s other saves at a stale revision', () => {
+  // The review found it on the rendered page: Profile read revision 7, a zone
+  // pick saved at 7 (now 8), and Profile's next name, default or bell save
+  // went at 7 and met a false "changed in another tab" 409.
+  const profileSave = (revision: number) => ({
+    display_name: 'Ada',
+    default_workspace: 'eng',
+    notifications: { muted: [], reminder: 'daily' as const },
+    revision,
+  })
+
+  /** MUTATION: send Profile's save at the revision it read, as before the fix. */
+  it('lets a save at the revision read before a zone pick land after it, keeping the zone', async () => {
+    const server = api(profile())
+    const { tz } = await page()
+    const { putPreferences } = await import('../api')
+    tz.notePerson(EMAIL)
+    tz.setZone(LA)
+    expect(await tz.zoneSaved()).toBe(true)
+    expect(server.current.revision).toBe(8)
+    const r = await putPreferences(profileSave(7))
+    expect(r.status).toBe('ok')
+    if (r.status === 'ok') expect(r.data.revision).toBe(9)
+    expect(server.puts[1]).toMatchObject({ revision: 8 })
+    expect(server.puts[1]).not.toHaveProperty('time_zone')
+    expect(server.current.time_zone).toBe(LA)
+  })
+
+  /** MUTATION: send Profile's save while the zone save is still in flight. */
+  it('waits for a zone save in flight before sending', async () => {
+    const server = api(profile())
+    const { tz } = await page()
+    const { putPreferences } = await import('../api')
+    tz.notePerson(EMAIL)
+    tz.setZone(LA)
+    const r = await putPreferences(profileSave(7))
+    expect(r.status).toBe('ok')
+    expect(server.puts.map((p) => p.revision)).toEqual([7, 8])
+    expect(server.current.time_zone).toBe(LA)
+  })
+
+  /** MUTATION: move every save to the newest revision seen, hiding a save made in another tab. */
+  it('still meets a 409 when another tab saved after the zone pick', async () => {
+    const server = api(profile())
+    const { tz } = await page()
+    const { putPreferences } = await import('../api')
+    tz.notePerson(EMAIL)
+    tz.setZone(LA)
+    expect(await tz.zoneSaved()).toBe(true)
+    // Another tab's save: revision 9.
+    server.set({ ...server.current, revision: 9 })
+    const r = await putPreferences(profileSave(7))
+    expect(r.status).toBe('error')
+    if (r.status === 'error') expect(r.error.httpStatus).toBe(409)
+  })
+
+  /** MUTATION: move a save whose revision the zone save never moved. */
+  it('leaves a revision no zone save moved as it was sent', async () => {
+    const server = api(profile())
+    const { tz } = await page()
+    const { putPreferences } = await import('../api')
+    tz.notePerson(EMAIL)
+    tz.setZone(LA)
+    expect(await tz.zoneSaved()).toBe(true)
+    const r = await putPreferences(profileSave(8))
+    expect(r.status).toBe('ok')
+    expect(server.puts[1]).toMatchObject({ revision: 8 })
+  })
+})
