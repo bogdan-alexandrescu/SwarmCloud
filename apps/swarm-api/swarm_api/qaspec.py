@@ -59,11 +59,21 @@ and its `found.json`. A target that asks to `discover` and has nothing stored
 renders `discover.slots` crawling steps (4 by default, at most 8) from the
 base alone, instead of being refused; one with neither is still refused. The
 report gains the leg's Coverage section (§3.5).
+
+A DISMISSED ROUTE IS SKIPPED BY LATER CRAWLS (lane QA-CRAWL-SKIP; BGD
+2026-10-25, part of #2157). The target's `dismissed_routes` (S9b's Remove,
+`qatargets.DISMISSED_FIELD`) travel in every capture step's route list as
+`dismissed`: each route's `route_key` as sha256 hex, sorted, so the crawl
+neither lists, loads nor captures one, and none spends a found-route slot.
+Hashes, not paths: a dismissed route was found by a crawl, and no path a
+crawl found reaches a prompt. A target with none writes no `dismissed`, so
+its spec is byte for byte as before.
 """
 
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import ipaddress
 import json
 import re
@@ -781,9 +791,10 @@ def group_screens(screens: Sequence[Mapping[str, Any]]) -> list[tuple[str, list[
 
 
 def route_list(groups: Sequence[tuple[str, Sequence[Mapping[str, Any]]]], *,
-               clock: str | None = None) -> dict[str, Any]:
+               clock: str | None = None, dismissed: Sequence[str] = ()) -> dict[str, Any]:
     """The capture tool's route-list document (`swarm_qa.load_routes`, format
-    1) for `groups`. `clock` only when the target sets one (§4.2)."""
+    1) for `groups`. `clock` only when the target sets one (§4.2);
+    `dismissed` (`dismissed_hashes`) only when the target dismissed a route."""
     document: dict[str, Any] = {
         "format": 1,
         "groups": {
@@ -796,7 +807,18 @@ def route_list(groups: Sequence[tuple[str, Sequence[Mapping[str, Any]]]], *,
     }
     if clock is not None:
         document["clock"] = clock
+    if dismissed:
+        document["dismissed"] = list(dismissed)
     return document
+
+
+def dismissed_hashes(target: Mapping[str, Any]) -> list[str]:
+    """The target's dismissed routes as the crawl reads them (QA-CRAWL-SKIP):
+    each `{key, ...}` entry's key as sha256 hex (`swarm_qa._sha`), sorted and
+    unique. An entry with no string key is no dismissal."""
+    return sorted({hashlib.sha256(d["key"].encode("utf-8")).hexdigest()
+                   for d in target.get("dismissed_routes") or []
+                   if isinstance(d, Mapping) and isinstance(d.get("key"), str)})
 
 
 def _clock(target: Mapping[str, Any]) -> str | None:
@@ -1224,7 +1246,11 @@ def render(target: Mapping[str, Any], *, screens: Sequence[str] | None = None,
     steps: list[dict[str, Any]] = []
     # The whole run's stored list, the same in every step (§3.1): an empty
     # group is no group, so a run from the base writes `groups: {}`.
-    run_routes = route_list([(g, m) for g, m in groups if m], clock=clock)
+    # The target's dismissed routes go with it, so no step's crawl lists,
+    # loads or captures one (QA-CRAWL-SKIP). `found_per_step` is not cut for
+    # them: a dismissed route is never stored, so it spends none of the 60.
+    run_routes = route_list([(g, m) for g, m in groups if m], clock=clock,
+                            dismissed=dismissed_hashes(target))
     for k, (group, _members) in enumerate(groups, 1):
         crawl = _crawl_flags(target, base, step=k, steps=len(groups), found_per_step=found_per_step,
                              bounds=bounds)

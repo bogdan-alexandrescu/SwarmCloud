@@ -101,6 +101,46 @@ def test_a_429_is_still_a_rate_limit_and_no_error_kind(text):
     assert classify_account_error(text) is None
 
 
+def _token_with_429() -> str:
+    """A runtime-built token whose hex carries `429` between hex digits.
+
+    `_token()`'s random hex contains `429` about one run in 137, which is how
+    `test_the_message_in_the_channel_is_redacted` went red on PRs 2316 and 2370
+    (FIX-RATE-LIMIT-MARKER, part of #2379). This one carries it every time.
+    """
+    return "sk-ant-" + "oat01-" + pysecrets.token_hex(8) + "a429f" + pysecrets.token_hex(8)
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    [
+        lambda: _token_with_429(),
+        lambda: "sk-ant-" + "oat01-" + "429" + pysecrets.token_hex(8),
+        lambda: "req_" + "429" + pysecrets.token_hex(6),
+        lambda: str(uuid.uuid4())[:9] + "4290" + str(uuid.uuid4())[13:],
+    ],
+    ids=["hex", "after-a-dash", "after-an-underscore", "uuid-group"],
+)
+def test_a_429_inside_an_identifier_is_not_a_rate_limit(identifier):
+    text = _api_error(500, "api_error", f"bad request with {identifier()}")
+    assert detect_rate_limit(text)[0] is False
+    found = classify_account_error(text)
+    assert found is not None and found[0] == "server_error"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "API Error: 429",
+        '{"status": 429}',
+        "request failed (429)",
+        "status=429, retry later",
+    ],
+)
+def test_a_429_standing_as_a_status_is_still_a_rate_limit(text):
+    assert detect_rate_limit(text)[0] is True
+
+
 @pytest.mark.parametrize("text", ["", "the build failed", "ModuleNotFoundError: foo"])
 def test_an_ordinary_failure_is_no_error_kind(text):
     assert classify_account_error(text) is None
@@ -197,6 +237,19 @@ def test_the_message_in_the_channel_is_redacted(tmp_path, monkeypatch):
     assert channel["error"]["kind"] == "server_error"
     assert leaked not in json.dumps(channel)
     assert "oat01-" not in channel["error"]["message"]
+
+
+def test_a_500_carrying_a_token_with_429_in_its_hex_fails_and_does_not_park(
+    tmp_path, monkeypatch
+):
+    leaked = _token_with_429()
+    failure, channel = _run_on_account(
+        tmp_path, monkeypatch, _api_error(500, "api_error", f"bad request with {leaked}")
+    )
+
+    assert not isinstance(failure, QuotaExhaustedSignal), "a 429 in a token is not a status"
+    assert channel["error"]["kind"] == "server_error"
+    assert leaked not in json.dumps(channel)
 
 
 # -- the worker reports it for the held account -----------------------------

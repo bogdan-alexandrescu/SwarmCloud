@@ -16,6 +16,9 @@ What these tests hold, over the real app and the in-memory Firestore:
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from typing import Any
 
 from .conftest import auth_header
@@ -27,7 +30,7 @@ from .test_qa_target_discovery import (  # noqa: F401 -- pytest fixtures, used b
 )
 from .test_qa_target_environments import entry_of
 from .test_qa_target_settle import _later, finish_capture, found, row, run_leg, shown
-from .test_qa_run_groups import approved_two
+from .test_qa_run_groups import approved_two, tasks_of
 from .test_qa_targets import TARGETS, audit_rows, register
 
 
@@ -81,6 +84,26 @@ def test_remove_dismisses_a_route_and_a_later_run_leaves_it_out(client, db, obje
     # MUTATION: keep the dismissal on the staging leg alone and production's later run offers /billing.
     assert new_paths(later, "production") == ["/careers"]
     assert new_paths(later, "staging") == ["/team"]
+
+
+def capture_route_lists(db, workflow_id: str) -> list[dict[str, Any]]:
+    """The route list each capture step of `workflow_id` is told to write."""
+    return [json.loads(re.findall(r"```json\n(.*?)\n```", t["input"]["prompt"], flags=re.S)[0])
+            for t in tasks_of(db, workflow_id) if t["step_id"].startswith("capture-")]
+
+
+def test_a_later_run_tells_every_capture_step_to_skip_a_dismissed_route(client, db, objects, seeded) -> None:
+    """QA-CRAWL-SKIP (BGD 2026-10-25): a dismissed route is skipped by later
+    runs' crawls, on every leg; the tool reads it as its key's sha256."""
+    target, billing = staging_found(client, db, objects)
+    before = run_leg(client, target["id"], "production")
+    # CONTROL: a run before any dismissal names none.
+    assert all("dismissed" not in r for r in capture_route_lists(db, before))
+    assert dismiss(client, target["id"], billing).status_code == 200
+    workflow_id = run_leg(client, target["id"], "production")
+    lists = capture_route_lists(db, workflow_id)
+    # MUTATION: render a later run without the target's `dismissed_routes` and its crawl captures /billing again.
+    assert lists and all(r["dismissed"] == [hashlib.sha256(b"/billing").hexdigest()] for r in lists)
 
 
 def test_restore_puts_a_dismissed_route_back(client, db, objects, seeded) -> None:

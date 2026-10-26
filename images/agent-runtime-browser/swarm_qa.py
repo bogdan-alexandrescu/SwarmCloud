@@ -263,6 +263,17 @@ controls, {path, text})}, crawl: {pages, depth, seconds, stopped_by: done |
 pages | depth | time}}`. A capture aborted mid-walk still writes it, stopped
 by `time`, so a route it did not reach is never read as gone.
 
+A DISMISSED ROUTE IS NEVER CRAWLED (lane QA-CRAWL-SKIP; BGD 2026-10-25, part
+of #2157). The run list's optional `dismissed` holds the routes a workspace
+admin removed (S9b), each as the sha256 hex of its `state_key`, the way
+swarm-api's qaspec writes them: hashes, so no path a crawl found reaches the
+prompt that carries the list. The walk bars a dismissed route as it bars an
+excluded one: never listed, so it takes no `--max-pages` slot, never loaded,
+never captured, and never counted toward `--found-per-step`; found.json's
+`skipped.dismissed` counts them, and is absent from a run list with none, so
+that run's found.json is what it was. The key is the state's: a dismissed tab
+bars that state, not its path. A stored route is stored whatever is dismissed.
+
 `diff` compares two tarballs image by image: a changed-pixel ratio per image
 present in both, a `<name>.diff.png` where the ratio is over the threshold
 (the changed pixels in DIFF_MARK over a faded copy of A), and the names only
@@ -1059,6 +1070,10 @@ def load_routes(path: str | os.PathLike, *, allow_empty: bool = False) -> dict:
                     route["reveal"] = check_reveal(route["reveal"])
                 except UsageError as exc:
                     raise UsageError(f"route {rid}: {exc}") from exc
+    dismissed = document.get("dismissed", [])
+    if not isinstance(dismissed, list) or not all(isinstance(d, str) and SHA256_HEX.fullmatch(d)
+                                                  for d in dismissed):
+        raise UsageError("dismissed must be a list of route keys as lowercase sha256 hex")
     mockups = document.setdefault("mockups", [])
     if not isinstance(mockups, list) or not all(
         isinstance(m, dict) and isinstance(m.get("id"), str) and isinstance(m.get("path"), str) for m in mockups
@@ -1964,7 +1979,8 @@ def _crawl_walk(routes: dict, base: str, crawl: dict, gate: _GateRefusals, harve
                  max_depth=crawl.get("max_depth", DISCOVER_MAX_DEPTH), hash_routes=True, clicks=True,
                  words=words, selectors=crawl.get("selectors", []),
                  seconds=crawl.get("seconds", CRAWL_SECONDS),
-                 navigation_ms=crawl.get("navigation_ms", NAVIGATION_MS), gate=gate, harvested=harvested)
+                 navigation_ms=crawl.get("navigation_ms", NAVIGATION_MS), gate=gate, harvested=harvested,
+                 dismissed=set(routes.get("dismissed", [])))
     for route in _stored(routes):
         walk.seed(route["path"], route.get("reveal"))
     # The start path heads the walk; listed after the stored routes, so one
@@ -1980,7 +1996,7 @@ def _found_empty(routes: dict) -> dict:
     return {"format": FOUND_FORMAT, "stored": [state_key(r["path"], r.get("reveal")) for r in _stored(routes)],
             "captured_new": [], "not_owned": [], "over_cap": [],
             "skipped": {"off_origin": 0, "outside_base": 0, "excluded": 0, "robots": 0, "http_error": 0,
-                        "failed": 0, "write_attempting": []},
+                        "failed": 0, "write_attempting": [], **({"dismissed": 0} if routes.get("dismissed") else {})},
             "crawl": {"pages": 0, "depth": 0, "seconds": 0.0, "stopped_by": "time"}}
 
 
@@ -2180,6 +2196,10 @@ def found_ids(keys: list[str], taken: set[str]) -> dict[str, str]:
             for key, slug in slugs.items()}
 
 
+#: A dismissed route in the run list (QA-CRAWL-SKIP): its key's sha256 (`_sha`).
+SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
 def state_key(path: str, reveal: list[dict] | None) -> str:
     """What identifies a route, and what the owner rule hashes: its path, and
     for a route state the texts it reveals by."""
@@ -2249,8 +2269,10 @@ class _Walk:
                  clicks: bool = False, words: list[str] | tuple[str, ...] = DEFAULT_EXCLUDED_CONTROLS,
                  selectors: list[str] | None = None, seconds: float = CRAWL_SECONDS,
                  navigation_ms: int = NAVIGATION_MS, gate: _GateRefusals | None = None,
-                 harvested: dict[str, list] | None = None) -> None:
+                 harvested: dict[str, list] | None = None, dismissed: set[str] | None = None) -> None:
         self.root, self.origin, self.start = root, origin, start
+        #: The run's dismissed routes, as `_sha(state_key)` (QA-CRAWL-SKIP).
+        self.dismissed = set(dismissed or ())
         self.globs, self.rules = globs, rules
         self.max_pages, self.max_depth, self.hash_routes = max_pages, max_depth, hash_routes
         self.clicks, self.words, self.selectors = clicks, list(words), list(selectors or [])
@@ -2262,6 +2284,8 @@ class _Walk:
         self.seen: set[str] = set()
         self.skipped: dict[str, Any] = {"off_origin": 0, "outside_base": 0, "excluded": 0, "robots": 0,
                                         "failed": 0, "http_error": 0, "write_attempting": []}
+        if self.dismissed:
+            self.skipped["dismissed"] = 0
         self.off: set[str] = set()
         self.outside: set[str] = set()
         self.failed: list[str] = []
@@ -2299,7 +2323,7 @@ class _Walk:
         if key in self.seen:
             return
         self.seen.add(key)
-        barred = self._barred(path)
+        barred = "dismissed" if self.dismissed and _sha(key) in self.dismissed else self._barred(path)
         if barred is not None:
             self.skipped[barred] += 1
         elif depth > self.max_depth:
