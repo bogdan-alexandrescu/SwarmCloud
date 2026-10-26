@@ -1775,6 +1775,23 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
           : []),
       ]
     : []
+  // THE BROWSER QA AGENT'S LONG LOG (BT-001/BT-009, #2423): the log beside
+  // its live browser and in the theater is only worth reviewing when it is
+  // longer than its column, so this running agent has a log that is -- the
+  // walk measured 1632px of steps in a ~224px column. Playwright steps, as a
+  // claude-code-browser agent writes them; each pair one turn.
+  if (taskId === 'task_b40e5a1c' && started && !finished) {
+    const pages = ['/', '/about', '/docs', '/pricing', '/blog', '/contact', '/login', '/signup', '/status', '/terms', '/privacy', '/careers']
+    for (const [i, page] of pages.entries()) {
+      const n = 4 + i * 3
+      const id = `toolu_b${String(i).padStart(2, '0')}`
+      steps.push(
+        step(n, { text: `Opening https://example.com${page} to read what it says.` }),
+        step(n + 1, { kind: 'tool_call', tool: { id, name: 'mcp__playwright__browser_navigate', input: `{\n  "url": "https://example.com${page}"\n}` } }),
+        step(n + 2, { kind: 'tool_result', role: 'user', tool_result: { tool_use_id: id, is_error: false, content: `Page URL: https://example.com${page}\nPage Title: Example Domain`, images: 0 } }),
+      )
+    }
+  }
   const size = started ? 4096 : 0
   const at = span?.ended ?? FIXTURE_NOW - 4_000
   return {

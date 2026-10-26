@@ -56,7 +56,7 @@ interface Call {
   method: string
 }
 
-function stubFetch(answer: (url: string, method: string) => Response): Call[] {
+function stubFetch(answer: (url: string, method: string) => Response | Promise<Response>): Call[] {
   const calls: Call[] = []
   vi.stubGlobal(
     'fetch',
@@ -231,6 +231,54 @@ describe('1. prev, next and OTHER LIVE are fed', () => {
     expect(calls.some((c) => c.url.startsWith('/v1/tasks?'))).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: 'next ›' }))
     expect(onNavigate).toHaveBeenLastCalledWith('task_step_three')
+  })
+})
+
+// BT-008 (#2423, measured on swarm.saga.xyz 2026-10-26): 3 s after opening,
+// OTHER LIVE said "No other live browser agent." with prev and next disabled
+// while four were running; ~20 s later the read answered and listed them. A
+// read in flight is not an empty list. MUTATION: hand the theater
+// `loaded.agents ?? []` again (Theater.tsx `TheaterHost`) -- the first case
+// reads "No other live browser agent." before the page answers.
+describe('BT-008: OTHER LIVE says it is reading until the read answers', () => {
+  it('says reading, not none, while the page read is in flight; lists the agents once it lands', async () => {
+    let release: (r: Response) => void = () => {}
+    const page = new Promise<Response>((r) => {
+      release = r
+    })
+    stubFetch((url, method) => (url.startsWith('/v1/tasks?') ? page : answer(url, method)))
+    render(<Tab />)
+    await flush()
+    const region = screen.getByRole('region', { name: 'OTHER LIVE' })
+    expect(region.textContent).not.toContain('No other live browser agent')
+    expect(within(region).getByRole('status').textContent).toMatch(/Reading the live browser agents/)
+    const next = screen.getByRole('button', { name: 'next ›' }) as HTMLButtonElement
+    expect(next.disabled).toBe(true)
+    expect(next.title).toBe('Reading the live browser agents')
+
+    release(json(PAGE))
+    await flush()
+    expect(within(region).queryByRole('status')).toBeNull()
+    expect(within(region).getAllByRole('listitem')).toHaveLength(2)
+    expect((screen.getByRole('button', { name: 'next ›' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('says none only after a read answered with none', async () => {
+    stubFetch((url, method) => (url.startsWith('/v1/tasks?') ? json({ tasks: [PAGE.tasks[0]], next_page_token: null }) : answer(url, method)))
+    render(<Tab />)
+    await flush()
+    const region = screen.getByRole('region', { name: 'OTHER LIVE' })
+    expect(region.textContent).toContain('No other live browser agent.')
+    expect(within(region).queryByRole('status')).toBeNull()
+  })
+
+  it('says the read failed when it did, rather than reading forever or saying none', async () => {
+    stubFetch((url, method) => (url.startsWith('/v1/tasks?') ? json({ code: 'unavailable', message: 'down' }, 503) : answer(url, method)))
+    render(<Tab />)
+    await flush()
+    const region = screen.getByRole('region', { name: 'OTHER LIVE' })
+    expect(region.textContent).not.toContain('No other live browser agent')
+    expect(within(region).getByRole('status').textContent).toMatch(/could not be read/)
   })
 })
 
