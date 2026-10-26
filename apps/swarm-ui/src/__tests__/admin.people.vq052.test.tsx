@@ -163,11 +163,13 @@ describe('VQ-052: the Claude account cell is one short line', () => {
     expect(claudeOf('kay@example.com').querySelector('details')).toBeNull()
   })
 
-  it('keeps every account in the Manage drawer, where there is room for them', async () => {
+  it('keeps every account in the Manage drawer, behind the same one line', async () => {
     await mount(platform([borrower('bogdan@example.com', SEVEN)]))
     fireEvent.click(within(rowOf('bogdan@example.com')).getByRole('button', { name: 'Manage' }))
     const drawer = await screen.findByRole('dialog', { name: 'Manage bogdan@example.com' }, WAIT)
-    expect(visible(drawer.querySelector('[data-section="claude"]'))).toContain('ai-eng-7 (eng 7), lent by Engineering')
+    const items = [...drawer.querySelectorAll<HTMLElement>('[data-section="claude"] .pp-loan-list > li')].map((li) => visible(li))
+    expect(items).toHaveLength(7)
+    expect(items[6]).toBe('ai-eng-7 (eng 7)')
   })
 
   it('reads the name whole at 1440: the name over the address, the avatar on its line, the cell two lines', async () => {
@@ -195,25 +197,26 @@ describe('VQ-052: the Claude account cell is one short line', () => {
   })
 })
 
-describe('VQ-052: the loan line wraps only where a phone needs it to', () => {
+describe('VQ-052: the loan line wraps between words, never inside one', () => {
   const loans =
     '<details class="pp-loans"><summary class="pp-loan-sum"><span class="pp-nobr">7 accounts ·</span> lent by <span class="pp-nobr">Engineering</span></summary>' +
-    '<ul class="pp-loan-list"><li>ai-eng-1 (eng 1)</li></ul></details>'
+    '<ul class="pp-loan-list"><li><span class="pp-nobr">ai-eng-1</span> (eng 1)</li></ul></details>'
 
-  it('holds the summary and each account to one line in the wide table', () => {
+  it('lets the wide table wrap it, so the grid fits its pane at 1440 (rendered review of PR 2464)', () => {
     document.body.innerHTML = `<div class="ctl-table is-scroll"><table class="pp-table"><tbody><tr><td>${loans}</td></tr></tbody></table></div>`
-    // MUTATION: drop the wide-table rule -> the summary wraps under a long name.
-    expect(painted(document.querySelector('.pp-loan-sum')!, 'white-space', WIDE)).toBe('nowrap')
-    expect(painted(document.querySelector('.pp-loan-list > li')!, 'white-space', WIDE)).toBe('nowrap')
+    // MUTATION: put back the wide-table nowrap -> with the Platform role column
+    // the grid is 1124px in a 1009px pane and Manage is behind its scroll.
+    expect(painted(document.querySelector('.pp-loan-sum')!, 'white-space', WIDE)).toBeNull()
+    expect(painted(document.querySelector('.pp-loan-list > li')!, 'white-space', WIDE)).toBeNull()
+    for (const span of document.querySelectorAll('.pp-nobr')) expect(painted(span, 'white-space', WIDE)).toBe('nowrap')
   })
 
-  it('lets a phone record wrap it between whole words, never inside the count or a lender', () => {
-    document.body.innerHTML = `<div class="pp-record">${loans}</div>`
+  it('wraps it the same way where a phone draws it, the Manage drawer, never inside the count, a lender or an id', () => {
+    // A phone's grid has no Claude column: the drawer is the one place it is drawn.
+    document.body.innerHTML = `<div class="pp-scrim"><aside class="pp-drawer"><section class="pp-dsec" data-section="claude"><div class="pp-now">Now using <div class="pp-now-what">${loans}</div></div></section></aside></div>`
     const PHONE: CascadeEnv = { width: 390 }
-    // MUTATION: make the summary nowrap everywhere -> a 390px record overflows.
     expect(painted(document.querySelector('.pp-loan-sum')!, 'white-space', PHONE)).toBeNull()
-    expect(painted(document.querySelector('.pp-loan-list > li')!, 'white-space', PHONE)).toBeNull()
-    for (const span of document.querySelectorAll('.pp-loan-sum .pp-nobr')) expect(painted(span, 'white-space', PHONE)).toBe('nowrap')
+    for (const span of document.querySelectorAll('.pp-nobr')) expect(painted(span, 'white-space', PHONE)).toBe('nowrap')
   })
 })
 
