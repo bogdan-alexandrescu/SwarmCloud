@@ -28,7 +28,10 @@
 // note without the links or RecordingsPanel, or drop LiveScreen's last-frame
 // capture; put MemberControl back in `.live-toolbar-end`; fit to the preset
 // alone in `fitShape`; say "not reported" for a null origin; render the
-// banner's Take control with `refusal="line"`.
+// banner's Take control with `refusal="line"`. Review fixes: drop the
+// narrow tab's width-led `floor` on `.live-stage`, or its window cap; anchor
+// `.live-strip-say` at the ⓘ's `left: 0` again; give the running tab's
+// stacked rows `3fr 2fr` again.
 
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -184,6 +187,44 @@ describe('BT-003: the frame is fitted into the room the pane has, never pushed b
     expect(Number(getComputedStyle(stage).minHeight.replace(/px$/, ''))).toBeLessThanOrEqual(160)
   })
 
+  it('gives a narrow tab’s stage the device at the tab’s width, since its pane is sized to its content', () => {
+    // RENDERED (review, 2026-10-26) at 390: the pane is content-sized, so
+    // the stage fell to its 160 px floor and a desktop was drawn 182x115 in
+    // a 358 px column. Desktop 1440x900 at 358 - 2 px of hairline: 223 px,
+    // + 2 px of hairline + the 6 px gap (the caption measures 0 here).
+    const narrow = (el: HTMLElement) => el.classList.contains('live-stage') || el.classList.contains('live-tab')
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+      return narrow(this) ? 358 : 0
+    })
+    pane(session())
+    const stage = document.querySelector<HTMLElement>('.live-stage')!
+    expect(stage.style.minHeight).toBe(`${Math.floor((900 * 356) / 1440) + 2 + 6}px`)
+  })
+
+  it('holds a narrow tab’s stage to the window’s height', () => {
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains('live-stage') || this.classList.contains('live-tab') ? 358 : 0
+    })
+    vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(200)
+    pane(session())
+    expect(document.querySelector<HTMLElement>('.live-stage')!.style.minHeight).toBe('200px')
+  })
+
+  it('opens the address’s explanation inside the strip, at its right, never past its edge', () => {
+    // RENDERED (review, 2026-10-26) at 1440: anchored at the ⓘ's left, near
+    // the strip's right end, it ran to x 1526 in a 1440 window, cut mid-word.
+    pane(session())
+    const strip = document.querySelector<HTMLElement>('.live-strip')!
+    const why = strip.querySelector<HTMLElement>('details.live-strip-why')!
+    expect(getComputedStyle(strip).position).toBe('relative')
+    expect(getComputedStyle(why).position).toBe('static')
+    const say = rulesFor('.live-strip-why > .live-strip-say').join('')
+    expect(say).toMatch(/position:\s*absolute/)
+    expect(say).toMatch(/right:\s*\d+px/)
+    expect(say).not.toMatch(/(^|[\s;{])left:/)
+    expect(say).toMatch(/max-width:\s*min\(\d+px,\s*calc\(100%\s*-\s*\d+px\)\)/)
+  })
+
   it('draws the strip as one line: the address, who drives, and the address’s explanation folded away', () => {
     pane(session())
     const strip = document.querySelector<HTMLElement>('.live-strip')!
@@ -281,6 +322,22 @@ describe('BT-002: the logs column keeps its toolbar and scrolls only its lines',
     expect(block![2]).toMatch(/grid-template-areas:\s*"screen"\s*"logs"/)
     expect(block![2]).toMatch(/\.live-split\s*\{\s*display:\s*none/)
     expect(rulesFor('.live-tab').join('')).toMatch(/container:\s*live-tab\s*\/\s*inline-size/)
+  })
+
+  it('bounds the stacked rows of a running tab, never shares of the log’s own height', () => {
+    // RENDERED (review, 2026-10-26) at 390: `3fr 2fr` on the phone's
+    // content-sized pane made the body 3299 px, the frame at y≈1343 and the
+    // logs ~2470 px down.
+    const css = LIVE_CSS.replace(/\/\*[\s\S]*?\*\//g, '')
+    const at = css.search(/@container\s+live-tab/)
+    const inner = css.slice(at)
+    const rule = /\.live-tab\.with-logs:not\(\.is-finished\)\s+\.live-body\s*\{([^}]*)\}/.exec(inner)
+    expect(rule).not.toBeNull()
+    const rows = /grid-template-rows:\s*([^;]+);/.exec(rule![1] ?? '')
+    expect(rows).not.toBeNull()
+    expect(rows![1]).not.toMatch(/fr\b/)
+    expect(rows![1]).toMatch(/^auto\s+min\(\d+vh,\s*\d+px\)$/)
+    expect(rule![1]).toMatch(/flex:\s*none/)
   })
 })
 

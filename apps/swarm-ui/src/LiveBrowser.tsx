@@ -1765,6 +1765,12 @@ const DESKTOP_BEZEL = 0
 const HAIRLINE = 1
 /** The gap between the device and its caption (`.live-stage`'s `gap`). */
 const STAGE_GAP = 6
+/**
+ * Under this many pixels of tab the tab stacks and reads top to bottom
+ * (live.css's `@container live-tab (max-width: 479px)`): the pane is sized to
+ * its content there, so the stage has no height to take and is given one.
+ */
+const NARROW_TAB = 480
 /** A mobile preset this wide on its short side is a tablet (iPad: 810), and gets the tablet's outline. */
 const TABLET_MIN = 600
 /** Focus is on no control at all: the page's body, as after the focused element left the page. */
@@ -1842,7 +1848,7 @@ function LiveScreen({
   const [hasFocus, setHasFocus] = useState(false)
   const stage = useRef<HTMLDivElement>(null)
   const below = useRef<HTMLDivElement>(null)
-  const [room, setRoom] = useState<{ width: number; height: number; caption: number } | null>(null)
+  const [room, setRoom] = useState<{ width: number; height: number; caption: number; narrow: boolean } | null>(null)
   const lastRef = useRef(onLastFrame)
   lastRef.current = onLastFrame
   // noVNC has reported a frame of some size: the canvas holds a picture worth keeping.
@@ -1876,13 +1882,22 @@ function LiveScreen({
     if (node === null) return
     const measure = () => {
       const caption = below.current?.offsetHeight ?? 0
+      // A tab of no measured width (no layout) is not taken for a narrow one.
+      const tab = node.closest<HTMLElement>('.live-tab')?.clientWidth ?? 0
       const next = {
         width: node.clientWidth,
         height: node.clientHeight - caption - STAGE_GAP,
         caption,
+        narrow: tab > 0 && tab < NARROW_TAB,
       }
       setRoom((was) =>
-        was !== null && was.width === next.width && was.height === next.height && was.caption === next.caption ? was : next,
+        was !== null &&
+        was.width === next.width &&
+        was.height === next.height &&
+        was.caption === next.caption &&
+        was.narrow === next.narrow
+          ? was
+          : next,
       )
     }
     measure()
@@ -1905,6 +1920,22 @@ function LiveScreen({
     proportions === null || room === null
       ? null
       : fitDevice({ width: room.width - 2 * edge, height: room.height - 2 * edge }, proportions)
+  // A NARROW TAB'S STAGE IS AS TALL AS THE DEVICE AT ITS WIDTH (review of
+  // BT-003, 2026-10-26). There the pane is sized to its content and the
+  // drawer scrolls, so `flex: 1 1 0` gave the stage nothing and it fell to
+  // live.css's 160 px floor: rendered at 390, a desktop 182x115 in a 358 px
+  // column and a phone preset ~74x160. QA12-19's width-led floor is kept
+  // there, and only there, held to the window's height so a phone preset is
+  // never taller than the screen; a wider tab is bounded by its pane and
+  // takes the room left (BT-003).
+  const floorFit =
+    proportions === null || room === null || !room.narrow
+      ? null
+      : fitDevice({ width: room.width - 2 * edge, height: Number.POSITIVE_INFINITY }, proportions)
+  const floor =
+    floorFit === null || room === null
+      ? null
+      : Math.min(floorFit.height + 2 * edge + room.caption + STAGE_GAP, window.innerHeight)
   const kind = device === null || !device.mobile ? 'desktop' : Math.min(device.width, device.height) >= TABLET_MIN ? 'tablet' : 'phone'
 
   useEffect(() => {
@@ -2191,7 +2222,7 @@ function LiveScreen({
           its caption and 'View only.' sat below its edge. The device is
           fitted into the stage both ways; the pane scrolls only under
           live.css's small floor. */}
-      <div ref={stage} className="live-stage">
+      <div ref={stage} className="live-stage" style={floor === null ? undefined : { minHeight: `${floor}px` }}>
         <div
           // ITS OWN BOX IN EVERY STATE (visual QA run 6, task-006): a
           // desktop frame drew no edge of its own, only the screen's hairline
