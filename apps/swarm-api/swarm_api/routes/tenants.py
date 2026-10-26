@@ -59,7 +59,9 @@ from ..codec import console_origin, tenant_to_api
 from ..deps import AppContext, current_auth, get_context
 from ..errors import KeyLinkInvalid, ValidationFailed
 from ..schemas import FEATURE_UNKNOWN, CredentialCreate, FeatureState, StrictModel, TenantFeatures
+from ..store import TENANTS
 from ..validation import AWAIT_INPUT_PROFILE, known_providers
+from .workspace_name import clean_name
 
 log = logging.getLogger(__name__)
 
@@ -228,11 +230,25 @@ def get_mine(
     one that is not `ready` yet is not listed either.
 
     THEN the registered tenant groups Cloud Identity confirmed for this
-    request, in admin order, `kind: group`. Nothing is read for them, so a
-    group listed here need not have a tenant document yet; selecting it on a
-    submit creates one exactly as a first submit by its default member does.
-    Their `display_name` is the group email: it is what an admin registered,
-    it is unique where the tenant id is not, and it needs no read.
+    request, in admin order, `kind: group`. Their membership is not read
+    here, so a group listed here need not have a tenant document yet;
+    selecting it on a submit creates one exactly as a first submit by its
+    default member does.
+
+    THEIR NAMES ARE READ (MINE-NAMES, part of #2157). A workspace's admins
+    rename it (`PUT /v1/workspaces/{id}/name`), and BGD decided on
+    2026-10-25 that everyone's switcher shows the new name at once, not only
+    after they next act there -- which `/me` alone could not do, since it
+    names only the workspace in force. So every group entry's
+    `tenants/{id}` document, the reach's included, is read in ONE batched
+    `get_all` per call (`_stored_names`), never a read per workspace. A
+    stored name is served as `display_name`, with the group email beside it
+    as `group`. An entry keeps today's `display_name`, the group email, and
+    carries no `group` when its document is missing, unreadable, still named
+    by its id (what a first submit writes), or holds a name a rename would
+    refuse (`workspace_name.clean_name`: the tenant's own worker can write
+    that document). No entry is ever dropped for its name. The personal
+    entry is not read: it is "Your workspace (u-…)" whatever its document says.
 
     Empty for a caller in no registered group without a ready workspace.
 
@@ -251,7 +267,7 @@ def get_mine(
     AFTER THEM, for a platform admin with the reach on, every registered group
     workspace they are NOT a member of (`AuthContext.platform_reach`), each
     `via: "platform_admin"`, `is_default: false` and `role: admin` by rule --
-    no read. Every other entry's role costs one cached grant read; a
+    no grant read. Every other entry's role costs one cached grant read; a
     personal entry's costs none.
     """
     entries = [
@@ -264,7 +280,40 @@ def get_mine(
             "is_default": False, "via": roles.VIA_PLATFORM_ADMIN,
             "role": {"name": roles.ADMIN, "source": roles.SOURCE_PLATFORM_ADMIN},
         })
+    names = _stored_names(ctx, [e["tenant_id"] for e in entries if e["kind"] == "group"])
+    for entry in entries:
+        name = names.get(entry["tenant_id"])
+        if entry["kind"] == "group" and name is not None:
+            entry["group"] = entry["display_name"]
+            entry["display_name"] = name
     return entries
+
+
+def _stored_names(ctx: AppContext, tenant_ids: list[str]) -> dict[str, str]:
+    """Each workspace's servable stored name, by id, from ONE `get_all` of
+    their `tenants/{id}` documents. A missing document, a name that is
+    absent, the id itself or one a rename would refuse is left out; a
+    failed read leaves every one out, logged, and never fails the route."""
+    if not tenant_ids:
+        return {}
+    collection = ctx.db.collection(TENANTS)
+    try:
+        snaps = list(ctx.db.get_all([collection.document(t) for t in dict.fromkeys(tenant_ids)]))
+    except Exception:  # noqa: BLE001 - an unread name is served as today's group email
+        log.warning("tenants/mine could not read the workspaces' names", exc_info=True)
+        return {}
+    names: dict[str, str] = {}
+    for snap in snaps:
+        if not snap.exists:
+            continue
+        stored = (snap.to_dict() or {}).get("display_name")
+        if not isinstance(stored, str) or stored.strip() == snap.id:
+            continue
+        try:
+            names[snap.id] = clean_name(stored)
+        except ValidationFailed:
+            continue
+    return names
 
 
 def _choice(ctx: AppContext, auth: AuthContext, tenant_id: str, principal: str, *,
