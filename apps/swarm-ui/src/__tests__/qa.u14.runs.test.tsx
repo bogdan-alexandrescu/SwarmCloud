@@ -26,8 +26,9 @@
  * the full green sha as its text -- each turns a case red.
  *
  * VQ-019 (visual QA #2391, 2026-10-26): give `.rn-srow` its own `auto`
- * columns back, or leave the phone's state and links beside the title -- each
- * turns a case red.
+ * columns back, size the meta column to the widest row's content (`auto`),
+ * or leave the phone's state and links beside the title -- each turns a case
+ * red.
  */
 import { render, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -437,7 +438,14 @@ describe('VQ-019: the Steps card lines its titles up, and gives a phone its widt
     const card = await stepsCard(container)
     const list = card.querySelector('.rn-srows')!
     expect(painted(list, 'display', DESKTOP)).toBe('grid')
-    expect(painted(list, 'grid-template-columns', DESKTOP)).toBe('fit-content(180px) minmax(0, 1fr) auto auto')
+    // The meta track was `auto`: it took the widest row's max-content
+    // ('elapsed 6h 26m · attempt 1 of 3 · quota exhausted') on EVERY row and
+    // left each title 146px at 1440, so a title wrapped over three lines and
+    // its mono id broke. The title and the meta share the free width 2:1 and
+    // the meta wraps inside its share; only the links keep their own width.
+    const tracks = painted(list, 'grid-template-columns', DESKTOP)
+    expect(tracks).toBe('fit-content(180px) minmax(0, 2fr) minmax(0, 1fr) auto')
+    expect(tracks!.split(/\s(?![^(]*\))/).filter((t) => t === 'auto')).toHaveLength(1)
     for (const step of ['impl', 'docs', 'wire', 'review']) {
       const row = rowOf(card, step)
       expect(painted(row, 'grid-template-columns', DESKTOP), step).toBe('subgrid')

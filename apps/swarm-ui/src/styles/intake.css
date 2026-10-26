@@ -566,7 +566,10 @@
      `flex: none` item beside the run id, so its width was the reason's whole
      unwrapped line. The cell gives its two pieces to the card: the state's
      mark sits beside the run id, and the reason, when there is one, takes a
-     full line after the issue, cut with an ellipsis and whole in its title. */
+     full line after the issue, cut with an ellipsis and whole in its title.
+     `display: contents` drops the cell's box; Chromium keeps the td's role,
+     but older engines took a display: contents cell out of the accessibility
+     tree, so its pill and reason read without their column there. */
   .rn-row > td[data-label='State'] { display: contents; }
   .rn-row > td[data-label='State'] > .c-pill { order: 2; flex: none; align-self: center; }
   .rn-row > td[data-label='State'] > .rn-why { order: 3; flex: 0 0 100%; min-width: 0; }

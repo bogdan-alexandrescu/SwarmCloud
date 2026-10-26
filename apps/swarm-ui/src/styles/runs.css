@@ -73,10 +73,16 @@
    different x on every row -- the state cell was its word's width,
    'succeeded' wider than 'parked'. The list holds the columns and every row
    is a subgrid of them: the state column is the widest state's, at most
-   180px (a longer mark wraps inside it), and the titles line up. */
+   180px (a longer mark wraps inside it), and the titles line up.
+   THE META COLUMN IS A SHARE, NOT ITS WIDEST ROW (review of VQ-019): as
+   `auto` it took the widest row's whole meta line ('elapsed 6h 26m · attempt
+   1 of 3 · quota exhausted') on every row and left each title 146px at 1440
+   -- the squeezed title and broken step id VQ-019 reports, now on desktop.
+   The title and the meta share the free width 2:1 and the meta's flex-wrap
+   folds its pieces inside its share; only the links keep their own width. */
 .rn-srows {
   margin: 0; padding: 0; list-style: none; display: grid; gap: 0; min-width: 0;
-  grid-template-columns: fit-content(180px) minmax(0, 1fr) auto auto; column-gap: 10px;
+  grid-template-columns: fit-content(180px) minmax(0, 2fr) minmax(0, 1fr) auto; column-gap: 10px;
 }
 .rn-srow {
   display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center;
@@ -87,7 +93,7 @@
 .rn-srow-n { min-width: 0; overflow-wrap: anywhere; }
 .rn-srow-t { font-weight: 600; }
 .rn-srow-id, .rn-srow-r { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
-.rn-srow-m { display: flex; flex-wrap: wrap; gap: 0 10px; font-size: var(--t-micro); line-height: var(--lh-micro); }
+.rn-srow-m { display: flex; flex-wrap: wrap; gap: 0 10px; min-width: 0; overflow-wrap: anywhere; font-size: var(--t-micro); line-height: var(--lh-micro); }
 /* ON A PHONE THE TITLE HAS THE ROW'S WIDTH (VQ-019). The meta dropped under
    the name, but the state and the links kept their columns beside it, so at
    390 the title had ~80px -- a word or two a line -- and the mono step id
