@@ -1603,6 +1603,17 @@ everyone sees it.
   listing failed) is judged by the whole patch, as before, so nothing older
   is waved through. A lane that fast-forwarded onto main has main's commits
   on its first-parent line and is gated on them: that errs towards gating.
+* **A vitest file is not a UI path** (owner decision 2026-10-26, part of
+  #2379). On 2026-10-26 a lane whose only own file under `apps/swarm-ui/`
+  was `src/__tests__/accounts.timeline.test.tsx` had its review's MERGE
+  forced to NOT_YET. The re-review that `on_merge_verdict` appends runs the
+  review's own profile (`rereview_step_for`), so no fix round could ever be
+  rendered, and the merge refused `verdict_not_merge`. A browser renders
+  pages, not tests, so a path under `apps/swarm-ui/` in a `__tests__/`
+  directory or ending `.test.ts(x)` or `.spec.ts(x)` does not gate.
+  Application code, CSS, `index.html`, configs and all of `docs/web-ui/`
+  still do, and a test changed beside application code leaves the lane
+  gated on that code.
 * **The rule is in the review's own prompt.** The worker appends it, naming
   the UI paths and the profile the step runs on, so a reviewer knows before
   it writes a verdict that MERGE from anywhere but a rendered review will not
@@ -2406,6 +2417,20 @@ there: a workflow on another host opens no pull request (the worker harvests
 a patch), so with `metadata.merge` absent it is accepted with no merge step
 appended, and an admin turning `merge_by_default` on breaks no tenant who
 never asked for a merge.
+
+## A repository's Playwright suite as a sharded gate: `swarm_suite_gate`
+
+The bridge tool `swarm_suite_gate` (PLAYWRIGHT-GATE, part of #2253) renders a
+workflow for a registered repository: N shard steps on `claude-code` and one
+`report` step. Each shard runs `npx playwright test --shard k/N --retries=1
+--reporter=blob,line` from `working_dir` and puts its blob in its artifacts.
+The report merges the blobs into one HTML report and a `summary.json` with
+passed, failed and flaky counts and each failure's spec and first error line.
+The caller supplies only data: the repository, a ref, `shards` (1 to 20,
+default 8), and optionally a Playwright project and a non-secret env file. It
+never supplies an image, a command or resources (invariant 10). No step fixes
+code or commits. What it costs, how to pick N and how a project wires it into
+its merge train are in [suite-gate.md](suite-gate.md).
 
 ## When not to use a workflow
 

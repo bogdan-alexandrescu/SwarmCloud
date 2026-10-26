@@ -203,7 +203,7 @@ describe('Admin › Workspaces you admin (NAV-ADMIN-ROLE)', () => {
     await waitFor(() => expect(window.location.pathname).toBe('/config/people'))
   })
 
-  it('lists for a platform admin the workspaces where their stored role is admin, not every one they reach', async () => {
+  it('lists for a platform admin the group workspaces they are in, marked as a platform admin\'s, not every one they reach', async () => {
     serve(ME(true), [
       PERSONAL,
       group('eng', 'admin', { role: { name: 'admin', source: 'platform_admin' } }),
@@ -212,6 +212,9 @@ describe('Admin › Workspaces you admin (NAV-ADMIN-ROLE)', () => {
     await app('/admin/workspaces')
     await waitFor(() => expect(rows()).toHaveLength(1))
     expect(rows()[0]!.getAttribute('data-tenant')).toBe('eng')
+    // VQ-044: the API resolved this admin as a platform admin, whatever eng stores for them; never "stored role".
+    expect(rows()[0]!.querySelector('[data-via="platform_admin"]')?.textContent).toBe('admin as a platform admin')
+    expect(document.querySelector('.wya-page .ur-sub')?.textContent).not.toContain('stored role')
   })
 
   it('says plainly that you administer no group workspace', async () => {

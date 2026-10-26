@@ -158,6 +158,28 @@
 .ac-authz { margin: 0 0 10px; }
 .ob-help { margin: 2px 0 0; }
 
+/* ---- GH-ACCESS-E-REST (#2157, config-e.html S2a-S2c) ----------------------- */
+/* WHAT COMES AFTER (S2a) is dashed and unfilled: steps that wait, not a
+   panel to act in. Each step is an empty ring, its name and its wait. */
+.c-card.ac-after.is-dash { border-style: dashed; background: transparent; }
+.ac-steps { list-style: none; margin: 0; padding: 0; }
+.ac-step { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: var(--t-meta); line-height: var(--lh-meta); }
+.ac-step:last-child { border-bottom: 0; }
+.ac-step-m { flex: none; width: 18px; height: 18px; margin-top: 1px; border: 2px solid var(--line); border-radius: 50%; }
+.ac-step-t { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow-wrap: anywhere; }
+.ac-step-t b { font-weight: 600; }
+.ac-step-t small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+/* WHERE THE APP IS INSTALLED (S2b) is keys.css's stacking table: each owner
+   a card on a phone. The owner's kind sits under its name; the action column
+   has no visible head, as S2b draws it, but keeps its name for a reader. */
+.ac-installs-k { display: block; }
+.ac-installs-t td.ac-installs-a { text-align: right; white-space: nowrap; }
+.ac-installs-t td.ac-installs-a .c-banner { white-space: normal; text-align: left; }
+.ac-vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* THE FOOT BAR (S2c): what this visit saved on the left, Refresh on the right. */
+.ac-foot { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: flex-end; padding-top: 10px; border-top: 1px solid var(--line); font-size: var(--t-meta); line-height: var(--lh-meta); }
+.ac-foot > .ac-foot-n { margin-right: auto; min-width: 0; overflow-wrap: anywhere; }
+
 /* ---- narrower screens, and the 390px phone frame ---------------------------- */
 @media (max-width: 1079px) {
   .ac-grant { grid-template-columns: minmax(0, 1fr) auto; }
@@ -189,6 +211,10 @@
   .ac-typed-row > .c-seg { flex-basis: auto; }
   /* A step body's own actions are phone targets too (visual QA V228). */
   .ob-step .ob-ws .ob-acts .c-btn { min-height: 44px; }
+  /* S2e: an owner's card ends in its action, left under its values, at a tap target's height. */
+  .ac-installs-t td.ac-installs-a { text-align: left; white-space: normal; padding-top: 6px; }
+  .ac-installs-t td.ac-installs-a .c-btn, .ac-installs-t td.ac-installs-a a { min-height: 44px; }
+  .ac-foot .c-btn { min-height: 44px; }
 }
 
 /* #847 W8: the workspace and Claude-account steps' bodies, and Admin › People. */

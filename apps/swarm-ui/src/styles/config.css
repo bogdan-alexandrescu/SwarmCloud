@@ -7,6 +7,23 @@
 
 .cfg-page { display: flex; flex-direction: column; gap: var(--ctl-s3, 12px); min-width: 0; }
 
+/* TITLE AND TABS, THEN THE STRIP, THEN THE LEAD (VQ-040; config-e.html's
+   desk(): head(), stripD(), body). `ConfigPage` (App.tsx) mounts the strip
+   once, before the page, so it drew above the h1 and read as part of the page
+   before. Every Config page's own box is a 12px flex column like this one
+   (.pk-page, .ur-page, .ws-page), so it dissolves into this column with no
+   spacing change, and its head and tab strip are ordered ahead of the strip.
+   Only the head and the tabs move; the rest keeps its order under the strip.
+   A page whose head is not its box's own child keeps the strip on top.
+   The phone draws the compact strip over the head (S2d: phone()), so this
+   is the wider screens' alone, from where the compact strip stops. */
+@media (min-width: 760px) {
+  .cfg-page > :is(.pk-page, .ur-page, .ws-page) { display: contents; }
+  .cfg-page > :is(.pk-page, .ur-page, .ws-page) > .c-phead { order: -3; }
+  .cfg-page > :is(.pk-page, .ur-page, .ws-page) > .cfg-parts { order: -2; }
+  .cfg-page > .cfg-strip { order: -1; }
+}
+
 /* ---- the strip ------------------------------------------------------------ */
 .cfg-strip { display: grid; grid-template-columns: minmax(0, 1fr) auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden; }
 .cfg-steps { list-style: none; margin: 0; padding: var(--ctl-s1); display: grid; grid-template-columns: repeat(var(--cfg-n, 4), minmax(0, 1fr)); gap: var(--ctl-s1); min-width: 0; }
@@ -39,6 +56,25 @@
 .cfg-count small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .cfg-count .ctl-link { font-size: var(--t-micro); line-height: var(--lh-micro); }
 
+/* Finished (config-e.html `stripD`): one line on every width, the tick, the
+   words, the count and its age, and Show steps at the far end. The row never
+   wraps: at phone-390 a wrapped row put Show steps on a second line and drew
+   a 71px strip, as tall as the unfinished compact one. The count and its age
+   give way first, to an ellipsis; the words and the link keep their width. */
+.cfg-done { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: nowrap; gap: 10px; padding: 8px 14px; min-width: 0; }
+.cfg-done .cfg-mark { margin-top: 0; flex-shrink: 0; }
+.cfg-done .cfg-mark circle { fill: var(--s-live); stroke: var(--s-live); }
+.cfg-done .cfg-mark path { stroke: var(--surface); stroke-width: 2; }
+.cfg-done b { font: 650 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); white-space: nowrap; flex-shrink: 0; }
+.cfg-done small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cfg-done .ctl-link { margin-left: auto; font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; flex-shrink: 0; }
+/* Show steps and Hide steps are buttons that draw as the mock-up's <a>: the
+   `:where(.app button)` floor's box (1px border, 5px 12px padding, 28px
+   height, the surface fill) made Show steps 88px wide on the fold. The size
+   stays the container's `.ctl-link` rule's; the colour and underline are
+   `.ctl-link`'s own. */
+.cfg-strip button.ctl-link { min-height: 0; padding: 0; border: 0; background: none; font-weight: inherit; cursor: pointer; }
+
 /* Tablet: the steps go two by two, the count under them. */
 @media (max-width: 1100px) {
   .cfg-strip { grid-template-columns: minmax(0, 1fr); }
@@ -58,6 +94,11 @@
   .cfg-compact-h b { font: 650 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
   .cfg-compact-h .ctl-link { font-size: var(--t-meta); line-height: var(--lh-meta); text-align: right; }
   .cfg-compact small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+  /* The fold's three gaps and two sides come out of its count: at 10px and
+     14px the phone-390 count had 124px and cut '4 of 4 · checked 2m ago'
+     (125px) to 'checked 2m a…'. At 6px and 12px (the compact strip's side)
+     it has about 140px, and a three-character age ('12m', 129px) fits. */
+  .cfg-done { gap: 6px; padding: 8px 12px; }
 }
 
 /* ---- Workspace Settings' parts ---------------------------------------------- */

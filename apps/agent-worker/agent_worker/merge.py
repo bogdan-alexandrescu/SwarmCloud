@@ -309,6 +309,14 @@ CI_FIX_POSTBACK_STATES = frozenset({"pending", "posted", "gave_up"})
 #: unmatched head is `head_moved` as before.
 CI_FIXER_TASKS_READ = 10
 
+#: The step's summary key naming each fix-round record it could not read
+#: (#2373): its own task, a round's, a recorded fixer's. At most
+#: FIX_RECORDS_UNREAD_MAX of them, each reason FIX_RECORDS_UNREAD_CHARS long,
+#: so a `merge_fix` record listing many rounds cannot grow the summary.
+FIX_RECORDS_UNREAD_KEY = "fix_records_unread"
+FIX_RECORDS_UNREAD_MAX = 5
+FIX_RECORDS_UNREAD_CHARS = 200
+
 #: swarm-api's record of every platform fix round's pushed head, against the
 #: PULL REQUEST (repository + number), on the task whose `swarm/<id>` branch
 #: it is on (epic #1334: HANG-LEASE's merge refused PR 1338 at the head a fix
@@ -335,8 +343,18 @@ MERGE_QUEUED = "merge_queued"
 
 #: Who commits GitHub's own merge commits -- `update-branch`, the web UI --
 #: and signs them, so `verification.verified` is true. A two-parent commit
-#: anyone else made can carry any tree, so the walk accepts only these.
+#: anyone else made can carry any tree, so the walk takes one of those only
+#: once its tree is shown to be the clean merge of its parents
+#: (`_merge_impurity`, FIX-MERGE-PURE-BASE-MERGE).
 GITHUB_COMMITTER_EMAIL = "noreply@github.com"
+
+#: The summary key listing every base merge the walk took that GitHub did not
+#: commit: a person's (or anyone's) clean merge of the base on top of an
+#: accepted head. BGD, 2026-10-26: "accept a pure base merge, and record who
+#: made it" -- F05 of #2379, where a person's merge of main ended a parked
+#: merge step FAILED head_moved that auto-merge.yml's `is_pure_base_merge`
+#: accepts from anyone. Each entry is `_commit_record`'s.
+PURE_BASE_MERGES_KEY = "pure_base_merges"
 
 #: A 405/422 from the merge call that means the branch is behind: the
 #: update row, not a refusal.
@@ -688,11 +706,25 @@ class CommitFacts:
     parents: tuple[str, ...]
     committer_email: str | None
     verified: bool
+    #: The commit's tree, what a pure base merge's is compared by
+    #: (`_merge_impurity`). None when GitHub did not say.
+    tree: str | None = None
 
     @property
     def by_github(self) -> bool:
         """Committed and signed by GitHub itself, as `update-branch` commits are."""
         return self.verified and (self.committer_email or "").lower() == GITHUB_COMMITTER_EMAIL
+
+
+@dataclass(frozen=True)
+class TreeFacts:
+    """A recursive tree: every path that is not a directory, as (mode, object sha).
+
+    `truncated` is GitHub saying it served only part of the tree, which then
+    proves nothing about the rest."""
+
+    entries: Mapping[str, tuple[str, str]]
+    truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -754,6 +786,10 @@ class ForgeMerger(Protocol):
     def commit(self, sha: str) -> CommitFacts: ...
 
     def on_base(self, base: str, sha: str) -> bool: ...
+
+    def merge_base(self, first: str, second: str) -> str | None: ...
+
+    def tree(self, sha: str) -> TreeFacts: ...
 
     def update_branch(self, number: int, *, expected_head_sha: str) -> UpdateAnswer: ...
 
@@ -988,7 +1024,28 @@ class GitHubMerger:
             parents=parents,
             committer_email=_str(_mapping(detail.get("committer")).get("email")),
             verified=_mapping(detail.get("verification")).get("verified") is True,
+            tree=_str(_mapping(detail.get("tree")).get("sha")),
         )
+
+    def merge_base(self, first: str, second: str) -> str | None:
+        """The commit `compare` says `first` and `second` both descend from."""
+        data = _mapping(self._client.get_ok(
+            f"{self._base}/compare/{quote(first, safe='')}...{quote(second, safe='')}"
+        ))
+        return _str(_mapping(data.get("merge_base_commit")).get("sha"))
+
+    def tree(self, sha: str) -> TreeFacts:
+        """The tree `sha`, recursively: blobs and submodules, never directories."""
+        data = _mapping(self._client.get_ok(f"{self._base}/git/trees/{quote(sha, safe='')}",
+                                            query={"recursive": "1"}))
+        entries: dict[str, tuple[str, str]] = {}
+        for raw in data.get("tree") or []:
+            entry = _mapping(raw)
+            path, kind = _str(entry.get("path")), _str(entry.get("type"))
+            if path is None or kind == "tree":
+                continue
+            entries[path] = (_str(entry.get("mode")) or "", _str(entry.get("sha")) or "")
+        return TreeFacts(entries=entries, truncated=data.get("truncated") is True)
 
     def on_base(self, base: str, sha: str) -> bool:
         """Whether `sha` is already on `base`: `compare` says the commit is
@@ -1410,10 +1467,14 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
     summary["pinned"] = pinned
     # The step's own record of its CI-fix rounds, and the heads they pushed:
     # task-store reads that need no credential, so before the token.
-    own = _own_doc(ctx)
-    fix_heads = _distinct(_fix_round_heads(ctx, own, opener, target.pull_request)
+    unread: list[str] = []
+    own = _own_doc(ctx, unread)
+    fix_heads = _distinct(_fix_round_heads(ctx, own, opener, target.pull_request, unread)
                           + _ci_fixer_heads(ctx, opener, target.pull_request, number)
-                          + _recorded_fix_heads(ctx, opener, target.pull_request, number))
+                          + _recorded_fix_heads(ctx, opener, target.pull_request, number,
+                                                unread))
+    if unread:
+        summary[FIX_RECORDS_UNREAD_KEY] = unread[:FIX_RECORDS_UNREAD_MAX]
     return _merge_with_token(
         run, number=number, pinned=pinned,
         branch=f"{ctx.branch_prefix}{_branch_task(opener, target.pull_request)}",
@@ -1713,20 +1774,33 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     if pr.draft:
         return run.refuse("draft", f"pull request #{number} is a draft")
     head = pr.head_sha
+    proven: dict[str, str | None] = {}
     accepted = None if head is None else _accept(
-        merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default
+        merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default, proven=proven
     )
     if head is None or accepted is None:
-        return run.refuse("head_moved",
-                          f"pull request #{number}'s head is {head}, not {pinned}, "
-                          "the head this workflow pushed, nor one of its CI-fix or conflict "
-                          "fix rounds' heads, nor a head the platform's CI fixer recorded "
-                          "for this pull request, nor GitHub's own update of any of them")
-    updates, pushed_by = accepted
+        unread = summary.get(FIX_RECORDS_UNREAD_KEY) or []
+        record = None if head is None else _head_record(
+            merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default, proven=proven)
+        outcome = run.refuse(
+            "head_moved",
+            f"pull request #{number}'s head is {head}, not {pinned}, "
+            "the head this workflow pushed, nor one of its CI-fix or conflict "
+            "fix rounds' heads, nor a head the platform's CI fixer recorded "
+            "for this pull request, nor a clean merge of the base into any of them"
+            + (f"; and this step could not read {'; '.join(unread)}, so a "
+               "round's head there was never a candidate" if unread else "")
+            + ("" if record is None else _named(record)))
+        if record is not None:
+            summary["refusal"]["commit"] = record
+        return outcome
+    updates, pushed_by, others = accepted
     summary["head"] = head
     summary["updates"] = updates
     if pushed_by is not None:
         summary["head_pushed_by"] = pushed_by
+    if others:
+        summary[PURE_BASE_MERGES_KEY] = others
     if title_is_placeholder(pr.title):
         return run.refuse("title_placeholder",
                           "the pull request's title is the worker's placeholder")
@@ -2061,27 +2135,41 @@ def queued_provenance(ctx: ActionContext, merger: ForgeMerger, *, number: int,
     ])
 
 
-def _updates_onto(merger: ForgeMerger, *, head: str, pushed: str, base: str) -> int | None:
-    """How many of GitHub's base merges lead from `pushed` to `head`, or None.
+def _updates_onto(merger: ForgeMerger, *, head: str, pushed: str, base: str,
+                  proven: dict[str, str | None] | None = None
+                  ) -> tuple[int, list[dict[str, Any]]] | None:
+    """How many base merges lead from `pushed` to `head`, and the record of
+    each GitHub did not commit, or None.
 
     The first-parent walk (docs/merge-step.md "Revised 2026-10-06" §1): from
-    the live head, each step down must be a two-parent commit GitHub itself
-    committed and signed, whose second parent is already on `base`; its first
-    parent is the next step. It must reach `pushed` within
-    MERGE_MAX_HEAD_UPDATES steps. A fact about GitHub, never about the
-    tenant-writable task document, so a lost attempt's update is re-derived
-    here and a forged count changes nothing. Anything else is `head_moved`.
+    the live head, each step down must be a two-parent commit whose second
+    parent is already on `base`, and either GitHub itself committed and
+    signed it or its tree is the clean merge of its two parents
+    (`_merge_impurity`; BGD 2026-10-26, F05 of #2379). Its first parent is
+    the next step. It must reach `pushed` within MERGE_MAX_HEAD_UPDATES
+    steps. A fact about GitHub, never about the tenant-writable task
+    document, so a lost attempt's update is re-derived here and a forged
+    count changes nothing. Anything else is `head_moved`. `proven` caches
+    `_merge_impurity` by commit across the candidates `_accept` walks.
     """
+    proven = {} if proven is None else proven
     steps = 0
+    others: list[dict[str, Any]] = []
     while head != pushed:
         if steps >= MERGE_MAX_HEAD_UPDATES:
             return None
         try:
             commit = merger.commit(head)
-            if len(commit.parents) != 2 or not commit.by_github:
+            if len(commit.parents) != 2:
                 return None
             if not merger.on_base(base, commit.parents[1]):
                 return None
+            if not commit.by_github:
+                if commit.sha not in proven:
+                    proven[commit.sha] = _merge_impurity(merger, commit)
+                if proven[commit.sha] is not None:
+                    return None
+                others.append(_commit_record(commit))
         except forge_mod.ForgeAnswered as exc:
             # A commit or comparison GitHub does not have is not an update.
             if getattr(exc, "status", None) in (404, 422):
@@ -2089,7 +2177,110 @@ def _updates_onto(merger: ForgeMerger, *, head: str, pushed: str, base: str) -> 
             raise
         head = commit.parents[0]
         steps += 1
-    return steps
+    return steps, others
+
+
+def _named(record: Mapping[str, Any]) -> str:
+    """`_head_record`, as the clause a `head_moved` message ends with."""
+    if "unreadable" in record:
+        return f"; {record['sha']} could not be read ({record['unreadable']})"
+    parents = ", ".join(str(p)[:12] for p in record.get("parents") or []) or "none"
+    signed = "signed" if record.get("verified") else "unsigned"
+    return (f"; {record['sha']} was committed by {record.get('committer_email') or 'nobody named'} "
+            f"({signed}), parents {parents}: {record.get('why') or 'not taken'}")
+
+
+def _commit_record(commit: CommitFacts) -> dict[str, Any]:
+    """Who made a commit the walk read, as the step's summary records it."""
+    return {"sha": commit.sha, "parents": list(commit.parents),
+            "committer_email": commit.committer_email, "verified": commit.verified}
+
+
+def _merge_impurity(merger: ForgeMerger, commit: CommitFacts) -> str | None:
+    """None when `commit`'s tree is the clean merge of its two parents; else why not.
+
+    What auto-merge.yml's `is_pure_base_merge` asks of `git merge-tree`,
+    asked of GitHub's tree API, since the merge step has no clone. Path by
+    path over the merge base B, the first parent O and the second T (each a
+    (mode, sha), or absent): O and T agree, or one of them is B and the other
+    is taken, and the merge must carry exactly that. Then `_rename_risk`.
+
+    THIS PROOF MAY REFUSE WHAT GIT ACCEPTS, NEVER ACCEPT WHAT GIT REFUSES. So a
+    path both parents changed differently is not shown clean, even on lines
+    apart: a line merge here (difflib) aligned lines differently from git's
+    diff and took merges git conflicts on or merges to other bytes (the
+    review of FIX-MERGE-PURE-BASE-MERGE measured 107 of 1427). Nor is a tree
+    GitHub truncated. A merge not shown clean stays head_moved.
+    """
+    ours, theirs = commit.parents
+    base = merger.merge_base(ours, theirs)
+    if base is None:
+        return "its parents share no merge base"
+    tree_of: dict[str, TreeFacts] = {}
+    for name, sha in (("the merge base", base), ("its first parent", ours),
+                      ("its second parent", theirs), ("the merge", commit.sha)):
+        tree = commit.tree if sha == commit.sha else merger.commit(sha).tree
+        if tree is None:
+            return f"{name}'s tree is unreadable"
+        facts = merger.tree(tree)
+        if facts.truncated:
+            return f"GitHub truncated {name}'s tree"
+        tree_of[sha] = facts
+    b, o, t, m = (tree_of[sha].entries for sha in (base, ours, theirs, commit.sha))
+    for path in sorted(set(b) | set(o) | set(t) | set(m)):
+        at_b, at_o, at_t, at_m = b.get(path), o.get(path), t.get(path), m.get(path)
+        if at_o == at_t:
+            want = at_o
+        elif at_o == at_b:
+            want = at_t
+        elif at_t == at_b:
+            want = at_o
+        else:
+            return f"both parents change {path}"
+        if at_m != want:
+            return f"{path} is not the clean merge of its parents"
+    return _rename_risk(b, o, t)
+
+
+def _rename_risk(base: Mapping[str, Any], *sides: Mapping[str, Any]) -> str | None:
+    """Why git's rename detection might merge these trees differently from
+    the path-wise walk, or None.
+
+    The walk merges path by path; git pairs a side's deleted path with one
+    it added as a rename, and a directory a side removes entirely as a
+    directory rename. A rename on one side meets the other only through its
+    source, its target or that directory, so the trees are refused when one
+    side both deletes and adds paths (it may have renamed) and the other
+    changes or deletes a path it deleted (rename/delete, rename/rename) or
+    adds a path it added (rename/add); or when one side adds a path under a
+    directory the other removed entirely (git moves it, and merge-tree
+    reports the move as a conflict).
+    """
+    for side, other in ((sides[0], sides[1]), (sides[1], sides[0])):
+        removed = sorted(p for p in base if p not in side)
+        added = sorted(p for p in side if p not in base)
+        if removed and added:
+            for path in removed:
+                if other.get(path) != base[path]:
+                    return (f"{path} is deleted by one parent, which may have renamed it, "
+                            "and changed or deleted by the other")
+            for path in added:
+                if path in other:
+                    return (f"{path} is added by one parent, which may have renamed a file "
+                            "to it, and by the other")
+        gone = {d for p in base for d in _dirs(p)} - {d for p in side for d in _dirs(p)}
+        for path in sorted(p for p in other if p not in base):
+            for d in _dirs(path):
+                if d in gone:
+                    return (f"{path} is added in {d}/, which the other parent removes "
+                            "entirely, so git may move it as a directory rename")
+    return None
+
+
+def _dirs(path: str) -> list[str]:
+    """Every directory `path` sits under, outermost first."""
+    parts = path.split("/")
+    return ["/".join(parts[:i]) for i in range(1, len(parts))]
 
 
 def _update_branch(run: _Run, merger: ForgeMerger, *, number: int, head: str, updates: int,
@@ -2174,23 +2365,61 @@ def _update_branch(run: _Run, merger: ForgeMerger, *, number: int, head: str, up
 
 
 def _accept(merger: ForgeMerger, *, head: str, pinned: str,
-            fix_heads: list[tuple[str, str]], base: str) -> tuple[int, str | None] | None:
-    """(GitHub's base merges on top, the CI-fix round's task or None), or None.
+            fix_heads: list[tuple[str, str]], base: str,
+            proven: dict[str, str | None] | None = None
+            ) -> tuple[int, str | None, list[dict[str, Any]]] | None:
+    """(base merges on top, the CI-fix round's task or None, the record of each
+    base merge GitHub did not commit), or None.
 
     The live head is accepted when it is the pinned head or a head one of
     this workflow's CI-fix rounds pushed (`fix_heads`, newest first), itself
-    or under GitHub's own base merges (`_updates_onto`). Exact matches are
-    tried first, so the common case reads nothing more from GitHub.
+    or under clean base merges (`_updates_onto`). Exact matches are tried
+    first, so the common case reads nothing more from GitHub. `proven` caches
+    `_merge_impurity` by commit, and is shared with `_head_record`.
     """
     candidates: list[tuple[str | None, str]] = [(None, pinned), *fix_heads]
     for task_id, pushed in candidates:
         if head == pushed:
-            return 0, task_id
+            return 0, task_id, []
+    proven = {} if proven is None else proven
     for task_id, pushed in candidates:
-        updates = _updates_onto(merger, head=head, pushed=pushed, base=base)
-        if updates is not None:
-            return updates, task_id
+        walked = _updates_onto(merger, head=head, pushed=pushed, base=base, proven=proven)
+        if walked is not None:
+            return walked[0], task_id, walked[1]
     return None
+
+
+def _head_record(merger: ForgeMerger, *, head: str, pinned: str,
+                 fix_heads: list[tuple[str, str]], base: str,
+                 proven: dict[str, str | None] | None = None) -> dict[str, Any]:
+    """The commit a `head_moved` refusal names: its parents, who committed it,
+    whether it is signed, whether its first parent is an accepted head, and
+    the first reason the walk did not take it. Read best-effort: a read that
+    fails says so in `unreadable`, and the refusal stands either way.
+    `proven` is the walk's `_merge_impurity` cache, so no tree is proved twice."""
+    proven = {} if proven is None else proven
+    record: dict[str, Any] = {"sha": head}
+    try:
+        commit = merger.commit(head)
+        record.update(_commit_record(commit))
+        first = commit.parents[0] if commit.parents else None
+        accepted = first is not None and _accept(
+            merger, head=first, pinned=pinned, fix_heads=fix_heads, base=base,
+            proven=proven) is not None
+        record["first_parent_accepted"] = accepted
+        if len(commit.parents) != 2:
+            record["why"] = "it is not a two-parent merge"
+        elif not accepted:
+            record["why"] = "its first parent is not an accepted head"
+        elif not merger.on_base(base, commit.parents[1]):
+            record["why"] = f"its second parent is not on {base}"
+        elif not commit.by_github:
+            if commit.sha not in proven:
+                proven[commit.sha] = _merge_impurity(merger, commit)
+            record["why"] = proven[commit.sha] or "it is the clean merge of its parents"
+    except (forge_mod.ForgeError, ValueError) as exc:
+        record["unreadable"] = f"{type(exc).__name__}: {getattr(exc, 'status', None) or exc}"[:200]
+    return record
 
 
 # ---------------------------------------------------------------------------
@@ -2308,11 +2537,29 @@ def _slot_base(ctx: ActionContext, merger: ForgeMerger) -> str | None:
     return base or merger.default_branch()
 
 
-def _own_doc(ctx: ActionContext) -> Mapping[str, Any]:
+def _unread(ctx: ActionContext, unread: list[str] | None, what: str, exc: Exception) -> None:
+    """Note in `unread` that `what` could not be read, and why (#2373).
+
+    A record the step cannot read names no round, so the head that round
+    pushed is `head_moved` -- the right answer, and on 2026-10-25 the only
+    one four MERGE-verdict PRs got, with nothing saying the read was what
+    failed (a tenant on the state routes, whose `state/upstream` serves
+    neither the step's own task nor a round's). The refusal now says so.
+    The reason is the exception's own text, scrubbed and bounded: an id and
+    a refusal code, never a document.
+    """
+    if unread is None:
+        return
+    reason = ctx.scrub(str(exc) or type(exc).__name__)[:FIX_RECORDS_UNREAD_CHARS]
+    unread.append(f"{what} ({reason})")
+
+
+def _own_doc(ctx: ActionContext, unread: list[str] | None = None) -> Mapping[str, Any]:
     """The step's own task document, or {} when it cannot be read."""
     try:
         return _mapping(ctx.fetch_upstream(ctx.task_id))
-    except Exception:  # noqa: BLE001 - an unreadable record has no rounds
+    except Exception as exc:  # noqa: BLE001 - an unreadable record has no rounds
+        _unread(ctx, unread, f"its own task {ctx.task_id}, which records its rounds", exc)
         return {}
 
 
@@ -2373,7 +2620,7 @@ def _rounds_asked(own: Mapping[str, Any]) -> int:
 
 
 def _fix_round_heads(ctx: ActionContext, own: Mapping[str, Any], opener: Mapping[str, Any],
-                     target: str) -> list[tuple[str, str]]:
+                     target: str, unread: list[str] | None = None) -> list[tuple[str, str]]:
     """(task, pushed head) of each CI-fix and conflict fix round of this merge, newest first.
 
     The rounds are named by the tenant-writable `merge_fix` record, so each
@@ -2391,6 +2638,9 @@ def _fix_round_heads(ctx: ActionContext, own: Mapping[str, Any], opener: Mapping
     `workflow_id`), never this merge's: against this merge's workflow every
     round would be `workflow_mismatch`, and its head refused. What binds it
     to this merge is the signed `continues`, not the workflow.
+
+    A round's task that cannot be read at all is noted in `unread` (#2373);
+    one that reads but fails a check is not: that is the guard working.
     """
     root = _branch_task(opener, target)
     heads: list[tuple[str, str]] = []
@@ -2401,6 +2651,10 @@ def _fix_round_heads(ctx: ActionContext, own: Mapping[str, Any], opener: Mapping
             continue
         try:
             doc = _mapping(ctx.fetch_upstream(task_id))
+        except Exception as exc:  # noqa: BLE001 - unreadable: not a round's head
+            _unread(ctx, unread, f"round task {task_id}", exc)
+            continue
+        try:
             workflow = _task_id(entry.get("workflow_id")) or _task_id(doc.get("workflow_id"))
             if workflow is None:
                 continue
@@ -2509,7 +2763,7 @@ def _fixer_head(ctx: ActionContext, task_id: str, doc: Mapping[str, Any], *,
 
 
 def _recorded_fix_heads(ctx: ActionContext, opener: Mapping[str, Any], target: str,
-                        number: int) -> list[tuple[str, str]]:
+                        number: int, unread: list[str] | None = None) -> list[tuple[str, str]]:
     """(task, pushed head) of each fix round swarm-api recorded for THIS pull request
     (epic #1334), newest first, whichever workflow the round ran in.
 
@@ -2552,7 +2806,8 @@ def _recorded_fix_heads(ctx: ActionContext, opener: Mapping[str, Any], target: s
             continue
         try:
             doc = _mapping(ctx.fetch_upstream(task_id))
-        except Exception:  # noqa: BLE001 - unreadable: not a round's head
+        except Exception as exc:  # noqa: BLE001 - unreadable: not a round's head
+            _unread(ctx, unread, f"recorded fix task {task_id}", exc)
             continue
         pushed = _fixer_head(ctx, task_id, doc, root=root, repository=repository)
         if pushed is not None and pushed == entry.get("head"):

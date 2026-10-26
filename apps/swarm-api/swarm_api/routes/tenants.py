@@ -10,7 +10,9 @@ WORKSPACE ROLES (docs/design/workspace-roles.md §4.3, lane ROLES-API-CORE).
 `/me` and every `/mine` entry carry `role: {name, source}` -- the seam Settings
 › Profile reads (§4.11) -- and each `/mine` entry its `via`: "personal",
 "member", or "platform_admin" for a registered group workspace a platform
-admin reaches without being in it (§4.2.2 step 5). A role that could not be
+admin reaches without being in it (§4.2.2 step 5), or "platform_member" for
+one the person joined by an approved request rather than its Google group
+(docs/design/join-requests.md §4.5 step 3, behind `platform_memberships`). A role that could not be
 read is left out rather than guessed; the console then shows the derived one.
 `POST /me/credentials` writes the workspace's provider key, which is its
 admin's (Q6): behind `role_admin_required`'s switch, off at ship.
@@ -54,12 +56,14 @@ from swarm_common.admission import _snapshot
 from swarm_common.profiles import RUNNER_PROFILES
 
 from .. import awaitinput, mcp_servers, refusals, roles
-from ..auth import AuthContext
+from ..auth import VIA_PLATFORM_MEMBER, AuthContext
 from ..codec import console_origin, tenant_to_api
 from ..deps import AppContext, current_auth, get_context
 from ..errors import KeyLinkInvalid, ValidationFailed
 from ..schemas import FEATURE_UNKNOWN, CredentialCreate, FeatureState, StrictModel, TenantFeatures
+from ..store import TENANTS
 from ..validation import AWAIT_INPUT_PROFILE, known_providers
+from .workspace_name import clean_name
 
 log = logging.getLogger(__name__)
 
@@ -161,6 +165,11 @@ def get_me(
         "environment_declared": ctx.settings.environment_declared,
         "features": _features(ctx, auth),
         **_role_field(ctx, auth),
+        # Present only when the switch is on and this person's platform
+        # memberships could not be read (docs/design/join-requests.md §4.4):
+        # the console's switcher then says the workspaces joined by request
+        # are missing for now, rather than that the person has none.
+        **({"memberships_unavailable": True} if auth.memberships_unread else {}),
     }
 
 
@@ -228,11 +237,25 @@ def get_mine(
     one that is not `ready` yet is not listed either.
 
     THEN the registered tenant groups Cloud Identity confirmed for this
-    request, in admin order, `kind: group`. Nothing is read for them, so a
-    group listed here need not have a tenant document yet; selecting it on a
-    submit creates one exactly as a first submit by its default member does.
-    Their `display_name` is the group email: it is what an admin registered,
-    it is unique where the tenant id is not, and it needs no read.
+    request, in admin order, `kind: group`. Their membership is not read
+    here, so a group listed here need not have a tenant document yet;
+    selecting it on a submit creates one exactly as a first submit by its
+    default member does.
+
+    THEIR NAMES ARE READ (MINE-NAMES, part of #2157). A workspace's admins
+    rename it (`PUT /v1/workspaces/{id}/name`), and BGD decided on
+    2026-10-25 that everyone's switcher shows the new name at once, not only
+    after they next act there -- which `/me` alone could not do, since it
+    names only the workspace in force. So every group entry's
+    `tenants/{id}` document, the reach's included, is read in ONE batched
+    `get_all` per call (`_stored_names`), never a read per workspace. A
+    stored name is served as `display_name`, with the group email beside it
+    as `group`. An entry keeps today's `display_name`, the group email, and
+    carries no `group` when its document is missing, unreadable, still named
+    by its id (what a first submit writes), or holds a name a rename would
+    refuse (`workspace_name.clean_name`: the tenant's own worker can write
+    that document). No entry is ever dropped for its name. The personal
+    entry is not read: it is "Your workspace (u-…)" whatever its document says.
 
     Empty for a caller in no registered group without a ready workspace.
 
@@ -251,8 +274,13 @@ def get_mine(
     AFTER THEM, for a platform admin with the reach on, every registered group
     workspace they are NOT a member of (`AuthContext.platform_reach`), each
     `via: "platform_admin"`, `is_default: false` and `role: admin` by rule --
-    no read. Every other entry's role costs one cached grant read; a
+    no grant read. Every other entry's role costs one cached grant read; a
     personal entry's costs none.
+
+    A group workspace the person joined by an approved request
+    (`AuthContext.platform_memberships`, only while `platform_memberships`
+    is on) is one of `tenant_choices`, after the confirmed groups, and is
+    listed in its place with `via: "platform_member"`.
     """
     entries = [
         _choice(ctx, auth, tenant_id, principal, first=index == 0)
@@ -264,7 +292,43 @@ def get_mine(
             "is_default": False, "via": roles.VIA_PLATFORM_ADMIN,
             "role": {"name": roles.ADMIN, "source": roles.SOURCE_PLATFORM_ADMIN},
         })
+    names = _stored_names(ctx, [e["tenant_id"] for e in entries if e["kind"] == "group"])
+    for entry in entries:
+        name = names.get(entry["tenant_id"])
+        if entry["kind"] == "group" and name is not None:
+            entry["group"] = entry["display_name"]
+            entry["display_name"] = name
     return entries
+
+
+def _stored_names(ctx: AppContext, tenant_ids: list[str]) -> dict[str, str]:
+    """Each workspace's servable stored name, by id, from ONE `get_all` of
+    their `tenants/{id}` documents. A missing document, a name that is
+    absent, the id itself or one a rename would refuse is left out; a
+    failed read leaves every one out, logged, and never fails the route."""
+    if not tenant_ids:
+        return {}
+    try:
+        # The client is reached inside the try too: a context without one (a
+        # test's bare namespace, a store not yet built) is a failed read like
+        # any other, so the route still answers with the group emails.
+        collection = ctx.db.collection(TENANTS)
+        snaps = list(ctx.db.get_all([collection.document(t) for t in dict.fromkeys(tenant_ids)]))
+    except Exception:  # noqa: BLE001 - an unread name is served as today's group email
+        log.warning("tenants/mine could not read the workspaces' names", exc_info=True)
+        return {}
+    names: dict[str, str] = {}
+    for snap in snaps:
+        if not snap.exists:
+            continue
+        stored = (snap.to_dict() or {}).get("display_name")
+        if not isinstance(stored, str) or stored.strip() == snap.id:
+            continue
+        try:
+            names[snap.id] = clean_name(stored)
+        except ValidationFailed:
+            continue
+    return names
 
 
 def _choice(ctx: AppContext, auth: AuthContext, tenant_id: str, principal: str, *,
@@ -275,8 +339,9 @@ def _choice(ctx: AppContext, auth: AuthContext, tenant_id: str, principal: str, 
         entry = {"tenant_id": tenant_id, "display_name": f"Your workspace ({tenant_id})",
                  "kind": "user", "via": roles.VIA_PERSONAL}
     else:
+        joined = (tenant_id, principal) in auth.platform_memberships
         entry = {"tenant_id": tenant_id, "display_name": principal, "kind": "group",
-                 "via": roles.VIA_MEMBER}
+                 "via": VIA_PLATFORM_MEMBER if joined else roles.VIA_MEMBER}
     entry.update(_role_field(ctx, roles.with_tenant(auth, tenant_id, principal)))
     entry["is_default"] = first
     if first:

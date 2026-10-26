@@ -290,21 +290,22 @@ describe("one schedule's page (V168, V171, V239, V241, V242, V243)", () => {
   it('V239: names the scope’s repositories as owner/repo, as the list does', async () => {
     // MUTATION: `(s.scope.repo_ids ?? []).join(', ')` back in the head.
     await mountSchedules('schedule=sch_a', schedulesRoutes())
+    // The scope is the second part of the head's meta line (VQ-029).
     const scope = await waitFor(() => {
-      const f = [...document.querySelectorAll<HTMLElement>('.sc-head .sc-fact')].find((x) => x.querySelector('dt')?.textContent === 'Scope')
+      const f = document.querySelector<HTMLElement>('[data-testid="sc-meta"] > span:nth-child(2)')
       expect(f).toBeTruthy()
-      expect(visible(f!.querySelector('dd'))).toContain('example-org/example-long-repository-name')
+      expect(visible(f)).toContain('example-org/example-long-repository-name')
       return f!
     }, WAIT)
-    expect(visible(scope.querySelector('dd'))).toBe('example-org/example-api, example-org/example-long-repository-name')
+    expect(visible(scope)).toBe('example-org/example-api, example-org/example-long-repository-name')
     expect(visible(scope)).not.toContain('repo_a')
   })
 
-  it('V241: sets the facts 12px below the head’s actions', async () => {
-    // MUTATION: drop `.sc-facts.sc-head { margin-top }`.
+  it('V241: sets the figures 12px below the head’s meta line', async () => {
+    // MUTATION: drop `.sc-figs { margin }`.
     await mountSchedules('schedule=sch_a', schedulesRoutes())
     const facts = await waitFor(() => {
-      const el = document.querySelector<HTMLElement>('.sc-facts.sc-head')
+      const el = document.querySelector<HTMLElement>('[data-testid="sc-figs"]')
       expect(el).not.toBeNull()
       return el!
     }, WAIT)

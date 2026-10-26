@@ -688,3 +688,98 @@ describe('VQA2-R9: the bars at now and the standalone lane names', () => {
     expect(step.textContent).toBe('plan')
   })
 })
+
+// VISUAL QA, WORK › TIMELINE › LANES (VQ-TIMELINE; part of #2391).
+describe('VQ-025: a workflow group row names the workflow, its id and steps, and brackets its span', () => {
+  const named = () =>
+    TASKS.map((t) => (t.id === 'task_plan' ? { ...t, metadata: { title: 'refactor-broker' } } : t)) as Task[]
+
+  it('names the workflow from its own lanes before the workflow read lands, with the id after the steps note', async () => {
+    api.loadTasks.mockResolvedValue(ok({ tasks: named() } as TaskPage))
+    api.loadWorkflow.mockReturnValue(new Promise(() => {}))
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(lane('task_plan')).not.toBeNull())
+    const head = document.querySelector<HTMLElement>('.tl-row.is-group[data-group="wf_7c1e"]')!
+    // MUTATION: name the group from `wfNames` (the workflow read) alone again.
+    expect(head.querySelector('.tl-name-k')!.textContent).toBe('refactor-broker')
+    // MUTATION: lead the note with the id again (`${block.key} · `): a
+    // real-length id filled the note cell and cut the steps off (review of VQ-025).
+    expect(head.querySelector('.tl-lab small')!.textContent).toBe('steps: reading… · wf_7c1e')
+    expect(head.querySelector('.tl-lab small')!.getAttribute('title'), 'what the width cuts is read on hover').toBe('steps: reading… · wf_7c1e')
+    expect(head.textContent, 'the old wording').not.toContain('workflow: reading')
+  })
+
+  it('keeps the id after the steps once the read lands', async () => {
+    api.loadTasks.mockResolvedValue(ok({ tasks: named() } as TaskPage))
+    api.loadWorkflow.mockResolvedValue(
+      ok({ workflow: { workflow_id: 'wf_7c1e', state: 'FAILED', steps: [{}, {}, {}] }, tasks: [named()[1]!, named()[2]!, NEVER_RAN] } as unknown as WorkflowRead),
+    )
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(lane('task_publish')).not.toBeNull())
+    const head = document.querySelector<HTMLElement>('.tl-row.is-group[data-group="wf_7c1e"]')!
+    expect(head.querySelector('.tl-name-k')!.textContent).toBe('refactor-broker')
+    expect(head.querySelector('.tl-lab small')!.textContent).toBe('2 of 3 steps have attempts in this span · failed · wf_7c1e')
+    expect(head.querySelector('.tl-lab small')!.getAttribute('title')).toBe('2 of 3 steps have attempts in this span · failed · wf_7c1e')
+  })
+
+  it('draws a bracket over the workflow’s span: its lanes’ first start to their last end', async () => {
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(lane('task_test')).not.toBeNull())
+    const head = document.querySelector<HTMLElement>('.tl-row.is-group[data-group="wf_7c1e"]')!
+    // MUTATION: draw the group's track empty again (`<div className="tl-trk" />`).
+    const br = head.querySelector<HTMLElement>('.tl-trk .tl-wf-span')
+    expect(br, 'no span bracket on the group row').not.toBeNull()
+    // The workflow's lanes draw from their tasks' wait, created 300 minutes
+    // ago, to the end marks at the tasks' completed_at, 100 minutes ago, in a
+    // 24-hour window ending now.
+    const left = Number.parseFloat(br!.style.left)
+    const width = Number.parseFloat(br!.style.width)
+    const drawn = [...document.querySelectorAll<HTMLElement>('[data-lane="task_plan"] .tl-seg, [data-lane="task_test"] .tl-seg')]
+    expect(Math.min(...drawn.map((e) => Number.parseFloat(e.style.left))), 'the bracket starts where the first bar does').toBeCloseTo(left, 0)
+    expect(left).toBeCloseTo(((1440 - 300) / 1440) * 100, 0)
+    expect(left + width).toBeCloseTo(((1440 - 100) / 1440) * 100, 0)
+    expect(br!.getAttribute('aria-hidden')).toBe('true')
+    // The standalone block is not one thing with a span: no bracket.
+    expect(document.querySelector('.tl-row.is-group[data-group="standalone"] .tl-wf-span')).toBeNull()
+  })
+
+  it('lets the lane count wrap in the top-left cell instead of cutting it', async () => {
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(lane('task_plan')).not.toBeNull())
+    const summary = document.querySelector('.tl-axis .tl-lab small')!
+    // MUTATION: drop the `.tl-axis .tl-lab small` white-space rule from timeline.css.
+    expect(painted(summary, 'white-space', { width: 1440 })).toBe('normal')
+    expect(painted(summary, 'text-overflow', { width: 1440 })).toBe('clip')
+  })
+})
+
+describe('VQ-024: on a phone the Lanes filters fold behind one Filters button', () => {
+  it('puts State, Profile, Workflow, Kind and Group by in a sheet behind `Filters · N`', async () => {
+    render(<TimelineLanesScreen view="state=FAILED&kind=steps" onView={() => {}} />)
+    await waitFor(() => expect(lane('task_test')).not.toBeNull())
+    // MUTATION: drop the `.tl-sheet-toggle` button from TimelineLanes.tsx.
+    const toggle = document.querySelector<HTMLButtonElement>('.tl-ctl > .tl-sheet-toggle')
+    expect(toggle, 'no Filters button').not.toBeNull()
+    expect(toggle!.textContent).toBe('Filters · 2')
+    expect(toggle!.getAttribute('aria-expanded')).toBe('false')
+    const sheet = document.getElementById(toggle!.getAttribute('aria-controls')!)!
+    expect(sheet.classList.contains('tl-sheet')).toBe(true)
+    expect(sheet.querySelector('.tl-kind'), 'Kind is not in the sheet').not.toBeNull()
+    expect(sheet.querySelector('.tl-wf-sel'), 'Workflow is not in the sheet').not.toBeNull()
+    expect(sheet.textContent).toContain('State')
+    expect(sheet.textContent).toContain('Group by')
+    // The span and the zoom stay out of it.
+    expect(sheet.querySelector('.tl-span, .tl-zoom')).toBeNull()
+    // Wide: the sheet's controls sit in the row, and there is no button.
+    expect(painted(toggle!, 'display', { width: 1440 })).toBe('none')
+    expect(painted(sheet, 'display', { width: 1440 })).toBe('contents')
+    // Phone: the button, and the sheet only once it is opened.
+    expect(painted(toggle!, 'display', { width: 390 })).toBe('inline-flex')
+    expect(painted(toggle!, 'min-height', { width: 390 })).toBe('44px')
+    expect(painted(sheet, 'display', { width: 390 })).toBe('none')
+    fireEvent.click(toggle!)
+    expect(toggle!.getAttribute('aria-expanded')).toBe('true')
+    expect(sheet.classList.contains('is-open')).toBe(true)
+    expect(painted(sheet, 'display', { width: 390 })).toBe('flex')
+  })
+})

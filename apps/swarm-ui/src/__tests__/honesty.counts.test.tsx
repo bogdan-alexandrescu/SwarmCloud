@@ -35,6 +35,12 @@ const loadTenants = vi.hoisted(() =>
   ),
 )
 vi.mock('../api', () => ({ loadStats, loadMe, loadTenants }))
+// The over-time read, which Platform counts' one Run starts for an admin
+// (COUNTS-ONE-RUN). It never answers here: this file is about the state counts.
+vi.mock('../platformTimeApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../platformTimeApi')>()),
+  loadPlatformTime: vi.fn(() => new Promise(() => {})),
+}))
 
 const { PlatformCountsScreen, forgetLastRun } = await import('../PlatformCounts')
 
@@ -509,7 +515,9 @@ describe('the cost shown before the first run', () => {
   it('is an admin’s cost for an admin, known from the session before any run', async () => {
     loadMe.mockResolvedValue(session(true))
     render(<PlatformCountsScreen />)
-    await waitFor(() => expect(perRun()).toBe(`${PER_SCOPE * 2} reads`))
+    // Both scopes' counts, plus the over-time read the same Run makes
+    // (COUNTS-ONE-RUN), per workspace because this file refuses the roster.
+    await waitFor(() => expect(perRun()).toMatch(new RegExp(`^${PER_SCOPE * 2} reads \\+ ~\\d+ a workspace$`)))
     expect(loadStats, 'the figure came from a run, not from the session').not.toHaveBeenCalled()
   })
 

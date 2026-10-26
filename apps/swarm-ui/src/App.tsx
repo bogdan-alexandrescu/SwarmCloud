@@ -1142,8 +1142,9 @@ function keptKeys(sectionId: string, tab: string): readonly string[] {
   // One inbox item rides on the page's address (`/approvals/<id>`, paths.ts),
   // and the inbox's kind filter beside it (AUT-15).
   if (sectionId === AUTOMATE && tab === 'approvals') return ['approval', 'kind']
-  // GitHub access' Mine / Members / Browser logins view (Access.tsx reads it off the bar).
-  if (sectionId === CONFIG && tab === 'github') return ['view']
+  // GitHub access' Choose repositories tab, and People and roles' Members'
+  // GitHub tab (GA-MOVE-VIEWS): each page reads `view` off the bar.
+  if (sectionId === CONFIG && (tab === 'github' || tab === 'people')) return ['view']
   if (sectionId !== CAPACITY) return []
   if (tab === 'pools') return ['pool']
   if (tab === 'holders') return ['pool', 'tenant']
@@ -1996,6 +1997,21 @@ const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
   // its topic rides the section's `?` rather than a second glyph by the title,
   // which the console's glyph ceiling (tests/help.test.ts) has no room for.
   'admin/people': 'people-and-roles-scope',
+  // VQ-055 (visual QA 2026-10-26): every Config page's `?` opened the same
+  // section card, whose `Help →` led to Help's first group. Each page now
+  // says, and links, its own topic in Help's Config and Admin groups.
+  'config/github': 'config-github-access',
+  'config/repositories': 'config-repositories',
+  'config/secrets': 'secret-scopes',
+  'config/mcp-servers': 'mcp-servers',
+  'config/people': 'workspace-roles',
+  'config/workspace': 'workspace-settings',
+  'admin/limits': 'ceiling-change-evicts-nothing',
+  'admin/runner-sizes': 'runner-sizes',
+  'admin/tenants': 'tenant-fields',
+  'admin/counts': 'platform-counts',
+  'admin/platform-secrets': 'platform-secrets',
+  'admin/workspaces': 'workspaces-you-admin',
 }
 
 function SectionQuestion({ section, topic = null }: { section: SectionQuestionDef; topic?: TopicId | null }) {
@@ -2214,7 +2230,7 @@ function SectionBody({
     case 'config/mcp-servers':
       return <McpServersScreen />
     case 'config/people':
-      return <WorkspacePeopleScreen />
+      return <WorkspacePeopleScreen view={view} />
     case 'config/workspace':
       return <WorkspaceSettingsScreen part={workspacePartOf(view)} go={go} />
 

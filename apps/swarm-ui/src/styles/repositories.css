@@ -370,15 +370,6 @@ table.ur-mx tr.ur-grp td { background: var(--surface-2); font-weight: 600; text-
   .ur-tmap-row, .ur-always-row, .ur-suite-row { grid-template-columns: minmax(0, 1fr); }
   .ur-lookup-form { flex-direction: column; align-items: stretch; }
   .ur-acts { margin-left: 0; }
-  /* ACCESS'S HEAD WRAPS AS ONE GROUP, AS SETUP'S DOES (visual QA run 6,
-     work-b-003, part of #1680). The head's actions kept `margin-left: auto`
-     and `flex-end`, and the switch-and-Setup group's own width put it on a
-     line under Refresh, so Refresh sat alone, right-aligned, on a row between
-     the title and the switch. The actions take the full row under the title
-     from the left edge, and the group starts from no width: it stays on
-     Refresh's row, the switch beside Refresh, and Setup wraps inside it. */
-  .ac-page > .c-phead > .c-acts { flex: 1 1 100%; margin-left: 0; justify-content: flex-start; }
-  .ac-page > .c-phead > .c-acts > .ur-acts { flex: 1 1 0; min-width: 0; }
   /* The grid needs the full width (screen 13's risk): a phone reads perms-b's cards. */
   .ur-mx-wide { display: none; }
   .ur-mx-cards { display: grid; gap: 12px; }
