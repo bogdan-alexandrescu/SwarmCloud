@@ -148,7 +148,7 @@ for an account the tenant neither owns nor borrows even if the broker sent it.
 At phone width the page lists **incidents**, not events (BGD's pick of proposal
 D for the phone, 2026-10-25). The grouping is the console's, not the broker's:
 the broker serves events, and `incidentsOf` in
-`apps/swarm-ui/src/accountHealth.ts` groups each account's served events (the
+`apps/swarm-ui/src/accountHealthRecord.ts` groups each account's served events (the
 page's `incidents()` and the side sheet both call it, so there is one rule),
 oldest first, by one fixed rule:
 
