@@ -77,6 +77,11 @@
   .cfg-compact-h b { font: 650 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
   .cfg-compact-h .ctl-link { font-size: var(--t-meta); line-height: var(--lh-meta); text-align: right; }
   .cfg-compact small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+  /* The fold's three gaps and two sides come out of its count: at 10px and
+     14px the phone-390 count had 124px and cut '4 of 4 · checked 2m ago'
+     (125px) to 'checked 2m a…'. At 6px and 12px (the compact strip's side)
+     it has about 140px, and a three-character age ('12m', 129px) fits. */
+  .cfg-done { gap: 6px; padding: 8px 12px; }
 }
 
 /* ---- Workspace Settings' parts ---------------------------------------------- */

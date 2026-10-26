@@ -254,6 +254,37 @@ function rule(selector: string): string {
   return (at.split('{')[1] ?? '').replace(/\s+/g, ' ')
 }
 
+/** The declarations of `selector`'s rule inside config.css's phone block, `@media (max-width: 759px)`. */
+function phoneRule(selector: string): string {
+  const flat = CONFIG_CSS.replace(/\/\*[\s\S]*?\*\//g, '')
+  const open = flat.indexOf('@media (max-width: 759px) {')
+  if (open < 0) throw new Error('no phone block in config.css')
+  let depth = 0
+  let end = open
+  for (let i = flat.indexOf('{', open); i < flat.length; i += 1) {
+    if (flat[i] === '{') depth += 1
+    if (flat[i] === '}') depth -= 1
+    if (depth === 0) {
+      end = i
+      break
+    }
+  }
+  const block = flat.slice(flat.indexOf('{', open) + 1, end)
+  const at = block.split('}').find((r) => (r.split('{')[0] ?? '').trim() === selector)
+  if (at === undefined) throw new Error(`no ${selector} rule in config.css's phone block`)
+  return (at.split('{')[1] ?? '').replace(/\s+/g, ' ')
+}
+
+/** The pixels of `name` (a `gap` or the horizontal half of a `padding`) in a rule's declarations. */
+function px(decls: string, name: 'gap' | 'padding-x'): number {
+  const prop = name === 'gap' ? 'gap' : 'padding'
+  const m = new RegExp(`(?:^|;)\\s*${prop}:\\s*([^;]+)`).exec(decls)
+  if (m === null) throw new Error(`no ${prop} in ${decls}`)
+  const parts = (m[1] ?? '').trim().split(/\s+/).map((v) => parseFloat(v))
+  if (name === 'gap') return parts[parts.length - 1] ?? NaN
+  return parts[1] ?? parts[0] ?? NaN
+}
+
 describe('the fold stays one line on a phone', () => {
   // jsdom lays nothing out, so the review's phone-390 render (Show steps
   // wrapped under the count, a 71px strip) is held by the rules that caused it.
@@ -265,6 +296,24 @@ describe('the fold stays one line on a phone', () => {
     expect(small).toContain('text-overflow: ellipsis')
     expect(small).toContain('white-space: nowrap')
     expect(rule('.cfg-done .ctl-link')).toContain('white-space: nowrap')
+  })
+
+  it("leaves the count its whole 'checked <age> ago' at phone-390, a two- or three-character age", () => {
+    // The re-review's phone-390 render measured the fold's <small> at 124px
+    // with `gap: 10px; padding: 8px 14px`, and '4 of 4 · checked 2m ago' cut
+    // by its own ellipsis ('checked 2m a…'): it needs 125px, and a 3-character
+    // age ('12m', '23h') 129px. The fold has four boxes (tick, words, count,
+    // Show steps), so three gaps and two side paddings come out of the count.
+    // MUTATION: drop the phone `.cfg-done` rule (back to 10px and 14px) and
+    // the count has 124px, under 129, and this fails.
+    const phone = phoneRule('.cfg-done')
+    const gap = px(phone, 'gap')
+    const side = px(phone, 'padding-x')
+    const small = 124 + 3 * (10 - gap) + 2 * (14 - side)
+    expect(small).toBeGreaterThanOrEqual(129)
+    // The row still never wraps, and the ellipsis stays the last resort.
+    expect(rule('.cfg-done')).toContain('flex-wrap: nowrap')
+    expect(rule('.cfg-done small')).toContain('text-overflow: ellipsis')
   })
 
   it("draws the strip's buttons as plain links, as config-e.html's <a>", () => {
