@@ -1275,11 +1275,39 @@
 .ho-refused { color: var(--bad); }
 
 /* --- a live-browser task's recordings (§7) ------------------------------ */
-.rec-panel { margin-top: var(--ctl-s3); }
-.rec-note, .rec-absent, .rec-dropped { color: var(--text-dim); }
+/* BT-012 (2026-10-26, part of #2423): `.ctl-card` draws a border and no
+   padding, so the panel's text sat 1 px off its box (x 782 vs 781). One row
+   per attempt, a grid with the Play button in its own column: inline after
+   the text, the button sat on the line of a short row and wrapped under a
+   long one, so no two rows lined up. The player and the parts span both
+   columns. The player's cap is the pane's height less room for the row
+   (`--rec-fit`, set by Recordings.tsx from the pane's clientHeight), never
+   more than 60vh: at 60vh (454 px) it overran a 407 px pane, and the frame
+   and its controls never showed together. */
+.rec-panel { margin-top: var(--ctl-s3); padding: var(--ctl-s2) var(--ctl-s3); }
+.rec-note, .rec-absent, .rec-dropped, .rec-status { color: var(--text-dim); }
 .rec-list { list-style: none; margin: 0; padding: 0; }
-.rec-list > li { padding: var(--ctl-s1) 0; border-top: 1px solid var(--line); }
-.rec-player { display: block; width: 100%; max-height: 60vh; margin-top: var(--ctl-s1); background: var(--bg); }
+.rec-list > li.rec-take {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--ctl-s2);
+  row-gap: var(--ctl-s1);
+  padding: var(--ctl-s2) 0;
+  border-top: 1px solid var(--line);
+}
+.rec-take > .rec-what { grid-column: 1; min-width: 0; overflow-wrap: anywhere; }
+.rec-take > .rec-act { grid-column: 2; grid-row: 1; justify-self: end; }
+.rec-take > .rec-play, .rec-take > .rec-parts { grid-column: 1 / -1; min-width: 0; }
+.rec-parts > ol { margin: var(--ctl-s1) 0 0; padding-left: var(--ctl-s5); color: var(--text-dim); overflow-wrap: anywhere; }
+.rec-status { margin: var(--ctl-s1) 0 0; }
+.rec-player {
+  display: block;
+  width: 100%;
+  max-height: min(60vh, var(--rec-fit, 60vh));
+  object-fit: contain;
+  background: var(--bg);
+}
 
 /* A LIVE BROWSER ROW'S DEVICE OUTLINE (live-browser.md §6; LB-UX3): a static
    phone, tablet or desktop shape in the session's orientation, at the start of
