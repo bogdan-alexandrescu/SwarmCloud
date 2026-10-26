@@ -6369,10 +6369,14 @@ function fixturePoolHealth(): PoolHealth {
     ],
     'u-bogdan:full-six': [[-140 * H, 'network', { m: 'read timeout after 600 s, stream closed' }]],
   }
-  const status = (a: ServedAccount): HealthStatus =>
+  // accountstore.health_status's order: re-auth, then limited -- by the window
+  // readings OR by a 429 short of its reset (`limited_until`), so an account
+  // whose phone card is an open limit never has a Healthy row -- then erroring.
+  const status = (a: ServedAccount, limitedUntil: string | null): HealthStatus =>
     a.state === 'REAUTH_REQUIRED' ? 'reauth_needed'
-    : a.account_id === 'u-bogdan:overflow' ? 'erroring'
     : a.can_take_new_agent === false && (a.blocked_by ?? []).some((b) => 'window' in b) ? 'limited'
+    : limitedUntil !== null && Date.parse(limitedUntil) > FIXTURE_NOW ? 'limited'
+    : a.account_id === 'u-bogdan:overflow' ? 'erroring'
     : 'healthy'
   const accounts = fixtureAccounts.map((a): AccountHealthRecord => {
     const events: HealthEvent[] = (plan[a.account_id] ?? [])
@@ -6406,7 +6410,7 @@ function fixturePoolHealth(): PoolHealth {
       account_id: a.account_id,
       label: a.label,
       owner_tenant: a.owner_tenant,
-      status: status(a),
+      status: status(a, limit?.reset_at ?? null),
       limited_until: limit?.reset_at ?? null,
       counts: { last_1h: since(1), last_24h: since(24), last_7d: since(168) },
       hourly,

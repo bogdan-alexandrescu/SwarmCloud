@@ -516,12 +516,21 @@ function markSay(mk: LaneMark, name: string, now: number): string {
  * scroller: at a fixed 1040 px the newest hours (and the now line) sat past the
  * card's edge at 1440 and only one day of seven showed at 390, so the lanes
  * read as quieter than the counts beside them.
+ *
+ * It is the CONTENT width: `clientWidth` counts the scroller's own side padding
+ * (`--ctl-pad-chrome`, 16 px a side), and a chart sized to it started 16 px in
+ * and ran 32 px past the box, so the newest hour scrolled out of sight and
+ * "now 12:00Z" read "now 12:0" (PR 2357's re-review).
  */
 function useBoxWidth(el: HTMLElement | null): number | null {
   const [w, setW] = useState<number | null>(null)
   useEffect(() => {
     if (el === null) return
-    const measure = () => setW(el.clientWidth > 0 ? el.clientWidth : null)
+    const measure = () => {
+      const cs = getComputedStyle(el)
+      const content = el.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0)
+      setW(content > 0 ? content : null)
+    }
     measure()
     if (typeof ResizeObserver === 'undefined') return
     const watch = new ResizeObserver(measure)
