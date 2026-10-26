@@ -5063,9 +5063,11 @@ function fixtureTaskRows(): Task[] {
     // A LONE AGENT WITH A TITLE (SUMMARY-TITLE): its Agents row reads the
     // title, beside task_a073aff5 above, which has none and reads
     // `claude-code agent · a073aff5`. The summary view serves metadata as
-    // the title alone, so this is the whole of what the list sees.
+    // the title alone, so this is the whole of what the list sees. No
+    // `(#N)` in it: the copy sweep (walk.copy.test.tsx) reads every page
+    // this build draws and refuses an issue number in visible copy.
     mk('task_8ea5c26d', 'RUNNING', 'claude-code', 5, {
-      metadata: { title: 'Fix flaky lease heartbeat test (#248)' },
+      metadata: { title: 'Fix flaky lease heartbeat test' },
     }),
     // THE BROWSER QA AGENT: the one fixture task with a live browser, so
     // the Browser pane has a live session to draw in this build, and the
