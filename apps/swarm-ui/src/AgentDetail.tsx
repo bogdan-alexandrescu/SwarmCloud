@@ -1141,6 +1141,53 @@ function worstWords(worst: MemoryFigure['worst']): string | null {
   return worst === null ? null : `worst ${bytesLabel(worst.bytes)}, attempt ${worst.ordinal}`
 }
 
+/** `ai-eng-2` for `eng:ai-eng-2`: an account's label, without its tenant. */
+function accountLabel(account: unknown): string {
+  const text = typeof account === 'string' ? account : ''
+  const at = text.indexOf(':')
+  return at >= 0 ? text.slice(at + 1) : text || '?'
+}
+
+/**
+ * EVERY AGENT RUN, BESIDE THE DURATION (SWAP-RUNS, #2457). An account swap
+ * restarts the agent, and the worker records each run in
+ * `result_summary.runs` and each swap in `.swaps` -- only when there was more
+ * than one run, so `null` here is the one-run attempt and draws nothing. The
+ * duration the tile shows is the attempt's clock, which already spans every
+ * run; this line says it was not one run. On 2026-10-26 two timeouts read as
+ * 42 minutes outside the agent because nothing on the page said a swap had
+ * restarted it. The title carries what the swap cost: the seconds and tokens
+ * the restarted run spent before it acted again (`swap_cost`).
+ */
+export function runsLine(summary: ResultSummary | null | undefined): { text: string; title: string } | null {
+  const runs: unknown = summary?.runs
+  if (!Array.isArray(runs) || runs.length < 2) return null
+  const listed: unknown = summary?.swaps
+  const swaps = (Array.isArray(listed) ? (listed as unknown[]) : []).filter(
+    (s): s is Record<string, unknown> => typeof s === 'object' && s !== null,
+  )
+  const moves = swaps.map((s) => {
+    const when = typeof s.at === 'string' && Number.isFinite(new Date(s.at).getTime()) ? ` at ${hhmm(s.at)}` : ''
+    return `${accountLabel(s.from)} ${typeof s.reason === 'string' && s.reason ? s.reason : 'moved'} → ${accountLabel(s.to)}${when}`
+  })
+  const text =
+    `${runs.length} runs` +
+    (swaps.length > 0 ? ` · ${swaps.length} account ${swaps.length === 1 ? 'swap' : 'swaps'} (${moves.join(', ')})` : '')
+  const titles = [`The agent ran ${runs.length} times in this attempt; the duration counts every run.`]
+  const cost: unknown = summary?.swap_cost
+  if (typeof cost === 'object' && cost !== null && !Array.isArray(cost)) {
+    const c = cost as Record<string, unknown>
+    const tokens = typeof c.reread_tokens === 'object' && c.reread_tokens !== null ? Object.values(c.reread_tokens) : []
+    const total = tokens.reduce<number>((n, v) => n + (typeof v === 'number' && Number.isFinite(v) ? v : 0), 0)
+    if (typeof c.reread_seconds === 'number' && Number.isFinite(c.reread_seconds)) {
+      titles.push(
+        `After the swap, the restarted agent spent ${formatDuration(c.reread_seconds * 1000)} and ${total.toLocaleString('en-US')} tokens before it acted again.`,
+      )
+    }
+  }
+  return { text, title: titles.join(' ') }
+}
+
 function DtStrip({ run, now }: { run: AgentRun; now: number }) {
   const { task, attempts, events } = run
   const el = elapsed(task, now)
@@ -1166,6 +1213,8 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
   const ordinal = attempts !== null && attempts.length > 0 ? attempts.length : task.attempt_count
   const runWord = el.phase === 'running' ? 'Run' : el.phase === 'ran' ? 'Ran' : null
   const clockLabel = runWord === null ? 'Elapsed' : ordinal > 0 ? `${runWord} · attempt ${ordinal}` : runWord
+  // The summary is the ended attempt's, so its runs are said once it has ended.
+  const runs = el.phase === 'ran' ? runsLine(task.result_summary as ResultSummary | null) : null
   const cells: DtCell[] = [
     {
       label: waited !== null ? 'Waiting' : clockLabel,
@@ -1174,12 +1223,24 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
         el.phase === 'running' && start !== null ? (
           <span title={`started ${start.title}`}>since {start.text}</span>
         ) : el.phase === 'ran' && start !== null && end !== null ? (
-          <span title={`started ${start.title} · ended ${end.title}`}>
-            {start.text} → {end.text}
-          </span>
+          <>
+            <span title={`started ${start.title} · ended ${end.title}`}>
+              {start.text} → {end.text}
+            </span>
+            {runs !== null && (
+              <>
+                {' · '}
+                <span className="dt-runs" title={runs.title}>
+                  {runs.text}
+                </span>
+              </>
+            )}
+          </>
         ) : (
           elapsedNote(task, el.phase, now)
         ),
+      // Drawn whole: the swap's accounts are the half a clamp would cut.
+      whole: runs !== null ? true : undefined,
     },
   ]
 

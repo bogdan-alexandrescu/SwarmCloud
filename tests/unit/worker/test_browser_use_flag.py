@@ -206,6 +206,9 @@ def _bound_worker(tmp_path: Path, *, live: bool, output: dict[str, Any] | None) 
         log=SimpleNamespace(warning=lambda *a, **k: None),
         handoff=SimpleNamespace(live=live),
         _child=None,
+        # One run, no swap: no `runs` block (SWAP-RUNS).
+        _runs=[],
+        _swap_log=[],
     )
 
 
