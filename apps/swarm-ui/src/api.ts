@@ -2714,6 +2714,16 @@ export interface NotificationFeed {
   unread_updates: number
   /** Requests waiting on any admin; 0 for a non-admin. */
   admin_pending: number
+  /**
+   * Workspaces waiting to be created (Admin › Tenants); null for a non-admin
+   * or an admin source that could not be read, absent from an older API.
+   */
+  tenants_waiting?: number | null
+  /**
+   * Platform secrets with no enabled version (Admin › Platform secrets); null
+   * for a non-admin or a count that could not be read, absent from an older API.
+   */
+  platform_secrets_unset?: number | null
   read_at: string
 }
 
