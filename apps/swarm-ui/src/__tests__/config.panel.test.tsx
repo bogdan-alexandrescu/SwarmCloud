@@ -243,7 +243,7 @@ describe('the Admin panel in groups (S1b, S1c)', () => {
     expect(ws).toMatchObject({ name: 'People and workspaces', rows: ['People and roles', 'Workspaces you admin'] })
     expect(platform).toMatchObject({ name: 'Platform', rows: ['Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets'] })
     // MUTATION: draw Schedules or Approvals as Admin pages -> their links leave Automate and this fails.
-    expect(automate).toEqual({ name: 'In Automate', rows: ['Schedules', 'Approvals'], hrefs: ['/automate/schedules?scope=all', '/approvals'] })
+    expect(automate).toEqual({ name: 'In Automate', rows: ['Schedules', 'Approvals'], hrefs: ['/automate/schedules?scope=all', '/automate/approvals'] })
     // The spine's Admin still opens Pool limits.
     expect(document.querySelector('.sk-spine a[data-sec="admin"]')?.getAttribute('href')).toBe('/admin/limits')
   })
@@ -255,7 +255,7 @@ describe('the Admin panel in groups (S1b, S1c)', () => {
     const [ws, automate] = groups()
     // MUTATION: hand a workspace admin the Platform group -> fails.
     expect(ws).toMatchObject({ name: 'Your workspaces', rows: ['People and roles', 'Workspaces you admin'] })
-    expect(automate).toEqual({ name: 'In Automate', rows: ['Schedules', 'Approvals'], hrefs: ['/automate/schedules', '/approvals'] })
+    expect(automate).toEqual({ name: 'In Automate', rows: ['Schedules', 'Approvals'], hrefs: ['/automate/schedules', '/automate/approvals'] })
     expect(document.querySelector('.sk-panel')?.textContent).not.toMatch(/Pool limits|Tenants|Platform counts/)
     expect(document.querySelector('.sk-pnote')?.textContent).toBe('Showing eng and ops, the workspaces you administer. The platform’s own pages are shown to platform admins only.')
   })

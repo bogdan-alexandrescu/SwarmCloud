@@ -21,7 +21,7 @@
       {
         "id": "approvals",
         "address": "automate/approvals",
-        "path": "/approvals",
+        "path": "/automate/approvals",
         "ready": "main h1"
       },
       {

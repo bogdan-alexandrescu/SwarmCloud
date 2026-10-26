@@ -1,9 +1,10 @@
 // AUTOMATE › APPROVALS (docs/schedules.md §4.5, §6.1-§6.2, lane S7): the
-// tenant's inbox at `/approvals`.
+// tenant's inbox at `/automate/approvals`.
 //
 // WHAT EACH CASE HOLDS:
-//   * Approvals is Automate's second tab, at `/approvals`, and one item is
-//     `/approvals/<id>`, both ways; the panel's Approvals page carries the
+//   * Approvals is Automate's second tab, at `/automate/approvals`, and one item is
+//     `/automate/approvals/<id>`, both ways (APPROVALS-MOVE; the old addresses
+//     are approvals.move.test.tsx's); the panel's Approvals page carries the
 //     inbox count the section does;
 //   * a measured empty inbox is the `Absent` state, not a list of nothing;
 //   * on a desktop the list and the chosen item sit side by side (variant B);
@@ -114,13 +115,13 @@ afterEach(() => {
 })
 
 describe('the Approvals page', () => {
-  it('is Automate’s second tab at /approvals, one item at /approvals/<id>, and a panel page', () => {
+  it('is Automate’s second tab at /automate/approvals, one item at /automate/approvals/<id>, and a panel page', () => {
     const automate = SECTIONS.find((s) => s.id === 'automate')!
     expect(automate.tabs.map((t) => t.id)).toEqual(['schedules', 'approvals'])
-    expect(addressToPath('automate/approvals')).toBe('/approvals')
-    expect(pathToAddress('/approvals')?.address).toBe('automate/approvals')
-    expect(addressToPath('automate/approvals?approval=run%3Arun_8f2a')).toBe('/approvals/run%3Arun_8f2a')
-    expect(pathToAddress('/approvals/run%3Arun_8f2a')?.address).toBe('automate/approvals?approval=run%3Arun_8f2a')
+    expect(addressToPath('automate/approvals')).toBe('/automate/approvals')
+    expect(pathToAddress('/automate/approvals')?.address).toBe('automate/approvals')
+    expect(addressToPath('automate/approvals?approval=run%3Arun_8f2a')).toBe('/automate/approvals/run%3Arun_8f2a')
+    expect(pathToAddress('/automate/approvals/run%3Arun_8f2a')?.address).toBe('automate/approvals?approval=run%3Arun_8f2a')
     expect(PANEL_PAGES.automate.map((p) => p.key)).toEqual(['schedules', 'approvals'])
   })
 
@@ -493,10 +494,10 @@ describe('live QA: automate, approvals', () => {
   })
 
   it('filters by kind through the route, and keeps the kind in the address (AUT-15)', async () => {
-    expect(addressToPath('automate/approvals?kind=merge')).toBe('/approvals?kind=merge')
-    expect(pathToAddress('/approvals', '?kind=merge')?.address).toBe('automate/approvals?kind=merge')
-    expect(addressToPath('automate/approvals?approval=apr_1&kind=merge')).toBe('/approvals/apr_1?kind=merge')
-    expect(pathToAddress('/approvals/apr_1', '?kind=merge')?.address).toBe('automate/approvals?approval=apr_1&kind=merge')
+    expect(addressToPath('automate/approvals?kind=merge')).toBe('/automate/approvals?kind=merge')
+    expect(pathToAddress('/automate/approvals', '?kind=merge')?.address).toBe('automate/approvals?kind=merge')
+    expect(addressToPath('automate/approvals?approval=apr_1&kind=merge')).toBe('/automate/approvals/apr_1?kind=merge')
+    expect(pathToAddress('/automate/approvals/apr_1', '?kind=merge')?.address).toBe('automate/approvals?approval=apr_1&kind=merge')
     // MUTATION: leave `kind` out of keptKeys and the filter is dropped from the URL.
     expect(canonical(fromAddress('automate/approvals?kind=merge'))).toBe('automate/approvals?kind=merge')
     const { calls, go } = await mount('kind=merge', routes(() => null))
@@ -509,7 +510,7 @@ describe('live QA: automate, approvals', () => {
     expect(go).toHaveBeenLastCalledWith('automate/approvals')
     // An item opened from a filtered list keeps the filter.
     await waitFor(() => expect(document.querySelectorAll('li[data-approval]').length).toBeGreaterThan(0), WAIT)
-    expect(document.querySelector('li[data-approval="apr_merge1"] a')!.getAttribute('href')).toBe('/approvals/apr_merge1?kind=merge')
+    expect(document.querySelector('li[data-approval="apr_merge1"] a')!.getAttribute('href')).toBe('/automate/approvals/apr_merge1?kind=merge')
   })
 
   it('asks for the whole inbox when no kind is named', async () => {

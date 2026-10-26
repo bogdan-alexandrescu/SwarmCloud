@@ -1915,7 +1915,9 @@ Admin**. This is not the Work › Schedules tab this design first
 recommended.
 
 * **Automate holds two pages: Schedules and Approvals.** Approvals is a page of
-  its own at `/approvals`, not a second pane of Schedules, with a count badge on
+  its own at `/automate/approvals` (one item at `/automate/approvals/<id>`;
+  it was `/approvals` until APPROVALS-MOVE, below), not a second pane of
+  Schedules, with a count badge on
   the section and on the page. Its items cover issue runs as well as
   schedules. It is also on Overview, as a "Waiting on you" card that appears
   only when something is waiting.
@@ -2006,6 +2008,20 @@ and actions, mounted by `Schedules.tsx` as the All tenants view; the platform
 ticks are in `PlatformCounts.tsx`. Admin's question now reads "...how many
 tasks are in each state, what does the platform run on its own, and who is
 waiting for a workspace?", in `SECTIONS` and redesign.md §2 together.
+
+**Moved by APPROVALS-MOVE, 2026-10-26** (BGD's decision on VQ-030, "Move it,
+and redirect /approvals"; part of #2391). Approvals is at
+`/automate/approvals` and one item at `/automate/approvals/<id>`, the kind
+filter still riding as `?kind=`. Visual QA found the page at `/approvals`
+while its sibling was `/automate/schedules`, and `/automate/approvals`, the
+address a reader guesses from the nav, was a "No page" screen. A page's
+address now names its section, as every other section's pages do. The old
+`/approvals` and `/approvals/<id>` are not dropped: `pathToAddress` in
+`apps/swarm-ui/src/paths.ts` lands them on the new addresses with the id and
+the kind kept, and the app rewrites the bar once, because the API's
+notifications (`swarm_api/notifications.py`), issue comments and saved links
+already carry the old ones. The issue forms' "Where" option follows
+(`test_issue_forms.py` reads it from `paths.ts`).
 
 ### 6.2 Screens
 

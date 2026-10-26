@@ -1,6 +1,6 @@
 /**
  * AUTOMATE › APPROVALS (docs/schedules.md §4.5, §6.1-§6.2, lane S7): the
- * tenant's inbox, at `/approvals`. One list holds every kind -- a firing
+ * tenant's inbox, at `/automate/approvals`. One list holds every kind -- a firing
  * waiting to run, an issue run's plan (projected from the run, not copied),
  * a held plan, a green pull request waiting to merge, a proposal, a spec --
  * oldest first, as `GET /v1/approvals` serves it.
@@ -35,8 +35,8 @@ import { useNow } from './useNow'
 import './styles/schedules.css'
 
 /**
- * The page's address, and one item's (`/approvals/<id>`, paths.ts). The
- * inbox's kind filter rides on both as `kind=` (`/approvals?kind=merge`), so
+ * The page's address, and one item's (`/automate/approvals/<id>`, paths.ts). The
+ * inbox's kind filter rides on both as `kind=` (`/automate/approvals?kind=merge`), so
  * opening an item keeps the list it was opened from (AUT-15).
  */
 export const APPROVALS_ADDRESS = 'automate/approvals'
