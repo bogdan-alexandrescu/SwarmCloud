@@ -11,8 +11,9 @@ lane VQ-2 TARGETS, part of #1933).
     POST   /v1/qa-targets/{id}:approve-host        a PLATFORM admin approves an entry's host (VQ-Q1),
                                                    its extra origin and IdP token path
     POST   /v1/qa-targets/{id}:run                 a member starts a run of one or several legs:
-                                                   {screens?, file?, environments?} (or the one-leg
-                                                   `environment`), one workflow per leg, one run group
+                                                   {screens?, file?, environments?, flows_per_step?}
+                                                   (or the one-leg `environment`), one workflow per leg,
+                                                   one run group
     GET    /v1/qa-runs/{group_id}                  a run group, in its own tenant (any role)
     POST   /v1/qa-targets/{id}:dismiss-route   a workspace admin dismisses a found route, {route_id}:
                                                    no leg's new_since_last_run offers it again (S9b)
@@ -64,9 +65,10 @@ import json
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, Request, Response, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from starlette.concurrency import run_in_threadpool
 
+from .. import qaspec
 from ..auth import AuthContext
 from ..children import PROOF_HEADER, TIMESTAMP_HEADER, ChildService
 from ..deps import AppContext, admin_auth, current_auth, get_context, tenant_scope
@@ -163,6 +165,12 @@ class RunBody(StrictModel):
     environments: list[str] | None = Field(default=None, max_length=8)
     #: One leg, as a caller named it before `environments`; never with it.
     environment: str | None = EnvironmentName
+    #: How many read-only flows one live-browser step runs, for this run only
+    #: (QA-FLOWS-CAP; `qaspec.MIN_FLOWS_PER_STEP`-`MAX_FLOWS_PER_STEP`). Unset
+    #: is the workspace's `qa_flows_per_step`, else 15. StrictInt: "15" and
+    #: true are refused, not read as 15 and 1. Recorded on the run's record.
+    flows_per_step: StrictInt | None = Field(default=None, ge=qaspec.MIN_FLOWS_PER_STEP,
+                                             le=qaspec.MAX_FLOWS_PER_STEP)
 
 
 class LegBody(StrictModel):
@@ -362,7 +370,8 @@ def run_target(
     names = [body.environment] if body.environment is not None else body.environments
     targets = _targets(request, ctx)
     legs = targets.runnable_legs(tenant_id, target_id, file=body.file, environments=names,
-                                 screens=body.screens, browser_tool=body.browser_tool)
+                                 screens=body.screens, browser_tool=body.browser_tool,
+                                 flows_per_step=body.flows_per_step)
     specs = [WorkflowCreate.model_validate(leg.workflow) for leg in legs]
     by = _email(auth)
     group_id = targets.open_group(tenant_id=tenant_id, legs=legs, file=body.file, by=by,
@@ -390,7 +399,7 @@ def run_target(
         task_ids = [t.id for t in submission.tasks if t.step_id in set(leg.browser)]
         targets.record_run(tenant_id=tenant_id, target=leg.target, workflow_id=workflow_id,
                            task_ids=task_ids, file=body.file, by=by, browser_tool=body.browser_tool,
-                           group_id=group_id)
+                           group_id=group_id, leg=leg)
         targets.leg_submitted(group_id, leg.name, workflow_id=workflow_id)
         answered.append({"environment": leg.name, "state": "submitted", "workflow_id": workflow_id,
                          "qa_target": leg.mark, "browser_steps": leg.browser, "reason": None})

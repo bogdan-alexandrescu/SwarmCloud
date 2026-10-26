@@ -168,6 +168,13 @@
   font-weight: 600;
   color: var(--text);
 }
+/* A STEP NAMED BY ITS WORKFLOW (VQ-009): `<title> · <step>` on the one line.
+   The title gives way to an ellipsis first; the step, which tells one
+   workflow's rows apart, keeps up to 70% of the line. The whole name and the
+   id are the name's title. */
+.row.is-compact > .cr-name b.is-titled { display: flex; min-width: 0; }
+.row.is-compact > .cr-name b > .cr-wf { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.row.is-compact > .cr-name b > .cr-step { flex: none; max-width: 70%; overflow: hidden; text-overflow: ellipsis; }
 .row.is-compact > .when { grid-column: age; white-space: nowrap; }
 /* A ROW WITH NO TIME TO GIVE KEEPS ITS COLUMN (QA-079): blank, not collapsed. */
 .row.is-compact > .when:empty { min-width: 1px; }
@@ -591,6 +598,39 @@
   border-radius: var(--radius);
   background: var(--surface);
 }
+/* THE LOG'S OWN BODY SCROLLS WHEREVER THE LOG IS (BT-001, #2423). The Logs
+   tab lays the log out in a flex column, so the body is the scroller and
+   Follow keeps its newest line in view. Beside the live browser
+   (`.live-logs`, LiveBrowser.tsx) and in the theater's Logs panel
+   (`.th-left-body`, Theater.tsx) its parent is a plain scrolling block: the
+   log grew to its content, the parent scrolled instead, and Follow set the
+   body's `scrollTop` to no effect -- the log opened at its top (scrollTop 0
+   of 1632) and stayed put as steps arrived. There it is the parent's
+   height, border included, and its body scrolls. Not in the phone theater
+   (theater.css `max-width: 640px`): there the Logs panel is a strip of about
+   51px, so the log at its height left its body 8px -- unreadable -- and
+   `.th-left-body` scrolls the whole log instead, as it did before. */
+.live-logs > .ag-logs {
+  box-sizing: border-box;
+  height: 100%;
+  margin-bottom: 0;
+}
+/* Beside the browser on a phone (under 760px, as `.ag-split.ctl-drawer`
+   above) the `.live-body` row grows to its content, so `100%` is the log's
+   own 2777px and the drawer scrolled instead of its body: Follow showed
+   pressed over the oldest step. A bounded height makes the body the
+   scroller again (measured on the review render: clientHeight 385, followed
+   to its end). */
+@media (max-width: 759px) {
+  .live-logs > .ag-logs { height: min(70vh, 560px); }
+}
+@media (min-width: 641px) {
+  .th-left-body > .ag-logs {
+    box-sizing: border-box;
+    height: 100%;
+    margin-bottom: 0;
+  }
+}
 /* ONE ROW OF CONTROLS (U10a D13; U11a N11 at the 380px split). The four
    streams are a segmented control that never scrolls or spills; the search
    gives way to its floor; everything else keeps its width. The bar is a size
@@ -639,6 +679,28 @@
   .ag-logs-streams > button > .ag-logs-short { display: inline; }
 }
 .ag-logs-bar > .ag-logs-streams { align-self: center; }
+/* THE STREAMS IN TWO ROWS UNDER 260px (BT-009, #2423). Beside the live
+   browser and in the theater's Logs panel the bar is 213px at 1440 and 180px
+   at 1024; the four short labels need 238px in a row, and the segmented
+   control's `overflow: hidden` cut `Runner` to `Run` at 1440 and dropped it
+   at 1024, so that stream could not be chosen there. Under 260px they are a
+   two-by-two grid as wide as the bar: every stream whole, none scrolled. */
+@container ag-logbar (max-width: 259px) {
+  .ag-logs-bar > .ag-logs-streams.c-seg {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    flex: 1 0 100%;
+    height: auto;
+  }
+  .ag-logs-bar > .ag-logs-streams.c-seg > button {
+    min-height: var(--h-sm);
+    padding: 0 6px;
+    justify-content: center;
+  }
+  .ag-logs-bar > .ag-logs-streams.c-seg > button:nth-child(2n) { border-right: 0; }
+  .ag-logs-bar > .ag-logs-streams.c-seg > button:nth-child(1),
+  .ag-logs-bar > .ag-logs-streams.c-seg > button:nth-child(2) { border-bottom: 1px solid var(--line); }
+}
 /* ON A PHONE THE STREAMS ARE A LINE OF THEIR OWN (390px): the four of them
    are the width of the screen, and the controls are one row under them. */
 @container ag-logbar (max-width: 480px) {
@@ -956,8 +1018,21 @@
      desktop-03): `Ended, newest first` beside `Failed first` and `Group by
      workflow` is wider than a 390 screen, so on a phone the tail that never
      breaks at 1440 (V147, `.ag-tools-tail` above) wraps between its controls,
-     each kept whole, rather than run off the edge. */
-  .ag-list-head .ag-tools-tail { flex: 0 1 auto; min-width: 0; flex-wrap: wrap; }
+     each kept whole, rather than run off the edge. The tail is no box of its
+     own here at all now (VQ-012, below), so its controls wrap as the tools
+     group's own items. */
+  /* THE PROFILE AND THE SORT SHARE A ROW (VQ-012, BGD's visual QA
+     2026-10-26). At 390 the filters stacked three high -- search, profile,
+     sort -- and pushed the first agent below the fold: the select asked for
+     its 16em cap and the sort for its words, more than the 358px line. Here
+     the tail's controls are items of the tools group itself (`contents`),
+     the profile and the sort lead it, and the select gives way to the sort
+     down to 7em (still capped at 16em, V061), its value whole in its title; Recent's state filter and the
+     checkboxes follow on the next row. */
+  .ag-list-head .ag-tools-tail { display: contents; }
+  .ag-list-head .ag-tools > .ag-filter-profile { order: -2; flex: 1 1 7em; min-width: 7em; }
+  .ag-list-head .ag-tools > .ag-filter-profile > select { flex: 1 1 auto; width: 100%; }
+  .ag-list-head .ag-tools-tail > .ag-sort { order: -1; }
   .ag-head-actions { margin-inline-start: 0; }
   /* The back link replaces the ✕ on a phone, as it did on the column. */
   .ag-head-actions > .drawer-close { display: none; }
@@ -1002,15 +1077,22 @@
    the strip was cut at `C ›`. AgentSplit `AgTabsEdge` keeps the tabs that fit
    on the bar and puts the rest under More, at its end, on the bar's own
    underline; More opens the shared `.c-menu` under it. */
-/* MORE GIVES WAY TO THE OPEN TAB (BT-004, #2423, 2026-10-26): at 390 a
-   448 px More that would not shrink squeezed the strip, and the open tab in
-   it, to 0 px, and ran past the drawer's edge. More is a short `More 7` now;
-   if even that does not fit beside the open tab (the strip's min-width,
-   set by `AgTabsEdge`), More shrinks and its label ends in an ellipsis. The
-   names it holds are in its name and title, not drawn. */
+/* MORE GIVES WAY, THE OPEN TAB NEVER DOES (BT-004, #2423; VQ-008, BGD's
+   visual QA, 2026-10-26): at 390 a 448 px More that would not shrink
+   squeezed the strip, and the open tab in it, to 0 px, and ran past the
+   drawer's edge. More is a short `More 7` now. A fitted strip (`is-fitted`,
+   `AgTabsEdge`: More is drawn) holds only tabs measured to fit, so it keeps
+   its width, and no strip is narrower than its open tab (its min-width, set
+   by `AgTabsEdge`); if even `More 7` does not fit beside it, More shrinks and
+   its label ends in an ellipsis, its chevron whole. `AgTabsEdge` fits More
+   from its label and chevron, not from this shrinking box (VQ-008 review: at
+   390 it was squeezed to `2 m`). The names it holds are in its name and
+   title, not drawn. */
+.ag-tabs-edge > .ag-split-tabs.is-fitted { flex: none; }
 .ag-tabs-more-host { flex: 0 1 auto; min-width: 0; margin: var(--ctl-s2) 0 var(--ctl-s3); border-bottom: 1px solid var(--line); }
-.ag-tabs-more { display: flex; gap: 6px; align-items: center; max-width: 100%; padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; color: var(--text-dim); font: var(--t-meta)/var(--lh-meta) var(--font); white-space: nowrap; cursor: pointer; }
+.ag-tabs-more { display: flex; gap: 6px; align-items: center; max-width: 100%; min-width: 0; padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; color: var(--text-dim); font: var(--t-meta)/var(--lh-meta) var(--font); white-space: nowrap; cursor: pointer; }
 .ag-tabs-more-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ag-tabs-more > [aria-hidden] { flex: none; }
 .ag-tabs-more-names { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .ag-tabs-more[aria-expanded='true'] { color: var(--text); }
 .ag-tabs-more:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
@@ -1193,11 +1275,39 @@
 .ho-refused { color: var(--bad); }
 
 /* --- a live-browser task's recordings (§7) ------------------------------ */
-.rec-panel { margin-top: var(--ctl-s3); }
-.rec-note, .rec-absent, .rec-dropped { color: var(--text-dim); }
+/* BT-012 (2026-10-26, part of #2423): `.ctl-card` draws a border and no
+   padding, so the panel's text sat 1 px off its box (x 782 vs 781). One row
+   per attempt, a grid with the Play button in its own column: inline after
+   the text, the button sat on the line of a short row and wrapped under a
+   long one, so no two rows lined up. The player and the parts span both
+   columns. The player's cap is the pane's height less room for the row
+   (`--rec-fit`, set by Recordings.tsx from the pane's clientHeight), never
+   more than 60vh: at 60vh (454 px) it overran a 407 px pane, and the frame
+   and its controls never showed together. */
+.rec-panel { margin-top: var(--ctl-s3); padding: var(--ctl-s2) var(--ctl-s3); }
+.rec-note, .rec-absent, .rec-dropped, .rec-status { color: var(--text-dim); }
 .rec-list { list-style: none; margin: 0; padding: 0; }
-.rec-list > li { padding: var(--ctl-s1) 0; border-top: 1px solid var(--line); }
-.rec-player { display: block; width: 100%; max-height: 60vh; margin-top: var(--ctl-s1); background: var(--bg); }
+.rec-list > li.rec-take {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--ctl-s2);
+  row-gap: var(--ctl-s1);
+  padding: var(--ctl-s2) 0;
+  border-top: 1px solid var(--line);
+}
+.rec-take > .rec-what { grid-column: 1; min-width: 0; overflow-wrap: anywhere; }
+.rec-take > .rec-act { grid-column: 2; grid-row: 1; justify-self: end; }
+.rec-take > .rec-play, .rec-take > .rec-parts { grid-column: 1 / -1; min-width: 0; }
+.rec-parts > ol { margin: var(--ctl-s1) 0 0; padding-left: var(--ctl-s5); color: var(--text-dim); overflow-wrap: anywhere; }
+.rec-status { margin: var(--ctl-s1) 0 0; }
+.rec-player {
+  display: block;
+  width: 100%;
+  max-height: min(60vh, var(--rec-fit, 60vh));
+  object-fit: contain;
+  background: var(--bg);
+}
 
 /* A LIVE BROWSER ROW'S DEVICE OUTLINE (live-browser.md §6; LB-UX3): a static
    phone, tablet or desktop shape in the session's orientation, at the start of

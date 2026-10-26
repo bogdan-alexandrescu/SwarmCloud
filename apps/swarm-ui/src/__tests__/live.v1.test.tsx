@@ -414,6 +414,8 @@ describe('B3: input lands where the person clicks after the fit', () => {
 
 describe('U3: the device bar’s why is its tooltip, not a toolbar line', () => {
   const toolbar = () => screen.getByRole('toolbar', { name: 'Browser view' })
+  /** The chips, rotate and touch are in the toolbar's Device menu (BT-003, #2423). */
+  const openDevice = () => fireEvent.click(within(toolbar()).getByRole('button', { name: /^Device:/ }))
 
   it('draws no visible hint line in the toolbar for a viewer', () => {
     layOut()
@@ -429,6 +431,7 @@ describe('U3: the device bar’s why is its tooltip, not a toolbar line', () => 
   it('puts the why on every disabled device control, as its title and its accessible description', () => {
     layOut()
     pane(viewer())
+    openDevice()
     const bar = toolbar()
     for (const name of ['Desktop', 'iPhone 15', 'iPad', '⟲ rotate', 'touch: off']) {
       const b = within(bar).getByRole('button', { name }) as HTMLButtonElement
@@ -445,19 +448,22 @@ describe('U3: the device bar’s why is its tooltip, not a toolbar line', () => 
   it('describes nothing for the person in control, whose controls work', () => {
     layOut()
     pane(session({ controller: { email: ME, since: iso(NOW) } }))
+    openDevice()
     const b = within(toolbar()).getByRole('button', { name: 'Desktop' })
     expect(b.getAttribute('aria-describedby')).toBeNull()
     expect(document.body.textContent).not.toContain(DEVICE_WHY)
   })
 
-  it('keeps ⤢ Theater and "Let any member take control" together at the right, unbroken', () => {
+  // "Let any member take control" sat beside ⤢ Theater until BT-011 (#2423)
+  // moved it to the group of what changes the agent's browser.
+  it('keeps ⤢ Theater at the right, unbroken, and "Let any member take control" unbroken in its own group', () => {
     injectLiveCss()
     layOut()
     pane(session())
     const bar = toolbar()
     const end = bar.querySelector<HTMLElement>('.live-toolbar-end')!
     expect(end.contains(within(bar).getByRole('button', { name: 'Open theater (T)' }))).toBe(true)
-    expect(end.contains(within(bar).getByRole('checkbox', { name: 'Let any member take control' }))).toBe(true)
+    expect(end.contains(within(bar).getByRole('checkbox', { name: 'Let any member take control' }))).toBe(false)
     expect(getComputedStyle(end).marginLeft).toBe('auto')
     expect(getComputedStyle(end).flexWrap).toBe('nowrap')
     expect(getComputedStyle(bar.querySelector('.live-open')!).whiteSpace).toBe('nowrap')

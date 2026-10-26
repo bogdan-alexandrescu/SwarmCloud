@@ -198,16 +198,17 @@ describe('the header is two lines: state, name and the elapsed headline; then on
       return h!
     })
     const lines = [...head.children].filter((c) => !c.classList.contains('ag-parent'))
-    expect(lines.map((l) => l.className.split(' ')[0])).toEqual(['ag-head-row', 'ag-head-id', 'ag-head-facts'])
+    // TWO LINES (VQ-010, BGD's visual QA 2026-10-26): the id is on the meta line.
+    expect(lines.map((l) => l.className.split(' ')[0])).toEqual(['ag-head-row', 'ag-head-facts'])
     const row = head.querySelector('.ag-head-row')!
     expect(row.querySelector('.ag-head-title')?.textContent).toBe('refactor-backoff')
     expect(row.querySelector('.ag-head-actions'), 'the actions share line 1').not.toBeNull()
     const hl = row.querySelector('.ag-head-hl')!
     expect(hl.textContent).toMatch(/^1[34]m \d+s · attempt 1 of 3$/)
     expect(hl.querySelector('b')?.textContent).toMatch(/^1[34]m \d+s$/)
-    // The id is printed once, on its own line under the name, with its copy (#94).
-    expect(head.querySelector('.ag-head-id .tid-text')?.textContent).toBe(ID)
-    expect(head.querySelector('.ag-head-facts')!.textContent).not.toContain(ID)
+    // The id is printed once, whole, with its copy (#94), on the meta line (VQ-010).
+    expect(head.querySelectorAll('.tid-text')).toHaveLength(1)
+    expect(head.querySelector('.ag-head-facts .ag-head-id .tid-text')?.textContent).toBe(ID)
     const copy = head.querySelector<HTMLButtonElement>('.ag-head-id .tid-copy')!
     expect(copy.title).toContain(ID)
     // Plain-language dispatch chips, in STRATEGY_LABEL's words.

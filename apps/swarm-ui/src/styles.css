@@ -11285,10 +11285,9 @@ span.sk-ttile { cursor: default; }
    anonymous cell and its own box was 37px in a 56px row, so its bottom border
    floated ~20px above the row's. Its pieces stack as blocks instead. */
 .wfl-name { min-width: 14em; }
-.wfl-name > a, .wfl-name > .id, .wfl-name > .wfl-why { display: block; }
+/* The name, its id and its runners are one line (`.wfl-line`, styles/workflows.css; VQ-013). */
+.wfl-name > .wfl-why { display: block; }
 .wfl-name > * + * { margin-top: 2px; }
-.wfl-name > a { color: var(--text); font-weight: 600; text-decoration: none; }
-.wfl-name > a:hover, .wfl-name > a:focus-visible { text-decoration: underline; }
 .wfl-why { font-size: var(--t-micro); color: var(--text-dim); }
 .wfl-why.is-bad { color: var(--s-bad); }
 .wfl-why.is-warn { color: var(--s-warn); }
@@ -11334,8 +11333,6 @@ span.sk-ttile { cursor: default; }
 
 /* One workflow (workflows.html B): the back link and the confirm. The head's
    row, the tabs and the body card are in styles/workflows.css (#503). */
-.wfp-back { display: inline-block; margin-bottom: 6px; font-size: var(--t-meta); color: var(--sk-ac); text-decoration: none; }
-.wfp-back:hover, .wfp-back:focus-visible { text-decoration: underline; }
 .wfp { display: flex; flex-direction: column; gap: var(--ctl-gutter); min-width: 0; }
 .wfp-chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .wfp-confirm { display: flex; flex-direction: column; gap: 8px; max-width: 34em; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--s-bad) 45%, transparent); border-radius: 10px; background: var(--s-badb); font-size: var(--t-meta); }

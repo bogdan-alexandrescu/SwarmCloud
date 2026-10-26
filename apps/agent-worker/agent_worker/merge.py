@@ -106,7 +106,10 @@ waits for a person's `human-ready`, as before. A review re-running wakes
 nothing. Either way the next attempt reads every answer again. The
 scheduler's human-wait expiry (`_expire_human_waits`) spares this park, as
 it spares a `question_wait` or `release_wait` one, so it never dead-letters
-at `human_park_max_seconds`. The review's `open_questions`, the ones it
+at `human_park_max_seconds`. Its pull request merged or closed outside the
+workflow ends it instead (MERGE-OUTSIDE-ENDS, #2441): swarm-api's wake tick
+marks the hold, the scheduler wakes it, and `_ended_outside` reads the pull
+request before any question and ends the step SUCCEEDED or CANCELLED. The review's `open_questions`, the ones it
 judged need not hold, never stop the merge; those still unanswered are
 listed, in the asking task's own words, in the comment that records the
 merge -- so a merge made by `auto-merge.yml` rather than this step lists
@@ -179,6 +182,16 @@ OWNER_QUESTIONS_OPEN = "owner_questions_open"
 OWNER_PICK_NOT_BUILT = "owner_pick_not_built"
 UNBUILT_PICKS_KEY = "unbuilt_picks"
 OWNER_QUESTIONS_UNREADABLE = "owner_questions_unreadable"
+
+#: swarm-api's wake tick's record of an owner-question hold
+#: (`swarm_api.mergewake.OWNER_HOLD_KEY`), inside `metadata.merge_wait`, and
+#: the two wake reasons it writes when the hold's pull request was merged or
+#: closed outside the workflow (MERGE-OUTSIDE-ENDS, part of #2441). Held equal
+#: by tests/unit/control_plane/test_merge_outside_ends.py.
+OWNER_HOLD_KEY = "owner_hold"
+PULL_REQUEST_MERGED = "pull_request_merged"
+PULL_REQUEST_CLOSED = "pull_request_closed"
+OUTSIDE_WAKE_REASONS = frozenset({PULL_REQUEST_MERGED, PULL_REQUEST_CLOSED})
 #: `metadata.owner_answers`, swarm-api's record of each answer
 #: (`questions.OWNER_ANSWERS_KEY`).
 OWNER_ANSWERS_KEY = questions_mod.OWNER_ANSWERS_KEY
@@ -664,6 +677,10 @@ class PullRequestFacts:
     mergeable_state: str | None = None
     #: GraphQL's id for the pull request, which `enqueuePullRequest` takes.
     node_id: str | None = None
+    #: Who merged it (GitHub's `merged_by.login`) and when (`merged_at`), as
+    #: GitHub says: what a merge made outside the workflow is recorded with.
+    merged_by: str | None = None
+    merged_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -914,6 +931,8 @@ class GitHubMerger:
             merge_commit_sha=_str(data.get("merge_commit_sha")),
             mergeable_state=_str(data.get("mergeable_state")),
             node_id=_str(data.get("node_id")),
+            merged_by=_str(_mapping(data.get("merged_by")).get("login")),
+            merged_at=_str(data.get("merged_at")),
         )
 
     def required_checks(self, branch: str) -> RequiredChecks:
@@ -1467,6 +1486,12 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
                 f"the review's verdict is {verdict.verdict}, not MERGE"
                 + (f" ({len(verdict.findings)} finding(s))" if verdict.findings else ""),
             )
+        # #2441: a hold woken because its pull request was merged or closed
+        # outside the workflow ends here, before any question is read again:
+        # a merged pull request needs no answers.
+        ended = _ended_outside(run, target, opener)
+        if ended is not None:
+            return ended
         # #2070: the owner questions the review said hold the merge, each
         # answer re-read; then the ones it said need not, listed if open.
         held = _unanswered(ctx, verdict.needs_owner)
@@ -1511,6 +1536,81 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         branch=f"{ctx.branch_prefix}{_branch_task(opener, target.pull_request)}",
         own=own, fix_heads=fix_heads,
     )
+
+
+def _ended_outside(run: _Run, target: MergeTarget,
+                   opener: Mapping[str, Any]) -> ActionOutcome | None:
+    """The end of a hold whose pull request was merged or closed outside the workflow.
+
+    MERGE-OUTSIDE-ENDS (part of #2441): JOIN-UI-ADMIN's merge step stayed
+    PARKED on an owner question after its PR 2387 was merged by hand, and
+    nothing would ever have ended it. swarm-api's wake tick reads a held
+    step's pull request and marks the hold `pull_request_merged` or
+    `pull_request_closed` (`swarm_api.mergewake`); the scheduler returns it
+    to READY on that mark. Only then -- the mark is on a tenant-writable
+    document, so it is a reason to look, never a fact -- this reads the pull
+    request again with the tenant's token:
+
+      * merged, by anyone: SUCCEEDED, naming the merge commit, who merged it
+        and when. Nothing is merged and no question is asked again;
+      * closed unmerged: CANCELLED, saying so;
+      * open (a forged or stale mark), not this workflow's pull request, or
+        unreadable: None, and the hold parks again exactly as before.
+
+    No mark, no read: an ordinary hold stays credential-free.
+    """
+    ctx, summary = run.ctx, run.summary
+    wait = _mapping(_mapping(_own_doc(ctx).get("metadata")).get(MERGE_WAIT_METADATA_KEY))
+    if _mapping(wait.get(OWNER_HOLD_KEY)).get("wake_reason") not in OUTSIDE_WAKE_REASONS:
+        return None
+    assert target.pull_request is not None
+    number = pull_request_number(opener)
+    if number is None or mergeable_repository(ctx.repository_url) is None \
+            or ctx.read_git_token is None:
+        return None
+    try:
+        token = ctx.read_git_token()
+    except Exception as exc:  # noqa: BLE001 - never the value; the type is enough
+        summary["outside_unread"] = f"the forge token could not be read ({type(exc).__name__})"
+        return None
+    ctx.register_secret(token)
+    try:
+        merger = merger_for(ctx.repository_url, token=token, transport=ctx.transport,
+                            retry=forge_retry(ctx))
+        pr = merger.pull_request(number)
+    except Exception as exc:  # noqa: BLE001 - unread is not ended: the hold parks again
+        summary["outside_unread"] = (f"pull request #{number} could not be read "
+                                     f"({type(exc).__name__})")
+        return None
+    finally:
+        del token
+    branch = f"{ctx.branch_prefix}{_branch_task(opener, target.pull_request)}"
+    if not pull_request_belongs(
+        {"head": {"ref": pr.head_ref, "repo": {"full_name": pr.head_repo}},
+         "base": {"repo": {"full_name": pr.base_repo}}},
+        author_branch=branch,
+    ):
+        return None
+    summary["pull_request"] = number
+    if pr.merged:
+        words = f"pull request #{number} was merged outside the workflow"
+        if pr.merged_by:
+            words += f" by {pr.merged_by}"
+        if pr.merged_at:
+            words += f" at {pr.merged_at}"
+        if pr.merge_commit_sha:
+            words += f" as {pr.merge_commit_sha}"
+        summary.update({"merged_outside_workflow": True, "merge_commit": pr.merge_commit_sha,
+                        "merged_by": pr.merged_by, "merged_at": pr.merged_at,
+                        "outcome": words})
+        return _outcome(TaskState.SUCCEEDED, None, summary, words)
+    if pr.state == "closed":
+        message = (f"pull request #{number} was closed without merging, outside the "
+                   "workflow; there is nothing left to merge")
+        summary["refusal"] = {"code": "pull_request_closed", "message": message}
+        return _outcome(TaskState.CANCELLED, EndCause.MERGE_REFUSED, summary,
+                        f"pull_request_closed: {message}", exit_code=ExitCode.CANCELLED)
+    return None
 
 
 def _answered(doc: Mapping[str, Any], index: int) -> bool:

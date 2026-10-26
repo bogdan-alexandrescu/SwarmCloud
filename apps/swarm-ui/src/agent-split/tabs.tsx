@@ -294,6 +294,8 @@ export function AgTabsEdge({
   // count so a count that lands is measured again; and More's own.
   const widths = useRef(new Map<string, number>())
   const moreWidth = useRef(0)
+  // More's padding, border and gap: the stylesheet's, read once as the gap is.
+  const moreChrome = useRef<number | null>(null)
   // The strip's gap, read once: it is the stylesheet's, and `getComputedStyle`
   // on every fit -- which every strip mutation now runs -- held the panes'
   // first reads back by seconds in jsdom (walk.agent, reads.dedup).
@@ -322,14 +324,35 @@ export function AgTabsEdge({
       gapPx.current = parseFloat(getComputedStyle(strip).columnGap) || 0
     }
     const gap = gapPx.current ?? 0
-    // MORE IS MEASURED AT ITS OWN WIDTH (BT-004, #2423): it may shrink on a
-    // phone, so the button's full width is read as well as the box's.
+    // MORE IS MEASURED FROM WHAT IT DRAWS, NOT FROM ITS BOX (VQ-008 review,
+    // 2026-10-26; BT-004, #2423): the host gives way (agents.css), so its
+    // `offsetWidth` -- and the squeezed button's `scrollWidth` -- is the width
+    // it was already squeezed to: at 390 More was fitted at 32px and drawn
+    // `2 m`, its chevron off the page. The room it needs is its label
+    // (`More 7`, whose own `scrollWidth` is the whole text however it is cut),
+    // its chevron, and the button's padding, border and one gap between them;
+    // the names are read, not drawn (`.ag-tabs-more-names`), and take none.
     const m = b.querySelector<HTMLElement>(':scope > .ag-tabs-more-host')
-    if (m !== null) moreWidth.current = Math.max(m.offsetWidth, m.querySelector<HTMLElement>('.ag-tabs-more')?.scrollWidth ?? 0)
+    const mb = m?.querySelector<HTMLElement>(':scope > .ag-tabs-more') ?? null
+    if (m !== null && mb !== null) {
+      if (moreChrome.current === null && b.clientWidth > 0) {
+        const cs = getComputedStyle(mb)
+        const px = (v: string) => parseFloat(v) || 0
+        moreChrome.current = px(cs.paddingLeft) + px(cs.paddingRight) + px(cs.borderLeftWidth) + px(cs.borderRightWidth) + px(cs.columnGap)
+      }
+      moreWidth.current = Math.ceil(
+        (moreChrome.current ?? 0) +
+          (mb.querySelector<HTMLElement>(':scope > .ag-tabs-more-label')?.scrollWidth ?? 0) +
+          (mb.querySelector<HTMLElement>(':scope > [aria-hidden]')?.offsetWidth ?? 0),
+      )
+    }
     // THE OPEN TAB KEEPS ITS WIDTH (BT-004): at 390 the strip holding it was
     // squeezed to 0 px beside More, and nothing said which tab was open. The
-    // strip is never narrower than its open tab; More gives way instead. And
-    // the `›` the strip's end draws sits at the strip's end, not over More.
+    // strip is never narrower than its open tab, and a fitted strip
+    // (`is-fitted`) never shrinks at all; More gives way instead, its label
+    // cut with an ellipsis only when even `More 7` cannot fit beside the open
+    // tab. And the `›` the strip's end draws sits at the strip's end, not over
+    // More.
     const on = barTabs.findIndex((t) => t.key === current)
     if (strip !== null) strip.style.minWidth = on === -1 || drawn[on] === undefined ? '' : `${drawn[on]!.offsetWidth}px`
     b.style.setProperty('--ag-more-w', `${m === null ? 0 : m.offsetWidth}px`)
@@ -436,9 +459,19 @@ export function AgTabsEdge({
     drawn[to]!.focus()
     if (key !== current) onSelect(key)
   }
+  const stripClass = moreTabs.length === 0 ? 'ag-split-tabs' : 'ag-split-tabs is-fitted'
   return (
     <div className="ag-tabs-edge" ref={box} data-more={more || undefined} onKeyDown={onKey}>
-      <Tabs className="ag-split-tabs" label="Agent panes" current={current} tabs={barTabs} onSelect={onSelect} />
+      {/* A FITTED BAR NEVER SHRINKS (VQ-008): it holds only the tabs that
+          fit, the open one always, so More gives way and the open tab stays
+          drawn and marked (agents.css `.ag-split-tabs.is-fitted`). */}
+      <Tabs
+        className={stripClass}
+        label="Agent panes"
+        current={current}
+        tabs={barTabs}
+        onSelect={onSelect}
+      />
       {moreTabs.length > 0 && <MoreTabs tabs={moreTabs} onSelect={onSelect} />}
     </div>
   )
