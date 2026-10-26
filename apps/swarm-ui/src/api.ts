@@ -20,6 +20,7 @@ import { CONCURRENCY_STATES, MODEL_PRICE_RATES, TERMINAL_STATES } from './types'
 import { sumReported } from './measure'
 import { TASK_PAGE_LIMIT } from './pageLimits'
 import { normUtilisation, type UtilisationRead } from './utilisation'
+import { noteProfile } from './timezone'
 import type { Outcomes } from './outcomes'
 import { ledgerFixture } from './outcomes.fixture'
 import {
@@ -48,7 +49,7 @@ import type {
   AdminGrantAnswer, AdminRemoveAnswer, AdminWorkspaceView, LoanDeclineAnswer, LoanRequestAnswer, NewWorkspaceBody, PeopleDoc, ScopedPeopleDoc, WorkspaceActionAnswer, WorkspaceKind, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceState, WorkspaceView,
   AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
   AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
-  NotificationTopic, Preferences, PreferencesSaved, PreferencesWrite, Profile, ProfileClaudeAccount, ProfileClaudeAccounts, ProfileDefault,
+  NotificationTopic, Preferences, PreferencesSaved, PreferencesWrite, Profile, TimeZoneSource, ProfileClaudeAccount, ProfileClaudeAccounts, ProfileDefault,
   ProfileGitHub, ProfileIdentity, ProfileKeyStatus, ProfileNotifications, ProfileQuotaWindow, ProfileSection, ProfileTypeSafe, ProfileWorkspace,
   ReminderCadence, WorkspaceRole,
   DefaultRoleChange, PersonRoleChange, PersonRoles, PersonWorkspaceRole, RoleSummary, WorkspaceRoleEvent, WorkspaceRoleMe,
@@ -7678,6 +7679,10 @@ function fixtureProfile(): unknown {
       },
     },
     notifications: { preferences: { muted: ['finished'], reminder: 'daily' }, topics: [...NOTIFICATION_TOPICS] },
+    // Nothing saved: UTC. A zone this browser cached moves to the server on
+    // the first read, which the fixture build does not serve, so it stays here.
+    time_zone: 'UTC',
+    time_zone_source: 'default',
     claude_accounts: {
       personal_workspace: FIXTURE_TENANT,
       // The accounts Capacity › Accounts lists, so the two pages agree: the
@@ -9532,10 +9537,26 @@ export function normProfile(raw: unknown): Profile {
     connections,
     revision: pfNum(r.revision),
     unavailable,
+    ...normTimeZone(r),
   }
   if (pfObj(r.notifications) !== null) profile.notifications = normNotifications(r.notifications)
   if (pfObj(r.claude_accounts) !== null) profile.claude_accounts = normClaudeAccounts(r.claude_accounts)
   return profile
+}
+
+const TIME_ZONE_SOURCES: readonly TimeZoneSource[] = ['profile', 'default', 'unavailable']
+
+/**
+ * `time_zone` and `time_zone_source` (TIMEZONE-SERVER). A source this console
+ * does not know, or a zone that is not text where one is claimed, reads as
+ * unread: never as UTC, which would move every time on the page.
+ */
+function normTimeZone(r: Record<string, unknown>): Pick<Profile, 'time_zone' | 'time_zone_source'> {
+  const source = TIME_ZONE_SOURCES.find((s) => s === r.time_zone_source)
+  const zone = pfStr(r.time_zone)
+  if (source === undefined) return {}
+  if (source === 'unavailable' || zone === null) return { time_zone: null, time_zone_source: 'unavailable' }
+  return { time_zone: zone, time_zone_source: source }
 }
 
 function normPreferencesSaved(raw: unknown): PreferencesSaved {
@@ -9546,12 +9567,19 @@ function normPreferencesSaved(raw: unknown): PreferencesSaved {
     default_workspace: normDefault(r.default_workspace),
     notifications: normNotifications(r.notifications),
     revision: pfNum(r.revision) ?? 0,
+    ...normTimeZone(r),
   }
 }
 
-/** `GET /v1/profile`: the signed-in person's own profile, each section failing alone. */
+/**
+ * `GET /v1/profile`: the signed-in person's own profile, each section failing
+ * alone. Every answered read tells `timezone.ts` who is signed in and their
+ * zone (TIMEZONE-SERVER), so Profile's read is also the zone's, not a second one.
+ */
 export async function loadProfile(): Promise<Result<Profile>> {
-  return readAs(route('/v1/profile'), normProfile)
+  const r = await readAs(route('/v1/profile'), normProfile)
+  if (r.status === 'ok' || r.status === 'stale') noteProfile(r.data)
+  return r
 }
 
 /**
