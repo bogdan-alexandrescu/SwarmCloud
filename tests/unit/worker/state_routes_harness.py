@@ -15,11 +15,13 @@ A module of its own name, not `conftest`: see test_helpers_import_by_unique_name
 from __future__ import annotations
 
 import io
+import json
 import secrets
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import spec_keys
 from fastapi.testclient import TestClient
 
 from agent_worker.children import ChildApi
@@ -113,7 +115,13 @@ def api_client(db: ApiFirestore) -> TestClient:
                       "email_verified": True, "sub": "1000000000000000000002"},
     }
     ctx = build_context(
-        settings=api_settings(child_key=CHILD_KEY),
+        # The verify key `spec_keys` signs with, and no KMS signer: the state
+        # routes verify a task's spec (`state/upstream`), and nothing here
+        # submits one.
+        settings=api_settings(child_key=CHILD_KEY,
+                              spec_signing_key_version=spec_keys.KEY_VERSION,
+                              spec_verify_keys=json.dumps(spec_keys.VERIFY_KEYS)),
+        signer=None,
         db=db,
         verifier=StaticTokenVerifier(tokens),
         groups=StaticGroups({}),
@@ -153,7 +161,8 @@ def seed_attempt(
         "dispatch_deadline": now + timedelta(minutes=10),
         "expires_at": now + timedelta(minutes=2), "released_at": None,
     }
-    return doc
+    # Signed as submission signs it, so `state/upstream` reads its signed ids.
+    return spec_keys.sign_document(doc, task_id)
 
 
 class Recorder:
