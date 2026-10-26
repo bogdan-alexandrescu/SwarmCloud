@@ -672,7 +672,9 @@ def forget_attached() -> None:
 # that answered the stop remembers the task here, and `{attach: "all",
 # new_only: true}` attaches a new row for it once it has LEFT PARKED, and only
 # for it: a step still parked stays left out, and an entry is forgotten as it
-# is attached, so it is attached once.
+# is attached, so it is attached once. Only a HUMAN_REQUIRED park ends a row
+# this way; an AWAITING_INPUT step's row keeps following it (`/sc answer`
+# fills its form in), so it is never remembered here.
 _PERSON_WAITS: dict[str, tuple[str | None, str | None]] = {}
 
 
