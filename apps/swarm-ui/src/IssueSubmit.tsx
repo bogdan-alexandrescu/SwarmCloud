@@ -345,7 +345,7 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
               <b>Plan approval</b>
               <small>
                 {approval === 'required'
-                  ? 'Required (default): the run waits PLANNED, holding no capacity, until someone in this tenant approves, edits or rejects the plan.'
+                  ? 'Required (default): the run waits, planned and holding no capacity, until someone in this workspace approves, edits or rejects the plan.'
                   : 'Auto: the plan is approved the moment it is read, and the work starts without anyone being asked.'}
               </small>
             </div>
@@ -453,8 +453,8 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             <li className="ctl-fact in-fact-long">
               <b>lands as</b>
               {approval === 'required'
-                ? 'PLANNING, then PLANNED · a planned run holds no capacity'
-                : 'PLANNING, then PLANNED, approved on the next tick, then RUNNING · only the planner and the workflow\'s steps hold capacity'}
+                ? 'planning, then planned · a planned run holds no capacity'
+                : 'planning, then planned, approved on the next tick, then running · only the planner and the workflow\'s steps hold capacity'}
             </li>
           </ul>
           <Button type="submit" kind="primary" full disabled={blocked}>
