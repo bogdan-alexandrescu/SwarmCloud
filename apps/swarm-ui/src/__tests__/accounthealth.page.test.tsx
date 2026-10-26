@@ -457,3 +457,163 @@ describe('review fixes: the phone, the swimlane, the list and the development po
     for (const x of limits) expect(container.textContent).toContain(`${x.label} rate-limited`)
   })
 })
+
+describe('fourth review: the marks in their lanes, the phone’s switch and the re-auth fix from the row’s state', () => {
+  const LANE_H = 46
+
+  /** A CSS rule's declarations, by its exact selector. */
+  function ruleOf(css: string, selector: string): string | null {
+    const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const m = new RegExp(`(?:^|\\})\\s*${esc}\\s*\\{([^}]*)\\}`, 'm').exec(css)
+    return m === null ? null : m[1]!
+  }
+  function px(decls: string | null, prop: string): number | null {
+    if (decls === null) return null
+    const m = new RegExp(`(?:^|;|\\s)${prop}\\s*:\\s*([0-9.]+)(px)?\\s*(;|$)`, 'm').exec(decls)
+    return m === null ? null : Number(m[1])
+  }
+
+  it('draws every mark button at the mark’s own height, so its centre is the lane position the chart computes', () => {
+    // The console's `:where(.app button) { min-height: 28px }` made each 12 px
+    // `.ah-hit` 28 px tall, and its grid-centred mark sat 8 px low: a
+    // credential square of the last lane but one hung into the lane below it.
+    const styles = readFileSync(join(__dirname, '..', 'styles.css'), 'utf8')
+    const css = readFileSync(join(__dirname, '..', 'styles', 'account-health.css'), 'utf8')
+    const globalMin = px(ruleOf(styles, ':where(.app button)'), 'min-height')
+    expect(globalMin).toBe(28)
+    const hit = ruleOf(css, '.ah-hit')
+    const height = px(hit, 'height')!
+    const ownMin = px(hit, 'min-height')
+    const drawn = Math.max(height, ownMin ?? globalMin!)
+    expect(drawn).toBe(12)
+
+    const { accounts, events } = pool()
+    const { container } = desktop(board(accounts, events))
+    const marks = [...container.querySelectorAll<HTMLElement>('[data-mark]')]
+    expect(marks.length).toBeGreaterThan(0)
+    let visited = 0
+    for (const b of marks) {
+      const lane = container.querySelector(`[data-lane="${b.dataset.markOf}"] rect.ah-lane`)!
+      const top = Number(lane.getAttribute('y'))
+      const bottom = top + Number(lane.getAttribute('height'))
+      const y = parseFloat(b.style.top)
+      // The whole button, outline and all, inside its own lane.
+      expect(y).toBeGreaterThanOrEqual(top)
+      expect(y + drawn).toBeLessThanOrEqual(bottom)
+      // errors high, limits on the line, credential low
+      const centre = y + drawn / 2
+      const line = top - 3 + LANE_H / 2 + 5
+      expect(centre - line).toBe(b.dataset.mark === 'err' ? -8 : b.dataset.mark === 'lim' ? 0 : 8)
+      visited += 1
+    }
+    expect(visited).toBe(marks.length)
+  })
+
+  it('keeps the newest marks inside the chart’s right edge on a 390 phone', () => {
+    const box = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(324)
+    try {
+      const { accounts, events } = pool()
+      // One event at the read itself: the newest a mark can be.
+      events.set('eng:example-team', [ev(0, 'network')])
+      const { container } = desktop(board(accounts, events))
+      const W = Number(container.querySelector<HTMLElement>('.ah-swim-box')!.dataset.chartWidth)
+      expect(W).toBe(324)
+      const marks = [...container.querySelectorAll<HTMLElement>('[data-mark]')]
+      expect(marks.length).toBeGreaterThan(0)
+      const rights = marks.map((b) => parseFloat(b.style.left) + 12)
+      expect(Math.max(...rights)).toBeLessThanOrEqual(W)
+      expect(Number(container.querySelector('.ah-now')!.getAttribute('x1')) + 6).toBeLessThanOrEqual(W)
+    } finally {
+      box.mockRestore()
+    }
+  })
+
+  it('never commits a frame of the chart wider than its box: the first one is drawn at the measured width', () => {
+    const box = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(324)
+    const host = document.body.appendChild(document.createElement('div'))
+    const seen = new MutationObserver(() => undefined)
+    seen.observe(host, { subtree: true, childList: true, attributes: true, attributeOldValue: true, attributeFilter: ['data-chart-width'] })
+    try {
+      const { accounts, events } = pool()
+      render(<AccountHealthBody board={board(accounts, events)} now={NOW} phone={false} />, { container: host })
+      const records = seen.takeRecords()
+      const widths: string[] = []
+      for (const r of records) {
+        if (r.type === 'attributes' && r.oldValue !== null) widths.push(r.oldValue)
+        for (const n of r.addedNodes) {
+          if (!(n instanceof HTMLElement)) continue
+          for (const el of [n, ...n.querySelectorAll<HTMLElement>('[data-chart-width]')])
+            if (el.dataset.chartWidth !== undefined) widths.push(el.dataset.chartWidth)
+        }
+      }
+      expect(widths.length).toBeGreaterThan(0)
+      expect(widths.every((w) => w === '324')).toBe(true)
+    } finally {
+      seen.disconnect()
+      box.mockRestore()
+      host.remove()
+    }
+  })
+
+  it('keeps the phone’s Incidents/Accounts choice across a resize that crosses the phone breakpoint', () => {
+    const { accounts, events } = pool()
+    const b = board(accounts, events)
+    const { rerender } = render(<AccountHealthBody board={b} now={NOW} phone />)
+    fireEvent.click(screen.getByRole('button', { name: 'Accounts' }))
+    expect(screen.getByRole('button', { name: 'Accounts' }).getAttribute('aria-pressed')).toBe('true')
+
+    rerender(<AccountHealthBody board={b} now={NOW} phone={false} />)
+    expect(document.querySelector('[data-layout="desktop"]')).not.toBeNull()
+    rerender(<AccountHealthBody board={b} now={NOW} phone />)
+
+    expect(screen.getByRole('button', { name: 'Accounts' }).getAttribute('aria-pressed')).toBe('true')
+    expect(document.querySelectorAll('.ah-acard')).toHaveLength(7)
+  })
+
+  it('shows a re-auth card with Sign in again in Incidents from the list’s own status when the health read failed', () => {
+    const { accounts, events } = pool()
+    const { container } = render(<AccountHealthBody board={board(accounts, events, 'unreadable')} now={NOW} phone />)
+
+    expect(screen.getByRole('button', { name: /Incidents/ }).getAttribute('aria-pressed')).toBe('true')
+    expect(container.querySelector('[data-sum="reauth_needed"]')!.textContent).toContain('1')
+    const card = container.querySelector<HTMLElement>('[data-state="reauth"]')!
+    expect(card.dataset.account).toBe('eng:ai-eng-3')
+    expect(within(card).getByRole('link', { name: 'Sign in again' }).getAttribute('href')).toBe(
+      '#capacity/accounts?account=eng%3Aai-eng-3',
+    )
+  })
+
+  it('leads a REAUTH_REQUIRED row with its fix when the deployment does not serve health, keeping its figures as dashes', () => {
+    const { accounts, events } = pool()
+    const old = accounts.map((a) => {
+      const { health_status: _s, health_24h: _c, ...rest } = a
+      return rest as HealthAccount
+    })
+    const { container } = desktop(board(old, events, 'not_served'))
+
+    const callout = container.querySelector<HTMLElement>('[data-state="reauth"]')!
+    expect(callout.dataset.account).toBe('eng:ai-eng-3')
+    expect(within(callout).getByRole('link', { name: 'Sign in again' })).toBeTruthy()
+    const row = container.querySelector<HTMLElement>('tr[data-account="eng:ai-eng-3"]')!
+    expect(row.dataset.status).toBe('reauth_needed')
+    expect(within(row).getByRole('link', { name: 'Sign in again ›' })).toBeTruthy()
+    const nums = [...row.querySelectorAll<HTMLElement>('td.ah-num')]
+    expect(nums).toHaveLength(3)
+    for (const c of nums) {
+      expect(c.textContent).toBe('—')
+      expect(c.querySelector('.ah-dash')!.getAttribute('title')).toMatch(/does not serve/)
+    }
+    // Only the account whose state says so: the others stay unknown.
+    expect(container.querySelectorAll('[data-state="reauth"]')).toHaveLength(1)
+    expect(container.querySelector('tr[data-account="eng:example-team"]')!.getAttribute('data-status')).toBe('unknown')
+  })
+
+  it('starts the failed read’s sentence with a capital letter when the server’s reason does not', () => {
+    const { accounts, events } = pool()
+    const b = board(accounts, events, 'unreadable')
+    b.health = { kind: 'unreadable', reason: 'upstream timed out after 10 s' }
+    desktop(b)
+
+    expect(screen.getByRole('alert').querySelector('p')!.textContent).toMatch(/^Upstream timed out after 10 s\. /)
+  })
+})
