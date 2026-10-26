@@ -260,6 +260,16 @@ vitest without file arguments, never pytest over a whole directory or with
 polled with sleep, and `scripts/changed-guards.sh` once at the end. Keyed on
 the script being in the checkout, so another tenant's repository is never
 told to run a script it does not have.
+
+WHY A SCRATCH NOTE (issue #2436). task_73850f24085447368991 was evicted twice
+with `EmptyDir volume "tmp" exceeds 3Gi`: its agent wrote a Postgres data dir,
+test logs and Chromium's libraries to a literal /tmp while TMPDIR pointed at
+the 20 GiB cache volume. Every repository step's prompt gains
+`cachedirs.scratch_note` (`scratch_note_for`): big scratch data under $TMPDIR,
+never a literal /tmp or the workspace. Where the worker put
+PLAYWRIGHT_BROWSERS_PATH under the cache (an image with no browser), this
+runner hands that path to the agent itself, and never reads it as an image's
+browser (`cachedirs.image_browsers_path`).
 """
 
 from __future__ import annotations
@@ -271,7 +281,7 @@ import shlex
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from swarm_common.models import (
     MCP_SERVER_NAME as REGISTERED_MCP_SERVER_NAME,
@@ -280,6 +290,7 @@ from swarm_common.models import (
 )
 
 from .. import browser_tools, graphstage
+from ..cachedirs import image_browsers_path, scratch_note
 from ..children import git_shim_argv, search_shim_argv
 from ..mcp_attach import MAX_SERVERS as MAX_MCP_SERVERS
 from ..mcp_attach import RELAY_ENV as MCP_RELAY_ENV
@@ -693,6 +704,19 @@ def related_tests_note(repo_dir: Path | str | None) -> str | None:
     if repo_dir is None or not (Path(repo_dir) / RELATED_TESTS_SCRIPT).is_file():
         return None
     return RELATED_TESTS_NOTE
+
+
+def scratch_note_for(environ: Mapping[str, str]) -> str | None:
+    """`cachedirs.scratch_note` for this attempt, or None without the worker's TMPDIR.
+
+    On the GKE cache volume exactly when TMPDIR is outside the attempt tree
+    (`Workspace.cache_on_own_volume`, read off the two paths the worker set).
+    """
+    tmpdir = environ.get("TMPDIR", "").strip()
+    workspace = environ.get("SWARM_WORKSPACE", "").strip()
+    if not tmpdir or not workspace:
+        return None
+    return scratch_note(own_volume=not Path(tmpdir).is_relative_to(workspace))
 
 
 def egress_notice(spool: str) -> str | None:
@@ -1324,7 +1348,12 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     jev = False
     jev_key_file = ""
     jev_internal = False
-    browsers = os.environ.get(BROWSERS_PATH_ENV, "").strip()
+    # The image's browser only: the cache's PLAYWRIGHT_BROWSERS_PATH
+    # (`cachedirs.cache_env`, #2436) holds none, and is handed on below.
+    browsers = image_browsers_path(os.environ)
+    cache_browsers = "" if browsers else os.environ.get(BROWSERS_PATH_ENV, "").strip()
+    if cache_browsers:
+        env[BROWSERS_PATH_ENV] = cache_browsers
     endpoint = os.environ.get(CDP_ENDPOINT_ENV, "").strip()
     prompt = ctx.payload.get("prompt")
     spec = SPEC
@@ -1336,6 +1365,12 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     narrow = related_tests_note(ctx.repo_dir)
     if narrow and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{narrow}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
+    # Where big scratch data goes (#2436): every repository step, after the
+    # test rule and before the browser note.
+    scratch = scratch_note_for(os.environ) if ctx.repo_dir is not None else None
+    if scratch and isinstance(prompt, str) and prompt.strip():
+        prompt = f"{prompt.rstrip()}\n\n{scratch}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
     # The caller's registered MCP servers, through the worker's relay
     # (MCP-RUNNERS): the local token and loopback URLs only, and a line each
