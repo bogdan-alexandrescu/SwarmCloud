@@ -68,10 +68,18 @@
 /* ---- lane U14: the run while it runs (owner, 2026-10-04) -------------------- */
 /* THE STEPS CARD (item 1): one 32px row per workflow step -- the state mark,
    the step's name, elapsed and attempt, and "Open agent →" at the row's end.
-   On a phone the meta drops under the name and the link stays on the row. */
-.rn-srows { margin: 0; padding: 0; list-style: none; display: grid; gap: 0; min-width: 0; }
+   ONE SET OF COLUMNS FOR THE CARD (visual QA VQ-019, 2026-10-26): each row
+   was its own grid with an `auto` state column, so the title started at a
+   different x on every row -- the state cell was its word's width,
+   'succeeded' wider than 'parked'. The list holds the columns and every row
+   is a subgrid of them: the state column is the widest state's, at most
+   180px (a longer mark wraps inside it), and the titles line up. */
+.rn-srows {
+  margin: 0; padding: 0; list-style: none; display: grid; gap: 0; min-width: 0;
+  grid-template-columns: fit-content(180px) minmax(0, 1fr) auto auto; column-gap: 10px;
+}
 .rn-srow {
-  display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center;
+  display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center;
   column-gap: 10px; min-height: 32px; padding: 4px 0;
   font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
 }
@@ -80,9 +88,19 @@
 .rn-srow-t { font-weight: 600; }
 .rn-srow-id, .rn-srow-r { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .rn-srow-m { display: flex; flex-wrap: wrap; gap: 0 10px; font-size: var(--t-micro); line-height: var(--lh-micro); }
+/* ON A PHONE THE TITLE HAS THE ROW'S WIDTH (VQ-019). The meta dropped under
+   the name, but the state and the links kept their columns beside it, so at
+   390 the title had ~80px -- a word or two a line -- and the mono step id
+   broke across three lines: one step was ~260px tall. Now the state and the
+   links share the first line, the title and its id the next at full width,
+   and the meta the line after. */
 @media (max-width: 719px) {
-  .rn-srow { grid-template-columns: auto minmax(0, 1fr) auto; }
-  .rn-srow-m { grid-column: 2 / 4; grid-row: 2; }
+  .rn-srows { grid-template-columns: minmax(0, 1fr); }
+  .rn-srow { grid-template-columns: auto minmax(0, 1fr); row-gap: 2px; }
+  .rn-srow > :first-child { grid-column: 1; grid-row: 1; }
+  .rn-srow-links { grid-column: 2; grid-row: 1; justify-self: end; }
+  .rn-srow-n { grid-column: 1 / -1; grid-row: 2; }
+  .rn-srow-m { grid-column: 1 / -1; grid-row: 3; }
 }
 .rn-steps-n { font-weight: 400; color: var(--text-dim); }
 .rn-steps-err { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; overflow-wrap: anywhere; }
