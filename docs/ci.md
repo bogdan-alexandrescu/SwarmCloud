@@ -1821,11 +1821,16 @@ and whose release ships it -- and promote, apply and deploy do not run. Any
 other failure, or an API that cannot be read, stays red.
 
 **There is no `newest` check**, unlike `release.yml`. A hotfix whose images
-were built and scanned still reaches dev well before the newer commit's
-normal release, which waits behind `release-dev` (held 100 min p50, above).
-Superseding it whenever `main` had moved on would drop nearly every hotfix on
-a busy `main`, and buys nothing: `release-order.sh` already ends the lane
-green if a newer commit reached dev first. Only a build that never happened
+were built and scanned still reaches dev before the newer commit's normal
+release, which waits for its own CI build and then for `release-dev` (an
+estimated 5-10 min past that wait now that `verify` and acceptance left the
+lock, "The timeline now" above; 100 min p50 before). The gap is smaller than it
+was, but it is still the hotfix's whole reason to exist, and superseding it
+whenever `main` had moved on would drop nearly every hotfix on a busy `main`
+for nothing: `release-order.sh` already ends the lane green if a newer commit
+reached dev first. The `after` step also reads `main`'s head, a call
+release.yml's step does not make, so the summary can name the commit that
+ships the change. Only a build that never happened
 leaves the lane nothing to ship.
 
 ### What the tests hold, and what they cannot
