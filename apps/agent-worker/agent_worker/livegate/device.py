@@ -27,9 +27,8 @@ agent owns).
 THE ORDER OF A CHANGE: the name is checked first, so an unknown name changes
 nothing; then the display is resized (the step most likely to fail: a size
 past what Xvfb was started with); then the window is fitted to it, the device
-set on every page, the scale sink (if any) told the new screen scale, and the
-injector told the new bounds. A failure part-way is recorded and raised; the
-next change starts again from the name.
+set on every page, and the injector told the new bounds. A failure part-way
+is recorded and raised; the next change starts again from the name.
 
 WHY NO `scale`, AND THE DISPLAY AT CSS SIZE. Headed Chromium draws an
 emulated device at one screen pixel per CSS pixel and clips the view there;
@@ -191,13 +190,6 @@ class Display(Protocol):
     """The virtual display Chromium draws on."""
 
     async def resize(self, width: int, height: int) -> None: ...
-
-
-class ScaleSink(Protocol):
-    """Told screen pixels per CSS pixel on every change. The gate passes none:
-    its only user was the mask, gone with LIVE-NOMASK (#2298)."""
-
-    def set_scale(self, scale: float) -> None: ...
 
 
 class DisplayError(Exception):
@@ -431,12 +423,11 @@ def captured(frame: Frame, device: Device) -> Frame:
 class DeviceController:
     """Which device the browser is, applied from the gate's own sessions."""
 
-    def __init__(self, cdp: GateCdp, display: Display, scale: ScaleSink | None = None, *, record: Record,
+    def __init__(self, cdp: GateCdp, display: Display, *, record: Record,
                  on_resize: Callable[[Device], None] | None = None,
                  on_change: Callable[[Device], None] | None = None) -> None:
         self._cdp = cdp
         self._display = display
-        self._scale = scale
         self._record = record
         self._on_resize = on_resize
         #: Told the device once it is applied -- at start and on every change --
@@ -684,8 +675,6 @@ class DeviceController:
 
     async def _apply_display(self, device: Device) -> None:
         await self._display.resize(device.display_width, device.display_height)
-        if self._scale is not None:
-            self._scale.set_scale(device.screen_scale)
         if self._on_resize is not None:
             self._on_resize(device)
         self._windows.clear()

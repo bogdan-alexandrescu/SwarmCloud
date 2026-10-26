@@ -29,6 +29,8 @@ nothing.
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import re
 import tempfile
@@ -49,6 +51,12 @@ IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 #: unexpectedly huge object from taking the bridge -- and the session -- down.
 MAX_SAVED_BYTES = 64 * 1024 * 1024
 
+#: The most one image shown INLINE may be (ARTIFACT-IMAGES). Its bytes travel
+#: base64 in one JSON-RPC line and land in the session's context: a 1440p
+#: screenshot is well under 1 MiB, and a larger image is the console's to show,
+#: which the over-cap answer links to.
+MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024
+
 #: A task id is one path segment of this shape. It becomes a directory name.
 _TASK_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
@@ -65,7 +73,7 @@ class SavePlan:
 
     @property
     def is_image_name(self) -> bool:
-        return PurePosixPath(self.parts[-1]).suffix.lower() in IMAGE_SUFFIXES
+        return is_image_name(self.parts[-1])
 
 
 def claude_temp_roots() -> list[Path]:
@@ -136,6 +144,10 @@ def save_image(client: SwarmClient, task_id: str, name: str, plan: SavePlan) -> 
     content_type = body.headers.get("content-type", "").split(";")[0].strip()
     if body.headers.get("x-artifact-kind") != "image" or not content_type.startswith("image/"):
         return None
+    if sniff_image(body.data) != content_type:
+        # The bridge's own magic-byte check, as `show_image` makes it: no
+        # unredacted byte is written on the route's word alone.
+        return None
     stored = body.headers.get("x-artifact-bytes")
     if stored is not None and stored.isdigit() and int(stored) != len(body.data):
         # The route streams chunked, and a failure after the first byte can
@@ -167,3 +179,127 @@ def save_image(client: SwarmClient, task_id: str, name: str, plan: SavePlan) -> 
         "task_id": task_id,
         "name": name,
     }
+
+
+def is_image_name(name: str) -> bool:
+    """Whether the raw route could ever serve `name` as an image: its extension."""
+    return PurePosixPath(name).suffix.lower() in IMAGE_SUFFIXES
+
+
+def sniff_image(data: bytes) -> str | None:
+    """The image type the bytes' own MAGIC BYTES say they are, or None.
+
+    swarm-api's `agent_output.sniff_image`, restated because this bridge ships
+    alone, from a git tag. It is the bridge's own check that what it shows is
+    an image, whatever a header said.
+    """
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+@dataclass(frozen=True)
+class ImageAnswer:
+    """A tool answer that carries an image: the metadata as text, then the bytes.
+
+    `serve` sends `content()` as the call's content blocks; everything else
+    that reads a tool's answer (the build board) reads `text`.
+    """
+
+    text: str
+    data: bytes
+    mime_type: str
+
+    def content(self) -> list[dict[str, Any]]:
+        return [
+            {"type": "text", "text": self.text},
+            {"type": "image", "data": base64.b64encode(self.data).decode("ascii"), "mimeType": self.mime_type},
+        ]
+
+
+#: What every answer about an image says, because it is true of every one.
+_NOT_REDACTED = (
+    "image bytes are NOT redacted: no scanner reads pixels, so a screenshot of a page that "
+    "showed a value carries it, exactly as the console's image viewer does"
+)
+
+
+def _too_large(task_id: str, name: str, stored: int | None, console: str | None) -> str:
+    answer: dict[str, Any] = {
+        "status": "image_too_large",
+        "task_id": task_id,
+        "name": name,
+        "bytes": stored,
+        "max_bytes": MAX_INLINE_IMAGE_BYTES,
+        "redaction": "not-applied",
+        "detail": (
+            f"this image is over the {MAX_INLINE_IMAGE_BYTES} bytes this bridge shows inline, "
+            "so no bytes were returned. Open it in the console, or call again with `save_to` "
+            "to write it to a file you read with the Read tool"
+        ),
+    }
+    if console is not None:
+        answer["console"] = console
+    return json.dumps(answer, indent=2)
+
+
+def show_image(
+    client: SwarmClient,
+    task_id: str,
+    name: str,
+    *,
+    stored_bytes: Any = None,
+    console: Any = None,
+) -> ImageAnswer | str | None:
+    """Read `name` through `/artifacts/raw` and answer it as image content.
+
+    Returns the ImageAnswer; a JSON string answering the size and the console
+    link (`console()`, called only then) for an image over
+    `MAX_INLINE_IMAGE_BYTES`; or None when the bytes are not an image -- by
+    the route's `x-artifact-kind`, its content type, or the magic bytes read
+    here -- and the caller gives today's read, which redacts text and reports
+    a binary as `binary` with no bytes. `stored_bytes` is the size the content
+    read already reported, which refuses an oversized image before its bytes
+    are requested at all.
+    """
+
+    def _link() -> str | None:
+        return console() if callable(console) else None
+
+    stored = stored_bytes if isinstance(stored_bytes, int) and not isinstance(stored_bytes, bool) else None
+    if stored is not None and stored > MAX_INLINE_IMAGE_BYTES:
+        return _too_large(task_id, name, stored, _link())
+    try:
+        body = client.artifact_raw(task_id, name, max_bytes=MAX_INLINE_IMAGE_BYTES, disposition="inline")
+    except SwarmError as exc:
+        # A 2xx with more bytes than the cap: the client kept none of them.
+        if exc.status is not None and 200 <= exc.status < 300:
+            return _too_large(task_id, name, stored, _link())
+        raise
+    content_type = body.headers.get("content-type", "").split(";")[0].strip()
+    if body.headers.get("x-artifact-kind") != "image" or not content_type.startswith("image/"):
+        return None
+    if sniff_image(body.data) != content_type:
+        return None
+    header = body.headers.get("x-artifact-bytes")
+    if header is not None and header.isdigit() and int(header) != len(body.data):
+        raise SwarmError(
+            f"swarm_artifact: {name!r} is {header} bytes stored and {len(body.data)} arrived; "
+            "the read came up short, so nothing is shown. Call again"
+        )
+    metadata = {
+        "status": "image",
+        "task_id": task_id,
+        "name": name,
+        "bytes": len(body.data),
+        "content_type": content_type,
+        "redaction": "not-applied",
+        "detail": f"the image follows as image content; {_NOT_REDACTED}",
+    }
+    return ImageAnswer(text=json.dumps(metadata, indent=2), data=body.data, mime_type=content_type)
