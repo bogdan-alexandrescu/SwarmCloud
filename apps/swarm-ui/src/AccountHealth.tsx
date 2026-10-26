@@ -192,12 +192,11 @@ function StatusIcon({ s }: { s: HealthStatus | null }) {
   )
 }
 
-function StatusChip({ s, extra }: { s: HealthStatus; extra?: string }) {
+function StatusChip({ s }: { s: HealthStatus }) {
   return (
     <span className={`ah-st is-${s}`} data-status={s}>
       <StatusIcon s={s} />
       {STATUS_WORD[s]}
-      {extra ? ` · ${extra}` : ''}
     </span>
   )
 }
@@ -371,8 +370,16 @@ function Tiles({ m }: { m: Model }) {
 function StatusCellView({ m, a }: { m: Model; a: HealthAccount }) {
   const c = m.cell(a)
   if (c.status === null) return <Dash why={c.why} />
-  const extra = c.status === 'limited' ? untilWord(m.records.get(a.account_id), m.now) : ''
-  return <StatusChip s={c.status} extra={extra} />
+  const until = c.status === 'limited' ? untilWord(m.records.get(a.account_id), m.now) : ''
+  // The reset time sits under the word, free to wrap: inside the nowrap chip
+  // it held the Status column wide enough to push the table 12 px past its
+  // card at 1440 and cut the re-auth row's "Sign in again ›".
+  return (
+    <>
+      <StatusChip s={c.status} />
+      {until && <small className="ah-st-until">{until}</small>}
+    </>
+  )
 }
 
 /** Why a record-derived cell is a dash on this read. */

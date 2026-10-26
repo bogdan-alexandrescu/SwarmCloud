@@ -20,6 +20,9 @@
 .ah-st.is-limited { color: var(--warn-ink); }
 .ah-st.is-erroring { color: var(--bad-ink); }
 .ah-st.is-reauth_needed { color: var(--bad-ink); }
+/* A Limited row's reset time, under its word in the list: it may wrap, so the
+   Status column gives way and the table fits its card at 1440. */
+.ah-st-until { display: block; margin-top: 2px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--warn-ink); }
 .ah-dash { color: var(--text-dim); font-weight: 600; cursor: help; }
 .ah-mu { color: var(--text-dim); }
 

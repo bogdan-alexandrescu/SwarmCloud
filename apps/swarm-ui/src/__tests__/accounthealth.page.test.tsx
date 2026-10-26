@@ -13,6 +13,9 @@
 // the record is not served, or put the closed incidents first on a phone -- a
 // case below turns red.
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -398,6 +401,32 @@ describe('review fixes: the phone, the swimlane, the list and the development po
     const cell = container.querySelector('tr[data-account="eng:example-team"] td.ah-last-td')!
     const msg = cell.querySelector<HTMLElement>('.ah-msg.is-one-line')!
     expect(msg.getAttribute('title')).toBe(long)
+  })
+
+  it('lets a Limited row’s reset time wrap under its word, so the table fits its card and keeps "Sign in again ›"', () => {
+    // At 1440 the table was 1049 px in a 1037 px scroller: "Limited · 7-day
+    // until …" sat in the nowrap status chip, and the overflow cut the
+    // re-auth row's "Sign in again ›" at the card's edge. jsdom lays nothing
+    // out, so this pins the rule that lets the column give way: the chip
+    // holds the word alone, the reset time is a sibling that may wrap.
+    const css = readFileSync(join(__dirname, '..', 'styles', 'account-health.css'), 'utf8')
+    const { accounts, events } = pool()
+    const b = board(accounts, events)
+    if (b.health.kind !== 'ok') throw new Error('the board has no health')
+    const r = b.health.pool.accounts.find((x) => x.account_id === 'eng:example-personal')!
+    r.limited_until = new Date(NOW + 1500 * MIN).toISOString()
+    const { container } = desktop(b)
+
+    const cell = container.querySelector('tr[data-account="eng:example-personal"] td:nth-child(2)')!
+    const chip = cell.querySelector<HTMLElement>('.ah-st')!
+    expect(chip.textContent).toBe('Limited')
+    const until = cell.querySelector<HTMLElement>('.ah-st-until')!
+    expect(until.textContent).toMatch(/^7-day until /)
+    expect(chip.contains(until)).toBe(false)
+    const rule = /\.ah-st-until\s*\{([^}]*)\}/.exec(css)
+    expect(rule).not.toBeNull()
+    expect(rule![1]).not.toMatch(/nowrap/)
+    expect(rule![1]).toMatch(/display:\s*block/)
   })
 
   it('tells the development pool’s re-auth story on the account whose state is REAUTH_REQUIRED', async () => {
