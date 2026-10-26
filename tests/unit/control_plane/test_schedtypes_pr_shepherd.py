@@ -538,6 +538,27 @@ def test_a_terminal_ci_fix_does_not_hold_the_conflict_fix(db, ctx, gh, repo_id) 
     assert len(_conflict_fixes(db)) == 1
 
 
+@pytest.mark.parametrize("age,held", [(30, True), (600, False)], ids=["in_grace", "stale"])
+def test_a_ci_fix_still_being_submitted_holds_the_conflict_fix_for_its_grace(
+    db, ctx, gh, repo_id, age, held
+) -> None:
+    """A claim with no task yet is a fixer between `stamp` and its write."""
+    seed_issue_run(db)
+    db.docs["ci_fix_claims/" + "0" * 40] = {
+        "tenant_id": "eng", "repository": f"{OWNER}/{REPO}".lower(), "pull_request": 5,
+        "head_sha": HEAD, "run_id": 1, "root_task_id": INTEGRATOR, "claim_id": "c" * 32,
+        "claimed_at": NOW - timedelta(seconds=age),
+    }
+    gh.add_pull(5, labels=("stale",), mergeable=False, state="dirty", branch=f"swarm/{INTEGRATOR}")
+    schedule = shepherd(db, repo_id, params={"fix_conflicts": True}, gate={"run": "auto"})
+
+    pr_shepherd.create(firing_for(ctx, schedule))
+
+    # MUTATION: read tasks alone -- a fixer still submitting is not seen; or
+    # ignore the grace window -- a refused submission holds the fix for ever.
+    assert bool(_conflict_fixes(db)) is not held
+
+
 @pytest.mark.parametrize("where", [{"pull_request": 6}, {"tenant_id": "research"}],
                          ids=["another_pull_request", "another_tenant"])
 def test_a_ci_fix_on_another_pull_request_or_tenant_does_not_hold_it(db, ctx, gh, repo_id, where) -> None:
