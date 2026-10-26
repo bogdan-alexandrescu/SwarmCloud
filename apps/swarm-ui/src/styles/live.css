@@ -32,8 +32,9 @@
    whole text their title. A warning, the gate's word and "isn't using this
    browser" are lines of their own under it, because they are the point.
    MEASURED 2026-10-26: three lines, 103 px of a 407 px pane. */
+/* `position: relative`: the ⓘ's explanation opens inside the strip's box (below). */
 .live-strip {
-  display: flex; flex-direction: column; gap: 4px;
+  position: relative; display: flex; flex-direction: column; gap: 4px;
   padding: 4px 12px; border-radius: var(--radius);
   border: 1px solid var(--line); border-left-width: 4px;
   font-size: var(--t-meta);
@@ -49,7 +50,6 @@
    ⓘ sits near the strip's right end, and opened from its left edge the text
    ran 86 px past a 1440 window, cut mid-word, with a horizontal scrollbar on
    the pane. It opens at the strip's right, never wider than the strip. */
-.live-strip { position: relative; }
 .live-strip-why { position: static; flex: none; }
 .live-strip-why > summary { list-style: none; cursor: pointer; color: var(--text-dim); padding: 0 2px; }
 .live-strip-why > summary::-webkit-details-marker { display: none; }
