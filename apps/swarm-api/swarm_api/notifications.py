@@ -384,8 +384,14 @@ def _may_decide(viewer: Viewer, approvers: Any, *, excluded: Iterable[str] = ())
     return True
 
 
+# Approvals is Automate's second page (APPROVALS-MOVE, PR 2486). The console
+# still redirects `/approvals` and `/approvals/<id>`, but only for links that
+# were already sent: every link built here names the page where it lives.
+APPROVALS_HREF = "/automate/approvals"
+
+
 def _approval_href(approval_id: str) -> str:
-    return "/approvals/" + quote(approval_id, safe="")
+    return f"{APPROVALS_HREF}/" + quote(approval_id, safe="")
 
 
 def approval_items(reading: Reading) -> list[dict[str, Any]]:
@@ -434,7 +440,7 @@ def approval_items(reading: Reading) -> list[dict[str, Any]]:
         items.setdefault(approval_id, _item(
             f"approval:{approval_id}", APPROVAL, True, _APPROVAL_TITLES[approvals.RUN],
             f"{schedule.get('name')}: {schedule.get('type')} waits to run",
-            "/approvals", firing.get("fired_at"), topic=T_APPROVAL))
+            APPROVALS_HREF, firing.get("fired_at"), topic=T_APPROVAL))
 
     runs, _ = IssueRuns(db, now=lambda: reading.now).planned(tenant_id, limit=SCAN)
     for run in runs:
