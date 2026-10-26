@@ -17,14 +17,21 @@ Four texts, each built from the run document alone:
     every planned requirement is delivered, `part of #N` naming what is left
     otherwise (CLAUDE.md, "`Closes #N` ONLY WHEN IT IS UNCONDITIONALLY TRUE").
 
-EVERY TEXT SOMEONE ELSE AUTHORED IS NEUTRALISED (`neutral`). The plan is an
-agent's output and the issue is anybody's, and the comment is posted with the
-TENANT'S credential, so whatever it says, the tenant said:
+EVERY TEXT SOMEONE ELSE AUTHORED IS NEUTRALISED, AND WRITTEN PLAIN (`plain`,
+`prose`, `code`). The plan is an agent's output and the issue is anybody's,
+and the comment is posted with the TENANT'S credential, so whatever it says,
+the tenant said:
 
   * masked by the API's redaction -- with the token as a known literal when
     the caller has it -- so a plan that quoted a credential does not publish it;
-  * `<` and `>` escaped, so it cannot open an HTML comment that looks like our
-    marker, a `<details>` that swallows the rest, or an image that pings a host;
+  * in prose, a `<` that could open HTML takes a Markdown backslash escape
+    (`prose`), so it cannot open an HTML comment that looks like our marker, a
+    `<details>` that swallows the rest, or an image that pings a host -- and
+    GitHub shows the `<` itself, so `->` and `#<n>` read as written. A value
+    in a code span (`code`) or a fenced block (`plain`) is shown as typed and
+    parsed for no HTML, so it is written as it is. No `&lt;`/`&gt;` entity is
+    written to GitHub: a title and a code span print one as typed (BGD,
+    2026-10-26, part of #2391);
   * every `@` that could mention someone broken with a zero-width joiner, by
     the worker's own rule (`agent_worker.lifecycle._neutralise_mentions`,
     restated here because swarm-api does not import the worker;
@@ -140,7 +147,13 @@ def _cut(text: str, limit: int) -> str:
 
 
 def neutral(text: str, limit: int, *, literals: Iterable[str] = (), one_line: bool = False) -> str:
-    """Text someone else wrote, made safe to post with the tenant's credential."""
+    """Text someone else wrote, masked and with `<` and `>` as HTML entities.
+
+    For a store that is not GitHub. Nothing posted to GitHub uses it any more:
+    GitHub prints an entity in a title or a code span as typed ('-&gt;'), so
+    a writer there uses `plain`, `prose` or `code`, which keep every other
+    protection here.
+    """
     masked = redact(str(text), extra=tuple(literals)).text
     masked = masked.replace("\x00", "")
     if one_line:
@@ -148,6 +161,48 @@ def neutral(text: str, limit: int, *, literals: Iterable[str] = (), one_line: bo
     masked = masked.replace("<", "&lt;").replace(">", "&gt;")
     masked = neutralise_closing_keywords(neutralise_mentions(masked))
     return _cut(masked, limit)
+
+
+#: Where Markdown prose could begin raw HTML -- a tag, a closing tag, a
+#: comment, a declaration, a processing instruction -- or an entity reference.
+_HTML_START = re.compile(r"<(?=[A-Za-z/!?])|&(?=#?[A-Za-z0-9]+;)")
+_BACKTICKS = re.compile(r"`+")
+
+
+def plain(text: str, limit: int, *, literals: Iterable[str] = (), one_line: bool = False) -> str:
+    """Text someone else wrote, for a GitHub title or a fenced code block, as written.
+
+    `neutral` without its HTML escaping: masked, mentions broken, closing
+    keywords turned into `refs`, cut to `limit`. GitHub stores a title as given
+    and shows it as text, and a fenced block shows every character as typed, so
+    `&gt;` there is printed as `&gt;` (#2217 read 'implement -&gt; review -&gt;
+    fix'). Every writer that posts to GitHub writes this, `prose` or `code`
+    (BGD, 2026-10-26, part of #2391).
+    """
+    masked = redact(str(text), extra=tuple(literals)).text.replace("\x00", "")
+    if one_line:
+        masked = " ".join(masked.split())
+    return _cut(neutralise_closing_keywords(neutralise_mentions(masked)), limit)
+
+
+def prose(text: str, limit: int, *, literals: Iterable[str] = (), one_line: bool = False) -> str:
+    """`plain`, for Markdown prose: a `<` that could open HTML, and an `&` that
+    could start an entity, take a Markdown backslash escape, which GitHub renders
+    as the character itself. So `<details>`, `<!--` or `<img>` cannot swallow the
+    body, fake a marker or ping a host, and `->` and `#<n>` read as written; an
+    entity would be printed in a code span."""
+    text = plain(text, limit, literals=literals, one_line=one_line)
+    return _HTML_START.sub(lambda match: "\\" + match.group(0), text)
+
+
+def code(text: str, limit: int, *, literals: Iterable[str] = ()) -> str:
+    """`plain`, one line, as a Markdown code span: GitHub parses no HTML inside
+    one and shows every character as typed. The fence is one backtick longer
+    than any run in the value, so a backtick there cannot end the span early."""
+    text = plain(text, limit, literals=literals, one_line=True)
+    fence = "`" * (max((len(run) for run in _BACKTICKS.findall(text)), default=0) + 1)
+    pad = "" if fence == "`" else " "  # GitHub strips one space each side of a longer fence
+    return f"{fence}{pad}{text}{pad}{fence}"
 
 
 def bounded(body: str, limit: int = MAX_BODY_CHARS) -> str:
@@ -168,7 +223,7 @@ def _person(email: str | None, *, literals: Iterable[str] = ()) -> str:
         return "someone"
     if email == AUTO_APPROVER:
         return "automatic approval (`plan_approval: auto`)"
-    return neutral(email.split("@", 1)[0], 100, literals=literals, one_line=True)
+    return prose(email.split("@", 1)[0], 100, literals=literals, one_line=True)
 
 
 def _iso(moment: object) -> str:
@@ -208,7 +263,7 @@ def _approval_line(run: IssueRun, literals: Sequence[str]) -> str:
         return line
     if run.state == RunState.REJECTED:
         reason = (
-            f": {neutral(run.rejection_reason, MAX_LINE_CHARS, literals=literals, one_line=True)}"
+            f": {prose(run.rejection_reason, MAX_LINE_CHARS, literals=literals, one_line=True)}"
             if run.rejection_reason else ""
         )
         return f"**Rejected** by {_person(run.rejected_by, literals=literals)}{reason}"
@@ -230,8 +285,8 @@ def _overlap_line(item: dict, literals: Sequence[str]) -> str:
         path = "pull" if kind == "pull request" else "issues"
         label = f"[{ref}](https://github.com/{owner_repo}/{path}/{number})"
     else:
-        label = neutral(ref, 160, literals=literals, one_line=True)
-    note = neutral(item.get("note") or "", MAX_LINE_CHARS, literals=literals, one_line=True)
+        label = prose(ref, 160, literals=literals, one_line=True)
+    note = prose(item.get("note") or "", MAX_LINE_CHARS, literals=literals, one_line=True)
     return f"- {label} ({kind}): {note}"
 
 
@@ -252,18 +307,18 @@ def render_plan_comment(
         facts.append(f"**Mode:** {'one agent' if plan['mode'] == 'single' else 'workflow'}")
     if plan.get("estimate"):
         facts.append(
-            "**Estimate:** " + neutral(plan["estimate"], 200, literals=literals, one_line=True)
+            "**Estimate:** " + prose(plan["estimate"], 200, literals=literals, one_line=True)
         )
     facts.append(f"**Revision:** {run.plan_revision}")
     facts.append(f"**Digest:** `{run.plan_digest or 'none'}`")
     out += [" · ".join(facts), ""]
-    out += [neutral(plan.get("summary") or "", MAX_SUMMARY_CHARS, literals=literals), ""]
+    out += [prose(plan.get("summary") or "", MAX_SUMMARY_CHARS, literals=literals), ""]
 
     requirements = plan.get("requirements") or []
     out.append("#### Requirements")
     if requirements:
         out += [
-            f"{n}. {neutral(item, MAX_LINE_CHARS, literals=literals, one_line=True)}"
+            f"{n}. {prose(item, MAX_LINE_CHARS, literals=literals, one_line=True)}"
             for n, item in enumerate(requirements, start=1)
         ]
     else:
@@ -282,23 +337,23 @@ def render_plan_comment(
 
     out.append("#### Steps")
     for n, step in enumerate(plan.get("steps") or [], start=1):
-        title = neutral(step.get("title") or "", 200, literals=literals, one_line=True)
+        title = prose(step.get("title") or "", 200, literals=literals, one_line=True)
         line = f"{n}. **{title}** (`{step.get('step_id')}`)"
         if step.get("estimate"):
-            line += " — " + neutral(step["estimate"], 100, literals=literals, one_line=True)
+            line += " — " + prose(step["estimate"], 100, literals=literals, one_line=True)
         out.append(line)
         if step.get("files"):
             out.append("   - files: " + ", ".join(
-                f"`{neutral(path, 300, literals=literals, one_line=True).replace('`', '')}`"
+                code(path, 300, literals=literals)
                 for path in step["files"]
             ))
         if step.get("tests"):
             out.append("   - tests, written first:")
             out += [
-                f"     - {neutral(test, MAX_LINE_CHARS, literals=literals, one_line=True)}"
+                f"     - {prose(test, MAX_LINE_CHARS, literals=literals, one_line=True)}"
                 for test in step["tests"]
             ]
-        prompt = neutral(step.get("prompt") or "", MAX_PROMPT_CHARS, literals=literals)
+        prompt = prose(step.get("prompt") or "", MAX_PROMPT_CHARS, literals=literals)
         out += [
             "",
             "   <details><summary>Instructions</summary>",
@@ -386,13 +441,13 @@ def _not_ready_lines(verdict: dict, literals: Sequence[str]) -> list[str]:
         out.append(f"- **Verdict:** {kind}")
     out += [
         "",
-        "**Why:** " + neutral(str(verdict.get("reason") or ""), MAX_LINE_CHARS * 4,
-                              literals=literals, one_line=True),
+        "**Why:** " + prose(str(verdict.get("reason") or ""), MAX_LINE_CHARS * 4,
+                            literals=literals, one_line=True),
     ]
     needs = [str(n) for n in verdict.get("needs") or []]
     if needs:
         out += ["", "**Needs:**"]
-        out += [f"- {neutral(n, MAX_LINE_CHARS, literals=literals, one_line=True)}" for n in needs]
+        out += [f"- {prose(n, MAX_LINE_CHARS, literals=literals, one_line=True)}" for n in needs]
     out += [
         "",
         "_The issue is planned again only after it is edited or commented on._",
@@ -415,7 +470,7 @@ def render_status_comment(
         sha = str(pull.get("head_sha") or "")[:12]
         out.append(
             f"- **Pull request:** #{int(pull['number'])}"
-            + (f" at `{neutral(sha, 12, one_line=True)}`" if sha else "")
+            + (f" at {code(sha, 12)}" if sha else "")
         )
         if run.requirements_met is not None:
             # Which keyword the pull request's body carries, and why. An
@@ -441,8 +496,8 @@ def render_status_comment(
         out.append(f"- **Plan:** revision {run.plan_revision}, `{run.plan_digest}`")
     if run.state == RunState.PLANNED and run.hold:
         out.append(
-            "- **Waiting:** `" + neutral(run.hold, 120, literals=literals, one_line=True)
-            .replace("`", "'") + "` -- another live run's plan edits the same files; "
+            "- **Waiting:** " + code(run.hold, 120, literals=literals)
+            + " -- another live run's plan edits the same files; "
             "this one is approved once that run ends"
         )
     if run.state == RunState.NOT_READY and run.not_ready:
@@ -453,7 +508,8 @@ def render_status_comment(
             "**Why:**",
             "",
             "```text",
-            neutral(run.error, MAX_ERROR_CHARS, literals=literals).replace("```", "'''"),
+            # A fenced block shows its text as typed: plain, its fence defused.
+            plain(run.error, MAX_ERROR_CHARS, literals=literals).replace("```", "'''"),
             "```",
         ]
     console = _console_lines(run, console_origin)
@@ -498,10 +554,10 @@ def render_verification_comment(
 ) -> str | None:
     """The build's verification tables, for an already_on_main run; None for any other.
 
-    The tables are the agents' text, so they are neutralised like the plan
-    (`neutral`): masked again with the tenant's token as a literal, `<` and
-    `>` escaped, mentions broken, closing keywords turned into `refs`. They
-    keep their lines, so the Markdown table still renders.
+    The tables are the agents' text, so they are written like the plan
+    (`prose`): masked again with the tenant's token as a literal, an HTML
+    opener backslash-escaped, mentions broken, closing keywords turned into
+    `refs`. They keep their lines, so the Markdown table still renders.
     """
     if run.state != RunState.DONE or run.outcome != OUTCOME_ALREADY_ON_MAIN:
         return None
@@ -513,7 +569,7 @@ def render_verification_comment(
         f"default branch, and wrote what it verified ({VERIFICATION_FILE}, one row per "
         "planned requirement).",
         "",
-        neutral(run.verification or f"No build step wrote {VERIFICATION_FILE}.",
+        prose(run.verification or f"No build step wrote {VERIFICATION_FILE}.",
                 MAX_VERIFICATION_CHARS, literals=literals),
         "",
         f"**{_closing_words(run)[0].upper() + _closing_words(run)[1:]}.**",
@@ -522,11 +578,11 @@ def render_verification_comment(
         if run.requirements_unmet:
             out += ["", "Not confirmed:"]
             out += [
-                f"- {neutral(item, MAX_LINE_CHARS, literals=literals, one_line=True)}"
+                f"- {prose(item, MAX_LINE_CHARS, literals=literals, one_line=True)}"
                 for item in run.requirements_unmet[:60]
             ]
         if run.requirements_note:
-            out += ["", f"_{neutral(run.requirements_note, MAX_ERROR_CHARS, literals=literals, one_line=True)}_"]
+            out += ["", f"_{prose(run.requirements_note, MAX_ERROR_CHARS, literals=literals, one_line=True)}_"]
     return bounded("\n".join(out) + "\n")
 
 
@@ -553,7 +609,7 @@ def keyword_block(
         if unmet:
             lines += ["", "Not yet delivered:"]
             lines += [
-                f"- {neutral(item, MAX_LINE_CHARS, literals=literals, one_line=True)}"
+                f"- {prose(item, MAX_LINE_CHARS, literals=literals, one_line=True)}"
                 for item in list(unmet)[:60]
             ]
         elif not requirements:
