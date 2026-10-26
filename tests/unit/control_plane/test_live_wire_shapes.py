@@ -191,7 +191,7 @@ def test_the_session_read_serves_live_browser_and_a_session(client, ldb, live):
     # Nothing reported by the gate yet: null, never invented.
     assert session["origin"] is None and session["device"] is None
     assert [p["name"] for p in session["presets"]] == [
-        "desktop", "iphone-15", "phone-390", "pixel-8", "iphone-se", "ipad-7"]
+        "desktop", "iphone-15", "phone-390", "phone-380", "pixel-8", "iphone-se", "ipad-7"]
     assert fits(served, fixture("session.open.json")) == []
     assert fits(served, fixture("session.reported.json")) == []
 
@@ -432,6 +432,7 @@ def test_the_api_and_the_gate_name_the_same_presets_at_the_same_sizes():
     api = {p["name"]: (p["width"], p["height"]) for p in live_module.LIVE_PRESETS}
     assert api == gate
     assert api["phone-390"] == (390, 844)
+    assert api["phone-380"] == (380, 844)
     assert PRESETS["phone-390"].mobile == PRESETS["iphone-15"].mobile
     assert PRESETS["phone-390"].touch == PRESETS["iphone-15"].touch
     assert PRESETS["phone-390"].scale == PRESETS["iphone-15"].scale
