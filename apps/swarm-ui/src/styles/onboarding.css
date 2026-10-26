@@ -203,8 +203,11 @@
 .ac-quota > li > [data-mark] { flex: none; }
 .ac-quota > li > span:not([data-mark]) { min-width: 0; overflow-wrap: anywhere; }
 /* THE RULES CHECKLIST: a check, the headline and one short line per rule,
-   hairlines between, and how each is held one fold away. */
-.ac-rules.is-check { list-style: none; padding-left: 0; gap: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
+   hairlines between, and how each is held one fold away. `display: block`,
+   not the base rule's flex column at `gap: 0`: the rows are one list divided
+   by hairlines, and a flex parent at a 0px gutter is what the spacing sweep
+   reads as stacked surfaces touching (the `.rows` precedent in styles.css). */
+.ac-rules.is-check { display: block; list-style: none; padding-left: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
 .ac-rules.is-check > li { display: flex; gap: 10px; align-items: flex-start; padding: var(--ctl-s2) 0; border-bottom: 1px solid var(--line); }
 .ac-rules.is-check > li:last-child { border-bottom: 0; }
 .ac-rules.is-check > li > [data-mark] { flex: none; margin-top: 2px; }
