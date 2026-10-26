@@ -118,6 +118,13 @@ class FakeApi:
         return {"branch": body["branch"], "old_sha": old, "new_sha": new}
 
     def git_fetch(self, body: dict[str, Any]) -> dict[str, Any]:
+        if "confirm" in body:
+            # swarm-api's answer to "which of these does origin have" (#2413):
+            # the shas that are commits in the bare origin, nothing else.
+            return {"confirmed": [sha for sha in body["confirm"]
+                                  if subprocess.run(["git", "-C", str(self.origin), "cat-file",
+                                                     "-e", f"{sha}^{{commit}}"],
+                                                    capture_output=True).returncode == 0]}
         ref = body["ref"]
         sha = _git(self.origin, "rev-parse", f"{ref}^{{commit}}")
         if sha in body["haves"]:
