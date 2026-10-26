@@ -120,8 +120,9 @@ describe('QA-013: the Needs a look head counts the cards it draws', () => {
     const lead = el.querySelector('#ov-needs')!
     const cards = lead.querySelectorAll('.ov-att:not(.is-skel)')
     expect(cards.length, 'two throttled providers, two cards').toBe(2)
-    // MUTATION: put back `· ${found} found something`, which reads "1" over two cards.
-    expect(text(lead.querySelector('.ov-cnt'))).toMatch(/^checks (\d+)\/\1 · 1 found 2 problems$/)
+    // MUTATION: put back `· ${found} found something`, which reads "1" over two cards. The head is
+    // "N problems · R of T checks ran" since VQ-004 (2026-10-26).
+    expect(text(lead.querySelector('.ov-cnt'))).toMatch(/^2 problems · (\d+) of \1 checks ran$/)
   })
 
   it('says one problem in the singular', async () => {
@@ -129,34 +130,40 @@ describe('QA-013: the Needs a look head counts the cards it draws', () => {
     const lead = el.querySelector('#ov-needs')!
     expect(lead.querySelectorAll('.ov-att:not(.is-skel)').length).toBe(1)
     // MUTATION: drop the `problem`/`problems` choice and always say "problems".
-    expect(text(lead.querySelector('.ov-cnt'))).toMatch(/^checks (\d+)\/\1 · 1 found 1 problem$/)
+    expect(text(lead.querySelector('.ov-cnt'))).toMatch(/^1 problem · (\d+) of \1 checks ran$/)
   })
 })
 
-describe('QA-061: a check card’s link drops under its text on a phone', () => {
-  it('wraps the card and gives the link a line of its own at 390px, and keeps it beside the text at 1440', async () => {
+/*
+ * QA-061's link took a line of its own on a phone so "quota, all tenants ·
+ * admin →" stopped squeezing the title. Since VQ-002 (2026-10-26) a phone
+ * draws the card as one line -- mark, title, arrow -- so the words step
+ * aside instead, visually only: the card's accessible name keeps them.
+ */
+describe('QA-061, VQ-002: a check card’s link words never squeeze its title on a phone', () => {
+  it('steps the link words aside at 390px, keeps the arrow, and draws the words at 1440', async () => {
     await mount({ providers: ok(TWO_THROTTLED) })
-    const card = screen.getByRole('link', { name: /^anthropic is THROTTLED/ })
+    const card = screen.getByRole('link', { name: /^anthropic is throttled/ })
     const go = card.querySelector('.ov-att-go')!
-    expect(text(go)).toBe('quota, all tenants · admin →')
-    // MUTATION: drop `flex-wrap: wrap` from `.ov-att` in the 560px block.
-    expect(painted(card, 'flex-wrap', PHONE)).toBe('wrap')
-    // MUTATION: drop `flex-basis: 100%` from `.ov-att-go` in the 560px block.
-    expect(painted(go, 'flex-basis', PHONE)).toBe('100%')
-    // MUTATION: move the phone rules out of the 560px block, onto every width.
-    expect(painted(card, 'flex-wrap', WIDE)).not.toBe('wrap')
-    expect(painted(go, 'flex-basis', WIDE)).not.toBe('100%')
+    expect(text(go)).toBe('quota, all workspaces · admin →')
+    const words = go.querySelector('.ov-att-go-w')!
+    // MUTATION: drop `.ov-att-go-w` from the 560px block's visually-hidden rule.
+    expect(painted(words, 'clip', PHONE)).toBe('rect(0 0 0 0)')
+    expect(painted(words, 'position', PHONE)).toBe('absolute')
+    // MUTATION: move the phone rule out of the 560px block, onto every width.
+    expect(painted(words, 'clip', WIDE)).toBeNull()
+    expect(painted(go, 'display', PHONE)).not.toBe('none')
   })
 })
 
 describe('QA-109: the failures card’s link names the page it opens', () => {
-  it('says "Agents · FAILED", the page’s own title and the state the card counts', async () => {
+  it('says "Agents · failed", the page’s own title and the state the card counts, as a word (VQ-003)', async () => {
     await mount({
       tasks: ok({ tasks: [task({ id: 'tsk_f1', state: 'FAILED', completed_at: ago(5) })], tenant_id: 'eng', next_page_token: null } as TaskPage),
     })
     const card = screen.getByRole('link', { name: /^1 failed agent\b/ })
-    // MUTATION: put back `linkLabel: 'failed agents'`, a name the page it opens does not carry.
-    expect(text(card.querySelector('.ov-att-go'))).toBe('Agents · FAILED →')
+    // MUTATION: put back `linkLabel: 'failed agents'`, a name the page it opens does not carry, or 'Agents · FAILED'.
+    expect(text(card.querySelector('.ov-att-go'))).toBe('Agents · failed →')
     expect(card.getAttribute('href')).toBe('/agents/recent?state=failed')
   })
 })
@@ -177,7 +184,7 @@ describe('VOCAB-AGENTS (QA-109; owner decision 2026-10-20): the cards count agen
     })
     // MUTATION: put back `failed task${...}` in checks.ts's failedProblem headline.
     const failed = screen.getByRole('link', { name: /^2 failed agents among the 4 most recent/ })
-    expect(text(failed.querySelector('.ov-att-go'))).toBe('Agents · FAILED →')
+    expect(text(failed.querySelector('.ov-att-go'))).toBe('Agents · failed →')
     // MUTATION: put back `'task' : 'tasks'` in checks.ts's unitFor.
     const parked = screen.getByRole('link', { name: /^2 parked agents will not resume without a person/ })
     expect(text(parked.querySelector('.ov-att-go'))).toBe('waiting agents →')

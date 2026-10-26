@@ -190,13 +190,15 @@ describe('the shell reads the name again after a rename', () => {
         {null}
       </SkyShell>,
     )
-    const label = () => container.querySelector('.sk-pbar .sk-tn')?.textContent
+    // The header prints the workspace's short key (`eng`, visual QA VQ-001);
+    // its whole name is the label's title.
+    const label = () => container.querySelector('.sk-pbar .sk-tn')?.getAttribute('title') ?? undefined
     await waitFor(() => expect(label()).toBe('Engineering'), WAIT)
     const before = mineReads
     // Every redraw from the rename on is watched: the name must never be gone.
     const drawn: (string | undefined)[] = []
     const watch = new MutationObserver(() => drawn.push(label()))
-    watch.observe(container, { childList: true, subtree: true, characterData: true })
+    watch.observe(container, { childList: true, subtree: true, characterData: true, attributes: true })
     await act(async () => {
       await renameWorkspace('eng', 'Example Team')
     })

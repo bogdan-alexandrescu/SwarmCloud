@@ -249,7 +249,7 @@ describe('#95: every figure in the Headroom card names what it counts', () => {
   it('labels the binding pool as the one that binds', async () => {
     const el = await mount()
     expect(text(profileTile(el, 'heavy').querySelector('small'))).toBe('binds large')
-    expect(text(profileTile(el, 'claude-code').querySelector('small'))).toBe('binds your tenant')
+    expect(text(profileTile(el, 'claude-code').querySelector('small'))).toBe('binds your workspace')
   })
 })
 
