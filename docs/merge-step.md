@@ -54,21 +54,21 @@ The rule, in three places, each for the reason given:
   (`mergewake.wake_owner_holds`). The scheduler holds no forge token and must
   not, and the tick already reads CI parks every minute per tenant with the
   tenant's own `-git` token -- so it is the place, as for CI. One indexed
-  equality query for the named tenant's PARKED `HUMAN_REQUIRED` tasks, kept
+  equality query for the named tenant's PARKED `HUMAN_REQUIRED` agents, kept
   only where `blocked_by` carries `park_phase: "owner_questions"`; at most
   one read per `CI_READ_SECONDS`; the same quota deferral and refused-quota
-  hold; the tenant's own token, never another tenant's task (invariant 9).
+  hold; the tenant's own token, never another tenant's agent (invariant 9).
   It reads only whether the pull request is open, closed or merged -- the
   number the merge's signed target's opener recorded -- and never its checks.
   Merged or closed, it writes `merge_wait.wake_requested_at` / `wake_reason`
   (`pull_request_merged`, `pull_request_closed`) and the same mark in
   `merge_wait.owner_hold`, beside `parked_at`, the park instant it read. All
-  in one transaction guarded on the task still being this tenant's and still
-  parked the same way. It never moves the task and takes no capacity
+  in one transaction guarded on the agent still being this tenant's and still
+  parked the same way. It never moves the agent and takes no capacity
   (invariant 1).
 * **The scheduler returns the hold to READY on that mark** (`_wake_owner_hold`,
   reached from `_expire_human_waits`, which still never expires the hold),
-  and only on a mark whose `parked_at` is the instant the task is parked at
+  and only on a mark whose `parked_at` is the instant the agent is parked at
   now. A mark outlives its park on the document; without that binding a step
   parked again on an open pull request would be woken by its old mark on
   every drain. Promotion writes READY alone; the next attempt is admitted
