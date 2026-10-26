@@ -4729,9 +4729,9 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
     one(
       'AWAITING_INPUT',
       'Waiting for a member of u-bogdan to answer; /sc answer wf_sizes_sched_2 approve',
-      'a member of the tenant answers, or the window expires and its default applies',
+      'a member of the workspace answers, or the window expires and its default applies',
       {
-        who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of tenant u-bogdan' },
+        who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of workspace u-bogdan' },
         opened_at: at(47), expires_at: at(-240), answer_command: '/sc answer wf_sizes_sched_2 approve',
       },
       { next: null },
@@ -4740,9 +4740,9 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
     one(
       'HUMAN_REQUIRED',
       'Waiting for a person: sign in on its console page, then say it is ready',
-      "a member of the tenant calls human-ready (the console's Ready button)",
+      "a member of the workspace calls human-ready (the console's Ready button)",
       {
-        who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of tenant u-bogdan' },
+        who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of workspace u-bogdan' },
         expires_at: null, answer_route: 'POST /v1/tasks/task_wait_human_required/human-ready', cause: null,
       },
       { next: null, task: { runner_profile: 'claude-code-browser', resource_class: 'browser', blocked_by: [{ reason: 'HUMAN_REQUIRED' }] } },
@@ -4782,7 +4782,7 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
     one(
       'CREDENTIAL_MISSING',
       'Credential missing: anthropic key, github/token',
-      "the tenant registers the credential and the scheduler's credential sweep finds it",
+      "the workspace registers the credential and the scheduler's credential sweep finds it",
       {
         provider: 'anthropic', secret_names: ['anthropic key', 'github/token'], account_pool: null,
         forge_connection: null, workspace_secrets: [{ consumer: 'github', slot: 'token' }], mcp_servers: [],

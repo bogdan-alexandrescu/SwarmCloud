@@ -632,7 +632,7 @@ describe('members (Access B, on People and roles)', () => {
   })
 
   it('tells a non-admin the view is for admins', async () => {
-    api((m, url) => (m === 'GET' && url === '/v1/access/members' ? { status: 403, body: { code: 'admin_required', message: "the tenant's members view is for admins" } } : null))
+    api((m, url) => (m === 'GET' && url === '/v1/access/members' ? { status: 403, body: { code: 'admin_required', message: "the workspace's members view is for admins" } } : null))
     await mountMembers()
     await waitFor(() => expect(visible(document.querySelector('.ac-members'))).toMatch(/admin/i))
     expect(screen.queryByRole('list', { name: 'Members of eng' })).toBeNull()
@@ -642,13 +642,13 @@ describe('members (Access B, on People and roles)', () => {
     // MUTATION: drop `membersGated` -- the route answers a non-admin with the
     // generic `forbidden` code, which drew a red failure with a Try again
     // that can never succeed.
-    api((m, url) => (m === 'GET' && url === '/v1/access/members' ? { status: 403, body: { code: 'forbidden', message: "the tenant's members view is for admins" } } : null))
+    api((m, url) => (m === 'GET' && url === '/v1/access/members' ? { status: 403, body: { code: 'forbidden', message: "the workspace's members view is for admins" } } : null))
     await mountMembers()
     await waitFor(() => expect(document.querySelector('.ac-members .state.admin-gate')).not.toBeNull())
     const card = document.querySelector<HTMLElement>('.ac-members')!
     expect(card.querySelector('.state.failed')).toBeNull()
     expect(within(card).queryByRole('button', { name: /Try again|Retry/ })).toBeNull()
-    expect(visible(card)).toContain("the tenant's members view is for admins")
+    expect(visible(card)).toContain("the workspace's members view is for admins")
   })
 })
 
