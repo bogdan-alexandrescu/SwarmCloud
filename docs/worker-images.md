@@ -6,7 +6,7 @@ scanned (trivy, HIGH and CRITICAL) before promotion and weekly after it.
 
 | image | built from | carries | runs |
 |---|---|---|---|
-| `agent-runtime-base` | `python:3.11-slim-bookworm` by digest | the worker, Node, the agent CLIs (Claude Code, codex), the agent toolbox (gh, gcloud, kubectl, terraform, checkov, trivy, shellcheck, make, the docker CLI; tofu only with `INSTALL_TOFU=1`, tflint only with `INSTALL_TFLINT=1`) | every profile but `browser`, `claude-code-browser` and `indexer`: `mock`, `generic`, `claude-code`, `codex`, `merge`, `post-verdict`, `claude-code-review` |
+| `agent-runtime-base` | `python:3.11-slim-bookworm` by digest | the worker, Node, the agent CLIs (Claude Code, codex), the agent toolbox (gh, gcloud, kubectl, terraform, checkov, trivy, shellcheck, make, the docker CLI, the CodeRabbit CLI; tofu only with `INSTALL_TOFU=1`, tflint only with `INSTALL_TFLINT=1`) | every profile but `browser`, `claude-code-browser` and `indexer`: `mock`, `generic`, `claude-code`, `codex`, `merge`, `post-verdict`, `claude-code-review` |
 | `agent-runtime-browser` | `agent-runtime-base` by digest | Playwright and Chromium | `browser` and `claude-code-browser` (contract request 67, accepted by the owner 2026-10-11), both on GKE Autopilot |
 | `agent-runtime-indexer` | `agent-runtime-base` by digest | the repository index's toolchain: the tree-sitter extractor `swarm-repo-index`, the shard writer `swarm-repo-graph`, the Go toolchain, gopls (compiled from module source, #661), pyright and typescript-language-server | `indexer` (contract request 48, accepted by the owner 2026-10-05) |
 
@@ -286,6 +286,83 @@ reaches it. It is emptied when the attempt's workspace is created and removed
 when it is destroyed. Checkpointing (invariant 8) covers `work/` exactly as
 before; the `TOOL_CACHES` exclusions in `checkpoint.py` still apply to
 anything a tool writes under HOME regardless.
+
+## CodeRabbit
+
+`agent-runtime-base` carries the CodeRabbit CLI (CODERABBIT-IMAGE, part of
+#2442; owner decision 2026-10-26), so every image built on it has it too:
+`claude-code`, `codex`, `claude-code-browser` and the rest. A lane whose
+repository's rules ask for a local CodeRabbit review on a risky change runs
+it itself, in its checkout, before it finishes:
+
+```bash
+coderabbit review --agent              # structured findings, one JSON object a line
+coderabbit review --agent --base main  # against a named base
+```
+
+Nothing runs it for the lane. The platform does not start a review, read
+its findings or gate a pull request on them: the CLI is a tool, like `gh`.
+
+**What is installed.** The vendor's 0.9.1 linux/amd64 release, pinned and
+sha256-checked in `images/agent-runtime-base/Dockerfile` (which records where
+the checksum came from, the size, and the scan), root-owned at
+`/opt/coderabbit/coderabbit`. `coderabbit` on PATH is a short launcher,
+`images/agent-runtime-base/coderabbit`, and it exists because the CLI takes
+its API key **only** as `--api-key` on `review` (its `--help`: "there is no
+API-key environment variable"). `coderabbit auth login` would store the key
+under HOME, which in an attempt is the checkpointed work directory, so the
+launcher never logs in: it reads the key on every call and hands it to that
+one process. It also switches off the CLI's self-update (the pinned binary
+cannot be replaced, and should not be) and its telemetry.
+
+**The key is a workspace secret, never in the image or the repository.** A
+workspace admin sets it, in the console, under Settings › Workspace ›
+**Secrets** (docs/design/workspace-secrets.md §5):
+
+1. **Add** a secret named exactly `coderabbit-api-key`, kind **API key**,
+   the value pasted into the form (an Agentic API key from CodeRabbit's
+   settings). The value goes into the form only: no chat, prompt, `/sc`
+   command or MCP tool takes it, though `/sc` can mint a one-time link to
+   the form.
+2. **Grant** it to each runner profile that should be able to review, in the
+   profile's `files` slot: `profile:claude-code`, and `profile:codex` or
+   `profile:claude-code-browser` if their lanes review too. It takes effect
+   at the next attempt.
+
+`scripts/create-secrets.sh --stdin` is **not** the route for this key: it
+stores a tenant's provider key or one of the platform's own secrets, has no
+CodeRabbit option, and nothing releases a platform secret to a lane. The
+workspace secret is the only way the key reaches an agent.
+
+**How it reaches the CLI.** Before the agent starts, the worker asks swarm-api
+for the secrets granted to this attempt's profile (`agent_worker.secretrelease`)
+and writes each to a 0600 file under its own `private/` directory, never
+checkpointed and never uploaded, listed by name in the manifest at
+`$SWARM_SECRETS_MANIFEST`. Every value is registered with the worker's
+redaction the moment it arrives, before any file is written; the same set
+scrubs every log line and every artifact the worker uploads, and the
+publish-time scan refuses a diff that contains it. When the agent runs
+`coderabbit review`, the launcher finds the manifest entry named
+`coderabbit-api-key` in slot `files`, reads that one file and starts the CLI
+with `--api-key`. The CLI's environment never holds the key, nor the manifest's
+path. The key is in that process's argv while it runs, which only this pod's
+processes can read (the agent's own uid, which can read the file anyway).
+`private/secrets/` is deleted when the attempt ends.
+
+**Without the key** -- no secret of that name, or not granted to this profile
+-- the manifest has no such entry. Nothing fails at start: `coderabbit review`
+runs keyless, the launcher prints one line naming the secret and slot it looked
+for, and the CLI reports that it is not signed in. A lane should say so in its
+report rather than treat a review it could not run as clean.
+
+**Why the `files` slot and not a `coderabbit` consumer.** The consumer
+catalogue (profiles, `RUNTIME_TOOLS`, components) is the frozen contract
+(`swarm_common.profiles`, requests 80-82), and a runtime tool is matched
+against a profile's signed `browser_tool` input, which `claude-code` and
+`codex` do not have. The `files` slot every agent profile already declares
+carries the key with the same release, redaction and removal, so no contract
+change was needed. A dedicated consumer, if the owner wants one, is a
+contract request (the CODERABBIT-IMAGE PR names it).
 
 ## Adding to a worker image
 
