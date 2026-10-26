@@ -24,6 +24,12 @@
    job in flight the table was 1151px wide. A typical address (`name@example.com`)
    is far inside either cap; the phone record's name line keeps 18rem. */
 .is-scroll > .pp-table .pp-who { max-width: 15rem; }
+/* AND THE NAME DOES NOT SHRINK BELOW ITS OWN WIDTH (visual QA VQ-052): with
+   `min-width: 0` the Person column's min-content was the avatar alone, so the
+   table took its width for a long Claude account cell and cut "Bogdan
+   Alexandrescu" to "Bogdan Alexand…" with room to spare. At its own width,
+   capped above, the name reads whole; only one past the cap is cut. */
+.is-scroll > .pp-table .pp-who { flex-shrink: 0; width: max-content; }
 .pp-avatar {
   flex: none; display: inline-flex; align-items: center; justify-content: center;
   width: 24px; height: 24px; border-radius: 50%;
@@ -33,6 +39,12 @@
 .pp-gh { flex: none; display: inline-flex; color: var(--text-dim); }
 .pp-gh.is-expired { color: var(--warn-ink); }
 .pp-claude { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s1) var(--ctl-s2); }
+/* SEVERAL LOANS ARE ONE LINE AND A DISCLOSURE (S5c, visual QA VQ-052): the
+   count and the lenders on the summary line, which does not wrap; the
+   accounts, one per line, only when it is opened. */
+.pp-loans > .pp-loan-sum { cursor: pointer; white-space: nowrap; }
+.pp-loan-list { list-style: none; margin: var(--ctl-s1) 0 0; padding: 0; display: grid; gap: 2px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.pp-loan-list > li { white-space: nowrap; }
 .pp-manage-cell { text-align: right; }
 /* AN ID IS ONE TOKEN: no break opportunity, at its hyphen or anywhere. The
    ids the shared workspace bodies print (a request id) are held to the same
@@ -194,11 +206,11 @@
 .pp-role-w { color: var(--text-dim); }
 .pp-role-w.is-admin { color: var(--text); font-weight: 600; }
 .pp-role-none { color: var(--text-dim); opacity: 0.75; }
-.pp-padmin { flex: none; }
-/* THE PLATFORM ADMIN CHIP WRAPS UNDER THE NAME (rendered review, 2026-10-25).
-   Beside it, on a phone it cut `alice@example.com` to "alice@examp", and at
-   1440 it widened Person until "lent by u-bogdan" broke at its hyphen. The
-   name line may wrap; the address still never breaks. */
+/* THE PLATFORM ROLE IS A COLUMN (S5c, visual QA VQ-051), one line. It was a
+   chip in the Person cell, which on a phone cut `alice@example.com` to
+   "alice@examp" and at 1440 took the name's room (VQ-052). */
+.pp-grid td.pp-prole { white-space: nowrap; }
+/* The name line may still wrap its GitHub mark under it; the address never breaks. */
 .pp-grid .pp-person { flex-wrap: wrap; }
 .pp-nobr { white-space: nowrap; }
 
@@ -263,3 +275,12 @@
   .pp-req[data-kind='join'] .pp-join-approve { flex: 1 1 100%; }
   .pp-req[data-kind='join'] .pp-join-role { flex: 1 1 0; max-width: none; min-height: 44px; }
 }
+
+/* SET DEFAULT'S NO-OP IS A MUTED NOTE, NOT A WARNING (visual QA VQ-052).
+   Choosing the default already in effect disables Set default, and the
+   shared disabled-button reason (`Button`'s `disabledReason`, components.css
+   `.c-why`) draws an amber ▲ before "The default is already member": a
+   warning mark on a non-problem. The note keeps its muted text and loses the
+   glyph, in the Workspace roles card this page draws (WorkspaceRolesAdmin's
+   `SetDefault`, the one `.wra-form` that sets a disabled reason). */
+.wra-form .c-why svg { display: none; }

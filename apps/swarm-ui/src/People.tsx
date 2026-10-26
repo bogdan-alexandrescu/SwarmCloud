@@ -31,6 +31,7 @@ import type {
   PeopleRoleCell,
   PeopleWorkspaceColumn,
   PersonClaudeAccount,
+  PersonLentAccount,
   PersonRow,
   ScopedPeopleDoc,
   ScopedPersonRow,
@@ -1206,10 +1207,32 @@ function PersonCell({ row, doc }: { row: PersonRow; doc: PeopleDoc }) {
         <PersonName email={row.email} name={row.display_name ?? null} variant="full" />
       </span>
       <GitHubMark github={row.github} />
-      {holderOf(doc, row.email)?.role === 'owner' && <Chip className="pp-owner">platform owner</Chip>}
-      {/* The grid's Platform role (S5c), in the person's own cell rather than a column of its own. */}
-      {gridColumns(doc) !== null && holderOf(doc, row.email)?.role === 'admin' && <Chip className="pp-padmin">platform admin</Chip>}
+      {/* The grid says the platform role in a column of its own (`PlatformRoleCell`); an older API's table keeps the owner's chip. */}
+      {gridColumns(doc) === null && holderOf(doc, row.email)?.role === 'owner' && <Chip className="pp-owner">platform owner</Chip>}
     </span>
+  )
+}
+
+/**
+ * THE GRID'S PLATFORM ROLE COLUMN (S5c, visual QA VQ-051): "platform owner",
+ * "platform admin", or a dash for no platform role. It was a chip beside the
+ * name, which took the room the name needed ("Bogdan Alexand…" at 1440,
+ * VQ-052). When `admins` was not read, the dash says that instead: an unread
+ * list is not "nobody holds one". A member of an ADMIN_GROUPS group holds no
+ * document and reads as none here, as it does in Admins.
+ */
+function PlatformRoleCell({ row, doc }: { row: PersonRow; doc: PeopleDoc }) {
+  const role = holderOf(doc, row.email)?.role
+  return (
+    <td role="cell" data-label="Platform role" className="pp-prole">
+      {!Array.isArray(doc.admins) ? (
+        <Dash why="The platform roles were not read" />
+      ) : role === 'owner' || role === 'admin' ? (
+        <span className={`pp-role-w is-${role}`}>platform {role}</span>
+      ) : (
+        <Dash why="No platform role" />
+      )}
+    </td>
   )
 }
 
@@ -1341,10 +1364,45 @@ function WorkspaceCell({ row }: { row: PersonRow }) {
   )
 }
 
+/** Who lent an account: the owner tenant's display name, else its id. */
+function lenderOf(a: PersonLentAccount): string {
+  return a.owner_name ?? a.owner_tenant
+}
+
+/**
+ * THE ROW'S CLAUDE ACCOUNT IS ONE SHORT LINE (S5c, visual QA VQ-052): seven
+ * loans joined with '; ' ran eight lines, said "lent by Engineering" seven
+ * times and made the row about 200px tall. Two or more loans are a count and
+ * their lenders, each named once, with the accounts behind a disclosure; a
+ * lender is repeated in it only when there is more than one. One loan, and
+ * every other source, is already one line. The Manage drawer still lists
+ * every account in full (`ClaudeSection`): it has the room.
+ */
+function ClaudeSummary({ c }: { c: PersonClaudeAccount }) {
+  const accounts = c.source === 'lent' ? (c.lent_accounts ?? []) : []
+  if (accounts.length < 2) return <>{claudeText(c)}</>
+  const lenders = [...new Set(accounts.map(lenderOf))]
+  return (
+    <details className="pp-loans">
+      <summary className="pp-loan-sum">
+        {accounts.length} accounts · lent by <span className="pp-nobr">{lenders.join(', ')}</span>
+      </summary>
+      <ul className="pp-loan-list">
+        {accounts.map((a) => (
+          <li key={`${a.owner_tenant}/${a.account_id}`}>
+            {accountWithId(a)}
+            {lenders.length > 1 ? `, lent by ${lenderOf(a)}` : ''}
+          </li>
+        ))}
+      </ul>
+    </details>
+  )
+}
+
 function ClaudeCell({ row }: { row: PersonRow }) {
   return (
     <span className="pp-claude">
-      {claudeText(row.claude_account)}
+      <ClaudeSummary c={row.claude_account} />
       {row.loan_request?.state === 'requested' && <Chip className="pp-borrow">borrow requested</Chip>}
       {row.loan_request?.state === 'declined' && <Chip className="pp-borrow">loan declined</Chip>}
     </span>
@@ -1389,6 +1447,7 @@ function Row({
       <th role="rowheader" scope="row">
         <PersonCell row={row} doc={doc} />
       </th>
+      {columns !== null && <PlatformRoleCell row={row} doc={doc} />}
       {columns !== null
         ? roleCells(row, columns, grid)
         : !phone && (
@@ -1904,6 +1963,118 @@ function auditTenant(e: AuditEntry): string | null {
   return typeof t === 'string' && t !== '' ? t : null
 }
 
+/**
+ * WHAT EACH ADMIN ACTION IS CALLED (visual QA VQ-052): Recent admin actions
+ * printed the recorded kind, "qa_target_credential_set × 12". ONE TABLE, the
+ * kinds the API's `admin_audit` writers record (people.py, admins.py,
+ * purge.py, qatargets.py, repositories.py, roles.py, joinrequests.py and the
+ * rest), each as what happened. A kind not in it -- a writer added later --
+ * still reads as words, by `auditWords`' fallback, never as a raw token; the
+ * kind itself stays in the name's `title`.
+ */
+export const AUDIT_ACTION_WORDS: Readonly<Record<string, string>> = {
+  // People and roles: workspaces, loans, platform admins (people.py, admins.py).
+  approve: 'Workspace approved',
+  approve_own_workspace_auto: 'Own workspace approved automatically',
+  request_workspace: 'Workspace requested',
+  request_workspace_approved: 'Workspace requested and approved',
+  deny: 'Workspace denied',
+  retry: 'Workspace build retried',
+  limits: 'Workspace ceiling set',
+  lend: 'Claude account lent',
+  reclaim: 'Claude account reclaimed',
+  lend_pending: 'Claude account loan queued',
+  reclaim_pending: 'Claude account reclaim queued',
+  lend_pending_dropped: 'Queued loan dropped',
+  loan_declined: 'Claude account loan declined',
+  grant: 'Platform admin granted',
+  remove: 'Platform admin removed',
+  seed_owner: 'Platform owner recorded',
+  owner_changed: 'Platform owner changed',
+  history_purged: 'History purged',
+  history_purge_failed: 'History purge failed',
+  // Workspace roles, members and join requests.
+  workspace_role_granted: 'Workspace role granted',
+  workspace_role_cleared: 'Workspace role cleared',
+  workspace_role_grant_invalid: 'Workspace role grant refused',
+  workspace_default_role_set: 'Workspace default role set',
+  workspace_member_added: 'Workspace member added',
+  workspace_member_removed: 'Workspace member removed',
+  join_requested: 'Join requested',
+  join_approved: 'Join request approved',
+  join_denied: 'Join request denied',
+  join_withdrawn: 'Join request withdrawn',
+  join_link_changed: 'Join link changed',
+  platform_admin_acted: 'Platform admin acted in a workspace',
+  platform_admin_viewed: 'Platform admin viewed a workspace',
+  workspace_renamed: 'Workspace renamed',
+  display_name_changed: 'Display name changed',
+  tenant_enabled: 'Workspace enabled',
+  tenant_disabled: 'Workspace disabled',
+  // Secrets and keys.
+  workspace_secret_created: 'Workspace secret created',
+  workspace_secret_rotated: 'Workspace secret rotated',
+  workspace_secret_deleted: 'Workspace secret deleted',
+  workspace_secret_grant_enabled: 'Workspace secret grant enabled',
+  workspace_secret_grant_disabled: 'Workspace secret grant disabled',
+  workspace_secret_grant_attested: 'Workspace secret grant attested',
+  workspace_secret_use_in_set: 'Workspace secret use set',
+  workspace_secret_version_disabled: 'Workspace secret version disabled',
+  workspace_secret_repository_grants_disabled: 'Workspace secret repository grants disabled',
+  actions_secret_set: 'GitHub Actions secret set',
+  actions_secret_deleted: 'GitHub Actions secret deleted',
+  provider_key_set: 'Provider key set',
+  provider_key_deleted: 'Provider key deleted',
+  // Repositories, merge settings, code intelligence.
+  repository_platform_set: 'Repository platform set',
+  repository_platform_cleared: 'Repository platform cleared',
+  repository_merge_policy_set: 'Repository merge policy set',
+  repository_readable_by_tasks_set: 'Repository task access set',
+  repository_workflow_files_set: 'Repository workflow files set',
+  repository_context_set: 'Repository context set',
+  agents_may_file_issues_set: 'Agent issue filing set',
+  workspace_merge_settings_set: 'Workspace merge settings set',
+  workspace_code_intelligence_set: 'Code intelligence set',
+  judgment_backend_set: 'Judgment backend set',
+  // QA targets and identities, MCP servers.
+  qa_target_created: 'QA target created',
+  qa_target_changed: 'QA target changed',
+  qa_target_deleted: 'QA target deleted',
+  qa_target_host_approved: 'QA target host approved',
+  qa_target_credential_set: 'QA target credentials set',
+  qa_target_challenge_bypass_set: 'QA target challenge bypass set',
+  qa_target_migrated: 'QA target migrated',
+  qa_target_issued: 'QA target issued',
+  qa_target_route_dismissed: 'QA target route dismissed',
+  qa_target_route_restored: 'QA target route restored',
+  qa_identity_granted: 'QA identity granted',
+  qa_identity_revoked: 'QA identity revoked',
+  qa_identity_issued: 'QA identity issued',
+  mcp_server_registered: 'MCP server registered',
+  mcp_server_updated: 'MCP server updated',
+  mcp_server_disabled: 'MCP server disabled',
+  mcp_server_enabled: 'MCP server enabled',
+}
+
+/** Short words a fallback name keeps in capitals. */
+const AUDIT_ACRONYMS: ReadonlySet<string> = new Set(['qa', 'mcp', 'ci', 'pr', 'id', 'url', 'iam', 'gcs', 'api'])
+
+/**
+ * An admin action in words: the table's, else the kind's own words --
+ * `frobnicated_mcp_widget` reads "Frobnicated MCP widget".
+ */
+export function auditWords(action: string): string {
+  const named = Object.prototype.hasOwnProperty.call(AUDIT_ACTION_WORDS, action) ? AUDIT_ACTION_WORDS[action] : undefined
+  if (named !== undefined) return named
+  const words = action
+    .split(/[_\s.:-]+/)
+    .filter((w) => w !== '')
+    .map((w) => (AUDIT_ACRONYMS.has(w.toLowerCase()) ? w.toUpperCase() : w.toLowerCase()))
+  if (words.length === 0) return action
+  const [head, ...rest] = words
+  return [head!.charAt(0).toUpperCase() + head!.slice(1), ...rest].join(' ')
+}
+
 /** A run of consecutive entries with the same action, admin and tenant. */
 export interface AuditRun {
   first: AuditEntry
@@ -1940,11 +2111,11 @@ export const AUDIT_SHOWN = 50
  */
 export const HOUSEKEEPING: ReadonlySet<string> = new Set(['history_purged'])
 
-/** `history_purged × 48`, per housekeeping action, in the order they first appear. */
+/** `History purged × 48`, per housekeeping action in words, in the order they first appear. */
 export function housekeepingSummary(entries: readonly AuditEntry[]): string {
   const counts = new Map<string, number>()
   for (const e of entries) if (HOUSEKEEPING.has(e.action)) counts.set(e.action, (counts.get(e.action) ?? 0) + 1)
-  return [...counts].map(([a, n]) => `${a} × ${n}`).join(', ')
+  return [...counts].map(([a, n]) => `${auditWords(a)} × ${n}`).join(', ')
 }
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000
@@ -2022,7 +2193,7 @@ function Audit({ entries }: { entries: AuditEntry[] }) {
                     <li key={`${r.first.at ?? ''}:${i}`} data-count={r.count}>
                       {r.first.at !== null ? timeAgo(r.first.at) : <Dash why="The entry carries no time" />}
                       {r.count > 1 && r.last.at !== null && r.last.at !== r.first.at ? ` to ${timeAgo(r.last.at)}` : ''} ·{' '}
-                      <b>{r.first.action}</b>
+                      <b title={r.first.action}>{auditWords(r.first.action)}</b>
                       {r.count > 1 ? (
                         <> × {r.count}</>
                       ) : target !== null ? (
@@ -2453,6 +2624,11 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc & JoinFields; reload: () =
               <thead role="rowgroup">
                 <tr role="row">
                   <th role="columnheader" scope="col">Person</th>
+                  {columns !== null && (
+                    <th role="columnheader" scope="col">
+                      Platform role
+                    </th>
+                  )}
                   {columns !== null
                     ? columns.map((c) => <ColumnHead key={c.tenant_id} column={c} />)
                     : !phone && <th role="columnheader" scope="col">Teams</th>}

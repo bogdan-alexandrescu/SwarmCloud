@@ -482,7 +482,7 @@ describe('live QA admin: nothing writes on the first click', () => {
     const lines = [...document.querySelectorAll<HTMLElement>('.pp-audit-list li')]
     // MUTATION: draw one line per entry.
     expect(lines).toHaveLength(1)
-    expect(visible(lines[0]!)).toContain('history_purged × 50 · smoke by bob@example.com')
+    expect(visible(lines[0]!)).toContain('History purged × 50 · smoke by bob@example.com')
     expect(screen.getByTestId('pp-audit-shown').textContent).toContain('latest 50')
   })
 
@@ -492,7 +492,7 @@ describe('live QA admin: nothing writes on the first click', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Show housekeeping' }, WAIT))
     await waitFor(() => expect(document.querySelector('.pp-audit-list')).not.toBeNull(), WAIT)
     const line = visible(document.querySelector('.pp-audit-list'))
-    expect(line).toContain('history_purged task_0001 · smoke by bob@example.com')
+    expect(line).toContain('History purged task_0001 · smoke by bob@example.com')
     expect(line).not.toContain('?')
   })
 })
@@ -617,7 +617,7 @@ describe('admins and the audit', () => {
     await mount(people(ROWS, { audit: [{ action: 'approve', target_workspace_id: 'w-3f9a2c', by: 'bob@example.com', at: now(), detail: {} }] }))
     await openAudit()
     await waitFor(() => expect(document.querySelector('.pp-audit-list')).not.toBeNull(), WAIT)
-    expect(visible(document.querySelector('.pp-audit-list'))).toContain('approve w-3f9a2c by bob@example.com')
+    expect(visible(document.querySelector('.pp-audit-list'))).toContain('Workspace approved w-3f9a2c by bob@example.com')
   })
 })
 
