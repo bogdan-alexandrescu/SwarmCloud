@@ -8,6 +8,7 @@
  * client. `OverviewRegions.tsx` re-exports it for the screen.
  */
 import type { Task, TaskPage, TaskState } from './types'
+import { currentZone, formatClock } from './timezone'
 
 /**
  * ONE STATE, READ BY STATE (live QA OV-1/OV-2/OV-4, 2026-10-11).
@@ -103,10 +104,13 @@ export function stateView(page: OverviewTaskPage, states: readonly TaskState[]):
   }
 }
 
-/** HH:MM UTC of an ISO instant, the way this screen names a time of day. */
-export function hhmmUtc(iso: string): string {
-  const d = new Date(iso)
-  return Number.isFinite(d.getTime()) ? `${d.toISOString().slice(11, 16)} UTC` : iso
+/**
+ * HH:MM of an ISO instant in the person's zone, labelled ("09:06 PDT"), the
+ * way this screen names a time of day (VQ-023, `timezone.ts`). UTC until
+ * they pick a zone in Profile.
+ */
+export function hhmm(iso: string): string {
+  return formatClock(iso, currentZone())
 }
 
 /**
@@ -119,7 +123,7 @@ export function hhmmUtc(iso: string): string {
  * sample (`stateView` over the same states) print the same instant.
  */
 export function readReach(since: string | null): string {
-  return since === null ? 'partial: not every agent was read' : `partial: agents created since ${hhmmUtc(since)} read`
+  return since === null ? 'partial: not every agent was read' : `partial: agents created since ${hhmm(since)} read`
 }
 
 /** The three states Recent failures lists, and the Overview reads by state for it. */
