@@ -1607,12 +1607,15 @@ class People:
 
     def add_roles(self, rows: list[dict[str, Any]], columns: list[dict[str, Any]],
                   grants: Mapping[str, dict[str, str] | None],
-                  join_requests: list[dict[str, Any]] | None = None) -> None:
-        """Each of `everyone()`'s rows gains `roles`: its cell in every column."""
+                  join_requests: list[dict[str, Any]] | None = None, *,
+                  platform_admins: Collection[str] = ()) -> None:
+        """Each of `everyone()`'s rows gains `roles`: its cell in every column,
+        `admin` in each for one of `platform_admins` (`role_cell`)."""
         requested = requesters(join_requests)
         for row in rows:
             teams = set(row.get("teams") or [])
-            row["roles"] = {c["tenant_id"]: role_cell(row["email"], teams, c, grants, requested)
+            row["roles"] = {c["tenant_id"]: role_cell(row["email"], teams, c, grants, requested,
+                                                      platform_admins=platform_admins)
                             for c in columns}
 
     def join_rows(self, views: Iterable[Any], labels: Mapping[str, str]) -> list[dict[str, Any]]:
@@ -1633,7 +1636,8 @@ class People:
 
     def in_workspaces(self, role_store: Any, workspaces: Mapping[str, str],
                       join_requests: list[dict[str, Any]] | None = None,
-                      join_requests_error: str | None = None) -> dict[str, Any]:
+                      join_requests_error: str | None = None, *,
+                      platform_admins: Collection[str] = ()) -> dict[str, Any]:
         """A WORKSPACE ADMIN'S READ (S5f): only `workspaces`, the group
         workspaces they administer, and only the people in them -- whoever was
         last seen in one (`people/{id}.teams`) or holds a role of their own in
@@ -1647,7 +1651,11 @@ class People:
         these workspaces, `join_requests` as the route read them, and each
         requester's row with the `requested` cell, so a person with nothing
         else here still appears. They are all `pending` counts: a personal
-        workspace request and a loan stay a platform admin's to decide."""
+        workspace request and a loan stay a platform admin's to decide.
+
+        A PLATFORM ADMIN'S CELL is `admin` here too (`platform_admins`, the
+        emails the route read; `role_cell`): this read serves no admins list,
+        so the cell is the only place it can say so. Who is a row is unchanged."""
         columns, grants = self.role_columns(role_store, workspaces)
         wanted = set(workspaces)
         join_requests = None if join_requests is None else [
@@ -1668,7 +1676,8 @@ class People:
             sight = seen.get(email) or {"teams": set(), "last": None}
             rows.append({
                 "email": email,
-                "roles": {c["tenant_id"]: role_cell(email, sight["teams"], c, grants, requested)
+                "roles": {c["tenant_id"]: role_cell(email, sight["teams"], c, grants, requested,
+                                                    platform_admins=platform_admins)
                           for c in columns},
                 "last_active": _iso(sight["last"]),
                 "_last": sight["last"] if isinstance(sight["last"], datetime) else None,
