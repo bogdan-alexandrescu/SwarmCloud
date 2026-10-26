@@ -144,7 +144,7 @@ describe('one Schedules page, with an admin switch', () => {
     const nav = screen.getByRole('navigation', SWITCH)
     expect([...nav.querySelectorAll('a')][1]!.getAttribute('aria-current')).toBe('page')
     expect(document.querySelector('th[data-col="tenant"]')).not.toBeNull()
-    expect(visible(rowOf('sch_b')!.querySelector('td[data-label="Tenant"]'))).toBe('research')
+    expect(visible(rowOf('sch_b')!.querySelector('td[data-label="Workspace"]'))).toBe('research')
     expect(visible(screen.getByTestId('as-tick'))).toContain('60 ticks, 4 fired, 0 errors')
     expect(screen.getByRole('button', { name: /Pause all of eng’s schedules/ })).toBeTruthy()
     // The platform's own ticks are Admin › Platform counts' now, not this page's.
