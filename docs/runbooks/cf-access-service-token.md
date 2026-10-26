@@ -116,12 +116,12 @@ the AI Studio lanes).
    * kind: **OAuth client**;
    * paste the **Client ID** into `client_id` and the **Client Secret** into
      `client_secret`. The form is the only place the value is typed.
-2. **Grant it to the browser runner, with its hosts.** The console's grant
-   matrix shows the `cf-access` slot under `profile:claude-code-browser` once
-   contract request 117 is applied. Until the console offers the host-list
-   field, set the grant from a terminal with `scripts/api.sh`, which calls
-   swarm-api as you without putting your token in argv (the body carries no
-   secret, only host names), as the workspace's admin:
+2. **Grant it to the browser runner, with its hosts.** `claude-code-browser`
+   declares the `cf-access` slot (contract request 117). The console has no
+   host-list field yet, so set the grant from a terminal with
+   `scripts/api.sh`, which calls swarm-api as you without putting your token
+   in argv (the body carries no secret, only host names), as the workspace's
+   admin:
 
    ```bash
    scripts/api.sh PUT /workspace/secrets/platform-admin/grants/profile:claude-code-browser \
@@ -133,6 +133,15 @@ the AI Studio lanes).
    a port, a path, a wildcard or an IP address is refused, and so is an empty
    list. `example.com` does not cover `www.example.com`: list each host the
    site's pages and its API are served from.
+
+   **Do not tick this secret's `profile:claude-code-browser` cell in the
+   console's grant matrix.** The matrix has one cell per consumer, and for a
+   consumer with two slots it writes the first that takes the kind, which
+   for an OAuth client is `files`. A secret has one grant per consumer, so
+   the tick replaces the `cf-access` grant with a `files` one, and the
+   `files` slot writes the value to a file the agent reads. If it happens,
+   send the `PUT` above again, then rotate the token (below): the agent of
+   any attempt that started in between could read it.
 3. Close the Cloudflare page. The value now lives only in Secret Manager.
 
 The grant takes effect at the next attempt. A running attempt keeps what it

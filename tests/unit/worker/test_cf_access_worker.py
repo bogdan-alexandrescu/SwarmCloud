@@ -8,10 +8,10 @@ real worker (`lifecycle.Worker.run`) and the real release against swarm-api's
 proof check, as test_secretrelease.py does, and the real `cf_access.hand_over`
 against a recording gate.
 
-The catalogue declares no `cf-access` slot yet (contract request 117,
-docs/contract-change-requests.md), so the slot is added to the attempt's
-consumer slots for these tests only, as test_secretrelease.py adds a required
-slot. The fake token is built at run time, never written as one literal.
+The frozen catalogue declares the slot on `claude-code-browser` alone
+(contract request 117, docs/contract-change-requests.md), and these tests
+read it from there: no fixture adds it. The fake token is built at run time,
+never written as one literal.
 """
 
 from __future__ import annotations
@@ -27,13 +27,13 @@ from agent_worker import cf_access, lifecycle
 from agent_worker import children as children_mod
 from agent_worker import secretrelease as release_mod
 from agent_worker.errors import ExitCode
-from swarm_common.profiles import RUNNER_PROFILES, SecretSlot
+from swarm_common.profiles import RUNNER_PROFILES
 
-from test_secretrelease import FakeRoutes, _item, _Log, _worker, agent, fake_value, spawned  # noqa: F401
+from test_secretrelease import (  # noqa: F401
+    NONCE, FakeRoutes, _ApiKeySecrets, _item, _Log, _worker, agent, fake_value, spawned)
+from worker_seeds import seed_attempt, seed_tenant
 
 HOSTS = ["staging-admin.example.dev", "admin.example.com"]
-SLOT = SecretSlot(kinds=("oauth_client",),
-                  means="sent by the live gate to the grant's hosts; never in the agent's reach")
 
 
 def _token() -> tuple[str, str, str]:
@@ -48,16 +48,6 @@ def _cf_item(value: str, hosts: list[str] | None = None, name: str = "platform-a
 
 
 @pytest.fixture
-def cf_slot(monkeypatch):
-    original = release_mod.consumer_slots
-
-    def with_cf(profile, inputs):
-        return {**original(profile, inputs), "cf-access": SLOT}
-
-    monkeypatch.setattr(release_mod, "consumer_slots", with_cf)
-
-
-@pytest.fixture
 def handed(monkeypatch):
     """What `hand_over` was given, copied before it empties the list."""
     seen: list[list[dict[str, Any]]] = []
@@ -69,6 +59,20 @@ def handed(monkeypatch):
 
     monkeypatch.setattr(cf_access, "hand_over", recording)
     return seen
+
+
+def _browser_worker(db, worker_factory, routes):
+    """test_secretrelease's `_worker`, on the one profile that declares the slot.
+
+    This unit run starts no live gate; the caller lets the agent start without
+    one (`gate_missing` False) so the release and the hand-over are reached."""
+    seed_attempt(db, runner_profile="claude-code-browser", task_input={"prompt": "use the key"})
+    seed_tenant(db, credentials=["anthropic"])
+    worker, _, _ = worker_factory(
+        runner_profile="claude-code-browser", child_api=routes, child_nonce=NONCE,
+        swarm_api_url="https://swarm-api.example", secret_client=_ApiKeySecrets(),
+    )
+    return worker
 
 
 class Gate:
@@ -89,12 +93,13 @@ class Gate:
 
 
 def test_a_cf_access_item_never_reaches_the_agents_environment_files_or_work(
-        db, worker_factory, agent, spawned, log_stream, monkeypatch, cf_slot, handed):  # noqa: F811
+        db, worker_factory, agent, spawned, log_stream, monkeypatch, handed):  # noqa: F811
     monkeypatch.setattr(lifecycle.workspace_mod, "destroy", lambda ws: None)
+    monkeypatch.setattr(lifecycle.handoff_mod.HandoffPath, "gate_missing", property(lambda self: False))
     client_id, client_secret, value = _token()
     other = fake_value("f")
     routes = FakeRoutes([_cf_item(value), _item("brave-key", other)])
-    worker = _worker(db, worker_factory, routes)
+    worker = _browser_worker(db, worker_factory, routes)
     recording, at_spawn = spawned
     recording.logger = worker.log
     assert worker.run() == ExitCode.OK, db.doc("tasks/task_1").get("last_error")
@@ -112,13 +117,13 @@ def test_a_cf_access_item_never_reaches_the_agents_environment_files_or_work(
         assert needle not in json.dumps(db.documents, default=str)
     # Every field registered for redaction before the runner existed.
     assert at_spawn and {value, client_id, client_secret} <= at_spawn[-1]
-    # Handed over (to no gate: claude-code has no live browser), then dropped.
+    # Handed over (to no gate: this unit run starts no live browser), then dropped.
     assert handed == [[{"name": "platform-admin", "slot": "cf-access", "hosts": HOSTS, "value": value}]]
     assert worker.secret_release.result is not None and worker.secret_release.result.gate == []
 
 
 def test_a_workspace_with_no_cf_access_grant_hands_nothing(
-        db, worker_factory, agent, cf_slot, handed):  # noqa: F811
+        db, worker_factory, agent, handed):  # noqa: F811
     routes = FakeRoutes([_item("brave-key", fake_value())])
     worker = _worker(db, worker_factory, routes)
     assert worker.run() == ExitCode.OK
@@ -131,17 +136,32 @@ def test_a_workspace_with_no_cf_access_grant_hands_nothing(
 # --------------------------------------------------------------------------
 
 
-def _release(items: list[dict[str, Any]], tmp_path: Path, log: _Log | None = None) -> release_mod.Released:
+def _release(items: list[dict[str, Any]], tmp_path: Path, log: _Log | None = None,
+             profile: str = "claude-code-browser") -> release_mod.Released:
     key = children_mod.AttemptKey()
     routes = FakeRoutes(items)
     routes.public_key = key.public
     children = type("P", (), {"_key": key, "_api": routes, "keyed": True})()
     cfg = type("C", (), {"attempt_id": "att_1", "generation": 1})()
-    with pytest.MonkeyPatch.context() as mp:
-        original = release_mod.consumer_slots
-        mp.setattr(release_mod, "consumer_slots", lambda p, i: {**original(p, i), "cf-access": SLOT})
-        return release_mod.SecretRelease(cfg, children=children, logger=log or _Log()).release(
-            profile=RUNNER_PROFILES["claude-code-browser"], inputs={}, private_dir=tmp_path)
+    return release_mod.SecretRelease(cfg, children=children, logger=log or _Log()).release(
+        profile=RUNNER_PROFILES[profile], inputs={}, private_dir=tmp_path)
+
+
+def test_the_browser_profiles_attempts_take_the_cf_access_slot():
+    # MUTATION: drop `cf-access` from claude-code-browser's secret_slots and
+    # the worker refuses every item in it.
+    slots = release_mod.consumer_slots(RUNNER_PROFILES["claude-code-browser"], {})
+    assert slots["cf-access"].kinds == ("oauth_client",)
+    assert set(release_mod.GATE_SLOTS) <= set(slots)
+
+
+@pytest.mark.parametrize("name", sorted(
+    n for n, p in RUNNER_PROFILES.items() if p.secret_slots and n != "claude-code-browser"))
+def test_no_other_profile_is_released_a_cf_access_item(tmp_path, name):
+    assert "cf-access" not in release_mod.consumer_slots(RUNNER_PROFILES[name], {})
+    _, _, value = _token()
+    released = _release([_cf_item(value)], tmp_path, profile=name)
+    assert released.gate == [] and released.delivered == [] and released.env == {}
 
 
 def test_the_release_holds_a_gate_item_in_the_heap_and_writes_no_file(tmp_path):

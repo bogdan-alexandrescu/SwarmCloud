@@ -124,7 +124,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 114 | `CONTRACT.md` invariant 7: swarm-api alone starts with Cloud Run's startup CPU boost, the one recorded exception; every other Cloud Run service and every worker stays under invariant 7 as written (API-CPU-BOOST, part of #1816) | ACCEPTED by BGD 2026-10-23 (#1816 option (a)) and APPLIED by PR 2132; recorded here by lane FOLLOWUPS-1023 (part of #2150). The invariant's text is unchanged |
 | 115 | `models.py`: `Task.publish_to_pr`, the existing pull request a lane's commits are pushed onto instead of opening one, typed rather than carried in `metadata.dispatch` (PUBLISH-TO-PR, part of #2183) | open, REQUESTED 2026-10-24 by lane PUBLISH-TO-PR. Not applied, and not needed for the feature to work: the field ships in the signed `metadata.dispatch` block, as `strategy` and `continues` do |
 | 116 | `specsign.py`: `SETTINGS_MAC_FIELDS` gains a `"qa"` block, `("flows_per_step",)`, so the workspace's QA batch size is signed like `merge` and `code_intelligence` (QA-TRIPWIRE-MAC, part of #2136) | ACCEPTED by BGD 2026-10-26 (answering QA-FLOWS-CAP's question, task_23a1c31d528e450187b8). Not applied: `apps/common/swarm_common/` is frozen and a lane does not edit it |
-| 117 | `profiles.py`: a `cf-access` secret slot on `claude-code-browser`, kind `oauth_client`, whose value the live gate sends as Cloudflare Access service-token headers to the hosts its grant lists and the agent never holds (CF-ACCESS-TOKEN, part of #2442) | open, ACCEPTED 2026-10-26 by BGD (requested by lane CF-ACCESS-TOKEN as 116, renumbered: QA-TRIPWIRE-MAC took 116 first). Not applied yet: until it is, a grant into `cf-access` is refused and no token is released |
+| 117 | `profiles.py`: a `cf-access` secret slot on `claude-code-browser`, kind `oauth_client`, whose value the live gate sends as Cloudflare Access service-token headers to the hosts its grant lists and the agent never holds (CF-ACCESS-TOKEN, part of #2442) | ACCEPTED 2026-10-26 by BGD (requested by lane CF-ACCESS-TOKEN as 116, renumbered: QA-TRIPWIRE-MAC took 116 first) and APPLIED by the pull request that adds this line (lane CF-ACCESS-CONTRACT, part of #2442): `_CF_ACCESS_SLOT` beside `_FILES_SLOT`, declared on `claude-code-browser` only. A grant into `cf-access` is accepted with a host list and refused without one |
 
 ---
 
@@ -14466,9 +14466,18 @@ integer, never a spec. **1-8** are untouched.
 
 ## 117. `profiles.py`: a `cf-access` secret slot on `claude-code-browser` (CF-ACCESS-TOKEN, part of #2442)
 
-**Status:** ACCEPTED 2026-10-26 by BGD, not applied yet (filed by lane CF-ACCESS-TOKEN as 116 and renumbered, since QA-TRIPWIRE-MAC took 116 on main first). Not applied:
-`apps/common/swarm_common/` is frozen. The feature is built and tested
-against a catalogue with the slot added, and does nothing until it is.
+**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (filed by lane CF-ACCESS-TOKEN
+as 116 and renumbered, since QA-TRIPWIRE-MAC took 116 on main first). APPLIED by lane
+CF-ACCESS-CONTRACT (part of #2442), in the pull request that rewrote row 117
+of the index above: `_CF_ACCESS_SLOT` in `profiles.py`, worded as below, and
+`claude-code-browser`'s `secret_slots` is `{"files": _FILES_SLOT,
+"cf-access": _CF_ACCESS_SLOT}`. Nothing beyond the request. The tests that
+added the slot for their own run now read it from the catalogue
+(`tests/unit/control_plane/test_cf_access_slot.py`,
+`tests/unit/worker/test_cf_access_worker.py`,
+`tests/unit/common/test_workspace_secret_contract.py`), and hold that no
+other profile takes it. "What is true today" below is the state the request
+was filed against.
 
 ### What is true today
 

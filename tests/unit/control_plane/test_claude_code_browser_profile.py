@@ -92,10 +92,16 @@ def test_the_profile_is_claude_code_on_the_browser_image():
     # `live_browser` is contract request 71 (LB-D, #1030): the one live profile.
     # `inputs` is contract request 77 (BSTATUS-API): claude-code's plus `browser_tool`,
     # and `qa_identity` by contract request 106 (QI-CONTRACT).
-    assert differ == ["image", "inputs", "live_browser", "name", "resource_class"], (
+    # `secret_slots` is contract request 117 (CF-ACCESS-CONTRACT): claude-code's
+    # plus `cf-access`.
+    assert differ == ["image", "inputs", "live_browser", "name", "resource_class", "secret_slots"], (
         f"the owner's decision was claude-code with its name, image and class changed, "
-        f"live_browser set (request 71) and browser_tool declared (request 77); {differ} differ"
+        f"live_browser set (request 71), browser_tool declared (request 77) and the "
+        f"cf-access slot added (request 117); {differ} differ"
     )
+    slots = dict(profile.secret_slots)
+    assert slots.pop("cf-access").kinds == ("oauth_client",)
+    assert slots == dict(claude.secret_slots)
     extra = dict(profile.inputs)
     assert extra.pop("browser_tool").choices == ("auto", "playwright", "dev-browser", "jev")
     assert extra.pop("qa_identity").choices == ("console",)
