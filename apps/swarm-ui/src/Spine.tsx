@@ -1116,6 +1116,20 @@ function feedCount(feed: NotificationFeed | null, key: 'admin_pending' | 'tenant
 }
 
 /**
+ * A WORKSPACE ADMIN'S PEOPLE AND ROLES BADGE (S1c, visual QA VQ-051): the
+ * open requests to join a workspace they administer, as the feed serves them
+ * -- one `admin:join:<ref>` item each, derived for exactly the workspaces
+ * whose requests they may decide (notifications.py
+ * `join_requests_to_decide`). `admin_pending` is 0 for them by design, so the
+ * items are the only count the API serves. Null for no feed. A muted Admin
+ * topic leaves the items out of the feed, and so out of this count.
+ */
+export function joinsToDecide(feed: NotificationFeed | null): number | null {
+  if (feed === null || !Array.isArray(feed.items)) return null
+  return feed.items.filter((i) => i.group === 'admin' && i.id.startsWith('admin:join:')).length
+}
+
+/**
  * How many pools are near their ceiling: Pool limits' own rule (AdminSettings
  * `poolLead`, `NEAR_CEILING`). A paused pool, one with no ceiling set, and a
  * ceiling of 0 with nothing in use are not ranked there and not counted here.
@@ -1147,8 +1161,9 @@ export function nearCeilingCount(pools: Capacity['pools']): number {
  * absent). A measured zero of something waiting is no badge either, the way
  * Approvals' is (`approvalsBadge`). A WORKSPACE ADMIN WHO IS NOT A PLATFORM
  * ADMIN IS COUNTED ONLY WHAT IS THEIRS (S1c): `admin_pending` is the
- * platform's requests, so it is no badge of theirs, and the platform pages
- * are not in their panel at all.
+ * platform's requests, so it is no badge of theirs; their People and roles
+ * counts the join requests the feed serves them (`joinsToDecide`), and the
+ * platform pages are not in their panel at all.
  */
 export function adminPanelCounts(
   platformAdmin: boolean,
@@ -1162,7 +1177,11 @@ export function adminPanelCounts(
     const n = adminWorkspaces(choices).length
     out[WORKSPACES_YOU_ADMIN_TAB] = { n, why: `${n} group workspace${n === 1 ? '' : 's'} you administer` }
   }
-  if (!platformAdmin) return out
+  if (!platformAdmin) {
+    const joins = joinsToDecide(feed)
+    if (joins !== null && joins > 0) out.people = { n: joins, alert: true, why: `${joins} request${joins === 1 ? '' : 's'} to join a workspace you administer` }
+    return out
+  }
   const pending = feedCount(feed, 'admin_pending')
   if (pending !== null && pending > 0) out.people = { n: pending, alert: true, why: `${pending} request${pending === 1 ? '' : 's'} waiting on an admin` }
   const c = dataOf(cap)
