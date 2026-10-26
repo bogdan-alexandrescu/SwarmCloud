@@ -418,11 +418,20 @@ function StatusCellView({ m, a }: { m: Model; a: HealthAccount }) {
   )
 }
 
+/** The last day label's distance from the chart's right edge, in px. */
+const EDGE_INSET = 2
+
 /** Why a record-derived cell is a dash on this read. */
 function recordWhy(m: Model): string {
   if (!m.served) return NOT_SERVED_WHY
   if (m.health.kind === 'not_served') return m.health.reason
-  if (m.health.kind === 'unreadable') return `The health read failed: ${sentence(m.health.reason)}`
+  if (m.health.kind === 'unreadable') {
+    // The served reasons already open with "The health read ..." ("timed out",
+    // "answered in a shape this console does not know"); prefixing them again
+    // read "The health read failed: The health read ..." on the phone.
+    const why = sentence(m.health.reason)
+    return /^the health read\b/i.test(why) ? why : `The health read failed: ${why}`
+  }
   return "The broker sent no record for this account."
 }
 
@@ -718,11 +727,15 @@ function Timeline({ m }: { m: Model }) {
                 const x = xOf(t)
                 const label = day(t)
                 const edge = x + 3 + label.length * 7 > W
+                // An end-anchored label at exactly W overhung the scroll box by
+                // 0.18 px at 390 (its glyph box is wider than its advance), and
+                // that sliver drew a scrollbar that scrolled nothing (#2302,
+                // ACCOUNT-HEALTH-PAGE-REVIEW5). EDGE_INSET keeps it inside.
                 return (
                   <g key={t}>
                     <line className="ah-grid" x1={x} x2={x} y1={STRIP_TOP} y2={H - 18} />
                     {(days.length - 1 - i) % labelEvery === 0 && (
-                      <text className="ah-ax" x={edge ? W : x + 3} y={H - 4} textAnchor={edge ? 'end' : 'start'}>
+                      <text className="ah-ax" x={edge ? W - EDGE_INSET : x + 3} y={H - 4} textAnchor={edge ? 'end' : 'start'}>
                         {label}
                       </text>
                     )}

@@ -304,7 +304,10 @@ describe('F4: the honest states', () => {
     expect(container.querySelector('.ah-timeline')!.getAttribute('data-state')).toBe('unreadable')
     expect(Number(container.querySelector('[data-tile="limited"] .ah-tile-n')!.textContent)).toBe(2)
     const last = container.querySelector('tr[data-account="eng:example-team"] td:nth-child(6) .ah-dash')!
-    expect(last.getAttribute('title')).toContain('The health read failed')
+    const why = last.getAttribute('title')!
+    expect(why).toContain('The health read timed out.')
+    // said once: the reason already names the read, so it is not prefixed again
+    expect(why.match(/the health read/gi)).toHaveLength(1)
   })
 })
 
