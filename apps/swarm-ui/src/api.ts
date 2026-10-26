@@ -1238,7 +1238,7 @@ export async function loadQuestions(taskId: string): Promise<Result<TaskQuestion
     return {
       status: 'ok',
       fetchedAt: Date.now(),
-      data: { task_id: taskId, count: 0, status: 'none', questions: [], redacted: false, redaction_count: 0 },
+      data: fixtureHeldQuestions(taskId) ?? { task_id: taskId, count: 0, status: 'none', questions: [], redacted: false, redaction_count: 0 },
     }
   }
   return read<TaskQuestions>(route('/v1/tasks/{id}/questions', { id: taskId }), () => false)
@@ -2648,8 +2648,14 @@ export async function loadMe(options: { frame?: boolean } = {}): Promise<Result<
 /** One tenant the caller may select: an entry of `GET /v1/tenants/mine`. */
 export interface TenantChoice {
   tenant_id: string
-  /** The registered group's email -- unique where the tenant id is not; "Your workspace (u-…)" for your own. */
+  /**
+   * The workspace's stored name when `group` is present (MINE-NAMES: the
+   * server read it, so a rename shows at once); otherwise the registered
+   * group's email -- unique where the tenant id is not; "Your workspace (u-…)" for your own.
+   */
   display_name: string
+  /** The registered group's email, present only when `display_name` is the stored name. Absent from an older API. */
+  group?: string
   /** `user` for the caller's own personal workspace, `group` for a tenant group (#1200). Absent from an older API. */
   kind?: 'user' | 'group'
   /**
@@ -2714,6 +2720,16 @@ export interface NotificationFeed {
   unread_updates: number
   /** Requests waiting on any admin; 0 for a non-admin. */
   admin_pending: number
+  /**
+   * Workspaces waiting to be created (Admin › Tenants); null for a non-admin
+   * or an admin source that could not be read, absent from an older API.
+   */
+  tenants_waiting?: number | null
+  /**
+   * Platform secrets with no enabled version (Admin › Platform secrets); null
+   * for a non-admin or a count that could not be read, absent from an older API.
+   */
+  platform_secrets_unset?: number | null
   read_at: string
 }
 
@@ -4475,6 +4491,53 @@ function fixturePools(): Capacity['pools'] {
   ]
 }
 
+/** The questions the fixture's held merge names (#2313), by asking task and index. */
+const FIXTURE_HELD = [
+  { task_id: 'task_wait_asked_implement', step_id: 'implement', question_index: 0, question: 'Keep /agents/views as a redirect to the new Views page?' },
+  { task_id: 'task_wait_asked_fix', step_id: 'fix', question_index: 1, question: 'Rename the views flag in this change or in a follow-up?' },
+]
+
+/** What each asking task of the fixture's held merge asked: `GET /v1/tasks/{id}/questions`. */
+function fixtureHeldQuestions(taskId: string): TaskQuestions | null {
+  const option = (label: string, description: string) => ({ label, description })
+  const asked: Record<string, AgentQuestion[]> = {
+    task_wait_asked_implement: [
+      {
+        question: 'Keep /agents/views as a redirect to the new Views page?',
+        options: [
+          option('Redirect', 'Old links keep working; the redirect is removed in a later release.'),
+          option('Remove', 'Old links 404; nothing else changes.'),
+        ],
+        recommended: 'Redirect',
+        context: 'Bookmarks and three runbooks link the old address.',
+        answer: null,
+      },
+    ],
+    task_wait_asked_fix: [
+      {
+        question: 'Add a test for the empty Views state?',
+        options: [option('Yes', 'One more component test.'), option('No', 'Covered by the page test.')],
+        recommended: 'Yes',
+        context: null,
+        answer: { question_index: 0, question: 'Add a test for the empty Views state?', choice: 'Yes', text: null, by: 'bogdan@example.com', at: new Date(FIXTURE_NOW - 30 * 60_000).toISOString(), history: [] },
+      },
+      {
+        question: 'Rename the views flag in this change or in a follow-up?',
+        options: [
+          option('This change', 'One pull request; the review re-runs on the rename.'),
+          option('Follow-up', 'This merges as reviewed; the rename is its own lane.'),
+        ],
+        recommended: 'Follow-up',
+        context: null,
+        answer: null,
+      },
+    ],
+  }
+  const questions = asked[taskId]
+  if (questions === undefined) return null
+  return { task_id: taskId, count: questions.length, status: 'ok', questions, redacted: false, redaction_count: 0, may_answer: true }
+}
+
 /**
  * ONE WAITING AGENT PER REASON (#1782, WAIT-UI-PANEL), each carrying the full
  * `waiting` object `GET /v1/tasks/{id}` serves (swarm_api/waiting_detail.py),
@@ -4647,6 +4710,7 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
       },
       { next: null },
     ),
+    // A real hand-off: a browser agent nobody took control of in time.
     one(
       'HUMAN_REQUIRED',
       'Waiting for a person: sign in on its console page, then say it is ready',
@@ -4655,7 +4719,39 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
         who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of tenant u-bogdan' },
         expires_at: null, answer_route: 'POST /v1/tasks/task_wait_human_required/human-ready', cause: null,
       },
-      { next: null },
+      { next: null, task: { runner_profile: 'claude-code-browser', resource_class: 'browser', blocked_by: [{ reason: 'HUMAN_REQUIRED' }] } },
+    ),
+    // A merge step held by the owner's questions (#2313): HUMAN_REQUIRED too,
+    // but no browser and no Ready -- the questions, answered on the steps
+    // that asked them (`fixtureHeldQuestions`).
+    one(
+      'HUMAN_REQUIRED',
+      'Waiting for answers to 2 owner questions before merging (implement: 1, fix: 1)',
+      'the last named question is answered (it resumes on its own)',
+      {
+        park_phase: 'owner_questions',
+        questions: FIXTURE_HELD,
+        unreadable: 0,
+        who_may_answer: { submitted_by: 'bogdan@example.com', admin: true, text: 'bogdan@example.com, who launched workflow wf_ga_move_views, or an admin' },
+      },
+      {
+        next: null,
+        since: 9,
+        history: [{ at: at(9), kind: 'parked', text: 'parked: HUMAN_REQUIRED, attempt refunded' }],
+        task: {
+          id: 'task_wait_owner_questions',
+          runner_profile: 'merge',
+          workflow_id: 'wf_ga_move_views',
+          step_id: 'merge',
+          blocked_by: [
+            {
+              reason: 'HUMAN_REQUIRED',
+              park_phase: 'owner_questions',
+              owner_questions: { code: 'owner_questions_open', questions: FIXTURE_HELD, unreadable: 0 },
+            },
+          ],
+        },
+      },
     ),
     one(
       'CREDENTIAL_MISSING',

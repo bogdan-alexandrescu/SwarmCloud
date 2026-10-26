@@ -491,9 +491,22 @@ def test_the_restated_constants_match_swarm_api():
     UI_FILE, *UI_TEST_FILES, SCHEDULER_FILE, "docs/web-ui/index.html", "/apps/swarm-ui/x.css",
     "apps/swarm-ui/src/testsuite/Panel.tsx", "apps/swarm-ui/src/App.test.tsx",
     "docs/web-ui/tests/a.html", "apps/swarm-ui-old/a.tsx", "tests/apps/swarm-ui/a.tsx", "",
+    "apps/swarm-ui/src/views/Accounts.spec.tsx", "docs/web-ui/accounts.test.html",
 ])
 def test_the_scheduler_and_the_gate_share_one_ui_path_rule(path):
     assert runtime_mod.UI_PATH_PREFIXES == verdict_mod.UI_PATH_PREFIXES
     assert runtime_mod.TEST_DIRECTORIES == verdict_mod.TEST_DIRECTORIES
-    assert runtime_mod.TEST_FILE_MARK == verdict_mod.TEST_FILE_MARK
+    assert runtime_mod.TEST_FILE_MARKS == verdict_mod.TEST_FILE_MARKS
+    assert runtime_mod.TEST_FILE_MARK_PREFIX == verdict_mod.TEST_FILE_MARK_PREFIX
     assert runtime_mod.is_ui_path(path) == verdict_mod.is_ui_path(path)
+
+
+def test_browser_if_ui_keeps_the_gates_vitest_rule_and_its_docs_page_rule():
+    # The rendered-review gate's rule from #2379 F03 (#2396), held for the
+    # scheduler too: a `.spec.` vitest file under apps/swarm-ui is no UI path,
+    # while a docs/web-ui page stays one whatever its name.
+    # MUTATION: drop ".spec." from TEST_FILE_MARKS, or the apps/swarm-ui scope
+    # of the filename mark, and this fails.
+    assert not runtime_mod.is_ui_path("apps/swarm-ui/src/views/Accounts.spec.tsx")
+    assert runtime_mod.is_ui_path("docs/web-ui/accounts.test.html")
+    assert not runtime_mod.is_ui_path("docs/web-ui/tests/a.html")

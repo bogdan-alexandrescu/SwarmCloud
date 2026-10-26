@@ -166,9 +166,24 @@ def api_context(db, tokens, group_map, objects):
     )
 
 
+class OfflineSecretMetadata:
+    """A Secret Manager metadata reader that reads nothing: every secret is
+    unreadable, so an admin's feed counts `platform_secrets_unset: None`. The
+    notification feed reads the app's one reader (`routes.admin.secret_metadata`,
+    CONFIG-ADMIN-POLISH-2), and a unit test builds no Secret Manager client; a
+    test that reads the platform secrets sets its own on `app.state`."""
+
+    def enabled_versions(self, secret_id: str) -> list[datetime | None]:
+        from swarm_api.platform_secrets import PERMISSION_DENIED, MetadataUnreadable
+
+        raise MetadataUnreadable(PERMISSION_DENIED)
+
+
 @pytest.fixture
 def client(api_context) -> TestClient:
-    return TestClient(create_app(api_context), raise_server_exceptions=False)
+    app = create_app(api_context)
+    app.state.secret_metadata = OfflineSecretMetadata()
+    return TestClient(app, raise_server_exceptions=False)
 
 
 def auth_header(user: str) -> dict[str, str]:

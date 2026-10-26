@@ -132,6 +132,10 @@ async function manage(email: string): Promise<HTMLElement> {
   return screen.findByRole('dialog', { name: `Manage ${email}` }, WAIT)
 }
 const writesOf = (calls: { method: string; url: string; body: unknown }[]) => calls.filter((c) => c.method !== 'GET')
+/** Recent admin actions opens folded (ADMIN-PEOPLE-FILTER, S5c): open it to read its entries. */
+async function openAudit(): Promise<void> {
+  fireEvent.click(await screen.findByRole('button', { name: /Recent admin actions/ }, WAIT))
+}
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -471,6 +475,7 @@ describe('live QA admin: nothing writes on the first click', () => {
     })
     const audit = [purged(0), purged(1), ...Array.from({ length: 48 }, (_, i) => purged(i + 2))]
     await mount(people(ROWS, { audit }))
+    await openAudit()
     // Housekeeping is folded away until asked for (#1206).
     fireEvent.click(await screen.findByRole('button', { name: 'Show housekeeping' }, WAIT))
     await waitFor(() => expect(document.querySelector('.pp-audit-list')).not.toBeNull(), WAIT)
@@ -483,6 +488,7 @@ describe('live QA admin: nothing writes on the first click', () => {
 
   it('ADM-5: a single task-scoped entry shows its target_id, never a bare ?', async () => {
     await mount(people(ROWS, { audit: [{ action: 'history_purged', target_kind: 'task', target_id: 'task_0001', by: 'bob@example.com', at: now(), detail: { tenant_id: 'smoke' } }] }))
+    await openAudit()
     fireEvent.click(await screen.findByRole('button', { name: 'Show housekeeping' }, WAIT))
     await waitFor(() => expect(document.querySelector('.pp-audit-list')).not.toBeNull(), WAIT)
     const line = visible(document.querySelector('.pp-audit-list'))
@@ -609,6 +615,7 @@ describe('admins and the audit', () => {
 
   it('lists the audit entries under the table, or a measured zero', async () => {
     await mount(people(ROWS, { audit: [{ action: 'approve', target_workspace_id: 'w-3f9a2c', by: 'bob@example.com', at: now(), detail: {} }] }))
+    await openAudit()
     await waitFor(() => expect(document.querySelector('.pp-audit-list')).not.toBeNull(), WAIT)
     expect(visible(document.querySelector('.pp-audit-list'))).toContain('approve w-3f9a2c by bob@example.com')
   })

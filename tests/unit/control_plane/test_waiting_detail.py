@@ -471,6 +471,92 @@ def test_human_required_says_a_person_resumes_it_from_the_console():
     assert d["cause"] == "hold_expired"
     # MUTATION: an "eligible since, still parked" clause on a park only a person ends turns this red.
     assert "still parked" not in w["summary"]
+    # MUTATION: a hand-off park described as an owner-question hold turns this red.
+    assert w["summary"] == "Waiting for a person: sign in on its console page, then say it is ready"
+    assert w["resumes_when"] == "a member of the tenant calls human-ready (the console's Ready button)"
+    assert "park_phase" not in d
+
+
+# --------------------------------------------------------------------------
+# HUMAN_REQUIRED on the owner's questions: a merge step's hold (#2313)
+# --------------------------------------------------------------------------
+
+HELD = [
+    {"task_id": "task_impl", "step_id": "implement", "question_index": 0,
+     "question": "Keep the old route?"},
+    {"task_id": "task_fix", "step_id": "fix", "question_index": 2,
+     "question": "Rename the flag?"},
+]
+
+
+def owner_park(questions: list[dict[str, Any]], *, unreadable: int = 0) -> dict[str, Any]:
+    """The park the merge step writes (`agent_worker.lifecycle._park_for_owner_questions`)."""
+    return {"reason": "HUMAN_REQUIRED", "park_phase": "owner_questions",
+            "owner_questions": {"code": "owner_questions_open", "questions": questions,
+                                "unreadable": unreadable}}
+
+
+def merge_task(**extra: Any) -> Task:
+    return task(park_reason=ParkReason.HUMAN_REQUIRED, next_eligible_at=READ_AT - timedelta(minutes=9),
+                workflow_id="wf_move", step_id="merge", **extra)
+
+
+def test_a_merge_held_by_owner_questions_names_them_and_serves_no_ready_route():
+    ev = [event(EventType.PARKED, READ_AT - timedelta(minutes=9), owner_park(HELD))]
+    w = build_waiting(merge_task(), events=ev, as_of=READ_AT)
+    d = w["detail"]
+    # MUTATION: today's sign-in sentence on an owner-question hold turns this red.
+    assert w["summary"] == "Waiting for answers to 2 owner questions before merging (implement: 1, fix: 1)"
+    assert "sign in" not in w["summary"]
+    # MUTATION: serving the human-ready route, which only re-parks it, turns this red.
+    assert "answer_route" not in d
+    assert d["park_phase"] == "owner_questions"
+    # MUTATION: dropping a question, or its asking step, task or index, turns this red.
+    assert d["questions"] == [
+        {"task_id": "task_impl", "step_id": "implement", "question_index": 0,
+         "question": "Keep the old route?"},
+        {"task_id": "task_fix", "step_id": "fix", "question_index": 2,
+         "question": "Rename the flag?"},
+    ]
+    assert d["unreadable"] == 0
+    # MUTATION: "any member of the tenant" (the answer route's rule is the submitter or an admin).
+    assert d["who_may_answer"] == {
+        "submitted_by": "alice@example.com", "admin": True,
+        "text": "alice@example.com, who launched workflow wf_move, or an admin"}
+    assert w["resumes_when"] == "the last named question is answered (it resumes on its own)"
+    assert w["since"] == READ_AT - timedelta(minutes=9)
+    assert w["next_check_at"] is None
+
+
+def test_the_owner_question_hold_is_read_from_blocked_by_when_no_events_were_read():
+    w = build_waiting(merge_task(blocked_by=[owner_park(HELD[:1])]), events=None, as_of=READ_AT)
+    assert w["summary"] == "Waiting for answers to 1 owner question before merging (implement: 1)"
+    assert [q["question_index"] for q in w["detail"]["questions"]] == [0]
+    assert "answer_route" not in w["detail"]
+
+
+def test_an_owner_question_hold_the_answer_route_cannot_read_still_says_ready():
+    # FAIL CLOSED in swarm-api's answer route (`owner_questions_hold`): an
+    # unreadable entry wakes nothing, so only human-ready returns it.
+    ev = [event(EventType.PARKED, READ_AT - timedelta(minutes=9), owner_park(HELD[:1], unreadable=1))]
+    w = build_waiting(merge_task(), events=ev, as_of=READ_AT)
+    assert w["summary"] == (
+        "Waiting for answers to 1 owner question before merging (implement: 1); 1 entry the "
+        "merge cannot read: say it is ready once it is answered")
+    assert w["detail"]["answer_route"] == "POST /v1/tasks/task_w/human-ready"
+    assert w["detail"]["unreadable"] == 1
+    assert "human-ready" in w["resumes_when"]
+
+
+def test_a_malformed_owner_question_record_serves_no_invented_question():
+    bad = [{"task_id": "task_impl", "question_index": "0"}, "x", {"question_index": 1}]
+    ev = [event(EventType.PARKED, READ_AT - timedelta(minutes=9), owner_park(bad))]
+    w = build_waiting(merge_task(), events=ev, as_of=READ_AT)
+    # Every entry that is not a task id and an integer index is counted unreadable.
+    assert w["detail"]["questions"] == []
+    assert w["detail"]["unreadable"] == 3
+    assert w["detail"]["answer_route"] == "POST /v1/tasks/task_w/human-ready"
+    assert w["summary"].startswith("Waiting for the owner questions the review named before merging")
 
 
 # --------------------------------------------------------------------------
@@ -688,3 +774,82 @@ def test_workflow_steps_serve_the_waiting_summary():
     assert steps["merge"]["waiting"]["summary"].startswith("CI on PR #1779")
     # MUTATION: inventing a wait for a step with no task turns this red.
     assert steps["later"]["waiting"] is None
+
+
+# --------------------------------------------------------------------------
+# The wake's words come from merge_wait.wake_reason (F05, part of #2379)
+# --------------------------------------------------------------------------
+
+WOKE_AT = SECOND_PARK + timedelta(minutes=11, seconds=45)
+
+
+def woken_task(wake_reason: str | None) -> tuple[Task, list[TaskEvent]]:
+    """task_c9c3a5301531437bad42's shape: parked CI_PENDING, then woken by the tick."""
+    t, events = ci_task()
+    t.state = TaskState.READY
+    t.park_reason = None
+    wait = dict(t.metadata["merge_wait"])
+    wait["wake_requested_at"] = WOKE_AT - timedelta(seconds=5)
+    if wake_reason is not None:
+        wait["wake_reason"] = wake_reason
+    t.metadata = {"merge_wait": wait}
+    ready = {"reason": "wake_requested", "park_reason": "CI_PENDING",
+             "was_eligible_at": ELIGIBLE.isoformat()}
+    return t, [*events, event(EventType.READY, WOKE_AT, ready, task_id=t.id, n=1)]
+
+
+def _ready_texts(w: dict[str, Any]) -> list[str]:
+    return [h["text"] for h in w["history"] if h["kind"] == "ready"]
+
+
+def test_a_wake_on_head_moved_says_the_head_moved_not_that_the_checks_settled():
+    t, events = woken_task("head_moved")
+    w = build_waiting(t, events=events, as_of=READ_AT)
+    newest = _ready_texts(w)[-1]
+    # MUTATION: mapping every wake_requested to "read the checks settled" turns this red.
+    assert "the head moved" in newest
+    assert "checks settled" not in newest
+    # MUTATION: dropping the park the step woke from turns this red.
+    assert newest.endswith("(was CI_PENDING)")
+
+
+def test_a_wake_on_settled_checks_still_says_the_checks_settled():
+    for settled in ("green", "red"):
+        t, events = woken_task(settled)
+        w = build_waiting(t, events=events, as_of=READ_AT)
+        # MUTATION: losing the settled words for a green or red reading turns this red.
+        assert _ready_texts(w)[-1] == (
+            "ready: woke: swarm-api's tick read the checks settled (was CI_PENDING)")
+
+
+def test_a_wake_whose_reason_is_not_recorded_claims_no_reason():
+    t, events = woken_task(None)
+    w = build_waiting(t, events=events, as_of=READ_AT)
+    newest = _ready_texts(w)[-1]
+    # MUTATION: inventing "checks settled" for a wake with no recorded reason turns this red.
+    assert "checks settled" not in newest
+    assert "reason not recorded" in newest
+
+
+def test_the_wake_reason_names_only_the_wake_it_was_recorded_for():
+    """merge_wait holds the newest wake's reason: an older wake does not inherit it."""
+    t, events = woken_task("head_moved")
+    old = event(EventType.READY, FIRST_PARK + timedelta(minutes=5),
+                {"reason": "wake_requested", "park_reason": "CI_PENDING"}, task_id=t.id, n=2)
+    w = build_waiting(t, events=[old, *events], as_of=READ_AT)
+    texts = _ready_texts(w)
+    # MUTATION: giving every wake_requested row the newest wake_reason turns this red.
+    assert "the head moved" not in texts[0] and "reason not recorded" in texts[0]
+    assert "the head moved" in texts[-1]
+
+
+def test_the_wake_requested_row_of_a_parked_step_words_the_reason():
+    t, events = ci_task()
+    t.metadata["merge_wait"] = {**t.metadata["merge_wait"],
+                                "wake_requested_at": READ_AT - timedelta(minutes=1),
+                                "wake_reason": "head_moved"}
+    w = build_waiting(t, events=events, as_of=READ_AT)
+    wake = [h for h in w["history"] if h["kind"] == "wake"]
+    # MUTATION: serving the raw code, or "checks settled", on the wake row turns this red.
+    assert wake and wake[0]["text"] == (
+        "wake requested: swarm-api's tick read that the head moved")

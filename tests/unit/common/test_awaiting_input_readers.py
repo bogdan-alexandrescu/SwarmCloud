@@ -97,6 +97,12 @@ MUST_IGNORE: dict[str, str] = {
         "item kind, listed as information, is lane HW-MCP's",
     "apps/swarm-mcp/swarm_mcp/server.py":
         "`/sc check`'s help text for the hand-off row; lane HW-MCP's",
+    "apps/swarm-ui/src/AgentSplit.tsx":
+        "a merge held by the owner's questions has no Browser tab (#2313), read "
+        "through `ownerQuestionsHold`; an await-input step is no browser either",
+    "apps/swarm-ui/src/QuestionsCard.tsx":
+        "a merge held by the owner's questions (#2313) and an agent's blocking "
+        "questions; an await-input step is answered on its own card (lane HW-UI's)",
     "apps/swarm-ui/src/AgentDetail.tsx":
         "the live-browser hand-off banner; the await-input card is lane HW-UI's",
     "apps/swarm-ui/src/Handoff.tsx":

@@ -74,8 +74,11 @@ SIGNATURE_FIELDS = ("spec_signature", "spec_key_version", "spec_format")
 UI_PATH_PREFIXES = ("apps/swarm-ui/", "docs/web-ui/")
 #: Directories whose files are tests, wherever they sit under a UI prefix.
 TEST_DIRECTORIES = ("__tests__", "tests")
-#: A file whose name carries this is a test (`App.test.tsx`).
-TEST_FILE_MARK = ".test."
+#: A file under `apps/swarm-ui/` whose name carries one of these is a vitest
+#: file (`App.test.tsx`, `Accounts.spec.tsx`). Only there: a `docs/web-ui/`
+#: page is rendered whatever it is called (#2379, F03).
+TEST_FILE_MARKS = (".test.", ".spec.")
+TEST_FILE_MARK_PREFIX = "apps/swarm-ui/"
 
 #: Task documents read per resolution: the parents and the `builds_on` chain
 #: behind them. A workflow has at most 50 parents per step; a chain longer
@@ -95,9 +98,17 @@ REASON_INHERIT_UNREADABLE = "inherited_unreadable"
 
 
 def is_test_path(path: str) -> bool:
-    """Whether a repository path is a test file: under `__tests__/` or `tests/`, or `*.test.*`."""
-    parts = path.lstrip("/").split("/")
-    return any(part in TEST_DIRECTORIES for part in parts[:-1]) or TEST_FILE_MARK in parts[-1]
+    """Whether a repository path is a test file.
+
+    Under a `__tests__/` or `tests/` directory, or, under `apps/swarm-ui/`,
+    named `*.test.*` or `*.spec.*`.
+    """
+    text = path.lstrip("/")
+    parts = text.split("/")
+    if any(part in TEST_DIRECTORIES for part in parts[:-1]):
+        return True
+    return text.startswith(TEST_FILE_MARK_PREFIX) and any(
+        mark in parts[-1] for mark in TEST_FILE_MARKS)
 
 
 def is_ui_path(path: Any) -> bool:

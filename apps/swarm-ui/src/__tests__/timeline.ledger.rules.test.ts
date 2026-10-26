@@ -168,25 +168,28 @@ describe('the marks keep TS-4’s forms and the pick keeps no hue', () => {
 
 describe('at 390 (§7.2)', () => {
   const TOOLBAR =
-    '<div class="ctl-toolbar ol-toolbar"><div class="ctl-seg ol-span"><button class="is-wide-only">24h</button><button>14d</button></div>' +
+    '<div class="ctl-toolbar ol-toolbar"><div class="c-seg ol-span"><button>24h</button><button>14d</button><button>from–to</button></div>' +
     '<button class="ol-sheet-toggle">Filters · 0</button>' +
-    '<div class="ol-sheet" id="closed"><div class="ctl-seg ol-span-more"><button>24h</button></div></div>' +
+    '<div class="ol-sheet" id="closed"></div>' +
     '<div class="ol-sheet is-open" id="open"></div>' +
     '<button class="ol-table-toggle">Table</button></div>' +
     '<p class="ol-readout-head"><button class="ol-step">‹</button></p>'
 
-  it('keeps the span, moves 24h and the range into the sheet, and hides the sheet behind Filters · N', () => {
+  // VQ-024 (visual QA, 2026-10-26): 24h and the range used to move into the
+  // sheet, and the four left wrapped 3+1. Every span stays in the one control,
+  // on one row that scrolls sideways if it must.
+  it('keeps every span in one row, and hides the sheet behind Filters · N', () => {
     const f = fragment(TOOLBAR)
-    expect(won(pick(f, '.ol-span > .is-wide-only'), 'display', PHONE)).toBe('none')
-    expect(won(pick(f, '.ol-span > .is-wide-only'), 'display', WIDE)).toBeNull()
+    for (const b of f.querySelectorAll('.ol-span > button')) expect(won(b, 'display', PHONE), b.textContent ?? '').toBeNull()
+    expect(won(pick(f, '.ol-span'), 'flex-wrap', PHONE)).toBe('nowrap')
+    expect(won(pick(f, '.ol-span'), 'overflow-x', PHONE)).toBe('auto')
+    expect(won(pick(f, '.ol-span'), 'flex-wrap', WIDE)).toBeNull()
     expect(won(pick(f, '.ol-sheet-toggle'), 'display', WIDE), 'the sheet toggle shows on a wide screen').toBe('none')
     expect(won(pick(f, '.ol-sheet-toggle'), 'display', PHONE)).toBe('inline-flex')
     expect(won(pick(f, '#closed'), 'display', PHONE)).toBe('none')
     expect(won(pick(f, '#open'), 'display', PHONE)).toBe('flex')
     // At a wide width the sheet's controls sit in the toolbar's own row.
     expect(won(pick(f, '#closed'), 'display', WIDE)).toBe('contents')
-    expect(won(pick(f, '.ol-span-more'), 'display', WIDE)).toBe('none')
-    expect(won(pick(f, '.ol-span-more'), 'display', PHONE)).toBe('inline-flex')
   })
 
   it('gives the phone’s bucket steps, the sheet toggle and the Table toggle 44px targets, and no steps on a wide screen', () => {
