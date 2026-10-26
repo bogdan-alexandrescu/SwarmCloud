@@ -82,6 +82,7 @@
    clear of the pane's edge, where an overlay scrollbar covered the last
    letter of "Let any member take control" (MEASURED 2026-10-26). */
 .live-toolbar {
+  position: relative;
   display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: var(--t-meta);
   padding-inline-end: 12px;
 }
@@ -100,8 +101,12 @@
 .live-device-pop > .live-chips { flex-wrap: wrap; }
 .live-device { display: inline-flex; gap: 6px; align-items: center; }
 .live-open { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
-/* The member-control confirm (QA12-11) opens under its checkbox, as Take control's does under its button. */
-.live-open-wrap { position: relative; display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+/* The member-control confirm (QA12-11) opens under the toolbar, from its left
+   where the checkbox sits. The wrap is NOT positioned, so the ask's box is the
+   toolbar's -- the pane's width. Anchored right:0 to the wrap, a 420 px ask ran
+   ~104 px past the pane's left edge at 1440 (the heading read "er take
+   control?") and started at x=-110 at 390 (RENDERED, review of PR 2484). */
+.live-open-wrap { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .live-chips { display: inline-flex; flex-wrap: nowrap; gap: 2px; }
 .live-chip[aria-pressed="true"] { border-color: var(--sk-ac); color: var(--sk-ac); font-weight: 600; }
 .live-toolbar-end { margin-left: auto; display: inline-flex; flex-wrap: nowrap; gap: 8px; align-items: center; }
@@ -228,6 +233,11 @@
   display: flex; flex-direction: column; gap: 8px; padding: 12px;
   border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface);
   font-size: var(--t-body);
+}
+.live-ask.is-members { left: 0; right: auto; width: min(420px, 100%); box-sizing: border-box; }
+/* A phone: the whole toolbar's width, which already sits inside the page's gutters. */
+@media (max-width: 560px) {
+  .live-ask.is-members { left: 0; right: 0; width: auto; }
 }
 .live-ask.is-mismatch { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, var(--surface)); }
 /* No gap under the title (visual QA 5, U4): the ask's own `gap` spaces its
