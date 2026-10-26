@@ -14,7 +14,9 @@ the broker's own route, and these tests hold what it may and may not do:
   * an unknown provider or tenant is a 404, before the broker is called;
   * who asked is the token's verified email: a body that names a
     `requested_by` is refused, and the audit's `by` is never the body's;
-  * the broker client sends the broker's body, `{hard_max}`, to its route.
+  * the broker client sends the broker's body, `{hard_max, requested_by,
+    reason}`, to its route, and `requested_by` is the token's email
+    (ACCOUNT-429-FOLLOWUP: the broker audits the change in `quota_audit` too).
 
 No credentials, no network: a fake broker and the shared FakeFirestore.
 """
@@ -122,7 +124,8 @@ def test_a_platform_admin_sets_the_max_and_it_is_audited_as_the_token_says(db):
         HARD_MAX, json={"hard_max": 30, "reason": "eng asked for less"}, headers=auth_header("root"))
     assert response.status_code == 200, response.text
     assert broker.calls == [{"route": "hard-max", "provider": PROVIDER, "tenant_id": TENANT,
-                             "hard_max": 30}]
+                             "hard_max": 30, "requested_by": ADMIN,
+                             "reason": "eng asked for less"}]
     change = response.json()["change"]
     assert change["from_hard_max"] == 50 and change["to_hard_max"] == 30
     # The broker's clamp, said: 40 did not fit under 30.
@@ -220,8 +223,12 @@ def test_the_broker_client_puts_the_brokers_own_body_to_its_route():
 
     client = BrokerClient(base_url="https://broker.invalid", audience="https://broker.invalid",
                           tokens=_Token(), transport=transport)
-    assert client.set_hard_max(PROVIDER, TENANT, hard_max=30) == {"quota": {"configured_hard_max": 30}}
+    assert client.set_hard_max(
+        PROVIDER, TENANT, hard_max=30, requested_by=ADMIN, reason="eng asked for less"
+    ) == {"quota": {"configured_hard_max": 30}}
     assert calls == [{"method": "PUT",
                       "url": f"https://broker.invalid/v1/quota/{PROVIDER}/{TENANT}/hard-max",
-                      # The broker's `HardMaxRequest` forbids any other field.
-                      "body": {"hard_max": 30}}]
+                      # The broker's `HardMaxRequest`: who and why are audited
+                      # there too (ACCOUNT-429-FOLLOWUP).
+                      "body": {"hard_max": 30, "requested_by": ADMIN,
+                               "reason": "eng asked for less"}}]

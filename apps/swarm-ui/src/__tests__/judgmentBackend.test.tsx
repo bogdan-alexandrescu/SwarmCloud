@@ -163,13 +163,14 @@ describe('the Jev backend radio', () => {
   })
 })
 
-describe('on Settings › API keys', () => {
-  it('is drawn above the TypeSafe key', async () => {
+describe('on Config › Secrets (Settings › API keys until SSC-UI, part of #2158)', () => {
+  it('is drawn on the workspace scope, beside the keys it decides between', async () => {
     api(judgment())
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
-    const { ProviderKeysScreen } = await import('../ProviderKeys')
-    render(<ProviderKeysScreen link={null} />)
+    const { SecretsScreen } = await import('../Secrets')
+    render(<SecretsScreen view={null} />)
+    // MUTATION: drop JevBackendCard from the page -> the backend choice is reachable nowhere and this fails.
     expect(await group()).toBeTruthy()
   })
 })

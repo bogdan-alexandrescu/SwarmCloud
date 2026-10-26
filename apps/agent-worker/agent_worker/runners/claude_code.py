@@ -1132,23 +1132,102 @@ def screenshot_images(events: Any) -> dict[str, int]:
     return {"taken": len(calls), "seen_as_image": len(seen)}
 
 
-def _stream_screenshots(path: Path) -> dict[str, int]:
-    """`screenshot_images` over the CLI's captured stdout, read a line at a time:
-    with screenshots in it the capture is mostly base64, and only the lines
-    that can hold a screenshot call or its result are decoded."""
+def _stream_events(path: Path) -> list[Any] | None:
+    """The CLI's captured stdout, decoded, a line at a time: only the lines
+    that can hold a tool call or its result, since with screenshots in it the
+    capture is mostly base64. None when the file cannot be read -- which is
+    not a stream with no calls in it (`browser_use`)."""
     events: list[Any] = []
     try:
         with path.open(encoding="utf-8", errors="replace") as handle:
             for line in handle:
-                if "browser_take_screenshot" not in line and '"tool_result"' not in line:
+                if '"tool_use"' not in line and '"tool_result"' not in line:
                     continue
                 try:
                     events.append(json.loads(line))
                 except ValueError:
                     continue
     except OSError:
+        return None
+    return events
+
+
+def _stream_screenshots(path: Path) -> dict[str, int]:
+    """`screenshot_images` over the CLI's captured stdout (`_stream_events`)."""
+    return screenshot_images(_stream_events(path) or [])
+
+
+#: BROWSER-USE-FLAG (part of #2322): what counts as the agent using its
+#: browser. The 2026-10-25 audit found 49 browser tasks that never touched the
+#: browser, and only by reading agent logs by hand: nothing but screenshots
+#: was counted. A call is a `tool_use` of a browser MCP server this runner
+#: registers (Playwright, jev), or a Bash command that drives the browser or
+#: the gate: `swarm-handoff serve|device|theme|record`, `dev-browser`, or a
+#: script through `swarm_browser` (LIVE_BROWSER_NOTE names each).
+BROWSER_TOOL_PREFIXES = (f"mcp__{MCP_SERVER_NAME}__", f"mcp__{JEV_MCP_SERVER_NAME}__")
+BROWSER_COMMAND = re.compile(
+    r"\bswarm-handoff\s+(?:serve|device|theme|record)\b|\bdev-browser\b|\bswarm_browser\b"
+)
+#: The CLI's shell tool, whose `input.command` is read for `BROWSER_COMMAND`.
+BASH_TOOL = "Bash"
+#: An image the agent produced, by suffix: some agents render through a
+#: script with no tool call at all, and the image is all that shows it.
+IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
+
+
+def browser_calls(events: Any) -> dict[str, int]:
+    """How many browser calls the CLI's stream-json carries (`BROWSER_TOOL_PREFIXES`,
+    `BROWSER_COMMAND`): `tool` the browser MCP tools' calls, `command` the
+    Bash commands that drive the browser. Counts only, never the input."""
+    tool = command = 0
+    for event in events if isinstance(events, list) else []:
+        for block in _blocks(event):
+            if block.get("type") != "tool_use":
+                continue
+            name = str(block.get("name") or "")
+            if name.startswith(BROWSER_TOOL_PREFIXES):
+                tool += 1
+            elif name == BASH_TOOL:
+                tool_input = block.get("input")
+                text = tool_input.get("command") if isinstance(tool_input, dict) else None
+                if isinstance(text, str) and BROWSER_COMMAND.search(text):
+                    command += 1
+    return {"tool": tool, "command": command}
+
+
+def produced_images(directory: Path) -> int:
+    """How many image files (`IMAGE_SUFFIXES`) are under `directory`, the
+    task's artifacts: screenshots, flow GIFs and anything a script rendered.
+    Links are not followed; a directory that cannot be read counts 0."""
+    count = 0
+    try:
+        for path in directory.rglob("*"):
+            if path.suffix.lower() in IMAGE_SUFFIXES and not path.is_symlink() and path.is_file():
+                count += 1
+    except OSError:
         pass
-    return screenshot_images(events)
+    return count
+
+
+def browser_use(stream: Path, artifacts: Path, *, complete: bool = True) -> dict[str, Any]:
+    """The counts a live-browser attempt reports as `browser_use` (BROWSER-USE-FLAG).
+
+    `read` is false when the stream could not be read, and the call counts are
+    then None, never 0: an unread stream is not one with no calls. `complete`
+    is false when the capture was cut, and the counts are then a lower bound.
+    The verdict is the worker's (`lifecycle.browser_use_record`), which also
+    knows whether the attempt had a browser at all.
+    """
+    events = _stream_events(stream)
+    calls = browser_calls(events) if events is not None else None
+    return {
+        "read": events is not None,
+        "complete": complete,
+        "tool_calls": None if calls is None else calls["tool"] + calls["command"],
+        "mcp_calls": None if calls is None else calls["tool"],
+        "command_calls": None if calls is None else calls["command"],
+        "images": produced_images(artifacts),
+    }
 
 
 def prepare_test_browsers(image_browsers: Path, cache_home: Path) -> Path | None:
@@ -1358,8 +1437,13 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             # QA-KIT: what the model was given of its screenshots, read off the
             # stream, so a report can say what it saw. `complete` is false when
             # the capture was cut, and the counts are then a lower bound.
-            seen = _stream_screenshots(Path(ctx.artifacts_dir) / cli_stream_files(spec).stdout)
+            stream = Path(ctx.artifacts_dir) / cli_stream_files(spec).stdout
+            seen = _stream_screenshots(stream)
             result["browser_screenshots"] = {**seen, "complete": not result.get("stdout_truncated")}
+            # BROWSER-USE-FLAG: every browser call and every image, beside
+            # the screenshots, for the worker's `browser_used` verdict.
+            result["browser_use"] = browser_use(
+                stream, Path(ctx.artifacts_dir), complete=not result.get("stdout_truncated"))
         return result
     finally:
         # The worker's key file, whether or not jev was registered: the agent

@@ -192,7 +192,11 @@ _CACHE_MAX_ENTRIES = 256
 #: name; an arrival carries its provider. A stored day counted under 8 has
 #: none of those columns, so `_decode_rows` refuses it and it is re-derived
 #: once, by the read that next needs it or by the rollup job.
-DERIVE_VERSION = 9
+#: 10 (2026-10-25, #2322 BROWSER-USE-FLAG): an ended tuple carries its
+#: browser-runtime seconds (`browser_s`) and the worker's verdict on whether
+#: the browser was used (`browser_used`), for `usage.browser`. A stored day
+#: counted under 9 has neither column, so it is re-derived once.
+DERIVE_VERSION = 10
 CLASSIFIER_VERSION = 3
 
 #: Firestore caps a document at 1 MiB. A day whose tuples pass this many bytes
@@ -1505,6 +1509,11 @@ ENDED_COLS: tuple[str, ...] = (
     # The account the task last ran on, from its own events
     # (`task_accounts.last_account_id`), NOT_RECORDED when they name none.
     "pool_account",
+    # #2322 (DERIVE_VERSION 10). `run_s` again when the task's profile runs a
+    # live browser (`RunnerProfile.live_browser`), None otherwise; and the
+    # worker's `result_summary.browser_used`: true, false or None.
+    "browser_s",
+    "browser_used",
 )
 ARRIVED_COLS: tuple[str, ...] = (
     "id", "created", "profile", "submitted_by", "step", "model_class", "provider",
@@ -1598,6 +1607,19 @@ def _provider_of(profile_name: Any) -> str:
     if profile is None:
         return NOT_RECORDED
     return profile.provider or NO_PROVIDER
+
+
+def _browser_runtime(profile_name: Any) -> bool:
+    """Whether the profile runs a live browser (`RunnerProfile.live_browser`)."""
+    profile = RUNNER_PROFILES.get(str(profile_name))
+    return bool(getattr(profile, "live_browser", False))
+
+
+def _browser_used(task: Mapping[str, Any]) -> bool | None:
+    """The worker's verdict (`lifecycle.browser_use_record`), or None."""
+    summary = task.get("result_summary")
+    used = summary.get("browser_used") if isinstance(summary, Mapping) else None
+    return used if isinstance(used, bool) else None
 
 
 def _cost_estimated(task: Mapping[str, Any]) -> bool:
@@ -1737,6 +1759,8 @@ def tuple_from_docs(
         "cost_estimated": _cost_estimated(task),
         "provider": _provider_of(task.get("runner_profile")),
         "pool_account": pool_account or NOT_RECORDED,
+        "browser_s": run_s if _browser_runtime(task.get("runner_profile")) else None,
+        "browser_used": _browser_used(task) if _browser_runtime(task.get("runner_profile")) else None,
     }
 
 
@@ -2393,6 +2417,8 @@ class _Usage:
         "agents", "agents_ended", "retries", "attempts", "started",
         "run_sum", "run_measured", "tokens", "token_reporting",
         "cost_sum", "cost_reporting", "estimated_sum", "estimated",
+        "browser_agents", "browser_sum", "browser_measured", "unused_agents",
+        "unused_sum", "unknown_agents",
     )
 
     def __init__(self) -> None:
@@ -2410,6 +2436,15 @@ class _Usage:
         self.estimated_sum: float | None = None
         #: How many agents `estimated_sum` is over (#2149 answer 2).
         self.estimated = 0
+        #: #2322: the ended agents on a browser runtime, their summed run
+        #: seconds and how many of them had any, then those the worker found
+        #: did not use the browser and theirs, and those it could not say.
+        self.browser_agents = 0
+        self.browser_sum: float | None = None
+        self.browser_measured = 0
+        self.unused_agents = 0
+        self.unused_sum: float | None = None
+        self.unknown_agents = 0
 
     def add(self, t: Mapping[str, Any] | None) -> None:
         """One agent, with its ended tuple or None when it has none."""
@@ -2437,6 +2472,19 @@ class _Usage:
             if t.get("cost_estimated"):
                 self.estimated += 1
                 self.estimated_sum = (self.estimated_sum or 0.0) + float(cost)
+        if _browser_runtime(t.get("profile")):
+            self.browser_agents += 1
+            seconds = t.get("browser_s")
+            if seconds is not None:
+                self.browser_sum = (self.browser_sum or 0.0) + float(seconds)
+                self.browser_measured += 1
+            used = t.get("browser_used")
+            if used is False:
+                self.unused_agents += 1
+                if seconds is not None:
+                    self.unused_sum = (self.unused_sum or 0.0) + float(seconds)
+            elif used is not True:
+                self.unknown_agents += 1
 
     def merge(self, other: "_Usage") -> None:
         def plus(a: Any, b: Any) -> Any:
@@ -2455,6 +2503,12 @@ class _Usage:
         self.cost_reporting += other.cost_reporting
         self.estimated_sum = plus(self.estimated_sum, other.estimated_sum)
         self.estimated += other.estimated
+        self.browser_agents += other.browser_agents
+        self.browser_sum = plus(self.browser_sum, other.browser_sum)
+        self.browser_measured += other.browser_measured
+        self.unused_agents += other.unused_agents
+        self.unused_sum = plus(self.unused_sum, other.unused_sum)
+        self.unknown_agents += other.unknown_agents
 
     def to_api(self) -> dict[str, Any]:
         return {
@@ -2483,6 +2537,22 @@ class _Usage:
                 "agents": self.agents,
                 "reporting": self.cost_reporting,
             },
+            # #2322 BROWSER-USE-FLAG: browser-runtime run time, and the part
+            # of it whose task did not use its browser. `unused_s` is 0.0
+            # when every browser agent used it and null when none ended on a
+            # browser runtime with a measured run; `unknown` agents' seconds
+            # are in `run_s` and in neither verdict.
+            "browser": {
+                "agents": self.browser_agents,
+                "run_s": None if self.browser_sum is None else round(self.browser_sum, 1),
+                "measured": self.browser_measured,
+                "unused_agents": self.unused_agents,
+                "unused_s": (
+                    round(self.unused_sum, 1) if self.unused_sum is not None
+                    else (0.0 if self.browser_sum is not None else None)
+                ),
+                "unknown_agents": self.unknown_agents,
+            },
         }
 
 
@@ -2495,6 +2565,7 @@ _UNREAD_USAGE: dict[str, Any] = {
     "run_s": None,
     "tokens": None,
     "cost": None,
+    "browser": None,
 }
 
 

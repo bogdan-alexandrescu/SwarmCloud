@@ -153,7 +153,7 @@ describe('the page is led by what is missing (proposal E)', () => {
     expect(addButtons()).toHaveLength(1)
     expect(lead!.contains(addButtons()[0]!)).toBe(false)
     fireEvent.click(within(dashed()!).getByRole('link', { name: 'Register' }))
-    expect(go).toHaveBeenCalledWith('work/repositories?page=register')
+    expect(go).toHaveBeenCalledWith('config/repositories?page=register&repo=example-labs%2Fconsole')
   })
 
   it('with nothing chosen the lead carries Add new repository and the head does not repeat it (S3c)', async () => {

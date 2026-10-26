@@ -662,6 +662,10 @@ _PATCH_HEADER = re.compile(
 )
 
 
+#: The `result_summary.git` key naming the paths a step's own work changed.
+OWN_FILES_KEY = "own_files"
+
+
 def _patch_paths(header: str) -> list[str]:
     """The repository paths one patch header line names (`a/`, `b/` dropped)."""
     text = header.strip()
@@ -700,12 +704,39 @@ def ui_paths_in_patch(text: str) -> list[str]:
     return list(found)
 
 
+def ui_paths_in_own_files(summary: Any) -> tuple[list[str], bool] | None:
+    """`(UI paths, unknown)` from the paths a step's OWN work changed (#2337).
+
+    `result_summary.git.own_files`: its non-merge first-parent commits and
+    its uncommitted work, so a UI file a lane merged in from main or from
+    the branch it started on is not one it changed. None when the step
+    recorded no such list -- a step harvested before #2337, or one whose
+    listing failed -- and the caller judges by the whole patch, as before.
+    `unknown` as in `ui_paths_in_files`.
+    """
+    git = summary.get("git") if isinstance(summary, dict) else None
+    rows = git.get(OWN_FILES_KEY) if isinstance(git, dict) else None
+    if not isinstance(rows, list):
+        return None
+    found: dict[str, None] = {}
+    for value in rows:
+        if isinstance(value, str) and is_ui_path(value):
+            found.setdefault(value.lstrip("/"), None)
+    truncated = git.get(f"{OWN_FILES_KEY}_truncated") is True
+    return list(found), truncated and not found
+
+
 def ui_paths_in_files(summary: Any) -> tuple[list[str], bool]:
     """`(UI paths, unknown)` from a step's `result_summary.git` record.
 
-    `unknown` is True when its file list was cut at its bound and the part
-    kept names no UI path: the rest may, and nobody measured it.
+    Its own paths when it recorded them (`ui_paths_in_own_files`), else its
+    whole file list. `unknown` is True when the list read was cut at its
+    bound and the part kept names no UI path: the rest may, and nobody
+    measured it.
     """
+    own = ui_paths_in_own_files(summary)
+    if own is not None:
+        return own
     git = summary.get("git") if isinstance(summary, dict) else None
     rows = git.get("files") if isinstance(git, dict) else None
     found: dict[str, None] = {}

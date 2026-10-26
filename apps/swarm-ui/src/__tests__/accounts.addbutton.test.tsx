@@ -133,20 +133,28 @@ describe('the list names itself and qualifies its figures (#127, #503)', () => {
     const title = document.querySelector('section.acct-list .acct-list-head > h2')
     expect(title, 'the list has no title').not.toBeNull()
     expect(title!.firstChild?.textContent?.trim()).toBe('Subscription accounts')
-    // #2222: the ranked table names each window at its figure; the pane's
-    // tiles carry 5h, 7d and Clears, each under its word.
+    // #2222: the ranked table names each window at its figure, and so does
+    // the opened account's sheet, each window under its own word.
     expect(document.querySelector('table.accounts')).toBeNull()
     expect([...rowOf('laptop').querySelectorAll('.acct-fig b')].map((b) => b.textContent)).toEqual(['5-hour', '7-day'])
-    const tiles = [...document.querySelectorAll('.acct-tiles > .acct-tile > small')].map((t) => t.textContent)
-    expect(tiles).toEqual(['5h used', '7d used', 'Clears', 'Last given out'])
+    fireEvent.click(rowOf('laptop').querySelector('button.acct-open')!)
+    const wins = [...document.querySelectorAll('.acct-sheet .acct-ss-wins .acct-win-l > b')].map((t) => t.textContent)
+    expect(wins).toEqual(['5-hour', '7-day'])
   })
 
-  it('says which window Clears counts down on the tile', async () => {
-    await mount([live()])
-    // The row's Clears is when it can take an agent (#2222); the tile's is the binding window's reset.
+  it('says when a blocked account clears, from the broker, in its row and its sheet', async () => {
+    const at = new Date(Date.now() + 2 * HOUR).toISOString()
+    await mount([
+      live({
+        can_take_new_agent: false,
+        blocked_by: [{ window: 'five_hour', used: 0.9, floor: 0.15, resets_at: at, aged_reading: false }],
+        next_eligible_at: at,
+      } as Partial<Account>),
+    ])
     expect(rowOf('laptop').querySelector('.acct-clr')).not.toBeNull()
-    const tile = document.querySelector('.acct-tiles > [data-label="Clears"] .acct-clears-win')
-    expect(tile!.textContent).toBe('5h window')
+    fireEvent.click(rowOf('laptop').querySelector('button.acct-open')!)
+    const lines = [...document.querySelectorAll('.acct-sheet .acct-sv-why')].map((p) => p.textContent ?? '')
+    expect(lines.some((l) => /^Clears: \d\d:\d\dZ · in (1h 5\dm|2h)/.test(l)), lines.join(' | ')).toBe(true)
   })
 
   it('carries a last given out sub-line under each label, including never', async () => {
@@ -168,8 +176,21 @@ describe('the ~ legend is drawn only when a ~ is (#127)', () => {
   })
 
   it('keeps the legend when a projected figure is on screen', async () => {
-    await mount([live({ stale: true })])
-    expect(document.querySelector('.acct-tilde')).not.toBeNull()
+    const now = Date.now()
+    const old = live({
+      stale: true,
+      observed_at: new Date(now - 2 * HOUR).toISOString(),
+      windows: {
+        ...live().windows,
+        // A window with no column, read stale: its figure is drawn with `~`.
+        harbor_lantern: { utilization: 0.4, resets_at: new Date(now + 9 * HOUR).toISOString(), reset: false },
+      },
+    })
+    await mount([old])
+    // The table draws an old reading pale with its age, never a `~`.
+    expect(document.querySelector('.provenance')!.textContent).toContain('no projected figures')
+    fireEvent.click(rowOf('laptop').querySelector('button.acct-open')!)
+    expect(document.querySelector('.acct-extra-windows')!.textContent).toContain('~40% used')
     expect(document.querySelector('.provenance')!.textContent).toContain('~ is an old reading, not current')
   })
 })
