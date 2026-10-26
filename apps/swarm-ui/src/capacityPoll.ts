@@ -154,9 +154,34 @@ export function poolViewer(capacity: Pick<Capacity, 'tenant_id' | 'pools'>): str
 }
 
 /**
+ * NEAR ITS CEILING: this share of it in use, or more. Pool limits' rule
+ * (AdminSettings `NEAR_CEILING`, its lead and the panel's `near ceiling`
+ * count), restated here only because AdminSettings imports this module and
+ * the import cannot run the other way; `vq.capacity.pools.test.tsx` holds the
+ * two equal. Pools draws a pool past it `near ceiling` in the full mark's
+ * amber (VQ-031): `anthropic · eng` at 46 of 50 read `ok` in the same grey as
+ * an idle pool.
+ */
+export const POOL_NEAR_CEILING = 0.8
+
+/** True when a pool is not full but holds `POOL_NEAR_CEILING` of its ceiling or more. */
+export function nearCeiling(p: Pool): boolean {
+  const limit = p.effective_limit
+  if (overCeiling(p) || isPaused(p) || limit === null || limit <= 0 || p.active >= limit) return false
+  return p.active / limit >= POOL_NEAR_CEILING
+}
+
+/** True when something -- AIMD or a provider quota -- holds a pool's ceiling under its configured hard limit. */
+export function loweredCeiling(p: Pool): boolean {
+  return p.effective_limit !== null && p.hard_limit !== null && p.effective_limit > 0 && p.effective_limit < p.hard_limit
+}
+
+/**
  * How abnormal a pool is, worst first (#125): over its ceiling, paused, no
- * limit set or limit 0, full -- the order Pools draws its marks in -- and 4
- * for a pool with nothing wrong.
+ * limit set or limit 0, full, near its ceiling, lowered -- the order Pools
+ * draws its marks in -- and 6 for a pool with nothing to look at. Near and
+ * lowered rank too (VQ-031): the four lowered pools sat at the foot of
+ * Providers, under every idle slice.
  */
 export function poolProblemRank(p: Pool): number {
   const limit = p.effective_limit
@@ -164,7 +189,9 @@ export function poolProblemRank(p: Pool): number {
   if (isPaused(p)) return 1
   if (limit === null || limit === 0) return 2
   if (p.active >= limit) return 3
-  return 4
+  if (nearCeiling(p)) return 4
+  if (loweredCeiling(p)) return 5
+  return 6
 }
 
 /** True when a pool is this tenant's: `tenant:<viewer>` or `<anything>:tenant:<viewer>`. */

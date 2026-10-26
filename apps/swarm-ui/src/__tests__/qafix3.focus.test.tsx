@@ -270,7 +270,7 @@ describe('a11y-keyboard-001: Accounts keeps focus on the account refresh', () =>
     await openAccount()
     const button = await screen.findByRole('button', { name: 'Refresh this account' }, WAIT)
     press(button)
-    await screen.findByRole('button', { name: 'exchanging…' }, WAIT)
+    await screen.findByRole('button', { name: 'Exchanging…' }, WAIT)
     // MUTATION: `disabled={state.kind === 'sending'}` back on the button
     // (Accounts.tsx `RefreshControl`).
     expect(button.hasAttribute('disabled')).toBe(false)
@@ -302,7 +302,7 @@ describe('a11y-keyboard-001: Accounts keeps focus on the account refresh', () =>
     const action = refresh.closest<HTMLElement>('.acct-action')!
     const retry = await within(action).findByRole('button', { name: 'Try again' }, WAIT)
     press(retry)
-    const sending = await screen.findByRole('button', { name: 'exchanging…' }, WAIT)
+    const sending = await screen.findByRole('button', { name: 'Exchanging…' }, WAIT)
     expect(within(action).queryByRole('button', { name: 'Try again' })).toBeNull()
     // MUTATION: `run` without moving focus to the account's refresh button:
     // Try again unmounts with its panel and focus is <body>.

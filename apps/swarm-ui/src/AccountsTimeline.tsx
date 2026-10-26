@@ -158,10 +158,13 @@ function Steps({
       return { ...s, x0, x1 }
     })
     .filter((s) => s.x1 > s.x0)
-  // A number is drawn in a segment only where it fits; the line under the
-  // bar says every step in words whenever one did not, and always on a phone.
-  const fits = (w: number) => w >= (phone ? 0.11 : 0.035)
-  const words = (w: number, n: number) => (w >= (phone ? 0.3 : 0.1) ? `${n} open` : String(n))
+  // A SEGMENT SAYS `N open` OR NOTHING (VQ-035, visual QA pass 1). A narrow
+  // one used to print its bare count -- one segment read `7`, a figure with
+  // no noun beside `3 open` -- and the slivers too thin for even that were
+  // unlabelled. Now a segment carries its words only where they fit, and the
+  // line under the bar says every step in words whenever one did not, and
+  // always on a phone.
+  const fits = (w: number) => w >= (phone ? 0.3 : 0.1)
   const unsaid = phone || segs.some((s) => !fits(s.x1 - s.x0))
   return (
     <>
@@ -173,7 +176,7 @@ function Steps({
             style={{ left: pctX(s.x0), width: pctX(s.x1 - s.x0) }}
             title={`${s.count} from ${utcAt(s.at, now)}`}
           >
-            {fits(s.x1 - s.x0) ? words(s.x1 - s.x0, s.count) : null}
+            {fits(s.x1 - s.x0) ? `${s.count} open` : null}
           </span>
         ))}
       </div>
@@ -444,7 +447,7 @@ function Holds({ a, now, axis, full }: { a: LanedAccount; now: number; axis: Axi
         </span>
       )}
       <span className="acct-tl-chip">
-        {pluralise(a.assigned, 'agent')} hold it · latest hold deadline{' '}
+        {pluralise(a.assigned, 'agent')} {a.assigned === 1 ? 'holds' : 'hold'} it · latest hold deadline{' '}
         {deadline.at !== null ? (
           <b className="acct-tl-nw">{utcAt(deadline.at, now)}</b>
         ) : (
@@ -926,6 +929,20 @@ export function AccountsTimeline({
             <li>
               <i className="lg-pace" aria-hidden="true" /> at this pace
             </li>
+          )}
+          {/* THE HOLDS ARE IN THE LEGEND TOO (VQ-035): a held lane's slot cells
+              and its thin bar to the latest hold deadline were the two marks
+              no entry named, so a held account's lane read as a different
+              kind of window from an idle one with the same share left. */}
+          {accounts.some((a) => a.assigned > 0) && (
+            <>
+              <li>
+                <i className="lg-held" aria-hidden="true" /> an agent slot held
+              </li>
+              <li>
+                <i className="lg-holdbar" aria-hidden="true" /> held until the latest hold deadline
+              </li>
+            </>
           )}
           <li>Band height: share left, square-root scale</li>
         </ul>

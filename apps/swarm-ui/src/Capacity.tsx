@@ -3,8 +3,19 @@ import { loadCapacity, loadLeases, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import { isPaused, type Result } from './fetch'
 import type { TopicId } from './help'
-import { HelpLinks } from './HelpCard'
-import { POOLS_POLL_MS, capacityPoll, comparePools, poolHref, poolViewer, tableMode, useLinkedPool, usePhoneTables } from './capacityPoll'
+import {
+  POOLS_POLL_MS,
+  capacityPoll,
+  comparePools,
+  loweredCeiling,
+  nearCeiling,
+  poolHref,
+  poolProblemRank,
+  poolViewer,
+  tableMode,
+  useLinkedPool,
+  usePhoneTables,
+} from './capacityPoll'
 import { leaseCoverage } from './Holders'
 import { Screen } from './Shell'
 import './styles/capacity.css'
@@ -68,6 +79,11 @@ export function CapacityScreen() {
       // landed you on. The nav's own rule (App.tsx: sections are named after
       // OBJECTS, not the question they answer) decides which side gives way.
       title="Pools"
+      // THE PAGE'S ONE `?` OPENS THE SCREEN'S TOPICS (VQ-033, BGD 2026-10-26:
+      // "Move the topics behind the page's one ?"). They were a `Reading this
+      // screen:` footer under the families; the `?` takes the section
+      // question's place by the title, so the page still draws one glyph.
+      help={CAPACITY_TOPICS}
       load={loadPoolsBoard}
       // Decided 2026-10-01 (#117): Pools re-reads every 30s, and `Screen`
       // pauses the timer while the tab is hidden.
@@ -89,13 +105,12 @@ export function CapacityScreen() {
         <>
           <CapSeg view="ceilings" />
           {/* CEILINGS, AS DECIDED ON 2026-10-01 (capacity.html, Variant 1, #125):
-              one table per family, with a "Needs action" group ahead of them
-              holding every pool a person has to act on (`needsAction`). A
-              pool appears once: the top group takes it out of its family.
-              The Cards view was the alternative set aside and is gone. */}
+              one table per family, with a "Needs a look" group ahead of them
+              holding every pool that is full, lowered, paused or near its
+              ceiling (`needsALook`, BGD 2026-10-26). A pool appears once: the
+              top group takes it out of its family. The Cards view was the
+              alternative set aside and is gone. */}
           <CeilingTables pools={d.pools} viewer={poolViewer(d)} holders={d.holders} />
-
-          <HelpLinks topics={CAPACITY_TOPICS} />
         </>
       )}
     </Screen>
@@ -189,7 +204,7 @@ export async function loadPoolsBoard(): Promise<Result<PoolsBoard>> {
 function PoolsSummary({ capacity }: { capacity: Capacity }) {
   const pools = capacity.pools
   // `too small` IS COUNTED BY THE ROW'S OWN RULE (visual QA run 6,
-  // 6:capacity-011, part of #1680). Needs action listed resource:large as
+  // 6:capacity-011, part of #1680). The top group listed resource:large as
   // `too small` while this line read `1 full · 1 lowered · 1 paused`, so the
   // summary named every state but the one a person had to act on. `isTooSmall`
   // is what `classifyPool` draws the chip from, weighed against the same
@@ -198,6 +213,9 @@ function PoolsSummary({ capacity }: { capacity: Capacity }) {
   const families = new Set(pools.map((p) => poolKind(p.name))).size
   const full = pools.filter((p) => !overCeiling(p) && p.effective_limit !== null && p.effective_limit > 0 && p.active >= p.effective_limit).length
   const lowered = pools.filter((p) => p.effective_limit !== null && p.hard_limit !== null && p.effective_limit < p.hard_limit).length
+  // NEAR CEILING IS COUNTED BY THE ROW'S OWN RULE (VQ-031), as `too small` is:
+  // the mark and this clause are both `nearCeiling`.
+  const near = pools.filter(nearCeiling).length
   const paused = pools.filter(isPaused).length
   const over = pools.filter(overCeiling).length
   const small = pools.filter((p) => isTooSmall(p, poolWeight(p, classes)?.units ?? null)).length
@@ -208,6 +226,7 @@ function PoolsSummary({ capacity }: { capacity: Capacity }) {
   const clauses = [
     `${pools.length} pools in ${families} famil${families === 1 ? 'y' : 'ies'}`,
     full > 0 ? `${full} full` : null,
+    near > 0 ? `${near} near ceiling` : null,
     lowered > 0 ? `${lowered} lowered` : null,
     paused > 0 ? `${paused} paused` : null,
     small > 0 ? `${small} too small` : null,
@@ -247,16 +266,13 @@ function scopeWord(name: string, viewer: string | undefined): string {
 }
 
 /**
- * True when a pool belongs in "Needs action" (owner decision 2026-10-01):
- * `poolGroup` (types.ts) files it there by `blockerGroup`, the rule the
- * Agents list's Waiting split uses -- paused, set to zero by a person, no
- * limit set, over its ceiling (drift), or below one task of its class. A `resource:` pool is weighed
- * against its class's `units` from the catalogue; no other pool has one class.
- *
- * It was "Needs a look", decided by this screen's own classification, which
- * also took in a pool that was merely full or lowered by AIMD: two screens,
- * two rules, and a busy pool filed beside one no wait will reopen. Those keep
- * their marks in their family's table.
+ * True when a pool is one a person has to act on: `poolGroup` (types.ts)
+ * files it under `needs_action` by `blockerGroup`, the rule the Agents list's
+ * Waiting split uses -- paused, set to zero by a person, no limit set, over
+ * its ceiling (drift), or below one task of its class. A `resource:` pool is
+ * weighed against its class's `units` from the catalogue; no other pool has
+ * one class. Every such pool is also in `needsALook`, so nothing Agents calls
+ * needs-action is left down in a family here.
  */
 export function needsAction(pool: Pool, classes: ResourceClasses | null): boolean {
   const units = poolKind(pool.name) === 'resource' ? classUnits(classes, pool.name.slice('resource:'.length)) : null
@@ -264,7 +280,32 @@ export function needsAction(pool: Pool, classes: ResourceClasses | null): boolea
 }
 
 /**
- * The Ceilings tab: "Needs action" first, then one table per family, each
+ * True when a pool belongs in Pools' top group, "Needs a look": full,
+ * lowered, paused or at `POOL_NEAR_CEILING` (80%) of its ceiling or more, the
+ * group capacity.html A draws -- and every pool `needsAction` takes, so a
+ * pool at 0, with no limit, over its ceiling or too small for its class leads
+ * as well. `poolProblemRank` is the rule the marks and the family order
+ * already use: anything it ranks above `ok` is something to look at.
+ *
+ * BGD'S ANSWER, 2026-10-26 08:20-08:30Z (VQ-031, task_06d63267fd684e27a419):
+ * "Needs a look, as the mock-up draws it". It REVERSES the 2026-10-01 note
+ * that made this group "Needs action", filed by the Agents list's Waiting
+ * split, which kept a full or AIMD-lowered pool in its family because
+ * waiting clears it. That split answers a different question -- which of a
+ * TASK's refusals a person must clear -- and Agents keeps it. Pools answers
+ * "which pools should I look at": the 46-of-50 pool read `ok` at the foot of
+ * Providers under that rule (pass 1), and the mock-up's group of full and
+ * lowered pools is what the owner picked.
+ */
+/** `poolProblemRank`'s rank for a pool with nothing to look at (capacityPoll.ts). */
+const POOL_RANK_OK = 6
+
+export function needsALook(pool: Pool, classes: ResourceClasses | null): boolean {
+  return needsAction(pool, classes) || poolProblemRank(pool) < POOL_RANK_OK
+}
+
+/**
+ * The Ceilings tab: "Needs a look" first, then one table per family, each
  * holding only the pools the top group did not take.
  */
 function CeilingTables({
@@ -280,8 +321,8 @@ function CeilingTables({
   // ONE POOL ORDER (QA G5-22): `comparePools`, the order Pool limits draws
   // the same pools in -- family, problems first, this tenant, name.
   const order = comparePools(viewer)
-  const act = pools.filter((p) => needsAction(p, classes)).sort(order)
-  const rest = pools.filter((p) => !needsAction(p, classes))
+  const look = pools.filter((p) => needsALook(p, classes)).sort(order)
+  const rest = pools.filter((p) => !needsALook(p, classes))
   // THE ROW A LINK NAMED (#128): Provider quota's Feeds pool lands here, on
   // its pool's row, outlined the way Pool limits outlines its linked row.
   const target = useLinkedPool()
@@ -302,11 +343,11 @@ function CeilingTables({
         </p>
       )}
       <HoldersUncounted holders={holders} />
-      {act.length > 0 && (
+      {look.length > 0 && (
         <Family
-          title={`Needs action · ${act.length}`}
+          title={`Needs a look · ${look.length}`}
           className="cap-needs"
-          pools={act}
+          pools={look}
           viewer={viewer}
           target={target}
           holders={holders}
@@ -524,7 +565,7 @@ function PoolRow({
   classes: ResourceClasses | null
 }) {
   // The weight `needsAction` weighed this pool against, so the row draws the
-  // reason it was filed under Needs action (QA-052).
+  // reason it was filed under Needs a look (QA-052).
   const marks = classifyPool(pool, poolWeight(pool, classes))
   const by = setBy(pool)
   const limit = pool.effective_limit
@@ -620,7 +661,10 @@ function PoolRow({
           c14), reversing PR 1853, which had printed the word here too after
           QA-099. Pool limits keeps `configured` in the dim ink (AdmSetBy);
           do not flip this one back to match it. */}
-      <td role="cell" data-label="Set by" title={by.detail}>
+      {/* `cap-by-cfg` LETS THE PHONE ROW DROP IT (VQ-032): the compact row
+          keeps Set by only when something other than the configured limit
+          sets the ceiling, which is when it says anything. */}
+      <td role="cell" data-label="Set by" title={by.detail} className={by.term === 'configured' ? 'cap-by-cfg' : undefined}>
         {by.term === 'configured' ? (
           <span className="cap-setby-cfg" role="img" aria-label="configured">·</span>
         ) : (
@@ -655,7 +699,7 @@ interface PoolClass {
 
 /**
  * ONE CLASSIFICATION FOR A POOL, READ BY THE TABLE AND THE CARDS ALIKE (CP-14,
- * #85): paused, over ceiling, limit 0, full, ok.
+ * #85): paused, over ceiling, limit 0, full, near ceiling, lowered, ok.
  *
  * The two views used to decide for themselves, and disagreed: the table drew
  * a healthy pool `ok` and the Cards view drew nothing; the card coloured a
@@ -705,7 +749,7 @@ function classifyPool(pool: Pool, weight: { name: string; units: number | null }
   const limit = pool.effective_limit
   // TOO SMALL FOR ONE TASK OF ITS CLASS (QA-052, 2026-10-20). `needsAction`
   // files a `resource:` pool whose positive limit is below its class's units
-  // under Needs action -- admission refuses when `active + units > limit`, so
+  // under Needs a look -- admission refuses when `active + units > limit`, so
   // it admits nothing at 0 in use -- and the row said `ok` with `0 / 2`, and
   // nothing on it said why it was there. `blockerCeiling` decides it, so the
   // group and the mark are one rule.
@@ -717,6 +761,16 @@ function classifyPool(pool: Pool, weight: { name: string; units: number | null }
   const unset = !paused && limit === null
   const zero = !paused && !over && limit === 0
   const full = !over && limit !== null && limit > 0 && pool.active >= limit
+  // NEAR ITS CEILING, AND LOWERED (VQ-031, visual QA pass 1). `anthropic · eng`
+  // at 46 of a lowered 50 read `ok` in the grey an idle pool takes, and the
+  // head's `4 lowered` named four rows nothing on them marked. Near is the
+  // full mark's amber, in the chip, the row and the track alike (CP-14: one
+  // answer); lowered is a neutral fact about the ceiling -- not a warning on
+  // its own -- with what lowered it in its title. Both file the pool under
+  // Needs a look (`needsALook`, BGD 2026-10-26), which `poolProblemRank`
+  // orders.
+  const near = nearCeiling(pool)
+  const lowered = !paused && !over && loweredCeiling(pool)
   const ceiling = zero
     ? blockerCeiling({ reason: '', pool: pool.name, limit: 0 })
     : unset
@@ -761,13 +815,30 @@ function classifyPool(pool: Pool, weight: { name: string; units: number | null }
   if (full) {
     chips.push({ cls: 'is-warn', word: 'full', title: `At its ceiling: ${pool.active} of ${limit} units in use.` })
   }
+  if (near) {
+    chips.push({
+      cls: 'is-warn',
+      word: 'near ceiling',
+      title: `${pool.active} of ${limit} units in use (${Math.round((pool.active / (limit as number)) * 100)}%): little room is left for the next agent.`,
+    })
+  }
+  // Lowered says what `ok` would have hidden; beside another mark it would only
+  // repeat the `/30` and the Set by the row already prints.
+  if (lowered && chips.length === 0) {
+    const by = setBy(pool)
+    chips.push({
+      cls: 'is-info',
+      word: 'lowered',
+      title: by.term === 'configured' ? `Lowered to ${limit} from its configured ${pool.hard_limit}.` : by.detail,
+    })
+  }
   // §6.6 AND THE CP-14 RULING: a healthy pool gets the ok mark -- the filled
   // disc and the word -- and the mark is a text grey, not a hue (`--text-faint`
   // since CH-17 set the chip primitive's grey). Healthy carries no hue; a quiet
   // grey screen is what a healthy platform looks like.
-  if (chips.length === 0) chips.push({ cls: 'is-ok', word: 'ok', title: 'Read, capped, not paused, and not at its ceiling.' })
+  if (chips.length === 0) chips.push({ cls: 'is-ok', word: 'ok', title: 'Read, capped, not paused, not lowered, and not near its ceiling.' })
 
-  const track = over ? 'is-bad' : paused ? 'is-paused' : zero || unset ? zeroTone : small ? 'is-paused' : full ? 'is-warn' : undefined
+  const track = over ? 'is-bad' : paused ? 'is-paused' : zero || unset ? zeroTone : small ? 'is-paused' : full || near ? 'is-warn' : undefined
   const row =
     track === undefined
       ? undefined
@@ -781,7 +852,9 @@ function classifyPool(pool: Pool, weight: { name: string; units: number | null }
               ? `${zeroTone} limit-unset`
               : small
                 ? 'is-paused below-units'
-                : 'is-warn full'
+                : full
+                  ? 'is-warn full'
+                  : 'is-warn near'
   return { chips, row, track }
 }
 
@@ -803,7 +876,8 @@ function PoolMarks({ marks }: { marks: PoolClass }) {
 }
 
 /**
- * The legend this screen used to end on, as links.
+ * The legend this screen used to end on, as links -- and then as a footer
+ * index, until VQ-033 moved it behind the title's `?` (`help` above).
  *
  * The middle entry carried "standard 1, browser 2, large 4" -- three platform
  * figures typed into a paragraph, which §5 of the prose migration table lists
