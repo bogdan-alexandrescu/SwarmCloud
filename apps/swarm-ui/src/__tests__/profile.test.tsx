@@ -369,6 +369,27 @@ describe('Settings › Profile › Time zone (VQ-023, part of #2391)', () => {
     expect(window.localStorage.getItem('swarm.timezone:ada@example.com')).toBeNull()
   })
 
+  /** MUTATION: send Profile's next save at the revision it read, before the zone pick moved it. */
+  it('saves notifications after a zone pick without a false "changed in another tab"', async () => {
+    // The API's revision rule: a PUT at any revision but the current one is a 409.
+    let revision = 4
+    const seen: Json[] = []
+    await drawn(fixture({ time_zone: 'UTC', time_zone_source: 'default' }), (body) => {
+      seen.push(body)
+      if (body.revision !== revision) return { status: 409, body: { code: 'preferences_changed', message: 'changed' } }
+      revision += 1
+      return { status: 200, body: saved(body, revision) }
+    })
+    fireEvent.click(zoneRadio('other')!)
+    fireEvent.change(within(region('Time zone')).getByLabelText(/Search \d+ zones/), { target: { value: LA } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save time zone' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /failed runs/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save notifications' }))
+    await waitFor(() => expect(visible(document.body)).toMatch(/Saved\. It applies to new sessions within a minute/))
+    expect(visible(document.body)).not.toMatch(/changed in another tab/i)
+    expect(seen.map((b) => [b.revision, b.time_zone ?? null])).toEqual([[4, LA], [5, null]])
+  })
+
   /** MUTATION: save whatever was typed. */
   it('refuses a name that is not a zone, and keeps the one in force', async () => {
     await drawn()
