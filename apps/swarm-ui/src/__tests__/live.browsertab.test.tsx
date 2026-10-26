@@ -1,6 +1,6 @@
 // LANE BROWSER-TAB-LIVE (part of #2423): THE LIVE FRAME IS THE FIRST THING
 // THE EYE LANDS ON. A Claude-in-Chrome walk over seven claude-code-browser
-// agents on swarm.saga.xyz, 2026-10-26, measured:
+// agents on the live deployment, 2026-10-26, measured:
 //
 //   BT-003 the frame sat under ~424 px of chrome and 42% of it was below the
 //          407 px pane: the stage's floor asked for the device at the pane's
