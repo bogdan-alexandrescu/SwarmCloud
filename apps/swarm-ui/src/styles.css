@@ -9829,7 +9829,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    phone's, where they collapse behind `Filters · N` (§7.2). */
 .ol-sheet { display: contents; }
 .ol-sheet-toggle { display: none; }
-.ol-span-more { display: none; }
 .ol-sheet-toggle,
 .ol-table-toggle,
 .ol-step {
@@ -10104,6 +10103,12 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   margin: var(--ctl-s2) 0 0;
 }
 .ol-pending { height: 420px; margin-top: var(--ctl-s3); }
+/* WHAT THE CHART REGION IS READING, beside its sweep (visual QA VQ-021). */
+.ol-body > .ol-reading {
+  margin: var(--ctl-s3) 0 0;
+  font: var(--t-body)/var(--lh-body) var(--font);
+  color: var(--text-dim);
+}
 /* A PERSON'S CELL IS CAPPED (QA G3-17): the local part of the address, the
    whole address in its title, and never wider than 220px, so the table's
    last columns stay inside the card at 1440. */
@@ -10138,7 +10143,14 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   gap: var(--ctl-s2);
   padding: 2px 0;
 }
+/* THE LABEL CUTS BEFORE ITS BAR (visual QA VQ-022): `nowrap` with nothing to
+   clip it ran "spec signature invalid" under its bar column, which drew over
+   it ('invali'). The grid cell is the label's width; the name is cut with an
+   ellipsis inside it, whole in its title. */
 .ol-row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font: var(--t-body)/var(--lh-body) var(--font);
   color: var(--text-dim);
   white-space: nowrap;
@@ -10245,7 +10257,14 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 
 /* ---- phone (§7.2): 44px targets, the span first, everything else behind a sheet ---- */
 @media (max-width: 560px) {
-  .ol-span > .is-wide-only { display: none; }
+  /* EVERY SPAN, ON ONE ROW (visual QA VQ-024, 2026-10-26). The shared control
+     wraps on a phone and lays five or six segments three to a row
+     (components.css V207); with 24h and from–to hidden, as they were, the four left
+     wrapped 3+1, 90d alone beside an empty cell. All six now stay in the
+     control, the column wide, and a row too narrow for them scrolls sideways
+     rather than wrapping. 0,3,1 over the shared rules' 0,3,0. */
+  .ol-toolbar > .c-seg.ol-span { flex: 1 1 100%; flex-wrap: nowrap; overflow-x: auto; }
+  .ol-toolbar > .c-seg.ol-span > button { flex: 1 0 auto; justify-content: center; }
   .ol-sheet-toggle { display: inline-flex; align-items: center; min-height: 44px; }
   .ol-sheet { display: none; }
   .ol-sheet.is-open {
@@ -10255,7 +10274,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     align-items: center;
     gap: var(--ctl-s2);
   }
-  .ol-span-more { display: inline-flex; }
   .ol-table-toggle { min-height: 44px; }
   .ol-pick > summary { display: flex; align-items: center; min-height: 44px; }
   .ol-step {
@@ -10266,6 +10284,11 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     min-height: 44px;
   }
   .ol-row { grid-template-columns: minmax(96px, 120px) minmax(40px, 1fr) 40px; }
+  /* A 0 ROW'S EMPTY BAR CELL GOES WHERE THE BAR GOES (review of VQ-022): the
+     phone block hides every `.ctl-util-track`, so a non-zero row's count
+     takes the bar's column. The empty cell kept its column, so a 0 row's
+     count sat one column right of the rest: two count columns at 390. */
+  .ol-row > .ol-row-none { display: none; }
 }
 
 /* diff viewer (#310), a file list and one file (owner decision 2026-10-01)
