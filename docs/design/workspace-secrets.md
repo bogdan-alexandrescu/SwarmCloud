@@ -1048,7 +1048,7 @@ read-only; the runbook says so.
 
 **The contract.** The slot must be declared on `claude-code-browser`'s
 `secret_slots` for the console, swarm-api's release and the worker's filter
-to read one declaration (request A's reason): contract request 116. Until it
+to read one declaration (request A's reason): contract request 117. Until it
 is applied, `check_grant` refuses a grant into `cf-access`, and everything
 above is built and tested against a catalogue with the slot added.
 

@@ -118,7 +118,7 @@ the AI Studio lanes).
      `client_secret`. The form is the only place the value is typed.
 2. **Grant it to the browser runner, with its hosts.** The console's grant
    matrix shows the `cf-access` slot under `profile:claude-code-browser` once
-   contract request 116 is applied. Until the console offers the host-list
+   contract request 117 is applied. Until the console offers the host-list
    field, set the grant from a terminal with `scripts/api.sh`, which calls
    swarm-api as you without putting your token in argv (the body carries no
    secret, only host names), as the workspace's admin:

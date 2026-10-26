@@ -8,7 +8,7 @@ real worker (`lifecycle.Worker.run`) and the real release against swarm-api's
 proof check, as test_secretrelease.py does, and the real `cf_access.hand_over`
 against a recording gate.
 
-The catalogue declares no `cf-access` slot yet (contract request 116,
+The catalogue declares no `cf-access` slot yet (contract request 117,
 docs/contract-change-requests.md), so the slot is added to the attempt's
 consumer slots for these tests only, as test_secretrelease.py adds a required
 slot. The fake token is built at run time, never written as one literal.

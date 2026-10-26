@@ -73,7 +73,7 @@ has a grant key, and is released only when that attestation verifies,
 whatever `grant_attestation_required` says (`_host_grant_admitted`). The
 release answers the item with its `hosts`; the worker never writes it to a
 file and hands it to the gate, which sends it to those hosts and no other.
-Today no catalogue entry declares the slot: contract request 116 asks for it
+Today no catalogue entry declares the slot: contract request 117 asks for it
 on `claude-code-browser`, and until it is applied a grant into it is refused
 by `check_grant` as a slot the consumer does not have.
 

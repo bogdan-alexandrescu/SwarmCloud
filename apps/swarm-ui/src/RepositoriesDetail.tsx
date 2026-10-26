@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
-  loadRepository, loadRepositoryIndex, loadRepositoryLanguages, loadResolvedToken, patchRepositoryContext, patchRepositoryKeepVersions, patchRepositoryTrigger, runRepositoryIndex,
+  loadRepository, loadRepositoryIndex, loadRepositoryLanguages, loadResolvedToken, patchRepositoryContext, patchRepositoryFileIssues, patchRepositoryKeepVersions, patchRepositoryTrigger,
+  patchRepositoryWorkflowFiles, runRepositoryIndex,
   type RepoContext, type RepoDetailRead, type RepoHardStops,
 } from './api'
 import { Banner, Button, Card, Chip, Dash, EmptyState, NamedMark, StatePill, ToneMark, routedClick } from './components'
@@ -17,6 +18,7 @@ import {
   useUrRead, writeFailure,
 } from './RepositoriesParts'
 import { RepoPermissions, useForgePermissions } from './PermissionCards'
+import { useRoleGate } from './Profile'
 import { PageHead } from './Shell'
 import { GraphTab, type GraphOpen } from './RepoGraph'
 import { AlwaysRun, EdgeGroups, PathLookup, Suites } from './RepoTestMap'
@@ -68,7 +70,7 @@ function tabOf(t: string | null): TabKey {
 
 /** The route these settings change through; named on the element, not in the words (walkthrough E). */
 const PATCH_ROUTE = 'PATCH /v1/repositories/{repo_id}'
-const PATCH_WHY = 'Except Code intelligence, the change trigger and the index history kept, these settings cannot be changed from this console yet: the controls show the served values.'
+const PATCH_WHY = 'Except Code intelligence, the change trigger, the index history kept, issue filing and workflow files, these settings cannot be changed from this console yet: the controls show the served values.'
 
 /** Where an absent `index_runs` / `used_by` would have been served (repo-index.md §6.1). */
 const DETAIL_ROUTE = 'GET /v1/repositories/{repo_id}'
@@ -837,9 +839,9 @@ function SettingsTab({
           </Card>
           {/* Drawn only where the registration serves the fields: an API older than lane S11 has no card to show. */}
           {stops !== null && <HardStopsCard stops={stops} />}
-          <FileIssuesCard on={r.agents_may_file_issues} />
+          <FileIssuesCard on={r.agents_may_file_issues} repoId={r.repo_id} onWrite={onWrite} />
           {/* Like the hard stops: an API older than WF-APP-TOKEN (#2029) serves no switch, so there is no card. */}
-          {r.workflow_files !== null && <WorkflowFilesCard on={r.workflow_files} repoId={r.repo_id} />}
+          {r.workflow_files !== null && <WorkflowFilesCard on={r.workflow_files} repoId={r.repo_id} onWrite={onWrite} />}
         </div>
         <div className="ur-stack">
           <Card title="Graph" className="ur-graph">
@@ -1187,21 +1189,93 @@ function HardStopsCard({ stops }: { stops: RepoHardStops }) {
 }
 
 /**
- * Whether the tenant's agents may file issues here (AU-0 REG-FLAG,
- * docs/design/agent-autonomy.md §3.2): the served value, shown and not
- * changed. Its one control is on the Repositories list's card, for a
- * workspace admin only (Q2); null is an API that did not serve it.
+ * ONE OF THIS PAGE'S TWO SWITCHES (BGD's answer to visual QA VQ-043,
+ * 2026-10-26: "Show state only on the card"). They were Turn on / Turn off on
+ * the Repositories list's card, which now says their state in one read-only
+ * line; here they are the setting's own control. Who may use them is
+ * unchanged: a workspace admin (the server decides, and refuses anyone else);
+ * below admin the line says who sets it and there is no control. A change is
+ * one PATCH carrying the one field, then the registration is read again, so
+ * the word shown is the stored value, never the one pressed.
  */
-function FileIssuesCard({ on }: { on: boolean | null }) {
+function SwitchLine({
+  label,
+  on,
+  dashWhy,
+  verb,
+  write,
+  onWrite,
+}: {
+  label: string
+  on: boolean | null
+  dashWhy: string
+  /** What `useRoleGate` says the admin does here. */
+  verb: string
+  write: (on: boolean) => Promise<Result<unknown>>
+  onWrite: () => void
+}) {
+  const gate = useRoleGate('admin', verb)
+  const [busy, setBusy] = useState(false)
+  const [failed, setFailed] = useState<string | null>(null)
+
+  async function set(next: boolean) {
+    setBusy(true)
+    setFailed(null)
+    const res = await write(next)
+    setBusy(false)
+    if (res.status === 'error') {
+      setFailed(writeFailure(res.error))
+      return
+    }
+    onWrite()
+  }
+
+  return (
+    <>
+      <p className="ur-meta">
+        <span>
+          {label} {on === null ? <Dash why={dashWhy} /> : <b>{on ? 'on' : 'off'}</b>}
+        </span>
+        {on !== null &&
+          // The button is not a span, so `.ur-meta` draws no dot before it; the gate's words are, and get one.
+          (gate === null ? (
+            <Button size="sm" busy={busy} onClick={() => void set(!on)}>
+              {on ? 'Turn off' : 'Turn on'}
+            </Button>
+          ) : (
+            <span className="ur-small" data-role-gate="admin">
+              set by a workspace admin
+            </span>
+          ))}
+      </p>
+      {failed !== null && (
+        <Banner tone="bad" title={`${label} was not changed`}>
+          {failed}
+        </Banner>
+      )}
+    </>
+  )
+}
+
+/**
+ * Whether the tenant's agents may file issues here (AU-0 REG-FLAG,
+ * docs/design/agent-autonomy.md §3.2): the served value, with its switch for a
+ * workspace admin only (Q2). Null is an API that did not serve it: a dash and
+ * no control.
+ */
+function FileIssuesCard({ on, repoId, onWrite }: { on: boolean | null; repoId: string; onWrite: () => void }) {
   return (
     <Card title="Issue filing">
-      <p className="ur-meta ur-detail-file-issues" data-file-issues={on === null ? undefined : String(on)}>
-        <span>
-          Agents may file issues{' '}
-          {on === null ? <Dash why="Whether agents may file issues was not served" /> : <b>{on ? 'on' : 'off'}</b>}
-        </span>
-        <span>set on the Repositories list by a workspace admin</span>
-      </p>
+      <div className="ur-detail-file-issues" data-file-issues={on === null ? undefined : String(on)}>
+        <SwitchLine
+          label="Agents may file issues"
+          on={on}
+          dashWhy="Whether agents may file issues was not served"
+          verb="set whether agents may file issues"
+          write={(next) => patchRepositoryFileIssues(repoId, next)}
+          onWrite={onWrite}
+        />
+      </div>
     </Card>
   )
 }
@@ -1209,20 +1283,23 @@ function FileIssuesCard({ on }: { on: boolean | null }) {
 /**
  * Whether an agent's push that changes workflow files is made here (#2029,
  * WF-APP-TOKEN; BGD's decision 2026-10-22: self-serve, per-repo opt-in, off by
- * default): the served value, shown and not changed. Like the issue-filing
- * switch, its one control is on the Repositories list's card, for a workspace
- * admin only. Drawn only where the API serves the switch.
+ * default), with its switch for a workspace admin only, as issue filing's.
+ * Under it, what turning it on means, and "Workflows: not granted" where it is
+ * on and the App installation has not accepted Workflows. Drawn only where the
+ * API serves the switch.
  */
-function WorkflowFilesCard({ on, repoId }: { on: boolean; repoId: string }) {
+function WorkflowFilesCard({ on, repoId, onWrite }: { on: boolean; repoId: string; onWrite: () => void }) {
   return (
     <Card title="Workflow files">
       <div className="ur-detail-workflow-files" data-workflow-files={String(on)}>
-        <p className="ur-meta">
-          <span>
-            Workflow files <b>{on ? 'on' : 'off'}</b>
-          </span>
-          <span>set on the Repositories list by a workspace admin</span>
-        </p>
+        <SwitchLine
+          label="Workflow files"
+          on={on}
+          dashWhy="Whether agents may push workflow files was not served"
+          verb="set whether agents may push workflow files"
+          write={(next) => patchRepositoryWorkflowFiles(repoId, next)}
+          onWrite={onWrite}
+        />
         <p className="ur-hint">{WORKFLOW_FILES_WHY}</p>
         {/* The GitHub read is made only where the switch is on: off, there is nothing to say. */}
         {on && <WorkflowsGrantRead repoId={repoId} />}

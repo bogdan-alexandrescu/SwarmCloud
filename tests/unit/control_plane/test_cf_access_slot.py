@@ -7,7 +7,7 @@ grant. The list decides where a credential is SENT, and a grant document is
 tenant-writable, so swarm-api signs it in attestation form "v3" and the
 release honours a host-scoped grant only when that attestation verifies.
 
-The catalogue declares no `cf-access` slot yet (contract request 116,
+The catalogue declares no `cf-access` slot yet (contract request 117,
 docs/contract-change-requests.md), so these tests add it to
 `profile:claude-code-browser` for their own run, as the frozen contract
 would. Drives the real store and release route over the in-memory Firestore
@@ -37,7 +37,7 @@ HOSTS = ["staging-admin.example.dev", "admin.example.com"]
 
 @pytest.fixture
 def cf_slot(monkeypatch):
-    """`profile:claude-code-browser` with the slot request 116 asks for."""
+    """`profile:claude-code-browser` with the slot request 117 asks for."""
     entry = ws.CONSUMERS_BY_NAME[BROWSER]
     slot = ws.Slot("cf-access", ("oauth_client",),
                    "sent by the live gate to the grant's hosts as CF-Access-Client-Id and "
@@ -112,7 +112,7 @@ def test_without_a_grant_key_a_host_list_is_never_written(db, sm, world, keys, t
     assert f"{ws.GRANTS_COLLECTION}/{sid(db, sm, 'platform-admin')}~{BROWSER}" not in db.docs
 
 
-def test_without_request_116_the_slot_is_refused(db, sm, world, keys, token):
+def test_without_request_117_the_slot_is_refused(db, sm, world, keys, token):
     with pytest.raises(ValidationFailed):
         _grant(db, sm, keys["one"])
 
