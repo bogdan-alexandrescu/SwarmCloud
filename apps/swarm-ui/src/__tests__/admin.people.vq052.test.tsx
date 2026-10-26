@@ -195,6 +195,17 @@ describe('VQ-052: the Claude account cell is one short line', () => {
     expect(painted(who, 'width', WIDE)).toBe('max-content')
     expect(painted(who, 'max-width', WIDE)).toBe('15rem')
   })
+
+  it('spaces the wide Person cell at 4px, so the grid fits its 1009px pane at 1440 (render review of FIX2)', async () => {
+    await mount(platform([borrower('bogdan@example.com', SEVEN, { display_name: 'Bogdan Alexandrescu' })]))
+    const cell = rowOf('bogdan@example.com').querySelector('.pp-person')!
+    // MUTATION: put back the 8px gap -> the nowrap cell (avatar, gap, who, gap,
+    // GitHub mark) is 8px wider, and with the seven-loan row the table's least
+    // width is 1010.8px in a 1009px pane: a 2px sideways scroll under the grid.
+    // jsdom cannot lay out, so the fit itself is measured on the render.
+    expect(painted(cell, 'gap', WIDE)).toBe('var(--ctl-s1)')
+    expect(painted(cell, 'flex-wrap', WIDE)).toBe('nowrap')
+  })
 })
 
 describe('VQ-052: the loan line wraps between words, never inside one', () => {
