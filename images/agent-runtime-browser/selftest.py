@@ -75,7 +75,7 @@ TOOLS = (
     "claude", "node", "npm", "python", "uv", "git",
     "gh", "gcloud", "gke-gcloud-auth-plugin", "kubectl", "terraform", "checkov",
     "trivy", "shellcheck", "make", "docker",
-    "postgres", "initdb", "pg_ctl", "pg_isready",
+    "postgres", "initdb", "pg_ctl", "pg_isready", "coderabbit",
 )
 CODEX_PACKAGE = "/usr/local/share/npm-global/lib/node_modules/@openai/codex"
 #: dev-browser (DEVB-INSTALL): the wrapper on PATH, the real binary off it,

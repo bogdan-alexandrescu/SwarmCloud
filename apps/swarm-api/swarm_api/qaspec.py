@@ -60,6 +60,18 @@ renders `discover.slots` crawling steps (4 by default, at most 8) from the
 base alone, instead of being refused; one with neither is still refused. The
 report gains the leg's Coverage section (§3.5).
 
+A LEG'S FLOWS RUN IN BATCHES (QA-FLOWS-CAP, part of #2136; BGD, 2026-10-26).
+A target holds up to `MAX_FLOWS` (150) flows. Its read-only flows render as
+ceil(n / flows_per_step) flow-batch steps, `flows-<k>`, each one agent that
+signs in once and runs its batch's flows in order, every flow ending "STOP
+and capture" with its own `flow-<id>.tar`; the step bundles them into
+`flows-<k>.tar`, the one file it stages to `flow-report` (`input_from` stages
+one file a step). A mutating flow keeps its own `flow-<id>` step, because
+the gate's write grant reads that step id (`flow_batches` says why). The
+batch size is the run's, else the workspace's, else 15 (`qasettings`); a leg
+that would pass the workflow's step or input bounds is refused with the
+batch size that fits.
+
 A DISMISSED ROUTE IS SKIPPED BY LATER CRAWLS (lane QA-CRAWL-SKIP; BGD
 2026-10-25, part of #2157). The target's `dismissed_routes` (S9b's Remove,
 `qatargets.DISMISSED_FIELD`) travel in every capture step's route list as
@@ -72,16 +84,20 @@ its spec is byte for byte as before.
 
 from __future__ import annotations
 
+import dataclasses
 import fnmatch
 import hashlib
 import ipaddress
 import json
+import math
 import re
 import shlex
 from dataclasses import dataclass, field
 from typing import Any, Collection, Mapping, Sequence
 from urllib.parse import urlsplit
 
+from swarm_common.config import Settings
+from swarm_common.profiles import RUNNER_PROFILES
 from swarm_redaction import redact
 
 # --------------------------------------------------------------------------
@@ -111,10 +127,49 @@ DEFAULT_SLOTS = 4
 #: tool's 900 s crawl ceiling beside the step's own captures.
 CRAWL_SECONDS = 600
 CRAWL_CAPTURE_TIMEOUT = 2700
-#: `swarm_qa`'s own bounds (`MAX_SEGMENTS`, `NAME`), which the capture tool
-#: refuses past; restated so a target is refused at registration, not at run.
+#: `swarm_qa`'s own bound (`MAX_SEGMENTS`, beside `NAME`), which the capture
+#: tool refuses past; restated so a target is refused at registration, not at run.
 MAX_SEGMENTS = 12
-MAX_FLOWS = 10
+#: The flows one target (each leg) may hold (QA-FLOWS-CAP, part of #2136).
+#: BGD, 2026-10-26: AI Studio's ai-studio-staging needs 132 read-only
+#: frame-state flows; 150 holds them with room. Stated HERE ONLY: a flow runs
+#: as an agent's prompt, and the capture tool (`swarm_qa`) never reads one, so
+#: there is no second statement to hold equal (docs/mirrored-values.md).
+MAX_FLOWS = 150
+#: How many read-only flows one flow-batch step runs (`flows_per_step`): the
+#: run's own value (`:run`'s `flows_per_step`), else the workspace's
+#: `qa_flows_per_step` (`qasettings`), else 15 (BGD, 2026-10-26). One agent
+#: signs in once and runs its batch's flows in order. 30 at most because a
+#: batch's step is held to the browser profile's 7,200 s (`FLOW_STEP_CEILING`):
+#: 30 flows have 240 s each, about two widths of the bench's 44.5 s median
+#: flow run (docs/browser-bench.md) plus a sign-in; more would starve them.
+FLOWS_PER_STEP_DEFAULT = 15
+MIN_FLOWS_PER_STEP = 1
+MAX_FLOWS_PER_STEP = 30
+#: One flow's budget: the timeout a one-flow step had before batching. A
+#: batch step's timeout is this times its flows, held to `FLOW_STEP_CEILING`.
+FLOW_SECONDS = 2700
+#: The live-browser profile's own ceiling (`claude-code-browser`'s
+#: `timeout_seconds`, 7,200 s), read from the frozen catalogue rather than
+#: restated: the API cuts a longer step to it anyway (`validation`), so a
+#: render that said more would promise time the step never gets.
+FLOW_STEP_CEILING = RUNNER_PROFILES["claude-code-browser"].timeout_seconds
+#: The most steps one workflow holds (`swarm_common.config.Settings.
+#: max_workflow_steps`, 50), read from the frozen default as
+#: `attemptstate.BUILDS_ON_MAX_DEPTH` reads it. A leg that would render more
+#: is refused here, naming the smallest `flows_per_step` that fits, instead of
+#: by the submission's DAG check with nothing said about flows.
+MAX_WORKFLOW_STEPS: int = next(
+    f.default for f in dataclasses.fields(Settings) if f.name == "max_workflow_steps"
+)
+#: The most bytes every step's input of one workflow comes to together
+#: (`Settings.max_input_bytes`, 256 KiB; `service.validate_input_size`'s
+#: "workflow input"). 150 flows of 500-character goals are ~80 KB of goals
+#: alone, more in a script of several bytes a character, so a leg's prompts
+#: are measured here and refused with a reason, not at submission without one.
+MAX_INPUT_BYTES: int = next(
+    f.default for f in dataclasses.fields(Settings) if f.name == "max_input_bytes"
+)
 #: The broker's per-agent issue bound (agent-autonomy.md §3.2).
 MAX_ISSUES = 30
 
@@ -593,6 +648,39 @@ def flows_browser_tool(target: Mapping[str, Any], override: Any = None) -> str:
     return DEFAULT_FLOW_BROWSER_TOOL
 
 
+def check_flows_per_step(value: Any = None) -> int:
+    """The batch size a render uses: `value` when it names one, else
+    `FLOWS_PER_STEP_DEFAULT`. Anything but an int in 1-30 is refused, a bool
+    included (`True` is an int to Python and a mistake to everyone else)."""
+    if value is None:
+        return FLOWS_PER_STEP_DEFAULT
+    if not isinstance(value, int) or isinstance(value, bool) \
+            or not MIN_FLOWS_PER_STEP <= value <= MAX_FLOWS_PER_STEP:
+        raise _invalid(f"flows_per_step must be a whole number {MIN_FLOWS_PER_STEP}-{MAX_FLOWS_PER_STEP}")
+    return value
+
+
+def flow_batches(flows: Sequence[Mapping[str, Any]], per_step: int) -> list[list[Mapping[str, Any]]]:
+    """The read-only flows, in their order, cut into batches of `per_step`:
+    ceil(n / per_step) of them, every one full but the last.
+
+    A mutating flow is never in a batch. The gate grants a step writes from
+    its own step id, `flow-<id>`, naming one flow the stored target declares
+    mutating (`qatargets.QaTargetIssuer._mutating`); a batch that held one
+    would either lose that grant or hand it to every read-only flow beside
+    it. So a mutating flow keeps its own step, as before batching."""
+    readonly = [f for f in flows if not f.get("mutating")]
+    return [readonly[k:k + per_step] for k in range(0, len(readonly), per_step)]
+
+
+def batch_timeout(size: int) -> int:
+    """A flow-batch step's timeout: `FLOW_SECONDS` (2,700 s, one flow's step
+    before batching) for each of its flows, held to `FLOW_STEP_CEILING` (the
+    profile's 7,200 s). 1 flow: 2,700 s; 2: 5,400 s; 3 or more: 7,200 s, so a
+    batch of 15 has 480 s a flow and one of 30 has 240 s."""
+    return min(FLOW_SECONDS * size, FLOW_STEP_CEILING)
+
+
 def _file_settings(target: Mapping[str, Any]) -> dict[str, Any]:
     raw = target.get("file") or {}
     if not isinstance(raw, Mapping):
@@ -1040,6 +1128,37 @@ def _flow_prompt(target: Mapping[str, Any], base: str, flow: Mapping[str, Any], 
     )
 
 
+def _flow_batch_prompt(target: Mapping[str, Any], base: str, batch_id: str, flows: Sequence[Mapping[str, Any]],
+                       widths: Sequence[str], own_login: bool, tool: str) -> str:
+    """One agent, signed in once, runs `flows` in order, each as `_flow_prompt`
+    runs one: recorded at each width, then STOP and capture its own
+    flow-<id>.json, recordings and tar before the next. The per-width recipe
+    is said once, not under every flow, so a 150-flow leg's prompts stay
+    well inside the API's 256 KiB of workflow input."""
+    listing = " ".join(
+        f"({n}) `{f['id']}`: open {screen_url(base, f['start_path'])}; goal: {f['goal']}."
+        for n, f in enumerate(flows, 1)
+    )
+    return (
+        f"Goal-driven flow tests of {target['name']}: {len(flows)} flows, run one after another in this "
+        f"order, in the one live browser.{_sign_in_note(own_login, start_clicks(target))} The browser stays "
+        f"signed in from one flow to the next: sign in no more than once. {_FLOW_TOOL_SENTENCE[tool]}, reach "
+        f"each flow's goal as a person would, without typing addresses after opening its start page. For "
+        f"each flow <id>, at each width of {', '.join(widths)}: run `swarm-handoff device <width>`, then "
+        f"`swarm-handoff record start flow-<id>-<width>`, open the flow's start page, reach the goal, then "
+        f"`swarm-handoff record stop`. Then STOP and capture that flow before you start the next: write "
+        f"flow-<id>.json saying, for each width, whether the goal was reached, the steps taken, and every "
+        f"point where a label was missing, ambiguous or misleading, each with a screenshot taken with "
+        f"browser_take_screenshot and no filename (it is saved under $SWARM_ARTIFACTS_DIR/screenshots); list "
+        f"in flow-<id>.json every screenshot you took during that flow, by its file name, with what it shows; "
+        f"and bundle flow-<id>.json, the flows/flow-<id>-*.gif recordings and those screenshots into "
+        f"flow-<id>.tar under $SWARM_ARTIFACTS_DIR. A flow you cannot finish still gets its flow-<id>.json, "
+        f"saying where it stopped and why, and its flow-<id>.tar; then go on to the next flow. The flows: "
+        f"{listing} Last, bundle every flow-<id>.tar of this batch, and nothing else, into {batch_id}.tar "
+        f"under $SWARM_ARTIFACTS_DIR. {_safety(target, _origin(base))} {NO_CHANGE}"
+    )
+
+
 def _report_prompt(target: Mapping[str, Any], groups: Sequence[tuple[str, Sequence[Any]]],
                    widths: Sequence[str], themes: Sequence[str]) -> str:
     names = [g for g, _ in groups]
@@ -1077,11 +1196,23 @@ def _coverage_line(leg_name: str) -> str:
     )
 
 
-def _flow_report_prompt(flows: Sequence[Mapping[str, Any]]) -> str:
-    tars = ", ".join(f"flow-{f['id']}.tar" for f in flows)
+def _flow_report_prompt(flows: Sequence[Mapping[str, Any]],
+                        batches: Sequence[tuple[str, Sequence[Mapping[str, Any]]]] = ()) -> str:
+    """The flows' report. `batches` is (batch step id, its flows): each batch
+    tar carries one flow-<id>.tar per flow of its batch; a mutating flow's own
+    step stages its flow-<id>.tar directly. Every flow is named by its tar."""
+    batched = {f["id"] for _, members in batches for f in members}
+    staged = []
+    for batch_id, members in batches:
+        inner = ", ".join(f"flow-{f['id']}.tar" for f in members)
+        staged.append(f"{batch_id}.tar, holding {inner}")
+    staged += [f"flow-{f['id']}.tar" for f in flows if f["id"] not in batched]
+    order = ", ".join(f"`{f['id']}`" for f in flows)
     return (
-        f"Write the visual QA report of the flows. Unpack every staged tar: {tars}. A tar that is missing "
-        f"is itself a finding, naming the flow. Write flows.md: one section per flow, and in it, for each "
+        f"Write the visual QA report of the flows. Unpack every staged tar, and every flow tar a batch tar "
+        f"holds, each flow's into its own directory: {'; '.join(staged)}. A flow tar that is missing, from "
+        f"its batch tar or because the batch tar is missing, is itself a finding, naming the flow. The "
+        f"flows, in order: {order}. Write flows.md: one section per flow, and in it, for each "
         f"width, whether the goal was reached, the steps, and every finding with its screenshot embedded by "
         f"relative link; a screenshot no json describes is listed as one nobody described. Copy every "
         f"screenshot and recording to $SWARM_ARTIFACTS_DIR next to flows.md. {NO_CHANGE}"
@@ -1206,15 +1337,16 @@ def _workflow(target: Mapping[str, Any], title: str, steps: list[dict[str, Any]]
 
 def render(target: Mapping[str, Any], *, screens: Sequence[str] | None = None,
            file: str = "issues", browser_tool: str | None = None,
-           group: Mapping[str, Any] | None = None) -> dict[str, Any]:
+           group: Mapping[str, Any] | None = None, flows_per_step: Any = None) -> dict[str, Any]:
     """The QA run's workflow spec for `target`, as `read_spec` reads it.
 
     `screens` narrows the run to those screen ids; `file="none"` renders the
     report without the filing step (§6); `browser_tool` runs this render's
     flows with that tool instead of the target's (`flows_browser_tool`); `group`,
     `{group_id, legs}`, is the dispatch this leg is one of, whose page the
-    filed issues link (§7). Raises `QaSpecError` for anything
-    the spec cannot hold; never returns a partial spec."""
+    filed issues link (§7); `flows_per_step` how many read-only flows each
+    flow-batch step runs (`check_flows_per_step`, 15 when None). Raises
+    `QaSpecError` for anything the spec cannot hold; never returns a partial spec."""
     if file not in FILE_MODES:
         raise _invalid(f"file must be one of {', '.join(FILE_MODES)}")
     # `group` names a capture group below; the dispatch is kept apart.
@@ -1234,6 +1366,7 @@ def render(target: Mapping[str, Any], *, screens: Sequence[str] | None = None,
     # (swarm_qa cuts the same way; the prompt says the figure it will use).
     found_per_step = min(bounds["found_per_step"], max(0, (MAX_SCREENS - len(stored)) // len(groups)))
     flows = _flows(target)
+    per_step = check_flows_per_step(flows_per_step)
     flow_tool = flows_browser_tool(target, browser_tool)
     design_docs = _design_docs(target)
     settings = _file_settings(target)
@@ -1263,22 +1396,64 @@ def render(target: Mapping[str, Any], *, screens: Sequence[str] | None = None,
             f"review-{group}", REVIEW_PROFILE, REVIEW_MODEL, _review_prompt(target, base, group, design_docs),
             timeout=3600, depends_on=[f"capture-{group}"],
             input_from={f"capture-{group}": f"capture-{group}.tar"}))
+    # QA-FLOWS-CAP: the read-only flows as ceil(n / per_step) flow-batch
+    # steps, `flows-<k>`, one agent each. The id can be no flow's step id
+    # (`flow-<id>`), so the gate's write grant never reads a batch as a flow.
+    batches = [(f"flows-{k}", members) for k, members in enumerate(flow_batches(flows, per_step), 1)]
+    flow_tars: dict[str, str] = {}
+    for batch_id, members in batches:
+        steps.append(_step(
+            batch_id, CAPTURE_PROFILE, FLOW_MODEL,
+            _flow_batch_prompt(target, base, batch_id, members, widths, own_login, flow_tool),
+            timeout=batch_timeout(len(members)), browser_tool=flow_tool))
+        flow_tars[batch_id] = f"{batch_id}.tar"
     for flow in flows:
+        if not flow["mutating"]:
+            continue
         steps.append(_step(
             f"flow-{flow['id']}", CAPTURE_PROFILE, FLOW_MODEL,
-            _flow_prompt(target, base, flow, widths, own_login, flow_tool), timeout=2700,
+            _flow_prompt(target, base, flow, widths, own_login, flow_tool), timeout=FLOW_SECONDS,
             browser_tool=flow_tool))
+        flow_tars[f"flow-{flow['id']}"] = f"flow-{flow['id']}.tar"
     staged = {f"{kind}-{g}": f"{kind}-{g}.tar" for kind in ("capture", "review") for g, _ in groups}
     steps.append(_step("report", REVIEW_PROFILE, REPORT_MODEL, _report_prompt(target, groups, widths, themes),
                        timeout=3600, depends_on=list(staged), input_from=staged))
     if flows:
-        flow_tars = {f"flow-{f['id']}": f"flow-{f['id']}.tar" for f in flows}
-        steps.append(_step("flow-report", REVIEW_PROFILE, REPORT_MODEL, _flow_report_prompt(flows),
+        steps.append(_step("flow-report", REVIEW_PROFILE, REPORT_MODEL, _flow_report_prompt(flows, batches),
                            timeout=1800, depends_on=list(flow_tars), input_from=flow_tars))
     if file == "issues":
         steps.append(_step("file", REVIEW_PROFILE, FILE_MODEL, _file_prompt(target, settings, run_group),
                            timeout=2700, depends_on=["report"], input_from={"report": "findings.json"}))
+    _hold_step_bound(steps, batches)
     return _workflow(target, f"Visual QA: {name}", steps)
+
+
+def _hold_step_bound(steps: Sequence[Mapping[str, Any]],
+                     batches: Sequence[tuple[str, Sequence[Mapping[str, Any]]]]) -> None:
+    """Refuse a leg whose prompts pass `MAX_INPUT_BYTES`, or of more than
+    `MAX_WORKFLOW_STEPS` steps, naming the
+    smallest `flows_per_step` that fits when one does. Everything but the
+    batches is fixed by the target (at most 8 captures, 8 reviews, the
+    report, the flow report, the filing and one step per mutating flow), so
+    with 60 screens and no mutating flow 31 batches remain: 150 flows need 5."""
+    size = sum(len(str(step["prompt"]).encode("utf-8")) for step in steps)
+    if size > MAX_INPUT_BYTES:
+        raise _invalid(
+            f"this leg's prompts come to {size} bytes and a workflow's input holds at most {MAX_INPUT_BYTES}: "
+            f"shorten the flows' goals, or raise flows_per_step (each batch says its instructions once)")
+    if len(steps) <= MAX_WORKFLOW_STEPS:
+        return
+    fixed = len(steps) - len(batches)
+    readonly = sum(len(members) for _, members in batches)
+    room = MAX_WORKFLOW_STEPS - fixed
+    need = math.ceil(readonly / room) if room > 0 else None
+    if need is not None and need <= MAX_FLOWS_PER_STEP:
+        raise _invalid(
+            f"this leg renders {len(steps)} steps and a workflow holds at most {MAX_WORKFLOW_STEPS}: with "
+            f"{readonly} read-only flows, flows_per_step must be at least {need}")
+    raise _invalid(
+        f"this leg renders {len(steps)} steps and a workflow holds at most {MAX_WORKFLOW_STEPS}, whatever "
+        f"flows_per_step is: it has {fixed} steps besides the flow batches (each mutating flow is one)")
 
 
 def render_discovery(target: Mapping[str, Any]) -> dict[str, Any]:

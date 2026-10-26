@@ -178,21 +178,29 @@ describe('QA12-18: the tab bar fits', () => {
 
 describe('QA12-18: the sheet draws More at the end of the bar', () => {
   const ENVS: CascadeEnv[] = [{ width: 1440 }, { width: 390, height: 844 }]
-  it('lets the strip shrink and keeps More beside it, at 1440 and 390', () => {
+  // MORE GIVES WAY, THE FITTED STRIP NEVER DOES (VQ-008, BGD's visual QA
+  // 2026-10-26): More held its whole width and the strip shrank, so at 390 a
+  // 405px More left the open tab 0px wide. The strip that holds only tabs
+  // measured to fit (`is-fitted`) keeps its width; More shrinks, its label cut.
+  it('keeps a fitted strip whole and lets More shrink beside it, at 1440 and 390', () => {
     const host = document.createElement('div')
     host.innerHTML =
-      '<div class="ag-split"><div class="ag-tabs-edge"><div class="c-tabs ag-split-tabs" role="tablist"></div>' +
+      '<div class="ag-split"><div class="ag-tabs-edge"><div class="c-tabs ag-split-tabs is-fitted" role="tablist"></div>' +
       '<span class="c-menu-host ag-tabs-more-host"><button class="ag-tabs-more">More</button></span></div></div>'
     document.body.appendChild(host)
     try {
       for (const env of ENVS) {
         expect(painted(host.querySelector('.ag-tabs-edge')!, 'display', env)).toBe('flex')
-        expect(painted(host.querySelector('.ag-split-tabs')!, 'min-width', env)).toBe('0')
+        expect(painted(host.querySelector('.ag-split-tabs')!, ['flex', 'flex-shrink'], env)).toMatch(/none|^0$/)
         // More gives way to the open tab rather than the strip (BROWSER-TAB-TABS, BT-004, #2423):
         // `flex: none` squeezed the strip, and the open tab, to 0 px at 390.
         expect(painted(host.querySelector('.ag-tabs-more-host')!, ['flex', 'flex-shrink'], env)).toBe('0 1 auto')
+        expect(painted(host.querySelector('.ag-tabs-more-host')!, 'min-width', env)).toBe('0')
         expect(painted(host.querySelector('.ag-tabs-more')!, 'white-space', env)).toBe('nowrap')
       }
+      // A strip with no More beside it still shrinks and scrolls (Q4).
+      host.querySelector('.ag-split-tabs')!.classList.remove('is-fitted')
+      for (const env of ENVS) expect(painted(host.querySelector('.ag-split-tabs')!, 'min-width', env)).toBe('0')
     } finally {
       host.remove()
     }

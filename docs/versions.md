@@ -83,6 +83,7 @@ release of either, and the same findings.
 | `shellcheck` | **0.11.0** | yes | matches the operator pin |
 | `docker` | **29.8.2** | yes | CLI only, from Docker's bookworm `.deb`; no daemon, no socket |
 | `trivy` | **0.75.0** | yes | newest; scan clean on 2026-10-06 (0.74.0 had grpc 1.82.1; #442) |
+| `coderabbit` | **0.9.1** | yes | the release the vendor's installer binds Linux to; checksum from its signed `SHA256SUMS`; 91.1 MiB on disk; nothing in it trivy can analyse (2026-10-26). Fetched from `cli.coderabbit.ai`, not the tool mirror; its key is a workspace secret ([worker-images.md](worker-images.md#coderabbit)) |
 | `tofu` | **1.13.1** | **no** | no release scans clean (2026-10-09): x/mod 0.39.0, grpc 1.83.1 (1.12.7 has eight) |
 | `tflint` | **0.64.0** | **no** | no release scans clean (2026-10-09): Go 1.26.3 stdlib, x/crypto, x/mod, grpc |
 
