@@ -206,12 +206,12 @@ spec. 9: the tick reads with the merge agent's own tenant's token, and the
 round is submitted as the merge's submitter while a member. 10: the round's
 profile is `claude-code`, chosen by the platform.
 
-**Not built here.** The round's step is not appended to the lane's workflow
-yet. `swarm_rollup.FIX_ROUND_STEP_RE` (apps/workflow-rollup, outside this
-lane's territory) accepts only `ci-fix:<n>` and `conflict-fix:<n>`, so
-`_append_round_step` refuses `pick-fix:<n>`, and the round is found from
-`merge_fix.pick_rounds` and its own workflow. Widening the pattern is a
-question in PR PICK-FIX-ROUND.
+**The round is a step of the lane.** Since ROLLUP-PICK-FIX (BGD,
+2026-10-26), `swarm_rollup.FIX_ROUND_STEP_RE` accepts `pick-fix:<n>` beside
+`ci-fix:<n>` and `conflict-fix:<n>`, so `_append_round_step` appends the
+round to the lane's workflow, and the rollup ranks it as it ranks the other
+rounds: a failed pick round under a merge that then SUCCEEDED leaves the
+workflow SUCCEEDED.
 
 ## Revised 2026-10-14: auto fix rounds (lane SPEED-D2)
 
@@ -271,8 +271,8 @@ defaulted to 0. What this lane changed, and why:
 * **Each round is a step of the lane's workflow.** The round is still its
   own one-step continuation workflow (it must be: it is submitted, signed and
   admitted like any other). After it is submitted the tick appends a step to
-  the merge agent's workflow -- `ci-fix:<n>` or `conflict-fix:<n>`, naming the
-  round's agent -- so `GET /v1/workflows/<id>` and the console show it beside
+  the merge agent's workflow -- `ci-fix:<n>` or `conflict-fix:<n>` (and,
+  since ROLLUP-PICK-FIX, `pick-fix:<n>`), naming the round's agent -- so `GET /v1/workflows/<id>` and the console show it beside
   implement, review, fix and merge. A caller's step id cannot hold `:`, so the
   id alone marks a step only the platform appended; the append is guarded on
   the workflow being the tenant's and holding the merge agent.
