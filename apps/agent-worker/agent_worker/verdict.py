@@ -641,6 +641,14 @@ def pull_request_lines(record: dict[str, Any]) -> list[str]:
 
 #: The repository paths whose change makes a review UI-gated.
 UI_PATH_PREFIXES = ("apps/swarm-ui/", "docs/web-ui/")
+#: Under `apps/swarm-ui/`, the vitest files a rendered review would not see:
+#: a `__tests__/` directory, or these suffixes. Owner decision 2026-10-26
+#: (part of #2379, F03): a lane whose only UI-prefixed file was a test could
+#: never reach MERGE, since its fix round re-reviews on the review's own
+#: profile. Application code, CSS, index.html and configs stay gated.
+UI_TEST_PREFIX = "apps/swarm-ui/"
+UI_TEST_DIR = "__tests__"
+UI_TEST_SUFFIXES = (".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx")
 #: The one profile that renders pages (contract request 108's browser runner).
 RENDERED_REVIEW_PROFILE = "claude-code-browser"
 #: What a rendered review leaves in its artifacts directory.
@@ -687,8 +695,20 @@ def _patch_paths(header: str) -> list[str]:
 
 
 def is_ui_path(path: str) -> bool:
-    """Whether a repository-relative path is one a rendered review must see."""
-    return isinstance(path, str) and path.lstrip("/").startswith(UI_PATH_PREFIXES)
+    """Whether a repository-relative path is one a rendered review must see.
+
+    A vitest file under `apps/swarm-ui/` is not: nothing renders it.
+    """
+    if not isinstance(path, str):
+        return False
+    path = path.lstrip("/")
+    if not path.startswith(UI_PATH_PREFIXES):
+        return False
+    if path.startswith(UI_TEST_PREFIX) and (
+        UI_TEST_DIR in path.split("/")[:-1] or path.endswith(UI_TEST_SUFFIXES)
+    ):
+        return False
+    return True
 
 
 def ui_paths_in_patch(text: str) -> list[str]:

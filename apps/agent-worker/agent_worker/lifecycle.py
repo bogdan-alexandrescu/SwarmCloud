@@ -6112,15 +6112,48 @@ class Worker:
 
     def _publish_branch_name(self) -> str | None:
         """The branch `_publish_git` would push, or None when it would refuse to
-        name one. Read only to ask for this attempt's own tool-pushed tip."""
+        name one. Read to ask for this attempt's own tool-pushed tip, and by
+        the head-moved guard as this step's own line (`_fetched_line`)."""
         try:
-            if self._pr_role() == "amender":
-                return self._pr_author_branch()
-            return continuation_mod.publish_branch(
-                (self._task or {}).get("metadata"), self.cfg.git_branch_prefix, self.cfg.task_id
-            )
+            return self._push_branch()[0]
         except WorkerError:
             return None
+
+    def _push_branch(self) -> "tuple[str, publishpr_mod.Target | None]":
+        """The branch this step pushes, and the pull request it pushes onto
+        (or None). The ONE place that is decided: `_publish_git` pushes it and
+        the head-moved guard exempts it (`_publish_branch_name`).
+
+        MEASURED 2026-10-26 (F04 of #2379): the guard named only the amender's
+        or `swarm/<own task>`, while a `publish_to_pr` step pushes the pull
+        request's branch; an agent that checked that branch out was refused
+        `head_moved` and its work published nothing. The descent check and
+        `_check_pull_before_push` still bound what lands there.
+
+        Raises WorkerError where `_publish_git` refuses to name a branch.
+        """
+        pr_role = self._pr_role()
+        # The amender's branch is the author's, derived from its task id;
+        # `push_branch` never forces, so its push only fast-forwards.
+        # Otherwise its own `<prefix><task id>`, or the branch a fix step
+        # continues (#263).
+        branch = self._pr_author_branch() if pr_role == "amender" else (
+            continuation_mod.publish_branch(
+                (self._task or {}).get("metadata"), self.cfg.git_branch_prefix, self.cfg.task_id
+            )
+        )
+        # `publish_to_pr` (#2183): the step that would open the pull
+        # request -- `direct-pr`, the `integrate` integrator -- pushes
+        # onto the existing one's branch instead, derived from the signed
+        # task id. A contributor still pushes its own branch: the
+        # integrator merges it, as without the field.
+        onto_pr = (
+            self._publish_to_pr()
+            if not pr_role and self._opens_pull_request() else None
+        )
+        if onto_pr is not None:
+            branch = onto_pr.branch(self.cfg.git_branch_prefix)
+        return branch, onto_pr
 
     def _adopt_tool_pushed_tip(self, publish_repo: Path, branch: str) -> str | None:
         """The tip this attempt's own `git_push_branch` left on `branch`, when
@@ -13175,26 +13208,11 @@ class Worker:
             out["publish_reason"] = "no credential"
             return out
 
-        # Its own `<prefix><task id>`, or the branch a fix step continues (#263).
+        # The amender's author branch, the pull request's (`publish_to_pr`),
+        # or its own `<prefix><task id>` / the branch a fix step continues.
         try:
-            # The amender's branch is the author's, derived from its task id;
-            # `push_branch` never forces, so its push only fast-forwards.
-            branch = self._pr_author_branch() if pr_role == "amender" else (
-                continuation_mod.publish_branch(
-                    (self._task or {}).get("metadata"), cfg.git_branch_prefix, cfg.task_id
-                )
-            )
-            # `publish_to_pr` (#2183): the step that would open the pull
-            # request -- `direct-pr`, the `integrate` integrator -- pushes
-            # onto the existing one's branch instead, derived from the signed
-            # task id. A contributor still pushes its own branch: the
-            # integrator merges it, as without the field.
-            onto_pr = (
-                self._publish_to_pr()
-                if not pr_role and self._opens_pull_request() else None
-            )
+            branch, onto_pr = self._push_branch()
             if onto_pr is not None:
-                branch = onto_pr.branch(cfg.git_branch_prefix)
                 out["publish_to_pr"] = {
                     **onto_pr.to_record(cfg.git_branch_prefix),
                     "started_head": self._pr_start_head,

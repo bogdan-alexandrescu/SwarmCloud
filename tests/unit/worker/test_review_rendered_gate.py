@@ -220,3 +220,61 @@ def test_a_builds_on_steps_file_list_is_read_and_a_cut_one_is_unknown():
     assert verdict_mod.ui_paths_in_files(plain) == ([], False)
     cut = {"git": {"files": [{"path": "apps/scheduler/s.py"}], "files_truncated": True}}
     assert verdict_mod.ui_paths_in_files(cut) == ([], True)
+
+
+TIMELINE_TEST = "apps/swarm-ui/src/__tests__/accounts.timeline.test.tsx"
+
+
+def _own(paths: list[str]) -> dict[str, Any]:
+    return {"git": {"files": [{"path": p} for p in paths], "files_truncated": False,
+                    "own_files": paths, "own_files_truncated": False}}
+
+
+def test_a_lane_whose_only_ui_file_is_a_vitest_file_is_not_ui_gated():
+    # F03 of #2379: this lane's review could only be fixed by a browser
+    # profile no fix round reaches, so its merge refused verdict_not_merge.
+    # MUTATION: drop the test-file exemption in is_ui_path and this is gated.
+    assert verdict_mod.ui_paths_in_own_files(_own([TIMELINE_TEST])) == ([], False)
+    for path in ("apps/swarm-ui/src/views/Accounts.test.ts",
+                 "apps/swarm-ui/src/views/Accounts.spec.tsx",
+                 "apps/swarm-ui/src/__tests__/helpers.ts"):
+        assert not verdict_mod.is_ui_path(path), path
+
+
+def test_application_code_css_and_a_test_mixed_with_app_code_stay_gated():
+    for path in ("apps/swarm-ui/src/App.tsx", "apps/swarm-ui/src/styles.css",
+                 "apps/swarm-ui/index.html", "apps/swarm-ui/vite.config.ts",
+                 "apps/swarm-ui/src/testing.tsx", "docs/web-ui/accounts.test.html"):
+        assert verdict_mod.is_ui_path(path), path
+    mixed = _own([TIMELINE_TEST, "apps/swarm-ui/src/App.tsx"])
+    assert verdict_mod.ui_paths_in_own_files(mixed) == (["apps/swarm-ui/src/App.tsx"], False)
+    assert verdict_mod.ui_paths_in_own_files(_own(["apps/swarm-ui/src/styles.css"])) == (
+        ["apps/swarm-ui/src/styles.css"], False)
+
+
+def test_a_lane_whose_own_ui_change_is_only_a_vitest_file_keeps_its_merge(
+    db, store, worker_factory, runner_inputs
+):
+    patch = UI_PATCH.replace("apps/swarm-ui/src/App.tsx", TIMELINE_TEST) + PLAIN_PATCH
+    run_upstream(db, worker_factory, artifact_name="swarm-work.patch", artifact_text=patch)
+    upstream = db.doc("tasks/task_up")
+    upstream["result_summary"] = {**(upstream.get("result_summary") or {}),
+                                  **_own([TIMELINE_TEST, "apps/scheduler/scheduler/drain.py"])}
+    seed_attempt(db, task_id="task_2", attempt_id="att_2", lease_id="lease_2", task_input={
+        "prompt": "review the patch", "steps": 1, "sleep_seconds": 0.01,
+        "artifact_name": "verdict.json", "artifact_text": MERGE,
+    })
+    db.doc("tasks/task_2")["metadata"] = {
+        "input_from": {"task_up": "swarm-work.patch"},
+        "expected_outputs": ["verdict.json"],
+    }
+    worker, _config, _exporter = worker_factory(
+        task_id="task_2", attempt_id="att_2", lease_id="lease_2")
+    assert worker.run() == ExitCode.OK
+    doc = db.doc("tasks/task_2")
+    assert doc["state"] == TaskState.SUCCEEDED.value
+
+    # MUTATION: gate test files and this MERGE is rewritten to NOT_YET.
+    assert _uploaded_verdict(store) == json.loads(MERGE)
+    assert "rendered_review" not in doc["result_summary"]
+    assert "claude-code-browser" not in runner_inputs[-1]["prompt"]
