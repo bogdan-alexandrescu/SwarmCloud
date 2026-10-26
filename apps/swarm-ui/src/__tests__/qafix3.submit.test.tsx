@@ -151,7 +151,7 @@ function repoField(repositoryUrl: string): HTMLInputElement {
       scale: 'task',
     }),
   )
-  return screen.getByLabelText(/repository url/) as HTMLInputElement
+  return screen.getByLabelText(/repository url/i) as HTMLInputElement
 }
 
 describe('sf-002: an invalid repository URL is drawn as invalid and its message is in view', () => {
@@ -201,7 +201,7 @@ describe('sf-002: an invalid repository URL is drawn as invalid and its message 
       return <DispatchChoice draft={draft} onChange={setDraft} steps={1} scale="task" />
     }
     render(<Form />)
-    const field = screen.getByLabelText(/repository url/) as HTMLInputElement
+    const field = screen.getByLabelText(/repository url/i) as HTMLInputElement
     expect(scroll).not.toHaveBeenCalled()
     fireEvent.change(field, { target: { value: 'not a url' } })
     // MUTATION: drop the effect that scrolls the scheme warning -> it can stay below the fold under a field in view.

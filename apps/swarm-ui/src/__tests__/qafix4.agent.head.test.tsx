@@ -157,7 +157,7 @@ describe('N15: a tab’s count is a badge, apart from its name', () => {
     const { strip } = bar(ended(), 'detail')
     // MUTATION: drop the bar's accessible names and `Attempts 3` is a run-on again.
     expect(within(strip).getByRole('tab', { name: 'Attempts, 3' })).not.toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /^\d+ more: / }))
+    fireEvent.click(screen.getByRole('button', { name: /^More \d+ tabs: / }))
     const menu = screen.getByRole('group', { name: 'More agent panes' })
     const item = within(menu).getByRole('button', { name: 'Artifacts, not counted' })
     // MUTATION: drop the item's own name and the menu reads `Artifacts not counted`.
@@ -182,7 +182,7 @@ describe('N15: a tab’s count is a badge, apart from its name', () => {
       // MUTATION: drop the badge's background and only the face sets the count apart.
       expect(painted(badge, ['background', 'background-color'], env)).not.toBeNull()
     }
-    fireEvent.click(screen.getByRole('button', { name: /^\d+ more: / }))
+    fireEvent.click(screen.getByRole('button', { name: /^More \d+ tabs: / }))
     const item = within(screen.getByRole('group', { name: 'More agent panes' })).getByRole('button', { name: /^Artifacts/ })
     // MUTATION: scope the badge to the bar alone and More's counts run on from their names.
     expect(look(item.querySelector('em')!, PHONE)).not.toEqual(look(item.querySelector('.c-tab-label')!, PHONE))
@@ -193,7 +193,7 @@ describe('N15: at 390 More wraps no item and keeps off the Logs toolbar', () => 
   it('draws each item on one line', () => {
     const { strip } = bar(ended(), 'logs')
     expect(strip).not.toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /^\d+ more: / }))
+    fireEvent.click(screen.getByRole('button', { name: /^More \d+ tabs: / }))
     const menu = screen.getByRole('group', { name: 'More agent panes' })
     const item = within(menu).getByRole('button', { name: /^Artifacts/ })
     const badge = item.querySelector('em')!
@@ -208,7 +208,7 @@ describe('N15: at 390 More wraps no item and keeps off the Logs toolbar', () => 
 
   it('on Logs it opens upward, over the head, not down over the Logs toolbar', () => {
     bar(ended(), 'logs')
-    fireEvent.click(screen.getByRole('button', { name: /^\d+ more: / }))
+    fireEvent.click(screen.getByRole('button', { name: /^More \d+ tabs: / }))
     const menu = screen.getByRole('group', { name: 'More agent panes' })
     for (const env of [PHONE, WIDE]) {
       // MUTATION: drop the on-logs placement and the menu hangs `top: calc(100% + 4px)`, over the Logs bar.
@@ -220,7 +220,7 @@ describe('N15: at 390 More wraps no item and keeps off the Logs toolbar', () => 
 
   it('off Logs it still drops under the bar, where the pane has no toolbar to cover', () => {
     bar(ended(), 'detail')
-    fireEvent.click(screen.getByRole('button', { name: /^\d+ more: / }))
+    fireEvent.click(screen.getByRole('button', { name: /^More \d+ tabs: / }))
     const menu = screen.getByRole('group', { name: 'More agent panes' })
     // MUTATION: open upward everywhere and on a phone's sticky strip the menu leaves the top of the screen.
     expect((painted(menu, 'top', PHONE) ?? '').replace(/\s+/g, ' ')).toBe('calc(100% + 4px)')
@@ -229,20 +229,24 @@ describe('N15: at 390 More wraps no item and keeps off the Logs toolbar', () => 
 
 describe('c01: an overflowing bar ranks Details, Logs and Attempts first', () => {
   for (const open of ['detail', 'logs', 'attempts'] as const) {
-    it(`at 390 with ${open} open: Details · Logs · Attempts 3 · N more: <Tab>, … ▾`, () => {
+    it(`at 390 with ${open} open: Details · Logs · Attempts 3 · More <n> ▾`, () => {
       const { onBar } = bar(ended(), open)
       // MUTATION: fill the bar in draw order and it reads `Details · Logs · Changes`, Attempts hidden in More.
       expect(onBar()).toEqual(['Details', 'Logs', 'Attempts'])
       // MUTATION (c02/c20 kept): move More off the bar's end or drop its count.
-      expect(flat(document.querySelector('.ag-tabs-edge > :last-child .ag-tabs-more'))).toMatch(/^\d+ more: [A-Z][^▾]* ▾$/)
+      // (BROWSER-TAB-TABS, #2423: More draws `More <n>`; the names are its name, not its glass.)
+      expect(flat(document.querySelector('.ag-tabs-edge > :last-child .ag-tabs-more-label'))).toMatch(/^More \d+$/)
     })
   }
 
+  // A 390 bar has room for three of these tabs, so the open one takes the
+  // lowest-ranked place; where there is room the bar does not change with
+  // the open tab at all (BROWSER-TAB-TABS, BT-013, browser-tab-tabs.test.tsx).
   it('with Changes open, Changes joins the bar and Attempts steps into More', () => {
     const { onBar } = bar(ended(), 'changes')
     // MUTATION: drop the open tab's place on the bar (QA12-18) and Changes is chosen and unseen.
     expect(onBar()).toEqual(['Details', 'Logs', 'Changes'])
-    fireEvent.click(screen.getByRole('button', { name: /^\d+ more: / }))
+    fireEvent.click(screen.getByRole('button', { name: /^More \d+ tabs: / }))
     const items = within(screen.getByRole('group', { name: 'More agent panes' }))
       .getAllByRole('button')
       .map((b) => b.querySelector('.c-tab-label')?.textContent)
@@ -255,7 +259,7 @@ describe('c01: an overflowing bar ranks Details, Logs and Attempts first', () =>
     const { onBar } = bar(ended(), 'attempts')
     // MUTATION: draw the bar in rank order and a wide desktop's tabs are shuffled.
     expect(onBar()).toEqual(['Details', 'Logs', 'Changes', 'Attempts', 'Artifacts', 'Checkpoints'])
-    expect(screen.queryByRole('button', { name: /^\d+ more: / })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^More \d+ tabs: / })).toBeNull()
   })
 })
 

@@ -17,7 +17,9 @@
  *
  * FIXED:
  *   ffp-002  The phone's Running rows cut their titles, so rows of one
- *          workflow were cut at the same point. They wrap, whole. The test
+ *          workflow were cut at the same point. They wrapped, whole, until
+ *          VQ-002 (2026-10-26) found a long title took four lines a row: the
+ *          row is one line now, the title cut and the step kept. The test
  *          reads the CASCADE in the bundle's order (overview.css, then
  *          names.css): PR 1848's override lost to names.css's clamp there.
  *   a11y-keyboard-003  The Overview's tables had no accessible name.
@@ -205,7 +207,7 @@ describe('overview-automate-006: a phone keeps the 10-character head of a workfl
  */
 const BUNDLE = [OVERVIEW_CSS, NAMES_CSS, STYLES_CSS].join('\n')
 
-describe('ffp-002: phone Running row titles wrap rather than cut at the same point', () => {
+describe('ffp-002, VQ-002: a phone Running row is one line that keeps the step, never cut at the same point', () => {
   it('loads overview.css before names.css, as the app imports them', () => {
     const imports = (src: string) => [...src.matchAll(/^import\s+(?:[^'\n]*from\s+)?'([^']+)'/gm)].map((m) => m[1]!)
     const ov = imports(OVERVIEW_TSX)
@@ -218,7 +220,7 @@ describe('ffp-002: phone Running row titles wrap rather than cut at the same poi
     expect(app.indexOf('./Overview')).toBeLessThan(app.indexOf('./Workflows'))
   })
 
-  it('lets the row name wrap, whole, in the cascade the built console paints', async () => {
+  it('cuts the title and keeps the step, in the cascade the built console paints', async () => {
     const el = await mount(
       page([
         task({ id: 'tsk_r1', state: 'RUNNING', step_id: 'scan-scripts', workflow_id: 'wf_audit_01', started_at: ago(5), metadata: null }),
@@ -237,17 +239,23 @@ describe('ffp-002: phone Running row titles wrap rather than cut at the same poi
       expect(at(n, '-webkit-line-clamp') ?? 'none').toBe('none')
       // MUTATION: put `.ov-page a.ov-prun-n` back in names.css's two-line clamp.
       expect(at(n, 'line-clamp') ?? 'none').toBe('none')
+      // ONE LINE (VQ-002): a flex row of its parts, nothing wrapping.
       // MUTATION: put `.ov-page a.ov-prun-n` back in names.css's clamp (its `display: -webkit-box`).
-      expect(at(n, 'display')).not.toBe('-webkit-box')
-      // MUTATION: put `overflow: hidden` on `.ov-prun-n`, or the names.css clamp back.
-      expect(at(n, ['overflow', 'overflow-y']) ?? 'visible').toBe('visible')
-      // MUTATION: put `white-space: nowrap` back on `.ov-prun-n`.
-      expect(at(n, 'white-space')).toBe('normal')
-      // MUTATION: put the ellipsis back on `.ov-prun-n`.
+      expect(at(n, 'display')).toBe('flex')
+      // MUTATION: put `white-space: normal` back on `.ov-prun-n`.
+      expect(at(n, 'white-space')).toBe('nowrap')
+      // NOT CUT AT ITS END (ffp-002): the anchor itself has no ellipsis; the
+      // part that gives way is the one that does not tell the rows apart.
+      // MUTATION: put the ellipsis on `.ov-prun-n` itself.
       expect(at(n, 'text-overflow')).toBeNull()
-      // MUTATION: drop `overflow-wrap: anywhere` from `.ov-prun-n`.
-      expect(at(n, 'overflow-wrap')).toBe('anywhere')
+      const cut = n.querySelector('.ov-prun-t')!
+      // MUTATION: drop the ellipsis from `.ov-prun-t`.
+      expect(at(cut, 'text-overflow')).toBe('ellipsis')
+      expect(at(cut, 'min-width')).toBe('0')
     }
+    // These two rows carry no workflow title, so the step is the one part,
+    // and it is the step that differs between them.
+    expect(names.map((n) => (n.textContent ?? '').trim())).toEqual(['scan-scripts', 'scan-terraform'])
   })
 
   it("keeps the two-line clamp on the desktop cards' names", () => {

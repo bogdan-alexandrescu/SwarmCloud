@@ -598,6 +598,47 @@ def test_a_rewritten_tip_record_is_not_a_lease(client, db, origin):
 
 # --------------------------------------------------------------------------
 # fetch and rebase
+# which of these does origin have (#2413, PUSH-RANGE-HAVES)
+# --------------------------------------------------------------------------
+
+
+def test_a_confirm_answers_exactly_the_asked_shas_origin_has(client, db, origin):
+    """The worker's push asks before it refuses `foreign_author`: a commit
+    origin already has is not the task's to answer for. Answered from the
+    forge, one depth-1 fetch each; a sha origin lacks is left out, never an
+    error, and nothing is fetched into the worker's clone."""
+    attempt, _ = running_task(client, db)
+    missing = secrets.token_hex(20)
+    response = call(client, attempt, "git_fetch",
+                    {"confirm": [origin["b"], missing, origin["a"]], "haves": []})
+    assert response.status_code == 200, response.text
+    # MUTATION: answering every asked sha (or none) fails here.
+    assert response.json() == {"confirmed": [origin["b"], origin["a"]]}
+    row = audit_rows(db)[-1]
+    assert row["tool"] == "git_fetch" and row["result"] == "ok"
+    assert row["confirm"] == {"asked": 3, "found": 2}
+
+
+@pytest.mark.parametrize("fields", [
+    {"ref": "main", "confirm": ["0" * 40]},
+    {"haves": []},
+    {"confirm": ["main"]},
+    {"confirm": ["0" * 40] * 17},
+], ids=["ref-and-confirm", "neither", "not-a-sha", "over-the-cap"])
+def test_a_confirm_names_shas_and_only_shas(client, db, origin, fields):
+    attempt, _ = running_task(client, db)
+    response = call(client, attempt, "git_fetch", fields)
+    # MUTATION: treating a confirm as a fetch of `ref`, or fetching a name
+    # for it, answers 200.
+    assert response.status_code == 422, response.text
+
+
+def test_a_rebase_never_takes_a_confirm(client, db, origin):
+    attempt, _ = running_task(client, db)
+    response = call(client, attempt, "git_rebase_onto", {"confirm": [origin["b"]]})
+    assert response.status_code == 422, response.text
+
+
 # --------------------------------------------------------------------------
 
 

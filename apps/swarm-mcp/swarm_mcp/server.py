@@ -45,7 +45,7 @@ from urllib.parse import urlsplit
 
 from swarm_common.profiles import MODEL_CLASSES, RESOURCE_CLASSES
 
-from . import artifacts, checkout, compact, config, keys, progress, qatargets
+from . import artifacts, checkout, compact, config, keys, progress, qatargets, suitegate
 from . import secrets as secret_tools
 from . import profiles as catalogue
 from . import workflows
@@ -1315,6 +1315,17 @@ TOOLS: list[dict[str, Any]] = [
                                     "need its patch are SKIPPED."
                                 ),
                             },
+                            "runtime": {
+                                "type": "string",
+                                "enum": ["browser_if_ui"],
+                                "description": (
+                                    "For a review: run on claude-code-browser only when "
+                                    "an upstream step's change touches UI (test files "
+                                    "excluded), on claude-code otherwise; the platform "
+                                    "decides as the step is readied. Name no "
+                                    "runner_profile, or claude-code-browser."
+                                ),
+                            },
                             "inputs": _INPUTS_SCHEMA,
                             "files": _FILES_SCHEMA,
                             "additional_repositories": {
@@ -2494,6 +2505,48 @@ TOOLS: list[dict[str, Any]] = [
                                            "pattern": qatargets.ENVIRONMENT_NAME.pattern}},
             },
             "required": ["target"],
+        },
+    },
+    {
+        "name": "swarm_suite_gate",
+        "description": (
+            "Run a registered repository's whole Playwright suite as a sharded gate "
+            "(docs/suite-gate.md). The bridge renders the workflow, you name only data: "
+            "`shards` steps on `claude-code` each run, from `working_dir`, `npm ci`, "
+            "`npx playwright install chromium` and `npx playwright test --shard k/N "
+            "--retries=1 --reporter=blob,line` (with `--project` when named, after loading "
+            "`env_file` when named), and put their blob report in their artifacts; one "
+            "`report` step depending on all of them merges the blobs "
+            "(`npx playwright merge-reports`) into playwright-report.zip and writes "
+            "summary.md and summary.json: passed, failed, flaky, and each failure's spec and "
+            "first error line. Every step runs tests only: none fixes code or commits "
+            "(strategy collect, no merge). Never an image, a command or resources from the "
+            "caller (invariant 10). Returns as soon as the workflow is accepted; follow it "
+            "with swarm_workflow_status, then read the report step with swarm_result and "
+            "swarm_artifact. A shard that produced no blob fails, and the gate with it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "repository": {"type": "string", "maxLength": 220,
+                               "description": "owner/repo, registered by your workspace."},
+                "ref": {"type": "string", "maxLength": 200,
+                        "description": "The branch, tag or commit SHA to test."},
+                "suite": {"type": "string", "enum": list(suitegate.SUITES)},
+                "working_dir": {"type": "string", "maxLength": 200,
+                                "description": "The repo-relative directory holding package.json "
+                                               "and the Playwright config, e.g. `web`; default the root."},
+                "shards": {"type": "integer", "minimum": suitegate.MIN_SHARDS,
+                           "maximum": suitegate.MAX_SHARDS, "default": suitegate.DEFAULT_SHARDS},
+                "project": {"type": "string", "maxLength": 100,
+                            "description": "A Playwright project name, passed as --project."},
+                "env_file": {"type": "string", "maxLength": 200,
+                             "description": "A repo-relative file of NON-SECRET env the suite "
+                                            "needs (a mock server's URL, say), loaded before the tests."},
+                "target": _TARGET_SCHEMA,
+            },
+            "required": ["repository", "ref", "suite"],
         },
     },
     {
@@ -5187,6 +5240,22 @@ def _call(
                              environments=args.get("environments")),
             indent=2,
         )
+
+    if name == "swarm_suite_gate":
+        # WHERE IT GOES first (S8), as swarm_workflow: under `local` nothing is
+        # read or sent. Then every argument is checked and the registration
+        # read before the one POST.
+        placed = _placement(name, {k: v for k, v in args.items() if k == "target"},
+                            profiles=[suitegate.PROFILE])
+        envelope, rendered = suitegate.gate(client, args)
+        reply = json.loads(_workflow_created(
+            without_credentials(envelope), placed=placed,
+            repository={"url": rendered["repository_url"], "ref": rendered["repository_ref"],
+                        "source": "given"},
+            given=[str(step.get("step_id")) for step in rendered["steps"]],
+            name=rendered["title"]))
+        reply["suite_gate"] = suitegate.reply_fields(rendered)
+        return json.dumps(reply, indent=2)
 
     if name == "swarm_qa_target_credential_link":
         # The url and its expiry, nothing else: `qatargets.credential_link`

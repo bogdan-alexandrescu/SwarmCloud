@@ -641,14 +641,22 @@ def pull_request_lines(record: dict[str, Any]) -> list[str]:
 
 #: The repository paths whose change makes a review UI-gated.
 UI_PATH_PREFIXES = ("apps/swarm-ui/", "docs/web-ui/")
-#: Under `apps/swarm-ui/`, the vitest files a rendered review would not see:
-#: a `__tests__/` directory, or these suffixes. Owner decision 2026-10-26
-#: (part of #2379, F03): a lane whose only UI-prefixed file was a test could
-#: never reach MERGE, since its fix round re-reviews on the review's own
-#: profile. Application code, CSS, index.html and configs stay gated.
-UI_TEST_PREFIX = "apps/swarm-ui/"
-UI_TEST_DIR = "__tests__"
-UI_TEST_SUFFIXES = (".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx")
+#: Test files under those prefixes are NOT UI: nothing renders them. Two
+#: decisions, kept as one rule. Fix 6 of the 2026-10-25 runtime audit (#2322):
+#: a `__tests__/` or `tests/` directory under either prefix holds tests, and
+#: gating it sent a test-only change to a render follow-up. Owner decision
+#: 2026-10-26 (part of #2379, F03): a vitest file under `apps/swarm-ui/`
+#: (`*.test.*`, `*.spec.*`) is not UI either, since a lane whose only UI file
+#: was a test could never reach MERGE. The filename mark counts only under
+#: `apps/swarm-ui/`: a `docs/web-ui/` page is rendered whatever it is called.
+#: Application code, CSS, index.html and configs stay gated. The scheduler
+#: resolves a `browser_if_ui` review's profile by the same rule
+#: (`scheduler.runtime.is_ui_path`), restated there because neither image
+#: carries the other's package and `swarm_common` is frozen;
+#: tests/unit/control_plane/test_runtime_by_diff.py holds the two equal.
+TEST_DIRECTORIES = ("__tests__", "tests")
+TEST_FILE_MARKS = (".test.", ".spec.")
+TEST_FILE_MARK_PREFIX = "apps/swarm-ui/"
 #: The one profile that renders pages (contract request 108's browser runner).
 RENDERED_REVIEW_PROFILE = "claude-code-browser"
 #: What a rendered review leaves in its artifacts directory.
@@ -694,21 +702,26 @@ def _patch_paths(header: str) -> list[str]:
     return paths
 
 
-def is_ui_path(path: str) -> bool:
-    """Whether a repository-relative path is one a rendered review must see.
+def is_test_path(path: str) -> bool:
+    """Whether a repository path is a test file.
 
-    A vitest file under `apps/swarm-ui/` is not: nothing renders it.
+    Under a `__tests__/` or `tests/` directory, or, under `apps/swarm-ui/`,
+    named `*.test.*` or `*.spec.*`.
     """
+    text = path.lstrip("/")
+    parts = text.split("/")
+    if any(part in TEST_DIRECTORIES for part in parts[:-1]):
+        return True
+    return text.startswith(TEST_FILE_MARK_PREFIX) and any(
+        mark in parts[-1] for mark in TEST_FILE_MARKS)
+
+
+def is_ui_path(path: str) -> bool:
+    """Whether a repository-relative path is one a rendered review must see (tests are not)."""
     if not isinstance(path, str):
         return False
-    path = path.lstrip("/")
-    if not path.startswith(UI_PATH_PREFIXES):
-        return False
-    if path.startswith(UI_TEST_PREFIX) and (
-        UI_TEST_DIR in path.split("/")[:-1] or path.endswith(UI_TEST_SUFFIXES)
-    ):
-        return False
-    return True
+    text = path.lstrip("/")
+    return text.startswith(UI_PATH_PREFIXES) and not is_test_path(text)
 
 
 def ui_paths_in_patch(text: str) -> list[str]:
