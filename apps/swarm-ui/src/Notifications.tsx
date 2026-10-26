@@ -350,9 +350,31 @@ function useItemQuestion(item: NotificationItem): string | null {
   return text
 }
 
+/**
+ * ONE NOTIFICATION IS TWO LINES (VQ-057, visual QA 2026-10-26): its title and
+ * one line under it. It printed the whole detail -- five lines of an agent's
+ * outcome -- and a breadcrumb with the raw task id ("Work › Agents ›
+ * task_9f3b… ›"), so a 390px screen held two notifications. The line is the
+ * agent's question where there is one, else the detail with its line breaks
+ * folded; the sheet cuts it at the edge, and the whole text is its tooltip
+ * and is on the page the item opens. Where the item leads is the link's
+ * tooltip, in the panel's words, without the id.
+ */
+export function excerptOf(item: NotificationItem, question: string | null): string | null {
+  if (question !== null) return `\u201c${question}\u201d`
+  const detail = (item.detail ?? '').replace(/\s+/g, ' ').trim()
+  return detail === '' ? null : detail
+}
+
+/** Where an item leads, for its tooltip: the panel's words, an agent's id left out. */
+export function leadsTo(href: string): string {
+  const dest = destinationOf(href)
+  return `Opens ${(dest[0] === 'Work' && dest[1] === 'Agents' ? dest.slice(0, 2) : dest).join(' › ')}`
+}
+
 function Item({ item, now, onOpen }: { item: NotificationItem; now: number; onOpen: (item: NotificationItem) => void }) {
-  const dest = destinationOf(item.href)
   const question = useItemQuestion(item)
+  const excerpt = excerptOf(item, question)
   const icon = GROUP_ICON[item.group] ?? 'work'
   return (
     <li className={`nt-item is-${item.group}${item.read ? '' : ' is-unread'}`}>
@@ -363,6 +385,7 @@ function Item({ item, now, onOpen }: { item: NotificationItem; now: number; onOp
       <a
         className="nt-main"
         href={item.href}
+        title={leadsTo(item.href)}
         onClick={(e: ReactMouseEvent<HTMLAnchorElement>) => {
           if (!routedClick(e)) return
           e.preventDefault()
@@ -371,20 +394,20 @@ function Item({ item, now, onOpen }: { item: NotificationItem; now: number; onOp
       >
         {item.read ? null : <span className="sk-vh">Unread: </span>}
         <span className="nt-title">{item.title}</span>
-        {question !== null && (
-          <span className="nt-question" data-testid="nt-question">
-            &ldquo;{question}&rdquo;
+        {excerpt !== null && (
+          <span className={question !== null ? 'nt-excerpt nt-question' : 'nt-excerpt'} title={excerpt}>
+            {excerpt}
           </span>
         )}
-        {item.detail !== null && item.detail !== '' && <span className="nt-detail">{item.detail}</span>}
-        <span className="nt-dest">{`${dest.join(' › ')} ›`}</span>
       </a>
       <span className="nt-side">
         <time dateTime={item.at} title={item.at}>
           {timeAgo(item.at, now)}
         </time>
         {!item.read && (
-          <button type="button" className="nt-mark" aria-label={`Mark read: ${item.title}`} onClick={() => void markRead([item.id])}>
+          // The console's small button (components.html A), not a text link
+          // in the time's monospace.
+          <button type="button" className="c-btn is-sm is-ghost nt-mark" aria-label={`Mark read: ${item.title}`} onClick={() => void markRead([item.id])}>
             Mark read
           </button>
         )}

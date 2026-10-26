@@ -3,7 +3,7 @@
 // "why do I have schedules in Admin and also in Automate?" and chose one page
 // with an admin toggle:
 //
-//   * Automate › Schedules carries a "Mine | All tenants" switch, drawn only
+//   * Automate › Schedules carries a "Mine | All workspaces" switch, drawn only
 //     for an admin (the session's `principal.is_admin`); a non-admin never
 //     sees it, and the server still decides `GET /v1/admin/schedules`;
 //   * All tenants is the cross-tenant table (a Tenant column), the schedule
@@ -101,12 +101,15 @@ afterEach(() => {
 })
 
 describe('one Schedules page, with an admin switch', () => {
-  it('draws "Mine | All tenants" for an admin, with Mine chosen on the bare page', async () => {
+  it('draws "Mine | All workspaces" for an admin, with Mine chosen on the bare page', async () => {
     await mount(true, null)
     // MUTATION: draw the switch for nobody, or for everyone.
     const nav = await screen.findByRole('navigation', SWITCH, WAIT)
     const links = [...nav.querySelectorAll('a')]
-    expect(links.map((a) => a.textContent)).toEqual(['Mine', 'All tenants'])
+    // VQ-030: BGD on #2157 (2026-10-23) kept the "All workspaces" switch; the
+    // console says workspace, never tenant, in its words and its titles.
+    expect(links.map((a) => a.textContent)).toEqual(['Mine', 'All workspaces'])
+    for (const a of links) expect(a.getAttribute('title') ?? '').not.toMatch(/tenant/i)
     expect(links.map((a) => a.getAttribute('href'))).toEqual(['/automate/schedules', '/automate/schedules?scope=all'])
     expect(links[0]!.getAttribute('aria-current')).toBe('page')
   })

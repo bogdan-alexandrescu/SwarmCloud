@@ -340,7 +340,7 @@ describe('QA-111: the sort button says the order the list is in', () => {
 })
 
 describe('QA-116: More says what it holds', () => {
-  it('reads `2 more: Artifacts, Checkpoints` and names the tabs behind it', async () => {
+  it('reads `More 3` and names the tabs behind it', async () => {
     const t = row(1, 'FAILED')
     serve([t])
     const proto = HTMLElement.prototype
@@ -348,7 +348,8 @@ describe('QA-116: More says what it holds', () => {
       client: Object.getOwnPropertyDescriptor(proto, 'clientWidth'),
       offset: Object.getOwnPropertyDescriptor(proto, 'offsetWidth'),
     }
-    // A 390 phone's strip: room for four 80px tabs beside More, not six.
+    // A 390 phone's strip: room for four 80px tabs beside More, not six; three
+    // stay, with room kept for the tab More holds (BROWSER-TAB-TABS, BT-013).
     Object.defineProperty(proto, 'clientWidth', {
       configurable: true,
       get(this: HTMLElement) {
@@ -366,15 +367,16 @@ describe('QA-116: More says what it holds', () => {
       render(<AgentSplit taskId={t.id} pane="detail" artifact={null} closeTo="work/running/recent" go={() => {}} base={`work/task/${t.id}`} />)
       await waitFor(() => expect(document.querySelector('.ag-head-title')).not.toBeNull())
       fireEvent(window, new Event('resize'))
-      await waitFor(() => expect(within(panes()).getAllByRole('tab')).toHaveLength(4))
+      await waitFor(() => expect(within(panes()).getAllByRole('tab')).toHaveLength(3))
       const more = document.querySelector<HTMLElement>('.ag-tabs-more')!
       // MUTATION: draw `More 2` again -- a bare figure that reads as two
       // checkpoints as easily as two hidden tabs.
-      expect(flat(more)).toBe('2 more: Artifacts, Checkpoints ▾')
+      // (BROWSER-TAB-TABS, #2423: the names are its name and title, not its glass.)
+      expect(flat(more.querySelector('.ag-tabs-more-label'))).toBe('More 3')
       // MUTATION: drop the names from the button's name and tooltip -- a
       // reader cannot tell Checkpoints is behind it without opening it.
-      expect(screen.getByRole('button', { name: '2 more: Artifacts, Checkpoints' })).toBe(more)
-      expect(more.getAttribute('title')).toBe('Artifacts, Checkpoints')
+      expect(screen.getByRole('button', { name: 'More 3 tabs: Changes, Artifacts, Checkpoints' })).toBe(more)
+      expect(more.getAttribute('title')).toBe('Changes, Artifacts, Checkpoints')
     } finally {
       for (const [k, d] of [['clientWidth', had.client], ['offsetWidth', had.offset]] as const) {
         if (d) Object.defineProperty(proto, k, d)

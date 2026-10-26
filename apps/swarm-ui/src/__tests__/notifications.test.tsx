@@ -149,10 +149,10 @@ describe('the drop-down', () => {
     const titles = [...p.querySelectorAll('.nt-item .nt-title')].map((t) => t.textContent)
     // MUTATION: keep the served order, or sort both groups the same way.
     expect(titles).toEqual(['Older ask', 'Newer ask', 'Newer update', 'Older update'])
-    // Each item says where it leads, from its href.
+    // Each item says where it leads, from its href: its link's tooltip (VQ-057).
     const first = p.querySelector('.nt-item')!
     expect(first.classList.contains('is-unread')).toBe(true)
-    expect(visible(first.querySelector('.nt-dest'))).toMatch(/Admin.*People/)
+    expect(first.querySelector('.nt-main')!.getAttribute('title')).toMatch(/Admin.*People/)
     expect(p.textContent).toContain('Read items clear after 30 days')
   })
 
@@ -409,7 +409,9 @@ describe('an agent-questions item', () => {
     await mountBell(notifications(() => feed(items), extra))
     const p = await openPanel()
     await waitFor(() => expect(p.querySelector('.nt-question')?.textContent).toContain('Should the retry cap be 3 or 5?'), WAIT)
-    expect(visible(p.querySelector('.nt-detail'))).toContain('fix-heartbeat')
+    // One line under the title (VQ-057): the question takes it, the detail is not drawn too.
+    expect(p.querySelectorAll('.nt-excerpt')).toHaveLength(1)
+    expect(p.textContent).not.toContain('fix-heartbeat')
   })
 
   it('cuts a long question on a word, and says nothing for an item that is no question', async () => {
@@ -421,5 +423,49 @@ describe('an agent-questions item', () => {
     expect(cut.endsWith('…')).toBe(true)
     expect(long.startsWith(cut.slice(0, -1))).toBe(true)
     expect(firstQuestion({ ...read, questions: [] })).toBeNull()
+  })
+})
+
+/**
+ * VQ-057 (visual QA, 2026-10-26; components.html A). Each item printed its whole
+ * detail -- five lines -- and a breadcrumb with the raw task id, so the 390px
+ * page held two notifications; and Mark read was a monospace text link unlike
+ * every other button. An item is now its title and ONE line, and Mark read is
+ * the console's small button.
+ */
+describe('VQ-057: an item is a title and one line', () => {
+  const ID = 'task_' + '9f3b6189'.repeat(2) + '1234'
+  const long = ['Opened PR 42 against main.', 'Changed 3 files.', 'Tests: 120 passed.', 'Coverage unchanged.', 'Ready for review.'].join('\n')
+
+  it('draws one excerpt, its line breaks folded and the whole text its tooltip, and no breadcrumb with the task id', async () => {
+    const items = [note('f1', { group: 'finished', title: 'Your agent finished', detail: long, href: `/agents/recent/${ID}` })]
+    await mountBell(notifications(() => feed(items)))
+    const p = await openPanel()
+    const item = p.querySelector('.nt-item')!
+    const lines = item.querySelectorAll('.nt-main > span:not(.sk-vh)')
+    // MUTATION: draw the detail and the breadcrumb again -- three lines.
+    expect([...lines].map((l) => l.className)).toEqual(['nt-title', 'nt-excerpt'])
+    const excerpt = item.querySelector('.nt-excerpt')!
+    expect(excerpt.textContent).not.toContain('\n')
+    expect(excerpt.textContent).toBe(long.replace(/\n/g, ' '))
+    expect(excerpt.getAttribute('title')).toBe(excerpt.textContent)
+    // The raw id is drawn nowhere in the item; where it leads is the tooltip.
+    expect(item.textContent).not.toContain(ID)
+    expect(item.querySelector('.nt-main')!.getAttribute('title')).toBe('Opens Work › Agents')
+  })
+
+  it('draws no excerpt line for an item with no detail', async () => {
+    await mountBell(notifications(() => feed([note('n1', { title: 'Workspace request', detail: '  ' })])))
+    const p = await openPanel()
+    expect(p.querySelector('.nt-excerpt')).toBeNull()
+  })
+
+  it('draws Mark read as the console’s small button, not a text link', async () => {
+    await mountBell(notifications(() => feed([note('n1', { needs_you: true, group: 'admin', title: 'Workspace request' })])))
+    const p = await openPanel()
+    const mark = within(p).getByRole('button', { name: /Mark read/ })
+    // MUTATION: drop `c-btn is-sm` -- the monospace link is back.
+    expect(mark.classList.contains('c-btn')).toBe(true)
+    expect(mark.classList.contains('is-sm')).toBe(true)
   })
 })
