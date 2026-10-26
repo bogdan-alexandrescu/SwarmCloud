@@ -630,7 +630,18 @@ TOOLS: list[dict[str, Any]] = [
             "hundred bytes a call. With `step_id`, a task PARKED on "
             "`CI_PENDING` (a merge waiting on its pull request's checks) also "
             "says `stop: true`, with a `PARKED` `result` naming the park and "
-            "how to resume, rather than holding hour after hour. A call holds up to `wait_seconds` (max "
+            "how to resume, rather than holding hour after hour. A task PARKED "
+            "on `HUMAN_REQUIRED` -- the merge's owner-question hold or a "
+            "hand-off -- says `stop: true` with `stop_reason: "
+            "\"waiting_on_person\"` and a `PARKED` `result` whose "
+            "`waiting_on_person` names the questions (asking step, index, text), "
+            "the console link and, for a hand-off, the human-ready route. A wait "
+            "line says when the wait began (`parked since 03:05Z (4h 30m)`), and "
+            "an unchanged line comes back at most every 30 minutes "
+            "(`refreshed`). `held_s` is how long the call held; holds that keep "
+            "returning in under 60 s with nothing changed answer `stop_reason: "
+            "\"hold_wait\"` (wait, then follow again) and, at five, "
+            "`\"hold_not_holding\"`. A call holds up to `wait_seconds` (max "
             f"{compact.MAX_WAIT_SECONDS}) and returns early only when a task's "
             "STATE changes -- waiting, parked (and why), holding capacity, or "
             "finished; progress inside one state does not end it. With "
@@ -4646,6 +4657,19 @@ def _setup_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         raise
 
 
+def _remember_person_waits(reply: dict[str, Any]) -> None:
+    """Each task this reply ended a row for because a person must act on it
+    (#2441), remembered so `/sc check` attaches a new row once it resumes
+    (`launch.resumed_person_waits`)."""
+    from . import launch
+
+    for row in reply.get("tasks") or []:
+        wait = row.get("waiting_on_person") if isinstance(row, dict) else None
+        if isinstance(wait, dict) and row.get("task_id"):
+            launch.remember_person_wait(str(row["task_id"]), wait.get("workflow_id") or None,
+                                        wait.get("step_id") or None)
+
+
 def _follow_rows(
     client: SwarmClient,
     args: dict[str, Any],
@@ -5095,6 +5119,7 @@ def _call(
         since_token, since_note = progress.HANDLES.resolve(args.get("since"), follower)
         args = {**args, "since": since_token}
         reply = _follow_rows(client, args, expected_step, parents, keepalive=keepalive)
+        _remember_person_waits(reply)
         reply["since"] = progress.HANDLES.issue(follower, reply["since"])
         if since_note:
             reply["since_note"] = since_note

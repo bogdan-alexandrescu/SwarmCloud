@@ -375,7 +375,11 @@ re-dispatches anything (owner, 2026-10-14: "report only"). Two calls:
    `per-step`, every `rows 1-8`, `rows 9-16`... copy it lists.
    `new_only` leaves out every workflow and task this session was already
    handed a row for, and `exclude` what you can see, so nothing is attached
-   twice; `already_attached` names them, `repository_unread` names any whose
+   twice -- with one exception: a step or single task whose row ENDED
+   because its task parked waiting on a person (the owner's questions, a
+   hand-off; #2441) gets a NEW row once it has left PARKED, for that step
+   alone (a `rows 1-N` copy naming it), and only once; one still parked
+   stays left out; `already_attached` names them, `repository_unread` names any whose
    repository could not be read, with the `/sc attach <id>` for each. Empty
    `launches` is an answer: every running workflow of the project already has
    its rows. `/sc attach <wf_id>` by hand always attaches, whatever was
