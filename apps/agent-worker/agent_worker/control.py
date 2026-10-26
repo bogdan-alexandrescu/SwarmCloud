@@ -102,8 +102,9 @@ from swarm_common.states import (
     TaskState,
     assert_transition,
 )
+from swarm_redaction import redact as redact_text
 
-from .accountlease import fetch_identity_token
+from .accountlease import Assignment, fetch_identity_token
 from .errors import (
     ControlPlaneError,
     ExitCode,
@@ -668,6 +669,11 @@ QUOTA_REPORT_ROUTES: dict[ProviderState, str] = {
     ProviderState.THROTTLED: "rate-limit",
     ProviderState.EXHAUSTED: "rate-limit",
 }
+
+#: Characters of a report's message sent for the account's health record
+#: (#2302). The message is a runner's own sentence about the 429
+#: (`QuotaSignal.detail`), never output; the broker caps it again.
+QUOTA_REPORT_MESSAGE_MAX = 200
 
 #: Seconds one report may take. Short: it sits on the way to a park, and a
 #: worker waiting on a control-plane service is a worker holding a slot.
@@ -1802,6 +1808,8 @@ class ControlPlane:
         state: ProviderState,
         retry_after_seconds: int | None = None,
         reset_at: datetime | None = None,
+        account: Assignment | None = None,
+        message: str = "",
     ) -> bool:
         """Report what this worker learned about the provider to the quota broker.
 
@@ -1828,6 +1836,15 @@ class ControlPlane:
         the window out and meets a fresh 429 is reported, because the window
         it would have matched has closed. A success always goes, and closes
         the window.
+
+        THE ACCOUNT THAT WAS REFUSED (#2302). When the attempt holds a pool
+        account, a 429 report names it -- with the hold's proof, the
+        assignment id, task and attempt -- and the broker records the 429 on
+        that account's health record INSTEAD of halving the tenant's target,
+        unless every account the tenant may use is limited at once. Without an
+        account (API-key traffic) the report is exactly what it always was.
+        `message` (a runner's sentence about the 429) is redacted here, before
+        it leaves the pod, and capped. A success never names an account.
 
         NEVER RAISES AND NEVER WAITS LONGER THAN ONE SHORT CALL. A failed
         report is logged and dropped; no retry. The caller's park-and-exit on a
@@ -1870,6 +1887,11 @@ class ControlPlane:
             body["retry_after_seconds"] = max(0, min(int(retry_after_seconds), 86_400))
         if route == "rate-limit" and reset_at is not None:
             body["reset_at"] = reset_at.isoformat()
+        if route == "rate-limit" and account is not None:
+            body["account"] = self._report_account(account)
+            text = self._report_message(message)
+            if text:
+                body["message"] = text
         try:
             self._quota_reporter.report(
                 provider=provider, tenant_id=self.tenant_id, route=route, body=body
@@ -1889,6 +1911,55 @@ class ControlPlane:
             )
         else:
             self._rate_limit_known_until.pop(provider, None)
+        return True
+
+    def _report_account(self, account: Assignment) -> dict[str, str]:
+        """The held account as a report names it: the broker's `ReportAccount`,
+        the same four-part proof its reading and swap routes check."""
+        return {
+            "account_id": account.account_id,
+            "assignment_id": account.assignment_id,
+            "task_id": self.task_id,
+            "attempt_id": self.attempt_id,
+        }
+
+    @staticmethod
+    def _report_message(message: str) -> str:
+        """`message` through `swarm_redaction`, one line, capped. Redacted
+        before it is cut, so a cut never leaves half a credential unmasked."""
+        text = " ".join(redact_text(str(message or "")).text.split())
+        return text[:QUOTA_REPORT_MESSAGE_MAX]
+
+    def report_account_error(
+        self, *, provider: str, account: Assignment, kind: str, message: str = ""
+    ) -> bool:
+        """Record a provider error that is not a rate limit on the held account.
+
+        Health only (#2302): the broker's `/account-error` route counts it on
+        the account's record (`kind`: auth, overloaded, server_error, network)
+        and never touches AIMD. Never raises, like `update_quota_state`, and
+        for the same reason: it sits on a path that must go on either way.
+        Returns True when the broker accepted it.
+        """
+        if self._quota_reporter is None:
+            return False
+        body: dict[str, Any] = {"account": self._report_account(account), "kind": kind}
+        text = self._report_message(message)
+        if text:
+            body["message"] = text
+        try:
+            self._quota_reporter.report(
+                provider=provider, tenant_id=self.tenant_id, route="account-error", body=body
+            )
+        except Exception as exc:
+            self._log.warning(
+                "could not report an account error to the quota broker; carrying on",
+                provider=provider,
+                account_id=account.account_id,
+                kind=kind,
+                error=str(exc)[:300],
+            )
+            return False
         return True
 
     # -- lease release -----------------------------------------------------

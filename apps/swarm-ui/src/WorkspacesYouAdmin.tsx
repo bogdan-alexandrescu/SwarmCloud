@@ -22,6 +22,14 @@
  * `X-Swarm-Tenant` without switching the one in hand), so an admin of several
  * sees which one is behind. A read that failed draws "not read", never done.
  *
+ * IT LEADS WITH THE WORKSPACE FURTHEST BEHIND (CONFIG-ADMIN-POLISH; part of
+ * #2157, S10a): the Config pages' lead (`AdminLead`, as Pool limits and
+ * Tenants draw it) naming it, its next step, and one button, "Open <X>'s
+ * Config", which selects it and opens that step's Config page. Its links are
+ * the Config tabs' own names and addresses, since Config replaced the
+ * Settings pages (CONFIG-NAV): Workspace Settings, MCP servers, People and
+ * roles, Secrets.
+ *
  * Personal workspaces are not listed: everyone administers their own, and its
  * settings are under Profile. Neither are a platform admin's reach entries,
  * which are workspaces they can reach, not ones they were made admin of.
@@ -32,22 +40,26 @@ import { SetupProgress, behindOf, setupSteps } from './ConfigSetup'
 import { loadWorkspaceSetup } from './configSetupApi'
 import type { Result } from './fetch'
 import type { OnboardingDoc } from './types'
-import { EmptyState, routedClick } from './components'
+import { ButtonLink, EmptyState, routedClick } from './components'
 import { chooseTenant } from './fetch'
-import { addressToPath } from './paths'
+import { AdminLead } from './AdminSettings'
+import { CONFIG_SECRETS_ADDRESS, addressToPath } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { WORKSPACE_PEOPLE_ADDRESS } from './roles'
 import { PageHead } from './Shell'
 import { adminWorkspaces, nameTenants } from './Spine'
 
-/** The four pages a workspace admin changes, in the Profile panel's order. */
+/** The four Config pages a workspace admin changes, by their tab names (S10a). */
 export const WORKSPACE_ADMIN_LINKS: readonly { label: string; to: string }[] = [
-  { label: 'Workspace', to: 'settings/workspace' },
-  { label: 'MCP servers', to: 'settings/mcp-servers' },
+  { label: 'Workspace Settings', to: 'config/workspace' },
+  { label: 'MCP servers', to: 'config/mcp-servers' },
   { label: 'People and roles', to: WORKSPACE_PEOPLE_ADDRESS },
-  // API keys' tenant row is the workspace key; the person's own key above it is theirs.
-  { label: 'Workspace key', to: 'settings/keys' },
+  // Workspace secrets and the workspace key (Keys for agents and MCP).
+  { label: 'Secrets', to: CONFIG_SECRETS_ADDRESS },
 ]
+
+/** Where "Open <X>'s Config" lands when no step is next: Config's first page, as `/config` does. */
+const CONFIG_LANDING = 'config/github'
 
 function NoneToAdmin() {
   return (
@@ -87,10 +99,17 @@ function AdminList({ choices, open }: { choices: Parameters<typeof adminWorkspac
   return (
     <>
       {behind !== null && (
-        <p className="wya-behind" role="status">
-          <b>{behind.w.display_name} is behind</b>
-          {behindNext !== null ? `: next, ${behindNext.label.toLowerCase()} (${behindNext.line}).` : '.'}
-        </p>
+        <AdminLead
+          tone="next"
+          kicker="Your workspaces"
+          title={`${behind.w.display_name} is behind`}
+          body={behindNext !== null ? `Next: ${behindNext.label.toLowerCase()} (${behindNext.line}).` : undefined}
+          action={
+            <ButtonLink kind="primary" href={addressToPath(behindNext?.to ?? CONFIG_LANDING)} onClick={(e) => open(e, behind.w.tenant_id, behindNext?.to ?? CONFIG_LANDING)}>
+              Open {behind.w.display_name}’s Config
+            </ButtonLink>
+          }
+        />
       )}
       <ul className="wya-list">
         {rows.map(({ w, read, steps }) => (

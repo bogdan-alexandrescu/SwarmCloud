@@ -161,7 +161,7 @@ def test_what_the_install_dialog_collects_is_what_the_bridge_resolves(tmp_path):
     options = _bridge_options()
     assert set(options) == {
         config.PLUGIN_URL, config.PLUGIN_CLIENT_ID, config.PLUGIN_CLIENT_SECRET, config.PLUGIN_TARGET,
-        config.PLUGIN_MAX_LIVE_ROWS, config.PLUGIN_ROWS,
+        config.PLUGIN_MAX_LIVE_ROWS, config.PLUGIN_ROWS, config.PLUGIN_LAYOUT,
     }, "the bridge names a role for every option the manifest prompts for, and no other"
     # URL-shaped for every option: a valid deployment URL, and a string that
     # is still a well-formed (if unusual) client id and secret. The target is
@@ -174,7 +174,9 @@ def test_what_the_install_dialog_collects_is_what_the_bridge_resolves(tmp_path):
     answers[config.PLUGIN_MAX_LIVE_ROWS] = "17"
     # Not the default, so landing in the mode proves the substitution (PLUGIN-ROW-SPLIT).
     answers[config.PLUGIN_ROWS] = "per-step"
-    environ = {"SWARM_CONFIG_DIR": str(tmp_path)}
+    # Not the default, so landing in the layout proves the substitution (SC-BROWSER-BUILD).
+    answers[config.PLUGIN_LAYOUT] = "pane"
+    environ = {"SWARM_CONFIG_DIR": str(tmp_path), "CLAUDE_PROJECT_DIR": str(tmp_path)}
     for name, value in _server_env().items():
         for key, answer in answers.items():
             value = value.replace(f"${{user_config.{key}}}", answer)
@@ -191,6 +193,9 @@ def test_what_the_install_dialog_collects_is_what_the_bridge_resolves(tmp_path):
     assert "plugin" in target.source, target.source
     assert config.max_live_rows(environ) == 17, "the live-row cap typed at install never arrived"
     assert config.rows_mode(environ) == "per-step", "the row mode chosen at install never arrived"
+    from swarm_mcp import layout
+
+    assert layout.current(environ)["layout"] == "pane", "the layout chosen at install never arrived"
 
 
 def test_the_default_target_defaults_to_the_bridges_default_and_names_all_three():

@@ -463,14 +463,10 @@ def _nav_options() -> dict[str, str]:
     m = re.search(r"\?\? \(at\.sectionId === HELP \? '([^']+)'", app)
     assert m is not None, "could not read the name the head prints for the Help screen"
     out[paths[help_route]] = f"{UI}{m.group(1)} ({paths[help_route]})"
-    # Settings › API keys (KEYS-UI): not a section, reached from the panel's
-    # foot beside the person's name. Read from the constants the router, the
-    # link and the page title use.
-    keys = f"{_const(app, 'SETTINGS')}/{_const(app, 'KEYS_TAB')}"
-    out[paths[keys]] = f"{UI}{_const(app, 'SETTINGS_LABEL')} › {_const(app, 'KEYS_LABEL')} ({paths[keys]})"
+    # Settings › API keys (KEYS-UI) was read here until SSC-UI (part of #2158)
+    # moved it into Config › Secrets, which the SECTIONS loop above reads.
     # Settings › Workspace and Settings › MCP servers were read here until
-    # CONFIG-NAV (part of #2157) made them Config tabs, which the SECTIONS loop
-    # above reads like every other. Settings keeps API keys and Profile.
+    # CONFIG-NAV (part of #2157) made them Config tabs. Settings keeps Profile.
     # Settings › Profile (PROFILE-NAV; docs/design/user-profile.md §2.1): the
     # person's own identity, workspaces, connections, bell and Claude accounts.
     # The same constants, for the same reason.

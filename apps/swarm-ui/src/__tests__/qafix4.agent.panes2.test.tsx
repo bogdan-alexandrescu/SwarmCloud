@@ -160,17 +160,16 @@ function resourcesNote(el: HTMLElement, name: string): string {
   return row!.textContent ?? ''
 }
 
-// ONE FROZEN INSTANT FOR THE WHOLE FILE, as details.v3.test.tsx does and for
-// its reason: `useNow` keeps one clock per cadence in module state, and the
-// first `renderToStaticMarkup` in this file creates it without subscribing, so
-// nothing moves it again. A later test's fixtures, built from a later
-// Date.now(), then read short: PR 2335's CI run 40185209286 drew `2m 57s` for
-// an attempt built `ago(3)`. Only Date is faked; act and the timers stay real.
-const FROZEN = new Date('2026-10-22T12:00:00Z')
+// ONE INSTANT FOR THE WHOLE FILE (PR #2305's CI, 2026-10-25). `useNow`'s
+// clock is module state, and under `renderToStaticMarkup` nothing subscribes
+// to it, so it keeps the instant of the file's first static render. Every
+// fixture after that was built on a later `Date.now()`, and on a slow runner
+// c07's `Run` tile read `2m 58s` for a start three minutes back. Only `Date`
+// is faked: the timers the client-rendered cases wait on stay real.
+const T0 = Date.now()
 
 beforeEach(() => {
-  vi.useFakeTimers({ toFake: ['Date'] })
-  vi.setSystemTime(FROZEN)
+  vi.useFakeTimers({ toFake: ['Date'], now: T0 })
   api.loadCheckpoints.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   api.loadTaskInputOnce.mockReturnValue(new Promise(() => {}))
@@ -181,9 +180,9 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  vi.useRealTimers()
   for (const h of hosts.splice(0)) h.remove()
   vi.clearAllMocks()
+  vi.useRealTimers()
 })
 
 describe('c05: the over-time line names the limit it counts against', () => {
@@ -253,8 +252,8 @@ describe('c07: the two clocks are named', () => {
     const t = tile(el, /^Run/)
     // MUTATION: leave the label `Elapsed` while the task runs.
     expect(t.querySelector('.dt-sc-l')?.textContent).toBe('Run · attempt 3')
-    // Started three minutes before the frozen instant the fixture and the clock both read.
-    expect(t.querySelector('.dt-sc-v')?.textContent).toBe('3m 0s')
+    // Started three minutes before the fixture was built, on the file's one frozen instant.
+    expect(t.querySelector('.dt-sc-v')?.textContent).toMatch(/^(2m 59s|3m 0s)$/)
     expect(t.querySelector('.dt-sc-s')?.textContent).toMatch(/^since /)
   })
 

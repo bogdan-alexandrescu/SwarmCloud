@@ -17,6 +17,16 @@ The asymmetry is deliberate and is the whole design:
   `multiplicative_decrease` immediately. Waiting for a second data point means
   the second data point arrives as a wall of 429s.
 
+  BUT ONLY A TENANT'S 429 REACHES IT (#2302). A 429 from one pool account's
+  window is that account's: the broker records it on the account's health
+  record and the account is kept from new work by its own window readings
+  (S15), so it never calls `record_rate_limit`/`record_exhausted` here. On
+  2026-10-25 one account's 429 halved eng from 26 to 14 while every other
+  account had room. A 429 still lands here when it names no account (API-key
+  traffic), when its caller cannot prove it holds the account it names, and
+  when every account the tenant may draw from is limited at once -- the pool
+  itself is spent (`quota_broker.main._account_scope`).
+
 THE INVARIANT THAT MUST NEVER BREAK:
 
     adaptive_target <= configured_hard_max, always.

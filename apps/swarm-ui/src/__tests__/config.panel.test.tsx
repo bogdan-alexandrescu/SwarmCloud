@@ -233,7 +233,7 @@ describe('the Admin panel in groups (S1b, S1c)', () => {
     const [ws, platform, automate] = groups()
     // MUTATION: draw PANEL_PAGES.admin as one list -> no groups and this fails.
     expect(ws).toMatchObject({ name: 'People and workspaces', rows: ['People and roles', 'Workspaces you admin'] })
-    expect(platform).toMatchObject({ name: 'Platform', rows: ['Pool limits', 'Runner sizes', 'Tenants', 'Platform counts'] })
+    expect(platform).toMatchObject({ name: 'Platform', rows: ['Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets'] })
     // MUTATION: draw Schedules or Approvals as Admin pages -> their links leave Automate and this fails.
     expect(automate).toEqual({ name: 'In Automate', rows: ['Schedules', 'Approvals'], hrefs: ['/automate/schedules?scope=all', '/approvals'] })
     // The spine's Admin still opens Pool limits.
@@ -273,7 +273,9 @@ describe('Workspaces you admin, each with its own setup progress (S10a)', () => 
     expect(ops!.querySelector('.cfg-progress-h b')?.textContent).toBe('Setup 2 of 4')
     expect(ops!.querySelector('.cfg-progress-next a')?.getAttribute('href')).toBe('/config/repositories')
     // MUTATION: drop the comparison -> nothing says which is behind and this fails.
-    expect(document.querySelector('.wya-behind')?.textContent).toBe('ops@example.com is behind: next, repositories chosen (not yet).')
+    const lead = screen.getByRole('region', { name: 'Your workspaces' })
+    expect(lead.querySelector('b')?.textContent).toBe('ops@example.com is behind')
+    expect(lead.querySelector('.ws-lead-s')?.textContent).toBe('Next: repositories chosen (not yet).')
     // Reading one workspace's setup does not switch the one in hand.
     const { chosenTenant } = await import('../fetch')
     expect(chosenTenant()).toBeNull()
@@ -288,6 +290,6 @@ describe('Workspaces you admin, each with its own setup progress (S10a)', () => 
     expect(ops.querySelector('.cfg-progress')).toBeNull()
     expect(ops.querySelector('.wya-reading')?.textContent).toMatch(/^Setup not read/)
     // One read is no comparison.
-    expect(document.querySelector('.wya-behind')).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Your workspaces' })).toBeNull()
   })
 })

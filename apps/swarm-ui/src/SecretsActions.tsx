@@ -73,7 +73,7 @@ const LIST_ROUTE = 'GET /v1/repositories/{repo_id}/actions/secrets'
 /** GitHub's rules for a secret's name (§3.9, `actions_secrets.SECRET_NAME`). */
 const NAME_RULE = /^[A-Za-z_][A-Za-z0-9_]{0,199}$/
 
-function nameProblem(name: string): string | null {
+export function nameProblem(name: string): string | null {
   if (name === '') return null
   if (!NAME_RULE.test(name)) return 'Letters, digits and _ only, not starting with a digit.'
   if (/^GITHUB_/i.test(name)) return 'GitHub reserves names starting with GITHUB_.'
@@ -89,7 +89,7 @@ function dropLinkToken(): void {
 }
 
 /** An environment's rule in the reader's words, short (a chip). */
-function ruleWords(r: ActionsEnvironmentRule | null): string {
+export function ruleWords(r: ActionsEnvironmentRule | null): string {
   if (r === null) return 'rule not read'
   if (!r.exists) return 'not on GitHub'
   if (r.rule === 'main_only') return `${r.branch} only`
@@ -104,7 +104,7 @@ function RuleChip({ rule }: { rule: ActionsEnvironmentRule | null }) {
 }
 
 /** Who can read a secret written there, in a sentence. */
-function readersOf(environment: string | null, rule: ActionsEnvironmentRule | null, repository: string): ReactNode {
+export function readersOf(environment: string | null, rule: ActionsEnvironmentRule | null, repository: string): ReactNode {
   if (environment === null) return <>Read by every workflow in {repository}.</>
   if (rule !== null && rule.main_only) return <>Read by workflows that run in <b>{environment}</b>, on {rule.branch} only. SwarmCloud grants nothing further.</>
   return <>Read by workflows that run in <b>{environment}</b>, which {ruleWords(rule) === 'any branch' ? 'any branch' : `its rule (${ruleWords(rule)})`} can deploy to.</>
@@ -696,7 +696,7 @@ function Opt({ id, name, checked, onPick, title, sub }: { id: string; name: stri
 }
 
 /** The `/sc` line that mints the same form from a terminal (§6.4). */
-function scLine(name: string, repository: string, environment: string | null): string {
+export function scLine(name: string, repository: string, environment: string | null): string {
   return `/sc secrets link repository ${name} --repo ${repository} --actions${environment === null ? '' : ` --env ${environment}`}`
 }
 
