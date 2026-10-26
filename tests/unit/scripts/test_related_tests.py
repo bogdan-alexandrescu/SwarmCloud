@@ -667,3 +667,152 @@ def test_the_script_selects_the_seven_named_sheet_readers_once(tmp_path):
         # MUTATION: list the readers but leave them out of the runs -> red.
         assert sum(c.count(f" {reader}") for c in commands) == 1, (reader, commands)
     _assert_every_command_names_files(commands)
+
+
+# --- the spacing slices a screen change reaches (#2362, part 2) --------------
+#
+# spacingsweep.tsx imports {App, SECTIONS} from '../App', so by import every
+# module App.tsx reaches reached all nine spacing.<group>.test.tsx slices, at
+# 252-437 CI-seconds each: 40+ agents timed out re-running them (#2362). A
+# slice renders App at its own routes only, so a change to one route's screen
+# selects the slices that walk that route, and a change to anything else App
+# renders -- the shell, the sweep, a sheet -- still selects all of them.
+
+SLICES = ("src/__tests__/spacing.capacity.test.tsx", "src/__tests__/spacing.admin.test.tsx")
+SLICE_CHECK = "src/__tests__/spacing.test.tsx"
+
+APP_TSX = """\
+import { AScreen } from './A'
+import { BScreen } from './B'
+import { Spine } from './Spine'
+
+export function App() {
+  return <Spine><SectionBody id="capacity/pools" /></Spine>
+}
+
+function SectionBody({ id }: { id: string }) {
+  switch (id) {
+    case 'capacity/pools':
+      return <AScreen />
+    case 'admin/limits':
+      return <BScreen />
+    default:
+      return null
+  }
+}
+"""
+
+SWEEP_TSX = """\
+import { App, SECTIONS } from '../App'
+import { probe } from './spaceprobe'
+
+export const SPACING_GROUPS: readonly SpacingGroup[] = [
+  { name: 'capacity', routes: ['capacity/pools'], floor: 1 },
+  {
+    name: 'admin', routes: ['admin/limits'], floor: 1,
+    centred: ['span.x [left] width 4px, centred'],
+  },
+]
+"""
+
+
+def _sweep_tree(root: Path, *, app: str = APP_TSX, sweep: str = SWEEP_TSX) -> None:
+    _write(root, f"{UI}/src/App.tsx", app)
+    _write(root, f"{UI}/src/A.tsx", "import { onlyA } from './onlyA'\nexport const AScreen = () => onlyA\n")
+    _write(root, f"{UI}/src/onlyA.ts", "export const onlyA = 1\n")
+    _write(root, f"{UI}/src/B.tsx", "export const BScreen = () => null\n")
+    _write(root, f"{UI}/src/Spine.tsx", "export const Spine = () => null\n")
+    _write(root, f"{UI}/src/styles/capacity.css", ".a { margin: 0 }\n")
+    _write(root, f"{UI}/src/__tests__/spaceprobe.ts", "export const probe = 1\n")
+    _write(root, f"{UI}/src/__tests__/spacingsweep.tsx", sweep)
+    for slice_ in SLICES:
+        _write(root, f"{UI}/{slice_}", "import { spacingGroup } from './spacingsweep'\n")
+    _write(root, f"{UI}/{SLICE_CHECK}", "import { SPACING_GROUPS } from './spacingsweep'\n")
+    _write(root, f"{UI}/src/__tests__/a.test.tsx", "import { AScreen } from '../A'\n")
+    _write(root, f"{UI}/src/__tests__/app.test.tsx", "import { App } from '../App'\n")
+
+
+def _spacing_selected(root: Path, *changed: str) -> list[str]:
+    files = _files(_select(root, *(f"{UI}/{c}" for c in changed))["vitest"])
+    return [f for f in files if "/spacing." in f]
+
+
+def test_a_screen_change_selects_only_the_spacing_slice_of_its_routes(tmp_path):
+    _sweep_tree(tmp_path)
+    for changed in ("src/A.tsx", "src/onlyA.ts"):
+        # MUTATION: leave the selection to the import graph -> A reaches App,
+        # App reaches the sweep, and spacing.admin is selected too.
+        assert _spacing_selected(tmp_path, changed) == sorted(
+            ["src/__tests__/spacing.capacity.test.tsx", SLICE_CHECK]), changed
+    assert _spacing_selected(tmp_path, "src/B.tsx") == sorted(
+        ["src/__tests__/spacing.admin.test.tsx", SLICE_CHECK])
+
+
+def test_an_app_shell_or_sweep_or_sheet_change_selects_every_spacing_slice(tmp_path):
+    _sweep_tree(tmp_path)
+    every = sorted([*SLICES, SLICE_CHECK])
+    for changed in ("src/App.tsx", "src/Spine.tsx", "src/__tests__/spacingsweep.tsx",
+                    "src/__tests__/spaceprobe.ts", "src/styles/capacity.css"):
+        # MUTATION: treat Spine as a screen, or select slices by screen alone
+        # -> a shell, sweep or sheet change drops a slice it changes.
+        assert _spacing_selected(tmp_path, changed) == every, changed
+
+
+def test_a_screen_module_app_also_imports_for_the_shell_selects_every_slice(tmp_path):
+    # A wrapper's module or a name App uses outside SectionBody's cases (a
+    # card, a hook) is rendered on every route, so its module is not a screen.
+    app = APP_TSX.replace("import { AScreen } from './A'", "import { AScreen, useA } from './A'")
+    app = app.replace("export function App() {\n", "export function App() {\n  useA()\n")
+    _sweep_tree(tmp_path, app=app)
+    # MUTATION: cut every App import of a case's screen name -> only capacity.
+    assert _spacing_selected(tmp_path, "src/A.tsx") == sorted([*SLICES, SLICE_CHECK])
+
+
+def test_an_unparseable_app_or_sweep_selects_every_spacing_slice(tmp_path):
+    every = sorted([*SLICES, SLICE_CHECK])
+    broken = {
+        "no SPACING_GROUPS": {"sweep": "import { App } from '../App'\nexport const GROUPS = []\n"},
+        "no case lines": {"app": APP_TSX.replace("case ", "when ")},
+        "an unresolvable screen": {"app": APP_TSX.replace("import { AScreen } from './A'\n", "")},
+        "a route with no case": {"sweep": SWEEP_TSX.replace("'capacity/pools'", "'capacity/gone'")},
+    }
+    for why, parts in broken.items():
+        root = tmp_path / why.replace(" ", "-")
+        _sweep_tree(root, **parts)
+        # MUTATION: answer "no slice" when the parse fails -> a screen change
+        # selects nothing and the sweep goes unrun until CI.
+        assert _spacing_selected(root, "src/B.tsx") == every, why
+
+
+def test_non_spacing_selection_is_unchanged(tmp_path):
+    _sweep_tree(tmp_path)
+    got = [f for f in _files(_select(tmp_path, f"{UI}/src/A.tsx")["vitest"]) if "/spacing." not in f]
+    # MUTATION: drop the screen's importers outside the sweep as well -> a.test
+    # or app.test goes missing.
+    assert got == ["src/__tests__/a.test.tsx", "src/__tests__/app.test.tsx"]
+
+
+def test_every_real_spacing_route_resolves_to_a_screen_module():
+    module = _selector_module()
+    ui_root = REPO / UI
+    known = set(module._ui_files(ui_root))
+    plan = module.spacing_plan(ui_root, known)
+    # MUTATION: rename SPACING_GROUPS, a SectionBody case or a screen's import
+    # -> the plan is None and every UI change selects all nine slices again.
+    assert plan is not None
+    slices = sorted(k for k in known if re.fullmatch(r"src/__tests__/spacing\.[^.]+\.test\.tsx", k))
+    assert sorted(f"src/__tests__/spacing.{g}.test.tsx" for g in plan.groups) == slices
+    for group, routes in plan.groups.items():
+        for route in routes:
+            modules = plan.routes[route]
+            assert modules, (group, route)
+            assert all(m in known for m in modules), (route, modules)
+    # And the narrowing is not empty: some screen's change selects fewer than
+    # every slice. (Screens import from each other -- Overview's cards come
+    # from several -- so one screen often reaches two or three slices.)
+    for screen in sorted(plan.cut):
+        got = [f for f in module.ui_related(ui_root, [screen]) if module._SLICE.fullmatch(f)]
+        if 0 < len(got) < len(slices):
+            break
+    else:
+        raise AssertionError(f"no screen of {sorted(plan.cut)} narrows the spacing slices")
