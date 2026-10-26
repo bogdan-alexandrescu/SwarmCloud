@@ -42,7 +42,8 @@ A `browser_take_screenshot` with no filename is saved under
 `$SWARM_ARTIFACTS_DIR/screenshots` and comes back to the model as an image.
 **The size is a preset, never a resize**: `swarm-handoff device <preset>`
 switches between `desktop` (1440×900), `iphone-15` (393×852), `phone-390`
-(390×844), `pixel-8` (412×915), `iphone-se` (375×667) and `ipad-7` (810×1080),
+(390×844), `phone-380` (380×844), `pixel-8` (412×915), `iphone-se` (375×667)
+and `ipad-7` (810×1080),
 and `browser_resize` is refused, so the person watching sees the device the
 page is laid out for. `swarm-handoff theme dark|light|system` sets the colour
 scheme every page is told to prefer, across navigations and new tabs. Every
@@ -256,3 +257,214 @@ Calling a test runner without the wrapper, with
 the same thing. The wrapper is the form the agent's note names. The design, and
 what the exception does and does not relax, are in
 [live-browser.md, "The test-runner exception"](design/live-browser.md#the-test-runner-exception-pw-testrunner-2253).
+
+---
+
+## 6. Rendering your own branch in another repository's implement step
+
+This section is for lane authors in other repositories. A UI lane's implement
+step can look at its own branch in a real browser and compare each render with
+the repository's frame PNGs before it finishes. BGD decided this on 2026-10-26
+(IMPLEMENT-RENDER, part of #2442), at the AI Studio session's request, and it
+applies to **any** repository.
+
+**Why.** AI Studio's ~30 visual-conformance lanes checked their UI fixes only
+with rendered-HTML tests. None of them looked at a real render. After merge, a
+browser re-check on staging found 28 of 52 desktop rows and 12 of 34 phone rows
+still wrong, plus 6 new regressions. A rendered-HTML test checks the markup
+you expected to write. It cannot see a token that resolves to the wrong
+colour, a flex child that wraps at 390, or a dark theme that was never wired
+up. A render compared with the frame can.
+
+### 6.1 Put the implement step on `claude-code-browser`
+
+Run **only the implement step** on `claude-code-browser`, with
+`browser_tool: playwright`. The other steps stay on `claude-code`. A
+`claude-code-browser` step holds a `browser` pod on GKE Autopilot for its whole
+length, including the time the model spends thinking, so a review or a plan
+step there costs a browser slot and gets nothing for it.
+
+```json
+{"step_id": "implement",
+ "runner_profile": "claude-code-browser",
+ "model_class": "opus",
+ "input": {
+   "browser_tool": "playwright",
+   "prompt": "Fix the rows in conformance.md. Before you finish, render your branch: start the app (README: `make dev-noauth`), and for every screen you changed take desktop light, desktop dark, phone-390 light and phone-390 dark, compare each with its frame in design/frames/ using `swarm-handoff compare`, fix what the diff shows, and compare again. In your summary, list every frame you compared with its score."}}
+```
+
+The prompt names the frames' directory, the command that starts the app
+without sign-in, and the four renders. The agent cannot guess the first two,
+and if the prompt does not ask for the renders, the step will not do them.
+
+### 6.2 Start the app inside the step, on 127.0.0.1
+
+The app runs in the step's own container, from the step's checkout: the branch
+being implemented, not a deployment. The live Chromium runs in the pod's
+display sidecar, which shares the pod's network namespace, so it reaches the
+agent's `127.0.0.1` directly. Chromium also sends loopback traffic direct
+when its other egress goes through a proxy. Use the repository's own dev
+server, bound to `127.0.0.1`, started in the background, with its output in a
+log file:
+
+```bash
+# a FastAPI backend, if the frontend needs one
+(cd backend && uv sync && nohup uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/api.log 2>&1 &)
+# a Next.js frontend
+(cd web && npm ci && nohup npm run dev -- --hostname 127.0.0.1 --port 3000 > /tmp/web.log 2>&1 &)
+# wait until a path that answers 200 does: curl retries itself, so no sleep loop is needed
+curl -sf --retry 60 --retry-delay 2 --retry-connrefused http://127.0.0.1:3000/ > /dev/null
+```
+
+* **Point the frontend at the backend on loopback** with whatever the
+  repository already reads, for example `NEXT_PUBLIC_API_URL=http://127.0.0.1:8000`
+  or a dev rewrite. The backend's CORS settings must allow
+  `http://127.0.0.1:3000`, or the frontend must proxy it.
+* **Open the page in the LIVE browser**, never in a Chromium of your own. The
+  runner refuses that launch: `chromium.launch()`, headless or not, fails by
+  design, because the person watching on the console would see none
+  of the work (live-browser.md §3.2). To drive the browser, use the
+  `browser_*` tools or `from swarm_browser import live`. A repository's own
+  headless suite is the one exception, and it runs under
+  `swarm-test-browsers` (§5).
+* **Next.js and `127.0.0.1`.** A Next.js dev server may treat
+  `127.0.0.1` and `localhost` as different origins for its `/_next/*` dev
+  resources. Newer versions warn about this, and versions that enforce
+  `allowedDevOrigins` load the page without its scripts. If that happens, add
+  `127.0.0.1` to `allowedDevOrigins` in the repository's `next.config`, or
+  open the host the dev server printed.
+* `swarm-handoff serve <dir>` is for a static directory, such as a mockup or
+  the frames themselves. It is not for the app.
+
+### Sign-in is never typed by an agent
+
+An agent never types a password, a one-time code or a recovery key into a
+sign-in page, and a lane cannot sign in to Keycloak, Auth0, Cloudflare Access
+or any other identity provider on its own. **A repository whose app sits
+behind Keycloak or something like it must offer a fixture or a no-auth dev
+mode** before a lane can render it. Examples:
+
+* an environment flag the dev server reads, such as `AUTH_MODE=fixture`,
+  that swaps the auth provider for a fixed fake user and role;
+* a mock-service-worker or fixture build, as this repository's console does
+  with `npm run dev` (fixture data, no network);
+* a backend dependency override that returns a fixed principal in dev.
+
+Whatever form it takes, it must be off in every deployed build. The repository
+owns it and documents it in its README, and the lane's prompt names it. A
+hand-off to a person (`swarm-handoff request`) does not replace it: the lane
+parks until someone comes, the session is not kept across a park, and on a
+step that runs unattended nobody comes. The way through Cloudflare Access is a
+service token that the platform adds and the agent never sees. That is lane
+CF-ACCESS-TOKEN of #2442, not this one.
+
+### 6.3 Render the four combinations
+
+For each screen you changed, render four combinations: desktop light, desktop
+dark, phone light and phone dark. The size is a preset and the theme is a
+command. Both are the gate's, and both hold across navigation and new tabs:
+
+| render | commands |
+|---|---|
+| desktop light | `swarm-handoff device desktop` · `swarm-handoff theme light` |
+| desktop dark | `swarm-handoff device desktop` · `swarm-handoff theme dark` |
+| phone light | `swarm-handoff device phone-390` · `swarm-handoff theme light` |
+| phone dark | `swarm-handoff device phone-390` · `swarm-handoff theme dark` |
+
+Use `phone-380` instead of `phone-390` when the repository's phone frames
+are drawn at 380. It is `phone-390` ten pixels narrower, with the same height,
+scale and user agent. `desktop` is 1440×900. `browser_resize` is refused:
+the gate owns the size.
+
+Take each render to a known path, so that it can be compared:
+
+```bash
+mkdir -p "$SWARM_ARTIFACTS_DIR/render"
+swarm-handoff device phone-390 && swarm-handoff theme dark
+python - <<'PY'
+import os
+from swarm_browser import live
+playwright, browser, context = live()
+page = context.new_page()                      # a tab of its own, which the person sees
+page.goto("http://127.0.0.1:3000/settings", wait_until="networkidle")
+page.screenshot(path=os.environ["SWARM_ARTIFACTS_DIR"] + "/render/settings--phone-390--dark.png")
+page.close()
+playwright.stop()                              # never browser.close(): the live browser stays up
+PY
+```
+
+A `browser_take_screenshot` with no filename is also saved, under
+`$SWARM_ARTIFACTS_DIR/screenshots`, and the model sees it. The script above
+puts the PNG at a name the compare step can use.
+
+**Take the viewport, not the full page, on a phone preset.** Through the gate
+a full-document shot on a phone preset is not the page as laid out. `swarm_qa`
+measured a first shot at phone-390 of 980×2121 with the page drawn small
+(`swarm_qa.py`, `_shot`). On a phone, compare the viewport with
+`--top-only` (below). On `desktop`, `full_page=True` is fine when the frame
+is a whole page.
+
+### 6.4 Compare each render with its frame
+
+```bash
+swarm-handoff compare "$SWARM_ARTIFACTS_DIR/render/settings--phone-390--dark.png" \
+    design/frames/settings--phone-390--dark.png
+```
+
+It prints one JSON line and writes two files under
+`$SWARM_ARTIFACTS_DIR/compare/`: `<name>.diff.png`, which is the render faded
+with every differing cell in magenta, and `<name>.json`, the report. The name
+defaults to the render's file name, and `--name` sets it. Exit codes:
+
+* **0**: the score is within the threshold;
+* **1**: the score is over the threshold;
+* **5**: the input was refused (an unreadable image, a bad name, or no
+  `$SWARM_ARTIFACTS_DIR`).
+
+How it scores, and why that way (the full reasoning is in the command's own
+docstring, `images/agent-runtime-browser/swarm-handoff`):
+
+* **The score is perceptual, not a pixel count.** A design tool and Chromium
+  never draw a glyph's edge the same way, so a pixel-exact ratio would call
+  every frame different. Both images are averaged into cells of 4×4 of the
+  render's CSS pixels, and each pair of cells is compared in CIELAB. A cell
+  differs when its colour difference (ΔE) is over 6, which is plainly visible.
+  The score is the share of cells that differ: **0 for the same picture**.
+  The default threshold is 0.02, about one misplaced line of body text across
+  a desktop. `--threshold 0` asks for a match with no differing cell.
+* **A frame exported at 2× or 3× is fine.** It is averaged over 2× or 3× the
+  pixels, so it lands on the same grid as the render.
+* **Transparency is seen over white.** A frame's empty canvas is transparent,
+  and the browser paints white.
+* **Heights must agree, or you must say they need not.** Rows that only one
+  image has count as different, so a one-screen render cannot pass for a
+  whole-page frame. `--top-only` scores only the rows both images have, and
+  reports how many it left out.
+* **Pillow does the decoding** when it is available. It is pinned in the
+  image's venv, which also lets it read palette, 16-bit and JPEG frames.
+  Without it, a standard-library decoder reads what Chromium writes. Measured
+  2026-10-26: about 1 s of CPU for a desktop render against a 2× frame, and
+  0.25 s for a phone.
+
+### 6.5 Fix, then finish, and name the frames
+
+Open each diff image with `Read`. The magenta cells are where the render and
+the frame disagree. Fix them, render again at the same preset and theme, and
+compare again. Finish when every frame you touched is within the threshold.
+If a frame cannot be matched, because the frame is wrong or because of a font
+the container lacks, say so for that frame.
+
+The summary names every frame compared, with its preset, theme, score and
+diff image:
+
+```text
+Rendered and compared (swarm-handoff compare, threshold 0.02):
+- design/frames/settings--desktop--light.png    desktop   light  0.004  compare/settings--desktop--light.diff.png
+- design/frames/settings--desktop--dark.png     desktop   dark   0.011  compare/settings--desktop--dark.diff.png
+- design/frames/settings--phone-390--light.png  phone-390 light  0.000  compare/settings--phone-390--light.diff.png
+- design/frames/settings--phone-390--dark.png   phone-390 dark   0.019  compare/settings--phone-390--dark.diff.png (--top-only, 120 rows left out)
+```
+
+The diff images and reports are in the step's artifacts, so whoever reviews
+the PR, or the next visual-QA step, can check the claim without rendering
+anything again.

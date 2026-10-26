@@ -183,6 +183,7 @@ export const DEVICE_CHIPS: ReadonlyArray<readonly [string, string]> = [
   ['desktop', 'Desktop'],
   ['iphone-15', 'iPhone 15'],
   ['phone-390', 'Phone 390'],
+  ['phone-380', 'Phone 380'],
   ['pixel-8', 'Pixel 8'],
   ['iphone-se', 'iPhone SE'],
   ['ipad-7', 'iPad'],
@@ -197,7 +198,7 @@ type Outline = 'desktop' | 'phone' | 'tablet' | 'unknown'
 function outlineOf(preset: string | null | undefined): Outline {
   if (preset === 'desktop') return 'desktop'
   if (preset === 'ipad-7') return 'tablet'
-  if (preset === 'iphone-15' || preset === 'phone-390' || preset === 'pixel-8' || preset === 'iphone-se') return 'phone'
+  if (preset === 'iphone-15' || preset === 'phone-390' || preset === 'phone-380' || preset === 'pixel-8' || preset === 'iphone-se') return 'phone'
   return 'unknown'
 }
 
