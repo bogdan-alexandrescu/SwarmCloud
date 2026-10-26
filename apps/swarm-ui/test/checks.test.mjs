@@ -309,7 +309,7 @@ test('parked steps that need a person are reported, with the reason', () => {
   assert.match(p.headline, /2 parked workflow steps will not resume without a person/)
   // "here is why" -- the reason, spelled and explained.
   assert.match(p.detail, /CREDENTIAL_MISSING/)
-  assert.match(p.detail, /No provider key is registered for this tenant/)
+  assert.match(p.detail, /No provider key is registered for this workspace/)
   assert.match(p.detail, /BUDGET_EXHAUSTED/)
   assert.match(p.detail, /No timer ends any of these/)
 })

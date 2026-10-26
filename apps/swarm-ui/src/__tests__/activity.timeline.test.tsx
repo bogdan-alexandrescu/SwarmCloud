@@ -1158,7 +1158,7 @@ describe('the eight cards', () => {
     const person = c.querySelector('.ol-person')!
     expect(person.classList.contains('is-warn')).toBe(true)
     // In words, not enums (QA G3-24): `reasonCopy`'s, with the token in the title.
-    expect(person.textContent).toContain('No provider key is registered for this tenant 2')
+    expect(person.textContent).toContain('No provider key is registered for this workspace 2')
     expect(c.textContent).toContain('clears itself The provider quota is spent. Parked until it resets 1')
     expect(c.textContent).not.toContain('PROVIDER_QUOTA_EXHAUSTED')
   })
