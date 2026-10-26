@@ -54,13 +54,19 @@ function schedule(): Json {
   }
 }
 
-/** Firing n, fired n days ago, which made task `task_<n>`. */
+/**
+ * Firing n, fired n days ago, which made task `task_<n>`, ended an hour later.
+ * The end is offset from `at`, not read from a second `minutesAgo`: a slow
+ * runner's millisecond between two clock reads made the firing 60m + 1ms,
+ * which the page's scale rounds up to +1h15m (#2375's run, 2026-10-26).
+ */
 function firing(n: number, over: Json = {}): Json {
   const at = minutesAgo(n * 1440)
+  const ended = new Date(Date.parse(at) + 60 * 60_000).toISOString()
   return {
     firing_id: `sch_a:${n}`, schedule_id: 'sch_a', type: 'issue-sweep', slot: at, fired_at: at, trigger: 'cron',
     state: 'done', work: [{ kind: 'task', id: `task_${n}`, repo_id: 'repo_a' }], skip: null, dry_run: null,
-    approval_id: null, outcome: 'succeeded', cost: null, ended_at: minutesAgo(n * 1440 - 60),
+    approval_id: null, outcome: 'succeeded', cost: null, ended_at: ended,
     ...over,
   }
 }
