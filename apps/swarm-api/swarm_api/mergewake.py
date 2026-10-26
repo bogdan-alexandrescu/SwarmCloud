@@ -1463,7 +1463,12 @@ def wake_release_waits(ctx: Any, tenant: Any, tenant_id: str, *, limit: int,
 
 
 def owner_hold_of(doc: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    """The owner-questions hold this merge step is PARKED on (#2070), else None."""
+    """The owner-questions hold this merge step is PARKED on (#2070), else None.
+
+    HUMAN_REQUIRED only. An AWAITING_INPUT park (contract request 92) is an
+    await-input step's, ended by swarm-api's human-step routes on its answer,
+    default or expiry; it is never a merge's hold, so this tick never reads it.
+    """
     if (doc.get("state") != TaskState.PARKED.value
             or doc.get("park_reason") != ParkReason.HUMAN_REQUIRED.value):
         return None
