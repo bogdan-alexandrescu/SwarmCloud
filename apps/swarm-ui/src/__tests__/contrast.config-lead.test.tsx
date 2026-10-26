@@ -13,9 +13,11 @@
 // WHY A FILE OF ITS OWN RATHER THAN THE SWEEP. The sweep renders each route
 // once, in whatever state the fixtures leave it, and a lead's buttons depend on
 // the state: "Connect GitHub" alone with nothing connected, "Choose
-// repositories" beside a secondary "Repositories" once something is chosen.
-// The 2.89:1 border is the SECONDARY one, so this renders each lead state on
-// purpose, through the same resolved sheet and the same probe the sweep uses.
+// repositories" once connected, "Next: Repositories" on the Choose tab. The
+// 2.89:1 border was the SECONDARY one ("Repositories" beside "Choose
+// repositories", until GITHUB-ACCESS-S2B gave S2b's lead one primary button),
+// so this renders each lead state on purpose, through the same resolved sheet
+// and the same probe the sweep uses.
 //
 // WHAT IT HOLDS, in both themes:
 //   * the lead is tinted: its card paints `--sk-acs`, not `--surface` (a lead
@@ -93,8 +95,10 @@ const GRANT = {
 const STATES: readonly { name: string; access: Record<string, unknown>; path: string; buttons: string[] }[] = [
   { name: 'nothing connected', access: { connection: null, grants: [] }, path: '/config/github', buttons: ['Connect GitHub'] },
   { name: 'connected, nothing chosen', access: { connection: CONNECTION, grants: [] }, path: '/config/github', buttons: ['Choose repositories'] },
-  // THE CASE THE 2.89:1 WAS MEASURED ON: a secondary button beside the primary.
-  { name: 'connected, one chosen', access: { connection: CONNECTION, grants: [GRANT] }, path: '/config/github', buttons: ['Choose repositories', 'Repositories'] },
+  // THE 2.89:1 WAS MEASURED ON A SECONDARY BUTTON BESIDE THE PRIMARY here.
+  // Since GITHUB-ACCESS-S2B (VQ-038) S2b's lead draws its one primary button,
+  // with the setup read unmeasured (no SetupContext) as here as well.
+  { name: 'connected, one chosen', access: { connection: CONNECTION, grants: [GRANT] }, path: '/config/github', buttons: ['Choose repositories'] },
   { name: 'Choose tab, not connected', access: { connection: null, grants: [] }, path: '/config/github?view=choose', buttons: ['Open Connection'] },
   { name: 'Choose tab, connected', access: { connection: CONNECTION, grants: [GRANT] }, path: '/config/github?view=choose', buttons: ['Next: Repositories'] },
 ]
