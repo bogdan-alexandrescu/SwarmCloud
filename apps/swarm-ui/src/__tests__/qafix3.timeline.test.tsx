@@ -142,3 +142,23 @@ describe('work-a-004: a workflow title is cut the way a lane name is', () => {
     expect(painted(title!, 'text-overflow', WIDE)).toBe('ellipsis')
   })
 })
+
+// TENANT-WORDING-I (VQ-056, part of #2391): a workflow the batched read did
+// not serve is "not found in this workspace", the console's word for a tenant
+// (BGD, 2026-10-26). The route in the tooltip keeps its technical shape.
+describe('VQ-056: a workflow the batch did not serve is named against the workspace', () => {
+  it('says "not found in this workspace" in the note and its tooltip', async () => {
+    // A 404 from the single read is an id the batch double reports `missing`.
+    api.loadWorkflow.mockResolvedValue({ status: 'error', error: { kind: 'not_found', httpStatus: 404, code: null, message: 'no such workflow' } })
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    const note = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('.tl-row.is-group[data-group="wf_long"] .tl-lab small')
+      expect(el?.textContent).toMatch(/^steps not read: /)
+      return el!
+    })
+    // MUTATION: put "tenant" back in the `missing` branch and both are red.
+    expect(note.textContent).toMatch(/^steps not read: not found in this workspace · retry · wf_long$/)
+    expect(note.querySelector('.tl-wf-unread')?.getAttribute('title')).toBe('/v1/workflows?ids=wf_long not found in this workspace')
+    expect(note.textContent).not.toMatch(/tenant/i)
+  })
+})
