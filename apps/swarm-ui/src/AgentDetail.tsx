@@ -23,7 +23,7 @@ import { resultIsNewest, stepCostOf, totalCostOf } from './dag'
 import { DecisionCard } from './DecisionCard'
 import { AdditionalRepositoryRows } from './Dispatch'
 import { PersonName } from './PersonName'
-import { QuestionsCard } from './QuestionsCard'
+import { HeldQuestionsCard, QuestionsCard } from './QuestionsCard'
 import { handoffOf } from './Handoff'
 import { pullRequestOf } from './decision'
 import { PHASE_LABEL, attemptEnd, instant, phasesFor, spanText, type AttemptEnd, type AttemptPhases, type Segment } from './duration'
@@ -446,6 +446,10 @@ export function Run({
           of #1206): where the bell's "Your agent asked N question(s)" lands,
           at `#questions`. Nothing, and no read, when it asked none. */}
       <QuestionsCard task={task} />
+      {/* A MERGE HELD BY THE OWNER'S QUESTIONS (#2313): those questions, with
+          the same answer control, each under the step that asked it. Nothing
+          for any other task. */}
+      <HeldQuestionsCard task={task} />
       <DecisionCard task={task} readAt={readAt} />
       {lead === 'failed' ? (
         <DtFailure run={run} lastLine={lastLine} />

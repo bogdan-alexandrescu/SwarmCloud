@@ -93,6 +93,27 @@ export interface UsageFigures {
   tokens: Record<TokenKind, TokenSum>
   /** `reporting` of `agents` is "k of n agents reported"; `estimated_usd` is INCLUDED in `sum_usd`. */
   cost: { sum_usd: number | null; estimated_usd: number | null; agents: number; reporting: number }
+  /**
+   * #2322 BROWSER-USE-FLAG (`outcomes._Usage.to_api`): the ended agents on a
+   * browser runtime and their run time, and the part whose agent the worker
+   * said did not use the browser. OPTIONAL: a read from an API older than
+   * DERIVE_VERSION 10 has no `browser`, and the view draws a dash for it.
+   */
+  browser?: BrowserUsage | null
+}
+
+/**
+ * `usage.*.browser`. `unused_s` is 0.0 when every measured browser agent used
+ * it and null only when no browser agent in the row has a measured run;
+ * `unknown_agents` (no verdict) are in `run_s` and in neither verdict.
+ */
+export interface BrowserUsage {
+  agents: number
+  run_s: number | null
+  measured: number
+  unused_agents: number
+  unused_s: number | null
+  unknown_agents: number
 }
 
 /** An unread bucket carries every figure null: never a partial sum. */
@@ -278,6 +299,7 @@ export function platformTimeExample(query: URLSearchParams, now: number): Platfo
       cache_creation_input_tokens: { sum: null, reporting: 0, attempts: 0 },
     },
     cost: { sum_usd: null, estimated_usd: null, agents: 0, reporting: 0 },
+    browser: { agents: 0, run_s: null, measured: 0, unused_agents: 0, unused_s: null, unknown_agents: 0 },
   })
   const add = (a: UsageFigures, b: UsageFigures) => {
     const plus = (x: number | null, y: number | null) => (x === null ? y : y === null ? x : x + y)
@@ -296,6 +318,16 @@ export function platformTimeExample(query: URLSearchParams, now: number): Platfo
       estimated_usd: plus(a.cost.estimated_usd, b.cost.estimated_usd),
       agents: a.cost.agents + b.cost.agents,
       reporting: a.cost.reporting + b.cost.reporting,
+    }
+    const x = a.browser!
+    const y = b.browser!
+    a.browser = {
+      agents: x.agents + y.agents,
+      run_s: plus(x.run_s, y.run_s),
+      measured: x.measured + y.measured,
+      unused_agents: x.unused_agents + y.unused_agents,
+      unused_s: plus(x.unused_s, y.unused_s),
+      unknown_agents: x.unknown_agents + y.unknown_agents,
     }
   }
   const figuresFor = (agents: number, i: number, open: boolean): UsageFigures => {
@@ -319,6 +351,21 @@ export function platformTimeExample(query: URLSearchParams, now: number): Platfo
         agents,
         reporting: ended - gap,
       },
+      // About one ended agent in eight on a browser runtime, a fifth of those
+      // never touching it and one in twenty with no verdict (example data).
+      browser: (() => {
+        const on = Math.round(ended / 8)
+        const unused = Math.round(on / 5)
+        const unknown = Math.round(on / 20)
+        return {
+          agents: on,
+          run_s: on === 0 ? null : on * 1500,
+          measured: on,
+          unused_agents: unused,
+          unused_s: on === 0 ? null : unused * 1500,
+          unknown_agents: unknown,
+        }
+      })(),
     }
   }
   const buckets: UsageBucket[] = []
@@ -330,7 +377,7 @@ export function platformTimeExample(query: URLSearchParams, now: number): Platfo
     if (i === count - 4) {
       buckets.push({
         start, end: stop, state: 'unread', in_progress: false, unread_reason: 'read_failed',
-        agents: null, agents_ended: null, retries: null, attempts: null, run_s: null, tokens: null, cost: null,
+        agents: null, agents_ended: null, retries: null, attempts: null, run_s: null, tokens: null, cost: null, browser: null,
       })
       continue
     }
