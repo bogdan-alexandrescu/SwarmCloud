@@ -166,8 +166,11 @@ def _count(tmp_path: Path, *, mode: str = "all", areas: str = "", tests: str = "
            cwd: Path = REPO, durations: Path = DURATIONS) -> tuple[subprocess.CompletedProcess[str], dict]:
     output = tmp_path / "count-output"
     output.write_text("")
+    # Never the job's own step summary: a count's coverage warning lands in
+    # `count-summary`, where a test can read it.
     env = {**os.environ, "PYTHON_MODE": mode, "PYTHON_AREAS": areas, "PYTHON_TESTS": tests,
-           "DURATIONS": str(durations), "GITHUB_OUTPUT": str(output)}
+           "DURATIONS": str(durations), "GITHUB_OUTPUT": str(output),
+           "GITHUB_STEP_SUMMARY": str(tmp_path / "count-summary")}
     proc = subprocess.run(["python3", str(UNIT_SHARDS), "count"], cwd=cwd, env=env,
                           capture_output=True, text=True, timeout=120)
     outputs = dict(l.split("=", 1) for l in output.read_text().splitlines() if "=" in l)
@@ -309,15 +312,66 @@ def test_the_shards_are_balanced_by_the_stored_weights(tmp_path):
     assert max(loads) <= 1.10 * (sum(loads) / len(loads)), loads
 
 
-def test_the_weights_name_test_files_and_cover_most_of_them():
-    """Stale weights unbalance the shards but never drop a file (an unknown
-    file weighs the median). Below 80 % coverage they are worth refreshing
-    (docs/ci.md, "Refreshing the shard weights")."""
+def test_the_weights_name_test_files():
+    """The weights file is well-formed: every key a unit test path, every
+    value a positive number. How MANY files it covers is not asserted here:
+    stale weights unbalance the shards but never drop a file (an unknown file
+    weighs the median), and an 80 % floor here turned python-unit red on main
+    and every pull request whenever new tests outran a manual refresh
+    (1069/1337 at 82638be8, #2364). The count reports it instead
+    (test_a_quarter_unweighted_still_shards_under_budget_and_warns).
+    MUTATION: weigh a file 0, or key one outside tests/unit."""
     weights = json.loads(DURATIONS.read_text())
     assert all(re.fullmatch(r"tests/unit/[\w/.-]+\.py", k) for k in weights), [k for k in weights][:5]
-    assert all(isinstance(v, (int, float)) and v > 0 for v in weights.values())
-    files = _test_files()
-    assert len(files & set(weights)) >= 0.8 * len(files), len(files & set(weights))
+    assert all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in weights.values())
+
+
+#: changed-guards.sh holds each pytest call to this; a shard must fit in one.
+CALL_BUDGET_SECONDS = 540
+
+
+def _weighted_tree(root: Path, files: int, weighted: int) -> Path:
+    _tree(root, {f"tests/unit/w/test_{i:02d}.py": "def test_x(): pass\n" for i in range(files)})
+    durations = root / "durations.json"
+    durations.write_text(json.dumps({f"tests/unit/w/test_{i:02d}.py": 4.0 + i % 3 for i in range(weighted)}))
+    return durations
+
+
+def test_a_quarter_unweighted_still_shards_under_budget_and_warns(tmp_path):
+    """#2364. A quarter of the files with no weight is a stale weights file,
+    not a broken gate: the count and every pick succeed, every file runs once,
+    no shard is over budget, and the count says the weights want refreshing.
+    MUTATION: fail the count below 80 %, or say nothing."""
+    root = tmp_path / "tree"
+    durations = _weighted_tree(root, 40, 30)
+    counted = tmp_path / "counted"
+    counted.mkdir()
+    proc, outputs = _count(counted, cwd=root, durations=durations)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "::warning title=stale shard weights::30 of 40 test files weighted (75%)" in proc.stdout, proc.stdout
+    assert "docs/ci.md#refreshing-the-shard-weights" in proc.stdout, proc.stdout
+    assert "30 of 40 test files weighted (75%)" in (counted / "count-summary").read_text()
+    picks = tmp_path / "picks"
+    picks.mkdir()
+    shards = _all_shards(picks, cwd=root, durations=durations)
+    every = [f for shard in shards for f in shard]
+    assert sorted(every) == sorted(_test_files(root)), every
+    weights = json.loads(durations.read_text())
+    median = sorted(weights.values())[len(weights) // 2]
+    target, _ = _constants()
+    loads = [sum(weights.get(f, median) for f in shard) for shard in shards]
+    assert max(loads) <= min(CALL_BUDGET_SECONDS, 1.5 * target), loads
+
+
+def test_well_weighted_tree_does_not_warn(tmp_path):
+    """At 80 % coverage and above the count says nothing about the weights.
+    MUTATION: warn on every run."""
+    root = tmp_path / "tree"
+    durations = _weighted_tree(root, 40, 32)
+    proc, outputs = _count(tmp_path, cwd=root, durations=durations)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "::warning" not in proc.stdout, proc.stdout
+    assert not (tmp_path / "count-summary").exists()
 
 
 @pytest.mark.parametrize(
