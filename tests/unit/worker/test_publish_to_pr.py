@@ -426,3 +426,70 @@ def test_the_token_goes_only_to_github(monkeypatch):
     ref = forge_mod.RepoRef(host="git.example.invalid", owner="acme", name="widgets")
     with pytest.raises(forge_mod.ForgeError, match="only to github.com"):
         forge_mod.read_pull_request(ref=ref, token="x" * 8, number=NUMBER)
+
+
+# -- the pull request's branch is the lane's own (F04, part of #2379) ---------
+
+
+def _checkout_and_commit(branch: str, name: str, *, fetch: str | None = None):
+    """An agent that fetches `fetch` (default `branch`), runs `git checkout -B
+    <branch>` there, and commits -- as the F04 lane did on its PR's branch."""
+    def edit(repo: Path) -> None:
+        _git(repo, "fetch", "--quiet", "origin", fetch or branch)
+        _git(repo, "checkout", "--quiet", "-B", branch, f"origin/{fetch or branch}")
+        (repo / f"{name}.txt").write_text(f"work from {name}\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "--quiet", "-m", name)
+    return edit
+
+
+def test_a_lane_that_checks_out_the_pull_requests_branch_publishes_onto_it(
+    worker_factory, monkeypatch, origin, local_urls, forge, pull
+):
+    """MEASURED 2026-10-26 (F04 of #2379): a `publish_to_pr` lane ran `git
+    checkout -B <the PR's branch>`, committed, and was refused `head_moved`
+    -- the guard exempted only `swarm/<own task>`, while the publish pushes
+    the pull request's branch. MUTATION: exempt only `swarm/<own task>` in
+    `_fetched_line` -- this ends head_moved == PR_BRANCH, published False."""
+    _no_agent_text(monkeypatch)
+    start = refs(origin)[PR_BRANCH]
+    _, config, out = run_attempt(worker_factory, monkeypatch, origin, task_id="t-own-pr",
+                                 dispatch=DIRECT, edit=_checkout_and_commit(PR_BRANCH, "onpr"))
+    assert "head_moved" not in out, out
+    assert out["published"] is True, out
+    assert out["branch"] == PR_BRANCH
+    new_tip = refs(origin)[PR_BRANCH]
+    assert new_tip != start
+    _git(origin, "merge-base", "--is-ancestor", start, new_tip)
+    assert {"mockup.txt", "onpr.txt"} <= tree_at(origin, new_tip)
+    assert forge.pulls == [] and f"swarm/{config.task_id}" not in refs(origin)
+
+
+def test_a_publish_to_pr_lane_on_another_fetched_branch_still_moved(
+    worker_factory, monkeypatch, origin, local_urls, forge, pull, tmp_path
+):
+    """The control: only the pull request's branch is the lane's own."""
+    _no_agent_text(monkeypatch)
+    _push_commit(origin, tmp_path, "feature/elsewhere", "elsewhere")
+    start = refs(origin)[PR_BRANCH]
+    _, _, out = run_attempt(
+        worker_factory, monkeypatch, origin, task_id="t-elsewhere", dispatch=DIRECT,
+        edit=_checkout_and_commit("feature/elsewhere", "stray"),
+    )
+    assert out["head_moved"] == "feature/elsewhere", out
+    assert out["published"] is False
+    assert refs(origin)[PR_BRANCH] == start and pull.updates == []
+
+
+def test_a_lane_without_publish_to_pr_on_that_branch_still_moved(
+    worker_factory, monkeypatch, origin, local_urls, forge, pull
+):
+    """The control: without the field the pull request's branch is someone
+    else's, and checking it out is leaving this step's line."""
+    start = refs(origin)[PR_BRANCH]
+    dispatch = {"strategy": "direct-pr", "carrier": "checkpoints"}
+    _, _, out = run_attempt(worker_factory, monkeypatch, origin, task_id="t-not-onto",
+                            dispatch=dispatch, edit=_checkout_and_commit(PR_BRANCH, "stray"))
+    assert out["head_moved"] == PR_BRANCH, out
+    assert out["published"] is False
+    assert refs(origin)[PR_BRANCH] == start and forge.pulls == []
