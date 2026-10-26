@@ -43,7 +43,7 @@ function figures(agents: number, retries: number, over: Partial<UsageFigures> = 
       cache_read_input_tokens: tok(attempts * 5000),
       cache_creation_input_tokens: tok(attempts * 300),
     },
-    cost: { sum_usd: agents * 1.5, estimated_usd: null, agents, reporting: agents },
+    cost: { sum_usd: agents * 1.5, estimated_usd: null, estimated: 0, agents, reporting: agents },
     ...over,
   }
 }
@@ -64,6 +64,10 @@ function payload(opts: {
     buckets.reduce((n, b) => n + (b.agents ?? 0), 0),
     buckets.reduce((n, b) => n + (b.retries ?? 0), 0),
   )
+  // One series per row, each its row's agents in the first bucket: these tests read the table, not the stack.
+  const rows = opts.rows ?? []
+  const series = rows.map((r) => ({ key: r.key, measured: true, other: false, keys: 1, agents: buckets.map((_, i) => (i === 0 ? r.agents : 0)), retries: buckets.map((_, i) => (i === 0 ? r.retries : 0)) }))
+  const grouping = { by: opts.by ?? 'runner_profile', rows_total: rows.length, rows, series }
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -81,7 +85,8 @@ function payload(opts: {
         cost_label: LABEL,
         buckets,
         totals: { complete: buckets.every((b) => b.state !== 'unread'), ...totals },
-        groups: { by: opts.by ?? 'runner_profile', rows_total: (opts.rows ?? []).length, rows: opts.rows ?? [] },
+        groups: grouping,
+        breakdowns: { runner_profile: grouping, model: grouping, tenant_id: grouping, pool_account: grouping },
       },
     },
   }
@@ -165,14 +170,15 @@ describe('Platform counts over time: the request', () => {
     expect(monthDays).toBeLessThan(367)
   })
 
-  it('asks for the chosen breakdown as the route’s group', async () => {
+  it('asks for one group whatever the breakdown: the route serves every breakdown in each read (answer 3)', async () => {
     loadPlatformTime.mockResolvedValue(WEEKS)
     render(<PlatformOverTime workspaces={3} />)
     fireEvent.click(screen.getByRole('button', { name: /^Breakdown/ }))
     fireEvent.click(screen.getByRole('menuitemradio', { name: /Pool account/ }))
     await run()
-    // MUTATION: map Pool account to any group but pool_account.
-    expect(loadPlatformTime.mock.calls[0]![0].get('group')).toBe('pool_account')
+    // MUTATION: send the picked breakdown as the group: the view reads
+    // `usage.breakdowns`, so a group per breakdown is a second client-side key for one fold.
+    expect(loadPlatformTime.mock.calls[0]![0].get('group')).toBe('runner_profile')
   })
 })
 
@@ -249,8 +255,8 @@ describe('Platform counts over time: the table', () => {
       buckets: WEEKS.status === 'ok' ? WEEKS.data.usage.buckets : [],
       by: 'runner_profile',
       rows: [
-        { key: 'claude-code', ...figures(600, 80, { cost: { sum_usd: 812.4, estimated_usd: 3.1, agents: 600, reporting: 597 } }) },
-        { key: 'generic', ...figures(10, 0, { cost: { sum_usd: null, estimated_usd: null, agents: 10, reporting: 0 } }) },
+        { key: 'claude-code', ...figures(600, 80, { cost: { sum_usd: 812.4, estimated_usd: 3.1, estimated: 4, agents: 600, reporting: 597 } }) },
+        { key: 'generic', ...figures(10, 0, { cost: { sum_usd: null, estimated_usd: null, estimated: 0, agents: 10, reporting: 0 } }) },
       ],
     }))
     render(<PlatformOverTime workspaces={3} />)
@@ -266,8 +272,8 @@ describe('Platform counts over time: the table', () => {
     expect(cost('claude-code')).toContain('at least $812')
     // MUTATION: drop the coverage beside the figure.
     expect(cost('claude-code')).toContain('597 of 600 agents reported')
-    // MUTATION: hide the stopped-run share, or add it to the sum twice.
-    expect(cost('claude-code')).toMatch(/\$3\.10 estimated from a stopped run/)
+    // MUTATION: hide the stopped-run share, or name its dollars without its count (answer 2).
+    expect(cost('claude-code')).toContain('4 estimated from a stopped run ($3.10)')
   })
 
   it('labels cost with exactly BGD’s words', async () => {
