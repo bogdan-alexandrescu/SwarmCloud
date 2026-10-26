@@ -20,6 +20,7 @@ import { AccountHealthBody } from '../AccountHealth'
 import { loadAccountHealthBoard, type AccountHealthBoard } from '../api'
 import {
   HEALTH_KINDS,
+  poolIncidents,
   type AccountHealthRecord,
   type HealthAccount,
   type HealthEvent,
@@ -361,7 +362,14 @@ describe('review fixes: the phone, the swimlane, the list and the development po
   })
 
   it('draws the 7 days to fit the chart’s box: the now line and every mark sit inside it', () => {
-    const box = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(352)
+    // The scroller is padded at its sides (account-health.css gives it
+    // --ctl-pad-chrome, 16 px), and clientWidth counts that padding. Its CONTENT
+    // box is 384 - 2 x 16 = 352: a chart sized to clientWidth started 16 px in
+    // and ended 32 px past it, which hid the newest hour and cut "now 12:00Z".
+    const pad = document.createElement('style')
+    pad.textContent = '.ah-chart-scroll { padding-left: 16px; padding-right: 16px; }'
+    document.head.appendChild(pad)
+    const box = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(384)
     try {
       const { accounts, events } = pool()
       const { container } = desktop(board(accounts, events))
@@ -377,6 +385,7 @@ describe('review fixes: the phone, the swimlane, the list and the development po
       expect(lefts.every((l) => l >= 0 && l + 6 <= 352)).toBe(true)
     } finally {
       box.mockRestore()
+      pad.remove()
     }
   })
 
@@ -400,5 +409,22 @@ describe('review fixes: the phone, the swimlane, the list and the development po
     for (const x of reauth) expect(x.events.some((e) => e.kind === 'reauth' || e.kind === 'auth')).toBe(true)
     const healthy = r.data.health.pool.accounts.filter((x) => x.status === 'healthy')
     for (const x of healthy) expect(x.events.some((e) => e.kind === 'reauth')).toBe(false)
+  })
+
+  it('never shows an open limit card on the phone for an account whose row says Healthy, in the development pool', async () => {
+    // The broker's rule 2 (accountstore.health_status): a 429 short of its
+    // reset is `limited`. weekly-burn's 7-day hit resets in 20 h, so a
+    // fixture that called it healthy drew a "Rate-limited" card beside a
+    // Healthy row: the two halves of one page disagreeing.
+    const r = await loadAccountHealthBoard()
+    if (r.status !== 'ok' || r.data.health.kind !== 'ok') throw new Error('the fixture board did not load')
+    const row = new Map(r.data.page.accounts.map((a) => [a.account_id, a.health_status]))
+    const { open } = poolIncidents(r.data.health.pool, (id) => (row.get(id) ?? null) as HealthStatus | null, r.data.readAt)
+    const limits = open.filter((x) => x.family === 'lim')
+    expect(limits.length).toBeGreaterThan(0)
+    for (const x of limits) expect([x.account_id, row.get(x.account_id)]).toEqual([x.account_id, 'limited'])
+
+    const { container } = render(<AccountHealthBody board={r.data} now={r.data.readAt} phone />)
+    for (const x of limits) expect(container.textContent).toContain(`${x.label} rate-limited`)
   })
 })
