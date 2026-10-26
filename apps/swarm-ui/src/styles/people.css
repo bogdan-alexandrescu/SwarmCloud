@@ -15,7 +15,7 @@
 /* A ROW WITH AN OPEN REQUEST HAS AN AMBER LEFT EDGE, drawn as an inset shadow
    on its first cell so it costs no layout and moves no column. */
 .pp-table > tbody > tr.is-waiting > th { box-shadow: inset 3px 0 0 var(--warn); }
-.pp-person { display: inline-flex; align-items: center; gap: var(--ctl-s2); min-width: 0; max-width: 100%; }
+.pp-person { display: inline-flex; align-items: flex-start; gap: var(--ctl-s2); min-width: 0; max-width: 100%; }
 /* ONE LONG ADDRESS DOES NOT WIDEN THE TABLE (visual QA V021) AND IS NEVER
    BROKEN (#1206): one line, capped at 18rem, cut with an ellipsis. */
 .pp-who { display: block; min-width: 0; max-width: 18rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; overflow-wrap: normal; }
@@ -222,10 +222,10 @@
    fit beside the avatar, so the cell wrapped to three lines (avatar; cut
    name; GitHub mark) -- a row 89px tall where the others are 56px. Stacked,
    the who is as wide as the longer of the two, the name never shares a line
-   with the address, and the cell is two lines. In the wide table it does not
-   wrap, so the avatar and the GitHub mark stay on the name's line; a phone
+   with the address, and the cell is two lines. The cell aligns to its top
+   (`.pp-person` above), and in the wide table it does not wrap, so the
+   avatar and the GitHub mark stay on the name's line; a phone
    record keeps the wrap above for a long address. */
-.pp-person { align-items: flex-start; }
 .pp-person > .pp-who > .person-name { flex-direction: column; }
 .pp-person > .pp-who .person-name-dot { display: none; }
 .is-scroll > .pp-table .pp-person { flex-wrap: nowrap; }
