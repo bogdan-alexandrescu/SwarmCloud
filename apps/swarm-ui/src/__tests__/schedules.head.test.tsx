@@ -18,20 +18,19 @@
 // The bodies are `routes/schedules.py::schedule_to_api`'s shapes.
 // Placeholders only; nothing is token-shaped.
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 import { Routed } from './screenroute'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
+import { holdScheduleClock, minutesAgo } from './scheduleclock'
 
 const WAIT = { timeout: 4000 }
 const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
 
 type Json = Record<string, unknown>
-
-const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
 
 function schedule(over: Json = {}): Json {
   return {
@@ -70,7 +69,11 @@ async function mount(s: Json) {
 const figs = () => [...document.querySelectorAll<HTMLElement>('[data-testid="sc-figs"] > [data-fig]')]
 const fig = (name: string) => figs().find((f) => f.dataset.fig === name)!.querySelector('dd')!
 
+// One instant for the fixture and the page: "in 1h" is not a race (CLOCK-ONCE).
+beforeEach(() => holdScheduleClock())
+
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
