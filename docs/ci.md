@@ -3500,9 +3500,16 @@ jq -S -s 'add' /tmp/unit-durations/*/unit-durations.json > tests/unit/scripts/un
 ```
 
 and open a pull request with the file. Only the weights' ratios matter, so CI's
-seconds replacing a container's is fine. `test_unit_shards.py` fails when fewer
-than 80 % of the test files have a weight, and holds the split to within 10 %
-of an even share.
+seconds replacing a container's is fine. When fewer than 80 % of the test files a
+run selects have a weight, `unit_shards.py count` writes a `::warning` and a
+step-summary line naming the coverage (`n of m test files weighted (p%)`) and
+does not fail. It used to be a hard assertion in `test_unit_shards.py`, and new
+test files outran the manual refresh: `main` and every pull request were red on
+it from `82638be8` to `e8cf8b7c` on 2026-10-25 (1069 of 1337 weighted, #2364),
+though an unweighted file runs at the median and nothing was dropped.
+`test_unit_shards.py` still holds the weights well-formed (every key a
+`tests/unit/**.py` path, every value positive) and the split to within 10 % of
+an even share.
 
 ### Where pull-request CI time goes (2026-10-09)
 

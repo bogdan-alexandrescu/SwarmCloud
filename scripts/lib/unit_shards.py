@@ -7,7 +7,8 @@
 Both read the environment the workflow sets: PYTHON_MODE (all | selected |
 subset), PYTHON_AREAS (subset: docs, swarm-ui), PYTHON_TESTS (selected: the
 test files the change reaches), DURATIONS (tests/unit/scripts/
-unit_test_durations.json) and GITHUB_OUTPUT; `pick` also SHARD, SHARDS
+unit_test_durations.json), GITHUB_OUTPUT and, for `count`'s stale-weights
+warning, GITHUB_STEP_SUMMARY when set; `pick` also SHARD, SHARDS
 (`strategy.job-total`) and SHARD_FILES. Paths are relative to the working
 directory, the repository's checkout.
 
@@ -67,6 +68,14 @@ SHARD_TARGET_SECONDS = 600
 # More would add a runner apiece to the queue when a dozen pull requests
 # arrive together; fewer puts a full run's shard back over the bound.
 MAX_SHARDS = 9
+
+# Below this share of a run's test files with a stored weight, the count warns
+# that the weights want refreshing. REPORT-ONLY, never a failure: a file with
+# no weight runs at the median weight, so stale weights only unbalance the
+# shards and never drop a file. As a hard floor in test_unit_shards.py it
+# turned python-unit red on main and every pull request whenever new tests
+# outran a manual refresh (1069/1337 at 82638be8, #2364).
+WEIGHT_COVERAGE_WARN = 0.8
 
 MODES = ("all", "selected", "subset")
 
@@ -156,6 +165,19 @@ def _output(line: str) -> None:
         out.write(f"{line}\n")
 
 
+def _warn_coverage(tests: list[Path], weights: dict[str, float]) -> None:
+    weighted = sum(str(p) in weights for p in tests)
+    if not tests or weighted >= WEIGHT_COVERAGE_WARN * len(tests):
+        return
+    line = (f"{weighted} of {len(tests)} test files weighted ({100 * weighted // len(tests)}%); "
+            f"refresh: docs/ci.md#refreshing-the-shard-weights")
+    print(f"::warning title=stale shard weights::{line}")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a") as out:
+            out.write(f"Stale shard weights: {line}\n")
+
+
 def count() -> int:
     mode = os.environ["PYTHON_MODE"]
     if mode == "none":
@@ -167,6 +189,7 @@ def count() -> int:
     weights, default = _weights()
     total = sum(weights.get(str(p), default) for p in tests)
     n = shard_count(total)
+    _warn_coverage(tests, weights)
     _output(f"shards={json.dumps(list(range(1, n + 1)))}")
     print(f"{mode}: {len(tests)} test file(s), ~{total:.0f} s of measured test time: {n} shard(s) "
           f"(~{SHARD_TARGET_SECONDS} s a shard, at most {MAX_SHARDS})")
