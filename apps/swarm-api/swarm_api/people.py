@@ -103,7 +103,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Collection, Iterable, Mapping
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -132,6 +132,7 @@ from .gittokens import COLLECTION as GIT_TOKENS
 from .groups import GroupLookupError, MembershipResolver, check_group_readable
 from .preferences import Preferences, key_versions
 from .publish_workspace import MODE_CREATE, MODE_LIMITS, WorkspacePublisher
+from .roles import ADMIN
 from .store import TENANTS
 
 log = logging.getLogger(__name__)
@@ -253,14 +254,24 @@ ROLE_REQUESTED = "requested"
 
 def role_cell(email: str, teams: set[str], column: Mapping[str, Any],
               grants: Mapping[str, dict[str, str] | None],
-              requested: Mapping[str, set[str]] | None = None) -> str | None:
+              requested: Mapping[str, set[str]] | None = None, *,
+              platform_admins: Collection[str] = ()) -> str | None:
     """One person's role in one workspace, as the grid draws it: their own
     role when they hold one, else the workspace's default when they were last
     seen in it, else `requested` when they have an open join request there
     (`requested`: tenant_id -> requesters), else `none`; None when the
     workspace's roles were not read. The platform cannot list a Google
     group's members (`searchTransitiveGroups` is 403 here), so "in it" is the
-    last sighting's `teams`."""
+    last sighting's `teams`.
+
+    A PLATFORM ADMIN (`platform_admins`) IS `admin`, first and whatever their
+    grant says: `RoleStore.resolve`'s rule (roles.py, Q5), which reads no
+    grant for them, so an unread column changes nothing either. Config ›
+    People and roles, This workspace and Profile answer the same; the grid
+    drawing the stored `member` was the fourth answer (VQ-044, BGD
+    2026-10-26). A grant naming them stays stored and editable, and inert."""
+    if email in platform_admins:
+        return ADMIN
     tenant_id = column["tenant_id"]
     over = grants.get(tenant_id)
     if over is None:
