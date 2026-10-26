@@ -815,7 +815,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'the-platform',
     title: 'What Platform counts returns',
     short:
-      'Two reads behind one priced button, the page head’s Run: the state counts and Over time. The state counts: one count() per state for your tenant, and across every tenant when you are an administrator. Over time: agents counted on the day they were submitted, retries apart, from the daily rollup, with an estimated cost at list price, not a bill.',
+      'Two reads behind one priced button, the page head’s Run: the state counts and Over time. The state counts: one count() per state for your tenant, and across every tenant for an administrator. Over time: agents counted on the day they were submitted, retries apart, from the daily rollup, with an estimated cost at list price, not a bill.',
     long: [
       'Each run of the state counts asks the stats route for the number of agent documents in each state, as they stand at that moment. An agent that has moved on since is counted where it is now, and nothing about how long any agent spent anywhere is in that answer; that is what Over time is for.',
       'The first set is scoped to the caller’s own tenant. An administrator also gets a second set across every tenant; anyone else sees that card as not entitled, which is a permission and not a fault.',
