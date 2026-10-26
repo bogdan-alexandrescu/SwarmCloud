@@ -32,19 +32,18 @@
 // The bodies are `routes/schedules.py::schedule_to_api`'s, `firing_to_api`'s
 // and `list_firing_spans`'s shapes. Placeholders only; nothing is token-shaped.
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 import { Routed } from './screenroute'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
+import { holdScheduleClock, minutesAgo } from './scheduleclock'
 
 const WAIT = { timeout: 4000 }
 const KEY = 'swarm.schedule.history.view'
 
 type Json = Record<string, unknown>
-
-const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
 
 function schedule(): Json {
   return {
@@ -62,9 +61,10 @@ function schedule(): Json {
 
 /**
  * Firing n, fired n days ago, which made task `task_<n>`, ended an hour later.
- * The end is offset from `at`, not read from a second `minutesAgo`: a slow
- * runner's millisecond between two clock reads made the firing 60m + 1ms,
- * which the page's scale rounds up to +1h15m (#2375's run, 2026-10-26).
+ * The end is offset from `at`, not read from a second clock read: a slow
+ * runner's millisecond between two reads made the firing 60m + 1ms, which the
+ * page's scale rounds up to +1h15m (#2375's run, 2026-10-26). `minutesAgo`
+ * reads no clock at all now (scheduleclock.ts), and `Date` is held there.
  */
 function firing(n: number, over: Json = {}): Json {
   const at = minutesAgo(n * 1440)
@@ -133,7 +133,11 @@ const fiveSpans: Handler = (url) => ({
 
 const lanes = () => [...document.querySelectorAll<HTMLElement>('[data-firing-lane]')]
 
+// One instant for the fixture and the page: the axis is not a race (CLOCK-ONCE).
+beforeEach(() => holdScheduleClock())
+
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()

@@ -413,6 +413,78 @@ _WINDOW_NAME = re.compile(r"^[a-z0-9_]{1,40}$")
 #: for is seconds apart at the fastest, so a quarter of a second loses nothing.
 _WATCH_SECONDS = 0.25
 
+# WHAT A RESUMED RUN SPENT GETTING BACK TO WORK (SWAP-RUNS, #2457). A swap
+# restarts the CLI with `--resume`, and the restarted agent re-reads before it
+# acts again. The watcher notes the first tool call that is not a read -- an
+# edit, a write, a command that is not one of the reading commands below -- and
+# the seconds and tokens the run had spent before it. The worker exposes the
+# figure for a run that followed a swap (`lifecycle._runs`); how the swap
+# happens does not change.
+#
+#: The CLI's tools that only read. Anything else -- Edit, Write, MultiEdit,
+#: NotebookEdit, an MCP tool, a Bash command that is not a read -- is the first
+#: action. `Task`/`Agent` start a subagent, whose own calls are judged as they
+#: arrive, so the start itself is not an action.
+READ_TOOLS = frozenset({
+    "Read", "Grep", "Glob", "LS", "NotebookRead", "WebFetch", "WebSearch",
+    "TodoRead", "TodoWrite", "ToolSearch", "Task", "Agent", "BashOutput",
+})
+#: The first word of a shell command that only reads. A command reads when
+#: every one of its pieces (split at `;`, `&&`, `||`, `|` and newlines) starts
+#: with one of these; `sed -i` and a redirect (`>`) are writes whatever the
+#: word. `git` reads only with one of `_READ_GIT`.
+_READ_COMMANDS = frozenset({
+    "cat", "cd", "echo", "find", "grep", "egrep", "head", "less", "ls", "nl",
+    "pwd", "rg", "sed", "stat", "tail", "tree", "wc", "file", "awk", "sort",
+    "uniq", "cut", "diff", "jq", "realpath", "dirname", "basename", "true",
+})
+_READ_GIT = frozenset({
+    "log", "show", "diff", "status", "blame", "grep", "ls-files", "rev-parse",
+    "branch", "describe", "shortlog",
+})
+_SHELL_PIECES = re.compile(r"&&|\|\||[;|\n]")
+#: The usage counts summed per message for the re-read cost.
+_TOKEN_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
+
+
+def _shell_reads(command: Any) -> bool:
+    """Whether a Bash tool call's command only reads. False when unsure."""
+    if not isinstance(command, str) or not command.strip() or ">" in command:
+        return False
+    for piece in _SHELL_PIECES.split(command):
+        words = piece.strip().split()
+        if not words:
+            continue
+        word = words[0]
+        if word not in _READ_COMMANDS and word != "git":
+            return False
+        if word == "sed" and any(w.startswith("-i") or w == "--in-place" for w in words[1:]):
+            return False
+        if word == "git":
+            sub = next((w for w in words[1:] if not w.startswith("-")), None)
+            if sub not in _READ_GIT:
+                return False
+    return True
+
+
+def is_action(block: Mapping[str, Any]) -> bool:
+    """Whether one `tool_use` block is the agent acting rather than reading."""
+    name = block.get("name")
+    if not isinstance(name, str) or not name:
+        return False
+    if name in READ_TOOLS:
+        return False
+    if name == "Bash":
+        tool_input = block.get("input")
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        return not _shell_reads(command)
+    return True
+
 
 def _reading_of(event: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
     """(window, {utilization, resets_at}) from one `rate_limit_event`, or None.
@@ -473,7 +545,14 @@ class AccountStreamWatcher:
     Without a tap (a test driving the watcher by hand) it reads the file.
     """
 
-    def __init__(self, stdout_path: Path, channel: Path, move: Path | None) -> None:
+    def __init__(
+        self,
+        stdout_path: Path,
+        channel: Path,
+        move: Path | None,
+        *,
+        carry: "AccountStreamWatcher | None" = None,
+    ) -> None:
         self._stdout = stdout_path
         self._channel = channel
         self._move = move
@@ -490,6 +569,16 @@ class AccountStreamWatcher:
         #: (`classify_account_error`): {"kind", "message"}, set by `judge`.
         self.error: dict[str, str] | None = None
         self._dirty = False
+        # THE RE-READ MEASURE (SWAP-RUNS). One runner process can start the
+        # CLI more than once (a finish pass, repair turns), each with its own
+        # watcher; `carry` is the previous one, so the clock and the tokens
+        # run from the runner's FIRST start and a first action already seen
+        # is kept. `_usage` is each message's usage, the LAST copy of each id
+        # (the stream repeats a message once per content block).
+        self._origin = carry._origin if carry is not None else time.monotonic()
+        self._usage: dict[str, dict[str, int]] = dict(carry._usage) if carry is not None else {}
+        self._anonymous = carry._anonymous if carry is not None else 0
+        self.first_action: dict[str, Any] | None = carry.first_action if carry is not None else None
 
     def poll(self) -> str | None:
         stop: str | None = None
@@ -499,6 +588,8 @@ class AccountStreamWatcher:
             if isinstance(sid, str) and _SESSION_ID.match(sid) and sid != self.session_id:
                 self.session_id = sid
                 self._dirty = True
+            if kind == "assistant":
+                self._note_assistant(event)
             if kind == "rate_limit_event":
                 reading = _reading_of(event)
                 if reading is not None and self.readings.get(reading[0]) != reading[1]:
@@ -524,6 +615,48 @@ class AccountStreamWatcher:
         if self._dirty:
             self.write()
         return stop
+
+    def _tokens(self, *, without: str | None = None) -> dict[str, int]:
+        totals = dict.fromkeys(_TOKEN_FIELDS, 0)
+        for key, usage in self._usage.items():
+            if key == without:
+                continue
+            for field_name in _TOKEN_FIELDS:
+                totals[field_name] += usage.get(field_name, 0)
+        return totals
+
+    def _note_assistant(self, event: dict[str, Any]) -> None:
+        """Count one assistant event's usage; note the first action it takes."""
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return
+        key = message.get("id")
+        if not isinstance(key, str) or not key:
+            self._anonymous += 1
+            key = f"\x00{self._anonymous}"
+        usage = message.get("usage")
+        if isinstance(usage, dict):
+            self._usage[key] = {
+                f: usage[f]
+                for f in _TOKEN_FIELDS
+                if isinstance(usage.get(f), int) and not isinstance(usage.get(f), bool)
+                and usage[f] >= 0
+            }
+        if self.first_action is not None:
+            return
+        content = message.get("content")
+        for block in content if isinstance(content, list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and is_action(block):
+                # BEFORE it: the message that issues the action is not counted,
+                # nor anything after it.
+                self.first_action = {
+                    "seconds": round(time.monotonic() - self._origin, 3),
+                    "tokens": self._tokens(without=key),
+                    "tool": str(block.get("name"))[:80],
+                    "turns": self.turns,
+                }
+                self._dirty = True
+                return
 
     def tap(self) -> Callable[[bytes], None]:
         """The callable the stdout capture feeds; from now on the file is not read."""
@@ -582,6 +715,15 @@ class AccountStreamWatcher:
                 "readings": self.readings,
                 "stopped_for": self.stopped_for,
                 "error": self.error,
+                # SWAP-RUNS: the first action and what was spent before it,
+                # or null when the run has taken none (yet); and the tokens
+                # and seconds the run has spent so far, which is the re-read
+                # cost of a run that never got to act.
+                "first_action": self.first_action,
+                "spent": {
+                    "seconds": round(time.monotonic() - self._origin, 3),
+                    "tokens": self._tokens(),
+                },
             }
         )
         tmp = self._channel.with_name(f".{self._channel.name}.tmp")
@@ -623,13 +765,20 @@ def write_session_file(path: Path, session: str | None) -> None:
         pass
 
 
-def _account_watcher(spec: CliAgentSpec, stdout_path: Path) -> AccountStreamWatcher | None:
-    """The watcher, when this run holds a pool account and the CLI can resume."""
+def _account_watcher(
+    spec: CliAgentSpec, stdout_path: Path, carry: AccountStreamWatcher | None = None
+) -> AccountStreamWatcher | None:
+    """The watcher, when this run holds a pool account and the CLI can resume.
+
+    `carry` is the watcher of this runner's previous start of the CLI, whose
+    re-read measure the new one continues."""
     channel = os.environ.get(ACCOUNT_STREAM_ENV, "").strip()
     if not spec.resume_flag or not channel:
         return None
     move = os.environ.get(ACCOUNT_MOVE_ENV, "").strip()
-    return AccountStreamWatcher(stdout_path, Path(channel), Path(move) if move else None)
+    return AccountStreamWatcher(
+        stdout_path, Path(channel), Path(move) if move else None, carry=carry
+    )
 
 
 def _run_watched(
@@ -1581,6 +1730,8 @@ def run_cli_agent(
     # When the latest start began, for `spec.session_locator`: a session file
     # an earlier run left in the restored workspace is not this run's.
     started_at = [time.time()]
+    # The last start's account watcher, which the next start's continues.
+    last_watcher: list[AccountStreamWatcher | None] = [None]
     # THE SESSION FILE (#626), named by the worker only for a run on no
     # account; written after every start, refused or not, because a refused
     # start is exactly the one the worker's credential reload continues.
@@ -1604,7 +1755,8 @@ def run_cli_agent(
         started_at[0] = time.time()
         stdin_data = run_prompt.encode("utf-8")
         run_limits = replace(limits, timeout_seconds=timeout_seconds)
-        run_watcher = _account_watcher(spec, stdout_path)
+        run_watcher = _account_watcher(spec, stdout_path, last_watcher[0])
+        last_watcher[0] = run_watcher
         if run_watcher is None and budget is None:
             run_result = run_child(
                 run_argv,

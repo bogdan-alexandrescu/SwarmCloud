@@ -65,8 +65,12 @@ vitest, no `tsc` and no `terraform fmt`. So the check set also holds:
   applies. Blocking, with the same one fix turn as every other check.
 * `tsc`, when a TypeScript file of a package with a `tsconfig.json` changed
   (the package's `typecheck` script's arguments, with its own tsc; a Next.js
-  package's own `next typegen` first, #1856), and
-  `terraform fmt -check` over changed `.tf` files (#1217).
+  package's own `next typegen` first, #1856),
+* `node-tests`, a changed package's own `npm run test:node` when its
+  package.json declares one (#2455): its node:test `.mjs` files run nowhere
+  else before publish, and four lanes went red in CI's ui-build on one that
+  checks no source names the company (#2429, #2430, #2433, #2437), and
+* `terraform fmt -check` over changed `.tf` files (#1217).
 
 AND AN ADVISORY SECTION NO MERGE PATH READS (`ADVISORY_SECTION_NAME`, appended
 to the pull request by `lifecycle.Worker._prepublish_advisory`): test reach
@@ -774,6 +778,15 @@ def _node_bin(repo: Path, package: str, tool: str) -> Path | None:
     return candidate if candidate.is_file() and os.access(candidate, os.X_OK) else None
 
 
+def _has_test_node(repo: Path, package: str) -> bool:
+    """Whether the package's package.json declares a `test:node` script."""
+    try:
+        scripts = json.loads((repo / package / "package.json").read_text()).get("scripts")
+    except (OSError, ValueError, AttributeError):
+        return False
+    return isinstance(scripts, dict) and bool(scripts.get("test:node"))
+
+
 def _relative(package: str, path: str) -> str:
     return path[len(package) + 1:] if package else path
 
@@ -1123,7 +1136,8 @@ def _terraform_fmt(files: Sequence[str]
 
 def graph_checks(repo: Path, files: Sequence[str], *, base: str, env: Mapping[str, str],
                  snapshot: Snapshot | None) -> list[Check]:
-    """graph-pytest, vitest, tsc and terraform-fmt for this diff (CTXQ-G)."""
+    """graph-pytest, vitest, tsc, node-tests and terraform-fmt for this diff
+    (CTXQ-G; node-tests #2455)."""
     present = [f for f in files if (repo / f).is_file()]
     checks: list[Check] = []
     tests = list(select_tests(repo, files, snapshot))[:GRAPH_TESTS_MAX]
@@ -1183,6 +1197,32 @@ def graph_checks(repo: Path, files: Sequence[str], *, base: str, env: Mapping[st
         else:
             checks.append(Check("tsc", tuple(members), f"tsc {' '.join(args)} (in {where})",
                                 run=_in_package(repo, package, binary, args)))
+
+    # A package's node:test files (`.mjs`, which the vitest selection above
+    # drops) run only through its own `test:node` script -- CI's ui-build
+    # runs it, and four lanes went red there on a company-name test the gate
+    # never ran (#2429, #2430, #2433, #2437; #2455). A deleted file counts:
+    # removing one can break a test that walks the tree.
+    node_packages: dict[str, list[str]] = {}
+    for path in files:
+        package = _package_root(repo, path)
+        if package is not None and _has_test_node(repo, package):
+            node_packages.setdefault(package, []).append(path)
+    for package, members in sorted(node_packages.items()):
+        where = package or "."
+        command = f"npm run test:node (in {where})"
+        npm = _which("npm", env)
+        if npm is None:
+            checks.append(Check("node-tests", tuple(members), command,
+                                skipped="npm is not on PATH in this image; CI runs it"))
+        elif not (repo / package / "node_modules").is_dir():
+            checks.append(Check(
+                "node-tests", tuple(members), command,
+                skipped=f"{where} has no node_modules (the gate does not run npm install); "
+                        "CI runs it"))
+        else:
+            checks.append(Check("node-tests", tuple(members), command,
+                                run=_in_package(repo, package, Path(npm), ["run", "test:node"])))
 
     tf = [f for f in present if f.endswith(_TF_SUFFIX)]
     if tf:
@@ -1873,7 +1913,8 @@ def advisory_section(*, graph: Mapping[str, Any], outcomes: Sequence[Outcome],
                      f"{', '.join(shown)}{more}.")
     else:
         parts.append("No test file was found covering the changed files.")
-    ran = [o for o in outcomes if o.name in ("graph-pytest", "vitest", "tsc", "terraform-fmt")]
+    ran = [o for o in outcomes if o.name in ("graph-pytest", "vitest", "tsc", "node-tests",
+                                                "terraform-fmt")]
     if ran:
         parts.append("Ran: " + ", ".join(
             f"{o.name} {o.status}" + (f" ({o.reason})" if o.status == SKIPPED and o.reason

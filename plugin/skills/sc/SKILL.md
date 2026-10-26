@@ -79,7 +79,7 @@ one action — never a second one the developer did not ask for:
 | `inputs` | the workflow steps of your tenant waiting for a person's answer: `swarm_inputs` | no |
 | `answer <wf_id> <step_id> [file ...]` | the developer answers that step in this host's own form: `swarm_workflow_input`. You never write the answer | **yes**, what the developer typed |
 | `watch off` | cancels this session's watch and saves "off" for the project, so nothing arms it again until `watch` | no |
-| `layout [rows\|pane]` | how this project follows SwarmCloud work: `/sc layout rows` (today's /workflows rows) or `/sc layout pane` (the SwarmCloud pane plus ONE quiet row per workflow); bare, says which is set: `swarm_layout`. See "Two layouts" | saves a local preference; nothing in SwarmCloud |
+| `layout [rows\|pane\|band]` | how this project follows SwarmCloud work: `/sc layout rows` (today's /workflows rows), `/sc layout pane` (the SwarmCloud pane plus ONE quiet row per workflow) or `/sc layout band` (a strip above the prompt and a summary line below it, and no rows at all); bare, says which is set: `swarm_layout`. See "Layouts" | saves a local preference; nothing in SwarmCloud |
 | `run <spec path\|JSON>` | submits a workflow spec, and says so first | **yes** |
 | `run --issue owner/repo#N [--plan auto] [--auto-merge] [--fix-rounds N]` | plans a GitHub issue (one planner task), and says so first | **yes** |
 | `runs` | lists your tenant's issue runs | no |
@@ -113,7 +113,14 @@ check 02:46Z`, and nothing more of `waiting` (its detail and history are the
 console page's). No `waiting_line` -- a task not waiting, or an API older
 than it -- is the line without it. An error is reported verbatim:
 an id the API does not have and another tenant's id read the same. Never poll;
-a second look is the developer's next `/sc status`. Both tools are the sc
+a second look is the developer's next `/sc status`. In the `band` layout the
+strip above the prompt queues this verb itself when it notices a change, with
+what changed after the id -- `/sc status wf_… · finished: succeeded · PR
+#2463`, `· <step> waits for a person`, `· merge parked on owner questions
+(<step>)`, `· new owner questions: N` -- so the session learns of it as it
+did from a row: make the ONE read, report it, and say what the strip noticed
+(a waiting step: `/sc answer`; owner questions: `swarm_result`'s
+`owner_questions`, put to the person). Both tools are the sc
 plugin's own read tools and work outside a checkout; they are not pre-granted
 here -- this skill's grants mark it as the checkout-bound view surface -- so
 the session may ask once before the first read.
@@ -298,8 +305,13 @@ named.
   repository and how many came from other sessions (`from_other_sessions`);
   say that in one line. Entries another session started are marked
   `this_session: false`.
+* In the **band** layout the strip above the prompt opens at session start
+  with this session's AND this project's running work, read with
+  `swarm_browse {level: "workflows", project: true}` and no model row, and
+  the hook asks for nothing else -- no attach: the band starts no rows (see
+  "Layouts").
 * In the **pane** layout the pane opens at session start, not read yet (see
-  "Two layouts"), and its Refresh lists the project's running work beside
+  "Layouts"), and its Refresh lists the project's running work beside
   this session's (`swarm_browse {level: "workflows", project: true}`) with
   no model row for it; the hook asks for the plain `/sc attach --all` only
   when this session has work of its own, for its quiet finish rows.
@@ -531,12 +543,12 @@ developer can press. The off is SAVED for the project, not forgotten: no
 attach, run or new session arms the watch again until `/sc watch`, and every
 `arm_watch` is null meanwhile.
 
-### Two layouts: rows, or the pane
+### Layouts: rows, the pane, or the band
 
 How this session follows SwarmCloud work in Claude Code (SC-BROWSER-BUILD,
-#2318; BGD picked proposal B, Two columns, on 2026-10-25). Two layouts, and a
-toggle between them that is remembered per project and switches without
-restarting the session:
+#2318; BGD picked proposal B, Two columns, on 2026-10-25, and added the band
+on 2026-10-26, SC-BAND). Three layouts, and a toggle between them that is
+remembered per project and switches without restarting the session:
 
 * **`rows`** (the default) -- today's: /sc:swarmcloud shows each workflow in
   /workflows as the plugin's `rows` setting says, one `sc:summary` row per
@@ -571,8 +583,29 @@ restarting the session:
   3/3 stages`) and holds each `swarm_follow` (`format: "stage"`) until it
   does, so a quiet stage costs one call per half hour, not one per step
   change. A batch of single tasks keeps its one summary row.
+* **`band`** -- the same levels in a **strip above the prompt**, with ONE
+  summary line **below** the prompt, and **no /workflows row at all** (BGD,
+  2026-10-26: in Claude Code's fullscreen layout a pane docks on the right,
+  where a plugin cannot move it, and a /workflows row is a model agent). The
+  strip's first line sums it up, `SwarmCloud · 6 running · 1 waits on you ·
+  2 PRs`; its `[Fold]` leaves that line alone, the engine scrolls a taller
+  tree, and it gives way while a survey is open. Under the prompt,
+  `SC 6 running · 1 waits on you · 2 PRs`, cleared when nothing of this
+  session or project runs. Every read is ONE direct `swarm_browse` call, no
+  model tokens. While anything runs the strip re-reads the list once a
+  minute (and stops when nothing runs, when the layout changes, and when the
+  session ends), and when a workflow finishes, a step waits for a person, a
+  merge parks on owner questions, or new owner questions appear, it queues
+  ONE chat turn, `/sc status <wf_id> · <what changed>` (see `status`). In
+  this layout `swarm_workflow_launch` answers an attach, `attach: "all"` and
+  a dispatch's rows with `launches: []` and `followed_by: "band"`: launch
+  nothing for them, and say the strip follows the work. A spec's launch is
+  still launched -- that run submits the workflow -- and starts no follow
+  row. At session start the strip opens with this session's and this
+  project's running work, and the hook asks for no attach.
 
-The toggle: **`/sc layout rows`** or **`/sc layout pane`** -- one
+The toggle: **`/sc layout rows`**, **`/sc layout pane`** or **`/sc layout
+band`** -- one
 `swarm_layout {layout}` call, which saves the choice for this project under
 the bridge's config directory (it outranks the plugin's `layout` option) --
 or the pane's own `[Layout]` control. Bare `/sc layout` says which is set
@@ -587,11 +620,15 @@ reply, then queue the re-attach by doing `attach --all` in the same turn.
 Say both: the old rows keep going, and the attach starts the new ones; never
 claim the rows changed at once. `/sc layout rows` returns to whatever the
 plugin's `rows` setting says (`summary` or `per-step`). Bare `/sc layout`
-saves nothing and attaches nothing.
+saves nothing and attaches nothing. **`/sc layout band`** is the exception to
+the re-attach: the band starts no rows, so it saves, opens the strip with
+one read, and queues nothing; leaving `band` for `rows` or `pane` clears the
+strip and the line under the prompt and re-attaches as above.
 
-The pane needs Claude Code's **function hooks**, early access in this build
-(`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`). Where they are off the pane does not
-load and `/sc-pane` does not exist; the `pane` layout's one row per workflow
+The pane and the band need Claude Code's **function hooks**, early access in
+this build (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`). Where they are off neither
+loads and `/sc-pane` does not exist -- so do not choose `band` there: it
+starts no rows and nothing would follow the work; the `pane` layout's one row per workflow
 still works, and `/sc status <wf_id>` reads a workflow on request.
 
 ### `keys`

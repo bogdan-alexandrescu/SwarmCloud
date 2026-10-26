@@ -109,19 +109,52 @@ to `*.cloudflareaccess.com` or a `403` means it does not.
 You need `admin` in the workspace whose agents will open the site (eng, for
 the AI Studio lanes).
 
-1. **Store the value.** Console › **Settings › Workspace › Secrets › Add**
+1. **Store the value.** Console › **Config › Secrets**, **Add a secret**
    (or mint a one-time link to that form with `swarm_secret_set_link`):
    * name: `platform-admin` (lower case, digits, hyphens);
    * provider: **other**;
    * kind: **OAuth client**;
    * paste the **Client ID** into `client_id` and the **Client Secret** into
      `client_secret`. The form is the only place the value is typed.
-2. **Grant it to the browser runner, with its hosts.** The console's grant
-   matrix shows the `cf-access` slot under `profile:claude-code-browser` once
-   contract request 117 is applied. Until the console offers the host-list
-   field, set the grant from a terminal with `scripts/api.sh`, which calls
-   swarm-api as you without putting your token in argv (the body carries no
-   secret, only host names), as the workspace's admin:
+2. **Grant it to the browser runner, with its hosts.** `claude-code-browser`
+   declares the `cf-access` slot (contract request 117), and the console's
+   grant matrix gives that slot its own column (CF-ACCESS-HOSTS-UI, PR 2465).
+   In **Config › Secrets**, on the **For agents** card, choose **Open the
+   grant matrix**. Under **Profiles**, the column headed
+   `claude-code-browser` with **cf-access · hosts** beneath it is the one;
+   in the `platform-admin` row:
+   1. type each host into the cell's field (its placeholder reads
+      `admin.example.com`) and choose **Add**: here
+      `staging-platformadmin-agents.pages.dev`, then
+      `platform.galatia.saga.xyz`. Each joins the cell's list with a
+      **×** to remove it, and the cell counts them ("2 of 16 hosts, matched
+      exactly");
+   2. tick the cell's box ("Grant platform-admin to profile:claude-code-browser
+      in its cf-access slot"). The tick writes the grant and its hosts in one
+      call, and the page answers that `profile:claude-code-browser` may now
+      read `platform-admin` in its cf-access slot, sent only to the hosts it
+      lists. The cell **refuses a tick with no host** before any call, in
+      the API's words: a grant into `cf-access` names the hosts its secret
+      may be sent to, and it is sent to no other.
+
+   The cell checks each host as swarm-api does: a host with a scheme, a
+   port, a path, a wildcard or an IP address is refused, and so is a 17th
+   (the cell also refuses one already listed). `example.com` does not cover
+   `www.example.com`: list each host the site's pages and its API are served
+   from, because the token is sent **only** to the hosts its grant lists.
+
+   **Tick the `cf-access · hosts` column, not the plain
+   `claude-code-browser` column beside it.** That column offers the
+   profile's other slots, and for an OAuth client that is `files`. A secret
+   has one grant per consumer, so a tick there replaces the `cf-access`
+   grant with a `files` one, and the `files` slot writes the value to a file
+   the agent reads. If it happens, add the hosts to the `cf-access · hosts`
+   cell and tick it again, then rotate the token (below): the agent of any
+   attempt that started in between could read it.
+
+   **From a terminal instead**, `scripts/api.sh` sets the same grant. It
+   calls swarm-api as you without putting your token in argv (the body
+   carries no secret, only host names); run it as the workspace's admin:
 
    ```bash
    scripts/api.sh PUT /workspace/secrets/platform-admin/grants/profile:claude-code-browser \
@@ -129,10 +162,8 @@ the AI Studio lanes).
        "hosts": ["staging-platformadmin-agents.pages.dev", "platform.galatia.saga.xyz"]}'
    ```
 
-   The answer lists the grant with its `hosts`, sorted. A host with a scheme,
-   a port, a path, a wildcard or an IP address is refused, and so is an empty
-   list. `example.com` does not cover `www.example.com`: list each host the
-   site's pages and its API are served from.
+   The answer lists the grant with its `hosts`, sorted and without
+   duplicates. It refuses the hosts the cell refuses, and an empty list.
 3. Close the Cloudflare page. The value now lives only in Secret Manager.
 
 The grant takes effect at the next attempt. A running attempt keeps what it
@@ -162,8 +193,12 @@ If the browser sees the sign-in page instead, the worker's log names why:
   it to the Service Auth rule), then paste the new pair through the console's
   **Rotate** on `platform-admin`. The old version stays usable for 24 hours,
   so running attempts finish; then remove the old token from the policy.
-* **Change the hosts.** Send the grant again with the new `hosts`. It is
-  signed again; the next attempt uses the new list.
-* **Remove.** Untick the grant (`"enabled": false`), or delete the secret
-  with its typed confirmation. Then delete the service token in Cloudflare,
+* **Change the hosts.** In the grant matrix's `cf-access · hosts` cell,
+  add or remove hosts (**×**), then choose **Save hosts**, which appears
+  once the list differs from the saved one; or send the `scripts/api.sh`
+  grant again with the new `hosts`. Either way it is signed again; the next
+  attempt uses the new list.
+* **Remove.** Untick the `cf-access · hosts` cell, which keeps its hosts
+  for a tick back (or send the grant with `"enabled": false`), or delete the
+  secret with its typed confirmation. Then delete the service token in Cloudflare,
   which is what actually stops it opening the site.

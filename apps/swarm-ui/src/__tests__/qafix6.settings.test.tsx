@@ -241,8 +241,11 @@ describe('b. 6:overview-automate-003: grouped controls have no browser border an
     expect(sets.map((f) => f.querySelector('legend')?.textContent)).toEqual(['Credential', 'Profiles that may use it'])
     cleanup()
     const page = await mountProfile()
-    sets.push(...page.querySelectorAll('fieldset'))
-    expect(sets).toHaveLength(3)
+    const profileSets = [...page.querySelectorAll('fieldset')]
+    // The Time zone card (TIMEZONE-SETTING, #2391) groups its choices too, and is held to the same rule.
+    expect(profileSets.map((f) => f.querySelector('legend')?.textContent)).toEqual(['What reaches your bell', 'Show times in'])
+    sets.push(...profileSets)
+    expect(sets).toHaveLength(4)
     for (const f of sets) {
       // MUTATION: drop `border: 0` from the fieldset rule -> the 1px near-white rectangle: red.
       expect(String(painted(f, ['border', 'border-width', 'border-style'], WIDE))).toMatch(/^(0|none|0px)$/)
@@ -277,7 +280,9 @@ describe('c. 6:overview-automate-002, -004: Profile reads like API keys', () => 
 describe('d. box 6343759200: each notification box sits beside its own words', () => {
   it('puts each input inside its own label, 6-8px from the words, with rows apart', async () => {
     const page = await mountProfile()
-    const rows = [...page.querySelectorAll('fieldset label')]
+    // The bell's group only: the Time zone card's radios are a fieldset of their own (#2391).
+    const bell = [...page.querySelectorAll('fieldset')].find((f) => f.querySelector('legend')?.textContent === 'What reaches your bell')!
+    const rows = [...bell.querySelectorAll('label')]
     expect(rows).toHaveLength(TOPICS.length)
     for (const r of rows) {
       // MUTATION: move the input out of its label -> a box that belongs to no words: red.

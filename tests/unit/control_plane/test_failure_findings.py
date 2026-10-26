@@ -127,6 +127,19 @@ def test_one_finding_of_the_tenant_is_served(client, db):
     assert body["task_id"] == "task_eng" and body["state"] == "open"
 
 
+def test_a_cause_stored_plain_is_served_exactly_as_written(client, db):
+    """`Filing.report` stores plain text (FAILURE-STORE-PLAIN, part of #2391):
+    the console escapes it once through React, so the API serves it untouched.
+    A document written before keeps its entities: nothing migrates them."""
+    _failed(db, "task_new")
+    _failed(db, "task_old")
+    new = _finding(db, "task_new", cause="implement -> review")
+    old = _finding(db, "task_old", cause="implement -&gt; review")
+    # MUTATION: escape `<`/`>` in `tenant_text` and this reads 'implement -&gt; review'.
+    assert _get(client, f"/v1/failure-findings/{new}").json()["cause"] == "implement -> review"
+    assert _get(client, f"/v1/failure-findings/{old}").json()["cause"] == "implement -&gt; review"
+
+
 # -- another tenant's id answers as missing ------------------------------------
 
 def test_another_tenants_finding_answers_exactly_as_a_missing_one(client, db):

@@ -45,8 +45,9 @@ MEDIAN_WINDOW_DAYS = 7
 #: Rows per page and pages per read: `GET /v1/tasks?state=SUCCEEDED&view=summary`
 #: is newest first, 100 rows a page, so 3 pages are the newest 300 successes --
 #: enough for a median per (profile, step) a tenant runs often, and a bounded
-#: cost for one that has thousands. `view=summary` leaves out input, metadata
-#: and result_summary, the heavy fields; the timing and the step stay.
+#: cost for one that has thousands. `view=summary` leaves out input and
+#: result_summary and cuts metadata to its title, the heavy fields; the timing
+#: and the step stay.
 MEDIAN_PAGE_SIZE = 100
 MEDIAN_PAGES = 3
 #: How long one read of the medians is reused, in this process: 15 minutes, so

@@ -393,11 +393,11 @@ function Members() {
       {gate !== null ? (
         <FailedPanel error={gate} onRetry={members.reload} />
       ) : (
-        <UrRegion state={members.state} route="GET /v1/access/members" what="The tenant's members" onRetry={members.reload} plural lines={4}>
+        <UrRegion state={members.state} route="GET /v1/access/members" what="The workspace's members" onRetry={members.reload} plural lines={4}>
           {(d) =>
             d.members.length === 0 ? (
               <EmptyState kind="empty" heading="No member has started">
-                Nobody in tenant {d.tenant_id} has connected GitHub or chosen a repository yet.
+                Nobody in workspace {d.tenant_id} has connected GitHub or chosen a repository yet.
               </EmptyState>
             ) : (
               <>

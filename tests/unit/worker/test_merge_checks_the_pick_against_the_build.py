@@ -13,7 +13,8 @@ the branch builds. The merge compares each answered `needs_owner` question's
 pick with it:
 
   * a pick equal to `built` merges;
-  * a different pick does not merge, and the refusal names the question, the
+  * a different pick does not merge: it parks for a pick-fix round
+    (PICK-FIX-ROUND, test_merge_pick_fix_round.py), naming the question, the
     pick and the build;
   * free text that names no option does not merge;
   * `built: null` passes as before;
@@ -30,15 +31,14 @@ import json
 from typing import Any
 
 from agent_worker import merge
-from swarm_common.models import EndCause
 from swarm_common.states import TaskState
 
 from merge_world import TENANT, WORKFLOW, MergeWorld
 
 IMPLEMENT = "task_impl"
 
-#: The refusal's code. Spelled out, not imported.
-REFUSED = "owner_pick_not_built"
+#: The park code of an unbuilt pick (PICK-FIX-ROUND). Spelled out, not imported.
+PICK_FIX = "owner_pick_fix_pending"
 
 
 def _question(**extra: Any) -> dict[str, Any]:
@@ -87,11 +87,11 @@ def test_a_pick_the_branch_did_not_build_does_not_merge_and_names_the_mismatch(t
     outcome = merge.run_merge(world.context())
 
     # MUTATION: check only THAT the question is answered (the 2026-10-26 bug) and this merges.
-    assert outcome.state is TaskState.FAILED, outcome.message
+    assert outcome.state is TaskState.PARKED, outcome.message
     assert world.merge_calls() == []
-    assert outcome.end_cause is EndCause.MERGE_REFUSED
-    assert outcome.summary["refusal"]["code"] == REFUSED
-    message = outcome.summary["refusal"]["message"]
+    # PICK-FIX-ROUND: parked for a round that builds the pick, not refused.
+    assert outcome.ci_wait["code"] == PICK_FIX
+    message = outcome.summary["wait"]["message"]
     # MUTATION: drop the question, the pick or the build from the reason and the
     # operator cannot tell what to build.
     assert "does not build" in message
@@ -112,10 +112,10 @@ def test_free_text_that_names_no_option_does_not_merge(tmp_path):
     outcome = merge.run_merge(world.context())
 
     # MUTATION: read a missing choice as agreeing with the build and this merges.
-    assert outcome.state is TaskState.FAILED, outcome.message
+    assert outcome.state is TaskState.PARKED, outcome.message
     assert world.merge_calls() == []
-    assert outcome.summary["refusal"]["code"] == REFUSED
-    assert "free text" in outcome.summary["refusal"]["message"]
+    assert outcome.ci_wait["code"] == PICK_FIX
+    assert "free text" in outcome.summary["wait"]["message"]
     assert outcome.summary["unbuilt_picks"][0]["picked"] is None
 
 

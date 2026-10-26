@@ -500,7 +500,7 @@ describe('the SD3 merge switch', () => {
 //   * a 360px side column on a desktop holds the cron's words, the next five
 //     and the template card (tier, gate, budget defaults, shortest interval),
 //     and folds under the fields below 1024px;
-//   * the head says "tenant eng · N of 25 used", a served limit winning;
+//   * the head says "workspace eng · N of 25 used", a served limit winning;
 //   * Start is Enabled / Dry run first / Paused;
 //   * a budget field states the type's default instead of "Blank: the type's
 //     default".
@@ -596,15 +596,18 @@ describe('edit A', () => {
     expect(fact('Budget')).toBe('$5.00 / run · $10.00 / day · 1 live')
   })
 
-  it('says how many of the tenant’s 25 schedules are used, a served limit winning', async () => {
+  it('says how many of the workspace’s 25 schedules are used, a served limit winning', async () => {
     await openCreate(createRoutes())
     // MUTATION: drop TenantRoom from the create page and this is gone.
-    await waitFor(() => expect(visible(screen.getByTestId('sc-room'))).toBe('tenant eng · 6 of 25 used'), WAIT)
+    await waitFor(() => expect(visible(screen.getByTestId('sc-room'))).toBe('workspace eng · 6 of 25 used'), WAIT)
   })
 
-  it('counts against a raised limit when the list serves one, and says a full tenant will be refused', async () => {
+  it('counts against a raised limit when the list serves one, and says a full workspace will be refused', async () => {
     await openCreate(createRoutes(() => null, list(30, { limit: 30 })))
-    await waitFor(() => expect(visible(screen.getByTestId('sc-room'))).toContain('tenant eng · 30 of 30 used'), WAIT)
+    await waitFor(() => expect(visible(screen.getByTestId('sc-room'))).toContain('workspace eng · 30 of 30 used'), WAIT)
+    // VQ-056: the full line says workspace too, never tenant.
+    expect(visible(screen.getByTestId('sc-room'))).toContain('this workspace has every schedule it may have')
+    expect(visible(screen.getByTestId('sc-room'))).not.toMatch(/tenant/i)
     expect(screen.getByTestId('sc-room').getAttribute('data-full')).toBe('true')
   })
 

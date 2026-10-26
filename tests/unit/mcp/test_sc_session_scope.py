@@ -201,9 +201,10 @@ def test_a_dispatch_a_batch_and_a_workflow_are_tagged_stored_and_served_back(swa
         assert served["claude_session"] == claude_session
     state = db.docs[f"tasks/{one['task_id']}"]["state"]
     summary = api.get(f"/v1/tasks?view=summary&state={state}", headers=AUTH).json()["tasks"]
-    assert summary and "metadata" not in summary[0]
+    # The summary's metadata is the title alone (SUMMARY-TITLE).
+    assert summary and "claude_session" not in summary[0]["metadata"]
     assert {t["claude_session"] for t in summary} == {claude_session}, \
-        "the summary view drops metadata, so the tag is served beside it"
+        "the summary view drops the rest of metadata, so the tag is served beside it"
     listed = api.get("/v1/workflows", headers=AUTH).json()["workflows"]
     assert [w["claude_session"] for w in listed] == [claude_session]
     # Each reply says which session it was tagged with.

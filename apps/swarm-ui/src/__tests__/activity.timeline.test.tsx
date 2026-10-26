@@ -1158,7 +1158,7 @@ describe('the eight cards', () => {
     const person = c.querySelector('.ol-person')!
     expect(person.classList.contains('is-warn')).toBe(true)
     // In words, not enums (QA G3-24): `reasonCopy`'s, with the token in the title.
-    expect(person.textContent).toContain('No provider key is registered for this tenant 2')
+    expect(person.textContent).toContain('No provider key is registered for this workspace 2')
     expect(c.textContent).toContain('clears itself The provider quota is spent. Parked until it resets 1')
     expect(c.textContent).not.toContain('PROVIDER_QUOTA_EXHAUSTED')
   })
@@ -1170,11 +1170,11 @@ describe('the eight cards', () => {
     expect(c.textContent).toContain('not filtered by profile')
   })
 
-  it('Not finished yet: says its platform counts are not filtered by tenant when the view excludes one', async () => {
+  it('Not finished yet: says its platform counts are not filtered by workspace when the view excludes one', async () => {
     const root = await timeline(ledgerFixture(), { view: 'exclude_tenant=verify' }, { admin: true })
     const c = card(root, /^Not finished yet/)
     await waitFor(() => expect(c.querySelector('.ol-open-counts')).not.toBeNull())
-    expect(c.querySelector('.ol-open-counts')!.textContent).toContain('not filtered by tenant')
+    expect(c.querySelector('.ol-open-counts')!.textContent).toContain('not filtered by workspace')
   })
 
   it('Not finished yet: re-reads its live counts when a filter changes, not only on refresh', async () => {

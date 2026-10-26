@@ -115,16 +115,12 @@ interface Model {
 }
 
 /**
- * A row's status: the health record's word (`statusOf`), or, when the health
- * read cannot say, the row's own `state`. REAUTH_REQUIRED is the broker's own
- * answer that the provider refused the credential, so a deployment that does
- * not serve health (or a read that failed) still leads that account with
- * Sign in again rather than a dash. Its figures stay dashes with their reason:
- * the state says nothing about counts.
+ * A row's status is `statusOf`'s, the one rule `worstFirst` sorts by, so a
+ * REAUTH_REQUIRED account whose health is null leads the list as well as the
+ * tiles and the cards.
  */
 function cellOf(a: HealthAccount, record: AccountHealthRecord | undefined): StatusCell {
-  const c = statusOf(a, record)
-  return c.status === null && a.state === 'REAUTH_REQUIRED' ? { status: 'reauth_needed' } : c
+  return statusOf(a, record)
 }
 
 /** The tiles and the summary line count the statuses the list draws, from `cellOf`. */

@@ -185,12 +185,14 @@ export { TASK_PAGE_LIMIT }
  * (Agents.tsx, `PHONE_PAGE_LIMIT`).
  *
  * `view: 'summary'` (#168) asks for `GET /v1/tasks?view=summary`: each row
- * WITHOUT `input`, `metadata` and `result_summary` and their redaction counts
- * -- the keys absent, not null (`codec.task_to_api`). Those three are most of
- * a row's 10-20 KiB (docs/web-ui §2.5), so a polled list that draws none of
- * them asks for it: the Overview and the Agents list. Anything that reads a
- * row's input, metadata or result summary reads `loadTask` instead, which is
- * always the full row. No `view` is the full row, as before.
+ * WITHOUT `input` and `result_summary` and their redaction counts -- the keys
+ * absent, not null (`codec.task_to_api`) -- and with `metadata` cut to its
+ * `title` alone (SUMMARY-TITLE, `codec.SUMMARY_METADATA_KEYS`). Those are
+ * most of a row's 10-20 KiB (docs/web-ui §2.5), so a polled list that draws
+ * none of them asks for it: the Overview and the Agents list. Anything that
+ * reads a row's input, the rest of its metadata or its result summary reads
+ * `loadTask` instead, which is always the full row. No `view` is the full
+ * row, as before.
  */
 export async function loadTasks(
   limit: number = TASK_PAGE_LIMIT,
@@ -1778,9 +1780,12 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
   // Browser tab's findings were measured on running browser agents with
   // logs of 20 and more steps, and a four-step log cannot show a log beside
   // the frame that runs past its pane. Forty browser actions, each a call
-  // and its result, for the render to be checked against.
-  const browserSteps = (from: number): TranscriptStep[] =>
-    Array.from({ length: 40 }, (_, i) => {
+  // and its result, for the render to be checked against. THE FINISHED
+  // BROWSER AGENT, task_f523c160 (FIXTURE-BROWSER-DONE, part of #2423), has
+  // a short one, six actions and its result: its Browser tab is reviewed
+  // for the end time, the links and the recordings, not for a long log.
+  const browserSteps = (from: number, count: number): TranscriptStep[] =>
+    Array.from({ length: count }, (_, i) => {
       const id = `toolu_b${String(i).padStart(2, '0')}`
       const action = ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type'][i % 4]!
       return [
@@ -1788,7 +1793,7 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
         step(from + 2 * i + 1, { kind: 'tool_result', role: 'user', tool_result: { tool_use_id: id, is_error: false, content: `Step ${i + 1}: ${action} done; the page says "Example Domain".`, images: 0 } }),
       ]
     }).flat()
-  const long = taskId === 'task_b40e5a1c' ? browserSteps(4) : []
+  const long = taskId === 'task_b40e5a1c' ? browserSteps(4, 40) : taskId === 'task_f523c160' ? browserSteps(4, 6) : []
   const steps: TranscriptStep[] = started
     ? [
         step(0, { kind: 'init', role: 'system', meta: { model: 'claude-opus-5', permission_mode: 'bypassPermissions', tool_count: 14 } }),
@@ -2771,7 +2776,7 @@ export interface NotificationFeed {
  */
 export async function loadNotifications(): Promise<Result<NotificationFeed>> {
   const target = route('/v1/notifications')
-  if (USE_FIXTURES) return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no notification feed.' } }
+  if (USE_FIXTURES) return { status: 'ok', fetchedAt: Date.now(), data: { items: [{ id: 'admin:ws:wsr_c4r0l', group: 'admin', needs_you: true, title: 'Carol asked for a workspace', detail: null, href: '/admin/people', at: new Date(Date.now() - 40 * 60_000).toISOString(), read: false }], unread_needs_you: 1, unread_updates: 0, admin_pending: 1, tenants_waiting: null, platform_secrets_unset: null, read_at: new Date().toISOString() } } as Result<NotificationFeed>
   const r = await read<NotificationFeed>(target, () => false, { frame: true })
   // A 200 with no list is not an empty feed, and drawing "Nothing needs you"
   // over an answer nobody could read would be a claim; it is a failure.
@@ -5058,7 +5063,15 @@ function fixtureTaskRows(): Task[] {
     // dispatch and attempt 2 failed, so the Attempts tab, the events and
     // the checkpoints all have more than one attempt to agree about.
     mk('task_a073aff5', 'RUNNING', 'claude-code', 4, { attempt_count: 3, current_generation: 3 }),
-    mk('task_8ea5c26d', 'RUNNING', 'claude-code', 5),
+    // A LONE AGENT WITH A TITLE (SUMMARY-TITLE): its Agents row reads the
+    // title, beside task_a073aff5 above, which has none and reads
+    // `claude-code agent · a073aff5`. The summary view serves metadata as
+    // the title alone, so this is the whole of what the list sees. No
+    // `(#N)` in it: the copy sweep (walk.copy.test.tsx) reads every page
+    // this build draws and refuses an issue number in visible copy.
+    mk('task_8ea5c26d', 'RUNNING', 'claude-code', 5, {
+      metadata: { title: 'Fix flaky lease heartbeat test' },
+    }),
     // THE BROWSER QA AGENT: the one fixture task with a live browser, so
     // the Browser pane has a live session to draw in this build, and the
     // QA route `task-browser` (qa/routes.json) captures it rather than an
@@ -5100,7 +5113,16 @@ function fixtureTaskRows(): Task[] {
     }),
     mk('task_99284d38', 'SUCCEEDED', 'claude-code', 50),
     mk('task_f278adec', 'SUCCEEDED', 'claude-code', 48),
-    mk('task_f523c160', 'SUCCEEDED', 'claude-code', 47),
+    // THE FINISHED BROWSER AGENT (FIXTURE-BROWSER-DONE, part of #2423; BGD
+    // 2026-10-26 "Convert one"): this row was an ordinary claude-code one
+    // no test named, converted rather than a row added so every fixture
+    // total stands. A finished agent's Browser tab (BT-006, BT-007) renders
+    // from it: its end time, the links to Attempts and Artifacts, and the
+    // recordings panel, empty here because the fixture build does not serve
+    // recordings. task_b40e5a1c stays the one RUNNING browser agent.
+    mk('task_f523c160', 'SUCCEEDED', 'claude-code-browser', 47, {
+      input: { prompt: 'Browser QA agent: open https://example.com, follow its one link, and report both pages.' },
+    }),
     mk('task_812d51aa', 'SUCCEEDED', 'claude-code', 46),
     mk('task_108ef29c', 'SUCCEEDED', 'mock', 90),
     mk('task_1beb89a5', 'CANCELLED', 'claude-code', 62, {
@@ -7787,6 +7809,13 @@ function fixturePeople(): unknown {
       first_seen: fixtureAgo(6 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(3 * FIXTURE_HOUR), last_submitted: fixtureAgo(4 * FIXTURE_HOUR), last_active: fixtureAgo(3 * FIXTURE_HOUR),
     },
     {
+      email: 'bogdan@example.com', display_name: 'Bogdan Alexandrescu', teams: [FIXTURE_GROUP.principal], github: 'connected', roles: { eng: 'admin', research: 'member' },
+      workspace: ws('ready', 'u-bogdan', { ready_at: fixtureAgo(12 * 24 * FIXTURE_HOUR) }),
+      claude_account: { source: 'lent', own: 0, lent: 7, lent_by: ['eng'], provider_key: false, lent_accounts: Array.from({ length: 7 }, (_, i) => ({ account_id: i === 0 ? 'ai-eng-1-max' : `ai-eng-${i + 1}`, label: i === 0 ? 'ai-eng-1-max' : `ai-eng-${i + 1}`, owner_tenant: 'eng', owner_name: 'Engineering', state: 'AVAILABLE' })) },
+      loan_request: null,
+      first_seen: fixtureAgo(12 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(2 * 60_000), last_submitted: fixtureAgo(30 * 60_000), last_active: fixtureAgo(2 * 60_000),
+    },
+    {
       email: 'dave@example.com', display_name: null, teams: [], github: 'expired', roles: { eng: 'none', research: 'admin' },
       workspace: ws('ready', 'u-dave', { ready_at: fixtureAgo(20 * 24 * FIXTURE_HOUR) }),
       claude_account: claude('provider_key', 0, 0, [], true), loan_request: null,
@@ -7800,11 +7829,16 @@ function fixturePeople(): unknown {
     people,
     count: people.length,
     pending: people.filter((p) => p.workspace.state === 'requested').length,
-    audit: [],
+    audit: [
+      ...Array.from({ length: 12 }, (_, i) => ({ action: 'qa_target_credential_set', target_workspace_id: 'eng', by: 'alice@example.com', at: fixtureAgo((i + 1) * 60_000), detail: {} })),
+      ...Array.from({ length: 10 }, (_, i) => ({ action: 'repository_workflow_files_set', target_workspace_id: 'eng', by: 'alice@example.com', at: fixtureAgo((i + 20) * 60_000), detail: {} })),
+      { action: 'approve', target_workspace_id: 'u-bob', by: 'alice@example.com', at: fixtureAgo(5 * 24 * FIXTURE_HOUR), detail: {} },
+      { action: 'frobnicated_mcp_widget', target_workspace_id: 'eng', by: 'alice@example.com', at: fixtureAgo(6 * 24 * FIXTURE_HOUR), detail: {} },
+    ],
     lendable_accounts: ownAccounts.map((a) => ({ account_id: a.account_id, owner_tenant: a.owner_tenant, label: a.label, state: a.state, lend_to: a.lend_to })),
     lendable_error: null,
     provisioning: { available: true, approved_waiting: 0 },
-    admins: [{ email: 'alice@example.com', role: 'admin', granted_by: 'ops@example.com', granted_at: fixtureAgo(30 * 24 * FIXTURE_HOUR) }],
+    admins: [{ email: 'ops@example.com', role: 'owner', granted_by: 'config:PLATFORM_OWNER', granted_at: null }, { email: 'bogdan@example.com', role: 'owner', granted_by: 'config:PLATFORM_OWNER', granted_at: null }, { email: 'alice@example.com', role: 'admin', granted_by: 'ops@example.com', granted_at: fixtureAgo(30 * 24 * FIXTURE_HOUR) }],
     admins_error: null,
   }
 }
@@ -8264,6 +8298,13 @@ export async function deleteProviderKey(provider: string, scope: ProviderKeyScop
 export interface WorkspaceSecretGrant {
   consumer: string
   enabled: boolean
+  /** The slot it fills; null when the list did not say. */
+  slot: string | null
+  /**
+   * The hosts a host-scoped slot's secret may be sent to (`cf-access`,
+   * swarm_api `slot_hosts`), as served: sorted, empty for every other slot.
+   */
+  hosts: string[]
 }
 
 /** One stored secret: never a value, its length, a prefix or a suffix. */
@@ -8343,8 +8384,9 @@ function normWorkspaceSecret(raw: unknown): WorkspaceSecret | null {
   if (name === null) return null
   const grants = (Array.isArray(r.grants) ? r.grants : []).flatMap((g): WorkspaceSecretGrant[] => {
     if (typeof g !== 'object' || g === null) return []
-    const consumer = wsText((g as Record<string, unknown>).consumer)
-    return consumer === null ? [] : [{ consumer, enabled: (g as Record<string, unknown>).enabled === true }]
+    const r = g as Record<string, unknown>
+    const consumer = wsText(r.consumer)
+    return consumer === null ? [] : [{ consumer, enabled: r.enabled === true, slot: wsText(r.slot), hosts: wsStrings(r.hosts) }]
   })
   const rotated = wsText(r.rotated_at)
   return {
@@ -8392,9 +8434,11 @@ function normWorkspaceSecretConsumers(raw: unknown): WorkspaceSecretConsumer[] {
 }
 
 /**
- * The fixture build's list: one secret on the personal workspace, which its
- * owner manages, granted to two consumers and not a third. No value: the API
- * serves none.
+ * The fixture build's list: secrets on the personal workspace, which its
+ * owner manages. One is granted to two consumers and not a third; the other
+ * is a Cloudflare Access service token in claude-code-browser's `cf-access`
+ * slot, its grant holding two hosts (CF-ACCESS-HOSTS-UI, part of #2442). No
+ * value: the API serves none.
  */
 async function fixtureWorkspaceSecrets(target: ApiRoute): Promise<Result<WorkspaceSecretList>> {
   await new Promise((r) => setTimeout(r, 80))
@@ -8414,6 +8458,10 @@ async function fixtureWorkspaceSecrets(target: ApiRoute): Promise<Result<Workspa
           { consumer: 'component:judge', enabled: true },
           { consumer: 'profile:claude-code', enabled: false },
         ],
+      }, {
+        name: 'admin-access', provider: 'other', kind: 'oauth_client', current_version: '1',
+        created_at: at, created_by: 'alice@example.com', rotated_at: null, rotated_by: null,
+        grants: [{ consumer: 'profile:claude-code-browser', slot: 'cf-access', enabled: true, hosts: ['admin.example.com', 'api.admin.example.com'] }],
       }],
     }),
   }
@@ -8440,10 +8488,20 @@ export async function loadWorkspaceSecrets(): Promise<Result<WorkspaceSecretList
 const FIXTURE_SECRET_KINDS = ['api_key', 'bearer_token', 'basic_auth', 'oauth_client', 'opaque']
 const FIXTURE_NO_SLOT = 'declares no secret slot yet; a grant would deliver nothing'
 
-/** The fixture build's catalogue: some of `_catalogue()`'s profiles, and its tools and components, with the slots §2.4 gives them. */
+/**
+ * The fixture build's catalogue: some of `_catalogue()`'s profiles, and its
+ * tools and components, with the slots §2.4 gives them. claude-code-browser
+ * also reads `cf-access`, the slot contract request 117 (accepted
+ * 2026-10-26, not yet applied) gives it, so the grant matrix's hosts field
+ * can be drawn for review.
+ */
 const FIXTURE_SECRET_CONSUMERS = [
   ...['browser', 'claude-code', 'claude-code-browser', 'codex'].map((name) => ({
-    consumer: `profile:${name}`, kind: 'profile', name, slots: [{ slot: 'files', kinds: FIXTURE_SECRET_KINDS }], grantable: true, note: '',
+    consumer: `profile:${name}`, kind: 'profile', name,
+    slots: name === 'claude-code-browser'
+      ? [{ slot: 'files', kinds: FIXTURE_SECRET_KINDS }, { slot: 'cf-access', kinds: ['oauth_client'] }]
+      : [{ slot: 'files', kinds: FIXTURE_SECRET_KINDS }],
+    grantable: true, note: '',
   })),
   { consumer: 'tool:jev-browser', kind: 'tool', name: 'jev-browser', slots: [{ slot: 'typesafe', kinds: ['api_key'] }], grantable: true, note: '' },
   { consumer: 'tool:dev-browser', kind: 'tool', name: 'dev-browser', slots: [], grantable: false, note: FIXTURE_NO_SLOT },
@@ -8507,16 +8565,26 @@ export async function rotateWorkspaceSecret(name: string, body: WorkspaceSecretR
 }
 
 /**
+ * A grant write's body: `{enabled}`, `slot` only for a consumer that declares
+ * several, and `hosts` only for a host-scoped slot (`cf-access`). Never a
+ * value: a grant names who may read a secret, not what it is.
+ */
+function grantBody(enabled: boolean, slot: string | null, hosts: readonly string[] | null): Record<string, unknown> {
+  return { enabled, ...(slot === null ? {} : { slot }), ...(hosts === null ? {} : { hosts: [...hosts] }) }
+}
+
+/**
  * `PUT /v1/workspace/secrets/{name}/grants/{consumer}`: ONE cell of the
  * matrix, `{enabled}` and nothing else. No slot: every consumer in the
  * catalogue reads one, and the API defaults to it (§2.2); `slot` is sent
- * only for a consumer that declares several. The answer is the record's
- * grants after the write, or null when it carried none.
+ * only for a consumer that declares several, and `hosts` only for a
+ * host-scoped slot's cell. The answer is the record's grants after the
+ * write, or null when it carried none.
  */
-export async function setWorkspaceSecretGrant(name: string, consumer: string, enabled: boolean, slot: string | null = null): Promise<Result<WorkspaceSecret | null>> {
+export async function setWorkspaceSecretGrant(name: string, consumer: string, enabled: boolean, slot: string | null = null, hosts: readonly string[] | null = null): Promise<Result<WorkspaceSecret | null>> {
   const target = route('/v1/workspace/secrets/{name}/grants/{consumer}', { name, consumer })
   if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<null>
-  const r = await write(target, 'PUT', slot === null ? { enabled } : { enabled, slot })
+  const r = await write(target, 'PUT', grantBody(enabled, slot, hosts))
   if (r.status === 'error') return r
   return { status: 'ok', fetchedAt: Date.now(), data: servedSecret(r) }
 }
@@ -8934,7 +9002,7 @@ export interface SecretStoreApi {
   create(body: WorkspaceSecretCreate, linkToken: string | null): Promise<Result<null>>
   rotate(name: string, body: WorkspaceSecretRotate, linkToken: string | null): Promise<Result<WorkspaceSecret | null>>
   remove(name: string): Promise<Result<unknown>>
-  grant(name: string, consumer: string, enabled: boolean, slot?: string | null): Promise<Result<WorkspaceSecret | null>>
+  grant(name: string, consumer: string, enabled: boolean, slot?: string | null, hosts?: readonly string[] | null): Promise<Result<WorkspaceSecret | null>>
   mintLink(action: 'add' | 'rotate', name: string | null): Promise<Result<MintedLink>>
 }
 
@@ -8996,7 +9064,7 @@ const WORKSPACE_STORE: SecretStoreApi = {
   create: createWorkspaceSecret,
   rotate: rotateWorkspaceSecret,
   remove: deleteWorkspaceSecret,
-  grant: (name, consumer, enabled, slot = null) => setWorkspaceSecretGrant(name, consumer, enabled, slot),
+  grant: (name, consumer, enabled, slot = null, hosts = null) => setWorkspaceSecretGrant(name, consumer, enabled, slot, hosts),
   mintLink: (action, name) => mint(route('/v1/workspace/secrets/links'), linkBody(action, name)),
 }
 
@@ -9028,10 +9096,10 @@ function repositoryStore(repoId: string): SecretStoreApi {
       if (USE_FIXTURES) return fixtureSecretsNotServed(target)
       return write(target, 'DELETE', { name })
     },
-    async grant(name, consumer, enabled, slot = null) {
+    async grant(name, consumer, enabled, slot = null, hosts = null) {
       const target = route('/v1/repositories/{repo_id}/secrets/{name}/grants/{consumer}', { repo_id, name, consumer })
       if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<null>
-      const r = await write(target, 'PUT', slot === null ? { enabled } : { enabled, slot })
+      const r = await write(target, 'PUT', grantBody(enabled, slot, hosts))
       return r.status === 'error' ? r : { status: 'ok', fetchedAt: Date.now(), data: servedSecret(r) }
     },
     mintLink: (action, name) => mint(route('/v1/repositories/{repo_id}/secrets/links', { repo_id }), linkBody(action, name)),

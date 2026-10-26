@@ -536,11 +536,12 @@ def task_to_api(
 ) -> dict[str, Any]:
     """Public JSON shape. Contains no credential material and no backend spec.
 
-    `summary` is `GET /v1/tasks?view=summary` (#168): the row WITHOUT `input`,
-    `metadata` and `result_summary` and their three masking counts -- the
-    keys ABSENT, not null, so a reader cannot mistake a dropped field for an
-    empty one -- and without the masking work for them, which is skipped
-    rather than computed and discarded. Everything else, `last_error` and
+    `summary` is `GET /v1/tasks?view=summary` (#168): the row WITHOUT `input`
+    and `result_summary` and their masking counts -- the keys ABSENT, not
+    null, so a reader cannot mistake a dropped field for an empty one -- and
+    without the masking work for them, which is skipped rather than computed
+    and discarded. Its `metadata` is cut to `SUMMARY_METADATA_KEYS`, the
+    title alone (`summary_metadata`). Everything else, `last_error` and
     `repository_url` included, is masked exactly as in the full row.
 
     `heartbeat` is `swarm_api.heartbeats`' reading of the task's current
@@ -589,6 +590,8 @@ def task_to_api(
         masked_input, input_count = masking.input_value()
         masked_metadata, metadata_count = masking.metadata_value()
         result_summary, result_summary_count = masking.leaves(task.result_summary)
+    else:
+        masked_metadata, metadata_count = summary_metadata(task, masking)
     last_error, last_error_count = masking.text(task.last_error)
     repository_url, repository_url_count = masking.repository_url(task.repository_url)
     beat = heartbeat or {}
@@ -792,16 +795,41 @@ def browser_use_to_api(result_summary: Any) -> dict[str, Any]:
     return {"browser_used": used if isinstance(used, bool) else None, "browser_use": served}
 
 
-#: What `view=summary` leaves out of a task row (#168): the three fields a
-#: list never shows, and the masking count beside each.
+#: What `view=summary` leaves out of a task row (#168): the two fields a
+#: list never shows, and the masking count beside each. `metadata` was the
+#: third until SUMMARY-TITLE; it is cut to `SUMMARY_METADATA_KEYS` instead.
 SUMMARY_DROPPED_KEYS: tuple[str, ...] = (
-    "metadata",
-    "metadata_redaction_count",
     "input",
     "input_redaction_count",
     "result_summary",
     "result_summary_redaction_count",
 )
+
+#: The `metadata` keys `view=summary` serves (SUMMARY-TITLE, part of #2391):
+#: the title alone. BGD's decision of 2026-10-26 (VQ-009) is that the console
+#: names a lone agent by its title in the list, with no read per row. Every
+#: other key stays out: the summary exists because the list moved megabytes of
+#: what it never draws (#168).
+SUMMARY_METADATA_KEYS: tuple[str, ...] = ("title",)
+
+
+def summary_metadata(task: Task, masking: TaskMasking) -> tuple[dict[str, Any], int]:
+    """The summary row's `metadata`: its string `title`, masked, and the masks it took.
+
+    `{}` when the task has no title or a title that is not a string. Masked
+    by the task's own masker as one string (`TaskMasking.text`), so a title
+    reads here as it reads in the full row's `metadata`, and the full
+    metadata's masking (`metadata_value`) is still never run for a summary.
+    """
+    stored = task.metadata or {}
+    out: dict[str, Any] = {}
+    count = 0
+    for key in SUMMARY_METADATA_KEYS:
+        value = stored.get(key)
+        if isinstance(value, str):
+            out[key], found = masking.text(value)
+            count += found
+    return out, count
 
 
 # --------------------------------------------------------------------------

@@ -50,6 +50,7 @@ import { disabledSentence } from './ProfileMatrix'
 import { parkWord } from './words'
 import { AGED_AFTER_MS, CountNote, PageHead, RefreshControl, staleFoot, timeAgo, useClaimPageAge, useIdleStop, usePoll } from './Shell'
 import { AGE_TICK_MS, PageClock, usePageClock, useNow as useAgeClock } from './useNow'
+import { useTimeZone } from './useTimeZone'
 import {
   CONCURRENCY_STATES,
   PARK_REASONS,
@@ -196,13 +197,19 @@ export function OverviewScreen({ setup, waitingOnYou }: { setup?: ReactNode; wai
   // this derivation and Recent failures from each render's own clock, so a
   // failure crossing the 24-hour edge between the two read 68 above and 67
   // below. Both count from `checkedAt`.
+  //
+  // THE ZONE IS A DEPENDENCY (VQ-023): a check's "agents created since 09:06
+  // PDT read" names a time in the person's zone, so a pick in Profile words
+  // the checks again without waiting for the next read.
+  const zone = useTimeZone()
   const { checks, checkedAt } = useMemo(() => {
     const at = Date.now()
     return {
       checks: deriveChecks({ capacity, tasks, leases, providers, accounts, workflows, stats, phonePage: phoneWidth() }, at),
       checkedAt: at,
     }
-  }, [capacity, tasks, leases, providers, accounts, workflows, stats])
+    // `zone` is read by `readReach` through `timezone.ts`, not passed.
+  }, [capacity, tasks, leases, providers, accounts, workflows, stats, zone])
   // The newest reading behind this screen, for the head's one age (#98).
   const newest = reads.reduce<number | null>((m, r) => {
     const at = ageOf(r)

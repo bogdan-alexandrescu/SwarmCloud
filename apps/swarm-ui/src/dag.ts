@@ -1987,32 +1987,6 @@ const NO_NOTES: ReadonlySet<string> = new Set<string>()
  * level holding one noted node is that much taller, like a level holding one
  * long dependency list.
  */
-/**
- * HOW WIDE A LINEAR CHAIN'S NODES MAY GROW (QA G3-27): twice the full tier's
- * card. A chain -- one step per level -- drew its 248px cards down the middle
- * of a ~1,000px column, and wrapped its dependency line mid-filename
- * (`(swarm-` / `work.patch)`) in a card a quarter of the width it sat in.
- * Nothing sits beside a chain's node, so the room is free; the cap keeps a
- * short chain from turning into full-width bars.
- */
-export const CHAIN_NODE_W = NODE_W * 2
-
-/**
- * The node width for these levels: `base`, or -- when every level holds one
- * step -- as wide as `CHAIN_NODE_W` and the column allow. Width is all it
- * changes: `heightOf` is handed the same width, so a dependency list that
- * now fits on fewer lines is measured on fewer lines.
- */
-export function chainNodeW(levels: readonly (readonly WorkflowStep[])[], base: number, column: number): number {
-  if (levels.length === 0 || levels.some((l) => l.length !== 1)) return base
-  return Math.max(base, Math.min(CHAIN_NODE_W, column - PAD * 2))
-}
-
-/** How much wider than `base` a chain's nodes are drawn: `chainNodeW` less `base`. */
-function chainRoom(levels: readonly (readonly WorkflowStep[])[], base: number, column: number): number {
-  return chainNodeW(levels, base, column) - base
-}
-
 // ---------------------------------------------------------------------------
 // Crossing reduction -- the order of the steps inside each level (GR1)
 // ---------------------------------------------------------------------------
@@ -2135,9 +2109,15 @@ export function layoutOf(
   // THE WIDTH EVERY NODE IN THIS LAYOUT GETS, computed once. Every coordinate
   // below is in terms of it rather than of NODE_W, which is now only the full
   // tier's value.
-  // A LINEAR CHAIN'S NODES TAKE THE ROOM BESIDE THEM (QA G3-27, `chainNodeW`):
-  // zero for any other shape.
-  const nodeW = nodeWidthAt(tier, steps) + chainRoom(levels, nodeWidthAt(tier, steps), column)
+  // A LINEAR CHAIN'S NODES KEEP THEIR TIER'S WIDTH (VQ-014, BGD 2026-10-26,
+  // "Drop the chain widening on the page"). QA G3-27 drew a chain -- one step
+  // per level -- at up to twice NODE_W (about 510px), so its dependency line
+  // would not wrap mid-filename. That card was 510x180 under Auto, and a
+  // five-step chain showed about one and a half steps at a time. The tier's
+  // own width (about 250px at Details) is the decision: a long `input_from`
+  // name wraps inside its card, which `heightOf` measures at this width, and
+  // that is accepted. Auto's tier rule (#330 item 4, D29) is unchanged.
+  const nodeW = nodeWidthAt(tier, steps)
   if (levels.length === 0) {
     return {
       nodes: [],

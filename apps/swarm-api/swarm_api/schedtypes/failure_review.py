@@ -104,8 +104,9 @@ from ..forgechecks import evaluate, required_status_checks
 from ..forgewrite import ForgeWriteError, ForgeWriteNotFound, GitHubWriter
 from ..issueci import excerpt_at
 from ..issuecomments import bounded as bounded_body
-from ..issuecomments import neutral
+from ..issuecomments import neutralise_closing_keywords, neutralise_mentions
 from ..issueruns import TERMINAL_RUN_STATES, IssueRuns, RunState, hard_stop_hold, refuse_auto_merge
+from ..redaction import redact
 from ..repositories import Repositories, hard_stop_paths_of, platform_of
 from ..routes.runs import start_run
 from ..schemas import TaskCreate
@@ -514,15 +515,55 @@ def _window(review: Mapping[str, Any]) -> str:
     return f"{_mapping(review.get('window')).get('from')} to {_mapping(review.get('window')).get('to')}"
 
 
+#: Where Markdown prose could begin raw HTML -- a tag, a closing tag, a
+#: comment, a declaration, a processing instruction -- or an entity reference.
+_HTML_START = re.compile(r"<(?=[A-Za-z/!?])|&(?=#?[A-Za-z0-9]+;)")
+_BACKTICKS = re.compile(r"`+")
+
+
+def plain(value: str, limit: int, *, literals: Sequence[str] = (), one_line: bool = False) -> str:
+    """The investigator's text, for an issue's title, as written (ISSUE-WRITER, VQ-020).
+
+    `neutral` without its HTML escaping: masked, mentions broken, closing
+    keywords turned into `refs`, cut to `limit`. GitHub stores a title as given
+    and shows it as text, so `&gt;` there is printed as `&gt;` (#2217 read
+    'implement -&gt; review -&gt; fix').
+    """
+    masked = redact(str(value), extra=tuple(literals)).text.replace("\x00", "")
+    if one_line:
+        masked = " ".join(masked.split())
+    masked = neutralise_closing_keywords(neutralise_mentions(masked))
+    return masked if len(masked) <= limit else masked[: limit - 1] + "…"
+
+
+def prose(value: str, limit: int, *, literals: Sequence[str] = (), one_line: bool = False) -> str:
+    """`plain`, for Markdown prose: a `<` that could open HTML, and an `&` that
+    could start an entity, take a Markdown backslash escape, which GitHub renders
+    as the character itself. So `<details>` or `<!--` cannot swallow the body, and
+    `->` and `#<n>` read as written; an entity would be printed in a code span."""
+    text = plain(value, limit, literals=literals, one_line=one_line)
+    return _HTML_START.sub(lambda match: "\\" + match.group(0), text)
+
+
+def code(value: str, limit: int, *, literals: Sequence[str] = ()) -> str:
+    """`plain`, one line, as a Markdown code span: GitHub parses no HTML inside
+    one and shows every character as typed. The fence is one backtick longer
+    than any run in the value, so a backtick there cannot end the span early."""
+    text = plain(value, limit, literals=literals, one_line=True)
+    fence = "`" * (max((len(run) for run in _BACKTICKS.findall(text)), default=0) + 1)
+    pad = "" if fence == "`" else " "  # GitHub strips one space each side of a longer fence
+    return f"{fence}{pad}{text}{pad}{fence}"
+
+
 def render_issue(review: Mapping[str, Any], cause: Cause, component: str, *, held: bool,
                  literals: Sequence[str] = ()) -> tuple[str, str]:
     def text(value: str, one_line: bool = False) -> str:
-        return neutral(value, MAX_FIELD_CHARS, literals=literals, one_line=one_line)
+        return prose(value, MAX_FIELD_CHARS, literals=literals, one_line=one_line)
 
-    title = neutral(cause.cause, MAX_TITLE_CHARS, literals=literals, one_line=True)
-    evidence = [f"- `{text(e.command, one_line=True)}`: {text(e.result, one_line=True)}"
+    title = plain(cause.cause, MAX_TITLE_CHARS, literals=literals, one_line=True)
+    evidence = [f"- {code(e.command, MAX_FIELD_CHARS, literals=literals)}: {text(e.result, one_line=True)}"
                 for e in cause.evidence[:MAX_EVIDENCE]]
-    files = ", ".join(f"`{neutral(f, 300, literals=literals, one_line=True)}`" for f in cause.files) or "none named"
+    files = ", ".join(code(f, 300, literals=literals) for f in cause.files) or "none named"
     hold_line = (f"Held for the owner (`{HOLD_LABEL}`, category `{cause.hold}`): no fix run is started."
                  if held else "A fix run is started for this issue by the failure-review schedule.")
     body = "\n".join([
@@ -556,7 +597,7 @@ def render_issue(review: Mapping[str, Any], cause: Cause, component: str, *, hel
         "### Identifiers",
         "",
         f"- Fingerprint: `{cause.fingerprint}`",
-        f"- Signature: `{neutral(cause.signature, 500, literals=literals, one_line=True)}`",
+        f"- Signature: {code(cause.signature, 500, literals=literals)}",
         f"- Failures: {_failures_line(review, cause.failures)}",
         "",
         "### Screenshots, errors, logs",
@@ -596,8 +637,8 @@ def render_comment(review: Mapping[str, Any], cause: Cause, new_failures: int, *
         lines += ["", "No new fix run: one is live, a pull request is open, or the issue was closed "
                       "as not planned."]
     for e in cause.evidence[:3]:
-        lines.append(f"- `{neutral(e.command, 300, literals=literals, one_line=True)}`: "
-                     f"{neutral(e.result, 600, literals=literals, one_line=True)}")
+        lines.append(f"- {code(e.command, 300, literals=literals)}: "
+                     f"{prose(e.result, 600, literals=literals, one_line=True)}")
     return bounded_body("\n".join(lines) + "\n")
 
 
@@ -749,8 +790,11 @@ class _Filing:
                 "finding_id": fid, "tenant_id": tenant_id, "kind": where.get("kind"),
                 "task_id": failure if where.get("kind") == "agent" else None,
                 "failure_id": failure, "fingerprint": cause.fingerprint,
-                "cause": neutral(cause.cause, 2000, one_line=True),
-                "fix": neutral(cause.fix, MAX_FIELD_CHARS),
+                # Plain, as written (FAILURE-STORE-PLAIN, part of #2391): the
+                # console shows these through React, which escapes them itself,
+                # so a stored `&gt;` read '-&gt;'. Masked and neutralised still.
+                "cause": plain(cause.cause, 2000, one_line=True),
+                "fix": plain(cause.fix, MAX_FIELD_CHARS),
                 "evidence": dict(_mapping(evidence.get(ref))),
                 "schedule_id": self.review["schedule_id"], "firing_id": self.review["firing_id"],
                 "state": "open", "created_at": self.ctx.now(),
@@ -822,7 +866,7 @@ class _Filing:
         if not progress.get("observed"):
             # Idempotent for one firing: a second observation counts nothing.
             self.causes.observe(cause, failure_ids=failure_ids, firing_id=self.review["firing_id"],
-                                title=neutral(cause.cause, MAX_TITLE_CHARS, one_line=True))
+                                title=plain(cause.cause, MAX_TITLE_CHARS, one_line=True))
             progress = self._progress(cause.fingerprint, {**progress, "observed": True})
         if cause.where == "tenant_repo":
             return self._progress(cause.fingerprint, {**progress, "action": Action.REPORT.value,
@@ -853,7 +897,7 @@ class _Filing:
         action = Action(progress["action"])
         if action == Action.NO_CHANGE:
             self.causes.record_no_change(cause.fingerprint, firing_id=self.review["firing_id"],
-                                         fix=neutral(cause.fix, MAX_FIELD_CHARS),
+                                         fix=plain(cause.fix, MAX_FIELD_CHARS),
                                          evidence=[e.model_dump() for e in cause.evidence[:MAX_EVIDENCE]])
             return self._progress(cause.fingerprint, {**progress, "done": True})
         if action in (Action.FILE_AND_RUN, Action.FILE_HELD):

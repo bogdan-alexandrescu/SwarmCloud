@@ -1,6 +1,6 @@
 ---
 description: SwarmCloud cluster state — accounts, capacity, agents, trouble
-argument-hint: "[accounts|agents|capacity|trouble|check|watch [interval]|layout [rows|pane]|task <id>|runs|run show <run>|plan show <run>|schedules|schedules show <name>|approvals|mcp-servers|roles]"
+argument-hint: "[accounts|agents|capacity|trouble|check|watch [interval]|layout [rows|pane|band]|task <id>|runs|run show <run>|plan show <run>|schedules|schedules show <name>|approvals|mcp-servers|roles]"
 allowed-tools:
   - Bash(uv run sc)
   - Bash(uv run sc overview:*)
@@ -42,9 +42,10 @@ run them here: `sc` has no such view. They are the `sc` skill's verbs -- one
 the CronCreate schedule `swarm_check_schedule` hands back -- so follow that
 skill's `check` and `watch` sections.
 
-If the arguments are `layout`, `layout rows` or `layout pane`, do **not**
-run them here: `sc` has no such view. It is the `sc` skill's toggle between
-the two layouts (its "Two layouts" section): `/sc layout rows` or
+If the arguments are `layout`, `layout rows`, `layout pane` or `layout band`,
+do **not** run them here: `sc` has no such view. It is the `sc` skill's toggle
+between the three layouts (its "Layouts" section; `layout band` saves and
+queues no attach, since the band starts no rows): `/sc layout rows` or
 `/sc layout pane` is one `swarm_layout {layout}` call, which saves the choice
 for this project; bare `/sc layout` is `swarm_layout {}`, which says which is
 set and saves nothing. After `/sc layout rows` or `/sc layout pane` saves,

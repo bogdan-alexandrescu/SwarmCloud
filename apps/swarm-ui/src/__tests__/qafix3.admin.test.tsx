@@ -231,7 +231,7 @@ describe('a11y-keyboard-003: every table on Pool limits is named', () => {
     const tables = screen.getAllByRole('table').filter((t) => t.classList.contains('adm-limits'))
     expect(tables.length).toBe(3)
     // MUTATION: drop the table's `aria-label`: each is announced as "table".
-    for (const name of ['Global', 'Tenants', 'Providers']) expect(screen.getByRole('table', { name: `${name} ceilings` })).toBeTruthy()
+    for (const name of ['Global', 'Workspaces', 'Providers']) expect(screen.getByRole('table', { name: `${name} ceilings` })).toBeTruthy()
   })
 
   it('names the rows after an open editor as the same family, continued', async () => {
@@ -241,8 +241,8 @@ describe('a11y-keyboard-003: every table on Pool limits is named', () => {
     const edit = await screen.findByRole('button', { name: 'Edit ceiling for tenant:a' }, WAIT)
     edit.click()
     // MUTATION: name only the first part: the second table under the editor is anonymous.
-    await waitFor(() => expect(screen.getByRole('table', { name: 'Tenants ceilings, continued' })).toBeTruthy(), WAIT)
-    expect(screen.getByRole('table', { name: 'Tenants ceilings' })).toBeTruthy()
+    await waitFor(() => expect(screen.getByRole('table', { name: 'Workspaces ceilings, continued' })).toBeTruthy(), WAIT)
+    expect(screen.getByRole('table', { name: 'Workspaces ceilings' })).toBeTruthy()
   })
 })
 

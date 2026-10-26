@@ -384,8 +384,11 @@ def test_a_kind_its_slot_refuses_and_a_locked_or_slotless_consumer_are_422(clien
            fields={"username": "ci-bot", "password": "pw" + "z" * 30})
     # jev-browser reads an API key in its typesafe slot.
     assert grant(client, "root", "eng", "login", "tool:jev-browser").status_code == 422
-    # A profile's `files` slot takes any kind.
-    assert grant(client, "root", "eng", "login", "profile:claude-code-browser").status_code == 200
+    # A profile's `files` slot takes any kind. claude-code-browser declares two
+    # slots (contract request 117), so a grant to it names one.
+    assert grant(client, "root", "eng", "login", "profile:claude-code-browser",
+                 slot="files").status_code == 200
+    assert grant(client, "root", "eng", "login", "profile:claude-code-browser").status_code == 422
     assert grant(client, "root", "eng", "login", "component:git").status_code == 422
     assert grant(client, "root", "eng", "login", "tool:playwright").status_code == 422
     assert grant(client, "root", "eng", "login", "profile:codex",
