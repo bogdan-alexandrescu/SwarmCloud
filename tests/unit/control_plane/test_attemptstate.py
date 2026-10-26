@@ -979,6 +979,118 @@ def test_upstream_serves_a_merge_its_recorded_fixer_and_its_conflict_round_state
 
 
 # --------------------------------------------------------------------------
+# upstream: a merge-only continuation's target (FIX-MERGE-CONTINUATION-READ,
+# part of #2379)
+#
+# `issueci.merge_workflow` submits ONE merge step that `continues_task` the
+# task that pushed the green head: `MergeSources(continued=True).depends_on()`
+# is [], so the task it merges -- in another workflow -- is named only by the
+# signed `dispatch.merge_target.pull_request`, and the merge's first read
+# (`agent_worker.merge`, `ctx.fetch_upstream(target.pull_request)`) is of it.
+# F01 and F02 of #2379 ended `inputs_unavailable` on exactly that read.
+# --------------------------------------------------------------------------
+
+MERGE_WORKFLOW = "wf_merge_only"
+PR_WORKFLOW = "wf_pull_request"
+
+
+def _merge_only(client, db, worker: Worker, *, target: str, root: str,
+                target_tenant: str = "eng",
+                target_dispatch: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A merge-only continuation of `target`, which pushed the head in
+    `PR_WORKFLOW`, on the branch of `root`; shaped as `merge_workflow` signs it:
+    no `depends_on`, `continues` the branch's root, and the target named only
+    by `merge_target`. The target, signed as submission signs it, is returned."""
+    opened(client, db, worker, workflow_id=MERGE_WORKFLOW, depends_on=[],
+           metadata={"dispatch": {"strategy": "direct-pr", "carrier": "checkpoints",
+                                  "continues": root,
+                                  "merge_target": {"pull_request": target,
+                                                   "pull_request_workflow": PR_WORKFLOW}}})
+    doc = seed_task(db, task_id=target, tenant_id=target_tenant, state="SUCCEEDED",
+                    workflow_id=PR_WORKFLOW)
+    doc["metadata"] = {"dispatch": target_dispatch or {"strategy": "integrate",
+                                                       "role": "integrator"}}
+    return SIGNER.sign_document(doc, target)
+
+
+def test_upstream_serves_a_merge_only_continuations_target(client, db):
+    """F01: the target opened the pull request and continues nothing."""
+    worker = Worker()
+    _merge_only(client, db, worker, target="task_pr", root="task_pr")
+    # MUTATION: leave `merge_target.pull_request` out of the declared set and
+    # take the merge-round rule out of it, and this is the F01 403.
+    response = worker.get(client, "upstream", "upstream_task_id=task_pr")
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["id"] == "task_pr"
+    assert response.json()["task"]["workflow_id"] == PR_WORKFLOW
+
+
+def test_upstream_serves_a_merge_only_continuations_target_that_continues_a_task(client, db):
+    """F02: the head was pushed by a task that itself continues the branch's
+    root (a CI-fix round), so the target is not the root."""
+    worker = Worker()
+    _merge_only(client, db, worker, target="task_cifix", root="task_root",
+                target_dispatch={"strategy": "direct-pr", "continues": "task_root"})
+    _continuation(db, "task_root", "task_none")
+    for upstream in ("task_cifix", "task_root"):
+        response = worker.get(client, "upstream", f"upstream_task_id={upstream}")
+        assert response.status_code == 200, (upstream, response.text)
+        assert response.json()["task"]["id"] == upstream
+
+
+def test_upstream_serves_a_merge_only_target_whose_own_spec_fails(client, db):
+    """The target is DECLARED, by the merge's own signed spec, as a
+    `depends_on` id is: the route serves it as stored and the worker holds it
+    to its signed spec (`merge._verify_opener`), so a target rewritten after
+    signing ends `spec_unverified`, naming the check, not `inputs_unavailable`
+    as if it could not be read. The merge-round rule alone verifies the
+    opener before following it, and refuses it."""
+    worker = Worker()
+    target = _merge_only(client, db, worker, target="task_pr", root="task_pr")
+    target["metadata"]["dispatch"]["role"] = "rewritten"
+    # MUTATION: serve the target only through `_is_merge_fix_record` and this
+    # is the 403.
+    response = worker.get(client, "upstream", "upstream_task_id=task_pr")
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["metadata"]["dispatch"]["role"] == "rewritten"
+
+
+def test_upstream_refuses_a_merge_only_target_of_another_tenant(client, db):
+    worker = Worker()
+    _merge_only(client, db, worker, target="task_pr", root="task_pr",
+                target_tenant="research")
+    response = worker.get(client, "upstream", "upstream_task_id=task_pr")
+    # MUTATION: drop the caller's tenant check on a declared id and this is a 200.
+    assert _refused(response)
+    assert "research" not in response.text
+
+
+def test_upstream_refuses_a_merge_only_continuation_a_task_its_target_does_not_name(client, db):
+    worker = Worker()
+    _merge_only(client, db, worker, target="task_pr", root="task_pr")
+    _bystander(db, "task_victim", workflow=PR_WORKFLOW)
+    _bystander(db, "task_sibling", workflow=MERGE_WORKFLOW)
+    # MUTATION: serve any task of the target's workflow, or of the merge's, and
+    # one of these is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_sibling"))
+
+
+def test_upstream_follows_no_merge_only_target_rewritten_after_signing(client, db):
+    """The declared target is the SIGNED copy's: a rewrite of the merge's own
+    `merge_target` after signing names nothing."""
+    worker = Worker()
+    _merge_only(client, db, worker, target="task_pr", root="task_pr")
+    _bystander(db, "task_victim", workflow=PR_WORKFLOW)
+    own = db.docs[f"tasks/{worker.tuple.task_id}"]
+    own["metadata"]["dispatch"]["merge_target"]["pull_request"] = "task_victim"
+    # MUTATION: read `merge_target` from the stored document without the
+    # signature check and this is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_pr"))
+
+
+# --------------------------------------------------------------------------
 # upstream: every id from the SIGNED copy (SIGNED-UPSTREAM, part of #2373)
 #
 # The merge rule above was the first; BGD chose on 2026-10-26 that every
