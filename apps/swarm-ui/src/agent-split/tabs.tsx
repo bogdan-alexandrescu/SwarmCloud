@@ -223,6 +223,9 @@ export function tabName(t: TabDef): string {
   return `${t.label}, ${t.count}`
 }
 
+/** The room kept for More's names, in ems of its type: `Checkp…` rather than `1 more: ▾` (VQ-008 review). */
+export const MORE_NAMES_EM = 4
+
 /**
  * THE TAB BAR FITS (QA12-18, live-browser QA p12): at 1440 with the list open
  * the bar was cut at `C ›` -- eight tabs with counts in a column a third of
@@ -254,6 +257,8 @@ export function AgTabsEdge({
   // count so a count that lands is measured again; and More's own.
   const widths = useRef(new Map<string, number>())
   const moreWidth = useRef(0)
+  // More's padding, border and gaps, and its type size: the stylesheet's, read once as the gap is.
+  const moreChrome = useRef<{ edges: number; em: number } | null>(null)
   // The strip's gap, read once: it is the stylesheet's, and `getComputedStyle`
   // on every fit -- which every strip mutation now runs -- held the panes'
   // first reads back by seconds in jsdom (walk.agent, reads.dedup).
@@ -289,8 +294,36 @@ export function AgTabsEdge({
     // off the edge. The names give way (an ellipsis, agents.css
     // `.ag-tabs-more-names`), so the room More needs is the button without
     // them: `6 more ▾`.
+    //
+    // AND IT IS MEASURED FROM WHAT IT HOLDS, NOT FROM ITS BOX (VQ-008 review,
+    // 2026-10-26): the host gives way (agents.css), so its `offsetWidth` is
+    // the width it was already squeezed to -- at 390 More was fitted at 32px
+    // and drawn `2 m`, its chevron off the page -- and with no room kept for
+    // the names, 1440 read `1 more: ▾` with a sliver of an ellipsis. The room
+    // is the count and the chevron, which never shrink, the button's padding
+    // and gaps, and the names up to `MORE_NAMES_EM` (all of them when shorter);
+    // the host is held at that width, so the count and chevron are never cut.
     const m = b.querySelector<HTMLElement>(':scope > .ag-tabs-more-host')
-    if (m !== null) moreWidth.current = m.offsetWidth - (m.querySelector<HTMLElement>('.ag-tabs-more-names')?.offsetWidth ?? 0)
+    const mb = m?.querySelector<HTMLElement>(':scope > .ag-tabs-more') ?? null
+    if (m !== null && mb !== null) {
+      if (moreChrome.current === null && b.clientWidth > 0) {
+        const cs = getComputedStyle(mb)
+        const px = (v: string) => parseFloat(v) || 0
+        moreChrome.current = {
+          edges: px(cs.paddingLeft) + px(cs.paddingRight) + px(cs.borderLeftWidth) + px(cs.borderRightWidth) + 2 * px(cs.columnGap),
+          em: px(cs.fontSize) || 12,
+        }
+      }
+      const chrome = moreChrome.current ?? { edges: 0, em: 12 }
+      const names = mb.querySelector<HTMLElement>(':scope > .ag-tabs-more-names')
+      const need =
+        chrome.edges +
+        (mb.querySelector<HTMLElement>(':scope > .ag-tabs-more-n')?.offsetWidth ?? 0) +
+        (mb.querySelector<HTMLElement>(':scope > [aria-hidden]')?.offsetWidth ?? 0) +
+        Math.min(names?.scrollWidth ?? 0, MORE_NAMES_EM * chrome.em)
+      moreWidth.current = Math.ceil(need)
+      m.style.minWidth = `${moreWidth.current}px`
+    }
     // A tab not drawn since its count changed keeps its last width (or its
     // label's), and is measured again the first time it is back on the bar.
     const last = (t: TabDef) =>

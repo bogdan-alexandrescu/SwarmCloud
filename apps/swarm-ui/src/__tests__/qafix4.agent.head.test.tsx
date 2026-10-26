@@ -68,12 +68,18 @@ const WIDTH: Readonly<Record<string, number>> = {
   Artifacts: 130,
   Checkpoints: 118,
 }
-const MORE = 110
+// More is measured from its parts (VQ-008 review): its count and chevron,
+// which never shrink, and up to four ems of its names, which want 200px here;
+// the host's own box is the width CSS squeezed it to and is never read.
+const MORE_N = 36
+const MORE_CHEVRON = 10
+const MORE_NAMES = 200
 let room = 358
 const proto = HTMLElement.prototype
 const had = {
   client: Object.getOwnPropertyDescriptor(proto, 'clientWidth'),
   offset: Object.getOwnPropertyDescriptor(proto, 'offsetWidth'),
+  scroll: Object.getOwnPropertyDescriptor(proto, 'scrollWidth'),
 }
 beforeEach(() => {
   room = 358
@@ -86,14 +92,22 @@ beforeEach(() => {
   Object.defineProperty(proto, 'offsetWidth', {
     configurable: true,
     get(this: HTMLElement) {
-      if (this.classList.contains('ag-tabs-more-host')) return MORE
+      if (this.classList.contains('ag-tabs-more-host')) return 0
+      if (this.classList.contains('ag-tabs-more-n')) return MORE_N
+      if (this.getAttribute('aria-hidden') === 'true' && this.parentElement?.classList.contains('ag-tabs-more')) return MORE_CHEVRON
       if (this.getAttribute('role') !== 'tab' || this.closest('.ag-tabs-edge') === null) return 0
       return WIDTH[this.querySelector('.c-tab-label')?.textContent ?? ''] ?? 0
     },
   })
+  Object.defineProperty(proto, 'scrollWidth', {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.classList.contains('ag-tabs-more-names') ? MORE_NAMES : 0
+    },
+  })
 })
 afterEach(() => {
-  for (const [k, d] of [['clientWidth', had.client], ['offsetWidth', had.offset]] as const) {
+  for (const [k, d] of [['clientWidth', had.client], ['offsetWidth', had.offset], ['scrollWidth', had.scroll]] as const) {
     if (d) Object.defineProperty(proto, k, d)
     else delete (proto as unknown as Record<string, unknown>)[k]
   }

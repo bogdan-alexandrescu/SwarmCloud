@@ -89,37 +89,50 @@ const proto = HTMLElement.prototype
 const had = {
   client: Object.getOwnPropertyDescriptor(proto, 'clientWidth'),
   offset: Object.getOwnPropertyDescriptor(proto, 'offsetWidth'),
+  scroll: Object.getOwnPropertyDescriptor(proto, 'scrollWidth'),
 }
 function unsize() {
-  for (const [k, d] of [['clientWidth', had.client], ['offsetWidth', had.offset]] as const) {
+  for (const [k, d] of [['clientWidth', had.client], ['offsetWidth', had.offset], ['scrollWidth', had.scroll]] as const) {
     if (d) Object.defineProperty(proto, k, d)
     else delete (proto as unknown as Record<string, unknown>)[k]
   }
 }
 
-// THE BAR AS BGD'S 390 RENDER LAID IT OUT: a 358px column, and More 405px wide
-// with its six names, 330 of which are the names.
+// THE BAR AS THE RENDER LAID IT OUT: a 358px column at 390. More's count
+// (`3 more:`) is 44px and its chevron 10px, neither of which shrinks; its
+// names want 7px a letter. The host and the names span are measured at the
+// width CSS already squeezed them to (32px and 0px, the review's `2 m`), so a
+// fit that reads the host's box reads a More that is not there.
 const WIDTH: Readonly<Record<string, number>> = { Details: 62, Logs: 46, Changes: 130, Attempts: 84, Artifacts: 130, Checkpoints: 118 }
-function sizeBar() {
+function sizeBar(column = 358) {
   Object.defineProperty(proto, 'clientWidth', {
     configurable: true,
     get(this: HTMLElement) {
-      return this.classList.contains('ag-tabs-edge') ? 358 : 0
+      return this.classList.contains('ag-tabs-edge') ? column : 0
     },
   })
   Object.defineProperty(proto, 'offsetWidth', {
     configurable: true,
     get(this: HTMLElement) {
-      if (this.classList.contains('ag-tabs-more-host')) return 405
-      if (this.classList.contains('ag-tabs-more-names')) return 330
+      if (this.classList.contains('ag-tabs-more-host')) return 32
+      if (this.classList.contains('ag-tabs-more-names')) return 0
+      if (this.classList.contains('ag-tabs-more-n')) return 44
+      if (this.getAttribute('aria-hidden') === 'true' && this.parentElement?.classList.contains('ag-tabs-more')) return 10
       if (this.getAttribute('role') !== 'tab' || this.closest('.ag-tabs-edge') === null) return 0
       return WIDTH[this.querySelector('.c-tab-label')?.textContent ?? ''] ?? 0
+    },
+  })
+  Object.defineProperty(proto, 'scrollWidth', {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.classList.contains('ag-tabs-more-names') ? 7 * (this.textContent ?? '').length : 0
     },
   })
 }
 
 describe('VQ-008: at 390 the open tab is drawn, and More fits beside it', () => {
-  function bar() {
+  function bar(column = 358) {
+    sizeBar(column)
     const t = row(1, 'FAILED')
     const tabs = paneTabs({ task: t, base: '/agents/live/x', hasBrowser: false, sessionOpen: false, childCount: null, runs: 1, ckpt: null, ckptCount: 2 })
     render(
@@ -143,9 +156,9 @@ describe('VQ-008: at 390 the open tab is drawn, and More fits beside it', () => 
   }
 
   it('reserves More at its count, so Details, Logs and Attempts stay on the bar', () => {
-    sizeBar()
     const { strip, onBar } = bar()
-    // MUTATION: fit More at its whole 405px and only Details is left, in a strip CSS shrinks to 0.
+    // MUTATION: fit More at its whole 405px and only Details is left, in a strip CSS shrinks to 0;
+    // fit it at its squeezed host (32px) and Changes joins the bar, leaving More `2 m`.
     expect(onBar()).toEqual(['Details', 'Logs', 'Attempts'])
     expect(within(strip).getByRole('tab', { name: 'Details' }).getAttribute('aria-selected')).toBe('true')
     // The strip that holds only tabs that fit is marked, so the sheet keeps its width.
@@ -158,8 +171,31 @@ describe('VQ-008: at 390 the open tab is drawn, and More fits beside it', () => 
     expect(more.querySelector('.ag-tabs-more-names')?.textContent).toBe('Changes, Artifacts, Checkpoints')
   })
 
+  it('measures More from its count and chevron, not its squeezed box, and holds the host there', () => {
+    bar()
+    const host = document.querySelector<HTMLElement>('.ag-tabs-more-host')!
+    // 44 count + 10 chevron + the button's padding and gaps + four ems of names
+    // (the names want 77px here), in the type and spacing the sheet computes.
+    // MUTATION: measure the host's own box and it is held at 32px, or not at all.
+    const cs = getComputedStyle(host.querySelector('.ag-tabs-more')!)
+    const px = (v: string) => parseFloat(v) || 0
+    const edges = px(cs.paddingLeft) + px(cs.paddingRight) + px(cs.borderLeftWidth) + px(cs.borderRightWidth) + 2 * px(cs.columnGap)
+    expect(host.style.minWidth).toBe(`${Math.ceil(44 + 10 + edges + Math.min(77, 4 * (px(cs.fontSize) || 12)))}px`)
+    expect(parseFloat(host.style.minWidth)).toBeGreaterThanOrEqual(44 + 10 + 48)
+  })
+
+  it('keeps room for a name at desktop, so More never reads `1 more: ▾`', () => {
+    // 520px: every tab but Checkpoints is 452px, which leaves 68px, room for the
+    // count and chevron (54) and a 14px sliver of names. Four ems of names do
+    // not fit beside Artifacts, so it joins Checkpoints under More.
+    // MUTATION: drop the names' reserve and More reads `1 more: C…`.
+    const { onBar } = bar(520)
+    expect(onBar()).toEqual(['Details', 'Logs', 'Changes', 'Attempts'])
+    expect(flat(document.querySelector('.ag-tabs-more'))).toBe('2 more: Artifacts, Checkpoints ▾')
+  })
+
   it('does not mark a strip where every tab fits (control)', () => {
-    const { strip } = bar()
+    const { strip } = bar(0)
     expect(document.querySelector('.ag-tabs-more')).toBeNull()
     expect(strip.classList.contains('is-fitted')).toBe(false)
   })
