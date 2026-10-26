@@ -98,7 +98,7 @@ from swarm_common.profiles import RUNNER_PROFILES, url_refusal
 from swarm_common.states import EventType, ParkReason, TaskState, assert_transition
 from swarm_redaction import redact as redact_text
 
-from . import browser_tools
+from . import browser_tools, cf_access
 from .browser_resume import BrowserResume, Restored
 from .egress_ticket import BrowserEgress
 from .qa_identity import NOTICE_NAME as QA_NOTICE_NAME
@@ -1293,6 +1293,14 @@ class HandoffPath:
                   "reason": f"browser egress {cause}: pages do not load, and there is no direct fallback"})
         except Exception:  # a note must never stop the attempt
             pass
+
+    def give_cf_access(self, items: list[dict[str, Any]]) -> str:
+        """The attempt's Cloudflare Access tokens to the gate, before the agent
+        exists (CF-ACCESS-TOKEN; `cf_access.hand_over`). Never raises; `items`
+        is emptied. A heap the agent could read hands nothing over."""
+        gate = self.gate if self.live else None
+        protected = getattr(self._memory, "status", None) == PROTECTED
+        return cf_access.hand_over(gate, items, self.log, protected=protected)
 
     def start_qa_identity(self, task: Any) -> str | None:
         """The QA identity's first credential, before the agent exists (§4.5). Never raises.

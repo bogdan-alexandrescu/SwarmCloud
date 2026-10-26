@@ -3419,6 +3419,11 @@ class Worker:
                     "workspace-secret:" + ",".join(released.missing_required),
                 ),
             )
+        # STEP 6a*: a Cloudflare Access token (CF-ACCESS-TOKEN), held in this
+        # heap by the release and never written, goes to the live gate now,
+        # before the runner exists; the release's copy is emptied either way.
+        # None granted, nothing is sent and the gate intercepts nothing.
+        self.handoff.give_cf_access(released.gate)
         # STEP 6a': the TypeSafe forwarder's first ticket and the shim, before
         # the runner and before `_build_child_env` (whose jev key and judge
         # setup read the shim file). Switched off, nothing happens. A 409 is

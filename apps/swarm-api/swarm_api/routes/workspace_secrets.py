@@ -47,6 +47,7 @@ from ..schemas import StrictModel
 from ..workspace_secrets import (
     CONSUMERS,
     KINDS,
+    MAX_SLOT_HOSTS,
     MAX_USE_IN,
     MAX_VALUE_BYTES,
     PROVIDERS,
@@ -103,6 +104,9 @@ class GrantWrite(StrictModel):
     enabled: bool
     #: Defaults to the consumer's only slot when it has one (§2.2).
     slot: str | None = Field(default=None, max_length=32)
+    #: The hosts a host-scoped slot's secret may be sent to (CF-ACCESS-TOKEN;
+    #: `workspace_secrets.slot_hosts` says the rules). Refused for any other slot.
+    hosts: list[str] | None = Field(default=None, max_length=MAX_SLOT_HOSTS)
 
 
 class UseInWrite(StrictModel):
@@ -259,7 +263,8 @@ def set_grant(
     require_manager(auth, tenant, ctx.roles)
     name = check_name(name)
     record = _store(ctx, writer).set_grant(tenant_id=tenant_id, name=name, consumer=consumer,
-                                           slot=body.slot, enabled=body.enabled, by=auth.email)
+                                           slot=body.slot, enabled=body.enabled, by=auth.email,
+                                           hosts=body.hosts)
     return {"secret": record, "takes_effect": "at the next attempt"}
 
 
