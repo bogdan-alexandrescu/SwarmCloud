@@ -2219,7 +2219,7 @@ function Audit({ entries }: { entries: AuditEntry[] }) {
                   return (
                     <li key={`${r.first.at ?? ''}:${i}`} data-count={r.count}>
                       {r.first.at !== null ? timeAgo(r.first.at) : <Dash why="The entry carries no time" />}
-                      {r.count > 1 && r.last.at !== null && r.last.at !== r.first.at ? ` to ${timeAgo(r.last.at)}` : ''} ·{' '}
+                      {r.count > 1 && r.last.at !== null && r.first.at !== null && timeAgo(r.last.at) !== timeAgo(r.first.at) ? ` to ${timeAgo(r.last.at)}` : ''} ·{' '}
                       <b title={r.first.action}>{auditWords(r.first.action)}</b>
                       {r.count > 1 ? (
                         <> × {r.count}</>
