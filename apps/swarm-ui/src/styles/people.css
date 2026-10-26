@@ -248,6 +248,12 @@
 .pp-person > .pp-who > .person-name { flex-direction: column; }
 .pp-person > .pp-who .person-name-dot { display: none; }
 .is-scroll > .pp-table .pp-person { flex-wrap: nowrap; }
+/* AND ITS TWO GAPS ARE 4PX, NOT 8 (render review of PR 2464's FIX2, 1440
+   with the nav open): nowrap, the cell's least width is avatar, gap, who,
+   gap, GitHub mark, and the seven-loan row's "Bogdan Alexandrescu" held the
+   table at 1010.8px in its 1009px pane, a 2px sideways scroll under the
+   grid. The 8px saved is the margin; the cell does not wrap for it. */
+.is-scroll > .pp-table .pp-person { gap: var(--ctl-s1); }
 .pp-nobr { white-space: nowrap; }
 
 /* THE GRID'S OWN CONTROLS (ADMIN-PEOPLE-FILTER; part of #2157, S5c, S5f).
