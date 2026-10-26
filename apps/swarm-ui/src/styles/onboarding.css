@@ -200,7 +200,8 @@
    (the mark was jammed against the text as a bullet between cards). */
 .ac-quota { list-style: none; padding: 0; display: flex; flex-direction: column; gap: var(--ctl-s1); color: var(--text-dim); }
 .ac-quota > li { display: flex; gap: 6px; align-items: baseline; }
-.ac-quota > li > span { min-width: 0; overflow-wrap: anywhere; }
+.ac-quota > li > [data-mark] { flex: none; }
+.ac-quota > li > span:not([data-mark]) { min-width: 0; overflow-wrap: anywhere; }
 /* THE RULES CHECKLIST: a check, the headline and one short line per rule,
    hairlines between, and how each is held one fold away. */
 .ac-rules.is-check { list-style: none; padding-left: 0; gap: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }

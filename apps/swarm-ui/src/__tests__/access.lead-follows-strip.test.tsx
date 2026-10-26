@@ -19,6 +19,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+import { painted } from './marks'
 
 const CONNECTION = {
   connection_id: 'github:eng:abc',
@@ -188,6 +189,13 @@ describe('the Connection tab is S2b’s two columns', () => {
     // MUTATION: mount <GitHubQuotaLines> between the install card and the rules again.
     const quota = screen.getByRole('list', { name: 'GitHub quota' })
     expect(quota.closest('.ac-conn'), 'the quota lines sit in the GitHub card').not.toBeNull()
+    // THE MARK KEEPS ITS WIDTH (render, phone-390): shrunk to 6px, the warn
+    // triangle overflowed its gap and touched the words. MUTATION: drop `flex: none`.
+    const mark = quota.querySelector<HTMLElement>('li > [data-mark]')!
+    expect(painted(mark, 'flex', { width: 390 })).toBe('none')
+    // 2:1 at 1440, one column at 390. MUTATION: drop the 899px one-column rule.
+    expect(painted(body!, 'grid-template-columns', { width: 1440 })).toBe('minmax(0, 2fr) minmax(0, 1fr)')
+    expect(painted(body!, 'grid-template-columns', { width: 390 })).toBe('minmax(0, 1fr)')
     // The rules are a checklist of three short lines, each headline with its line (S2b).
     const rules = [...side!.querySelectorAll<HTMLElement>('[data-rule]')]
     expect(rules.map((r) => r.querySelector('.ac-rule-t > b')?.textContent)).toEqual([
