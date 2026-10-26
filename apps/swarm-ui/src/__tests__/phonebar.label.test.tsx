@@ -106,7 +106,7 @@ const px = (v: string | null, basis = 0): number => {
 /** Border-left plus border-right, read from the `border` shorthand or its width. */
 function bordersX(el: Element): number {
   const w = painted(el, 'border-width', PHONE)
-  if (w !== null) return 2 * px(w.split(/\s+/)[0])
+  if (w !== null) return 2 * px(w.split(/\s+/)[0] ?? null)
   const b = painted(el, 'border', PHONE)
   if (b === null || b === '0' || b === 'none') return 0
   const m = /([\d.]+)px/.exec(b)
