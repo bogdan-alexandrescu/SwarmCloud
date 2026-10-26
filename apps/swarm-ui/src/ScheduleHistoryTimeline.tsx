@@ -366,10 +366,20 @@ function itemWhat(it: SpanItem): ReactNode {
   )
 }
 
+/** A cost never recorded: a dash whose reason is its title (schedules.html's `.dash`). The words stay in
+ *  the text, read aloud, and schedules.css shows them under the item on a phone, where there is no hover. */
+function CostDash({ why }: { why: string }) {
+  return (
+    <i className="ctl-em sht-dash" title={why}>
+      &mdash;<span className="sht-why"> {why}</span>
+    </i>
+  )
+}
+
 /** The item's cost: the figure, a floor marked partial, or a dash with its reason -- never $0 for nothing recorded. */
 function ItemCost({ cost }: { cost: SpanCost | null | undefined }) {
-  if (cost === null || cost === undefined) return <i className="ctl-em">&mdash; its cost was not served</i>
-  if (cost.reported_usd === null) return <i className="ctl-em">&mdash; {cost.unread ?? 'no attempt recorded a cost'}</i>
+  if (cost === null || cost === undefined) return <CostDash why="its cost was not served" />
+  if (cost.reported_usd === null) return <CostDash why={cost.unread ?? 'no attempt recorded a cost'} />
   if (cost.unread !== null) {
     return (
       <span className="sc-spend">
@@ -400,22 +410,24 @@ function ItemList({
         const state = itemState(it, f.work.find((w) => w.kind === it.kind && w.id === it.id))
         return (
           <li key={`${f.firing_id}:${it.kind}:${it.id}`} data-work={`${it.kind}:${it.id}`}>
-            <span className="sc-who">
-              {when === null ? 'time not recorded' : <span title={localTime(when)}>{timeAgo(when, now)}</span>}
+            <span className="sht-words">
+              <span className="sc-who">
+                {when === null ? 'time not recorded' : <span title={localTime(when)}>{timeAgo(when, now)}</span>}
+              </span>
+              {' · '}
+              {itemWhat(it)}
+              {to !== null && (
+                <>
+                  {' → '}
+                  {LINK_WORD[it.kind] ?? it.kind}{' '}
+                  <InApp go={go} to={to} className="mono">
+                    {it.id}
+                  </InApp>
+                </>
+              )}
+              {state !== null && ` · ${state}`}
             </span>
-            {' · '}
-            {itemWhat(it)}
-            {to !== null && (
-              <>
-                {' → '}
-                {LINK_WORD[it.kind] ?? it.kind}{' '}
-                <InApp go={go} to={to} className="mono">
-                  {it.id}
-                </InApp>
-              </>
-            )}
-            {state !== null && ` · ${state}`}
-            <span className="sc-sub" data-cost="">
+            <span className="sc-sub sht-cost" data-cost="">
               <ItemCost cost={it.cost} />
             </span>
           </li>

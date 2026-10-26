@@ -27,8 +27,12 @@ export type RoleName = (typeof ROLES)[number]
  */
 export const DEFAULT_ROLES: readonly RoleName[] = ['viewer', 'member']
 
-/** The address of a workspace's own roles page, Settings › People and roles (§4.8). */
-export const WORKSPACE_PEOPLE_ADDRESS = 'settings/people'
+/**
+ * The address of a workspace's own roles page, Config › People and roles, as
+ * App.tsx SECTIONS spells it (CONFIG-NAV). The old Settings address
+ * redirects here (paths.ts `MOVED_TO_CONFIG`).
+ */
+export const WORKSPACE_PEOPLE_ADDRESS = 'config/people'
 
 /** A role's place on the ladder, or -1 for a name this build does not know. */
 export function rank(role: string | null | undefined): number {

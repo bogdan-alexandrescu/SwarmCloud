@@ -84,7 +84,8 @@ const adminItem = () => document.querySelector<HTMLAnchorElement>('.sk-spine a[d
 /** The Admin pages in the panel, without the "In Automate" links under them (S1b, CONFIG-PANEL-E). */
 const panelRows = () => [...document.querySelectorAll('.sk-panel .sk-pk:not(.sk-pk-out) .sk-pl')].map((e) => e.textContent)
 /** The session is read once the panel foot names the person. */
-const signedIn = () => expect(document.querySelector('.sk-pfoot small')?.textContent).toBe('ana.b@example.com')
+// The foot's second line is the role since CONFIG-ADMIN-POLISH (S1a); the email is its title.
+const signedIn = () => expect(document.querySelector('.sk-pfoot small')?.getAttribute('title')).toBe('ana.b@example.com')
 
 afterEach(() => {
   cleanup()
@@ -189,12 +190,11 @@ describe('Admin › Workspaces you admin (NAV-ADMIN-ROLE)', () => {
     expect(eng.querySelector('.wya-name b')?.textContent).toBe('eng@example.com')
     const links = [...eng.querySelectorAll<HTMLAnchorElement>('.wya-links a')]
     expect(links.map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
-      // The pages' own addresses are still `settings/*`; they land on Config since CONFIG-NAV.
-      ['Workspace', '/config/workspace'],
+      // The Config tabs' own names and addresses (S10a, CONFIG-ADMIN-POLISH).
+      ['Workspace Settings', '/config/workspace'],
       ['MCP servers', '/config/mcp-servers'],
       ['People and roles', '/config/people'],
-      // Settings › API keys is Config › Secrets since SSC-UI (part of #2158).
-      ['Workspace key', '/config/secrets'],
+      ['Secrets', '/config/secrets'],
     ])
     const { chosenTenant } = await import('../fetch')
     expect(chosenTenant()).toBeNull()
