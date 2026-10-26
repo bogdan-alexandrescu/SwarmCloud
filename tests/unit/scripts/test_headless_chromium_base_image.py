@@ -46,7 +46,9 @@ DEBIAN12_CHROMIUM = (
 )
 #: Fontconfig, the libraries it and the renderer read fonts through, and the
 #: fonts: Liberation (metric-compatible Arial/Times/Courier) and colour emoji.
-FONT_PACKAGES = ("fontconfig", "libfontconfig1", "libfreetype6", "fonts-liberation", "fonts-noto-color-emoji")
+FONT_PACKAGES = (
+    "fontconfig", "libfontconfig1", "libfreetype6", "fonts-liberation", "fonts-noto-color-emoji",
+)
 
 
 def _runtime_text() -> str:
@@ -135,9 +137,10 @@ def test_the_dockerfile_says_why_each_block_is_there() -> None:
 
 def test_the_doc_tells_a_step_how_to_run_its_suite_on_both_profiles() -> None:
     doc = BROWSER_QA_DOC.read_text()
-    heading = "## Running a repository's own Playwright suite"
-    assert heading in doc, heading
-    section = doc.split(heading, 1)[1].split("\n## ", 1)[0]
+    heading = re.search(
+        r"^## (?:\d+\. )?Running a repository's own Playwright suite$", doc, re.MULTILINE)
+    assert heading, "docs/browser-qa.md has no section on running a repository's own suite"
+    section = doc[heading.end():].split("\n## ", 1)[0]
     for needle in ("claude-code-browser", "`claude-code`", "npx playwright install chromium",
                    "swarm-test-browsers npx playwright test", "SWARM_TEST_BROWSERS_PATH",
                    "XDG_CACHE_HOME", "--with-deps", "#2253"):
