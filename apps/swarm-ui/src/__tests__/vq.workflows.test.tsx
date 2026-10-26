@@ -15,6 +15,10 @@
  * keeps 200px at 1440 with the runners moved under it, the graph card's stop
  * control has its own place, the state drift is said in words, the Table's
  * step name reads whole, and the id is drawn once, behind Copy id.
+ *
+ * And VQ-WORKFLOWS-FIX3's two clean-ups: the page's same-step row does not
+ * render the id at all (it was rendered and hidden by CSS), and the Step
+ * column is sized at the measured mono advance, not 0.6em.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -42,7 +46,8 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { WorkflowsScreen } = await import('../Workflows')
+const { WorkflowsScreen, WorkflowCard } = await import('../Workflows')
+const { stepColumnWidth } = await import('../WorkflowViews')
 const { crumbsOf, SECTIONS } = await import('../App')
 
 const T0 = Date.parse('2026-10-26T01:00:00.000Z')
@@ -565,9 +570,8 @@ describe('VQ-WORKFLOWS re-review minors', () => {
     expect(drift.getAttribute('aria-label')).toBe('Stored as queued; the steps say running.')
   })
 
-  // MUTATION: put the Step cell's right padding back to 6px: the column is
-  // sized at 0.6em a character and the face's advance is a hair over it, so
-  // `scan-terraform` (14) drew as `scan-terraf…`.
+  // MUTATION: put the Step cell's right padding back to 6px: `scan-terraform`
+  // (14) drew as `scan-terraf…`.
   it('lets the Table’s longest step name read whole in the column sized for it', async () => {
     const terraform = workflow('wf_tf', 'RUNNING', [step('plan', [], { task_id: 'task_plan' }), step('scan-terraform', ['plan'], { task_id: 'task_build' })], 600)
     serve([terraform], chainTasks)
@@ -580,11 +584,11 @@ describe('VQ-WORKFLOWS re-review minors', () => {
     const pad = (painted(cell, 'padding', { width: 1440 }) ?? '').split(/\s+/).map((v) => Number.parseFloat(v))
     expect(pad).toHaveLength(4)
     const [, right, , left] = pad as [number, number, number, number]
-    // `stepColumnWidth` (WorkflowViews.tsx): n x 0.6 x 14px + 22px. Drawn: the
-    // name at the face's measured advance, the cell's padding, and the pick's
-    // 4px a side and 1px border (`.wf-table .wf-pick`).
+    // `stepColumnWidth` (WorkflowViews.tsx): n x the mono advance x 14px +
+    // 22px. Drawn: the name at the face's measured advance, the cell's
+    // padding, and the pick's 4px a side and 1px border (`.wf-table .wf-pick`).
     for (let n = 1; n <= 60; n++) {
-      const column = n * 0.6 * 14 + 22
+      const column = n * MONO_ADVANCE_EM * 14 + 22
       const drawn = n * MONO_ADVANCE_EM * 14 + left + right + 2 * 4 + 2
       expect(drawn, `a ${n}-character name is cut`).toBeLessThanOrEqual(column)
     }
@@ -614,7 +618,7 @@ describe('VQ-WORKFLOWS re-review minors', () => {
     const cell = pick.parentElement!
     const [, right, , left] = (painted(cell, 'padding', env) ?? '').split(/\s+/).map((v) => Number.parseFloat(v)) as [number, number, number, number]
     const name = 'scan-terraform'
-    const column = Math.min(name.length * 0.6 * 14 + 22, 96 + env.container - 980)
+    const column = Math.min(name.length * MONO_ADVANCE_EM * 14 + 22, 96 + env.container - 980)
     const drawn = (chars: number) => chars * MONO_ADVANCE_EM * 14 + left + right + 2 * 4 + 2
     // The case is real: on one line the name does not fit the capped column.
     expect(drawn(name.length)).toBeGreaterThan(column)
@@ -648,13 +652,50 @@ describe('VQ-WORKFLOWS re-review minors', () => {
     fireEvent.click(copy)
     expect(writeText).toHaveBeenCalledWith('wf_chain')
     await waitFor(() => expect(copy.textContent).toBe('Id copied'))
-    // The inspector's same-step row does not print it again on the page.
-    const scrubId = await waitFor(() => {
-      const el = document.querySelector<HTMLElement>('.wfp-screen .wf-scrub[data-scrub="workflow"] > .id')
+    // The inspector's same-step row does not render it again on the page:
+    // not drawn and hidden, absent.
+    const scrub = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('.wfp-screen .wf-scrub[data-scrub="workflow"]')
       expect(el).toBeTruthy()
       return el!
     })
-    expect(painted(scrubId, 'display', { width: 1440 })).toBe('none')
-    expect(painted(scrubId, 'display', { width: 390 })).toBe('none')
+    expect(scrub.querySelector('.id'), 'the same-step row renders the id').toBeNull()
+    expect(scrub.textContent).not.toContain('wf_chain')
+  })
+
+  // MUTATION: drop the id from every same-step row, not only the page's, or
+  // keep the stylesheet's `display: none` on it.
+  it('keeps the id on a card that is not a workflow’s page, where no head carries it, and hides it with no rule', () => {
+    render(
+      <div className="wfp-screen">
+        <WorkflowCard
+          workflow={chain}
+          taskById={chainTasks}
+          usage={{ kind: 'ready', usage: null }}
+          openStages={{}}
+          onToggleStage={() => {}}
+          picked="build"
+          reload={() => {}}
+        />
+      </div>,
+    )
+    const id = document.querySelector<HTMLElement>('.wf-scrub[data-scrub="workflow"] > .id')
+    expect(id, 'the card’s same-step row lost its id').toBeTruthy()
+    expect(id!.textContent).toBe('wf_chain')
+    for (const width of [1440, 390]) expect(painted(id!, 'display', { width }), `hidden at ${width}`).not.toBe('none')
+  })
+})
+
+describe('the Step column at the measured mono advance', () => {
+  // MUTATION: size the column at 0.6em a character again. The face's advance
+  // is 0.602em, so past a few characters the rounding cut the name's tail.
+  it('asks for every name length at least the name’s measured advance plus its 22px of chrome', () => {
+    for (let n = 1; n <= 60; n++) {
+      const width = String(stepColumnWidth([{ step: { step_id: 'x'.repeat(n) } }]).width)
+      const asked = /^min\(calc\((\d+) \* ([\d.]+) \* var\(--t-body\) \+ 22px\),/.exec(width)
+      expect(asked, width).toBeTruthy()
+      const column = Number(asked![1]) * Number(asked![2]) * 14 + 22
+      expect(monoW(n, 14) + 22, `a ${n}-character name is cut`).toBeLessThanOrEqual(column)
+    }
   })
 })

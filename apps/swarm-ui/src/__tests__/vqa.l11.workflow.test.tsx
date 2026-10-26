@@ -43,7 +43,7 @@ vi.mock('../api', async (importOriginal) => {
 const { WorkflowCard, WorkflowsScreen, DOCK_MIN_PX } = await import('../Workflows')
 const { StopRun } = await import('../StopRun')
 const { stepColumnWidth } = await import('../WorkflowViews')
-const { depUnits, monoW, nodeWidthAt, NODE_CHROME_W, NODE_W } = await import('../dag')
+const { depUnits, monoW, nodeWidthAt, MONO_ADVANCE_EM, NODE_CHROME_W, NODE_W } = await import('../dag')
 
 const T0 = Date.parse('2026-10-11T12:00:00.000Z')
 const iso = (offsetSeconds: number) => new Date(T0 + offsetSeconds * 1000).toISOString()
@@ -281,7 +281,7 @@ describe('V098: the Step column grows to its longest name', () => {
   it('asks for the longest name at the mono advance, capped by the table’s slack', () => {
     const rows = [{ step: { step_id: 'plan' } }, { step: { step_id: 'scan-terraform' } }]
     const w = String(stepColumnWidth(rows).width)
-    expect(w).toContain('14 * 0.6 * var(--t-body)')
+    expect(w).toContain(`14 * ${MONO_ADVANCE_EM} * var(--t-body)`)
     expect(w).toContain('100cqi - 980px')
   })
 
