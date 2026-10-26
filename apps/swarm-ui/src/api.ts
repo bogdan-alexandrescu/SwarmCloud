@@ -1774,7 +1774,7 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
   })
   // An attempt that has not started has written no transcript yet.
   const started = span?.started != null
-  // THE BROWSER QA AGENT'S LOG IS LONG (BROWSER-TAB-TABS and -LOGS, part of #2423): the
+  // THE BROWSER QA AGENT'S LOG IS LONG (BROWSER-TAB-TABS, -LOGS and -LIVE, part of #2423): the
   // Browser tab's findings were measured on running browser agents with
   // logs of 20 and more steps, and a four-step log cannot show a log beside
   // the frame that runs past its pane. Forty browser actions, each a call

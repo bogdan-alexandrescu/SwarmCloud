@@ -17,8 +17,8 @@
 //
 // MUTATIONS, one per block: drop the first-button focus in `useAsk` (or its
 // window listener); call openLiveToMembers on the tick instead of on the
-// confirm, or disable the box once open; return `want` uncapped from
-// `stageFloor`, or drop the stage's min-height; drop the `human_wait` check
+// confirm, or disable the box once open; fit the device to the stage's
+// width alone (BT-003 replaced QA12-19's min-height); drop the `human_wait` check
 // on `takeOnly`, or `reload()` without the answer; mint before re-reading on
 // a reconnect.
 
@@ -57,7 +57,7 @@ vi.mock('@novnc/novnc/core/rfb.js', () => ({
   },
 }))
 
-const { LiveBrowserPane, LiveControl, stageFloor, useLiveSession } = await import('../LiveBrowser')
+const { LiveBrowserPane, LiveControl, useLiveSession } = await import('../LiveBrowser')
 
 const ID = 'task_4defa61c5eea4a5c87f5'
 const ME = ['ada', 'example.com'].join('@')
@@ -200,30 +200,36 @@ describe('QA12-11: member control goes both ways, and asks once when turned on',
   })
 })
 
-describe('QA12-19: the screen uses the pane’s width', () => {
-  const desktop = { width: 1440, height: 900, mobile: false }
-  const phone = { width: 393, height: 852, mobile: true }
+// QA12-19 gave the stage a min-height that drew the device at the pane's full
+// width and let the pane scroll. BT-003 (#2423, measured 2026-10-26) found
+// that scroll hid 42% of the frame on every running agent: the stage is now
+// the room the pane has left, and the device fills it whichever way binds.
+describe('QA12-19, as BT-003 amended it: the screen fills the room it has, both ways', () => {
+  function stageOf(width: number, height: number) {
+    const isStage = (el: HTMLElement) => el.classList.contains('live-stage')
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+      return isStage(this) ? width : 0
+    })
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return isStage(this) ? height : 0
+    })
+  }
+  const frame = () => document.querySelector<HTMLElement>('.live-frame')!
 
-  it('asks for the height a desktop needs at the full width, outline and caption included', () => {
-    // (1000 - 2) × 900 / 1440 = 623.75 → 624, + 2 hairline + 17 caption + 6 gap.
-    expect(stageFloor(1000, desktop, 1200, 17)).toBe(649)
-  })
-
-  it('never more than the window less the console around it, never less than the floor', () => {
-    expect(stageFloor(1000, phone, 900, 17)).toBe(780)
-    expect(stageFloor(200, desktop, 900, 17)).toBe(320)
-  })
-
-  it('a device not reported yet is drawn in the desktop’s proportions', () => {
-    expect(stageFloor(1000, null, 1200, 17)).toBe(stageFloor(1000, desktop, 1200, 17))
-  })
-
-  it('the stage carries that height, so the device is fitted to the width', () => {
-    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1000)
+  it('a short pane: the desktop is as tall as the room, and no taller', () => {
+    // 1000 wide, 400 tall, less the 6 px gap: room 1000×394, inside the 1 px hairline 998×392.
+    stageOf(1000, 400)
     pane(session())
-    const stage = document.querySelector<HTMLElement>('.live-stage')!
-    expect(stage.style.minHeight).toBe(`${stageFloor(1000, desktop, window.innerHeight, 0)}px`)
-    expect(stage.style.minHeight).not.toBe('320px')
+    expect(document.querySelector<HTMLElement>('.live-stage')!.style.minHeight).toBe('')
+    expect(frame().style.height).toBe('394px')
+    expect(frame().style.width).toBe(`${Math.floor((1440 * 392) / 900) + 2}px`)
+  })
+
+  it('a tall pane: the desktop is as wide as the room', () => {
+    stageOf(1000, 1200)
+    pane(session())
+    expect(frame().style.width).toBe('1000px')
+    expect(frame().style.height).toBe(`${Math.floor((900 * 998) / 1440) + 2}px`)
   })
 })
 

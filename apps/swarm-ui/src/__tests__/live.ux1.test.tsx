@@ -8,7 +8,10 @@
 //   2. Browser has its own address, `/agents/<tab>/<id>/browser`, and
 //      `?theater=1` there opens the theater;
 //   3. the toolbar is device chips, `⟲ rotate`, `touch: on|off`, `◫ logs`,
-//      and `⤢ Theater` at the right, then "Let any member take control";
+//      and `⤢ Theater` at the right, then "Let any member take control"
+//      (since BROWSER-TAB-LIVE, #2423: the chips, rotate and touch in a
+//      `Device: <preset> ▾` menu, and the members box with them, apart from
+//      `◫ logs` and `⤢ Theater`);
 //   4. under the device, `<device> · <W>×<H> · <path>`;
 //   5. `◫ logs` puts the logs on the LEFT and the device on the right;
 //   6. ONE hand-off banner on the Browser tab, carrying Take control and Open
@@ -168,7 +171,11 @@ const viewer = (over: Partial<LiveSession> = {}) =>
   })
 
 function pane(s: LiveSession, t: Task = agent()) {
-  return render(<LiveBrowserPane task={t} live={{ status: 'ok', liveBrowser: true, session: s }} reload={() => {}} />)
+  const view = render(<LiveBrowserPane task={t} live={{ status: 'ok', liveBrowser: true, session: s }} reload={() => {}} />)
+  // The chips, rotate and touch are in the toolbar's Device menu (BT-003): opened as a person opens it.
+  const menu = screen.queryByRole('button', { name: /^Device:/ })
+  if (menu !== null) fireEvent.click(menu)
+  return view
 }
 
 type Pane = 'detail' | 'logs' | 'browser'
@@ -326,14 +333,14 @@ describe('item 3: the toolbar is the mockup’s, left to right', () => {
     expect(within(toolbar()).queryByRole('combobox')).toBeNull()
   })
 
-  it('labels rotate, touch and logs exactly, and puts ⤢ Theater after them, then the members box', () => {
+  it('labels rotate, touch and logs exactly: the members box after the device, ◫ logs and ⤢ Theater apart at the right', () => {
     pane(session({ device: { preset: 'iphone-15', orientation: 'portrait', touch: true } }))
     const bar = toolbar()
     const names = [...bar.querySelectorAll('button, input')].map((el) =>
       el instanceof HTMLInputElement ? 'checkbox' : (el.textContent ?? '').trim(),
     )
     const after = names.slice(names.indexOf('iPad') + 1)
-    expect(after).toEqual(['⟲ rotate', 'touch: on', '◫ logs', '⤢ Theater', 'checkbox'])
+    expect(after).toEqual(['⟲ rotate', 'touch: on', 'checkbox', '◫ logs', '⤢ Theater'])
     expect(bar.querySelector('.live-toolbar-end')?.contains(within(bar).getByRole('button', { name: 'Open theater (T)' }))).toBe(true)
     expect(within(bar).getByRole('checkbox', { name: 'Let any member take control' })).toBeTruthy()
   })
@@ -411,7 +418,9 @@ describe('item 5: ◫ logs puts the logs on the left and the device on the right
     const body = document.querySelector('.live-body')!
     const kids = [...body.children]
     expect(kids[0]!.classList.contains('live-logs')).toBe(true)
-    expect(kids[1]!.querySelector('.live-screen')).not.toBeNull()
+    // Between them, the separator that shares the width (BT-002, #2423).
+    expect(kids[1]!.getAttribute('role')).toBe('separator')
+    expect(kids[2]!.querySelector('.live-screen')).not.toBeNull()
   })
 })
 
