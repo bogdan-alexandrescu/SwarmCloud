@@ -207,6 +207,14 @@ describe('the Config panel\'s row badges (S1a)', () => {
     expect(badge('People and roles')?.text).toBe('—')
   })
 
+  it('draws no tick on MCP servers when nothing is missing: the read counts credentials, not registrations (VQ-046)', async () => {
+    serve(ME(true), [PERSONAL, group('eng', 'admin')], { eng: onboarding({ secrets: SECRETS_NONE, people: PEOPLE(false, 0) }) })
+    await app('/config/secrets')
+    await waitFor(() => expect(badge('Secrets')?.text).toBe('✓'))
+    // MUTATION: draw "MCP servers: nothing to set" as a done tick -> it reads as configured over none registered, and this fails.
+    expect(badge('MCP servers')).toBeNull()
+  })
+
   it('draws a member the same states, and People invited done when someone else holds a role (S1d)', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'member')], { eng: onboarding({ secrets: SECRETS_THREE, people: PEOPLE(true, 5) }) })
     await app('/config/people')

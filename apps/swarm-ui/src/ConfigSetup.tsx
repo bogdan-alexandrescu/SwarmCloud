@@ -182,7 +182,11 @@ export function configBadges(doc: OnboardingDoc | null, personal: boolean): Read
   const needed = setup?.secrets?.needed ?? null
   put('secrets', stepBadge(secrets, needed === null ? 'to set' : `${needed} to set`))
   // MCP servers: the secrets step's MCP source alone, so its count is the
-  // part of Secrets' count that is set from that page.
+  // part of Secrets' count that is set from that page. NOTHING TO SET DRAWS
+  // NO MARK (VQ-046): the setup read counts missing credentials, not
+  // registrations, so a ✓ there read as "configured" over a workspace with no
+  // MCP server at all. Registering one is optional; the page's lead says
+  // whether any is registered.
   const mcp = setup?.secrets?.sources.mcp_servers
   if (doc !== null && setup?.secrets != null && mcp !== undefined) {
     const n = setup.secrets.items.filter((i) => i.kind === 'mcp_server').length
@@ -192,7 +196,7 @@ export function configBadges(doc: OnboardingDoc | null, personal: boolean): Read
         ? { tone: 'unknown', text: '—', why: `MCP servers: ${mcp.reason ?? 'not read'}` }
         : n > 0
           ? { tone: 'missing', text: `${n} to set`, why: `MCP servers: ${n} need a secret nobody has stored` }
-          : { tone: 'done', text: '✓', why: 'MCP servers: nothing to set' },
+          : null,
     )
   } else put('mcp-servers', { tone: 'unknown', text: '—', why: `MCP servers: ${doc === null ? 'not read' : 'not in the setup read'}` })
   const people = by('people')
@@ -218,9 +222,13 @@ export function ConfigBadgeMark({ badge }: { badge: ConfigBadge | undefined }) {
   )
 }
 
-/** The first measured step not done: the one the strip calls next. */
+/** The first measured step not done: the one the strip calls next, for a page's lead to name. */
+export function setupNext(steps: readonly SetupStep[]): SetupStep | null {
+  return steps.find((s) => s.state !== 'done' && s.state !== 'unknown') ?? null
+}
+
 function nextOf(steps: readonly SetupStep[]): string | null {
-  return steps.find((s) => s.state !== 'done' && s.state !== 'unknown')?.key ?? null
+  return setupNext(steps)?.key ?? null
 }
 
 /** The strip's count, in words: measured done of all, and how many nothing measured. */
