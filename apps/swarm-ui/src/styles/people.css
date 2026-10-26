@@ -41,13 +41,16 @@
 .pp-claude { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s1) var(--ctl-s2); }
 /* SEVERAL LOANS ARE ONE LINE AND A DISCLOSURE (S5c, visual QA VQ-052): the
    count and the lenders on the summary line; the accounts, one per line, only
-   when it is opened. In the wide table neither wraps. A phone record is 390px
-   wide, so there the line may wrap between the count and a lender, and an
-   account between its id and its name -- never inside either (`.pp-nobr`). */
+   when it is opened. THE LINE WRAPS BETWEEN WORDS, NEVER INSIDE ONE: never in
+   the count, a lender or an account id (`.pp-nobr`), in the grid and in the
+   Manage drawer alike. It was nowrap in the wide table, and with the Platform
+   role column that held the grid 115px past its 1009px pane at 1440 with the
+   nav open: "Last active" read "Last act" and every Manage sat behind the
+   table's scroll (rendered review of PR 2464). Wrapping, the cell's least
+   width is one word ("Engineering"), and the table gives it two lines only
+   when it has no room for one. */
 .pp-loans > .pp-loan-sum { cursor: pointer; }
 .pp-loan-list { list-style: none; margin: var(--ctl-s1) 0 0; padding: 0; display: grid; gap: 2px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
-.is-scroll > .pp-table .pp-loan-sum,
-.is-scroll > .pp-table .pp-loan-list > li { white-space: nowrap; }
 .pp-manage-cell { text-align: right; }
 /* AN ID IS ONE TOKEN: no break opportunity, at its hyphen or anywhere. The
    ids the shared workspace bodies print (a request id) are held to the same
