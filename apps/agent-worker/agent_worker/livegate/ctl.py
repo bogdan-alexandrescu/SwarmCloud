@@ -80,6 +80,7 @@ import socket
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
+from .cfaccess import OP as CF_ACCESS_OP
 from .qaidentity import OP as QA_IDENTITY_OP
 from .qatarget import OP as QA_SIGN_IN_OP
 from .session import OPS as SESSION_OPS
@@ -123,8 +124,14 @@ KEY_BYTES = 32
 #:   true}` reads how that sign-in ended. Accepted only on this registered
 #:   channel, refused once the attempt's wipe has run, and, like the tickets,
 #:   never logged: the handler's log line names the operation and outcome only.
+#: * `cf_access` -- the attempt's Cloudflare Access service tokens, each
+#:   `{hosts, client_id, client_secret}` under `tokens`, from a `cf-access`
+#:   workspace-secret grant (cfaccess.py; CF-ACCESS-TOKEN, part of #2442).
+#:   Accepted once, refused after the wipe, and, like the tickets, never
+#:   logged.
 OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "theme", "status",
-                 "egress_ticket", "browser_tools", QA_IDENTITY_OP, QA_SIGN_IN_OP}) | SESSION_OPS | TABS_OPS
+                 "egress_ticket", "browser_tools", QA_IDENTITY_OP, QA_SIGN_IN_OP,
+                 CF_ACCESS_OP}) | SESSION_OPS | TABS_OPS
 
 #: The first start's marker, in the sidecar's own /tmp (§3.1; the dispatcher
 #: mounts that volume in the sidecar only). Directly in /tmp, not a subdirectory:

@@ -993,6 +993,65 @@ dropped. Only an unattested grant gets through, and it is logged.
 
 ---
 
+### The cf-access slot (CF-ACCESS-TOKEN, 2026-10-26, part of #2442)
+
+BGD decided on 2026-10-26, at the AI Studio session's request, that browser
+visual-QA agents reach a site behind Cloudflare Access with a Cloudflare
+Access SERVICE TOKEN, because an agent cannot pass Access's interactive
+sign-in and second factor. How the admin makes and stores one:
+[runbooks/cf-access-service-token.md](../runbooks/cf-access-service-token.md).
+What this records is why it is built as it is, so the shape is not quietly
+undone.
+
+**A slot whose value never reaches the agent.** Every other agent slot
+(`files`) lands a value in `private/secrets/`, which the agent's uid reads:
+that is its purpose. A service token is the opposite case: the BROWSER needs
+it and the agent must not hold it, or a prompt-injected page could have the
+agent post it anywhere. So `cf-access` is a gate slot: the worker's release
+holds the item in its heap (`secretrelease.GATE_SLOTS`), writes no file and
+no manifest entry, and hands it over ctl.sock to the live gate
+(`agent_worker/cf_access.py`), which adds the two headers on its own CDP
+sessions (`livegate/cfaccess.py`). Every agent-bound CDP message is scrubbed
+of both values, and both are registered with the worker's redaction as the
+release is parsed, so "never in its environment, prompt, files or tool
+results" is enforced where each of those is made, not asked of the agent.
+
+**The host list lives on the grant, under the MAC.** A token is sent to the
+hosts the workspace admin set beside the slot, and to no other. A grant
+document is tenant-writable (§2.2), and this list decides where a credential
+is SENT, so a list an agent could edit would let it name its own host.
+`set_grant(hosts=...)` therefore stores it sorted and signs it in grant form
+"v3" (`grant_attest`), refuses to write one in a deployment without a grant
+key, and the release honours a host-scoped grant only when that attestation
+verifies, whatever `grant_attestation_required` says. On the record it would
+not be signed; in the value it could only change by rotating the secret.
+
+**Exact hosts, top frame, no worker.** The gate adds the headers to
+`https://<host>/...` only for a listed host compared exactly (no subdomain,
+port or other scheme), and only to the top frame's own navigation or a
+request from a frame whose top-level origin is a listed host of the same
+token: a page elsewhere that fetches a listed host does not spend the token.
+A dedicated or service worker has no frame and gets nothing (it reads as
+signed out), which is the QA identity's rule for the same reason.
+
+**Redirects.** A header `Fetch.continueRequest` adds follows no redirect
+(M5, [qa-identity-measurements.md](qa-identity-measurements.md)); a redirect
+is a request of its own, judged by its own host. Guard 2 is built anyway:
+with a token held every request pauses, and one carrying a held value to any
+host loses that header. The QA identity's guard 1 (stop a cross-origin 3xx)
+is not: Access sends a refused request to `<team>.cloudflareaccess.com`,
+which must load, and guard 2 already keeps the values off it.
+
+**Read-only is the Access policy's.** The token is admitted by a Service Auth
+rule and gets every method the site serves. Nothing in the gate makes it
+read-only; the runbook says so.
+
+**The contract.** The slot must be declared on `claude-code-browser`'s
+`secret_slots` for the console, swarm-api's release and the worker's filter
+to read one declaration (request A's reason): contract request 116. Until it
+is applied, `check_grant` refuses a grant into `cf-access`, and everything
+above is built and tested against a catalogue with the slot added.
+
 ## 5. Console: Settings › Workspace › Secrets
 
 Settings is reached from the panel's foot (`App.tsx`, `SETTINGS`), beside the

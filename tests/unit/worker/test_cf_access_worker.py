@@ -1,0 +1,211 @@
+"""A Cloudflare Access service token, the worker's half (CF-ACCESS-TOKEN, part of #2442).
+
+A `cf-access` item of the workspace-secrets release is held in the worker's
+heap and handed to the live gate; it is never a file under `private/`, never
+in the manifest, never in the runner's environment, argv or `work/`, and it
+is registered for redaction before the runner exists. These tests drive the
+real worker (`lifecycle.Worker.run`) and the real release against swarm-api's
+proof check, as test_secretrelease.py does, and the real `cf_access.hand_over`
+against a recording gate.
+
+The catalogue declares no `cf-access` slot yet (contract request 116,
+docs/contract-change-requests.md), so the slot is added to the attempt's
+consumer slots for these tests only, as test_secretrelease.py adds a required
+slot. The fake token is built at run time, never written as one literal.
+"""
+
+from __future__ import annotations
+
+import json
+import secrets
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from agent_worker import cf_access, lifecycle
+from agent_worker import children as children_mod
+from agent_worker import secretrelease as release_mod
+from agent_worker.errors import ExitCode
+from swarm_common.profiles import RUNNER_PROFILES, SecretSlot
+
+from test_secretrelease import FakeRoutes, _item, _Log, _worker, agent, fake_value, spawned  # noqa: F401
+
+HOSTS = ["staging-admin.example.dev", "admin.example.com"]
+SLOT = SecretSlot(kinds=("oauth_client",),
+                  means="sent by the live gate to the grant's hosts; never in the agent's reach")
+
+
+def _token() -> tuple[str, str, str]:
+    client_id, client_secret = secrets.token_hex(16) + ".access", secrets.token_hex(32)
+    return client_id, client_secret, json.dumps({"client_id": client_id, "client_secret": client_secret})
+
+
+def _cf_item(value: str, hosts: list[str] | None = None, name: str = "platform-admin") -> dict[str, Any]:
+    item = _item(name, value, slot="cf-access", kind="oauth_client")
+    item["hosts"] = list(HOSTS if hosts is None else hosts)
+    return item
+
+
+@pytest.fixture
+def cf_slot(monkeypatch):
+    original = release_mod.consumer_slots
+
+    def with_cf(profile, inputs):
+        return {**original(profile, inputs), "cf-access": SLOT}
+
+    monkeypatch.setattr(release_mod, "consumer_slots", with_cf)
+
+
+@pytest.fixture
+def handed(monkeypatch):
+    """What `hand_over` was given, copied before it empties the list."""
+    seen: list[list[dict[str, Any]]] = []
+    original = cf_access.hand_over
+
+    def recording(gate, items, log, *, protected):
+        seen.append([dict(i) for i in items])
+        return original(gate, items, log, protected=protected)
+
+    monkeypatch.setattr(cf_access, "hand_over", recording)
+    return seen
+
+
+class Gate:
+    def __init__(self, refuse: bool = False) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.refuse = refuse
+
+    def call(self, op: str, args: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((op, json.loads(json.dumps(args))))
+        if self.refuse:
+            raise RuntimeError("refused:hosts")
+        return {"cf_access": "held"}
+
+
+# --------------------------------------------------------------------------
+# The whole worker: the agent never holds the values
+# --------------------------------------------------------------------------
+
+
+def test_a_cf_access_item_never_reaches_the_agents_environment_files_or_work(
+        db, worker_factory, agent, spawned, log_stream, monkeypatch, cf_slot, handed):  # noqa: F811
+    monkeypatch.setattr(lifecycle.workspace_mod, "destroy", lambda ws: None)
+    client_id, client_secret, value = _token()
+    other = fake_value("f")
+    routes = FakeRoutes([_cf_item(value), _item("brave-key", other)])
+    worker = _worker(db, worker_factory, routes)
+    recording, at_spawn = spawned
+    recording.logger = worker.log
+    assert worker.run() == ExitCode.OK, db.doc("tasks/task_1").get("last_error")
+
+    [seen] = agent()
+    # The ordinary item is a file, as before; the cf-access one is not.
+    assert [e["name"] for e in seen["manifest"]["secrets"]] == ["brave-key"]
+    assert [f["value"] for f in seen["files"]] == [other]
+    private = Path(seen["manifest_path"]).parent
+    assert not (private / "cf-access").exists(), "no directory for the gate slot"
+    everything = json.dumps(seen)
+    for needle in (value, client_id, client_secret):
+        assert needle not in everything, "not in the environment, argv, manifest, files or work/"
+        assert needle not in log_stream.getvalue()
+        assert needle not in json.dumps(db.documents, default=str)
+    # Every field registered for redaction before the runner existed.
+    assert at_spawn and {value, client_id, client_secret} <= at_spawn[-1]
+    # Handed over (to no gate: claude-code has no live browser), then dropped.
+    assert handed == [[{"name": "platform-admin", "slot": "cf-access", "hosts": HOSTS, "value": value}]]
+    assert worker.secret_release.result is not None and worker.secret_release.result.gate == []
+
+
+def test_a_workspace_with_no_cf_access_grant_hands_nothing(
+        db, worker_factory, agent, cf_slot, handed):  # noqa: F811
+    routes = FakeRoutes([_item("brave-key", fake_value())])
+    worker = _worker(db, worker_factory, routes)
+    assert worker.run() == ExitCode.OK
+    assert handed == [[]]
+    assert cf_access.hand_over(Gate(), [], _Log(), protected=True) == cf_access.NONE
+
+
+# --------------------------------------------------------------------------
+# The release, alone
+# --------------------------------------------------------------------------
+
+
+def _release(items: list[dict[str, Any]], tmp_path: Path, log: _Log | None = None) -> release_mod.Released:
+    key = children_mod.AttemptKey()
+    routes = FakeRoutes(items)
+    routes.public_key = key.public
+    children = type("P", (), {"_key": key, "_api": routes, "keyed": True})()
+    cfg = type("C", (), {"attempt_id": "att_1", "generation": 1})()
+    with pytest.MonkeyPatch.context() as mp:
+        original = release_mod.consumer_slots
+        mp.setattr(release_mod, "consumer_slots", lambda p, i: {**original(p, i), "cf-access": SLOT})
+        return release_mod.SecretRelease(cfg, children=children, logger=log or _Log()).release(
+            profile=RUNNER_PROFILES["claude-code-browser"], inputs={}, private_dir=tmp_path)
+
+
+def test_the_release_holds_a_gate_item_in_the_heap_and_writes_no_file(tmp_path):
+    client_id, client_secret, value = _token()
+    log = _Log()
+    released = _release([_cf_item(value)], tmp_path, log)
+    assert released.gate == [{"name": "platform-admin", "slot": "cf-access", "hosts": HOSTS, "value": value}]
+    assert released.delivered == [] and released.env == {}
+    assert not (tmp_path / "secrets").exists()
+    assert {value, client_id, client_secret} <= log._secrets
+    assert value not in repr(released)
+
+
+@pytest.mark.parametrize("hosts", [[], None, "admin.example.com", [""], [7]])
+def test_a_gate_item_without_a_host_list_is_refused(tmp_path, hosts):
+    _, _, value = _token()
+    item = _cf_item(value)
+    if hosts is None:
+        item.pop("hosts")
+    else:
+        item["hosts"] = hosts
+    released = _release([item], tmp_path)
+    assert released.gate == [] and released.delivered == []
+
+
+# --------------------------------------------------------------------------
+# The hand-over
+# --------------------------------------------------------------------------
+
+
+def test_the_gate_is_handed_each_token_with_its_hosts_and_the_list_is_emptied():
+    client_id, client_secret, value = _token()
+    items = [{"name": "platform-admin", "slot": "cf-access", "hosts": HOSTS, "value": value}]
+    gate, log = Gate(), _Log()
+    assert cf_access.hand_over(gate, items, log, protected=True) == cf_access.HANDED
+    assert gate.calls == [("cf_access", {"tokens": [
+        {"hosts": HOSTS, "client_id": client_id, "client_secret": client_secret}]})]
+    assert items == []
+    assert value not in json.dumps(log.lines) and client_secret not in json.dumps(log.lines)
+
+
+@pytest.mark.parametrize("case, expected", [
+    ("no_gate", cf_access.NO_GATE),
+    ("unprotected", cf_access.UNPROTECTED),
+    ("malformed", cf_access.MALFORMED),
+    ("refused", cf_access.GATE_REFUSED),
+])
+def test_a_token_that_cannot_be_handed_over_is_dropped_and_never_logged(case, expected):
+    client_id, client_secret, value = _token()
+    if case == "malformed":
+        value = json.dumps({"username": client_id, "password": client_secret})
+    items = [{"name": "platform-admin", "slot": "cf-access", "hosts": HOSTS, "value": value}]
+    gate, log = Gate(refuse=case == "refused"), _Log()
+    outcome = cf_access.hand_over(None if case == "no_gate" else gate, items, log,
+                                  protected=case != "unprotected")
+    assert outcome == expected and items == []
+    if case != "refused":
+        assert gate.calls == []
+    assert client_secret not in json.dumps(log.lines) and client_id not in json.dumps(log.lines)
+
+
+def test_the_gate_slots_are_swarm_apis():
+    from swarm_api import workspace_secrets
+
+    assert release_mod.GATE_SLOTS == workspace_secrets.HOST_SCOPED_SLOTS
+    assert release_mod.MAX_GATE_HOSTS == workspace_secrets.MAX_SLOT_HOSTS
+    assert cf_access.CTL_OP == "cf_access"
