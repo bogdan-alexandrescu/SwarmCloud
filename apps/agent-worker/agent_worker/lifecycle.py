@@ -3468,6 +3468,12 @@ class Worker:
                 )
         if unattached is not None:
             self.mcp.close()
+            # A WORKFLOW STEP'S per-run credential that lapsed while it waited
+            # parks for its caller to re-store it (BGD 2026-10-26, §4.10);
+            # anything else withheld still fails the attempt.
+            lapsed = attached.lapsed_credentials() if task.get("workflow_id") else []
+            if lapsed:
+                return functools.partial(self._park_mcp_credential, lapsed)
             return functools.partial(self._fail_mcp_unattached, *unattached)
         try:
             child_env = self._build_child_env()
@@ -11137,6 +11143,51 @@ class Worker:
                 end_cause=EndCause.CANNOT_START,
             )
         return Outcome(exit_code=ExitCode.FAILED, state=state)
+
+    def _park_mcp_credential(self, lapsed: list[tuple[str, str]]) -> Outcome:
+        """A workflow step's per-run MCP credential lapsed between admission
+        and this attach (registered-mcp-servers.md §4.10, BGD 2026-10-26).
+        Its caller is online and re-stores it through
+        `PUT /v1/workflows/{id}/mcp-credentials`, so this is a wait, not a
+        failure: checkpoint, PARKED(CREDENTIAL_MISSING), release, exit, with
+        the detail a caller watches for (`credential: "mcp"`, the code, the
+        server by name). The attach does not say when the row expired, so
+        `expired_at` is null here; the scheduler's park says it. The park's
+        instant is `next_eligible_at`, so the credential sweep promotes it
+        the moment the row is live again. Names and reason words only.
+        """
+        name, reason = lapsed[0]
+        code = ("mcp_credential_missing" if reason == mcp_attach_mod.CREDENTIAL_MISSING
+                else "mcp_credential_expired")
+        self.log.warning(
+            "a workflow's mcp credential lapsed before the agent; parking for its caller",
+            servers=[n for n, _ in lapsed], code=code,
+        )
+        self._checkpoint("mcp-credential")
+        summary = self._upload_outputs()
+        now = utcnow()
+        with self._metrics_after_the_record():
+            self.control.park(
+                reason=ParkReason.CREDENTIAL_MISSING,
+                next_eligible_at=now,
+                detail={
+                    "credential": "mcp",
+                    "code": code,
+                    "server": name,
+                    "expired_at": None,
+                    "parked_at": now.isoformat(),
+                    "mcp_servers": [
+                        {"name": n,
+                         "code": ("mcp_credential_missing"
+                                  if r == mcp_attach_mod.CREDENTIAL_MISSING
+                                  else "mcp_credential_expired"),
+                         "why": r}
+                        for n, r in lapsed
+                    ],
+                    **summary,
+                },
+            )
+        return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _fail_mcp_unattached(self, cause: str, detail: str, retryable: bool) -> Outcome:
         """The attempt ends before its agent ran: a registered MCP server the
