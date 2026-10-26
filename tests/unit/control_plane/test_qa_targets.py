@@ -530,7 +530,7 @@ _FLOWS = [{"id": "find-docs", "goal": "find the API reference", "start_path": "/
 def flow_tools(db: Any, workflow_id: str) -> dict[str, Any]:
     return {d["step_id"]: d["input"].get("browser_tool") for p, d in db.docs.items()
             if p.startswith("tasks/") and d.get("workflow_id") == workflow_id
-            and d["step_id"].startswith("flow-") and d["step_id"] != "flow-report"}
+            and d["step_id"].startswith(("flow-", "flows-")) and d["step_id"] != "flow-report"}
 
 
 def test_a_target_without_the_field_runs_its_flows_with_playwright(client, db, seeded):
@@ -540,7 +540,7 @@ def test_a_target_without_the_field_runs_its_flows_with_playwright(client, db, s
     assert response.status_code == 201, response.text
     workflow_id = response.json()["workflow_id"]
     # MUTATION: keep `browser_tool="jev"` on the flow steps and this is jev.
-    assert flow_tools(db, workflow_id) == {"flow-find-docs": "playwright"}
+    assert flow_tools(db, workflow_id) == {"flows-1": "playwright"}
     run_doc = db.docs[f"qa_target_runs/{workflow_id}"]
     # MUTATION: leave the tool off `record_run` and the run's record cannot say what it used.
     assert run_doc["flows_browser_tool"] == "playwright"
@@ -559,7 +559,7 @@ def test_a_target_that_chooses_jev_is_stored_served_and_runs_its_flows_with_jev(
     answer = run(client, target["id"], file="none")
     assert answer.status_code == 201, answer.text
     # MUTATION: render the run without the target's field and this is playwright.
-    assert flow_tools(db, answer.json()["workflow_id"]) == {"flow-find-docs": "jev"}
+    assert flow_tools(db, answer.json()["workflow_id"]) == {"flows-1": "jev"}
 
 
 def test_a_change_of_anything_else_keeps_the_flows_browser_tool(client, db, seeded):
@@ -577,7 +577,7 @@ def test_one_runs_browser_tool_overrides_the_targets_for_that_run_only(client, d
     assert first.status_code == 201, first.text
     first_id = first.json()["workflow_id"]
     # MUTATION: drop `browser_tool` from `render_run`'s call in `:run` and this is jev.
-    assert flow_tools(db, first_id) == {"flow-find-docs": "playwright"}
+    assert flow_tools(db, first_id) == {"flows-1": "playwright"}
     first_doc = db.docs[f"qa_target_runs/{first_id}"]
     # MUTATION: record the target's tool instead of the one the run used and these fail.
     assert first_doc["browser_tool"] == "playwright"
@@ -586,7 +586,7 @@ def test_one_runs_browser_tool_overrides_the_targets_for_that_run_only(client, d
     assert target_docs(db)[f"qa_targets/{target['id']}"]["flows_browser_tool"] == "jev"
     second = run(client, target["id"], file="none")
     assert second.status_code == 201, second.text
-    assert flow_tools(db, second.json()["workflow_id"]) == {"flow-find-docs": "jev"}
+    assert flow_tools(db, second.json()["workflow_id"]) == {"flows-1": "jev"}
     assert db.docs[f"qa_target_runs/{second.json()['workflow_id']}"]["browser_tool"] is None
 
 

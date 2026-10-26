@@ -417,5 +417,17 @@ def test_the_flow_step_prefix_is_what_render_run_names_a_flow_step(ldb):
     workflow, _, browser = render_run(target, screens=None, file="issues")
     flow_steps = sorted(s for s in browser if s.startswith(FLOW_STEP_PREFIX))
     # MUTATION: rename the flow step in `qaspec.render` and every flow answers read-only.
-    assert flow_steps == sorted(FLOW_STEP_PREFIX + f["id"] for f in FLOWS)
+    # QA-FLOWS-CAP: only a mutating flow keeps its own `flow-<id>` step; the
+    # read-only ones run in the batch step `flows-1`, which no flow id can name.
+    assert flow_steps == sorted(FLOW_STEP_PREFIX + f["id"] for f in FLOWS if f["mutating"])
+    assert "flows-1" in browser and not "flows-1".startswith(FLOW_STEP_PREFIX)
     assert {s["step_id"] for s in workflow["steps"] if "metadata" in s} >= set(flow_steps)
+
+
+def test_a_flow_batch_step_is_never_mutating(client, ldb, running):
+    # QA-FLOWS-CAP: a batch holds only read-only flows; the gate never grants it writes,
+    # even on a target whose flows include a mutating one.
+    response = mutating_answer(client, ldb, running, step_id="flows-1")
+    assert response.status_code == 200, response.text
+    # MUTATION: grant a batch writes when any flow of the target is mutating and this is true.
+    assert response.json()["mutating"] is False

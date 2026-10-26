@@ -1350,7 +1350,9 @@ runs the legs it names
   when unset). Each name is checked against the target at create, at edit
   and at every firing; a name the target lacks is refused
   `qa_target_environment_unknown`. Nothing else about the run is a schedule
-  parameter. The URL, sign-in, screens, flows and filing rules all
+  parameter. A firing names no `flows_per_step` (QA-FLOWS-CAP, 2026-10-26),
+  so its flows run in batches of the workspace's `qa_flows_per_step`, else 15,
+  and its `qa_target_runs` rows record which. The URL, sign-in, screens, flows and filing rules all
   belong to the target, which a workspace admin sets (design §1.1). So a
   schedule can only start a run a member could start by hand (invariant 10).
 * **The tenant.** The target must be the schedule's tenant's own. At create
@@ -1369,13 +1371,18 @@ runs the legs it names
   application.
 * **Gate.** Run and plan auto, merge **off**, and the floor is the same. It
   files issues and changes no code, so there is no merge gate to set.
-* **Budget.** `BUDGET_CAPS` in the executor: `per_run_usd` 40 a leg,
-  `per_day_usd` 160, `max_concurrent` 2, set by BGD on 2026-10-23
-  ([design/qa-environments.md](design/qa-environments.md) §10, Q9 (a)).
-  `per_run_usd` is a tripwire per work item, and a leg is one, so $40 bounds
-  each leg as it bounded a run; `max_concurrent` 2 lets a two-leg firing
-  start both legs; $160 a day keeps the daily firing plus one run-now for
-  both legs. A schedule may set lower figures. The history: BGD first set
+* **Budget.** `BUDGET_CAPS` in the executor: `per_run_usd` 80 a leg,
+  `per_day_usd` 160, `max_concurrent` 2. `per_run_usd` is a tripwire per
+  work item, and a leg is one. BGD set it at $40 a leg on 2026-10-23
+  ([design/qa-environments.md](design/qa-environments.md) §10, Q9 (a)), as
+  it bounded a run, and BGD raised it to $80 on 2026-10-26 (QA-TRIPWIRE-MAC)
+  for the batched legs of up to 150 flows that QA-FLOWS-CAP (PR 2409)
+  brings: at the bench median of $0.14 a flow run, 132 flows at 2 widths
+  cost about $37 before capture, review and the report. `max_concurrent` 2
+  lets a two-leg firing start both legs; $160 a day, also set by BGD on
+  2026-10-23, holds both legs of one firing at the new cap, and is
+  unchanged. A schedule may set lower figures, never higher. The history:
+  BGD first set
   $40 a run, $80 a day and one at a time on 2026-10-22 (VQ7-CAPS, #1933)
   from the first measured run, the full-console QA run 5b
   (`wf_025ae735511546d99eff`, 17 steps, 362 screenshots), which cost $23.62,

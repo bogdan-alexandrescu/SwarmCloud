@@ -233,5 +233,8 @@ def test_the_plugin_moved_to_a_bridge_that_has_the_suite_gate():
     manifest = json.loads(
         (Path(__file__).resolve().parents[3] / "plugin" / ".claude-plugin" / "plugin.json").read_text()
     )
-    assert manifest["version"] == "0.5.71", manifest["version"]  # MUTATION: no bump.
-    assert any("@sc-v0.5.71#" in arg for arg in manifest["mcpServers"]["swarmcloud"]["args"])
+    # At least the bump this change made; a later bump moves it on (0.5.72,
+    # SC-ROWS-PERSON-WAIT), and the tag the bridge is fetched at follows it.
+    version = manifest["version"]
+    assert tuple(int(p) for p in version.split(".")) >= (0, 5, 71), version  # MUTATION: no bump.
+    assert any(f"@sc-v{version}#" in arg for arg in manifest["mcpServers"]["swarmcloud"]["args"])

@@ -72,6 +72,7 @@ from .progress import (
     _payload,
     clip,
     outcome,
+    owner_questions,
     questions_count,
     questions_words,
     waiting_key,
@@ -135,6 +136,36 @@ RATE_LIMITED_STATUS = 429
 RATE_LIMIT_BACKOFF_SECONDS = 15.0
 RATE_LIMIT_BACKOFF_CAP_SECONDS = 120.0
 
+#: How often a row may write its line again when nothing changed (#2441,
+#: BGD 2026-10-26): a line is written only on a change, so a panel showed
+#: "PARKED · waiting 7s" for 4.5 hours. Every wait line now says when the
+#: wait BEGAN (`parked since 03:05Z (4h 30m)`), and a held call whose task did
+#: not change still hands the row its line again once this long has passed
+#: since the row last wrote it -- a refresh, never a transition.
+REFRESH_SECONDS = 1800
+
+#: A HOLD THAT DOES NOT HOLD (#2441). One row's thirty-minute holds came back
+#: after a median of 3.3 s, 119 calls in 2h14m and 2.1M tokens. Every call
+#: that asked to hold at least `FAST_RETURN_SECONDS` and came back sooner with
+#: nothing changed adds its duration to a streak the `since` token carries;
+#: any other answer clears it. At `FAST_RETURNS_WAIT` the reply asks the row
+#: to wait (run.js's sc:wait row) before its next call; at `FAST_RETURNS_END`
+#: the row ends UNKNOWN, naming the durations. The bridge times the call, not
+#: the row: a Haiku relay has no clock.
+FAST_RETURN_SECONDS = 60.0
+FAST_RETURNS_WAIT = 3
+FAST_RETURNS_END = 5
+
+#: How long the row waits (run.js's `HOLD_WAIT_S`) when its holds came back fast.
+HOLD_WAIT_SECONDS = 60
+
+#: The `result.state` a row answers when the bridge asks it to wait before its
+#: next call; run.js runs one sc:wait row and starts the row again.
+HOLD_WAIT_STATE = "HOLD_WAIT"
+
+#: `stop_reason` for a task a person must act on (#2441): the row ends.
+WAITING_ON_PERSON = "waiting_on_person"
+
 #: The `since` token's format marker. A `lines` token carries none, and is
 #: read here as no token: those positions are byte offsets this format does
 #: not use.
@@ -166,9 +197,13 @@ _WAITS_FOR = {
 
 def encode_since(
     states: dict[str, Any], keys: dict[str, str], failures: dict[str, int], llm_said: set[str] | None = None,
+    written: dict[str, int] | None = None, fast: list[float] | None = None,
 ) -> str:
     """States last reported, each task's last line key, the read-failure
-    streaks, and the tasks whose `LLM: <account>` was already said.
+    streaks, and the tasks whose `LLM: <account>` was already said; then
+    when each task's line was last handed out (`written`, epoch seconds, for
+    `REFRESH_SECONDS`) and the streak of holds that came back fast (`fast`,
+    their durations in seconds, for `FAST_RETURNS_WAIT`).
 
     The same envelope as `progress.encode_since` -- base64url JSON, a dot, a
     CRC-32 -- so a relay that changes one character is refused, not resumed
@@ -183,6 +218,10 @@ def encode_since(
     }
     if llm_said:
         payload["l"] = sorted(llm_said)
+    if written:
+        payload["t"] = {k: int(v) for k, v in written.items()}
+    if fast:
+        payload["q"] = [round(float(v), 1) for v in fast]
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     body = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
     return f"{body}.{_checksum(body)}"
@@ -217,9 +256,63 @@ def llm_said(token: Any) -> set[str]:
     return {str(t) for t in payload["l"]}
 
 
+def pacing(token: Any) -> tuple[dict[str, int], list[float]]:
+    """`(written, fast)` a token carries (`encode_since`); empty for no token,
+    one of another format, or one from before #2441."""
+    payload = _payload(token)
+    if payload is None or payload.get("fmt") != _FORMAT:
+        return {}, []
+    raw_t = payload.get("t") if isinstance(payload.get("t"), dict) else {}
+    written = {str(k): int(v) for k, v in raw_t.items()
+               if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    raw_q = payload.get("q") if isinstance(payload.get("q"), list) else []
+    fast = [float(v) for v in raw_q if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    return written, fast
+
+
 # --------------------------------------------------------------------------
 # One task, as one line
 # --------------------------------------------------------------------------
+
+def clock_at(at: datetime, now: datetime) -> str:
+    """`03:05Z`, or `10-25 03:05Z` for a time a day or more before `now`."""
+    at = at.astimezone(timezone.utc)
+    if (now - at).total_seconds() >= 86400:
+        return at.strftime("%m-%d %H:%MZ")
+    return at.strftime("%H:%MZ")
+
+
+def age_words(seconds: float) -> str:
+    """`4h 30m`, `12m`, `40s`: how long, in the words a wait line uses."""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    hours, minutes = divmod(seconds // 60, 60)
+    return f"{hours}h {minutes:02d}m" if hours else f"{minutes}m"
+
+
+def wait_began(task: dict[str, Any]) -> datetime | None:
+    """When a waiting task's wait BEGAN: the API's `waiting.since` (the park's
+    own event), else the document's `updated_at` (a park writes it), else its
+    `created_at`; None when none was served."""
+    waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
+    return (parse_time(waiting.get("since")) or parse_time(task.get("updated_at"))
+            or parse_time(task.get("created_at")))
+
+
+def since_words(task: dict[str, Any], now: datetime) -> str:
+    """`parked since 03:05Z (4h 30m)` -- the ABSOLUTE start of a wait (#2441).
+
+    An elapsed count alone ("waiting 7s") is true only at the moment the line
+    is written, and a row writes a line only on a change, so the panel showed
+    "waiting 7s" for 4.5 hours. The start time stays true however long the
+    line stands; the age beside it is as of the line."""
+    word = "parked" if task.get("state") == "PARKED" else "waiting"
+    began = wait_began(task)
+    if began is None:
+        return word
+    return f"{word} since {clock_at(began, now)} ({age_words((now - began).total_seconds())})"
+
 
 def _span(seconds: float) -> str:
     seconds = max(0, int(seconds))
@@ -349,8 +442,7 @@ def progress_line(client: SwarmClient, task: dict[str, Any], now: datetime) -> t
     state = task.get("state")
     wake = _wake_key(task)
     if state in _PENDING:
-        since = parse_time(task.get("updated_at")) or parse_time(task.get("created_at"))
-        waited = f"waiting {_span((now - since).total_seconds())}" if since else "waiting"
+        waited = since_words(task, now)
         brief = waiting_brief(task)
         if brief is not None:
             # WHY IN THE API'S OWN WORDS (#1782), and a new line only when
@@ -545,6 +637,191 @@ def ci_park_result(task_id: str, task: dict[str, Any], link: str | None) -> dict
     }
 
 
+# --------------------------------------------------------------------------
+# A task a person must act on: the row ends (#2441)
+# --------------------------------------------------------------------------
+
+#: The park only a person ends (`agent_worker.handoff.park_human_required`):
+#: the browser hand-off's, and the merge's owner-question hold (#2070).
+_PERSON_PARK = "HUMAN_REQUIRED"
+
+#: The owner-question hold's `blocked_by[].park_phase`, and the key its
+#: questions ride under (`agent_worker.lifecycle._park_for_owner_questions`;
+#: swarm-api's `waiting_detail.OWNER_QUESTIONS_PHASE`). Spelled again: the
+#: worker is not installed with the bridge.
+_OWNER_QUESTIONS_PHASE = "owner_questions"
+
+
+def _parked_for_person(task: dict[str, Any]) -> bool:
+    """Whether a task read back PARKED on HUMAN_REQUIRED."""
+    return task.get("read") == "ok" and task.get("state") == "PARKED" and task.get("park_reason") == _PERSON_PARK
+
+
+def _hold_questions(task: dict[str, Any]) -> tuple[bool, list[dict[str, Any]]]:
+    """`(owner_hold, entries)`: whether the park is the owner-question hold,
+    and the questions it names -- `{task_id, step_id, question_index,
+    question}` each -- from `blocked_by[].owner_questions`, else from the
+    API's `waiting.detail` (which serves the same list)."""
+    hold = False
+    raw: Any = None
+    for block in task.get("blocked_by") or []:
+        if isinstance(block, dict) and block.get("park_phase") == _OWNER_QUESTIONS_PHASE:
+            hold = True
+            named = block.get(_OWNER_QUESTIONS_PHASE)
+            if isinstance(named, dict) and isinstance(named.get("questions"), list):
+                raw = named["questions"]
+    waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
+    detail = waiting.get("detail") if isinstance(waiting.get("detail"), dict) else {}
+    if detail.get("park_phase") == _OWNER_QUESTIONS_PHASE:
+        hold = True
+        if raw is None and isinstance(detail.get("questions"), list):
+            raw = detail["questions"]
+    entries = []
+    for entry in raw or []:
+        if not isinstance(entry, dict):
+            continue
+        index = entry.get("question_index")
+        asker = entry.get("task_id")
+        if not isinstance(asker, str) or not asker or isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            continue
+        entries.append({"task_id": asker, "step_id": _text(entry.get("step_id")),
+                        "question_index": index, "question": _text(entry.get("question"))})
+    return hold, entries
+
+
+def _asked(client: SwarmClient, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each named question with its own text, options, recommendation and
+    context, read from the ASKING task's questions (`progress.owner_questions`,
+    as `swarm_check` reads them for `owner_questions`) -- one read per asking
+    task. A read that fails keeps the text the hold recorded, and says why."""
+    read: dict[str, tuple[list[dict[str, Any]], str | None]] = {}
+    out = []
+    for entry in entries:
+        asker = entry["task_id"]
+        if asker not in read:
+            try:
+                document = client.task(asker)
+                found = owner_questions(client, {**document, "task_id": asker})
+                read[asker] = ([q for q in found.get("questions") or [] if isinstance(q, dict)],
+                               found.get("questions_unavailable_because"))
+            except SwarmError as exc:
+                read[asker] = ([], f"the asking task could not be read: {exc}")
+        questions, why = read[asker]
+        index = entry["question_index"]
+        whole = _no_null_question(questions[index]) if index < len(questions) else None
+        question = {**entry, "options": [], "recommended": "", "context": ""}
+        if whole is not None:
+            question.update({k: v for k, v in whole.items() if k != "question" or v})
+        else:
+            question["unavailable_because"] = clip(
+                why or f"{asker} names no question {index} in its questions.json", 200)
+        out.append(question)
+    return out
+
+
+def person_wait(client: SwarmClient, task_id: str, task: dict[str, Any], link: str | None,
+                now: datetime) -> dict[str, Any]:
+    """What a person must do for a task PARKED on HUMAN_REQUIRED (#2441).
+
+    `kind` is `owner_questions` for the merge's owner-question hold, else
+    `hand_off`. `questions` are the hold's, each with the asking task, step
+    and index and the question's own text; `console` the API's link, as
+    served; `human_ready_route` the route that returns a hand-off (or a hold
+    whose entries an answer cannot clear) -- the one the API served, else
+    the documented route. `since` is when the wait began."""
+    hold, entries = _hold_questions(task)
+    began = wait_began(task)
+    waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
+    detail = waiting.get("detail") if isinstance(waiting.get("detail"), dict) else {}
+    out: dict[str, Any] = {
+        "kind": "owner_questions" if hold else "hand_off",
+        "since": began.isoformat() if began else "",
+        "since_clock": clock_at(began, now) if began else "",
+        "workflow_id": _text(task.get("workflow_id")),
+        "step_id": _text(task.get("step_id")),
+        "questions": _asked(client, entries) if entries else [],
+        "console": _text(link),
+    }
+    brief = waiting_brief(task)
+    if brief is not None:
+        out["summary"] = brief["summary"]
+    route = detail.get("answer_route")
+    if isinstance(route, str) and route.strip():
+        out["human_ready_route"] = route.strip()
+    elif not hold:
+        out["human_ready_route"] = f"POST /v1/tasks/{task_id}/human-ready"
+    return out
+
+
+def person_line(label: str, wait: dict[str, Any]) -> str:
+    """The row's last line: `WAITING ON A PERSON since 03:05Z · 2 owner
+    questions` -- or, for a hand-off, what the person does."""
+    head = f"[{label}] WAITING ON A PERSON"
+    if wait.get("since_clock"):
+        head += f" since {wait['since_clock']}"
+    if wait["kind"] == "owner_questions":
+        n = len(wait["questions"])
+        return f"{head} · {n} owner question{'' if n == 1 else 's'}"
+    return f"{head} · hand-off: sign in on its console page, then say it is ready"
+
+
+def person_wait_result(task_id: str, wait: dict[str, Any]) -> dict[str, Any]:
+    """A row's answer for a task a person must act on: `step_result`'s shape,
+    no null, `state: PARKED`, and `waiting_on_person` -- the questions, the
+    console link and, for a hand-off, the human-ready route.
+
+    WHY (#2441, BGD 2026-10-26). Seven merge rows followed an owner-question
+    hold for 3 to 7 hours, 27 to 35 thirty-minute calls and 0.32-0.46M tokens
+    each, because the follow answered `stop: false` for it. Nothing a row does
+    moves a person; the task holds no capacity (invariant 1), and `/sc check`
+    attaches a new row once the step leaves PARKED."""
+    if wait["kind"] == "owner_questions":
+        n = len(wait["questions"])
+        what = (f"answer the {n} owner question{'' if n == 1 else 's'} its hold names; it resumes on its own"
+                if n else "answer the owner questions its hold names")
+    else:
+        what = "sign in on its console page, then say it is ready"
+        if wait.get("human_ready_route"):
+            what += f" ({wait['human_ready_route']})"
+    since = f" since {wait['since_clock']}" if wait.get("since_clock") else ""
+    return {
+        "state": "PARKED",
+        "answer_excerpt": "",
+        "pr_url": "",
+        "artifacts": [],
+        "last_error": (
+            f"PARKED on {_PERSON_PARK}: waiting on a person{since} -- {what}. It holds no capacity "
+            f"and nothing was cancelled; this row ends here, and /sc check attaches a new one "
+            f"once it leaves PARKED. Resume by hand with: swarm follow {task_id}"
+        ),
+        "console": _text(wait.get("console")),
+        "questions": [],
+        "waiting_on_person": wait,
+    }
+
+
+def hold_result(task_id: str, fast: list[float], link: str | None, *, end: bool) -> dict[str, Any]:
+    """A row's answer when its holds came back fast with nothing changed:
+    `HOLD_WAIT_STATE` (wait, then follow again) or, at `FAST_RETURNS_END`,
+    `UNKNOWN` saying the hold is not holding. Both name the durations."""
+    took = ", ".join(f"{d:.1f} s" for d in fast[-FAST_RETURNS_END:])
+    said = (f"the hold is not holding: {len(fast)} swarm_follow calls in a row asked to hold and "
+            f"returned in under {int(FAST_RETURN_SECONDS)} s with nothing changed ({took})")
+    return {
+        "state": "UNKNOWN" if end else HOLD_WAIT_STATE,
+        "answer_excerpt": "",
+        "pr_url": "",
+        "artifacts": [],
+        "last_error": (
+            f"{said}. Nothing was cancelled and the task runs on. "
+            + (f"Resume with: swarm follow {task_id}" if end else
+               f"Wait {HOLD_WAIT_SECONDS} s before the next call")
+        ),
+        "console": _text(link),
+        "questions": [],
+    }
+
+
 def _no_null_question(question: dict[str, Any]) -> dict[str, Any]:
     """One of `progress.owner_questions`' questions, every missing text as ""."""
     return {
@@ -591,11 +868,21 @@ def watch_progress(
     step_id: str | None = None,
     parents: list[str] | None = None,
     max_wait: float = MAX_WAIT_SECONDS,
+    rows: bool = True,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
 ) -> dict[str, Any]:
     """`{progress, changed, transitions, stop, since, tasks}` for these tasks.
+
+    `rows` (a row's follow; `watch_summary` passes False, and keeps what it
+    did before #2441): a task PARKED on HUMAN_REQUIRED ends the follow with
+    `stop_reason: "waiting_on_person"` and what the person must do; an
+    unchanged line is handed out again every `REFRESH_SECONDS`; and holds that
+    keep coming back fast ask the row to wait, then end it
+    (`FAST_RETURNS_WAIT`, `FAST_RETURNS_END`). `held_s` is how long the call
+    held. `stop_reason` says why a reply stops: `finished`, `abandoned`,
+    `parked_on_ci`, `waiting_on_person`, `hold_wait` or `hold_not_holding`.
 
     `progress` holds a line only for a task whose line changed since `since`;
     `changed` is whether it holds any. A finished task carries `outcome`, the
@@ -621,9 +908,11 @@ def watch_progress(
         )
     states, keys, failures = decode_since(since)
     said_llm = llm_said(since)
+    written, fast = pacing(since)
     first_call = since in (None, "")
     wait = max(0.0, min(float(wait_seconds or 0), max_wait, MAX_WAIT_SECONDS))
-    deadline = clock() + wait
+    began = clock()
+    deadline = began + wait
     interval = POLL_SECONDS
     latest: dict[str, dict[str, Any]] = {}
     read_ok: set[str] = set()
@@ -658,9 +947,11 @@ def watch_progress(
             t for t in task_ids
             if step_id is not None and latest[t]["read"] == "ok" and latest[t].get("step_id") != step_id
         }
+        # A task a person must act on ends a row's follow like a finished one.
         settled = all(
             (latest[t]["read"] == "ok" and latest[t]["terminal"]) or t in wrong
             or (latest[t]["read"] == "failed" and latest[t].get("http_status") in PERMANENT_READ_STATUSES)
+            or (rows and _parked_for_person(latest[t]))
             for t in task_ids
         )
         moved = any(
@@ -679,11 +970,16 @@ def watch_progress(
             backoff = min(backoff * 2, RATE_LIMIT_BACKOFF_CAP_SECONDS)
             continue
         backoff = RATE_LIMIT_BACKOFF_SECONDS
-        if parents:
-            if settled or ci_parked or not held_by_parents:
-                break
+        if parents and held_by_parents and not (settled or ci_parked):
+            # The parent hold: the first call holds too.
+            pass
         elif first_call or settled or moved or ci_parked:
             break
+        # NOT `break` once the parents are done (#2441): a row that kept
+        # passing `parents` after they finished -- step.md says to drop them,
+        # and a Haiku relay did not -- had every thirty-minute call answered
+        # after one read, about 3 s: 119 calls in 2h14m. Past the parents it
+        # is the ordinary hold, which a state change ends.
         remaining = deadline - clock()
         if remaining <= 0:
             break
@@ -696,7 +992,8 @@ def watch_progress(
     stamp = now()
     progress: list[str] = []
     transitions: list[str] = []
-    rows: list[dict[str, Any]] = []
+    out_rows: list[dict[str, Any]] = []
+    refreshed = False
     for task_id in task_ids:
         task = latest[task_id]
         label = task_label(task_id, task.get("step_id"))
@@ -782,8 +1079,19 @@ def watch_progress(
             if fresh_llm:
                 line = f"{line} · LLM: {held}"
                 said_llm.add(task_id)
-            if key != keys.get(task_id) or first_call or fresh_llm:
+            news = key != keys.get(task_id) or first_call or fresh_llm
+            # THE REFRESH (#2441): an unchanged line again once
+            # `REFRESH_SECONDS` have passed since the row was handed it, so
+            # the age on it is never hours stale. Not a transition.
+            stale = (rows and not news and task_id in written
+                     and stamp.timestamp() - written[task_id] >= REFRESH_SECONDS)
+            if news or stale:
                 progress.append(line)
+                written[task_id] = int(stamp.timestamp())
+                refreshed = refreshed or (stale and not news)
+            elif rows and task_id not in written:
+                # A token from before the refresh: start its clock now.
+                written[task_id] = int(stamp.timestamp())
             keys[task_id] = key
             if task["read"] == "ok" and task.get("terminal"):
                 try:
@@ -793,28 +1101,72 @@ def watch_progress(
                     row["outcome_unavailable_because"] = clip(f"the finished task could not be re-read: {exc}", 200)
         if step_id is not None and not abandoned and _parked_on_ci(task):
             row["parked_on_ci"] = True
-        rows.append(row)
+        elif rows and not abandoned and _parked_for_person(task):
+            row["waiting_on_person"] = person_wait(client, task_id, task, link, stamp)
+            line = person_line(label, row["waiting_on_person"])
+            if link is not None:
+                line = f"{line} · console: {link}"
+            # The row's LAST line, whatever it wrote before.
+            progress[:] = [p for p in progress if not p.startswith(f"[{label}] ")]
+            progress.append(line)
+            written[task_id] = int(stamp.timestamp())
+        out_rows.append(row)
 
-    stop = bool(rows) and all(
-        r.get("abandoned") or r.get("parked_on_ci") or (r["terminal"] and r.get("outcome")) for r in rows
+    stop = bool(out_rows) and all(
+        r.get("abandoned") or r.get("parked_on_ci") or r.get("waiting_on_person")
+        or (r["terminal"] and r.get("outcome"))
+        for r in out_rows
     )
+    held = max(0.0, clock() - began)
+    news = bool(transitions) or (bool(progress) and not refreshed)
+    if rows and not stop and not first_call and wait >= FAST_RETURN_SECONDS and not news \
+            and held < FAST_RETURN_SECONDS and not any(r.get("read") == "rate_limited" for r in out_rows):
+        fast = [*fast, held]
+    else:
+        fast = []
+    stop_reason = None
+    if stop:
+        if any(r.get("waiting_on_person") for r in out_rows):
+            stop_reason = WAITING_ON_PERSON
+        elif any(r.get("parked_on_ci") for r in out_rows):
+            stop_reason = "parked_on_ci"
+        elif any(r.get("abandoned") for r in out_rows):
+            stop_reason = "abandoned"
+        else:
+            stop_reason = "finished"
+    elif len(fast) >= FAST_RETURNS_WAIT and len(out_rows) == 1:
+        stop = True
+        stop_reason = "hold_not_holding" if len(fast) >= FAST_RETURNS_END else "hold_wait"
     reply = {
         "progress": progress,
         "changed": bool(progress),
         "transitions": transitions,
         "stop": stop,
-        "since": encode_since(states, keys, failures, said_llm),
-        "tasks": rows,
+        "since": encode_since(states, keys, failures, said_llm, written if rows else None, fast),
+        "tasks": out_rows,
+        "held_s": round(held, 1),
     }
+    if stop_reason is not None:
+        reply["stop_reason"] = stop_reason
+    if refreshed:
+        reply["refreshed"] = True
+    if fast:
+        reply["fast_returns"] = [round(d, 1) for d in fast]
     if parents:
         reply["parents"] = parent_states
-    if stop and len(rows) == 1:
+    if stop and len(out_rows) == 1:
         # The step's answer, ready-made (`step_result`): the row returns it as
         # given rather than retyping `outcome` field by field.
-        if rows[0].get("parked_on_ci"):
-            reply["result"] = ci_park_result(rows[0]["task_id"], latest[rows[0]["task_id"]], rows[0].get("console"))
+        row = out_rows[0]
+        if stop_reason in ("hold_wait", "hold_not_holding"):
+            reply["result"] = hold_result(row["task_id"], fast, row.get("console"),
+                                          end=stop_reason == "hold_not_holding")
+        elif row.get("parked_on_ci"):
+            reply["result"] = ci_park_result(row["task_id"], latest[row["task_id"]], row.get("console"))
+        elif row.get("waiting_on_person"):
+            reply["result"] = person_wait_result(row["task_id"], row["waiting_on_person"])
         else:
-            reply["result"] = step_result(rows[0])
+            reply["result"] = step_result(row)
     return reply
 
 
@@ -951,7 +1303,7 @@ def watch_summary(
     open_ids = [t for t in task_ids if states.get(t) not in TERMINAL]
     if open_ids:
         reply = watch_progress(client, open_ids, since=since, wait_seconds=wait_seconds, max_wait=max_wait,
-                               sleep=sleep, clock=clock, now=now)
+                               rows=False, sleep=sleep, clock=clock, now=now)
     else:
         reply = {"progress": [], "transitions": [], "stop": True,
                  "since": since if since not in (None, "") else encode_since({}, {}, {}), "tasks": []}
@@ -1118,7 +1470,7 @@ def watch_stage(
         if open_ids:
             remaining = 0.0 if first_call else max(0.0, deadline - clock())
             reply = watch_progress(client, open_ids, since=token, wait_seconds=remaining, max_wait=max_wait,
-                                   sleep=sleep, clock=clock, now=now)
+                                   rows=False, sleep=sleep, clock=clock, now=now)
         else:
             reply = {"transitions": [], "stop": True, "tasks": [],
                      "since": token if token not in (None, "") else encode_since({}, {}, {})}

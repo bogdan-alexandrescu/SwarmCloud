@@ -42,9 +42,9 @@ Three reasons, in the order they cost the most:
 | `application.yml` | push to `main`; **every** pull request (no path filter since 2026-10-07: its `ci-gate` job is the required check). Its `what this change reaches` job skips every other job unless the change touches `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml`, `auto-merge.yml`, `.dockerignore`, `.gcloudignore` or the workflow itself ([below](#the-merge-pipelines-wall-time)) | `what this change reaches` · `shellcheck` · `release workflow wiring (actionlint)` (also lints `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml` and `auto-merge.yml`) · `ruff check` ([below](#ruff-lint-is-the-house-python-linter-and-formatting-is-not-adopted)) · `format / unit tests` (stands for `lock / contract / format / bridge install` and the four `unit tests (k/4)` shards) · `swarm-ui typecheck / component tests` (stands for `swarm-ui typecheck / build` and the four `swarm-ui component tests (k/4)` shards) · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) · `build changed images without pushing` (**pull requests only** — [below](#images-are-built-on-a-pull-request-without-pushing)) · `record the tested tree` (every run but main's: what it passed, keyed by its tree, which main's push run reuses — [below](#main-reuses-the-tested-tree)) · `ci-gate` — `needs` every job above but the two name-keepers `format / unit tests` and `swarm-ui typecheck / component tests` (whose own `needs` it holds; [below](#where-pull-request-ci-time-goes-2026-10-09)) and passes only when each passed or was skipped by its own `if:`, then waits for this commit's `terraform.yml` run ([below](#the-ruleset-on-main-and-ci-gate)) |
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
-| `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` (**dispatch only** — on a push CI proved the same SHA, [below](#the-release-timeline)) · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy` (verifies the digests; **on prod** also warms, smokes and proves GKE) — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
+| `release.yml` | **every** push to `main` (no path filter since 2026-10-26: only the newest commit is released, and a release whose commit `main` has moved past ends green, superseded — [below](#only-the-newest-commit-on-main-is-built-and-released)); or manual dispatch with an environment | `verify` (**dispatch only** — on a push CI proved the same SHA, [below](#the-release-timeline)) · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy` (verifies the digests; **on prod** also warms, smokes and proves GKE) — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
 | `accept.yml` | `release` **completing** on `main` (`workflow_run`), or manual dispatch on `main` (scope `all`); accepting jobs in `accept-dev-<job>` groups, cancel-in-progress ([below](#the-release-timeline)). Also **every three hours** (`schedule`) and on a dispatch with scope `live-browser`, for the live-browser group alone ([below](#live-browser-runs-on-a-schedule)) | `what dev runs` (the SHA in `releases/dev/applied.json`) · `warm, smoke and GKE proof (dev)` · `put the deployed commit's fixtures on the sandbox` · `acceptance (<group>)` × 6, in two waves · `acceptance (tenant-isolation)` (the cross-tenant Firestore probe, beside wave 2; report-only until the repository variable `ISO_PROBE_REQUIRED` is `true`, [below](#the-cross-tenant-firestore-probe-is-report-only-until-the-cutover)) · `read back and sweep the sandbox` · `report what was accepted` (a red run opens or updates one `bug` issue). On the schedule: `acceptance (live-browser, scheduled)` · `report the scheduled live-browser group` (its own `bug` issue) — dev only, as its own identity, never the deployer |
-| `hotfix.yml` | push to `main` on the same paths as `release.yml`; or manual dispatch on `main`. Acts only for a pull request merged with the `hotfix` label ([below](#hotfix-releases)) | `is this a hotfix` (reads the label; no Google identity) · `images and scan (dev, hotfix)` · `promote (dev, hotfix)` · `terraform apply (dev, hotfix)` (fails on a plan that changes IAM) · `deploy and smoke (dev, hotfix)` — dev only, concurrency group `hotfix-dev`, release.yml's own stages from `.github/actions/release-*` |
+| `hotfix.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/`, `.trivyignore.yaml` or a release workflow or action (the paths `release.yml` filtered on until 2026-10-26); or manual dispatch on `main`. Acts only for a pull request merged with the `hotfix` label ([below](#hotfix-releases)) | `is this a hotfix` (reads the label; no Google identity) · `images and scan (dev, hotfix)` · `promote (dev, hotfix)` · `terraform apply (dev, hotfix)` (fails on a plan that changes IAM) · `deploy and smoke (dev, hotfix)` — dev only, concurrency group `hotfix-dev`, release.yml's own stages from `.github/actions/release-*` |
 | `ci-fix.yml` | `application` **completing red on a `swarm/<task-id>` branch** of this repository (`workflow_run`, so only as the file is on `main`) ([below](#the-ci-fixer)) | `fix a red SwarmCloud pull request` |
 | `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged; `workflow_run: completed` of every pull-request workflow, and the `workflow_dispatch` that sends ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch, a failing check or a missing merge App, with a comment; waits while a check still runs; otherwise enables native squash auto-merge under the PR's title); `re-evaluate ready pull requests when a run finishes` dispatches it again for each `ready` pull request at a finished run's head ([below](#a-ready-label-that-lands-while-checks-run-is-re-evaluated), #697); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name), #621). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
@@ -460,7 +460,10 @@ matching in `build-images.sh` and `push-images.sh` is the scar).
    `scripts/lib/ci-built-images.sh`, which finds `application.yml`'s run for
    the same commit on `main`, **waits** while the build is queued or running
    (up to 45 minutes), downloads the record, and refuses it unless it names
-   this commit and this environment.
+   this commit and this environment. On a push the job first asks whether
+   `main` has moved past the commit, and asks again after the wait; if it
+   has, the release ends green, superseded, and promotes nothing
+   ([below](#only-the-newest-commit-on-main-is-built-and-released)).
 3. The same job runs `scripts/push-images.sh --manifest
    build/images-dev.json --scan-only`: every recorded digest confirmed in
    Artifact Registry and trivy-scanned, one refusal failing the lot, and **no
@@ -508,7 +511,8 @@ last line (and a run annotation) names the reason and links the job:
 | succeeded, recorded for this environment | reused | reused |
 | still queued or running | waited for (45 min cap) | waited for |
 | **failed** | fails: "re-run that job if it was a flake" | fails the same way — rebuilding would repeat the failure behind a second Cloud Build |
-| cancelled (before it started, or part-way), skipped, never ran, or recorded for another environment | fails: "re-run CI's run, then this release" — a dispatch would release main's head, not this commit | **builds it here**, through the same script and tag |
+| cancelled by a newer push to `main` before it built (the run `cancelled`, its build job cancelled, skipped or never started) | **superseded**: green, nothing promoted — the newer commit's release ships this change | — (a dispatch ships main's head) |
+| cancelled otherwise, skipped, never ran, or recorded for another environment | fails: "re-run CI's run, then this release" — a dispatch would release main's head, not this commit | **builds it here**, through the same script and tag |
 | GitHub API unreadable | fails — an unreadable API is never read as "never built" | fails |
 
 "Recorded for another environment" is every **prod** release:
@@ -517,40 +521,121 @@ bundle when it is compiled (`VITE_SWARM_ENV`), so a dev build is not a prod
 build. A prod release is always dispatched, so it builds — and the build is
 `build-images.sh`, the same path, not a second copy of it.
 
-**On `main`, every commit's `application.yml` run has a concurrency group of
-its own, and is never cancelled.** Its group used to be the ref, and a newer
-push cancelled the in-progress run. Now that a run on `main` is the only build
-of its commit, nothing may stop it before it builds — and turning
-`cancel-in-progress` off was not enough on its own. GitHub keeps **one pending
-run per group** and cancels the older pending run when a newer one queues,
-whatever `cancel-in-progress` says. Measured on 2026-09-24: release run
-36035365877, pending in `release-dev`, was cancelled at 17:41:28 — two seconds
-after 36036058352 queued — and lists zero jobs.
+### Only the newest commit on `main` is built and released
+
+**Owner decision, BGD, 2026-10-26 (#2438): "Release only the newest".** On
+`main`, every `application.yml` run is in one concurrency group,
+`application-refs/heads/main`, with `cancel-in-progress: true`: a newer push
+cancels an older run that has not finished, queued or running. `release.yml`
+runs on every push to `main` and ships its commit only while that commit is
+still `main`'s newest. Pull requests and lane branches are unchanged: their
+group is the ref, and a newer push cancels the older run.
+
+**Why: the 2026-10-26 stall.** Nothing deployed from 2026-10-25 23:32Z
+(release 40245218405, the last success) to past 08:00Z the next day. Until
+then each commit on `main` had a group of its own and its run was never
+cancelled (the 2026-09-24 rule below), so every merge added a full run of
+about 25 jobs to the GitHub-hosted queue that main's push jobs use (PR 1720).
+Read at 05:24Z: 71 workflow runs queued, 27 of them `application` push runs
+on `main`, the oldest queued since 01:40Z. The release waited 2700 s for its
+own commit's `build images` job, which had not reached a runner, and failed.
+Of the last 30 `release.yml` runs on `main` at 05:24Z, 25 were cancelled while
+pending, 3 had failed and 2 were pending; the 4 failures since 00:23Z
+(40249148453, 40254486207, 40255378252, 40263856035) all read `timed out
+after 2700s waiting for application.yml's 'build images' job`. Between 27 and
+78 `application` runs on `main` were queued during the stall, and 34 merges
+were waiting to deploy. Merges every few minutes meant no release ever
+completed.
+
+**Why cancelling is safe now.** `main` is linear, so a newer commit contains
+every older one, and a cancelled commit's change ships inside the newer
+commit's build. That build is incremental from the newest *recorded* build of
+an ancestor (`ci-built-images.sh --previous` passes over a run that recorded
+nothing), and an image is diffed from the commit its reused digest was built
+from, not from the commit before, so an image a cancelled commit changed is
+rebuilt ([below](#main-builds-only-the-images-a-commit-changed)). Every
+intermediate commit was already tested on its pull request, or on its
+identical tree ([Main reuses the tested tree](#main-reuses-the-tested-tree)).
+
+**How a release ends when it is not the newest.** `images and scan` asks
+GitHub to compare its commit with `main`; `ahead` means `main` holds the
+commit and more. It asks twice:
+
+* **before the wait**, so a release that starts behind `main` never waits
+  for a build at all;
+* **after it**, because the newer push cancels this commit's `application`
+  run and the wait then ends "never built". That failure is read as
+  superseded only when `main` has moved on **and** `application`'s push run
+  for the commit concluded `cancelled` with its `build images` job cancelled,
+  skipped or never started. A build that failed, a scan that refused, or a
+  `main` that has not moved stays red. So does an unreadable API: "could not
+  tell" is never "superseded".
+
+A superseded release ends **green**, says so in its summary and a notice, and
+outputs `superseded=true`; `approval` — and so promote, both applies and the
+deploy — and the plugin tag do not run. A dispatch is never superseded: it
+ships `main`'s head by construction.
+
+**A pending release is replaced; a running one is never cancelled.**
+`release-dev` stays `cancel-in-progress: false`. GitHub keeps one pending run
+per group and cancels the older pending run when a newer one queues, so only
+the newest push waits. The run in progress is left to finish: once past
+`approval` it may be half-way through a promote, an apply or a deploy, and
+cancelling it there would leave the release lock to go stale and dev between
+two releases. Before `approval` it does not need cancelling: it ends itself,
+superseded, within one poll (30 s) of the newer push cancelling its build.
+
+**Why the release lost its path filter.** It filtered on `apps/`, `images/`,
+`terraform/`, `kubernetes/`, `scripts/`, `.trivyignore.yaml` and its own
+files. With `main`'s runs cancelling each other, a docs- or tests-only push
+cancels the previous commit's build; under the filter it started no release,
+and the previous commit's release ended superseded with nothing to ship its
+change — exactly the 2026-09-24 stranding below. Now that push starts the
+release that ships it. A release of a tree that changed nothing deployable
+promotes the same digests (CI re-tags every unchanged image under the new
+commit's tag), plans no change, and its deploy verifies the same digests;
+acceptance then runs on the new SHA, as after any release. `hotfix.yml` keeps the filter: it acts
+only for a labelled pull request anyway.
+
+**What it costs.** A Cloud Build a cancelled run submitted carries on —
+stopping `gcloud builds submit` does not stop it (`build-images.sh`,
+`on_interrupt`) — at most `BUILD_PARALLELISM` of them per cancelled run. A
+`hotfix`-labelled commit is still released by its own lane, which waits for
+the same build: if a newer push cancels that build, the hotfix run fails and
+the newer commit's normal release ships the fix.
+
+**What a pull request cannot prove about this.**
+`tests/unit/scripts/test_release_newest_only.py` holds the groups, the
+trigger and the two conditions, and runs both decision steps against a fake
+`gh`. It cannot show that GitHub's compare API says `ahead` for a commit
+`main` has moved past, or how a run cancelled by concurrency lists its jobs;
+the first burst of merges after this lands is the first real proof.
+
+### Before 2026-10-26: one group per commit on `main`
+
+*Superseded by the section above; kept because it records why the release
+lost its path filter.* From 2026-09-24 every commit's `application.yml` run
+on `main` had a concurrency group of its own and was never cancelled. A run on
+`main` was the only build of its commit, so nothing could stop it before it
+built — and turning `cancel-in-progress` off was not enough on its own.
+GitHub keeps **one pending run per group** and cancels the older pending run
+when a newer one queues, whatever `cancel-in-progress` says. Measured on
+2026-09-24: release run 36035365877, pending in `release-dev`, was cancelled
+at 17:41:28 — two seconds after 36036058352 queued — and lists zero jobs.
 
 With one group for all of `main` that cancelled builds releases were waiting
-for. `application.yml` runs on **every** push to `main`; `release.yml` has a
+for. `application.yml` ran on **every** push to `main`; `release.yml` had a
 path filter. So: commit A building, B queued behind it, and a push C that
 touched only docs, tests or the README. C's run cancelled B's; C started no
 release to take the place of B's; B's release, still pending, then found its
 commit never built and went red, and B's change did not reach dev until the
-next push that starts a release. (The group is now
-`application-refs/heads/main@<sha>` on `main` and the ref everywhere else, so
-a pull request's newer push still supersedes its older run.)
+next push that started a release.
 
-**What that costs.** Runs on `main` are no longer serialised. A burst of merges
-builds every commit, in parallel; each run is bounded to four Cloud Builds at
-once (`BUILD_PARALLELISM` in `build-images.sh`), in a project whose build
-quota is shared. An estimate from measured push times, not measured builds:
-on 2026-09-24 `main` took 18 pushes between 15:56:14 and 17:41:26 — one every
-six minutes — and a run that finished took 9–10 minutes, the build its last
-eight. In the densest stretch (five pushes between 16:42 and 16:56) three runs
-would have been building at once: twelve concurrent Cloud Builds. Each commit
-is still built exactly once. Cancelling part-way never saved a build anyway:
-stopping `gcloud builds submit` does not stop the build it submitted.
-
-A release of a commit is still replaced while *it* is pending, by the next
-push that starts a release — which is harmless, because that release ships a
-later commit that contains this one.
+The price was that runs on `main` were not serialised: a burst of merges
+built every commit, in parallel. On 2026-09-24 `main` took 18 pushes between
+15:56:14 and 17:41:26 and three runs would have been building at once. On
+2026-10-26, with main's jobs on GitHub-hosted runners, it was the stall
+above.
 
 **Kept, deliberately:** scan before promote; all-or-nothing promotion; every
 deployed image pinned by digest. (The `dev`/`prod` environments used to sit on
@@ -1778,10 +1863,11 @@ only checkout, `jq` and `git`. (`acceptance` held the same grant for its own
 sweep until #628 moved its pull requests to the private sandbox; it is
 `contents: read` now, and the sweep uses the sandbox's own token.)
 
-**A bump that touches only `plugin/` starts no release,** because `plugin/**`
-is not in `release.yml`'s `on.push.paths`. That filter was left alone. The
-version is tagged by the next release whose commit descends from the bump. The
-tag then lands on that later commit, whose `plugin.json` says the same version.
+**A release a newer commit superseded tags nothing** (2026-10-26): it may
+never have found CI's record, which is the tag's proof on a push. The newer
+commit's release tags the same version on the commit it ships, whose
+`plugin.json` says the same version. (Until 2026-10-26 a bump that touched only
+`plugin/` started no release at all, because `release.yml` had a path filter.)
 
 **The check.** On a push to main, `application.yml`'s `shell` job asks whether
 origin has `sc-v<version>`.

@@ -151,8 +151,8 @@ describe('QA12-20: the Live tab says exactly what it holds', () => {
     expect(document.querySelectorAll('.rows .row.is-compact')).toHaveLength(5)
     expect(document.body.textContent).not.toMatch(/more beyond/)
     expect(screen.queryByRole('button', { name: /^Load \d+ more$/ })).toBeNull()
-    // Every live state was read, and only those.
-    expect(api.loadTasksInState.mock.calls.map(([s]) => s).sort()).toEqual(['DISPATCHED', 'LEASED', 'RUNNING', 'STARTING'])
+    // Every live state was read, and the waiting states beside them (VQ-012), nothing else.
+    expect(api.loadTasksInState.mock.calls.map(([s]) => s).sort()).toEqual(['DISPATCHED', 'LEASED', 'PARKED', 'READY', 'RUNNING', 'STARTING'])
 
     // CONTROL: Recent is still a capped page, and still says so.
     fireEvent.click(screen.getByRole('tab', { name: /^Recent/ }))

@@ -62,7 +62,7 @@ number is stale the day after, so read it again before acting on it.
 |---|---|---|---|
 | `swarm-api` | max 5 instances of 1 vCPU, one uvicorn process each, 80 requests in flight per instance; 20 req/s per principal per instance, so 100 req/s for one caller across all five | `service_max_instances` in `terraform/environments/dev/dev.tfvars`; `cpu` and `concurrency` in `terraform/infra/main.tf`; `requests_per_second` in `apps/common/swarm_common/config.py` | 429s from the per-principal bucket; latency once five instances are busy |
 | `swarm-scheduler` | concurrency 1, max 2 instances: at most two drains at once, platform-wide | `terraform/infra/main.tf`, `service_max_instances` in dev.tfvars | 3,044 "no available instance" 429s on wake pushes during two 300-agent bursts in the 48 h window; Pub/Sub retries them and the 1-minute tick is the floor |
-| Cloud NAT | 1 static IP for both GKE nodes and Cloud Run jobs: 64,512 ports, at most 8,192 to one VM | `nat_static_ip_count` in dev.tfvars, `max_ports_per_vm` in `terraform/modules/network/main.tf` | 655 packets dropped for lack of a NAT port in the 7 days to 2026-10-21 (#1471): a worker's outbound connection fails, not its admission |
+| Cloud NAT | 2 static IP addresses (since 2026-10-26; 1 before) for both GKE nodes and Cloud Run jobs: 64,512 ports each, 129,024 in all, at most 8,192 to one VM. Every external allow-list of the egress addresses (MCP servers, model providers) must hold both | `nat_static_ip_count` in dev.tfvars, `max_ports_per_vm` in `terraform/modules/network/main.tf` | 655 packets dropped for lack of a NAT port in the 7 days to 2026-10-21 (#1471): a worker's outbound connection fails, not its admission |
 | Regional quotas, `us-central1` | 216/3,000 vCPU and 3,299/40,960 GB SSD in use on 2026-10-21, **shared with the other team in `saga-agents-staging`** | `gcloud compute regions describe us-central1` | not reached on 2026-10-21; expected: GKE cannot add a node, so pods wait Pending while their leases hold capacity, and the other team's workloads hit the same wall |
 | Cloud Run, VPC egress | 200 instances for a service or job that uses VPC egress | Cloud Run's documented limit | not reached on 2026-10-21 (only `mock` and the fallback Jobs run there); expected: executions past it fail to start |
 | Tenant namespace `ResourceQuota` | 200 Jobs and 200 PVCs (one cache PVC per Job); a finished Job is kept for an hour (`ttlSecondsAfterFinished`) and counts until then | `--quota-jobs` default in `kubernetes/render.py`, `kubernetes/namespaces/tenant-namespace.yaml` | the API server refuses the Job with a 403 and the agent fails today (#1820); `eng` peaked at 119 Jobs in a rolling hour |
@@ -70,7 +70,7 @@ number is stale the day after, so read it again before acting on it.
 
 The quotas and the NAT are why "add more" is not a pool edit: 100 `standard`
 agents are 400 vCPU against a regional budget the other team draws on too, and
-every one of them shares one NAT IP's ports.
+every one of them shares the NAT's ports.
 
 ---
 

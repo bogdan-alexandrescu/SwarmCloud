@@ -221,6 +221,9 @@ STEP_OUTPUTS = {
     # while it ran (scripts/lib/release-order.sh). A boolean expression over
     # three steps' outputs, so a started job renders exactly one of these.
     ("deploy", "superseded"): ("true", "false"),
+    # `images and scan`: whether main moved past this commit before anything
+    # was promoted (the `newest` and `after` steps; test_release_newest_only.py).
+    ("build", "superseded"): ("true", "false"),
 }
 
 

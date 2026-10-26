@@ -38,7 +38,7 @@ import logging
 import random
 import time
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from google.api_core.exceptions import Aborted
@@ -159,6 +159,12 @@ def _newest_disable(db: Any, tenant: Tenant) -> dict[str, str]:
 #: tests/unit/worker/test_merge_action.py.
 MERGE_WAIT_METADATA_KEY = "merge_wait"
 MERGE_WAKE_MARKER = "wake_requested_at"
+#: The wake tick's record of a merge step's owner-question hold, inside
+#: `merge_wait` (MERGE-OUTSIDE-ENDS, part of #2441): the park instant it read
+#: (`parked_at`) and, once the hold's pull request was merged or closed
+#: outside the workflow, the marker. `swarm_api.mergewake.OWNER_HOLD_KEY`,
+#: held equal by tests/unit/control_plane/test_merge_outside_ends.py.
+OWNER_HOLD_KEY = "owner_hold"
 
 #: A MERGE verdict's integrator, published by swarm-api without a worker
 #: (#748, `swarm_api.verdictpublish`): the marker it writes on the step, its
@@ -259,6 +265,34 @@ def owner_wait(task: Task, key: str) -> bool:
     """
     return any(isinstance(block, dict) and isinstance(block.get(key), dict)
                for block in task.blocked_by or ())
+
+
+def _instant(value: Any) -> datetime | None:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def owner_hold_marked(task: Task) -> str | None:
+    """The wake reason of an owner-question hold the wake tick marked, else None (#2441).
+
+    Marked means `merge_wait.owner_hold.wake_requested_at` set at the park
+    instant this task is parked at now (`next_eligible_at`, the worker's park
+    instant): a mark the tick wrote for an earlier park answers nothing.
+    """
+    wait = (task.metadata or {}).get(MERGE_WAIT_METADATA_KEY)
+    hold = wait.get(OWNER_HOLD_KEY) if isinstance(wait, dict) else None
+    if not isinstance(hold, dict) or not hold.get(MERGE_WAKE_MARKER):
+        return None
+    parked_at = _instant(hold.get("parked_at"))
+    if parked_at is None or parked_at != _instant(task.next_eligible_at):
+        return None
+    return str(hold.get("wake_reason") or "wake_requested")
 
 
 def account_park_provider(task: Task) -> str | None:
@@ -2322,7 +2356,9 @@ class Scheduler:
                 # (#2070) is woken by swarm-api's answer route once none is
                 # open, and never expires (owner decision 2026-10-23,
                 # "Resume on answer, no expiry"). It holds no lease while
-                # it waits (invariant 1).
+                # it waits (invariant 1). Its pull request merged or closed
+                # outside the workflow wakes it too (#2441).
+                self._wake_owner_hold(task, report)
                 continue
             parked_at = task.next_eligible_at or task.updated_at
             if parked_at + timedelta(seconds=limit) > now:
@@ -2349,6 +2385,36 @@ class Scheduler:
             else:
                 self._count_stale(outcome, report)
         return ended
+
+    def _wake_owner_hold(self, task: Task, report: DrainReport) -> bool:
+        """Return an owner-question hold to READY on the wake tick's marker (#2441).
+
+        MERGE-OUTSIDE-ENDS (BGD 2026-10-26): a merge held on owner questions
+        whose pull request was merged or closed outside the workflow finishes
+        on its own. swarm-api's wake tick reads the pull request -- the
+        scheduler holds no forge token -- and marks `merge_wait.owner_hold`
+        with `wake_requested_at` and the park instant it read. Only a mark
+        bound to THIS park counts (`owner_hold_marked`): a mark that outlived
+        an earlier park, which the worker parked again on an open pull
+        request, would otherwise wake it on every drain. A forged mark costs
+        one early wake, whose worker re-reads the pull request and parks
+        again on an open one. Promotion writes the task alone; only
+        admission takes capacity (invariants 1 and 3), and the next attempt
+        is fenced as any other (invariant 5).
+        """
+        reason = owner_hold_marked(task)
+        if reason is None:
+            return False
+        return self._promote(
+            task,
+            kind="owner_hold_wake",
+            detail={
+                "reason": "wake_requested",
+                "wake_reason": reason,
+                "park_reason": ParkReason.HUMAN_REQUIRED.value,
+            },
+            report=report,
+        )
 
     def _sweep_awaiting_input(self, report: DrainReport) -> None:
         """Apply `fail_workflow` to await-input steps waiting for a person. Never promotes, never expires.

@@ -95,9 +95,14 @@ def test_it_runs_on_main_only_and_never_on_a_pull_request():
     on = _hotfix()["on"]
     assert set(on) == {"push", "workflow_dispatch"}, f"hotfix.yml triggers on {sorted(on)}"
     assert on["push"]["branches"] == ["main"]
-    # Exactly where a release can start, so a hotfix is possible exactly where
-    # a release is.
-    release_paths = set(_workflow("release.yml")["on"]["push"]["paths"])
+    # Wherever a release path changes, so a hotfix is possible wherever a
+    # change can reach dev. release.yml has run on every push to main since
+    # 2026-10-26 (#2438, test_release_newest_only.py); these are the paths
+    # it filtered on until then.
+    release_paths = {
+        "apps/**", "images/**", "terraform/**", "kubernetes/**", "scripts/**",
+        ".trivyignore.yaml", ".github/workflows/release.yml", ".github/actions/release-*/**",
+    }
     assert release_paths <= set(on["push"]["paths"]), sorted(release_paths - set(on["push"]["paths"]))
     assert ".github/workflows/hotfix.yml" in on["push"]["paths"]
 

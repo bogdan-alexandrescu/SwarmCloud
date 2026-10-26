@@ -1,0 +1,138 @@
+#!/usr/local/bin/python3 -I
+"""coderabbit: the CodeRabbit CLI, handed the workspace's key when it has one.
+
+    coderabbit review --agent          # review the lane's changes
+    coderabbit review --base main
+
+The vendor's binary is /opt/coderabbit/coderabbit (images/agent-runtime-base/
+Dockerfile pins it); this launcher is what PATH finds. It exists for one
+reason: the CLI takes its API key ONLY as `--api-key <key>` on `review` or
+`auth login` ("there is no API-key environment variable", its own `--help`,
+0.9.1). `auth login` would store the key under $HOME, which in an attempt is
+the work directory, and the work directory is checkpointed. So the key is
+never stored: it is read from the released secret's file on every call and
+given to that one process.
+
+WHERE THE KEY COMES FROM (docs/worker-images.md, "CodeRabbit"). A workspace
+admin stores it as the workspace secret `coderabbit-api-key` (kind api_key)
+and grants it to the profile that runs the lane (`profile:claude-code`,
+`profile:codex`, ...), slot `files`. The worker releases it before the agent
+starts, as it releases every granted secret (agent_worker.secretrelease): a
+0600 file under the worker's private/ directory, never checkpointed, listed
+by name in the manifest at $SWARM_SECRETS_MANIFEST, registered with the
+worker's redaction before the file is written, and removed when the attempt
+ends. This launcher reads that one entry. A step whose workspace granted no
+such secret has no manifest entry: the CLI runs without a key and says it is
+not signed in. Nothing fails at start.
+
+WHAT IT NEVER DOES: print the key, write it anywhere, or put it in an
+environment. The key is in the CLI's argv for the life of that process,
+which only this pod's processes can read -- the agent's own uid -- and the
+worker scrubs it from every log and artifact it uploads.
+
+It also switches off the CLI's self-update (the binary is root-owned and
+pinned; an update could not land and would only cost a download) and its
+telemetry, and drops $SWARM_SECRETS_MANIFEST from the CLI's environment: the
+CLI needs the one key, not the list of every secret the step holds.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Callable, Mapping, Sequence
+
+#: The vendor's binary, installed by the Dockerfile beside this file.
+REAL = "/opt/coderabbit/coderabbit"
+#: The worker's manifest variable (`agent_worker.secretrelease.MANIFEST_ENV`).
+MANIFEST_ENV = "SWARM_SECRETS_MANIFEST"
+#: The workspace secret's name, and the slot every agent profile declares
+#: (`swarm_common.profiles._FILES_SLOT`). tests/unit/worker/test_coderabbit_cli.py
+#: holds the docs to these.
+SECRET_NAME = "coderabbit-api-key"
+SLOT = "files"
+#: The commands that take `--api-key`. No command at all is the CLI's default
+#: mode, a review (`coderabbit --agent` reviews).
+KEYED_COMMANDS = ("review",)
+#: The CLI's own flag for the key, on `review` and `auth login`.
+KEY_FLAG = "--api-key"
+#: Asking for help or the version needs no key and must not be given one.
+NO_KEY_FLAGS = frozenset({"-h", "--help", "-v", "--version"})
+#: Set for the CLI on every call. Values, never credentials.
+CLI_ENV = {"CODERABBIT_CLI_DISABLE_AUTO_UPDATE": "true", "CR_CLI_TELEMETRY_DISABLED": "true"}
+
+
+def api_key(environ: Mapping[str, str]) -> str | None:
+    """The released key, or None when this step was released none."""
+    path = environ.get(MANIFEST_ENV)
+    if not path:
+        return None
+    try:
+        manifest = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    items = manifest.get("secrets") if isinstance(manifest, dict) else None
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("name") != SECRET_NAME or item.get("slot") != SLOT:
+            continue
+        secret_path = item.get("path")
+        if not isinstance(secret_path, str) or not secret_path:
+            return None
+        try:
+            value = Path(secret_path).read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        return value or None
+    return None
+
+
+def wants_key(args: Sequence[str]) -> bool:
+    """Whether this invocation is one the CLI accepts `--api-key` on, and the
+    caller did not pass one of its own."""
+    # `--api-key KEY` and its `=` form both have the flag before any `=`.
+    if any(a.partition("=")[0] == KEY_FLAG for a in args):
+        return False
+    if any(a in NO_KEY_FLAGS for a in args):
+        return False
+    command = next((a for a in args if not a.startswith("-")), None)
+    return command is None or command in KEYED_COMMANDS
+
+
+def command_line(args: Sequence[str], key: str | None) -> list[str]:
+    """The vendor binary's argv: `args`, with `--api-key` added when there is
+    a key and the command takes one. Before a `--`, which ends the options."""
+    argv = list(args)
+    if key and wants_key(argv):
+        at = argv.index("--") if "--" in argv else len(argv)
+        argv[at:at] = [KEY_FLAG, key]
+    return [REAL, *argv]
+
+
+def cli_environ(environ: Mapping[str, str]) -> dict[str, str]:
+    env = {k: v for k, v in environ.items() if k != MANIFEST_ENV}
+    env.update(CLI_ENV)
+    return env
+
+
+def main(argv: Sequence[str], environ: Mapping[str, str],
+         execve: Callable[[str, list[str], dict[str, str]], object] = os.execve) -> int:
+    args = list(argv[1:])
+    key = api_key(environ)
+    if key is None and wants_key(args):
+        print(
+            f"coderabbit: this step was released no workspace secret {SECRET_NAME!r}, "
+            "so the CLI runs without a key. A workspace admin stores it and grants it "
+            f"to this runner profile, slot {SLOT!r} (docs/worker-images.md, \"CodeRabbit\").",
+            file=sys.stderr,
+        )
+    full = command_line(args, key)
+    execve(REAL, full, cli_environ(environ))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv, os.environ))

@@ -123,6 +123,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 113 | `profiles.py`: a `claude-code-large` runner profile on the `large` class with a 14,400 s timeout, picked by name for heavy lanes (AUTONOMY-DESIGN, part of #1933) | ACCEPTED by the owner 2026-10-22 and APPLIED by the pull request that adds this line (lane AU9-PROFILE-LARGE, part of #1933; Q6 of `docs/design/agent-autonomy.md` §7: "Accept contract request 113: a claude-code-large profile") |
 | 114 | `CONTRACT.md` invariant 7: swarm-api alone starts with Cloud Run's startup CPU boost, the one recorded exception; every other Cloud Run service and every worker stays under invariant 7 as written (API-CPU-BOOST, part of #1816) | ACCEPTED by BGD 2026-10-23 (#1816 option (a)) and APPLIED by PR 2132; recorded here by lane FOLLOWUPS-1023 (part of #2150). The invariant's text is unchanged |
 | 115 | `models.py`: `Task.publish_to_pr`, the existing pull request a lane's commits are pushed onto instead of opening one, typed rather than carried in `metadata.dispatch` (PUBLISH-TO-PR, part of #2183) | open, REQUESTED 2026-10-24 by lane PUBLISH-TO-PR. Not applied, and not needed for the feature to work: the field ships in the signed `metadata.dispatch` block, as `strategy` and `continues` do |
+| 116 | `specsign.py`: `SETTINGS_MAC_FIELDS` gains a `"qa"` block, `("flows_per_step",)`, so the workspace's QA batch size is signed like `merge` and `code_intelligence` (QA-TRIPWIRE-MAC, part of #2136) | ACCEPTED by BGD 2026-10-26 (answering QA-FLOWS-CAP's question, task_23a1c31d528e450187b8). Not applied: `apps/common/swarm_common/` is frozen and a lane does not edit it |
 
 ---
 
@@ -14378,3 +14379,86 @@ already pays: a reader has to know the block to find it.
 branch, image, command or backend parameter. **9**: the pull request is read,
 and its branch pushed, with the tenant's own forge credential, and its head
 branch must be a lane branch of the submitting tenant. **1-8** are untouched.
+
+## 116. `specsign.py`: a `"qa"` block in `SETTINGS_MAC_FIELDS`, for the workspace's QA batch size (QA-TRIPWIRE-MAC, part of #2136)
+
+**Status:** ACCEPTED by BGD 2026-10-26, answering lane QA-FLOWS-CAP's
+question ("Should a 'qa' MAC block be added to the frozen contract?",
+task_23a1c31d528e450187b8, answered 08:26Z: "Request a 'qa' block").
+Filed by lane QA-TRIPWIRE-MAC. Not applied: `apps/common/swarm_common/` is
+frozen, and this lane does not edit it.
+
+### What is true today
+
+QA-FLOWS-CAP (PR 2409) adds a per-workspace default for how many read-only
+flows one live-browser step runs, `qa_flows_per_step` (1-30, default 15),
+stored in `workspace_settings/{tenant_id}` beside `judgment_backend`,
+`merge` and `code_intelligence`, and written by
+`apps/swarm-api/swarm_api/qasettings.py`. A QA run that names no
+`flows_per_step` of its own, and every scheduled `visual-qa` firing, reads
+it. No block of `SETTINGS_MAC_FIELDS` covers it, so it is not signed.
+
+### Why
+
+[tenant-settings-integrity.md](design/tenant-settings-integrity.md) §1.3:
+any tenant worker can write `workspace_settings/<B>` (rows 5-7 are the
+fields already there), and the QA batch size is now read from that
+document. So tenant A's worker can choose tenant B's batch size. The harm
+is bounded, because PR 2409's reader treats any stored value other than an
+int in 1-30 as unset, and a run's own value overrides the workspace's. A
+forger can choose only a batch size B's admin could have chosen. But that
+choice still changes B's runs: a batch of 30 gives each flow 240 s rather
+than 480 s (2409's timeout arithmetic), and it changes how many steps and
+how much spend a leg takes. It is the same kind of write as row 6's
+`merge.*`, which is signed for that reason.
+
+### The change
+
+```python
+SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    "top": ("judgment_backend",),
+    "merge": ("mode", "train_size", "max_train_age_minutes"),
+    "code_intelligence": ("jev", "context", "context_ab", "graph_delivery",
+                          "judgment_backend"),
+    "qa": ("flows_per_step",),
+})
+```
+
+Nothing else in `specsign.py` changes: `canonical_settings_block` already
+takes any listed block, and the block name is inside the bytes, so a `qa`
+MAC cannot be replayed onto another block or tenant.
+`tests/unit/common/test_settings_block.py`, which pins the mapping, gains
+the entry in the same change.
+
+### The follow-up once it is applied
+
+* `qasettings` stores the value as a `qa` map, `qa: {flows_per_step, mac}`,
+  and signs it on every write with `judgment.sign_block(..., block="qa")`,
+  as `mergesettings.py` signs `merge`.
+* Its reader takes the block through `judgment.trusted_block(tenant_id,
+  "qa", ...)`, so a tenant on the MAC cutover whose `qa` block does not
+  verify gets the default, 15. The 1-30 bound stays as a second check.
+* `judgment.WRITER_FIELDS` gains `"qa": ("flows_per_step",)`
+  (`tests/unit/control_plane/test_settings_mac.py` holds it equal to the
+  contract's blocks), so `scripts/resign-workspace-settings.sh` signs a
+  stored `qa` block like the others.
+* The value PR 2409 stores at the top level, `qa_flows_per_step`, is read
+  as a fallback only for a tenant not yet on the cutover, then retired.
+* §1.3 of the design gains a row for `workspace_settings/<B>.qa.*`.
+
+### What it would break if accepted
+
+Nothing at once. A new block changes no other block's bytes, so every MAC
+stored today still verifies. Until the follow-up lands, no writer signs a
+`qa` block, and `trusted_block` is not called for it.
+
+### If it is declined
+
+The batch size stays unsigned, and the 1-30 bound is its only defence: a
+forger picks B's batch size within what B's admin could pick.
+
+### Invariants
+
+**9** is what this protects: one tenant's worker must not set another
+tenant's settings. **10** holds either way: a caller names a bounded
+integer, never a spec. **1-8** are untouched.

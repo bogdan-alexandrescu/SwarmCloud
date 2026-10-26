@@ -57,6 +57,7 @@ const proto = HTMLElement.prototype
 const had = {
   client: Object.getOwnPropertyDescriptor(proto, 'clientWidth'),
   offset: Object.getOwnPropertyDescriptor(proto, 'offsetWidth'),
+  scroll: Object.getOwnPropertyDescriptor(proto, 'scrollWidth'),
 }
 function size(room: number) {
   Object.defineProperty(proto, 'clientWidth', {
@@ -75,9 +76,17 @@ function size(room: number) {
       return WIDTH[label] ?? 0
     },
   })
+  // The fit reads More from what it draws (VQ-008 review): its label's whole
+  // text; the 30 px of padding and gap is the sheet's, read from the button.
+  Object.defineProperty(proto, 'scrollWidth', {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.classList.contains('ag-tabs-more-label') ? 7 * (this.textContent ?? '').length : 0
+    },
+  })
 }
 afterEach(() => {
-  for (const [k, d] of [['clientWidth', had.client], ['offsetWidth', had.offset]] as const) {
+  for (const [k, d] of [['clientWidth', had.client], ['offsetWidth', had.offset], ['scrollWidth', had.scroll]] as const) {
     if (d) Object.defineProperty(proto, k, d)
     else delete (proto as unknown as Record<string, unknown>)[k]
   }

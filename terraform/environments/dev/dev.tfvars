@@ -19,11 +19,17 @@ extra_labels = {
 
 # --- network ---------------------------------------------------------------
 # Deliberately disjoint from anything agents-staging-vpc might use.
-subnet_cidr         = "10.40.0.0/20"
-pods_cidr           = "10.44.0.0/14"
-services_cidr       = "10.48.0.0/20"
-gke_master_cidr     = "172.16.32.0/28"
-nat_static_ip_count = 1
+subnet_cidr     = "10.40.0.0/20"
+pods_cidr       = "10.44.0.0/14"
+services_cidr   = "10.48.0.0/20"
+gke_master_cidr = "172.16.32.0/28"
+# 1 -> 2: BGD, 2026-10-26, before the raised pools (BROWSER-POOL-100: 180 GKE
+# pods platform-wide, a tenant up to 100) fill the one address's 64,512 ports;
+# 655 packets were already dropped for lack of a port in the 7 days to
+# 2026-10-21 (#1471). EVERY EGRESS ALLOW-LIST MUST ADD THE NEW ADDRESS: it is
+# served as MCP_EGRESS_ADDRESSES and is what model providers allow-list
+# (modules/network nat_addresses).
+nat_static_ip_count = 2
 restrict_egress     = false
 
 # --- GKE Autopilot (browser / GPU / >32 GiB only) --------------------------
@@ -145,14 +151,50 @@ cleanup_dry_run = false
 # `provider:mock-provider:tenant:eng` (100). mock-provider is what the mock
 # runner reports at runtime and no catalogue profile names it, so terraform
 # creates neither pool and `--check` does not compare them.
+# BROWSER-POOL-100 (BGD, 2026-10-26, part of #2136): the browser pool provides
+# 100 units, and they run BESIDE claude-code's 80 standard, not instead of them.
+# A claude-code-browser task acquires every pool of pool_names_for() in one
+# transaction (invariant 2), so each pool it shares with claude-code had to hold
+# both: 100 browser x 1 unit (1 since contract request 79, 2026-10-14) + 80
+# standard x 1 unit = 180. The pools, and what each needed:
+#
+#   global                 shared with claude-code       100 -> 180
+#   resource:browser       browser alone                  20 -> 100
+#   runner:claude-code-browser   browser alone           (global) -> 100, stated
+#   backend:GKE_AUTOPILOT  shared with claude-code       100 -> 180 (below)
+#   provider:anthropic     shared with claude-code       120 -> 200 (below)
+#   provider:<p>:tenant:<t>      every tenant's floor     40 -> 100 (owner, below)
+#   tenant:<t>             NOT raised: each is one tenant's own ceiling (eng 45,
+#     smoke 20, a workspace its record's), which still binds below 100.
+#
+# provider_tenant 40 -> 100: BGD, 2026-10-26, answering BROWSER-POOL-100's
+# question "should any single tenant be able to hold the 100 browser units?"
+# with "raise every tenant's floor". It lifts provider:<p>:tenant:<t> for every
+# provider a tenant declares, so the platform-wide pools must follow
+# (variables.tf's floor rule): anthropic 2 x 100 = 200, openai 1 x 100 = 100.
+# A tenant's own tenant:<t> pool is NOT raised by this, so eng still runs at
+# most 45 at once until its capacity is raised through the admin API.
+#
+# A browser pod is 4 vCPU requested (worker 2 + display 2; limits 4 + 3) and
+# 8 GiB, request == limit (invariant 7), so 180 pods ask for 720 vCPU and
+# 1,440 GiB. It fits the quota: us-central1 regional CPUS read 216 of 3,000 in
+# use on 2026-10-21 (docs/scaling.md), and 216 + 720 = 936. Not re-read for this
+# change: this lane's identity has no compute.regions.get. No compute class pins
+# a family (no ComputeClass, nodeSelector or machine-family in kubernetes/,
+# terraform/ or the scheduler's pod spec, grep 2026-10-26), so T2D's 128 vCPU
+# quota (below) caps none of these pods.
+#
+# AS EVERYWHERE IN THIS BLOCK, NONE OF THIS CHANGES THE LIVE POOLS (the
+# ignore_changes note above): each needs
+# `scripts/pool-limit.sh --pool <pool> --limit <n>`.
 pool_limits = {
-  global          = 100
+  global          = 180
   default_tenant  = 40
-  provider_tenant = 40
+  provider_tenant = 100
 
   resource_classes = {
     standard = 80
-    browser  = 20
+    browser  = 100
     large    = 40
   }
 
@@ -162,6 +204,9 @@ pool_limits = {
     claude-code = 80
     codex       = 20
     browser     = 20
+    # Stated rather than left to fall back to `global`, which is 180 now and
+    # would say nothing about browser: resource:browser's 100.
+    claude-code-browser = 100
   }
 
   # GKE_AUTOPILOT 40 -> 100: owner, 2026-10-07, accepting contract request 53
@@ -173,6 +218,11 @@ pool_limits = {
   # us-central1 regional CPUS read 2,990 of 3,000 free on 2026-10-07, and
   # 100 x 4 vCPU = 400.
   #
+  # GKE_AUTOPILOT 100 -> 180: BROWSER-POOL-100 (2026-10-26). claude-code's 80
+  # standard plus 100 browser units, every one of them a GKE pod; at 100 this
+  # pool would bind at 20 browser tasks beside a full claude-code. 180 x 4 vCPU
+  # = 720 against the 3,000 regional CPUS (the arithmetic above pool_limits).
+  #
   # NO COMPUTE CLASS MAY PIN T2D. T2D_CPUS quota in us-central1 is 128 vCPUs,
   # 32 standard pods; the pods carry no nodeSelector, so Autopilot's default
   # class picks from every family, and a T2D pin (or a ComputeClass listing
@@ -181,7 +231,7 @@ pool_limits = {
   # resources" (request 53, "What the probe saw go wrong").
   backends = {
     CLOUD_RUN_JOB = 100
-    GKE_AUTOPILOT = 100
+    GKE_AUTOPILOT = 180
   }
 
   providers = {
@@ -189,8 +239,8 @@ pool_limits = {
     # per-tenant one and the per-tenant ceiling stops meaning anything. The
     # rule at variables.tf:337 enforces this; it is not a guideline.
     #
-    #   anthropic  eng + smoke             = 2 x 40 = 80    (set: 120)
-    #   openai     eng                     = 1 x 40 = 40    (set: 40)
+    #   anthropic  eng + smoke             = 2 x 100 = 200  (set: 200)
+    #   openai     eng                     = 1 x 100 = 100  (set: 100)
     #
     # anthropic stays at 120 after u-bogdan left this map (W9, 2026-10-09),
     # above the floor of 80, because u-bogdan still runs on the shared
@@ -201,7 +251,17 @@ pool_limits = {
     # (#628): 100 is below the new floor and the plan would refuse it. The
     # floor is what forces 120, not a measurement; smoke's own pool is
     # min(max_active, capacity_units) = 20, so acceptance can add at most 20.
-    anthropic = 120
+    #
+    # 120 -> 180: BROWSER-POOL-100 (2026-10-26). claude-code and
+    # claude-code-browser are both anthropic, so 80 standard beside 100
+    # browser is 180 anthropic leases; at 120 this pool would bind at 40
+    # browser tasks. Still a ceiling AIMD searches below (the 429 back-off
+    # above), not a promise.
+    #
+    # 180 -> 200: provider_tenant 100 (owner, 2026-10-26) sets the floor at
+    # 2 x 100, and the plan refuses anything below it. `global` (180) still
+    # binds first, so this admits no more than 180 at once.
+    anthropic = 200
 
     # Exactly the floor provider_tenant = 40 implies, and the live value since
     # the 2026-10-02 doubling. It is NOT a measurement: the account-pool reasoning
@@ -212,7 +272,11 @@ pool_limits = {
     # If that uniformity turns out to be wrong, the fix is a per-provider
     # tenant ceiling, not a smaller number here -- a number below this floor
     # does not fail at runtime, it fails the plan.
-    openai = 40
+    #
+    # 40 -> 100: the floor provider_tenant 100 implies (owner, 2026-10-26). It
+    # is a ceiling with no OpenAI account pool behind it; codex's own
+    # runner:codex (20) still binds first.
+    openai = 100
   }
 }
 
@@ -282,8 +346,14 @@ tenants = {
     # already 45 but capacity_units 40 capped the pool at 40. Terraform creates
     # the tenant document once and ignores later changes, so these record the
     # live state rather than enforce it.
-    max_active     = 45
-    capacity_units = 45
+    #
+    # 45 -> 100: BGD, 2026-10-26, so one tenant can hold the 100 browser units
+    # (BROWSER-POOL-100's question; provider_tenant 100 alone left eng at 45).
+    # Live once set through `PUT /v1/admin/tenants/eng/limits`; eng's namespace
+    # ResourceQuota (kubernetes/apply.sh, default 100 pods) must rise with it, or
+    # 100 browser pods at 4 vCPU fill it exactly.
+    max_active     = 100
+    capacity_units = 100
     # The CI fixer (.github/workflows/ci-fix.yml) acts for this tenant, which
     # owns the swarm pull requests it fixes. Listed here, NOT added to
     # eng@saga.xyz: that group holds project-wide admin roles on this shared

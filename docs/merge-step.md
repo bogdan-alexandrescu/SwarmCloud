@@ -29,7 +29,65 @@ is a fix round's, and a conflicting pull request goes to a conflict fix round
 instead of a six-hour wait for checks -- the second section below.**
 **Revised 2026-10-14: a lane workflow's red or conflicting pull request runs
 bounded fix rounds by itself, two by default, re-running a flaky job before
-it spends an agent -- the first section below.**
+it spends an agent -- the second section below.**
+**Revised 2026-10-26: a merge held on owner questions whose pull request was
+merged or closed outside the workflow finishes on its own -- the first
+section below.**
+
+## Revised 2026-10-26: a held merge whose pull request ended outside the workflow finishes (MERGE-OUTSIDE-ENDS, part of #2441)
+
+Owner decision (BGD), 2026-10-26: **a parked merge step whose pull request
+was merged or closed outside the workflow finishes on its own. It must never
+stay parked forever.**
+
+What happened. JOIN-UI-ADMIN's merge step parked PARKED `HUMAN_REQUIRED` at
+01:52Z on one owner question its review named in `verdict.needs_owner`
+(#2070). Its PR 2387 was merged by hand at 07:25Z, and the step stayed
+parked. That park is woken only by the answer that leaves no named question
+open, and the scheduler's human-wait expiry (`_expire_human_waits`) spares
+it on purpose ("Resume on answer, no expiry", 2026-10-23), so nothing would
+ever have ended it. It was cancelled by hand.
+
+The rule, in three places, each for the reason given:
+
+* **swarm-api's merge wake tick reads the hold's pull request**
+  (`mergewake.wake_owner_holds`). The scheduler holds no forge token and must
+  not, and the tick already reads CI parks every minute per tenant with the
+  tenant's own `-git` token -- so it is the place, as for CI. One indexed
+  equality query for the named tenant's PARKED `HUMAN_REQUIRED` agents, kept
+  only where `blocked_by` carries `park_phase: "owner_questions"`; at most
+  one read per `CI_READ_SECONDS`; the same quota deferral and refused-quota
+  hold; the tenant's own token, never another tenant's agent (invariant 9).
+  It reads only whether the pull request is open, closed or merged -- the
+  number the merge's signed target's opener recorded -- and never its checks.
+  Merged or closed, it writes `merge_wait.wake_requested_at` / `wake_reason`
+  (`pull_request_merged`, `pull_request_closed`) and the same mark in
+  `merge_wait.owner_hold`, beside `parked_at`, the park instant it read. All
+  in one transaction guarded on the agent still being this tenant's and still
+  parked the same way. It never moves the agent and takes no capacity
+  (invariant 1).
+* **The scheduler returns the hold to READY on that mark** (`_wake_owner_hold`,
+  reached from `_expire_human_waits`, which still never expires the hold),
+  and only on a mark whose `parked_at` is the instant the agent is parked at
+  now. A mark outlives its park on the document; without that binding a step
+  parked again on an open pull request would be woken by its old mark on
+  every drain. Promotion writes READY alone; the next attempt is admitted
+  all-or-nothing and fenced under a new generation like any other
+  (invariant 5).
+* **The woken merge step re-reads the pull request before the hold**
+  (`merge._ended_outside`), because a merged pull request needs no answers.
+  The mark is on a tenant-writable document, so it is a reason to look and
+  never a fact. Merged, by anyone: SUCCEEDED, the summary saying "merged
+  outside the workflow" with the merge commit, who merged it and when;
+  nothing is merged and no question is asked again. Closed unmerged:
+  CANCELLED (`MERGE_REFUSED`, `pull_request_closed`). Still open (a forged or
+  stale mark), not this workflow's branch, or unreadable: it parks on the
+  hold again exactly as before. An unmarked hold reads no credential, as
+  #2070 made it.
+
+A forged mark costs one early wake, whose worker reads GitHub and parks
+again. A hold whose pull request stays open is untouched: it waits for the
+answer, and never expires.
 
 ## Revised 2026-10-14: auto fix rounds (lane SPEED-D2)
 
