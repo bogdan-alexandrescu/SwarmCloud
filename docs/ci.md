@@ -48,6 +48,7 @@ Three reasons, in the order they cost the most:
 | `ci-fix.yml` | `application` **completing red on a `swarm/<task-id>` branch** of this repository (`workflow_run`, so only as the file is on `main`) ([below](#the-ci-fixer)) | `fix a red SwarmCloud pull request` |
 | `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged; `workflow_run: completed` of every pull-request workflow, and the `workflow_dispatch` that sends ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch, a failing check or a missing merge App, with a comment; waits while a check still runs; otherwise enables native squash auto-merge under the PR's title); `re-evaluate ready pull requests when a run finishes` dispatches it again for each `ready` pull request at a finished run's head ([below](#a-ready-label-that-lands-while-checks-run-is-re-evaluated), #697); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name), #621). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
+| `unit-weights-refresh.yml` | daily 05:17 UTC (`schedule`) and manual dispatch, on `main` only; never a push or a pull request ([below](#refreshing-the-shard-weights)) | `refresh the unit shard weights` (opens or updates one pull request from `chore/unit-weights-refresh`, never labelled `ready`) |
 
 Three details in that table are easy to misread and each has bitten someone:
 
@@ -3487,29 +3488,71 @@ from them.
 
 ### Refreshing the shard weights
 
-The weights go stale as tests are added and change — the split stays correct
+The weights go stale as tests are added and change. The split stays correct
 (every file still runs exactly once, an unknown one at the median weight) but
 drifts out of balance. Every shard on `main` uploads what it measured, per
-file, as the artifact `unit-durations-<k>` (30 days). To refresh, from a green
-push run on `main`:
+file, as the artifact `unit-durations-<k>` (30 days).
 
-```bash
-run="$(gh run list --workflow application.yml --branch main --event push --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
-gh run download "$run" -p 'unit-durations-*' -D /tmp/unit-durations
-jq -S -s 'add' /tmp/unit-durations/*/unit-durations.json > tests/unit/scripts/unit_test_durations.json
-```
-
-and open a pull request with the file. Only the weights' ratios matter, so CI's
-seconds replacing a container's is fine. When fewer than 80 % of the test files a
-run selects have a weight, `unit_shards.py count` writes a `::warning` and a
-step-summary line naming the coverage (`n of m test files weighted (p%)`) and
-does not fail. It used to be a hard assertion in `test_unit_shards.py`, and new
-test files outran the manual refresh: `main` and every pull request were red on
-it from `82638be8` to `e8cf8b7c` on 2026-10-25 (1069 of 1337 weighted, #2364),
+**Stale weights warn; they never fail.** When fewer than 80 % of the test
+files a run selects have a weight, `unit_shards.py count` writes a `::warning`
+and a step-summary line naming the coverage (`n of m test files weighted
+(p%)`) and does not fail. It used to be a hard assertion in
+`test_unit_shards.py`, and new test files outran the manual refresh: `main`
+and every pull request were red on it from `82638be8` to `e8cf8b7c` on
+2026-10-25 (1069 of 1337 weighted, #2364, failure-review fr-87a9244bfaef),
 though an unweighted file runs at the median and nothing was dropped.
 `test_unit_shards.py` still holds the weights well-formed (every key a
 `tests/unit/**.py` path, every value positive) and the split to within 10 % of
 an even share.
+
+**The refresh is automatic** (#2364).
+[`unit-weights-refresh.yml`](../.github/workflows/unit-weights-refresh.yml)
+runs daily at 05:17 UTC and on dispatch, on `main` only, and calls
+[`scripts/refresh-unit-weights.sh`](../scripts/refresh-unit-weights.sh):
+
+* **Which run it reads.** The newest successful `push` run of
+  `application.yml` on `main` that still has `unit-durations-*` artifacts. A
+  push run on `main` skips python-unit when the identical tree was already
+  tested ([main reuses the tested tree](#main-reuses-the-tested-tree)) and so
+  uploads nothing; the script walks back through the last 20 green push runs
+  until one has them, and fails, rather than reporting nothing to do, when
+  none does. It prints the run it used and how many files it merged.
+* **The merge**
+  ([`scripts/lib/merge_unit_weights.py`](../scripts/lib/merge_unit_weights.py),
+  replacing the old recipe's `jq -S -s add`, which kept only what one run
+  measured): a measured weight replaces the stored one, a file that no longer
+  exists is dropped, an existing file nobody measured keeps its stored weight,
+  and a measured path outside `tests/unit` is ignored. It writes the shards'
+  own format (indent 1, sorted keys, trailing newline), so an unchanged
+  measurement changes no byte, and the run ends there, opening nothing.
+* **The pull request.** Changed, the file is committed on top of `main` to
+  the bot-owned branch `chore/unit-weights-refresh` (force-updated; no other
+  branch is ever forced), and one pull request from it is opened, or retitled
+  in place, as "The unit shard weights cover *n* of *m* test files again,
+  refreshed from main's green run *id*", with the before and after coverage
+  in its body.
+* **Why the merge App's token.** A branch pushed or a pull request opened with
+  the workflow's `GITHUB_TOKEN` starts no workflow, so the refresh would sit
+  with no CI ([why](#a-ready-pull-request-is-merged-by-github-not-by-a-session)).
+  The App's token (contents and pull-requests write) pushes and opens it; the
+  workflow's own token only reads runs and downloads artifacts. The key lives
+  in the main-only `repo-secrets` environment, like every other reader of it.
+* **Why it is not labelled `ready`.** Weights decide only how the shards
+  balance, but a refresh measured on a bad day (a slow runner, one shard that
+  hung) moves every file's share at once. A person reads the before and after
+  numbers and merges it; nothing merges it on its own.
+
+**By hand, as the fallback** (the App unconfigured, or a refresh wanted from a
+particular run), from a checkout of `main` with `gh` logged in:
+
+```bash
+scripts/refresh-unit-weights.sh --write-only            # newest green push run with the artifacts
+scripts/refresh-unit-weights.sh --write-only --run <id> # that run
+```
+
+It rewrites `tests/unit/scripts/unit_test_durations.json` with the same merge
+and prints the same counts; commit it and open a pull request. Only the
+weights' ratios matter, so CI's seconds replacing a container's is fine.
 
 ### Where pull-request CI time goes (2026-10-09)
 

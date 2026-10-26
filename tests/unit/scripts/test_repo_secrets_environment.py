@@ -39,6 +39,8 @@ KNOWN_READERS = {
     ("auto-merge.yml", "disable"),
     ("auto-merge.yml", "ready-on-green"),
     ("merge-train.yml", "tick"),
+    # The shard-weight refresh (#2364, added 2026-10-26).
+    ("unit-weights-refresh.yml", "refresh"),
     ("runner-fallback.yml", "judge"),
     ("accept.yml", "sandbox"),
     ("accept.yml", "sandbox-results"),
