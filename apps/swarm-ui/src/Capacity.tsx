@@ -4,7 +4,18 @@ import { classUnits, useResourceClasses } from './Blockers'
 import { isPaused, type Result } from './fetch'
 import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
-import { POOLS_POLL_MS, capacityPoll, comparePools, poolHref, poolViewer, tableMode, useLinkedPool, usePhoneTables } from './capacityPoll'
+import {
+  POOLS_POLL_MS,
+  capacityPoll,
+  comparePools,
+  loweredCeiling,
+  nearCeiling,
+  poolHref,
+  poolViewer,
+  tableMode,
+  useLinkedPool,
+  usePhoneTables,
+} from './capacityPoll'
 import { leaseCoverage } from './Holders'
 import { Screen } from './Shell'
 import './styles/capacity.css'
@@ -198,6 +209,9 @@ function PoolsSummary({ capacity }: { capacity: Capacity }) {
   const families = new Set(pools.map((p) => poolKind(p.name))).size
   const full = pools.filter((p) => !overCeiling(p) && p.effective_limit !== null && p.effective_limit > 0 && p.active >= p.effective_limit).length
   const lowered = pools.filter((p) => p.effective_limit !== null && p.hard_limit !== null && p.effective_limit < p.hard_limit).length
+  // NEAR CEILING IS COUNTED BY THE ROW'S OWN RULE (VQ-031), as `too small` is:
+  // the mark and this clause are both `nearCeiling`.
+  const near = pools.filter(nearCeiling).length
   const paused = pools.filter(isPaused).length
   const over = pools.filter(overCeiling).length
   const small = pools.filter((p) => isTooSmall(p, poolWeight(p, classes)?.units ?? null)).length
@@ -208,6 +222,7 @@ function PoolsSummary({ capacity }: { capacity: Capacity }) {
   const clauses = [
     `${pools.length} pools in ${families} famil${families === 1 ? 'y' : 'ies'}`,
     full > 0 ? `${full} full` : null,
+    near > 0 ? `${near} near ceiling` : null,
     lowered > 0 ? `${lowered} lowered` : null,
     paused > 0 ? `${paused} paused` : null,
     small > 0 ? `${small} too small` : null,
@@ -620,7 +635,10 @@ function PoolRow({
           c14), reversing PR 1853, which had printed the word here too after
           QA-099. Pool limits keeps `configured` in the dim ink (AdmSetBy);
           do not flip this one back to match it. */}
-      <td role="cell" data-label="Set by" title={by.detail}>
+      {/* `cap-by-cfg` LETS THE PHONE ROW DROP IT (VQ-032): the compact row
+          keeps Set by only when something other than the configured limit
+          sets the ceiling, which is when it says anything. */}
+      <td role="cell" data-label="Set by" title={by.detail} className={by.term === 'configured' ? 'cap-by-cfg' : undefined}>
         {by.term === 'configured' ? (
           <span className="cap-setby-cfg" role="img" aria-label="configured">·</span>
         ) : (
@@ -655,7 +673,7 @@ interface PoolClass {
 
 /**
  * ONE CLASSIFICATION FOR A POOL, READ BY THE TABLE AND THE CARDS ALIKE (CP-14,
- * #85): paused, over ceiling, limit 0, full, ok.
+ * #85): paused, over ceiling, limit 0, full, near ceiling, lowered, ok.
  *
  * The two views used to decide for themselves, and disagreed: the table drew
  * a healthy pool `ok` and the Cards view drew nothing; the card coloured a
@@ -717,6 +735,16 @@ function classifyPool(pool: Pool, weight: { name: string; units: number | null }
   const unset = !paused && limit === null
   const zero = !paused && !over && limit === 0
   const full = !over && limit !== null && limit > 0 && pool.active >= limit
+  // NEAR ITS CEILING, AND LOWERED (VQ-031, visual QA pass 1). `anthropic · eng`
+  // at 46 of a lowered 50 read `ok` in the grey an idle pool takes, and the
+  // head's `4 lowered` named four rows nothing on them marked. Near is the
+  // full mark's amber, in the chip, the row and the track alike (CP-14: one
+  // answer); lowered is a neutral fact about the ceiling -- not a warning on
+  // its own -- with what lowered it in its title. Neither moves the pool into
+  // Needs action (owner decision 2026-10-01: waiting clears both); both lead
+  // their family (`poolProblemRank`).
+  const near = nearCeiling(pool)
+  const lowered = !paused && !over && loweredCeiling(pool)
   const ceiling = zero
     ? blockerCeiling({ reason: '', pool: pool.name, limit: 0 })
     : unset
@@ -761,13 +789,30 @@ function classifyPool(pool: Pool, weight: { name: string; units: number | null }
   if (full) {
     chips.push({ cls: 'is-warn', word: 'full', title: `At its ceiling: ${pool.active} of ${limit} units in use.` })
   }
+  if (near) {
+    chips.push({
+      cls: 'is-warn',
+      word: 'near ceiling',
+      title: `${pool.active} of ${limit} units in use (${Math.round((pool.active / (limit as number)) * 100)}%): little room is left for the next agent.`,
+    })
+  }
+  // Lowered says what `ok` would have hidden; beside another mark it would only
+  // repeat the `/30` and the Set by the row already prints.
+  if (lowered && chips.length === 0) {
+    const by = setBy(pool)
+    chips.push({
+      cls: 'is-info',
+      word: 'lowered',
+      title: by.term === 'configured' ? `Lowered to ${limit} from its configured ${pool.hard_limit}.` : by.detail,
+    })
+  }
   // §6.6 AND THE CP-14 RULING: a healthy pool gets the ok mark -- the filled
   // disc and the word -- and the mark is a text grey, not a hue (`--text-faint`
   // since CH-17 set the chip primitive's grey). Healthy carries no hue; a quiet
   // grey screen is what a healthy platform looks like.
-  if (chips.length === 0) chips.push({ cls: 'is-ok', word: 'ok', title: 'Read, capped, not paused, and not at its ceiling.' })
+  if (chips.length === 0) chips.push({ cls: 'is-ok', word: 'ok', title: 'Read, capped, not paused, not lowered, and not near its ceiling.' })
 
-  const track = over ? 'is-bad' : paused ? 'is-paused' : zero || unset ? zeroTone : small ? 'is-paused' : full ? 'is-warn' : undefined
+  const track = over ? 'is-bad' : paused ? 'is-paused' : zero || unset ? zeroTone : small ? 'is-paused' : full || near ? 'is-warn' : undefined
   const row =
     track === undefined
       ? undefined
@@ -781,7 +826,9 @@ function classifyPool(pool: Pool, weight: { name: string; units: number | null }
               ? `${zeroTone} limit-unset`
               : small
                 ? 'is-paused below-units'
-                : 'is-warn full'
+                : full
+                  ? 'is-warn full'
+                  : 'is-warn near'
   return { chips, row, track }
 }
 

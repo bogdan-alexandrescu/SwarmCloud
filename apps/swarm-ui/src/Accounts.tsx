@@ -28,7 +28,7 @@ import { AGE_TICK_MS, useNow } from './useNow'
 import { AccountsTable } from './AccountsTable'
 import { AcctState } from './AccountState'
 import { DuplicateBanner, Forecast, RuleLine, Verdict, usePoolWaiting, type WaitRead } from './AccountsVerdict'
-import { agoPastDay, type PoolAccount } from './accountsPool'
+import { agoPastDay, utcAt, type PoolAccount } from './accountsPool'
 import { AgentCap, SheetAccount, SheetDuplicate, SheetForecast, SheetHealth, SheetVerdict, SheetWindows } from './AccountSheet'
 import { AccountsTimeline, ViewToggle } from './AccountsTimeline'
 import { VIEW_KEY, viewOf, type AccountsView } from './accountsLanes'
@@ -1262,7 +1262,7 @@ function NameHead({ account, owned, reload }: { account: Account; owned: boolean
             }
           }}
         />
-        <Button kind="primary" size="sm" type="submit" busy={busy ? 'saving…' : false}>
+        <Button kind="primary" size="sm" type="submit" busy={busy ? 'Saving…' : false}>
           Save name
         </Button>
         <Button kind="ghost" size="sm" disabled={busy} onClick={cancel}>
@@ -1377,7 +1377,7 @@ function Detail({
             // THE CLOCK, THEN THE AGE (G5-16): a clock lines the hand-out up
             // against the holds' Since column. The age is `agoPastDay`, the
             // row's own, so the two never round one hand-out two ways.
-            <span title={new Date(account.last_assigned_at as string).toLocaleString()}>
+            <span title={account.last_assigned_at as string}>
               {givenAt(account.last_assigned_at as string, now)} ({agoPastDay(account.last_assigned_at as string, now)})
             </span>
           )}
@@ -1657,27 +1657,32 @@ function heldFor(ms: number): string {
   return `${Math.floor(h / 24)}d ${h % 24}h`
 }
 
+/**
+ * A clock in UTC, `17:46Z` (VQ-035, visual QA pass 1). The sheet printed
+ * `last given out 17:46` and the holds' Since in the browser's zone, beside
+ * `resets 05:30Z` and the Timeline's `Times are UTC`: two clocks on one
+ * sheet, one of them unmarked. Every time on Accounts is now UTC with its Z.
+ */
 function clockOf(iso: string): string {
   const d = new Date(iso)
   return Number.isFinite(d.getTime())
-    ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+    ? `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}Z`
     : '?'
 }
 
 /**
- * WHEN AN ACCOUNT WAS LAST GIVEN OUT, as a clock (G5-16): `22:30` TODAY, and
- * the date before it on any other day -- a bare `22:30` from three days ago
+ * WHEN AN ACCOUNT WAS LAST GIVEN OUT, as a clock (G5-16): `22:30Z` TODAY, and
+ * the date before it on any other day -- a bare `22:30Z` from three days ago
  * reads as tonight's. An unreadable instant is the em dash.
  *
  * TODAY, NOT "WITHIN 24 HOURS" (live QA CAP-13): `20:00 · 9h ago` was
  * yesterday evening, and read at 05:30 it looked like a time later today.
+ *
+ * IN UTC, WITH ITS Z (VQ-035): `utcAt`, the Timeline's and the Clears
+ * column's own clock, so "today" is the UTC day the Z names.
  */
 export function givenAt(iso: string, now: number): string {
-  const t = Date.parse(iso)
-  if (!Number.isFinite(t)) return '—'
-  if (new Date(t).toDateString() === new Date(now).toDateString()) return clockOf(iso)
-  const day = new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric' })
-  return `${day} ${clockOf(iso)}`
+  return utcAt(iso, now)
 }
 
 /**
@@ -2384,7 +2389,7 @@ function RefreshControl({
         aria-disabled={sending || undefined}
         onClick={sending ? undefined : () => void run()}
       >
-        {sending ? 'exchanging…' : 'Refresh this account'}
+        {sending ? 'Exchanging…' : 'Refresh this account'}
       </button>
 
       {state.kind === 'answered' && <RefreshAnswer result={state.result} />}
@@ -2558,7 +2563,7 @@ function Lending({
           }}
           disabled={!dirty || busy || unknown.length > 0}
         >
-          save lending
+          Save lending
         </button>
         {/* The second `.tag` on this screen, collapsed into the same primitive
             for the same reason as the state chip above. */}
@@ -2596,8 +2601,8 @@ function Lending({
               <Button kind="ghost" onClick={closeConfirm}>
                 Keep the list as it is
               </Button>
-              <Button kind="primary" busy={busy ? 'saving…' : false} onClick={() => void save()}>
-                save lending
+              <Button kind="primary" busy={busy ? 'Saving…' : false} onClick={() => void save()}>
+                Save lending
               </Button>
             </>
           }
@@ -2776,7 +2781,7 @@ function ModelClasses({ account, reload }: { account: Account; reload: () => voi
           ))}
         </fieldset>
         <button type="button" onClick={() => void save()} disabled={!dirty || busy}>
-          {busy ? 'saving…' : 'save classes'}
+          {busy ? 'Saving…' : 'Save classes'}
         </button>
         {saved && <ToneMark tone="is-ok">saved</ToneMark>}
       </span>
@@ -2903,7 +2908,7 @@ function StateControls({ account, reload }: { account: Account; reload: () => vo
               <Button
                 kind={asked.to === 'AVAILABLE' ? 'primary' : 'danger'}
                 disabled={needsReason && reason.trim() === ''}
-                busy={busy ? 'saving…' : false}
+                busy={busy ? 'Saving…' : false}
                 onClick={() => void move(asked.to)}
               >
                 {moveLabel(asked.to)}
@@ -4427,7 +4432,7 @@ function SignInDone({
       )}
       <p className="acct-buttons">
         <button type="button" onClick={onAgain}>
-          done
+          Done
         </button>
       </p>
     </div>
@@ -4706,7 +4711,7 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
           disabled={!armed || busy}
           onClick={() => void run()}
         >
-          {busy ? 'removing…' : `remove ${account.label}`}
+          {busy ? 'Removing…' : `Remove ${account.label}`}
         </Button>
         <span className="client-side">type the label to arm this</span>
       </span>

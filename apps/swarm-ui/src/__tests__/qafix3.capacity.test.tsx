@@ -303,7 +303,7 @@ describe('capacity-002: Accounts\' remove button is drawn off until it is armed'
     await renderAccounts()
     // Remove is in the account's sheet (#2222), which opens on its row.
     fireEvent.click(document.querySelector<HTMLButtonElement>('button.acct-open')!)
-    const btn = screen.getByRole('button', { name: 'remove alice-personal' }) as HTMLButtonElement
+    const btn = screen.getByRole('button', { name: 'Remove alice-personal' }) as HTMLButtonElement
     expect(btn.disabled).toBe(true)
     for (const theme of THEMES) {
       const env = { ...WIDE, theme }
@@ -322,7 +322,7 @@ describe('capacity-002: Accounts\' remove button is drawn off until it is armed'
     fireEvent.change(screen.getByRole('textbox', { name: 'Type alice-personal to confirm removal' }), {
       target: { value: 'alice-personal' },
     })
-    const armed = screen.getByRole('button', { name: 'remove alice-personal' }) as HTMLButtonElement
+    const armed = screen.getByRole('button', { name: 'Remove alice-personal' }) as HTMLButtonElement
     expect(armed.disabled).toBe(false)
     // MUTATION: draw it secondary when armed too -- the one irreversible
     // control on the screen loses its red once it can fire.

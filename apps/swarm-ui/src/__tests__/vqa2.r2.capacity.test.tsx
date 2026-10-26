@@ -402,7 +402,7 @@ describe('V182: a finished sign-in shows its receipt, not the form', () => {
     // No empty form beside the receipt, Start disabled under it.
     expect(panel.querySelector('form.acct-add-form')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Start the sign-in' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'done' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
     await waitFor(() => expect(document.querySelector('.acct-add-panel')).toBeNull(), WAIT)
     expect(document.activeElement).toBe(document.querySelector('.acct-add'))
   })
@@ -520,12 +520,13 @@ describe('V005/V013: the quota columns follow what they hold', () => {
         '</colgroup></table></div>',
     )
     const widths = [...host.querySelectorAll('col')].map((c) => painted(c, 'width', WIDE))
-    // Tenant keeps its share; the bounded columns are as wide as what they
-    // hold; Feeds pool sets no width and takes what is left (QA-057).
-    // Each bounded column is capped at its old share, so a narrower table
-    // shrinks it back to the percentage instead of overflowing the card.
+    // Tenant is as wide as a tenant id since VQ-036, capped at its old share;
+    // the bounded columns are as wide as what they hold; Feeds pool sets no
+    // width and takes what is left (QA-057). Each bounded column is capped at
+    // its old share, so a narrower table shrinks it back to the percentage
+    // instead of overflowing the card.
     expect(widths).toEqual([
-      '16%', 'min(168px, 16%)', 'min(116px, 11%)', null, 'min(104px, 10%)', 'min(124px, 12%)', 'min(136px, 13%)', 'min(76px, 7%)',
+      'min(120px, 16%)', 'min(168px, 16%)', 'min(116px, 11%)', null, 'min(104px, 10%)', 'min(124px, 12%)', 'min(136px, 13%)', 'min(76px, 7%)',
     ])
     // At the ~1054px table they were measured on, they leave Feeds pool its 15%.
     const at = (w: string, t: number): number => {
