@@ -1132,7 +1132,13 @@
    one-cell grid could not grow: the card stayed 107px, its rows ran on past
    its padding, and the stop at the cell's foot still covered `(plan.md)`.
    `height: auto` sizes the cell to the card's content and its 42px strip;
-   `align-self: stretch` keeps a shorter card filling its slot as before. */
+   `align-self: stretch` keeps a shorter card filling its slot as before.
+
+   AND THE SLOT'S HEIGHT IS A FLOOR (VQ-WORKFLOWS re-review 3). With the slot
+   at an inline `height: 107px` the browser still held the grid's one row to
+   107px, so the card stayed short and the stop still covered `(plan.md)` at
+   1440 in both themes. Workflows.tsx gives the slot `min-height` instead: the
+   row is as tall as the card, and never shorter than `layoutOf`'s figure. */
 .wf-canvas .node-slot { display: grid; }
 .wf-canvas .node-slot > .node { position: relative; inset: auto; grid-area: 1 / 1; height: auto; align-self: stretch; }
 .wf-canvas .node-slot > .node-stop,

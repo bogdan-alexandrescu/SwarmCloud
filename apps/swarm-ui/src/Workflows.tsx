@@ -4614,10 +4614,14 @@ function StepNode({
   return (
     <div
       className={`node-slot${liveTask !== null ? ' has-live' : ''}`}
+      // `layoutOf`'s height is the slot's FLOOR, not its height (VQ-WORKFLOWS
+      // re-review 3): a fixed height held the slot's one-cell grid, and so the
+      // card, to 107px for scan-terraform while `↑ plan (plan.md)` wrapped,
+      // and the stop at the cell's foot was drawn over `(plan.md)`.
       style={
         liveTask !== null
-          ? ({ left: x, top: y, width: w, height: h, '--node-live-h': `${LIVE_CARD_H}px` } as CSSProperties)
-          : { left: x, top: y, width: w, height: h }
+          ? ({ left: x, top: y, width: w, minHeight: h, '--node-live-h': `${LIVE_CARD_H}px` } as CSSProperties)
+          : { left: x, top: y, width: w, minHeight: h }
       }
     >
       <button

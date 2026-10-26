@@ -1086,7 +1086,7 @@ describe('semantic zoom', () => {
       // `plan` is a root, so its height is the tier's own with no dependency
       // line added -- the figure `nodeHeightAt` sums from the rows the tier
       // draws, which is 246 with the four figures on it and 140 without.
-      expect(Number.parseFloat(slotOf(container, 'plan').style.height)).toBe(
+      expect(Number.parseFloat(slotOf(container, 'plan').style.minHeight)).toBe(
         nodeHeightAt(tier),
       )
       // And the whole canvas is inside the column, which is the point of all of
@@ -1881,7 +1881,7 @@ describe('the owner’s decisions: the open card', () => {
     // children.
     const figuresH = Math.ceil(10 + 42 + 2 + 14 * 1.5 + 3 * (12 * 1.45) + (8 + 4 * (14 * 1.5 + 1) + 3 * 2) + 4 * 4)
     expect(nodeHeightAt('figures'), 'the node does not count its source line').toBe(figuresH)
-    expect(Number.parseFloat(slotOf(container, 'work').style.height)).toBe(figuresH)
+    expect(Number.parseFloat(slotOf(container, 'work').style.minHeight)).toBe(figuresH)
     // AND IN THE WIDTH: the longest line it can print fits the content box,
     // and so does the widest figure beside its label.
     expect(monoW('cost · tokens from result'.length, 12)).toBeLessThanOrEqual(NODE_W - NODE_CHROME_W)
@@ -2341,12 +2341,12 @@ describe('#105: a failure’s cause is on the canvas, not only in the inspector'
     const settled = new Set(w.steps.filter((s) => s.task_id != null && ['SUCCEEDED', 'FAILED', 'CANCELLED', 'DEAD_LETTERED'].includes(tasks.get(s.task_id)?.state ?? '')).map((s) => s.step_id))
     const layout = layoutOf(w.steps, new Set<number>(), autoTier(w.steps, undefined, new Set(['join']), true, settled), new Set(['join']), undefined, settled)
     const placed = layout.nodes.find((n) => n.step.step_id === 'join')!
-    expect(Number.parseFloat(slotOf(container, 'join').style.height)).toBe(placed.h)
+    expect(Number.parseFloat(slotOf(container, 'join').style.minHeight)).toBe(placed.h)
     expect(placed.h).toBe(heightOf(w.steps[w.steps.length - 1]!, layout.tier, layout.nodeW, true, settled.has('join')))
     expect(placed.h).toBeGreaterThan(heightOf(w.steps[w.steps.length - 1]!, layout.tier, layout.nodeW, false, settled.has('join')))
     // A node that succeeded carries no line and is not made taller for one.
     expect(nodeNamed(container, 'plan').querySelector('.node-note')).toBeNull()
-    expect(Number.parseFloat(slotOf(container, 'plan').style.height)).toBe(nodeHeightAt(layout.tier) - (settled.has('plan') ? stripSavingAt(layout.tier) : 0))
+    expect(Number.parseFloat(slotOf(container, 'plan').style.minHeight)).toBe(nodeHeightAt(layout.tier) - (settled.has('plan') ? stripSavingAt(layout.tier) : 0))
   })
 
   it('keeps the line to one line in the sheet, and shows the whole error on focus', () => {
@@ -2609,7 +2609,7 @@ describe('#330 item 4: smaller Graph nodes', () => {
     expect(cascade(STYLES, stop, 'bottom', { width: 1440 }).winner?.value).toBe('4px')
     // The slot is given exactly the height the tier claims.
     // `plan` succeeded, so it is settled and gives back its strip (browser QA D29).
-    expect(Number.parseFloat(slotOf(container, 'plan').style.height)).toBe(nodeHeightAt('names') - stripSavingAt('names'))
+    expect(Number.parseFloat(slotOf(container, 'plan').style.minHeight)).toBe(nodeHeightAt('names') - stripSavingAt('names'))
   })
 
   it('fits a 3-step chain on one screen, at the tier that keeps the most fields', () => {

@@ -510,6 +510,10 @@ describe('VQ-WORKFLOWS re-review minors', () => {
   // The card is then the slot's inline height (`layoutOf`'s 107px for
   // scan-terraform), its rows run on past its padding, and the stop at the
   // cell's foot covers `(plan.md)` -- what the re-review rendered at 1440.
+  // MUTATION: give the slot its inline `height` again rather than a
+  // `min-height`. A grid with a fixed height holds its one row, and so the
+  // card, to `layoutOf`'s figure in the browser, and the stop covered
+  // `(plan.md)` at 1440 in both themes (VQ-WORKFLOWS-FIX3 review).
   it('lets a card taller than its slot carry the stop below its last line, not over it', async () => {
     render(<Routed initial="wf=wf_chain" />)
     const node = await waitFor(() => {
@@ -520,7 +524,9 @@ describe('VQ-WORKFLOWS re-review minors', () => {
     const slot = node.parentElement!
     const stop = slot.querySelector<HTMLElement>(':scope > .node-stop')!
     const env = { width: 1440 }
-    const slotH = Number.parseFloat(slot.style.height)
+    // The layout's height is a floor, never a fixed height.
+    const fixed = slot.style.height !== ''
+    const slotH = Number.parseFloat(slot.style.minHeight || slot.style.height)
     expect(slotH, 'the slot has no inline height').toBeGreaterThan(0)
     // jsdom lays nothing out, so this is the box the cascade gives, counted:
     // the one-cell grid's row is as tall as the card, and the card is either
@@ -533,6 +539,9 @@ describe('VQ-WORKFLOWS re-review minors', () => {
       if (pct !== null) return (slotH * Number(pct[1])) / 100
       expect(height).toBe('auto')
       expect(['normal', 'stretch']).toContain(alignSelf)
+      // A slot of fixed height holds its one-cell grid to that height, and
+      // the card stretched to the cell with it, whatever the card draws.
+      if (fixed) return slotH
       return Math.max(slotH, content)
     }
     const pad = (painted(node, 'padding', env) ?? '').split(/\s+/).map((v) => Number.parseFloat(v))
