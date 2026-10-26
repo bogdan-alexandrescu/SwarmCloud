@@ -210,8 +210,10 @@ export const HELP_GROUPS: readonly { id: HelpGroupId; title: string }[] = [
   // their pages' topics sat under How the platform behaves or had none, and
   // each Config page's `?` led to the first group. In the panel's order. The
   // ids are not section ids, so `/help/<group>` is never read as a section's
-  // old address (help.anchor.test.tsx).
-  { id: 'automating-work', title: 'Automate: schedules and approvals' },
+  // old address (help.anchor.test.tsx). A title is at most 30 characters, the
+  // length of the Config one: a longer one overruns the rail's text track at
+  // 1440 and pushes its count out of the column (help.vq055.test.tsx).
+  { id: 'automating-work', title: 'Automate: schedules, approvals' },
   { id: 'configuring-a-workspace', title: 'Config: setting up a workspace' },
   { id: 'administering-the-platform', title: 'Admin: running the platform' },
   // G1-21: the keyboard had no topic, and belongs to none of the above.

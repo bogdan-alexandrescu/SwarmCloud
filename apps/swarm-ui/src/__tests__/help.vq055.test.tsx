@@ -34,6 +34,14 @@ describe('VQ-055: Help has a group for Automate, Config and Admin', () => {
     }
   })
 
+  it('keeps every group title short enough for its count to hold the rail column', () => {
+    // Review of this lane, 2026-10-26: 'Automate: schedules and approvals'
+    // (33 characters) rendered ~199px in the rail's ~181px text track at 1440,
+    // pushing its count past the row's edge. 'Config: setting up a workspace'
+    // (30) is the longest that fits. MUTATION: restore the 33-character title.
+    for (const g of HELP_GROUPS) expect(g.title.length, g.title).toBeLessThanOrEqual(30)
+  })
+
   it('has a Config topic for the setup strip, secret scopes, the wizard, MCP servers, roles and workspace settings', () => {
     const config = inGroup(groupTitled('Config')!.id)
     for (const id of [
