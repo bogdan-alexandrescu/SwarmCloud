@@ -1,5 +1,5 @@
-import { useEffect, useSyncExternalStore } from 'react'
-import { loadMe } from './api'
+import type { Result } from './fetch'
+import type { Me } from './types'
 
 /**
  * THE PERSON'S TIME ZONE (VQ-023, owner decision 2026-10-26, "A per-person
@@ -10,7 +10,8 @@ import { loadMe } from './api'
  * Before this, Overview printed UTC and counted "today" from 00:00 UTC,
  * Outcomes named America/Los_Angeles, and Lanes drew the browser's local time
  * unlabelled -- three clocks, so "today" meant different things on two pages.
- * Every page that names a time of day reads it from here: `useTimeZone` for
+ * Every page that names a time of day reads it from here: `useTimeZone`
+ * (`useTimeZone.ts`, the React side) for
  * the zone, `formatClock`/`formatDateTime` for the words, `startOfDay` for
  * where "today" begins.
  *
@@ -130,7 +131,8 @@ function publish(next: string): void {
   for (const fn of listeners) fn()
 }
 
-function subscribe(fn: () => void): () => void {
+/** Call `fn` whenever the page's zone changes; returns the unsubscribe. */
+export function subscribeZone(fn: () => void): () => void {
   listeners.add(fn)
   return () => listeners.delete(fn)
 }
@@ -170,14 +172,20 @@ export function setZone(next: string): string | null {
   return canonical
 }
 
-/** Learn who is signed in, once per page, and only when a zone is stored here. */
-function learnPerson(): void {
+/**
+ * Learn who is signed in, once per page, and only when a zone is stored here.
+ * `load` is `loadMe` from `api.ts`, passed in by `useTimeZone.ts`: this module
+ * imports neither React nor the API, because `overviewReads.ts` -- and through
+ * it the pure check layer that `node --test` loads (test/checks.test.mjs) --
+ * reads the zone from here.
+ */
+export function learnPerson(load: (options: { frame?: boolean }) => Promise<Result<Me>>): void {
   if (asked) return
   asked = true
   if (storedKeys().length === 0) return
   // Inside a promise, so a read that throws before it returns leaves the guess.
   void Promise.resolve()
-    .then(() => loadMe({ frame: true }))
+    .then(() => load({ frame: true }))
     .then(
       (r) => {
         if (person !== null || (r.status !== 'ok' && r.status !== 'stale')) return
@@ -186,12 +194,6 @@ function learnPerson(): void {
       },
       () => undefined,
     )
-}
-
-/** The page's zone, re-rendering when the person picks another. */
-export function useTimeZone(): string {
-  useEffect(learnPerson, [])
-  return useSyncExternalStore(subscribe, currentZone, currentZone)
 }
 
 /** Forget the person and read storage again, as a fresh page would. For tests. */

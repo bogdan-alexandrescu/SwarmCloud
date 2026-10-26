@@ -50,7 +50,7 @@ import { disabledSentence } from './ProfileMatrix'
 import { parkWord } from './words'
 import { AGED_AFTER_MS, CountNote, PageHead, RefreshControl, staleFoot, timeAgo, useClaimPageAge, useIdleStop, usePoll } from './Shell'
 import { AGE_TICK_MS, PageClock, usePageClock, useNow as useAgeClock } from './useNow'
-import { useTimeZone } from './timezone'
+import { useTimeZone } from './useTimeZone'
 import {
   CONCURRENCY_STATES,
   PARK_REASONS,

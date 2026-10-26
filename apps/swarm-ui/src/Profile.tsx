@@ -9,7 +9,8 @@ import { noteOwnName } from './Spine'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { humaniseUntil, timeAgo } from './types'
 import { accountName } from './accountName'
-import { UTC, allZones, browserZone, canonicalZone, formatClock, notePerson, setZone, useTimeZone } from './timezone'
+import { UTC, allZones, browserZone, canonicalZone, formatClock, notePerson, setZone } from './timezone'
+import { useTimeZone } from './useTimeZone'
 import './styles/keys.css'
 import type {
   Me,
