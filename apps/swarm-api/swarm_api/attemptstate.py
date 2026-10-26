@@ -1662,9 +1662,10 @@ class AttemptState:
 
     def upstream(self, attempt: AttemptTuple, upstream_task_id: str) -> dict[str, Any]:
         """`fetch_parent_states` and `inputs.fetch_upstream_task`: ONLY an id
-        this task declares -- its `depends_on`, its `metadata.input_from` or
-        its dispatch block's `input_parents`, all covered by the spec
-        signature -- or one `_derived_upstream` derives, and only one of this
+        this task declares -- its `depends_on`, its `metadata.input_from`,
+        its dispatch block's `input_parents` or its merge step's
+        `merge_target.pull_request`, all covered by the spec signature --
+        or one `_derived_upstream` derives, and only one of this
         tenant. Anything else is the same 403, whether or not it exists.
 
         Every id is taken from the SIGNED copy of the document it is read
@@ -1694,8 +1695,16 @@ class AttemptState:
         declared: set[str] = {d for d in task.get("depends_on") or [] if isinstance(d, str)}
         metadata = _mapping(task.get("metadata"))
         declared |= {k for k in _mapping(metadata.get("input_from")) if isinstance(k, str)}
-        declared |= {k for k in _mapping(_mapping(metadata.get("dispatch")).get("input_parents"))
-                     if isinstance(k, str)}
+        dispatch = _mapping(metadata.get("dispatch"))
+        declared |= {k for k in _mapping(dispatch.get("input_parents")) if isinstance(k, str)}
+        # A merge-only continuation (`issueci.merge_workflow`,
+        # `MergeSources(continued=True)`) depends on nothing: the task it
+        # merges, in another workflow, is named only here, and is the
+        # merge's first read (#2379 F01, F02). Signed like the rest; the
+        # tenant check below still holds it to this tenant.
+        target = _mapping(dispatch.get("merge_target")).get("pull_request")
+        if isinstance(target, str) and target:
+            declared.add(target)
         refused = UpstreamNotDeclared("that task is not one this task declares as upstream")
         walk = _Walk()
         if upstream_task_id not in declared and not self._derived_upstream(
