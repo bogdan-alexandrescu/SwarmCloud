@@ -60,6 +60,14 @@ def fake_value() -> str:
     return "sk" + "-" + secrets.token_hex(20)
 
 
+def fake_last4() -> str:
+    """Four letters no hex id can hold. A `token_hex(2)` here sat inside one of
+    the response's hex repository ids about once in a few hundred runs, and the
+    "never a value" assertion failed on a match it never served (PR 2387's
+    unit shard 6, 2026-10-26: '71ae')."""
+    return "".join(secrets.choice("ghjkmnpqrtvwxyz") for _ in range(4))
+
+
 @pytest.fixture
 def group_map() -> dict[str, tuple[str, ...]]:
     """alice in eng, bob in research."""
@@ -104,7 +112,7 @@ def seed_secret(db: FakeFirestore, tenant_id: str, name: str, *, repo_id: str | 
         "kind": "api_key", "scope": "repository" if repo_id else "workspace",
         "repo_id": repo_id, "state": state, "managed": "store",
         "current_version": f"projects/test/secrets/{secret_id}/versions/1",
-        "last4": secrets.token_hex(2), "value": fake_value(),
+        "last4": fake_last4(), "value": fake_value(),
         "created_at": AT, "created_by": "alice@example.com"}
     return secret_id
 

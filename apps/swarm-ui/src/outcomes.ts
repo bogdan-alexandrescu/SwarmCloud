@@ -306,6 +306,13 @@ export interface Outcomes {
   generated_at: string
 }
 
+/**
+ * THE HEADLINE'S PAYLOAD (#2422): the page reads `coverage` and `previous` in
+ * a second request after first paint, so a payload that decides something
+ * before then may lack them. Absent is "not read yet", never empty.
+ */
+export type OutcomesHead = Omit<Outcomes, 'coverage' | 'previous'> & Partial<Pick<Outcomes, 'coverage' | 'previous'>>
+
 // ---------------------------------------------------------------------------
 // The tasks behind one figure (#116): `rows=…` on the same route
 // ---------------------------------------------------------------------------
@@ -932,7 +939,7 @@ export function spanCoverage(d: Outcomes): SpanCoverage {
  * one per tenant per UTC day, so "56 days sealed" over a 14-day platform view
  * of four tenants would name a unit the figure is not in.
  */
-export function dayDocWords(d: Outcomes, n: number): string {
+export function dayDocWords(d: Pick<Outcomes, 'scope'>, n: number): string {
   if (d.scope.kind === 'platform') return n === 1 ? 'tenant-day' : 'tenant-days'
   return n === 1 ? 'UTC day' : 'UTC days'
 }
@@ -944,8 +951,9 @@ export function dayDocWords(d: Outcomes, n: number): string {
  * the same gaps for a minute. A partial payload therefore must not say
  * "cached".
  */
-export function cacheable(d: Outcomes): boolean {
-  return d.totals.complete && (d.previous === null || d.previous.complete)
+export function cacheable(d: OutcomesHead): boolean {
+  // No `previous` in the payload: the read did not ask for it, so only the span decides.
+  return d.totals.complete && (d.previous === undefined || d.previous === null || d.previous.complete)
 }
 
 /** The not-read words for a span nobody read, with no digit in them: the figure slot's words. */

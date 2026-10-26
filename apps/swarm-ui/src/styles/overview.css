@@ -159,11 +159,18 @@
 /* EACH COLUMN STACKS ITS OWN CARDS (owner QA N17/D19, 2026-10-04): two rows
    of pairs left ~157px blank beside Cost so far and ~388px beside Headroom,
    each row as tall as its taller card. A column is a stack of cards at their
-   own heights; the pools span both columns under them. Below 1100px the
-   column wrappers step aside and the cards are one column in O1's order. */
+   own heights; Recent failures and the pools span both columns under them.
+   Below 1100px the column wrappers step aside and the cards are one column
+   in O1's order. */
+/* RECENT FAILURES ACROSS BOTH COLUMNS (visual QA VQ-006, 2026-10-26; O1 draws
+   it full width under the two). At the foot of the left column it left the
+   right one blank under Headroom for its whole height, about 550px at 1512.
+   It sits before the pools at every width now, the order G1-07 gave a phone:
+   it is the card a reader acts on, and the pools can be dozens of rows. */
 .ov-cols > .ov-col { display: contents; }
 @media (min-width: 1100px) {
   .ov-cols > .ov-col { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-content: start; align-items: start; min-width: 0; }
+  .ov-cols > .ov-failures { grid-column: 1 / -1; }
   .ov-cols > .ov-pools { grid-column: 1 / -1; }
 }
 @media (max-width: 1099px) {
@@ -171,8 +178,8 @@
   .ov-cols .ov-spend { order: 2; }
   .ov-cols .ov-waiting { order: 3; }
   .ov-cols .ov-headroom { order: 4; }
-  .ov-cols > .ov-pools { order: 5; }
-  .ov-cols .ov-failures { order: 6; }
+  .ov-cols .ov-failures { order: 5; }
+  .ov-cols > .ov-pools { order: 6; }
 }
 
 /* A card per components.html A: the card radius, 12px/14px padding. */
@@ -238,13 +245,20 @@
 .ov-prun li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; min-height: 32px; }
 .ov-prun .sk-st-w { display: none; }
 .ov-prun-m { display: flex; flex-direction: column; min-width: 0; }
-/* THE NAME WRAPS, WHOLE (visual QA run 3, ffp-002, 2026-10-21): cut to one
-   line, every step of one workflow read "<its title> · sc…", cut at the same
-   point, so the step -- the only part that told the rows apart -- was the
-   part lost. It wraps, and an unbroken id breaks where it must. No two-line
-   clamp either: names.css's Overview clamp names `.ov-name` alone, because
-   names.css comes after this sheet in the bundle and a tie there is its. */
-.ov-prun-n { white-space: normal; overflow-wrap: anywhere; color: var(--text); text-decoration: none; }
+/* ONE LINE, THE TITLE CUT AND THE STEP KEPT (visual QA VQ-002, 2026-10-26;
+   O1's 390 frame). ffp-002 (visual QA run 3, 2026-10-21) found that cut at
+   its end, every step of one workflow read "<its title> · sc…" alike, so the
+   step -- the only part that told the rows apart -- was the part lost; it
+   wrapped whole, and a long title took three or four lines, about three
+   agents a screen. The name is two parts now: the workflow's title gives way
+   with an ellipsis, the step after it keeps its width up to two thirds of the
+   row and is cut only past that (`pre` keeps the space before its ` · `,
+   which a flex item would drop, so the text is still the tooltip's). No clamp: names.css's Overview clamp names
+   `.ov-name` alone, because names.css comes after this sheet in the bundle
+   and a tie there is its. */
+.ov-prun-n { display: flex; min-width: 0; white-space: nowrap; color: var(--text); text-decoration: none; }
+.ov-prun-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ov-prun-s { flex: none; max-width: 66%; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
 /* STATE · PROFILE · SHORT WORKFLOW ID UNDER THE NAME (QA G1-08, 2026-10-07):
    the phone dropped all three, and two "implement" rows read alike. */
 .ov-prun-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
@@ -401,19 +415,29 @@
      pill floats mid-page is the scroller's to reserve, once, for every page
      (lane L14), not each page's. */
   .ov-atts { grid-template-columns: minmax(0, 1fr); gap: 6px; }
-  /* THE LINK TAKES A LINE OF ITS OWN (visual QA QA-061, 2026-10-20). Beside
-     the text and `nowrap`, "quota, all tenants · admin →" held about half a
-     390px card and squeezed the title and detail into the rest. The card
-     wraps and the link drops under them, at the right edge. */
-  .ov-att { flex-wrap: wrap; }
-  .ov-att-go { flex-basis: 100%; text-align: right; }
-  /* A split card's links share that line, side by side at its right edge
-     (5b:wg-dark-D1), so each keeps its own width. */
-  .ov-att-acts { flex-basis: 100%; flex-direction: row; flex-wrap: wrap; justify-content: flex-end; gap: 2px 14px; max-width: none; }
-  .ov-att-acts > .ov-att-go { flex-basis: auto; }
-  /* THE DETAIL IS READABLE BEFORE IT IS CUT (visual QA QA-100, 2026-10-20):
-     four lines, beside an ids line or not -- now the rule at every width
-     (`.ov-att-t small` above), so the phone has no clamp of its own. */
+  /* A CHECK IS ONE LINE ON A PHONE: ITS MARK, ITS TITLE AND AN ARROW (visual
+     QA VQ-002, 2026-10-26; O1's 390 frame, "the checks, the three lifecycle
+     figures, then running"). Each card printed its whole detail -- a commit
+     SHA among it -- and two workflow-id links, so the three figures began
+     about a screen and a half down. The ids and the detail are the desktop's;
+     here they are behind the card's link, and in its accessible name. The
+     title keeps its two lines (V143), so the count keeps its noun.
+     QA-061's "the link takes a line of its own" (2026-10-20) is gone with
+     the words it made room for: the link's words step aside, visually only
+     -- the card's or the link's accessible name keeps them -- and the arrow
+     stays at the right edge. */
+  .ov-att-t small, .ov-att-t small.ov-att-ids { display: none; }
+  .ov-att { align-items: center; }
+  .ov-att-go-w, .ov-att.is-split .ov-att-wf.is-cover .ov-att-wf-t { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  /* A split card keeps one way out: the first workflow's link, which carries
+     the card's cover (BGD's decision of 2026-10-23), so a tap anywhere on
+     the card opens the failed workflow. The other workflows and the list are
+     the desktop's links; Recent failures, further down, is the list. */
+  .ov-att.is-split .ov-att-wf:not(.is-cover), .ov-att.is-split .ov-att-go:not(.ov-att-wf) { display: none; }
+  .ov-att-acts { max-width: none; }
+  /* A hand-off banner's Open keeps the line of its own QA-061 gave every
+     `.ov-att-go` here: the banner draws no check card, so VQ-002 leaves it. */
+  .ov-handoff .ov-att-go { flex-basis: 100%; text-align: right; }
   /* Three across, the figure only: the per-state breakdown is the desktop's. */
   .ov-life { gap: 6px; border: 0; background: none; overflow: visible; }
   .ov-lc { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 7px 8px; gap: 0; }

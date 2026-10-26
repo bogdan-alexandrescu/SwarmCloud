@@ -1764,18 +1764,34 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
   })
   // An attempt that has not started has written no transcript yet.
   const started = span?.started != null
+  // THE BROWSER QA AGENT'S LOG IS LONG (BROWSER-TAB-TABS, part of #2423): the
+  // Browser tab's findings were measured on running browser agents with
+  // logs of 20 and more steps, and a four-step log cannot show a log beside
+  // the frame that runs past its pane. Forty browser actions, each a call
+  // and its result, for the render to be checked against.
+  const browserSteps = (from: number): TranscriptStep[] =>
+    Array.from({ length: 40 }, (_, i) => {
+      const id = `toolu_b${String(i).padStart(2, '0')}`
+      const action = ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type'][i % 4]!
+      return [
+        step(from + 2 * i, { kind: 'tool_call', tool: { id, name: action, input: `{\n  "step": ${i + 1}\n}` } }),
+        step(from + 2 * i + 1, { kind: 'tool_result', role: 'user', tool_result: { tool_use_id: id, is_error: false, content: `Step ${i + 1}: ${action} done; the page says "Example Domain".`, images: 0 } }),
+      ]
+    }).flat()
+  const long = taskId === 'task_b40e5a1c' ? browserSteps(4) : []
   const steps: TranscriptStep[] = started
     ? [
         step(0, { kind: 'init', role: 'system', meta: { model: 'claude-opus-5', permission_mode: 'bypassPermissions', tool_count: 14 } }),
         step(1, { text: 'Reading the repository before changing anything.' }),
         step(2, { kind: 'tool_call', tool: { id: 'toolu_01', name: 'Read', input: '{\n  "file_path": "CONTRACT.md"\n}' } }),
         step(3, { kind: 'tool_result', role: 'user', tool_result: { tool_use_id: 'toolu_01', is_error: false, content: '# The contract\n...', images: 0 } }),
+        ...long,
         ...(finished && result !== null
-          ? [step(4, { kind: 'result', role: null, text: result.text, meta: { subtype: result.subtype, is_error: result.is_error, num_turns: 7 } })]
+          ? [step(4 + long.length, { kind: 'result', role: null, text: result.text, meta: { subtype: result.subtype, is_error: result.is_error, num_turns: 7 } })]
           : []),
       ]
     : []
-  const size = started ? 4096 : 0
+  const size = started ? Math.max(4096, steps.length * 120) : 0
   const at = span?.ended ?? FIXTURE_NOW - 4_000
   return {
     status: 'ok',

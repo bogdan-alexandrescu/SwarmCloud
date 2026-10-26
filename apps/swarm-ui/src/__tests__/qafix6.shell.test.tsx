@@ -183,7 +183,7 @@ describe('c: the admin phone header names the workspace as the desktop does, and
     expect(chip.parentElement?.classList.contains('has-chip')).toBe(true)
   })
 
-  it('lets the title take the cut first, and sets no fixed-width children past 390px', () => {
+  it('lets the workspace give way before the title, and sets no fixed-width children past 390px', () => {
     const bar = build('div.sk-app > header.sk-pbar.has-chip', hosts)
     const title = document.createElement('b')
     bar.appendChild(title)
@@ -193,20 +193,22 @@ describe('c: the admin phone header names the workspace as the desktop does, and
     name.className = 'sk-tcn'
     chip.appendChild(name)
     bar.appendChild(chip)
-    // MUTATION: keep the title's 5.5em floor beside the chip and the chip
-    // takes the whole cut: 'Bo…' at 390 (6:admin-007).
-    expect(painted(title, 'min-width', PHONE)).toBe('0')
+    // The chip holds the short key now, so the title keeps its 5.5em floor
+    // beside it as beside the plain label (visual QA VQ-001, part of #2391).
+    // MUTATION: drop the floor beside the chip again and the page name goes
+    // to 'O…' at 390.
+    expect(painted(title, 'min-width', PHONE)).toBe('5.5em')
     // The member's bar (a plain label, no chip) keeps the title's floor.
     const plain = build('div.sk-app > header.sk-pbar > b', hosts)
     expect(painted(plain, 'min-width', PHONE)).toBe('5.5em')
-    // The chip and its name still give way after the title (5b:QA-017).
+    // The chip and its name still give way, and before the title (5b:QA-017, VQ-001).
     expect(painted(chip, 'min-width', PHONE)).toBe('0')
+    expect(painted(chip, 'flex-shrink', PHONE)).toBe('100')
     expect(painted(name, 'text-overflow', PHONE)).toBe('ellipsis')
     // Every child's declared floor, with the bar's padding and gaps, inside the glass.
     const kids = [
       build('div.sk-app > header.sk-pbar.has-chip > button.sk-ibtn', hosts),
       build('div.sk-app > header.sk-pbar.has-chip > span.sk-pill.is-mini', hosts),
-      build('div.sk-app > header.sk-pbar.has-chip > span.sk-adm', hosts),
       build('div.sk-app > header.sk-pbar.has-chip > span.sk-pbell', hosts),
       build('div.sk-app > header.sk-pbar.has-chip > button.sk-top', hosts),
       title,
@@ -214,7 +216,7 @@ describe('c: the admin phone header names the workspace as the desktop does, and
     ]
     const floors = kids.map((k) => Math.max(px(painted(k, 'width', PHONE)), px(painted(k, 'min-width', PHONE))))
     const gap = px(painted(bar, ['column-gap', 'gap'], PHONE))
-    // Eight children (these seven and the 22px mark), so seven gaps, and 12px of padding each side.
+    // Seven children (these six and the 22px mark; the admin tag is in the drawer since VQ-001), so six gaps, and 12px of padding each side.
     const total = floors.reduce((a, b) => a + b, 0) + 22 + gap * kids.length + 2 * 12
     expect(total, `floors ${floors.join(', ')}`).toBeLessThanOrEqual(390)
   })
