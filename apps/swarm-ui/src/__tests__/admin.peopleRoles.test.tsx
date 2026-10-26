@@ -129,8 +129,9 @@ describe('a platform admin reads every person against every workspace (S5c)', ()
     await mount(platform([BOB, DEVOPS, FAY]))
     // MUTATION: draw the Teams column instead of one per workspace -> fails.
     expect(heads()).toEqual(['Person', 'Platform role', 'Engineering', 'Labs', 'Own workspace', 'Claude account', 'Ceiling', 'Last active', 'Manage'])
-    expect(cell('bob@example.com', 'eng')?.textContent).toBe('admin')
-    expect(cell('bob@example.com', 'labs')?.textContent).toBe('viewer')
+    // bob is a platform admin (`admins`): admin in every workspace, whatever is stored (VQ-ROLES, BGD 2026-10-26).
+    expect(visible(cell('bob@example.com', 'eng'))).toBe('admin (platform admin)')
+    expect(visible(cell('bob@example.com', 'labs'))).toBe('admin (platform admin)')
     expect(cell('fay@example.com', 'eng')?.textContent).toBe('member')
     expect(cell('devops@example.com', 'eng')?.dataset.role).toBe('none')
     // Their own workspace's request is a cell of its own row.
@@ -171,10 +172,10 @@ describe('a platform admin reads every person against every workspace (S5c)', ()
   })
 
   it('draws a column whose roles were not read as a dash, never a role', async () => {
-    await mount(platform([{ ...BOB, roles: { eng: 'admin', labs: null } }], { workspaces: [COLUMNS[0], { ...COLUMNS[1], unavailable: true, default_role: null }] }))
+    await mount(platform([{ ...FAY, roles: { eng: 'member', labs: null } }], { workspaces: [COLUMNS[0], { ...COLUMNS[1], unavailable: true, default_role: null }] }))
     // MUTATION: fall back to the column's default for an unread cell -> fails.
-    expect(cell('bob@example.com', 'labs')?.dataset.role).toBe('unread')
-    expect(cell('bob@example.com', 'labs')?.textContent).toBe('—')
+    expect(cell('fay@example.com', 'labs')?.dataset.role).toBe('unread')
+    expect(cell('fay@example.com', 'labs')?.textContent).toBe('—')
   })
 })
 
@@ -204,7 +205,8 @@ describe('a workspace admin reads only their workspaces (S5f)', () => {
   it("reads only the People route and its workspaces' members lists, and writes nothing", async () => {
     const calls = await mount(SCOPED)
     // The joined-by-request mark reads each column's members list (BGD, 2026-10-26); SCOPED has one column.
-    await waitFor(() => expect(calls.map((c) => c.url)).toEqual(['/v1/admin/people', '/v1/workspace/members']), WAIT)
+    // `/v1/tenants/mine` names the workspaces as the switcher does (VQ-056).
+    await waitFor(() => expect(calls.map((c) => c.url).sort()).toEqual(['/v1/admin/people', '/v1/tenants/mine', '/v1/workspace/members']), WAIT)
     expect(calls.filter((c) => c.method !== 'GET')).toEqual([])
   })
 })

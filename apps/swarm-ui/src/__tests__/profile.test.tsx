@@ -219,7 +219,8 @@ describe('Settings › Profile', () => {
     await drawn()
     const row = within(region('Your connections')).getByRole('list', { name: /github/i }).querySelector('[data-tenant="team-x"]')!
     const open = within(row as HTMLElement).getByRole('link')
-    expect(visible(open)).toMatch(/in team-x@example\.com/)
+    // A group workspace with no stored name is named by its id, as the switcher names it (VQ-056).
+    expect(visible(open)).toMatch(/in team-x$/)
     // App's router takes the click (App.tsx, the document click handler); jsdom cannot navigate.
     const route = (e: Event) => e.preventDefault()
     document.addEventListener('click', route)
