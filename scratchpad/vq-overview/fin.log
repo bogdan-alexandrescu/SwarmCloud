@@ -1,0 +1,33 @@
+
+ RUN  v3.2.7 /workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui
+
+ ✓ src/__tests__/stylesheet.gate.test.ts (153 tests) 1036ms
+   ✓ the Overview decisions, as the cascade resolves them > OV-8: underlines a linked tile’s label with `.ctl-link`’s own declarations, and never its figure  314ms
+ ✓ src/__tests__/qa.vqa.checks.overview.test.tsx (5 tests) 4580ms
+   ✓ QA-013: the Needs a look head counts the cards it draws > says how many problems the checks that fired found, and draws that many cards  337ms
+   ✓ QA-061, VQ-002: a check card’s link words never squeeze its title on a phone > steps the link words aside at 390px, keeps the arrow, and draws the words at 1440  1812ms
+   ✓ QA-109: the failures card’s link names the page it opens > says "Agents · failed", the page’s own title and the state the card counts, as a word (VQ-003)  1011ms
+   ✓ VOCAB-AGENTS (QA-109; owner decision 2026-10-20): the cards count agents, never tasks > says "2 failed agents" and "2 parked agents" over the Agents links, and no card says "task"  1166ms
+ ✓ src/__tests__/vq.overview.test.tsx (8 tests) 3925ms
+   ✓ VQ-004: the Needs a look head says one count, then what it is over > reads "N problems · R of T checks ran", N the cards drawn  375ms
+   ✓ VQ-003: Needs a look says states and park reasons as words > prints no state or reason enum in the cards, their names or their tooltips  377ms
+   ✓ VQ-003: Needs a look says states and park reasons as words > names the failures link "Agents · failed", the parked reason "waiting for CI", the quota "throttled"  368ms
+   ✓ VQ-005: one sample of failures, one window, the same words > gives Needs a look and Recent failures the same count and the same cut-off  380ms
+   ✓ VQ-005: one sample of failures, one window, the same words > words Finished today’s partial sample as every other card does  371ms
+   ✓ VQ-006: Recent failures is a full-width row under both columns > sits outside the columns, across both, before the pools  536ms
+   ✓ VQ-002: a phone draws a check as one line and an agent as one line > steps the detail, the ids and the link words aside at 390, and keeps them at 1440  1064ms
+   ✓ VQ-002: a phone draws a check as one line and an agent as one line > cuts a Running row’s workflow title on one line and keeps its step whole  453ms
+ ✓ src/__tests__/overview.handoff.who.test.tsx (7 tests) 1130ms
+   ✓ the Overview's hand-off cards say which agent is waiting (LB-V5) > past three, draw the three oldest and link "+N more waiting" to the Waiting tab  486ms
+   ✓ the Overview's hand-off cards say which agent is waiting (LB-V5) > draws no "more" link at three or fewer  370ms
+ ✓ src/__tests__/qafix5.overview-timeline.test.tsx (9 tests) 1567ms
+   ✓ 5b:wg-dark-D1: the failed-agents card reaches the failed workflow as plainly as the list > draws a link named for the workflow beside the list’s link, not only the id in the sentence  350ms
+   ✓ 5b:wg-dark-D1: the failed-agents card reaches the failed workflow as plainly as the list > names each link by where it goes  302ms
+   ✓ 5b:wg-dark-D1: the failed-agents card reaches the failed workflow as plainly as the list > paints the workflow link as the list’s link is painted, and lets it cover the card  512ms
+ ✓ src/__tests__/sections.stylesheet.test.ts (199 tests) 240ms
+
+ Test Files  6 passed (6)
+      Tests  381 passed (381)
+   Start at  03:52:34
+   Duration  22.42s (transform 5.43s, setup 213ms, collect 8.78s, tests 12.48s, environment 464ms, prepare 91ms)
+

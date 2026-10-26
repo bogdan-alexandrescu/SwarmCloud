@@ -1,0 +1,968 @@
+
+ RUN  v3.2.7 /workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui
+
+ ✓ src/__tests__/honesty.prose.test.tsx (27 tests) 1610ms
+   ✓ Accounts draws a window with the shared track, not the five-cell bar (CP-25) > draws the window’s track across the sheet, at 1440 and at 390 (mock-up A P3)  310ms
+ ✓ src/__tests__/layout.overview.test.tsx (28 tests) 9713ms
+   ✓ OV-9: while the checks read, the lead says so and draws no figure > draws the lead's partial mark with its original rounded corners  605ms
+   ✓ OV-16: the running count re-reads every 60 seconds and says how old it is > re-reads /v1/stats on a 60-second timer and not on the 20-second one  708ms
+   ✓ OV-16: the running count re-reads every 60 seconds and says how old it is > is silent about a fresh count’s age, and shows it in the head as every 20 s  302ms
+   ✓ #227: usePoll leaves nothing behind when the Overview unmounts > fires no timer and keeps no visibilitychange listener after unmount  2466ms
+   ✓ VOCAB-AGENTS (QA-109, part of #1680): Running now and Spend name their empty and unread states by agents > says "No agent exists" on both cards for a tenant with no agents  344ms
+ ✓ src/__tests__/chrome.shared.test.tsx (21 tests) 12785ms
+   ✓ CH-2: the head's read age is the screen's own > says "reading…" while its screen loads, even after the frame's own read has landed  807ms
+   ✓ CH-2: the head's read age is the screen's own > says "reading…" on the Repositories list's own refresh until its read lands  690ms
+   ✓ CH-2: the head's read age is the screen's own > says "not read" when its screen's read failed, and never shows the frame's age  750ms
+   ✓ CH-2: the head's read age is the screen's own > says "not read" on the Repositories list's own refresh when its read failed  919ms
+   ✓ CH-2: the head's read age is the screen's own > shows the list's own age again when the inspector over it closes, with no read in flight  4258ms
+   ✓ CH-2: the head's read age is the screen's own > keeps the list's own age across its tab and state addresses (OV-10), which read nothing  2758ms
+   ✓ CH-17: a read cell is a row in the dock's panel, not a box > draws no border, radius or fill on a cell  306ms
+   ✓ CH-17: a read cell is a row in the dock's panel, not a box > gives a failing cell the table row's own edge: full height for bad, half for warn  441ms
+   ✓ CH-21: a position in the navigation means one thing, at every width > holds the same spine items, in the same order, on every section route  798ms
+   ✓ CH-21: a position in the navigation means one thing, at every width > puts the same spine and panel in a drawer at phone width, behind the phone header  345ms
+   ✓ CH-13: one rule for tables below 900px > caps the held column, so a long route cannot cover the columns beside it at 390  444ms
+ ✓ src/__tests__/intake.runs.test.tsx (29 tests) 61084ms
+   ✓ /runs: the tenant's runs, newest first as served > draws one row per run in the served order, with the state the API names  2218ms
+   ✓ /runs: the tenant's runs, newest first as served > offers the older page the API says exists, and appends it  3566ms
+   ✓ /runs/<id>: one run > shows the state, the plan and its digest, and the links it has  1311ms
+   ✓ /runs/<id>: one run > links the workflow once there is one  2137ms
+   ✓ /runs/<id>: one run > Approve sends the digest of the plan shown, and draws the answer  3280ms
+   ✓ /runs/<id>: one run > a stale-digest refusal re-reads the run and says the plan changed  5544ms
+   ✓ /runs/<id>: one run > Reject sends the shown digest and the reason  4927ms
+   ✓ /runs/<id>: one run > Edit sends the edited plan with the digest it replaces  4421ms
+   ✓ /runs/<id>: one run > a staged plan states its shape and each step's dependencies  1174ms
+   ✓ /runs/<id>: one run > Edit keeps every step's depends_on, so a staged plan does not become a chain  4294ms
+   ✓ /runs/<id>: one run > a FAILED run says why, and offers no action  1407ms
+   ✓ /runs/<id>: one run > the CI states (#454) are named as the API names them, with a mark and what they mean  2963ms
+   ✓ /runs/<id>: one run > the plan names its overlaps as links, with kind and note, ahead of the steps  1442ms
+   ✓ /runs/<id>: one run > an overlap ref that is not owner/repo#N is drawn as text, never a link  302ms
+   ✓ /runs/<id>: one run > a plan that found no overlaps says so, with the open work it read  307ms
+   ✓ /runs/<id>: one run > the editor round-trips every new field and saves with the digest it opened on  5043ms
+   ✓ /runs/<id>: one run > the editor edits requirements, the estimate and a step's files, tests and estimate  5012ms
+   ✓ /runs/<id>: one run > a CHECKING run links its pull request and names the fix rounds left  1425ms
+   ✓ /runs/<id>: one run > a DONE run shows the green sha and Closes when every requirement was confirmed  329ms
+   ✓ /runs/<id>: one run > a run whose review left requirements open says part of, and names them  333ms
+   ✓ /runs/<id>: one run > a FAILED run shows the failing excerpt as text, never as HTML  322ms
+   ✓ /runs/<id>: one run > links the plan and status comments on the issue, and shows a failed write-back  1394ms
+   ✓ /runs/<id>: one run > a poll that serves another plan under an open editor is held; Save sends the digest the editor opened on  3419ms
+   ✓ /runs/<id>: one run > a poll never swaps the plan under Approve: it approves the digest shown until the reader asks for the new plan  3475ms
+ ✓ src/__tests__/drawer.reread.test.tsx (10 tests) 1014ms
+   ✓ the drawer clock does not age a read that failed to refresh (AG-2) > holds the liveness badge and the run figure one poll past the last good read  569ms
+ ✓ src/__tests__/encoding.hues.test.ts (42 tests) 2648ms
+   ✓ the outcome stack is four shapes, not four hues (TS-4) > draws each outcome in a silhouette of its own  631ms
+ ✓ src/__tests__/crossscreen.test.tsx (23 tests) 11642ms
+   ✓ #98: one read age per screen > keeps the list's own age while an agent is open over it  2049ms
+   ✓ #98: one read age per screen > labels Overview's lead count as the checks it counts  453ms
+   ✓ #138: the breadcrumb is the trail to the page, in links, and never the title again > renders the segments as links that navigate, and no segment repeats the h1  1607ms
+   ✓ #138: the breadcrumb is the trail to the page, in links, and never the title again > puts the cost of a count on the button that spends it  1629ms
+   ✓ #139: the phone header compacts on scroll, and a long page has a way back up > offers `Top` on the phone only, in the sticky header, and it goes to the top  5083ms
+ ✓ src/__tests__/details.cpu.test.tsx (31 tests) 3514ms
+   ✓ the CPU reading reaches a phone, where the by column is hidden > shows a live reading at 390 in a strip outside the row, in words  445ms
+   ✓ the CPU reading reaches a phone, where the by column is hidden > shows figures last written at 390 in a strip outside the row, in words  324ms
+   ✓ the CPU reading reaches a phone, where the by column is hidden > shows figures at exit at 390 in a strip outside the row, in words  320ms
+ ✓ src/__tests__/intake.issue.test.tsx (26 tests) 88003ms
+   ✓ step 1: the issue is read and shown before anything is created > shows title, body, labels, state, comments and the link, read through the preview route  3537ms
+   ✓ step 1: the issue is read and shown before anything is created > says when the body was cut or masked, as the API flagged it  1938ms
+   ✓ step 1: the issue is read and shown before anything is created > a closed issue warns and needs "Plan it anyway"; it is never refused  4887ms
+   ✓ step 1: the issue is read and shown before anything is created > draws the not_found refusal in its own words, with no figure it did not read  2845ms
+   ✓ step 1: the issue is read and shown before anything is created > draws the no_access refusal in its own words, with no figure it did not read  2707ms
+   ✓ step 1: the issue is read and shown before anything is created > draws the is_pull_request refusal in its own words, with no figure it did not read  2907ms
+   ✓ step 1: the issue is read and shown before anything is created > draws the no_forge_credential refusal in its own words, with no figure it did not read  2810ms
+   ✓ step 1: the issue is read and shown before anything is created > draws the read_failed refusal in its own words, with no figure it did not read  3091ms
+   ✓ step 1: the issue is read and shown before anything is created > draws the validation_failed refusal in its own words, with no figure it did not read  2690ms
+   ✓ step 1: the issue is read and shown before anything is created > a pull request points at the task form  3829ms
+   ✓ step 1: the issue is read and shown before anything is created > a failed read offers to read again, and says the state is unknown  3903ms
+   ✓ step 1: the issue is read and shown before anything is created > a reference edited after its read must be read again  2740ms
+   ✓ the reference is parsed before it is sent (G4-25) > never sends "foo bar": Read stays disabled and the field says what it takes  1960ms
+   ✓ steps 2 and 3: the runner and what it may do on its own > offers claude-code by name and holds every other runner back with the reason  1107ms
+   ✓ steps 2 and 3: the runner and what it may do on its own > plan approval defaults to Required; auto-merge is off and disabled, requiring #295; fix rounds 3 in 1-5  2109ms
+   ✓ steps 2 and 3: the runner and what it may do on its own > auto-merge stays disabled when the preview says it is unavailable, and shows the API's reason  3783ms
+   ✓ steps 2 and 3: the runner and what it may do on its own > auto-merge can be switched on only when the API reports it available, and is sent  4720ms
+   ✓ steps 2 and 3: the runner and what it may do on its own > live QA SUB-2: a repository whose preview serves default: true starts the switch on, says so, and sends it  4694ms
+   ✓ steps 2 and 3: the runner and what it may do on its own > live QA SUB-2: an untouched switch sends the served default, and default: false stays off  7403ms
+   ✓ steps 2 and 3: the runner and what it may do on its own > a preview that does not say is read as unavailable: nothing switches it on  4124ms
+   ✓ steps 2 and 3: the runner and what it may do on its own > the summary repeats the choices  3272ms
+   ✓ submit creates the run > POSTs RunCreate exactly and lands on the run  4248ms
+   ✓ submit creates the run > live QA SUB-13: Enter in the fix-rounds field confirms the number and plans nothing  3890ms
+   ✓ submit creates the run > a fix-round count outside 1-5 is not sent  4594ms
+   ✓ submit creates the run > a refused submission says so and does not navigate  4206ms
+stderr | src/__tests__/details.v3.test.tsx > the Now card leads, and becomes the outcome or the failure > a running agent: phase, heartbeat and the latest checkpoint time from its event
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtNow (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:634:3)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+stderr | src/__tests__/details.v3.test.tsx > the Now card leads, and becomes the outcome or the failure > a checkpoint whose event is not in the window says so with a dash, never a time
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtNow (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:634:3)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+stderr | src/__tests__/details.v3.test.tsx > the Now card leads, and becomes the outcome or the failure > a finished agent leads with its Outcome
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at section
+    at Output (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:3501:3)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+stderr | src/__tests__/details.v3.test.tsx > the Now card leads, and becomes the outcome or the failure > a failed agent leads with the failure: a plain sentence, its writer and the whole error
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtFailure (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:709:22)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+stderr | src/__tests__/details.v3.test.tsx > the Now card leads, and becomes the outcome or the failure > a worker lost to its memory limit says it ran out of memory, not that it stopped answering (#1926, OOMKilled, exit 137)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtFailure (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:709:22)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+stderr | src/__tests__/details.v3.test.tsx > the Now card leads, and becomes the outcome or the failure > a worker lost to its memory limit says it ran out of memory, not that it stopped answering (#1926, stalled)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtFailure (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:709:22)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+stderr | src/__tests__/details.v3.test.tsx > the Now card leads, and becomes the outcome or the failure > a cancelled agent with no error leads with the neutral Cancelled card, not an Outcome
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtFailure (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:709:22)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+stderr | src/__tests__/details.v3.test.tsx > one stat strip: Elapsed · Attempt · Peak memory · CPU · Cost > a running agent: memory with % of its limit, CPU against its cores, cost small and pending
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtNow (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:634:3)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+stderr | src/__tests__/details.v3.test.tsx > one stat strip: Elapsed · Attempt · Peak memory · CPU · Cost > an unknown figure is a dash with its reason, never 0, and wears the muted form
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at section
+    at Output (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:3501:3)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+stderr | src/__tests__/details.v3.test.tsx > one stat strip: Elapsed · Attempt · Peak memory · CPU · Cost > CPU names its denominator: the limit’s source, and the class’s size when it differs
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtNow (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:634:3)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+stderr | src/__tests__/details.v3.test.tsx > one stat strip: Elapsed · Attempt · Peak memory · CPU · Cost > a failed attempt read leaves the task’s own figures and dashes the rest
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtNow (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:634:3)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+stderr | src/__tests__/details.v3.test.tsx > Progress | Resources: two columns from a 640px pane, one below > switches on the pane’s width through the shipped sheet
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtNow (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:634:3)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+stderr | src/__tests__/details.v3.test.tsx > Progress | Resources: two columns from a 640px pane, one below > on a phone the strip stays below the Now card, as at 1440
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtNow (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:634:3)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+stderr | src/__tests__/details.v3.test.tsx > Progress | Resources: two columns from a 640px pane, one below > from 480 to 639px the strip sticks to the top of the pane; at 640 and over, and under 480, it scrolls with the rest
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtNow (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:634:3)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+stderr | src/__tests__/details.v3.test.tsx > the first 900px: Now, the strip and both column heads, with nothing heavy above them > keeps the order and folds the long sections at 1440
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtNow (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:634:3)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+ ✓ src/__tests__/details.v3.test.tsx (17 tests) 12689ms
+   ✓ the header is two lines: state, name and the elapsed headline; then one meta line > says elapsed · attempt n of N beside the title and keeps the id behind a copy button  960ms
+   ✓ the detail has ONE scroll container > nothing inside the split scrolls but its pane  10882ms
+ ✓ src/__tests__/config.nav.test.tsx (46 tests) 42795ms
+   ✓ the Config section (CONFIG-NAV) > lists exactly the six pages, in BGD's order, between Capacity and Admin  736ms
+   ✓ the Config section (CONFIG-NAV) > draws the same six pages in the panel, and Config on the spine between Capacity and Admin  489ms
+   ✓ the Config section (CONFIG-NAV) > leaves People and roles out of a personal workspace's Config (S1e)  630ms
+   ✓ the Config section (CONFIG-NAV) > knows a personal workspace from its own tenant, even for someone in no group  1286ms
+   ✓ the Config section (CONFIG-NAV) > takes Repositories, Setup and Access out of Work, and leaves Settings only Profile (API keys is Config › Secrets since SSC-UI)  672ms
+   ✓ every old address lands on its new one > /access -> /config/github  478ms
+   ✓ every old address lands on its new one > /access?view=members -> /config/people?view=members  455ms
+   ✓ every old address lands on its new one > /access?view=logins -> /config/secrets?view=logins  545ms
+   ✓ every old address lands on its new one > /repositories -> /config/repositories  727ms
+   ✓ every old address lands on its new one > /repositories/register -> /config/repositories/register  367ms
+   ✓ every old address lands on its new one > /repositories/tokens -> /config/repositories/tokens  375ms
+   ✓ every old address lands on its new one > /repositories/tokens/permissions -> /config/repositories/tokens/permissions  486ms
+   ✓ every old address lands on its new one > /repositories/acme%2Fapi -> /config/repositories/acme%2Fapi  542ms
+   ✓ every old address lands on its new one > /repositories/acme%2Fapi/graph?view=tests&q=src -> /config/repositories/acme%2Fapi/graph?view=tests&q=src  452ms
+   ✓ every old address lands on its new one > /repositories?page=qa-targets -> /config/repositories?page=qa-targets  402ms
+   ✓ every old address lands on its new one > /setup -> /config/workspace/setup  429ms
+   ✓ every old address lands on its new one > /settings/workspace -> /config/workspace  421ms
+   ✓ every old address lands on its new one > /settings/workspace/secrets -> /config/secrets  414ms
+   ✓ every old address lands on its new one > /settings/workspace/secrets?action=rotate&name=gh-token -> /config/secrets?action=rotate&name=gh-token  473ms
+   ✓ every old address lands on its new one > /settings/mcp-servers -> /config/mcp-servers  361ms
+   ✓ every old address lands on its new one > /settings/people -> /config/people  438ms
+   ✓ every old address lands on its new one > /config -> /config/github  408ms
+   ✓ every old address lands on its new one > round-trips every new address, so a Config link is written once and read back the same  382ms
+   ✓ every old address lands on its new one > lands the addresses the pages and the old hash router still name  638ms
+   ✓ every old address lands on its new one > keeps the plugin's and the API's anchors on the setup page  363ms
+   ✓ every old address lands on its new one > rewrites the bar of an old bookmark in place  1454ms
+   ✓ the workspace secrets one-time link > opens Config › Secrets with its add form, and the token never stays in the bar  1373ms
+   ✓ Admin is drawn only for an admin (CONFIG-NAV) > sends a member from /admin/limits to Overview, and draws no Admin  507ms
+   ✓ Admin is drawn only for an admin (CONFIG-NAV) > sends a member from every Admin address, deep links included  1959ms
+   ✓ Admin is drawn only for an admin (CONFIG-NAV) > does not redirect while either read is in flight  530ms
+   ✓ Admin is drawn only for an admin (CONFIG-NAV) > keeps a platform admin and a workspace admin where they asked to go  870ms
+   ✓ a workspace admin on a platform Admin page goes to Workspaces you admin (ADMIN-REDIRECT) > sends a workspace admin from every platform Admin address to /admin/workspaces  2443ms
+   ✓ a workspace admin on a platform Admin page goes to Workspaces you admin (ADMIN-REDIRECT) > renders People and roles at /admin/people for a workspace admin instead of redirecting (ADMIN-PEOPLE-ROLES)  1230ms
+   ✓ a workspace admin on a platform Admin page goes to Workspaces you admin (ADMIN-REDIRECT) > rewrites the bar in place, so Back does not return to the refused page  422ms
+   ✓ a workspace admin on a platform Admin page goes to Workspaces you admin (ADMIN-REDIRECT) > never redirects a platform admin, from any Admin page  2084ms
+   ✓ a workspace admin on a platform Admin page goes to Workspaces you admin (ADMIN-REDIRECT) > keeps a member and a viewer on CONFIG-NAV's redirect to Overview  843ms
+   ✓ a workspace admin on a platform Admin page goes to Workspaces you admin (ADMIN-REDIRECT) > does not redirect a workspace admin while the identity read is in flight  377ms
+   ✓ the setup strip (proposal E) > runs across every Config page: /config/github  2387ms
+   ✓ the setup strip (proposal E) > runs across every Config page: /config/repositories  1918ms
+   ✓ the setup strip (proposal E) > runs across every Config page: /config/secrets  1860ms
+   ✓ the setup strip (proposal E) > runs across every Config page: /config/mcp-servers  1948ms
+   ✓ the setup strip (proposal E) > runs across every Config page: /config/people  1941ms
+   ✓ the setup strip (proposal E) > runs across every Config page: /config/workspace  2039ms
+   ✓ the setup strip (proposal E) > runs across every Config page: /config/workspace/setup  2465ms
+   ✓ the setup strip (proposal E) > carries a compact form for the phone that names the next measured step (S2d)  1126ms
+ ✓ src/__tests__/ga.moveviews.test.tsx (30 tests) 23555ms
+   ✓ the old addresses land on the new places > /config/github?view=members -> /config/people?view=members  373ms
+   ✓ the old addresses land on the new places > /config/github?view=logins -> /config/secrets?view=logins  401ms
+   ✓ the old addresses land on the new places > /access?view=members -> /config/people?view=members  406ms
+   ✓ the old addresses land on the new places > /access?view=logins -> /config/secrets?view=logins  448ms
+   ✓ the old addresses land on the new places > /config/github?view=choose -> /config/github?view=choose  345ms
+   ✓ the old addresses land on the new places > /config/github -> /config/github  431ms
+   ✓ the old addresses land on the new places > /config/people?view=members -> /config/people?view=members  388ms
+   ✓ the old addresses land on the new places > /config/secrets?view=logins -> /config/secrets?view=logins  360ms
+   ✓ the old addresses land on the new places > the hash router's old addresses land there too  337ms
+   ✓ the old addresses land on the new places > a secrets link keeps its action over a view, and never a token  388ms
+   ✓ the old addresses land on the new places > opening an old address rewrites the bar in place: replaced, never pushed  443ms
+   ✓ Config › GitHub access is S2's two tabs and nothing else > draws no Mine / Members / Browser logins switch  501ms
+   ✓ Config › GitHub access is S2's two tabs and nothing else > a stale ?view=members on the page itself opens Connection, not Members  577ms
+   ✓ Config › GitHub access is S2's two tabs and nothing else > the recovery line names Workspace setup as SECTIONS spells it, linked at its own path  963ms
+   ✓ Members is a tab of Config › People and roles > a platform admin finds the tab, and it draws every member's GitHub connection  1257ms
+   ✓ Members is a tab of Config › People and roles > ?view=members opens the tab on arrival  729ms
+   ✓ Browser logins is a tab of Config › Secrets > the tab draws the person's saved logins, and its address is ?view=logins  1181ms
+   ✓ Browser logins is a tab of Config › Secrets > ?view=logins opens the tab on arrival, and Revoke still works from it  1863ms
+   ✓ Browser logins is a tab of Config › Secrets > in a group workspace the tab says only where logins live, and the head offers no Refresh of the secrets (seen on the render)  631ms
+   ✓ Browser logins is a tab of Config › Secrets > a one-time add link opens the secrets, whatever the view  632ms
+   ✓ People and roles' role list and overrides read as the house list and table (seen on the render, GA-MOVE-VIEWS review) > draws the role list as a label-value grid and the overrides as a table that stacks at 390  931ms
+   ✓ an old bookmark lands on the new page with its tab drawn (GA-MOVE-VIEWS review) > /#work/access?view=logins opens /config/secrets?view=logins on Browser logins  1268ms
+   ✓ an old bookmark lands on the new page with its tab drawn (GA-MOVE-VIEWS review) > /#config/github?view=logins opens /config/secrets?view=logins on Browser logins  1325ms
+   ✓ an old bookmark lands on the new page with its tab drawn (GA-MOVE-VIEWS review) > /#config/github?view=members opens /config/people?view=members on Members' GitHub  1395ms
+   ✓ an old bookmark lands on the new page with its tab drawn (GA-MOVE-VIEWS review) > /#work/access?view=members opens /config/people?view=members on Members' GitHub  1438ms
+   ✓ an old bookmark lands on the new page with its tab drawn (GA-MOVE-VIEWS review) > /#config/people?view=members opens /config/people?view=members on Members' GitHub  1615ms
+   ✓ an old bookmark lands on the new page with its tab drawn (GA-MOVE-VIEWS review) > /config/github?view=logins opens /config/secrets?view=logins on Browser logins  1403ms
+   ✓ an old bookmark lands on the new page with its tab drawn (GA-MOVE-VIEWS review) > /config/github?view=members opens /config/people?view=members on Members' GitHub  1364ms
+ ✓ src/__tests__/details.onehome.test.tsx (16 tests) 909ms
+ ✓ src/__tests__/decision.card.test.tsx (12 tests) 27376ms
+   ✓ a step whose agent the review verdict MERGE kept from running > states the rule in words from the gate, naming the review step  2874ms
+   ✓ a step whose agent the review verdict MERGE kept from running > links the verdict to the review inspector and to its verdict.json in the viewer  3226ms
+   ✓ a step whose agent the review verdict MERGE kept from running > groups what the review weighed by severity, with a count line and each finding whole  711ms
+   ✓ a step whose agent the review verdict MERGE kept from running > says no agent was started and what the step published, from which branch, sha and PR text  3640ms
+   ✓ a step whose agent the review verdict MERGE kept from running > lists the inputs it staged, each linked to its source step and id  3594ms
+   ✓ a step whose agent the review verdict NOT_YET started > says the agent ran because of the verdict, with the findings it was handed  3308ms
+   ✓ a review step's own inspector > shows the verdict this review wrote and the step it gated, with what that step did  1204ms
+   ✓ fields the worker did not record are dashes with reasons > a gate block with no findings, no file, no branch and no PR-text source  2603ms
+   ✓ fields the worker did not record are dashes with reasons > a gated step that failed before a verdict was recorded reads the verdict as unreadable  1482ms
+   ✓ fields the worker did not record are dashes with reasons > a gated step still running says the verdict is not recorded yet, never a guess  1723ms
+   ✓ a skipped step's Artifacts tab > says why it holds only pr-title.txt and pr-body.md, and links to the Decision card  2967ms
+ ✓ src/__tests__/config.panel.test.tsx (11 tests) 5958ms
+   ✓ the Config panel's row badges (S1a) > draws each row's state from the strip's read, and the two agree  2038ms
+   ✓ the Config panel's row badges (S1a) > draws a dash with the reason on a row whose source was unread, never a tick  356ms
+   ✓ the Config panel's row badges (S1a) > draws a member the same states, and People invited done when someone else holds a role (S1d)  1224ms
+   ✓ the Admin panel in groups (S1b, S1c) > draws a platform admin their workspaces, then the platform's pages, then In Automate links only  411ms
+   ✓ the Admin panel in groups (S1b, S1c) > draws a workspace admin only their own workspaces' group, and the two links into Automate  384ms
+   ✓ Workspaces you admin, each with its own setup progress (S10a) > draws one strip per workspace, each from that workspace's own read, and names the one behind  975ms
+   ✓ Workspaces you admin, each with its own setup progress (S10a) > says a workspace's setup was not read, rather than drawing it done  336ms
+ ✓ src/__tests__/config.strip-done.test.tsx (13 tests) 17982ms
+   ✓ the finished strip folds to one line > draws "Setup complete", the count and the read's age, and no step list until Show steps  2247ms
+   ✓ the finished strip folds to one line > remembers Show steps on this device  3908ms
+   ✓ the finished strip folds to one line > still folds and unfolds when the browser refuses storage  1704ms
+   ✓ the finished strip folds to one line > counts N of N from the steps: three in a personal workspace  432ms
+   ✓ the finished strip folds to one line > does not fold while a step is left  1821ms
+   ✓ each step line names its reading's age > draws "checked <age>" from `derived_at` on every step line  1828ms
+   ✓ each step line names its reading's age > draws no age on a step the read did not measure  1961ms
+   ✓ each step line names its reading's age > draws a dash with its reason where the read carried no `derived_at`, never "just now"  2863ms
+   ✓ each step line names its reading's age > draws a dash on the fold too, and one for a time it cannot read  1175ms
+ ✓ src/__tests__/config.admin.polish.test.tsx (20 tests) 7938ms
+   ✓ the Admin panel's badges (S1b) > draws each Admin row's served count  347ms
+   ✓ the Admin panel's badges (S1b) > draws no badge for a count that was not read, never 0  480ms
+   ✓ the Admin panel's badges (S1b) > draws no Workspaces you admin badge when the list could not be read  414ms
+   ✓ the Admin panel's badges (S1b) > draws a workspace admin only their own badges (S1c)  363ms
+   ✓ the Config panel in a personal workspace (S1e) and the panel foot (S1a) > says why a personal workspace has no People and roles  382ms
+   ✓ the Config panel in a personal workspace (S1e) and the panel foot (S1a) > says nothing of it in a group workspace  383ms
+   ✓ the Config panel in a personal workspace (S1e) and the panel foot (S1a) > shows a platform admin their role, not their email, with the email in its title  385ms
+   ✓ the Config panel in a personal workspace (S1e) and the panel foot (S1a) > shows a workspace admin their role, not their email, with the email in its title  395ms
+   ✓ the Config panel in a personal workspace (S1e) and the panel foot (S1a) > shows a member their role, not their email, with the email in its title  592ms
+   ✓ the Config panel in a personal workspace (S1e) and the panel foot (S1a) > shows a viewer their role, not their email, with the email in its title  412ms
+   ✓ Workspaces you admin's lead and links (S10a) > leads with the workspace furthest behind and one button into its Config  1173ms
+   ✓ Workspaces you admin's lead and links (S10a) > links each workspace to its Config pages by their tab names  2158ms
+   ✓ the Admin panel's worded counts are chips (S1b) > draws a worded count as a chip and a number count without one  442ms
+ ✓ src/__tests__/details.followup.test.tsx (13 tests) 701ms
+ ✓ src/__tests__/live.qa.overview.test.tsx (10 tests) 2557ms
+   ✓ OV-1/OV-2: a phone counts the failures its 200 newest do not hold > shows 11 failed and no real-zero badge on a phone page with none of them on it  368ms
+   ✓ OV-1/OV-2: a phone counts the failures its 200 newest do not hold > keeps the failed-tasks check in Needs a look  366ms
+   ✓ OV-1/OV-2: a phone counts the failures its 200 newest do not hold > says partial, not real zero, when the failed read did not land  364ms
+   ✓ OV-4: Running now lists every agent holding capacity > lists the fifth running agent, created before the 200 newest  358ms
+   ✓ OV-7: "last 24h" says partial when the read did not cover it > marks the count as a lower bound with the window it covers  374ms
+   ✓ OV-7: "last 24h" says partial when the read did not cover it > claims last 24h exactly when every failed task was read  364ms
+   ✓ OV-6: Finished today says how far back the phone read reaches > names the instant the page reaches back to  355ms
+ ✓ src/__tests__/github.callback.test.tsx (9 tests) 3211ms
+   ✓ the callback finishes the connection > posts state and code once and says "Connected as @<login>" with the orgs the connection reaches  501ms
+   ✓ the callback finishes the connection > says the orgs are not read yet rather than drawing none, and that they are enabled on Config › GitHub access (GT-GUIDE)  543ms
+   ✓ a refusal says why and offers Try again > posts GitHub's error with the state, shows the server's recovery copy, and Try again restarts authorize  556ms
+   ✓ a refusal says why and offers Try again > shows a refusal without §2.3 detail by its heading and message, and never opens a non-GitHub URL  489ms
+   ✓ the address bar never keeps the code or the state > a visit with no state posts nothing and offers Connect GitHub  505ms
+   ✓ the router serves the callback path > resolves /onboarding/github/callback to this page, and its query never re-enters the bar  435ms
+ ✓ src/__tests__/live.poll.test.tsx (5 tests) 13114ms
+   ✓ 1. origin and device appear without a reload > draws them from a later read once the gate has reported them  2997ms
+   ✓ 1. origin and device appear without a reload > keeps reading after the read at load failed: a failure backs off, it does not end the reads  1749ms
+   ✓ 2. a finished task replaces "starting" > re-reads the task on the Browser tab’s clock, says it finished, and stops reading  930ms
+   ✓ 3. device actions use the device the gate reported > rotate after an iPhone 15 change sends iPhone 15, never the Desktop from before it  6552ms
+   ✓ 4. no reads while the page is hidden > reads neither the session nor the task while hidden, and reads at once when shown  886ms
+ ✓ src/__tests__/code.card.test.tsx (13 tests) 5091ms
+   ✓ the card opens with one sentence, then the base pin, then the diff > links to the Changes tab, switches the split to it, and reads no patch here  1804ms
+   ✓ the card opens with one sentence, then the base pin, then the diff > says the file count beside the link where the worker kept git.files  888ms
+   ✓ PUBLISH_REFUSED > names each refused attempt and the file, withholds its content, and offers no diff -- while the task retries  1135ms
+   ✓ PUBLISH_REFUSED > withholds the diff on a FAILED task whose last attempt was refused for a credential  798ms
+ ✓ src/__tests__/inspector.charts.test.tsx (7 tests) 1034ms
+ ✓ src/__tests__/handoff.copy.test.tsx (16 tests) 4361ms
+   ✓ QA12-04: a hand-off is worded for any reason, not as a sign-in > a parked hand-off offers "I'm ready", and says nothing about signing in  624ms
+   ✓ QA12-05: the person in control is told so in the second person > learns who you are from the session read when the caller did not say  448ms
+   ✓ QA12-28: the Overview card runs Take control, Open, then the rest > on a held hand-off, Take control comes before Open  544ms
+   ✓ QA12-28: the Overview card runs Take control, Open, then the rest > on a parked hand-off, I'm ready comes before Open  475ms
+ ✓ src/__tests__/help.h1.test.tsx (13 tests) 1566ms
+   ✓ H1: the search spans every group > lists matches from every group with the match marked, each a link to its topic  543ms
+   ✓ H1 on a phone: the group is a select > lists every group, and choosing one navigates to it  312ms
+ ✓ src/__tests__/live.qa.submit.test.tsx (9 tests) 19260ms
+   ✓ SUB-1: a task is posted once per request, whatever submits the form > after a 201, submitting the unchanged form again (Enter in the repository field) posts nothing  2307ms
+   ✓ SUB-1: a task is posted once per request, whatever submits the form > two submissions while the first is in flight post once  2315ms
+   ✓ SUB-1: a task is posted once per request, whatever submits the form > a changed form is a new request and is sent (the control)  2288ms
+   ✓ SUB-3: a repository the API will refuse is not ready to send > the task form: "not a repo" holds the heading and the button, for collect and direct-pr, and Enter posts nothing  2886ms
+   ✓ SUB-3: a repository the API will refuse is not ready to send > the workflow form: "foo" holds the heading and the button  2972ms
+   ✓ SUB-4: an input over the served limit is not ready to send > the task form: a prompt over the fixture's 64 KiB reads "Not ready to send" with the limit, and one under it is ready  2600ms
+   ✓ SUB-5: the workflow card is a way back to the workflow > links the created id to its page  3705ms
+ ✓ src/__tests__/live.qa.chrome.test.tsx (13 tests) 236ms
+ ✓ src/__tests__/head.c4f.test.tsx (11 tests) 1149ms
+   ✓ #117: a polling screen re-reads, pauses when hidden, stops when idle > re-reads on its interval, not while hidden, stops after 15 min idle and resumes on click  1099ms
+ ✓ src/__tests__/details.diff.test.tsx (6 tests) 16967ms
+   ✓ Agent › Changes opens swarm-work.patch in the in-app diff viewer > reads the patch by its manifest name and lists every file with its own counts  2615ms
+   ✓ Agent › Changes opens swarm-work.patch in the in-app diff viewer > switches between unified and split  6289ms
+   ✓ Agent › Changes opens swarm-work.patch in the in-app diff viewer > finds a string across files with a counter, moving the open file  2526ms
+   ✓ Agent › Changes opens swarm-work.patch in the in-app diff viewer > moves between files with n / p and between hunks with j / k, inside the drawer  1845ms
+   ✓ Agent › Changes opens swarm-work.patch in the in-app diff viewer > names a binary file, a rename and a deleted file as such  2721ms
+   ✓ Agent › Changes opens swarm-work.patch in the in-app diff viewer > draws the patch as served: the mask stays the mask, markup stays text  971ms
+ ✓ src/__tests__/live.devicecaption.test.tsx (6 tests) 35ms
+ ✓ src/__tests__/details.masked.everywhere.test.tsx (6 tests) 349ms
+ ✓ src/__tests__/details.sized.test.tsx (8 tests) 372ms
+ ✓ src/__tests__/eventpaging.strings.test.tsx (6 tests) 204ms
+ ✓ src/__tests__/live.r1.test.tsx (5 tests) 1123ms
+   ✓ LB-R1: the stage takes the height the pane has left > passes the pane’s height down every box to the stage: each is a growing flex child, or a grid row of the room left  565ms
+   ✓ LB-R1: the stage takes the height the pane has left > gives the stage a floor of 320 px and no ceiling  545ms
+ ✓ src/__tests__/live.blank.test.tsx (3 tests) 21ms
+ ✓ src/__tests__/cost.totals.test.tsx (7 tests) 207ms
+ ✓ src/__tests__/emptystate.onemark.test.tsx (6 tests) 237ms
+ ✓ src/__tests__/frame.overscroll.test.tsx (3 tests) 15858ms
+   ✓ item 3: no box escapes the app frame, so the window never scrolls > the workflow graph page  10963ms
+   ✓ item 3: no box escapes the app frame, so the window never scrolls > the agent page  3325ms
+   ✓ item 3: no box escapes the app frame, so the window never scrolls > the timeline page  1570ms
+ ✓ src/__tests__/head.c4f.idle.test.tsx (2 tests) 2142ms
+   ✓ #117: input keeps a poll alive > still re-reads past fifteen minutes when someone touched the page before the deadline  340ms
+   ✓ #117: Overview stops after fifteen minutes idle, behind `Paused · resume` > stops its poll, says so in the head, and reads at once on resume  1802ms
+ ✓ src/__tests__/limits.link.test.tsx (3 tests) 924ms
+   ✓ Pool limits keeps the row a link named (#134) > marks exactly the linked row when the whole app is opened at the link  473ms
+   ✓ Pool limits keeps the row a link named (#134) > moves the mark when a second link is followed on the mounted screen  447ms
+ ✓ src/__tests__/letterspacing.test.ts (4 tests) 46ms
+ ✓ src/__tests__/ledger.modelgroups.test.tsx (3 tests) 1913ms
+   ✓ Reliability groups by model and by model class > offers both, for a tenant and on the platform view  1276ms
+   ✓ Reliability groups by model and by model class > asks for the group it names  630ms
+ ✓ src/__tests__/live.nomask.copy.test.tsx (3 tests) 14ms
+ ✓ src/__tests__/intake.routes.test.ts (5 tests) 11ms
+stderr | src/__tests__/help.anchor.test.tsx
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:81:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+
+ ✓ src/__tests__/help.anchor.test.tsx (4 tests) 44ms
+ ✓ src/__tests__/headroom.test.ts (3 tests) 6ms
+ ✓ src/__tests__/live.parked.handoff.test.tsx (3 tests) 12ms
+ ✓ src/__tests__/codeIntelligence.routes.test.ts (2 tests) 5ms
+
+ Test Files  48 passed (48)
+      Tests  609 passed (609)
+   Start at  02:51:27
+   Duration  445.30s (transform 7.40s, setup 357ms, collect 19.33s, tests 423.98s, environment 392ms, prepare 78ms)
+

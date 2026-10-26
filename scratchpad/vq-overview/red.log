@@ -1,0 +1,147 @@
+
+ RUN  v3.2.7 /workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui
+
+ ❯ src/__tests__/vq.overview.test.tsx (8 tests | 8 failed) 3460ms
+   × VQ-004: the Needs a look head says one count, then what it is over > reads "N problems · R of T checks ran", N the cards drawn 504ms
+     → the head reads "checks 8/8 · 2 found 2 problems": expected null not to be null
+   × VQ-003: Needs a look says states and park reasons as words > prints no state or reason enum in the cards, their names or their tooltips 414ms
+     → no card was drawn: expected 2 to be greater than or equal to 3
+   × VQ-003: Needs a look says states and park reasons as words > names the failures link "Agents · failed", the parked reason "waiting for CI", the quota "throttled" 421ms
+     → the failures card has no list link: expected undefined to be defined
+   × VQ-005: one sample of failures, one window, the same words > gives Needs a look and Recent failures the same count and the same cut-off 464ms
+     → expected '≥5 failed agents in the last 24 hours…' to contain 'partial: agents created since 23:12 U…'
+   × VQ-005: one sample of failures, one window, the same words > words Finished today’s partial sample as every other card does 398ms
+     → expected 'of the 200 newest read · created sinc…' to match /^of the 200 newest read · partial: ag…/
+   × VQ-006: Recent failures is a full-width row under both columns > sits outside the columns, across both, before the pools 402ms
+     → expected false to be true // Object.is equality
+   × VQ-002: a phone draws a check as one line and an agent as one line > steps the detail, the ids and the link words aside at 390, and keeps them at 1440 375ms
+     → expected 2 to be greater than or equal to 3
+   × VQ-002: a phone draws a check as one line and an agent as one line > cuts a Running row’s workflow title on one line and keeps its step whole 478ms
+     → expected 'normal' to be 'nowrap' // Object.is equality
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 8 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/vq.overview.test.tsx > VQ-004: the Needs a look head says one count, then what it is over > reads "N problems · R of T checks ran", N the cards drawn
+AssertionError: the head reads "checks 8/8 · 2 found 2 problems": expected null not to be null
+ ❯ src/__tests__/vq.overview.test.tsx:190:66
+    188|     // MUTATION: put back `checks ${ran}/${checks.length} · ${found} f…
+    189|     const m = /^(\d+) (problems?) · (\d+) of (\d+) checks ran$/.exec(t…
+    190|     expect(m, `the head reads ${JSON.stringify(text(cnt))}`).not.toBeN…
+       |                                                                  ^
+    191|     const cards = el.querySelectorAll('#ov-needs .ov-att:not(.is-skel)…
+    192|     expect(cards, 'no card was drawn, so this measured nothing').toBeG…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/8]⎯
+
+ FAIL  src/__tests__/vq.overview.test.tsx > VQ-003: Needs a look says states and park reasons as words > prints no state or reason enum in the cards, their names or their tooltips
+AssertionError: no card was drawn: expected 2 to be greater than or equal to 3
+ ❯ src/__tests__/vq.overview.test.tsx:204:88
+    202|     const el = await mount(ok(THROTTLED))
+    203|     const lead = el.querySelector('#ov-needs')!
+    204|     expect(lead.querySelectorAll('.ov-att:not(.is-skel)').length, 'no …
+       |                                                                                        ^
+    205|     // MUTATION: put back 'Agents · FAILED', `FAILED agents created si…
+    206|     for (const s of said(lead)) expect(s).not.toMatch(ENUM)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/8]⎯
+
+ FAIL  src/__tests__/vq.overview.test.tsx > VQ-003: Needs a look says states and park reasons as words > names the failures link "Agents · failed", the parked reason "waiting for CI", the quota "throttled"
+AssertionError: the failures card has no list link: expected undefined to be defined
+ ❯ src/__tests__/vq.overview.test.tsx:214:56
+    212|     // MUTATION: put back `linkLabel: 'Agents · FAILED'` in checks.ts.
+    213|     const list = [...lead.querySelectorAll('a.ov-att-go')].find((a) =>…
+    214|     expect(list, 'the failures card has no list link').toBeDefined()
+       |                                                        ^
+    215|     expect(text(list)).toBe('Agents · failed →')
+    216|     // MUTATION: drop `parkProse` from CheckCard.
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/8]⎯
+
+ FAIL  src/__tests__/vq.overview.test.tsx > VQ-005: one sample of failures, one window, the same words > gives Needs a look and Recent failures the same count and the same cut-off
+AssertionError: expected '≥5 failed agents in the last 24 hours…' to contain 'partial: agents created since 23:12 U…'
+
+Expected: "partial: agents created since 23:12 UTC read"
+Received: "≥5 failed agents in the last 24 hours · FAILED agents created since 16:12 UTC read · newest 30m ago"
+
+ ❯ src/__tests__/vq.overview.test.tsx:237:18
+    235|     const reach = `partial: agents created since ${hhmm(CANCELLED_FROM…
+    236|     expect(note).toContain(reach)
+    237|     expect(head).toContain(reach)
+       |                  ^
+    238|     expect(head).not.toContain(hhmm(FAILED_FROM))
+    239|   })
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/8]⎯
+
+ FAIL  src/__tests__/vq.overview.test.tsx > VQ-005: one sample of failures, one window, the same words > words Finished today’s partial sample as every other card does
+AssertionError: expected 'of the 200 newest read · created sinc…' to match /^of the 200 newest read · partial: ag…/
+
+- Expected: 
+/^of the 200 newest read · partial: agents created since \d\d:\d\d UTC read$/
+
++ Received: 
+"of the 200 newest read · created since 00:28 UTC"
+
+ ❯ src/__tests__/vq.overview.test.tsx:245:24
+    243|     const foot = el.querySelectorAll('#ov-band .ov-lc')[2]!.querySelec…
+    244|     // MUTATION: put back ` · created since ${hhmmUtc(finished.since)}…
+    245|     expect(text(foot)).toMatch(/^of the 200 newest read · partial: age…
+       |                        ^
+    246|   })
+    247| })
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/8]⎯
+
+ FAIL  src/__tests__/vq.overview.test.tsx > VQ-006: Recent failures is a full-width row under both columns > sits outside the columns, across both, before the pools
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/__tests__/vq.overview.test.tsx:254:64
+    252|     const fails = el.querySelector('#ov-failures')!
+    253|     // MUTATION: put the section back inside the left `.ov-col`.
+    254|     expect(fails.parentElement!.classList.contains('ov-cols')).toBe(tr…
+       |                                                                ^
+    255|     expect(fails.closest('.ov-col')).toBeNull()
+    256|     // MUTATION: drop `.ov-cols > .ov-failures` from the 1100px rule's…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/8]⎯
+
+ FAIL  src/__tests__/vq.overview.test.tsx > VQ-002: a phone draws a check as one line and an agent as one line > steps the detail, the ids and the link words aside at 390, and keeps them at 1440
+AssertionError: expected 2 to be greater than or equal to 3
+ ❯ src/__tests__/vq.overview.test.tsx:273:26
+    271|     const el = await mount(ok(THROTTLED))
+    272|     const cards = [...el.querySelectorAll('#ov-needs .ov-att:not(.is-s…
+    273|     expect(cards.length).toBeGreaterThanOrEqual(3)
+       |                          ^
+    274|     for (const c of cards) {
+    275|       for (const small of c.querySelectorAll('.ov-att-t small')) {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/8]⎯
+
+ FAIL  src/__tests__/vq.overview.test.tsx > VQ-002: a phone draws a check as one line and an agent as one line > cuts a Running row’s workflow title on one line and keeps its step whole
+AssertionError: expected 'normal' to be 'nowrap' // Object.is equality
+
+Expected: "nowrap"
+Received: "normal"
+
+ ❯ src/__tests__/vq.overview.test.tsx:312:37
+    310|     }
+    311|     // MUTATION: put back `white-space: normal` on `.ov-prun-n` (ffp-0…
+    312|     expect(at(name, 'white-space')).toBe('nowrap')
+       |                                     ^
+    313|     expect(at(name, 'display')).toBe('flex')
+    314|     const part = name.querySelector('.ov-prun-t')!
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/8]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  8 failed (8)
+   Start at  02:12:33
+   Duration  9.45s (transform 3.21s, setup 328ms, collect 4.64s, tests 3.46s, environment 577ms, prepare 114ms)
+

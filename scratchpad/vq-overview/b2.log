@@ -1,0 +1,452 @@
+
+ RUN  v3.2.7 /workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui
+
+ ✓ src/__tests__/activity.timeline.test.tsx (101 tests) 17292ms
+   ✓ the read > asks for 14 days by default, in the viewer’s zone, with the previous span for the delta  308ms
+   ✓ the read > reads the span the hash names, and writes a new span to the hash  1004ms
+   ✓ the read > offers 24h, 7d, 14d, 30d, 90d and a from–to range, and no Rows control  426ms
+   ✓ the read > sends a from–to range as since and an exclusive until  623ms
+   ✓ the readout > swaps to one bucket on hover, tap or focus, and back on "all", Escape or leaving  633ms
+   ✓ the readout > zooms the page to a picked day, and a chip goes back to the span it came from  455ms
+   ✓ reading, failing and re-reading > dims the last drawing rather than blanking it while a new filter is read  490ms
+   ✓ what the route serves, said as the route means it > refuses a range the route would refuse, with the reason, and sends nothing  595ms
+   ✓ the eight cards > Reliability: the group-by writes the hash, and a tenant grouping is offered only in platform scope  464ms
+   ✓ the eight cards > Not finished yet: re-reads its live counts when a filter changes, not only on refresh  432ms
+   ✓ a figure lists the tasks behind it (#116) > closes an open bucket’s rows on a zoom, since the zoomed buckets no longer start there  408ms
+   ✓ a figure lists the tasks behind it (#116) > closes, and the address forgets the figure  316ms
+   ✓ VQA-L13: lane captions and table edges > V109: fades a card table’s right edge while columns are off it, and only then  338ms
+ ✓ src/__tests__/artifacts.pane.test.tsx (51 tests) 105019ms
+   ✓ the drawer has six panes: Details, Logs, Changes, Attempts, Artifacts, Checkpoints > names them so, and #work/task/<id>/artifacts opens the fifth of six  4971ms
+   ✓ Outputs: the answer first, then every file > renders the agent’s answer as Markdown, above the file list  1930ms
+   ✓ Outputs: the answer first, then every file > downloads every file through the API and copies a gsutil line, and never links a bucket  1985ms
+   ✓ Outputs: the answer first, then every file > draws an image inline from the raw route, and says so when it cannot be decoded  2184ms
+   ✓ Outputs: the answer first, then every file > opens each file in the viewer its kind names: Markdown rendered, JSON pretty only when whole  5844ms
+   ✓ Outputs: the answer first, then every file > says a running task’s files are uploaded when the attempt ends, and its answer is not yet -- never none  2190ms
+   ✓ Outputs: the answer first, then every file > words a value due at finish as its not-yet, never `reading`  2147ms
+   ✓ Outputs: the answer first, then every file > says a route this deployment does not serve is not served, never that there is no answer  2175ms
+   ✓ Outputs lists every file the run uploaded, past one page of the listing > asks for a page big enough for a 60-screenshot run, and draws every screenshot inline  1929ms
+   ✓ Outputs lists every file the run uploaded, past one page of the listing > lists the files past the route’s page from the task’s own manifest, and says how many the route listed  2403ms
+   ✓ Outputs says which working-folder files were not uploaded, and why > lists each one with its size and its reason, and says how many more only the worker log names  1909ms
+   ✓ Outputs says which working-folder files were not uploaded, and why > draws nothing for a run that uploaded every file it created, or a task with a repository  1920ms
+   ✓ Outputs says how many files in $SWARM_ARTIFACTS_DIR were past the 500-file cap > counts them, names the cap from the summary, and says the worker log names every one  1811ms
+   ✓ Outputs says how many files in $SWARM_ARTIFACTS_DIR were past the 500-file cap > reads the cap from the summary rather than restating it  2180ms
+   ✓ Outputs says how many files in $SWARM_ARTIFACTS_DIR were past the 500-file cap > draws nothing when every file in the folder fit  1835ms
+   ✓ Outputs names the cause the worker recorded for each skipped file > says the cap for a cap skip, the upload for an upload error, and nothing for an older name  1857ms
+   ✓ Inputs: the prompt, the repository, and every staged file > shows the prompt as the API served it, wrapped, and the repository, ref and commit cloned  1965ms
+   ✓ Inputs: the prompt, the repository, and every staged file > masks a credential in the prompt as the API masked it, counts it, and never draws the raw input  1849ms
+   ✓ Inputs: the prompt, the repository, and every staged file > says an API that does not serve the copy does not, and draws no raw prompt in its place  1825ms
+   ✓ Inputs: the prompt, the repository, and every staged file > asks again for a copy that failed, on the pane’s next poll, and draws it when it comes  2264ms
+   ✓ Inputs: the prompt, the repository, and every staged file > links each staged file to the step that produced it, and reads it from THAT run  3117ms
+   ✓ Inputs: the prompt, the repository, and every staged file > says a staged file removed upstream was removed, and keeps the size that was staged  3084ms
+   ✓ Logs: the transcript as steps, the agent’s streams, the runner’s > draws a tool call and its result as one collapsed row, marks a failed one, and nests a sub-agent  2066ms
+   ✓ Logs: the transcript as steps, the agent’s streams, the runner’s > labels a run that recorded only its final result, rather than drawing a short transcript  2101ms
+   ✓ Logs: the transcript as steps, the agent’s streams, the runner’s > draws the agent’s empty stderr as a measured zero, and the runner’s own log behind its own choice  2246ms
+   ✓ Logs: the transcript as steps, the agent’s streams, the runner’s > says a runner with no agent CLI has no agent stream, which is not a missing one  1948ms
+   ✓ the pane reads what #188 serves about a cut capture, an over-long line and bytes that are not UTF-8 > says a transcript whose capture was cut is not the whole run, and draws the capture’s notice in its own words  2063ms
+   ✓ the pane reads what #188 serves about a cut capture, an over-long line and bytes that are not UTF-8 > draws a line longer than the window in words, with the server’s reason, never as a bare other  2055ms
+   ✓ the pane reads what #188 serves about a cut capture, an over-long line and bytes that are not UTF-8 > never joins a tool result to a call because both ids are null  2036ms
+   ✓ the pane reads what #188 serves about a cut capture, an over-long line and bytes that are not UTF-8 > marks an answer whose capture was cut, and says why an ended run left none when the capture was cut  1912ms
+   ✓ the pane reads what #188 serves about a cut capture, an over-long line and bytes that are not UTF-8 > says a finished run with no answer had its capture cut, in the server’s words  2284ms
+   ✓ the pane reads what #188 serves about a cut capture, an over-long line and bytes that are not UTF-8 > counts the bytes of a window that are not UTF-8, and draws nothing at zero  4232ms
+   ✓ live: every 5 s while the task runs, with each read’s age, and not after it has settled > re-reads the transcript and logs on the 5 s clock, shows the server’s age, and stops once the finish is in  2109ms
+   ✓ the pane holds at 390 wide and in the dark theme > keeps every live read’s age on screen at 390  2225ms
+   ✓ the pane holds at 390 wide and in the dark theme > keeps every file’s download and copy on screen at 390  3262ms
+   ✓ the pane holds at 390 wide and in the dark theme > draws every table as the stacked record the inspector uses below 900px  1994ms
+   ✓ the drawer findings of the post-deploy QA (#222) > (b) says the attempt and the masking in the log dock’s facts, which wrap rather than overflow  1871ms
+   ✓ the drawer findings of the post-deploy QA (#222) > (c) draws no facts over a transcript that has published nothing yet  1856ms
+   ✓ the drawer findings of the post-deploy QA (#222) > (c) and draws none for a runner that has no agent CLI  1857ms
+   ✓ the drawer findings of the post-deploy QA (#222) > (d) draws a thinking step with an empty text as words, never an empty expandable  1775ms
+   ✓ the drawer findings of the post-deploy QA (#222) > (f) words a rate-limit reading and gives its reset in local time, never raw keys and an epoch  2207ms
+   ✓ the drawer findings of the post-deploy QA (#222) > puts the transcript object’s location and its copy beside the transcript  1857ms
+   ✓ the drawer findings of the post-deploy QA (#222) > keeps each stream’s location and its copy on its own row in the other views  1837ms
+   ✓ the address names the open output and never the open file of a patch > opening change.diff gives exactly /agents/<tab>/<id>/artifacts/change.diff; n and a click leave it alone  2995ms
+   ✓ the address names the open output and never the open file of a patch > opens the output the address names, at the first file of the patch  2844ms
+ ✓ src/__tests__/admin.people.test.tsx (38 tests) 78869ms
+   ✓ a non-admin never sees the pane > draws the admin gate, and no table or button  871ms
+   ✓ the people table > sorts requested rows first, keeping the server order for the rest  1054ms
+   ✓ the people table > a failed row has Retry; a needs_owner row waits for the owner at its step  4761ms
+   ✓ the people table > a held (migrating) request offers no Approve or Deny, and an auto-approved row says so  1032ms
+   ✓ the people table > a denied row may still be approved, and is not offered Retry  3860ms
+   ✓ the people table > writes zero pending as words, measured, not as the real-zero mark  459ms
+   ✓ the people table > draws an unread lendable list as not read, never as an empty one  1550ms
+   ✓ approve and deny > the card's Approve, beside the limits it gives, posts the approve route by workspace id  1101ms
+   ✓ approve and deny > Deny without a reason posts nothing; with one, posts {reason}  3344ms
+   ✓ ceiling and loans > a ceiling save sends {max_active} and nothing else  3284ms
+   ✓ ceiling and loans > Lend posts {account_id, lend: true} for the account chosen  3742ms
+   ✓ live QA admin: nothing writes on the first click > ADM-1: Lend asks first, naming the account, its owner tenant and the person, and Cancel sends nothing  3788ms
+   ✓ live QA admin: nothing writes on the first click > ADM-2: Reclaim offers only an account lent to this person, and reclaims it behind a confirm  3336ms
+   ✓ live QA admin: nothing writes on the first click > ADM-2: a paused account is marked in the list and the lend confirm says it starts no new agent  3620ms
+   ✓ live QA admin: nothing writes on the first click > ADM-3: a ceiling Save asks first with old → new and the change, and an unchanged value has nothing to save  4296ms
+   ✓ live QA admin: nothing writes on the first click > ADM-4: Grant admin refuses a non-email, submits on Enter, and asks before it grants  1479ms
+   ✓ live QA admin: nothing writes on the first click > ADM-5: a task-scoped entry names its target and tenant, a run of one action is one line, and the cap is said  6615ms
+   ✓ live QA admin: nothing writes on the first click > ADM-5: a single task-scoped entry shows its target_id, never a bare ?  6914ms
+   ✓ the layout fits the card (seen live at 1456, 2026-10-09) > gives the table its own scroll container, holds no control in it, and keeps the card's Deny form in its row  1348ms
+   ✓ the layout fits the card (seen live at 1456, 2026-10-09) > keeps a workspace id on one line, in mono, with no break opportunity  1149ms
+   ✓ the layout fits the card (seen live at 1456, 2026-10-09) > sets every label a token gap above its field  1813ms
+   ✓ the layout fits the card (seen live at 1456, 2026-10-09) > is a short record per person on a phone, every cell named, Manage opening the sheet  830ms
+   ✓ admins and the audit > lists the admins, the platform owner first and marked, with no Remove for the owner  1484ms
+   ✓ admins and the audit > draws an unread admin list as not read, and keeps the typed Remove  974ms
+   ✓ admins and the audit > removes a listed admin, and shows the API's last-admin refusal as it came  1358ms
+   ✓ admins and the audit > lists the audit entries under the table, or a measured zero  3402ms
+   ✓ workspace building off in this deployment > shows one banner with the count, naming where to switch it on  491ms
+   ✓ workspace building off in this deployment > shows no banner when building is on  857ms
+   ✓ workspace building off in this deployment > Approve says the API's own sentence when the workspace was not sent for building  1171ms
+   ✓ visual QA (VQA-L06) > V021: a long email is capped, so it widens no column, and is cut rather than broken (#1206)  723ms
+   ✓ visual QA (VQA-L06) > V028: opening Deny focuses the reason, and Cancel gives focus back to Deny  2295ms
+   ✓ visual QA (VQA-L06) > V064: the gate keeps the refresh control, and the title row is a control tall in every state  481ms
+   ✓ visual QA (VQA-L06) > V080: a request's decisions flow side by side, and the drawer never draws Lend and Reclaim together  2573ms
+   ✓ visual QA (VQA-L06) > V081: a job step label wraps in its own column, its state does not, and a request id is one token  609ms
+   ✓ visual QA (VQA-L06) > V082: Remove admin is bordered like Grant admin, read or unread, and no card repeats the page title  1060ms
+   ✓ visual QA (VQA-L06) > V082: the typed Remove admin of an unread list is bordered too  981ms
+ ✓ src/__tests__/brand.test.tsx (34 tests) 5678ms
+   ✓ which environment this console is pointed at > tells the four apart WITHOUT USING COLOUR  1433ms
+   ✓ CH-20: the identity at phone width > holds the phone header to one row at 390, and draws none above it  444ms
+   ✓ B17: an identifier is never restyled > leaves the workflow id alone inside the page heading  445ms
+   ✓ B17: an identifier is never restyled > beats a case-shifting ANCESTOR by inheritance, not by specificity  352ms
+   ✓ B17: an identifier is never restyled > and the rule reaches literals that were never wrapped in anything  363ms
+   ✓ B19: the console uses the glass it is given > grows its gutter at wide breakpoints, and the content column reads it  376ms
+   ✓ B19: the console uses the glass it is given > clamps a sentence even though the page is no longer clamped  367ms
+ ✓ src/__tests__/LiveBrowser.test.tsx (47 tests) 35909ms
+   ✓ the Browser tab follows Details for a running browser agent > opens a running live-browser agent on its Browser tab, the second tab, and does not send it to Logs  3348ms
+   ✓ the Browser tab follows Details for a running browser agent > draws no Browser tab for a running agent whose profile is not a live browser, and keeps it on Details (#1646)  1503ms
+   ✓ the Browser tab follows Details for a running browser agent > does not ask a finished agent for a live session at all  1921ms
+   ✓ the session read exactly as swarm-api serves it (tests/fixtures/live, LB-SEAM) > opens on a Browser tab, shows the device as not reported, and offers Take control  6617ms
+   ✓ the session read exactly as swarm-api serves it (tests/fixtures/live, LB-SEAM) > a live-browser task whose tunnel is not up yet still has its Browser tab  2753ms
+   ✓ a viewer’s device switcher is disabled > shows a viewer the current device, disabled, with rotate and touch disabled too  796ms
+   ✓ a viewer’s device switcher is disabled > says why, on the switcher, as its tooltip and its description  774ms
+   ✓ a viewer’s device switcher is disabled > follows the server, not the controller field: in control but not allowed to switch is disabled  753ms
+   ✓ the person in control switches the device (LB-DEV-B) > enables the switcher, rotate and touch, with nothing said against them  753ms
+   ✓ the person in control switches the device (LB-DEV-B) > a preset is sent by name, never a size, and the session is read again  758ms
+   ✓ the person in control switches the device (LB-DEV-B) > rotate asks for the same preset in the other orientation  738ms
+   ✓ the person in control switches the device (LB-DEV-B) > touch turns the toggle over, on the same preset and orientation  727ms
+   ✓ the person in control switches the device (LB-DEV-B) > a preset with no touch offers no touch toggle  1133ms
+   ✓ the person in control switches the device (LB-DEV-B) > a refusal is shown, not swallowed  1154ms
+   ✓ the submitter opens control to members through the served route > posts open-to-members once the box is ticked and the confirm said yes  1269ms
+   ✓ the submitter opens control to members through the served route > keeps the box enabled once control is open to members, so it can be turned off  528ms
+   ✓ a mismatched origin turns the strip red and asks twice > asks a second time, naming both domains, and takes control only on that second yes  1154ms
+   ✓ a mismatched origin turns the strip red and asks twice > one take is one request: the header opens the ask, the ask posts once, however often it is pressed (LB-R4)  1010ms
+   ✓ a mismatched origin turns the strip red and asks twice > asks once on the named site  710ms
+   ✓ every key typed in control reaches the agent’s page (KEYS-FOCUS) > sends the keys typed after a device switch, with no second click on the canvas  1486ms
+   ✓ every key typed in control reaches the agent’s page (KEYS-FOCUS) > gives the new canvas the keys after a reconnect, rather than saying they go to the one noVNC removed  2016ms
+   ✓ every key typed in control reaches the agent’s page (KEYS-FOCUS) > sends keys in the theater and back in the tab, and says “Click to type” wherever the canvas has no focus  2064ms
+   ✓ a relay restart is rejoined at once > reconnects in well under a second when the relay closed with 1012  315ms
+   ✓ a relay restart is rejoined at once > keeps the ordinary backoff for any other close  913ms
+ ✓ src/__tests__/agents.landing.test.tsx (34 tests) 13496ms
+   ✓ the Agents screen lands where the rows are > lands on Waiting when nothing is live and three steps are waiting  476ms
+   ✓ the Agents screen lands where the rows are > lands on Recent when everything has finished  492ms
+   ✓ the Agents screen lands where the rows are > still lands on Live when something is live  412ms
+   ✓ the Agents screen lands where the rows are > honours the tab a reader picks, including an empty one  889ms
+   ✓ the capacity `?` belongs to the empty Live tab alone > draws no `?` on an empty Waiting tab  835ms
+   ✓ the capacity `?` belongs to the empty Live tab alone > draws no `?` on an empty Recent tab  1254ms
+   ✓ the capacity `?` belongs to the empty Live tab alone > keeps it on the empty Live tab  846ms
+   ✓ the tab and the Recent state are addresses (OV-10) > opens recent/failed on Recent with only the FAILED rows, though Live has one  420ms
+   ✓ the tab and the Recent state are addresses (OV-10) > offers all, failed, cancelled and succeeded on Recent, counted from the loaded rows  883ms
+   ✓ the tab and the Recent state are addresses (OV-10) > lands as before when the address names no tab  414ms
+   ✓ Recent can be searched and put failures first (#99) > offers one "Find by name or task id" box above the list, on every tab (agents.html V1)  1596ms
+   ✓ Recent can be searched and put failures first (#99) > narrows the Live tab by name too  368ms
+   ✓ Recent can be searched and put failures first (#99) > leaves only the row a pasted full task id names  354ms
+   ✓ Recent can be searched and put failures first (#99) > matches a step name and a workflow id case-insensitively  390ms
+   ✓ Recent can be searched and put failures first (#99) > applies after the state filter, and says so when nothing is left  364ms
+   ✓ Recent can be searched and put failures first (#99) > never writes the query to the address  369ms
+   ✓ Recent can be searched and put failures first (#99) > puts FAILED rows first, then newest first, when asked  609ms
+   ✓ a reason shared by neighbouring rows is said once (#100) > says a run of equal reasons once in the flat list, and keeps it in every row  1824ms
+   ✓ a reason shared by neighbouring rows is said once (#100) > prints a shared reason once on the group header, with its count  508ms
+ ✓ src/__tests__/checkpoint.browser.test.tsx (33 tests) 32903ms
+   ✓ a listing > draws the archive as a tree, directories first, with sizes, modes and link targets  1196ms
+   ✓ a listing > opens a file in the artifact viewer, fed by the checkpoint per-file read  2225ms
+   ✓ a listing > draws a member's not-utf-8 count, and names the checkpoint download as what holds the bytes (#207)  1898ms
+   ✓ a listing > draws no not-utf-8 fact for a member whose window measured zero  1805ms
+   ✓ a listing > reads a file ONCE, however often the browser re-renders  5300ms
+   ✓ a listing > shows a member the NUL sniff found binary as not text, with no bytes  1071ms
+   ✓ a listing > offers the whole archive as a download link to the content route  378ms
+   ✓ absence and failure are not an empty checkpoint > never calls an empty but CUT listing a zero  394ms
+   ✓ absence and failure are not an empty checkpoint > draws a FAILED read as not read, with no figure, and retries it  314ms
+   ✓ absence and failure are not an empty checkpoint > draws a 404 as an absent archive, with no retry and no download  734ms
+   ✓ absence and failure are not an empty checkpoint > draws a CORRUPT archive as unreadable past a point, with the rows before it marked partial  522ms
+   ✓ absence and failure are not an empty checkpoint > names the cut when the entry cap stops the listing  421ms
+   ✓ absence and failure are not an empty checkpoint > lists an unsafe member apart from the tree and offers no way to open it  1231ms
+   ✓ absence and failure are not an empty checkpoint > shows a member whose name is not UTF-8 by its escaped bytes, and offers no way to open it  1125ms
+   ✓ opened from the checkpoint list > each checkpoint row opens its own browser, and the fixture exercises the absent archive  3658ms
+   ✓ a file row opens the viewer > opens the file a click anywhere on its row names, and reads exactly that path  758ms
+   ✓ a file row opens the viewer > opens and closes a directory on a click anywhere on its row  1094ms
+   ✓ a file row opens the viewer > reads a nested member by its full path, not by the name the row shows  727ms
+   ✓ a file row opens the viewer > moves between rows on the arrow keys, and opens and closes a directory  3190ms
+   ✓ a refusal is drawn as a refusal > draws the allowlist refusing a name as refused, with the server’s reason  1473ms
+   ✓ a refusal is drawn as a refusal > draws a read-budget refusal as refused, with no retry  2138ms
+ ✓ src/__tests__/changes.matrix.test.tsx (29 tests) 22618ms
+   ✓ the matrix: which step changed which file > draws a row per file and a column per step, counted from git.files  1232ms
+   ✓ the matrix: which step changed which file > says a step that changed nothing changed nothing, with the hollow ring  765ms
+   ✓ the matrix: which step changed which file > reads hunks on demand: only the steps that changed the open file  1108ms
+   ✓ the matrix: which step changed which file > stacks each step’s hunks for the open file, tagged by step, and writes the choice to the address  2837ms
+   ✓ the matrix: which step changed which file > filters rows and hunks to one step, from a chip or from the address  1965ms
+   ✓ the matrix: which step changed which file > says a filtered step that changed nothing changed no files: a measured zero  665ms
+   ✓ the matrix: which step changed which file > reads a patch whose files the summary does not list, to find them  1099ms
+   ✓ the matrix: which step changed which file > links each step to its own agent’s Changes tab, and marks the integrator  1081ms
+   ✓ the states: none of them reads as no changes > withholds a step refused for a credential in ANY attempt: no file, no count, no read  1469ms
+   ✓ the states: none of them reads as no changes > reads no patch until the step’s attempts are known  351ms
+   ✓ the states: none of them reads as no changes > hatches a step not started and one with nothing written yet, never `·`  1071ms
+   ✓ the states: none of them reads as no changes > says a patch discarded over the cap cannot be drawn, while its counts still show  889ms
+   ✓ the states: none of them reads as no changes > says a failed read is not read, and reads again on Retry  2098ms
+   ✓ an issue run’s Changes tab > draws its workflow’s steps, then each CI fix round’s, keyed apart  1149ms
+   ✓ an issue run’s Changes tab > says an unread workflow once, in the panel, with its reason and Try again (V211)  364ms
+   ✓ WG-7: a step column's link names its scope, and a filtered page carries one > says Agent’s changes, not Changes, on every column the page shows  1481ms
+   ✓ WG-7: a step column's link names its scope, and a filtered page carries one > carries the link only on the step the page is filtered to, not once per other column  915ms
+   ✓ WG-9: the matrix's step headers wrap, so six step columns fit a 1440 frame > lets a step header break between its lines and inside a long step id  1785ms
+ ✓ src/__tests__/accounts.timeline.test.tsx (26 tests) 15785ms
+   ✓ the Table / Timeline toggle > opens on Table, beside the verdict  1107ms
+   ✓ the Table / Timeline toggle > switches to Timeline, writes it to the address and the browser, and reopens on it  1712ms
+   ✓ the Table / Timeline toggle > lets a followed ?view=table link win over the browser’s memory  1008ms
+   ✓ the Timeline > draws a lane per account in the Table’s order, the pool row from the verdict’s N, and the queue  1070ms
+   ✓ the Timeline > draws a full account’s holds up to the latest hold deadline the broker serves  572ms
+   ✓ the Timeline > draws a held but not full account’s latest hold deadline too, and a dash with its reason when unserved  1143ms
+   ✓ the Timeline > draws a hold deadline the broker does not know as a dash with its reason  547ms
+   ✓ the Timeline > draws an old reading pale, and names a duplicate’s other half only inside this workspace  520ms
+   ✓ the Timeline > marks the kept half of a duplicate pair on its lane, naming the other only inside this workspace  589ms
+   ✓ the Timeline > opens the Table’s side sheet from a lane, keeps the view in the address, and closes back to the lanes  3146ms
+   ✓ the Timeline > opens the sheet as the whole screen on a phone: the lanes and the verdict step aside  1114ms
+   ✓ the Timeline > keeps the view in the address an account writes when the Timeline came from the browser’s memory  626ms
+   ✓ the Timeline > writes ?view=timeline to the address when the Timeline is restored from the browser’s memory  613ms
+   ✓ the Timeline > leaves a Table address bare: only a restored Timeline is written  549ms
+   ✓ the Timeline > draws the empty pool as B6: no lanes, the add form in the first lane, one heading  1450ms
+ ✓ src/__tests__/approvals.test.tsx (23 tests) 24356ms
+   ✓ the Approvals page > is the Absent state when nothing waits  438ms
+   ✓ the Approvals page > QA-048: names, in its empty sentence, exactly the kinds its filter chips name  1225ms
+   ✓ the Approvals page > lists every kind oldest first, and asks for a choice before deciding  463ms
+   ✓ one item > shows the plan beside the list, approves with the digest it showed, and reads the inbox again  1053ms
+   ✓ one item > says the server’s rule when it refuses  1061ms
+   ✓ one item > says who may decide when the last editor is refused, not "Not decided" (#2259)  1484ms
+   ✓ one item > says an owner-only item is the owner’s even as its last editor (#2259)  465ms
+   ✓ one item > says an owner-only hold’s approver once, not twice and not "only by ... only" (#2259)  838ms
+   ✓ one item > asks a one-person tenant for the words its own hold names, and sends them  2344ms
+   ✓ one item > rejects only with a reason, and sends it  2320ms
+   ✓ a merge > draws a ✓ row per check that holds, and names the head on Approve  1012ms
+   ✓ a merge > draws each unmet requirement, a red CI and a matched hard stop as ✗ rows, and leaves Approve enabled  1479ms
+   ✓ a merge > says a check it has not read as not read, not as met, and an older green head as unmet  1047ms
+   ✓ a merge > paints a met mark in the ok ink and an unmet one in the bad ink  1186ms
+   ✓ a merge > leaves a plan’s button as plain Approve  956ms
+   ✓ the inbox on a phone > opens the chosen item in place under its row, each row a 44px target  476ms
+   ✓ live QA: automate, approvals > reads an item the inbox does not hold and says it was not found, beside the empty inbox (AUT-6)  457ms
+   ✓ live QA: automate, approvals > shows what became of a linked item someone else decided, or that expired (AUT-6)  3953ms
+   ✓ live QA: automate, approvals > opens a listed item in the inbox, not twice (AUT-6 control)  422ms
+   ✓ live QA: automate, approvals > filters by kind through the route, and keeps the kind in the address (AUT-15)  1092ms
+   ✓ live QA: automate, approvals > asks for the whole inbox when no kind is named  465ms
+ ✓ src/__tests__/agent.wait-panel.test.tsx (24 tests) 1237ms
+   ✓ wait history > collapses past 5, newest last, and "show all N" opens the rest  593ms
+   ✓ wait history > does not offer "show all" at 5 or fewer  452ms
+ ✓ src/__tests__/agents.split.test.tsx (15 tests) 28298ms
+   ✓ the detail has a header row: state pill, name, Copy link, Stop > heads the split with the agent’s name, not its id, and puts the id, profile, class and units under it  1871ms
+   ✓ the detail has a header row: state pill, name, Copy link, Stop > copies the address of this agent  1529ms
+   ✓ the detail has a header row: state pill, name, Copy link, Stop > says the read is in flight, and heads with the id until the task is read  798ms
+   ✓ underline tabs with counts, and an unknown count is words or a dash with its reason > draws the four panes as the canonical `Tabs` (tablist form), Attempts counted from the task, the rest a dash until known  3026ms
+   ✓ underline tabs with counts, and an unknown count is words or a dash with its reason > counts the files once the manifest is written  1902ms
+   ✓ the divider has a handle, snaps to three stops, and remembers per device > is a visible handle that steps between the stops on the arrow keys and remembers the stop  882ms
+   ✓ the divider has a handle, snaps to three stops, and remembers per device > draws the three stops while dragged, lights the nearest, and keeps only the one it is released on  876ms
+   ✓ the divider has a handle, snaps to three stops, and remembers per device > folds the list with [ as the list header’s « does  842ms
+   ✓ the log is a tab, not a dock across the tabs (U11a, owner decision 2026-10-04) > draws the log on Logs only, and keeps what the reader typed while the agent stays open there  4209ms
+   ✓ children (D15): a tab on a parent, a link on a child, only when the API serves them > offers no Children tab for an API that sends no parent field  2062ms
+   ✓ children (D15): a tab on a parent, a link on a child, only when the API serves them > counts a served parent’s children, says the cap is not served, and a parked parent holds no capacity  4806ms
+   ✓ children (D15): a tab on a parent, a link on a child, only when the API serves them > calls a list read that ignored the filter "not served", and never draws its rows as children  3250ms
+   ✓ children (D15): a tab on a parent, a link on a child, only when the API serves them > links a child to its parent above its title  1305ms
+   ✓ the split is ONE drawer: AgentDetail does not draw a second one inside it > has exactly one dialog, no nested .drawer and one close control  937ms
+ ✓ src/__tests__/awaitinput.card.test.tsx (17 tests) 10910ms
+   ✓ the await-input card renders each form > verdict: Approve, Request changes and the findings box  640ms
+   ✓ the await-input card renders each form > answers: the upstream agent’s questions, each option a choice  1127ms
+   ✓ the await-input card renders each form > text: a text box and Send  527ms
+   ✓ answering > Approve posts MERGE, with the findings and one answer id, to the step’s route  625ms
+   ✓ answering > Request changes posts NOT_YET  568ms
+   ✓ answering > a second answer is the server’s 409, said in place, and the step is read again  581ms
+   ✓ answering > sends files as multipart: one answer part and a file part each  828ms
+   ✓ the file picker refuses before sending > refuses an eleventh file  1967ms
+   ✓ the file picker refuses before sending > refuses a total over 16 MiB  985ms
+   ✓ the file picker refuses before sending > shows the warning above the picker and again beside Send  456ms
+   ✓ the file picker refuses before sending > max_files 0 shows no picker and no warning  638ms
+   ✓ a step that is no longer waiting > answered: says who, when and how, and offers no form  380ms
+   ✓ a step that is no longer waiting > expired: says nobody answered, when it expired and how it ended, and offers no form  354ms
+   ✓ a step that is no longer waiting > offers an image attachment as a download, never rendered  859ms
+   ✓ the waiting pill > a member who may not answer is told so and shown no form  362ms
+ ✓ src/__tests__/changes.findings.test.tsx (13 tests) 9782ms
+   ✓ the digest check > pins a finding beside its line when the patch shown is the patch the review read  856ms
+   ✓ the digest check > pins nothing and says "from an earlier patch" when the digest differs  1924ms
+   ✓ the digest check > does not compare a patch it cannot hash as stored: masked text pins nothing  1306ms
+   ✓ not placed, never guessed > lists a finding without a location as not placed, and one with a file and no line too  2002ms
+   ✓ not placed, never guessed > places nothing when the worker recorded no digest of the patch the review read  328ms
+   ✓ not placed, never guessed > lists a pin whose line is in no hunk as not pinned, in the viewer itself  422ms
+   ✓ keyboard access > makes each mark a button whose focus says the finding, and lists every pin as a button that reaches it  1143ms
+   ✓ keyboard access > opens a pinned finding’s file from the findings panel  1379ms
+   ✓ files named by the review sort first > puts a named file above the rest and tags it, with no score  383ms
+ ✓ src/__tests__/agents.compact.test.tsx (15 tests) 1298ms
+   ✓ a strip row shows its agent on hover and on focus > draws the card on hover, names the agent in it, and takes it down on leave  407ms
+   ✓ a strip row shows its agent on hover and on focus > draws the card on keyboard focus too, and ↓ moves it to the next row  340ms
+ ✓ src/__tests__/browser.badges.test.tsx (40 tests) 511ms
+ ✓ src/__tests__/changes.agent.test.tsx (15 tests) 16134ms
+   ✓ the tab: beside Logs, counted by the file count, a dash where nobody counted > sits after Logs and counts git.files  2091ms
+   ✓ opening it folds the list to the strip: remembered, not forced > folds on open without writing the device’s width, and gives the width back on leaving  1982ms
+   ✓ opening it folds the list to the strip: remembered, not forced > keeps the width a reader chose while on Changes  1784ms
+   ✓ the patch, at full height, with the open file in the address > reads the patch by its manifest name and opens the file the route names  1432ms
+   ✓ the patch, at full height, with the open file in the address > writes each file the reader opens into the address  2213ms
+   ✓ the patch, at full height, with the open file in the address > is reached from the Code card’s `Changes ›`  3528ms
+   ✓ the states: none of them reads as no changes > withholds the patch on a credential refusal in ANY attempt, and never reads it  327ms
+   ✓ the states: none of them reads as no changes > waits for the attempts before it reads the patch  807ms
+   ✓ the states: none of them reads as no changes > says a failed read is not read, with its status, and reads again on Retry  890ms
+   ✓ the states: none of them reads as no changes > reads a diff a workflow step handed on, and says it was handed on  560ms
+ ✓ src/__tests__/Handoff.test.tsx (13 tests) 3032ms
+   ✓ the hand-off banner > on a parked hand-off reads the reason from its request event and offers "I'm ready to sign in"  507ms
+   ✓ the hand-off banner > "I'm ready to sign in" POSTs human-ready for that task and reports the task back  493ms
+   ✓ the hand-off banner > a refused human-ready says so and does not claim the browser is starting  630ms
+   ✓ the Overview's hand-off cards > a parked card's "I'm ready" calls human-ready and opens the agent  401ms
+   ✓ the Live browsers filter (the All | Browsers N switch) > on the Agents list, lists the browser agents with the needs-you row first and yellow, starting ones last  553ms
+ ✓ src/__tests__/artifact.diff.test.tsx (16 tests) 2218ms
+   ✓ an artifact diff opens in the #310 viewer > under its own bar: back, name, size, attempt, Copy patch, Download -- and no second head  856ms
+   ✓ a patch bigger than one window > one file over the window: no parse error, the cut file named, and the window copied as a window  986ms
+ ✓ src/__tests__/accounts.name.test.tsx (10 tests) 39836ms
+   ✓ the Name is shown in place of the label, with the id still printed > shows a named account by its Name on its row and in its pane  1062ms
+   ✓ the Name is shown in place of the label, with the id still printed > shows an unnamed account by its label, exactly as before  991ms
+   ✓ Rename in the pane > saves a Name at once and shows it after the reload  7091ms
+   ✓ Rename in the pane > saves on Enter and cancels on Escape without sending anything  7385ms
+   ✓ Rename in the pane > clears the Name when the field is emptied, and the label shows again  7569ms
+   ✓ Rename in the pane > draws a refusal in its own words and keeps the editor open  7551ms
+   ✓ Rename in the pane > offers a borrower no Rename  1790ms
+   ✓ Remove is a danger outline until it is armed (part of #1680, box comment 6314115845) > draws the unarmed button in the danger ink with no fill, and the armed one filled  6392ms
+ ✓ src/__tests__/agent.tokens.test.tsx (17 tests) 590ms
+ ✓ src/__tests__/checkpoint.reclaimed.test.tsx (9 tests) 485ms
+   ✓ the Checkpoints section tells a reclaimed checkpoint from a real zero > breaks the checkpoint prefix at its slashes, not inside a segment  329ms
+ ✓ src/__tests__/agent.header.actions.test.tsx (20 tests) 63160ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > no two controls overlap, and none leaves the column, at the 380px snap in a 1440px window  2889ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > no two controls overlap, and none leaves the column, at 50% in a 1440px window  3410ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > no two controls overlap, and none leaves the column, at full (list folded to its strip) in a 1440px window  2825ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > no two controls overlap, and none leaves the column, at the 380px snap in a 1280px window  2815ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > no two controls overlap, and none leaves the column, at 50% in a 1280px window  2843ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > no two controls overlap, and none leaves the column, at full (list folded to its strip) in a 1280px window  2809ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > no two controls overlap, and none leaves the column, at the 380px snap in a 1100px window  2819ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > no two controls overlap, and none leaves the column, at 50% in a 1100px window  2768ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > no two controls overlap, and none leaves the column, at full (list folded to its strip) in a 1100px window  3439ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > line 1 -- pill, title, headline and actions -- stays inside the column at the 380px snap in a 1440px window  3872ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > line 1 -- pill, title, headline and actions -- stays inside the column at 50% in a 1440px window  3587ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > line 1 -- pill, title, headline and actions -- stays inside the column at full (list folded to its strip) in a 1440px window  3536ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > line 1 -- pill, title, headline and actions -- stays inside the column at the 380px snap in a 1280px window  3503ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > line 1 -- pill, title, headline and actions -- stays inside the column at 50% in a 1280px window  3460ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > line 1 -- pill, title, headline and actions -- stays inside the column at full (list folded to its strip) in a 1280px window  4259ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > line 1 -- pill, title, headline and actions -- stays inside the column at the 380px snap in a 1100px window  3737ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > line 1 -- pill, title, headline and actions -- stays inside the column at 50% in a 1100px window  3588ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > line 1 -- pill, title, headline and actions -- stays inside the column at full (list folded to its strip) in a 1100px window  3714ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > shares line 1 with the title, and neither the actions nor the headline is squeezed under it  1683ms
+   ✓ item 2: the agent header's actions never overlap, at every split width > draws no sticky header band over the split's header  1602ms
+ ✓ src/__tests__/browseruse.agents.test.tsx (10 tests) 2634ms
+   ✓ the inspector draws the same fact beside the profile > opens the counts on a press, and warns on "not used"  570ms
+   ✓ the inspector draws the same fact beside the profile > a running browser task is a dash until it ends; a non-browser task has no fact  393ms
+   ✓ the link from Platform counts filters the Agents list > lists only the browser agents whose browser was not used, says so, and clears  457ms
+   ✓ the link from Platform counts filters the Agents list > the Recent state counts count what the filter lets through  594ms
+ ✓ src/__tests__/agent.names.test.tsx (8 tests) 4988ms
+   ✓ #94: the inspector is headed by the step, with the id kept and copyable > heads the drawer with the step once the run is read  2785ms
+   ✓ #94: the inspector is headed by the step, with the id kept and copyable > prints the whole task id under the name, with a copy control, in the header  675ms
+   ✓ #94: the inspector is headed by the step, with the id kept and copyable > prints a standalone task’s id once, on the id line, not again in the meta line  653ms
+   ✓ #94: the inspector is headed by the step, with the id kept and copyable > links the workflow id to that workflow's page  694ms
+ ✓ src/__tests__/agent.idline.test.tsx (11 tests) 2156ms
+   ✓ #94: the id is printed under the name, without a hover > prints the whole id under the step name in the split header  626ms
+   ✓ #94: the copy button copies the whole id > copies the full id from the split header  734ms
+   ✓ #94: at phone width the id stays on one line, cut at its start > keeps it on one line at 390, with its distinguishing end drawn  319ms
+ ✓ src/__tests__/LiveBrowser.mounts.test.tsx (6 tests) 6250ms
+   ✓ the Browser tab opens the theater on its own screen > shows ⤢ on a live-browser task, and ⤢ opens the theater with the tab’s live screen in its stage  937ms
+   ✓ the theater’s device slot switches the device for the person in control (LB-DEV-B) > rotates through setLiveDevice from the theater  926ms
+   ✓ the theater’s device slot switches the device for the person in control (LB-DEV-B) > is disabled in the theater for a viewer  851ms
+   ✓ Save as login after Return control > is offered once the person returns control in a personal workspace, and not before  2130ms
+   ✓ Save as login after Return control > is absent in a group workspace after the same return  702ms
+   ✓ Save as login after Return control > is absent when someone else took control over the person, which is not a return  702ms
+ ✓ src/__tests__/admin.leads.tenants.test.tsx (9 tests) 2136ms
+   ✓ Tenants leads with the workspace waiting to be created (S10d) > names the one waiting for approval first, and its button opens its request  929ms
+   ✓ Tenants leads with the workspace waiting to be created (S10d) > marks the record it opened, where a click draws no focus ring  384ms
+   ✓ Tenants leads with the workspace waiting to be created (S10d) > names one whose setting up stopped ahead of one being set up  366ms
+   ✓ Tenants leads with the workspace waiting to be created (S10d) > names one being set up in the info tone, and its button opens its progress  346ms
+ ✓ src/__tests__/awaitinput.workflow.test.tsx (3 tests) 2925ms
+   ✓ the workflow page > the waiting step’s pill reads "waiting for a member" and its row shows the deadline  786ms
+   ✓ the workflow page > opens the waiting step’s card on arrival, which reads the step and offers its form  1730ms
+   ✓ the run’s Steps card > reads what the step waits for and leads to its card, never to an agent  409ms
+ ✓ src/__tests__/agent.parked-handoff.test.tsx (10 tests) 369ms
+ ✓ src/__tests__/attempt.parked.timeline.test.tsx (8 tests) 172ms
+ ✓ src/__tests__/agentwhy.belowunits.test.tsx (3 tests) 87ms
+ ✓ src/__tests__/agents.silent.test.tsx (6 tests) 44ms
+ ✓ src/__tests__/attempt.handoff.timeline.test.tsx (6 tests) 98ms
+ ✓ src/__tests__/adminPlatformSecrets.test.tsx (4 tests) 3656ms
+   ✓ the Platform secrets tab is absent for a non-admin > a workspace admin's spine draws Admin without it  590ms
+   ✓ status only > draws set, versions, age and who writes it, the accounts as one line, and never a value  2999ms
+ ✓ src/__tests__/attempt.model.test.tsx (9 tests) 52ms
+ ✓ src/__tests__/attempts.timeline.gaps.test.tsx (5 tests) 56ms
+ ✓ src/__tests__/cancel.request.timeline.test.tsx (4 tests) 174ms
+ ✓ src/__tests__/artifact.masked.test.tsx (3 tests) 140ms
+ ✓ src/__tests__/changes.routes.test.ts (8 tests) 19ms
+ ✓ src/__tests__/agent-split.compose.test.tsx (2 tests) 1562ms
+   ✓ the composed split renders the same panel set as before the move > draws the divider, the header, every tab in its order, the pane and the Checkpoints host  1559ms
+ ✓ src/__tests__/agents.elapsed.cancelled.test.tsx (5 tests) 80ms
+ ❯ src/__tests__/agentlink.anystate.test.tsx (3 tests | 3 failed) 6261ms
+   × agent link drawer opens in any state (path /agents/live/<id>) > opens the drawer for a SUCCEEDED task that is not in the live list 1801ms
+     → expected '/agents/recent/task_11nk0succeeded000…' to be '/agents/live/task_11nk0succeeded000000' // Object.is equality
+   × agent link drawer opens in any state (path /agents/live/<id>) > opens the drawer for a FAILED task that is not in the live list 2536ms
+     → expected '/agents/recent/task_11nk0failed000000…' to be '/agents/live/task_11nk0failed00000000' // Object.is equality
+   × agent link drawer opens in any state (path /agents/live/<id>) > opens the drawer for a QUEUED task that is not in the live list 1925ms
+     → expected '/agents/waiting/task_11nk0queued00000…' to be '/agents/live/task_11nk0queued00000000' // Object.is equality
+ ✓ src/__tests__/agentdetail.late.test.tsx (2 tests) 34ms
+ ✓ src/__tests__/attempts.pane.gutter.test.tsx (2 tests) 295ms
+ ✓ src/__tests__/automate.help.test.tsx (4 tests) 603ms
+   ✓ the Automate pages’ `?` > on /automate/schedules, says the schedules topic and links to it  392ms
+ ✓ src/__tests__/admin.only.test.tsx (2 tests) 3129ms
+   ✓ a viewer sees no Admin (ADMIN-ONLY) > draws no Admin in the spine for someone whose only role is viewer  434ms
+   ✓ a viewer sees no Admin (ADMIN-ONLY) > sends a viewer from every platform Admin address to Overview  2695ms
+ ✓ src/__tests__/checkpoints.pane.read.test.ts (3 tests) 8ms
+ ✓ src/__tests__/agents.split.snap.test.ts (5 tests) 13ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/agentlink.anystate.test.tsx > agent link drawer opens in any state (path /agents/live/<id>) > opens the drawer for a SUCCEEDED task that is not in the live list
+AssertionError: expected '/agents/recent/task_11nk0succeeded000…' to be '/agents/live/task_11nk0succeeded000000' // Object.is equality
+
+Expected: "/agents/live/task_11nk0succeeded000000"
+Received: "/agents/recent/task_11nk0succeeded000000"
+
+ ❯ src/__tests__/agentlink.anystate.test.tsx:99:40
+     97|       expect(paths).toContain(`/v1/tasks/${id}`)
+     98|       // The address still names this agent.
+     99|       expect(window.location.pathname).toBe(`/agents/live/${id}`)
+       |                                        ^
+    100|     })
+    101|   }
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  src/__tests__/agentlink.anystate.test.tsx > agent link drawer opens in any state (path /agents/live/<id>) > opens the drawer for a FAILED task that is not in the live list
+AssertionError: expected '/agents/recent/task_11nk0failed000000…' to be '/agents/live/task_11nk0failed00000000' // Object.is equality
+
+Expected: "/agents/live/task_11nk0failed00000000"
+Received: "/agents/recent/task_11nk0failed00000000"
+
+ ❯ src/__tests__/agentlink.anystate.test.tsx:99:40
+     97|       expect(paths).toContain(`/v1/tasks/${id}`)
+     98|       // The address still names this agent.
+     99|       expect(window.location.pathname).toBe(`/agents/live/${id}`)
+       |                                        ^
+    100|     })
+    101|   }
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  src/__tests__/agentlink.anystate.test.tsx > agent link drawer opens in any state (path /agents/live/<id>) > opens the drawer for a QUEUED task that is not in the live list
+AssertionError: expected '/agents/waiting/task_11nk0queued00000…' to be '/agents/live/task_11nk0queued00000000' // Object.is equality
+
+Expected: "/agents/live/task_11nk0queued00000000"
+Received: "/agents/waiting/task_11nk0queued00000000"
+
+ ❯ src/__tests__/agentlink.anystate.test.tsx:99:40
+     97|       expect(paths).toContain(`/v1/tasks/${id}`)
+     98|       // The address still names this agent.
+     99|       expect(window.location.pathname).toBe(`/agents/live/${id}`)
+       |                                        ^
+    100|     })
+    101|   }
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  1 failed | 48 passed (49)
+      Tests  3 failed | 778 passed (781)
+   Start at  02:40:50
+   Duration  587.52s (transform 6.71s, setup 376ms, collect 18.08s, tests 567.35s, environment 413ms, prepare 87ms)
+

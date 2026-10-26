@@ -1,0 +1,255 @@
+
+ RUN  v3.2.7 /workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui
+
+ ✓ src/__tests__/prose.runs.test.tsx (25 tests) 2429ms
+   ✓ Agents, with every help card closed > states a tab is a real zero with a mark rather than a paragraph  670ms
+ ✓ src/__tests__/phone.chrome.test.tsx (12 tests) 13786ms
+   ✓ #139 at 390: the header collapses on scroll > compacts to 36px past its own height and keeps the mark, the env and the tenant in it  682ms
+   ✓ #139 at 390: the header collapses on scroll > draws an admin as a grey hairline tag in the phone header, like the env, on the one row  598ms
+   ✓ #139 at 390: every section is reachable from any scroll position, and none moves > gives the open section's pages their own scrolling column, so the sections hold their places  1251ms
+   ✓ #139 at 390: a section's sticky page strip sits flush under the header > nests the strip in the page scroller and the header outside it, and sticks the strip at 0 in both header heights  517ms
+   ✓ #139 at 390: the header row never widens the page > cuts a long tenant name with an ellipsis, after the title has given way, and keeps the whole name as its title  340ms
+   ✓ #139 at 390: the first Agents row starts above the midpoint > stacks less than half of an 844px screen above the first row, every block resolved to px and counted  9423ms
+ ✓ src/__tests__/primitives.screens.test.tsx (16 tests) 957ms
+ ✓ src/__tests__/qa.c6u.capacity.test.tsx (24 tests) 7139ms
+   ✓ G5-08: at 390 a capacity or admin table is a record per row > stacks every Pools family table, and keeps the scroll above the phone  1316ms
+   ✓ G5-08: at 390 a capacity or admin table is a record per row > draws the profile matrix as one card per profile: name, Can start, runs out first with leased/ceiling  1307ms
+   ✓ G5-08: at 390 a capacity or admin table is a record per row > stacks Provider quota, its fixed table no wider than the phone  938ms
+   ✓ G5-15: one task reference across Capacity > copies the whole id  378ms
+   ✓ G5-20: a 0% Use track is lighter than a 5% one > draws the zero as a 1px tick with no outline on Pools, and keeps the shared mark elsewhere  310ms
+   ✓ G5-23: format and wording > puts the Holders tenant chip in the address, and filters by the tenant it names  761ms
+   ✓ G5-23: format and wording > gives Quota cap its unit, and holds both figure heads on one line  670ms
+ ✓ src/__tests__/live.ux1.test.tsx (25 tests) 46480ms
+   ✓ item 1: Details, Browser, Logs, and Browser opens while the agent runs > orders the tabs Details, Browser, Logs and opens a running browser agent on Browser, by its address  4399ms
+   ✓ item 1: Details, Browser, Logs, and Browser opens while the agent runs > marks the Browser tab LIVE while the session is open, and not before the tunnel is up  9314ms
+   ✓ item 2: `browser` is a routed pane, and ?theater=1 opens the theater > opens the theater when the split is routed to Browser with theater set  1856ms
+   ✓ item 2: `browser` is a routed pane, and ?theater=1 opens the theater > opens the Browser tab, not the theater, without it  1638ms
+   ✓ item 3: the toolbar is the mockup’s, left to right > draws the five device chips with the mockup’s labels, the current one pressed, and no <select>  692ms
+   ✓ item 3: the toolbar is the mockup’s, left to right > labels rotate, touch and logs exactly, and puts ⤢ Theater after them, then the members box  1139ms
+   ✓ item 3: the toolbar is the mockup’s, left to right > says touch: off when touch is off  977ms
+   ✓ item 3: the toolbar is the mockup’s, left to right > keeps every device control disabled for a viewer, saying why  1016ms
+   ✓ item 3: the toolbar is the mockup’s, left to right > enables them for the person in control (LB-DEV-B), with nothing said against them  994ms
+   ✓ item 3: the toolbar is the mockup’s, left to right > draws the chips unpressed when the gate has not reported the device  777ms
+   ✓ item 5: ◫ logs puts the logs on the left and the device on the right > draws the logs first in the body once toggled, and the device after them  3202ms
+   ✓ item 6: one hand-off banner, with Take control and Open in theater > draws exactly one banner on the Browser tab, with the reason, the site and the time left  844ms
+   ✓ item 6: one hand-off banner, with Take control and Open in theater > carries Take control, which asks as the header’s does, and Open in theater, which opens it  3357ms
+   ✓ item 6: one hand-off banner, with Take control and Open in theater > hides Take control from a person who may not take it  1543ms
+   ✓ item 6: one hand-off banner, with Take control and Open in theater > keeps the strip on Logs, with the same two buttons; Open in theater goes to the Browser tab in theater  2562ms
+   ✓ item 6: one hand-off banner, with Take control and Open in theater > on a parked hand-off, "I'm ready to sign in" calls human-ready and then opens the Browser tab  4435ms
+   ✓ item 6: one hand-off banner, with Take control and Open in theater > on a parked hand-off, the banner says since when it is parked  3691ms
+   ✓ item 6: one hand-off banner, with Take control and Open in theater > on a held hand-off, the banner says nothing about being parked  819ms
+   ✓ item 7: the header reads Copy link · Take control · Stop > draws the three actions in that order, Stop capitalised  3193ms
+ ✓ src/__tests__/qa-identity.test.tsx (20 tests) 17838ms
+   ✓ 1. the panel is an admin’s > draws no panel, and reads no grants, for a non-admin  325ms
+   ✓ 1. the panel is an admin’s > draws it for an admin: the identity, its host, its account, configured, and each grant  575ms
+   ✓ 2. Grant needs a reason, and a refusal is the API’s own words > keeps Grant disabled until a reason is typed, and a blank one does not count  380ms
+   ✓ 2. Grant needs a reason, and a refusal is the API’s own words > grants with the workspace and the trimmed reason, and reads the list again  394ms
+   ✓ 2. Grant needs a reason, and a refusal is the API’s own words > draws a 403 as the API’s code and message, word for word  697ms
+   ✓ 2. Grant needs a reason, and a refusal is the API’s own words > revokes a granted workspace and draws the API’s refusal the same way  749ms
+   ✓ 3. the Submit form offers the QA identity only when this workspace is granted > offers it when the profile declares it and `/v1/qa-identities/mine` says granted  2405ms
+   ✓ 3. the Submit form offers the QA identity only when this workspace is granted > does not offer it when not granted  1672ms
+   ✓ 3. the Submit form offers the QA identity only when this workspace is granted > does not offer it when not configured  1700ms
+   ✓ 3. the Submit form offers the QA identity only when this workspace is granted > does not offer it when the read failed  1670ms
+   ✓ 3. the Submit form offers the QA identity only when this workspace is granted > does not offer it, nor ask, for a profile that does not declare it  1675ms
+   ✓ 3. the Submit form offers the QA identity only when this workspace is granted > sends `qa_identity: "console"` ticked, and nothing unticked  5220ms
+   ✓ 4. the task page says whose session the browser holds > explains itself on focus: the QA account, not the submitter, and the agent never holds the credential  318ms
+ ✓ src/__tests__/live.v1.test.tsx (24 tests) 4629ms
+   ✓ B3: the device fits the stage’s height and width, centred, in its outline > outlines the frame in CSS, centred in the stage, outside the screen’s size  485ms
+   ✓ U3: the device bar’s why is its tooltip, not a toolbar line > draws no visible hint line in the toolbar for a viewer  317ms
+   ✓ U3: the device bar’s why is its tooltip, not a toolbar line > puts the why on every disabled device control, as its title and its accessible description  947ms
+   ✓ U3: the device bar’s why is its tooltip, not a toolbar line > describes nothing for the person in control, whose controls work  954ms
+   ✓ U3: the device bar’s why is its tooltip, not a toolbar line > keeps ⤢ Theater and "Let any member take control" together at the right, unbroken  1135ms
+   ✓ U4: the Take-control ask has no gap under its title > sets the title’s and the text’s margins to nothing, so only the ask’s gap spaces them  664ms
+ ✓ src/__tests__/logs.tab.test.tsx (15 tests) 27664ms
+   ✓ the tab opens on the stream the runner has > offers Transcript, Agent stdout, Agent stderr and Runner  1044ms
+   ✓ the attempt picker reads the picked attempt, by attempt_id > labels each attempt by generation and passes its id to every log read  1811ms
+   ✓ search covers this window, and wrap and the keys work > counts the hits in this window, walks them, and says so  4660ms
+   ✓ jump to error: a transcript is_error and a console-side pattern > counts a failed tool result and a Traceback line, and says what it matches and that it can miss  4922ms
+   ✓ the masked count is the server’s, and a masked value is ******** > counts the window’s masks and draws each in its own ink  1683ms
+   ✓ follow and pause > pauses on Paused, keeps the paused read on screen, and counts the lines that arrived since  5877ms
+   ✓ output missing between two reads > draws an amber notice with both bytes when the tail moved past output nobody read  2103ms
+   ✓ output missing between two reads > draws no gap when the latest read is a new attempt  2064ms
+   ✓ On a failed task the last log line says it is not the error (QA-115 follow-up, owner 2026-10-20) > labels the line "Last log line (not the error)" when the task failed  741ms
+   ✓ On a failed task the last log line says it is not the error (QA-115 follow-up, owner 2026-10-20) > keeps "Last log line" on every task that did not fail  1153ms
+   ✓ Details carries the newest log line, and it opens the Logs tab > draws the newest line of the default stream and switches to the tab on a click  345ms
+   ✓ Details carries the newest log line, and it opens the Logs tab > says a read in flight is reading, never that the log is empty  369ms
+   ✓ honest forms > says the attempt list did not load, and still reads the latest  667ms
+ ✓ src/__tests__/overview.o1.test.tsx (18 tests) 4684ms
+   ✓ O1: Needs a look is a row of check cards > lays the cards at 400px or more each at 1440  315ms
+   ✓ O1 at 390 > draws Running as a compact list of mark, name and elapsed, and hides the table  308ms
+ ✓ src/__tests__/notifications.test.tsx (20 tests) 5728ms
+   ✓ the drop-down > marks one item read from its own control, without navigating  802ms
+   ✓ the drop-down > marks everything read and the count goes  961ms
+   ✓ the muted line (Q3) > says "1 muted item needs you" when muted.needs_you is 1, and leads to Settings › Profile  904ms
+   ✓ the bell in the shell > sits at the spine’s foot on a section page, with no header bar to hold it (V178)  489ms
+   ✓ the phone > opens a full-screen Notifications page with Mark all read  869ms
+ ✓ src/__tests__/merge.card.test.tsx (20 tests) 827ms
+   ✓ the workflow page > draws the merge card in the merge step's inspector  776ms
+ ✓ src/__tests__/live.seam.test.tsx (32 tests) 313ms
+ ✓ src/__tests__/overview.glance.test.tsx (8 tests) 2364ms
+   ✓ #97: the Spend card reads without a help card > prints the headline with two decimals and publishes the precise figure  946ms
+ ✓ src/__tests__/qa.503.runs.test.tsx (14 tests) 3546ms
+   ✓ #503: the check counts the run serves > counts and names the checks a parked merge step waits for, and says the rest are not served  427ms
+ ✓ src/__tests__/live.ux3.test.tsx (6 tests) 5343ms
+   ✓ the Agents list: All | Browsers N > is a switch, not a checkbox, and N counts the browser agents, the starting one too  589ms
+   ✓ the Agents list: All | Browsers N > Browsers lists them needs-you first, each with its device outline, and theater all opens the first  945ms
+   ✓ the Overview's hand-off card: Take control > is offered when the session says you may, asks first, takes, then opens the Browser tab  1483ms
+   ✓ the phone's Browser tab: the device switcher under ⋯ > at phone width, the toolbar holds ⋯, and the device, rotate, touch and logs are in its menu  1570ms
+   ✓ the phone's Browser tab: the device switcher under ⋯ > at desktop width, there is no ⋯ and the device switcher is in the toolbar  750ms
+ ✓ src/__tests__/live.striplabel.test.tsx (7 tests) 3969ms
+   ✓ 1. the theater strip says what the gate names > shows the closed browser’s label above the browser, no covered-page reason, and clears it when the gate names the page again  481ms
+   ✓ 2. the device label follows the preset > says the Desktop asked for while the gate still reports iPad, and reads Desktop once it reports it  1327ms
+   ✓ 2. the device label follows the preset > says nothing was asked for when the device route refuses the switch  981ms
+   ✓ 4. the screen’s name sits on a role that allows one > is an application, named, while the viewer holds control  336ms
+   ✓ 4. the screen’s name sits on a role that allows one > is a named group while the viewer only watches  797ms
+ ✓ src/__tests__/qa.c6p.submit.test.tsx (13 tests) 2933ms
+   ✓ G4-26: a step not reached yet dims its controls, never its labels > keeps every label at full strength, at least 4.5:1 on the card in both themes  2177ms
+   ✓ G4-26: a step not reached yet dims its controls, never its labels > dims the controls themselves  344ms
+ ✓ src/__tests__/overview.attention.test.tsx (9 tests) 2169ms
+ ✓ src/__tests__/merge.park.questions.test.tsx (10 tests) 17668ms
+   ✓ the merge step's page > draws no Browser tab, no hand-off banner and no I am ready  3307ms
+   ✓ the merge step's page > sends a Browser address (the bell links one) to Details, and draws no Browser tab there  1459ms
+   ✓ the merge step's page > a real hand-off park keeps the banner, I am ready and the Browser tab  5412ms
+   ✓ the questions are drawn inline, with the answer control > lists each held question with its options, links its asking task, and answers on that task  4873ms
+   ✓ the questions are drawn inline, with the answer control > offers the re-run only for a hold the answer route cannot read whole  2206ms
+   ✓ the questions are drawn inline, with the answer control > draws no held-questions card for a hand-off park  363ms
+ ✓ src/__tests__/prose.hygiene.test.tsx (17 tests) 38ms
+ ✓ src/__tests__/nav.links.test.tsx (12 tests) 6760ms
+   ✓ the links the frame draws itself > draws the API reads help link in the product link treatment  3546ms
+   ✓ the links the frame draws itself > tells the agent list which agent the inspector has open  1455ms
+   ✓ the links the frame draws itself > hands the list its address, and closes the drawer back to it  1530ms
+ ✓ src/__tests__/nav.foot.test.tsx (19 tests) 9258ms
+   ✓ API reads is a page of Capacity (NAV-FOOT) > lights Capacity and its API reads page at /capacity/api-reads, with the Failures only row  3114ms
+   ✓ API reads is a page of Capacity (NAV-FOOT) > rewrites /reference to /capacity/api-reads in the app  638ms
+   ✓ API reads is a page of Capacity (NAV-FOOT) > rewrites /api-reads to /capacity/api-reads in the app  679ms
+   ✓ API reads is a page of Capacity (NAV-FOOT) > rewrites /#reference to /capacity/api-reads in the app  762ms
+   ✓ the signed-in name opens Profile (NAV-FOOT) > is a link to /settings/profile whose name says it opens your profile  3596ms
+ ✓ src/__tests__/needsaction.groups.test.tsx (5 tests) 1600ms
+   ✓ the Agents list splits Waiting into Needs action and No room > draws each waiting task under the group its blockers put it in  666ms
+   ✓ Capacity puts the pools that need a person under "Needs action" at the top > holds exactly the blockerGroup needs-action pools, and leaves a full pool in its family  929ms
+ ✓ src/__tests__/live.tab.test.tsx (15 tests) 12193ms
+   ✓ QA12-09: the take-control ask is a focused dialog that keeps the reason in view > is modal and focuses its first button when it opens  721ms
+   ✓ QA12-09: the take-control ask is a focused dialog that keeps the reason in view > quotes the agent’s reason, which the ask would otherwise cover  529ms
+   ✓ QA12-09: the take-control ask is a focused dialog that keeps the reason in view > closes on Esc pressed anywhere, and gives focus back to Take control  558ms
+   ✓ QA12-09: the take-control ask is a focused dialog that keeps the reason in view > keeps Tab inside it  717ms
+   ✓ QA12-11: member control goes both ways, and asks once when turned on > ticking it asks first, explaining it carries over; only the confirm opens it  1286ms
+   ✓ QA12-11: member control goes both ways, and asks once when turned on > Cancel leaves it off and sends nothing  1966ms
+   ✓ QA12-11: member control goes both ways, and asks once when turned on > once on, it can be turned off, at once and through the served route  574ms
+   ✓ QA12-22: after Return control, Take control is not offered > the banner offers no Take control once the session has no hand-off, though the task still shows one  934ms
+   ✓ QA12-22: after Return control, Take control is not offered > draws the return’s answer at once, before the next read comes back  863ms
+   ✓ QA12-25: no ticket is asked for while the session is not open > a reconnect reads the session first, and hands the pane a closed one without minting  2011ms
+   ✓ QA12-25: no ticket is asked for while the session is not open > a reconnect to a session still open mints as before  2024ms
+ ✓ src/__tests__/person.name.test.tsx (7 tests) 1209ms
+   ✓ every place the design names prints a person through PersonName > the workflow page's owner  871ms
+ ✓ src/__tests__/overlap.action.runs.test.tsx (8 tests) 1136ms
+ ✓ src/__tests__/pools.runsout.test.tsx (6 tests) 68ms
+stderr | src/__tests__/qa.g1.help.test.tsx > G1-16: "You see" is the claim, never the name again > draws a different "You see" line from the heading on every card of every group
+Warning: Encountered two children with the same key, `W`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version.
+    at dl
+    at dd
+    at div
+    at dl
+    at div
+    at Topic (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpSection.tsx:236:3)
+    at section
+    at HelpScreen (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpSection.tsx:15:23)
+Warning: Encountered two children with the same key, `N`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version.
+    at dl
+    at dd
+    at div
+    at dl
+    at div
+    at Topic (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpSection.tsx:236:3)
+    at section
+    at HelpScreen (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpSection.tsx:15:23)
+Warning: Encountered two children with the same key, `/`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version.
+    at dl
+    at dd
+    at div
+    at dl
+    at div
+    at Topic (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpSection.tsx:236:3)
+    at section
+    at HelpScreen (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpSection.tsx:15:23)
+
+stderr | src/__tests__/qa.g1.help.test.tsx > G1-21: the keyboard has a topic, generated from the table the handlers read > lists every shortcut, with what it does and where
+Warning: Encountered two children with the same key, `W`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version.
+    at dl
+    at dd
+    at div
+    at dl
+    at div
+    at Topic (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpSection.tsx:236:3)
+    at section
+    at HelpScreen (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpSection.tsx:15:23)
+Warning: Encountered two children with the same key, `N`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version.
+    at dl
+    at dd
+    at div
+    at dl
+    at div
+    at Topic (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpSection.tsx:236:3)
+    at section
+    at HelpScreen (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpSection.tsx:15:23)
+Warning: Encountered two children with the same key, `/`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version.
+    at dl
+    at dd
+    at div
+    at dl
+    at div
+    at Topic (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpSection.tsx:236:3)
+    at section
+    at HelpScreen (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpSection.tsx:15:23)
+
+ ✓ src/__tests__/qa.g1.help.test.tsx (12 tests) 2008ms
+   ✓ G1-17: search matches whole words first, and snippets end on word edges > “lease” does not light the inside of “released”  308ms
+   ✓ G1-17: search matches whole words first, and snippets end on word edges > falls back to a match inside a word when no word starts with the query  310ms
+   ✓ G1-17: search matches whole words first, and snippets end on word edges > starts and ends every snippet on a word edge  1171ms
+ ✓ src/__tests__/phone.rows.test.tsx (12 tests) 332ms
+ ✓ src/__tests__/pools.rows.test.tsx (6 tests) 2076ms
+   ✓ Pools puts the abnormal row first and measures every row (#125) > draws a utilisation track and a % on every row, and Set by on every row  1151ms
+   ✓ a Pools row is one click from its holders and its limit (#125) > links the pool name to its own row, which Holders is not (QA G5-23)  307ms
+stdout | src/__tests__/prose.budget.test.tsx > the prose budget > holds Overview under its word ceiling on the healthy path
+OVERVIEW RENDERED WORDS: 154
+
+ ✓ src/__tests__/prose.budget.test.tsx (1 test) 246ms
+ ✓ src/__tests__/overview.handoff.who.test.tsx (7 tests) 2370ms
+   ✓ the Overview's hand-off cards say which agent is waiting (LB-V5) > name the agent, its short task id and how long it has waited  496ms
+   ✓ the Overview's hand-off cards say which agent is waiting (LB-V5) > past three, draw the three oldest and link "+N more waiting" to the Waiting tab  889ms
+   ✓ the Overview's hand-off cards say which agent is waiting (LB-V5) > draws no "more" link at three or fewer  961ms
+ ✓ src/__tests__/qa.c6t.overview.test.tsx (8 tests) 1348ms
+ ✓ src/__tests__/overview.summaryview.test.tsx (4 tests) 719ms
+ ✓ src/__tests__/live.r6.test.tsx (6 tests) 146ms
+ ✓ src/__tests__/qa.c5d.submit.test.tsx (8 tests) 5489ms
+   ✓ G1-05 / G4-23: the chooser times the read it makes > draws no "reads nothing" in the frame, and its refresh carries the age of the recent read  1421ms
+   ✓ G1-05 / G4-23: the chooser times the read it makes > reads the recent submissions again when the refresh is pressed  369ms
+   ✓ G4-24: the workflow rail names the cause of a refused priority > says "out of range" in the summary for 500, and "not a whole number" for 2.5  1846ms
+   ✓ G4-27: the workflow help says what the default failure policy does > spells "dependents" one way across the help and the form  1843ms
+ ✓ src/__tests__/qa.browser.fixture.test.tsx (4 tests) 1437ms
+   ✓ the fixture build has one live-browser agent > lists exactly one RUNNING claude-code-browser task, and keeps task_a073aff5 the ordinary running agent  355ms
+   ✓ the fixture build has one live-browser agent > answers live_browser true with an open session for that task only  357ms
+   ✓ the Browser pane, drawn from the fixture build with no network call > draws the live state for the browser agent  367ms
+   ✓ the Browser pane, drawn from the fixture build with no network call > still draws no live browser for task_a073aff5  358ms
+ ✓ src/__tests__/live.unused.test.tsx (10 tests) 30ms
+ ✓ src/__tests__/overview.failures.age.test.tsx (4 tests) 188ms
+ ✓ src/__tests__/podstart.problem.test.tsx (8 tests) 13ms
+ ✓ src/__tests__/qa.agent.test.tsx (4 tests) 7148ms
+   ✓ Q4: the open tab takes the column to its foot > is the column’s last row, and the column is the viewport’s height at any pane height  2148ms
+   ✓ Q4: the open tab takes the column to its foot > draws the log no wider than the pane it fills  1670ms
+   ✓ Q4: the detail header and tabs fit the split > ellipses the title and keeps the actions whole  1694ms
+   ✓ Q4: the detail header and tabs fit the split > scrolls the tabs sideways rather than cutting or wrapping them  1635ms
+ ✓ src/__tests__/overview.headroom.span.test.tsx (3 tests) 153ms
+ ✓ src/__tests__/overview.costsofar.test.tsx (6 tests) 21ms
+ ✓ src/__tests__/overview.stalledworkflows.test.ts (5 tests) 10ms
+ ✓ src/__tests__/profile.nav.test.tsx (3 tests) 1150ms
+   ✓ Settings › Profile > opens the Profile screen, under its own heading, at /settings/profile  1146ms
+ ✓ src/__tests__/providerKeys.routes.test.ts (4 tests) 9ms
+ ✓ src/__tests__/outcome.runs.test.tsx (3 tests) 8ms
+ ✓ src/__tests__/mounted.test.tsx (3 tests) 67ms
+ ✓ src/__tests__/mcpServers.routes.test.ts (2 tests) 5ms
+
+ Test Files  49 passed (49)
+      Tests  530 passed (530)
+   Start at  02:59:10
+   Duration  252.68s (transform 8.59s, setup 357ms, collect 22.98s, tests 227.70s, environment 428ms, prepare 103ms)
+

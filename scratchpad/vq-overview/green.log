@@ -1,0 +1,18 @@
+
+ RUN  v3.2.7 /workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui
+
+ ✓ src/__tests__/vq.overview.test.tsx (8 tests) 4395ms
+   ✓ VQ-004: the Needs a look head says one count, then what it is over > reads "N problems · R of T checks ran", N the cards drawn  466ms
+   ✓ VQ-003: Needs a look says states and park reasons as words > prints no state or reason enum in the cards, their names or their tooltips  404ms
+   ✓ VQ-003: Needs a look says states and park reasons as words > names the failures link "Agents · failed", the parked reason "waiting for CI", the quota "throttled"  369ms
+   ✓ VQ-005: one sample of failures, one window, the same words > gives Needs a look and Recent failures the same count and the same cut-off  353ms
+   ✓ VQ-005: one sample of failures, one window, the same words > words Finished today’s partial sample as every other card does  353ms
+   ✓ VQ-006: Recent failures is a full-width row under both columns > sits outside the columns, across both, before the pools  571ms
+   ✓ VQ-002: a phone draws a check as one line and an agent as one line > steps the detail, the ids and the link words aside at 390, and keeps them at 1440  1405ms
+   ✓ VQ-002: a phone draws a check as one line and an agent as one line > cuts a Running row’s workflow title on one line and keeps its step whole  471ms
+
+ Test Files  1 passed (1)
+      Tests  8 passed (8)
+   Start at  02:13:21
+   Duration  9.96s (transform 2.94s, setup 287ms, collect 4.26s, tests 4.39s, environment 604ms, prepare 102ms)
+

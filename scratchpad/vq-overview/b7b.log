@@ -1,0 +1,37 @@
+
+ RUN  v3.2.7 /workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui
+
+stdout | src/__tests__/spacing.accounts.test.tsx > spacing: accounts > finds nothing touching, nothing under the divider floors, no corner off the scale
+accounts DARK: 437 shapes examined, 13 findings, 0 unresolved, 0 centred
+  divider-under-floor (12)
+  surfaces-touch (1)
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor button.sk-cp [bottom]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor button.sk-cp [left]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor button.sk-cp [right]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor button.sk-cp [top]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor div.sk-theme [bottom]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor div.sk-theme [left]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor div.sk-theme [right]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor div.sk-theme [top]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor span.sk-adm [bottom]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor span.sk-adm [left]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor span.sk-adm [right]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor span.sk-adm [top]
+    exempt (app frame (spine | panel): the picked mock-up draws the spine and the panel touching) surfaces-touch div.sk-side [column]
+accounts LIGHT: 107 shapes examined, 12 findings, 0 unresolved, 0 centred
+  divider-under-floor (12)
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor button.sk-cp [bottom]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor button.sk-cp [left]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor button.sk-cp [right]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor button.sk-cp [top]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor div.sk-theme [bottom]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor div.sk-theme [left]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor div.sk-theme [right]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor div.sk-theme [top]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor span.sk-adm [bottom]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor span.sk-adm [left]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor span.sk-adm [right]
+    exempt (nav chrome hairlines: the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01) divider-under-floor span.sk-adm [top]
+
+ ✓ src/__tests__/spacing.accounts.test.tsx (1 test) 324316ms
+   ✓ spacing: accounts > finds nothing touching, nothing under the divider floors, no corner off the scale  324308ms

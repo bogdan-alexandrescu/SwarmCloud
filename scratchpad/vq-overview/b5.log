@@ -1,0 +1,600 @@
+
+ RUN  v3.2.7 /workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui
+
+ ✓ src/__tests__/qa.g3.workflow.test.tsx (25 tests) 2626ms
+   ✓ G3-13: the Timeline draws a key, a visible run and a park > prints a one-line key above the axis: on parents, waited, parked, ran, skipped  653ms
+   ✓ G3-19: the pending review verdict is one sentence > keeps `not read yet` inline and starts no line with a colon  402ms
+ ✓ src/__tests__/qa.u11a.logs.test.tsx (34 tests) 102743ms
+   ✓ the Logs tab: its address, its place, and all four streams > sits beside Details and has its own route, /agents/<tab>/<id>/logs  5686ms
+   ✓ the Logs tab: its address, its place, and all four streams > renders Transcript, Agent stdout, Agent stderr and Runner as one segmented control in the row  941ms
+   ✓ the Logs tab: its address, its place, and all four streams > offers Follow on a live agent only: a finished one says its record is final  2521ms
+   ✓ no element of the detail is covered by a log element, at any split width > draws the log in the pane's flow and nowhere else, list at strip, opened on detail  3780ms
+   ✓ no element of the detail is covered by a log element, at any split width > draws the log in the pane's flow and nowhere else, list at strip, opened on logs  4457ms
+   ✓ no element of the detail is covered by a log element, at any split width > draws the log in the pane's flow and nowhere else, list at strip, opened on attempts  2907ms
+   ✓ no element of the detail is covered by a log element, at any split width > draws the log in the pane's flow and nowhere else, list at strip, opened on artifacts  2488ms
+   ✓ no element of the detail is covered by a log element, at any split width > draws the log in the pane's flow and nowhere else, list at strip, opened on checkpoints  2207ms
+   ✓ no element of the detail is covered by a log element, at any split width > draws the log in the pane's flow and nowhere else, list at list, opened on detail  3716ms
+   ✓ no element of the detail is covered by a log element, at any split width > draws the log in the pane's flow and nowhere else, list at list, opened on logs  4529ms
+   ✓ no element of the detail is covered by a log element, at any split width > draws the log in the pane's flow and nowhere else, list at list, opened on attempts  2827ms
+   ✓ no element of the detail is covered by a log element, at any split width > draws the log in the pane's flow and nowhere else, list at list, opened on artifacts  2418ms
+   ✓ no element of the detail is covered by a log element, at any split width > draws the log in the pane's flow and nowhere else, list at list, opened on checkpoints  2360ms
+   ✓ no element of the detail is covered by a log element, at any split width > draws the log in the pane's flow and nowhere else, list at half, opened on detail  3875ms
+   ✓ no element of the detail is covered by a log element, at any split width > draws the log in the pane's flow and nowhere else, list at half, opened on logs  4193ms
+   ✓ no element of the detail is covered by a log element, at any split width > draws the log in the pane's flow and nowhere else, list at half, opened on attempts  2679ms
+   ✓ no element of the detail is covered by a log element, at any split width > draws the log in the pane's flow and nowhere else, list at half, opened on artifacts  2434ms
+   ✓ no element of the detail is covered by a log element, at any split width > draws the log in the pane's flow and nowhere else, list at half, opened on checkpoints  2159ms
+   ✓ a running agent opens on Details, as a finished one does > keeps a running agent at its bare address on Details and never navigates  4372ms
+   ✓ a running agent opens on Details, as a finished one does > keeps a running agent opened at /logs on Logs  1737ms
+   ✓ a running agent opens on Details, as a finished one does > opens a finished agent on Details, whose last log line opens the tab  4290ms
+   ✓ a running agent opens on Details, as a finished one does > opens a QUEUED agent on Details, not on an empty log  4247ms
+   ✓ a running agent opens on Details, as a finished one does > opens a READY agent on Details, not on an empty log  4200ms
+   ✓ a running agent opens on Details, as a finished one does > opens a PARKED agent on Details, not on an empty log  4235ms
+   ✓ a running agent opens on Details, as a finished one does > opens a LEASED agent on Details, as a RUNNING one  1695ms
+   ✓ a running agent opens on Details, as a finished one does > opens a DISPATCHED agent on Details, as a RUNNING one  1633ms
+   ✓ a running agent opens on Details, as a finished one does > opens a STARTING agent on Details, as a RUNNING one  1569ms
+   ✓ a running agent opens on Details, as a finished one does > leaves a link to another pane where it points  1777ms
+   ✓ N11: Escape in More closes the menu, and only the menu > folds More, keeps the agent open, and the next Escape closes the agent  1764ms
+   ✓ N11: Escape in More closes the menu, and only the menu > closes the menu from a control inside it too  1241ms
+   ✓ the log’s controls fit one row > at the 380px split: every stream, Follow and Error in the row, the rest under More, nothing past the edge  6067ms
+   ✓ the log’s controls fit one row > on a 390px phone: the same tab, full width, controls spilled into More until the row fits  6897ms
+   ✓ D7: the column ends at the scrollport, above the API-reads line > sticks 16px down and is 16px shorter, the page padding it sits under  614ms
+stderr | src/__tests__/qa.g2.inspector.test.tsx > G2-01: on a phone the inspector scrolls, and the strip sticks only where there is room > sticks the strip in a 480-639px pane on a 700px-tall window, and nowhere smaller
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtNow (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:634:3)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+stderr | src/__tests__/qa.g2.inspector.test.tsx > G2-03: one running task, one elapsed figure > labels the Progress total as the whole attempt: queue, cold start and run (c07)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtNow (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:634:3)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+stderr | src/__tests__/qa.g2.inspector.test.tsx > G2-10: each card’s `?` opens a topic about what it shows > Outcome opens `outcome-explained`, Input opens `input-as-submitted`
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at section
+    at Output (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:3501:3)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+stderr | src/__tests__/qa.g2.inspector.test.tsx > G2-11: the memory tile says its figure is a peak > reads `of 8 GiB · peak, written at exit` on a finished attempt
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at section
+    at Output (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:3501:3)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+stderr | src/__tests__/qa.g2.inspector.test.tsx > G2-13: a wait is named by the label, so its figure is never cut > a never-started parked task: label `Waiting`, value the duration alone
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtNow (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:634:3)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+stderr | src/__tests__/qa.g2.inspector.test.tsx > G2-14: the Progress total never wraps > sizes its last column to the figure and keeps the figure on one line
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtNow (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:634:3)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtProgress (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1305:23)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at DtResources (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:1720:24)
+    at div
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at HelpCardView (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:472:3)
+    at HelpCard (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/HelpCard.tsx:592:3)
+    at span
+    at div
+    at DtCardHead (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:346:23)
+    at section
+    at Input (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:4924:18)
+    at div
+    at Run (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/src/AgentDetail.tsx:185:3)
+
+ ✓ src/__tests__/qa.g2.inspector.test.tsx (24 tests) 8589ms
+   ✓ G2-01: on a phone the inspector scrolls, and the strip sticks only where there is room > makes the phone column the one scroller, so the header scrolls away and the tabs stay  1010ms
+   ✓ G2-01: on a phone the inspector scrolls, and the strip sticks only where there is room > leaves the Logs tab its own scroller on a phone, under a column that does not move  854ms
+   ✓ G2-01: a file opened on a phone is brought into view by the column that scrolls > scrolls the column, less the sticky tabs, when the pane does not scroll  323ms
+   ✓ G2-03: one running task, one elapsed figure > prints the header and the Elapsed tile at the same instant in the split  1580ms
+   ✓ G2-09: the staged-inputs column is headed by what it holds > heads a size `Size`, as the Artifacts tab does  773ms
+   ✓ G2-10: each card’s `?` opens a topic about what it shows > the strategy chips open `strategy-on-a-task`  821ms
+   ✓ G2-20: a wrapped line of the header never starts with a middot > puts each separator after its fact, never before one  1103ms
+   ✓ G2-23: Escape on the split closes it (re-verified on main, AgentSplit.tsx onKeyDown) > returns to the list the split was opened from  859ms
+   ✓ G2-34: the Inputs prompt is not a second scroller > clamps a long prompt with `Show all`, and scrolls inside nothing  317ms
+ ✓ src/__tests__/qa.u14.runs.test.tsx (18 tests) 17774ms
+   ✓ 1: a running run draws a live Steps card under its status line > draws one row per step, each with Open agent, its state, elapsed and attempt  1956ms
+   ✓ 1: a running run draws a live Steps card under its status line > draws a gated round with no task yet as "waiting on" its step, with no link  1121ms
+   ✓ 1: a running run draws a live Steps card under its status line > adds a CI fix round's steps as rows once the run names its workflow  1270ms
+   ✓ 1: a running run draws a live Steps card under its status line > says the workflow could not be read, rather than drawing no steps  952ms
+   ✓ 1: a running run draws a live Steps card under its status line > draws no Steps card before the run has a workflow  927ms
+   ✓ 2: after approval the plan's steps carry their live state and link > replaces "starts at once" with the step's state and Open agent  1274ms
+   ✓ 2: after approval the plan's steps carry their live state and link > keeps "starts at once" on a plan not yet approved  1059ms
+   ✓ 3: Progress interleaves the steps' changes with the run's > lists each step change at its time, oldest first, among the run transitions  983ms
+   ✓ 4: cost so far sums the steps' recorded cost with its coverage > sums the reporting steps and says how many report  899ms
+   ✓ 4: cost so far sums the steps' recorded cost with its coverage > counts a RUNNING step through its attempts, which is how it reports before it finishes  1027ms
+   ✓ 4: cost so far sums the steps' recorded cost with its coverage > is a dash with its reason when no step reports, never $0  982ms
+   ✓ 5: at CHECKING the pull request card leads, and the plan folds > leads the main column, titled with the PR number as a link  848ms
+   ✓ 5: at CHECKING the pull request card leads, and the plan folds > names each failed check and links the checks on GitHub  1092ms
+   ✓ 5: at CHECKING the pull request card leads, and the plan folds > folds Overlaps and the Plan to one line each once the plan is approved  1107ms
+   ✓ 5: at CHECKING the pull request card leads, and the plan folds > leaves the plan open while it waits for approval  914ms
+   ✓ 6: at DONE the card says what is known about the merge and the issue > says "merge not reported", draws the green sha short and links the issue  915ms
+ ✓ src/__tests__/qa.u12.runs.test.tsx (22 tests) 44357ms
+   ✓ R1/A: the side cards stack each label above its value > keeps every value inside its card at 1440px  15847ms
+   ✓ R1/A: the side cards stack each label above its value > keeps every value inside its card at 390px  15781ms
+   ✓ R1/A: the side cards stack each label above its value > draws the issue's state, labels and comments as values a reader can see  1008ms
+   ✓ R1/A: the side cards stack each label above its value > makes the pull request a link  1074ms
+   ✓ B/R2/D11: the page head never leaves the column > gives the title and its ? the first row and the rest the next at 1440px  532ms
+   ✓ B/R2/D11: the page head never leaves the column > gives the title and its ? the first row and the rest the next at 390px  411ms
+   ✓ B/R2/D11: the page head never leaves the column > fits the reference heading on a phone, the `?` wrapping under it rather than cutting it (D11, V096)  427ms
+   ✓ C: a step's touches and tests are lists > draws one item per line, broken only at `/`, `::` or `_`, each with a copy button  1151ms
+   ✓ D: a PLANNED run's actions are at the top and at the foot of the plan > puts Approve, Edit and Reject in the waiting banner and in a sticky bar  1285ms
+   ✓ D: a PLANNED run's actions are at the top and at the foot of the plan > draws no actions for a RUNNING run  432ms
+   ✓ D: a PLANNED run's actions are at the top and at the foot of the plan > draws no actions for a DONE run  303ms
+   ✓ D: a PLANNED run's actions are at the top and at the foot of the plan > draws no actions for a REJECTED run  303ms
+   ✓ F/N18: the lead is cut on what it renders, and can be read whole > offers Read more beside a cut lead, and it shows the whole summary  917ms
+   ✓ R11: the Runs list sizes Workflow and By to what they hold > fits a workflow id and an operator address whole at 1440, with the issue keeping room  3506ms
+ ✓ src/__tests__/qa.u12.agents.test.tsx (18 tests) 14627ms
+   ✓ R3: scrolling to a match moves only the log body > never calls scrollIntoView on Enter, and leaves the page scroller where it was  856ms
+   ✓ R3: scrolling to a match moves only the log body > puts the page back when a divider move scrolls it  1221ms
+   ✓ R4: the detail header stays in view at the foot of a long list > runs the split's grid area to the scrollport's foot, so the sticky column never rises  320ms
+   ✓ R6: the phone's stream control is sized for touch > lets the small segmented control grow to its 44px buttons  381ms
+   ✓ R7: beside the strip > fits the Runner table to the log, Size and Age inside it, the uri cut  435ms
+   ✓ R7: beside the strip > names a strip row by its agent and id, not its state word  305ms
+   ✓ R9: the Logs tab's polish > defaults the attempt picker to the current generation and reads that attempt  422ms
+   ✓ JUMP: the error matcher > enables Errors on the mock's stderr and says what it matches  5023ms
+   ✓ JUMP: a final result marked is_error is a jump target > counts a result step with meta.is_error and neutral text, and lands on it  4943ms
+ ✓ src/__tests__/qa.vqa.l03.overview.test.tsx (18 tests) 3550ms
+   ✓ V053: a long workflow id breaks inside Running now’s Agent cell > lets the row head and its sub-line break an id anywhere  397ms
+   ✓ QA-060: the Overview count note never leaves its `?` alone on a line > keeps the tally with its `?`, breaks only between the scope and the tally, and drops no dot at the break  457ms
+ ✓ src/__tests__/qa.live.runs.test.tsx (16 tests) 9133ms
+   ✓ RT-2: the plan keeps to its card, at 1440 and on a phone > lays the fold out in one track of the card's width, and lets every block of the plan wrap  475ms
+   ✓ RT-3: a plan step reads the workflow step it ran as > draws each planned step's state, never "the workflow read has no such step"  327ms
+   ✓ RT-4 and RT-8: the checks fact says what can still change > warns when a CHECKING run has had no CI read for longer than CI_UNREAD_WARN_MS  314ms
+   ✓ RT-4 and RT-8: the checks fact says what can still change > says a finished run's last reading is the last, and a run with no pull request has none  573ms
+   ✓ RT-6: the list's chip and search are its address > reads `?state=` and `?q=` back on mount, as Back to the list does  796ms
+   ✓ RT-6: the list's chip and search are its address > writes a chip and a search to the address in place  1942ms
+   ✓ RT-6: the list's chip and search are its address > offers not ready and rejected, finds a run by its workflow id, and links the issue (RT-10, RT-12)  3217ms
+ ✓ src/__tests__/qa.u11a.agent.test.tsx (12 tests) 7938ms
+   ✓ D14: a recent workflow’s span carries its whole name and id > titles the ellipsized span itself  499ms
+   ✓ D21: the Checkpoints tab counts from the read its pane draws, from the start > shows the count before the tab is opened, and says `1 written, 0 kept` in all three places  2534ms
+   ✓ D21: the Checkpoints tab counts from the read its pane draws, from the start > keeps a dash with its reason while the listing has not answered  1684ms
+   ✓ D28: the 64px strip shows only its collapse control, cleanly > keeps the list head at the top of the scrollport and steps the breadcrumb aside  446ms
+   ✓ N12: a parked task is grouped by its own park reason > heads a step waiting on an earlier step by that, not `No room`  2408ms
+ ✓ src/__tests__/qa.u10a.agent.test.tsx (12 tests) 10013ms
+   ✓ D6: beside an open agent the page title keeps its word > does not shrink the title; the head's actions and then the refresh's words give way  317ms
+   ✓ D36: Children has an address and one honest empty state > routes the tab to <agent>/children, and the address opens it  2924ms
+   ✓ D36: Children has an address and one honest empty state > says `no children` once, with nothing waited on and no cap beside it  1352ms
+   ✓ D21: the Checkpoints tab counts what its pane found > shows the listing’s count, not a dash, once the pane has read it  1721ms
+   ✓ D21: the Checkpoints tab counts what its pane found > keeps the dash, with its reason, for a listing that was cut  1702ms
+   ✓ D39: on a phone the tabs say there are more of them > marks the end with more beyond it, and the start once scrolled  1131ms
+   ✓ the artifact viewer: in view when it opens, and Escape closes it > scrolls itself into view, and Escape closes it without closing the agent  481ms
+ ✓ src/__tests__/qa.qafix3.overview.test.tsx (10 tests) 3332ms
+   ✓ overview-automate-003: the lifecycle band is three figures across at 390 (by design, owner 2026-10-21) > draws three tiles across, figures only, and keeps the breakdown for the desktop  647ms
+   ✓ ffp-002, VQ-002: a phone Running row is one line that keeps the step, never cut at the same point > cuts the title and keeps the step, in the cascade the built console paints  359ms
+   ✓ a11y-keyboard-003: every Overview table has an accessible name > names the Running now tables  998ms
+   ✓ a11y-keyboard-003: every Overview table has an accessible name > names the Recent failures tables  840ms
+ ✓ src/__tests__/qa.g2.runs.test.tsx (11 tests) 10848ms
+   ✓ G2-02: the right rail scrolls instead of clipping its cards > leaves each rail card its content height, so the sticky rail overflows and scrolls  480ms
+   ✓ G2-17: Open agent routes by the task's state > sends a finished task to Recent and a parked one to Waiting, never Live  1762ms
+   ✓ G2-31: Progress prints clock times with the gap from the line above > draws HH:MM:SS (or MM-DD HH:MM:SS), +Δ, and the full timestamp in the title  509ms
+   ✓ G2-18: the Runs list links its workflows and filters by state and text > links the Workflow column to the workflow, in the app  1195ms
+   ✓ G2-18: the Runs list links its workflows and filters by state and text > filters by state chips, with counts  4899ms
+   ✓ G2-18: the Runs list links its workflows and filters by state and text > searches the issue ref and the issue title, and says when nothing matches  682ms
+ ✓ src/__tests__/qa.u11b.runs.test.tsx (11 tests) 8165ms
+   ✓ D3: the Linked card cuts values, never labels > sizes every side card's track to the card, keeps each label whole and cuts each value with its title  2329ms
+   ✓ D11: a reference heading and the list's columns fit > gives a reference heading the row before the head's actions  345ms
+   ✓ D11: a reference heading and the list's columns fit > fits the Run id and the Issue reference whole in a 1056px list  2064ms
+   ✓ N15: a finished run names the pull request its workflow opened > reads the PR from the workflow's integrator result when the run records none  995ms
+   ✓ N15: the CI note is true of the run it is drawn on > draws a dash with its reason, never "none recorded", when the workflow could not be read  1049ms
+ ✓ src/__tests__/qa.u11b.overview.test.tsx (14 tests) 2220ms
+   ✓ N3: the failure mark fits its column > draws the mark alone, its word in the title, in a column that holds it  1145ms
+   ✓ D17: a profile name is one line, never hyphen-broken > holds "claude-code-review" whole in the narrowest tile  752ms
+ ✓ src/__tests__/qa.g1.overview.test.tsx (13 tests) 1503ms
+ ✓ src/__tests__/qa.g2.agents.test.tsx (10 tests) 8018ms
+   ✓ G2-04: a row’s elapsed and waiting ages move with the clock > keeps counting after the read has aged, and still never ages a heartbeat past the read  1062ms
+   ✓ G2-05: a count over a capped page says it is a lower bound > suffixes the tab badges and the Recent chips with `+` when more rows exist  1156ms
+   ✓ G2-05: a count over a capped page says it is a lower bound > prints a plain count when the page is every row there is  1106ms
+   ✓ G2-22: the list’s filters are in the address > reads the list back from an open agent’s path, and keeps a filtered list path as written  3858ms
+   ✓ G2-22: the list’s filters are in the address > draws the toggles from the address, and reports a toggle as an address  618ms
+ ✓ src/__tests__/qa.g2.words.test.tsx (14 tests) 227ms
+ ✓ src/__tests__/qa.g3.outcomes.test.tsx (13 tests) 1396ms
+ ✓ src/__tests__/qa.u10a.shell.test.tsx (14 tests) 3875ms
+   ✓ D25: Submit reads as the place you are on > still lights Work on a Work page  356ms
+   ✓ D26: the collapsed spine > draws the tenant as its initial only, the name in the tooltip, and offers Expand  703ms
+   ✓ D27: the panel counts what the Agents tabs count > draws the list’s Live and Waiting beside the tabs that say them  401ms
+   ✓ D31: every help popover heads itself in one face > a topic card’s title is the sans face, as the section question card’s is  347ms
+   ✓ D39: the phone frame > QA-039: on a phone the API-reads strip keeps every fact, and no `·` is left hanging at a line end  528ms
+ ✓ src/__tests__/qa.live.workagents.detail.test.tsx (14 tests) 13515ms
+   ✓ WA-3: one answer to "how many times did it run" > says 2 in the split header and on the Attempts tab  1816ms
+   ✓ WA-3: one answer to "how many times did it run" > falls back to the task’s counter when the attempt read fails  884ms
+   ✓ the split header and its splitter > WA-14: answers a Copy link press on the button and in a live region that was already there  3908ms
+   ✓ the split header and its splitter > WA-14: says a clipboard that throws could not copy  4853ms
+   ✓ the split header and its splitter > WA-16: moves the splitter to its ends on Home and End  908ms
+   ✓ the split header and its splitter > WA-17: is aria-modal where it covers the list  883ms
+ ✓ src/__tests__/qa.vqa.l04.test.tsx (11 tests) 3136ms
+   ✓ V151: an empty read keeps the tabs, the search and the filters > draws the list chrome and the tab’s own real zero  622ms
+   ✓ V061 and V146: the profile select is capped; a failed row’s reason is clamped and red > caps the select at every width and titles it with its value  383ms
+   ✓ V061 and V146: the profile select is capped; a failed row’s reason is clamped and red > clamps a failed row’s error to two lines, whole in its title, in --bad-ink  689ms
+   ✓ V152: Escape closes the split wherever focus is > closes after a mouse click left focus on the row, and leaves a text field’s Escape alone  826ms
+ ✓ src/__tests__/qa.u11b.workflows.test.tsx (10 tests) 37312ms
+   ✓ N1: a step row never prints over the next one > at 1440 the table is a table, with no sideways scroll (/workflows/wf_5e5ad3b6f7da4299a839/table)  1413ms
+   ✓ N1: a step row never prints over the next one > no row is shorter than what it holds, card open and closed, at 1440 and 390 (/workflows/wf_5e5ad3b6f7da4299a839/table)  10720ms
+   ✓ N1: a step row never prints over the next one > at 1440 the table is a table, with no sideways scroll (/workflows/wf_5e5ad3b6f7da4299a839)  3283ms
+   ✓ N1: a step row never prints over the next one > no row is shorter than what it holds, card open and closed, at 1440 and 390 (/workflows/wf_5e5ad3b6f7da4299a839)  13022ms
+   ✓ D12: names one line, numbers sized to what they hold > cuts each long name with an ellipsis and its whole id as its title  925ms
+   ✓ D12: names one line, numbers sized to what they hold > gives Attempts and Inputs their whole figure  2346ms
+   ✓ N7: the Runners cell names the runner > fits "claude-code ×3" whole in the Runners column at 1440  1762ms
+   ✓ N8: the Workflow cell is the row's own cell > lays the name cell out as a table cell, so its border is the row's  817ms
+   ✓ the graph: a picked node's card is scrolled to > scrolls the step card into view when a node opens it  3021ms
+ ✓ src/__tests__/qa.live.workagents.list.test.tsx (16 tests) 15626ms
+   ✓ WA-1: a whole task id is found beyond the loaded page > looks a whole id up on the server when the page does not hold it, and draws the task  445ms
+   ✓ WA-1: a whole task id is found beyond the loaded page > opens a found task under the tab its state puts it in  566ms
+   ✓ WA-1: a whole task id is found beyond the loaded page > finds a whole id the page holds under another tab without a read  837ms
+   ✓ WA-1: a whole task id is found beyond the loaded page > draws a 404 as an answer for the whole tenant  407ms
+   ✓ WA-1: a whole task id is found beyond the loaded page > draws a failed lookup as a failed read, never as zero  419ms
+   ✓ WA-1: a whole task id is found beyond the loaded page > does not call a search over a capped page that finds nothing a real zero  419ms
+   ✓ WA-1: a whole task id is found beyond the loaded page > still calls a search over the whole list that finds nothing a real zero (control)  400ms
+   ✓ WA-2: "load more" follows the next page > reads the page after the token into the list, counts it, and stops at the end  4860ms
+   ✓ WA-2: "load more" follows the next page > says a failed page read failed and keeps what it has  3450ms
+   ✓ WA-2: "load more" follows the next page > offers no "load more" on a page that is the whole list  1480ms
+   ✓ WA-9: the Recent state counts follow the profile filter > counts only the chosen profile’s rows  1447ms
+   ✓ WA-15: a deep-linked agent’s row is scrolled into view > scrolls the open agent’s row into view once it is drawn  857ms
+ ✓ src/__tests__/qa.u12.workflows.test.tsx (11 tests) 6496ms
+   ✓ R8: the page joins its own steps' tasks > does not wait on the board to draw its own workflow (live QA CH-21)  755ms
+   ✓ R8: the page joins its own steps' tasks > draws no step of a finished workflow as unread  873ms
+   ✓ R8: the page joins its own steps' tasks > gives the Attempts column room for "not joined"  701ms
+   ✓ R10: one money format, and Cost and Owner hold what they show > fits "$12.92 10/12" in Cost and a 14-character owner in Owner at 1440, the name keeping room  4138ms
+ ✓ src/__tests__/qa.phonetask.test.tsx (16 tests) 14350ms
+   ✓ QA-116, 1: the back link names the list it returns to, filter and all > from work/running/recent/failed it reads ‹ Failed  1023ms
+   ✓ QA-116, 1: the back link names the list it returns to, filter and all > from work/running/recent/cancelled it reads ‹ Cancelled  948ms
+   ✓ QA-116, 1: the back link names the list it returns to, filter and all > from work/running/recent/succeeded it reads ‹ Succeeded  957ms
+   ✓ QA-116, 1: the back link names the list it returns to, filter and all > from work/running/recent/failed?group=wf it reads ‹ Failed  914ms
+   ✓ QA-116, 1: the back link names the list it returns to, filter and all > from work/running/recent, with no filter, it still reads ‹ Recent  909ms
+   ✓ QA-116, 1: the back link names the list it returns to, filter and all > from work/running/live, with no filter, it still reads ‹ Live  853ms
+   ✓ QA-116, 1: the back link names the list it returns to, filter and all > from work/running/waiting, with no filter, it still reads ‹ Waiting  887ms
+   ✓ QA-116, 1: the back link names the list it returns to, filter and all > still goes back to the filtered list  894ms
+   ✓ QA-116, 2: under the header the task is a region, not a modal dialog > drops role=dialog and aria-modal, and lets Tab leave for the header  2695ms
+   ✓ QA-116, 2: under the header the task is a region, not a modal dialog > stays the modal dialog where it covers the whole screen (760-1100 px)  3419ms
+ ✓ src/__tests__/qa.u10b.workflows.test.tsx (9 tests) 11891ms
+   ✓ D8: the Workflows list never cuts a state, a count or a duration > sizes State, Steps done and Duration to the longest value each holds  5874ms
+   ✓ D8: the Workflows list never cuts a state, a count or a duration > never cuts those three with an ellipsis, and never wraps them  798ms
+   ✓ D8: the Workflows list never cuts a state, a count or a duration > gives the name and the shape their whole text as a title  741ms
+   ✓ D12: the step table of an issue run > draws each step name on one line, cut, with the whole id as its title  786ms
+   ✓ D12: the step table of an issue run > sizes Ran and Cost to what a running step holds  2025ms
+   ✓ D12: the step table of an issue run > stacks its rows below its minimum width, with no second border, and keeps the table at 1100  863ms
+   ✓ D30: the same-step scrubber keeps its arrows with the position > holds ◀ position ▶ in one unit that never wraps, and cuts the shape after it  562ms
+ ✓ src/__tests__/qa.head.test.tsx (8 tests) 18626ms
+   ✓ Q1: mono only for ids, values, code and timestamps > draws every table head, page-head action, freshness and count note in the sans face  2059ms
+   ✓ Q1: mono only for ids, values, code and timestamps > draws form labels and placeholders in the sans face  1408ms
+   ✓ Q1: mono only for ids, values, code and timestamps > draws the honesty marks and the small labels in the sans face  362ms
+   ✓ Q2/Q10: one page head, no breadcrumb row on a section page > draws no breadcrumb row, and the title, its ? and the freshness share one head  11761ms
+   ✓ Q2/Q10: one page head, no breadcrumb row on a section page > keeps the breadcrumb inside an open object  1731ms
+   ✓ Q2/Q10: one page head, no breadcrumb row on a section page > keeps the breadcrumb inside an open workflow and an open run, and names the object last  863ms
+ ✓ src/__tests__/qa.taskpanes.test.tsx (9 tests) 2325ms
+   ✓ QA-115: the Failed card on a task’s Details > leaves one link to the Attempts tab on the page, the Progress card’s  767ms
+   ✓ QA-115: the Failed card on a task’s Details > labels the log preview under the error as not the error (owner 2026-10-20)  1077ms
+ ✓ src/__tests__/qa.p12.agentslist.test.tsx (7 tests) 8307ms
+   ✓ QA12-20: the Live tab says exactly what it holds > counts Live exactly, lists a live agent older than the page, and offers no "more" on Live  6264ms
+   ✓ QA12-20: the Live tab says exactly what it holds > keeps the lower bound when a live-state read fails  860ms
+   ✓ QA12-20: the browser switch inside Live > says Browsers, not Live, and counts the starting browser agent with the running one  567ms
+   ✓ QA12-20: the browser switch inside Live > lists a STARTING browser agent, after the running one, with a starting mark  553ms
+ ✓ src/__tests__/qa.g1.shell.test.tsx (8 tests) 4102ms
+   ✓ G3-04: Recent marks only states a read of this page load gave > refreshes an opened workflow from the whole board read, and withholds the mark from one no read refreshed  775ms
+   ✓ G1-11 and G1-12: the 404 is titled as one, and every tab says its page > drops Overview’s anchors from the panel, titles the phone header and the tab "Not found", and heads the page with an h1  1223ms
+   ✓ G1-11 and G1-12: the 404 is titled as one, and every tab says its page > titles each page, and an open object by its id first  1331ms
+ ✓ src/__tests__/qa.g5.tenants.test.tsx (6 tests) 280ms
+ ✓ src/__tests__/qa.u10b.runs.test.tsx (5 tests) 4402ms
+   ✓ D3: no id runs past its card > lets every side card shrink to its track and cuts each id with its title  1570ms
+   ✓ D11: an old run reads honestly and the state is a pill > keeps a reference heading on one line  1068ms
+   ✓ D11: an old run reads honestly and the state is a pill > says once, briefly, that an old run kept no copy of the issue  1043ms
+   ✓ D11: an old run reads honestly and the state is a pill > fits the list in a 1056px card, with the issue title and every cell cut with its title  462ms
+ ✓ src/__tests__/qa.u11b.submit.test.tsx (6 tests) 11424ms
+   ✓ N2: the send card never runs past its column > sizes the card's track to the card, cuts the reference with its title and holds the button to the card  2827ms
+   ✓ N13: the summary follows Plan approval > says what Required and what Auto do, and never both  2912ms
+   ✓ N14: fix rounds names the rule > says "a whole number from 1 to 5" for 9  1617ms
+   ✓ N18 / N20: the preview's title and meta line > draws the title's inline code as code  1608ms
+   ✓ N18 / N20: the preview's title and meta line > never opens a line on a separator, and prints the read time as an age  1677ms
+   ✓ D34: Escape closes "+ Add setting" from anywhere > closes the list when Escape is pressed in a field outside it  782ms
+ ✓ src/__tests__/qa.vqa.checks.overview.test.tsx (5 tests) 7535ms
+   ✓ QA-061, VQ-002: a check card’s link words never squeeze its title on a phone > steps the link words aside at 390px, keeps the arrow, and draws the words at 1440  2234ms
+   ✓ QA-109: the failures card’s link names the page it opens > says "Agents · failed", the page’s own title and the state the card counts, as a word (VQ-003)  2434ms
+   ✓ VOCAB-AGENTS (QA-109; owner decision 2026-10-20): the cards count agents, never tasks > says "2 failed agents" and "2 parked agents" over the Agents links, and no card says "task"  2410ms
+ ✓ src/__tests__/qa.u10b.overview.test.tsx (10 tests) 681ms
+ ✓ src/__tests__/qa.vqa.l10.submit.test.tsx (5 tests) 3378ms
+   ✓ V126: the pool holding a runner at zero > is mono at the fact's own size, kept whole, with its name in the title  1749ms
+   ✓ V135 and V136: Start from a recent one > lists every failed read under an unread who-you-are, and offers Try again  991ms
+   ✓ V135 and V136: Start from a recent one > offers Try again when a list read failed and who you are was read  613ms
+ ✓ src/__tests__/qa.g2.logs.test.tsx (5 tests) 7250ms
+   ✓ G2-07: the runner’s streams are named the runner’s, and a zero keeps its mark beside it > heads the Runner rows `runner stdout` / `runner stderr`, against the `Agent stdout` sub-tab  3006ms
+   ✓ G2-07: the runner’s streams are named the runner’s, and a zero keeps its mark beside it > draws `0 B` and its `real zero` mark as one item of the Size cell  2127ms
+   ✓ G2-15: the search keeps its placeholder > says `Search…`, and keeps the whole phrase as its name and its title  387ms
+   ✓ G2-16: More names the attempt once, inside the popover > reads `attempt 1 · gen 1 · att_8f8ecaa6…` with a copy of the whole id  1486ms
+ ✓ src/__tests__/qa.u12.submit.test.tsx (5 tests) 707ms
+   ✓ R15: your recent submissions > draws them in the card, each a link, with the windows it looked in  674ms
+ ✓ src/__tests__/qa.u12.overview.test.tsx (5 tests) 628ms
+   ✓ N17/D19: no column is left blank beside a taller card > stacks each column's cards at their own heights at 1440, the failures and the pools under both  367ms
+ ✓ src/__tests__/qa.u10b.submit.test.tsx (5 tests) 318ms
+ ✓ src/__tests__/qa.qafix2.overview.test.tsx (3 tests) 244ms
+ ❯ src/__tests__/qa.g1.jumps.test.tsx (5 tests | 1 failed) 98ms
+   × G1-14: On this page > lists every section Overview draws, in the order it draws them 13ms
+     → expected [ 'ov-needs', 'ov-band', …(6) ] to deeply equal [ 'ov-needs', 'ov-band', …(6) ]
+   ✓ G1-14: On this page > puts the section on the address, in place, so it can be linked 21ms
+   ✓ G1-14: On this page > jumps without animating in a hidden tab, where a smooth scroll does not run 18ms
+   ✓ G1-14: On this page > closes the phone drawer when a jump is tapped 26ms
+   ✓ G1-14: On this page > animates in a tab that can be seen 19ms
+ ❯ src/__tests__/qa.u12.shell.test.tsx (4 tests | 1 failed) 1705ms
+   × R5: the phone drawer is the drawer's width > lets the panel shrink to the drawer and cuts a long Recent name with an ellipsis 879ms
+     → expected 'Audit the operator scripts and the Te…' to be 'UI U7 a very long workflow lane label…' // Object.is equality
+   ✓ R14: a section's root opens its first page > reads /capacity, /admin and /work as their first pages, one way 3ms
+   ✓ R14: a section's root opens its first page > lands /capacity on /capacity/pools, never "No page at" 178ms
+   ✓ R14: a section's root opens its first page > lands /admin on /admin/limits, never "No page at"  646ms
+ ✓ src/__tests__/qa.g1.latency.test.tsx (6 tests) 113ms
+ ✓ src/__tests__/qa.g2.words.runs.test.tsx (1 test) 231ms
+ ✓ src/__tests__/qa.overview.test.tsx (2 tests) 272ms
+ ✓ src/__tests__/qa.u10b.notfound.test.tsx (3 tests) 1719ms
+   ✓ an unknown route is a not-found state, not a redirect > says which address has no page, keeps it in the bar, and links the nearest route  1711ms
+ ✓ src/__tests__/qa.pools.test.tsx (1 test) 3158ms
+   ✓ Q8: a pool row reads as a row title over one sans line > draws the name at normal weight without an underline, and the sublabel on one sans line  3158ms
+ ✓ src/__tests__/qa.kit.presets.test.tsx (3 tests) 8ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/qa.g1.jumps.test.tsx > G1-14: On this page > lists every section Overview draws, in the order it draws them
+AssertionError: expected [ 'ov-needs', 'ov-band', …(6) ] to deeply equal [ 'ov-needs', 'ov-band', …(6) ]
+
+- Expected
++ Received
+
+  [
+    "ov-needs",
+    "ov-band",
+    "ov-running",
+    "ov-waiting",
++   "ov-failures",
+    "ov-spend",
+    "ov-headroom",
+-   "ov-failures",
+    "ov-pools",
+  ]
+
+ ❯ src/__tests__/qa.g1.jumps.test.tsx:39:45
+     37|     expect(ids).toContain('ov-spend')
+     38|     expect(ids).toContain('ov-pools')
+     39|     expect(OVERVIEW_JUMPS.map((j) => j.id)).toEqual(ids)
+       |                                             ^
+     40|     expect(OVERVIEW_JUMPS.find((j) => j.id === 'ov-spend')!.label).toB…
+     41|     expect(OVERVIEW_JUMPS.find((j) => j.id === 'ov-pools')!.label).toB…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/__tests__/qa.u12.shell.test.tsx > R5: the phone drawer is the drawer's width > lets the panel shrink to the drawer and cuts a long Recent name with an ellipsis
+AssertionError: expected 'Audit the operator scripts and the Te…' to be 'UI U7 a very long workflow lane label…' // Object.is equality
+
+Expected: "UI U7 a very long workflow lane label a very long workflow lane label a very long workflow lane label a very long workflow lane label a very long workflow lane label a very long workflow lane label a very long workflow lane label a very long workflow lane label "
+Received: "Audit the operator scripts and the Terraform"
+
+ ❯ src/__tests__/qa.u12.shell.test.tsx:73:30
+     71|     expect(painted(row, 'max-width', PHONE)).toBe('100%')
+     72|     const name = row.querySelector(':scope > span > span:last-child')!
+     73|     expect(name.textContent).toBe(long)
+       |                              ^
+     74|     expect(painted(name, 'white-space', PHONE)).toBe('nowrap')
+     75|     expect(painted(name, 'text-overflow', PHONE)).toBe('ellipsis')
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  2 failed | 47 passed (49)
+      Tests  2 failed | 511 passed (513)
+   Start at  03:03:28
+   Duration  464.90s (transform 6.50s, setup 351ms, collect 22.23s, tests 440.77s, environment 411ms, prepare 91ms)
+

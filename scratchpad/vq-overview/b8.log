@@ -1,0 +1,328 @@
+
+ RUN  v3.2.7 /workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui
+
+ ✓ src/__tests__/workflow.board.test.tsx (67 tests) 29710ms
+   ✓ the list > V2: /workflows lands on the full-width list, one row per workflow and no canvas  807ms
+   ✓ how long a step has taken > shows an ABSENCE for a step that has not started, and never 0s  746ms
+   ✓ the expanded canvas > WF-7: fills the inspector in place when a node is clicked, and the inspector links to the run  502ms
+   ✓ a stage too wide to draw > never hides a failure, and marks the band that holds one  517ms
+   ✓ a stage too wide to draw > is a button with aria-expanded, and names what it controls once open  768ms
+   ✓ a stage too wide to draw > keeps a stage open across a remount of the card  792ms
+   ✓ a stage too wide to draw > leaves a stage that fits the FULL tier alone, and keeps every field on it  502ms
+   ✓ semantic zoom > emits, on every slot, exactly the width and height its tier claims  510ms
+   ✓ semantic zoom > puts the tier boundary exactly where the derived threshold puts it  1497ms
+   ✓ semantic zoom > drops the FIELD and never the value, and says on the canvas that it did  779ms
+   ✓ semantic zoom > shrinks no type and scales no canvas, at any tier  768ms
+   ✓ semantic zoom > offers the zoom as four real buttons, and putting a field back works  505ms
+   ✓ semantic zoom > maps the canvas only when the canvas does not fit, and marks what is off it  543ms
+   ✓ semantic zoom > #405: tints each map node in its step’s state pair, parked violet and unread amber  2692ms
+   ✓ the shipped stylesheet > draws a step with no duration differently from a measured one  1259ms
+   ✓ the QA pass: the census > WF-1: accounts for every way a step ends, not only success and failure  537ms
+   ✓ the QA pass: the census > the census reads whole without a pointer > states the whole census in the open card, at 1440 and at 390  431ms
+   ✓ the QA pass: the canvas > WF-2: does not paint a stage of cancelled and succeeded steps as a failure  614ms
+   ✓ the QA pass: the canvas > WF-20: prints a run once at the Figures tier, and keeps a wait beside the state  359ms
+   ✓ the owner’s decisions: the open card > WF-13: says what the run opens in the card’s own short phrase, and leaves the sentence to the forms  911ms
+   ✓ the owner’s decisions: the open card > WF-14: says what the zoom leaves out as a view choice, in faint type, with no data mark  739ms
+   ✓ the owner’s decisions: the open card > WF-5: says a figure is the result’s on a line of its own that the node counts, and never clips the figure  316ms
+   ✓ the owner’s decisions: the open card > WF-9: opens a canvas wider than its column on the start node, and again when a stage is opened  897ms
+   ✓ the owner’s decisions: the open card > WF-10: marks the stage band that holds the picked step, and opens it to that step  558ms
+   ✓ the owner’s decisions: the open card > WF-10: a picked step in a folded stage is on the canvas in the very render the pick arrives in  974ms
+   ✓ the owner’s decisions: the open card > WF-10: a reader who closes the picked step's stage again is not overruled on later renders  650ms
+   ✓ #105: a failure’s cause is on the canvas, not only in the inspector > names the cause on a band holding failures, and in its accessible name  544ms
+   ✓ #105: a failure’s cause is on the canvas, not only in the inspector > groups the workflow’s failures by a normalised cause, in the census  528ms
+   ✓ #330: the label names the workflow > names the workflow by its label in the inspector head too  532ms
+   ✓ #330: the graph’s details panel opens on the right > renders the panel in a right-hand column beside the graph, not under it  311ms
+   ✓ #330: the graph’s details panel opens on the right > takes focus on opening, closes on Escape, and gives focus back to the node  301ms
+   ✓ #330 item 4: smaller Graph nodes > shrinks the Names card, in the layout and in the stylesheet by the same numbers  554ms
+   ✓ #330 item 4: smaller Graph nodes > scrolls the canvas horizontally, instead of wrapping, when an opened stage is too wide even at Names  534ms
+   ✓ #330 item 4: smaller Graph nodes > stays a band at every tier when a fan-out never fits one row, and opening it still shows every card  529ms
+   ✓ #330 item 4: smaller Graph nodes > lays the graph out beside the open panel, and never folds the picked step into a band  734ms
+ ✓ src/__tests__/workflow.views.test.tsx (55 tests) 13750ms
+   ✓ U2: the view modes > offers Table and Timeline beside the Graph, as the page tabs, and no board-wide control  410ms
+   ✓ U2: the view modes > switches the page between views through its address  864ms
+   ✓ U2: a step reads the same in every view > still times a running attempt, and only that one, as "so far"  471ms
+   ✓ U3: an edge that carries a file > draws a collapsed stage’s edge as the weakest of the edges it stands for, whichever child is drawn last  1202ms
+   ✓ U3: an edge that carries a file > marks, on the open card, a staged input no edge can carry  914ms
+   ✓ U5: scrubbing > steps to the next and previous attempt of a step, by pointer and by keyboard  1327ms
+   ✓ U5: scrubbing > steps to the same step in the next workflow of the same shape, newest first, and keeps focus on the control  1861ms
+   ✓ U5: scrubbing > keeps focus on a scrub control that reaches its end, so the arrow keys keep working  1080ms
+   ✓ the QA pass: the table, the inspector and the board chrome > WF-22: shows the sample mark in the head row of the table whose figures it qualifies  443ms
+   ✓ the owner’s decisions: where a figure came from (WF-5) > says on the board that it did not read a step’s attempts, and leaves the claim about the attempt document to the inspector, which did  581ms
+   ✓ the owner’s decisions: scrubbing across workflows (WF-10) > keeps the view the reader chose, and the picked step, when the scrubber moves to another workflow  1316ms
+ ✓ src/__tests__/workflow.u2.test.tsx (36 tests) 9459ms
+   ✓ the 390px phone form of the graph (workflows.html B, phone frame) > draws the stages as stacked cards, naming the steps that need a look and counting the rest  957ms
+   ✓ Recent (5) shows on the list page, by name (#503) > puts an opened workflow first, and draws names with marks in the panel  936ms
+   ✓ the workflow page head (#503, workflows.html frame B) > titles the page by the workflow name, with no second heading, and a meta line that does not open on a dot  588ms
+   ✓ the workflow page head (#503, workflows.html frame B) > draws underline tabs under the title, Graph · Table with its count · Timeline, and no boxed control in the card  494ms
+   ✓ Cancel workflow asks for the id to be typed while a step runs (states.html §12) > unlocks only on the exact id, then sends  432ms
+   ✓ the picked step card sits under the graph below 1280 (#503), beside it from 1280 (QAFIX5 QA-120) > stacks the card under the canvas on the page below 1280, docks it beside from 1280, with Open agent → and Stop step  784ms
+   ✓ the picked step card sits under the graph below 1280 (#503), beside it from 1280 (QAFIX5 QA-120) > keeps the same-step strip inside the card: at most 15 marks, the rest counted  395ms
+   ✓ a wide stage band: mix bar, slots held, named chips (wide-workflows.html A) > draws the bar, the hold line and the chips, and a chip picks its step  829ms
+   ✓ a wide stage band: mix bar, slots held, named chips (wide-workflows.html A) > opens the Table filtered to the stage and state from a band count  1219ms
+   ✓ edges: one lane per target step, lit on hover and select > lights the picked step’s own edges and fades the rest, and hover does the same  353ms
+   ✓ a step skipped by its verdict gate never reads as one that ran > draws the node striped with the dashed check, and the table says skipped  382ms
+   ✓ the verdict card on a review step (agent-detail-2.html A3) > shows the card when the review step is picked, findings as plain text  371ms
+   ✓ the merge step’s checklist card (agent-detail-2.html A3, A3b) > lists each check in order with its state, and the refusal reason  423ms
+   ✓ the merge step’s checklist card (agent-detail-2.html A3, A3b) > draws nothing for a step whose result has no merge block  459ms
+ ✓ src/__tests__/workflow.v2.test.tsx (41 tests) 11048ms
+   ✓ the workflow list > reads its filters from the address and draws only what they leave  471ms
+   ✓ the workflow list > writes every filter change back to the address, and a new address redraws the list  2554ms
+   ✓ one workflow > opens on its graph with the step that needs a look in the card under it, the step table below, and records itself in Recent  390ms
+   ✓ one workflow > draws each node in its brand mark and tint  329ms
+   ✓ one workflow > switches tabs through the address  866ms
+   ✓ Cancel workflow > calls cancelWorkflow on confirm, then re-reads  525ms
+   ✓ Cancel workflow > sends nothing when dismissed, and asks again next time  456ms
+   ✓ Cancel workflow > says why when the cancel was not recorded, and does not re-read  682ms
+   ✓ #330: the page head links the pull request the run opened > shows PR #N, linked, for the integrator’s pull request  456ms
+   ✓ #330: the page head links the pull request the run opened > does the same for a direct-pr step  340ms
+   ✓ #330: the page head links the pull request the run opened > prints the number without a link when the URL is not http(s)  317ms
+   ✓ #330: the page head links the pull request the run opened > names no PR from a contributor  354ms
+   ✓ #330: the page head links the pull request the run opened > names no PR from a collect step  325ms
+   ✓ #330: the page head links the pull request the run opened > names no PR from no pull request  340ms
+   ✓ WF-15: a cancel is said to be requested only while the workflow has not ended > on the page head  302ms
+   ✓ WF-15: a cancel is said to be requested only while the workflow has not ended > on the page head of a live workflow  346ms
+   ✓ the list row: shape, runners and spend > draws an absent spend differently from a measured one, in the shipped stylesheet  1128ms
+ ✓ src/__tests__/vq.overview.test.tsx (8 tests) 4196ms
+   ✓ VQ-004: the Needs a look head says one count, then what it is over > reads "N problems · R of T checks ran", N the cards drawn  380ms
+   ✓ VQ-003: Needs a look says states and park reasons as words > prints no state or reason enum in the cards, their names or their tooltips  354ms
+   ✓ VQ-003: Needs a look says states and park reasons as words > names the failures link "Agents · failed", the parked reason "waiting for CI", the quota "throttled"  352ms
+   ✓ VQ-005: one sample of failures, one window, the same words > gives Needs a look and Recent failures the same count and the same cut-off  379ms
+   ✓ VQ-005: one sample of failures, one window, the same words > words Finished today’s partial sample as every other card does  397ms
+   ✓ VQ-006: Recent failures is a full-width row under both columns > sits outside the columns, across both, before the pools  585ms
+   ✓ VQ-002: a phone draws a check as one line and an agent as one line > steps the detail, the ids and the link words aside at 390, and keeps them at 1440  1293ms
+   ✓ VQ-002: a phone draws a check as one line and an agent as one line > cuts a Running row’s workflow title on one line and keeps its step whole  455ms
+ ✓ src/__tests__/typescale.test.ts (15 tests) 1147ms
+ ✓ src/__tests__/workflow.readability.test.tsx (18 tests) 4650ms
+   ✓ #108: the workflow graph has a key for its edge kinds > names order, staged and declared beside the canvas, each drawn with the edge rule it names  955ms
+   ✓ #108: the workflow graph has a key for its edge kinds > is drawn even where the zoom control is not, on a chain the zoom cannot change  893ms
+   ✓ #108: the workflow graph has a key for its edge kinds > reads at the 12px floor with no letter-spacing, and the declared sample is dashed in both themes  506ms
+   ✓ #110: the workflow step inspector opens next to the picked step > keeps the Table sort when a step is picked, because the table is not remounted  1087ms
+   ✓ #111: the workflows list sorts, and shows start and duration > draws Submitted and Duration columns, and one choice re-sorts the rows  647ms
+ ✓ src/__tests__/workspaceSettings.page.test.tsx (17 tests) 24792ms
+   ✓ Config › Workspace Settings: its settings and its Workspace setup part > draws the workspace's settings under one heading, with Workspace setup a part of the page  1143ms
+   ✓ Config › Workspace Settings: its settings and its Workspace setup part > draws the setup checklist as its Workspace setup part, with no heading of its own  1719ms
+   ✓ each part's lead agrees with the checklist under it > leads Workspace setup with the checklist's next step, and sends it to GitHub access  541ms
+   ✓ each part's lead agrees with the checklist under it > leads Settings with the same next step, never "Nothing here needs you" while a step has failed  437ms
+   ✓ Workspace setup's GitHub steps link to Config › GitHub access > Connect GitHub, Enable orgs and Choose repositories each link to /config/github  1274ms
+   ✓ Workspace setup's GitHub steps link to Config › GitHub access > names GitHub access, not Access or Work › Setup, in the setup copy  808ms
+   ✓ Add a new workspace: a platform admin's part only > is a part of the page for a platform admin, its form drawn on the page, and files through POST /v1/admin/workspaces once  2413ms
+   ✓ Add a new workspace: a platform admin's part only > is absent for a member, who cannot reach it by its address either  533ms
+   ✓ Add a new workspace: a platform admin's part only > is absent from the parts while the profile is unread  403ms
+   ✓ the Add a new workspace address > routes /config/workspace?part=new to Workspace Settings with the part named  3496ms
+   ✓ the leads follow the strip once the checklist is done (S6a, S6b) > leads Settings with the strip's Secrets step, not "every step is done", while Secrets is open  1198ms
+   ✓ the leads follow the strip once the checklist is done (S6a, S6b) > leads Settings with People and roles once Secrets is set, and is green only when the strip is complete  1268ms
+   ✓ the leads follow the strip once the checklist is done (S6a, S6b) > moves Workspace setup's lead on to the strip's step 3 when the checklist is complete  1494ms
+   ✓ the leads follow the strip once the checklist is done (S6a, S6b) > lists the strip's steps 3-4 in an After the checklist card, each with its button  2017ms
+   ✓ the leads follow the strip once the checklist is done (S6a, S6b) > has no People invited row in a personal workspace, which has nobody to invite  2244ms
+   ✓ the leads follow the strip once the checklist is done (S6a, S6b) > holds Show on Overview in its own On Overview card while the checklist is hidden there  1919ms
+   ✓ Settings: This workspace names the default role (S6a) > shows the workspace's default role, linking to People and roles  1884ms
+ ✓ src/__tests__/vqa.l02.submit.test.tsx (18 tests) 42592ms
+   ✓ V002 / V048 / V049: the outcome is drawn beside the button, and a 201 is not one click from a duplicate > the task form: the 201 is in the send panel, and the button is "Submit another" until the form changes  6557ms
+   ✓ V002 / V048 / V049: the outcome is drawn beside the button, and a 201 is not one click from a duplicate > the task form: "Submit another" starts a blank form  3796ms
+   ✓ V002 / V048 / V049: the outcome is drawn beside the button, and a 201 is not one click from a duplicate > the task form: a failed write is drawn in the panel too  2949ms
+   ✓ V002 / V048 / V049: the outcome is drawn beside the button, and a 201 is not one click from a duplicate > the workflow form: the 201 is in the send panel, and the button is "Submit another" until the form changes  7745ms
+   ✓ V051: a workflow 422 is read, and the step it names is marked > a validator error on steps.0 marks that step and prints no JSON  3315ms
+   ✓ V052 / V139 / V130: a push with nowhere to push, and the repository it pushes to > V052: the task form with direct-pr and no repository is not ready, and its button is off  4070ms
+   ✓ V052 / V139 / V130: a push with nowhere to push, and the repository it pushes to > V139: the workflow panel names the repository whenever the strategy pushes, and holds the button without one  5191ms
+   ✓ V052 / V139 / V130: a push with nowhere to push, and the repository it pushes to > V130: an address the slug cannot shorten is one cut line, whole in its title  1637ms
+   ✓ V131 / V127: no line opens on a comma or a separator > V131: each not-ready name carries its own comma, in one unbroken run  1810ms
+   ✓ V131 / V127: no line opens on a comma or a separator > V127: a step's runner facts hold each separator to the word before it  1808ms
+   ✓ V125 / V128: the runner list > V125: a runner name is drawn at a DM Mono weight main.tsx bundles  1421ms
+   ✓ V003 / V133: the issue as read > V133: a body the cut does not hide offers no "Show the whole body"  355ms
+   ✓ V003 / V133: the issue as read > V133: a body the cut hides offers it, and it closes again  950ms
+   ✓ V137: "+ Add setting" brings its list into view > scrolls the opened list to the nearest edge, clear of the dock  372ms
+ ✓ src/__tests__/vqa.l05.admin.test.tsx (17 tests) 10729ms
+   ✓ V023: the fallback token fields are sized for what is typed into them > draws its own form row, not the ceiling editor’s 96px field  432ms
+   ✓ V024: opening the editor at 1440 reflows no row > keeps the families in the one grid column and floats the editor over their right  1191ms
+   ✓ V025: below 1280px the editor is drawn under the row it edits > opens on a phone directly after the first record, not after all six families  1203ms
+   ✓ V025: below 1280px the editor is drawn under the row it edits > keeps it beside the families from 1280px  1094ms
+   ✓ V065: dim text on the edited row keeps AA in the dark theme > maps the faint step to the dim one on the row being edited, and only there  1198ms
+   ✓ V077: a long pool list gets the filter at every width, and the columns fit what they hold > draws the filter on a desktop once there are more pools than a screen holds  664ms
+   ✓ V077: a long pool list gets the filter at every width, and the columns fit what they hold > draws none for a short list on a desktop  326ms
+   ✓ V078: the three kinds of no record look different > draws `not read` where the admin pool read failed  1180ms
+   ✓ V029: a first run keeps the page’s shape until the answer lands > keeps both cards, marked busy, while the count is in flight  1077ms
+   ✓ V084: both count cards draw their bars on one scale > scales the tenant’s bars to the largest count on the screen, not its own  936ms
+ ✓ src/__tests__/workflows.liveqa.test.tsx (13 tests) 5161ms
+   ✓ WF-2: the list pages past its newest 100 and says what its counts are of > follows the page token on asking, and the older rows join the counts and the order  2630ms
+   ✓ WF-6: the attempt stepper and the table count the same thing, or say which each counts > names the stepper position a run when CI parks were refunded from the count  1093ms
+   ✓ WF-7/WF-17: another view of a workflow is a new history entry > pushes the new address when a tab is chosen, so Back returns to the one before  831ms
+ ✓ src/__tests__/vqa.l11.workflow.test.tsx (17 tests) 6796ms
+   ✓ V001: the stop confirmation on a graph node leaves the card > opens over the page as a modal, takes focus, and gives it back on Escape  1226ms
+   ✓ V001: the stop confirmation on a graph node leaves the card > wraps Tab inside the modal  1267ms
+   ✓ V001: the stop confirmation on a graph node leaves the card > keeps the in-place dialog where there is room, and still moves focus into it  904ms
+   ✓ V099, V100: the inspector docks only beside a split wide enough for the view > ends the inspector head’s first line with the ×, beside the workflow  619ms
+   ✓ V103: the page skeleton draws the count note’s line > puts a count-note line before the page frame while it reads, where the loaded page puts its census  1691ms
+   ✓ V110: the empty list says what a workflow is and where one is submitted > links to Submit › workflow  399ms
+ ✓ src/__tests__/vqa2.r1.submit.test.tsx (14 tests) 46051ms
+   ✓ V002: a 422 is drawn where the button is, and the panel stops saying "Ready to send" > a refusal naming a field: in the slot, with a way to the field; "Refused" and the button held until an edit  6257ms
+   ✓ V002: a 422 is drawn where the button is, and the panel stops saying "Ready to send" > a refusal naming no field: in the slot too, never under the panel note  2975ms
+   ✓ V002: a 422 is drawn where the button is, and the panel stops saying "Ready to send" > a refusal on the repository: its name focuses the repository field  3524ms
+   ✓ V255: after a submit, focus is on what it did > the task form: a 201, a 422 and a 500 each leave focus on the outcome  9028ms
+   ✓ V255: after a submit, focus is on what it did > the workflow form: a 201 leaves focus on the outcome  4310ms
+   ✓ V175 / V255: the issue form's failed POST is drawn in the slot, in view, with focus > a 500 lands inside the send panel's outcome slot, which is scrolled to and focused  1164ms
+   ✓ V251: a failed preview read is spaced from the input row as a 404 is > a 500 read sits 12px under the row, at both widths  403ms
+   ✓ V127: a step's runner facts are text, so a dot stays with its word > the facts line is not a flex row at either width  1970ms
+   ✓ V174 / V254: the workflow outcome > V174: "accepted as" is one value on an unwrapping row, at the card's size, and the two lists do not touch  4532ms
+   ✓ V174 / V254: the workflow outcome > V254: a 422's last fact is 8px from "Nothing was created…"  3831ms
+   ✓ V250: the Created card > its id is 8px from what is above and below it and splits evenly; the carrier and its mark are one value  4227ms
+   ✓ V253: one description size in the workflow form's two radio groups > "If a step fails" describes at the merge options' size  2003ms
+   ✓ V257: the pools in "Room for 0 more" are DM Mono > each pool named in the room box is the mono face at the meta step  1729ms
+ ✓ src/__tests__/vqa2.r3.admin.test.tsx (11 tests) 6711ms
+   ✓ V077: the filter of a long list stays in reach down the page > draws the filter for 59 pools at 1440 and sticks it, with the heads below it  857ms
+   ✓ V193: the record being edited is tinted to its edges on a phone > tints the record and not the cells inside its padding  1382ms
+   ✓ V192: while the first run counts, the cards say so > reads `counting now` and the reading mark in both cards, not `not run yet`  1031ms
+   ✓ V192: while the first run counts, the cards say so > still says why a non-admin’s platform card has no figure while counting  1967ms
+ ✓ src/__tests__/vqa2.r7.workflows.test.tsx (11 tests) 4611ms
+   ✓ V103: the page head is the same height while it reads as when it has read > draws the skeleton’s cost bar in the same slot, and the other bars at the text’s line  1815ms
+   ✓ V103: the page head is the same height while it reads as when it has read > sets "cost not reported" in the cost chip on the figure’s own line  352ms
+   ✓ V164: the list prints the cost and the runner mix below 900px > hides neither at a phone, a tablet or a desktop  871ms
+   ✓ V201: every Stop-step fact is a key and one value > gives each fact exactly a key and a `.stop-val`, laid out as two columns  716ms
+ ✓ src/__tests__/workflow.tints.test.tsx (8 tests) 2737ms
+   ✓ #405: the Table tints each step row in its state’s pair > tints every row: the tint across its cells and the edge down its first one, in both themes  676ms
+   ✓ #405: the Timeline tints each run span in its step’s pair; a wait stays hueless > draws a wait in no state’s hue: waiting is not the step’s verdict  363ms
+   ✓ #405: the Graph node draws the same pair as the Table and the Timeline > tints each node from the pair its row and span use  1384ms
+ ✓ src/__tests__/vqa2.r8.runs.test.tsx (12 tests) 6516ms
+   ✓ V096 and V208: the run head is the workflow page's > keeps the `?` after a reference and the actions on its row when they fit, at 1440px  678ms
+   ✓ V096 and V208: the run head is the workflow page's > keeps the `?` after a reference and the actions on its row when they fit, at 400px  445ms
+   ✓ V096 and V208: the run head is the workflow page's > keeps the `?` after a title and the actions on its row when they fit, at 1440px  404ms
+   ✓ V096 and V208: the run head is the workflow page's > keeps the `?` after a title and the actions on its row when they fit, at 400px  349ms
+   ✓ V205: a long issue ref keeps its number > cuts the repository and draws `#N` whole after it  333ms
+   ✓ V206: the phone card never cuts a fact to share a row > wraps the facts as flex items, By and Workflow each the line after their pair  531ms
+   ✓ V209: the run page meta wraps between its facts > draws the reference, the run id and the creator as pieces, each keeping its ` ·`  402ms
+   ✓ V210: the empty Runs screen links the issue form > links Submit › From a GitHub issue in the screen's own empty state, its mark off the heading  698ms
+   ✓ V210: the empty Runs screen links the issue form > gives the list's empty state, older runs offered, the same link and spacing  813ms
+   ✓ V214: every Progress line keeps its time on its line > wraps the words inside their item, never the time under them, at 400px  474ms
+   ✓ V214: every Progress line keeps its time on its line > wraps the words inside their item, never the time under them, at 1440px  365ms
+   ✓ V215: the list header is one line > keeps every header on one line and gives Plan approval its width  1022ms
+ ✓ src/__tests__/workflow.c5f.test.tsx (9 tests) 1708ms
+   ✓ G3-09: the Workflow column holds at least 280px at 1440 and the id never wraps > drops Shape and Runners below 1680 and carries the runner mix on the name’s second line  309ms
+   ✓ G3-14: at 390 the owner select fits its column > names each owner by the part before the @, with the whole address in its title  1033ms
+ ✓ src/__tests__/workflows.skeleton.test.tsx (8 tests) 2868ms
+   ✓ #113: one workflow’s page draws its head and tabs while it reads > draws the head row with its actions disabled, the view tabs and a body card, then the page in the same places  1410ms
+   ✓ #113: one workflow’s page draws its head and tabs while it reads > lets a tab be chosen during the load: each view is an address, not a control the data drives  1164ms
+ ✓ src/__tests__/workspacePeople.test.tsx (10 tests) 16951ms
+   ✓ People and roles: its address > opens the page, under its own heading, at #settings/people  1546ms
+   ✓ Settings › People and roles > shows a viewer the roster, the roles and the events, and no control  1060ms
+   ✓ Settings › People and roles > offers an admin the controls: set a role, return to the default, set the default  2444ms
+   ✓ Settings › People and roles > offers viewer and member, never admin, as the workspace's default  1510ms
+   ✓ Settings › People and roles > shows a personal workspace's fixed-admin line and no control  544ms
+   ✓ Settings › People and roles > sets a role with the email in the body, then reads again  4234ms
+   ✓ Settings › People and roles > returns a person to the default with a DELETE whose body names them  2412ms
+   ✓ Settings › People and roles > shows a refusal in the API's words and claims nothing  3194ms
+ ✓ src/__tests__/workflow.waits.test.tsx (16 tests) 1335ms
+   ✓ the graph reads the waiting steps’ events and draws their real state and time (#503) > says ≥ from the last write until the events land, then the event’s time, and never queued  650ms
+   ✓ the graph reads the waiting steps’ events and draws their real state and time (#503) > keeps the lower bound when the events read fails  660ms
+ ✓ src/__tests__/workflow.gr1.test.tsx (13 tests) 3042ms
+   ✓ GR1: the critical path on the canvas > draws a finished run’s path heavier and names its steps, every one measured  861ms
+   ✓ GR1: the critical path on the canvas > says “not measured” with the absent Mark while a step is still running, and draws no path  708ms
+   ✓ GR1: the vertical map > maps a canvas taller than the screen, top to bottom, with its height in words  766ms
+   ✓ GR1: the vertical map > draws no map beside a canvas that fits the screen  654ms
+ ✓ src/__tests__/whyline.tone.test.tsx (5 tests) 1011ms
+   ✓ the Agents list paints a why line --warn only when it asks for a person > marks exactly the rows that need action, on both tabs that carry reasons  553ms
+ ✓ src/__tests__/vqa.l12.runs.test.tsx (9 tests) 5265ms
+   ✓ V036: the Run cell stays in the table's row > cuts the id on a span inside the cell, never on the cell itself  379ms
+   ✓ V040: a list with no run is an empty state with a way to start one > says there is none yet and links Submit › From a GitHub issue, with no table  1076ms
+   ✓ V040: a list with no run is an empty state with a way to start one > draws no bare header when a search matches nothing  1043ms
+   ✓ V096: the head's `?` shares the title's row > keeps the `?` beside the title at 1440px  302ms
+   ✓ V096: the head's `?` shares the title's row > keeps the `?` beside the title at 400px  300ms
+   ✓ V107: the issue ref never orphans its number > breaks before `#`, never after it  1226ms
+   ✓ V112: a phone draws each run as one compact card > lays a run out as three rows of a bordered card, labelling only the four facts  382ms
+ ✓ src/__tests__/workflow.graph-pan.test.tsx (4 tests) 5957ms
+   ✓ the workflow graph pans to every part of a tall DAG > is the owner’s DAG: six levels, taller than the port  939ms
+   ✓ the workflow graph pans to every part of a tall DAG > scrolls the frame, not the canvas’s own wrapper, and the frame reaches the last level  1431ms
+   ✓ the workflow graph pans to every part of a tall DAG > moves the frame to the level clicked on the map, and steers while dragged  2830ms
+   ✓ the workflow graph pans to every part of a tall DAG > cancels no wheel, touch or key event on the canvas, its wrapper or the map  756ms
+ ✓ src/__tests__/vqa2.r13.agents.test.tsx (13 tests) 1359ms
+   ✓ V262: a split opened by its address takes focus without a ring > asks for no focus ring when nothing held focus as it opened  575ms
+   ✓ V262: a split opened by its address takes focus without a ring > keeps the AG-31 ring when a row opened it  530ms
+ ✓ test/LiveThumb.test.tsx (12 tests) 9058ms
+   ✓ a running browser node expands a card with a thumbnail at <= 1 fps > draws the card with a live thumbnail and never asks the gate for more than one frame a second  914ms
+   ✓ a running browser node expands a card with a thumbnail at <= 1 fps > is view only: after the handshake it sends only SetPixelFormat, SetEncodings and update requests  660ms
+   ✓ Open Browser tab and ⤢ Theater navigate to the same session > both links open the one agent the thumbnail watches, and the socket names only the task  1059ms
+   ✓ no thumbnail stream for a finished step > a SUCCEEDED browser step draws no card and opens no socket  1089ms
+   ✓ no thumbnail stream for a finished step > a FAILED browser step draws no card and opens no socket  615ms
+   ✓ no thumbnail stream for a finished step > a CANCELLED browser step draws no card and opens no socket  640ms
+   ✓ no thumbnail stream for a finished step > a PARKED browser step draws no card and opens no socket  795ms
+   ✓ no thumbnail stream for a finished step > a QUEUED browser step draws no card and opens no socket  609ms
+   ✓ no thumbnail stream for a finished step > a STARTING browser step draws no card and opens no socket  694ms
+   ✓ no thumbnail stream for a finished step > a running step on a profile that is not a live-browser profile opens nothing  715ms
+   ✓ no thumbnail stream for a finished step > a step that finishes under the card closes its stream and does not reconnect  1264ms
+ ✓ src/__tests__/wait.ui.lists.test.tsx (8 tests) 1973ms
+   ✓ the Agents Waiting tab says each task’s own reason > draws the short form on the reason line, and the whole summary as its title and in the row’s name  1914ms
+ ✓ src/__tests__/walk.steps.inspector.test.tsx (3 tests) 10509ms
+   ✓ item 1: the Steps table with the step card open > scrolls inside its card below its minimum width, and its column never pushes the card  1209ms
+   ✓ item 1: the Steps table with the step card open > wraps ten long step names inside their own cells, apart from the state pill and the figures  8696ms
+   ✓ item 1: the Steps table with the step card open > keeps the whole name in its own cell, one line, and draws the pill only in the State cell  603ms
+ ✓ src/__tests__/vqa2.r15.shell.test.tsx (7 tests) 3602ms
+   ✓ V178: no bell bar holding only the bell > draws no header bar on a section page, and the bell sits at the spine’s foot  713ms
+   ✓ V178: no bell bar holding only the bell > opens the rail bell’s drop-down beside the spine, not clipped inside its 84px  465ms
+   ✓ V178: no bell bar holding only the bell > at phone width puts the bell in the phone header, once, with no second band under it  890ms
+   ✓ V178: no bell bar holding only the bell > keeps the bar for an open object’s trail, with no bell in it, and exports its height  592ms
+   ✓ V150: Recent says in words why it has no count > draws "newest first" beside Recent, muted, and still no count mark  593ms
+ ✓ src/__tests__/timeline.platform-read.test.tsx (6 tests) 7016ms
+   ✓ Not finished yet reads the platform half once per scope pick (#2149) > makes exactly one platform read when an admin picks platform scope  991ms
+   ✓ Not finished yet reads the platform half once per scope pick (#2149) > makes no platform read on the ticks after the pick, which still read the tenant half  1130ms
+   ✓ Not finished yet reads the platform half once per scope pick (#2149) > makes one platform read when the page’s own refresh is pressed  1008ms
+   ✓ Not finished yet reads the platform half once per scope pick (#2149) > reads once more when the admin leaves platform scope and comes back  2527ms
+   ✓ Not finished yet reads the platform half once per scope pick (#2149) > draws the platform counts with their age, "as of <time>"  916ms
+   ✓ Not finished yet reads the platform half once per scope pick (#2149) > makes no platform read for a non-admin, even on a platform-scope address  445ms
+ ✓ src/__tests__/workflow.livecard.test.tsx (10 tests) 2403ms
+   ✓ the card is inline in the running browser step’s node > draws in the node’s slot, outside its button, on running browser steps only  639ms
+   ✓ the card is inline in the running browser step’s node > links the tab and the theater by the routed paths, with the workflow for prev and next  647ms
+   ✓ the card is inline in the running browser step’s node > the step details panel carries no second live view  615ms
+   ✓ no session reads "no live view" > the ticketed socket reports a null session as NO_LIVE_SESSION and mints no ticket  370ms
+ ✓ src/__tests__/waitingfor.lead.test.tsx (11 tests) 294ms
+ ✓ src/__tests__/walk.steps.test.tsx (6 tests) 12885ms
+   ✓ A: the Steps table is a fixed table whose cells never overlap > holds every column apart at 1440 and at its minimum width, with the measured figures  7272ms
+   ✓ A: the Steps table is a fixed table whose cells never overlap > never wraps a head, a figure or the runner  905ms
+   ✓ A: Inputs is a count in the column and the files in the row under it > draws a count, not the files, and opens them under the step  488ms
+   ✓ A: Inputs is a count in the column and the files in the row under it > says none in the column for a step that reads nothing, with no control  486ms
+   ✓ A: the sampling chip is in the table head row, inside the card > draws no empty chrome strip above the card, and any sampling chip is in the table head  504ms
+   ✓ A: the sampling chip is in the table head row, inside the card > heads the Steps table under the Graph with its own head row, directly above the table  3230ms
+ ✓ src/__tests__/walk.agent.test.tsx (4 tests) 12971ms
+   ✓ B: the metadata is said once, in the header block > draws profile · class, the id and the facts in the header and nowhere in the pane  2639ms
+   ✓ B: Copy link and the close ✕ each have their own space > puts the ✕ in the header action row after Copy link, laid out in the row rather than over it  2654ms
+   ✓ B: the log is a tab, and nothing is drawn under the pane > scrolls the pane and never the column, and puts nothing after the pane  2486ms
+   ✓ B: the log is a tab, and nothing is drawn under the pane > opens a running agent and a finished one on Details (#1646)  5191ms
+ ✓ src/__tests__/vocab.agents.ui.test.tsx (10 tests) 25ms
+ ✓ src/__tests__/walk.long.test.tsx (6 tests) 7870ms
+   ✓ C: a long name is two lines and a tooltip, never off the edge > clamps the page title, and lets it give way rather than push the row off the screen  411ms
+   ✓ C: a long name is two lines and a tooltip, never off the edge > clamps the agent title in the split header  1918ms
+   ✓ C: a long name is two lines and a tooltip, never off the edge > draws each Headroom tile’s profile name on one line, never hyphen-broken, in the sans face  834ms
+   ✓ C: a long name is two lines and a tooltip, never off the edge > clamps an agent’s name on the Overview cards  1444ms
+   ✓ C: no empty band between the workflow page’s tabs and its card > draws nothing between the tabs and the card, and holds them 12px apart  3182ms
+ ✓ src/__tests__/vqa.l09.test.tsx (7 tests) 916ms
+   ✓ V138: a disabled primary button’s label is legible > .c-btn.is-primary:disabled is not faded, and its label clears AA in both themes  310ms
+ ✓ src/__tests__/walk.copy.test.tsx (1 test) 41132ms
+   ✓ E: no implementation explanation in visible copy > prints no API path, issue number or code identifier on any page  41132ms
+ ✓ src/__tests__/viewers.kinds.test.tsx (6 tests) 7800ms
+   ✓ JSON: a tree with a Raw toggle, and the mask in its own ink > opens a whole file as a tree that counts an array’s items  1740ms
+   ✓ markdown: rendered as React elements, or its source > renders by default, and shows the source on request  2325ms
+   ✓ a log: numbered lines, in one <pre> > numbers each line and keeps the window copyable as one block  620ms
+   ✓ a window that is not the whole file says so, and offers the next > says partial with the byte it continues from  1607ms
+   ✓ binary: no preview, and a download that says it is not redacted > reads nothing, downloads as stored, and says no rule scanned it  821ms
+   ✓ a member past one request’s read budget is a refusal, not a failure > draws the 413 as refused, with the server’s words, and no "try again"  686ms
+ ✓ src/__tests__/walk.runners.test.tsx (4 tests) 2842ms
+   ✓ D: the issue form shows the one runner it can use > draws claude-code alone, and the others behind "Other runners (N, not used for issue runs)" with a one-line reason each  1611ms
+   ✓ D: one rule for every runner list > splits only when most entries are disabled, and keeps the chosen one in view  407ms
+   ✓ D: one rule for every runner list > draws the task form’s held runners behind the disclosure, with a short reason and the long one in the tooltip  415ms
+   ✓ D: one rule for every runner list > puts the workflow step select’s held runners in their own group  409ms
+ ✓ src/__tests__/workflow.spend.test.tsx (1 test) 74ms
+ ✓ src/__tests__/workflow.cifix.step.test.tsx (2 tests) 920ms
+   ✓ STATUS-TRUE: a running ci-fix round is a step of the page > draws the round as a step, with its state and its stop control  915ms
+ ✓ src/__tests__/walk.names.test.tsx (4 tests) 3317ms
+   ✓ G: an agent is named from what it is > draws that name, not the hash, on the agent list  440ms
+   ✓ G: an agent is named from what it is > draws that name as the open agent’s breadcrumb  2549ms
+   ✓ G: a Timeline lane leads with its name, state and duration > sets the cancel tag above the bar, inside the track  324ms
+ ✓ src/__tests__/workspaceSecrets.routes.test.ts (6 tests) 21ms
+ ✓ src/__tests__/walk.overview.test.tsx (2 tests) 825ms
+   ✓ F: a check still reading is a skeleton card, not an empty dashed box > draws a skeleton of the check card while any check is reading  459ms
+   ✓ F, revised by browser QA D19 (2026-10-04): each card keeps its own height > aligns every card of a column to its top, none with a height of its own  366ms
+ ✓ src/__tests__/workflow.after.pr.test.tsx (4 tests) 17ms
+ ✓ src/__tests__/timeline.pages.routes.test.ts (3 tests) 11ms
+
+ Test Files  48 passed (48)
+      Tests  588 passed (588)
+   Start at  03:43:21
+   Duration  432.28s (transform 9.17s, setup 397ms, collect 33.54s, tests 396.63s, environment 454ms, prepare 92ms)
+

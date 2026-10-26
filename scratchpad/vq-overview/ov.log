@@ -1,0 +1,99 @@
+
+ RUN  v3.2.7 /workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui
+
+ ✓ src/__tests__/crossscreen.test.tsx (23 tests) 12624ms
+   ✓ #96: a failed run is a row form, not only a mark > leaves the text in ink and the selection rule as it was  387ms
+   ✓ #98: one read age per screen > keeps the list's own age while an agent is open over it  2788ms
+   ✓ #98: one read age per screen > labels Overview's lead count as the checks it counts  469ms
+   ✓ #138: the breadcrumb is the trail to the page, in links, and never the title again > renders the segments as links that navigate, and no segment repeats the h1  1598ms
+   ✓ #138: the breadcrumb is the trail to the page, in links, and never the title again > puts the cost of a count on the button that spends it  1641ms
+   ✓ #139: the phone header compacts on scroll, and a long page has a way back up > offers `Top` on the phone only, in the sticky header, and it goes to the top  4860ms
+ ✓ src/__tests__/qa.vqa.checks.overview.test.tsx (5 tests) 6388ms
+   ✓ QA-061, VQ-002: a check card’s link words never squeeze its title on a phone > steps the link words aside at 390px, keeps the arrow, and draws the words at 1440  1946ms
+   ✓ QA-109: the failures card’s link names the page it opens > says "Agents · failed", the page’s own title and the state the card counts, as a word (VQ-003)  1882ms
+   ✓ VOCAB-AGENTS (QA-109; owner decision 2026-10-20): the cards count agents, never tasks > says "2 failed agents" and "2 parked agents" over the Agents links, and no card says "task"  2072ms
+ ✓ src/__tests__/layout.overview.test.tsx (28 tests) 8847ms
+   ✓ OV-9: while the checks read, the lead says so and draws no figure > draws the lead's partial mark with its original rounded corners  399ms
+   ✓ OV-16: the running count re-reads every 60 seconds and says how old it is > re-reads /v1/stats on a 60-second timer and not on the 20-second one  656ms
+   ✓ #227: usePoll leaves nothing behind when the Overview unmounts > fires no timer and keeps no visibilitychange listener after unmount  2433ms
+ ✓ src/__tests__/walk.long.test.tsx (6 tests) 6306ms
+   ✓ C: a long name is two lines and a tooltip, never off the edge > clamps the page title, and lets it give way rather than push the row off the screen  318ms
+   ✓ C: a long name is two lines and a tooltip, never off the edge > clamps the agent title in the split header  1485ms
+   ✓ C: a long name is two lines and a tooltip, never off the edge > draws each Headroom tile’s profile name on one line, never hyphen-broken, in the sans face  816ms
+   ✓ C: a long name is two lines and a tooltip, never off the edge > clamps an agent’s name on the Overview cards  1056ms
+   ✓ C: no empty band between the workflow page’s tabs and its card > draws nothing between the tabs and the card, and holds them 12px apart  2556ms
+ ✓ src/__tests__/overview.o1.test.tsx (18 tests) 4531ms
+   ✓ O1: Needs a look is a row of check cards > lays the cards at 400px or more each at 1440  304ms
+ ✓ src/__tests__/qa.qafix3.overview.test.tsx (10 tests) 2818ms
+   ✓ overview-automate-003: the lifecycle band is three figures across at 390 (by design, owner 2026-10-21) > draws three tiles across, figures only, and keeps the breakdown for the desktop  558ms
+   ✓ ffp-002, VQ-002: a phone Running row is one line that keeps the step, never cut at the same point > cuts the title and keeps the step, in the cascade the built console paints  346ms
+   ✓ a11y-keyboard-003: every Overview table has an accessible name > names the Running now tables  816ms
+   ✓ a11y-keyboard-003: every Overview table has an accessible name > names the Recent failures tables  689ms
+ ✓ src/__tests__/qafix5.overview-timeline.test.tsx (9 tests) 2261ms
+   ✓ 5b:wg-dark-D1: the failed-agents card reaches the failed workflow as plainly as the list > draws a link named for the workflow beside the list’s link, not only the id in the sentence  661ms
+   ✓ 5b:wg-dark-D1: the failed-agents card reaches the failed workflow as plainly as the list > names each link by where it goes  656ms
+   ✓ 5b:wg-dark-D1: the failed-agents card reaches the failed workflow as plainly as the list > draws one workflow link per workflow the headline names, in its order  419ms
+   ✓ 5b:wg-dark-D1: the failed-agents card reaches the failed workflow as plainly as the list > paints the workflow link as the list’s link is painted, and lets it cover the card  388ms
+ ✓ src/__tests__/live.qa.overview.test.tsx (10 tests) 2507ms
+   ✓ OV-1/OV-2: a phone counts the failures its 200 newest do not hold > shows 11 failed and no real-zero badge on a phone page with none of them on it  364ms
+   ✓ OV-1/OV-2: a phone counts the failures its 200 newest do not hold > keeps the failed-tasks check in Needs a look  351ms
+   ✓ OV-1/OV-2: a phone counts the failures its 200 newest do not hold > says partial, not real zero, when the failed read did not land  357ms
+   ✓ OV-4: Running now lists every agent holding capacity > lists the fifth running agent, created before the 200 newest  358ms
+   ✓ OV-7: "last 24h" says partial when the read did not cover it > marks the count as a lower bound with the window it covers  357ms
+   ✓ OV-7: "last 24h" says partial when the read did not cover it > claims last 24h exactly when every failed task was read  349ms
+   ✓ OV-6: Finished today says how far back the phone read reaches > names the instant the page reaches back to  366ms
+ ✓ src/__tests__/qa.g1.overview.test.tsx (13 tests) 1334ms
+ ✓ src/__tests__/qa.u12.overview.test.tsx (5 tests) 582ms
+   ✓ N17/D19: no column is left blank beside a taller card > stacks each column's cards at their own heights at 1440, the failures and the pools under both  362ms
+ ✓ src/__tests__/qafix4.overview.test.tsx (6 tests) 534ms
+ ✓ src/__tests__/vq.overview.test.tsx (8 tests) 3590ms
+   ✓ VQ-004: the Needs a look head says one count, then what it is over > reads "N problems · R of T checks ran", N the cards drawn  433ms
+   ✓ VQ-003: Needs a look says states and park reasons as words > prints no state or reason enum in the cards, their names or their tooltips  348ms
+   ✓ VQ-003: Needs a look says states and park reasons as words > names the failures link "Agents · failed", the parked reason "waiting for CI", the quota "throttled"  344ms
+   ✓ VQ-005: one sample of failures, one window, the same words > gives Needs a look and Recent failures the same count and the same cut-off  342ms
+   ✓ VQ-005: one sample of failures, one window, the same words > words Finished today’s partial sample as every other card does  340ms
+   ✓ VQ-006: Recent failures is a full-width row under both columns > sits outside the columns, across both, before the pools  526ms
+   ✓ VQ-002: a phone draws a check as one line and an agent as one line > steps the detail, the ids and the link words aside at 390, and keeps them at 1440  847ms
+   ✓ VQ-002: a phone draws a check as one line and an agent as one line > cuts a Running row’s workflow title on one line and keeps its step whole  410ms
+ ✓ src/__tests__/qa.vqa.l03.overview.test.tsx (18 tests) 3165ms
+   ✓ QA-060: the Overview count note never leaves its `?` alone on a line > keeps the tally with its `?`, breaks only between the scope and the tally, and drops no dot at the break  405ms
+ ✓ src/__tests__/qa.vqa2.r12.overview.test.tsx (9 tests) 2123ms
+   ✓ V177: the phone’s Running now list stops at eight rows > lists eight, then "39 more" with the rest in place, on the phone only  418ms
+   ✓ V259: an in-card absence says why in sight > draws the read’s reason under every unread card heading  502ms
+   ✓ V263: Recent failures names the whole workflow id at desktop width (owner Q5) > draws the whole id wide, the short one on a phone, and the whole id in the title  321ms
+ ✓ src/__tests__/overview.glance.test.tsx (8 tests) 2254ms
+   ✓ #97: the Spend card reads without a help card > prints the headline with two decimals and publishes the precise figure  911ms
+ ✓ src/__tests__/overview.handoff.who.test.tsx (7 tests) 2248ms
+   ✓ the Overview's hand-off cards say which agent is waiting (LB-V5) > name the agent, its short task id and how long it has waited  486ms
+   ✓ the Overview's hand-off cards say which agent is waiting (LB-V5) > past three, draw the three oldest and link "+N more waiting" to the Waiting tab  915ms
+   ✓ the Overview's hand-off cards say which agent is waiting (LB-V5) > draws no "more" link at three or fewer  829ms
+ ✓ src/__tests__/overview.attention.test.tsx (9 tests) 2143ms
+ ✓ src/__tests__/qa.u11b.overview.test.tsx (14 tests) 1900ms
+   ✓ N3: the failure mark fits its column > draws the mark alone, its word in the title, in a column that holds it  987ms
+   ✓ D17: a profile name is one line, never hyphen-broken > holds "claude-code-review" whole in the narrowest tile  617ms
+ ✓ src/__tests__/wait.ui.lists.test.tsx (8 tests) 1645ms
+   ✓ the Agents Waiting tab says each task’s own reason > draws the short form on the reason line, and the whole summary as its title and in the row’s name  1618ms
+ ✓ src/__tests__/typescale.test.ts (15 tests) 1592ms
+   ✓ B4.1: the tokens are actually in the cascade > fixes the inversion: a panel title is --t-lead in --text, not small caps  350ms
+   ✓ B4.1: the tokens are actually in the cascade > sets the attention lead title a step below the page title  413ms
+ ✓ src/__tests__/qa.c6t.overview.test.tsx (8 tests) 1271ms
+ ✓ src/__tests__/qafix6.overview.test.tsx (8 tests) 644ms
+   ✓ e: a click on the card’s empty space opens the failed workflow (box 6343766999) > anchors the card’s one cover on the first workflow’s link, every other link above it  302ms
+ ✓ src/__tests__/walk.overview.test.tsx (2 tests) 703ms
+   ✓ F: a check still reading is a skeleton card, not an empty dashed box > draws a skeleton of the check card while any check is reading  448ms
+ ✓ src/__tests__/overview.summaryview.test.tsx (4 tests) 715ms
+ ✓ src/__tests__/qa.u10b.overview.test.tsx (10 tests) 584ms
+ ✓ src/__tests__/qafix4.overview2.test.tsx (8 tests) 259ms
+ ✓ src/__tests__/qa.overview.test.tsx (2 tests) 223ms
+ ✓ src/__tests__/qa.qafix2.overview.test.tsx (3 tests) 204ms
+ ✓ src/__tests__/overview.headroom.span.test.tsx (3 tests) 155ms
+ ✓ src/__tests__/overview.failures.age.test.tsx (4 tests) 155ms
+ ✓ src/__tests__/overview.costsofar.test.tsx (6 tests) 15ms
+ ✓ src/__tests__/overview.stalledworkflows.test.ts (5 tests) 4ms
+ ✓ src/__tests__/headroom.test.ts (3 tests) 3ms
+
+ Test Files  33 passed (33)
+      Tests  295 passed (295)
+   Start at  02:18:00
+   Duration  93.04s (transform 7.82s, setup 287ms, collect 17.25s, tests 74.33s, environment 395ms, prepare 76ms)
+

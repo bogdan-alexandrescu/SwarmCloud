@@ -1,0 +1,391 @@
+
+ RUN  v3.2.7 /workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui
+
+ ✓ src/__tests__/shell.test.tsx (76 tests) 14573ms
+   ✓ B2: the attempt timeline is a view mode, not a screen > is reachable only as a pane of one agent, and the pane strip is there  2368ms
+   ✓ B3: the work area, now beside the Sky spine > is one grid column with the agent as a second, and keeps its gutter tokens  586ms
+   ✓ B3: the head > carries a breadcrumb, and each screen carries its own read age on its refresh control  1344ms
+   ✓ B4.3: the six moves > move 1: regions are separated by a hairline, not by 28px of nothing  377ms
+   ✓ B4.3: the six moves > move 2: one track primitive, one height, one radius  439ms
+   ✓ B4.3: the six moves > move 5: the page is not centred in a 1100px lane  304ms
+   ✓ one control, one appearance > draws `.retry` the same inside a state panel and outside one  477ms
+   ✓ D2: compact data inside generous chrome > holds the row height inside the 28-32px band the owner settled on  535ms
+   ✓ D2: compact data inside generous chrome > does NOT squeeze the chrome with it  339ms
+   ✓ B18: the strip collapses to one line and expands on click > is a row of the frame, 28px at rest, and resizes within 120px-70vh  1114ms
+   ✓ B20: a measured zero and an unrendered track are different marks > draws an axis on a measured track and none on an unmeasured one  351ms
+   ✓ B20: a measured zero and an unrendered track are different marks > a count the response did not carry is hatched, not drawn as zero  1774ms
+   ✓ the overflow inventory, as rules that cannot be quietly dropped > WF-21 (#178): the table head fill is on thead, and thead paints it as one rectangle > gives no head cell a fill of its own but the held corner below 900px  396ms
+   ✓ the overflow inventory, as rules that cannot be quietly dropped > WF-21 (#178): the table head fill is on thead, and thead paints it as one rectangle > holds, sizes and fills only the real corner of a two-row head, in both themes, at 1440 and 390  1009ms
+ ✓ src/__tests__/schedules.test.tsx (39 tests) 47634ms
+   ✓ the list > draws one row per schedule with the columns the owner listed  528ms
+   ✓ the list > marks a spend some attempt never reported as partial, with the count  545ms
+   ✓ the list > says a never-fired, paused schedule has no last run and no next run, rather than 0  496ms
+   ✓ the list > draws the Absent state for a tenant with no schedule, and still the built-in rows  1054ms
+   ✓ the list > says the built-in rows were not read when the repositories read fails  495ms
+   ✓ the list > opens a schedule by its address  1225ms
+   ✓ the list > is two lines a row on a phone: name and state, then type · repository · when · last · next · spend · waiting  1177ms
+   ✓ the list > keeps the built-in rows a record on a phone, every cell named  762ms
+   ✓ a row of the list > offers Run now on every row, and Resume only when paused or auto-paused  1714ms
+   ✓ a row of the list > resumes a paused row through :resume, without asking, and reads the list again  938ms
+   ✓ a row of the list > asks before a Run now that spends capacity, and sends nothing until confirmed  1306ms
+   ✓ a row of the list > runs at once, unasked, when the gate holds the run for approval, since it then spends nothing  818ms
+   ✓ a row of the list > says which rule refused a run, as an alert  1231ms
+   ✓ a schedule's page head > offers Run now, Dry run, Pause and Delete when enabled; Resume, not Pause, when paused  3276ms
+   ✓ a schedule's page head > dry-runs and pauses without asking, through :run and :pause, then reads the schedule again  2190ms
+   ✓ a schedule's page head > asks before Run now on the page too, when it spends capacity  1816ms
+   ✓ a schedule's page head > deletes only with the name typed, through DELETE with confirm, and goes back to the list  2939ms
+   ✓ a schedule's page head > keeps the dialog open and says so when the server refuses the delete  2743ms
+   ✓ the Budget tab > draws the burn bar from the served parts: reported, unreported at the cap, live, free  1784ms
+   ✓ the Budget tab > draws the parts against their total, with the day marked, when they pass the day  1894ms
+   ✓ the Budget tab > draws no bar and invents no figure when the read did not serve the reservation  1822ms
+   ✓ one schedule > shows Absent for a schedule that never fired, not "0 runs"  978ms
+   ✓ one schedule > lists its firings, newest first, linking the work each made  1546ms
+   ✓ one schedule > says in plain words why a refused run was not started, under a firing that still succeeded  939ms
+   ✓ one schedule > says in plain words why a firing started nothing, on each row (SCHED)  935ms
+   ✓ one schedule > reads the audit when its tab is opened, newest first as served  1733ms
+   ✓ one schedule > shows the gate and the budget as read, with the hard stops beside them  2807ms
+   ✓ one schedule on a phone > draws each firing as a record, every cell named, and its facts in one column  1082ms
+   ✓ Waiting on you > lists what waits, each linking to its subject  780ms
+   ✓ live QA: automate, the list and the page > labels a dry-run schedule as one in the list and in the head (AUT-3)  1386ms
+   ✓ live QA: automate, the list and the page > keeps the tab and the editor in the address (AUT-11)  2472ms
+   ✓ live QA: automate, the list and the page > says a schedule deleted while its page was open was deleted, not "showing older data" (AUT-9)  1283ms
+   ✓ live QA: automate, the list and the page > re-reads the built-in rows with the list on ⟳ (AUT-19)  487ms
+ ✓ src/__tests__/runfiles.flat.test.tsx (28 tests) 587ms
+ ✓ src/__tests__/tenants.test.tsx (31 tests) 10629ms
+   ✓ Tenants: New workspace is an admin’s button (WK-UI-TENANTS) > draws no New workspace button and reads no records for a non-admin  1624ms
+   ✓ Tenants: New workspace is an admin’s button (WK-UI-TENANTS) > draws it for an admin, and it opens the New workspace dialog  3119ms
+   ✓ Tenants draws Being created and New workspace on one line (#1678) > puts the heading and the button in one header row of the section, outside onboarding’s actions row  1070ms
+   ✓ Tenants draws Being created and New workspace on one line (#1678) > lays the row out across the section, centred, with the heading at no top margin  1246ms
+   ✓ Tenants draws Being created and New workspace on one line (#1678) > wraps the button under the heading at phone width, full width and a 44px target  1115ms
+   ✓ Tenants: only the platform owner approves a service workspace (Q2 (a)) > draws no Approve on a service row for an admin who is not the owner, and draws it on a group row  718ms
+   ✓ Tenants: only the platform owner approves a service workspace (Q2 (a)) > draws Approve on a service row for the owner, and it approves by w- id  737ms
+ ✓ src/__tests__/timeline.causes.test.tsx (37 tests) 3628ms
+ ✓ src/__tests__/tenant.switcher.test.tsx (29 tests) 5304ms
+   ✓ an unsent form across a tenant switch (2A) > is KEPT, re-read in place, and its button names the new tenant  3833ms
+stderr | src/__tests__/shell.v2.test.tsx > #503: every spine item is a link, so it opens in a new tab and copies > leaves a shift-click on every section to the browser
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:81:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+
+stderr | src/__tests__/shell.v2.test.tsx > #503: every spine item is a link, so it opens in a new tab and copies > leaves a shift-click on every section to the browser
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:81:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+
+stderr | src/__tests__/shell.v2.test.tsx > #503: every spine item is a link, so it opens in a new tab and copies > leaves a shift-click on every section to the browser
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:81:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+
+stderr | src/__tests__/shell.v2.test.tsx > #503: every spine item is a link, so it opens in a new tab and copies > leaves a shift-click on every section to the browser
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:81:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+
+stderr | src/__tests__/shell.v2.test.tsx > #503: every spine item is a link, so it opens in a new tab and copies > leaves a shift-click on every section to the browser
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:81:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+
+stderr | src/__tests__/shell.v2.test.tsx > #503: every spine item is a link, so it opens in a new tab and copies > leaves a middle-click on every section to the browser
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:81:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+
+stderr | src/__tests__/shell.v2.test.tsx > #503: every spine item is a link, so it opens in a new tab and copies > leaves a middle-click on every section to the browser
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:81:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+
+stderr | src/__tests__/shell.v2.test.tsx > #503: every spine item is a link, so it opens in a new tab and copies > leaves a middle-click on every section to the browser
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:81:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+
+stderr | src/__tests__/shell.v2.test.tsx > #503: every spine item is a link, so it opens in a new tab and copies > leaves a middle-click on every section to the browser
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:81:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+
+stderr | src/__tests__/shell.v2.test.tsx > #503: every spine item is a link, so it opens in a new tab and copies > leaves a middle-click on every section to the browser
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:81:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+
+stderr | src/__tests__/shell.v2.test.tsx > #503: every spine item is a link, so it opens in a new tab and copies > takes a plain click from the browser, so the app routes without a reload
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:81:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+
+stderr | src/__tests__/shell.v2.test.tsx > #503: every spine item is a link, so it opens in a new tab and copies > takes a plain click from the browser, so the app routes without a reload
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:81:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+
+stderr | src/__tests__/shell.v2.test.tsx > #503: every spine item is a link, so it opens in a new tab and copies > takes a plain click from the browser, so the app routes without a reload
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:81:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+
+stderr | src/__tests__/shell.v2.test.tsx > #503: every spine item is a link, so it opens in a new tab and copies > takes a plain click from the browser, so the app routes without a reload
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:81:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+
+stderr | src/__tests__/shell.v2.test.tsx > #503: every spine item is a link, so it opens in a new tab and copies > takes a plain click from the browser, so the app routes without a reload
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:81:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+
+ ✓ src/__tests__/shell.v2.test.tsx (35 tests) 12622ms
+   ✓ #503: every spine item is a link, so it opens in a new tab and copies > draws a recent workflow and "All workflows" as links  1236ms
+   ✓ #503/#138: the page head is one row -- title left, refresh with its age right > puts the title and the refresh carrying its age in one row, and the count over the first card  487ms
+   ✓ states.html C: the takeover replaces the content area and keeps the nav > draws an expired session as one panel, with the spine still usable  2751ms
+   ✓ states.html C: the takeover replaces the content area and keeps the nav > draws an unreachable API before any read as a takeover with Try again  2149ms
+   ✓ states.html C: the takeover replaces the content area and keeps the nav > draws a tenant that could not be resolved in amber, with Try now  2261ms
+ ✓ src/__tests__/stylesheet.gate.test.ts (153 tests) 827ms
+ ✓ src/__tests__/theater.followup.test.tsx (20 tests) 11975ms
+   ✓ QA12-08 / QA12-24: one set of device chips, the working one > the top bar draws no chips of its own; the DEVICE column holds the tab’s switcher  824ms
+   ✓ QA12-10: focus stays inside the theater, and goes back on close > focus that lands outside (a click behind, a script) is pulled back in  395ms
+   ✓ QA12-10: focus stays inside the theater, and goes back on close > Esc closes and focus returns to ⤢ Theater  444ms
+   ✓ QA12-13: a replay says it is a replay > the stage reads "Replay · <time>", the pill reads REPLAY, the live strip is labelled as live; live ● undoes all three  2738ms
+   ✓ QA12-13: a replay says it is a replay > the recordings list is read again while the theater is open, without stopping a replay  1518ms
+   ✓ QA12-16: the address follows the theater > ⤢ and T put ?theater=1 on the Browser tab’s address; Esc takes it off; the rest of the query stays  608ms
+   ✓ the hand-off checklist (QA12-23, QA12-05, QA12-21, neutral wording) > QA12-23: "check the strip" is ticked when the strip’s verdict is the expected site  624ms
+   ✓ the hand-off checklist (QA12-23, QA12-05, QA12-21, neutral wording) > QA12-23: and not ticked on another site, or with no address reported  1306ms
+   ✓ the hand-off checklist (QA12-23, QA12-05, QA12-21, neutral wording) > neutral wording: the agent’s reason is the headline, no step says sign in, nothing says masked  657ms
+   ✓ the hand-off checklist (QA12-23, QA12-05, QA12-21, neutral wording) > QA12-05 / QA12-21: while you hold control the flag reads "You are in control" and the timer is the idle one  643ms
+   ✓ the hand-off checklist (QA12-23, QA12-05, QA12-21, neutral wording) > QA12-21: not in control, the flag is "Needs you" and the countdown is m:ss left  693ms
+   ✓ QA12-24: the outline follows rotate, and OTHER LIVE names the task > a landscape device draws a landscape outline, in the DEVICE line and on the chosen chip  706ms
+   ✓ QA12-24: the outline follows rotate, and OTHER LIVE names the task > each OTHER LIVE row carries the task’s short id beside its name  618ms
+ ✓ src/__tests__/submit.additional-repositories.test.tsx (13 tests) 34346ms
+   ✓ the task form picks additional repositories by name > offers only registrations readable by tasks, from every page, and never the token-readable list  3547ms
+   ✓ the task form picks additional repositories by name > is not drawn for a Cloud Run runner, and nothing is read for it  2324ms
+   ✓ the task form picks additional repositories by name > sends names, with a ref or directory only when typed, and shows each pinned commit from the 201  6773ms
+   ✓ the task form picks additional repositories by name > sends no `additional_repositories` key when nothing is picked  3689ms
+   ✓ the task form picks additional repositories by name > prints the API's limit refusal under the picker  6499ms
+   ✓ the workflow form sends one list, and `[]` on a step that cannot take it > names the steps that read them, and sends the workflow list with `[]` on the Cloud Run step  6071ms
+   ✓ the agent detail shows each pinned commit > draws one `reads` row per additional repository, with its commit  479ms
+   ✓ the agent detail shows each pinned commit > draws no row for a task that reads none  441ms
+   ✓ Admin › Pool limits edits the two limits > reads the current values, and PUTs only the one that changed  1347ms
+   ✓ Admin › Pool limits edits the two limits > PUTs both when both change  1005ms
+   ✓ Admin › Pool limits edits the two limits > sends nothing for a value that is not a whole number, and shows the API's range refusal  1101ms
+   ✓ Admin › Pool limits edits the two limits > says a non-admin cannot read them, and draws no field  408ms
+   ✓ Admin › Pool limits edits the two limits > says the limits were not read, keeping the message one hover away, and draws no field  661ms
+ ✓ src/__tests__/started.account.test.tsx (22 tests) 2276ms
+   ✓ Work > Agents: the start and the account (#376, #379) under agents.html V1 > sorts by start from the list header, newest then oldest, never-started last both ways  949ms
+   ✓ a workflow’s start, derived from its steps > prints the derived start and the submit time in the open card  549ms
+   ✓ a workflow’s start, derived from its steps > prints never started in the open card when every step ended without starting  545ms
+ ✓ src/__tests__/timeline.cards.test.tsx (26 tests) 11477ms
+   ✓ with IntersectionObserver > draws a card that scrolls in later from the read its twin already made, until the filters change  868ms
+   ✓ with IntersectionObserver > re-reads only the cards in view on a filter change, and marks the rest stale until they scroll in  839ms
+   ✓ with IntersectionObserver > re-reads the cards in view on refresh, and no other  2056ms
+   ✓ with IntersectionObserver > failures shows a failure with a way to try again, and trying again reads again  736ms
+   ✓ with IntersectionObserver > retries shows a failure with a way to try again, and trying again reads again  678ms
+   ✓ with IntersectionObserver > latency shows a failure with a way to try again, and trying again reads again  660ms
+   ✓ with IntersectionObserver > reliability shows a failure with a way to try again, and trying again reads again  652ms
+   ✓ with IntersectionObserver > workflows shows a failure with a way to try again, and trying again reads again  966ms
+   ✓ with IntersectionObserver > cost shows a failure with a way to try again, and trying again reads again  686ms
+   ✓ with IntersectionObserver > cancels shows a failure with a way to try again, and trying again reads again  699ms
+   ✓ with IntersectionObserver > drops a read that lands after the filters changed, so an old figure is never drawn as new  754ms
+ ✓ src/__tests__/roles.gates.test.tsx (13 tests) 12340ms
+   ✓ Approvals, by role > disables Approve and Reject for a viewer, with the role sentence  721ms
+   ✓ Approvals, by role > leaves both live for a member, with no sentence  742ms
+   ✓ Approvals, by role > disables nothing when the API serves no role (an older API)  796ms
+   ✓ Submit, by role > disables Submit for a viewer, with the role sentence, and posts nothing  1537ms
+   ✓ Submit, by role > leaves Submit live for a member  1556ms
+   ✓ Cancel, by role > disables stop for a viewer, with the role sentence, and opens no dialog  321ms
+   ✓ Cancel, by role > leaves stop live for a member  381ms
+   ✓ Questions for you, by role > disables the options and Answer for a viewer the API would let answer, with the role sentence  354ms
+   ✓ Schedules, by role > offers a viewer no new schedule, no Run now and no Resume, each saying why  1286ms
+   ✓ Repositories, by role > offers a viewer no register and no Index now, and says why once  2211ms
+   ✓ Settings › Profile, the role seam > shows the stored role and its source  744ms
+   ✓ Settings › Profile, the role seam > shows "admin (platform admin)" for a reach entry  936ms
+   ✓ Settings › Profile, the role seam > shows the derived role when the entry carries no role, beside a stored one  753ms
+ ✓ src/__tests__/submit.picks.test.tsx (13 tests) 15120ms
+   ✓ /submit is a page of its own in the frame > names Submit in the head, times its recent read, and lights Submit  1434ms
+   ✓ /submit is a page of its own in the frame > gives the two forms a trail back to the chooser  2073ms
+   ✓ the chooser draws the three picked cards > each card has an icon, its heading, its Start button and its key  736ms
+   ✓ the chooser draws the three picked cards > "Start from a recent one" is a card of your own recent submissions, not a dashed box  363ms
+   ✓ the task form is F1 > draws the runners as two-column cards with size, backend and how many can start now  1338ms
+   ✓ the task form is F1 > draws steps 2 and 3 as cards, dimmed until a runner is chosen  1354ms
+   ✓ the task form is F1 > says where the task lands and what that costs, and the disabled button is pale accent  1343ms
+   ✓ the workflow form is G1 > picks each step runner from a select, not a radio list of every profile  1757ms
+   ✓ the workflow form is G1 > draws an arrow between each pair of stages  1790ms
+   ✓ the workflow form is G1 > puts "If a step fails" and "Priority" in step 2 and lists both in the summary  2906ms
+ ✓ src/__tests__/theater.test.tsx (13 tests) 9477ms
+   ✓ opening the theater > ⤢ opens it on the same session: the same screen node, no second socket, no ticket read  502ms
+   ✓ leaving the theater > Esc returns to the tab at the same scroll, with the screen home and focus back on ⤢  818ms
+   ✓ the left column > switches between Timeline and Logs  1353ms
+   ✓ the left column > becomes the hand-off checklist while the agent waits for a person, and Timeline is still a click away  823ms
+   ✓ prev and next > walks the live agents in that order  1472ms
+   ✓ prev and next > stops at the ends rather than wrapping  1452ms
+   ✓ replay > reads the listing through the tenant-scoped task route and plays only the tenant segments  1958ms
+   ✓ replay > a refused listing plays nothing and says so  893ms
+ ✓ src/__tests__/taskpanes.follow.test.tsx (8 tests) 8746ms
+   ✓ 1 (box 6343793416): the overflow names the tabs it hides, and keeps the count > reads `N more: <Tab>, <Tab> ▾`, and is named by exactly that text  1064ms
+   ✓ 1 (box 6343793416): the overflow names the tabs it hides, and keeps the count > one hidden tab reads `1 more: <Tab> ▾`  983ms
+   ✓ 2 (box 6343764730): the error jump never shows a dash > one error line, none jumped to: `Error 1 of 1`, short `Error 1/1`  2596ms
+   ✓ 2 (box 6343764730): the error jump never shows a dash > several error lines, none jumped to: `N error lines`, short `N err ln`; a jump then reads `Error k of N`  1671ms
+   ✓ 3 (6:task-002): the split hands the count its pane > <AgentSplit pane="children"> on a child counts the row its read returns  2292ms
+ ✓ src/__tests__/startup.progress.test.tsx (14 tests) 4105ms
+   ✓ StartupProgress > renders the stages from a fixture, in order, done, current and to come  730ms
+   ✓ StartupProgress > counts the current stage live, from when it began  701ms
+   ✓ StartupProgress > draws the bar from the task events when /startup answers 404  515ms
+   ✓ StartupProgress > polls every 2 s while starting, and stops once done  344ms
+   ✓ StartupProgress > marks earlier stages no step of which arrived as skipped (already ready) once a later one has  719ms
+   ✓ the thumbnail > draws a thin bar and "starting m:ss" while the browser starts  306ms
+   ✓ the theater > draws the start-up over its screen area until the first frame  385ms
+   ✓ the Browser tab > draws the start-up where it said only that the browser is starting  365ms
+ ✓ src/__tests__/theater.mockup.test.tsx (9 tests) 9086ms
+   ✓ 1. prev, next and OTHER LIVE are fed > with no list passed, reads the tenant’s live browser agents, needs-you first, and lists the others  611ms
+   ✓ 1. prev, next and OTHER LIVE are fed > next › navigates to the chosen agent’s …/browser?theater=1 through the router  1172ms
+   ✓ 1. prev, next and OTHER LIVE are fed > a list that is passed (the workflow graph’s live steps) is walked as given, and no page is read  1047ms
+   ✓ 2. the mockup’s labels > top bar: LIVE pill, prev, next and Esc · back to tab, and no second set of device chips; right: DEVICE and OTHER LIVE  1231ms
+   ✓ 2. the mockup’s labels > a device nobody reported reads "Not reported", with the unknown outline  412ms
+   ✓ 2. the mockup’s labels > Esc · back to tab closes the theater  970ms
+   ✓ 3. replay is a scrubber over the recording > lays the segments end to end, plays from ◀◀ replay, seeks by the bar, and live ● goes back  2050ms
+   ✓ 4. the hand-off checklist > ticks the steps done and returns control with the same action as the bottom bar  676ms
+   ✓ 4. the hand-off checklist > before you take control, that step is not ticked and the return button waits  917ms
+ ✓ src/__tests__/shell.qafix3.test.tsx (9 tests) 3414ms
+   ✓ ffp-001: the phone Overview chip row says it scrolls > marks the side that has more chips past it, and only that side  1018ms
+   ✓ work-b-007: `Top` arriving moves nothing in the phone header > holds its place in the header from the first frame, hidden and out of reach until the page is far down  1457ms
+ ✓ src/__tests__/timeline.lazy.test.tsx (10 tests) 2463ms
+   ✓ Not finished yet reads when it scrolls into view > shows a failure with a way to try again, never an empty card, and trying again reads again  726ms
+   ✓ Not finished yet reads when it scrolls into view > treats a failed parked list as a failed card too, with a way to try again  706ms
+ ✓ src/__tests__/theater.take.test.tsx (10 tests) 31630ms
+   ✓ 1. the hand-off checklist takes control > not in control and eligible: the checklist offers Take control, which asks, then takes  3764ms
+   ✓ 1. the hand-off checklist takes control > on the wrong site, the checklist’s take asks the second time, and says what was confirmed  4810ms
+   ✓ 1. the hand-off checklist takes control > someone else in control, and you may preempt: the checklist offers to take it from them  4294ms
+   ✓ 1. the hand-off checklist takes control > in control: the checklist’s button is "I'm done, return control", and no Take control  2900ms
+   ✓ 1. the hand-off checklist takes control > not eligible, nobody in control: "View only", and no button  2942ms
+   ✓ 1. the hand-off checklist takes control > not eligible, someone else in control: names them, and no button  2829ms
+   ✓ 2. the bottom bar’s Take control > without a hand-off, the bar offers Take control; its ask is inside the theater and reachable  4410ms
+   ✓ 2. the bottom bar’s Take control > with a hand-off, the bar offers Take control too; in control it reads Return control  2866ms
+   ✓ 2. the bottom bar’s Take control > in control, the bar reads Return control  2813ms
+ ✓ src/__tests__/runs.page.issue.test.tsx (11 tests) 8925ms
+   ✓ item 4: the run page leads with the issue > titles the page with the issue title and puts ref · run · creator in its meta  620ms
+   ✓ item 4: the run page leads with the issue > shows what the issue said at submission in the Read-from-the-issue card  1025ms
+   ✓ item 4: the run page leads with the issue > says once that a run created before runs kept the read has none  1242ms
+   ✓ item 4: the run page leads with the issue > says why when the read failed at submission, never 0 comments  1084ms
+   ✓ item 4: the run page leads with the issue > says the comments and the pull request are not there yet before the write-back posts them  1144ms
+   ✓ item 5: the plan is drawn from its schema > leads with a short summary, not the whole paragraph  320ms
+   ✓ item 5: the plan is drawn from its schema > numbers the steps with title and id, files / tests / estimate when present, and folds each prompt  441ms
+   ✓ item 6: owner/repo#N breaks only at its joints > in the Linked and Read-from-the-issue cards at 1440px  1382ms
+   ✓ item 6: owner/repo#N breaks only at its joints > in the Linked and Read-from-the-issue cards at 390px  1144ms
+ ✓ src/__tests__/theater.v2.test.tsx (7 tests) 22888ms
+   ✓ B1: Esc closes only the theater, back to the Browser tab and ⤢ > Esc pressed in the theater closes it and leaves the split on Browser  5755ms
+   ✓ B1: Esc closes only the theater, back to the Browser tab and ⤢ > Esc with focus outside the theater (on the page body) still closes only the theater  2074ms
+   ✓ B1: Esc closes only the theater, back to the Browser tab and ⤢ > opened from ⤢, Esc gives focus back to ⤢; the next Esc closes the split as before  7845ms
+   ✓ B1: Esc closes only the theater, back to the Browser tab and ⤢ > Esc in the screen is the remote browser’s: the theater stays and the split never hears it  2393ms
+   ✓ B4: the DEVICE column is a vertical list, nothing clipped > lists every device with its outline and name, the current one marked  2975ms
+   ✓ B5: the pill reads LIVE <agent name>, with the task id as its title > names the agent the split read, not its id  1843ms
+ ✓ src/__tests__/spine.adminrole.test.tsx (9 tests) 3649ms
+   ✓ who sees Admin (NAV-ADMIN-ROLE) > draws no Admin item, flyout or drawer entry for a member with no admin role  810ms
+   ✓ Admin › Workspaces you admin (NAV-ADMIN-ROLE) > lists eng, and its People and roles link selects eng and lands on Config › People and roles  553ms
+   ✓ Admin › Workspaces you admin (NAV-ADMIN-ROLE) > lists for a platform admin the workspaces where their stored role is admin, not every one they reach  553ms
+   ✓ Admin › Workspaces you admin (NAV-ADMIN-ROLE) > says plainly that you administer no group workspace  517ms
+   ✓ Admin › Workspaces you admin (NAV-ADMIN-ROLE) > sends a member on a direct /admin/limits to Overview (CONFIG-NAV)  586ms
+ ✓ src/__tests__/runs.context.test.tsx (7 tests) 2143ms
+   ✓ the Context card (screen 5, pick B) > sits above the plan and names what the planner read  585ms
+ ✓ src/__tests__/submit.workspace.refusal.test.tsx (10 tests) 17093ms
+   ✓ the task form > draws a 403 WORKSPACE_NOT_READY as the banner, with the form live before it  2033ms
+   ✓ the task form > draws a 403 NO_CLAUDE_ACCOUNT as the banner, with the form live before it  1925ms
+   ✓ the task form > keeps drawing any other 403 as the failure panel, not a banner  1343ms
+   ✓ the workflow form > draws a 403 WORKSPACE_NOT_READY as the banner, with the form live before it  2535ms
+   ✓ the workflow form > draws a 403 NO_CLAUDE_ACCOUNT as the banner, with the form live before it  2403ms
+   ✓ the issue screen > draws a 403 WORKSPACE_NOT_READY as the banner, with the form live before it  3628ms
+   ✓ the issue screen > draws a 403 NO_CLAUDE_ACCOUNT as the banner, with the form live before it  3220ms
+ ✓ src/__tests__/tables.held.test.tsx (4 tests) 3507ms
+   ✓ the held first column keeps a readable width at 390 (#222) > floors both Runtimes tables  1230ms
+   ✓ the held first column keeps a readable width at 390 (#222) > floors the Tenants roster  328ms
+   ✓ the held first column keeps a readable width at 390 (#222) > floors the Timeline’s Table view, Reliability and Workflows that failed  1795ms
+ ✓ src/__tests__/schedules.onepage.test.tsx (9 tests) 5820ms
+   ✓ one Schedules page, with an admin switch > draws "Mine | All tenants" for an admin, with Mine chosen on the bare page  909ms
+   ✓ one Schedules page, with an admin switch > draws no switch for a non-admin, and never reads the admin list  497ms
+   ✓ one Schedules page, with an admin switch > a non-admin following a ?scope=all link gets their own list, with no switch  486ms
+   ✓ one Schedules page, with an admin switch > switches to All tenants by its address  892ms
+   ✓ one Schedules page, with an admin switch > All tenants is the cross-tenant table, the tick’s last hour and the pause-all control  1957ms
+   ✓ Admin › Platform counts lists the platform ticks > draws every Cloud Scheduler job under its own heading, with the intro sentence  1070ms
+ ✓ src/__tests__/secrets.routes.test.tsx (6 tests) 2976ms
+   ✓ an old one-time link, opened in the app > /settings/keys/typesafe?scope=user&t=.. opens Config › Secrets' key form, and the token goes back with the write alone  2948ms
+ ✓ src/__tests__/secrets.addAddress.test.tsx (7 tests) 8182ms
+   ✓ the address of Add a secret, a consumer picked > opens the form with consumer mcp:kb picked, and never says it came from a one-time link  2256ms
+   ✓ the address of Add a secret, a consumer picked > `?action=add` with its link still says it was opened from a one-time link; the new address does not  595ms
+   ✓ the address of Add a secret, a consumer picked > opens the form with nothing picked for a consumer the catalogue does not list  2832ms
+   ✓ the address of Add a secret, a consumer picked > a reader who may not add secrets sees the page as today, with no form  1651ms
+   ✓ the address of Add a secret, a consumer picked > closing the form leaves its address, so a reload does not reopen it  841ms
+ ✓ src/__tests__/spine.profile.test.tsx (11 tests) 150ms
+ ✓ src/__tests__/spine.labels.test.tsx (8 tests) 917ms
+   ✓ the rail names Help (#136) > draws the word Help on the rail entry, visible, not only in a title  730ms
+ ✓ src/__tests__/staged.inputs.test.tsx (4 tests) 162ms
+ ✓ src/__tests__/rt4.rt7.runs.test.tsx (3 tests) 819ms
+   ✓ RT-4: a CI read that failed is said, with why > keeps "not read yet" for a run the loop has not tried, and draws no error line  305ms
+ ✓ src/__tests__/repositories.routes.test.tsx (7 tests) 47ms
+ ✓ src/__tests__/tables.phone.test.tsx (1 test) 11ms
+ ✓ src/__tests__/sweep.runs.test.tsx (4 tests) 577ms
+   ✓ the sweeper on the Runs list > shows a NOT_READY run with its reason, and who started each run  570ms
+ ✓ src/__tests__/sections.stylesheet.test.ts (199 tests) 520ms
+ ✓ src/__tests__/spacing.test.tsx (4 tests) 11ms
+ ✓ src/__tests__/timeline.outcomes.width.test.tsx (3 tests) 62ms
+ ✓ src/__tests__/runnerSizes.tab.test.tsx (3 tests) 9ms

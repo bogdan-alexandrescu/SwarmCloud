@@ -1,0 +1,19 @@
+
+ RUN  v3.2.7 /workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui
+
+ ✓ src/__tests__/spine.qafix.test.tsx (10 tests) 1616ms
+   ✓ QA-028: the copy id button is named with the words it shows > its accessible name contains its visible text, and still names the tenant  737ms
+   ✓ QA-055: an active sub-item keeps the panel’s right margin > the sub-list ends where a top-level row does  353ms
+ ✓ src/__tests__/spine.qafix2.test.tsx (6 tests) 1539ms
+   ✓ FF-P1: a phone has an "On this page" list on Overview itself > is one scrollable row of tap-sized links on the phone  508ms
+ ✓ src/__tests__/qafix4.phonebar.test.tsx (4 tests) 1003ms
+   ✓ N2: the phone Overview chip row starts at the page gutter (run-4 overview-automate-005) > the row starts at the gutter the cards below it use  407ms
+ ✓ src/__tests__/spine.nkey.test.tsx (9 tests) 180ms
+ ✓ src/__tests__/spine.keyboard.test.tsx (7 tests) 201ms
+ ✓ src/__tests__/spine.settings.test.tsx (3 tests) 75ms
+
+ Test Files  6 passed (6)
+      Tests  39 passed (39)
+   Start at  03:51:06
+   Duration  9.06s (transform 1.99s, setup 235ms, collect 3.28s, tests 4.61s, environment 475ms, prepare 93ms)
+

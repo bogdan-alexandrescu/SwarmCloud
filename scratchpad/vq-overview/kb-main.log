@@ -1,0 +1,47 @@
+
+ RUN  v3.2.7 /workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui
+
+stdout | src/__tests__/keyboard.test.tsx > keyboard traversal > reaches every control on every route, and nothing swallows Tab
+30 routes · 1139 tab stops · 43 help cards opened · 974 stops covered by a :focus-visible rule · 0 findings
+  overview/now             61 stops   2 cards  of 886 elements
+  work/running             44 stops   1 cards  of 387 elements
+  work/workflows           36 stops   1 cards  of 380 elements
+  work/runs                37 stops   1 cards  of 286 elements
+  work/timeline            56 stops   1 cards  of 322 elements
+  work/new                 31 stops   2 cards  of 312 elements
+  work/new-workflow        36 stops   2 cards  of 294 elements
+  work/new-issue           28 stops   1 cards  of 284 elements
+  automate/schedules       28 stops   1 cards  of 298 elements
+  automate/approvals       27 stops   1 cards  of 195 elements
+  capacity/pools           91 stops   1 cards  of 935 elements
+  capacity/catalogue       34 stops   2 cards  of 520 elements
+  capacity/profiles        36 stops   1 cards  of 448 elements
+  capacity/holders         33 stops   2 cards  of 514 elements
+  capacity/accounts        51 stops   2 cards  of 743 elements
+  capacity/quota           32 stops   1 cards  of 390 elements
+  capacity/api-reads       25 stops   1 cards  of 453 elements
+  config/github            31 stops   1 cards  of 305 elements
+  config/repositories      67 stops   1 cards  of 552 elements
+  config/secrets           42 stops   1 cards  of 376 elements
+  config/mcp-servers       32 stops   1 cards  of 325 elements
+  config/people            26 stops   1 cards  of 266 elements
+  config/workspace         31 stops   1 cards  of 309 elements
+  admin/limits             32 stops   2 cards  of 321 elements
+  admin/runner-sizes       32 stops   2 cards  of 322 elements
+  admin/tenants            32 stops   2 cards  of 323 elements
+  admin/counts             32 stops   2 cards  of 324 elements
+  admin/platform-secrets   32 stops   2 cards  of 325 elements
+  admin/people             32 stops   2 cards  of 326 elements
+  admin/workspaces         32 stops   2 cards  of 327 elements
+
+ ✓ src/__tests__/keyboard.test.tsx (5 tests) 252908ms
+   ✓ keyboard traversal > agrees with a fixture about what Tab stops on  1788ms
+   ✓ keyboard traversal > reaches every control on every route, and nothing swallows Tab  243552ms
+   ✓ keyboard traversal > traps Tab, closes on Escape, and hands the row back  6206ms
+   ✓ keyboard traversal > tabs from a help trigger into its portalled card and back out  723ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  02:31:41
+   Duration  260.81s (transform 4.95s, setup 190ms, collect 6.72s, tests 252.91s, environment 422ms, prepare 80ms)
+

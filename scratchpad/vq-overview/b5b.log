@@ -1,0 +1,13 @@
+
+ RUN  v3.2.7 /workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui
+
+ ✓ src/__tests__/qa.u12.shell.test.tsx (4 tests) 1789ms
+   ✓ R5: the phone drawer is the drawer's width > lets the panel shrink to the drawer and cuts a long Recent name with an ellipsis  848ms
+   ✓ R14: a section's root opens its first page > lands /admin on /admin/limits, never "No page at"  742ms
+ ✓ src/__tests__/qa.g1.jumps.test.tsx (5 tests) 75ms
+
+ Test Files  2 passed (2)
+      Tests  9 passed (9)
+   Start at  03:11:50
+   Duration  10.59s (transform 5.54s, setup 197ms, collect 7.76s, tests 1.86s, environment 409ms, prepare 91ms)
+

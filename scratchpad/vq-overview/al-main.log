@@ -1,0 +1,13 @@
+
+ RUN  v3.2.7 /workspace/att_301c4a979acd4c1f921e/work/repo/apps/swarm-ui
+
+ ✓ src/__tests__/agentlink.anystate.test.tsx (3 tests) 13336ms
+   ✓ agent link drawer opens in any state (path /agents/live/<id>) > opens the drawer for a SUCCEEDED task that is not in the live list  9239ms
+   ✓ agent link drawer opens in any state (path /agents/live/<id>) > opens the drawer for a FAILED task that is not in the live list  2156ms
+   ✓ agent link drawer opens in any state (path /agents/live/<id>) > opens the drawer for a QUEUED task that is not in the live list  1940ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  02:50:45
+   Duration  14.32s (transform 5.02s, setup 181ms, collect 37ms, tests 13.34s, environment 413ms, prepare 88ms)
+
