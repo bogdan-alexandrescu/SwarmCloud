@@ -418,8 +418,8 @@ defaults to the render's file name, and `--name` sets it. Exit codes:
 
 * **0**: the score is within the threshold;
 * **1**: the score is over the threshold;
-* **5**: the input was refused (an unreadable image, a bad name, or no
-  `$SWARM_ARTIFACTS_DIR`).
+* **5**: the input was refused (an unreadable image, an image too large to
+  score, a bad name, or no `$SWARM_ARTIFACTS_DIR`).
 
 How it scores, and why that way (the full reasoning is in the command's own
 docstring, `images/agent-runtime-browser/swarm-handoff`):
@@ -442,9 +442,16 @@ docstring, `images/agent-runtime-browser/swarm-handoff`):
   reports how many it left out.
 * **Pillow does the decoding** when it is available. It is pinned in the
   image's venv, which also lets it read palette, 16-bit and JPEG frames.
-  Without it, a standard-library decoder reads what Chromium writes. Measured
-  2026-10-26: about 1 s of CPU for a desktop render against a 2× frame, and
-  0.25 s for a phone.
+  Without it, a standard-library decoder reads what Chromium writes.
+* **Neither image is scored at more than 6 M pixels.** The scoring is pure
+  Python, and this lane's first attempt to finish spent two hours of four
+  cores before its runner timed out. Pillow shrinks a larger image by a whole
+  factor first (a 2880×8000 frame is scored at 1440×4000); without Pillow it
+  is refused as `too_large`, from its header, before anything is
+  decompressed. A 2× export of a 1440×900 frame (5.2 M) is under the cap.
+  Measured 2026-10-26: 1.3–1.6 s of CPU for a desktop render against its 2×
+  frame, 0.3–1.2 s for a phone, and 5.3 s for a 1440×4000 page against its
+  2× frame with Pillow.
 
 ### 6.5 Fix, then finish, and name the frames
 
