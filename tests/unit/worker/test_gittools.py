@@ -283,11 +283,14 @@ def test_a_malformed_request_is_refused_before_any_request(
 
 
 def test_a_commit_the_task_did_not_write_is_foreign_author(world: World):
-    _commit(world.clone, "src/app.py", "x = 1\n", "work",
-            who=("Mallory", "mallory@example.invalid"))
+    theirs = _commit(world.clone, "src/app.py", "x = 1\n", "work",
+                     who=("Mallory", "mallory@example.invalid"))
     answer = world.spool("git_push_branch", {})
     assert answer["refused"]["code"] == "foreign_author"
-    assert world.api.calls == []
+    assert answer["refused"]["on_origin"] is False
+    # The one request is the question "does origin have it?" (#2413); no push.
+    assert [(c["path"].rsplit("/", 1)[1], c["body"].get("confirm")) for c in world.api.calls] \
+        == [("git_fetch", [theirs])]
 
 
 # --------------------------------------------------------------------------
