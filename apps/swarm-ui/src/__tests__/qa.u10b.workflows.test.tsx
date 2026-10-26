@@ -100,7 +100,7 @@ describe('D8: the Workflows list never cuts a state, a count or a duration', () 
     const rows = [...t.querySelectorAll('tbody tr.wfl-row')]
     expect(rows.length).toBeGreaterThan(0)
     for (const row of rows) {
-      const a = row.querySelector<HTMLAnchorElement>('td[data-col="workflow"] > a')!
+      const a = row.querySelector<HTMLAnchorElement>('td[data-col="workflow"] > .wfl-line > a')!
       expect(a.getAttribute('title'), 'the name has no title').toBe(a.textContent)
       const shape = row.querySelector<HTMLElement>('td[data-col="shape"]')!
       expect(shape.getAttribute('title'), 'the shape has no title').toBeTruthy()

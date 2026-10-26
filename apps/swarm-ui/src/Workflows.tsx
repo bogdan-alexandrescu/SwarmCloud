@@ -183,7 +183,6 @@ import './styles/workflows.css'
 import './styles/names.css'
 import {
   anyRunning,
-  backLabel,
   bucketCounts,
   bucketOf,
   BUCKET_FILTERS,
@@ -397,11 +396,13 @@ export function WorkflowsScreen({
     // module constant as the tab's heading ('Workflows', below) and skips a
     // per-workflow local like this one.
     const pageTitle = name ?? id
+    // ONE BACK PATH (visual QA VQ-015, #2391): the breadcrumb above is the way
+    // back -- `Work ▸ Workflows · Failed ▸ <name>`, its list segment carrying
+    // these filters (App.tsx `crumbsOf`) -- so the page draws no `‹ Workflows`
+    // link of its own under it. `wfp-screen` scopes the page head's phone
+    // rule (V103), which that link used to.
     return (
-      <>
-        <a className="wfp-back" href={listHref(query)}>
-          ‹ {backLabel(query)}
-        </a>
+      <div className="wfp-screen">
         <Screen
           key={`wf:${id}:${stores.reloads}`}
           // THE PAGE IS TITLED BY THE WORKFLOW'S NAME (#503: the id was the
@@ -436,7 +437,7 @@ export function WorkflowsScreen({
             />
           )}
         </Screen>
-      </>
+      </div>
     )
   }
 
@@ -472,8 +473,11 @@ export function WorkflowsScreen({
   )
 }
 
-/** The name Recent holds for `id`, kept current as the list or the page records it. */
-function useRecentName(id: string | null): string | null {
+/**
+ * The name Recent holds for `id`, kept current as the list or the page records
+ * it: the page's title, and the breadcrumb's last segment (App.tsx, VQ-015).
+ */
+export function useRecentName(id: string | null): string | null {
   const [name, setName] = useState<string | null>(() => (id === null ? null : recentName(id)))
   useEffect(() => {
     const again = () => setName(id === null ? null : recentName(id))
@@ -1364,6 +1368,10 @@ export function WorkflowCard({
       setArrival(false)
       const card =
         sectionRef.current?.querySelector<HTMLElement>('.wf-panel') ?? sectionRef.current?.querySelector<HTMLElement>('.wf-inspect') ?? null
+      // No card on screen: the Table's or Timeline's arrival pick, which draws
+      // none under its row (VQ-016). Clearing `arrival` above draws it there
+      // now; its close control takes focus once it has (`bringInline`).
+      if (card === null) bringInline.current = true
       if (card !== null) {
         if (typeof card.scrollIntoView === 'function') card.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
         // The docked panel takes focus itself; the card drawn under a row
@@ -1376,6 +1384,21 @@ export function WorkflowCard({
     }
     return togglePick(stepId)
   }
+
+  // THE ARRIVAL PICK OPENS NO CARD UNDER A ROW (visual QA VQ-016, #2391). On
+  // the Table and the Timeline below the dock width the card is drawn under
+  // the picked row or track, and the page's own pick on arrival -- the
+  // running step, or the failure -- drew a ~370px card there by itself: of
+  // five steps two rows showed and three sat below it. The view now arrives
+  // whole with the step marked picked, and its card opens under the row when
+  // a reader asks for it (`pickStep`). Where the card docks beside the view
+  // it costs the view no rows, so the arrival pick still opens it there.
+  const bringInline = useRef(false)
+  useEffect(() => {
+    if (arrival || !bringInline.current) return
+    bringInline.current = false
+    sectionRef.current?.querySelector<HTMLElement>('.wf-inspect .wf-inspect-close')?.focus({ preventScroll: true })
+  }, [arrival])
 
   // CLOSING THE GRAPH'S PANEL PUTS FOCUS BACK ON THE NODE THAT OPENED IT, so a
   // keyboard reader is where they were rather than at the top of the page. The
@@ -1560,7 +1583,7 @@ export function WorkflowCard({
                 view={view}
                 picked={picked}
                 onPick={pickStep}
-                detail={picked !== null && narrow ? inspector(picked, () => closePanel(picked)) : null}
+                detail={picked !== null && narrow && !(page && arrival) ? inspector(picked, () => closePanel(picked)) : null}
                 filter={view === 'table' ? tableFilter : null}
                 onClearFilter={onClearFilter}
               />
@@ -2527,7 +2550,13 @@ function StepCardExtras({
             step={step}
             taskById={taskById}
             reload={reload}
-            variant="inline"
+            // `Stop step`, IN THE PAGE HEAD'S BUTTON (visual QA VQ-015;
+            // workflows.html B): the card's action was StopRun's small
+            // lower-case `stop` beside the head's `Cancel workflow`. The
+            // panel variant is the danger outline at the head's size; the
+            // card has the width for its in-place confirmation.
+            variant="panel"
+            label="Stop step"
           />
         </div>
       )}
@@ -2677,6 +2706,13 @@ function useNow(): number {
  * not: one of those in a `.tsx` makes git call the whole file binary and stop
  * showing anyone its diff. (It did.)
  */
+/**
+ * The level rail and its gap beside the canvas: `.wf-levels`' 72px and
+ * `.wf-graph`'s `--ctl-s3` (12px), the same two figures `CANVAS_COLUMN`
+ * (dag.ts) is kept in step with.
+ */
+const LEVEL_RAIL_W = 72 + 12
+
 export function stageKey(workflowId: string, level: number): string {
   return `${level}|${workflowId}`
 }
@@ -3591,6 +3627,16 @@ function WorkflowGraph({
   //     disappearing under its own consequence: a workflow that loses a step
   //     and would now fit must not take away the only way back from a choice
   //     still in force, leaving dropped fields with nothing explaining them.
+  // A GRAPH THAT FITS ACROSS IS AS TALL AS IT IS (visual QA VQ-014, #2391).
+  // The wrapper is held to the screen (V034) so a wide graph's one sideways
+  // scrollbar stays in view; on a graph with nothing to its right that bound
+  // only made a second scroller -- about 350px of a five-step chain under the
+  // page's head, scrolled by the wheel instead of the page. When the canvas
+  // and its level rail fit the measured wrapper (CANVAS_COLUMN before the
+  // first measure), the wrapper grows with the graph and the page is the one
+  // scroll container (`.wf-canvas-wrap.fits-x`); `scrollPortOf` then finds no
+  // room in it and steers the page.
+  const fitsAcross = view.w > 0 ? LEVEL_RAIL_W + layout.width <= view.w : layout.width <= CANVAS_COLUMN
   const zoomable =
     zoom !== 'auto' ||
     tier !== 'figures' ||
@@ -3630,7 +3676,7 @@ function WorkflowGraph({
           no data mark (WF-14), and an unmeasured path is one. */}
       {layout.edges.length > 0 && <CriticalPathNote path={critical} total={workflow.steps.length} />}
       <div className="wf-canvas-row">
-      <div className="wf-canvas-wrap" ref={wrapRef} onScroll={syncView}>
+      <div className={`wf-canvas-wrap${fitsAcross ? ' fits-x' : ''}`} ref={wrapRef} onScroll={syncView}>
         <div className="wf-graph">
           {/* THE LEVEL RAIL, WHICH WAS A ROW OF COLUMN CAPTIONS. When levels ran
             left to right these sat across the top, one over each column. Levels
@@ -5502,21 +5548,26 @@ function WorkflowList({
   }, [board.workflows, labels])
 
   const which = query.state === 'all' ? '' : `${BUCKET_LABEL[query.state].toLowerCase()} `
+  // THE LIST'S ONE NOTE (VQ-013): its clauses, each only when it is true.
+  const listNote = [
+    older.more !== null ? `Counts and order are of ${scope} workflows; older ones are on the server and not read yet` : null,
+    unread.length > 0
+      ? `${rows.length - unread.length} of ${rows.length} rows have their steps read; ${
+          searching ? 'the rest are being read for the search' : 'older rows show ids only until they scroll into view'
+        }${failedReads > 0 ? `; ${failedReads} could not be read` : ''}`
+      : null,
+  ]
+    .filter((c): c is string => c !== null)
+    .join(' · ')
   return (
     <div className="wfl">
       <WorkflowListFilters query={query} choose={choose} counts={counts} owners={owners} profiles={profiles} />
-      {older.more !== null && (
-        <CountNote>
-          Counts and order are of {scope} workflows; older ones are on the server and not read yet
-        </CountNote>
-      )}
-      {unread.length > 0 && (
-        <CountNote>
-          {rows.length - unread.length} of {rows.length} rows have their steps read;{' '}
-          {searching ? 'the rest are being read for the search' : 'older rows show ids only until they scroll into view'}
-          {failedReads > 0 ? `; ${failedReads} could not be read` : ''}
-        </CountNote>
-      )}
+      {/* ONE MUTED LINE UNDER THE HEAD (visual QA VQ-013, #2391): what the
+          counts are of and how many rows know their steps were two notes,
+          each with the list's gap after it, and at 1512x806 they and the
+          tall rows left about five of 100 workflows on screen. The two facts
+          are clauses of one note now, each said only when it is true. */}
+      {listNote !== '' && <CountNote>{listNote}</CountNote>}
       {outside !== null && (
         <p className="wfl-outside" data-fact="pasted-id">
           <Id title={outside}>{outside}</Id> is not among {scope} workflows read.{' '}
@@ -5804,25 +5855,31 @@ function WorkflowListRow({
         <WorkflowStateMark workflow={workflow} />
       </td>
       <td className="wfl-name" data-col="workflow">
-        <a href={workflowHref(workflow.workflow_id, query)} title={named.name}>
-          {named.name}
-        </a>
-        {named.showId && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
+        {/* ONE LINE: THE NAME, ITS ID AND ITS RUNNERS (visual QA VQ-013,
+            #2391; workflows.html A). Name, id, runner chips and the current
+            step were four stacked lines, so a row was 3-4 lines tall. The id
+            sits beside the name, muted, cut first and whole in its title;
+            the runner mix follows on the same line where the Runners column
+            is not drawn (below 1680, QA G3-09). The current step, when there
+            is one, is the row's only second line. */}
+        <span className="wfl-line">
+          <a href={workflowHref(workflow.workflow_id, query)} title={named.name}>
+            {named.name}
+          </a>
+          {named.showId && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
+          <span className="wfl-mix">
+            <Mix steps={workflow.steps} />
+          </span>
+          <PullRequestWaitTag workflow={workflow} />
+          {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
+        </span>
         {/* Drawn at ≤560 only, where the done, failed and age columns are
             off the right edge (#109); the cells say it wide, so hidden from
             assistive technology to keep one reading of each fact. */}
         <span className="wfl-phone" aria-hidden>
           {phoneSummary(workflow, now)}
         </span>
-        {/* THE RUNNER MIX ON THE NAME'S SECOND LINE below 1680 (QA G3-09),
-            where the Runners and Shape columns give the name their width;
-            hidden where the column draws it, so it is read once. */}
-        <span className="wfl-mix">
-          <Mix steps={workflow.steps} />
-        </span>
         {why !== null && <RowWhyLine why={why} />}
-        <PullRequestWaitTag workflow={workflow} />
-        {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
       </td>
       <td className="wfl-shape" data-col="shape" title={shapeOf(workflow.steps).label}>
         <StageGlyph steps={workflow.steps} taskById={taskById} />
@@ -5925,29 +5982,39 @@ function listRowWhy(w: Workflow, taskById: ReadonlyMap<string, Task> | null, pen
 
 /** The row's second line. The step is bold; the cause is the task's own words. */
 function RowWhyLine({ why }: { why: ListWhy }) {
+  // The line is one line, cut at the cell's edge on a wide table (VQ-013);
+  // its whole sentence is its title.
   switch (why.kind) {
     case 'running':
       return (
-        <span className="wfl-why">
+        <span className="wfl-why" title={`${why.step} running`}>
           <b>{why.step}</b> running
         </span>
       )
     case 'failed':
       return (
-        <span className="wfl-why is-bad">
+        <span className="wfl-why is-bad" title={`failed at ${why.step}: ${why.why}`}>
           failed at <b>{why.step}</b>: {why.why}
         </span>
       )
     case 'failed-unread':
-      return <span className="wfl-why is-bad">failed: {why.why}</span>
+      return (
+        <span className="wfl-why is-bad" title={`failed: ${why.why}`}>
+          failed: {why.why}
+        </span>
+      )
     case 'parked':
       return (
-        <span className="wfl-why">
+        <span className="wfl-why" title={`${why.step} parked · ${why.why}`}>
           <b>{why.step}</b> parked · {why.why}
         </span>
       )
     case 'unread':
-      return <span className="wfl-why is-warn">{why.why}</span>
+      return (
+        <span className="wfl-why is-warn" title={why.why}>
+          {why.why}
+        </span>
+      )
   }
 }
 

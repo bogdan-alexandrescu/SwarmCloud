@@ -70,7 +70,8 @@ import { ApprovalsScreen } from './Approvals'
 import { RepositoriesScreen } from './Repositories'
 import { qaCredentialLinkFrom, type QaLink } from './qaTargetsApi'
 import { AGE_TICK_MS, useNow } from './useNow'
-import { WorkflowsScreen } from './Workflows'
+import { useRecentName, WorkflowsScreen } from './Workflows'
+import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist'
 
 /**
  * THE NAVIGATION, AND WHY IT IS AS FEW THINGS AS IT IS.
@@ -1731,7 +1732,10 @@ function Head({
   const home = submitForm ? SUBMIT : section === null ? at.sectionId : `${section.id}/${firstTab(section)}`
   // The open agent by its name once its split has read it (walkthrough G).
   const named = useAgentName(at.taskId)
-  const crumbs = crumbsOf({ at, head, home, tab, tabs: section?.tabs.length ?? 0, title, closeTo, named })
+  // An open workflow by its name too, as its page title has it (VQ-015).
+  const object = openObjectOf(at)
+  const workflowName = useRecentName(at.taskId === null && at.tab === 'workflows' ? object : null)
+  const crumbs = crumbsOf({ at, head, home, tab, tabs: section?.tabs.length ?? 0, title, closeTo, named: named ?? workflowName })
 
   // A SECTION PAGE HAS NO ROW HERE (visual QA Q2/Q10, 2026-10-02): its title,
   // meta, freshness and `?` are one row (`PageHead`), and a breadcrumb above
@@ -1751,7 +1755,7 @@ function Head({
                 </span>
               )}
               {c.to === null ? (
-                <span className="id ctl-crumb-obj" aria-current="page" title={at.taskId ?? undefined}>
+                <span className="id ctl-crumb-obj" aria-current="page" title={object ?? undefined}>
                   {c.label}
                 </span>
               ) : (
@@ -1833,17 +1837,28 @@ export function crumbsOf({
   tabs: number
   title: string
   closeTo: string
-  /** The open agent's name (`agentName`), once read; its id until then. */
+  /** The open agent's or workflow's name (`agentName`, `recentName`), once read; its id until then. */
   named?: string | null
 }): Crumb[] {
   const out: Crumb[] = []
   const object = openObjectOf(at)
   const open = object !== null
+  // AN OPEN WORKFLOW'S TRAIL IS ITS ONE WAY BACK (visual QA VQ-015, #2391):
+  // the page drew a `‹ Workflows · Failed` link under this trail as well, and
+  // named itself here by its raw id under a title that was its name. The list
+  // segment now goes back to the list with the filters it was opened from and
+  // says them (`backLabel`), and the object is the name once one is known.
+  const workflowList = at.taskId === null && at.tab === 'workflows' && open ? parseWorkflowQuery(at.view ?? '') : null
   if (open || head !== title) out.push({ key: 'section', label: head, to: home })
   if (tab !== null && tabs > 1 && (open || tab.label !== title)) {
-    out.push({ key: 'tab', label: tab.label, to: at.taskId !== null ? closeTo : `${at.sectionId}/${tab.id}` })
+    const filters = workflowList === null ? '' : filterQueryString(workflowList)
+    out.push({
+      key: 'tab',
+      label: workflowList === null ? tab.label : backLabel(workflowList),
+      to: at.taskId !== null ? closeTo : `${at.sectionId}/${tab.id}${filters === '' ? '' : `?${filters}`}`,
+    })
   }
-  if (object !== null) out.push({ key: 'object', label: at.taskId !== null && named !== null ? named : object, to: null })
+  if (object !== null) out.push({ key: 'object', label: named ?? object, to: null })
   return out
 }
 

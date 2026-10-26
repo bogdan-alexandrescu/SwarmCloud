@@ -262,7 +262,7 @@ describe('the workflow list', () => {
     const why = row.querySelector('.wfl-why.is-bad')!
     expect(why.textContent).toBe('failed at rewrite-b: exit 1')
     expect(row.querySelector('[data-mark="failed"][data-hue="bad"]')).toBeTruthy()
-    expect(row.querySelector('.wfl-name > a')!.getAttribute('href')).toBe('/workflows/wf_bumps?state=failed')
+    expect(row.querySelector('.wfl-line > a')!.getAttribute('href')).toBe('/workflows/wf_bumps?state=failed')
   })
 
   it('re-reads every 10s while a workflow runs, and not once none does', () => {
@@ -281,9 +281,10 @@ describe('one workflow', () => {
   it('opens on its graph with the step that needs a look in the card under it, the step table below, and records itself in Recent', async () => {
     render(<WorkflowsScreen view="wf=wf_broker&state=running&owner=priya" />)
     await waitFor(() => expect(document.querySelector('.wf-canvas')).toBeTruthy())
-    // The back link keeps the filters.
-    const back = screen.getByText(/Workflows · Running · owner: priya/)
-    expect(back.closest('a')!.getAttribute('href')).toBe('/workflows?state=running&owner=priya')
+    // The way back with the filters is the breadcrumb's list segment
+    // (App.tsx `crumbsOf`, VQ-015: vq.workflows.test.tsx); the page draws
+    // no back link of its own under it.
+    expect(screen.queryByText(/Workflows · Running · owner: priya/)).toBeNull()
     // No board controls on a page.
     expect(screen.queryByRole('checkbox', { name: /chains only/i })).toBeNull()
     // The running step is picked into the card, stacked under the graph (#503).

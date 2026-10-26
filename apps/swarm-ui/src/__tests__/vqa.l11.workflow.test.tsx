@@ -417,7 +417,7 @@ describe('V103: the page skeleton draws the count note’s line', () => {
   })
 
   it('makes the page head two lines in both states at a phone', () => {
-    const host = html('<a class="wfp-back" href="#">‹ Workflows</a><div class="c-phead"><div class="head"></div><div class="c-acts"></div></div>')
+    const host = html('<div class="wfp-screen"><div class="c-phead"><div class="head"></div><div class="c-acts"></div></div></div>')
     const acts = host.querySelector('.c-acts')!
     expect(painted(acts, ['flex', 'flex-basis'], { width: 400 })).toBe('1 0 100%')
   })

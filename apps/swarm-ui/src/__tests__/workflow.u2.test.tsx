@@ -487,8 +487,8 @@ describe('the picked step card sits under the graph below 1280 (#503), beside it
     expect(at(panel, 'position', 1100)).toBe('static')
     expect(at(panel, 'position', 1440)).toBe('sticky')
     expect(within(panel).getByText('Open agent →')).toBeTruthy()
-    // StopRun's own control, in a group named for what it stops (StopRun.tsx is shared; its word is `stop`).
-    expect(within(within(panel).getByRole('group', { name: 'Stop step' })).getByRole('button', { name: 'stop' })).toBeTruthy()
+    // StopRun's own control, in a group named for what it stops (VQ-015: `Stop step`, as workflows.html B draws it).
+    expect(within(within(panel).getByRole('group', { name: 'Stop step' })).getByRole('button', { name: 'Stop step' })).toBeTruthy()
   })
 
   it('keeps the same-step strip inside the card: at most 15 marks, the rest counted', async () => {

@@ -299,7 +299,7 @@ describe('the list', () => {
     // Each row links to that workflow's page.
     const row = document.querySelector('.wfl-table tr[data-workflow="wf_audit_01"]')
     expect(row, 'no row for wf_audit_01').toBeTruthy()
-    expect(row!.querySelector('.wfl-name > a')?.getAttribute('href')).toBe('/workflows/wf_audit_01')
+    expect(row!.querySelector('.wfl-line > a')?.getAttribute('href')).toBe('/workflows/wf_audit_01')
   })
 })
 
