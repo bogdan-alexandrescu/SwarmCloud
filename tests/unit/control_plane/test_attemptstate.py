@@ -626,10 +626,20 @@ def _index_run(client, db, worker: Worker, *, version_task: str, registered_by: 
     db.docs[f"repositories/{repo_id}/index_versions/{'c' * 40}"] = {"task_id": "task_older"}
 
 
+def _index_task(db, task_id: str, *, sha: str = BASE_SHA, repo: str = REPO_URL) -> dict[str, Any]:
+    """The index run that built `sha`, signed as `repoindex.indexer_task` is at submission."""
+    from swarm_api.repoindex import INDEXER_PROFILE
+
+    doc = seed_task(db, task_id=task_id, tenant_id="eng", state="SUCCEEDED",
+                    runner_profile=INDEXER_PROFILE)
+    doc.update({"repository_url": repo, "repository_ref": sha})
+    return SIGNER.sign_document(doc, task_id)
+
+
 def test_upstream_serves_the_index_runs_base_version_task(client, db):
     worker = Worker()
     _index_run(client, db, worker, version_task="task_base")
-    seed_task(db, task_id="task_base", tenant_id="eng", state="SUCCEEDED")
+    _index_task(db, "task_base")
     response = worker.get(client, "upstream", "upstream_task_id=task_base")
     assert response.status_code == 200, response.text
     assert response.json()["task"]["id"] == "task_base"
@@ -1022,8 +1032,8 @@ def test_upstream_serves_no_index_base_a_rewritten_prompt_or_repository_names(cl
 
     worker = Worker()
     _index_run(client, db, worker, version_task="task_base")
-    seed_task(db, task_id="task_base", tenant_id="eng", state="SUCCEEDED")
-    seed_task(db, task_id="task_older", tenant_id="eng", state="SUCCEEDED")
+    _index_task(db, "task_base")
+    _index_task(db, "task_older", sha="c" * 40)
     assert worker.get(client, "upstream", "upstream_task_id=task_base").status_code == 200
     own = db.docs[f"tasks/{worker.tuple.task_id}"]
     own["input"] = {"prompt": f"index\n{BASE_LINE}{'c' * 40}\n"}
@@ -1036,6 +1046,31 @@ def test_upstream_serves_no_index_base_a_rewritten_prompt_or_repository_names(cl
     _bystander(db)
     own["repository_url"] = "https://github.com/acme/gadgets.git"
     # MUTATION: take the repository unverified and the other registration's task is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+
+
+@pytest.mark.parametrize("named", [
+    pytest.param(lambda db: _bystander(db), id="not-an-index-run"),
+    pytest.param(lambda db: _index_task(db, "task_victim", sha="c" * 40), id="another-commit"),
+    pytest.param(lambda db: _index_task(db, "task_victim",
+                                        repo="https://github.com/acme/gadgets.git"),
+                 id="another-repository"),
+    pytest.param(lambda db: _index_task(db, "task_victim")["metadata"].update(
+        {"dispatch": {"role": "rewritten"}}), id="unsigned-index-run"),
+])
+def test_upstream_serves_no_task_a_rewritten_index_version_names(client, db, named):
+    """`index_versions/<sha>` is no signed document: its `task_id` is held to
+    the named task's own signed spec, an index run of this repository at
+    exactly that commit (`repoindex.indexer_task`)."""
+    worker = Worker()
+    _index_run(client, db, worker, version_task="task_base")
+    _index_task(db, "task_base")
+    named(db)
+    from swarm_api.repositories import repo_id_for
+
+    db.docs[f"repositories/{repo_id_for('eng', 'acme', 'widgets')}/index_versions/{BASE_SHA}"][
+        "task_id"] = "task_victim"
+    # MUTATION: take the version's `task_id` as it is stored and this is a 200.
     assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
 
 
