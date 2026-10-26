@@ -17,9 +17,11 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AccountHealthBody } from '../AccountHealth'
+import AH_CSS from '../styles/account-health.css?raw'
 import { loadAccountHealthBoard, type AccountHealthBoard } from '../api'
 import {
   HEALTH_KINDS,
+  poolIncidents,
   type AccountHealthRecord,
   type HealthAccount,
   type HealthEvent,
@@ -380,6 +382,37 @@ describe('review fixes: the phone, the swimlane, the list and the development po
     }
   })
 
+  it('draws the 7 days to the scroller’s CONTENT width, not its clientWidth, which counts its padding', () => {
+    // The shipped scroller pads its sides with --ctl-pad-chrome. clientWidth
+    // includes that padding, so a chart drawn to clientWidth started 16 px in
+    // and ended 32 px past the content box: the now label read "now 12:0" and
+    // a horizontal scrollbar hid the newest hours (re-review of PR 2357).
+    expect(AH_CSS).toMatch(/\.ah-chart-scroll\s*\{[^}]*padding:\s*0 var\(--ctl-pad-chrome\)/)
+    const pad = document.createElement('style')
+    pad.textContent = '.ah-chart-scroll { padding: 0 16px; }'
+    document.head.appendChild(pad)
+    const box = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(600)
+    try {
+      const { accounts, events } = pool()
+      const { container } = desktop(board(accounts, events))
+
+      const scroller = container.querySelector<HTMLElement>('.ah-chart-scroll')!
+      const cs = getComputedStyle(scroller)
+      const content = scroller.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)
+      expect(content).toBe(568)
+      const chart = container.querySelector<HTMLElement>('.ah-swim-box')!
+      expect(chart.dataset.chartWidth).toBe(String(content))
+      const nowX = Number(container.querySelector('.ah-now')!.getAttribute('x1'))
+      expect(nowX).toBeLessThanOrEqual(content)
+      const lefts = [...container.querySelectorAll<HTMLElement>('[data-mark]')].map((b) => parseFloat(b.style.left))
+      expect(lefts.length).toBeGreaterThan(0)
+      expect(lefts.every((l) => l >= 0 && l + 6 <= content)).toBe(true)
+    } finally {
+      box.mockRestore()
+      pad.remove()
+    }
+  })
+
   it('cuts the Last event message to one line with the whole of it as its title', () => {
     const { accounts, events } = pool()
     const long = 'x'.repeat(30) + ' a provider message long enough to widen the column past its card'
@@ -400,5 +433,17 @@ describe('review fixes: the phone, the swimlane, the list and the development po
     for (const x of reauth) expect(x.events.some((e) => e.kind === 'reauth' || e.kind === 'auth')).toBe(true)
     const healthy = r.data.health.pool.accounts.filter((x) => x.status === 'healthy')
     for (const x of healthy) expect(x.events.some((e) => e.kind === 'reauth')).toBe(false)
+  })
+
+  it('gives no account in the development pool an open limit incident while its row says Healthy', async () => {
+    const r = await loadAccountHealthBoard()
+    if (r.status !== 'ok' || r.data.health.kind !== 'ok') throw new Error('the fixture board did not load')
+    const { pool } = r.data.health
+    const row = new Map(r.data.page.accounts.map((a) => [a.account_id, (a as HealthAccount).health_status ?? null]))
+    const { open } = poolIncidents(pool, (id) => row.get(id) ?? null, r.data.readAt)
+    const limits = open.filter((x) => x.family === 'lim')
+    // The pool still shows an open limit somewhere: the case is drawn, on an account that is limited.
+    expect(limits.length).toBeGreaterThan(0)
+    for (const x of limits) expect([x.account_id, row.get(x.account_id)]).toEqual([x.account_id, 'limited'])
   })
 })

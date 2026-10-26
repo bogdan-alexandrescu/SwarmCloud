@@ -1,21 +1,26 @@
-// ACCOUNT-HEALTH-PAGE (part of #2302): THE CONSOLE'S INCIDENT RULE.
+// ACCOUNT-HEALTH-PAGE (part of #2302): THE PAGE'S INCIDENTS, FROM THE ONE RULE.
 //
-// At 390 the page groups each account's served events into incidents, by
-// proposal D's fixed rule (docs/quota-management.md, "Incidents"): a rate-limit
-// hit opens a limit incident that later limit events join until its reset; a
-// burst of errors of one family is one incident while each event comes within
-// 45 minutes of the last; a refusal with no window belongs to the re-auth
-// incident. D's own risk was "two storms 50 minutes apart read as two
-// incidents" -- the rule must say which, and this file holds it there.
+// At 390 the page groups each account's served events into incidents by
+// proposal D's rule. The rule is written once, as `incidentsOf` in
+// accountHealth.ts, and its cases live in accountHealth.test.ts (BGD,
+// 2026-10-25: two copies of a grouping rule are two answers to "how many
+// incidents did this account have"). This file holds the page's side: that
+// `incidents()` groups through that one function and only names each
+// incident's account, and the pool's ordering and re-auth cards around it.
 //
-// BREAK IT: widen the gap to 60 minutes, let a limit event join after its
-// reset, file a windowless refusal with the limits, or open an error incident
-// on a healthy account -- a case below turns red.
+// BREAK IT: give accountHealthModel.ts its own grouping loop again -- the
+// one-copy case turns red. Drop the re-auth card for an account with no
+// credential event, or order limits before errors -- a pool case turns red.
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
+vi.mock('../accountHealth', async (real) => {
+  const mod = await real<typeof import('../accountHealth')>()
+  return { ...mod, incidentsOf: vi.fn(mod.incidentsOf) }
+})
+
+import { incidentsOf } from '../accountHealth'
 import {
-  INCIDENT_GAP_MS,
   incidents,
   poolIncidents,
   type AccountHealthRecord,
@@ -56,76 +61,33 @@ function record(id: string, events: HealthEvent[]): AccountHealthRecord {
   }
 }
 
-describe('errors: a burst of one family is one incident', () => {
-  it('splits two storms 50 minutes apart into two incidents', () => {
-    // Storm one: 4 errors from -200m to -170m. Storm two starts 50 min after its last event.
-    const storm1 = [200, 190, 180, 170].map((m) => ev(m, 'overloaded'))
-    const storm2 = [120, 115, 110].map((m) => ev(m, 'server_error'))
-    const got = incidents(record('eng:a', [...storm1, ...storm2]), 'healthy', NOW)
-
-    expect(got.map((x) => x.events.length)).toEqual([3, 4])
-    expect(got.every((x) => x.family === 'err')).toBe(true)
-    expect(170 - 120).toBeGreaterThan(INCIDENT_GAP_MS / MIN)
-  })
-
-  it('keeps two storms 40 minutes apart as one incident', () => {
-    const events = [200, 190, 180, 140, 135].map((m) => ev(m, 'network'))
-    const got = incidents(record('eng:a', events), 'healthy', NOW)
-
-    expect(got).toHaveLength(1)
-    expect(got[0]!.events).toHaveLength(5)
-  })
-
-  it('opens the newest error incident only while the account is erroring and it is under an hour old', () => {
-    const events = [30, 25, 20].map((m) => ev(m, 'overloaded'))
-
-    expect(incidents(record('eng:a', events), 'erroring', NOW)[0]!.open).toBe(true)
-    expect(incidents(record('eng:a', events), 'healthy', NOW)[0]!.open).toBe(false)
-    const old = [130, 125, 120].map((m) => ev(m, 'overloaded'))
-    expect(incidents(record('eng:a', old), 'erroring', NOW)[0]!.open).toBe(false)
-  })
-})
-
-describe('limits: a hit opens one incident that later limit events join until its reset', () => {
-  it('joins a refusal on the same window before the reset, and opens a new incident after it', () => {
+describe('the rule is the console’s one copy, in accountHealth.ts', () => {
+  it('groups through incidentsOf and only names each incident’s account', () => {
     const events = [
       ev(300, 'rate_limit', { window: 'five_hour', resetIn: -200 }),
       ev(250, 'assign_refused', { window: 'five_hour' }),
-      // After the first reset (-200m): a new incident.
       ev(90, 'rate_limit', { window: 'five_hour', resetIn: 60 }),
-      ev(30, 'exhausted'),
-    ]
-    const got = incidents(record('eng:a', events), 'limited', NOW)
-
-    expect(got.map((x) => [x.family, x.events.length, x.open])).toEqual([
-      ['lim', 2, true],
-      ['lim', 2, false],
-    ])
-    expect(got[0]!.to).toBe(NOW + 60 * MIN)
-  })
-
-  it('never joins a limit event to an incident with no reset', () => {
-    const got = incidents(record('eng:a', [ev(50, 'exhausted'), ev(40, 'exhausted')]), 'healthy', NOW)
-
-    expect(got).toHaveLength(2)
-  })
-})
-
-describe('credential: a refusal with no window belongs to the re-auth incident', () => {
-  it('groups failed refreshes, the 401, the re-auth mark and the refusals after it', () => {
-    const events = [
       ev(70, 'refresh_failed'),
-      ev(62, 'auth'),
-      ev(61, 'reauth'),
       ev(40, 'assign_refused'),
-      ev(12, 'assign_refused'),
+      ...[200, 190, 140, 30, 25].map((m) => ev(m, 'overloaded')),
     ]
-    const got = incidents(record('eng:a', events), 'reauth_needed', NOW)
+    const r = record('eng:a', events)
+    vi.mocked(incidentsOf).mockClear()
+    const got = incidents(r, 'erroring', NOW)
 
-    expect(got).toHaveLength(1)
-    expect(got[0]!.family).toBe('cred')
-    expect(got[0]!.events.map((e) => e.kind)).toEqual(['refresh_failed', 'auth', 'reauth', 'assign_refused', 'assign_refused'])
-    expect(got[0]!.open).toBe(true)
+    expect(incidentsOf).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(incidentsOf).mock.calls[0]![0]).toBe(r.events)
+    const shared = incidentsOf(r.events as Parameters<typeof incidentsOf>[0], 'erroring', NOW)
+    const shape = (x: { from: number; last: number; to: number | null; window: string | null; open: boolean; events: unknown[] }) => ({
+      from: x.from,
+      last: x.last,
+      to: x.to,
+      window: x.window,
+      open: x.open,
+      events: x.events,
+    })
+    expect(got.map((x) => ({ family: x.family, ...shape(x) }))).toEqual(shared.map((x) => ({ family: x.fam, ...shape(x) })))
+    expect(got.every((x) => x.account_id === 'eng:a' && x.label === 'a')).toBe(true)
   })
 })
 

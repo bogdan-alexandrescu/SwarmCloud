@@ -511,20 +511,33 @@ function markSay(mk: LaneMark, name: string, now: number): string {
 }
 
 /**
- * The width of the box the chart is drawn into, followed as it resizes. The
- * chart is DRAWN TO FIT that box rather than at a fixed width inside a
- * scroller: at a fixed 1040 px the newest hours (and the now line) sat past the
- * card's edge at 1440 and only one day of seven showed at 390, so the lanes
- * read as quieter than the counts beside them.
+ * The CONTENT width of the box the chart is drawn into, followed as it
+ * resizes. The chart is DRAWN TO FIT that box rather than at a fixed width
+ * inside a scroller: at a fixed 1040 px the newest hours (and the now line) sat
+ * past the card's edge at 1440 and only one day of seven showed at 390, so the
+ * lanes read as quieter than the counts beside them.
+ *
+ * CONTENT, NOT clientWidth: the scroller pads its sides (`.ah-chart-scroll`,
+ * --ctl-pad-chrome) and clientWidth counts that padding, so a chart drawn to
+ * it started 16 px in and ended 32 px past the box -- "now 12:00Z" cut to
+ * "now 12:0", a scrollbar, and the newest hour's marks hidden (re-review of
+ * PR 2357). The observer's contentRect is the exact content box; the first
+ * measure, and any browser without ResizeObserver, takes the padding off
+ * clientWidth. Floored, so a fractional box never draws a pixel past itself.
  */
 function useBoxWidth(el: HTMLElement | null): number | null {
   const [w, setW] = useState<number | null>(null)
   useEffect(() => {
     if (el === null) return
-    const measure = () => setW(el.clientWidth > 0 ? el.clientWidth : null)
-    measure()
+    const keep = (px: number) => setW(px > 0 ? Math.floor(px) : null)
+    const cs = getComputedStyle(el)
+    const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0)
+    keep(el.clientWidth - pad)
     if (typeof ResizeObserver === 'undefined') return
-    const watch = new ResizeObserver(measure)
+    const watch = new ResizeObserver((entries) => {
+      const box = entries[entries.length - 1]?.contentRect
+      if (box !== undefined) keep(box.width)
+    })
     watch.observe(el)
     return () => watch.disconnect()
   }, [el])

@@ -6,14 +6,17 @@
 // record in one read: status, counts, the hourly series, the last 50 events).
 // Pure, so the rules the mock-ups were picked for -- the tiles agree with the
 // list, the worst account comes first, one mark per served event, and the
-// console's incident grouping -- are tested without a DOM.
+// pool's incidents (grouped by accountHealth.ts's one rule) -- are tested
+// without a DOM.
 //
 // THE STATUS IS THE BROKER'S WORD. The console never derives `limited` or
 // `erroring` from the counts: `quota_broker.accountstore.health_status` owns
 // that rule, and a second copy here would be the drift this repository keeps
 // paying for. The console only COUNTS the words and sorts by them.
 
+import { incidentsOf } from './accountHealth'
 import type { PoolAccount } from './accountsPool'
+import type { AccountHealthEvent } from './api'
 
 /** `HEALTH_KINDS` in quota_broker/accountstore.py, and nothing else. */
 export const HEALTH_KINDS = [
@@ -384,11 +387,6 @@ export function served7d(pool: PoolHealth): number {
 // Incidents (proposal D's rule; docs/quota-management.md "Incidents")
 // ---------------------------------------------------------------------------
 
-/** Two error or credential events further apart than this are two incidents. */
-export const INCIDENT_GAP_MS = 45 * 60_000
-/** An error incident is still open while its last event is this recent and the account is erroring. */
-export const ERROR_OPEN_MS = 60 * 60_000
-
 export interface Incident {
   account_id: string
   label: string
@@ -403,77 +401,31 @@ export interface Incident {
   open: boolean
 }
 
-/** The family an event's incident belongs to: a refusal with no window is the re-auth incident's. */
-export function incidentFamily(e: HealthEvent): HealthFamily {
-  if (e.kind === 'assign_refused' && e.window === null) return 'cred'
-  return FAMILY_OF[e.kind] ?? 'err'
-}
-
 /**
- * THE CONSOLE'S GROUPING of one account's served events into incidents
- * (proposal D's `incidents()`, BGD's pick for F5). Oldest first, each event:
- *
- *   1. its family, with a refusal that names no window moved to `cred`: the
- *      broker withholding an account that needs re-auth is that incident;
- *   2. the newest incident of the same family is joined when
- *        - limits: that incident has a reset and the event comes at or before
- *          it (a rate-limit hit opens a limit incident that later limit events
- *          join until its reset; a later reset extends it);
- *        - errors and credential: the event comes within 45 minutes of that
- *          incident's last event (a burst of one kind is one incident);
- *   3. otherwise the event opens a new incident.
- *
- * Open: a limit until its reset passes; an error incident while it is the
- * newest of its family, the account is `erroring` and its last event is under
- * an hour old; a credential incident while it is the newest of its family and
- * the account is `reauth_needed`. Newest first.
+ * One account's served events as incidents, newest first, BY THE CONSOLE'S ONE
+ * RULE: `incidentsOf` in accountHealth.ts (proposal D, BGD's pick for F5), the
+ * same function the account sheet's Health section groups with. This page kept
+ * its own copy of the loop until BGD decided on 2026-10-25 that the rule lives
+ * there once -- two copies are two answers to "how many incidents did this
+ * account have", and the sheet and this page must give the same one. The page
+ * only adds which account each incident is on, for its cards and its pool.
  */
 export function incidents(record: AccountHealthRecord, status: HealthStatus | null, now: number): Incident[] {
-  const out: Incident[] = []
-  const events = [...record.events]
-    .filter((e) => Number.isFinite(Date.parse(e.at)))
-    .sort((x, y) => Date.parse(x.at) - Date.parse(y.at))
-  for (const e of events) {
-    const fam = incidentFamily(e)
-    const at = Date.parse(e.at)
-    const reset = e.reset_at === null ? null : Date.parse(e.reset_at)
-    let cur: Incident | undefined
-    for (let i = out.length - 1; i >= 0; i--) {
-      if (out[i]!.family === fam) {
-        cur = out[i]
-        break
-      }
-    }
-    const joins =
-      cur !== undefined &&
-      (fam === 'lim' ? cur.to !== null && at <= cur.to : at - cur.last <= INCIDENT_GAP_MS)
-    if (cur !== undefined && joins) {
-      cur.events.push(e)
-      cur.last = at
-      if (reset !== null && Number.isFinite(reset) && (cur.to === null || reset > cur.to)) cur.to = reset
-      continue
-    }
-    out.push({
-      account_id: record.account_id,
-      label: record.label || record.account_id,
-      family: fam,
-      events: [e],
-      from: at,
-      last: at,
-      to: reset !== null && Number.isFinite(reset) ? reset : null,
-      window: e.window,
-      open: false,
-    })
-  }
-  const newest = new Map<HealthFamily, Incident>()
-  for (const x of out) newest.set(x.family, x)
-  for (const x of out) {
-    if (x.family === 'lim') x.open = x.to !== null && x.to > now
-    else if (newest.get(x.family) !== x) x.open = false
-    else if (x.family === 'cred') x.open = status === 'reauth_needed'
-    else x.open = status === 'erroring' && now - x.last < ERROR_OPEN_MS
-  }
-  return out.reverse()
+  const label = record.label || record.account_id
+  // The served window is a string here (`normPoolHealth` keeps a window this
+  // console does not know by name); the rule only tests it for null and carries it.
+  const events = record.events as readonly AccountHealthEvent[]
+  return incidentsOf(events, status, now).map((x) => ({
+    account_id: record.account_id,
+    label,
+    family: x.fam,
+    events: x.events,
+    from: x.from,
+    last: x.last,
+    to: x.to,
+    window: x.window,
+    open: x.open,
+  }))
 }
 
 /** Open first, worst first: credential, then errors, then limits; newer first within each. */

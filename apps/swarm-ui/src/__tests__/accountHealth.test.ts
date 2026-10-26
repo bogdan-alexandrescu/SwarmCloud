@@ -112,6 +112,16 @@ describe('the incident rule', () => {
     expect(incidentsOf(events, 'healthy', NOW)[0]!.open).toBe(false)
   })
 
+  it('keeps two error storms 40 minutes apart as one incident (moved from the Account health page’s copy)', () => {
+    const inc = incidentsOf([200, 190, 180, 140, 135].map((m) => ev(m, 'network')), 'healthy', NOW)
+    expect(inc).toHaveLength(1)
+    expect(inc[0]!.events).toHaveLength(5)
+  })
+
+  it('never joins a limit event to an incident with no reset (moved from the Account health page’s copy)', () => {
+    expect(incidentsOf([ev(50, 'exhausted'), ev(40, 'exhausted')], 'healthy', NOW)).toHaveLength(2)
+  })
+
   it('places every event of the last 50 in exactly one incident, oldest first inside it', () => {
     const kinds: AccountHealthKind[] = ['overloaded', 'rate_limit', 'auth', 'network', 'exhausted', 'reauth']
     const events = Array.from({ length: 60 }, (_, i) =>

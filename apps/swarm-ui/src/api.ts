@@ -6239,7 +6239,7 @@ function healthReadOf(r: Result<unknown>): HealthRead {
  * and one with no events in 7 days. Built off the fixture accounts, so the
  * rows, the tiles and the lanes agree, and relative to FIXTURE_NOW.
  */
-function fixtureAccountHealth(): PoolHealth {
+function fixtureAccountHealthPool(): PoolHealth {
   const H = 3_600_000
   const M = 60_000
   const top = Math.floor(FIXTURE_NOW / H) * H
@@ -6250,10 +6250,20 @@ function fixtureAccountHealth(): PoolHealth {
       ...Array.from({ length: 9 }, (_, i): Ev => [-(40 - i * 4) * M, i % 3 === 0 ? 'server_error' : 'overloaded']),
       [-30 * H, 'overloaded'], [-30 * H + 8 * M, 'overloaded'],
     ],
+    // A limit sits only on an account whose row says Limited: an open limit
+    // card on the phone beside a Healthy row is two answers to one question
+    // (re-review of PR 2357). weekly-burn is paused, not limited, so its
+    // 5-hour limit is the one its window shows as refilled 6 minutes ago:
+    // closed. The open 7-day limit is weekly-floor's, which the pool holds
+    // back on that window until the same reset its row shows.
     'u-bogdan:weekly-burn': [
-      [-3 * H, 'rate_limit', { w: 'seven_day', r: 20 * H }],
-      [-2 * H, 'assign_refused', { w: 'seven_day', m: 'not assigned: its 7-day window is under its floor' }],
+      [-4 * H, 'rate_limit', { w: 'five_hour', r: -6 * M }],
+      [-2 * H, 'assign_refused', { w: 'five_hour', m: 'not assigned: its 5-hour window is under its floor' }],
       [-27 * H, 'exhausted'],
+    ],
+    'u-bogdan:weekly-floor': [
+      [-3 * H, 'rate_limit', { w: 'seven_day', r: (2 * 24 + 21) * H }],
+      [-2 * H, 'assign_refused', { w: 'seven_day', m: 'not assigned: its 7-day window is under its floor' }],
     ],
     'u-bogdan:five-hour-floor': [
       [-90 * M, 'rate_limit', { w: 'five_hour', r: 50 * M }],
@@ -6325,7 +6335,7 @@ async function fixtureAccountHealthBoard(): Promise<Result<AccountHealthBoard>> 
   await new Promise((r) => setTimeout(r, 180))
   noteFixtureProbe(route('/v1/accounts'), 180, true)
   noteFixtureProbe(route('/v1/accounts/health'), 120, true)
-  const pool = fixtureAccountHealth()
+  const pool = fixtureAccountHealthPool()
   const byId = new Map(pool.accounts.map((r) => [r.account_id, r]))
   return {
     status: 'ok',
