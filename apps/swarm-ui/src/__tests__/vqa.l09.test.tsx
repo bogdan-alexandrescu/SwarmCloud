@@ -71,8 +71,11 @@ describe('V062: the Submit pages ask their own question behind the title `?`', (
     expect(new Set(visited).size).toBe(4)
   })
 
+  // Holders, not Accounts: Accounts' title `?` now opens its own topics, the
+  // footer it replaced (VQ-033, BGD 2026-10-26), as Pools' and Provider
+  // quota's do. Holders passes no `help`, so its head keeps the section's.
   it('a section page keeps its section’s question (Q2: section-level help stays)', async () => {
-    const q = await headQuestion('/capacity/accounts')
+    const q = await headQuestion('/capacity/holders')
     expect(q.text).toContain('Capacity answers')
     expect(q.text).not.toContain('Submit answers')
   })

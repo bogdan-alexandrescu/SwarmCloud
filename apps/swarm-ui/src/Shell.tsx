@@ -974,8 +974,9 @@ export function PageHead({
         {/* ONE `?` BY THE TITLE: the screen's own topic when it has one,
             otherwise its section's question (Q2). A LIST is the screen's
             index of topics, the footer it replaced (VQ-033, BGD
-            2026-10-26): still one glyph, in the section question's place. */}
-        {help === undefined ? sectionHelp : typeof help === 'string' ? <HelpCard topic={help} /> : <HelpCard topics={help} />}
+            2026-10-26): still one glyph, in the section question's place,
+            and one `<HelpCard>` in this file for the ration to count. */}
+        {help === undefined ? sectionHelp : <HelpCard {...(typeof help === 'string' ? { topic: help } : { topics: help })} />}
       </div>
       <div className="c-acts">
         {takes && <span className="ctl-head-age">{headAge}</span>}
