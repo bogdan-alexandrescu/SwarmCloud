@@ -168,6 +168,13 @@
   font-weight: 600;
   color: var(--text);
 }
+/* A STEP NAMED BY ITS WORKFLOW (VQ-009): `<title> · <step>` on the one line.
+   The title gives way to an ellipsis first; the step, which tells one
+   workflow's rows apart, keeps up to 70% of the line. The whole name and the
+   id are the name's title. */
+.row.is-compact > .cr-name b.is-titled { display: flex; min-width: 0; }
+.row.is-compact > .cr-name b > .cr-wf { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.row.is-compact > .cr-name b > .cr-step { flex: none; max-width: 70%; overflow: hidden; text-overflow: ellipsis; }
 .row.is-compact > .when { grid-column: age; white-space: nowrap; }
 /* A ROW WITH NO TIME TO GIVE KEEPS ITS COLUMN (QA-079): blank, not collapsed. */
 .row.is-compact > .when:empty { min-width: 1px; }
@@ -956,8 +963,21 @@
      desktop-03): `Ended, newest first` beside `Failed first` and `Group by
      workflow` is wider than a 390 screen, so on a phone the tail that never
      breaks at 1440 (V147, `.ag-tools-tail` above) wraps between its controls,
-     each kept whole, rather than run off the edge. */
-  .ag-list-head .ag-tools-tail { flex: 0 1 auto; min-width: 0; flex-wrap: wrap; }
+     each kept whole, rather than run off the edge. The tail is no box of its
+     own here at all now (VQ-012, below), so its controls wrap as the tools
+     group's own items. */
+  /* THE PROFILE AND THE SORT SHARE A ROW (VQ-012, BGD's visual QA
+     2026-10-26). At 390 the filters stacked three high -- search, profile,
+     sort -- and pushed the first agent below the fold: the select asked for
+     its 16em cap and the sort for its words, more than the 358px line. Here
+     the tail's controls are items of the tools group itself (`contents`),
+     the profile and the sort lead it, and the select gives way to the sort
+     down to 7em (still capped at 16em, V061), its value whole in its title; Recent's state filter and the
+     checkboxes follow on the next row. */
+  .ag-list-head .ag-tools-tail { display: contents; }
+  .ag-list-head .ag-tools > .ag-filter-profile { order: -2; flex: 1 1 7em; min-width: 7em; }
+  .ag-list-head .ag-tools > .ag-filter-profile > select { flex: 1 1 auto; width: 100%; }
+  .ag-list-head .ag-tools-tail > .ag-sort { order: -1; }
   .ag-head-actions { margin-inline-start: 0; }
   /* The back link replaces the ✕ on a phone, as it did on the column. */
   .ag-head-actions > .drawer-close { display: none; }
@@ -1002,8 +1022,19 @@
    the strip was cut at `C ›`. AgentSplit `AgTabsEdge` keeps the tabs that fit
    on the bar and puts the rest under More, at its end, on the bar's own
    underline; More opens the shared `.c-menu` under it. */
-.ag-tabs-more-host { flex: none; margin: var(--ctl-s2) 0 var(--ctl-s3); border-bottom: 1px solid var(--line); }
-.ag-tabs-more { display: flex; gap: 6px; align-items: center; padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; color: var(--text-dim); font: var(--t-meta)/var(--lh-meta) var(--font); white-space: nowrap; cursor: pointer; }
+/* MORE GIVES WAY, THE OPEN TAB NEVER DOES (VQ-008, BGD's visual QA
+   2026-10-26). At 390 More was `flex: none` and 405px wide in a 358px column:
+   the strip beside it, holding the open tab, shrank to 0px and More ran off
+   the edge, its chevron over `Checkpoints`. A fitted strip (`is-fitted`,
+   `AgTabsEdge`: More is drawn) holds only tabs measured to fit, so it keeps
+   its width; More takes what is left and cuts its list of names with an
+   ellipsis, its count and chevron whole. The names stay its title and name. */
+.ag-tabs-edge > .ag-split-tabs.is-fitted { flex: none; }
+.ag-tabs-more-host { flex: 0 1 auto; min-width: 0; margin: var(--ctl-s2) 0 var(--ctl-s3); border-bottom: 1px solid var(--line); }
+.ag-tabs-more > .ag-tabs-more-n { flex: none; }
+.ag-tabs-more > .ag-tabs-more-names { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ag-tabs-more > [aria-hidden] { flex: none; }
+.ag-tabs-more { display: flex; gap: 6px; align-items: center; max-width: 100%; min-width: 0; padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; color: var(--text-dim); font: var(--t-meta)/var(--lh-meta) var(--font); white-space: nowrap; cursor: pointer; }
 .ag-tabs-more[aria-expanded='true'] { color: var(--text); }
 .ag-tabs-more:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
 .ag-tabs-menu { min-width: 180px; }

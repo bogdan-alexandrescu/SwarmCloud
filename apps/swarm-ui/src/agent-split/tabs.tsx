@@ -282,8 +282,15 @@ export function AgTabsEdge({
       gapPx.current = parseFloat(getComputedStyle(strip).columnGap) || 0
     }
     const gap = gapPx.current ?? 0
+    // MORE IS FITTED AT ITS COUNT, NOT ITS NAMES (VQ-008, BGD's visual QA
+    // 2026-10-26): at 390 `6 more: Logs, Changes, Children, Attempts,
+    // Artifacts, Checkpoints` measured 405px in a 358px column, so no tab fitted
+    // beside it, the strip holding the open tab shrank to 0px and More ran
+    // off the edge. The names give way (an ellipsis, agents.css
+    // `.ag-tabs-more-names`), so the room More needs is the button without
+    // them: `6 more ▾`.
     const m = b.querySelector<HTMLElement>(':scope > .ag-tabs-more-host')
-    if (m !== null) moreWidth.current = m.offsetWidth
+    if (m !== null) moreWidth.current = m.offsetWidth - (m.querySelector<HTMLElement>('.ag-tabs-more-names')?.offsetWidth ?? 0)
     // A tab not drawn since its count changed keeps its last width (or its
     // label's), and is measured again the first time it is back on the bar.
     const last = (t: TabDef) =>
@@ -387,9 +394,19 @@ export function AgTabsEdge({
     drawn[to]!.focus()
     if (key !== current) onSelect(key)
   }
+  const stripClass = moreTabs.length === 0 ? 'ag-split-tabs' : 'ag-split-tabs is-fitted'
   return (
     <div className="ag-tabs-edge" ref={box} data-more={more || undefined} onKeyDown={onKey}>
-      <Tabs className="ag-split-tabs" label="Agent panes" current={current} tabs={barTabs} onSelect={onSelect} />
+      {/* A FITTED BAR NEVER SHRINKS (VQ-008): it holds only the tabs that
+          fit, the open one always, so More gives way and the open tab stays
+          drawn and marked (agents.css `.ag-split-tabs.is-fitted`). */}
+      <Tabs
+        className={stripClass}
+        label="Agent panes"
+        current={current}
+        tabs={barTabs}
+        onSelect={onSelect}
+      />
       {moreTabs.length > 0 && <MoreTabs tabs={moreTabs} onSelect={onSelect} />}
     </div>
   )
@@ -437,7 +454,11 @@ function MoreTabs({ tabs, onSelect }: { tabs: readonly TabDef[]; onSelect: (key:
           `2 more: Artifacts, Checkpoints ▾`, keeping the count (c02/c20), and
           it is named by that text, with no aria-label to drift from it. */}
       <button type="button" className="ag-tabs-more" aria-expanded={open} title={names} onClick={() => setOpen((v) => !v)}>
-        {tabs.length} more: {names} <span aria-hidden="true">▾</span>
+        {/* THE COUNT STAYS WHOLE, THE NAMES GIVE WAY (VQ-008): one row of
+            the button at any width, `6 more: Logs, Chan… ▾`, its title and
+            its name the whole list. */}
+        <span className="ag-tabs-more-n">{tabs.length} more:</span>{' '}
+        <span className="ag-tabs-more-names">{names}</span> <span aria-hidden="true">▾</span>
       </button>
       {open && (
         <div className="c-menu ag-tabs-menu" role="group" aria-label="More agent panes">
