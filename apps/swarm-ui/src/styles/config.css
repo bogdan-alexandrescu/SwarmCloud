@@ -7,6 +7,23 @@
 
 .cfg-page { display: flex; flex-direction: column; gap: var(--ctl-s3, 12px); min-width: 0; }
 
+/* TITLE AND TABS, THEN THE STRIP, THEN THE LEAD (VQ-040; config-e.html's
+   desk(): head(), stripD(), body). `ConfigPage` (App.tsx) mounts the strip
+   once, before the page, so it drew above the h1 and read as part of the page
+   before. Every Config page's own box is a 12px flex column like this one
+   (.pk-page, .ur-page, .ws-page), so it dissolves into this column with no
+   spacing change, and its head and tab strip are ordered ahead of the strip.
+   Only the head and the tabs move; the rest keeps its order under the strip.
+   A page whose head is not its box's own child keeps the strip on top.
+   The phone draws the compact strip over the head (S2d: phone()), so this
+   is the wider screens' alone, from where the compact strip stops. */
+@media (min-width: 760px) {
+  .cfg-page > :is(.pk-page, .ur-page, .ws-page) { display: contents; }
+  .cfg-page > :is(.pk-page, .ur-page, .ws-page) > .c-phead { order: -3; }
+  .cfg-page > :is(.pk-page, .ur-page, .ws-page) > .cfg-parts { order: -2; }
+  .cfg-page > .cfg-strip { order: -1; }
+}
+
 /* ---- the strip ------------------------------------------------------------ */
 .cfg-strip { display: grid; grid-template-columns: minmax(0, 1fr) auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden; }
 .cfg-steps { list-style: none; margin: 0; padding: var(--ctl-s1); display: grid; grid-template-columns: repeat(var(--cfg-n, 4), minmax(0, 1fr)); gap: var(--ctl-s1); min-width: 0; }

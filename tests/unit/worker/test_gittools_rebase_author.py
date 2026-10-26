@@ -322,7 +322,8 @@ def test_a_lane_commit_authored_by_an_outside_identity_is_still_refused_after_th
     # MUTATION: accepting any author under this task's committer (instead of
     # only the task's own authors) lets this push through.
     assert answer["refused"]["code"] == "foreign_author", answer
-    assert world.routes.git_calls == ["git_fetch", "git_fetch"]
+    # The third is the push asking origin about the foreign commit (#2413).
+    assert world.routes.git_calls == ["git_fetch", "git_fetch", "git_fetch"]
     assert _git(world.origin, "rev-parse", LANE_BRANCH) == world.lane_tip
 
 
@@ -338,7 +339,8 @@ def test_a_commit_made_as_an_outside_identity_after_the_rebase_is_refused(
     answer = world.spool("git_push_branch", {}, "push")
     # MUTATION: removing the authorship check lets this push through.
     assert answer["refused"]["code"] == "foreign_author", answer
-    assert world.routes.git_calls == ["git_fetch", "git_fetch"]
+    # The third is the push asking origin about the foreign commit (#2413).
+    assert world.routes.git_calls == ["git_fetch", "git_fetch", "git_fetch"]
 
 
 def test_the_refusal_names_the_commit_the_field_and_both_identities(tmp_path: Path):

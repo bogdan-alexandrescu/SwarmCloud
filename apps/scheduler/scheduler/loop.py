@@ -67,6 +67,7 @@ from swarm_common.states import (
 )
 
 from . import children as children_mod
+from . import runtime as runtime_mod
 from . import sizes as sizes_mod
 from .awaitinput import is_control_plane
 from .codec import as_datetime
@@ -1645,7 +1646,9 @@ class Scheduler:
         that one write and holds nothing during it. It is not returned as
         released, so the finish event's admission pass is never handed it.
         """
-        if not self._promote(task, kind="dependency", detail={"reason": reason}, report=report):
+        patch_from, event_detail = self._runtime_resolution(task)
+        if not self._promote(task, kind="dependency", detail={"reason": reason}, report=report,
+                             patch_from=patch_from, event_detail=event_detail):
             return False
         if not is_control_plane(task.runner_profile):
             return True
@@ -1670,11 +1673,54 @@ class Scheduler:
         else:
             self._count_stale(outcome, report)
 
+    def _runtime_resolution(self, task: Task) -> tuple[
+        Callable[[dict[str, Any]], dict[str, Any]] | None, Callable[[], dict[str, Any]] | None
+    ]:
+        """A `browser_if_ui` step's profile, resolved as it is readied (#2322, `runtime`).
+
+        `(None, None)` for every other step, and for one already resolved.
+        Otherwise the parents' changed files are read now -- every parent has
+        SUCCEEDED, so what they changed is final -- and the swap is computed
+        from the document as stored inside the promotion's own transaction:
+        the step is READY on the resolved profile in the one write, before
+        any admission has looked at it (invariants 2 and 3). The READY event
+        records the profile and the reason (`runtime` in its detail).
+        """
+        policy = runtime_mod.policy_of(task.metadata)
+        if policy is None or "resolved" in policy:
+            return None, None
+        resolution = runtime_mod.resolve(
+            list(task.depends_on), policy,
+            lambda task_id: self._store.task_document(task_id, tenant_id=task.tenant_id),
+        )
+        at = self._now()
+        record: dict[str, Any] = {}
+
+        def patch_from(stored: dict[str, Any]) -> dict[str, Any]:
+            patch = runtime_mod.swap_patch(stored, resolution, at)
+            record.clear()
+            record.update(patch["metadata"][runtime_mod.RUNTIME_METADATA_KEY]["resolved"])
+            return patch
+
+        def event_detail() -> dict[str, Any]:
+            return {"runtime": {key: value for key, value in record.items() if key != "at"}}
+
+        log.info(
+            "runtime resolved as the step is readied",
+            extra={"task_id": task.id, "tenant_id": task.tenant_id,
+                   "profile": resolution.profile, "reason": resolution.reason},
+        )
+        return patch_from, event_detail
+
     def _promote(
-        self, task: Task, *, kind: str, detail: dict[str, Any], report: DrainReport | None
+        self, task: Task, *, kind: str, detail: dict[str, Any], report: DrainReport | None,
+        patch_from: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        event_detail: Callable[[], dict[str, Any]] | None = None,
     ) -> bool:
         """Promote one PARKED task; True only if the promotion was written."""
-        outcome = self._store.promote_to_ready(task, detail=detail)
+        outcome = self._store.promote_to_ready(
+            task, detail=detail, patch_from=patch_from, event_detail=event_detail,
+        )
         if not outcome.applied:
             self._count_stale(outcome, report)
             return False

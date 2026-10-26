@@ -32,6 +32,7 @@ from agent_worker.livegate.presets import (
     BROWSER_UI_HEIGHT,
     MAX_DISPLAY_HEIGHT,
     MAX_DISPLAY_WIDTH,
+    Device,
     all_devices,
     resolve,
 )
@@ -96,26 +97,19 @@ class Display:
         self.sizes.append((width, height))
 
 
-class Scale:
-    def __init__(self) -> None:
-        self.scales: list[float] = []
-
-    def set_scale(self, scale: float) -> None:
-        self.scales.append(scale)
+def _started() -> tuple[DeviceController, GateCdp, Display, list[Device]]:
+    cdp, display, resized = GateCdp(), Display(), []
+    controller = DeviceController(cdp, display, record=lambda k, f: None, on_resize=resized.append)
+    return controller, cdp, display, resized
 
 
-def _started() -> tuple[DeviceController, GateCdp, Display, Scale]:
-    cdp, display, mask = GateCdp(), Display(), Scale()
-    controller = DeviceController(cdp, display, mask, record=lambda k, f: None)
-    return controller, cdp, display, mask
-
-
-def _assert_laid_out(cdp: GateCdp, display: Display, mask: Scale, session: str, name: str, orientation: str,
-                     window: int = 1) -> None:
+def _assert_laid_out(cdp: GateCdp, display: Display, resized: list[Device], session: str, name: str,
+                     orientation: str, window: int = 1) -> None:
     width, height, dpr, mobile, screen, screen_orientation = EXPECTED[(name, orientation)]
     assert display.sizes[-1] == screen
     assert screen == (width, height + UI_ROWS), "the display is the CSS viewport plus the browser UI"
-    assert mask.scales[-1] == 1.0, "the frame shows one screen pixel per CSS pixel"
+    assert (resized[-1].name, resized[-1].orientation) == (name, orientation), "the display change is this device's"
+    assert resized[-1].screen_scale == 1.0, "the frame shows one screen pixel per CSS pixel"
     fitted = [b for w, b in cdp.bounds() if w == window]
     assert fitted[-1] == {"left": 0, "top": 0, "width": screen[0] + 1, "height": screen[1] + 1,
                           "windowState": "normal"}, "the window is fitted one pixel past the display"
@@ -132,7 +126,7 @@ def _assert_laid_out(cdp: GateCdp, display: Display, mask: Scale, session: str, 
 
 @pytest.mark.parametrize(("name", "orientation"), sorted(EXPECTED))
 def test_each_preset_and_orientation_lays_the_page_out_at_the_presets_size(name, orientation):
-    controller, cdp, display, mask = _started()
+    controller, cdp, display, resized = _started()
 
     async def main() -> None:
         await controller.start()
@@ -141,7 +135,7 @@ def test_each_preset_and_orientation_lays_the_page_out_at_the_presets_size(name,
     asyncio.run(main())
     session = controller.session_for("PAGE")
     assert session is not None
-    _assert_laid_out(cdp, display, mask, session, name, orientation)
+    _assert_laid_out(cdp, display, resized, session, name, orientation)
 
 
 @pytest.mark.parametrize(("name", "orientation"), sorted(EXPECTED))
@@ -157,7 +151,7 @@ def test_the_frame_is_the_page_and_the_browser_ui_and_nothing_else(name, orienta
 
 def test_rotating_iphone_15_lays_the_page_out_landscape_not_a_clipped_corner():
     """The re-QA's own sequence: iPhone 15, then rotate to landscape, then back."""
-    controller, cdp, display, mask = _started()
+    controller, cdp, display, resized = _started()
 
     async def main() -> None:
         await controller.start()
@@ -167,17 +161,17 @@ def test_rotating_iphone_15_lays_the_page_out_landscape_not_a_clipped_corner():
     asyncio.run(main())
     session = controller.session_for("PAGE")
     assert session is not None
-    _assert_laid_out(cdp, display, mask, session, "iphone-15", "landscape")
+    _assert_laid_out(cdp, display, resized, session, "iphone-15", "landscape")
     # The frame the defect drew in: 852 x 393 at 3 is 2556 x 1179, plus the UI.
     assert (2556, 1267) not in display.sizes
     assert all("scale" not in p for m, p, _ in cdp.calls if m == "Emulation.setDeviceMetricsOverride")
 
     asyncio.run(controller.select("iphone-15", "portrait"))
-    _assert_laid_out(cdp, display, mask, session, "iphone-15", "portrait")
+    _assert_laid_out(cdp, display, resized, session, "iphone-15", "portrait")
 
 
 def test_a_new_page_in_its_own_window_has_the_window_fitted_and_the_device_set():
-    controller, cdp, display, mask = _started()
+    controller, cdp, display, resized = _started()
 
     async def main() -> None:
         await controller.start()
@@ -196,7 +190,7 @@ def test_a_new_page_in_its_own_window_has_the_window_fitted_and_the_device_set()
     for target, window in (("POPUP", 2), ("TAB", 1)):
         session = controller.session_for(target)
         assert session is not None
-        _assert_laid_out(cdp, display, mask, session, "iphone-15", "landscape", window=window)
+        _assert_laid_out(cdp, display, resized, session, "iphone-15", "landscape", window=window)
     # Window 1 was fitted once for the default device and once for the iPhone;
     # the tab in it did not refit it.
     assert [w for w, _ in cdp.bounds()] == [1, 1, 2]
@@ -204,7 +198,7 @@ def test_a_new_page_in_its_own_window_has_the_window_fitted_and_the_device_set()
 
 def test_the_device_follows_the_page_across_its_navigations():
     """The override is the target's: a navigation changes the document, not the gate's session."""
-    controller, cdp, display, mask = _started()
+    controller, cdp, display, resized = _started()
 
     async def main() -> None:
         await controller.start()
@@ -220,7 +214,7 @@ def test_the_device_follows_the_page_across_its_navigations():
     asyncio.run(main())
     session = controller.session_for("PAGE")
     assert session is not None
-    _assert_laid_out(cdp, display, mask, session, "pixel-8", "portrait")
+    _assert_laid_out(cdp, display, resized, session, "pixel-8", "portrait")
 
 
 def test_a_touch_maps_one_screen_pixel_to_one_css_pixel():

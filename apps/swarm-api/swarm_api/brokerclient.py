@@ -254,6 +254,8 @@ class AccountPool(Protocol):
     # `routes/accounts.py` filters them per viewer.
     def account_health(self, account_id: str) -> dict[str, Any]: ...
 
+    def accounts_health(self, tenant_id: str | None) -> dict[str, Any]: ...
+
     # THE TWO QUOTA ROUTES this API calls, both a platform admin's, proxied so
     # the broker stays the only writer of quota documents: the reset of a
     # tenant's AIMD target (QUOTA-RESET, 2026-10-14) and the tenant's
@@ -624,6 +626,12 @@ class BrokerClient:
 
     def account_health(self, account_id: str) -> dict[str, Any]:
         return self._call("GET", f"/v1/accounts/{quote(account_id, safe='')}/health")
+
+    def accounts_health(self, tenant_id: str | None) -> dict[str, Any]:
+        # Every account `tenant_id` may run on, in one call (ACCOUNT-HEALTH-PAGE);
+        # None is the platform's unscoped read.
+        params = {"tenant_id": tenant_id} if tenant_id else None
+        return self._call("GET", "/v1/accounts/health", params=params)
 
     def set_adaptive_target(
         self,

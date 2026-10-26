@@ -666,7 +666,11 @@ function RunList({ first, go, view = null }: { first: IssueRunSummaryPage; go: (
                     </td>
                     <td data-label="Plan approval" title={r.plan_approval === 'auto' ? 'This run\'s plan is approved automatically.' : 'This run\'s plan needs a person\'s approval.'}>{planApprovalWord(r)}</td>
                     {r.workflow_id === null ? (
-                      <td data-label="Workflow"><i className="ctl-em">{noWorkflowWord(r)}</i></td>
+                      /* THE NOTE IS CUT IN ITS COLUMN (visual QA VQ-017, 2026-10-26): the
+                         italic 'none · the run ended before a workflow' ran over Created
+                         at 1440 ('a wor7h ago'). Cut as every other cell's value is,
+                         whole in its title; on a phone it wraps (intake.css). */
+                      <td data-label="Workflow"><i className="ctl-em rn-cut rn-nowf" title={noWorkflowWord(r)}>{noWorkflowWord(r)}</i></td>
                     ) : (
                       <td data-label="Workflow">
                         <span className="mono rn-cut" title={r.workflow_id}>

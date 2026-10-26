@@ -29,6 +29,12 @@ import { build, painted, resolveColour, sameColour, stateHueIn, THEMES, type The
 const loadStats = vi.hoisted(() => vi.fn<() => Promise<Result<Stats>>>())
 const loadMe = vi.hoisted(() => vi.fn<() => Promise<Result<Me>>>())
 vi.mock('../api', () => ({ loadStats, loadMe }))
+// The over-time read, which Platform counts' one Run starts for an admin
+// (COUNTS-ONE-RUN). It never answers here: this file is about the state counts.
+vi.mock('../platformTimeApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../platformTimeApi')>()),
+  loadPlatformTime: vi.fn(() => new Promise(() => {})),
+}))
 
 const COUNTS: Record<string, number> = {
   READY: 2, PARKED: 1, LEASED: 0, DISPATCHED: 0, STARTING: 1,

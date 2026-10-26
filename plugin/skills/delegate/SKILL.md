@@ -8,6 +8,7 @@ allowed-tools:
   - mcp__swarmcloud__swarm_workflow_status
   - mcp__swarmcloud__swarm_workflow_result
   - mcp__swarmcloud__swarm_workflow_cancel
+  - mcp__swarmcloud__swarm_suite_gate
   - mcp__swarmcloud__swarm_follow
   - mcp__swarmcloud__swarm_status
   - mcp__swarmcloud__swarm_wait
@@ -30,6 +31,7 @@ allowed-tools:
   - mcp__plugin_sc_swarmcloud__swarm_workflow_status
   - mcp__plugin_sc_swarmcloud__swarm_workflow_result
   - mcp__plugin_sc_swarmcloud__swarm_workflow_cancel
+  - mcp__plugin_sc_swarmcloud__swarm_suite_gate
   - mcp__plugin_sc_swarmcloud__swarm_follow
   - mcp__plugin_sc_swarmcloud__swarm_status
   - mcp__plugin_sc_swarmcloud__swarm_wait
@@ -211,6 +213,14 @@ prompt. The filename is also where the file lands, so a join with several
 parents needs each parent to write a **distinct** filename (`scan-A-notes.md`,
 `scan-B-notes.md`, not `notes.md` twice). The API refuses a shared name, or an
 absolute or `..` path, at submission.
+
+**A repository's whole Playwright suite is `swarm_suite_gate`, not a
+hand-written workflow.** Name the registered `repository`, the `ref`, `suite:
+"playwright"`, `working_dir` and `shards` (1 to 20, default 8). The bridge
+renders the shard steps and the merging `report` step, and you read the
+report's `summary.md` with `swarm_result` and `summary.json` with
+`swarm_artifact`. No step fixes code or commits. Cost and how to pick the
+shard count: docs/suite-gate.md.
 
 A step's file reaches its dependant only if the upstream agent wrote it to
 `$SWARM_ARTIFACTS_DIR`. `./artifacts` in its working directory is a link to that

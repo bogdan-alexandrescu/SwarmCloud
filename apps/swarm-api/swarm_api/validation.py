@@ -25,6 +25,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
+from types import MappingProxyType
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from swarm_common.profiles import (
@@ -160,6 +161,94 @@ PROVIDER_KEY_PROVIDERS: frozenset[str] = frozenset({TYPESAFE_PROVIDER})
 #: 77, BSTATUS-API). Its names are the catalogue's `choices`; nothing here
 #: restates them.
 BROWSER_TOOL_INPUT_KEY = "browser_tool"
+
+#: A review step's runtime, chosen from its diff (#2322, BGD 2026-10-25: "if a
+#: review only does code review and a UI review or UI QA is not needed, it
+#: should not dispatch a review task with a browser runtime"). A WORKFLOW STEP
+#: may carry `metadata.runtime = {"policy": "browser_if_ui", "browser":
+#: "claude-code-browser", "code": "claude-code"}`: the scheduler runs it on
+#: the browser when any path its parents changed is UI, test files excluded,
+#: and on `claude-code` otherwise, deciding as it readies the step
+#: (`scheduler.runtime`). The two names are the ONLY pair: they are catalogue
+#: profile names, nothing else, so the policy names no image, command,
+#: resource or backend (invariant 10). Not a typed field: `swarm_common`'s
+#: step model is frozen, and step metadata already travels to the task.
+RUNTIME_METADATA_KEY = "runtime"
+RUNTIME_POLICY_BROWSER_IF_UI = "browser_if_ui"
+RUNTIME_POLICY_PROFILES: Mapping[str, str] = MappingProxyType(
+    {"browser": "claude-code-browser", "code": "claude-code"}
+)
+#: The task fields a profile decides. swarm-api fills them for the `code`
+#: profile into `metadata.runtime.alternate` at submission and signs that
+#: spec too (`specsigning.sign_task_specs`); the scheduler swaps them, with
+#: the signature, only to a spec swarm-api signed. Restated by
+#: `scheduler.runtime.RUNTIME_SWAP_FIELDS`, held equal by
+#: tests/unit/control_plane/test_runtime_by_diff.py.
+RUNTIME_SWAP_FIELDS = (
+    "runner_profile", "resource_class", "timeout_seconds", "provider", "model", "model_class",
+)
+
+
+class RuntimePolicyInvalid(ValidationFailed):
+    """422 `invalid_runtime`: a `metadata.runtime` this platform does not run."""
+
+    code = "invalid_runtime"
+
+
+def resolve_runtime_policy(
+    metadata: Mapping[str, Any] | None, *, runner_profile: str, step_id: str | None,
+    workflow_step: bool,
+) -> dict[str, str] | None:
+    """A step's `browser_if_ui` block, checked and normalised; None when it has none.
+
+    Refused: on anything but a workflow step (a task has no parent whose
+    diff could choose for it); any shape but the three keys; any policy but
+    `browser_if_ui`; any pair but `RUNTIME_POLICY_PROFILES`; and a step not
+    submitted on the pair's browser profile -- the profile a step runs when
+    nothing resolves it, so a failed resolution never loses the browser.
+    """
+    if not isinstance(metadata, Mapping) or RUNTIME_METADATA_KEY not in metadata:
+        return None
+    where = {"step_id": step_id} if step_id else {}
+    shape = {"policy": RUNTIME_POLICY_BROWSER_IF_UI, **RUNTIME_POLICY_PROFILES}
+    if not workflow_step:
+        raise RuntimePolicyInvalid(
+            "metadata.runtime is a workflow step's: a task has no upstream step whose "
+            "change could choose its runtime",
+            detail={**where, "field": f"metadata.{RUNTIME_METADATA_KEY}"},
+        )
+    raw = metadata[RUNTIME_METADATA_KEY]
+    if not isinstance(raw, Mapping) or set(raw) != set(shape):
+        raise RuntimePolicyInvalid(
+            f"metadata.runtime must be exactly {shape}: the policy and both profiles "
+            "it may resolve to",
+            detail={**where, "field": f"metadata.{RUNTIME_METADATA_KEY}", "accepted": shape},
+        )
+    if raw.get("policy") != RUNTIME_POLICY_BROWSER_IF_UI:
+        raise RuntimePolicyInvalid(
+            f"metadata.runtime.policy {raw.get('policy')!r} is not one this platform runs; "
+            f"the one policy is {RUNTIME_POLICY_BROWSER_IF_UI!r}",
+            detail={**where, "field": f"metadata.{RUNTIME_METADATA_KEY}.policy",
+                    "accepted": [RUNTIME_POLICY_BROWSER_IF_UI]},
+        )
+    pair = {key: raw.get(key) for key in RUNTIME_POLICY_PROFILES}
+    if pair != dict(RUNTIME_POLICY_PROFILES):
+        raise RuntimePolicyInvalid(
+            f"metadata.runtime names {pair}; a {RUNTIME_POLICY_BROWSER_IF_UI} step resolves "
+            f"only between {dict(RUNTIME_POLICY_PROFILES)}",
+            detail={**where, "field": f"metadata.{RUNTIME_METADATA_KEY}",
+                    "accepted": dict(RUNTIME_POLICY_PROFILES)},
+        )
+    if runner_profile != RUNTIME_POLICY_PROFILES["browser"]:
+        raise RuntimePolicyInvalid(
+            f"a {RUNTIME_POLICY_BROWSER_IF_UI} step is submitted on "
+            f"{RUNTIME_POLICY_PROFILES['browser']!r}, the profile it runs when nothing "
+            f"resolves it; this one names {runner_profile!r}",
+            detail={**where, "field": "runner_profile",
+                    "accepted": [RUNTIME_POLICY_PROFILES["browser"]]},
+        )
+    return dict(shape)
+
 
 def validate_runner_profile(name: str) -> RunnerProfile:
     profile = RUNNER_PROFILES.get(name)
@@ -2960,6 +3049,12 @@ def rereview_step_for(
     staged, the first review's MERGE, byte for byte as its own artifact
     (`agent_worker.lifecycle.Worker._republish_staged_verdict`), so the
     merge step reads the same file name from the same step on both paths.
+
+    A review that asked for `browser_if_ui` (#2322) passes the block on with
+    the rest of its metadata, and the service adds `inherit`, naming the
+    review's task (`SubmissionService.submit_workflow`): the scheduler runs
+    the re-review on the profile the review RESOLVED to, never re-deciding
+    from the integrator's diff (`scheduler.runtime.resolve`).
     """
     sources = merge_sources(steps, strategy)
     if (

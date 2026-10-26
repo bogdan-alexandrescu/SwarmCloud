@@ -805,6 +805,13 @@ function shownOf(data: Outcomes, b: OutcomeBucket | null): Shown {
 
 export interface OutcomeLedgerProps {
   data: Outcomes
+  /**
+   * `coverage.seal_grace_s`, which the page reads after first paint (#2422):
+   * null until then -- and while the chart draws from the first `buckets` +
+   * `totals` read (visual QA VQ-021) -- when an open bucket says "settling"
+   * without a minute count it does not have.
+   */
+  sealGraceS: number | null
   /** The picked bucket, by its start -- never by index, which a re-read would silently repoint. */
   picked: string | null
   onPick: (start: string | null) => void
@@ -824,7 +831,7 @@ export interface OutcomeLedgerProps {
  * chart and its readout put the span back. It is not a live region: the
  * focused column's name already says the same counts.
  */
-export function OutcomeLedger({ data, picked, onPick, onZoom, figureLink }: OutcomeLedgerProps) {
+export function OutcomeLedger({ data, sealGraceS, picked, onPick, onZoom, figureLink }: OutcomeLedgerProps) {
   const { buckets, bucket, tz } = data
   const starts = useMemo(() => buckets.map((b) => b.start), [buckets])
   const scales = useMemo(() => scalesOf(buckets), [buckets])
@@ -953,7 +960,7 @@ export function OutcomeLedger({ data, picked, onPick, onZoom, figureLink }: Outc
   }
 
   const shown = shownOf(data, pickedBucket !== null && pickedBucket.state !== 'unread' ? pickedBucket : null)
-  const settleMin = Math.round(data.coverage.seal_grace_s / 60)
+  const settleMin = sealGraceS === null ? null : Math.round(sealGraceS / 60)
   const failedThere = pickedBucket === null ? 0 : (pickedBucket.failed ?? 0) + (pickedBucket.dead_lettered ?? 0)
   const cancelledThere = pickedBucket === null ? 0 : (pickedBucket.cancelled?.total ?? 0)
   const succeededThere = pickedBucket === null ? 0 : (pickedBucket.succeeded ?? 0)
@@ -1081,7 +1088,9 @@ export function OutcomeLedger({ data, picked, onPick, onZoom, figureLink }: Outc
               <i className="ol-k is-fin" aria-hidden /> finished <b className="ol-n">{shown.ended}</b>
             </span>
             {pickedBucket !== null && pickedBucket.state === 'open' && !pickedBucket.in_progress && (
-              <span className="ol-li ol-q">settling, final {settleMin} min after the bucket</span>
+              <span className="ol-li ol-q">
+                {settleMin === null ? 'settling, not final yet' : `settling, final ${settleMin} min after the bucket`}
+              </span>
             )}
           </p>
         )}
