@@ -485,6 +485,17 @@ def test_the_shell_group_lists_one_check_per_verdict_key_in_order():
     assert all(line.startswith("live-browser: ") for line in listed.splitlines())
 
 
+def test_the_frames_and_recording_labels_say_the_field_is_as_drawn():
+    """The checks pass a field shown as Chromium drew it and fail one painted
+    over (BGD, 2026-10-25: the live view paints nothing), so a label saying
+    "painted" names the opposite of what is checked (LIVE-NOMASK-TIDY)."""
+    text = GROUP.read_text()
+    listed = re.search(r"live_browser_checks\(\) \{\n  cat <<'EOF'\n(.*?)\nEOF", text, re.S).group(1)
+    labels = dict(zip(lb.CHECKS, listed.splitlines()))
+    assert not [line for line in labels.values() if "painted" in line]
+    assert "as drawn" in labels["frames"] and "as drawn" in labels["recording"]
+
+
 def test_the_shell_group_never_holds_the_password():
     text = GROUP.read_text()
     assert "new_password" not in text and "password=" not in text.lower()
