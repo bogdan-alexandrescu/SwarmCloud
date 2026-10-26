@@ -30,10 +30,11 @@ instead of a six-hour wait for checks -- the third section below.**
 **Revised 2026-10-14: a lane workflow's red or conflicting pull request runs
 bounded fix rounds by itself, two by default, re-running a flaky job before
 it spends an agent -- the second section below.**
-**Revised 2026-10-26: a merge woken by the owner's answers refuses an
-option its branch did not build, and a merge held on owner questions whose
-pull request was merged or closed outside the workflow finishes on its own
--- the first two sections below.**
+**Revised 2026-10-26: a merge woken by the owner's answers does not merge an
+option its branch did not build -- it starts a bounded pick-fix round that
+builds it, and compares every answered question that names `built` -- and a
+merge held on owner questions whose pull request was merged or closed
+outside the workflow finishes on its own -- the first two sections below.**
 
 ## Revised 2026-10-26: a held merge whose pull request ended outside the workflow finishes (MERGE-OUTSIDE-ENDS, part of #2441)
 
@@ -114,38 +115,103 @@ request is needed; swarm-api serves the questions as before and does not
 read `built`.
 
 **The merge compares the pick with the build.** Once every `needs_owner`
-question is answered, the step reads each asking agent's validated
-`questions.json` again (`owner_questions.questions_of`) and, for every
-question that names a `built` label, compares the answer's `choice` with it.
-Another option, or free text with no option, refuses `owner_pick_not_built`,
-end cause `MERGE_REFUSED`, before any credential is read:
+question is answered, the step reads the validated `questions.json` of every
+step of its workflow it depends on (`owner_questions.workflow_questions`,
+walked from its own task document, or from its signed target's review and
+opener when that cannot be read) and, for every ANSWERED question that names
+a `built` label, compares the answer's `choice` with it. Another option, or
+free text with no option, is an unbuilt pick, found before any credential is
+read. `result_summary.merge.unbuilt_picks` lists each one as `{task_id,
+step_id, question_index, question, picked, built}` (`picked` null for free
+text, with the owner's `text`). A counted `questions.json` the check cannot
+read ends `INPUTS_UNAVAILABLE`, code `owner_questions_unreadable`, as an
+unreadable upstream does.
 
-    owner_pick_not_built: the owner picked an option this pull request does not
-    build: step implement question 0: picked 'Needs a look', the branch builds
-    'Needs action'. Build the picked option in a fix round, then merge again
-
-`result_summary.merge.unbuilt_picks` lists each one as `{task_id, step_id,
-question_index, question, picked, built}` (`picked` null for free text). A
-counted `questions.json` the check cannot read ends `INPUTS_UNAVAILABLE`,
-code `owner_questions_unreadable`, as an unreadable upstream does.
+**Every answered question, not only `needs_owner` (PICK-FIX-ROUND, BGD
+2026-10-26).** A question the owner answered before the review ran goes in
+neither of the review's lists (`owner_questions.guidance`: "an answered
+question goes in neither"), so PR 2451, which compared only `needs_owner`,
+merged past a pick made then. The pick binds the merge whether or not a
+review held for it. An unanswered question the review judged need not hold
+still holds nothing: there is no pick to compare.
 
 **What passes as before.** A pick equal to `built`; `built: null`; and a
 question with no `built` key at all -- a file written before this check -- so
 a lane parked on its answers today is not stranded behind a field its agent
 was never asked for.
 
-**Why a refusal, not a fix round.** The workflow is a DAG fixed at
-submission: its one fix step runs on the review's `NOT_YET`, before the
-merge (`validation.REREVIEW_ROUNDS`), and the merge's own fix rounds are CI
-and conflict rounds that swarm-api's tick starts from a park code. There is
-no round a merge can ask to build a different option, so the step ends FAILED
-with the pull request open and the reason on the console, for the operator
-to send it back; whether the merge should start such a round itself is an
-open question for the owner in the pull request that built this.
+**An unbuilt pick starts a pick-fix round (PICK-FIX-ROUND, part of #2441).**
+BGD's answer to PR 2451, 2026-10-26: "yes, a follow-up lane. The merge parks
+on `owner_pick_not_built`, and swarm-api's tick runs a round that builds the
+picked option, then merges again." Until this the step refused and the
+operator sent the lane back by hand. The workflow is a DAG fixed at
+submission, so the round is the kind the merge already has: a continuation
+on the pull request's branch that swarm-api's wake tick starts from a park
+code, as it starts CI and conflict rounds.
 
-**What it does not cover.** Only `needs_owner` questions are compared. A
-question answered before the review ran goes in neither of the review's lists
-(`owner_questions.guidance`), so a pick made then is not compared here.
+* **The park.** The step parks CI_PENDING, code `owner_pick_fix_pending`, at
+  the opener's pushed head, with one `pending` line per unbuilt pick:
+
+      pick task_... question 0 (step implement): picked 'Needs a look', the
+      branch builds 'Needs action'; question: Which tile does a full pool show?
+
+  The line starts with the asking agent's id and the question index, which is how
+  the tick records the picks a round is sent for. A free-text answer's line
+  carries the owner's text instead of a label. No credential is read. The
+  park holds nothing (invariant 1).
+* **The tick** (`mergewake._on_pick`) reads only the pull request, never its
+  checks. Merged or closed outside the workflow, it wakes the step with
+  `pull_request_merged` / `pull_request_closed`, which `_ended_outside`
+  finishes on, as for an owner hold. Open, it claims the next round in
+  `merge_fix.pick_rounds` under the guard the CI and conflict rounds are
+  claimed under, recording `pull_head` (the head the round starts from) and
+  `picks`. Only for a pull request on the root's own branch, as the merge
+  agent's submitter while still a member, it submits a one-step **claude-code**
+  continuation (`pick_fix_continuation`, step `pick-fix`). Its brief names
+  each pick, nonce-fenced as data, and asks for `picks-built.json`. The park
+  stays the same document until the worker parks again, so a round claimed at
+  or after its `parked_at` is this park's: it is waited on, never claimed
+  twice, and its end wakes the step `fix_round_ended`. The round's record is
+  `merge_fix_round` with `kind: "pick"`, so it is a merge round to the rest
+  of swarm-api (`cifix.ROUND_KINDS`): it runs with its lane's territory, it
+  is the pull request's one live writer, and its pushed head is recorded
+  against the pull request.
+* **The report.** The round writes `$SWARM_ARTIFACTS_DIR/picks-built.json`,
+  one `{task_id, question_index, picked, builds_pick}` per pick. The merge
+  counts a pick as built only when the round's agent is this branch's round
+  (signed spec verified against the round's own workflow, signed `continues`
+  the root) and SUCCEEDED, it pushed a head other than `pull_head`, and its
+  report says `builds_pick: true` for the pick as the owner now answers it.
+  The pushed head is then a fix round's head to the merge
+  (`_fix_round_heads`), and the merge goes on to CI as before.
+* **Bounded; it never loops.** A round that did not succeed, pushed nothing
+  (changed nothing), or whose submission was refused refuses
+  `owner_pick_not_built`, end cause `MERGE_REFUSED`, with the reason. So does a
+  round that left a pick it was sent for unbuilt. A pick is never sent to a
+  second round. A pick no round was sent for (a question answered after the
+  last round) gets the next round, at most `MERGE_PICK_ROUNDS_MAX` = 2, the
+  conflict rounds' bound. Past that, it refuses. The park is on the CI clock,
+  so `MERGE_CI_MAX_SECONDS` bounds a round that never ends:
+
+      owner_pick_not_built: the owner picked an option this pull request does
+      not build: step implement question 0: picked 'Needs a look', the branch
+      builds 'Needs action'; pick fix round 1 (task_...) changed nothing: it
+      pushed no new head
+
+**Invariants.** 1: the pick park holds no lease, pool count or execution,
+and the round is an ordinary agent admitted all-or-nothing like any other.
+5: the next merge attempt is fenced under a new generation, and the round is
+fenced as any agent is. The worker accepts its head only from its signed
+spec. 9: the tick reads with the merge agent's own tenant's token, and the
+round is submitted as the merge's submitter while a member. 10: the round's
+profile is `claude-code`, chosen by the platform.
+
+**Not built here.** The round's step is not appended to the lane's workflow
+yet. `swarm_rollup.FIX_ROUND_STEP_RE` (apps/workflow-rollup, outside this
+lane's territory) accepts only `ci-fix:<n>` and `conflict-fix:<n>`, so
+`_append_round_step` refuses `pick-fix:<n>`, and the round is found from
+`merge_fix.pick_rounds` and its own workflow. Widening the pattern is a
+question in PR PICK-FIX-ROUND.
 
 ## Revised 2026-10-14: auto fix rounds (lane SPEED-D2)
 
