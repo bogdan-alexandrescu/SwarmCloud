@@ -464,6 +464,15 @@ function Events({ events }: { events: WorkspaceRoleEvent[] }) {
  * the old one working.
  */
 
+/**
+ * The link as a person can open it. The API builds it on `console_url`,
+ * which is empty unless SWARM_CONSOLE_URL is set, and then answers a bare
+ * `/join#<code>`: this page is the console, so its own origin completes it.
+ */
+export function shareableLink(link: string, origin: string = window.location.origin): string {
+  return link.startsWith('/') ? `${origin}${link}` : link
+}
+
 function JoinCards({ name }: { name: string }) {
   return (
     <>
@@ -493,7 +502,7 @@ function JoinLinkCard({ name }: { name: string }) {
       return
     }
     const answer: JoinLinkState | null = r.status === 'ok' || r.status === 'stale' ? r.data : null
-    setMade(answer?.link ?? null)
+    setMade(answer?.link === undefined ? null : shareableLink(answer.link))
     if (kind === 'off') setDone(`The join link is off: nobody can ask to join ${name} with it.`)
     else if (answer?.link === undefined) {
       // On again with the code it had (`JoinStore.set_link` keeps it): the

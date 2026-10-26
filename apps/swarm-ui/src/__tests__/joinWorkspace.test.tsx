@@ -323,6 +323,14 @@ describe('Settings › People and roles: the join link is shown once', () => {
   })
 })
 
+describe('Settings › People and roles: a link a person can open', () => {
+  it('completes a bare /join link with the console’s own origin, and leaves a full one alone', async () => {
+    const { shareableLink } = await loadPeople()
+    expect(shareableLink(`/join#${CODE}`, 'https://console.example.test')).toBe(LINK)
+    expect(shareableLink(LINK, 'https://elsewhere.example.test')).toBe(LINK)
+  })
+})
+
 describe('Settings › People and roles: Joined by request', () => {
   const LEE = { email: 'lee@example.com', by: 'alex@example.com', at: iso(-3 * HOUR), via: 'workspace_admin', group_changed: false, still_in_group: false }
   const JO = { email: 'jo@example.com', by: 'ops@example.com', at: iso(-30 * HOUR), via: 'platform_admin', group_changed: true, still_in_group: null }
