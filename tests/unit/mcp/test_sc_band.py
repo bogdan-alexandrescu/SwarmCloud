@@ -261,11 +261,11 @@ def test_a_narrow_band_clips_the_summary_never_the_control(tmp_path):
 
 
 def test_the_settings_frame_offers_the_band_and_saving_it_is_one_call(tmp_path):
-    got = _js(tmp_path, f"""
-const s = {{ ...m.initialState(), level: 'settings', layout: 'band' }}
-const lines = m.frame(s, {{ cols: 66, narrow: false, now: '' }}).map((l) => l.map((g) => g.text).join(''))
+    got = _js(tmp_path, """
+const s = { ...m.initialState(), level: 'settings', layout: 'band' }
+const lines = m.frame(s, { cols: 66, narrow: false, now: '' }).map((l) => l.map((g) => g.text).join(''))
 const calls = []
-const after = await m.act(s, 'layout:band', async (tool, args) => {{ calls.push({{ tool, args }}); return {{ ok: true, data: {{ layout: 'band' }} }} }}, () => 'T')
+const after = await m.act(s, 'layout:band', async (tool, args) => { calls.push({ tool, args }); return { ok: true, data: { layout: 'band' } } }, () => 'T')
 process.stdout.write(JSON.stringify([lines, calls, after.layout]))""")
     lines, calls, chosen = got
     assert any("● Band above the prompt" in line for line in lines)
