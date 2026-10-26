@@ -15,7 +15,7 @@ import { HIDDEN_LINE_AFTER_MS, HiddenTabLine } from './AppStates'
 import { Banner, Button } from './components'
 import { chosenTenant, errorHeading, errorReassurance, isWriteFailure, pageReads, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, writeRefused, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { type TopicId } from './help'
-import { HelpCard } from './HelpCard'
+import { HelpCard, type HelpTopicsLead } from './HelpCard'
 import { Absent, type LinkOut } from './primitives'
 import { timeAgo } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -975,8 +975,10 @@ export function PageHead({
             otherwise its section's question (Q2). A LIST is the screen's
             index of topics, the footer it replaced (VQ-033, BGD
             2026-10-26): still one glyph, in the section question's place,
-            and one `<HelpCard>` in this file for the ration to count. */}
-        {help === undefined ? sectionHelp : <HelpCard {...(typeof help === 'string' ? { topic: help } : { topics: help })} />}
+            and one `<HelpCard>` in this file for the ration to count. The
+            list is LED BY THE SECTION'S QUESTION (Q2), so the head `?` is
+            still the section's: it joins the question, it does not hide it. */}
+        {help === undefined ? sectionHelp : <HelpCard {...(typeof help === 'string' ? { topic: help } : { topics: help, lead: sectionLead(sectionHelp) })} />}
       </div>
       <div className="c-acts">
         {takes && <span className="ctl-head-age">{headAge}</span>}
@@ -984,6 +986,18 @@ export function PageHead({
       </div>
     </div>
   )
+}
+
+/**
+ * The section's label and question, read off the `SectionHelp` value: App.tsx
+ * provides a `<SectionQuestion section={...}>` there, and its `section` carries
+ * both. Undefined outside the frame (a screen rendered alone, in a test), where
+ * there is no section to ask about and the index leads with its own title.
+ */
+function sectionLead(n: ReactNode): HelpTopicsLead | undefined {
+  if (!isValidElement<{ section?: { label?: unknown; question?: unknown } }>(n)) return undefined
+  const { label, question } = n.props.section ?? {}
+  return typeof label === 'string' && typeof question === 'string' ? { label, question } : undefined
 }
 
 /** The words a node draws, for a title: strings and numbers, through elements and fragments. */

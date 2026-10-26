@@ -1158,10 +1158,27 @@ export function HelpCardView({
  * NOTHING MEASURED MAY DEPEND ON IT, as the footer's rule was: the marks on
  * the screen say a missing figure from a zero with every card closed.
  */
+/**
+ * A SECTION'S QUESTION, LEADING A SCREEN'S INDEX (VQ-033 with Q2). Pools,
+ * Accounts and Provider quota are Capacity pages, and their head `?` was the
+ * section's question before their footer moved behind it. The footer's topics
+ * did not replace the question, they joined it: so the card asks the section's
+ * question first, in `SectionQuestion`'s (App.tsx) own markup and name
+ * ("Help: Capacity answers"), and lists the topics under it -- one glyph, the
+ * same disc every other page head draws.
+ */
+export interface HelpTopicsLead {
+  /** The section's label: the card says "<label> answers". */
+  label: string
+  question: string
+}
+
 export interface HelpTopicsViewProps {
   topics: readonly TopicId[]
   /** The card's heading, and what its `?` is named after "Help:". */
   title: string
+  /** The section's question, when the page head has one to lead with. */
+  lead?: HelpTopicsLead | undefined
   state: HelpState
   cardId: string
   trigger: HelpTriggerProps
@@ -1201,7 +1218,8 @@ const TOPIC_CLAIM: CSSProperties = {
 
 export function HelpTopicsView({
   topics,
-  title,
+  title: ownTitle,
+  lead,
   state,
   cardId,
   trigger,
@@ -1218,6 +1236,7 @@ export function HelpTopicsView({
   const phone = usePhoneWidth()
   const triggerId = `${cardId}-t`
   const titleId = `${cardId}-title`
+  const title = lead === undefined ? ownTitle : `${lead.label} answers`
 
   const cardNode = (
     <span
@@ -1225,7 +1244,10 @@ export function HelpTopicsView({
       role={helpRole(state)}
       aria-labelledby={titleId}
       data-focus-return={triggerId}
-      style={{ ...CARD, ...placement }}
+      // LED BY THE SECTION, IT IS THE SECTION'S CARD: `.ctl-q-card` draws its
+      // box, as it draws every other page head's, so the two cannot drift.
+      className={lead === undefined ? undefined : 'ctl-q-card'}
+      style={lead === undefined ? { ...CARD, ...placement } : placement}
       ref={cardRef}
     >
       {state.pinned && phone && (
@@ -1233,9 +1255,18 @@ export function HelpTopicsView({
           <span aria-hidden="true">&times;</span>
         </button>
       )}
-      <strong id={titleId} style={CARD_TITLE}>
-        {title}
-      </strong>
+      {lead === undefined ? (
+        <strong id={titleId} style={CARD_TITLE}>
+          {title}
+        </strong>
+      ) : (
+        <>
+          <strong id={titleId} className="ctl-q-title">
+            {title}
+          </strong>
+          <span className="ctl-q-body">{lead.question}</span>
+        </>
+      )}
       <ul style={TOPIC_LIST}>
         {topics.map((id) => (
           <li key={id} style={TOPIC_ITEM}>
@@ -1249,21 +1280,23 @@ export function HelpTopicsView({
     </span>
   )
 
+  // The section's disc and its phone hit area come from `.ctl-q-glyph`
+  // (styles.css); without a lead the glyph is a topic card's, inline.
   return (
-    <span style={WRAP} {...hover} ref={anchorRef}>
+    <span className={lead === undefined ? undefined : 'ctl-q'} style={lead === undefined ? WRAP : undefined} {...hover} ref={anchorRef}>
       <button
         type="button"
         id={triggerId}
         ref={triggerRef}
-        className="help-glyph"
-        style={GLYPH}
+        className={lead === undefined ? 'help-glyph' : 'ctl-q-glyph'}
+        style={lead === undefined ? GLYPH : undefined}
         aria-label={`Help: ${title}`}
         aria-expanded={state.open}
         aria-controls={state.open ? cardId : undefined}
         {...trigger}
         {...bridge.trigger}
       >
-        ?{phone && <span aria-hidden="true" style={HIT} />}
+        ?{lead === undefined && phone && <span aria-hidden="true" style={HIT} />}
       </button>
       {state.open &&
         (typeof document === 'undefined' ? cardNode : createPortal(cardNode, document.body))}
@@ -1283,12 +1316,13 @@ export function HelpTopicsView({
  *
  * `<HelpCard topics={[...]} />` is the screen-index form (`HelpTopicsView`):
  * one `?` whose card lists several topics, each linked. It publishes no
- * description -- an index has no one sentence to publish.
+ * description -- an index has no one sentence to publish. Given a `lead`, the
+ * card asks that section's question first and the `?` is the section's.
  */
 export function HelpCard(
   props:
     | { topic: TopicId; describedById?: string }
-    | { topics: readonly TopicId[]; title?: string },
+    | { topics: readonly TopicId[]; title?: string; lead?: HelpTopicsLead | undefined },
 ) {
   const auto = useId()
   const { state, trigger, hover, cardRef, triggerRef } = useHelpDisclosure()
@@ -1297,6 +1331,7 @@ export function HelpCard(
       <HelpTopicsView
         topics={props.topics}
         title={props.title ?? 'Reading this screen'}
+        lead={props.lead}
         state={state}
         cardId={`${auto}-card`}
         trigger={trigger}
