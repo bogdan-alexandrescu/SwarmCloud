@@ -440,7 +440,12 @@ def check_rebase(lane: Role, rebase: Role) -> Verdict:
     checks = rebase.rows("pr_checks", result="ok")
     reading = checks[-1] if checks else None
     if reading is None:
-        problems.append("no pr_checks call succeeded")
+        # The audit rows and the agent's answer tell a forge_refused (the
+        # sandbox credential's scope) from a call the agent never made.
+        audited = [f"{r.get('result')} {r.get('code')}" for r in rebase.rows("pr_checks")]
+        problems.append(f"no pr_checks call succeeded (audited: {audited or 'none'}; "
+                        f"the agent was answered "
+                        f"{refusal_code(rebase.answer('pr-checks')) or 'nothing'})")
     else:
         if reading.get("pr") != number:
             problems.append(f"pr_checks read #{reading.get('pr')}, not the lane's #{number}")
