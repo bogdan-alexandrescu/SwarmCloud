@@ -149,6 +149,9 @@ def gated(monkeypatch):
     """The prod-gate model, taught the one step output hotfix.yml's job
     conditions read."""
     monkeypatch.setitem(gate_model.STEP_OUTPUTS, ("gate", "proceed"), ("true", "false", ""))
+    # `images`' `after` step: a build a newer push cancelled
+    # (test_hotfix_superseded.py).
+    monkeypatch.setitem(gate_model.STEP_OUTPUTS, ("images", "superseded"), ("true", "false"))
     return _jobs()
 
 
@@ -174,7 +177,10 @@ def test_nothing_prod_facing_starts_unless_the_gate_proceeds(gated, ctx):
 @pytest.mark.parametrize("ctx", [PUSH, DISPATCH], ids=["push", "dispatch"])
 def test_a_labelled_commit_reaches_every_stage(gated, ctx):
     jobs = gated
-    clean = [r for r, o in _attempts(jobs, ctx, endings=("success",)) if o["gate"].get("proceed") == "true"]
+    clean = [
+        r for r, o in _attempts(jobs, ctx, endings=("success",))
+        if o["gate"].get("proceed") == "true" and o["images"].get("superseded") != "true"
+    ]
     assert clean
     for results in clean:
         assert all(r == "success" for r in results.values()), results

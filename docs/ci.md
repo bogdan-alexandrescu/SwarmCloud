@@ -1806,6 +1806,33 @@ commit follows it -- same SHA, so it proceeds, re-applies the same digests, and
 its completion starts `accept.yml`. The normal release of an *older* commit that reaches its
 promote or apply after the hotfix stops there, superseded.
 
+### A build a newer push cancelled ends the hotfix green
+
+Since #2438 (2026-10-26) `application.yml` runs all of `main` in one
+concurrency group with `cancel-in-progress`, so a push to `main` cancels the
+older commit's run before its `build images` job finishes. The hotfix waits
+for exactly that job (`--reuse-ci only`), so its images stage then fails
+"never built". The `after` step on `images` (release.yml's step of the same
+name, failure path only) reads that one case as **superseded**: `main` has
+moved past the commit **and** `application.yml`'s push run for it concluded
+`cancelled` without `build images` succeeding or failing. The run ends green,
+its summary names `main`'s newest commit -- whose build includes the change
+and whose release ships it -- and promote, apply and deploy do not run. Any
+other failure, or an API that cannot be read, stays red.
+
+**There is no `newest` check**, unlike `release.yml`. A hotfix whose images
+were built and scanned still reaches dev before the newer commit's normal
+release, which waits for its own CI build and then for `release-dev` (an
+estimated 5-10 min past that wait now that `verify` and acceptance left the
+lock, "The timeline now" above; 100 min p50 before). The gap is smaller than it
+was, but it is still the hotfix's whole reason to exist, and superseding it
+whenever `main` had moved on would drop nearly every hotfix on a busy `main`
+for nothing: `release-order.sh` already ends the lane green if a newer commit
+reached dev first. The `after` step also reads `main`'s head, a call
+release.yml's step does not make, so the summary can name the commit that
+ships the change. Only a build that never happened
+leaves the lane nothing to ship.
+
 ### What the tests hold, and what they cannot
 
 `tests/unit/scripts/test_hotfix_release.py`: the gate proceeds only for a
@@ -1814,6 +1841,9 @@ or deploys starts otherwise; an IAM plan fails the hotfix and is still held
 for dev-iam by the release; `release-order.sh` refuses a non-ancestor, its
 lock is exclusive and released by generation; release.yml keeps its prod gate
 and its dev-iam gate; both lanes run the same stages and pin the same tools.
+`tests/unit/scripts/test_hotfix_superseded.py` runs the `after` step against a
+fake `gh`: a build a newer push cancelled ends green and promotes nothing,
+every other failure stays red.
 They cannot prove that GitHub runs the workflows as read, that GCS's
 generation precondition is atomic (it is documented to be), or that the
 deployer admits `hotfix.yml` before the owner applies the bootstrap root. The

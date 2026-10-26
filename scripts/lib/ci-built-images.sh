@@ -39,9 +39,14 @@
 #     CI_BUILD_APPEAR seconds;
 #   * its run was cancelled before any job started (GitHub then lists no jobs
 #     at all), or its build job was cancelled part-way or skipped (the checks
-#     it needs failed first). On main a newer push neither cancels nor
-#     replaces the run -- application.yml gives each commit there its own
-#     concurrency group -- so a cancellation is somebody's deliberate act;
+#     it needs failed first). On main that is now usually a newer push:
+#     since #2438 application.yml runs all of main in ONE group with
+#     cancel-in-progress, because one run per commit queued 27-78 runs at once
+#     and stalled every release. The newer commit's build includes this one's
+#     change, so release.yml's and hotfix.yml's `after` steps read a cancelled
+#     run on a moved main as superseded, green. This script still says "never
+#     built": whether that is a supersession is the caller's question, asked
+#     of main, not of the record;
 #   * the build succeeded but recorded nothing for THIS environment. That is
 #     every prod release: application.yml builds for dev, and swarm-ui bakes
 #     its environment into the bundle when it is compiled (VITE_SWARM_ENV,
@@ -103,11 +108,14 @@ REPO="${GITHUB_REPOSITORY:-}"
 WORKFLOW="${CI_BUILD_WORKFLOW:-application.yml}"
 JOB="${CI_BUILD_JOB:-build images}"
 BRANCH="${CI_BUILD_BRANCH:-main}"
-# 45 minutes. A build is ~9 minutes behind ~2 of checks. On main each commit's
-# application run has a concurrency group of its own, so it starts at the push
-# rather than queueing behind the previous commit's; what can still hold it is
-# a wait for a runner, or Cloud Build slots taken by other commits building in
-# parallel. Past 45 something is wrong, and the message says what was pending.
+# 45 minutes. A build is ~9 minutes behind ~2 of checks. Main's application
+# runs share one group with cancel-in-progress (#2438), so a push cancels the
+# previous commit's run instead of queueing behind it, and the newest run starts
+# at its push; what can still hold it is a wait for a runner, or Cloud Build
+# slots a cancelled run's builds still hold (cancelling does not stop them).
+# A newer push that cancels the run waited for ends the wait early, "never
+# built", not at 45. Past 45 something is wrong, and the message says what was
+# pending.
 WAIT="${CI_BUILD_WAIT:-2700}"
 # The run is created within seconds of the push that also started the release;
 # five minutes is for GitHub having a slow day, not for anything expected.
