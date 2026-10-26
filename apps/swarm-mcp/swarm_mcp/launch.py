@@ -135,6 +135,17 @@ until the workflow's stage changes -- while the SwarmCloud pane beside the
 chat browses stages, agents and details with direct MCP calls and no model
 tokens. A batch of single tasks keeps its one summary row.
 
+THE BAND LAYOUT (SC-BAND, part of #2318; BGD, 2026-10-26). With the layout
+set to `band` (`/sc layout band`) the SwarmCloud view is a strip above the
+prompt and a summary line below it, and the plugin starts NO /workflows row:
+an attach, an attach-all and a dispatch's rows answer `launches: []` with
+`rows: "band"` and `followed_by: "band"` (`_banded`), and read nothing to
+build a row; a spec's copy is still the run that submits it, its args say
+`rows: "band"`, and run.js submits and starts no follow row. The strip
+re-reads the list once a minute while anything runs and queues one chat turn
+when a workflow finishes or waits on a person, which is what the rows were
+for. A launch's own `rows` still outranks the layout.
+
 THE SPEC TRAVELS BY HANDLE (SC-LAUNCH-SPEC, #2034). Measured 2026-10-23
 ~01:35Z, lane SCAN-FP (wf_053776f6-dcb): the spec embedded in a launch's
 args reached `swarm_workflow` retyped by the `sc:workflow` agent, ~23 KB of
@@ -822,6 +833,9 @@ def for_spec(
         "workflow's finish, a line each time its stage changes, and the SwarmCloud pane "
         "browses its stages"
     ) if mode == config.ROWS_PANE else (
+        f"{title}: each step runs in SwarmCloud; this run submits it and starts no row -- the "
+        "SwarmCloud strip above the prompt follows it and says when it finishes"
+    ) if mode == layout.ROWS_BAND else (
         f"{title}: each step runs in SwarmCloud, and the whole workflow is shown here as ONE "
         "[SwarmCloud] summary row, a line each time its step counts change, with its console link"
     )
@@ -856,7 +870,24 @@ def for_spec(
         "`args.spec_handle` is the file this bridge wrote the spec to: the run submits from it, "
         "checked against its digest, so no agent retypes the spec; keep it beside `spec`"
     )
+    if mode == layout.ROWS_BAND:
+        # The run is the submission alone: no follow row after it (run.js).
+        out["followed_by"] = layout.ROWS_BAND
+        out["note"] = layout.BAND_NOTE
     return out
+
+
+def _banded(**fields: Any) -> dict[str, Any]:
+    """What a launch answers in the band layout: no row to launch, and why.
+    `fields` (the attach's id, a dispatch's task ids) go beside it."""
+    return {
+        **fields,
+        "rows": layout.ROWS_BAND,
+        "launches": [],
+        "followed_by": layout.ROWS_BAND,
+        "note": layout.BAND_NOTE,
+        "launch_with": "nothing: no Workflow call. The SwarmCloud strip above the prompt follows this work",
+    }
 
 
 #: The states a step does not leave (swarm_common.states.TERMINAL_STATES, as
@@ -1060,6 +1091,8 @@ def for_attach(client: SwarmClient, workflow_id: str, rows: str | None = None) -
     from . import session
 
     workflow_id = attach_id(workflow_id)
+    if layout.row_mode(rows) == layout.ROWS_BAND:
+        return _banded(attach=workflow_id)
     envelope = workflows.fetch(client, workflow_id)
     stored = workflows.stored_names(envelope)
     name = workflows.title_name(stored=stored["title"] or stored["label"], workflow_id=workflow_id)
@@ -1173,6 +1206,9 @@ def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None, 
             task = entry.get("task") if isinstance(entry.get("task"), dict) else {}
             record("dispatch", title=tasks_title([entry]), task_id=str(entry["task_id"]),
                    repository=task.get("repository_url") or entry.get("repository_url"))
+    if mode == layout.ROWS_BAND:
+        # Recorded above, as every dispatch is; no row (the strip follows them).
+        return _banded(task_ids=[str(e["task_id"]) for e in wanted])
     follow = wanted[:cap]
     labels: dict[str, str] = {}
     if client is not None and follow:
@@ -1384,6 +1420,9 @@ def for_all(
     origin naming a repository it widens to nothing and says so."""
     from . import sc, session
 
+    if layout.row_mode(rows) == layout.ROWS_BAND:
+        # No row to start, so nothing to read: the strip lists the work itself.
+        return _banded(attach="all")
     filtering = (repository is not None or new_only or bool(exclude)) and not project
     scope = None
     if repository is not None or project:

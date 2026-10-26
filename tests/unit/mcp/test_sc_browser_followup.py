@@ -258,4 +258,6 @@ def test_the_version_moved_with_its_pin_and_the_marketplace():
 def test_the_pane_module_queues_the_reattach_by_rewriting_the_run_not_by_a_timer():
     pane = _PANE.read_text()
     assert "args: 'attach --all'" in pane  # MUTATION: save and stop -- the new layout starts no rows.
-    assert pane.count("$.command.run(") == 1  # the pane's own Layout control, a press, outside any command hook
+    # The pane's own Layout control, a press, outside any command hook -- and
+    # the band's one turn per noticed change (SC-BAND, `queue`), never inside one.
+    assert pane.count("$.command.run(") == 2
