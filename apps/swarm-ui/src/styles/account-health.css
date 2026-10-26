@@ -1,6 +1,6 @@
 /* CAPACITY › ACCOUNT HEALTH (ACCOUNT-HEALTH-PAGE, part of #2302;
    docs/web-ui/mockups/account-health-b.html F1, F3, account-health-a.html F4,
-   account-health-d.html P1). Imported by AccountHealth.tsx only. Type from the
+   account-health-d.html P1). Imported by AccountHealthPage.tsx only. Type from the
    scale tokens; colour from the shell's. The three families keep a fixed
    series slot AND a fixed shape (diamond, circle, square), so none is read by
    hue alone. */

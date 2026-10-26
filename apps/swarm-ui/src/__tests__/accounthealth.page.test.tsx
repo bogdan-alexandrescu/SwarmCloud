@@ -19,7 +19,7 @@ import { join } from 'node:path'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { AccountHealthBody } from '../AccountHealth'
+import { AccountHealthBody } from '../AccountHealthPage'
 import { loadAccountHealthBoard, type AccountHealthBoard } from '../api'
 import {
   HEALTH_KINDS,

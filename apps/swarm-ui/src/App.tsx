@@ -17,7 +17,7 @@ import { AdminSettingsScreen } from './AdminSettings'
 import { AgentsScreen } from './Agents'
 import { TimelineLanesScreen } from './TimelineLanes'
 import { AgentSplit } from './AgentSplit'
-import { AccountHealthScreen } from './AccountHealth'
+import { AccountHealthScreen } from './AccountHealthPage'
 import { CapacityScreen } from './Capacity'
 import { Dock } from './Dock'
 import {
