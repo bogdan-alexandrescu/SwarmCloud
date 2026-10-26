@@ -769,6 +769,8 @@ def test_the_new_phone_preset_is_passed_to_the_gate_by_name(tmp_path, db, trace,
                                    "preset": "phone-390"}
     assert ("device", {"preset": "phone-390"}) in gate.ops
     assert "phone-390" in handoff_mod.AGENT_GUIDE
+    assert "phone-380" in handoff_mod.AGENT_GUIDE
+    assert "swarm-handoff compare" in handoff_mod.AGENT_GUIDE
 
 
 # --------------------------------------------------------------------------
