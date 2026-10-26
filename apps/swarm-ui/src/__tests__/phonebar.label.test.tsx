@@ -61,15 +61,26 @@ const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200, 
 
 const ENG = { tenant_id: 'eng', display_name: 'Engineering', kind: 'group' }
 const RESEARCH = { tenant_id: 'research', display_name: 'Research', kind: 'group' }
+const OWN = { tenant_id: 'u-ana', display_name: 'Ana B', kind: 'user' }
 
-/** An admin with two workspaces draws the switchable chip; a member with one, the plain label. */
-function liveApi(admin: boolean) {
+/**
+ * Whose bar: an admin in a group workspace draws the chip with its key
+ * (`eng`); an admin in their own workspace, the chip with the longest thing
+ * it ever holds (`Your workspace`, OWN_WORKSPACE_LABEL); a member with one
+ * workspace, the plain label.
+ */
+type Who = 'admin in eng' | 'admin in their own workspace' | 'member'
+const WHO: readonly Who[] = ['admin in eng', 'admin in their own workspace', 'member']
+
+function liveApi(who: Who) {
+  const admin = who !== 'member'
+  const current = who === 'admin in their own workspace' ? OWN : ENG
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input)
-    if (url.includes('/v1/tenants/mine')) return ok(admin ? [ENG, RESEARCH] : [ENG])
+    if (url.includes('/v1/tenants/mine')) return ok(who === 'member' ? [ENG] : who === 'admin in eng' ? [ENG, RESEARCH] : [OWN, ENG])
     if (url.includes('/v1/tenants/me')) {
       return ok({
-        tenant: { tenant_id: 'eng', kind: 'group', display_name: 'Engineering' },
+        tenant: current,
         principal: { email: 'ana.b@example.com', domain: 'example.com', groups: [], is_admin: admin },
         environment: 'dev',
         environment_declared: true,
@@ -79,11 +90,12 @@ function liveApi(admin: boolean) {
   }) as unknown as typeof fetch
 }
 
-async function bar(admin: boolean): Promise<{ header: HTMLElement; retitle: (title: string) => void }> {
+async function bar(who: Who): Promise<{ header: HTMLElement; retitle: (title: string) => void }> {
+  const admin = who !== 'member'
   vi.stubEnv('VITE_LIVE', '1')
   vi.stubEnv('VITE_SWARM_ENV', 'dev')
   vi.resetModules()
-  liveApi(admin)
+  liveApi(who)
   const { SkyShell } = await import('../Spine')
   window.history.replaceState(null, '', '/config/people')
   const shell = (title: string) => (
@@ -93,7 +105,8 @@ async function bar(admin: boolean): Promise<{ header: HTMLElement; retitle: (tit
   )
   const { container, rerender } = render(shell('People and roles'))
   const sel = admin ? '.sk-pbar .sk-tchip' : '.sk-pbar .sk-tn'
-  await waitFor(() => expect(container.querySelector(sel)).not.toBeNull(), WAIT)
+  const key = who === 'admin in their own workspace' ? 'Your workspace' : 'eng'
+  await waitFor(() => expect(container.querySelector(sel)?.textContent).toBe(key), WAIT)
   return { header: container.querySelector<HTMLElement>('.sk-pbar')!, retitle: (title) => rerender(shell(title)) }
 }
 
@@ -101,6 +114,14 @@ const px = (v: string | null, basis = 0): number => {
   const n = lengthPx(v, basis)
   if (n === null) throw new Error(`no length in ${JSON.stringify(v)}`)
   return n
+}
+
+/** A floor said in `em`, in px at the element's own font size. */
+function floorPx(el: Element): number {
+  const v = painted(el, 'min-width', PHONE)
+  const m = v === null ? null : /^([\d.]+)em$/.exec(v.trim())
+  if (m !== null) return Number(m[1]) * px(painted(el, 'font-size', PHONE))
+  return lengthPx(v, 0) ?? 0
 }
 
 /** Border-left plus border-right, read from the `border` shorthand or its width. */
@@ -128,8 +149,13 @@ function itemPx(el: HTMLElement): number {
   return box + textPx(el.textContent ?? '', el, PHONE)
 }
 
-/** The width the bar leaves its page name at 390, with the bell the live bar carries. */
-function roomFor(header: HTMLElement): number {
+/**
+ * The width the bar leaves its page name at 390, with the bell the live bar
+ * carries and every other item at its whole width. Below the name's floor the
+ * chip or label gives way (`flex-shrink: 100`, `min-width: 0`) and the name
+ * holds its floor; `chipPx` is how much the workspace has to give.
+ */
+function roomFor(header: HTMLElement): { room: number; chipPx: number } {
   const items = [...header.children].filter((c) => c.tagName.toLowerCase() !== 'b') as HTMLElement[]
   // jsdom never matches the phone query, so the bell is not in this bar; the
   // live one is. Its slot, from the cascade, is budgeted all the same.
@@ -137,7 +163,8 @@ function roomFor(header: HTMLElement): number {
   const others = items.reduce((sum, el) => sum + itemPx(el), 0) + px(painted(bell, 'width', PHONE))
   const [l, r] = paddingX(header, PHONE)
   const gaps = (items.length + 1) * px(painted(header, 'gap', PHONE))
-  return 390 - l - r - gaps - others
+  const workspace = items.find((el) => el.classList.contains('sk-tchip') || el.classList.contains('sk-tn'))
+  return { room: 390 - l - r - gaps - others, chipPx: workspace === undefined ? 0 : itemPx(workspace) }
 }
 
 /**
@@ -191,21 +218,42 @@ describe('PHONE-BAR-LABEL: a long page name reads whole at 390', () => {
     // one squeezed to make room for it.
     const title = build('div.sk-app > header.sk-pbar.has-chip > b', hosts)
     expect(painted(title, 'flex', PHONE)).toBe('1 1 0%')
-    expect(painted(title, 'min-width', PHONE)).toBe('5.5em')
+    const plain = build('div.sk-app > header.sk-pbar > b', hosts)
+    expect(painted(plain, 'flex', PHONE)).toBe('1 1 0%')
+    expect(painted(plain, 'min-width', PHONE)).toBe('5.5em')
   })
 
-  for (const admin of [true, false]) {
-    it(`sets every long page name in at most two whole lines beside ${admin ? "the admin's workspace chip" : "a member's workspace label"}`, async () => {
+  it("holds beside the admin's chip a floor two whole lines of the longest name fit, one size step down", () => {
+    // MUTATION: drop `.sk-pbar.has-chip b`'s size step or its 8em floor: the
+    // name falls back to 77px beside `Your workspace`, where `Submit from a
+    // GitHub issue` needs four lines and `Workspaces` is wider than the box.
+    const title = build('div.sk-app > header.sk-pbar.has-chip > b', hosts)
+    const plain = build('div.sk-app > header.sk-pbar > b', hosts)
+    expect(painted(title, 'font-size', PHONE)).toBe('var(--t-meta)')
+    expect(painted(plain, 'font-size', PHONE)).toBe('var(--t-body)')
+    const perChar = textPx('x', title, PHONE)
+    const floor = floorPx(title)
+    expect(floor).toBeGreaterThan(floorPx(plain))
+    for (const label of LONG_LABELS) expect(lines(label, perChar, floor).length, `"${label}" in ${floor}px`).toBeLessThanOrEqual(2)
+  })
+
+  for (const who of WHO) {
+    it(`sets every long page name in at most two whole lines: ${who}`, async () => {
       // MUTATION: shrink the room (a wider gap or padding in the bar), or
-      // grow the title's font, until a name needs a third line.
+      // grow the title's font, or lower its floor beside the chip, until a
+      // name needs a third line or a word is wider than its box.
       let visited = 0
-      const { header, retitle } = await bar(admin)
-      expect(header.classList.contains('has-chip')).toBe(admin)
+      const { header, retitle } = await bar(who)
+      expect(header.classList.contains('has-chip')).toBe(who !== 'member')
       // The room is the bar's less every item but the name, so one reading
       // serves every name; so does the title's face, size, wrap and clamp.
       const title = [...header.children].find((c) => c.tagName.toLowerCase() === 'b') as HTMLElement
-      const room = roomFor(header)
-      expect(room, 'the bar leaves the name less than its floor').toBeGreaterThanOrEqual(5.5 * px(painted(title, 'font-size', PHONE)))
+      const { room: left, chipPx } = roomFor(header)
+      const floor = floorPx(title)
+      // Below its floor the name holds it and the workspace gives the rest,
+      // never more than its own width: the row stays inside the glass.
+      expect(left + chipPx, 'the workspace cannot give the name its floor').toBeGreaterThanOrEqual(floor)
+      const room = Math.max(left, floor)
       // A `nowrap` name has one line; a wrapping one as many as its clamp.
       const most = painted(title, 'white-space', PHONE) === 'nowrap' ? 1 : Number(painted(title, '-webkit-line-clamp', PHONE) ?? 1)
       expect(most).toBeLessThanOrEqual(2)

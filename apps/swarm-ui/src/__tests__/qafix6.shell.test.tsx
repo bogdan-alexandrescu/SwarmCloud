@@ -193,11 +193,12 @@ describe('c: the admin phone header names the workspace as the desktop does, and
     name.className = 'sk-tcn'
     chip.appendChild(name)
     bar.appendChild(chip)
-    // The chip holds the short key now, so the title keeps its 5.5em floor
-    // beside it as beside the plain label (visual QA VQ-001, part of #2391).
-    // MUTATION: drop the floor beside the chip again and the page name goes
-    // to 'O…' at 390.
-    expect(painted(title, 'min-width', PHONE)).toBe('5.5em')
+    // The chip holds the short key now, so the title keeps a floor beside
+    // it as beside the plain label (visual QA VQ-001, part of #2391): 8em at
+    // one size step down, two whole lines of the longest page name
+    // (PHONE-BAR-LABEL). MUTATION: drop the floor beside the chip again and
+    // the page name goes to 'O…' at 390.
+    expect(painted(title, 'min-width', PHONE)).toBe('8em')
     // The member's bar (a plain label, no chip) keeps the title's floor.
     const plain = build('div.sk-app > header.sk-pbar > b', hosts)
     expect(painted(plain, 'min-width', PHONE)).toBe('5.5em')
