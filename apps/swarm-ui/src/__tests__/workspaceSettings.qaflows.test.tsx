@@ -96,10 +96,18 @@ describe('Config › Workspace Settings: QA flows per step', () => {
       fireEvent.change(input(card)!, { target: { value: bad } })
       // MUTATION: leave Save enabled on an out-of-range value.
       expect(save(card)!.disabled, `Save with ${bad}`).toBe(true)
+      // The page says why Save is dimmed: a red alert line naming the bound
+      // (a hint recoloured by .ur-bad loses to .ur-hint's later colour).
+      const alert = card.querySelector('form [role="alert"]')
+      expect(alert, `alert with ${bad}`).not.toBeNull()
+      expect(alert!.className).toContain('ur-bad')
+      expect(alert!.textContent).toContain('1-30')
       fireEvent.click(save(card)!)
     }
     await new Promise((r) => setTimeout(r, 50))
     expect(calls.filter((c) => c.method === 'PUT').length).toBe(0)
+    fireEvent.change(input(card)!, { target: { value: '20' } })
+    expect(card.querySelector('form [role="alert"]'), 'no alert on an in-range value').toBeNull()
   })
 
   it('a member sees it read-only', async () => {

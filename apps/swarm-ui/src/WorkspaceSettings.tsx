@@ -527,7 +527,11 @@ function QaFlowsPerStep({ read }: { read: QaSettings }) {
               onChange={(e) => setTyped(e.target.value)}
             />
           </label>
-          <p className={inBounds ? 'ur-hint' : 'ur-hint ur-bad'}>{`A whole number, ${bound}. The default is ${d.default_flows_per_step}.`}</p>
+          <p className="ur-hint">{`A whole number, ${bound}. The default is ${d.default_flows_per_step}.`}</p>
+          {/* Its own line: .ur-hint is declared after .ur-bad, so a hint carrying both stays grey. */}
+          {!inBounds && (
+            <small className="ur-bad" role="alert">{`QA flows per step is a whole number, ${bound}.`}</small>
+          )}
           {refused !== null && (
             <p className="ur-small ob-issue" role="alert" data-code={refused.code ?? undefined}>
               {refused.code !== null && <b className="ur-bad">{refused.code}</b>} {refused.message}
