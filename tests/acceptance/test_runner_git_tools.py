@@ -440,7 +440,12 @@ def check_rebase(lane: Role, rebase: Role) -> Verdict:
     checks = rebase.rows("pr_checks", result="ok")
     reading = checks[-1] if checks else None
     if reading is None:
-        problems.append("no pr_checks call succeeded")
+        # The audit rows and the agent's answer tell a forge_refused (the
+        # sandbox credential's scope) from a call the agent never made.
+        audited = [f"{r.get('result')} {r.get('code')}" for r in rebase.rows("pr_checks")]
+        problems.append(f"no pr_checks call succeeded (audited: {audited or 'none'}; "
+                        f"the agent was answered "
+                        f"{refusal_code(rebase.answer('pr-checks')) or 'nothing'})")
     else:
         if reading.get("pr") != number:
             problems.append(f"pr_checks read #{reading.get('pr')}, not the lane's #{number}")
@@ -616,6 +621,33 @@ def judge(base: str) -> list[tuple[str, str, str]]:
 def pr_kind(body: str) -> str:
     """github-verify.sh's question: is this the git-tools lane's pull request?"""
     return "git-tools" if PR_MARKER in (body or "") else "other"
+
+
+def test_a_refused_pr_checks_call_is_named_by_its_code(tmp_path: Any) -> None:
+    """pytest's entry (as test_caller_mcp.py's), offline and standard library
+    only: when no pr_checks call succeeded, check [1]'s reason names the
+    audited refusal and the agent's answer, so a forge_refused is told from no
+    call at all (F16, #2379). The full matrix is in
+    tests/unit/scripts/test_runner_git_tools_acceptance.py."""
+    files = {
+        "lane/task": "task_lane\n", "lane/state": "SUCCEEDED\n",
+        "lane/doc.json": json.dumps({"result_summary": {"git": {"pull_request": {"number": 7}}}}),
+        "lane/calls.json": json.dumps({"calls": []}),
+        "rebase/task": "task_rebase\n", "rebase/state": "SUCCEEDED\n",
+        "rebase/calls.json": json.dumps({"calls": [
+            {"tool": "pr_checks", "result": "refused", "code": "forge_refused", "at": "1"}]}),
+        f"rebase/{ANSWERS}": json.dumps({"step": "pr-checks", "answer": {
+            "refused": {"code": "forge_refused"}}}) + "\n",
+    }
+    for name, text in files.items():
+        path = os.path.join(str(tmp_path), name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    verdict, reason = check_rebase(Role(str(tmp_path), "lane"), Role(str(tmp_path), "rebase"))
+    assert verdict == "FAIL", reason
+    assert ("no pr_checks call succeeded (audited: ['refused forge_refused']; "
+            "the agent was answered forge_refused)") in reason, reason
 
 
 def main(argv: Iterable[str] | None = None) -> int:
