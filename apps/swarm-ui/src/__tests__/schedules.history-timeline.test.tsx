@@ -20,6 +20,9 @@
 //   * the pane and that list are headed, and each work item is named by what
 //     it is -- its issue, or what the firing's type made -- never by the
 //     runner profile it ran on (VQ-028, part of #2391);
+//   * a lane's second line reads whole for any attempt count and a longer
+//     profile ("claude-code-browser · succeeded · 12 attempts"): it wraps
+//     between its parts instead of an ellipsis (VQ-SCHEDULES re-review);
 //   * that list is schedules.html's History frame (SCHED-HISTORY-CSS, BGD
 //     2026-10-25): under its head, 20px under the lanes, each item's cost right-aligned in its
 //     own column on a desktop ($11.30, $9.80, a dash whose reason is its
@@ -473,6 +476,43 @@ describe('what each firing made, by name (VQ-028)', () => {
     const words = visible(li.querySelector('.sht-words'))
     expect(words).toContain('issue-sweep task on claude-code → task task_1 · succeeded')
     expect(visible(li.querySelector('.sht-words b'))).toBe('issue-sweep task')
+  })
+
+  it('reads the longest lane line whole: it wraps between its parts, never ellipsed', async () => {
+    // The re-review measured "claude-code · succeeded · 2 attempts" at 259px
+    // in the 255px column, drawn "… 2 attemp…". jsdom lays nothing out, so the
+    // line is held by its parts and by what the cascade paints them with.
+    const LONG = 'claude-code-browser'
+    await mount([firing(1)], (url) => ({
+      status: 200,
+      body: { firings: askedOf(url).map((id) => ({ firing_id: id, items: [item('task_1', [spanTask('task_1', 1, 12, { label: LONG })])] })), not_found: [] },
+    }))
+    const row = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('[data-item="task:task_1:task_1"]')
+      expect(el).not.toBeNull()
+      return el!
+    }, WAIT)
+    const sub = row.querySelector<HTMLElement>('.tl-lab small')!
+    expect(visible(sub)).toBe('claude-code-browser · succeeded · 12 attempts')
+    const parts = [...sub.querySelectorAll<HTMLElement>('.sht-sub-p')].map((p) => visible(p))
+    expect(parts).toEqual(['claude-code-browser', 'succeeded', '12 attempts'])
+    const WIDE: CascadeEnv = { width: 1440 }
+    const PHONE: CascadeEnv = { width: 390 }
+    for (const env of [WIDE, PHONE]) {
+      // MUTATION: drop `.sht .tl-lab small.sht-sub` from schedules.css and the
+      // line is one nowrap line again, ellipsed at the column's edge.
+      expect(painted(sub, 'white-space', env)).toBe('normal')
+      expect(painted(sub, 'text-overflow', env)).not.toBe('ellipsis')
+      expect(painted(sub, 'overflow', env)).toBe('visible')
+      // It breaks only between parts: "12 attempts" never splits from its number.
+      for (const p of sub.querySelectorAll<HTMLElement>('.sht-sub-p')) expect(painted(p, 'white-space', env)).toBe('nowrap')
+    }
+    // Beside a two-line label the track grows with the row; on a phone the
+    // label stacks over a 28px track.
+    const trk = row.querySelector<HTMLElement>('.tl-trk')!
+    expect(painted(trk, 'height', WIDE)).toBe('auto')
+    expect(painted(trk, 'min-height', WIDE)).toBe('46px')
+    expect(painted(trk, 'height', PHONE)).toBe('28px')
   })
 
   it('names an issue run’s steps by their step, with the issue’s number beside them', async () => {

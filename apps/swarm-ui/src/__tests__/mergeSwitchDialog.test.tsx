@@ -13,6 +13,7 @@
 //   * one action row: Close (a real button) before the primary; blocked, the
 //     primary is disabled with aria-disabled, reads "Switch to automatic" and
 //     carries no ellipsis, and is painted grey rather than the pale accent;
+//   * it says "workspace" to a person, never "tenant" (VQ-SCHEDULES re-review);
 //   * an eligible viewer sees the same structure with no warning and an
 //     enabled "Switch to automatic merging";
 //   * the page head's actions are one wrapping row that cannot outgrow its
@@ -138,7 +139,11 @@ describe('the merge switch dialog, for the gate’s last editor', () => {
     expect(reason).toBeGreaterThan(said.indexOf('You can’t make this switch'))
     expect(who).toBeGreaterThan(reason)
     // A non-admin cannot read Admin › People's list, so it is pointed at, not quoted.
-    expect(said).toMatch(/platform admin of this tenant \(Admin › People lists them\)/)
+    // The console's word to a person is "workspace", never "tenant"
+    // (VQ-SCHEDULES re-review minor). MUTATION: "this tenant" back and this fails.
+    expect(said).toMatch(/another member of this workspace must make this switch/)
+    expect(said).toMatch(/platform admin of this workspace \(Admin › People lists them\)/)
+    expect(visible(dialog)).not.toMatch(/tenant/i)
     expect(within(body[0] as HTMLElement).getByRole('link', { name: 'Admin › People' }).getAttribute('href')).toBe('/admin/people')
     // The rules sit behind Details, after the short summary.
     const details = dialog.querySelector('details')
@@ -208,7 +213,8 @@ describe('the merge switch dialog, for the gate’s last editor', () => {
     const { dialog } = await gateDialog(me('someone@example.com', false), schedule({ scope: { mode: 'platform' } }))
     const warning = await within(dialog).findByTestId('sc-switch-blocked', undefined, WAIT)
     expect(visible(warning)).toMatch(/platform repository/)
-    expect(visible(warning)).toMatch(/A platform admin of this tenant must switch it \(Admin › People lists them\)/)
+    expect(visible(warning)).toMatch(/A platform admin of this workspace must switch it \(Admin › People lists them\)/)
+    expect(visible(dialog)).not.toMatch(/tenant/i)
     expect(actionRow(dialog)[1]!.disabled).toBe(true)
   })
 })
@@ -229,6 +235,9 @@ describe('the merge switch dialog, for a viewer who can switch', () => {
     // The typed confirmation is kept.
     fireEvent.click(go!)
     await within(dialog).findByRole('textbox', undefined, WAIT)
+    // MUTATION: "In a tenant of one person" back and this fails.
+    expect(visible(dialog)).toMatch(/In a workspace of one person, this typed name stands in/)
+    expect(visible(dialog)).not.toMatch(/tenant/i)
   })
 })
 

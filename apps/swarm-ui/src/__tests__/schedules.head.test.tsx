@@ -10,7 +10,8 @@
 //     a figure the server did not serve is a dash with its reason, never 0;
 //   * the figures are four across on a desktop and two by two on a phone
 //     (390), so the History tab no longer starts 650px down;
-//   * on a phone every action but Run now folds into More, which opens them;
+//   * on a phone every action but Run now folds into More, which opens them
+//     and then reads Less, aria-expanded following;
 //     a desktop draws them all and no More. Asked of `painted` (cssgate's
 //     cascade), because jsdom applies no `@media` block.
 //
@@ -155,5 +156,12 @@ describe("a schedule's head (VQ-029)", () => {
     expect(more.getAttribute('aria-expanded')).toBe('true')
     expect(painted(fold, 'display', PHONE)).toBe('contents')
     expect(painted(edit, 'display', PHONE)).toBe('inline-flex')
+    // Open, it says what it does now (VQ-SCHEDULES re-review minor).
+    // MUTATION: a fixed "More" label and this fails.
+    expect(visible(more)).toBe('Less')
+    fireEvent.click(more)
+    expect(more.getAttribute('aria-expanded')).toBe('false')
+    expect(visible(more)).toBe('More')
+    expect(painted(fold, 'display', PHONE)).toBe('none')
   })
 })
