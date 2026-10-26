@@ -150,7 +150,7 @@ describe('VQ-056: the switcher says workspace, and names each workspace once', (
 
   it('treats an address as no display name', async () => {
     const { displayNameOf } = await import('../Spine')
-    expect(displayNameOf('smoke@saga.example')).toBeNull()
+    expect(displayNameOf('smoke@example.com')).toBeNull()
     expect(displayNameOf('  ')).toBeNull()
     expect(displayNameOf(null)).toBeNull()
     expect(displayNameOf('Engineering')).toBe('Engineering')

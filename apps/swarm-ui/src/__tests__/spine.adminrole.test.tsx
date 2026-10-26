@@ -187,7 +187,7 @@ describe('Admin › Workspaces you admin (NAV-ADMIN-ROLE)', () => {
     await waitFor(() => expect(rows()).toHaveLength(1))
     const eng = rows()[0]!
     expect(eng.getAttribute('data-tenant')).toBe('eng')
-    expect(eng.querySelector('.wya-name b')?.textContent).toBe('eng@example.com')
+    expect(eng.querySelector('.wya-name b')?.textContent).toBe('eng')
     const links = [...eng.querySelectorAll<HTMLAnchorElement>('.wya-links a')]
     expect(links.map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
       // The Config tabs' own names and addresses (S10a, CONFIG-ADMIN-POLISH).
