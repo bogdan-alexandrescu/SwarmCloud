@@ -785,8 +785,9 @@ describe('one schedule on a phone', () => {
       expect(td.getAttribute('data-label'), 'a cell with no name').toBeTruthy()
       expect(painted(td, 'display', PHONE)).toBe('block')
     }
-    const facts = document.querySelector<HTMLElement>('.sc-facts.sc-head')!
-    expect(painted(facts, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
+    // The head's figures are two by two on a phone (VQ-029), not one per row.
+    const figs = screen.getByTestId('sc-figs')
+    expect(painted(figs, 'grid-template-columns', PHONE)).toBe('repeat(2, minmax(0, 1fr))')
   })
 })
 
@@ -868,7 +869,7 @@ describe('live QA: automate, the list and the page', () => {
     list.unmount()
     await mountDetail({ '/v1/schedules/sch_a': { status: 200, body: { schedule: dry, firings: [] } } })
     await screen.findByRole('heading', { name: 'Dry sweep', level: 1 }, WAIT)
-    const state = [...document.querySelectorAll('.sc-head dt')].find((dt) => dt.textContent === 'State')!.nextElementSibling!
+    const state = screen.getByTestId('sc-pills')
     expect(visible(state)).toContain('paused')
     expect(visible(state)).toContain('dry run')
   })

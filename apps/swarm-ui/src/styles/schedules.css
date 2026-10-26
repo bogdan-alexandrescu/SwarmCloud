@@ -145,9 +145,43 @@
 .sc-fact > dt { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .sc-fact > dd { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
 .sc-wide { grid-column: 1 / -1; margin: 0; }
-/* THE HEAD'S ACTIONS AND ITS FACTS ARE APART (visual QA V241): the facts sat
-   flush under the buttons, and on a phone the 44px buttons touched "Type". */
-.sc-facts.sc-head { margin-top: 12px; }
+/* DETAIL A'S HEAD (schedules.html detail-a, visual QA VQ-029). It was a 5+3
+   label grid (Type, When, Scope, Owner, State, Next run, Spend today,
+   Waiting) with no Last run and no budget, and on a phone its eight facts
+   stacked the History tab 650px down. Now: the state pill and the risk chip
+   under the title with the actions beside them, ONE meta line (type, scope,
+   cadence, owner), and the mock-up's four figures -- Next run, Last run,
+   Live runs, Spend today of its budget -- four across, two by two on a phone.
+   The figures sit 12px under the meta line (V241: flush, they touched it). */
+.sc-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-width: 0; }
+.sc-pills { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; min-width: 0; }
+.sc-pills > .sc-dry { margin-left: 0; }
+.sc-top > .sc-head-row { margin-left: auto; }
+.sc-meta {
+  display: flex; flex-wrap: wrap; gap: 2px 14px; margin: 8px 0 0; min-width: 0;
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); overflow-wrap: anywhere;
+}
+.sc-meta b { font-weight: 600; color: var(--text); }
+.sc-meta code { font-family: var(--mono); font-size: var(--t-micro); }
+.sc-figs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 12px; margin-bottom: 0; min-width: 0; }
+.sc-fig { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.sc-fig > dt { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.sc-fig > dd { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+.sc-fig-v { font-size: var(--t-body); font-weight: 600; font-variant-numeric: tabular-nums; }
+.sc-fig-v small { font-size: var(--t-micro); font-weight: 400; color: var(--text-dim); }
+/* WHAT FOLDS INTO MORE: a desktop draws every action in the row (the fold
+   is no box of its own) and no More button. */
+.sc-fold { display: contents; }
+.sc-head-row > .sc-more { display: none; }
+@media (max-width: 640px) {
+  /* A PHONE FOLDS ITS ACTIONS INTO MORE (VQ-029): five 44px buttons wrapped
+     to two rows with Edit alone on the second. Run now stays; Dry run, Pause
+     or Resume, Delete and Edit open under More, which comes last. */
+  .sc-top > .sc-head-row { margin-left: 0; justify-content: flex-start; }
+  .sc-head-row[data-more='shut'] .sc-fold, .sc-head-row[data-more='shut'] > .sc-fold-edit { display: none; }
+  .sc-head-row > .sc-more { display: inline-flex; order: 1; }
+  .sc-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 /* A parameter with structure (a custom-prompt `spec`), one row per key, its
    text keeping its line breaks (visual QA V171). */
 .sc-pobj { display: grid; gap: 4px; margin: 2px 0 0; padding: 0; min-width: 0; }
@@ -401,7 +435,8 @@ ol.sc-pobj { padding-left: 18px; }
 /* The label column is the Timeline page's plus 40px: a row's second line is
    "run_8f2a · succeeded · 2 attempts", which 240px cut at "1 att…". */
 .sht { --tl-labw: 280px; min-width: 0; }
-.sht-bar { display: flex; justify-content: flex-end; margin: 0 0 8px; }
+.sht-bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin: 0 0 8px; }
+.sht-bar > .sht-h { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); }
 .sht-legend { margin: 0 0 8px; }
 .sht-axis { border-radius: 10px 10px 0 0; margin-bottom: 8px; }
 .sht-axis .tl-trk { height: 30px; background-image: none; }
@@ -430,7 +465,9 @@ ol.sc-pobj { padding-left: 18px; }
    cost never recorded is a dash whose reason is its title; the reason stays
    in the text for a screen reader, clipped out of the column (24ch holds a
    floor's "$2.00 · 1 attempt unreported" without crushing the words). */
-.sc-audit.sht-list { margin-top: 12px; }
+/* Headed and set apart (VQ-028): 20px under the last lane, the head 4px over its list. */
+.sht-list-h { margin-top: 20px; margin-bottom: 4px; }
+.sc-audit.sht-list { margin-top: 0; }
 .sht-list > li { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 16px; align-items: baseline; }
 .sht-words { min-width: 0; overflow-wrap: anywhere; }
 .sht-list > li > .sht-cost { grid-column: 2; text-align: right; max-width: 24ch; }

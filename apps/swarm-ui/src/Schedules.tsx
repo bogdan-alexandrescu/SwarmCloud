@@ -102,7 +102,11 @@ function useSessionAdmin(): boolean | null | 'unknown' {
   return admin
 }
 
-/** "Mine | All tenants": links, so either side opens in a new tab and reads as where you are. */
+/**
+ * "Mine | All workspaces" (BGD on #2157, 2026-10-23: Automate › Schedules keeps
+ * its "All workspaces" switch; VQ-030): links, so either side opens in a new tab
+ * and reads as where you are. The console says workspace, never tenant.
+ */
 function ScopeSwitch({ scope, go }: { scope: Scope; go: (to: string) => void }) {
   return (
     <Segmented<Scope>
@@ -110,8 +114,8 @@ function ScopeSwitch({ scope, go }: { scope: Scope; go: (to: string) => void }) 
       small
       value={scope}
       options={[
-        { key: 'mine', label: 'Mine', href: addressToPath(SCHEDULES_ADDRESS), title: 'This tenant’s schedules' },
-        { key: 'all', label: 'All tenants', href: addressToPath(ALL_TENANTS_SCHEDULES), title: 'Every tenant’s schedules and the schedule tick (admin)' },
+        { key: 'mine', label: 'Mine', href: addressToPath(SCHEDULES_ADDRESS), title: 'This workspace’s schedules' },
+        { key: 'all', label: 'All workspaces', href: addressToPath(ALL_TENANTS_SCHEDULES), title: 'Every workspace’s schedules and the schedule tick (admin)' },
       ]}
       onChange={(k) => go(k === 'all' ? ALL_TENANTS_SCHEDULES : SCHEDULES_ADDRESS)}
     />
@@ -338,11 +342,18 @@ export function ScheduleActions({
   where,
   onDone,
   onDeleted,
+  foldId,
 }: {
   s: Schedule
   where: 'row' | 'head'
   onDone: (notice: ActNotice) => void
   onDeleted?: (notice: ActNotice) => void
+  /**
+   * The head's id for what folds into More on a phone (VQ-029): every action
+   * but Run now. A desktop draws them in the row as before (`.sc-fold` is
+   * `display: contents`); the page's More button names this id.
+   */
+  foldId?: string
 }) {
   const [busy, setBusy] = useState<ActKind | null>(null)
   const [asking, setAsking] = useState<'run' | 'delete' | null>(null)
@@ -396,25 +407,31 @@ export function ScheduleActions({
       <Button size={size} kind={where === 'head' ? 'primary' : 'secondary'} busy={busy === 'run' ? 'Running…' : false} disabledReason={disabled} onClick={runNow}>
         Run now
       </Button>
-      {where === 'head' && (
-        <Button size={size} busy={busy === 'dry' ? 'Running dry…' : false} disabledReason={disabled} onClick={() => void act('dry')}>
-          Dry run
-        </Button>
-      )}
-      {where === 'head' && s.state === 'enabled' && (
-        <Button size={size} busy={busy === 'pause' ? 'Pausing…' : false} disabled={roleGate !== null} onClick={() => void act('pause')}>
-          Pause
-        </Button>
-      )}
-      {resumable && (
-        <Button size={size} busy={busy === 'resume' ? 'Resuming…' : false} disabled={roleGate !== null} onClick={() => void act('resume')}>
-          Resume
-        </Button>
-      )}
-      {where === 'head' && (
-        <Button size={size} kind="danger" disabled={roleGate !== null} onClick={() => { setTyped(''); setRefused(null); setAsking('delete') }}>
-          Delete…
-        </Button>
+      {where === 'head' ? (
+        <span className="sc-fold" id={foldId}>
+          <Button size={size} busy={busy === 'dry' ? 'Running dry…' : false} disabledReason={disabled} onClick={() => void act('dry')}>
+            Dry run
+          </Button>
+          {s.state === 'enabled' && (
+            <Button size={size} busy={busy === 'pause' ? 'Pausing…' : false} disabled={roleGate !== null} onClick={() => void act('pause')}>
+              Pause
+            </Button>
+          )}
+          {resumable && (
+            <Button size={size} busy={busy === 'resume' ? 'Resuming…' : false} disabled={roleGate !== null} onClick={() => void act('resume')}>
+              Resume
+            </Button>
+          )}
+          <Button size={size} kind="danger" disabled={roleGate !== null} onClick={() => { setTyped(''); setRefused(null); setAsking('delete') }}>
+            Delete…
+          </Button>
+        </span>
+      ) : (
+        resumable && (
+          <Button size={size} busy={busy === 'resume' ? 'Resuming…' : false} disabled={roleGate !== null} onClick={() => void act('resume')}>
+            Resume
+          </Button>
+        )
       )}
       {asking === 'run' && (
         <Dialog
@@ -683,7 +700,7 @@ function SchedulesBody({
   go: (to: string) => void
   notice: ActNotice | null
   onDone: (notice: ActNotice) => void
-  /** "Mine | All tenants", for an admin; nothing for anyone else. */
+  /** "Mine | All workspaces", for an admin; nothing for anyone else. */
   scopeSwitch: ReactNode
 }) {
   const names = repos.status === 'ok' || repos.status === 'stale' ? new Map(repos.data.map((r) => [r.repo_id, `${r.owner}/${r.repo}`])) : null
@@ -704,8 +721,8 @@ function SchedulesBody({
       </div>
       <Said notice={notice} />
       {rows.length === 0 ? (
-        <Absent kind="zero" heading="No schedules yet" say="This tenant has no schedules: the list was read and is empty.">
-          Recurring work in this tenant, such as an issue sweep, an index refresh or a nightly observer, is listed here. Each firing makes ordinary work: an issue run, an agent or a workflow.
+        <Absent kind="zero" heading="No schedules yet" say="This workspace has no schedules: the list was read and is empty.">
+          Recurring work in this workspace, such as an issue sweep, an index refresh or a nightly observer, is listed here. Each firing makes ordinary work: an issue run, an agent or a workflow.
         </Absent>
       ) : (
         <ScheduleList rows={rows} names={names} go={go} onDone={onDone} />
@@ -768,7 +785,7 @@ function ScheduleListScreen({ go, scopeSwitch }: { go: (to: string) => void; sco
       key={`schedules:${round}`}
       title="Schedules"
       load={loadListAndRepos}
-      summary={(d) => `${pluralise(d.schedules.length, 'schedule')} · tenant ${d.tenant_id}`}
+      summary={(d) => `${pluralise(d.schedules.length, 'schedule')} · workspace ${d.tenant_id}`}
     >
       {(d) => <SchedulesBody rows={d.schedules} repos={d.repos} go={go} notice={notice} onDone={onDone} scopeSwitch={scopeSwitch} />}
     </Screen>

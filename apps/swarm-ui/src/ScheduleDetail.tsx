@@ -1,6 +1,6 @@
 /**
- * ONE SCHEDULE (docs/schedules.md §6.2, detail variant A): a head of facts,
- * then tabs -- History first, because the run history is the reason to open
+ * ONE SCHEDULE (docs/schedules.md §6.2, detail variant A): detail A's head --
+ * the state pill and risk chip, one meta line, four figures (VQ-029) -- then tabs -- History first, because the run history is the reason to open
  * the page; then Budget, Gate, Settings and Audit, which are long and rarely
  * read. Every value is `GET /v1/schedules/{id}` as served, and the audit is
  * its own route, read when its tab is opened. Two things write: Edit, which
@@ -29,11 +29,11 @@ import {
   type ScheduleFiring,
   type ScheduleTypeRow,
 } from './api'
-import { Button, CIcon, Dialog, Tabs } from './components'
+import { Button, Chip, CIcon, Dialog, StatePill, Tabs } from './components'
 import { WarnGlyph } from './components/glyphs'
 import type { ApiError, Result } from './fetch'
 import { usd } from './measure'
-import { pluralise } from './types'
+import { pluralise, type TaskState } from './types'
 import { Absent, Mark } from './primitives'
 import { addressToPath } from './paths'
 import { EditSchedule, plainValue } from './ScheduleEdit'
@@ -292,7 +292,30 @@ function ScopeRepos({ ids }: { ids: readonly string[] }) {
   )
 }
 
-/** One fact of the head: a name and its value. */
+/**
+ * A SCHEDULE'S STATE AS A PILL (schedules.html detail A, VQ-029): the mark and
+ * hue of the task state it reads like -- an enabled schedule is live, a paused
+ * one is parked and holds nothing, a disabled one is ended -- with the
+ * schedule's own word, never the task state's.
+ */
+const STATE_PILL: Readonly<Record<Schedule['state'], TaskState>> = {
+  enabled: 'RUNNING',
+  paused: 'PARKED',
+  auto_paused: 'PARKED',
+  disabled: 'CANCELLED',
+}
+
+/** One of the head's four figures (detail A: Next run, Last run, Live runs, Spend today). */
+function Figure({ name, children }: { name: string; children: ReactNode }) {
+  return (
+    <div className="sc-fig" data-fig={name}>
+      <dt>{name}</dt>
+      <dd>{children}</dd>
+    </div>
+  )
+}
+
+/** One fact of a tab: a name and its value. */
 function Fact({ name, children }: { name: string; children: ReactNode }) {
   return (
     <div className="sc-fact">
@@ -972,6 +995,10 @@ function DetailBody({
   onDone: (notice: ActNotice) => void
 }) {
   const now = useNow()
+  // WHAT FOLDS INTO MORE ON A PHONE (VQ-029): every action but Run now, and
+  // Edit. A desktop draws them all and no More (schedules.css).
+  const foldId = useId()
+  const [more, setMore] = useState(false)
   // THE TAB AND THE EDITOR ARE IN THE ADDRESS (AUT-11): a reload, Back and a
   // pasted link land where the person was.
   const at = (next: { tab?: DetailTab; edit?: boolean }) => go(scheduleAddress(s.schedule_id, next))
@@ -989,37 +1016,82 @@ function DetailBody({
   }
   return (
     <>
-      <div className="sc-head-row" data-testid="sc-head-row">
-        <ScheduleActions
-          s={s}
-          where="head"
-          onDone={onDone}
-          onDeleted={() => go(SCHEDULES_ADDRESS)}
-        />
-        <Button onClick={() => at({ tab, edit: true })}>Edit</Button>
+      <div className="sc-top">
+        <p className="sc-pills" data-testid="sc-pills">
+          <StatePill state={STATE_PILL[s.state]} label={STATE_WORD[s.state]} />
+          {s.tier !== null && (
+            <Chip title={`Risk tier ${s.tier}`}>{s.gate.merge === 'approve' ? `${s.tier} · merges need approval` : s.tier}</Chip>
+          )}
+          <DryRunChip s={s} />
+        </p>
+        <div className="sc-head-row" data-testid="sc-head-row" data-more={more ? 'open' : 'shut'}>
+          <ScheduleActions
+            s={s}
+            where="head"
+            foldId={foldId}
+            onDone={onDone}
+            onDeleted={() => go(SCHEDULES_ADDRESS)}
+          />
+          <Button className="sc-fold-edit" id={`${foldId}-edit`} onClick={() => at({ tab, edit: true })}>Edit</Button>
+          <Button className="sc-more" aria-expanded={more} aria-controls={`${foldId} ${foldId}-edit`} onClick={() => setMore((m) => !m)}>
+            More
+          </Button>
+        </div>
       </div>
       <Said notice={notice} />
-      <dl className="sc-facts sc-head">
-        <Fact name="Type">{s.tier === null ? s.type : `${s.type} · ${s.tier}`}</Fact>
-        <Fact name="When">
-          {s.words ?? s.cron} <span className="sc-sub mono">{s.cron} · {s.timezone}</span>
-        </Fact>
-        <Fact name="Scope">
+      <p className="sc-meta" data-testid="sc-meta">
+        <span>{s.type}</span>
+        <span>
           {s.scope.mode === 'all' ? 'every registered repository' : s.scope.mode === 'platform' ? 'the platform' : <ScopeRepos ids={s.scope.repo_ids ?? []} />}
-        </Fact>
-        <Fact name="Owner">{s.owner}</Fact>
-        <Fact name="State">
-          {STATE_WORD[s.state]}
-          <DryRunChip s={s} />
-          {s.pause !== null && s.state !== 'enabled' && (s.pause.reason || s.pause.code) && <span className="sc-sub">{s.pause.reason || s.pause.code}</span>}
-        </Fact>
-        <Fact name="Next run">
-          {s.next_run_at === null ? <i className="ctl-em">&mdash; none while {STATE_WORD[s.state]}</i> : <span title={localTime(s.next_run_at)}>{untilWords(s.next_run_at, now)}</span>}
-        </Fact>
-        <Fact name="Spend today">
-          <SpendFigure usdReported={s.spend_today.reported_usd} unreported={s.spend_today.unreported_attempts} what="today's runs" />
-        </Fact>
-        <Fact name="Waiting">{s.pending_approvals > 0 ? `${s.pending_approvals} for approval` : 'none'}</Fact>
+        </span>
+        <span>
+          {s.words ?? s.cron} <code>{s.cron}</code> {s.timezone}
+        </span>
+        <span>
+          owner <b>{s.owner}</b>
+        </span>
+        {s.pause !== null && s.state !== 'enabled' && (s.pause.reason || s.pause.code) && <span>{s.pause.reason || s.pause.code}</span>}
+      </p>
+      <dl className="sc-figs" data-testid="sc-figs">
+        <Figure name="Next run">
+          {s.next_run_at === null ? (
+            <i className="ctl-em">&mdash; none while {STATE_WORD[s.state]}</i>
+          ) : (
+            <span className="sc-fig-v" title={localTime(s.next_run_at)}>{untilWords(s.next_run_at, now)}</span>
+          )}
+        </Figure>
+        <Figure name="Last run">
+          {s.last_firing === null ? (
+            <i className="ctl-em">&mdash; never fired</i>
+          ) : (
+            <>
+              <span className="sc-fig-v">{s.last_firing.outcome ?? 'in progress'}</span>
+              {(s.last_firing.ended_at ?? s.last_firing.slot) !== null && (
+                <span className="sc-sub" title={localTime(s.last_firing.ended_at ?? s.last_firing.slot ?? '')}>
+                  {timeAgo(s.last_firing.ended_at ?? s.last_firing.slot ?? '', now)}
+                </span>
+              )}
+            </>
+          )}
+        </Figure>
+        <Figure name="Live runs">
+          {s.budget_use === undefined || s.budget_use === null ? (
+            <i className="ctl-em">&mdash; not served with this schedule</i>
+          ) : (
+            <span className="sc-fig-v">
+              {s.budget_use.live_items}
+              {s.budget.max_concurrent !== undefined && <small> of {s.budget.max_concurrent}</small>}
+            </span>
+          )}
+          <span className="sc-sub">{s.pending_approvals > 0 ? `${s.pending_approvals} waiting for approval` : 'none waiting for approval'}</span>
+        </Figure>
+        <Figure name="Spend today">
+          <span className="sc-fig-v">
+            <SpendFigure usdReported={s.spend_today.reported_usd} unreported={s.spend_today.unreported_attempts} what="today's runs" />
+            {s.budget.per_day_usd !== undefined && <small> of {usd(s.budget.per_day_usd)}</small>}
+          </span>
+          {s.budget.per_day_usd === undefined && <span className="sc-sub">no daily budget set</span>}
+        </Figure>
       </dl>
       <Tabs
         className="sc-tabs"
