@@ -253,7 +253,10 @@ describe('N19 work-a-008: a workflow group says how many of its steps the span d
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     const head = await waitFor(() => {
       const el = document.querySelector<HTMLElement>('.tl-row.is-group[data-group="wf_five"] .tl-lab')
-      expect(el?.textContent).toMatch(/steps/)
+      // A digit before 'steps': the placeholder 'steps: reading…' says steps
+      // too, and matching it read the header before the workflow (CI run
+      // 40279737042).
+      expect(el?.textContent).toMatch(/\d steps/)
       return el!
     })
     // MUTATION: print `${steps.length} steps` again and the header says 5
@@ -306,7 +309,10 @@ describe('N19 work-a-008: a workflow group says how many of its steps the span d
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     const head = await waitFor(() => {
       const el = document.querySelector<HTMLElement>('.tl-row.is-group[data-group="wf_five"] .tl-lab')
-      expect(el?.textContent).toMatch(/steps/)
+      // A digit before 'steps': the placeholder 'steps: reading…' says steps
+      // too, and matching it read the header before the workflow (CI run
+      // 40279737042).
+      expect(el?.textContent).toMatch(/\d steps/)
       return el!
     })
     // MUTATION: draw an empty lane for every step with no row on the page
