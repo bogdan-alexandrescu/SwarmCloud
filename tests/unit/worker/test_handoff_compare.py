@@ -281,3 +281,73 @@ def test_the_lane_authors_section_names_the_profile_the_presets_and_the_command(
                    "swarm-handoff device phone-390", "phone-380", "swarm-handoff theme dark",
                    "swarm-handoff theme light", "127.0.0.1", "no-auth", "Keycloak"):
         assert needed in section, needed
+
+
+# -- the size cap (IMPLEMENT-RENDER-FINISH) ---------------------------------------
+#
+# The first continuation of this lane timed out at 7,200 s with four cores busy
+# for most of two hours. A pure-Python decode and grid over a full-size capture
+# is the one loop in this command whose cost grows with its input, so the
+# command never decodes more than COMPARE_MAX_PIXELS with the standard library:
+# it reads the size from the header and refuses before it decompresses.
+
+
+def _header_only_png(width: int, height: int) -> bytes:
+    """A PNG whose header claims `width` x `height` and whose data is one empty
+    row: decoding it would fail, so a refusal by size proves the size was read
+    first. Built in microseconds, whatever size it claims."""
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(b"\x00")) + chunk(b"IEND", b"")
+
+
+@pytest.mark.parametrize("which", ["shot", "frame"])
+def test_an_image_over_the_size_cap_is_refused_before_it_is_decoded(tmp_path, monkeypatch, capsys, which):
+    qa = _command()
+    small = _png(16, 16, _page)
+    # 4000 x 4000 is 16 M pixels: over the cap, and what a 2x full-page frame comes to.
+    huge = _header_only_png(4000, 4000)
+    shot, frame = (huge, small) if which == "shot" else (small, huge)
+    code, report, artifacts = _run(qa, tmp_path, monkeypatch, shot, frame, capsys=capsys)
+
+    assert code == qa.EXIT_REFUSED
+    assert report["code"] == "too_large", report
+    assert "%s.png" % which in report["message"]
+    assert "4000" in report["message"]
+    assert not (artifacts / "compare").exists()
+
+
+def test_the_cap_admits_a_2x_desktop_frame():
+    """The headline case, a 1440 x 900 desktop shot against its 2x export, is
+    never refused: the cap is over 2880 x 1800."""
+    qa = _command()
+    assert 2880 * 1800 <= qa.COMPARE_MAX_PIXELS < 4000 * 4000
+
+
+@pytest.mark.parametrize(
+    ("size", "factor"),
+    [((1440, 900), 1), ((2880, 1800), 1), ((2880, 6000), 2), ((2880, 12000), 3), ((390 * 3, 844 * 3), 1)],
+)
+def test_a_decoder_that_can_shrink_shrinks_by_the_smallest_whole_factor_under_the_cap(size, factor):
+    """With Pillow (the image's venv), an image over the cap is box-averaged by
+    a whole factor in C instead of refused: the grid compares CSS-pixel cells,
+    so a frame at 3x scores as one at 1x."""
+    qa = _command()
+    width, height = size
+    assert qa.reduction(width, height) == factor
+    assert (width // factor) * (height // factor) <= qa.COMPARE_MAX_PIXELS
+
+
+def test_an_image_past_any_decoder_is_refused_even_with_pillow():
+    qa = _command()
+    with pytest.raises(qa.TooLarge):
+        qa.reduction(16384, 16384)
+
+
+def test_a_half_transparent_pixel_is_composited_over_white():
+    qa = _command()
+    pixels = bytes((0, 0, 0, 128, 255, 0, 0, 255, 10, 20, 30, 0))
+    assert qa._opaque_rgb(3, 1, 4, pixels) == bytes((127, 127, 127, 255, 0, 0, 255, 255, 255))
