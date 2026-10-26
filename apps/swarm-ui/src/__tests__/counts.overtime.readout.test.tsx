@@ -243,8 +243,8 @@ describe('the overlaid readout never holds more than it shows', () => {
  * the chart and under it, in both themes. jsdom lays nothing out, so the rule
  * that decides it is read: every cover in the readout wraps inside its cell.
  */
-describe('a readout cover is never wider than its cell', () => {
-  it('wraps every cover in the readout, and no wide-plot rule sets it back to one line', async () => {
+describe('a readout cover is never wider than its cell, by the rule (jsdom lays nothing out, so this reads white-space and min-width, not geometry)', () => {
+  it('sets every cover in the readout to wrap, and no wide-plot rule sets it back to one line', async () => {
     const style = document.createElement('style')
     style.textContent = css
     document.head.appendChild(style)
@@ -268,6 +268,104 @@ describe('a readout cover is never wider than its cell', () => {
     const block = css.slice(at, css.indexOf('\n}', at))
     expect(block, 'the overlay puts a readout cover back on one line').not.toMatch(/\.pot-cov\s*\{[^}]*white-space:\s*nowrap/)
     expect(block).not.toMatch(/\.pot-readout-row\s*\{[^}]*min-width:\s*(?!0)/)
+  })
+})
+
+/**
+ * THE OVERLAY STILL FITS WITH EVERY COVER ON ITS LINE (re-review of PR 2348,
+ * 2026-10-25): wrapping the covers ended the overlap but gave up F6 -- each
+ * long cover took a second line in its 136px column, the overlay's content
+ * grew to 254-289px in its 248px box, and the fit measure sent 25 of 26 picked
+ * readouts, and every hovered one with a stopped-run estimate, under the
+ * chart, so the page under it jumped 153px as the pointer crossed the bars.
+ *
+ * jsdom lays nothing out, so the 1440 render's geometry is modelled from what
+ * the review measured there: a column 136px wide (minmax(118px, 1fr) at that
+ * plot width), 8px between columns, a cover about 5.6px a character ("N of N
+ * attempts reported", 28 characters, drew 156px). A row takes as many columns
+ * as the overlay's own rules in overtime.css give it (read here: jsdom skips a
+ * container rule). Every cover that does not fit its cell adds its second
+ * line, 17px, to the readout, which with every cover on one line is 236px in
+ * the 248px it has.
+ */
+const COLUMN_PX = 136
+const COLUMN_GAP_PX = 8
+const GLYPH_PX = 5.6
+const ONE_LINE_PX = 236
+const ROOM_PX = 248
+const SECOND_LINE_PX = 17
+
+/** The overlay's rules that set a readout row's `grid-column: span N`, as [selector, N]. */
+function overlaySpans(): Array<[string, number]> {
+  const at = css.indexOf('@container pot-plot (min-width: 640px)')
+  const block = css.slice(at, css.indexOf('\n}', at))
+  return Array.from(block.matchAll(/([^{}]+)\{([^}]*)\}/g))
+    .map((m) => [m[1]!.trim(), /grid-column:\s*span\s+(\d+)/.exec(m[2]!)?.[1]] as const)
+    .filter((r): r is readonly [string, string] => r[1] !== undefined && /pot-readout-row/.test(r[0]))
+    .map(([sel, n]) => [sel, Number(n)])
+}
+
+/** How many of the readout's covers would take a second line at 1440. */
+function wrappedCovers(ro: HTMLElement): number {
+  const spans = overlaySpans()
+  let wrapped = 0
+  for (const row of Array.from(ro.querySelectorAll<HTMLElement>('.pot-readout-row'))) {
+    const span = spans.find(([sel]) => row.matches(sel))?.[1] ?? 1
+    const cell = COLUMN_PX * span + COLUMN_GAP_PX * (span - 1)
+    for (const c of Array.from(row.querySelectorAll('.pot-cov'))) if ((c.textContent ?? '').length * GLYPH_PX > cell) wrapped += 1
+  }
+  return wrapped
+}
+
+function laidOut1440(): () => void {
+  const sh = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
+  const ch = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight')
+  const content = (el: HTMLElement) => ONE_LINE_PX + SECOND_LINE_PX * wrappedCovers(el)
+  Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get() { return this.classList.contains('pot-readout') ? content(this) : 0 } })
+  Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+    configurable: true,
+    get() { return this.classList.contains('pot-readout') ? (this.dataset.place === 'under' ? content(this) : ROOM_PX) : 0 },
+  })
+  return () => {
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', sh ?? { configurable: true, value: 0 })
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', ch ?? { configurable: true, value: 0 })
+  }
+}
+
+describe('the overlaid readout keeps every cover on one line at 1440, so it stays over the chart (F6)', () => {
+  it('stays over the chart picked and hovered, with a stopped-run estimate too', async () => {
+    // Every third week carries a stopped-run estimate, as the dev fixture does.
+    const estimated = BUCKETS.map((b, i) => (i % 3 === 0 ? { ...b, cost: { ...b.cost, estimated: 40, estimated_usd: 123.45 } } : b))
+    const p = payload()
+    if (p.status === 'ok') p.data.usage.buckets = estimated
+    loadPlatformTime.mockResolvedValue(p)
+    const restore = laidOut1440()
+    try {
+      render(<PlatformOverTime workspaces={2} />)
+      fireEvent.click(screen.getByRole('button', { name: /^Run/ }))
+      await waitFor(() => expect(document.querySelector('.pot-agents')).not.toBeNull())
+      let seen = 0
+      for (let i = 0; i < estimated.length; i += 1) {
+        // MUTATION: drop the overlay's `grid-column: span 2` on the long-cover
+        // rows, and "100 of 100 attempts reported" takes a second line in its
+        // 136px column, the readout outgrows its room and goes under the chart.
+        fireEvent.click(hits()[i]!)
+        const picked = document.querySelector<HTMLElement>('.pot-readout')!
+        expect(picked.querySelectorAll('.pot-cov').length, 'the readout drew no cover to measure').toBeGreaterThan(0)
+        expect(wrappedCovers(picked), `week ${i}: a cover takes a second line over the chart`).toBe(0)
+        expect(picked.hasAttribute('data-place'), `week ${i}: the picked readout went under the chart`).toBe(false)
+        fireEvent.keyDown(document.querySelector<HTMLElement>('.pot-agents .pot-chart')!, { key: 'Escape' })
+        fireEvent.mouseEnter(hits()[i]!)
+        const hovered = document.querySelector<HTMLElement>('.pot-readout')!
+        expect(hovered.hasAttribute('data-place'), `week ${i}: the hovered readout went under the chart`).toBe(false)
+        fireEvent.mouseLeave(hits()[i]!.closest('svg')!)
+        seen += 1
+      }
+      expect(seen).toBe(estimated.length)
+      expect(estimated.some((b) => b.cost.estimated > 0), 'no week carried an estimate').toBe(true)
+    } finally {
+      restore()
+    }
   })
 })
 
