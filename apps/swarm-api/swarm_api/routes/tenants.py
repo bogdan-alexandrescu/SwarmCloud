@@ -296,8 +296,11 @@ def _stored_names(ctx: AppContext, tenant_ids: list[str]) -> dict[str, str]:
     failed read leaves every one out, logged, and never fails the route."""
     if not tenant_ids:
         return {}
-    collection = ctx.db.collection(TENANTS)
     try:
+        # The client is reached inside the try too: a context without one (a
+        # test's bare namespace, a store not yet built) is a failed read like
+        # any other, so the route still answers with the group emails.
+        collection = ctx.db.collection(TENANTS)
         snaps = list(ctx.db.get_all([collection.document(t) for t in dict.fromkeys(tenant_ids)]))
     except Exception:  # noqa: BLE001 - an unread name is served as today's group email
         log.warning("tenants/mine could not read the workspaces' names", exc_info=True)
