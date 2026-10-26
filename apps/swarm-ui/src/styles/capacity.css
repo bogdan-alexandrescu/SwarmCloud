@@ -263,7 +263,8 @@
    is ~400px, the whole of `provider:anthropic:tenant:u-bogdan`. Run 2 shot
    1440 with the nav open, the ~1054 table, so the name still did not fit on
    one line there: it now wraps rather than being cut (`.quota-feeds a`).
-   EACH PX WIDTH IS CAPPED AT ITS OLD SHARE (`min(Npx, N%)`, QA-057 review).
+   EACH PX WIDTH IS CAPPED AT ITS OLD SHARE (QA-057 review; a container
+   query since the VQ-036 review, below).
    In bare px the bounded columns are 724px: a 1280px viewport with the nav
    open (a ~894px table) left Feeds pool ~27px, and below ~1250px the fixed
    table outgrew its card and pushed Reported past its edge -- the regression
@@ -276,13 +277,32 @@
    middle-cut with its last eight kept (`MiddleCut`), so 120px holds it; the
    ~50px it gives back go to Feeds pool, the one flexible column. Capped at
    its old share for the reason the px widths are (QA-057 review). */
-.quota-table col.quota-c-tenant { width: min(120px, 16%); }
-.quota-table col.quota-c-state { width: min(168px, 16%); }
-.quota-table col.quota-c-cap { width: min(116px, 11%); }
-.quota-table col.quota-c-left { width: min(104px, 10%); }
-.quota-table col.quota-c-429s { width: min(124px, 12%); }
-.quota-table col.quota-c-last { width: min(136px, 13%); }
-.quota-table col.quota-c-rep { width: min(76px, 7%); }
+/* A <COL> WIDTH IS A PLAIN LENGTH, NEVER `min()` (VQ-036 review, rendered
+   2026-10-26). Chromium drops a `min(px, %)` width on a column of this
+   fixed table and sizes it as auto, so all eight columns came out an equal
+   130px at 1440 with the nav open and Feeds pool still broke every name over
+   three lines. The cap the `min()` meant is a container query instead: the
+   px widths hold while the table is at least 993px, where their 844px leave
+   Feeds pool its 15% (149px); below that each bounded column takes its old
+   share, which leaves the pool exactly 15% again, so the two meet at 993.
+   At the ~1054px table (1440, nav open) Feeds pool is ~210px. */
+.quota-table { container: quota-table / inline-size; }
+.quota-table col.quota-c-tenant { width: 120px; }
+.quota-table col.quota-c-state { width: 168px; }
+.quota-table col.quota-c-cap { width: 116px; }
+.quota-table col.quota-c-left { width: 104px; }
+.quota-table col.quota-c-429s { width: 124px; }
+.quota-table col.quota-c-last { width: 136px; }
+.quota-table col.quota-c-rep { width: 76px; }
+@container quota-table (max-width: 992px) {
+  .quota-table col.quota-c-tenant { width: 16%; }
+  .quota-table col.quota-c-state { width: 16%; }
+  .quota-table col.quota-c-cap { width: 11%; }
+  .quota-table col.quota-c-left { width: 10%; }
+  .quota-table col.quota-c-429s { width: 12%; }
+  .quota-table col.quota-c-last { width: 13%; }
+  .quota-table col.quota-c-rep { width: 7%; }
+}
 .quota-table thead th { white-space: normal; }
 /* THE POOL NAME WRAPS AT ITS COLONS, WHOLE (QA-057, visual QA run 2). At
    1440 the column is ~160px and the name up to ~265px, so a one-line name
@@ -342,7 +362,10 @@
 .quota-state { display: inline-flex; align-items: center; gap: 7px; font-size: var(--t-micro); color: var(--text); }
 @media (max-width: 899px) {
   .quota-table > table { table-layout: auto; width: max-content; min-width: 100%; }
-  .quota-table col { width: auto; }
+  /* `[class]` so it outranks the px and container widths above: in the
+     auto layout a px column width is a floor, and the max-content table
+     would grow by it. */
+  .quota-table col[class] { width: auto; }
 }
 
 

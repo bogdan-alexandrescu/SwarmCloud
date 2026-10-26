@@ -186,9 +186,27 @@ describe('VQ-032: at 390 a pool is one compact row', () => {
 describe('VQ-036: Provider quota gives the slack to Feeds pool', () => {
   it('holds Tenant to a tenant id’s width, and lets the ceiling note wrap rather than cut', () => {
     const col = build('div.quota-table > table > colgroup > col.quota-c-tenant', hosts)
-    expect(painted(col, 'width', WIDE)).toBe('min(120px, 16%)')
+    expect(painted(col, 'width', WIDE)).toBe('120px')
     const note = build('div.quota-table > table > tbody > tr > td.quota-feeds > span.quota-ceiling', hosts)
     expect(painted(note, 'white-space', WIDE)).toBe('normal')
     expect(painted(note, 'text-overflow', WIDE)).not.toBe('ellipsis')
+  })
+
+  // REVIEW (rendered 2026-10-26): Chromium sizes a `<col>` whose width is
+  // `min(px, %)` as auto, so every column came out an equal 130px and Feeds
+  // pool gained nothing. jsdom echoes `min()` back, so the guard is on the
+  // value's shape: a plain px or % length, the cap moved to a container query.
+  // MUTATION: write any bounded column as `min(120px, 16%)` again.
+  it('sizes every bounded column with a plain length Chromium honours, at both table widths', () => {
+    const names = ['tenant', 'state', 'cap', 'left', '429s', 'last', 'rep']
+    for (const container of [1054, 894]) {
+      for (const n of names) {
+        const col = build(`div.quota-table > table > colgroup > col.quota-c-${n}`, hosts)
+        const w = painted(col, 'width', { width: 1440, container })
+        expect(w, `${n} in a ${container}px table`).toMatch(/^\d+(\.\d+)?(px|%)$/)
+      }
+    }
+    const feeds = build('div.quota-table > table > colgroup > col.quota-c-feeds', hosts)
+    expect(painted(feeds, 'width', { width: 1440, container: 1054 })).toBeNull()
   })
 })

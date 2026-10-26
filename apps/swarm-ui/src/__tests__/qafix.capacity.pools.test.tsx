@@ -220,7 +220,7 @@ describe('QA-057: the Feeds pool column takes the quota table\'s slack', () => {
     let used = 0
     for (const c of cols) {
       if (c.classList.contains('quota-c-feeds')) continue
-      used += px(painted(c, 'width', WIDE)!, table)
+      used += px(painted(c, 'width', { ...WIDE, container: table })!, table)
     }
     return table - used
   }
@@ -255,7 +255,7 @@ describe('QA-057: the Feeds pool column takes the quota table\'s slack', () => {
     // 899px), is a ~514px table. Bounded columns in bare px (724px) left
     // Feeds pool ~27px at 894 and less than nothing at 514, where the fixed
     // table outgrew its card and pushed Reported past its edge.
-    // MUTATION: drop the `min(..., N%)` from any bounded column -- Feeds pool
+    // MUTATION: drop the narrow-table container query -- Feeds pool
     // falls below 15% at 894, and the columns overflow the table at 514.
     for (const table of [514, 894]) {
       expect(feedsAt(cols, table), `${table}px table`).toBeGreaterThanOrEqual(0.15 * table - 0.5)
