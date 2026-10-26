@@ -19,6 +19,7 @@ import type { Result } from '../fetch'
 import type { WorkflowBoard, WorkflowUsage } from '../api'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
 import { painted } from './marks'
+import { mixChipW, monoW } from '../dag'
 import { ownFromBoard } from './workflowsById'
 
 const api = vi.hoisted(() => ({
@@ -224,6 +225,32 @@ describe('VQ-013: the list is compact rows under one note', () => {
     const mix = line.querySelector(':scope > .wfl-mix')!
     expect(painted(mix, 'display', { width: 1440 })).toBe('block')
     expect(painted(mix, 'display', { width: 1680 })).toBe('none')
+  })
+
+  // MUTATION: put back `flex: 1 0 0; min-width: 56px`, which left the mix
+  // 56px beside the name at 1440 and cut every row's runners to 'clau…'.
+  it('keeps room on the name’s line for one whole runner chip, and cuts the id and the name instead', async () => {
+    render(<WorkflowsScreen />)
+    await waitFor(() => expect(row('wf_chain')).toBeTruthy())
+    const line = row('wf_chain').querySelector<HTMLElement>('td[data-col="workflow"] > .wfl-line')!
+    const mix = line.querySelector(':scope > .wfl-mix')!
+    // One folded chip as `Mix` measures it: the `×N` chip plus the seven characters ' · N steps' adds.
+    const oneChip = mixChipW({ profile: 'claude-code', count: 5 }) + monoW(7, 12)
+    const px = (v: string | null) => {
+      const m = /^([\d.]+)(px|rem)$/.exec(v ?? '')
+      expect(m, `not a length: ${v}`).not.toBeNull()
+      return Number(m![1]) * (m![2] === 'rem' ? 16 : 1)
+    }
+    expect(px(painted(mix, 'min-width', { width: 1440 }))).toBeGreaterThanOrEqual(oneChip)
+    const [grow, shrink, basis] = (painted(mix, 'flex', { width: 1440 }) ?? '').split(/\s+/)
+    expect(grow).toBe('1')
+    expect(shrink, 'the mix gives way before the id and the name').toBe('0')
+    expect(px(basis!)).toBeGreaterThanOrEqual(oneChip)
+    // The id gives way first, then the name, down to its floor.
+    const [, idShrink] = (painted(line.querySelector(':scope > .id')!, 'flex', { width: 1440 }) ?? '').split(/\s+/)
+    const [, nameShrink] = (painted(line.querySelector(':scope > a')!, 'flex', { width: 1440 }) ?? '').split(/\s+/)
+    expect(Number(idShrink)).toBeGreaterThan(Number(nameShrink))
+    expect(Number(nameShrink)).toBeGreaterThan(0)
   })
 })
 

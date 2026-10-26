@@ -1755,7 +1755,15 @@ function Head({
                 </span>
               )}
               {c.to === null ? (
-                <span className="id ctl-crumb-obj" aria-current="page" title={object ?? undefined}>
+                // A WORKFLOW'S NAME IS PROSE, NOT AN ID (VQ-015 review, #2391):
+                // 'Audit the operator scripts and the Terraform' was set in the
+                // id's monospace face. The id face stays for an id, and for an
+                // agent's name, which carries its hash.
+                <span
+                  className={named === null && workflowName !== null ? 'ctl-crumb-obj' : 'id ctl-crumb-obj'}
+                  aria-current="page"
+                  title={object ?? undefined}
+                >
                   {c.label}
                 </span>
               ) : (

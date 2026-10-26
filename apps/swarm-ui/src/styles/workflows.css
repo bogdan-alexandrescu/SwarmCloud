@@ -110,15 +110,20 @@
   .wfl .wfl-table td[data-col="cost"],
   .wfl .wfl-table td[data-col="owner"] { font-size: var(--t-micro); }
   .wfl .wfl-name { min-width: 0; }
-  /* ONE LINE (VQ-013): the name keeps its room first, the id beside it is
-     cut first, and the runner mix takes what is left (at least a `+N` chip).
-     The mix measures its own width to fold its chips (`Mix`), so its basis is
-     0 and its width comes from the line, never from what it draws. */
+  /* ONE LINE (VQ-013): the id beside the name is cut first, then the name,
+     and the runner mix keeps room for one whole chip. At 1440 a basis of 0
+     and a 56px floor left the mix 56px beside a 247px name, and every row's
+     'claude-code · 5 steps' drew as 'clau…' (VQ-013 review) -- in the band
+     where the mix is the only place the runners are shown. 11rem (176px) is
+     one folded chip as `Mix` measures it: 'claude-code · 5 steps' is 169px
+     (dag.ts `mixChipW` plus `STEPS_WORD_W`). The basis is a length, not
+     `auto`: the mix measures its own width to fold its chips, so its width
+     comes from the line, never from what it draws. */
   .wfl .wfl-line > a { flex: 0 1 auto; min-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* THE ID IS ONE LINE, CUT (QA G3-09): it broke across two and three lines
      (`wf_37d2a419ea5a4bb / eb463`) in a 166px column. Whole in its title. */
   .wfl .wfl-line > .id { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .wfl .wfl-line > .wfl-mix { flex: 1 0 0; min-width: 56px; }
+  .wfl .wfl-line > .wfl-mix { flex: 1 0 11rem; min-width: 11rem; }
   /* The current step is the row's one second line, cut with its title. */
   .wfl .wfl-name > .wfl-why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .wfl .wfl-table th[data-col="workflow"] { min-width: 280px; }

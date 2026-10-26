@@ -2696,6 +2696,13 @@ function useNow(): number {
 }
 
 /**
+ * The level rail and its gap beside the canvas: `.wf-levels`' 72px and
+ * `.wf-graph`'s `--ctl-s3` (12px), the same two figures `CANVAS_COLUMN`
+ * (dag.ts) is kept in step with.
+ */
+const LEVEL_RAIL_W = 72 + 12
+
+/**
  * One stage's address in the board-wide expansion store.
  *
  * THE LEVEL GOES FIRST AND THAT IS THE WHOLE TRICK. `${id}-${level}` collides:
@@ -2706,13 +2713,6 @@ function useNow(): number {
  * not: one of those in a `.tsx` makes git call the whole file binary and stop
  * showing anyone its diff. (It did.)
  */
-/**
- * The level rail and its gap beside the canvas: `.wf-levels`' 72px and
- * `.wf-graph`'s `--ctl-s3` (12px), the same two figures `CANVAS_COLUMN`
- * (dag.ts) is kept in step with.
- */
-const LEVEL_RAIL_W = 72 + 12
-
 export function stageKey(workflowId: string, level: number): string {
   return `${level}|${workflowId}`
 }
