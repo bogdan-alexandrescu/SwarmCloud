@@ -363,6 +363,8 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 .facts span{font-size:12.5px;color:var(--text-dim)}
 .ph .facts{grid-template-columns:repeat(2,minmax(0,1fr))}
 .ph .facts>div{border-bottom:1px solid var(--line-soft)}
+.ph .facts>div:nth-child(even){border-right:0}
+.ph .facts>div:last-child:nth-child(odd){grid-column:1/-1;border-bottom:0}
 
 /* spend against the tripwire */
 .meter{position:relative;height:6px;border-radius:3px;background:var(--line);display:flex;overflow:visible;margin:10px 0 6px}
@@ -566,8 +568,8 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <span class="flab">Frame A3</span>
 <h2><span class="n">A3</span>A new or edited schedule</h2>
 <p>One page of numbered cards, with a side sheet that keeps the validation and the next firings in view. The sheet draws the server's own answers (<code>:preview</code>'s refusal and the type's caps), so the page shows problems before Create is pressed, not after.</p>
-<figure class="fr"><div class="scroller" data-f="a3"></div><figcaption><b>A3a · New issue-sweep schedule with two problems.</b> Every 10 minutes is under issue-sweep's shortest interval of 15 minutes, and $25 a run is over its $15 cap. Create stays off, and the sheet says why. Merge is approve, the type's default. Lowering it to off would need a platform admin, and auto is only the audited switch on the schedule page.</figcaption></figure>
-<figure class="fr"><div class="scroller" data-f="a3edit"></div><figcaption><b>A3b · Editing Bug sweep after its tripwire.</b> An edit has the same cards, but the type is fixed, and the sheet shows the change against the current version (revision 7). Saving does not resume the schedule: resuming is a separate step, and the lead says so.</figcaption></figure>
+<figure class="fr" id="A3a" data-frame="A3a"><div class="scroller" data-f="a3"></div><figcaption><b>A3a · New issue-sweep schedule with two problems.</b> Every 10 minutes is under issue-sweep's shortest interval of 15 minutes, and $25 a run is over its $15 cap. Create stays off, and the sheet says why. Merge is approve, the type's default. Lowering it to off would need a platform admin, and auto is only the audited switch on the schedule page.</figcaption></figure>
+<figure class="fr" id="A3b" data-frame="A3b"><div class="scroller" data-f="a3edit"></div><figcaption><b>A3b · Editing Bug sweep after its tripwire.</b> An edit has the same cards, but the type is fixed, and the sheet shows the change against the current version (revision 7). Saving does not resume the schedule: resuming is a separate step, and the lead says so.</figcaption></figure>
 </section>
 
 <section class="frame" id="A4" data-frame="A4">
@@ -575,7 +577,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <h2><span class="n">A4</span>Approvals: waiting, decided and expired</h2>
 <p>Automate › Approvals is the record. Waiting comes first, oldest first, each with its time to expiry. Then decided (approved, denied or superseded, by whom, when, and the reason), then expired. The kind filter holds every kind the API serves, each with its count.</p>
 <figure class="fr"><div class="scroller" data-f="a4"></div><figcaption><b>A4 · Desktop, every kind.</b> Waiting is oldest first here, where the landing's inbox is most urgent first: here the question is "what has waited longest", there it is "what do I do now". Proposal, Spec and Answer read 0 because none is stored or projected, a count that was read. A row opens its decision page (A5).</figcaption></figure>
-<figure class="fr"><div class="scroller" data-f="a4merge"></div><figcaption><b>A4b · Filtered to merge.</b> The filter keeps all three sections and narrows each.</figcaption></figure>
+<figure class="fr" id="A4b" data-frame="A4b"><div class="scroller" data-f="a4merge"></div><figcaption><b>A4b · Filtered to merge.</b> The filter keeps all three sections and narrows each.</figcaption></figure>
 </section>
 
 <section class="frame" id="A5" data-frame="A5">
@@ -614,9 +616,9 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <h2><span class="n">A7</span>Phone at 390: A1, A2 and A5</h2>
 <p>The phone header takes the spine colour. Inbox rows stack their columns, the schedules become one compact row each, a history table's rows become cards, and A5's decision bar sits at the foot of the screen with full-width buttons.</p>
 <div class="pair">
-  <figure class="fr"><div data-f="p-a1"></div><figcaption><b>A7a · A1 on a phone.</b> The inbox first, then the schedules, one compact row each: name, state, next firing, last firing and spend.</figcaption></figure>
-  <figure class="fr"><div data-f="p-a2"></div><figcaption><b>A7b · A2 on a phone.</b> The actions wrap under the title, and the fact strip takes two columns.</figcaption></figure>
-  <figure class="fr"><div data-f="p-a5"></div><figcaption><b>A7c · A5 pending on a phone.</b> The question, the four evidence cards, then the decision bar.</figcaption></figure>
+  <figure class="fr" id="A7a" data-frame="A7a"><div data-f="p-a1"></div><figcaption><b>A7a · A1 on a phone.</b> The inbox first, then the schedules, one compact row each: name, state, next firing, last firing and spend.</figcaption></figure>
+  <figure class="fr" id="A7b" data-frame="A7b"><div data-f="p-a2"></div><figcaption><b>A7b · A2 on a phone.</b> The actions wrap under the title, and the fact strip takes two columns.</figcaption></figure>
+  <figure class="fr" id="A7c" data-frame="A7c"><div data-f="p-a5"></div><figcaption><b>A7c · A5 pending on a phone.</b> The question, the four evidence cards, then the decision bar.</figcaption></figure>
 </div>
 </section>
 

@@ -640,8 +640,8 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <section class="frame" id="A3" data-frame="A3">
   <div class="flab"><span class="fid">A3</span><b>Automate › Schedules › New schedule · desktop 1440</b></div>
   <p>The editor opens beside the list. Its cadence preview is drawn as a lane, so the next firings show among the schedules already on the axis. Validation is shown in place, next to the field, and summed at the top, where Save says what blocks it.</p>
-  <div class="sub"><div class="slab"><span class="sid">A3a</span>New issue sweep, with two things to fix</div><div class="scroller" data-f="a3-d"></div></div>
-  <div class="sub"><div class="slab"><span class="sid">A3b</span>Editing Nightly visual QA <span class="dim">· the right pane only; the list on its left is A3a's</span></div><div class="scroller" data-f="a3-edit"></div></div>
+  <div class="sub" id="A3a" data-frame="A3a"><div class="slab"><span class="sid">A3a</span>New issue sweep, with two things to fix</div><div class="scroller" data-f="a3-d"></div></div>
+  <div class="sub" id="A3b" data-frame="A3b"><div class="slab"><span class="sid">A3b</span>Editing Nightly visual QA <span class="dim">· the right pane only; the list on its left is A3a's</span></div><div class="scroller" data-f="a3-edit"></div></div>
 </section>
 
 <h2><span class="n">A4</span>Approvals: what waits, against its expiry</h2>
@@ -655,13 +655,13 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <section class="frame" id="A5" data-frame="A5">
   <div class="flab"><span class="fid">A5</span><b>Automate › Approvals › Merge pull request #2392 · desktop 1440</b></div>
   <p>The approval opens on where it sits in its schedule's timeline: the firing that asked for it, the request, the firings it holds up, and its expiry. Then come what Approve, Deny and no decision each do to the next firing, then the evidence, then who may decide. A5a is the whole screen. A5b to A5f are the right pane in each other state, and the list on their left is A5a's.</p>
-  <div class="sub"><div class="slab"><span class="sid">A5a</span>Waiting, seen by the platform owner</div><div class="scroller" data-f="a5-d"></div></div>
+  <div class="sub" id="A5a" data-frame="A5a"><div class="slab"><span class="sid">A5a</span>Waiting, seen by the platform owner</div><div class="scroller" data-f="a5-d"></div></div>
   <div>
-    <div class="sub"><div class="slab"><span class="sid">A5b</span>Approved</div><div class="scroller" data-f="a5-approved"></div></div>
-    <div class="sub"><div class="slab"><span class="sid">A5c</span>Denied, with the reason</div><div class="scroller" data-f="a5-denied"></div></div>
-    <div class="sub"><div class="slab"><span class="sid">A5d</span>Expired</div><div class="scroller" data-f="a5-expired"></div></div>
-    <div class="sub"><div class="slab"><span class="sid">A5e</span>Superseded: the head moved after the request</div><div class="scroller" data-f="a5-superseded"></div></div>
-    <div class="sub"><div class="slab"><span class="sid">A5f</span>Seen by a member who may not decide</div><div class="scroller" data-f="a5-member"></div></div>
+    <div class="sub" id="A5b" data-frame="A5b"><div class="slab"><span class="sid">A5b</span>Approved</div><div class="scroller" data-f="a5-approved"></div></div>
+    <div class="sub" id="A5c" data-frame="A5c"><div class="slab"><span class="sid">A5c</span>Denied, with the reason</div><div class="scroller" data-f="a5-denied"></div></div>
+    <div class="sub" id="A5d" data-frame="A5d"><div class="slab"><span class="sid">A5d</span>Expired</div><div class="scroller" data-f="a5-expired"></div></div>
+    <div class="sub" id="A5e" data-frame="A5e"><div class="slab"><span class="sid">A5e</span>Superseded: the head moved after the request</div><div class="scroller" data-f="a5-superseded"></div></div>
+    <div class="sub" id="A5f" data-frame="A5f"><div class="slab"><span class="sid">A5f</span>Seen by a member who may not decide</div><div class="scroller" data-f="a5-member"></div></div>
   </div>
 </section>
 
@@ -669,10 +669,10 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <section class="frame" id="A6" data-frame="A6">
   <div class="flab"><span class="fid">A6</span><b>Automate with nothing in it, not served, unread, or quiet · desktop 1440</b></div>
   <p>Each is drawn as the whole screen. The axis stays even when there is no lane, so the page reads as the same page with nothing on it, not as an error. A figure that could not be read is a dash with its reason, never 0.</p>
-  <div class="sub"><div class="slab"><span class="sid">A6a</span>No schedules yet</div><div class="scroller" data-f="a6-none"></div></div>
-  <div class="sub"><div class="slab"><span class="sid">A6b</span>Automate not served by this deployment</div><div class="scroller" data-f="a6-off"></div></div>
-  <div class="sub"><div class="slab"><span class="sid">A6c</span>A read that failed</div><div class="scroller" data-f="a6-fail"></div></div>
-  <div class="sub"><div class="slab"><span class="sid">A6d</span>Nothing waiting</div><div class="scroller" data-f="a6-quiet"></div></div>
+  <div class="sub" id="A6a" data-frame="A6a"><div class="slab"><span class="sid">A6a</span>No schedules yet</div><div class="scroller" data-f="a6-none"></div></div>
+  <div class="sub" id="A6b" data-frame="A6b"><div class="slab"><span class="sid">A6b</span>Automate not served by this deployment</div><div class="scroller" data-f="a6-off"></div></div>
+  <div class="sub" id="A6c" data-frame="A6c"><div class="slab"><span class="sid">A6c</span>A read that failed</div><div class="scroller" data-f="a6-fail"></div></div>
+  <div class="sub" id="A6d" data-frame="A6d"><div class="slab"><span class="sid">A6d</span>Nothing waiting</div><div class="scroller" data-f="a6-quiet"></div></div>
 </section>
 
 <h2><span class="n">A7</span>Phone at 390</h2>
@@ -680,9 +680,9 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
   <div class="flab"><span class="fid">A7</span><b>A1, A2 and A5 at 390 wide</b></div>
   <p>The lanes stack, and each lane's words go above its track, the track running the full width. A pinned note becomes a line of words, while the pin stays on the track. On the phone the master-detail layout is two pages: the list, then the chosen item with a way back.</p>
   <div class="phones" style="margin-top:14px">
-    <div class="sub"><div class="slab"><span class="sid">A7a</span>A1, the landing</div><div data-f="a7-a1"></div></div>
-    <div class="sub"><div class="slab"><span class="sid">A7b</span>A2, Failure review</div><div data-f="a7-a2"></div></div>
-    <div class="sub"><div class="slab"><span class="sid">A7c</span>A5, the approval, waiting</div><div data-f="a7-a5"></div></div>
+    <div class="sub" id="A7a" data-frame="A7a"><div class="slab"><span class="sid">A7a</span>A1, the landing</div><div data-f="a7-a1"></div></div>
+    <div class="sub" id="A7b" data-frame="A7b"><div class="slab"><span class="sid">A7b</span>A2, Failure review</div><div data-f="a7-a2"></div></div>
+    <div class="sub" id="A7c" data-frame="A7c"><div class="slab"><span class="sid">A7c</span>A5, the approval, waiting</div><div data-f="a7-a5"></div></div>
   </div>
 </section>
 
@@ -958,9 +958,9 @@ function a3(ph){
   const top=LEAD('2 things to fix before it can be saved','The cadence is under the type’s floor, and the per-run budget is over the type’s cap.','Each is marked at its field. Save stays off until both are fixed.',B('Save schedule','p','')+B('Cancel','q'),'bd').replace('class="b p"','class="b p" aria-disabled="true"');
   const s1=`<div class="fsec"><h4><span class="n0">1</span>Type and template</h4><div class="tiles">${TYPES.map(x=>`<div class="opt ${x[2]?'on':''}"><span class="rd"></span><span><b>${x[0]}</b><small>${x[1]}</small></span></div>`).join('')}</div><span class="hint">6 of the 17 types this deployment serves. <a>Show all 17</a></span></div>`;
   const s2=`<div class="fsec"><h4><span class="n0">2</span>Name and target</h4><div class="frow" style="grid-template-columns:1fr 1.5fr .8fr">${F('Name','Issue sweep · docs label','v')}${F('Repository',I('repo')+'bogdan-alexandrescu/SwarmCloud','v')}${F('Issues with the label','docs','v')}</div></div>`;
-  const s3=`<div class="fsec"><h4><span class="n0">3</span>Cadence</h4><div class="frow">${F('Cron','*/10 * * * *','v bad',`<span class="err">${I('x')}Fires every 10 minutes. issue-sweep runs at most every 15 minutes (interval_too_short).</span>`)}${F('Time zone','UTC','v')}${F('In words','every 10 minutes','')}</div>${previewLane(newS,bad)}</div>`;
+  const s3=`<div class="fsec"><h4><span class="n0">3</span>Cadence</h4><div class="frow">${F('Cron','*/10 * * * *','v bad',`<span class="err">${I('x')}Fires every 10 minutes. issue-sweep runs at most every 15 minutes.</span>`)}${F('Time zone','UTC','v')}${F('In words','every 10 minutes','')}</div>${previewLane(newS,bad)}</div>`;
   const s4=`<div class="fsec"><h4><span class="n0">4</span>Gates and approvers</h4><div class="frow"><label class="fld"><span>Run</span>${SG(['auto','approve'],0)}</label><label class="fld"><span>Plan</span>${SG(['auto','approve'],1)}</label><label class="fld"><span>Merge</span>${SG(['approve','off'],0)}<span class="hint">auto is a separate, audited switch on the schedule’s page</span></label></div><div class="frow">${F('Approvers','any member of this tenant','v')}${F('An approval lasts','72 hours','v')}<span></span></div></div>`;
-  const s5=`<div class="fsec"><h4><span class="n0">5</span>Budget and tripwire</h4><div class="frow">${F('Per-run tripwire','$20.00','v bad',`<span class="err">${I('x')}issue-sweep’s cap is $15 per run (budget_above_cap).</span>`)}${F('Per day','$120.00','v','<span class="hint">the type’s cap: $120</span>')}${F('At once','8 firings','v','<span class="hint">the type’s cap: 8</span>')}</div><span class="hint">A firing over the per-run tripwire fails and pauses the schedule. The per-day figure is a gate: a firing that would pass it is skipped.</span></div>`;
+  const s5=`<div class="fsec"><h4><span class="n0">5</span>Budget and tripwire</h4><div class="frow">${F('Per-run tripwire','$20.00','v bad',`<span class="err">${I('x')}issue-sweep’s cap is $15 per run.</span>`)}${F('Per day','$120.00','v','<span class="hint">the type’s cap: $120</span>')}${F('At once','8 firings','v','<span class="hint">the type’s cap: 8</span>')}</div><span class="hint">A firing over the per-run tripwire fails and pauses the schedule. The per-day figure is a gate: a firing that would pass it is skipped.</span></div>`;
   const s6=`<div class="fsec"><h4><span class="n0">6</span>Start</h4><div class="frow"><div class="opt"><span class="rd"></span><span><b>Enabled</b><small>fires at its next slot</small></span></div><div class="opt on"><span class="rd"></span><span><b>Dry run first</b><small>fires, records what it would do, starts nothing</small></span></div><div class="opt"><span class="rd"></span><span><b>Paused</b><small>saved, never fires until resumed</small></span></div></div></div>`;
   const pnl=`<div class="dtl"><div class="dh"><div class="tl"><span class="h">New schedule</span><span class="chips">${C('not saved','ln')}</span></div></div>${top}<div class="cd" style="display:flex;flex-direction:column;gap:18px">${s1}${s2}${s3}${s4}${s5}${s6}</div></div>`;
   return `<div class="md">${schList('', `<div class="mi on"><span class="dot in"></span><span class="tx"><b>New schedule</b><span>not saved</span></span></div>`)}${pnl}</div>`;
@@ -989,7 +989,7 @@ function a4(ph){
   const lead=LEAD('Waiting on you','3 wait. The oldest, Docs drift’s merge of #2388, expires at 14:10Z, in 5 h 10 m.','Waiting items hold no capacity. Failure review’s merge goes to the platform owner alone; the other two, to any member.',B('Open the oldest','p'),'wn');
   const det=`<div class="dtl"><div class="dh"><div class="tl"><span class="h">Merge pull request #2388</span><span class="chips">${C('merge','in')}${C('waiting','wn')}${C('Docs drift','ln')}</span></div><div class="acts">${B('Approve and merge','p','check')}${B('Deny','d','x')}</div></div>`+
    LEAD('Expires at 14:10Z, in 5 h 10 m','Any member may decide. Nobody has yet.','Docs drift is paused by its tripwire, so no firing waits on this: approving merges the pull request and nothing more.',`<a class="sm12">Open in full ›</a>`,'bd')+
-   CARD('Evidence','',`<div class="ev"><div class="stp ok">${I('check')}<span class="tx"><b>Required checks green at the head</b><small>6 passed, 0 failed, 0 pending · green at 41c9e07ab2d3</small></span></div><div class="stp ok">${I('check')}<span class="tx"><b>Review verdict MERGE</b><small>at head 41c9e07ab2d3</small></span></div><div class="stp ok">${I('check')}<span class="tx"><b>No protected path changed</b><small>checked at 41c9e07ab2d3 · docs/ only</small></span></div></div>`)+
+   CARD('Evidence','',`<div class="ev"><div class="stp ok">${I('check')}<span class="tx"><b>Required checks green at the head</b><small>6 passed, 0 failed, 0 pending · green at 41c9e07ab2d3</small></span></div><div class="stp ok">${I('check')}<span class="tx"><b>Review verdict: merge</b><small>at head 41c9e07ab2d3</small></span></div><div class="stp ok">${I('check')}<span class="tx"><b>No protected path changed</b><small>checked at 41c9e07ab2d3 · docs/ only</small></span></div></div>`)+
    CARD('Asked by','',`<dl class="kv"><dt>Schedule</dt><dd><a>Docs drift</a> · firing Fri 23 06:00Z</dd><dt>Pull request</dt><dd><a>#2388</a> “docs: schedules.md cites the 72 h default”</dd><dt>Requested</dt><dd>Fri 23 Oct 14:10Z</dd><dt>Expires</dt><dd>Mon 26 Oct 14:10Z</dd></dl>`)+`</div>`;
   const filt=`<div class="fgrp"><span class="sm12 dim">Kind</span>${SG(['All 7','Merge 4','Plan 3','Run 0','Held plan 0','Proposal 0','Spec 0','Answer 0'],0)}</div>`;
   return lead+expiryBars()+filt+`<div class="md">${aprList(APW[0].id,true)}${det}</div>`;
@@ -1031,8 +1031,8 @@ function a5Timeline(state,ph){
    `<div class="row" style="grid-template-columns:minmax(0,1fr)"><div class="trk a5" style="min-height:${ph?64:72}px">${h}</div></div><div class="row axr" style="grid-template-columns:minmax(0,1fr)"><div class="trk" style="min-height:26px">${ax}</div></div>`+
    `<div class="lg2"><span>${words}</span></div></section>`;
 }
-const EVID=`<div class="ev"><div class="stp ok">${I('check')}<span class="tx"><b>Required checks green at the head</b><small>10 passed, 0 failed, 0 pending · green at dbd00f06c5cd</small></span></div><div class="stp ok">${I('check')}<span class="tx"><b>Review verdict MERGE</b><small>at head dbd00f06c5cd</small></span></div><div class="stp wn">${I('warn')}<span class="tx"><b>A hard stop matched: held for the platform owner</b><small>workflows · <span class="mn">.github/workflows/unit-weights-refresh.yml</span></small><small>shared · <span class="mn">scripts/lib/common.sh</span></small></span></div></div>`;
-const SUBJ=`<dl class="kv"><dt>Schedule</dt><dd><a>Failure review</a> · <span class="mn">sch_54e9828e6772</span></dd><dt>Firing</dt><dd>Mon 26 00:00Z · <span class="mn mono-wrap">sch_54e9828e6772:29882880</span></dd><dt>Run</dt><dd><a class="mn">run_682b9c60673341fdaa8e</a></dd><dt>Issue</dt><dd><a>#2364</a></dd><dt>Pull request</dt><dd><a>#2392</a> at dbd00f06c5cd</dd><dt>Requested</dt><dd>2026-10-26 02:40Z</dd><dt>Expires</dt><dd>2026-10-29 02:40Z · 72 h</dd><dt>Digest</dt><dd>MERGE at dbd00f06c5cd <small class="sm12 dim">· what Approve sends back</small></dd><dt>Id</dt><dd><span class="mn mono-wrap">apr_31f74dc3dc84349da9b83697</span></dd></dl>`;
+const EVID=`<div class="ev"><div class="stp ok">${I('check')}<span class="tx"><b>Required checks green at the head</b><small>10 passed, 0 failed, 0 pending · green at dbd00f06c5cd</small></span></div><div class="stp ok">${I('check')}<span class="tx"><b>Review verdict: merge</b><small>at head dbd00f06c5cd</small></span></div><div class="stp wn">${I('warn')}<span class="tx"><b>A hard stop matched: held for the platform owner</b><small>workflows · <span class="mn">.github/workflows/unit-weights-refresh.yml</span></small><small>shared · <span class="mn">scripts/lib/common.sh</span></small></span></div></div>`;
+const SUBJ=`<dl class="kv"><dt>Schedule</dt><dd><a>Failure review</a> · <span class="mn">sch_54e9828e6772</span></dd><dt>Firing</dt><dd>Mon 26 00:00Z · <span class="mn mono-wrap">sch_54e9828e6772:29882880</span></dd><dt>Run</dt><dd><a class="mn">run_682b9c60673341fdaa8e</a></dd><dt>Issue</dt><dd><a>#2364</a></dd><dt>Pull request</dt><dd><a>#2392</a> at dbd00f06c5cd</dd><dt>Requested</dt><dd>2026-10-26 02:40Z</dd><dt>Expires</dt><dd>2026-10-29 02:40Z · 72 h</dd><dt>Digest</dt><dd>merge at dbd00f06c5cd <small class="sm12 dim">· what Approve sends back</small></dd><dt>Id</dt><dd><span class="mn mono-wrap">apr_31f74dc3dc84349da9b83697</span></dd></dl>`;
 const SUMMARY='bogdan-alexandrescu/SwarmCloud#2364: pull request #2392 is green at dbd00f06c5cd and waits to merge';
 function a5Detail(state,ph){
   const chip={pending:C('waiting','wn'),member:C('waiting','wn'),approved:C('approved','ok','check'),denied:C('denied','bd','x'),expired:C('expired','ln'),superseded:C('superseded','ln')}[state];

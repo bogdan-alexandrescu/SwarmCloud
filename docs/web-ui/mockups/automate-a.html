@@ -430,19 +430,19 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <section class="frame" id="A3" data-frame="A3">
   <div class="flabel"><span class="fid">A3</span><h2>A new or edited schedule: the stepped sheet</h2></div>
   <p>The same sheet, in six steps: <b>type, target, cadence, gates, budget, review</b>. Each step checks what the server checks at that step, so a refusal shows on the step that caused it, not as one error after Create. Steps already passed are ticked; a step with a refusal is marked.</p>
-  <figure class="sub"><div class="sl"><span class="sid">A3a</span><b>Step 1, type and template</b><span class="dim">desktop 1440 · over the Schedules list</span></div><div class="scroller" data-f="a3a"></div>
+  <figure class="sub" id="A3a" data-frame="A3a"><div class="sl"><span class="sid">A3a</span><b>Step 1, type and template</b><span class="dim">desktop 1440 · over the Schedules list</span></div><div class="scroller" data-f="a3a"></div>
   <figcaption>Template tiles are <code>GET /v1/schedule-types</code>: name, description, shortest interval, default gate and tier. A type the viewer may not create is greyed with its <code>disabled_reason</code>. "7 of 25 used" counts A1's seven schedules against the tenant's limit. docs-drift's budget caps drawn in A3 ($5.00 a run, $20.00 a day) are example figures; the real ones are the type's <code>budget_caps</code>.</figcaption></figure>
   <div class="pair">
-    <figure class="sub"><div class="sl"><span class="sid">A3b</span><b>Step 2, target</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a3b"></div></figure>
-    <figure class="sub"><div class="sl"><span class="sid">A3c</span><b>Step 3, cadence: refused, then the preview</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a3c"></div></figure>
+    <figure class="sub" id="A3b" data-frame="A3b"><div class="sl"><span class="sid">A3b</span><b>Step 2, target</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a3b"></div></figure>
+    <figure class="sub" id="A3c" data-frame="A3c"><div class="sl"><span class="sid">A3c</span><b>Step 3, cadence: refused, then the preview</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a3c"></div></figure>
   </div>
   <div class="pair">
-    <figure class="sub"><div class="sl"><span class="sid">A3d</span><b>Step 4, gates and approvers</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a3d"></div></figure>
-    <figure class="sub"><div class="sl"><span class="sid">A3e</span><b>Step 5, budget and tripwire: two refusals</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a3e"></div></figure>
+    <figure class="sub" id="A3d" data-frame="A3d"><div class="sl"><span class="sid">A3d</span><b>Step 4, gates and approvers</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a3d"></div></figure>
+    <figure class="sub" id="A3e" data-frame="A3e"><div class="sl"><span class="sid">A3e</span><b>Step 5, budget and tripwire: two refusals</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a3e"></div></figure>
   </div>
   <div class="pair">
-    <figure class="sub"><div class="sl"><span class="sid">A3f</span><b>Step 6, review a new schedule</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a3f"></div></figure>
-    <figure class="sub"><div class="sl"><span class="sid">A3g</span><b>Edit: Nightly issue sweep, someone saved first</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a3g"></div></figure>
+    <figure class="sub" id="A3f" data-frame="A3f"><div class="sl"><span class="sid">A3f</span><b>Step 6, review a new schedule</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a3f"></div></figure>
+    <figure class="sub" id="A3g" data-frame="A3g"><div class="sl"><span class="sid">A3g</span><b>Edit: Nightly issue sweep, someone saved first</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a3g"></div></figure>
   </div>
   <p>Every validation message drawn is one the built editor or the API already gives: <code>interval_too_short</code> with <code>min_interval_minutes</code>, <code>budget_above_cap</code>, <code>invalid_budget</code> (a day under one run), "Choose at least one repository.", and <code>schedule_changed</code> on a stale <code>revision</code>. The preview is <code>POST /v1/schedules:preview</code>.</p>
 </section>
@@ -450,44 +450,44 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <section class="frame" id="A4" data-frame="A4">
   <div class="flabel"><span class="fid">A4</span><h2>Approvals</h2></div>
   <p>The second tab. Waiting first, oldest first, each with its time to expiry and who may decide; then decided (approved or rejected, by whom, when, with the reason); then expired and superseded. The kind filter is the API's <code>?kind=</code>.</p>
-  <figure class="sub"><div class="sl"><span class="sid">A4a</span><b>Every kind</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="a4a"></div></figure>
-  <figure class="sub"><div class="sl"><span class="sid">A4b</span><b>Filtered to merge</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="a4b"></div>
+  <figure class="sub" id="A4a" data-frame="A4a"><div class="sl"><span class="sid">A4a</span><b>Every kind</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="a4a"></div></figure>
+  <figure class="sub" id="A4b" data-frame="A4b"><div class="sl"><span class="sid">A4b</span><b>Filtered to merge</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="a4b"></div>
   <figcaption>The kinds are the seven the API serves (<code>run, plan, hold, merge, proposal, spec, input</code>) in the built page's words. A kind with nothing in it still shows, with its count, so the filter does not move.</figcaption></figure>
 </section>
 
 <section class="frame" id="A5" data-frame="A5">
   <div class="flabel"><span class="fid">A5</span><h2>One approval: apr_31f74dc3dc84349da9b83697, in six states</h2></div>
   <p>The merge of PR #2392, asked for by the failure-review schedule's firing. Pending is drawn over the Approvals list; the other five states are the same sheet alone. Approve sends the digest it shows (<code>{head_sha: dbd00f06c5cd, verdict: MERGE}</code>), so it can only ever approve the head the reader saw.</p>
-  <figure class="sub"><div class="sl"><span class="sid">A5a</span><b>Pending, seen by the platform owner</b><span class="dim">desktop 1440 · over the Approvals list</span></div><div class="scroller" data-f="a5a"></div></figure>
+  <figure class="sub" id="A5a" data-frame="A5a"><div class="sl"><span class="sid">A5a</span><b>Pending, seen by the platform owner</b><span class="dim">desktop 1440 · over the Approvals list</span></div><div class="scroller" data-f="a5a"></div></figure>
   <div class="pair">
-    <figure class="sub"><div class="sl"><span class="sid">A5b</span><b>Approved</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a5b"></div></figure>
-    <figure class="sub"><div class="sl"><span class="sid">A5c</span><b>Rejected, with the reason</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a5c"></div></figure>
+    <figure class="sub" id="A5b" data-frame="A5b"><div class="sl"><span class="sid">A5b</span><b>Approved</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a5b"></div></figure>
+    <figure class="sub" id="A5c" data-frame="A5c"><div class="sl"><span class="sid">A5c</span><b>Rejected, with the reason</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a5c"></div></figure>
   </div>
   <div class="pair">
-    <figure class="sub"><div class="sl"><span class="sid">A5d</span><b>Expired</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a5d"></div></figure>
-    <figure class="sub"><div class="sl"><span class="sid">A5e</span><b>Superseded: the head moved after the request</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a5e"></div></figure>
+    <figure class="sub" id="A5d" data-frame="A5d"><div class="sl"><span class="sid">A5d</span><b>Expired</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a5d"></div></figure>
+    <figure class="sub" id="A5e" data-frame="A5e"><div class="sl"><span class="sid">A5e</span><b>Superseded: the head moved after the request</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a5e"></div></figure>
   </div>
-  <figure class="sub"><div class="sl"><span class="sid">A5f</span><b>Pending, seen by a member who is not an approver</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a5f"></div>
+  <figure class="sub" id="A5f" data-frame="A5f"><div class="sl"><span class="sid">A5f</span><b>Pending, seen by a member who is not an approver</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a5f"></div>
   <figcaption><b>Deny is the API's reject.</b> The brief says "deny"; the API's state is <code>rejected</code> and its route <code>:reject</code>, and the built page says Reject, so the frames do too. <b>A5f hides Reject as well as Approve</b>, as the brief asks, but today any member may reject (<code>approvals.py</code> <code>reject()</code>, docs/schedules.md §4.5). Building A5f as drawn means the server's rule changes too; that is a question for BGD in the PR.</figcaption></figure>
 </section>
 
 <section class="frame" id="A6" data-frame="A6">
   <div class="flabel"><span class="fid">A6</span><h2>Empty and honest states</h2></div>
   <p>What the tabs say when there is nothing, when the deployment does not serve Automate, and when a read fails. A count that was not read is a dash with its reason; a 0 is drawn only when the list was read and is empty.</p>
-  <figure class="sub"><div class="sl"><span class="sid">A6a</span><b>No schedules yet</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="a6a"></div></figure>
-  <figure class="sub"><div class="sl"><span class="sid">A6b</span><b>Automate is not served by this deployment</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="a6b"></div>
+  <figure class="sub" id="A6a" data-frame="A6a"><div class="sl"><span class="sid">A6a</span><b>No schedules yet</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="a6a"></div></figure>
+  <figure class="sub" id="A6b" data-frame="A6b"><div class="sl"><span class="sid">A6b</span><b>Automate is not served by this deployment</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="a6b"></div>
   <figcaption>The API has no switch that turns Automate off: its routes are always mounted (<code>main.py</code>). "Not served" is what the console sees when <code>GET /v1/schedules</code> answers 404 <code>not_found</code>, as the fixture build's <code>scheduleNotServed</code> does, or an older API without the routes would.</figcaption></figure>
-  <figure class="sub"><div class="sl"><span class="sid">A6c</span><b>A read that failed: the approvals read, with the schedules read fine</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="a6c"></div></figure>
-  <figure class="sub"><div class="sl"><span class="sid">A6d</span><b>Nothing waiting</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="a6d"></div></figure>
+  <figure class="sub" id="A6c" data-frame="A6c"><div class="sl"><span class="sid">A6c</span><b>A read that failed: the approvals read, with the schedules read fine</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="a6c"></div></figure>
+  <figure class="sub" id="A6d" data-frame="A6d"><div class="sl"><span class="sid">A6d</span><b>Nothing waiting</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="a6d"></div></figure>
 </section>
 
 <section class="frame" id="A7" data-frame="A7">
   <div class="flabel"><span class="fid">A7</span><h2>Phone at 390: A1, A2 and A5</h2></div>
   <p>On a phone the table's rows become cards, and the side sheet becomes the whole screen with Back to the list. The order of the sheet does not change.</p>
   <div class="pair">
-    <figure class="sub"><div class="sl"><span class="sid">A7a</span><b>A1, Schedules</b></div><div data-f="a7a"></div></figure>
-    <figure class="sub"><div class="sl"><span class="sid">A7b</span><b>A2, Nightly issue sweep</b></div><div data-f="a7b"></div></figure>
-    <figure class="sub"><div class="sl"><span class="sid">A7c</span><b>A5, the merge of PR #2392, pending</b></div><div data-f="a7c"></div></figure>
+    <figure class="sub" id="A7a" data-frame="A7a"><div class="sl"><span class="sid">A7a</span><b>A1, Schedules</b></div><div data-f="a7a"></div></figure>
+    <figure class="sub" id="A7b" data-frame="A7b"><div class="sl"><span class="sid">A7b</span><b>A2, Nightly issue sweep</b></div><div data-f="a7b"></div></figure>
+    <figure class="sub" id="A7c" data-frame="A7c"><div class="sl"><span class="sid">A7c</span><b>A5, the merge of PR #2392, pending</b></div><div data-f="a7c"></div></figure>
   </div>
 </section>
 
@@ -767,7 +767,7 @@ function aprSheet(st,o){
   if(st==='expired') top=`<div class="bn">${I('clock')}<div><b>Expired 2026-10-29 02:40Z: nobody decided it in 72 h.</b>The pull request stays open, unmerged. Nothing was released, because a waiting approval holds nothing.</div></div>`;
   if(st==='superseded') top=`<div class="bn">${I('refresh')}<div><b>Superseded at 2026-10-26 07:55Z: the head moved after the request.</b>PR #2392’s head is now <span class="mn">4c1a9e7b20d3</span>, not <span class="mn">dbd00f06c5cd</span>, so this request can no longer be approved. <a>Open the new request, apr_c07e5b9a12d84f63b8e1a274</a></div></div>`;
   if(st==='pending'&&o.member) top=`<div class="bn in">${I('lock')}<div><b>Only the platform owner can decide this.</b>It is held for the owner because PR #2392 changes a workflow file and a shared script. You are signed in as Alex Pop, a member of Example Team: you can read it, and comment on the pull request.</div></div>`;
-  const acts=st==='pending'&&!o.member?`<div class="foot">${ph?'':`<span class="sm12 dim grow">Approve merges exactly <span class="mn">dbd00f06c5cd</span> with verdict MERGE.</span>`}${B('Reject…','d')}${B('Approve merge at dbd00f06c5cd','p','check')}</div>`:'';
+  const acts=st==='pending'&&!o.member?`<div class="foot">${ph?'':`<span class="sm12 dim grow">Approve merges exactly <span class="mn">dbd00f06c5cd</span> with the verdict merge.</span>`}${B('Reject…','d')}${B('Approve merge at dbd00f06c5cd','p','check')}</div>`:'';
   const checks=st==='superseded'?`<dd>10 passed · 0 failed · 0 pending <span class="dim">at dbd00f06c5cd, an older head</span></dd>`:`<dd><b>10 passed</b> · 0 failed · 0 pending <span class="dim">at dbd00f06c5cd</span></dd>`;
   return `<aside class="dsheet w6" aria-label="Merge PR #2392">`+
   (ph?`<span class="back">${I('back')}Approvals</span>`:'')+
@@ -777,7 +777,7 @@ function aprSheet(st,o){
   `<div class="shs"><h5>Held for the owner <small>reasons: workflows, shared</small></h5><p>Two of its files match the owner’s hard stops:</p>`+
   `<ul class="files"><li>${C('workflows','wn')}<span class="mn">.github/workflows/unit-weights-refresh.yml</span></li><li>${C('shared','wn')}<span class="mn">scripts/lib/common.sh</span></li></ul>`+
   `<dl class="kv"><dt>Who may decide</dt><dd>the platform owner alone, who may decide even as the schedule’s last editor; that is recorded as an owner waiver</dd></dl></div>`+
-  `<div class="shs"><h5>The merge</h5><dl class="kv"><dt>Checks</dt>${checks}<dt>Requirements</dt><dd>every requirement met</dd><dt>Protected paths</dt><dd>checked at ${st==='superseded'?'dbd00f06c5cd, an older head':'the head'}: 2 matched, above</dd><dt>Verdict</dt><dd><b>MERGE</b> at head <span class="mn">dbd00f06c5cd</span></dd></dl></div>`+
+  `<div class="shs"><h5>The merge</h5><dl class="kv"><dt>Checks</dt>${checks}<dt>Requirements</dt><dd>every requirement met</dd><dt>Protected paths</dt><dd>checked at ${st==='superseded'?'dbd00f06c5cd, an older head':'the head'}: 2 matched, above</dd><dt>Verdict</dt><dd><b>merge</b> at head <span class="mn">dbd00f06c5cd</span></dd></dl></div>`+
   `<div class="shs"><h5>Asked for by</h5><dl class="kv"><dt>Schedule</dt><dd><a>Failure review</a> <span class="mn">sch_54e9828e6772</span></dd><dt>Firing</dt><dd>the 00:00Z firing of Oct 26 <span class="c wn">example slot</span></dd><dt>Run</dt><dd><a class="mn">run_682b9c60673341fdaa8e</a></dd><dt>Issue</dt><dd><a>#2364</a></dd><dt>Pull request</dt><dd><a>#2392</a></dd></dl></div>`+
   `<div class="shs"><h5>Time</h5><dl class="kv"><dt>Asked</dt><dd>2026-10-26 02:40Z</dd><dt>Expires</dt><dd>2026-10-29 02:40Z${st==='pending'?' · in 2 d 17 h':''}</dd>${st==='approved'||st==='rejected'?`<dt>Decided</dt><dd>2026-10-26 ${st==='approved'?'09:12Z':'09:14Z'} by Operator</dd>`:''}<dt>Id</dt><dd class="mn">apr_31f74dc3dc84349da9b83697</dd></dl></div>`+
   acts+`</aside>`;
@@ -804,7 +804,7 @@ function a6a(){
 }
 function a6b(){
   return desk({page:'s',sbadge:'<span class="sm12 dim">—</span>',abadge:'<span class="sm12 dim">—</span>'},{h:'Schedules',age:'read 09:00Z'},
-  LEAD('Not served here','This deployment does not serve Automate.','GET /v1/schedules answered 404 not_found at 09:00Z, so there are no schedules or approvals to show, and nothing here is counted. Schedules need an API with the schedules routes (docs/schedules.md).',B('Read again','','refresh'),'')+
+  LEAD('Not served here','This deployment does not serve Automate.','GET /v1/schedules answered 404, not found, at 09:00Z, so there are no schedules or approvals to show, and nothing here is counted. Schedules need an API with the schedules routes (docs/schedules.md).',B('Read again','','refresh'),'')+
   CARD('Schedules','',`<div class="empty"><b>— <span class="dim" style="font-weight:400;font-size:13.5px">not served by this deployment</span></b><p>The count is a dash, not 0: no list was read. The panel’s badges are dashes for the same reason.</p></div>`),'','short');
 }
 function a6c(){
