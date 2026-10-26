@@ -185,12 +185,14 @@ export { TASK_PAGE_LIMIT }
  * (Agents.tsx, `PHONE_PAGE_LIMIT`).
  *
  * `view: 'summary'` (#168) asks for `GET /v1/tasks?view=summary`: each row
- * WITHOUT `input`, `metadata` and `result_summary` and their redaction counts
- * -- the keys absent, not null (`codec.task_to_api`). Those three are most of
- * a row's 10-20 KiB (docs/web-ui §2.5), so a polled list that draws none of
- * them asks for it: the Overview and the Agents list. Anything that reads a
- * row's input, metadata or result summary reads `loadTask` instead, which is
- * always the full row. No `view` is the full row, as before.
+ * WITHOUT `input` and `result_summary` and their redaction counts -- the keys
+ * absent, not null (`codec.task_to_api`) -- and with `metadata` cut to its
+ * `title` alone (SUMMARY-TITLE, `codec.SUMMARY_METADATA_KEYS`). Those are
+ * most of a row's 10-20 KiB (docs/web-ui §2.5), so a polled list that draws
+ * none of them asks for it: the Overview and the Agents list. Anything that
+ * reads a row's input, the rest of its metadata or its result summary reads
+ * `loadTask` instead, which is always the full row. No `view` is the full
+ * row, as before.
  */
 export async function loadTasks(
   limit: number = TASK_PAGE_LIMIT,
@@ -5058,7 +5060,13 @@ function fixtureTaskRows(): Task[] {
     // dispatch and attempt 2 failed, so the Attempts tab, the events and
     // the checkpoints all have more than one attempt to agree about.
     mk('task_a073aff5', 'RUNNING', 'claude-code', 4, { attempt_count: 3, current_generation: 3 }),
-    mk('task_8ea5c26d', 'RUNNING', 'claude-code', 5),
+    // A LONE AGENT WITH A TITLE (SUMMARY-TITLE): its Agents row reads the
+    // title, beside task_a073aff5 above, which has none and reads
+    // `claude-code agent · a073aff5`. The summary view serves metadata as
+    // the title alone, so this is the whole of what the list sees.
+    mk('task_8ea5c26d', 'RUNNING', 'claude-code', 5, {
+      metadata: { title: 'Fix flaky lease heartbeat test (#248)' },
+    }),
     // THE BROWSER QA AGENT: the one fixture task with a live browser, so
     // the Browser pane has a live session to draw in this build, and the
     // QA route `task-browser` (qa/routes.json) captures it rather than an

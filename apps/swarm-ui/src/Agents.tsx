@@ -122,14 +122,31 @@ const ListReadAt = createContext<number | null>(null)
  * list reads the titles the way Overview does (`useRowTitles`: one full read
  * per workflow, once a session, at most 12 at a time, a shared cache), so the
  * two pages name an agent one way. A context, as `ListReadAt`, because only
- * the row's name uses it. A lone agent keeps `agentName`'s name, which already
- * says what it is: reading every lone row in full would be a read per row.
+ * the row's name uses it. A lone agent is never read for it: reading every
+ * lone row in full would be a read per row, so its title comes on the summary
+ * row itself (`ownTitle`, SUMMARY-TITLE).
  */
 const RowTitleOf = createContext<((t: Task) => string | null) | null>(null)
 
 /** The rows that are a workflow's steps: the ones a workflow title names. */
 function isStep(t: Task): boolean {
   return (t.workflow_id ?? null) !== null && (t.step_id ?? null) !== null
+}
+
+/**
+ * A LONE AGENT'S OWN TITLE (SUMMARY-TITLE, BGD's decision on VQ-009,
+ * 2026-10-26): `metadata.title`, which the list's summary view carries and
+ * nothing else of the metadata (`codec.SUMMARY_METADATA_KEYS`), so the row
+ * reads `Fix flaky lease heartbeat test (#248)` with no read per row. Null
+ * for a step -- its name is the step, led by its workflow's title -- and for
+ * a title that is absent, blank or not a string, or an API older than the
+ * change, whose summary sends no metadata: the row is then `agentName`'s
+ * `claude-code agent · 01234567`, as before.
+ */
+export function ownTitle(t: Pick<Task, 'step_id' | 'metadata'>): string | null {
+  if ((t.step_id ?? null) !== null) return null
+  const v = t.metadata?.title
+  return typeof v === 'string' && v.trim() !== '' ? v.trim() : null
 }
 
 function tabOf(t: Task): Tab {
@@ -1913,10 +1930,12 @@ type CardAt = { top: number; left: number }
  *   then    the reason it waits or stopped, where there is one -- never
  *           dropped, for the reason `TaskRow` gives (the phone question)
  *
- * THE NAME IS THE STEP, OR THE TASK ID. A task carries no title; the step id
- * is the name a workflow gave it (#94), and a lone task is named by the id
- * prefix the rest of the product prints (`shortTaskId`). Either way the whole
- * id is printed under the name, with its copy (`TaskIdLine`, #94).
+ * THE NAME IS THE STEP, THE TITLE, OR THE TASK ID. The step id is the name a
+ * workflow gave it (#94), led by the workflow's title once read (VQ-009); a
+ * lone task is named by its own title, which the summary row carries
+ * (`ownTitle`, SUMMARY-TITLE), and without one by the id prefix the rest of
+ * the product prints (`shortTaskId`). Either way the whole id is printed
+ * under the name, with its copy (`TaskIdLine`, #94).
  *
  * FOLDED TO THE STRIP, the sheet leaves only the mark (`:root[data-agent-list
  * ='strip']`), and a mark alone says nothing about which agent it is. So
@@ -1974,7 +1993,9 @@ function CompactRow({
   // `<title> · implement`, Overview's `rowLabel`.
   const titleOf = useContext(RowTitleOf)
   const wfTitle = isStep(task) ? (titleOf?.(task) ?? null) : null
-  const name = rowLabel(task, wfTitle)
+  // A LONE AGENT LEADS WITH ITS OWN TITLE (SUMMARY-TITLE), off the row itself.
+  const loneTitle = ownTitle(task)
+  const name = loneTitle ?? rowLabel(task, wfTitle)
   const owner = task.submitted_by?.split('@')[0] ?? null
   const profile = task.model ? `${task.runner_profile} · ${task.model}` : task.runner_profile
   // WHETHER ITS BROWSER WAS USED (BROWSER-USE-UI, #2322): an ended agent on a
@@ -2091,6 +2112,12 @@ function CompactRow({
           <b className="is-titled" title={`${name} · ${task.id}`}>
             <span className="cr-wf">{wfTitle}</span>
             <span className="cr-step">{'\u00a0· '}{task.step_id}</span>
+          </b>
+        ) : loneTitle !== null ? (
+          // One text, so `.cr-name b`'s ellipsis cuts a long one (not the
+          // step's flex `is-titled`); the whole title and the id are the hover.
+          <b title={`${name} · ${task.id}`}>
+            {loneTitle}
           </b>
         ) : (
           <b title={task.id}>
