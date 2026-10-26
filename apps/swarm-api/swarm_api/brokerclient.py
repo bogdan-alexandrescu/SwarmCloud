@@ -249,9 +249,16 @@ class AccountPool(Protocol):
         cursor: str | None,
     ) -> dict[str, Any]: ...
 
-    # THE ONE QUOTA ROUTE this API calls (QUOTA-RESET, 2026-10-14): a platform
-    # admin's reset of a tenant's AIMD target, proxied so the broker stays the
-    # only writer of quota documents. Only `routes/admin.py` calls it.
+    # One account's health record (#2302). A PLATFORM read like the two
+    # above: its events name every tenant and task that met the account, and
+    # `routes/accounts.py` filters them per viewer.
+    def account_health(self, account_id: str) -> dict[str, Any]: ...
+
+    # THE TWO QUOTA ROUTES this API calls, both a platform admin's, proxied so
+    # the broker stays the only writer of quota documents: the reset of a
+    # tenant's AIMD target (QUOTA-RESET, 2026-10-14) and the tenant's
+    # configured max (POOL-LIMITS-QUOTA, 2026-10-25). Only `routes/admin.py`
+    # calls them.
     def set_adaptive_target(
         self,
         provider: str,
@@ -261,6 +268,16 @@ class AccountPool(Protocol):
         reason: str,
         clear_cooldown: bool,
         requested_by: str,
+    ) -> dict[str, Any]: ...
+
+    def set_hard_max(
+        self,
+        provider: str,
+        tenant_id: str,
+        *,
+        hard_max: int,
+        requested_by: str,
+        reason: str,
     ) -> dict[str, Any]: ...
 
 
@@ -605,6 +622,9 @@ class BrokerClient:
             params={"from": start or "", "to": end or "", "cursor": cursor or ""},
         )
 
+    def account_health(self, account_id: str) -> dict[str, Any]:
+        return self._call("GET", f"/v1/accounts/{quote(account_id, safe='')}/health")
+
     def set_adaptive_target(
         self,
         provider: str,
@@ -625,6 +645,28 @@ class BrokerClient:
                 # The admin this service verified. The broker records it next
                 # to the identity it verified itself -- this service's.
                 "requested_by": requested_by,
+            },
+        )
+
+    def set_hard_max(
+        self,
+        provider: str,
+        tenant_id: str,
+        *,
+        hard_max: int,
+        requested_by: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        return self._call(
+            "PUT",
+            f"/v1/quota/{quote(provider, safe='')}/{quote(tenant_id, safe='')}/hard-max",
+            payload={
+                "hard_max": int(hard_max),
+                # The admin this service verified, and why: the broker audits
+                # the change in `quota_audit` next to the identity it verified
+                # itself -- this service's (ACCOUNT-429-FOLLOWUP).
+                "requested_by": requested_by,
+                "reason": reason,
             },
         )
 

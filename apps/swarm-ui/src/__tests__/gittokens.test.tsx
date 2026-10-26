@@ -124,7 +124,7 @@ describe('Git tokens are cards by scope (pick B)', () => {
     await mount('page=tokens')
     await waitFor(() => expect(tokCards()).toHaveLength(3), WAIT)
     expect(document.querySelector('h1')?.textContent).toBe('Git tokens')
-    expect(visible(document.querySelector('.ur-crumb'))).toBe('Work › Repositories › Git tokens')
+    expect(visible(document.querySelector('.ur-crumb'))).toBe('Config › Repositories › Git tokens')
     const [ten, rep, usr] = tokCards()
     expect(visible(ten!.querySelector('.c-chip'))).toBe('Tenant')
     expect(visible(ten!.querySelector('h2'))).toBe('eng default')
@@ -413,7 +413,7 @@ describe('the permission matrix is a grid of tokens × repositories (pick A)', (
     await mount('page=permissions')
     await waitFor(() => expect(gridRows()).toHaveLength(3), WAIT)
     expect(document.querySelector('h1')?.textContent).toBe('Permissions')
-    expect(visible(document.querySelector('.ur-crumb'))).toBe('Work › Repositories › Git tokens › Permissions')
+    expect(visible(document.querySelector('.ur-crumb'))).toBe('Config › Repositories › Git tokens › Permissions')
     // #138: the order chip is an action in the head; the tokens × repositories count is the note over the grid.
     expect(visible(document.querySelector('.c-count-note'))).toContain('2 tokens × 2 repositories')
     expect(visible(document.querySelector('.c-phead .c-acts'))).toContain('order R2')
@@ -517,4 +517,22 @@ describe('the permission matrix is a grid of tokens × repositories (pick A)', (
     expect(cards.map((c) => visible(c.querySelector('h2')))).toEqual(['example-org/example-api', 'example-org/example-web'])
     expect(visible(cards[0]!)).toContain('Clone with example-api-bot')
   })
+})
+
+// CONFIG-COPY (part of #2157): Repositories is a Config page since CONFIG-NAV,
+// so the breadcrumb says Config, and its Repositories step links the Config path.
+describe('the Git tokens breadcrumbs name Config, not Work (CONFIG-COPY)', () => {
+  const OLD = /\bWork › (Setup|Access|Repositories)|(?<!Workspace )Settings › (Workspace|MCP servers)/
+
+  for (const view of ['page=tokens', 'page=permissions']) {
+    it(`${view}: no old address is drawn and Repositories links /config/repositories`, async () => {
+      tokenRoutes()
+      await mount(view)
+      await waitFor(() => expect(document.querySelector('.ur-crumb')).toBeTruthy(), WAIT)
+      const crumb = document.querySelector<HTMLElement>('.ur-crumb')!
+      expect(visible(crumb)).toMatch(/^Config › Repositories › Git tokens/)
+      expect(within(crumb).getByRole('link', { name: 'Repositories' }).getAttribute('href')).toBe('/config/repositories')
+      expect(visible(document.body)).not.toMatch(OLD)
+    })
+  }
 })

@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { loadReadableRepositories, loadRunnerProfiles, registerRepository, runRepositoryIndex, type RegisterRepositoryBody } from './api'
+import { useEffect, useRef, useState } from 'react'
+import { loadAccess, loadReadableRepositories, loadRunnerProfiles, registerRepository, runRepositoryIndex, type RegisterRepositoryBody } from './api'
 import { Banner, Button, Card, EmptyState } from './components'
 import { normRepo, triggerLabel, TRIGGER_OPTIONS, WEBHOOK_NOTE, WORKFLOW_FILES_WHY, type ChangeTrigger, type Readable, type ReadableList } from './RepositoriesData'
 import { LIST, UrCrumb, UrNavButton, UrRadio, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
@@ -38,6 +38,15 @@ import { timeAgo } from './types'
  * Runner profiles are offered BY NAME from the catalogue (invariant 10): a
  * registration narrows what may run in the repository and never says what a
  * profile is.
+ *
+ * OPENED WITH A REPOSITORY PICKED (REPOS-FOLLOWUPS; BGD, 2026-10-25): Config ›
+ * Repositories' dashed "chosen, not registered" card links here with
+ * `repo=owner/name`. When that repository is in the reader's reach list
+ * (`GET /v1/access`, case-insensitively, as GitHub compares names) the page
+ * opens on step 2 with it picked; a value that is not -- typed into the bar,
+ * or a grant since removed -- is ignored and the page opens on step 1. Only
+ * the shape of the pick comes from the address: the forge is still read by
+ * the POST, which refuses what it cannot clone.
  */
 
 const INTERVALS = [
@@ -53,13 +62,31 @@ type IntervalKey = (typeof INTERVALS)[number]['key']
 /** repo-index.md §1: a registration's profiles default to claude-code. */
 const DEFAULT_PROFILE = 'claude-code'
 
-export function RegisterRepository({ go }: { go: (to: string) => void }) {
+export function RegisterRepository({ go, repo = null }: { go: (to: string) => void; repo?: string | null }) {
   const readable = useUrRead(loadReadableRepositories, 'readable')
   const [filter, setFilter] = useState('')
   const [owner, setOwner] = useState<string | null>(null)
   const [picked, setPicked] = useState<Readable | null>(null)
   const [typed, setTyped] = useState('')
   const [step, setStep] = useState<1 | 2 | 3>(1)
+  // The reach list, read only when the address names a repository.
+  const wanted = repo === null || repo.trim() === '' ? null : repo.trim()
+  const access = useUrRead(
+    () => (wanted === null ? Promise.resolve({ status: 'empty' as const, fetchedAt: Date.now() }) : loadAccess()),
+    wanted === null ? 'register-access:none' : 'register-access',
+  )
+  const applied = useRef(false)
+  useEffect(() => {
+    if (applied.current || wanted === null || access.state.status !== 'ok') return
+    applied.current = true
+    // The person may have moved on while the read was in flight.
+    if (picked !== null || typed !== '' || step !== 1) return
+    const grant = access.state.data.grants.find((g) => g.repository.toLowerCase() === wanted.toLowerCase())
+    const pick = grant === undefined ? null : typedRepository(grant.repository)
+    if (pick === null) return
+    setPicked(pick)
+    setStep(2)
+  }, [access.state, wanted, picked, typed, step])
   const name = picked === null ? null : `${picked.owner}/${picked.repo}`
   const byName = typedRepository(typed)
   // A typed name is the pick while the field holds one; choosing a row empties the field.

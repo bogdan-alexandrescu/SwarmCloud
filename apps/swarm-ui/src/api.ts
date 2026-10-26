@@ -1,3 +1,4 @@
+import type { PoolFields } from './accountsPool'
 import { noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
@@ -34,7 +35,7 @@ import type {
   IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, IssueRunSummaryPage, RunCreateBody, RunPlan,
   GitHubAuthorization, GitHubAuthorizeSurface, GitHubDisconnectResponse, GitHubExchangeBody, GitHubExchangeResponse, OnboardingDoc,
   OnboardingDismissal, OwnerTokenResponse, AccessInstallRequestResponse,
-  AdminGrantAnswer, AdminRemoveAnswer, AdminWorkspaceView, LoanDeclineAnswer, LoanRequestAnswer, NewWorkspaceBody, PeopleDoc, WorkspaceActionAnswer, WorkspaceKind, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceState, WorkspaceView,
+  AdminGrantAnswer, AdminRemoveAnswer, AdminWorkspaceView, LoanDeclineAnswer, LoanRequestAnswer, NewWorkspaceBody, PeopleDoc, ScopedPeopleDoc, WorkspaceActionAnswer, WorkspaceKind, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceState, WorkspaceView,
   AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
   AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
   NotificationTopic, Preferences, PreferencesSaved, PreferencesWrite, Profile, ProfileClaudeAccount, ProfileClaudeAccounts, ProfileDefault,
@@ -90,7 +91,7 @@ const FIXTURE_NOW = Date.parse(FIXTURE_CLOCK)
  * in the fixture build, so no live read ever depends on it; a dev server
  * opened by hand has no cookie and is the member, as is any other value.
  */
-export type FixturePersona = 'member' | 'platform-admin'
+export type FixturePersona = 'member' | 'platform-admin' | 'workspace-admin'
 const PERSONA_COOKIE = 'swarm_qa_persona'
 
 function readFixturePersona(): FixturePersona {
@@ -98,7 +99,8 @@ function readFixturePersona(): FixturePersona {
   for (const part of document.cookie.split(';')) {
     const at = part.indexOf('=')
     if (at > 0 && part.slice(0, at).trim() === PERSONA_COOKIE) {
-      return part.slice(at + 1).trim() === 'platform-admin' ? 'platform-admin' : 'member'
+      const value = part.slice(at + 1).trim()
+      return value === 'platform-admin' || value === 'workspace-admin' ? value : 'member'
     }
   }
   return 'member'
@@ -107,6 +109,12 @@ function readFixturePersona(): FixturePersona {
 const FIXTURE_PERSONA: FixturePersona = USE_FIXTURES ? readFixturePersona() : 'member'
 /** Whether the fixture caller is a platform admin: the `platform-admin` persona only. */
 const fixtureIsAdmin = FIXTURE_PERSONA === 'platform-admin'
+/**
+ * The `workspace-admin` persona (ADMIN-PEOPLE-ROLES): eng's stored admin and
+ * no platform admin, so Admin › People and roles is answered scoped to eng
+ * (S5f) and every platform Admin read refuses it as the member's does.
+ */
+const fixtureIsWorkspaceAdmin = FIXTURE_PERSONA === 'workspace-admin'
 /** The group workspace the `platform-admin` persona administers: `tenant:eng` in fixtureCapacity is its pool. */
 const FIXTURE_GROUP = { tenant_id: 'eng', principal: 'eng@example.com' } as const
 
@@ -2674,7 +2682,7 @@ export async function loadMyTenants(): Promise<Result<TenantChoice[]>> {
     // The member has a personal tenant and no group, so there is nothing to
     // pick. The platform-admin persona is also a member of `eng`, where its
     // STORED role is admin -- what Admin › Workspaces you admin lists.
-    if (!fixtureIsAdmin) return { status: 'empty', fetchedAt: Date.now() }
+    if (!fixtureIsAdmin && !fixtureIsWorkspaceAdmin) return { status: 'empty', fetchedAt: Date.now() }
     return { status: 'ok', fetchedAt: Date.now(), data: fixtureTenantChoices() }
   }
   return read<TenantChoice[]>(route('/v1/tenants/mine'), (rows) => rows.length === 0, { frame: true })
@@ -3357,6 +3365,66 @@ async function fixtureAdminQuota(): Promise<Result<{ quota: QuotaState[] }>> {
       quota: fixtureQuotaRows().map((q) => ({ ...q, feeds_pool: pools.get(`provider:${q.provider}:tenant:${q.tenant_id}`) ?? null })),
     },
   }
+}
+
+/**
+ * A platform admin's reset of one tenant's AIMD target (QUOTA-RESET), from
+ * Admin › Pool limits (POOL-LIMITS-QUOTA, BGD 2026-10-25, part of #2302).
+ * The route proxies to the quota broker, which clamps the target into
+ * [min_target, configured_hard_max] and answers `{ quota, reset }`: `reset`
+ * carries `from_target`, `to_target` and `clamped`, which the row draws.
+ */
+export async function resetAdaptiveTarget(
+  provider: string,
+  tenant: string,
+  body: { target: number; reason: string; clear_cooldown: boolean },
+): Promise<Result<unknown>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 200))
+    const q = fixtureQuotaRows().find((row) => row.provider === provider && row.tenant_id === tenant)
+    const max = q?.configured_hard_max ?? body.target
+    const to = Math.min(body.target, max)
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: {
+        quota: { ...q, adaptive_target: to },
+        reset: { from_target: q?.adaptive_target ?? max, to_target: to, clamped: to !== body.target },
+      },
+    }
+  }
+  return write(route('/v1/admin/quota/{provider}/{tenant}/adaptive-target', { provider, tenant }), 'PUT', body)
+}
+
+/**
+ * A platform admin's change to one tenant's configured max (the broker's
+ * `configured_hard_max`), from Admin › Pool limits (POOL-LIMITS-QUOTA). The
+ * broker lowers the target to a max set below it in the same write; the
+ * answer's `change` says so (`target_clamped`, `from_target`, `to_target`).
+ */
+export async function setQuotaHardMax(
+  provider: string,
+  tenant: string,
+  body: { hard_max: number; reason: string },
+): Promise<Result<unknown>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 200))
+    const q = fixtureQuotaRows().find((row) => row.provider === provider && row.tenant_id === tenant)
+    const from = q?.adaptive_target ?? null
+    const to = from === null ? null : Math.min(from, body.hard_max)
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: {
+        quota: { ...q, configured_hard_max: body.hard_max, adaptive_target: to },
+        change: {
+          from_hard_max: q?.configured_hard_max ?? null, to_hard_max: body.hard_max,
+          from_target: from, to_target: to, target_clamped: from !== null && to !== null && to < from,
+        },
+      },
+    }
+  }
+  return write(route('/v1/admin/quota/{provider}/{tenant}/hard-max', { provider, tenant }), 'PUT', body)
 }
 
 /**
@@ -5565,7 +5633,13 @@ export async function setAccountLending(
  * it was parked. Local to this file and Accounts.tsx until the field moves
  * into `Account` in types.ts.
  */
-export type ServedAccount = Account & { model_classes?: string[] }
+/**
+ * `account_to_api` as served, beyond `types.ts` `Account`: the classes it
+ * serves, and the pool's answer per account (#2222: `can_take_new_agent`,
+ * `blocked_by`, `next_eligible_at`, `max_agents`, the organisation and the
+ * duplicate marks), typed in accountsPool.ts.
+ */
+export type ServedAccount = Account & PoolFields & { model_classes?: string[] }
 
 /**
  * `PUT /v1/accounts/{id}/model-classes`. The whole list, not a delta, exactly
@@ -5595,6 +5669,185 @@ export async function setAccountName(accountId: string, displayName: string | nu
   return write(route('/v1/accounts/{account_id}/name', { account_id: accountId }), 'PUT', {
     display_name: displayName,
   })
+}
+
+/**
+ * `PUT /v1/accounts/{id}/max-agents` (#2222): how many agents the account may
+ * hold at once, 1 to `MAX_AGENTS_LIMIT`. Owner only. swarm-api checks the range
+ * before it asks the broker and answers a 422 in the broker's words, which
+ * the detail's Change editor draws. Lowering it moves no agent already on it.
+ */
+export async function setAccountMaxAgents(accountId: string, maxAgents: number): Promise<Result<unknown>> {
+  if (USE_FIXTURES) return fixtureMaxAgents(accountId, maxAgents)
+  return write(route('/v1/accounts/{account_id}/max-agents', { account_id: accountId }), 'PUT', {
+    max_agents: maxAgents,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// One account's health (#2302, ACCOUNT-HEALTH-SHEET)
+// ---------------------------------------------------------------------------
+// `GET /v1/accounts/{id}/health` (ACCOUNT-429-SCOPE, PR 2305) as
+// `routes/accounts.py` `health_view` serves it: allow-lists, not types, on
+// both sides. The broker owns the record; swarm-api serves a value outside
+// its lists as nothing, and this read keeps what it does not know as nothing
+// too -- a count it was not sent is `null`, never a 0, because a 0 drawn for a
+// count nobody measured is the one thing the Health section must never show.
+
+/** The four words, by the broker's rule (`accountstore.health_status`). */
+export type AccountHealthStatus = 'healthy' | 'limited' | 'erroring' | 'reauth_needed'
+export const ACCOUNT_HEALTH_STATUSES: readonly AccountHealthStatus[] = ['healthy', 'limited', 'erroring', 'reauth_needed']
+
+/** `ACCOUNT_HEALTH_KINDS` in swarm-api's schemas.py, in its order. */
+export type AccountHealthKind =
+  | 'rate_limit'
+  | 'exhausted'
+  | 'auth'
+  | 'overloaded'
+  | 'server_error'
+  | 'network'
+  | 'assign_refused'
+  | 'reauth'
+  | 'refresh_failed'
+export const ACCOUNT_HEALTH_KINDS: readonly AccountHealthKind[] = [
+  'rate_limit',
+  'exhausted',
+  'auth',
+  'overloaded',
+  'server_error',
+  'network',
+  'assign_refused',
+  'reauth',
+  'refresh_failed',
+]
+
+/** `ACCOUNT_HEALTH_WINDOWS`: the window a rate-limit event names. */
+export type AccountHealthWindow = 'five_hour' | 'seven_day' | 'other'
+const HEALTH_WINDOWS: readonly AccountHealthWindow[] = ['five_hour', 'seven_day', 'other']
+
+/** One span's counts by kind. Every kind is present; a kind the broker did not send is 0 (swarm-api's `_health_counts`). */
+export type AccountHealthCounts = Record<AccountHealthKind, number>
+
+export interface AccountHealthEvent {
+  at: string
+  kind: AccountHealthKind
+  /** null for a borrower reading another workspace's event, which also has no task and no message. */
+  tenant_id: string | null
+  task_id: string | null
+  window: AccountHealthWindow | null
+  reset_at: string | null
+  /** Redacted twice: by the worker before it sent it and by swarm-api on the way out. */
+  message: string | null
+  own: boolean
+}
+
+export interface AccountHealthHour {
+  hour: string
+  counts: Partial<AccountHealthCounts>
+  total: number
+}
+
+export interface AccountHealth {
+  account_id: string
+  /** null when the record carries no word swarm-api knows: drawn as a dash, never as `healthy`. */
+  status: AccountHealthStatus | null
+  limited_until: string | null
+  /** Each span null when the broker sent none. */
+  counts: { last_1h: AccountHealthCounts | null; last_24h: AccountHealthCounts | null; last_7d: AccountHealthCounts | null }
+  /** The 7-day hourly series; an hour with no events may be absent. */
+  hourly: AccountHealthHour[]
+  /** The record's last 50, newest first. */
+  events: AccountHealthEvent[]
+  observed_at: string | null
+}
+
+const isHealthKind = (v: unknown): v is AccountHealthKind => ACCOUNT_HEALTH_KINDS.includes(v as AccountHealthKind)
+const healthStr = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null)
+const count = (v: unknown): number => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : 0)
+
+function healthCounts(raw: unknown): AccountHealthCounts | null {
+  if (!isRecord(raw)) return null
+  const out = {} as AccountHealthCounts
+  for (const k of ACCOUNT_HEALTH_KINDS) out[k] = count(raw[k])
+  return out
+}
+
+/** The served body, by the same allow-lists the route applies; null when it is not a health record at all. */
+export function normaliseAccountHealth(raw: unknown, accountId: string): AccountHealth | null {
+  if (!isRecord(raw)) return null
+  const counts = isRecord(raw.counts) ? raw.counts : {}
+  const hourly: AccountHealthHour[] = []
+  for (const h of Array.isArray(raw.hourly) ? raw.hourly : []) {
+    if (!isRecord(h) || healthStr(h.hour) === null || Number.isNaN(Date.parse(h.hour as string))) continue
+    const c: Partial<AccountHealthCounts> = {}
+    let total = 0
+    if (isRecord(h.counts)) {
+      for (const k of ACCOUNT_HEALTH_KINDS) {
+        const n = count(h.counts[k])
+        if (n > 0) {
+          c[k] = n
+          total += n
+        }
+      }
+    }
+    hourly.push({ hour: h.hour as string, counts: c, total })
+  }
+  const events: AccountHealthEvent[] = []
+  for (const e of Array.isArray(raw.events) ? raw.events : []) {
+    if (!isRecord(e) || !isHealthKind(e.kind) || healthStr(e.at) === null || Number.isNaN(Date.parse(e.at as string))) continue
+    events.push({
+      at: e.at as string,
+      kind: e.kind,
+      tenant_id: healthStr(e.tenant_id),
+      task_id: healthStr(e.task_id),
+      window: HEALTH_WINDOWS.includes(e.window as AccountHealthWindow) ? (e.window as AccountHealthWindow) : null,
+      reset_at: healthStr(e.reset_at),
+      message: typeof e.message === 'string' ? e.message : null,
+      own: e.own === true,
+    })
+  }
+  // NEWEST FIRST, whatever order arrived: the list draws them in this order.
+  events.sort((x, y) => Date.parse(y.at) - Date.parse(x.at))
+  return {
+    account_id: healthStr(raw.account_id) ?? accountId,
+    status: ACCOUNT_HEALTH_STATUSES.includes(raw.status as AccountHealthStatus) ? (raw.status as AccountHealthStatus) : null,
+    limited_until: healthStr(raw.limited_until),
+    counts: {
+      last_1h: healthCounts(counts.last_1h),
+      last_24h: healthCounts(counts.last_24h),
+      last_7d: healthCounts(counts.last_7d),
+    },
+    hourly,
+    events,
+    observed_at: healthStr(raw.observed_at),
+  }
+}
+
+/**
+ * `GET /v1/accounts/{id}/health`: one read, made when the account's sheet
+ * opens and when its reader asks again. Never `empty`: a record with no
+ * events is a measured zero the section says in words, and it needs the
+ * record in hand to say it. A 404 comes back as the error it is -- the
+ * section reads `not_found` as "this deployment does not serve the record",
+ * never as zero events.
+ */
+export async function loadAccountHealth(accountId: string): Promise<Result<AccountHealth>> {
+  if (USE_FIXTURES) return fixtureAccountHealth(accountId)
+  const res = await read<unknown>(route('/v1/accounts/{account_id}/health', { account_id: accountId }), () => false)
+  if (res.status !== 'ok' && res.status !== 'stale') return res as Result<AccountHealth>
+  const data = normaliseAccountHealth(res.data, accountId)
+  if (data === null) {
+    return {
+      status: 'error',
+      error: {
+        kind: 'server_error',
+        httpStatus: 200,
+        code: null,
+        message: 'The health read answered, but not with a health record.',
+      },
+    }
+  }
+  return { ...res, data }
 }
 
 /** `PUT /v1/accounts/{id}/state`. `reason` is for the next person, so it is required here. */
@@ -5708,6 +5961,15 @@ function fixtureAccount(
 let fixtureAccounts: ServedAccount[] = [
   fixtureAccount('u-bogdan', 'primary', {
     assigned: 2,
+    // THE POOL'S ANSWER (#2222), on every row: can it take a new agent, what
+    // stops it, and when that clears. One of each group the page ranks by.
+    max_agents: 6,
+    can_take_new_agent: true,
+    blocked_by: [],
+    next_eligible_at: null,
+    organisation: { name: 'Example', plan: 'Team' },
+    duplicate_of: 'u-bogdan:team-copy',
+    duplicate_reason: 'registered on the same organisation as u-bogdan:team-copy',
     windows: {
       five_hour: { utilization: 0.41, resets_at: ISO(2 * 3600_000 + 51 * 60_000), reset: false },
       seven_day: { utilization: 0.63, resets_at: ISO(70 * 3600_000), reset: false },
@@ -5718,6 +5980,15 @@ let fixtureAccounts: ServedAccount[] = [
     // row is marked `~` and nothing on it may be read as current.
     observed_at: ISO(-2 * 3600_000),
     stale: true,
+    // 12% left on its five-hour window, counted at half because the reading
+    // is old: under the 15% floor until a fresh reading or the reset.
+    max_agents: 6,
+    can_take_new_agent: false,
+    blocked_by: [
+      { window: 'five_hour', used: 0.88, floor: 0.15, resets_at: ISO(3600_000 + 43 * 60_000), aged_reading: true },
+    ],
+    next_eligible_at: ISO(3600_000 + 43 * 60_000),
+    organisation: null,
     windows: {
       // A five-hour window resets within five hours (QAFIX6-FIXTURE f, run 6
       // overview-automate-016): 19h 43m read as a window no provider has.
@@ -5728,6 +5999,11 @@ let fixtureAccounts: ServedAccount[] = [
   fixtureAccount('u-bogdan', 'weekly-burn', {
     state: 'PAUSED',
     reason: 'held back for the release run on Monday',
+    max_agents: 6,
+    can_take_new_agent: false,
+    blocked_by: [],
+    next_eligible_at: null,
+    organisation: { name: 'Personal', plan: 'Max' },
     windows: {
       // Already past its reset: the figure describes a window that has refilled.
       five_hour: { utilization: 0.97, resets_at: ISO(-6 * 60_000), reset: true },
@@ -5736,6 +6012,11 @@ let fixtureAccounts: ServedAccount[] = [
   }),
   fixtureAccount('u-bogdan', 'never-polled', {
     // Registered, never observed. Utilisation is UNKNOWN, emphatically not 0%.
+    // It takes one agent until its first reading (BGD, "One until measured").
+    max_agents: 6,
+    can_take_new_agent: true,
+    blocked_by: [],
+    next_eligible_at: null,
     observed_at: null,
     stale: true,
     windows: {},
@@ -5748,6 +6029,10 @@ let fixtureAccounts: ServedAccount[] = [
     state: 'REAUTH_REQUIRED',
     reason: 'refresh failed: reauth_required',
     lend_to: ['eng'],
+    max_agents: 6,
+    can_take_new_agent: false,
+    blocked_by: [],
+    next_eligible_at: null,
     observed_at: ISO(-3 * 86_400_000),
     stale: true,
     windows: {
@@ -5767,9 +6052,77 @@ let fixtureAccounts: ServedAccount[] = [
     // the treatment cannot ship unlooked-at.
     unreadable_by: ['u-bogdan'],
     unreadable_now: ['u-bogdan'],
+    // The broker's answer is for the owner; this tenant is skipped all the same.
+    max_agents: 6,
+    can_take_new_agent: true,
+    // IDENTICAL READINGS WITH ANOTHER WORKSPACE'S ACCOUNT (#2222, BGD Q1, Q2):
+    // advisory, so it still takes agents, and the other side is not named.
+    blocked_by: [
+      {
+        possible_duplicate: null,
+        advisory: true,
+        reason: 'identical readings on two polls with an account in another workspace',
+      },
+    ],
+    possible_duplicate: { of: null, reason: 'identical readings on two polls with an account in another workspace' },
+    next_eligible_at: null,
     windows: {
       // Only one window came back. The 7D column says so rather than showing 0%.
       five_hour: { utilization: 0.56, resets_at: ISO(3600_000 + 12 * 60_000), reset: false },
+    },
+  }),
+  // THE GROUPS #2222's PAGE RANKS BY, one row each: a five-hour floor that
+  // clears soon, a weekly floor that clears in days, a full account, and the
+  // later registration of one subscription, withheld.
+  fixtureAccount('u-bogdan', 'five-hour-floor', {
+    max_agents: 6,
+    can_take_new_agent: false,
+    blocked_by: [{ window: 'five_hour', used: 0.92, floor: 0.15, resets_at: ISO(40 * 60_000), aged_reading: false }],
+    next_eligible_at: ISO(40 * 60_000),
+    organisation: { name: 'Example', plan: 'Team' },
+    windows: {
+      five_hour: { utilization: 0.92, resets_at: ISO(40 * 60_000), reset: false },
+      seven_day: { utilization: 0.41, resets_at: ISO(4 * 86_400_000 + 3 * 3600_000), reset: false },
+    },
+  }),
+  fixtureAccount('u-bogdan', 'weekly-floor', {
+    max_agents: 6,
+    can_take_new_agent: false,
+    blocked_by: [{ window: 'seven_day', used: 0.97, floor: 0.05, resets_at: ISO(2 * 86_400_000 + 21 * 3600_000), aged_reading: false }],
+    next_eligible_at: ISO(2 * 86_400_000 + 21 * 3600_000),
+    organisation: { name: 'Example', plan: 'Team' },
+    windows: {
+      five_hour: { utilization: 0.31, resets_at: ISO(-3 * 3600_000), reset: true },
+      seven_day: { utilization: 0.97, resets_at: ISO(2 * 86_400_000 + 21 * 3600_000), reset: false },
+      // A window this console does not know by name: listed, held to the default floor.
+      harbor_lantern: { utilization: 0.1, resets_at: ISO(-9 * 86_400_000), reset: true },
+    },
+  }),
+  fixtureAccount('u-bogdan', 'full-six', {
+    assigned: 6,
+    max_agents: 6,
+    can_take_new_agent: false,
+    blocked_by: [{ cap: 6, max_agents: 6 }],
+    next_eligible_at: null,
+    organisation: { name: 'Example', plan: 'Team' },
+    lend_to: ['smoke'],
+    windows: {
+      five_hour: { utilization: 0.52, resets_at: ISO(4 * 3600_000 + 39 * 60_000), reset: false },
+      seven_day: { utilization: 0.71, resets_at: ISO(2 * 86_400_000 + 6 * 3600_000), reset: false },
+    },
+  }),
+  fixtureAccount('u-bogdan', 'team-copy', {
+    max_agents: 6,
+    can_take_new_agent: false,
+    blocked_by: [{ duplicate_of: 'u-bogdan:primary', reason: 'registered on the same organisation as u-bogdan:primary' }],
+    next_eligible_at: null,
+    organisation: { name: 'Example', plan: 'Team' },
+    duplicate_of: 'u-bogdan:primary',
+    duplicate_reason: 'registered on the same organisation as u-bogdan:primary',
+    last_assigned_at: null,
+    windows: {
+      five_hour: { utilization: 0.41, resets_at: ISO(2 * 3600_000 + 51 * 60_000), reset: false },
+      seven_day: { utilization: 0.63, resets_at: ISO(70 * 3600_000), reset: false },
     },
   }),
 ]
@@ -5995,6 +6348,141 @@ async function fixtureName(accountId: string, displayName: string | null): Promi
   if (name === '') return fixtureRefused("an account's Name is 1 to 60 characters once trimmed, and this one is empty; send null to clear it so the label shows")
   if (name !== null && name.length > 60) return fixtureRefused(`an account's Name is at most 60 characters once trimmed; this one is ${name.length}`)
   const account: Account = { ...found, display_name: name }
+  fixtureAccounts = fixtureAccounts.map((a) => (a.account_id === accountId ? account : a))
+  return { status: 'ok', fetchedAt: Date.now(), data: { account } }
+}
+
+/**
+ * THE HEALTH RECORD THE FIXTURE SERVES (#2302): one account per state the
+ * Health section draws, so a local render shows each without a deployment.
+ * `primary` has a week of events and a closed 5-hour limit; `five-hour-floor`
+ * is limited now; `retired-laptop` needs re-auth; `never-polled` was read and
+ * is empty; `eng:shared` is a deployment whose broker predates the record (a
+ * 404). Every other account is a quiet healthy one with a single event.
+ */
+async function fixtureAccountHealth(accountId: string): Promise<Result<AccountHealth>> {
+  await new Promise((r) => setTimeout(r, 160))
+  if (!fixtureAccounts.some((a) => a.account_id === accountId)) {
+    return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: 'not_found', message: `no account '${accountId}'` } }
+  }
+  if (accountId === 'eng:shared') {
+    return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: null, message: 'Not Found' } }
+  }
+  const now = Date.now()
+  const H = 3_600_000
+  const at = (hoursAgo: number) => new Date(now - hoursAgo * H).toISOString()
+  const task = () => `task_${Math.random().toString(16).slice(2, 12)}${Math.random().toString(16).slice(2, 12)}`
+  type Ev = [number, AccountHealthKind, Partial<AccountHealthEvent>?]
+  const ev = (list: Ev[]): AccountHealthEvent[] =>
+    list.map(([h, kind, over]) => ({
+      // Another workspace's event is floored to its hour, as the route floors it.
+      at: over?.own === false ? new Date(now - h * H - ((now - h * H) % H)).toISOString() : at(h),
+      kind,
+      tenant_id: 'u-bogdan',
+      task_id: task(),
+      window: null,
+      reset_at: null,
+      message: FIXTURE_HEALTH_MESSAGES[kind],
+      own: true,
+      ...over,
+    }))
+  let status: AccountHealthStatus = 'healthy'
+  let limitedUntil: string | null = null
+  let events: AccountHealthEvent[]
+  if (accountId === 'u-bogdan:never-polled') {
+    events = []
+  } else if (accountId === 'u-bogdan:primary') {
+    events = ev([
+      [0.4, 'overloaded'],
+      [3.2, 'network'],
+      [26, 'rate_limit', { window: 'five_hour', reset_at: at(23) }],
+      [25.5, 'exhausted'],
+      [25, 'assign_refused', { window: 'five_hour', message: 'not assigned: window under its floor' }],
+      [24.6, 'assign_refused', { window: 'five_hour', message: 'not assigned: window under its floor' }],
+      [52, 'server_error'],
+      [52.2, 'overloaded'],
+      [98, 'network', { tenant_id: null, task_id: null, message: null, own: false }],
+      [140, 'overloaded'],
+    ])
+  } else if (accountId === 'u-bogdan:five-hour-floor') {
+    status = 'limited'
+    limitedUntil = at(-40 / 60)
+    events = ev([
+      [0.2, 'assign_refused', { window: 'five_hour', message: 'not assigned: window under its floor' }],
+      [1.1, 'assign_refused', { window: 'five_hour', message: 'not assigned: window under its floor' }],
+      [2.6, 'exhausted'],
+      [2.8, 'rate_limit', { window: 'five_hour', reset_at: limitedUntil }],
+      [74, 'rate_limit', { window: 'five_hour', reset_at: at(71) }],
+      [73.6, 'exhausted'],
+    ])
+  } else if (accountId === 'u-bogdan:retired-laptop') {
+    status = 'reauth_needed'
+    events = ev([
+      [0.3, 'assign_refused', { message: 'not assigned: account marked reauth_needed' }],
+      [0.9, 'assign_refused', { message: 'not assigned: account marked reauth_needed' }],
+      [1.4, 'reauth'],
+      [1.41, 'auth'],
+      [1.6, 'refresh_failed'],
+      [2.1, 'refresh_failed'],
+    ])
+  } else {
+    events = ev([[61, 'network']])
+  }
+  events.sort((x, y) => Date.parse(y.at) - Date.parse(x.at))
+  const span = (hours: number): AccountHealthCounts => {
+    const c = {} as AccountHealthCounts
+    for (const k of ACCOUNT_HEALTH_KINDS) c[k] = 0
+    for (const e of events) if (now - Date.parse(e.at) <= hours * H) c[e.kind] += 1
+    return c
+  }
+  const byHour = new Map<string, AccountHealthHour>()
+  for (const e of events) {
+    const t = Date.parse(e.at)
+    const hour = new Date(t - (t % H)).toISOString()
+    const row = byHour.get(hour) ?? { hour, counts: {}, total: 0 }
+    row.counts[e.kind] = (row.counts[e.kind] ?? 0) + 1
+    row.total += 1
+    byHour.set(hour, row)
+  }
+  return {
+    status: 'ok',
+    fetchedAt: now,
+    data: {
+      account_id: accountId,
+      status,
+      limited_until: limitedUntil,
+      counts: { last_1h: span(1), last_24h: span(24), last_7d: span(168) },
+      hourly: [...byHour.values()].sort((x, y) => Date.parse(x.hour) - Date.parse(y.hour)),
+      events,
+      observed_at: new Date(now).toISOString(),
+    },
+  }
+}
+
+/** What the worker and broker write for each kind, already redacted (mock-up A's `msgOf`). */
+const FIXTURE_HEALTH_MESSAGES: Record<AccountHealthKind, string> = {
+  rate_limit: 'rate_limit_event status=rejected',
+  exhausted: 'PROVIDER_QUOTA_EXHAUSTED · parked at checkpoint 4, capacity released',
+  assign_refused: 'not assigned: window under its floor',
+  overloaded: '529 overloaded_error: Overloaded',
+  server_error: '503 service unavailable, retry later',
+  network: 'connect ECONNRESET api.anthropic.com:443',
+  auth: '401 authentication_error: OAuth access expired · credential [redacted]',
+  refresh_failed: 'refresh failed: invalid_grant · credential [redacted]',
+  reauth: 'marked reauth_needed by the worker after a 401',
+}
+
+async function fixtureMaxAgents(accountId: string, maxAgents: number): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 180))
+  const found = fixtureAccounts.find((a) => a.account_id === accountId)
+  if (!found) return fixtureRefused(`no account '${accountId}'`)
+  // swarm-api's `_checked_max_agents`, in its words.
+  if (!Number.isInteger(maxAgents) || maxAgents < 1 || maxAgents > 50) {
+    return fixtureRefused(
+      `an account's max_agents is 1 to 50, and this is ${maxAgents}; pause the account to stop it taking new agents`,
+    )
+  }
+  const account: ServedAccount = { ...found, max_agents: maxAgents }
   fixtureAccounts = fixtureAccounts.map((a) => (a.account_id === accountId ? account : a))
   return { status: 'ok', fetchedAt: Date.now(), data: { account } }
 }
@@ -6621,6 +7109,29 @@ const fixtureFileIssues = new Map<string, boolean>()
  */
 const fixtureWorkflowFiles = new Map<string, boolean>()
 
+/**
+ * The fixture registrations the fixture build removed (`deleteRepository`):
+ * gone from its list and its counts, and still among its grants, so the
+ * page draws each again as a dashed "chosen, not registered" card.
+ */
+const fixtureRemoved = new Set<string>()
+
+/**
+ * `GET /v1/repositories/counts` for the fixture registrations: secrets and QA
+ * targets, counts only. Both are 0 because the fixture build serves no QA
+ * target (`loadQaTargets`) and no secret granted to a repository
+ * (`fixtureWorkspaceSecrets`): a card saying "QA targets: 1" would link to a
+ * list that says there are none.
+ */
+function fixtureRepositoryCounts(): unknown {
+  return {
+    tenant_id: FIXTURE_TENANT,
+    counts: FIXTURE_REPOS.map((r) => ({
+      repo_id: r.repo_id, repository: `example-org/${r.repo}`, secrets: 0, qa_targets: 0,
+    })).filter((c) => !fixtureRemoved.has(c.repo_id)),
+  }
+}
+
 function fixtureRepositories(): unknown {
   return {
     repositories: FIXTURE_REPOS.map((r, i) => ({
@@ -6639,7 +7150,7 @@ function fixtureRepositories(): unknown {
       index_credential: { source: 'tenant', secret_name: `swarm-tenant-${FIXTURE_TENANT}-git` },
       agents_may_file_issues: fixtureFileIssues.get(r.repo_id) ?? false,
       workflow_files: fixtureWorkflowFiles.get(r.repo_id) ?? false,
-    })),
+    })).filter((x) => !fixtureRemoved.has(x.repo_id)),
   }
 }
 
@@ -6921,6 +7432,25 @@ function fixtureAdminWorkspacesRoles(): unknown {
   }
 }
 
+/** The grid's columns (ADMIN-PEOPLE-ROLES): eng, the personas' group, and research. */
+const FIXTURE_PEOPLE_COLUMNS = [
+  { tenant_id: FIXTURE_GROUP.tenant_id, group: FIXTURE_GROUP.principal, display_name: FIXTURE_GROUP.principal, default_role: 'member', unavailable: false },
+  { tenant_id: 'research', group: 'research@example.com', display_name: 'research@example.com', default_role: 'viewer', unavailable: false },
+]
+
+/**
+ * `GET /v1/admin/people` as the `workspace-admin` persona reads it (S5f):
+ * eng alone, its people's cells and when they were last seen, nothing else.
+ */
+function fixtureScopedPeople(): unknown {
+  const people = [
+    { email: 'alice@example.com', display_name: null, roles: { eng: 'admin' }, last_active: fixtureAgo(5 * 60_000) },
+    { email: 'bob@example.com', display_name: 'Bob', roles: { eng: 'member' }, last_active: fixtureAgo(3 * FIXTURE_HOUR) },
+    { email: 'erin@example.com', display_name: null, roles: { eng: 'viewer' }, last_active: null },
+  ]
+  return { scope: 'workspaces', workspaces: [FIXTURE_PEOPLE_COLUMNS[0]], workspaces_error: null, people, count: people.length, pending: 0 }
+}
+
 /**
  * `GET /v1/admin/people` (run-4 admin-003): four people -- three signed in
  * with a ready workspace, one pending (a requested workspace) -- and one
@@ -6936,31 +7466,34 @@ function fixturePeople(): unknown {
   const ownAccounts = fixtureAccounts.filter((a) => a.owner_tenant === FIXTURE_TENANT)
   const people = [
     {
-      email: 'carol@example.com', display_name: 'Carol', teams: [], github: 'none',
-      workspace: ws('requested', null, { request_id: 'wsr_c4r0l', requested_at: fixtureAgo(40 * 60_000), requested_via: 'console' }),
+      email: 'carol@example.com', display_name: 'Carol', teams: [], github: 'none', roles: { eng: 'none', research: 'none' },
+      workspace: ws('requested', 'w-c4r01e', { request_id: 'wsr_c4r0l', requested_at: fixtureAgo(40 * 60_000), requested_via: 'console' }),
       claude_account: claude('none', 0, 0, []), loan_request: null,
       first_seen: fixtureAgo(45 * 60_000), last_seen: fixtureAgo(40 * 60_000), last_submitted: null, last_active: fixtureAgo(40 * 60_000),
     },
     {
-      email: 'alice@example.com', display_name: null, teams: [FIXTURE_GROUP.principal], github: 'connected',
+      email: 'alice@example.com', display_name: null, teams: [FIXTURE_GROUP.principal], github: 'connected', roles: { eng: 'admin', research: 'none' },
       workspace: ws('ready', FIXTURE_TENANT, { ready_at: fixtureAgo(9 * 24 * FIXTURE_HOUR) }),
       claude_account: claude('own', ownAccounts.length, 1, [FIXTURE_GROUP.tenant_id]), loan_request: null,
       first_seen: fixtureAgo(9 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(5 * 60_000), last_submitted: fixtureAgo(20 * 60_000), last_active: fixtureAgo(5 * 60_000),
     },
     {
-      email: 'bob@example.com', display_name: 'Bob', teams: [FIXTURE_GROUP.principal], github: 'connected',
+      email: 'bob@example.com', display_name: 'Bob', teams: [FIXTURE_GROUP.principal], github: 'connected', roles: { eng: 'member', research: 'viewer' },
       workspace: ws('ready', 'u-bob', { ready_at: fixtureAgo(6 * 24 * FIXTURE_HOUR) }),
       claude_account: claude('lent', 0, 1, [FIXTURE_TENANT]), loan_request: { state: 'lent', requested_at: fixtureAgo(6 * 24 * FIXTURE_HOUR), decided_at: fixtureAgo(5 * 24 * FIXTURE_HOUR) },
       first_seen: fixtureAgo(6 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(3 * FIXTURE_HOUR), last_submitted: fixtureAgo(4 * FIXTURE_HOUR), last_active: fixtureAgo(3 * FIXTURE_HOUR),
     },
     {
-      email: 'dave@example.com', display_name: null, teams: [], github: 'expired',
+      email: 'dave@example.com', display_name: null, teams: [], github: 'expired', roles: { eng: 'none', research: 'admin' },
       workspace: ws('ready', 'u-dave', { ready_at: fixtureAgo(20 * 24 * FIXTURE_HOUR) }),
       claude_account: claude('provider_key', 0, 0, [], true), loan_request: null,
       first_seen: fixtureAgo(20 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(4 * 24 * FIXTURE_HOUR), last_submitted: null, last_active: fixtureAgo(4 * 24 * FIXTURE_HOUR),
     },
   ]
   return {
+    scope: 'platform',
+    workspaces: FIXTURE_PEOPLE_COLUMNS,
+    workspaces_error: null,
     people,
     count: people.length,
     pending: people.filter((p) => p.workspace.state === 'requested').length,
@@ -7030,6 +7563,10 @@ function fixtureSegment(url: string, n: number): string {
 /** What a fixture route answers, by template; absent is not served. Admin routes refuse the member. */
 const FIXTURE_READS: Readonly<Record<string, (url: string) => FixtureBody | undefined>> = {
   '/v1/repositories': () => ({ body: fixtureRepositories() }),
+  // Config › Secrets and Admin › Platform secrets (SSC-UI).
+  '/v1/secrets/overview': (url) => ({ body: fixtureSecretsOverview(url) }),
+  '/v1/admin/platform-secrets': () => (fixtureIsAdmin ? { body: fixturePlatformSecrets() } : 'admin'),
+  '/v1/repositories/counts': () => ({ body: fixtureRepositoryCounts() }),
   '/v1/repositories/{repo_id}/index': (url) => {
     const body = fixtureRepoIndex(fixtureSegment(url, 3))
     return body === undefined ? undefined : { body }
@@ -7039,7 +7576,7 @@ const FIXTURE_READS: Readonly<Record<string, (url: string) => FixtureBody | unde
   '/v1/code-intelligence': () => ({ body: fixtureCodeIntelligence() }),
   '/v1/profile': () => ({ body: fixtureProfile() }),
   '/v1/workspace/roles': () => ({ body: fixtureWorkspaceRoles() }),
-  '/v1/admin/people': () => (fixtureIsAdmin ? { body: fixturePeople() } : 'admin'),
+  '/v1/admin/people': () => (fixtureIsAdmin ? { body: fixturePeople() } : fixtureIsWorkspaceAdmin ? { body: fixtureScopedPeople() } : 'admin'),
   '/v1/admin/workspaces/roles': () => (fixtureIsAdmin ? { body: fixtureAdminWorkspacesRoles() } : 'admin'),
   // Admin › Tenants' "Being created": nothing is being built.
   '/v1/admin/workspaces': () => (fixtureIsAdmin ? { body: { workspaces: [] } } : 'admin'),
@@ -7247,6 +7784,55 @@ export async function registerRepository(body: RegisterRepositoryBody): Promise<
   return writeTo(route('/v1/repositories'), 'POST', body)
 }
 
+/**
+ * `DELETE /v1/repositories/{repo_id}`: unregister (member role). The API
+ * disables every grant on the registration's secrets in the transaction that
+ * removes it (`delete_repository`), so a re-registration revives none. The
+ * person's own grant on the repository (`/v1/access`) is not touched.
+ */
+export async function deleteRepository(repoId: string): Promise<Result<unknown>> {
+  const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
+  if (USE_FIXTURES) {
+    if (!FIXTURE_REPOS.some((r) => r.repo_id === repoId) || fixtureRemoved.has(repoId)) return repoNotServed<unknown>(target)
+    await new Promise((r) => setTimeout(r, 180))
+    noteFixtureProbe(target, 180, true)
+    fixtureRemoved.add(repoId)
+    return { status: 'ok', fetchedAt: Date.now(), data: null }
+  }
+  // The API answers 204 with no body; `write` reads that as the success it is.
+  return write(target, 'DELETE')
+}
+
+/** One registration's counts: its repository secrets for agents and its QA targets. Never a name. */
+export interface RepoCounts {
+  repo_id: string
+  secrets: number | null
+  qa_targets: number | null
+}
+
+const countOf = (v: unknown): number | null => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null)
+
+/** The served counts by `repo_id`; a row without a `repo_id` is dropped, a count not a whole number is null. */
+export function normRepoCounts(raw: unknown): Record<string, RepoCounts> {
+  const rows = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>).counts : null
+  const out: Record<string, RepoCounts> = {}
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (typeof row !== 'object' || row === null) continue
+    const r = row as Record<string, unknown>
+    if (typeof r.repo_id !== 'string') continue
+    out[r.repo_id] = { repo_id: r.repo_id, secrets: countOf(r.secrets), qa_targets: countOf(r.qa_targets) }
+  }
+  return out
+}
+
+/**
+ * `GET /v1/repositories/counts`: every registration's secret and QA-target
+ * counts in one read (REPOS-FOLLOWUPS), for Config › Repositories' cards.
+ */
+export async function loadRepositoryCounts(): Promise<Result<Record<string, RepoCounts>>> {
+  return readAs(route('/v1/repositories/counts'), normRepoCounts)
+}
+
 /** `POST /v1/repositories/{repo_id}/index:run`: queue an index run now. */
 export async function runRepositoryIndex(repoId: string, kind: 'full' | 'incremental'): Promise<Result<unknown>> {
   return writeTo(route('/v1/repositories/{repo_id}/index:run', { repo_id: repoId }), 'POST', { kind })
@@ -7274,8 +7860,8 @@ export async function verifyGitToken(tokenId: string): Promise<Result<unknown>> 
 
 // ---------------------------------------------------------------------------
 // Provider keys a person or an admin sets: TypeSafe (KEYS-API, PR #1284;
-// docs/provider-keys.md). Settings › API keys (ProviderKeys.tsx) is the only
-// caller. THE KEY IS AN ARGUMENT OF `putProviderKey` AND NOTHING ELSE: it goes
+// docs/provider-keys.md). Config › Secrets' TypeSafe key form (Secrets.tsx)
+// is the only caller. THE KEY IS AN ARGUMENT OF `putProviderKey` AND NOTHING ELSE: it goes
 // into that one request's body and is not kept, logged or returned here, and
 // no response carries it back. The status is copied field by field
 // (`normKeyStatus`), so anything a response carried by mistake is never drawn.
@@ -7637,6 +8223,766 @@ export async function deleteWorkspaceSecret(name: string): Promise<Result<unknow
   const target = route('/v1/workspace/secrets/{name}', { name })
   if (USE_FIXTURES) return fixtureSecretsNotServed(target)
   return write(target, 'DELETE', { name })
+}
+
+// ---------------------------------------------------------------------------
+// Config › Secrets (lane SSC-UI, part of #2158; docs/design/secrets-scopes.md
+// §4, §6.1, §6.2). Secrets.tsx and AdminPlatformSecrets.tsx are the callers.
+// THE OVERVIEW IS COPIED FROM AN ALLOW-LIST, field by field, as every secrets
+// read here is: `git_tokens` stores a `last4` the API never serves, and if a
+// response ever carried it, or a value, a length or a version name, nothing
+// below would copy it, so nothing could draw it.
+// ---------------------------------------------------------------------------
+
+/** The three scopes of §2.1, as `GET /v1/secrets/overview?scope=` spells them. */
+export type SecretsScope = 'workspace' | 'personal' | 'repository'
+
+/** One entry of a row's `shadowed_by` or `shadows` (Q1: the person's, then the repository's, then the workspace's). */
+export interface SecretsShadow {
+  scope: SecretsScope
+  /** "agents of <person>", "agents that clone <owner/repo>", "agents of this workspace". */
+  where: string
+  slot: string | null
+  person: string | null
+  repository: string | null
+}
+
+/** One row of the overview. Which fields mean anything depends on `section`. */
+export interface SecretsRow {
+  section: string
+  store: string
+  name: string
+  scope: string | null
+  kind: string | null
+  provider: string | null
+  /** `set`, `unset`, a token's state, or a login's. */
+  status: string
+  set_at: string | null
+  set_by: string | null
+  consumers: string[]
+  shadowed_by: SecretsShadow[]
+  shadows: SecretsShadow[]
+  can_manage: boolean
+  /** Yours: whether this personal secret is opted in to the selected workspace; null where not asked. */
+  opted_in: boolean | null
+  /** An MCP server's consumer (`mcp:<name>`) and the store secrets granted to it. */
+  consumer: string | null
+  secrets: string[]
+  /** A GitHub token's login, verify time, expiry and slot scope. Never any character of it. */
+  forge_login: string | null
+  verified_at: string | null
+  expires_at: string | null
+  token_scope: string | null
+  /** A QA target's id, environment and which of its two values (`credential`, `challenge_bypass`). */
+  target_id: string | null
+  environment: string | null
+  field: string | null
+  site: string | null
+  /** The console page a status-only row is managed on. */
+  page: string | null
+}
+
+export interface SecretsOverview {
+  tenant_id: string
+  scope: SecretsScope
+  repo_id: string | null
+  repository: string | null
+  personal_tenant_id: string | null
+  /** Whether the caller manages this scope; null when the API did not say, which is not a yes. */
+  can_manage: boolean | null
+  rows: SecretsRow[]
+}
+
+const SECRETS_SCOPES: readonly SecretsScope[] = ['workspace', 'personal', 'repository']
+
+function asScope(v: unknown): SecretsScope | null {
+  return typeof v === 'string' && (SECRETS_SCOPES as readonly string[]).includes(v) ? (v as SecretsScope) : null
+}
+
+function normShadows(raw: unknown): SecretsShadow[] {
+  return (Array.isArray(raw) ? raw : []).flatMap((s): SecretsShadow[] => {
+    if (typeof s !== 'object' || s === null) return []
+    const r = s as Record<string, unknown>
+    const scope = asScope(r.scope)
+    const where = wsText(r.where)
+    return scope === null || where === null
+      ? []
+      : [{ scope, where, slot: wsText(r.slot), person: wsText(r.person), repository: wsText(r.repository) }]
+  })
+}
+
+function normSecretsRow(raw: unknown): SecretsRow | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const r = raw as Record<string, unknown>
+  const section = wsText(r.section)
+  const name = wsText(r.name)
+  if (section === null || name === null) return null
+  return {
+    section,
+    store: wsText(r.store) ?? '',
+    name,
+    scope: wsText(r.scope),
+    kind: wsText(r.kind),
+    provider: wsText(r.provider),
+    status: wsText(r.status) ?? 'unknown',
+    set_at: wsText(r.set_at),
+    set_by: wsText(r.set_by),
+    consumers: wsStrings(r.consumers),
+    shadowed_by: normShadows(r.shadowed_by),
+    shadows: normShadows(r.shadows),
+    can_manage: r.can_manage === true,
+    opted_in: typeof r.opted_in === 'boolean' ? r.opted_in : null,
+    consumer: wsText(r.consumer),
+    secrets: wsStrings(r.secrets),
+    forge_login: wsText(r.forge_login),
+    verified_at: wsText(r.verified_at),
+    expires_at: wsText(r.expires_at),
+    // A git row's `scope` is the token's slot (tenant, user, repository), not a secrets scope.
+    token_scope: section === 'github' ? wsText(r.scope) : null,
+    target_id: wsText(r.target_id),
+    environment: wsText(r.environment),
+    field: wsText(r.field),
+    site: wsText(r.site),
+    page: wsText(r.page),
+  }
+}
+
+export function normSecretsOverview(raw: unknown): SecretsOverview {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  return {
+    tenant_id: wsText(r.tenant_id) ?? '',
+    scope: asScope(r.scope) ?? 'workspace',
+    repo_id: wsText(r.repo_id),
+    repository: wsText(r.repository),
+    personal_tenant_id: wsText(r.personal_tenant_id),
+    can_manage: typeof r.can_manage === 'boolean' ? r.can_manage : null,
+    rows: (Array.isArray(r.rows) ? r.rows : []).map(normSecretsRow).filter((x): x is SecretsRow => x !== null),
+  }
+}
+
+/** `GET /v1/secrets/overview?scope=..[&repo_id=..]`: every store of one scope, status only. */
+export async function loadSecretsOverview(scope: SecretsScope, repoId: string | null = null): Promise<Result<SecretsOverview>> {
+  const q = new URLSearchParams({ scope })
+  if (scope === 'repository' && repoId !== null) q.set('repo_id', repoId)
+  return readAs(route('/v1/secrets/overview', {}, q), normSecretsOverview)
+}
+
+/**
+ * WHERE A STORE SECRET IS WRITTEN: the selected workspace's own store, or one
+ * of its repositories' (`/v1/repositories/{repo_id}/secrets`, the same
+ * shapes). A form holds the target it was opened for and writes there and
+ * nowhere else, so a form opened on one repository cannot submit to another
+ * scope (SSC-UI's "cannot be submitted from the wrong scope").
+ */
+export type SecretStoreTarget = { scope: 'workspace' } | { scope: 'repository'; repoId: string }
+
+/** A one-time link the page minted for itself: its token, held in memory only, and its expiry. */
+export interface MintedLink {
+  token: string
+  expires_at: string | null
+}
+
+// ---------------------------------------------------------------------------
+// Config › Secrets › Repository › GitHub Actions (lane SSC-UI-ACTIONS, part of
+// #2158; docs/design/secrets-scopes.md §3, §6.1, and BGD's answers in §11).
+// SecretsActions.tsx is the only caller; the routes are SSC-ACTIONS-API's
+// (apps/swarm-api/swarm_api/routes/actions_secrets.py).
+//
+// A VALUE IS AN ARGUMENT OF `setActionsSecret` AND NOTHING ELSE. §11 Q5: the
+// value is sealed in swarm-api with PyNaCl, so the page sends it as `value`
+// in that one PUT, through the one-time form, and never seals it here (no
+// libsodium in the UI). GitHub serves no value, and every list is copied
+// from an allow-list, so nothing a response carried by mistake is drawn.
+//
+// NOTHING HERE CREATES AN ENVIRONMENT (§11 Q4). The one environment call is
+// a GET of its branch rule; a missing environment is answered with GitHub's
+// page to create it, which the page links to.
+// ---------------------------------------------------------------------------
+
+/** An environment's branch rule as `actions_secrets.RULE_*` spells it. */
+export type ActionsRule = 'main_only' | 'protected_branches' | 'custom_branches' | 'any_branch'
+
+const ACTIONS_RULES: readonly ActionsRule[] = ['main_only', 'protected_branches', 'custom_branches', 'any_branch']
+
+/** One secret's name and times, as GitHub serves them, beside SwarmCloud's own record of its writes. */
+export interface ActionsSecretName {
+  name: string
+  updated_at: string | null
+  /** True when SwarmCloud's `actions_secret_writes` holds a write of it; false is "set on GitHub". */
+  set_by_swarmcloud: boolean
+  set_by: string | null
+  set_at: string | null
+}
+
+/** `GET .../actions/environments/{environment}/rule`'s answer: whether it exists and lets only the default branch deploy. */
+export interface ActionsEnvironmentRule {
+  environment: string
+  exists: boolean
+  rule: ActionsRule | null
+  main_only: boolean
+  /** The registration's default branch, read from GitHub: the one branch "main only" means. */
+  branch: string
+  branches: { name: string; type: string }[]
+  /** GitHub's page to create it, served only for a missing environment. */
+  create_url: string | null
+  /** GitHub's page listing the repository's environments. */
+  settings_url: string | null
+  /** The API's steps to create a missing one, in words. */
+  steps: string | null
+}
+
+export interface ActionsEnvironment {
+  environment: string
+  rule: ActionsEnvironmentRule
+  secrets: ActionsSecretName[]
+}
+
+/** `GET /v1/repositories/{repo_id}/actions/secrets`: the repository's secrets and each environment's. */
+export interface ActionsSecretList {
+  repo_id: string
+  /** `owner/repo`, as the API names the registration; null when it did not. */
+  repository: string | null
+  /** The repository-level secrets (the API's `repository_secrets`). */
+  secrets: ActionsSecretName[]
+  environments: ActionsEnvironment[]
+  /** The API lists at most 30 environments; true when it may have stopped there. */
+  environments_truncated: boolean
+  /** GitHub's create-environment page, served on the list even with no environment yet. */
+  create_url: string | null
+  /**
+   * Whether this caller passes both checks a write runs (workspace manager,
+   * and GitHub calls them admin of the repository, asked live). It decides
+   * only what the pane offers: every write is authorised again by the API.
+   * Null when the API did not say.
+   */
+  can_write: boolean | null
+  /** The API's sentence for why not, when `can_write` is false. */
+  cannot_write_because: string | null
+  /** When GitHub was asked; null when the manager rule refused first. */
+  checked_at: string | null
+}
+
+/**
+ * A GitHub address the API served, or null. Only `https://github.com/` is
+ * linked: these become an `href`, and a page that links wherever a response
+ * points is one bad response away from sending a person somewhere else.
+ */
+export function githubUrl(v: unknown): string | null {
+  if (typeof v !== 'string') return null
+  try {
+    const u = new URL(v)
+    return u.protocol === 'https:' && u.hostname === 'github.com' ? u.toString() : null
+  } catch {
+    return null
+  }
+}
+
+function normActionsName(raw: unknown): ActionsSecretName | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const r = raw as Record<string, unknown>
+  if (typeof r.name !== 'string' || r.name === '') return null
+  return {
+    name: r.name,
+    updated_at: wsText(r.updated_at) ?? wsText(r.created_at),
+    set_by_swarmcloud: r.set_by_swarmcloud === true,
+    set_by: wsText(r.set_by),
+    set_at: wsText(r.set_at),
+  }
+}
+
+function normActionsNames(raw: unknown): ActionsSecretName[] {
+  return (Array.isArray(raw) ? raw : []).map(normActionsName).filter((s): s is ActionsSecretName => s !== null)
+}
+
+export function normActionsRule(raw: unknown, environment = ''): ActionsEnvironmentRule {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const rule = ACTIONS_RULES.find((x) => x === r.rule) ?? null
+  return {
+    environment: wsText(r.environment) ?? environment,
+    exists: r.exists === true,
+    rule,
+    // Main only is the API's word, never inferred: a missing flag is not main only.
+    main_only: r.main_only === true && rule === 'main_only',
+    branch: wsText(r.branch) ?? 'main',
+    branches: (Array.isArray(r.branches) ? r.branches : []).flatMap((b) => {
+      if (typeof b !== 'object' || b === null) return []
+      const o = b as Record<string, unknown>
+      return typeof o.name === 'string' ? [{ name: o.name, type: typeof o.type === 'string' ? o.type : '' }] : []
+    }),
+    create_url: githubUrl(r.create_url),
+    settings_url: githubUrl(r.settings_url),
+    steps: wsText(r.steps),
+  }
+}
+
+/**
+ * The list, from an allow-list. `repository` is the `owner/repo` name and
+ * the repository-level rows are `repository_secrets` (SSC-ACTIONS-API-2: the
+ * route's spread used to overwrite the name with the rows).
+ */
+export function normActionsSecretList(raw: unknown): ActionsSecretList {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const environments = (Array.isArray(r.environments) ? r.environments : []).flatMap((e): ActionsEnvironment[] => {
+    if (typeof e !== 'object' || e === null) return []
+    const o = e as Record<string, unknown>
+    if (typeof o.environment !== 'string' || o.environment === '') return []
+    return [{ environment: o.environment, rule: normActionsRule(o.rule, o.environment), secrets: normActionsNames(o.secrets) }]
+  })
+  return {
+    repo_id: wsText(r.repo_id) ?? '',
+    repository: wsText(r.repository),
+    secrets: normActionsNames(r.repository_secrets),
+    environments,
+    environments_truncated: r.environments_truncated === true,
+    create_url: githubUrl(r.create_url),
+    can_write: typeof r.can_write === 'boolean' ? r.can_write : null,
+    cannot_write_because: wsText(r.cannot_write_because),
+    checked_at: wsText(r.checked_at),
+  }
+}
+
+/** The fixture build's repository, the mock-up's example data (config-e.html S4b2). */
+const FIXTURE_ACTIONS_REPO = 'example-org/example-api'
+
+/** A fixture repository id ending in this reads as one whose App lacks Secrets permission. */
+export const FIXTURE_ACTIONS_UNGRANTED = '-ungranted'
+
+function fixtureActionsRule(environment: string, rule: ActionsRule | null): ActionsEnvironmentRule {
+  const base = `https://github.com/${FIXTURE_ACTIONS_REPO}/settings/environments`
+  return normActionsRule({
+    environment, exists: rule !== null, rule, main_only: rule === 'main_only', branch: 'main',
+    branches: rule === 'main_only' ? [{ name: 'main', type: 'branch' }] : [],
+    create_url: rule === null ? `${base}/new` : null, settings_url: base,
+    steps: rule === null ? `Create the environment '${environment}' on GitHub, set its deployment branches to 'Selected branches and tags' with the one rule 'main', then check its rule here again` : null,
+  }, environment)
+}
+
+function fixtureActionsRefusal<T>(target: ApiRoute): Result<T> {
+  noteFixtureProbe(target, 0, false, 'conflict')
+  return {
+    status: 'error',
+    error: {
+      kind: 'conflict', httpStatus: 409, code: 'conflict', template: target.template,
+      message: "the SwarmCloud GitHub App's installation has not granted the permission this needs (Secrets and Environments: Read and write); the installation's owner accepts it on GitHub, and nothing was written",
+      detail: { reason: 'secrets_not_granted', repository: FIXTURE_ACTIONS_REPO, review_url: 'https://github.com/organizations/example-org/settings/installations/1/permissions/update' },
+    },
+  } as Result<T>
+}
+
+/** `GET /v1/repositories/{repo_id}/actions/secrets`: names and times, read live from GitHub. */
+export async function loadActionsSecrets(repoId: string): Promise<Result<ActionsSecretList>> {
+  const target = route('/v1/repositories/{repo_id}/actions/secrets', { repo_id: repoId })
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 80))
+    if (repoId.endsWith(FIXTURE_ACTIONS_UNGRANTED)) return fixtureActionsRefusal(target)
+    noteFixtureProbe(target, 80, true)
+    const day = (n: number) => new Date(FIXTURE_NOW - n * 86_400_000).toISOString()
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: normActionsSecretList({
+        repo_id: repoId,
+        repository: FIXTURE_ACTIONS_REPO,
+        repository_secrets: [
+          { name: 'TEST_DB_PASSWORD', updated_at: day(5), set_by_swarmcloud: true, set_by: 'operator@example.com', set_at: day(5) },
+          { name: 'SENTRY_DSN', updated_at: day(40), set_by_swarmcloud: false, set_by: null, set_at: null },
+        ],
+        environments: [
+          { environment: 'repo-secrets', rule: fixtureActionsRule('repo-secrets', 'main_only'),
+            secrets: [{ name: 'MERGE_APP_PRIVATE_KEY', updated_at: day(2), set_by_swarmcloud: true, set_by: 'operator@example.com', set_at: day(2) }] },
+          { environment: 'staging', rule: fixtureActionsRule('staging', 'any_branch'), secrets: [] },
+        ],
+        environments_truncated: false,
+        create_url: `https://github.com/${FIXTURE_ACTIONS_REPO}/settings/environments/new`,
+        // The mock-up's sentence: a writer, GitHub asked a minute before the capture clock.
+        can_write: true,
+        cannot_write_because: null,
+        checked_at: new Date(FIXTURE_NOW - 60_000).toISOString(),
+      }),
+    }
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normActionsSecretList(r.data) }
+  return r
+}
+
+/** `GET .../actions/environments/{environment}/rule`: §11 Q4's Check rule. It writes nothing. */
+export async function checkActionsRule(repoId: string, environment: string): Promise<Result<ActionsEnvironmentRule>> {
+  const target = route('/v1/repositories/{repo_id}/actions/environments/{environment}/rule', { repo_id: repoId, environment })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(target, 0, true)
+    const known: Readonly<Record<string, ActionsRule>> = Object.fromEntries([['repo-secrets', 'main_only'], ['staging', 'any_branch']])
+    return { status: 'ok', fetchedAt: Date.now(), data: fixtureActionsRule(environment, known[environment] ?? null) }
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normActionsRule(r.data, environment) }
+  return r
+}
+
+/** A one-time link to the Set form, as the page holds it: never its URL, which carries the token. */
+export interface ActionsLink {
+  token: string
+  expires_at: string | null
+}
+
+export interface SecretStoreApi {
+  target: SecretStoreTarget
+  list(): Promise<Result<WorkspaceSecretList>>
+  create(body: WorkspaceSecretCreate, linkToken: string | null): Promise<Result<null>>
+  rotate(name: string, body: WorkspaceSecretRotate, linkToken: string | null): Promise<Result<WorkspaceSecret | null>>
+  remove(name: string): Promise<Result<unknown>>
+  grant(name: string, consumer: string, enabled: boolean, slot?: string | null): Promise<Result<WorkspaceSecret | null>>
+  mintLink(action: 'add' | 'rotate', name: string | null): Promise<Result<MintedLink>>
+}
+
+/** A link answer's token, read off its `path` (`...&t=<token>`); never the path or the URL kept. */
+function mintedFrom(r: Result<unknown>): Result<MintedLink> {
+  if (r.status === 'error') return r
+  const data = (r.status === 'ok' || r.status === 'stale') && typeof r.data === 'object' && r.data !== null ? (r.data as Record<string, unknown>) : {}
+  const path = wsText(data.path) ?? wsText(data.url) ?? ''
+  const q = path.indexOf('?')
+  const token = q === -1 ? null : new URLSearchParams(path.slice(q + 1)).get('t')
+  if (token === null || token === '') {
+    return { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The link answer carried no token.', method: 'POST' } }
+  }
+  return { status: 'ok', fetchedAt: Date.now(), data: { token, expires_at: wsText(data.expires_at) } }
+}
+
+/**
+ * The fixture build's link: a token built at runtime, so the one-time form
+ * can be drawn for review. Its writes are still refused (`fixtureSecretsNotServed`).
+ */
+function fixtureMinted(target: ApiRoute): Result<MintedLink> {
+  noteFixtureProbe(target, 0, true)
+  const token = Array.from({ length: 4 }, () => Math.random().toString(36).slice(2)).join('')
+  return { status: 'ok', fetchedAt: Date.now(), data: { token, expires_at: new Date(Date.now() + 600_000).toISOString() } }
+}
+
+async function mint(target: ApiRoute, body: unknown): Promise<Result<MintedLink>> {
+  if (USE_FIXTURES) return fixtureMinted(target)
+  return mintedFrom(await write(target, 'POST', body))
+}
+
+function linkBody(action: 'add' | 'rotate', name: string | null): Record<string, string> {
+  return action === 'rotate' && name !== null ? { action, name } : { action }
+}
+
+async function fixtureRepositorySecrets(target: ApiRoute, repoId: string): Promise<Result<WorkspaceSecretList>> {
+  await new Promise((r) => setTimeout(r, 80))
+  noteFixtureProbe(target, 80, true)
+  const at = (days: number) => new Date(Date.parse(FIXTURE_CLOCK) - days * 86_400_000).toISOString()
+  const secret = (name: string, kind: string, days: number, granted: string[]) => ({
+    name, provider: 'other', kind, scope: 'repository', repo_id: repoId, current_version: '1',
+    created_at: at(days), created_by: 'alice@example.com', rotated_at: null, rotated_by: null,
+    grants: granted.map((consumer) => ({ consumer, enabled: true })),
+  })
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: normWorkspaceSecretList({
+      tenant_id: FIXTURE_TENANT,
+      can_manage: true,
+      secrets: [secret('test-db-password', 'opaque', 5, ['profile:claude-code']), secret('search-api', 'api_key', 1, ['profile:claude-code'])],
+    }),
+  }
+}
+
+const WORKSPACE_STORE: SecretStoreApi = {
+  target: { scope: 'workspace' },
+  list: loadWorkspaceSecrets,
+  create: createWorkspaceSecret,
+  rotate: rotateWorkspaceSecret,
+  remove: deleteWorkspaceSecret,
+  grant: (name, consumer, enabled, slot = null) => setWorkspaceSecretGrant(name, consumer, enabled, slot),
+  mintLink: (action, name) => mint(route('/v1/workspace/secrets/links'), linkBody(action, name)),
+}
+
+function repositoryStore(repoId: string): SecretStoreApi {
+  const repo_id = repoId
+  return {
+    target: { scope: 'repository', repoId },
+    async list() {
+      const target = route('/v1/repositories/{repo_id}/secrets', { repo_id })
+      if (USE_FIXTURES) return fixtureRepositorySecrets(target, repoId)
+      const r = await read<unknown>(target, () => false)
+      if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normWorkspaceSecretList(r.data) }
+      return r
+    },
+    async create(body, linkToken) {
+      const target = route('/v1/repositories/{repo_id}/secrets', { repo_id })
+      if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<null>
+      const r = await write(target, 'POST', linkToken === null ? body : { ...body, link_token: linkToken })
+      return r.status === 'error' ? r : { status: 'ok', fetchedAt: Date.now(), data: null }
+    },
+    async rotate(name, body, linkToken) {
+      const target = route('/v1/repositories/{repo_id}/secrets/{name}/value', { repo_id, name })
+      if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<null>
+      const r = await write(target, 'PUT', linkToken === null ? body : { ...body, link_token: linkToken })
+      return r.status === 'error' ? r : { status: 'ok', fetchedAt: Date.now(), data: servedSecret(r) }
+    },
+    async remove(name) {
+      const target = route('/v1/repositories/{repo_id}/secrets/{name}', { repo_id, name })
+      if (USE_FIXTURES) return fixtureSecretsNotServed(target)
+      return write(target, 'DELETE', { name })
+    },
+    async grant(name, consumer, enabled, slot = null) {
+      const target = route('/v1/repositories/{repo_id}/secrets/{name}/grants/{consumer}', { repo_id, name, consumer })
+      if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<null>
+      const r = await write(target, 'PUT', slot === null ? { enabled } : { enabled, slot })
+      return r.status === 'error' ? r : { status: 'ok', fetchedAt: Date.now(), data: servedSecret(r) }
+    },
+    mintLink: (action, name) => mint(route('/v1/repositories/{repo_id}/secrets/links', { repo_id }), linkBody(action, name)),
+  }
+}
+
+/** The store a target names: the workspace's own, or one repository's. */
+export function secretStore(target: SecretStoreTarget): SecretStoreApi {
+  return target.scope === 'workspace' ? WORKSPACE_STORE : repositoryStore(target.repoId)
+}
+
+/** `POST /v1/provider-keys/{provider}/links`: a one-time link to the key form, for `user` (yours) or `tenant` (the workspace's). */
+export function mintProviderKeyLink(provider: string, scope: ProviderKeyScope): Promise<Result<MintedLink>> {
+  return mint(route('/v1/provider-keys/{provider}/links', { provider }), { scope })
+}
+
+/** `POST /v1/tenants/me/credentials/links` (SSC-LINKS): a one-time link to the runner-key form for one provider. */
+export function mintRunnerKeyLink(provider: string): Promise<Result<MintedLink>> {
+  return mint(route('/v1/tenants/me/credentials/links'), { provider })
+}
+
+/**
+ * `POST /v1/tenants/me/credentials`: the workspace's runner LLM key, its
+ * value in this one body and nowhere else; `linkToken` is the one-time link's.
+ */
+export async function putRunnerKey(provider: string, apiKey: string, linkToken: string | null): Promise<Result<unknown>> {
+  const target = route('/v1/tenants/me/credentials')
+  if (USE_FIXTURES) return fixtureSecretsNotServed(target)
+  return write(target, 'POST', linkToken === null ? { provider, api_key: apiKey } : { provider, api_key: apiKey, link_token: linkToken })
+}
+
+/** `DELETE /v1/browser-logins/{name}`: remove a saved browser session of the selected (personal) workspace. */
+export async function deleteBrowserLogin(name: string): Promise<Result<unknown>> {
+  const target = route('/v1/browser-logins/{name}', { name })
+  if (USE_FIXTURES) return fixtureSecretsNotServed(target)
+  return write(target, 'DELETE')
+}
+
+// ---------------------------------------------------------------------------
+// Admin › Platform secrets (SSC-UI over SSC-PLATFORM-STATUS; §5). STATUS
+// ONLY: the route reads Secret Manager metadata and never a payload, and
+// this copies set, version count, newest time and who writes it, nothing else.
+// ---------------------------------------------------------------------------
+
+export interface PlatformSecretRow {
+  secret_id: string
+  managed_by: string
+  written_by: string
+  /** `set`, `not_set`, `not_declared` or `unreadable`. */
+  status: string
+  /** Why an `unreadable` row is: `permission_denied` or `read_failed`. */
+  reason: string | null
+  enabled_versions: number | null
+  newest_enabled_at: string | null
+  rotation_in_grace: boolean
+  /** `platform` (the catalogue) or `account` (the quota broker's, two halves each). */
+  family: string
+  owner_tenant: string | null
+  label: string | null
+  half: string | null
+}
+
+export interface PlatformSecrets {
+  secrets: PlatformSecretRow[]
+  accounts_unread: boolean
+  accounts_refused: number
+  accounts_truncated: boolean
+  read_at: string | null
+}
+
+export function normPlatformSecrets(raw: unknown): PlatformSecrets {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const rows = (Array.isArray(r.secrets) ? r.secrets : []).flatMap((x): PlatformSecretRow[] => {
+    if (typeof x !== 'object' || x === null) return []
+    const s = x as Record<string, unknown>
+    const id = wsText(s.secret_id)
+    if (id === null) return []
+    return [{
+      secret_id: id,
+      managed_by: wsText(s.managed_by) ?? '',
+      written_by: wsText(s.written_by) ?? '',
+      status: wsText(s.status) ?? 'unreadable',
+      reason: wsText(s.reason),
+      enabled_versions: typeof s.enabled_versions === 'number' ? s.enabled_versions : null,
+      newest_enabled_at: wsText(s.newest_enabled_at),
+      rotation_in_grace: s.rotation_in_grace === true,
+      family: wsText(s.family) ?? 'platform',
+      owner_tenant: wsText(s.owner_tenant),
+      label: wsText(s.label),
+      half: wsText(s.half),
+    }]
+  })
+  return {
+    secrets: rows,
+    accounts_unread: r.accounts_unread === true,
+    accounts_refused: typeof r.accounts_refused === 'number' ? r.accounts_refused : 0,
+    accounts_truncated: r.accounts_truncated === true,
+    read_at: wsText(r.read_at),
+  }
+}
+
+/** `GET /v1/admin/platform-secrets`: a platform admin's; anyone else is the route's 403. */
+export async function loadPlatformSecrets(): Promise<Result<PlatformSecrets>> {
+  return readAs(route('/v1/admin/platform-secrets'), normPlatformSecrets, (d) => d.secrets.length === 0)
+}
+
+/**
+ * The fixture build's overview, one scope at a time: the shapes
+ * `swarm_api.secrets_overview` serves, with a shadowed name, a needed key
+ * and a QA sign-in not set, so every state of the page can be drawn. No value.
+ */
+function fixtureSecretsOverview(url: string): unknown {
+  const q = new URLSearchParams(url.slice(url.indexOf('?') + 1))
+  const scope = q.get('scope') ?? 'workspace'
+  const at = (days: number) => new Date(Date.parse(FIXTURE_CLOCK) - days * 86_400_000).toISOString()
+  const base = { section: 'agents', store: 'workspace_secrets', consumers: ['profile:claude-code'], shadowed_by: [], shadows: [], can_manage: true }
+  const github = (scopeOf: string) => ({
+    section: 'github', store: 'git_tokens', name: `swarm-tenant-${FIXTURE_TENANT}-git`, scope: scopeOf, kind: 'app_user',
+    status: 'active', forge_login: 'operator', verified_at: at(0.002), expires_at: new Date(Date.parse(FIXTURE_CLOCK) + 7 * 3_600_000).toISOString(),
+    set_at: at(3), set_by: 'alice@example.com', consumers: [], can_manage: false, page: '/repositories/tokens',
+  })
+  if (scope === 'repository') {
+    const repoId = q.get('repo_id') ?? FIXTURE_REPOS[0].repo_id
+    const repo = FIXTURE_REPOS.find((r) => r.repo_id === repoId) ?? FIXTURE_REPOS[0]
+    const repository = `example-org/${repo.repo}`
+    return {
+      tenant_id: FIXTURE_TENANT, scope, repo_id: repoId, repository, personal_tenant_id: null, can_manage: true,
+      rows: [
+        { ...base, name: 'search-api', scope: 'repository', kind: 'api_key', status: 'set', set_at: at(1), set_by: 'alice@example.com',
+          shadows: [{ scope: 'workspace', where: 'agents of this workspace', slot: 'files' }],
+          shadowed_by: [{ scope: 'personal', where: 'agents of alice@example.com', person: 'alice@example.com', slot: 'files' }] },
+        { ...base, name: 'test-db-password', scope: 'repository', kind: 'opaque', status: 'set', set_at: at(5), set_by: 'alice@example.com' },
+        { section: 'qa_sign_in', store: 'qa_targets', name: 'Studio', target_id: 'qat_fixture1', environment: 'staging', field: 'credential', status: 'set', set_at: at(2), set_by: 'alice@example.com', consumers: [], can_manage: true },
+        { section: 'qa_sign_in', store: 'qa_targets', name: 'Studio', target_id: 'qat_fixture1', environment: 'production', field: 'credential', status: 'unset', set_at: null, set_by: null, consumers: [], can_manage: true },
+        { section: 'actions', store: 'actions_secret_writes', name: 'MERGE_APP_PRIVATE_KEY', environment: 'repo-secrets', status: 'set', set_at: at(2), set_by: 'alice@example.com', consumers: [], can_manage: true },
+      ],
+    }
+  }
+  if (scope === 'personal') {
+    return {
+      tenant_id: FIXTURE_TENANT, scope, repo_id: null, repository: null, personal_tenant_id: FIXTURE_TENANT, can_manage: true,
+      rows: [
+        { ...base, name: 'search-api', scope: 'personal', kind: 'api_key', status: 'set', set_at: at(2), set_by: 'alice@example.com', opted_in: null,
+          shadows: [{ scope: 'workspace', where: 'agents of this workspace', slot: 'files' }] },
+        { section: 'keys', store: 'provider_keys', name: 'typesafe', status: 'set', set_at: at(6), set_by: 'alice@example.com', consumers: [], can_manage: true },
+        { section: 'browser_sessions', store: 'browser_logins', name: 'studio-staging', site: 'studio.example.com', status: 'active', set_at: at(2), set_by: 'alice@example.com', expires_at: new Date(Date.parse(FIXTURE_CLOCK) + 5 * 86_400_000).toISOString(), consumers: [], can_manage: true },
+        github('user'),
+      ],
+    }
+  }
+  return {
+    tenant_id: FIXTURE_TENANT, scope: 'workspace', repo_id: null, repository: null, personal_tenant_id: null, can_manage: true,
+    rows: [
+      { ...base, name: 'typesafe-key', scope: 'workspace', kind: 'api_key', status: 'set', set_at: at(2), set_by: 'alice@example.com',
+        shadowed_by: [{ scope: 'personal', where: 'agents of alice@example.com', person: 'alice@example.com', slot: 'typesafe' }] },
+      { section: 'keys', store: 'provider_keys', name: 'typesafe', status: 'unset', set_at: null, set_by: null, consumers: [], can_manage: true },
+      { section: 'keys', store: 'runner_provider_keys', name: 'anthropic', status: 'set', set_at: null, set_by: null, consumers: ['profile:claude-code'], can_manage: true },
+      { section: 'keys', store: 'mcp_servers', name: 'kb', consumer: 'mcp:kb', secrets: [], status: 'unset', set_at: null, set_by: null, consumers: ['mcp:kb'], can_manage: true },
+      { section: 'accounts', store: 'pool_accounts', name: 'subscription accounts', status: 'elsewhere', consumers: [], can_manage: false, page: '/capacity/accounts' },
+      github('tenant'),
+    ],
+  }
+}
+
+/** The fixture build's Admin › Platform secrets: one not declared, one in a rotation's grace, two account halves. */
+function fixturePlatformSecrets(): unknown {
+  const at = (days: number) => new Date(Date.parse(FIXTURE_CLOCK) - days * 86_400_000).toISOString()
+  const tf = 'terraform'
+  const row = (secret_id: string, status: string, versions: number | null, days: number | null, managed_by: string, written_by: string) => ({
+    secret_id, status, reason: null, enabled_versions: versions, newest_enabled_at: days === null ? null : at(days),
+    rotation_in_grace: (versions ?? 0) > 1, managed_by, written_by, family: 'platform',
+  })
+  return {
+    secrets: [
+      row('swarm-github-app-private-key', 'set', 1, 41, tf, 'scripts/create-secrets.sh --github-app private-key'),
+      row('swarm-github-app-webhook-secret', 'set', 1, 41, tf, 'scripts/create-secrets.sh --github-app-webhook-secret'),
+      row('swarm-search-api-key', 'set', 2, 0.25, tf, 'scripts/create-secrets.sh --search-api-key'),
+      row('swarm-live-key', 'not_declared', null, null, tf, 'scripts/create-secrets.sh --live-key'),
+      row('swarm-workspace-grant-key', 'set', 1, 23, tf, 'scripts/create-secrets.sh --workspace-grant-key'),
+      ...['access', 'refresh'].map((half) => ({
+        ...row(`swarm-account-${FIXTURE_TENANT}--max-1${half === 'refresh' ? '-refresh' : ''}`, 'set', 1, 2, 'quota-broker', 'the quota broker (Capacity › Accounts)'),
+        family: 'account', owner_tenant: FIXTURE_TENANT, label: 'max-1', half,
+      })),
+    ],
+    counts: {}, accounts_unread: false, accounts_refused: 0, accounts_truncated: false, read_at: FIXTURE_CLOCK,
+  }
+}
+
+/**
+ * `POST /v1/repositories/{repo_id}/actions/links`: the page mints its own
+ * one-time link on Open the one-time form (§6.1, "a link the page mints for
+ * itself on click"). The answer's `url` and `path` carry the token; only the
+ * token is kept, to go back once as the write's `link_token`, and neither is
+ * drawn or put in the address.
+ */
+export async function mintActionsLink(repoId: string, name: string, environment: string | null): Promise<Result<ActionsLink>> {
+  const target = route('/v1/repositories/{repo_id}/actions/links', { repo_id: repoId })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(target, 0, true)
+    const bytes = crypto.getRandomValues(new Uint8Array(24))
+    const token = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+    return { status: 'ok', fetchedAt: Date.now(), data: { token, expires_at: new Date(Date.now() + 600_000).toISOString() } }
+  }
+  const r = await write(target, 'POST', { name, environment })
+  if (r.status === 'error') return r
+  const raw = r.status === 'ok' || r.status === 'stale' ? r.data : null
+  const d = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const path = typeof d.path === 'string' ? d.path : typeof d.url === 'string' ? d.url : ''
+  const at = path.indexOf('?')
+  const token = at === -1 ? null : new URLSearchParams(path.slice(at + 1)).get('t')
+  if (token === null || token === '') {
+    return { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The API answered without a one-time link; nothing was written.', method: 'POST' } }
+  }
+  return { status: 'ok', fetchedAt: Date.now(), data: { token, expires_at: wsText(d.expires_at) } }
+}
+
+/** What a set sends, besides the value: where, the typed environment name when its rule asks for it, and the link. */
+export interface ActionsSecretTarget {
+  environment: string | null
+  /** §11 Q4: the environment's name, typed, for one whose rule is not main only. */
+  confirm_environment: string | null
+  link_token: string | null
+}
+
+/**
+ * `PUT /v1/repositories/{repo_id}/actions/secrets/{name}`: the value, once,
+ * in this one body. swarm-api seals it and drops it (§11 Q5). The answer is
+ * whether GitHub created it (201) or updated it (204); no value comes back.
+ */
+export async function setActionsSecret(repoId: string, name: string, value: string, at: ActionsSecretTarget): Promise<Result<{ created: boolean }>> {
+  const target = route('/v1/repositories/{repo_id}/actions/secrets/{name}', { repo_id: repoId, name })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(target, 0, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: { created: true } }
+  }
+  const body: Record<string, string> = { value }
+  if (at.environment !== null) body.environment = at.environment
+  if (at.confirm_environment !== null) body.confirm_environment = at.confirm_environment
+  if (at.link_token !== null) body.link_token = at.link_token
+  const r = await write(target, 'PUT', body)
+  if (r.status === 'error') return r
+  const raw = r.status === 'ok' || r.status === 'stale' ? r.data : null
+  const d = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  return { status: 'ok', fetchedAt: Date.now(), data: { created: d.created === true } }
+}
+
+/** `DELETE /v1/repositories/{repo_id}/actions/secrets/{name}`: the body repeats the name, typed. */
+export async function deleteActionsSecret(repoId: string, name: string, confirmName: string, environment: string | null): Promise<Result<unknown>> {
+  const target = route('/v1/repositories/{repo_id}/actions/secrets/{name}', { repo_id: repoId, name })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(target, 0, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: null }
+  }
+  return write(target, 'DELETE', environment === null ? { confirm_name: confirmName } : { confirm_name: confirmName, environment })
 }
 
 // ---------------------------------------------------------------------------
@@ -8329,9 +9675,13 @@ export async function requestLoan(): Promise<Result<LoanRequestAnswer>> {
   return writeTo(route('/v1/workspace/loan-request'), 'POST', { via: 'console' }) as Promise<Result<LoanRequestAnswer>>
 }
 
-/** `GET /v1/admin/people` (admin): everyone, pending first, the last 50 audit entries, the lendable accounts. */
-export async function loadPeople(): Promise<Result<PeopleDoc>> {
-  return readAs(route('/v1/admin/people'), (raw) => raw as PeopleDoc)
+/**
+ * `GET /v1/admin/people` (a platform admin: everyone, pending first, every
+ * workspace's column, the last 50 audit entries, the lendable accounts; a
+ * workspace admin: only the workspaces they administer, `ScopedPeopleDoc`).
+ */
+export async function loadPeople(): Promise<Result<PeopleDoc | ScopedPeopleDoc>> {
+  return readAs(route('/v1/admin/people'), (raw) => raw as PeopleDoc | ScopedPeopleDoc)
 }
 
 // -- Admin › Runner sizes (SIZES-UI; part of #1689) ---------------------------
@@ -8479,9 +9829,52 @@ export function normAdminWorkspace(raw: unknown): AdminWorkspaceView {
  * `approved` when the requester may approve it), 200 when one already stood; the record either way. A refusal is the
  * API's code and sentence (design §4.2.3), drawn as it came.
  */
-export async function createAdminWorkspace(body: NewWorkspaceBody): Promise<Result<AdminWorkspaceView>> {
+export async function createAdminWorkspace(body: NewWorkspaceBody & { first_admin?: string }): Promise<Result<FiledAdminWorkspace>> {
   const r = await writeTo(route('/v1/admin/workspaces'), 'POST', body)
-  return r.status === 'ok' ? { ...r, data: normAdminWorkspace(r.data) } : (r as Result<AdminWorkspaceView>)
+  return r.status === 'ok' ? { ...r, data: normAdminWorkspace(r.data) } : (r as Result<FiledAdminWorkspace>)
+}
+
+/**
+ * WHAT `first_admin` CAME TO (WORKSPACE-ADMIN-FIELDS, part of #2157; config-e.html S6c): the person named on Add a new
+ * workspace, granted `admin` in that workspace alone through the role override (docs/design/workspace-roles.md §8).
+ * `member: false` is someone not yet in the group: the role is stored and takes effect once they are in it, because
+ * membership stays the group's. `granted: false` says why in `reason` (`workspace_exists`, or a refusal's code).
+ */
+export interface FirstAdminAnswer {
+  email: string
+  role: 'admin'
+  granted: boolean
+  /** Whether the group holds them now; null when the directory did not answer. Absent when nothing was granted. */
+  member?: boolean | null
+  reason?: string
+}
+
+/** A filed record as `POST /v1/admin/workspaces` answers it: the record, and `first_admin` when one was named. */
+export type FiledAdminWorkspace = AdminWorkspaceView & { first_admin?: FirstAdminAnswer | null }
+
+/**
+ * Said on `window` once a workspace is renamed, with its tenant id as `detail`, so the shell reads its own name again
+ * (`/v1/tenants/me`) and the switcher and the headers draw the new one without a reload.
+ */
+export const WORKSPACE_RENAMED_EVENT = 'swarm:workspace-renamed'
+
+/** `PUT /v1/workspaces/{tenant_id}/name`'s answer: the display name changed, the id never does. */
+export interface WorkspaceRenameAnswer {
+  tenant_id: string
+  display_name: string
+  previous_display_name: string | null
+  changed: boolean
+}
+
+/**
+ * `PUT /v1/workspaces/{tenant_id}/name` (WORKSPACE-ADMIN-FIELDS, S6a): rename a workspace -- its display name, never
+ * its id. Its admins and platform admins only; anyone else is 403 `role_admin_required` with nothing written, and a
+ * name the API refuses (empty, over 60 characters, a control or invisible character) is its 422, drawn as it came.
+ */
+export async function renameWorkspace(tenantId: string, displayName: string): Promise<Result<WorkspaceRenameAnswer>> {
+  const r = (await writeTo(route('/v1/workspaces/{tenant_id}/name', { tenant_id: tenantId }), 'PUT', { display_name: displayName })) as Result<WorkspaceRenameAnswer>
+  if (r.status === 'ok' && r.data.changed) globalThis.dispatchEvent?.(new CustomEvent(WORKSPACE_RENAMED_EVENT, { detail: tenantId }))
+  return r
 }
 
 /** `GET /v1/admin/workspaces/{workspace_id}` (admin): one record, for the dialog's progress view. */

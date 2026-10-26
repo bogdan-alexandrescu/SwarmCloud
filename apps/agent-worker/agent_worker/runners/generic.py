@@ -242,6 +242,8 @@ def _build_env(ctx: RunnerContext) -> dict[str, str]:
     `input` contributes nothing here. The cache variables are the WORKER's
     (`cachedirs`, CACHE-SCRATCH), carried by exact name from this runner's own
     environment, so a build's caches and temp files stay off the workspace.
+    SWARM_TASK_ID is carried the same way, so a vitest run the command makes
+    caps its workers to the container (`vitestWorkers.ts`, #1641).
     """
     env = {
         "PATH": BASE_PATH,
@@ -259,7 +261,7 @@ def _build_env(ctx: RunnerContext) -> dict[str, str]:
         "SWARM_WORK_DIR": str(ctx.work_dir),
         "SWARM_ARTIFACTS_DIR": str(ctx.artifacts_dir),
     }
-    for name in AGENT_CACHE_ENV:
+    for name in (*AGENT_CACHE_ENV, "SWARM_TASK_ID"):
         if os.environ.get(name):
             env[name] = os.environ[name]
     return env

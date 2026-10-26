@@ -58,6 +58,11 @@ EXPIRED = "approval_expired"
 HARD_STOP = "hard_stop"
 GATE_MERGE_AUTO = "gate_merge_auto"
 GATE_MERGE_APPROVE = "gate_merge_approve"
+#: The platform owner decided a merge-tier item only the owner may decide,
+#: as the schedule's last gate editor: the second-person rule waived for
+#: them, written beside the decision's own row (#2259, owner decision
+#: 2026-10-24 "Owner may decide, audited"). Not a gate edit.
+SECOND_PERSON_WAIVED_OWNER = "second_person_waived_owner"
 
 
 def entry_id(schedule_id: str, at: datetime) -> str:

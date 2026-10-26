@@ -16,7 +16,9 @@
  *     `/settings/workspace/secrets?action=add&t=..`, still opens the add form,
  *     and its token still never enters the bar.
  *   * Admin is not drawn for a person who administers nothing, and its
- *     addresses send them to Overview once both reads say so.
+ *     addresses send them to Overview once both reads say so; a workspace
+ *     admin who is not a platform admin is sent from a platform Admin page
+ *     to Workspaces you admin (ADMIN-REDIRECT, BGD 2026-10-24).
  *   * The setup strip runs across every Config page, measured from
  *     `GET /v1/onboarding`; a step with no read is unknown, never done.
  */
@@ -145,7 +147,7 @@ describe('the Config section (CONFIG-NAV)', () => {
     expect(within(strip).getAllByRole('listitem')).toHaveLength(3)
   })
 
-  it('takes Repositories, Setup and Access out of Work, and leaves Settings only Profile and API keys', async () => {
+  it('takes Repositories, Setup and Access out of Work, and leaves Settings only Profile (API keys is Config › Secrets since SSC-UI)', async () => {
     const { App } = await routing()
     const work = App.SECTIONS.find((s) => s.id === 'work')!
     // MUTATION: leave Access in Work -> fails.
@@ -155,7 +157,7 @@ describe('the Config section (CONFIG-NAV)', () => {
     // MUTATION: leave Setup in the Work panel -> fails.
     expect(PANEL_PAGES.work.map((p) => p.key)).toEqual(['agents', 'workflows', 'runs', 'timeline'])
     // MUTATION: leave MCP servers under Profile -> fails.
-    expect(PANEL_PAGES.profile.map((p) => p.label)).toEqual(['Profile', 'API keys'])
+    expect(PANEL_PAGES.profile.map((p) => p.label)).toEqual(['Profile'])
   })
 })
 
@@ -289,23 +291,120 @@ describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
   })
 })
 
-describe('the setup strip (proposal E)', () => {
-  it('runs across every Config page', async () => {
-    for (const path of ['/config/github', '/config/repositories', '/config/secrets', '/config/mcp-servers', '/config/people', '/config/workspace', '/config/workspace/setup']) {
+describe('a workspace admin on a platform Admin page goes to Workspaces you admin (ADMIN-REDIRECT)', () => {
+  // BGD 2026-10-24, "Redirect, in a later lane": the nav never links a
+  // workspace admin to a platform page, and a typed or bookmarked one sends
+  // them to the one Admin page they are shown, as CONFIG-NAV sends a member
+  // to Overview.
+  // Not /admin/people since ADMIN-PEOPLE-ROLES (part of #2157): a workspace
+  // admin has a scoped People and roles page there (the case below).
+  const PLATFORM_PAGES = ['/admin/limits', '/admin/tenants', '/admin/runner-sizes', '/admin/counts', '/admin']
+
+  it('sends a workspace admin from every platform Admin address to /admin/workspaces', async () => {
+    for (const path of PLATFORM_PAGES) {
       serve(ME(false), [PERSONAL, group('eng', 'admin')])
       await app(path)
-      // MUTATION: mount the strip on GitHub access only -> every other row fails.
-      const strip = await screen.findByRole('list', { name: 'Workspace setup steps' })
-      expect(within(strip).getAllByRole('listitem').length, path).toBe(4)
+      // MUTATION: redirect only someone who administers nothing -> the
+      // workspace admin stays on the platform page and this fails.
+      await waitFor(() => expect(window.location.pathname, path).toBe('/admin/workspaces'))
+      expect(document.querySelector('.sk-spine a[data-sec="admin"]'), path).not.toBeNull()
       cleanup()
     }
   })
 
+  it('renders People and roles at /admin/people for a workspace admin instead of redirecting (ADMIN-PEOPLE-ROLES)', async () => {
+    const scoped = {
+      scope: 'workspaces',
+      workspaces: [{ tenant_id: 'eng', group: 'eng@example.com', display_name: 'Engineering', default_role: 'member', unavailable: false }],
+      workspaces_error: null,
+      people: [{ email: 'ana.b@example.com', display_name: null, roles: { eng: 'admin' }, last_active: null }],
+      count: 1,
+      pending: 0,
+    }
+    serve(ME(false), [PERSONAL, group('eng', 'admin')], (url) => (url.includes('/v1/admin/people') ? scoped : undefined))
+    await app('/admin/people')
+    await screen.findByRole('heading', { name: 'People and roles', level: 1 })
+    await waitFor(() => expect(document.querySelector('.pp-grid th[data-tenant="eng"]')).not.toBeNull())
+    await new Promise((r) => setTimeout(r, 30))
+    // MUTATION: keep People out of a workspace admin's Admin pages -> the
+    // redirect sends them to /admin/workspaces and this fails.
+    expect(window.location.pathname).toBe('/admin/people')
+    const rows = [...document.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((e) => e.textContent)
+    // Their workspaces' group, then the In Automate links (CONFIG-PANEL-E); no platform page.
+    expect(rows.slice(0, 2)).toEqual(['People and roles', 'Workspaces you admin'])
+    expect(rows.join(' ')).not.toMatch(/Pool limits|Runner sizes|Tenants|Platform counts/)
+    // The Admin item still lands on Workspaces you admin, as ADMIN-REDIRECT drew it.
+    expect(document.querySelector('.sk-spine a[data-sec="admin"]')?.getAttribute('href')).toBe('/admin/workspaces')
+  })
+
+  it('rewrites the bar in place, so Back does not return to the refused page', async () => {
+    serve(ME(false), [PERSONAL, group('eng', 'admin')])
+    const push = vi.spyOn(window.history, 'pushState')
+    await app('/admin/limits')
+    await waitFor(() => expect(window.location.pathname).toBe('/admin/workspaces'))
+    // MUTATION: navigate with `go` (a push) -> Back lands on /admin/limits again.
+    expect(push).not.toHaveBeenCalled()
+    push.mockRestore()
+  })
+
+  it('never redirects a platform admin, from any Admin page', async () => {
+    for (const path of PLATFORM_PAGES.filter((p) => p !== '/admin')) {
+      serve(ME(true), [PERSONAL, group('eng', 'admin')])
+      await app(path)
+      await waitFor(() => expect(document.querySelector('.sk-spine a[data-sec="admin"]')).not.toBeNull())
+      await new Promise((r) => setTimeout(r, 30))
+      // MUTATION: redirect on the stored role alone -> a platform admin who
+      // also administers a group is sent away and this fails.
+      expect(window.location.pathname, path).toBe(path)
+      cleanup()
+    }
+  })
+
+  it('keeps a member and a viewer on CONFIG-NAV\'s redirect to Overview', async () => {
+    for (const role of ['member', 'viewer']) {
+      serve(ME(false), [PERSONAL, group('eng', role)])
+      await app('/admin/tenants')
+      // MUTATION: send everyone refused to /admin/workspaces -> this fails.
+      await waitFor(() => expect(window.location.pathname, role).toBe('/overview'))
+      cleanup()
+    }
+  })
+
+  it('does not redirect a workspace admin while the identity read is in flight', async () => {
+    serve(null, [PERSONAL, group('eng', 'admin')])
+    await app('/admin/limits')
+    await new Promise((r) => setTimeout(r, 30))
+    // MUTATION: decide on `/v1/tenants/mine` alone -> a platform admin whose
+    // `/v1/tenants/me` is still loading would be redirected; this fails.
+    expect(window.location.pathname).toBe('/admin/limits')
+  })
+})
+
+describe('the setup strip (proposal E)', () => {
+  // ONE CASE PER PAGE, NOT ONE LOOP (PR #2305's CI, 2026-10-25): seven full
+  // app mounts in one case overran the 30s test timeout on a slow runner, and
+  // the timed-out loop went on mounting pages into the next case, which then
+  // found two setup strips. Each page now has its own timeout and cleanup.
+  // The strip lands ~1.7s after App mounts on an idle machine, close to
+  // setup.ts' 2s `asyncUtilTimeout`, so its own wait is 10s: still a failure,
+  // not a hang (MCP-LEAD-FORM, 2026-10-25).
+  const STRIP_WAIT = { timeout: 10_000 }
+  it.each(['/config/github', '/config/repositories', '/config/secrets', '/config/mcp-servers', '/config/people', '/config/workspace', '/config/workspace/setup'])(
+    'runs across every Config page: %s',
+    async (path) => {
+      serve(ME(false), [PERSONAL, group('eng', 'admin')])
+      await app(path)
+      // MUTATION: mount the strip on GitHub access only -> every other row fails.
+      const strip = await screen.findByRole('list', { name: 'Workspace setup steps' }, STRIP_WAIT)
+      expect(within(strip).getAllByRole('listitem').length, path).toBe(4)
+    },
+  )
+
   it('carries a compact form for the phone that names the next measured step (S2d)', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin')])
     await app('/config/secrets')
-    await screen.findByRole('list', { name: 'Workspace setup steps' })
-    await waitFor(() => expect(document.querySelector('.cfg-compact')?.textContent ?? '').toContain('Next: Repositories chosen'))
+    await screen.findByRole('list', { name: 'Workspace setup steps' }, STRIP_WAIT)
+    await waitFor(() => expect(document.querySelector('.cfg-compact')?.textContent ?? '').toContain('Next: Repositories chosen'), STRIP_WAIT)
     const compact = document.querySelector('.cfg-compact')!
     // MUTATION: drop the compact form -> the phone shows four stacked steps and this fails.
     expect(compact.textContent).toContain('Setup 1 of 4')

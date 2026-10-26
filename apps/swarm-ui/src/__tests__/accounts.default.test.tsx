@@ -6,7 +6,7 @@
 // BREAK IT: drop the exhausted rank from `attentionRank`, sort the fallback by
 // `account_id`, or skip the `assigned` step -- a case below turns red.
 
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { AccountsBoard } from '../api'
@@ -124,8 +124,11 @@ describe('defaultAccount: the rule the page opens by', () => {
   })
 })
 
-describe('the page opens on that account', () => {
-  it('shows the most used account in the pane when nothing needs attention', async () => {
+// THE TABLE IS THE PAGE (#2222, mock-up A F2/F4): the detail is a side sheet
+// a reader opens, so the page opens on no account at all. `defaultAccount`
+// above still orders what the page would pick; nothing draws it unasked.
+describe('the page opens on no account until one is chosen', () => {
+  it('draws no sheet until a row is opened, then that account', async () => {
     const accounts = [
       account({ account_id: 'eng:a', label: 'alpha' }),
       account({ account_id: 'eng:b', label: 'bravo', assigned: 2 }),
@@ -140,7 +143,11 @@ describe('the page opens on that account', () => {
     api.loadAccountsBoard.mockResolvedValue(ok)
     render(<AccountsScreen />)
     await screen.findByText('Subscription accounts', undefined, WAIT)
+    expect(document.querySelector('.acct-sheet')).toBeNull()
+    expect(document.querySelectorAll('.acct-pane-detail').length).toBe(0)
+    const alpha = [...document.querySelectorAll<HTMLButtonElement>('button.acct-open')].find((b) => b.dataset.account === 'eng:a')!
+    fireEvent.click(alpha)
     const shown = [...document.querySelectorAll('.acct-pane-detail')].map((s) => s.getAttribute('aria-label'))
-    expect(shown).toEqual(['Account bravo'])
+    expect(shown).toEqual(['Account alpha'])
   })
 })

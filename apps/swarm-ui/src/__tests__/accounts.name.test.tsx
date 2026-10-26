@@ -101,26 +101,27 @@ async function mount(accounts: Account[], chosen: string, shown: string): Promis
 function row(id: string): { name: string; id: string } {
   const open = document.querySelector<HTMLElement>(`.acct-open[data-account="${id}"]`)
   expect(open, `no row for ${id}`).toBeTruthy()
-  const li = open!.closest('li')!
+  const tr = open!.closest('tr')!
   return {
-    name: li.querySelector('.acct-li-name')!.textContent ?? '',
-    id: li.querySelector('.acct-li-meta .raw')!.textContent ?? '',
+    name: open!.textContent ?? '',
+    id: tr.querySelector('.raw')!.textContent ?? '',
   }
 }
 
 describe('the Name is shown in place of the label, with the id still printed', () => {
   it('shows a named account by its Name on its row and in its pane', async () => {
     const pane = await mount([account({ display_name: 'AI Eng 2' })], 'eng:ai-eng-2', 'AI Eng 2')
-    // MUTATION: print `account.label` in `.acct-li-name` (Accounts.tsx
-    // AcctItem) -- the row reads `ai-eng-2` after the owner renamed it.
+    // MUTATION: print `account.label` in the row's name (AccountsTable.tsx
+    // OpenName) -- the row reads `ai-eng-2` after the owner renamed it.
     expect(row('eng:ai-eng-2').name).toBe('AI Eng 2')
     // MUTATION: print the Name in place of the id under the heading -- which
     // account it is is no longer on the row.
     expect(row('eng:ai-eng-2').id).toBe('eng:ai-eng-2')
     // MUTATION: print `account.label` in the pane's <h3> (Accounts.tsx Detail).
     expect(pane.querySelector('.acct-dhead h3')!.textContent).toBe('AI Eng 2')
-    // MUTATION: drop the id from the pane's subtitle (`.acct-idt`).
-    expect(pane.querySelector('.acct-idt')!.textContent).toContain('eng:ai-eng-2')
+    // MUTATION: drop the id from the sheet's Account list (AccountSheet.tsx
+    // SheetAccount's `Id`), where it moved from the subtitle (#2222, F4).
+    expect(pane.querySelector('.acct-kv .acct-id')!.textContent).toBe('eng:ai-eng-2')
   })
 
   it('shows an unnamed account by its label, exactly as before', async () => {

@@ -49,6 +49,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
+from swarm_redaction import redact as redact_text
+
 from .. import expected_outputs as expected_mod
 from .. import indexspec
 from .. import issue as issue_mod
@@ -96,11 +98,18 @@ _SENSITIVE_PASSTHROUGH: tuple[str, ...] = ("HTTPS_PROXY", "HTTP_PROXY", "TYPESAF
 #: worker's paths for the agent's tool caches, off the workspace volume, and
 #: the switches that keep them small on Cloud Run. TMPDIR is set above with
 #: the platform's own values, so it is not repeated here.
+#: SWARM_TASK_ID is what `apps/swarm-ui/src/vitestWorkers.ts` gates on: vitest
+#: sizes its workers to the container's memory only when it is set (#1641).
+#: Without it a claude-code agent's vitest run started one jsdom worker per
+#: node CPU and was OOM-killed at 8 GiB (task_45e9d3b7c0264ef78091). The
+#: worker sets it for this process (`lifecycle._build_child_env`); it is a
+#: task id, never a secret.
 _PLAIN_PASSTHROUGH: tuple[str, ...] = (
     "NO_PROXY",
     "NODE_EXTRA_CA_CERTS",
     *GIT_IDENTITY_ENV,
     *(name for name in AGENT_CACHE_ENV if name != "TMPDIR"),
+    "SWARM_TASK_ID",
 )
 
 #: Substrings that mean "the provider said no, try later".
@@ -111,18 +120,24 @@ _RATE_LIMIT_MARKERS = (
     "ratelimit",
     "429",
     "too many requests",
-    "overloaded_error",
+    # NOT `overloaded_error` (RUNNER-ERROR-KINDS, #2302). A 529 is the
+    # provider's capacity, not this account's quota: parking it as
+    # PROVIDER_QUOTA_EXHAUSTED moved the attempt off a healthy account as
+    # "exhausted" and reported a rate limit for the tenant. It is an error
+    # kind on the account's health record now (`classify_account_error`).
     "insufficient_quota",
     "quota exceeded",
     "resource_exhausted",
     "usage limit reached",
-    # A CLI that surfaces the raw HTTP header and nothing else. `Retry-After` is
-    # only ever sent with a 429 or a 503, so it is a rate limit or an outage --
-    # both of which must park rather than burn one of the task's three attempts.
-    # `_RETRY_AFTER_PATTERNS` then reads the value out of the same line.
-    "retry-after",
-    "retry_after",
 )
+
+#: A CLI that surfaces the raw HTTP header and nothing else. `Retry-After` is
+#: sent with a 429 or a 503, so it is a rate limit or an outage -- both of
+#: which park rather than burn one of the task's three attempts -- UNLESS the
+#: same output says the provider was overloaded (a 529 carries one too), which
+#: is not a rate limit (`classify_account_error`). `_RETRY_AFTER_PATTERNS` then
+#: reads the value out of the same line.
+_RETRY_AFTER_MARKERS = ("retry-after", "retry_after")
 
 #: Substrings that mean "this credential is no longer usable" -- as opposed to
 #: "wait and try again", which is what _RATE_LIMIT_MARKERS covers.
@@ -158,6 +173,82 @@ _RETRY_AFTER_PATTERNS = (
     re.compile(r"try again in (\d+)\s*minute", re.IGNORECASE),
     re.compile(r"resets? in (\d+)\s*minute", re.IGNORECASE),
 )
+# ---------------------------------------------------------------------------
+# Error kinds: what a failed run on a pool account tells the account's health
+# ---------------------------------------------------------------------------
+#
+# BGD, 2026-10-25 ("Runner lane follow-up", #2302): the runner classifies the
+# provider errors its CLI gave up on, so the held account's health record (the
+# broker's `/account-error` route, which never touches AIMD) says which. The
+# CLI retries a 529, a 5xx and a dropped connection itself before it exits, so
+# by the time one reaches this runner it is the run's end, not a blip.
+#
+# A RATE LIMIT IS NOT ONE OF THEM. A 429 or a REJECTED `rate_limit_event` is
+# `detect_rate_limit`'s, and is judged first; a refused credential is the
+# worker's (`auth`, `lifecycle`), judged second. What is left and matches below
+# is reported -- and the run fails exactly as it did before, as an ordinary
+# runner failure the task's attempts budget covers: nothing parks, nothing
+# moves, nothing halves.
+
+#: The kinds the runner writes to the account channel. The broker's
+#: `/account-error` route accepts these and `auth`, which the worker reports.
+ERROR_OVERLOADED = "overloaded"
+ERROR_SERVER = "server_error"
+ERROR_NETWORK = "network"
+ACCOUNT_ERROR_KINDS = frozenset({ERROR_OVERLOADED, ERROR_SERVER, ERROR_NETWORK})
+
+#: Longest message written for one error: one short line, what a person reads.
+_ERROR_MESSAGE_CHARS = 200
+
+#: Each kind's shapes, first match wins: overloaded before server_error, since
+#: a 529 is also a 5xx. Matched against the detection text (`_detection_text`),
+#: which holds the provider's events and not the agent's own words, and only
+#: for a run that failed.
+_ERROR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (ERROR_OVERLOADED, re.compile(
+        r"overloaded_error|\boverloaded\b|api error:?\s*\(?529\b"
+        r"|api_error_status\W{0,3}529\b",
+        re.IGNORECASE,
+    )),
+    (ERROR_SERVER, re.compile(
+        r"\bapi_error\b|api error:?\s*\(?5\d\d\b|api_error_status\W{0,3}5\d\d\b"
+        r"|internal server error|bad gateway|service unavailable|gateway time-?out",
+        re.IGNORECASE,
+    )),
+    (ERROR_NETWORK, re.compile(
+        r"\beconnreset\b|connection reset|\beconnrefused\b|connection refused"
+        r"|\betimedout\b|\benotfound\b|\beai_again\b|\bepipe\b|socket hang up"
+        r"|fetch failed|connection error|network error|request timed out",
+        re.IGNORECASE,
+    )),
+)
+
+
+def classify_account_error(text: str) -> tuple[str, str] | None:
+    """(kind, message) for a provider error in CLI output, or None.
+
+    `kind` is one of ACCOUNT_ERROR_KINDS. `message` is the line the error was
+    found on, one line of at most `_ERROR_MESSAGE_CHARS` around the match,
+    through `swarm_redaction` -- it leaves the pod for the broker's record.
+    None for a rate limit (`detect_rate_limit`'s) and for anything else.
+    """
+    if _rate_limit_marked(text.lower()):
+        return None
+    for kind, pattern in _ERROR_PATTERNS:
+        match = pattern.search(text)
+        if match is None:
+            continue
+        start = text.rfind("\n", 0, match.start()) + 1
+        end = text.find("\n", match.end())
+        line = text[start : len(text) if end < 0 else end]
+        at = match.start() - start
+        line = line[max(0, at - _ERROR_MESSAGE_CHARS // 4) :]
+        # Redacted BEFORE it is cut, so a cut never leaves half a credential.
+        message = " ".join(redact_text(line).text.split())
+        return kind, message[:_ERROR_MESSAGE_CHARS]
+    return None
+
+
 _RESET_AT_PATTERN = re.compile(
     r"\"(?:reset_at|resets_at|resetsAt|resets_at_utc)\"\s*:\s*\"([^\"]+)\"", re.IGNORECASE
 )
@@ -384,6 +475,9 @@ class AccountStreamWatcher:
         self.turns = 0
         self.exhausted = False
         self.stopped_for: str | None = None
+        #: The provider error the run ended in, for the account's health
+        #: (`classify_account_error`): {"kind", "message"}, set by `judge`.
+        self.error: dict[str, str] | None = None
         self._dirty = False
 
     def poll(self) -> str | None:
@@ -476,6 +570,7 @@ class AccountStreamWatcher:
                 "turns": self.turns,
                 "readings": self.readings,
                 "stopped_for": self.stopped_for,
+                "error": self.error,
             }
         )
         tmp = self._channel.with_name(f".{self._channel.name}.tmp")
@@ -696,9 +791,7 @@ def detect_rate_limit(text: str) -> tuple[bool, int | None, str | None]:
     unrecognised rate limit as an ordinary failure would burn one of the task's
     three attempts on something that is not the task's fault.
     """
-    lowered = text.lower()
-    hit = any(marker in lowered for marker in _RATE_LIMIT_MARKERS)
-    if not hit:
+    if not _rate_limit_marked(text.lower()):
         return False, None, None
     retry_after: int | None = None
     for pattern in _RETRY_AFTER_PATTERNS:
@@ -711,6 +804,16 @@ def detect_rate_limit(text: str) -> tuple[bool, int | None, str | None]:
             break
     reset_match = _RESET_AT_PATTERN.search(text)
     return True, retry_after, (reset_match.group(1) if reset_match else None)
+
+
+def _rate_limit_marked(lowered: str) -> bool:
+    """Whether lower-cased `lowered` names a rate limit (`detect_rate_limit`)."""
+    if any(marker in lowered for marker in _RATE_LIMIT_MARKERS):
+        return True
+    if not any(marker in lowered for marker in _RETRY_AFTER_MARKERS):
+        return False
+    overloaded = _ERROR_PATTERNS[0][1]
+    return overloaded.search(lowered) is None
 
 
 def detect_credential_failure(text: str) -> tuple[bool, str | None]:
@@ -1555,6 +1658,15 @@ def run_cli_agent(
                     marker=marker or "",
                     spend=spend,
                 )
+            # Neither: a provider error the CLI gave up on, if it is one. On a
+            # pool account its kind goes to the channel for the account's
+            # health record (the worker reports it); the run fails below
+            # exactly as it always has. On no account there is no channel and
+            # nothing to report.
+            error = classify_account_error(combined)
+            if error is not None and run_watcher is not None:
+                run_watcher.error = {"kind": error[0], "message": error[1]}
+                run_watcher.write()
         if run_result.timed_out:
             raise RunnerFailure(
                 f"{spec.name} timed out after {limits.timeout_seconds:.0f}s", spend=spend

@@ -27,7 +27,7 @@ which the password was typed.
 MFA AND CAPTCHA ARE REFUSED, NEVER SOLVED (§2.4). A page that asks for a
 one-time code (`autocomplete=one-time-code`), calls WebAuthn
 (`navigator.credentials`, trapped on the gate's tab only), or shows a
-challenge frame from the hosts the mask knows (`CHALLENGE_FRAMES`) ends
+challenge frame from the hosts mask.py knows (`CHALLENGE_FRAMES`) ends
 the sign-in at once with `qa_sign_in_challenge` and `CHALLENGE_SENTENCE`.
 It is never retried past and never handed to a person: a person typing
 their own code would leave the agent signed in as that person.
@@ -1215,7 +1215,7 @@ _WEBAUTHN_TRAP = """(() => {
 })()"""
 
 #: The challenge frames §2.4 refuses: `mask.SHOWN_IN_CONTROL`, restated
-#: because mask.py imports the proxy, which imports this module;
+#: (written when mask.py imported the proxy, which imports this module);
 #: tests/unit/worker/test_qa_target_signin.py holds the two equal.
 CHALLENGE_FRAMES = (
     ("www.google.com", "/recaptcha/"),

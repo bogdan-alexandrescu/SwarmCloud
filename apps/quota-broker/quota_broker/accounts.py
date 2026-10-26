@@ -160,6 +160,22 @@ MAX_AGENTS_BEFORE_READING = 1
 #: per subscription, so two subscriptions agree on it only by coincidence;
 #: five seconds allows for the provider's own rounding and nothing more.
 IDENTICAL_RESET_SKEW = timedelta(seconds=5)
+
+#: How close a window's `resets_at` must be to a recorded 429's reset to be the
+#: SAME window instance. The provider reports both from one clock, so two
+#: minutes is slack for transit, not for a different window. Shared by
+#: `accountstore.refusing_window` (which window a 429 names) and
+#: `Account.with_reading` (whether a reading shows that window reset).
+LIMIT_RESET_SKEW = timedelta(minutes=2)
+
+#: The longest a 429 naming one of these windows may hold its account
+#: (`accountstore.limited_until_for`): the window's own length. A five-hour
+#: window cannot refuse for longer than five hours, so a report that says it
+#: will is a bad report, and it must not take the account out for a week.
+LIMIT_WINDOW_HORIZON = {
+    "five_hour": timedelta(hours=5),
+    "seven_day": timedelta(days=7),
+}
 #: How many consecutive polls of BOTH accounts must agree before the pair is a
 #: `possible_duplicate`. One agreement can be a coincidence -- two accounts
 #: whose figures happen to round alike once; two independent pairs of
@@ -594,13 +610,23 @@ class Account:
     #: provider gave them. Display text, not secret, and never an identity.
     organisation_name: str | None = None
     organisation_plan: str | None = None
+    #: WHICH SEAT OF THAT ORGANISATION (#2282): the opaque identity of the
+    #: provider LOGIN the credential was issued to (`oauth.Organisation.seat`),
+    #: recorded at add and at every refresh that names it. On a Team
+    #: organisation every seat has its own limits, so a subscription is the
+    #: organisation AND the seat. Never the login's uuid or email. None is an
+    #: account the provider has not yet said this about -- every document
+    #: written before this field, until its next refresh.
+    seat_id: str | None = None
 
     #: When this account was first registered. None is a document written
     #: before this field, which is older than any that carries one. Decides
     #: which of two registrations of one organisation is kept (`duplicates`).
     registered_at: datetime | None = None
 
-    #: Another account registered on the SAME organisation (#2222), or None.
+    #: Another account registered on the same SUBSCRIPTION (#2222) -- the same
+    #: organisation and seat, or with no seat recorded the same readings
+    #: (#2282, `duplicates`) -- or None.
     #: Both of a pair carry it, each naming the other side; `duplicate_withheld`
     #: is True on the newer one, which `choose()` never hands out -- one
     #: subscription is one account's worth of agents, however many labels it
@@ -617,6 +643,17 @@ class Account:
     possible_duplicate_of: str | None = None
     #: The count behind it, kept between passes.
     identical_readings: IdenticalReadings | None = None
+
+    #: Until when a 429 recorded against this account keeps it from a NEW
+    #: agent, and the window that 429 named (`accountstore.HEALTH_WINDOWS`, or
+    #: "other"). Mirrored from the account's health record by the transaction
+    #: that records the rate-limit or exhausted report
+    #: (`AccountStore.record_health`), so assignment reads it from the
+    #: document it already has and never reads a health record per candidate.
+    #: None is "no 429 holds it", which is every document written before
+    #: these fields. See `is_limited` for why this second hold exists.
+    limited_until: datetime | None = None
+    limited_window: str | None = None
 
     def serves_class(self, model_class: str | None) -> bool:
         """Whether a step of `model_class` may run on this account.
@@ -773,6 +810,30 @@ class Account:
             if not w.is_reset(now) and w.remaining() * factor < window_floor(name, floor)
         }
 
+    def is_limited(self, now: datetime) -> bool:
+        """Whether a recorded 429 still holds this account (`limited_until`).
+
+        A SECOND HOLD, NEXT TO THE WINDOW READINGS, because the readings do not
+        explain every 429. ACCOUNT-429-SCOPE (PR 2305) stopped an account's
+        429 halving the tenant and recorded it on the account, but `choose()`
+        asked only the readings, and a reading taken minutes before the refusal
+        still showed room -- so the next agent was handed the account the
+        provider had just refused, met the same 429, and parked (its review,
+        2026-10-25; BGD, "choose() honours limited_until"). This holds the
+        account until the provider's own reset, or until a reading of the
+        window the 429 named shows that window reset (`with_reading`), or an
+        operator's resume (`AccountStore.set_state`) -- whichever is first.
+
+        IT NEVER TOUCHES ADMISSION'S ARITHMETIC OR THE TENANT'S TARGET. It
+        takes one account out of `choose()`'s candidates, exactly as a window
+        under its floor does, and nothing else: no pool cap, no
+        `adaptive_target`, no lease moves. A pool whose every account it holds
+        is the one case the tenant is halved
+        (`AccountStore.every_account_limited`), which is PR 2305's rule, and
+        the parked task is dated by its end (`next_reset`).
+        """
+        return self.limited_until is not None and now < _aware(self.limited_until)
+
     def assignable(
         self,
         now: datetime,
@@ -780,7 +841,10 @@ class Account:
         floor: float | None = None,
         stale_after: timedelta = DEFAULT_STALE_AFTER,
     ) -> bool:
-        """Whether a NEW agent may be handed this account: no window blocks it."""
+        """Whether a NEW agent may be handed this account: no window blocks it,
+        and no recorded 429 holds it (`is_limited`)."""
+        if self.is_limited(now):
+            return False
         return not self.blocking_windows(now, floor=floor, stale_after=stale_after)
 
     def is_stale(
@@ -841,7 +905,13 @@ class Account:
             for name, w in self.windows.items()
             if not w.is_reset(now) and w.remaining() < window_floor(name, floor)
         ]
-        return min(blocking) if blocking else None
+        clear = min(blocking) if blocking else None
+        if self.is_limited(now) and self.limited_until is not None:
+            # A recorded 429 is a clock too: the account is back when it ends,
+            # and not before a window that also blocks it clears.
+            until = _aware(self.limited_until)
+            return max(until, clear) if clear is not None else until
+        return clear
 
     def with_reading(
         self, windows: dict[str, WindowReading], observed_at: datetime
@@ -884,7 +954,34 @@ class Account:
         newest = observed_at
         if self.observed_at is not None and self.observed_at > newest:
             newest = self.observed_at
-        return replace(self, windows=merged, observed_at=newest)
+        limit: dict[str, Any] = {}
+        if self._reading_clears_limit(windows, merged, observed_at):
+            limit = {"limited_until": None, "limited_window": None}
+        return replace(self, windows=merged, observed_at=newest, **limit)
+
+    def _reading_clears_limit(
+        self,
+        windows: dict[str, WindowReading],
+        merged: dict[str, WindowReading],
+        observed_at: datetime,
+    ) -> bool:
+        """Whether this reading shows the window a recorded 429 named has reset.
+
+        Only a reading OF THAT WINDOW, accepted as the newest of it, can. Its
+        `resets_at` within `LIMIT_RESET_SKEW` of the hold's end is the same
+        window instance the provider refused, read again -- the case this hold
+        exists for, so it stays. Any other `resets_at` is the provider saying
+        the window is not the one that refused: later, it rolled over; earlier,
+        the hold was longer than the window it named. A 429 naming no window
+        ("other") is cleared by time alone.
+        """
+        name = self.limited_window
+        if self.limited_until is None or not name or name not in windows:
+            return False
+        reading = merged.get(name)
+        if reading is None or reading.observed_at != observed_at:
+            return False
+        return abs(_aware(reading.resets_at) - _aware(self.limited_until)) > LIMIT_RESET_SKEW
 
     @property
     def secret(self) -> str:
@@ -935,6 +1032,7 @@ class Account:
             "organisation_id": self.organisation_id,
             "organisation_name": self.organisation_name,
             "organisation_plan": self.organisation_plan,
+            "seat_id": self.seat_id,
             "registered_at": self.registered_at,
             "duplicate_of": self.duplicate_of,
             "duplicate_withheld": self.duplicate_withheld,
@@ -942,6 +1040,8 @@ class Account:
             "identical_readings": (
                 self.identical_readings.to_firestore() if self.identical_readings else None
             ),
+            "limited_until": self.limited_until,
+            "limited_window": self.limited_window,
         }
 
     @classmethod
@@ -1006,6 +1106,7 @@ class Account:
             organisation_id=_optional_text(data.get("organisation_id")),
             organisation_name=_optional_text(data.get("organisation_name")),
             organisation_plan=_optional_text(data.get("organisation_plan")),
+            seat_id=_optional_text(data.get("seat_id")),
             registered_at=_optional_instant(data.get("registered_at")),
             duplicate_of=_optional_text(data.get("duplicate_of")),
             # Only a stored True withholds: anything else is the default.
@@ -1014,6 +1115,11 @@ class Account:
             possible_duplicate_of=_optional_text(data.get("possible_duplicate_of")),
             identical_readings=IdenticalReadings.from_firestore(
                 data.get("identical_readings")),
+            # Descriptive, unlike `max_agents`: a malformed hold reads as no
+            # hold. Raising would take the account out of the pool for good
+            # over a field whose whole job is to take it out for a while.
+            limited_until=_optional_instant(data.get("limited_until")),
+            limited_window=_optional_text(data.get("limited_window")),
         )
 
 
@@ -1356,15 +1462,36 @@ def _registration_order(account: Account) -> tuple[int, datetime, str]:
     )
 
 
-def duplicates(accounts: Iterable[Account]) -> dict[str, tuple[str, bool]]:
-    """Every account sharing an organisation with another: `(other, withheld)`.
+def one_subscription(a: Account, b: Account) -> bool:
+    """Whether two accounts on ONE organisation are one subscription (#2282).
 
-    ONE ORGANISATION IS ONE SUBSCRIPTION (#2222), whatever its labels, owners
-    or logins. Of the accounts on one organisation the OLDEST registration is
-    kept: it names the next one and is not withheld. Every newer one names the
-    kept one and is withheld, so `choose()` hands the subscription out once.
-    An account with no recorded organisation is in no pair: absence is not
-    sameness. An account in no pair is absent from the answer.
+    ONE SUBSCRIPTION IS ONE SEAT (BGD, 2026-10-25). On a Claude Team
+    organisation every seat has its own limits; on 2026-10-25 four seats of
+    one Team organisation read 59-61% of their week beside the kept one's 97%
+    and were withheld as its duplicates, with 104 tasks queued. So: two
+    recorded seats decide -- the same seat is one subscription whatever the
+    readings say, two seats are two whatever they say. Where either seat is
+    not recorded yet (every account added before #2282, until its next
+    refresh) only identical readings pair them (`readings_identical`, DUP-1's
+    fallback): readings that differ are proof of two quotas.
+    """
+    seat_a, seat_b = getattr(a, "seat_id", None), getattr(b, "seat_id", None)
+    if seat_a and seat_b:
+        return seat_a == seat_b
+    return readings_identical(a, b)
+
+
+def duplicates(accounts: Iterable[Account]) -> dict[str, tuple[str, bool]]:
+    """Every account sharing a subscription with another: `(other, withheld)`.
+
+    A SUBSCRIPTION IS AN ORGANISATION AND A SEAT (#2222, #2282), whatever the
+    labels or owners: two accounts on one organisation are a pair only when
+    `one_subscription` says so. Of a pair the OLDEST registration is kept: it
+    names the first newer one and is not withheld. Every newer one names the
+    kept one it pairs with and is withheld, so `choose()` hands the
+    subscription out once. An account with no recorded organisation is in no
+    pair here (absence is not sameness; `identical_reading_pairs` flags it).
+    An account in no pair is absent from the answer.
     """
     groups: dict[tuple[str, str], list[Account]] = {}
     for a in accounts:
@@ -1375,17 +1502,30 @@ def duplicates(accounts: Iterable[Account]) -> dict[str, tuple[str, bool]]:
     for group in groups.values():
         if len(group) < 2:
             continue
-        kept, *newer = sorted(group, key=_registration_order)
-        out[kept.account_id] = (newer[0].account_id, False)
-        for a in newer:
-            out[a.account_id] = (kept.account_id, True)
+        # Compared with EVERY older account, withheld ones too, and withheld
+        # against the kept account at the root of the chain: a seatless K
+        # paired with B (seat s1) by its readings, and a later C on seat s1,
+        # are one subscription however C's readings compare with K's.
+        seen: list[Account] = []
+        root: dict[str, str] = {}
+        for a in sorted(group, key=_registration_order):
+            older = next((k for k in seen if one_subscription(k, a)), None)
+            seen.append(a)
+            if older is None:
+                continue
+            kept = root.get(older.account_id, older.account_id)
+            root[a.account_id] = kept
+            out[a.account_id] = (kept, True)
+            out.setdefault(kept, (a.account_id, False))
     return out
 
 
 def _withheld(accounts: list[Account]) -> set[str]:
     """Accounts `choose()` must not hand out because an older registration of
-    the same organisation is the one in use: the stored mark, or a pair in
-    this very list that the sweep has not marked yet."""
+    the same subscription (`duplicates`) is the one in use: the stored mark,
+    or a pair in this very list that the sweep has not marked yet. A stored
+    mark whose pair no longer holds is cleared by the broker's next sweep
+    (`main.mark_duplicates`), which is also what the hold transaction reads."""
     marked = {a.account_id for a in accounts if getattr(a, "duplicate_withheld", False) is True}
     return marked | {i for i, (_, held) in duplicates(accounts).items() if held}
 
@@ -1421,9 +1561,10 @@ def identical_reading_pairs(
 
     THE FALLBACK FOR A MISSING ORGANISATION (#2222, `IDENTICAL_RESET_SKEW`).
     Two accounts of one provider are compared only when they do not BOTH
-    carry a recorded organisation: two recorded organisations either prove a
-    pair (`duplicates`) or prove two subscriptions, and a recorded
-    organisation that differs always wins over figures that coincide.
+    carry a recorded organisation: two recorded organisations are decided by
+    `duplicates` (the same organisation and seat, or with a seat unrecorded
+    the same readings, #2282), and a recorded organisation that differs
+    always wins over figures that coincide.
 
     A count goes up only when BOTH sides carry a reading newer than the ones
     it was last counted on, so a pass that sees the same readings again, or a
@@ -1510,10 +1651,17 @@ def choose(
     however much headroom it has (owner decision R5).
 
     A DUPLICATE IS HANDED OUT ONCE (#2222): of two accounts on one
-    organisation only the older registration is a candidate (`duplicates`).
+    subscription -- one organisation and one seat (#2282) -- only the older
+    registration is a candidate (`duplicates`).
     AND A NEVER-MEASURED ACCOUNT TAKES ONE AGENT (`awaits_first_reading`):
     it is skipped while it holds one and has no reading, and is an ordinary
     candidate from its first reading on.
+
+    A RECORDED 429 HOLDS AN ACCOUNT LIKE A WINDOW DOES (`Account.is_limited`,
+    asked through `assignable`): an account whose `limited_until` is still
+    ahead is no candidate, for assign and swap alike, until the time passes
+    or a reading shows the refusing window reset. It removes candidates and
+    nothing else, so it cannot hand an account out twice.
     """
     skip = {str(a) for a in exclude}
     accounts = list(accounts)
@@ -1764,6 +1912,7 @@ __all__ = [
     "choose",
     "due_for_refresh",
     "duplicates",
+    "one_subscription",
     "eligibility",
     "holds_from_firestore",
     "identical_reading_pairs",

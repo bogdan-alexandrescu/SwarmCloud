@@ -157,11 +157,14 @@ describe('V004/V014: a panel styles its own buttons, not every button inside it'
     }
   })
 
-  it('draws Holding now | History as one segmented control in the open account', async () => {
+  it('draws History as the canonical link-button in the open account, not a panel button', async () => {
     await accounts([account({ assigned: 1 })])
-    const tabs = document.querySelector('.acct-holding > .c-seg')
-    expect(tabs, 'the switch is not the canonical segmented control').not.toBeNull()
-    for (const b of tabs!.querySelectorAll('button')) expect(painted(b, 'border', WIDE)).toBe('0')
+    // The holds are drawn at once in the sheet (#2222); History is one control under them.
+    fireEvent.click(document.querySelector<HTMLButtonElement>('button.acct-open')!)
+    const history = document.querySelector('.acct-holding .acct-history-toggle')
+    expect(history, 'History is not drawn in the open account').not.toBeNull()
+    expect(history!.classList.contains('c-link')).toBe(true)
+    expect(painted(history!, 'border', WIDE)).toBe('0')
   })
 
   it('lets the tenant give way before the task reference', () => {
@@ -223,8 +226,8 @@ describe('V017: Holding now and History answer from the development fixture', ()
     api.loadAccountsBoard.mockResolvedValue(ok({ ...board([account({ assigned: 1 })]), fixture: true }))
     render(<AccountsScreen />)
     await screen.findByText('Subscription accounts', { selector: 'h2' }, WAIT)
-    fireEvent.click(screen.getByRole('tab', { name: /Holding now/ }))
-    await screen.findByText('Holding now · 1', undefined, WAIT)
+    fireEvent.click(document.querySelector<HTMLButtonElement>('button.acct-open')!)
+    await screen.findByRole('table', { name: 'Holding now · 1' }, WAIT)
     expect(document.querySelector('.acct-holding-now tbody tr')).not.toBeNull()
     expect(fetchSpy).not.toHaveBeenCalled()
   })
@@ -242,12 +245,13 @@ describe('V018: a code from another sign-in carries one instruction', () => {
   })
 })
 
-describe('V065: the chosen row\'s window suffix holds AA on the selection', () => {
+describe('V065: the chosen row\'s muted lines hold AA on the selection', () => {
   it('uses the selection-safe grey', () => {
-    const win = build('li.acct-li.is-chosen > button.acct-open > em.acct-window > span.acct-pct-win', hosts)
-    expect(painted(win, 'color', { ...WIDE, theme: 'dark' })).toBe('var(--text-dim-on-selected)')
-    const plain = build('li.acct-li > button.acct-open > em.acct-window > span.acct-pct-win', hosts)
-    expect(painted(plain, 'color', WIDE)).toBe('var(--text-faint)')
+    // #2222: the chosen row of the ranked table, not the list's suffix.
+    const age = build('table.acct-rank > tbody > tr.acct-rank-row.is-chosen > td > small.acct-age', hosts)
+    expect(painted(age, 'color', { ...WIDE, theme: 'dark' })).toBe('var(--text-dim-on-selected)')
+    const plain = build('table.acct-rank > tbody > tr.acct-rank-row > td > small.acct-age', hosts)
+    expect(painted(plain, 'color', WIDE)).toBe('var(--text-dim)')
   })
 })
 
@@ -257,6 +261,7 @@ describe('V066: a re-auth\'s steps start at 1', () => {
       ok({ authorize_url: 'https://claude.com/cai/oauth/authorize?state=s', state: 's'.repeat(43), expires_in_seconds: 900 }),
     )
     await accounts([account({ state: 'REAUTH_REQUIRED' })])
+    fireEvent.click(document.querySelector<HTMLButtonElement>('button.acct-open')!)
     const pane = document.querySelector('.acct-pane-detail')!
     const start = [...pane.querySelectorAll('button')].find((b) => b.textContent === 'Sign in again')!
     fireEvent.click(start)
@@ -270,14 +275,17 @@ describe('V067: a phone marks no row it did not open', () => {
   it('highlights the default only beside its pane', async () => {
     atPhone()
     await accounts([account(), account({ account_id: 'u-bogdan:b', label: 'b' })])
-    expect(document.querySelector('.acct-li.is-chosen')).toBeNull()
-    fireEvent.click(document.querySelectorAll('.acct-li > .acct-open')[1]!)
-    expect(document.querySelectorAll('.acct-li.is-chosen').length).toBe(1)
+    // A phone draws a card per account (#2222, mock-up A P1).
+    expect(document.querySelector('.acct-card.is-chosen')).toBeNull()
+    fireEvent.click(document.querySelectorAll('button.acct-open')[1]!)
+    expect(document.querySelectorAll('.acct-card.is-chosen').length).toBe(1)
   })
 
-  it('still highlights the default on a desktop', async () => {
+  it('marks no row on a desktop either until one is opened (#2222: no default sheet)', async () => {
     await accounts([account(), account({ account_id: 'u-bogdan:b', label: 'b' })])
-    expect(document.querySelectorAll('.acct-li.is-chosen').length).toBe(1)
+    expect(document.querySelectorAll('.acct-rank-row.is-chosen').length).toBe(0)
+    fireEvent.click(document.querySelectorAll('button.acct-open')[1]!)
+    expect(document.querySelectorAll('.acct-rank-row.is-chosen').length).toBe(1)
   })
 })
 
@@ -321,6 +329,7 @@ describe('V069: the add form\'s groups and the sign-in steps', () => {
 describe('V070: an id never breaks at its hyphen', () => {
   it('draws the subtitle\'s and Lending\'s tenants as unbreakable ids', async () => {
     await accounts([account({ lend_to: ['eng-platform'] })])
+    fireEvent.click(document.querySelector<HTMLButtonElement>('button.acct-open')!)
     const ids = [...document.querySelectorAll('.acct-pane .acct-id')].map((e) => e.textContent)
     expect(ids).toContain('u-bogdan')
     expect(ids).toContain('eng-platform')

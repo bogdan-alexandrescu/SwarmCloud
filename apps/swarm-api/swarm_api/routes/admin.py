@@ -63,6 +63,7 @@ from ..children import release_held_runs
 from ..schemas import (
     AdaptiveTargetRequest,
     DrainRequest,
+    HardMaxRequest,
     HistoryPurgeRequest,
     LimitRequest,
     PauseRequest,
@@ -74,6 +75,7 @@ from ..schemas import (
     TenantFindingsEpicRequest,
     TenantLimitsRequest,
 )
+from ..admins import AUDIT_COLLECTION
 from ..store import TENANTS
 from ..task_accounts import accounts_for
 from ..task_input import masking_for
@@ -983,6 +985,76 @@ def reset_adaptive_target(
     )
     ctx.metrics.admin_actions.labels(action="quota_adaptive_target_reset").inc()
     return result
+
+
+#: The `admin_audit` action a configured-max change is recorded under.
+QUOTA_HARD_MAX_AUDIT_ACTION = "quota_hard_max_set"
+
+
+@router.put("/quota/{provider}/{tenant_id}/hard-max")
+def set_quota_hard_max(
+    provider: str,
+    tenant_id: str,
+    body: HardMaxRequest,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+    broker: AccountPool = Depends(account_pool),
+) -> dict:
+    """Set a tenant's `configured_hard_max`, through the quota broker.
+
+    POOL-LIMITS-QUOTA (BGD, 2026-10-25, part of #2302: "Console edits
+    configured max"). The effective limit of a `provider:<p>:tenant:<t>` pool
+    is the least of its hard limit, this max and the AIMD target, and until
+    this route the max could only be changed by calling the broker directly.
+    It PROXIES as `reset_adaptive_target` does: a platform admin only
+    (`admin_auth`; not in `POOL_ADMIN_ROUTES`, so a pool admin is refused),
+    the provider and the tenant must exist (404 before the broker is
+    called), and the broker stays the only writer of quota documents. The
+    broker clamps the target down to a lowered max in the same write
+    (`QuotaBroker.set_hard_max`); the answer says whether it did.
+
+    AUDITED TWICE. The broker records the change in `quota_audit`, in the
+    quota document's own transaction, with the `requested_by` and `reason`
+    this route forwards (ACCOUNT-429-FOLLOWUP; BGD, 2026-10-25), and this
+    route writes one `admin_audit` entry once the broker has answered: who,
+    why, and the max and target before and after. Who is the admin's
+    verified email from the token in both -- the body cannot name one.
+    """
+    name = provider.strip().lower()
+    if name not in known_providers():
+        raise NotFound(f"provider {provider!r} not found",
+                       detail={"known_providers": list(known_providers())})
+    if ctx.store.get_tenant(tenant_id) is None:
+        raise NotFound(f"tenant {tenant_id!r} not found")
+    before = next((q for q in ctx.store.list_quota(tenant_id)
+                   if q.provider == name and q.tenant_id == tenant_id), None)
+    result = broker.set_hard_max(name, tenant_id, hard_max=body.hard_max,
+                                 requested_by=auth.email, reason=body.reason)
+    after = result.get("quota") if isinstance(result, dict) else None
+    after = after if isinstance(after, dict) else {}
+    from_target = None if before is None else before.adaptive_target
+    to_target = after.get("adaptive_target")
+    change = {
+        "provider": name,
+        "tenant_id": tenant_id,
+        "from_hard_max": None if before is None else before.configured_hard_max,
+        "to_hard_max": after.get("configured_hard_max", body.hard_max),
+        "from_target": from_target,
+        "to_target": to_target,
+        # The broker lowered the target to fit the new max.
+        "target_clamped": (isinstance(from_target, int) and isinstance(to_target, int)
+                           and to_target < from_target),
+        "reason": body.reason,
+    }
+    ctx.db.collection(AUDIT_COLLECTION).document().set({
+        "action": QUOTA_HARD_MAX_AUDIT_ACTION,
+        "target_tenant_id": tenant_id,
+        "by": auth.email,
+        "at": ctx.now(),
+        "detail": change,
+    })
+    ctx.metrics.admin_actions.labels(action="quota_hard_max_set").inc()
+    return {**result, "change": {**change, "requested_by": auth.email}}
 
 
 def _provider_pool_name(provider: str, tenant_id: str) -> str:

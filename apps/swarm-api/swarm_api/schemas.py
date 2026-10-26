@@ -646,6 +646,20 @@ class AdaptiveTargetRequest(StrictModel):
     clear_cooldown: bool = False
 
 
+class HardMaxRequest(StrictModel):
+    """`PUT /v1/admin/quota/{provider}/{tenant_id}/hard-max` (POOL-LIMITS-QUOTA).
+
+    `reason` is the point of the change's audit entries: swarm-api's
+    `admin_audit` one, and the broker's `quota_audit` one, which it is
+    forwarded to. No `requested_by`: who asked is the admin's verified email,
+    taken from the token, and a body that names one is refused
+    (`extra="forbid"`).
+    """
+
+    hard_max: int = Field(ge=0, le=100_000)
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class DrainRequest(StrictModel):
     #: Draining disables admission into the pool and lets in-flight work finish.
     #: Undraining is the same call with `drain=false`.
@@ -778,6 +792,39 @@ class AccountCreate(StrictModel):
     #: this API can return key material -- the same rule the tenant credential
     #: route states.
     credential: str = Field(min_length=8, max_length=16384)
+
+
+#: An account's health (#2302), as `GET /v1/accounts/{id}/health` and each row
+#: of `GET /v1/accounts` serve it. Allow-lists, not types: the broker
+#: (`quota_broker.accountstore`) owns the record, and `routes/accounts.py`
+#: serves a value outside these as nothing rather than passing it through.
+#: The four statuses, by the broker's rule (`accountstore.health_status`):
+#: re-auth first, then limited, then erroring (3+ errors in the last hour).
+ACCOUNT_HEALTH_STATUSES = ("healthy", "limited", "erroring", "reauth_needed")
+#: What an event may be: a rate limit or an exhausted report; a provider error
+#: by kind (auth, overloaded 529, 5xx, network); refused at assignment; a
+#: re-auth mark; a credential refresh that failed.
+ACCOUNT_HEALTH_KINDS = (
+    "rate_limit",
+    "exhausted",
+    "auth",
+    "overloaded",
+    "server_error",
+    "network",
+    "assign_refused",
+    "reauth",
+    "refresh_failed",
+)
+#: The window a rate-limit event names.
+ACCOUNT_HEALTH_WINDOWS = ("five_hour", "seven_day", "other")
+#: The count windows the record serves.
+ACCOUNT_HEALTH_SPANS = ("last_1h", "last_24h", "last_7d")
+#: The listing row's latest hold deadline (#2222, the Timeline's B3/B4): the
+#: latest `expires_at` among the account's live holds, as the broker
+#: (`quota_broker.main.account_to_api`) serves it. Allowed only as an ISO
+#: instant with its zone; `routes/accounts.py` serves anything else as null,
+#: and keeps a row from an older broker without the key.
+ACCOUNT_HOLD_DEADLINE = "latest_hold_deadline"
 
 
 class AccountLending(StrictModel):

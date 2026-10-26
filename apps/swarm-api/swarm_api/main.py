@@ -26,6 +26,7 @@ from swarm_common.states import InvalidTransition
 
 from .access import AccessService, build_access
 from .auth import qa_origin_refused
+from .compression import GzipWholeResponses
 from .deps import AppContext, build_context
 from .errors import ApiError, Conflict, RateLimited, Unauthenticated
 from .forgeapp import ForgeApp, build_forge_app
@@ -84,6 +85,7 @@ from .routes import (
     tenants,
     typesafe_ticket,
     workflows,
+    workspace_name,
     workspace_secrets,
     workspaces,
 )
@@ -380,6 +382,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # A workspace's merge settings, direct or merge train (TRAIN-WS,
     # docs/merge-trains.md §3): its owner or a platform admin, audited.
     app.include_router(merge_settings.router)
+    # Rename a workspace: its display name only, never its id (WORKSPACE-ADMIN-
+    # FIELDS, part of #2157): its admins or a platform admin, audited.
+    app.include_router(workspace_name.router)
     # A workspace's code-intelligence setting (CTXQ-SET,
     # docs/design/context-quality.md §4.7): its owner or a platform admin, audited.
     app.include_router(codeintel.router)
@@ -524,6 +529,13 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # an allow-list that keeps the platform tenant's fields out.
     app.include_router(failurefindings.router)
 
+    # Gzip for a caller that asks (#1822, lane API-GZIP): 3.23 GB left this
+    # API in 48 h uncompressed, a build-board task page averaging 1.43 MB and
+    # `sc overview --json` 1.24 MB. Whole answers only, never a stream or
+    # `text/event-stream` (compression.py says why). Added FIRST so it is the
+    # innermost: `observe` below re-sends every body in parts, and outside it
+    # every answer would look streamed and pass through uncompressed.
+    app.add_middleware(GzipWholeResponses)
     # Inner to `observe`, so a request it refuses is still counted.
     app.add_middleware(FrontDoor, owner=app)
 

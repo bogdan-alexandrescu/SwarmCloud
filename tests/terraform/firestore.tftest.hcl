@@ -568,6 +568,81 @@ run "workspace_roles_have_their_indexes" {
   }
 }
 
+run "join_requests_and_memberships_have_their_indexes" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  # docs/design/join-requests.md §4.4: the resolver reads every workspace a
+  # person joined with one query across tenants, in pages of 20:
+  #   workspace_memberships where subject == E order by at DESC
+  # Without this index the read fails, and every person reachable only by a
+  # platform membership answers membership_unavailable.
+  assert {
+    condition = (
+      google_firestore_index.this["workspace-memberships-subject-at"].collection == "workspace_memberships" &&
+      google_firestore_index.this["workspace-memberships-subject-at"].query_scope == "COLLECTION" &&
+      length(google_firestore_index.this["workspace-memberships-subject-at"].fields) == 2 &&
+      google_firestore_index.this["workspace-memberships-subject-at"].fields[0].field_path == "subject" &&
+      google_firestore_index.this["workspace-memberships-subject-at"].fields[0].order == "ASCENDING" &&
+      google_firestore_index.this["workspace-memberships-subject-at"].fields[1].field_path == "at" &&
+      google_firestore_index.this["workspace-memberships-subject-at"].fields[1].order == "DESCENDING"
+    )
+    error_message = "workspace_memberships needs (subject, at DESC): the newest valid grant per tenant is the membership (join-requests.md §4.4)"
+  }
+
+  # §4.1 and §4.6: a workspace's requests, newest first, for its admins'
+  # page and the per-workspace open limit:
+  #   join_requests where tenant_id == T order by requested_at DESC
+  assert {
+    condition = (
+      google_firestore_index.this["join-requests-tenant-requested"].collection == "join_requests" &&
+      google_firestore_index.this["join-requests-tenant-requested"].query_scope == "COLLECTION" &&
+      length(google_firestore_index.this["join-requests-tenant-requested"].fields) == 2 &&
+      google_firestore_index.this["join-requests-tenant-requested"].fields[0].field_path == "tenant_id" &&
+      google_firestore_index.this["join-requests-tenant-requested"].fields[0].order == "ASCENDING" &&
+      google_firestore_index.this["join-requests-tenant-requested"].fields[1].field_path == "requested_at" &&
+      google_firestore_index.this["join-requests-tenant-requested"].fields[1].order == "DESCENDING"
+    )
+    error_message = "join_requests needs (tenant_id, requested_at DESC): a workspace's requests for its admins, tenant_id leading (invariant 9)"
+  }
+
+  # §4.1: a person's own requests, newest first, for their list and the
+  # per-person open and daily limits:
+  #   join_requests where requester == E order by requested_at DESC
+  assert {
+    condition = (
+      google_firestore_index.this["join-requests-requester-requested"].collection == "join_requests" &&
+      google_firestore_index.this["join-requests-requester-requested"].query_scope == "COLLECTION" &&
+      length(google_firestore_index.this["join-requests-requester-requested"].fields) == 2 &&
+      google_firestore_index.this["join-requests-requester-requested"].fields[0].field_path == "requester" &&
+      google_firestore_index.this["join-requests-requester-requested"].fields[0].order == "ASCENDING" &&
+      google_firestore_index.this["join-requests-requester-requested"].fields[1].field_path == "requested_at" &&
+      google_firestore_index.this["join-requests-requester-requested"].fields[1].order == "DESCENDING"
+    )
+    error_message = "join_requests needs (requester, requested_at DESC): a person's own requests and their rate limits (join-requests.md §4.1)"
+  }
+}
+
+# The platform-membership switch ships off (join-requests.md §3.4, §6 row 5):
+# prod's tfvars never names it, so prod keeps swarm-api's default, off, even
+# once the index its read needs exists. dev turns it on in a separate commit,
+# only after JOIN-DOCS-ACCEPT is green.
+run "prod_leaves_platform_memberships_off" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  assert {
+    condition     = contains(output.index_names, "workspace-memberships-subject-at") && length(regexall("(?i)platform_memberships", file("../../terraform/environments/prod/prod.tfvars"))) == 0
+    error_message = "the membership read has its index, and terraform/environments/prod/prod.tfvars names no platform_memberships switch, so prod keeps it off (join-requests.md §6 row 5)"
+  }
+}
+
 # #1818 (owner's option b, 2026-10-21): the platform database gets Firestore's
 # managed daily backup, kept 7 days -- the point-in-time window, so an
 # offboarded tenant's documents outlive it no longer than they already did. A

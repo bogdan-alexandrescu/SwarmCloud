@@ -359,8 +359,12 @@ describe('the session read exactly as swarm-api serves it (tests/fixtures/live, 
     api.loadLiveSession.mockResolvedValue(ok(served('session.open.json')))
     api.mintLiveTicket.mockReturnValue(new Promise(() => {}))
     render(<Routed onGo={() => {}} />)
-    await waitFor(() => expect(label(tabs()[1]!)).toBe('Browser'))
-    await waitFor(() => expect(document.querySelector('.live-caption')?.textContent).toMatch(/^Device not reported/))
+    // The live-session read answers after the split's cold start, which on a
+    // loaded run of many files passes waitFor's 1 s default (as above).
+    await waitFor(() => expect(label(tabs()[1]!)).toBe('Browser'), { timeout: 10_000 })
+    await waitFor(() => expect(document.querySelector('.live-caption')?.textContent).toMatch(/^Device not reported/), {
+      timeout: 10_000,
+    })
     expect(screen.getAllByRole('button', { name: /Take control/ }).length).toBeGreaterThan(0)
   })
 
@@ -368,7 +372,7 @@ describe('the session read exactly as swarm-api serves it (tests/fixtures/live, 
     api.loadTask.mockResolvedValue(ok(agent()))
     api.loadLiveSession.mockResolvedValue(ok(served('session.pending.json')))
     render(<Routed onGo={() => {}} />)
-    await waitFor(() => expect(tabs().map(label)).toContain('Browser'))
+    await waitFor(() => expect(tabs().map(label)).toContain('Browser'), { timeout: 10_000 })
   })
 })
 

@@ -2,8 +2,9 @@
  * A LIVE-BROWSER TASK'S RECORDINGS (docs/design/live-browser.md §7, LB-4; lane
  * LB-L12, part of #1030).
  *
- * The relay records the MASKED frames -- nothing unmasked exists outside the
- * pod's sidecar -- as one-minute VP8 segments at
+ * The relay records the frames the person watching saw -- the screen as
+ * Chromium drew it, since the gate redacts no part of it (BGD, 2026-10-25;
+ * part of #2298) -- as one-minute VP8 segments at
  * `tenants/<t>/tasks/<task>/attempts/<a>/live/rec-<seq>.live.webm`, and a
  * lifecycle rule deletes them after 7 days whatever else the bucket keeps.
  * They are served to members of the task's tenant only, through swarm-api,
@@ -109,7 +110,7 @@ export function RecordingsPanel({ task }: { task: Pick<Task, 'id' | 'tenant_id'>
     <section className="ctl-card rec-panel" aria-labelledby={`rec-h-${task.id}`}>
       <h3 id={`rec-h-${task.id}`}>Browser recordings</h3>
       <p className="rec-note">
-        Masked frames only, as the person watching saw them. Kept {RECORDING_DAYS} days, then deleted.
+        The frames as the person watching saw them. Kept {RECORDING_DAYS} days, then deleted.
       </p>
       {listing.kind === 'reading' ? (
         <p className="art-loading">

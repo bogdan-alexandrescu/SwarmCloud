@@ -106,7 +106,8 @@ describe('V114: "not served" agrees with a plural subject on the list and Regist
     serve(() => ({ status: 404, body: { detail: 'Not Found' } }))
     await mount(null)
     await waitFor(() => expect(document.querySelector('[data-notserved="GET /v1/repositories"]')).not.toBeNull(), WAIT)
-    const words = visible(document.querySelector('[data-notserved]'))
+    // The registry's own region: GET /v1/access's card is above it (REPOS-PAGE).
+    const words = visible(document.querySelector('[data-notserved="GET /v1/repositories"]'))
     expect(words).toContain("The tenant's registered repositories are not served")
     expect(words).not.toContain('repositories is not')
   })
