@@ -3530,8 +3530,8 @@ pre.err.full { max-height: none; white-space: pre-wrap; }
    gone with the boxed tiles they drew (TS-11): the Timeline's figures are the
    shared `.ctl-metrics` strip now, whose absent state is `tone="absent"`. So
    is `.coverage`, the Timeline's row-count bar and its only caller (TS-12).
-   `.t-label` stays: Dispatch.tsx, SubmitWorkflow.tsx and Accounts.tsx label
-   fields with it. */
+   `.t-label` stays: SubmitWorkflow.tsx and Accounts.tsx label fields with
+   it. Dispatch.tsx's labels are `.dsp-head` (VQ-027). */
 .t-label { display: block; font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-faint); }
 
 /* §B4.3 move 3, the same cap on the proportional row. `minmax(0, 1fr)` in the
@@ -6684,6 +6684,18 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    steps are written as the steps they are. */
 .dsp { border: none; padding: 0; margin: var(--ctl-s3) 0 0; min-width: 0; }
 .dsp > legend { padding: 0; }
+/* EVERY FIELD LABEL IN THE DISPATCH CARD, ONE STYLE (visual QA VQ-027). The
+   control's own labels were muted lower-case `.t-label` lines while the
+   workflow form set "If a step fails" and "Priority" beside them bold and in
+   sentence case: two looks for one kind of field. Both now take this rule,
+   the weight and ink of the mock-up's step-2 headings (submit.html, `.sub3`)
+   at the meta step. Longhands, not the `font` shorthand: a shorthand would
+   reset the weight. */
+.dsp-head {
+  display: block;
+  font-family: var(--font); font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600;
+  color: var(--text);
+}
 
 .dsp-options { display: grid; gap: var(--ctl-s2); margin: var(--ctl-s2) 0 var(--ctl-s3); }
 

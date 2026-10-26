@@ -495,7 +495,7 @@ export function OnFailureChoice({ value, onChange }: {
 }) {
   return (
     <>
-      <h3 className="sb-sub" id="wf-on-failure">If a step fails</h3>
+      <h3 className="sb-sub dsp-head" id="wf-on-failure">If a step fails</h3>
       <div className="dsp-options" role="radiogroup" aria-labelledby="wf-on-failure">
         {ON_FAILURE.map((o) => (
           <label key={o.value} className={`dsp-option${value === o.value ? ' is-on' : ''}`}>
@@ -948,7 +948,7 @@ function Form({ sources }: { sources: FormSources }) {
               schemas.WorkflowCreate fields, sent only when they differ from
               the API's own defaults. */}
           <OnFailureChoice value={onFailure} onChange={setOnFailure} />
-          <label className="sb-sub" htmlFor="wf-priority">Priority</label>
+          <label className="sb-sub dsp-head" htmlFor="wf-priority">Priority</label>
           <div className="sb-prio">
             <input id="wf-priority" type="number" min={-100} max={100} step={1} value={priority}
               aria-invalid={!priorityOk || undefined} aria-describedby="wf-priority-say"
