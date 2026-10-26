@@ -79,7 +79,7 @@ from .forgeapp import GRANTS
 from .mergesettings import COLLECTION as WORKSPACE_SETTINGS
 from .provider_keys import KEYS_COLLECTION as PROVIDER_KEYS
 from .repositories import parse_repository, repo_id_for
-from .repoindex import BASE_LINE, KEPT_VERSIONS, VERSIONS_COLLECTION
+from .repoindex import BASE_LINE, INDEXER_PROFILE, KEPT_VERSIONS, VERSIONS_COLLECTION
 from .store import EVENTS, LEASES, TASKS
 from .verdictpublish import spec_refusal
 from .workspaces import personal_tenant_id
@@ -1726,7 +1726,8 @@ class AttemptState:
           * an index run's base version's task: the `task_id` of the
             `index_versions/<sha>` entry, under this tenant's registration of
             the signed repository, for the one base line of the signed prompt
-            (`lifecycle._stage_base`);
+            (`lifecycle._stage_base`), when that task's own signed spec is an
+            index run of this repository at that commit;
           * an ancestor along `builds_on` (`lifecycle._builds_on_base`): from
             this task's own signed `dispatch.builds_on`, following each
             verified ancestor's `builds_on` only through this tenant's tasks
@@ -1752,7 +1753,7 @@ class AttemptState:
         The caller still refuses a task of another tenant, so a derived id
         serves only this tenant's document.
         """
-        return (self._is_index_base(attempt, task, upstream_task_id)
+        return (self._is_index_base(attempt, task, upstream_task_id, walk)
                 or self._is_builds_on_ancestor(attempt, task, upstream_task_id, walk)
                 or self._is_gate_review(attempt, task, upstream_task_id, walk)
                 or self._is_workflow_ancestor(attempt, task, upstream_task_id, walk)
@@ -1807,7 +1808,7 @@ class AttemptState:
         return {snap.id: snap.to_dict() or {} for snap in snaps if snap.exists}
 
     def _is_index_base(self, attempt: AttemptTuple, task: Mapping[str, Any],
-                       upstream_task_id: str) -> bool:
+                       upstream_task_id: str, walk: "_Walk") -> bool:
         prompt = _mapping(task.get("input")).get("prompt")
         bases = set(_BASE_SHA_LINE.findall(prompt)) if isinstance(prompt, str) else set()
         repo = owner_repo(task.get("repository_url"))
@@ -1817,8 +1818,18 @@ class AttemptState:
         registration = self._read(ref)
         if registration is None or registration.get("tenant_id") != attempt.tenant_id:
             return False
-        version = self._read(ref.collection(VERSIONS_COLLECTION).document(bases.pop()))
-        return version is not None and version.get("task_id") == upstream_task_id
+        base = bases.pop()
+        version = self._read(ref.collection(VERSIONS_COLLECTION).document(base))
+        if version is None or version.get("task_id") != upstream_task_id:
+            return False
+        # `index_versions/<sha>` carries no signature, so the id it names is
+        # held to that task's own signed spec: an index run
+        # (`repoindex.indexer_task`) of this repository at exactly this commit.
+        doc = self._read(self._ref(TASKS, upstream_task_id))
+        return (doc is not None and self._verified(attempt, doc, upstream_task_id, walk)
+                and doc.get("runner_profile") == INDEXER_PROFILE
+                and doc.get("repository_ref") == base
+                and owner_repo(doc.get("repository_url")) == repo)
 
     def _is_builds_on_ancestor(self, attempt: AttemptTuple, task: Mapping[str, Any],
                                upstream_task_id: str, walk: "_Walk") -> bool:
