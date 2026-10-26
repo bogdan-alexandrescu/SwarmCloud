@@ -7,20 +7,28 @@ with their masking counts, not null -- skips the masking for them, and says
 `"view": "summary"`. No `view`, or `view=full`, is the response as it was; an
 unknown view is a 422 naming the allowed values. `GET /v1/tasks/{id}` is
 unchanged.
+
+SUMMARY-TITLE (VQ-009, BGD 2026-10-26): the summary's `metadata` carries the
+task's `title` and nothing else, masked as the full row masks it, so the
+console names a lone agent by its title with no read per row.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import secrets
+
 import pytest
 
-from swarm_api.codec import SUMMARY_DROPPED_KEYS
+from swarm_api.codec import SUMMARY_DROPPED_KEYS, SUMMARY_METADATA_KEYS
 from swarm_api.task_input import TaskMasking
 
 from .conftest import auth_header, seed_task, seed_tenant
 
 DROPPED = ("input", "metadata", "result_summary")
+#: What the summary leaves out whole: `metadata` is cut to its title instead.
+DROPPED_WHOLE = ("input", "result_summary")
 
 
 def _seed(db) -> None:
@@ -46,8 +54,10 @@ def test_summary_rows_carry_none_of_the_three_keys(client, db):
     assert body["view"] == "summary"
     assert len(body["tasks"]) == 3
     for row in body["tasks"]:
-        for key in DROPPED + tuple(f"{k}_redaction_count" for k in DROPPED):
+        for key in DROPPED_WHOLE + tuple(f"{k}_redaction_count" for k in DROPPED_WHOLE):
             assert key not in row, f"{key} is in a summary row"
+        # `metadata` is cut to its title; these tasks have none, so it is empty.
+        assert row["metadata"] == {}
         # Everything else is still there.
         assert row["state"] == "SUCCEEDED"
         assert "last_error" in row and "last_error_redaction_count" in row
@@ -107,5 +117,50 @@ def test_the_single_task_read_is_unchanged(client, db):
 
 
 @pytest.mark.parametrize("key", SUMMARY_DROPPED_KEYS)
-def test_the_dropped_set_is_the_three_fields_and_their_counts(key):
-    assert key.removesuffix("_redaction_count") in DROPPED
+def test_the_dropped_set_is_the_two_fields_and_their_counts(key):
+    assert key.removesuffix("_redaction_count") in DROPPED_WHOLE
+
+
+def test_the_summary_metadata_is_the_title_alone():
+    assert SUMMARY_METADATA_KEYS == ("title",)
+
+
+def _seed_titled(db, title) -> None:
+    seed_tenant(db, "eng")
+    doc = seed_task(db, task_id="task_t", tenant_id="eng", state="RUNNING")
+    doc["metadata"] = {
+        "title": title,
+        "unit": "lease",
+        "ticket": "T-9",
+        "workflow_step": "implement",
+        "nested": {"title": "not this one"},
+    }
+
+
+def test_the_summary_carries_the_title_and_drops_every_other_metadata_key(client, db):
+    _seed_titled(db, "Fix flaky lease heartbeat test (#248)")
+    row = _list(client, view="summary").json()["tasks"][0]
+    assert row["metadata"] == {"title": "Fix flaky lease heartbeat test (#248)"}
+    assert row["metadata_redaction_count"] == 0
+
+    # The control: the full row still carries every key the summary dropped.
+    full = _list(client).json()["tasks"][0]
+    assert set(full["metadata"]) == {"title", "unit", "ticket", "workflow_step", "nested"}
+
+
+def test_the_summary_title_is_masked_as_the_full_row_masks_it(client, db):
+    leaked = "ghp_" + secrets.token_hex(18)
+    _seed_titled(db, f"Rotate {leaked} today")
+    row = _list(client, view="summary").json()["tasks"][0]
+    full = _list(client).json()["tasks"][0]
+    assert leaked not in row["metadata"]["title"]
+    assert row["metadata"]["title"] == full["metadata"]["title"]
+    assert row["metadata_redaction_count"] == 1
+
+
+@pytest.mark.parametrize("title", [None, 7, ["a"], {"text": "x"}])
+def test_a_title_that_is_not_a_string_is_not_served(client, db, title):
+    _seed_titled(db, title)
+    row = _list(client, view="summary").json()["tasks"][0]
+    assert row["metadata"] == {}
+    assert row["metadata_redaction_count"] == 0
