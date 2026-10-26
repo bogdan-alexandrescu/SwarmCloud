@@ -340,8 +340,14 @@ tenants = {
     # already 45 but capacity_units 40 capped the pool at 40. Terraform creates
     # the tenant document once and ignores later changes, so these record the
     # live state rather than enforce it.
-    max_active     = 45
-    capacity_units = 45
+    #
+    # 45 -> 100: BGD, 2026-10-26, so one tenant can hold the 100 browser units
+    # (BROWSER-POOL-100's question; provider_tenant 100 alone left eng at 45).
+    # Live once set through `PUT /v1/admin/tenants/eng/limits`; eng's namespace
+    # ResourceQuota (kubernetes/apply.sh, default 100 pods) must rise with it, or
+    # 100 browser pods at 4 vCPU fill it exactly.
+    max_active     = 100
+    capacity_units = 100
     # The CI fixer (.github/workflows/ci-fix.yml) acts for this tenant, which
     # owns the swarm pull requests it fixes. Listed here, NOT added to
     # eng@saga.xyz: that group holds project-wide admin roles on this shared

@@ -72,6 +72,8 @@ PENDING_POOLS = {
     "provider:anthropic:tenant:eng": 100,
     "provider:openai:tenant:eng": 100,
     "provider:openai": 100,
+    # eng 45 -> 100 (BGD, 2026-10-26): min(max_active, capacity_units).
+    "tenant:eng": 100,
     # BROWSER-POOL-100 (BGD, 2026-10-26, part of #2136): 100 browser units
     # beside claude-code's 80 standard, so every pool both draw on is 180
     # (dev.tfvars says why). This supersedes #628's provider:anthropic 120 and
@@ -101,6 +103,8 @@ LIVE_TENANTS = {
 #: its pool into LIVE_POOLS, with the date read, once it is live.
 PENDING_TENANTS = {
     "u-or-9a0792": (4, 8),
+    # BGD, 2026-10-26: one tenant may hold the 100 browser units.
+    "eng": (100, 100),
 }
 
 #: Live pools no tfvars key can create. `mock-provider` is the provider the mock
