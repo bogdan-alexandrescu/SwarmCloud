@@ -13,7 +13,7 @@
 // that rule, and a second copy here would be the drift this repository keeps
 // paying for. The console only COUNTS the words and sorts by them.
 
-import { incidentsOf } from './accountHealthRecord'
+import { incidentsOf } from './accountHealth'
 import type { PoolAccount } from './accountsPool'
 import type { AccountHealthEvent } from './api'
 
@@ -386,11 +386,11 @@ export function served7d(pool: PoolHealth): number {
 // Incidents (proposal D's rule; docs/quota-management.md "Incidents")
 // ---------------------------------------------------------------------------
 
-// THE RULE IS accountHealthRecord.ts's `incidentsOf` (BGD, 2026-10-25): the account
+// THE RULE IS accountHealth.ts's `incidentsOf` (BGD, 2026-10-25): the account
 // sheet's Health section and this page group events by one function, so the
 // phone's cards and the sheet cannot disagree about where an incident starts
 // or whether it is open. This page only names each incident's account.
-export { ERROR_OPEN_MS, INCIDENT_GAP_MS } from './accountHealthRecord'
+export { ERROR_OPEN_MS, INCIDENT_GAP_MS } from './accountHealth'
 
 export interface Incident {
   account_id: string

@@ -37,7 +37,7 @@ import {
   type HealthFamily,
   type Incident,
   type LimitedBand,
-} from './accountHealthRecord'
+} from './accountHealth'
 import {
   loadAccountHealth,
   setAccountMaxAgents,

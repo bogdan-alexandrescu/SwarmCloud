@@ -8,7 +8,7 @@
 // incident. D's own risk was "two storms 50 minutes apart read as two
 // incidents" -- the rule must say which, and this file holds it there.
 //
-// THE RULE ITSELF is accountHealthRecord.ts's `incidentsOf`, shared with the account
+// THE RULE ITSELF is accountHealth.ts's `incidentsOf`, shared with the account
 // sheet (BGD, 2026-10-25) and tested there, in accountHealth.test.ts. This
 // file holds the page to it: `incidents` is that rule with each incident named
 // for its account, the cases below still read the rule through the page, and
@@ -21,7 +21,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { incidentsOf } from '../accountHealthRecord'
+import { incidentsOf } from '../accountHealth'
 import { loadAccountHealthBoard, type AccountHealthEvent } from '../api'
 import {
   INCIDENT_GAP_MS,

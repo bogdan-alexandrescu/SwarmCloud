@@ -1,6 +1,6 @@
 // ONE ACCOUNT'S HEALTH RECORD, READ FOR DRAWING (#2302, ACCOUNT-HEALTH-SHEET).
 //
-// What this file pins, in `accountHealthRecord.ts`:
+// What this file pins, in `accountHealth.ts`:
 //   * THE INCIDENT RULE (mock-up D, "What it reads"), the console's and not the
 //     broker's, so it is written once and held here: a limit opens on a hit and
 //     takes later limit events until its reset; errors and credential events
@@ -28,7 +28,7 @@ import {
   incidentTitle,
   incidentsOf,
   limitedBands,
-} from '../accountHealthRecord'
+} from '../accountHealth'
 
 const NOW = Date.UTC(2026, 9, 25, 7, 10)
 const MIN = 60_000
