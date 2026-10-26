@@ -460,6 +460,8 @@ describe('Admins and Recent admin actions', () => {
     const audit = [purged(1), purged(2), { action: 'approve', target_workspace_id: 'w-3f9a2c', by: 'bob@example.com', at: ago(3), detail: {} }, purged(4)]
     await mount(people(ROWS, { audit }))
     const card = document.querySelector<HTMLElement>('.pp-audit')!
+    // It opens folded (ADMIN-PEOPLE-FILTER, S5c).
+    fireEvent.click(within(card).getByRole('button', { name: /Recent admin actions/ }))
     const lines = () => [...card.querySelectorAll<HTMLElement>('.pp-audit-list li')].map((li) => visible(li))
     expect(lines()).toHaveLength(1)
     expect(lines()[0]).toContain('approve w-3f9a2c by bob@example.com')
@@ -474,6 +476,7 @@ describe('Admins and Recent admin actions', () => {
   it('says so when nothing but housekeeping is in the latest 50', async () => {
     await mount(people(ROWS, { audit: Array.from({ length: 50 }, (_, i) => purged(i)) }))
     const card = document.querySelector<HTMLElement>('.pp-audit')!
+    fireEvent.click(within(card).getByRole('button', { name: /Recent admin actions/ }))
     expect(visible(card)).toContain('No approvals, denials, loans or admin grants in the latest 50 entries.')
     expect(card.querySelector('.pp-audit-list')).toBeNull()
   })

@@ -544,3 +544,129 @@ def test_read_marks_older_than_30_days_are_pruned(db):
     service.mark_read(viewer, ["new-one"])
     assert [m["id"] for m in db.docs[doc_path]["marks"]] == ["new-one"]
     assert ALICE not in doc_path  # the key is a hash, not the address
+
+
+# --------------------------------------------------------------------------
+# the Admin panel's two platform counts (CONFIG-ADMIN-POLISH; part of #2157, S1b)
+# --------------------------------------------------------------------------
+
+class _Meta:
+    """A metadata reader: each secret's enabled-version times, or the error it raises."""
+
+    def __init__(self, versions: dict[str, Any]) -> None:
+        self.versions = versions
+        self.calls = 0
+
+    def enabled_versions(self, secret_id: str) -> list[datetime | None]:
+        from swarm_api import platform_secrets as ps
+
+        self.calls += 1
+        answer = self.versions.get(secret_id, [_now()])
+        if isinstance(answer, Exception):
+            raise answer
+        if answer is None:
+            raise ps.NotDeclared(secret_id)
+        return answer
+
+
+def _catalogue(*ids: str):
+    from swarm_api import platform_secrets as ps
+
+    return tuple(ps.PlatformSecret(i, ps.TERRAFORM, "scripts/create-secrets.sh") for i in ids)
+
+
+@pytest.fixture
+def catalogue(monkeypatch):
+    monkeypatch.setattr(notif, "PLATFORM_SECRET_CATALOGUE",
+                        _catalogue("swarm-a-key", "swarm-b-key", "swarm-c-key"))
+
+
+def test_tenants_waiting_counts_the_workspaces_waiting_to_be_created_for_an_admin(db):
+    _workspace(db, CAROL, workspace_id="w-c0ffee")
+    _workspace(db, ALICE, workspace_id="w-a11ce0")
+    _workspace(db, BOB, workspace_id="w-b0b000", state=ws.READY)
+    _loan(db, CAROL)  # a Claude-account request is People and roles', not Tenants'
+    service = notif.Notifications(db, Store(db), now=_now)
+    root = service.feed(_viewer(ROOT, admin=True))
+    # MUTATION: count admin_pending (workspaces and loans) -> 3 and this fails.
+    assert root["tenants_waiting"] == 2
+    assert root["admin_pending"] == 3
+    # Nothing waiting is a measured 0, not "not read".
+    db.docs = {k: v for k, v in db.docs.items() if not k.startswith(ws.WORKSPACES + "/")}
+    assert service.feed(_viewer(ROOT, admin=True))["tenants_waiting"] == 0
+
+
+def test_tenants_waiting_is_not_read_when_the_admin_source_failed_or_for_a_non_admin(db):
+    _workspace(db, CAROL)
+
+    def broken(reading):
+        raise RuntimeError("firestore said no")
+
+    service = notif.Notifications(db, Store(db), now=_now, sources=(("admin", broken),))
+    # MUTATION: count the items that did arrive -> 0 and this fails.
+    assert service.feed(_viewer(ROOT, admin=True))["tenants_waiting"] is None
+    plain = notif.Notifications(db, Store(db), now=_now)
+    assert plain.feed(_viewer())["tenants_waiting"] is None
+
+
+def test_platform_secrets_unset_counts_the_catalogue_rows_with_no_enabled_version(db, catalogue):
+    meta = _Meta({"swarm-a-key": [], "swarm-b-key": None})
+    service = notif.Notifications(db, Store(db), now=_now, secret_metadata=meta)
+    # MUTATION: count only `not_set`, or count `set` rows -> fails.
+    assert service.feed(_viewer(ROOT, admin=True))["platform_secrets_unset"] == 2
+    # A non-admin is never told, and nothing is read for them.
+    calls = meta.calls
+    assert service.feed(_viewer())["platform_secrets_unset"] is None
+    assert meta.calls == calls
+
+
+def test_platform_secrets_unset_is_not_read_when_a_row_could_not_be_read(db, catalogue):
+    from swarm_api import platform_secrets as ps
+
+    meta = _Meta({"swarm-a-key": [], "swarm-c-key": ps.MetadataUnreadable(ps.PERMISSION_DENIED)})
+    service = notif.Notifications(db, Store(db), now=_now, secret_metadata=meta)
+    # MUTATION: count the rows that were read -> 1 and this fails.
+    assert service.feed(_viewer(ROOT, admin=True))["platform_secrets_unset"] is None
+    # No reader at all (no project to read) is not read either, never 0.
+    bare = notif.Notifications(db, Store(db), now=_now)
+    assert bare.feed(_viewer(ROOT, admin=True))["platform_secrets_unset"] is None
+
+
+def test_platform_secrets_unset_is_read_once_per_period_not_per_feed(db, catalogue):
+    meta = _Meta({"swarm-a-key": []})
+    clock = [_now()]
+    service = notif.Notifications(db, Store(db), now=lambda: clock[0], secret_metadata=meta)
+    assert service.feed(_viewer(ROOT, admin=True))["platform_secrets_unset"] == 1
+    calls = meta.calls
+    meta.versions["swarm-b-key"] = []
+    # MUTATION: read Secret Manager on every feed -> calls grow and this fails.
+    assert service.feed(_viewer(ROOT, admin=True))["platform_secrets_unset"] == 1
+    assert meta.calls == calls
+    clock[0] += notif.PLATFORM_SECRETS_TTL + timedelta(seconds=1)
+    assert service.feed(_viewer(ROOT, admin=True))["platform_secrets_unset"] == 2
+
+
+def test_the_route_serves_both_counts(client, db):
+    _workspace(db, CAROL)
+    root = _feed(client, "root")
+    assert root["tenants_waiting"] == 1
+    assert "platform_secrets_unset" in root
+    alice = _feed(client, "alice")
+    assert alice["tenants_waiting"] is None and alice["platform_secrets_unset"] is None
+
+
+def test_the_route_hands_the_service_the_apps_own_secret_metadata_reader(client, catalogue):
+    # CONFIG-ADMIN-POLISH-2 (part of #2157): one reader, the one Admin ›
+    # Platform secrets reads (`routes.admin.secret_metadata`, kept on
+    # `app.state`), not a second one built from the Firestore client's project.
+    meta = _Meta({"swarm-a-key": [], "swarm-b-key": None})
+    client.app.state.secret_metadata = meta
+    # MUTATION: build `Notifications` without `secret_metadata=` -> None, fails.
+    assert _feed(client, "root")["platform_secrets_unset"] == 2
+    assert meta.calls
+    # A member's feed reads nothing from it.
+    calls = meta.calls
+    assert _feed(client, "alice")["platform_secrets_unset"] is None
+    assert meta.calls == calls
+    # MUTATION: keep the project fallback -> a second reader, and this fails.
+    assert not hasattr(notif, "_reader_for")

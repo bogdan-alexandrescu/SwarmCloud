@@ -471,6 +471,92 @@ def test_human_required_says_a_person_resumes_it_from_the_console():
     assert d["cause"] == "hold_expired"
     # MUTATION: an "eligible since, still parked" clause on a park only a person ends turns this red.
     assert "still parked" not in w["summary"]
+    # MUTATION: a hand-off park described as an owner-question hold turns this red.
+    assert w["summary"] == "Waiting for a person: sign in on its console page, then say it is ready"
+    assert w["resumes_when"] == "a member of the tenant calls human-ready (the console's Ready button)"
+    assert "park_phase" not in d
+
+
+# --------------------------------------------------------------------------
+# HUMAN_REQUIRED on the owner's questions: a merge step's hold (#2313)
+# --------------------------------------------------------------------------
+
+HELD = [
+    {"task_id": "task_impl", "step_id": "implement", "question_index": 0,
+     "question": "Keep the old route?"},
+    {"task_id": "task_fix", "step_id": "fix", "question_index": 2,
+     "question": "Rename the flag?"},
+]
+
+
+def owner_park(questions: list[dict[str, Any]], *, unreadable: int = 0) -> dict[str, Any]:
+    """The park the merge step writes (`agent_worker.lifecycle._park_for_owner_questions`)."""
+    return {"reason": "HUMAN_REQUIRED", "park_phase": "owner_questions",
+            "owner_questions": {"code": "owner_questions_open", "questions": questions,
+                                "unreadable": unreadable}}
+
+
+def merge_task(**extra: Any) -> Task:
+    return task(park_reason=ParkReason.HUMAN_REQUIRED, next_eligible_at=READ_AT - timedelta(minutes=9),
+                workflow_id="wf_move", step_id="merge", **extra)
+
+
+def test_a_merge_held_by_owner_questions_names_them_and_serves_no_ready_route():
+    ev = [event(EventType.PARKED, READ_AT - timedelta(minutes=9), owner_park(HELD))]
+    w = build_waiting(merge_task(), events=ev, as_of=READ_AT)
+    d = w["detail"]
+    # MUTATION: today's sign-in sentence on an owner-question hold turns this red.
+    assert w["summary"] == "Waiting for answers to 2 owner questions before merging (implement: 1, fix: 1)"
+    assert "sign in" not in w["summary"]
+    # MUTATION: serving the human-ready route, which only re-parks it, turns this red.
+    assert "answer_route" not in d
+    assert d["park_phase"] == "owner_questions"
+    # MUTATION: dropping a question, or its asking step, task or index, turns this red.
+    assert d["questions"] == [
+        {"task_id": "task_impl", "step_id": "implement", "question_index": 0,
+         "question": "Keep the old route?"},
+        {"task_id": "task_fix", "step_id": "fix", "question_index": 2,
+         "question": "Rename the flag?"},
+    ]
+    assert d["unreadable"] == 0
+    # MUTATION: "any member of the tenant" (the answer route's rule is the submitter or an admin).
+    assert d["who_may_answer"] == {
+        "submitted_by": "alice@example.com", "admin": True,
+        "text": "alice@example.com, who launched workflow wf_move, or an admin"}
+    assert w["resumes_when"] == "the last named question is answered (it resumes on its own)"
+    assert w["since"] == READ_AT - timedelta(minutes=9)
+    assert w["next_check_at"] is None
+
+
+def test_the_owner_question_hold_is_read_from_blocked_by_when_no_events_were_read():
+    w = build_waiting(merge_task(blocked_by=[owner_park(HELD[:1])]), events=None, as_of=READ_AT)
+    assert w["summary"] == "Waiting for answers to 1 owner question before merging (implement: 1)"
+    assert [q["question_index"] for q in w["detail"]["questions"]] == [0]
+    assert "answer_route" not in w["detail"]
+
+
+def test_an_owner_question_hold_the_answer_route_cannot_read_still_says_ready():
+    # FAIL CLOSED in swarm-api's answer route (`owner_questions_hold`): an
+    # unreadable entry wakes nothing, so only human-ready returns it.
+    ev = [event(EventType.PARKED, READ_AT - timedelta(minutes=9), owner_park(HELD[:1], unreadable=1))]
+    w = build_waiting(merge_task(), events=ev, as_of=READ_AT)
+    assert w["summary"] == (
+        "Waiting for answers to 1 owner question before merging (implement: 1); 1 entry the "
+        "merge cannot read: say it is ready once it is answered")
+    assert w["detail"]["answer_route"] == "POST /v1/tasks/task_w/human-ready"
+    assert w["detail"]["unreadable"] == 1
+    assert "human-ready" in w["resumes_when"]
+
+
+def test_a_malformed_owner_question_record_serves_no_invented_question():
+    bad = [{"task_id": "task_impl", "question_index": "0"}, "x", {"question_index": 1}]
+    ev = [event(EventType.PARKED, READ_AT - timedelta(minutes=9), owner_park(bad))]
+    w = build_waiting(merge_task(), events=ev, as_of=READ_AT)
+    # Every entry that is not a task id and an integer index is counted unreadable.
+    assert w["detail"]["questions"] == []
+    assert w["detail"]["unreadable"] == 3
+    assert w["detail"]["answer_route"] == "POST /v1/tasks/task_w/human-ready"
+    assert w["summary"].startswith("Waiting for the owner questions the review named before merging")
 
 
 # --------------------------------------------------------------------------

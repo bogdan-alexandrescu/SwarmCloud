@@ -64,6 +64,18 @@ derives a "needs you" item from it for the person who submitted the agent,
 through the one tenant projection in `routes.failurefindings`, under the
 existing topic `failed` (`preferences.TOPICS` is not this lane's to widen).
 
+THE ADMIN PANEL'S TWO PLATFORM COUNTS ride on this read (CONFIG-ADMIN-POLISH;
+part of #2157, proposal E S1b): `tenants_waiting`, the workspaces waiting to be
+created (Admin › Tenants' lead), and `platform_secrets_unset`, the platform
+secrets with no enabled version (Admin › Platform secrets' lead). The shell
+already polls this feed, so a badge costs no page its own poll. Both are a
+platform admin's only, and both are null -- never 0 -- when they were not read:
+the admin source failed, a secret's metadata could not be read, or there is no
+reader. The secret count comes from `platform_secrets.platform_secret_status`,
+the page's own read, so the badge and the page count the same rows; it is
+reused for `PLATFORM_SECRETS_TTL` per reader, because it is two Secret Manager
+metadata calls per secret and the bell polls every 30 s.
+
 NOTHING HERE CREATES DEMAND (invariants 1-3): it reads documents and writes one
 document of its own; no task, lease or slot is touched.
 """
@@ -71,6 +83,8 @@ document of its own; no task, lease or slot is touched.
 from __future__ import annotations
 
 import logging
+import threading
+import weakref
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -83,6 +97,7 @@ from swarm_common.admission import _snapshot
 from swarm_common.states import ParkReason, TaskState
 
 from . import approvals, schedulefire
+from . import platform_secrets as psec
 from .agent_questions import blocking_unanswered, current_wait, parked_wait, unanswered
 from . import workspaces as ws
 from .forgeapp import CONNECTIONS, REFRESH_FAILED, connection_id_for, user_hash
@@ -137,6 +152,14 @@ MAX_ID_CHARS = 200
 #: The most documents one source reads.
 SCAN = 200
 DETAIL_CHARS = 200
+
+#: How long one platform-secret count is reused. A secret is written by an
+#: operator's script, not by anyone in the console, so a badge five minutes
+#: behind is honest enough; the page itself always reads live.
+PLATFORM_SECRETS_TTL = timedelta(minutes=5)
+#: What `platform_secrets_unset` counts. The page's catalogue, named here so a
+#: test can narrow it.
+PLATFORM_SECRET_CATALOGUE = psec.PLATFORM_SECRETS
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _ENDED = {
@@ -760,15 +783,50 @@ class _Derived:
     muted: dict[str, int]
     admin_pending: int
     partial: bool
+    #: Workspaces waiting to be created; None for a non-admin or an unread admin source.
+    tenants_waiting: int | None = None
+
+
+#: Each reader's last count and when it was read (`PLATFORM_SECRETS_TTL`).
+_SECRET_COUNTS: "weakref.WeakKeyDictionary[Any, tuple[datetime, int | None]]" = weakref.WeakKeyDictionary()
+_SECRET_COUNTS_LOCK = threading.Lock()
+
+
+def platform_secrets_unset(meta: Any, db: Any, now: datetime) -> int | None:
+    """How many platform secrets have no enabled version (`not_set` or
+    `not_declared`), as Admin › Platform secrets counts them. None when any
+    row, or the broker's account documents, could not be read: a lower bound
+    drawn as a count would be the one claim nobody measured."""
+    with _SECRET_COUNTS_LOCK:
+        kept = _SECRET_COUNTS.get(meta)
+    if kept is not None and now - kept[0] < PLATFORM_SECRETS_TTL:
+        return kept[1]
+    try:
+        status = psec.platform_secret_status(meta, db, catalogue=PLATFORM_SECRET_CATALOGUE,
+                                             now=lambda: now)
+        rows = status["secrets"]
+        count: int | None = None if status["accounts_unread"] or any(
+            r["status"] == psec.UNREADABLE for r in rows) else sum(
+            1 for r in rows if r["status"] in (psec.NOT_SET, psec.NOT_DECLARED))
+    except Exception as exc:  # noqa: BLE001 - one count, never the feed
+        log.warning("notifications: platform secrets unread (%s)", type(exc).__name__)
+        count = None
+    with _SECRET_COUNTS_LOCK:
+        _SECRET_COUNTS[meta] = (now, count)
+    return count
 
 
 class Notifications:
     def __init__(self, db: Any, store: Any, *, now: Callable[[], datetime],
-                 sources: Sequence[tuple[str, Source]] = SOURCES) -> None:
+                 sources: Sequence[tuple[str, Source]] = SOURCES,
+                 secret_metadata: Any | None = None) -> None:
         self._db = db
         self._store = store
         self._now = now
         self._sources = tuple(sources)
+        #: The platform secrets' metadata reader, the app's one (routes/notifications.py
+        #: hands it over); None counts nothing.
+        self._secret_metadata = secret_metadata
 
     def _ref(self, viewer: Viewer) -> Any:
         return self._db.collection(COLLECTION).document("rd_" + user_hash(viewer.email))
@@ -781,17 +839,24 @@ class Notifications:
         reading = Reading(db=self._db, store=self._store, viewer=viewer, now=_aware(self._now()))
         items: dict[str, dict[str, Any]] = {}
         partial = viewer.preferences_unread
+        unread: set[str] = set()
         for name, source in self._sources:
             try:
                 found = source(reading)
             except Exception as exc:  # noqa: BLE001 - one source, never the feed
                 partial = True
+                unread.add(name)
                 log.warning("notifications: source %s unread (%s)", name, type(exc).__name__)
                 continue
             for item in found:
                 items.setdefault(item["id"], item)
         admin_pending = sum(1 for i in items.values() if i["group"] == ADMIN) \
             if viewer.is_admin else 0
+        # Tenants' "N waiting": the workspace requests among the admin items,
+        # not the Claude-account ones (People and roles counts both).
+        tenants_waiting = sum(1 for i in items.values()
+                              if i["group"] == ADMIN and i["id"].startswith("admin:workspace:")) \
+            if viewer.is_admin and "admin" not in unread else None
         muted = {"needs_you": 0, "updates": 0}
         needs, updates = [], []
         for item in items.values():
@@ -803,7 +868,8 @@ class Notifications:
             (needs if item["needs_you"] else updates).append(item)
         needs.sort(key=lambda i: (i["at"], i["id"]))
         updates.sort(key=lambda i: (i["at"], i["id"]), reverse=True)
-        return _Derived(needs + updates[:MAX_UPDATES], muted, admin_pending, partial)
+        return _Derived(needs + updates[:MAX_UPDATES], muted, admin_pending, partial,
+                        tenants_waiting)
 
     def _marks(self, viewer: Viewer) -> tuple[dict[str, datetime], datetime | None]:
         snap = self._ref(viewer).get()
@@ -842,10 +908,20 @@ class Notifications:
             "unread_needs_you": sum(1 for i in out if i["needs_you"] and not i["read"]),
             "unread_updates": sum(1 for i in out if not i["needs_you"] and not i["read"]),
             "admin_pending": derived.admin_pending,
+            "tenants_waiting": derived.tenants_waiting,
+            "platform_secrets_unset": self._platform_secrets_unset(viewer),
             "muted": derived.muted,
             "read_at": _iso(all_read_at),
             "partial": partial,
         }
+
+    def _platform_secrets_unset(self, viewer: Viewer) -> int | None:
+        if not viewer.is_admin:
+            return None
+        meta = self._secret_metadata
+        if meta is None:
+            return None
+        return platform_secrets_unset(meta, self._db, _aware(self._now()))
 
     def _write(self, viewer: Viewer, ids: Iterable[str], *, all_read: bool) -> None:
         now = _aware(self._now())

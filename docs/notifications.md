@@ -11,7 +11,8 @@ NOTIF-UI draws it.
 
 ```
 GET  /v1/notifications            -> {items, unread_needs_you, unread_updates,
-                                      admin_pending, muted, read_at, partial}
+                                      admin_pending, tenants_waiting,
+                                      platform_secrets_unset, muted, read_at, partial}
 POST /v1/notifications/read       {"ids": [...]} -> {"ok": true}
 POST /v1/notifications/read-all   -> {"ok": true}
 ```
@@ -184,6 +185,21 @@ invisible. Updates are cut to 50 *after* muting, so a person who mutes
 `finished` sees the failures the successes used to push out.
 `admin_pending` drives the Admin pill, not the bell, and is counted before
 muting: an admin who mutes `admin` still sees the pill.
+
+**Two Admin panel counts ride on the feed** (CONFIG-ADMIN-POLISH, part of
+#2157, proposal E S1b): `tenants_waiting`, the workspace requests among the
+admin items (Admin › Tenants' "N waiting"), and `platform_secrets_unset`, the
+platform secrets with no enabled version (Admin › Platform secrets). They are
+here because the shell already polls this read every 30 s; a badge that
+polled its own page's route would be a second poll per page, all day. Both are
+a platform admin's only and both are `null`, never 0, when they were not read:
+the admin source failed, a secret's metadata or the broker's account
+documents could not be read, or the API has no project to read. The console
+draws no badge for `null`. The secret count is the Platform secrets page's own
+read (`platform_secrets.platform_secret_status`), so the two never count
+different rows, and it is reused for five minutes per reader
+(`PLATFORM_SECRETS_TTL`): it is two Secret Manager metadata calls per secret,
+and a secret's value is written by the operator's script, not in the console.
 
 **"Mark all read" marks what was shown.** With nothing muted it still sets
 `all_read_at`. With a mute in force it marks only the ids shown and leaves

@@ -138,11 +138,22 @@ DENIED_HOLD_DAYS = 7
 #: Open requests per workspace: more than an admin will read. Shown only to
 #: someone holding a working code, so it reveals nothing to anyone else.
 OPEN_PER_WORKSPACE = 50
+#: The `ApiSettings` field that overrides each limit above (lane
+#: JOIN-RESOLVE, BGD's answer of 2026-10-25 on task_ad610136896d4461afeb).
+#: A store built over settings without the field, or with a value that is
+#: not a whole number of at least one, keeps the constant.
+LIMIT_SETTINGS = {
+    "join_open_per_person": OPEN_PER_PERSON,
+    "join_daily_per_person": DAILY_PER_PERSON,
+    "join_denied_hold_days": DENIED_HOLD_DAYS,
+    "join_open_per_workspace": OPEN_PER_WORKSPACE,
+}
 
 MESSAGE_MAX = 200
 REASON_MAX = 200
-#: Bounded reads. A person's window covers every request a denial in the
-#: last 7 days could belong to (14 + 7 days); the workspace's covers every
+#: Bounded reads. A person's window covers every request a denial inside
+#: the hold could belong to (14 + the hold's days, 7 unless
+#: JOIN_DENIED_HOLD_DAYS says otherwise); the workspace's covers every
 #: request that can still be open.
 PERSON_SCAN = 200
 WORKSPACE_SCAN = 500
@@ -324,6 +335,17 @@ class JoinStore:
             metrics or ApiMetrics(), "join_request_invalid", "swarm_api_join_request_invalid_total",
             "Join requests, decisions and links the reader skipped, by reason (mac, shape, "
             "decision_mac, decision_shape, link_mac, link_shape).")
+        self._open_per_person = self._limit("join_open_per_person")
+        self._daily_per_person = self._limit("join_daily_per_person")
+        self._denied_hold_days = self._limit("join_denied_hold_days")
+        self._open_per_workspace = self._limit("join_open_per_workspace")
+
+    def _limit(self, name: str) -> int:
+        """One rate limit of §4.1: the setting, else its constant."""
+        value = getattr(self._settings, name, None)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            return LIMIT_SETTINGS[name]
+        return value
 
     def _keys(self) -> tuple[str, ...]:
         return settings_keys(getattr(self._settings, "settings_key", ""),
@@ -383,7 +405,7 @@ class JoinStore:
         return views
 
     def _person_window(self, requester: str, now: datetime, read: Reader) -> list[RequestView]:
-        since = now - timedelta(days=OPEN_DAYS + DENIED_HOLD_DAYS)
+        since = now - timedelta(days=OPEN_DAYS + self._denied_hold_days)
         query = (self._requests()
                  .where(filter=FieldFilter("requester", "==", requester))
                  .where(filter=FieldFilter("requested_at", ">=", at_text(since)))
@@ -495,7 +517,7 @@ class JoinStore:
                     return view, False
             self._check_person_limits(mine, tenant_id, now)
             queue = self._open_in(tenant_id, now, read)
-            if len(queue) >= OPEN_PER_WORKSPACE:
+            if len(queue) >= self._open_per_workspace:
                 raise JoinWorkspaceQueueFull(
                     "this workspace has as many open join requests as its admins can read; "
                     "ask again once they have answered some",
@@ -511,17 +533,17 @@ class JoinStore:
             log.info("join request made tenant=%s", tenant_id)
         return view, created
 
-    @staticmethod
-    def _check_person_limits(mine: list[RequestView], tenant_id: str, now: datetime) -> None:
+    def _check_person_limits(self, mine: list[RequestView], tenant_id: str,
+                             now: datetime) -> None:
         open_mine = [v for v in mine if v.state == REQUESTED]
-        if len(open_mine) >= OPEN_PER_PERSON:
+        if len(open_mine) >= self._open_per_person:
             raise JoinRequestsOpenLimit(
                 f"you have {len(open_mine)} open join requests, the most at once; withdraw "
                 "one or wait for an answer",
                 _seconds_until(min(v.request.expires_at for v in open_mine), now))
         day_ago = now - timedelta(days=1)
         today = [v for v in mine if (parse_at(v.request.requested_at) or now) > day_ago]
-        if len(today) >= DAILY_PER_PERSON:
+        if len(today) >= self._daily_per_person:
             oldest = min(parse_at(v.request.requested_at) or now for v in today)
             raise JoinRequestsDailyLimit(
                 f"you have asked to join {len(today)} times in the last day, the most "
@@ -531,10 +553,11 @@ class JoinStore:
                    if v.request.tenant_id == tenant_id and v.state == DENIED
                    and v.decision is not None]
         latest = max((d for d in denials if d is not None), default=None)
-        if latest is not None and now < latest + timedelta(days=DENIED_HOLD_DAYS):
-            opens = latest + timedelta(days=DENIED_HOLD_DAYS)
+        hold = self._denied_hold_days
+        if latest is not None and now < latest + timedelta(days=hold):
+            opens = latest + timedelta(days=hold)
             raise JoinDeniedRecently(
-                f"this workspace's admin answered your last request {DENIED_HOLD_DAYS} days "
+                f"this workspace's admin answered your last request {hold} days "
                 f"ago or less; you can ask again on {opens.date().isoformat()}",
                 (opens - now).total_seconds(), opens_on=opens.date().isoformat())
 

@@ -10,7 +10,9 @@ WORKSPACE ROLES (docs/design/workspace-roles.md §4.3, lane ROLES-API-CORE).
 `/me` and every `/mine` entry carry `role: {name, source}` -- the seam Settings
 › Profile reads (§4.11) -- and each `/mine` entry its `via`: "personal",
 "member", or "platform_admin" for a registered group workspace a platform
-admin reaches without being in it (§4.2.2 step 5). A role that could not be
+admin reaches without being in it (§4.2.2 step 5), or "platform_member" for
+one the person joined by an approved request rather than its Google group
+(docs/design/join-requests.md §4.5 step 3, behind `platform_memberships`). A role that could not be
 read is left out rather than guessed; the console then shows the derived one.
 `POST /me/credentials` writes the workspace's provider key, which is its
 admin's (Q6): behind `role_admin_required`'s switch, off at ship.
@@ -54,7 +56,7 @@ from swarm_common.admission import _snapshot
 from swarm_common.profiles import RUNNER_PROFILES
 
 from .. import awaitinput, mcp_servers, refusals, roles
-from ..auth import AuthContext
+from ..auth import VIA_PLATFORM_MEMBER, AuthContext
 from ..codec import console_origin, tenant_to_api
 from ..deps import AppContext, current_auth, get_context
 from ..errors import KeyLinkInvalid, ValidationFailed
@@ -161,6 +163,11 @@ def get_me(
         "environment_declared": ctx.settings.environment_declared,
         "features": _features(ctx, auth),
         **_role_field(ctx, auth),
+        # Present only when the switch is on and this person's platform
+        # memberships could not be read (docs/design/join-requests.md §4.4):
+        # the console's switcher then says the workspaces joined by request
+        # are missing for now, rather than that the person has none.
+        **({"memberships_unavailable": True} if auth.memberships_unread else {}),
     }
 
 
@@ -253,6 +260,11 @@ def get_mine(
     `via: "platform_admin"`, `is_default: false` and `role: admin` by rule --
     no read. Every other entry's role costs one cached grant read; a
     personal entry's costs none.
+
+    A group workspace the person joined by an approved request
+    (`AuthContext.platform_memberships`, only while `platform_memberships`
+    is on) is one of `tenant_choices`, after the confirmed groups, and is
+    listed in its place with `via: "platform_member"`.
     """
     entries = [
         _choice(ctx, auth, tenant_id, principal, first=index == 0)
@@ -275,8 +287,9 @@ def _choice(ctx: AppContext, auth: AuthContext, tenant_id: str, principal: str, 
         entry = {"tenant_id": tenant_id, "display_name": f"Your workspace ({tenant_id})",
                  "kind": "user", "via": roles.VIA_PERSONAL}
     else:
+        joined = (tenant_id, principal) in auth.platform_memberships
         entry = {"tenant_id": tenant_id, "display_name": principal, "kind": "group",
-                 "via": roles.VIA_MEMBER}
+                 "via": VIA_PLATFORM_MEMBER if joined else roles.VIA_MEMBER}
     entry.update(_role_field(ctx, roles.with_tenant(auth, tenant_id, principal)))
     entry["is_default"] = first
     if first:

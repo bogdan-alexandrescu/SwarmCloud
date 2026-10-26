@@ -61,6 +61,8 @@ function isWait(v: unknown): v is NonNullable<Task['human_wait']> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
 const text = (v: unknown): string | null => (typeof v === 'string' && v.trim() !== '' ? v : null)
 
 function at(iso: string | null | undefined): number | null {
@@ -88,11 +90,61 @@ export type Handoff =
       deadline: number | null
     }
 
+/** One question a merge's owner-question hold names: whose, and which. */
+export interface HeldQuestion {
+  task_id: string
+  step_id: string | null
+  question_index: number
+  question: string | null
+}
+
+/**
+ * A MERGE STEP HELD BY THE OWNER'S QUESTIONS IS NOT A HAND-OFF (#2313). The
+ * merge (runner profile `merge`: git only, no browser) parks
+ * PARKED(HUMAN_REQUIRED) while questions its review named are unanswered,
+ * and records them in its park's `blocked_by` entry as `park_phase:
+ * "owner_questions"` with `owner_questions: {questions, unreadable}`
+ * (agent_worker.lifecycle._park_for_owner_questions). Nobody signs in to
+ * anything: the answer that clears the last named question returns it to
+ * READY by itself (QUESTION-WAKE), and I'm ready only re-ran it into the
+ * same park (task_ad66d2b402a847ca8b7d, 2026-10-25 07:32:52Z). So this is
+ * read here, where the hand-off is told apart, and `handoffOf` is null for
+ * it: no banner, no I'm ready, no Browser tab, no "needs you" browser row.
+ *
+ * The questions, else null. An entry that is not a task id and a
+ * non-negative integer index is counted in `unreadable`, never guessed at.
+ */
+export function ownerQuestionsHold(
+  task: Pick<Task, 'state' | 'park_reason' | 'blocked_by'>,
+): { questions: HeldQuestion[]; unreadable: number } | null {
+  if (task.state !== 'PARKED' || task.park_reason !== 'HUMAN_REQUIRED') return null
+  for (const entry of task.blocked_by ?? []) {
+    if (!isRecord(entry) || entry.reason !== 'HUMAN_REQUIRED' || entry.park_phase !== 'owner_questions') continue
+    const hold = isRecord(entry.owner_questions) ? entry.owner_questions : {}
+    const recorded = hold.unreadable
+    let unreadable = typeof recorded === 'number' && Number.isInteger(recorded) && recorded >= 0 ? recorded : 1
+    const questions: HeldQuestion[] = []
+    for (const q of Array.isArray(hold.questions) ? hold.questions : []) {
+      const r = isRecord(q) ? q : {}
+      const index = r.question_index
+      const id = text(r.task_id)
+      if (id === null || typeof index !== 'number' || !Number.isInteger(index) || index < 0) {
+        unreadable += 1
+        continue
+      }
+      questions.push({ task_id: id, step_id: text(r.step_id), question_index: index, question: text(r.question) })
+    }
+    return { questions, unreadable }
+  }
+  return null
+}
+
 /**
  * Whether, and how, this task is waiting for a person. Null for every task
- * that is not. The PARKED case carries no reason: the park clears
- * `human_wait`, so the reason is read from the request's event
- * (`useHandoffRequest`).
+ * that is not, and for a merge held by the owner's questions, which waits for
+ * answers rather than for a person at a browser (`ownerQuestionsHold`). The
+ * PARKED case carries no reason: the park clears `human_wait`, so the reason
+ * is read from the request's event (`useHandoffRequest`).
  */
 export function handoffOf(task: Task): Handoff | null {
   if (task.state === 'RUNNING' && isWait(task.human_wait)) {
@@ -105,7 +157,7 @@ export function handoffOf(task: Task): Handoff | null {
       controller: isWait(w.controller) ? text((w.controller as { email?: unknown }).email) : null,
     }
   }
-  if (task.state === 'PARKED' && task.park_reason === 'HUMAN_REQUIRED') {
+  if (task.state === 'PARKED' && task.park_reason === 'HUMAN_REQUIRED' && ownerQuestionsHold(task) === null) {
     const parkedAt = at(task.next_eligible_at) ?? at(task.updated_at)
     return { phase: 'parked', deadline: parkedAt === null ? null : parkedAt + HUMAN_PARK_MAX_MS }
   }
