@@ -43,6 +43,7 @@ from .forge_installation import InstallationSource, build_installation_tokens
 from .forgewrite import GitHubWriter
 from .groups import CloudIdentityGroups, MembershipResolver
 from .inspect import InspectionService
+from .memberships import MembershipStore
 from .metrics import ApiMetrics
 from .objects import ObjectReader, build_object_reader
 from .outcomes import Outcomes
@@ -244,6 +245,13 @@ def build_context(
         # workspace (Q9) -- right for an outage, wrong for a deployment that
         # never had the key, which keeps today's computed default instead.
         preferences=_configured_preferences(db, settings),
+        # Platform memberships (docs/design/join-requests.md §4.5, lane
+        # JOIN-WIRE): without it `_memberships_enabled` is false and
+        # PLATFORM_MEMBERSHIPS=true admits nobody. Nothing is read while the
+        # switch is off. The one instance: an approval writes through it
+        # (`ctx.authenticator.memberships`), so its eviction is what the
+        # person's next request reads.
+        memberships=MembershipStore(db, settings, metrics=metrics),
     )
     spec_signer = signer_from_settings(settings) if signer is _MISSING else signer
     # Built before the submissions service, which reads a `merge_pr` workflow's

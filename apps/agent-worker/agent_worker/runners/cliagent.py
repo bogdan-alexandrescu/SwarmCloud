@@ -118,7 +118,10 @@ _RATE_LIMIT_MARKERS = (
     "rate limit",
     "rate-limited",
     "ratelimit",
-    "429",
+    # NOT a bare `429` (FIX-RATE-LIMIT-MARKER, part of #2379): a substring
+    # match found it inside any hex token, uuid or request id -- one random
+    # 32-hex token in 137 -- and parked a 500 as PROVIDER_QUOTA_EXHAUSTED.
+    # `_RATE_LIMIT_STATUS` matches it only where it stands as a status.
     "too many requests",
     # NOT `overloaded_error` (RUNNER-ERROR-KINDS, #2302). A 529 is the
     # provider's capacity, not this account's quota: parking it as
@@ -130,6 +133,13 @@ _RATE_LIMIT_MARKERS = (
     "resource_exhausted",
     "usage limit reached",
 )
+
+#: A 429 standing as a status -- `API Error: 429 {...}`, `HTTP 429`,
+#: `"status": 429`, `(429)` -- and not as three characters of an identifier.
+#: Neither side may touch a letter, digit or underscore; nor may a `-`, `.` or
+#: `,` come before it (a uuid group, a version, `1,429 bytes`), nor a `.` or
+#: `,` followed by a digit after it (`429.5`, `429,117`).
+_RATE_LIMIT_STATUS = re.compile(r"(?<![\w.,-])429(?!\w|[.,]\d)")
 
 #: A CLI that surfaces the raw HTTP header and nothing else. `Retry-After` is
 #: sent with a 429 or a 503, so it is a rate limit or an outage -- both of
@@ -809,6 +819,8 @@ def detect_rate_limit(text: str) -> tuple[bool, int | None, str | None]:
 def _rate_limit_marked(lowered: str) -> bool:
     """Whether lower-cased `lowered` names a rate limit (`detect_rate_limit`)."""
     if any(marker in lowered for marker in _RATE_LIMIT_MARKERS):
+        return True
+    if _RATE_LIMIT_STATUS.search(lowered):
         return True
     if not any(marker in lowered for marker in _RETRY_AFTER_MARKERS):
         return False
@@ -1682,8 +1694,8 @@ def run_cli_agent(
     def detection_text(raw: str, parsed_run: Any) -> str:
         # What the rate-limit and credential heuristics read. For a streamed
         # run this is NOT the raw stdout tail -- see `_detection_text`. Neither
-        # half includes the capture's own notices, which count bytes: `429` is
-        # a marker.
+        # half includes the capture's own notices, which count bytes: `429`
+        # standing as a number is a marker.
         return (
             _detection_text(raw, parsed_run)
             + "\n"
@@ -2252,7 +2264,7 @@ def _detection_text(raw_stdout: str, parsed: Any) -> str:
 
     NEVER THE CAPTURE'S OWN NOTICE (#188 review). Where the output cap cut a
     stream, `procman.StreamCapture` writes a line counting the bytes it
-    dropped -- and `429` is a marker matched anywhere, so 4,290,117 dropped
+    dropped -- and `429` standing as a number is a marker, so 429 dropped
     bytes would park a failed run as rate-limited. Nor, in a streamed run,
     the line the cut went through, just above the notice: half an event is
     the agent's words or a tool's output as often as the provider's, and
@@ -2284,8 +2296,9 @@ def _detection_text(raw_stdout: str, parsed: Any) -> str:
     return "\n".join(kept)[-8000:]
 
 
-#: Keys whose values are random identifiers. `429` is a marker matched
-#: anywhere, and a uuid contains it about one time in 115 -- so a FAILED run
+#: Keys whose values are random identifiers. `429` was a marker matched
+#: anywhere until FIX-RATE-LIMIT-MARKER, and a uuid contains it about one time
+#: in 115 -- so a FAILED run
 #: whose `init` or `result` event carried such a `session_id` was parked as
 #: rate-limited, and on a pool account moved to another account as exhausted.
 #: An identifier is never the provider saying no.

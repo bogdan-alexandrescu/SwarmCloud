@@ -653,3 +653,20 @@ def test_the_route_serves_both_counts(client, db):
     assert "platform_secrets_unset" in root
     alice = _feed(client, "alice")
     assert alice["tenants_waiting"] is None and alice["platform_secrets_unset"] is None
+
+
+def test_the_route_hands_the_service_the_apps_own_secret_metadata_reader(client, catalogue):
+    # CONFIG-ADMIN-POLISH-2 (part of #2157): one reader, the one Admin ›
+    # Platform secrets reads (`routes.admin.secret_metadata`, kept on
+    # `app.state`), not a second one built from the Firestore client's project.
+    meta = _Meta({"swarm-a-key": [], "swarm-b-key": None})
+    client.app.state.secret_metadata = meta
+    # MUTATION: build `Notifications` without `secret_metadata=` -> None, fails.
+    assert _feed(client, "root")["platform_secrets_unset"] == 2
+    assert meta.calls
+    # A member's feed reads nothing from it.
+    calls = meta.calls
+    assert _feed(client, "alice")["platform_secrets_unset"] is None
+    assert meta.calls == calls
+    # MUTATION: keep the project fallback -> a second reader, and this fails.
+    assert not hasattr(notif, "_reader_for")

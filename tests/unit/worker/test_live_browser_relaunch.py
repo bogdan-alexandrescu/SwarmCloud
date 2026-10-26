@@ -334,12 +334,74 @@ def test_the_agents_connections_drop_on_exit_and_the_proxy_accepts_a_new_one_aft
     _run(body, tmp_path)
 
 
+def test_a_process_that_outlasts_the_wait_and_ignores_sigterm_is_reported_as_sigkill(monkeypatch):
+    """The path F18 took (#2379): `exited` stops a child that has not exited, and SIGKILL is its code.
+
+    A child mid core dump ignores SIGTERM and dies only to SIGKILL, so
+    `Browser.exited` returns -9 for a process that crashed on SIGSEGV. This pins
+    that path deterministically, which is why the real-process test below must
+    not let its child dump core.
+    """
+    import functools
+    import signal
+
+    stop_process = gate_main._stop_process
+    monkeypatch.setattr(gate_main, "_stop_process", functools.partial(stop_process, timeout=0.05))
+
+    class Dumping:
+        """`wait()` blocks until killed; `terminate()` is ignored, as during a core dump."""
+
+        def __init__(self) -> None:
+            self.returncode: int | None = None
+            self.signals: list[str] = []
+            self._gone = asyncio.Event()
+
+        async def wait(self) -> int:
+            await self._gone.wait()
+            assert self.returncode is not None
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.signals.append("SIGTERM")
+
+        def kill(self) -> None:
+            self.signals.append("SIGKILL")
+            self.returncode = -signal.SIGKILL
+            self._gone.set()
+
+    class Pipe:
+        async def close(self) -> None: ...
+
+    proc = Dumping()
+
+    async def main() -> tuple[int | None, list[str]]:
+        return await gate_main.Browser(proc, Pipe()).exited(0.05)
+
+    code, tail = asyncio.run(asyncio.wait_for(main(), 5))
+    assert proc.signals == ["SIGTERM", "SIGKILL"]
+    assert code == -signal.SIGKILL and tail == []
+    assert gate_main.exit_cause(code) == ("signal_SIGKILL", "SIGKILL")
+
+
 def test_a_real_process_that_dies_on_a_signal_gives_its_signal_and_its_last_stderr_lines():
-    """`Browser.exited`, on a real child: what `start_chromium` keeps of Chromium's stderr."""
+    """`Browser.exited`, on a real child: what `start_chromium` keeps of Chromium's stderr.
+
+    MEASURED 2026-10-25 (run 40206969879, F18 of #2379): on a loaded runner this
+    child's SIGSEGV came back as -9. A core dump in progress ignores SIGTERM, so
+    the exit outlasted `exited(10)` and `_stop_process`'s 5 s grace and was
+    killed (the test above pins that path). The child therefore makes itself
+    non-dumpable first, `prctl(PR_SET_DUMPABLE, 0)`: the kernel writes no core,
+    and a piped `core_pattern` helper is never started (RLIMIT_CORE=0 would not
+    stop one). The exit is then immediate, and the elapsed-time assertion makes
+    a slow one fail as slow rather than as a wrong signal.
+    """
     import signal
     import sys
+    import time
 
-    script = ("import os, signal, sys\n"
+    script = ("import ctypes, os, signal, sys\n"
+              "if sys.platform.startswith('linux'):\n"
+              "    ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0)  # PR_SET_DUMPABLE, 0\n"
               "for n in range(30): sys.stderr.write(f'line {n}\\n')\n"
               "sys.stderr.flush()\n"
               "os.kill(os.getpid(), signal.SIGSEGV)\n")
@@ -353,7 +415,10 @@ def test_a_real_process_that_dies_on_a_signal_gives_its_signal_and_its_last_stde
                                                     stderr=asyncio.subprocess.PIPE)
         return await gate_main.Browser(proc, Pipe()).exited(10)
 
+    started = time.monotonic()
     code, tail = asyncio.run(asyncio.wait_for(main(), 20))
+    elapsed = time.monotonic() - started
+    assert elapsed < 8, f"the child took {elapsed:.1f} s to exit: exited(10) would have killed it"
     assert code == -signal.SIGSEGV
     assert gate_main.exit_cause(code) == ("signal_SIGSEGV", "SIGSEGV")
     assert len(tail) == gate_main.STDERR_TAIL_LINES and tail[-1] == "line 29"

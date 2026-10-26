@@ -117,11 +117,6 @@ class Display:
         pass
 
 
-class Scale:
-    def set_scale(self, scale: float) -> None:
-        pass
-
-
 @pytest.fixture(autouse=True)
 def _no_settle(monkeypatch):
     # The wait after another session attaches, cut to nothing so the test does
@@ -137,7 +132,7 @@ async def _spin(until=lambda: False) -> None:
 
 
 async def _started(chromium: Chromium) -> DeviceController:
-    device = DeviceController(chromium, Display(), Scale(), record=lambda k, f: None)
+    device = DeviceController(chromium, Display(), record=lambda k, f: None)
     await device.start()
     return device
 
