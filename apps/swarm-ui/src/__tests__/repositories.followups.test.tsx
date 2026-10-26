@@ -265,6 +265,11 @@ describe('the Registered column and the counts', () => {
     expect(visible(api.querySelector('[data-row="qa-targets"]'))).toBe('QA targets: 1')
     expect(visible(web.querySelector('[data-row="secrets"]'))).toBe('Secrets: none')
     expect(visible(web.querySelector('[data-row="qa-targets"]'))).toBe('QA targets: none')
+    // ONE LINE FOR BOTH COUNTS (visual QA VQ-043, S3a's compact card).
+    // MUTATION: draw each count as its own row again -> fails.
+    const countRow = api.querySelector('[data-row="secrets"]')!.parentElement!
+    expect(countRow.classList.contains('ur-cmeta')).toBe(true)
+    expect(countRow.contains(api.querySelector('[data-row="qa-targets"]'))).toBe(true)
     fireEvent.click(within(api.querySelector<HTMLElement>('[data-row="qa-targets"]')!).getByRole('link'))
     // MUTATION: link the bare QA targets tab and the list is not narrowed to this repository.
     expect(go).toHaveBeenCalledWith('config/repositories?page=qa-targets&repository=example-org%2Fexample-api')

@@ -148,10 +148,16 @@ describe('Repositories: workflow files, per repository', () => {
     expect(visible(off)).toContain('Workflow files off')
     expect(on.getAttribute('data-workflow-files')).toBe('true')
     expect(visible(on)).toContain('Workflow files on')
-    // MUTATION: drop the plain-words line under the switch and this fails.
-    expect(visible(off)).toContain(
-      "An agent's workflow on a pushed branch runs in this repository with its secrets before any merge hold. Merges of workflow changes always wait for an owner.",
-    )
+    // WHAT IT MEANS IS SAID ONCE ON THE PAGE, NOT ON EVERY CARD (visual QA VQ-043): the same three lines
+    // under each card's switch doubled the cards' height against S3a.
+    const why =
+      "An agent's workflow on a pushed branch runs in this repository with its secrets before any merge hold. Merges of workflow changes always wait for an owner."
+    // MUTATION: put the plain-words line back under each card's switch -> fails.
+    for (const el of document.querySelectorAll('.ur-card')) expect(visible(el)).not.toContain(why)
+    // MUTATION: drop the page's one note -> fails.
+    const notes = [...document.querySelectorAll<HTMLElement>('p.ur-hint')].filter((p) => visible(p).includes(why))
+    expect(notes).toHaveLength(1)
+    expect(notes[0]!.closest('.ur-card')).toBeNull()
     // MUTATION: draw no control for anyone (drop the `admin ? <Button>` branch) and these are null.
     await waitFor(() => expect(off.querySelector('button')).not.toBeNull(), WAIT)
     expect(visible(off.querySelector('button'))).toBe('Turn on')

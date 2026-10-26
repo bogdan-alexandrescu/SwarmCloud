@@ -549,6 +549,13 @@ function RepositoryList({
           </div>
         )}
       </UrRegion>
+      {/* WHAT WORKFLOW FILES MEANS, SAID ONCE FOR EVERY CARD (visual QA VQ-043). Under each card's switch the
+          same three lines repeated on all six cards and doubled their height against S3a's compact card. */}
+      {registered !== null && registered.length > 0 && (
+        <p className="ur-hint" data-note="workflow-files">
+          <b>Workflow files:</b> {WORKFLOW_FILES_WHY}
+        </p>
+      )}
       {removing !== null && (
         <TypedConfirm
           title={`Remove ${repoName(removing)}?`}
@@ -625,8 +632,9 @@ function toCard(e: MouseEvent, repoId: string) {
  */
 function CountLine({ row, label, n, why, to, go }: { row: string; label: string; n: number | null | undefined; why: string; to?: string; go: (to: string) => void }) {
   const words = n === null || n === undefined ? null : n === 0 ? 'none' : String(n)
+  // A span in its card's shared `.ur-cmeta` line, which draws the dot between the two counts.
   return (
-    <div className="ur-cmeta" data-row={row}>
+    <span data-row={row}>
       {words === null ? (
         <span>
           {label}: <Dash why={why} />
@@ -640,7 +648,7 @@ function CountLine({ row, label, n, why, to, go }: { row: string; label: string;
           {label}: <b>{words}</b>
         </span>
       )}
-    </div>
+    </span>
   )
 }
 
@@ -837,7 +845,6 @@ function WorkflowFiles({
             </span>
           ))}
       </div>
-      <p className="ur-hint">{WORKFLOW_FILES_WHY}</p>
       <WorkflowsGrantLine grant={grant} />
     </div>
   )
@@ -929,8 +936,11 @@ function RepoCard({
         <span>Schedule {sched === null ? <Dash why="The schedule was not served" /> : <b>{sched}</b>}</span>
       </div>
       <IndexingUses r={r} go={go} />
-      <CountLine row="secrets" label="Secrets" n={counts?.secrets} why={countsWhy} go={go} />
-      <CountLine row="qa-targets" label="QA targets" n={counts?.qa_targets} why={countsWhy} to={qaTargetsOf(repoName(r))} go={go} />
+      {/* Secrets and QA targets share a line (VQ-043): two short counts were two of the card's rows. */}
+      <div className="ur-cmeta">
+        <CountLine row="secrets" label="Secrets" n={counts?.secrets} why={countsWhy} go={go} />
+        <CountLine row="qa-targets" label="QA targets" n={counts?.qa_targets} why={countsWhy} to={qaTargetsOf(repoName(r))} go={go} />
+      </div>
       {fileIssues}
       {workflowFiles}
       <FailureLine r={r} go={go} />
