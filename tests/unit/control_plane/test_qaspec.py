@@ -457,18 +457,32 @@ def test_repeated_screen_ids_are_refused() -> None:
         qaspec.render(_target(screens=[{"id": "a", "path": "/"}, {"id": "a", "path": "/b"}]))
 
 
-@pytest.mark.parametrize("width", ["desktop-4k", "1440", ""])
+@pytest.mark.parametrize("width", ["desktop-4k", "1440", "", "380", "380x800", "phone-380 "])
 def test_an_unknown_preset_is_refused(width: str) -> None:
     # MUTATION: pass widths through unchecked and the gate refuses at run time.
     with pytest.raises(qaspec.QaSpecError):
         qaspec.render(_target(widths=[width]))
 
 
+def test_a_target_may_name_phone_380_and_its_steps_carry_it() -> None:
+    """PHONE-380 (BGD 2026-10-26, part of #2136): AI Studio's phone mock-up
+    frame, 380 x 800, is a width a target names, as a preset."""
+    target = _target(widths=["desktop", "phone-380"],
+                     flows=[{"id": "look", "goal": "find pricing", "start_path": "/"}])
+    # MUTATION: leave phone-380 out of qaspec.PRESETS and render refuses it.
+    spec = qaspec.render(target)
+    steps = _steps(spec)
+    assert "--presets desktop,phone-380 --themes light,dark" in steps["capture-g1"]["prompt"]
+    flow = steps["flow-look"]["prompt"]
+    assert "swarm-handoff device phone-380" in flow
+    assert "swarm-handoff record start flow-look-phone-380" in flow
+
+
 def test_the_preset_names_are_the_gates() -> None:
     from agent_worker.livegate.presets import PRESETS
 
     # MUTATION: add a preset here the gate does not have.
-    assert set(qaspec.PRESETS) == set(PRESETS)
+    assert list(qaspec.PRESETS) == list(PRESETS)
 
 
 # --------------------------------------------------------------------------

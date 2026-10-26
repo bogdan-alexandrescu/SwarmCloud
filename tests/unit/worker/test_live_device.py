@@ -24,6 +24,7 @@ a scripted X server on a unix socket. No Chromium, no Xvfb, no network.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import os
 import struct
 import tempfile
@@ -62,6 +63,9 @@ DESIGN = {
     # QA-KIT (owner decision 2026-10-19): the 390-wide phone a visual QA sweep
     # names, with iPhone 15's mobile flags.
     "phone-390": (390, 844, 3.0, True, "iPhone OS"),
+    # PHONE-380 (BGD, 2026-10-26, part of #2136): AI Studio's phone mock-up
+    # frame, 380 x 800, with phone-390's mobile flags, user agent and scale.
+    "phone-380": (380, 800, 3.0, True, "iPhone OS"),
     "pixel-8": (412, 915, 2.625, True, "Android"),
     "iphone-se": (375, 667, 2.0, True, "iPhone OS"),
     "ipad-7": (810, 1080, 2.0, True, "Macintosh"),
@@ -283,6 +287,15 @@ def test_the_preset_list_is_the_designs_and_nothing_more():
         assert (preset.width, preset.height, preset.scale, preset.touch) == (w, h, scale, touch)
 
 
+def test_phone_380_is_phone_390_at_380_by_800():
+    """PHONE-380 (part of #2136): the same phone in every trait but its size --
+    touch, the mobile flag, the scale, the iOS user agent, platform and hints."""
+    p380, p390 = PRESETS["phone-380"], PRESETS["phone-390"]
+    assert (p380.width, p380.height) == (380, 800)
+    # MUTATION: give phone-380 the desktop user agent, or mobile=False, and this fails.
+    assert dataclasses.replace(p380, name=p390.name, width=p390.width, height=p390.height) == p390
+
+
 def test_xvfb_is_started_large_enough_for_every_device():
     assert MAX_DISPLAY_WIDTH >= max(d.display_width for d in all_devices())
     assert MAX_DISPLAY_HEIGHT >= max(d.display_height for d in all_devices())
@@ -381,7 +394,7 @@ def test_a_device_controller_on_the_gates_proxy_is_what_a_clipped_capture_reasse
 # ------------------------------------------------------- unknown is refused
 
 
-@pytest.mark.parametrize("name", ["galaxy-s24", "Desktop", "", None, 393, "iphone-15 "])
+@pytest.mark.parametrize("name", ["galaxy-s24", "Desktop", "", None, 393, "iphone-15 ", 380, "380", "380x800"])
 def test_an_unknown_preset_name_is_refused(tmp_path, name):
     records: list[tuple[str, dict[str, str]]] = []
 
@@ -407,6 +420,8 @@ def test_an_unknown_orientation_is_refused():
     {"preset": "iphone-15", "scale": 1},
     {"preset": "iphone-15", "userAgent": "x"},
     {"width": 393, "height": 852},
+    {"width": 380, "height": 800},
+    {"preset": "phone-380", "width": 380},
     {},
 ])
 def test_a_device_request_carrying_anything_but_a_name_is_refused(args):

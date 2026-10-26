@@ -24,6 +24,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import re
 import secrets
 import sys
 from datetime import timedelta
@@ -760,15 +761,29 @@ def test_a_device_is_switched_by_name_only(tmp_path, db, trace, gate):
     assert all(args.get("preset") in ("iphone-15", "393x852") for op, args in gate.ops if op == "device")
 
 
-def test_the_new_phone_preset_is_passed_to_the_gate_by_name(tmp_path, db, trace, gate):
+@pytest.mark.parametrize("preset", ["phone-390", "phone-380"])
+def test_the_new_phone_preset_is_passed_to_the_gate_by_name(tmp_path, db, trace, gate, preset):
     path, routes, work = _bare(tmp_path, db, trace, gate)
     devices = work / handoff_mod.SPOOL_DIR_NAME / "devices"
-    (devices / "d1.json").write_text(json.dumps({"preset": "phone-390"}))
+    (devices / "d1.json").write_text(json.dumps({"preset": preset}))
     path.tick(work, lambda: db.doc("tasks/task_1"))
     assert _answer(work, "d1") == {"request_id": "d1", "outcome": "applied", "exit": 0,
-                                   "preset": "phone-390"}
-    assert ("device", {"preset": "phone-390"}) in gate.ops
-    assert "phone-390" in handoff_mod.AGENT_GUIDE
+                                   "preset": preset}
+    assert ("device", {"preset": preset}) in gate.ops
+    assert preset in handoff_mod.AGENT_GUIDE
+
+
+def test_the_guide_names_the_gates_presets_in_its_order():
+    """PHONE-380 (part of #2136): the `swarm-handoff device` help is read off
+    `livegate.presets.PRESETS`, so a preset the gate gains is one the agent is
+    told about, and one it drops is never offered."""
+    from agent_worker.livegate.presets import PRESETS
+
+    guide = " ".join(handoff_mod.AGENT_GUIDE.split())
+    listed = re.search(r"switches the browser to a device preset by name \(([^)]*)\)", guide)
+    assert listed is not None, "the guide no longer lists the presets"
+    # MUTATION: write the list out by hand without phone-380 and this fails.
+    assert [n.strip() for n in listed.group(1).split(",")] == list(PRESETS)
 
 
 # --------------------------------------------------------------------------
