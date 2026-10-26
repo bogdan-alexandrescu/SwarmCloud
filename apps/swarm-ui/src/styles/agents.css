@@ -591,6 +591,39 @@
   border-radius: var(--radius);
   background: var(--surface);
 }
+/* THE LOG'S OWN BODY SCROLLS WHEREVER THE LOG IS (BT-001, #2423). The Logs
+   tab lays the log out in a flex column, so the body is the scroller and
+   Follow keeps its newest line in view. Beside the live browser
+   (`.live-logs`, LiveBrowser.tsx) and in the theater's Logs panel
+   (`.th-left-body`, Theater.tsx) its parent is a plain scrolling block: the
+   log grew to its content, the parent scrolled instead, and Follow set the
+   body's `scrollTop` to no effect -- the log opened at its top (scrollTop 0
+   of 1632) and stayed put as steps arrived. There it is the parent's
+   height, border included, and its body scrolls. Not in the phone theater
+   (theater.css `max-width: 640px`): there the Logs panel is a strip of about
+   51px, so the log at its height left its body 8px -- unreadable -- and
+   `.th-left-body` scrolls the whole log instead, as it did before. */
+.live-logs > .ag-logs {
+  box-sizing: border-box;
+  height: 100%;
+  margin-bottom: 0;
+}
+/* Beside the browser on a phone (under 760px, as `.ag-split.ctl-drawer`
+   above) the `.live-body` row grows to its content, so `100%` is the log's
+   own 2777px and the drawer scrolled instead of its body: Follow showed
+   pressed over the oldest step. A bounded height makes the body the
+   scroller again (measured on the review render: clientHeight 385, followed
+   to its end). */
+@media (max-width: 759px) {
+  .live-logs > .ag-logs { height: min(70vh, 560px); }
+}
+@media (min-width: 641px) {
+  .th-left-body > .ag-logs {
+    box-sizing: border-box;
+    height: 100%;
+    margin-bottom: 0;
+  }
+}
 /* ONE ROW OF CONTROLS (U10a D13; U11a N11 at the 380px split). The four
    streams are a segmented control that never scrolls or spills; the search
    gives way to its floor; everything else keeps its width. The bar is a size
@@ -639,6 +672,28 @@
   .ag-logs-streams > button > .ag-logs-short { display: inline; }
 }
 .ag-logs-bar > .ag-logs-streams { align-self: center; }
+/* THE STREAMS IN TWO ROWS UNDER 260px (BT-009, #2423). Beside the live
+   browser and in the theater's Logs panel the bar is 213px at 1440 and 180px
+   at 1024; the four short labels need 238px in a row, and the segmented
+   control's `overflow: hidden` cut `Runner` to `Run` at 1440 and dropped it
+   at 1024, so that stream could not be chosen there. Under 260px they are a
+   two-by-two grid as wide as the bar: every stream whole, none scrolled. */
+@container ag-logbar (max-width: 259px) {
+  .ag-logs-bar > .ag-logs-streams.c-seg {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    flex: 1 0 100%;
+    height: auto;
+  }
+  .ag-logs-bar > .ag-logs-streams.c-seg > button {
+    min-height: var(--h-sm);
+    padding: 0 6px;
+    justify-content: center;
+  }
+  .ag-logs-bar > .ag-logs-streams.c-seg > button:nth-child(2n) { border-right: 0; }
+  .ag-logs-bar > .ag-logs-streams.c-seg > button:nth-child(1),
+  .ag-logs-bar > .ag-logs-streams.c-seg > button:nth-child(2) { border-bottom: 1px solid var(--line); }
+}
 /* ON A PHONE THE STREAMS ARE A LINE OF THEIR OWN (390px): the four of them
    are the width of the screen, and the controls are one row under them. */
 @container ag-logbar (max-width: 480px) {
