@@ -10,6 +10,11 @@
  *          list's filters; the step card's action is `Stop step`.
  *  VQ-016  the Table's and the Timeline's arrival pick opens no card under its
  *          row, so the view arrives whole.
+ *
+ * And the re-review's NOT_YET and minors (lane VQ-WORKFLOWS-FIX2): the name
+ * keeps 200px at 1440 with the runners moved under it, the graph card's stop
+ * control has its own place, the state drift is said in words, the Table's
+ * step name reads whole, and the id is drawn once, behind Copy id.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -19,7 +24,7 @@ import type { Result } from '../fetch'
 import type { WorkflowBoard, WorkflowUsage } from '../api'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
 import { painted } from './marks'
-import { mixChipW, monoW } from '../dag'
+import { MONO_ADVANCE_EM, mixChipW, monoW } from '../dag'
 import { ownFromBoard } from './workflowsById'
 
 const api = vi.hoisted(() => ({
@@ -339,4 +344,185 @@ describe('VQ-016: the Table and the Timeline arrive whole', () => {
       expect(document.activeElement?.classList.contains('wf-inspect-close')).toBe(true)
     })
   }
+})
+
+/** Every `.wfl-line` reports `px` as its width; everything else is unmeasured (0), as jsdom leaves it. */
+function lineIs(px: number): void {
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+    return this.classList.contains('wfl-line') ? px : 0
+  })
+}
+
+describe('VQ-013 re-review: the name and the runners both read at 1440', () => {
+  /** The line's width the name keeps beside a mix on the line: less the mix's basis and the two gaps (id, mix). */
+  const nameBesideMix = (line: number, mix: Element) => {
+    const basis = (painted(mix, 'flex', { width: 1440 }) ?? '').split(/\s+/)[2]!
+    const m = /^([\d.]+)rem$/.exec(basis)
+    expect(m, `the mix's basis is not a rem length: ${basis}`).not.toBeNull()
+    return line - Number(m![1]) * 16 - 2 * 8
+  }
+
+  // MUTATION: keep the mix on the name's line whatever the line's width: at
+  // 1440 with the nav open the line is 319px and the name got 127px of it
+  // ('Audit the operator s…').
+  it('moves the runners under the name, beside the current step, when the name would keep under 200px', async () => {
+    viewport(1440)
+    lineIs(319)
+    render(<WorkflowsScreen />)
+    await waitFor(() => expect(row('wf_chain')).toBeTruthy())
+    const td = row('wf_chain').querySelector<HTMLElement>('td[data-col="workflow"]')!
+    const line = td.querySelector<HTMLElement>(':scope > .wfl-line')!
+    await waitFor(() => expect(line.querySelector(':scope > .wfl-mix'), 'the mix is still on the name’s line').toBeNull())
+    expect([...line.children].map((c) => c.className)).toEqual(['', 'id'])
+    // The second line: the runners, then the current step.
+    const sub = td.querySelector<HTMLElement>(':scope > .wfl-sub')!
+    expect(sub, 'no second line').toBeTruthy()
+    expect([...sub.children].map((c) => c.className.split(' ')[0])).toEqual(['wfl-mix', 'wfl-why'])
+    expect(sub.querySelector('.wf-mix')!.getAttribute('title')).toBe('Runner profiles: claude-code ×3')
+    expect(painted(sub, 'display', { width: 1440 })).toBe('flex')
+    expect(painted(sub, 'flex-wrap', { width: 1440 })).toBe('nowrap')
+    const mix = sub.querySelector(':scope > .wfl-mix')!
+    expect(painted(mix, 'display', { width: 1440 }), 'the runners are not drawn where the Runners column is hidden').toBe('block')
+    expect(painted(mix, 'display', { width: 1680 }), 'the runners are drawn twice where the column is shown').toBe('none')
+    // One whole chip still: the mix does not give way to the step.
+    const oneChip = mixChipW({ profile: 'claude-code', count: 5 }) + monoW(7, 12)
+    const [grow, shrink, basis] = (painted(mix, 'flex', { width: 1440 }) ?? '').split(/\s+/)
+    expect([grow, shrink]).toEqual(['0', '0'])
+    expect(Number(/^([\d.]+)rem$/.exec(basis!)![1]) * 16).toBeGreaterThanOrEqual(oneChip)
+    // The step beside it is cut with its title, never wrapped.
+    const why = sub.querySelector<HTMLElement>(':scope > .wfl-why')!
+    expect(why.textContent).toBe('build running')
+    expect(painted(why, 'white-space', { width: 1440 })).toBe('nowrap')
+    expect(painted(why, 'text-overflow', { width: 1440 })).toBe('ellipsis')
+    expect(painted(why, 'min-width', { width: 1440 })).toBe('0')
+    // The arithmetic the row decided by: beside the mix the name had less than 200px.
+    expect(nameBesideMix(319, document.querySelector('.wfl-line > .wfl-mix, .wfl-sub > .wfl-mix')!)).toBeLessThan(200)
+  })
+
+  // The control: a line with room for both keeps the one-line row.
+  it('keeps the runners on the name’s line while the name keeps 200px beside them', async () => {
+    viewport(1440)
+    lineIs(420)
+    render(<WorkflowsScreen />)
+    await waitFor(() => expect(row('wf_chain')).toBeTruthy())
+    const td = row('wf_chain').querySelector<HTMLElement>('td[data-col="workflow"]')!
+    const line = td.querySelector<HTMLElement>(':scope > .wfl-line')!
+    const mix = line.querySelector(':scope > .wfl-mix')!
+    expect(mix, 'a 420px line moved the mix off it').toBeTruthy()
+    expect(td.querySelector(':scope > .wfl-sub')).toBeNull()
+    expect(nameBesideMix(420, mix)).toBeGreaterThanOrEqual(200)
+  })
+
+  // The control: the phone card is not the band; its mix keeps its own line in the card.
+  it('leaves the phone card’s runners where they were', async () => {
+    viewport(390)
+    lineIs(319)
+    render(<WorkflowsScreen />)
+    await waitFor(() => expect(row('wf_chain')).toBeTruthy())
+    const td = row('wf_chain').querySelector<HTMLElement>('td[data-col="workflow"]')!
+    expect(td.querySelector(':scope > .wfl-line > .wfl-mix')).toBeTruthy()
+    expect(td.querySelector(':scope > .wfl-sub')).toBeNull()
+  })
+})
+
+describe('VQ-WORKFLOWS re-review minors', () => {
+  // MUTATION: drop the slot's grid, which leaves the stop control anchored to
+  // the slot's foot while the card's rows run on under it (it covered
+  // scan-terraform's `↑ plan (plan.md)` at 1440).
+  it('gives the graph card’s stop control a place in the card’s own box, below everything the card draws', async () => {
+    render(<Routed initial="wf=wf_chain" />)
+    const node = await waitFor(() => {
+      const n = document.querySelector<HTMLElement>('.wf-canvas .node[data-step="build"]')
+      expect(n).toBeTruthy()
+      return n!
+    })
+    const slot = node.parentElement!
+    const stop = slot.querySelector<HTMLElement>(':scope > .node-stop')!
+    expect(stop, 'a running step draws no stop control').toBeTruthy()
+    const env = { width: 1440 }
+    // One cell: the card fills it and grows with what it draws; the stop sits
+    // at the cell's foot, so in the card's own bottom padding whatever its height.
+    expect(painted(slot, 'display', env)).toBe('grid')
+    expect(painted(node, 'position', env)).toBe('relative')
+    expect(painted(node, 'grid-area', env)).toBe('1 / 1')
+    expect(painted(stop, 'position', env)).toBe('relative')
+    expect(painted(stop, 'grid-area', env)).toBe('1 / 1')
+    expect(painted(stop, 'align-self', env)).toBe('end')
+    // The strip's inset is unchanged: 10px up, the text column's left and right.
+    expect(painted(stop, 'bottom', env)).toBe('10px')
+    expect(painted(stop, 'left', env)).toBe('15px')
+    expect(painted(stop, 'margin-right', env)).toBe('27px')
+  })
+
+  // MUTATION: print `drift.stored` and `drift.derived` as they come (QUEUED, RUNNING).
+  it('says the state drift in words, not capitals', async () => {
+    const drifted: Workflow = {
+      ...chain,
+      drift: { stored: 'QUEUED', derived: 'RUNNING', agrees: false, reason: 'test', steps_read: 3, unreadable_steps: [], repaired: false },
+    }
+    serve([drifted], chainTasks)
+    render(<Routed initial="wf=wf_chain" />)
+    const drift = await waitFor(() => {
+      const d = document.querySelector<HTMLElement>('.wf-drift')
+      expect(d).toBeTruthy()
+      return d!
+    })
+    const facts = [...drift.querySelectorAll('.ctl-fact')].map((f) => (f.textContent ?? '').replace(/\s+/g, ' ').trim())
+    expect(facts).toEqual(['stored as queued', 'steps running'])
+    expect(drift.textContent).not.toMatch(/[A-Z]{3,}/)
+    expect(drift.getAttribute('aria-label')).toBe('Stored as queued; the steps say running.')
+  })
+
+  // MUTATION: put the Step cell's right padding back to 6px: the column is
+  // sized at 0.6em a character and the face's advance is a hair over it, so
+  // `scan-terraform` (14) drew as `scan-terraf…`.
+  it('lets the Table’s longest step name read whole in the column sized for it', async () => {
+    const terraform = workflow('wf_tf', 'RUNNING', [step('plan', [], { task_id: 'task_plan' }), step('scan-terraform', ['plan'], { task_id: 'task_build' })], 600)
+    serve([terraform], chainTasks)
+    render(<Routed initial="wf=wf_tf&tab=table" />)
+    const cell = await waitFor(() => {
+      const c = document.querySelector<HTMLElement>('.wf-table tr[data-step="scan-terraform"] td[data-col="step"]')
+      expect(c).toBeTruthy()
+      return c!
+    })
+    const pad = (painted(cell, 'padding', { width: 1440 }) ?? '').split(/\s+/).map((v) => Number.parseFloat(v))
+    expect(pad).toHaveLength(4)
+    const [, right, , left] = pad as [number, number, number, number]
+    // `stepColumnWidth` (WorkflowViews.tsx): n x 0.6 x 14px + 22px. Drawn: the
+    // name at the face's measured advance, the cell's padding, and the pick's
+    // 4px a side and 1px border (`.wf-table .wf-pick`).
+    for (let n = 1; n <= 60; n++) {
+      const column = n * 0.6 * 14 + 22
+      const drawn = n * MONO_ADVANCE_EM * 14 + left + right + 2 * 4 + 2
+      expect(drawn, `a ${n}-character name is cut`).toBeLessThanOrEqual(column)
+    }
+  })
+
+  // MUTATION: draw the id as text in the head's chips again, or leave the scrubber's copy of it.
+  it('draws the workflow id once, behind its Copy id control', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+    render(<Routed initial="wf=wf_chain" />)
+    const head = await waitFor(() => {
+      const h = document.querySelector<HTMLElement>('.wfp:not(.is-loading) .wfp-head')
+      expect(h).toBeTruthy()
+      return h!
+    })
+    expect(head.querySelector('.id'), 'the head prints the id as text').toBeNull()
+    expect(head.textContent).not.toContain('wf_chain')
+    const copy = within(head).getByRole('button', { name: 'Copy workflow id wf_chain' })
+    expect(copy.textContent).toBe('Copy id')
+    expect(copy.getAttribute('title')).toBe('wf_chain')
+    fireEvent.click(copy)
+    expect(writeText).toHaveBeenCalledWith('wf_chain')
+    await waitFor(() => expect(copy.textContent).toBe('Id copied'))
+    // The inspector's same-step row does not print it again on the page.
+    const scrubId = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('.wfp-screen .wf-scrub[data-scrub="workflow"] > .id')
+      expect(el).toBeTruthy()
+      return el!
+    })
+    expect(painted(scrubId, 'display', { width: 1440 })).toBe('none')
+    expect(painted(scrubId, 'display', { width: 390 })).toBe('none')
+  })
 })

@@ -179,6 +179,7 @@ import { gateVerdictOf, isReviewedBy, mergeOf, skippedByVerdict, verdictFor, typ
 import { WorkflowChangesTab, changesAtOf, changesCount, withChangesAt, type ChangesAt } from './WorkflowChanges'
 import { PersonName } from './PersonName'
 import { Mark } from './primitives'
+import { stateWord } from './words'
 import './styles/workflows.css'
 import './styles/names.css'
 import {
@@ -409,7 +410,7 @@ export function WorkflowsScreen({
           // `h1` and the name a second heading under it). The name is the
           // spec's label as Recent last read it -- the list or this page
           // records it -- and the id until one is known; the id stays on the
-          // page whole, as the head's chip.
+          // page behind the head's Copy id (VQ-015).
           title={pageTitle}
           help="absent-vs-zero"
           load={() => loadWorkflowPage(id)}
@@ -1174,17 +1175,21 @@ function cancelPending(workflow: Workflow): boolean {
  */
 function StateDrift({ drift }: { drift: WorkflowDrift | undefined }) {
   if (!drift || drift.agrees === true) return null
+  // STATES AS WORDS (VQ-WORKFLOWS re-review): the row read 'stored QUEUED ·
+  // steps RUNNING', the API's capitals, where the console says a state as a
+  // word in lower case (PICKS.md: no all-caps; `stateWord`, the state chip's
+  // spelling).
+  const stored = stateWord(drift.stored)
   if (drift.agrees === null) {
     return (
       <ul
         className="ctl-facts wf-drift"
         aria-label={`State could not be checked: ${drift.unreadable_steps.length} step${
           drift.unreadable_steps.length === 1 ? '' : 's'
-        } unread (${drift.reason}). The stored value is ${drift.stored} and nothing has confirmed it.`}
+        } unread (${drift.reason}). Stored as ${stored}, and nothing has confirmed it.`}
       >
         <li className="ctl-fact">
-          <b>stored</b>
-          <code>{drift.stored}</code>
+          <b>stored as</b> {stored}
         </li>
         <li className="ctl-fact is-absent">
           <b>steps</b>
@@ -1196,17 +1201,15 @@ function StateDrift({ drift }: { drift: WorkflowDrift | undefined }) {
   return (
     <ul
       className="ctl-facts wf-drift"
-      aria-label={`Stored state was ${drift.stored}; the steps say ${drift.derived}${
+      aria-label={`Stored as ${stored}; the steps say ${stateWord(drift.derived)}${
         drift.repaired ? ', and the stored copy has been corrected' : ''
       }.`}
     >
       <li className="ctl-fact">
-        <b>stored</b>
-        <code>{drift.stored}</code>
+        <b>stored as</b> {stored}
       </li>
       <li className="ctl-fact">
-        <b>steps</b>
-        <code>{drift.derived}</code>
+        <b>steps</b> {stateWord(drift.derived)}
       </li>
       {/* A plain value, NOT a `.ctl-mark`: the mark vocabulary names kinds of
           absence, and a repair is a thing that happened. Borrowing an absence
@@ -1214,7 +1217,7 @@ function StateDrift({ drift }: { drift: WorkflowDrift | undefined }) {
           learned to read as "nothing here". */}
       {drift.repaired && (
         <li className="ctl-fact">
-          <b>stored</b>repaired
+          <b>stored copy</b> corrected
         </li>
       )}
     </ul>
@@ -5799,6 +5802,46 @@ function withChosen(options: string[], chosen: string): string[] {
   return chosen === '' || options.includes(chosen) ? options : [...options, chosen].sort()
 }
 
+/**
+ * THE RUNNERS GO UNDER THE NAME WHEN THE NAME WOULD KEEP LESS THAN 200px
+ * (VQ-013 re-review, #2391). The mix keeps room for one whole chip on the
+ * name's line (`.wfl-mix`'s 11rem, styles/workflows.css), and at 1440 with the
+ * nav open that line is 319px: the name kept 127px of it and every row read
+ * 'Audit the operator s…', the ~20-character cut QA G3-09 fixed. Below the
+ * floor the mix moves to the row's second line, beside the current step, and
+ * the name has the whole line.
+ *
+ * Only in the band where the mix is drawn at all (900-1679, where the
+ * Runners column is hidden): the phone card gives the mix its own line in the
+ * card already, and from 1680 the column carries the runners.
+ */
+const NAME_FLOOR_PX = 200
+/** `.wfl-mix`'s basis on the name's line: 11rem. */
+const LINE_MIX_PX = 11 * 16
+/** `.wfl-line`'s `--ctl-s2` gap between its items. */
+const LINE_GAP_PX = 8
+const MIX_BAND_QUERY = '(min-width: 900px) and (max-width: 1679px)'
+
+/**
+ * Whether the name would keep less than `NAME_FLOOR_PX` beside the mix on a
+ * line `el`. Counted the same way wherever the mix is drawn now -- the mix's
+ * room and its gap are counted whether or not it is on the line -- so moving
+ * it cannot change the answer, and the row settles in one step. The id gives
+ * way to nothing below 0 (`min-width: 0`), so it costs only its gap; a tag is
+ * `flex: none`, so it costs its width.
+ */
+function mixGoesUnder(el: HTMLElement): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+  if (!window.matchMedia(MIX_BAND_QUERY).matches) return false
+  const line = el.clientWidth
+  if (line <= 0) return false
+  const others = [...el.children].filter((c) => !c.classList.contains('wfl-mix'))
+  const tags = others.filter((c) => c.classList.contains('tag')).reduce((w, c) => w + (c as HTMLElement).offsetWidth, 0)
+  // Every item but the name is one gap: the others less the name, and the mix.
+  const gaps = others.length * LINE_GAP_PX
+  return line - tags - gaps - LINE_MIX_PX < NAME_FLOOR_PX
+}
+
 function WorkflowListRow({
   workflow,
   label,
@@ -5828,6 +5871,20 @@ function WorkflowListRow({
   useEffect(() => {
     if (onSeen !== null && inView) onSeen(workflow)
   }, [onSeen, inView, workflow])
+  // The name's line, measured: its width comes from the fixed table's column,
+  // never from what it holds, so measuring it cannot feed back into itself.
+  const lineRef = useRef<HTMLSpanElement | null>(null)
+  const [mixUnder, setMixUnder] = useState(false)
+  useLayoutEffect(() => {
+    const el = lineRef.current
+    if (el === null) return
+    const measure = () => setMixUnder(mixGoesUnder(el))
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const watch = new ResizeObserver(measure)
+    watch.observe(el)
+    return () => watch.disconnect()
+  }, [])
   const why = listRowWhy(workflow, taskById, pending)
   // A row known to have no label or title is "Untitled workflow", id under it.
   const named = listRowName(workflow.workflow_id, label, stepsRead(workflow, taskById))
@@ -5861,15 +5918,19 @@ function WorkflowListRow({
             sits beside the name, muted, cut first and whole in its title;
             the runner mix follows on the same line where the Runners column
             is not drawn (below 1680, QA G3-09). The current step, when there
-            is one, is the row's only second line. */}
-        <span className="wfl-line">
+            is one, is the row's only second line -- and the runners join it
+            when the name would keep less than 200px beside them
+            (`mixGoesUnder`; VQ-013 re-review). */}
+        <span className="wfl-line" ref={lineRef}>
           <a href={workflowHref(workflow.workflow_id, query)} title={named.name}>
             {named.name}
           </a>
           {named.showId && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
-          <span className="wfl-mix">
-            <Mix steps={workflow.steps} />
-          </span>
+          {!mixUnder && (
+            <span className="wfl-mix">
+              <Mix steps={workflow.steps} />
+            </span>
+          )}
           <PullRequestWaitTag workflow={workflow} />
           {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
         </span>
@@ -5879,7 +5940,16 @@ function WorkflowListRow({
         <span className="wfl-phone" aria-hidden>
           {phoneSummary(workflow, now)}
         </span>
-        {why !== null && <RowWhyLine why={why} />}
+        {mixUnder ? (
+          <span className="wfl-sub">
+            <span className="wfl-mix">
+              <Mix steps={workflow.steps} />
+            </span>
+            {why !== null && <RowWhyLine why={why} />}
+          </span>
+        ) : (
+          why !== null && <RowWhyLine why={why} />
+        )}
       </td>
       <td className="wfl-shape" data-col="shape" title={shapeOf(workflow.steps).label}>
         <StageGlyph steps={workflow.steps} taskById={taskById} />
@@ -6359,14 +6429,13 @@ function WorkflowHead({
   usage: UsageRead
 }) {
   const spend = workflowSpend(workflow.steps, taskById, telemetryOf(usage))
-  const label = workflowLabel(workflow, taskById)
   const pr = workflowPullRequest(workflow, taskById)
   // ONE ROW, CHIPS LEFT AND ACTIONS RIGHT (workflows.html B; #503). The title
   // is the shell's head above, and its meta line the count note over this
   // row (`pageSummary`, #138); this row
   // carries what is not a sentence -- the state, the pull request, the failure
-  // policy, the cost, the id when the title is the name -- and Copy link and
-  // Cancel workflow, centred on the row so nothing leaves blank space under them.
+  // policy, the cost -- and Copy id, Copy link and Cancel workflow, centred on
+  // the row so nothing leaves blank space under them.
   return (
     <div className="wfp-head">
       <div className="wfp-chips">
@@ -6393,15 +6462,46 @@ function WorkflowHead({
             )}
           </Chip>
         </span>
-        {label !== null && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
         <PullRequestWaitTag workflow={workflow} />
         {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
       </div>
       <span className="wfp-actions">
+        {/* THE ID ONCE, BEHIND ITS COPY (visual QA VQ-015 re-review;
+            agent-details-v3.html A): it was a chip of plain text here and
+            printed again in the inspector's same-step row. The id is this
+            button's title and what it copies; the title above is the name. */}
+        <CopyId id={workflow.workflow_id} />
         <CopyLink />
         <CancelWorkflow workflow={workflow} taskById={taskById} onDone={reload} />
       </span>
     </div>
+  )
+}
+
+/** Copy id: the workflow's id, copied rather than printed; says when the browser refused. */
+function CopyId({ id }: { id: string }) {
+  const [said, setSaid] = useState<'copied' | 'refused' | null>(null)
+  const copy = () => {
+    // Asked inside the click: a browser grants `writeText` only during the
+    // gesture, is undefined outside a secure context, and may refuse.
+    const clip = typeof navigator === 'undefined' ? undefined : navigator.clipboard
+    if (clip === undefined || typeof clip.writeText !== 'function') {
+      setSaid('refused')
+      return
+    }
+    clip.writeText(id).then(
+      () => setSaid('copied'),
+      () => setSaid('refused'),
+    )
+  }
+  return (
+    <Button
+      onClick={copy}
+      title={said === 'refused' ? `This browser refused the clipboard. The id is ${id}` : id}
+      aria-label={`Copy workflow id ${id}`}
+    >
+      {said === 'copied' ? 'Id copied' : said === 'refused' ? 'Copy refused' : 'Copy id'}
+    </Button>
   )
 }
 

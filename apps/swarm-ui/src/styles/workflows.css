@@ -126,6 +126,15 @@
   .wfl .wfl-line > .wfl-mix { flex: 1 0 11rem; min-width: 11rem; }
   /* The current step is the row's one second line, cut with its title. */
   .wfl .wfl-name > .wfl-why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* THE RUNNERS UNDER THE NAME (VQ-013 re-review). Where the name would keep
+     less than 200px beside the mix -- at 1440 with the nav open the line is
+     319px, and the name kept 127px ('Audit the operator s…') -- the row draws
+     the mix on its second line, before the current step (`mixGoesUnder`,
+     Workflows.tsx). The mix keeps its one whole chip there and does not give
+     way; the step takes the rest and is cut with its title. */
+  .wfl .wfl-name > .wfl-sub { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--ctl-s2); min-width: 0; }
+  .wfl .wfl-sub > .wfl-mix { flex: 0 0 11rem; min-width: 0; }
+  .wfl .wfl-sub > .wfl-why { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .wfl .wfl-table th[data-col="workflow"] { min-width: 280px; }
 }
 /* THE LIST'S NOTE IS ONE MUTED LINE UNDER THE HEAD (VQ-013): the list's
@@ -148,13 +157,15 @@
    says and Runners moves onto the name's line (`.wfl-mix`; VQ-013), so the name
    holds about 390px. 1680 is where the table is wide enough (~1290px) for all
    nine with the name still over 280px. */
-.wfl .wfl-line > .wfl-mix { display: none; }
+.wfl .wfl-line > .wfl-mix,
+.wfl .wfl-sub > .wfl-mix { display: none; }
 @media (min-width: 900px) and (max-width: 1679px) {
   .wfl .wfl-table th[data-col="shape"],
   .wfl .wfl-table td[data-col="shape"],
   .wfl .wfl-table th[data-col="runners"],
   .wfl .wfl-table td[data-col="runners"] { display: none; }
-  .wfl .wfl-line > .wfl-mix { display: block; overflow: hidden; white-space: nowrap; }
+  .wfl .wfl-line > .wfl-mix,
+  .wfl .wfl-sub > .wfl-mix { display: block; overflow: hidden; white-space: nowrap; }
 }
 .wfl .wfl-owner { overflow: hidden; text-overflow: ellipsis; }
 /* WHAT BECAME OF THE OTHER STEPS, UNDER THE FRACTION (visual QA run 6, F3,
@@ -568,6 +579,16 @@
   }
   /* The files a step reads, in the row under it: wrapping text, the row's width. */
   .wf-card .ctl-table.wf-table tr.wf-xrow > td { white-space: normal; overflow: visible; padding: 4px 12px 10px; }
+}
+/* THE LONGEST NAME READS WHOLE (VQ-WORKFLOWS re-review): `stepColumnWidth`
+   (WorkflowViews.tsx) sizes the column at 0.6em a character plus 22px of
+   chrome, and the face's measured advance is 0.602em (dag.ts
+   `MONO_ADVANCE_EM`), so a 14-character `scan-terraform` was 0.4px over
+   and drew as `scan-terraf…`. The cell's right padding gives the name 4px:
+   enough for a 140-character name, and the next column's own 6px still
+   spaces the two. */
+@media (min-width: 900px) {
+  .wf-card .ctl-table.wf-table td[data-col="step"] { padding: 4px 2px 4px 6px; }
 }
 /* A STEP'S NAME IS ONE LINE (D12): the button is the cell's width at most and
    the id inside it is cut with an ellipsis, its whole text in its title, so
@@ -1081,6 +1102,24 @@
   height: calc(var(--node-live-h, 0px) - var(--ctl-s1));
 }
 .node-slot.has-live > .node.zoom-names ~ .node-live { bottom: 34px; }
+
+/* THE STOP CONTROL HAS ITS OWN PLACE ON THE CARD (VQ-WORKFLOWS re-review,
+   #2391). It was anchored to the SLOT's foot while the card's rows ran on in
+   the card: wherever a card drew taller than the height `layoutOf` gave its
+   slot, the rows went on into the strip and the small `stop` was drawn over
+   the last of them -- scan-terraform's `↑ plan (plan.md)` at 1440. Now the
+   slot is one grid cell holding both: the card fills it and grows with what
+   it draws, and the stop (and a live card above it) sits at the cell's foot,
+   so in the card's own bottom padding however tall the card turns out. The
+   insets are styles.css's, read as offsets from that foot: `bottom: 10px`
+   (4px at Names) lifts it, `left: 15px` moves it to the text column, and
+   the 27px margin is that 15 plus the card's 12px right padding, so the box
+   keeps the text column's width. A card that fits its slot draws exactly as
+   before. */
+.wf-canvas .node-slot { display: grid; }
+.wf-canvas .node-slot > .node { position: relative; inset: auto; grid-area: 1 / 1; }
+.wf-canvas .node-slot > .node-stop,
+.wf-canvas .node-slot.has-live > .node-live { position: relative; grid-area: 1 / 1; align-self: end; margin-right: 27px; }
 .node-live > .wf-live {
   display: flex; flex-direction: column; gap: var(--ctl-s1);
   height: 100%; min-width: 0;
@@ -1113,3 +1152,10 @@
    that had not answered. Reading is upright and faint -- not the absence's
    italic, and not `.wf-spend`'s dim ink, one step from a figure. */
 .wf-spend.is-reading { color: var(--text-faint); font-style: normal; }
+
+/* THE ID ONCE ON A WORKFLOW'S PAGE (VQ-015 re-review): the head's Copy id
+   carries it, and the inspector's same-step row printed it a second time. On
+   the page that row's position names the workflow and its strip's titles
+   name each one, and a step there opens that workflow's page, whose head
+   carries its id. The list's board card keeps it: no head there says it. */
+.wfp-screen .wf-scrub[data-scrub="workflow"] > .id { display: none; }
