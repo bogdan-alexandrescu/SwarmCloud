@@ -774,3 +774,81 @@ def test_workflow_steps_serve_the_waiting_summary():
     assert steps["merge"]["waiting"]["summary"].startswith("CI on PR #1779")
     # MUTATION: inventing a wait for a step with no task turns this red.
     assert steps["later"]["waiting"] is None
+
+
+# --------------------------------------------------------------------------
+# The wake's words come from merge_wait.wake_reason (F05, part of #2379)
+# --------------------------------------------------------------------------
+
+WOKE_AT = SECOND_PARK + timedelta(minutes=11, seconds=45)
+
+
+def woken_task(wake_reason: str | None) -> tuple[Task, list[TaskEvent]]:
+    """task_c9c3a5301531437bad42's shape: parked CI_PENDING, then woken by the tick."""
+    t, events = ci_task()
+    t.state = TaskState.READY
+    t.park_reason = None
+    wait = dict(t.metadata["merge_wait"])
+    wait["wake_requested_at"] = WOKE_AT - timedelta(seconds=5)
+    if wake_reason is not None:
+        wait["wake_reason"] = wake_reason
+    t.metadata = {"merge_wait": wait}
+    ready = {"reason": "wake_requested", "park_reason": "CI_PENDING",
+             "was_eligible_at": ELIGIBLE.isoformat()}
+    return t, [*events, event(EventType.READY, WOKE_AT, ready, task_id=t.id, n=1)]
+
+
+def _ready_texts(w: dict[str, Any]) -> list[str]:
+    return [h["text"] for h in w["history"] if h["kind"] == "ready"]
+
+
+def test_a_wake_on_head_moved_says_the_head_moved_not_that_the_checks_settled():
+    t, events = woken_task("head_moved")
+    w = build_waiting(t, events=events, as_of=READ_AT)
+    newest = _ready_texts(w)[-1]
+    # MUTATION: mapping every wake_requested to "read the checks settled" turns this red.
+    assert "the head moved" in newest
+    assert "checks settled" not in newest
+    # MUTATION: dropping the park the step woke from turns this red.
+    assert newest.endswith("(was CI_PENDING)")
+
+
+def test_a_wake_on_settled_checks_still_says_the_checks_settled():
+    for settled in ("green", "red"):
+        t, events = woken_task(settled)
+        w = build_waiting(t, events=events, as_of=READ_AT)
+        # MUTATION: losing the settled words for a green or red reading turns this red.
+        assert _ready_texts(w)[-1] == (
+            "ready: woke: swarm-api's tick read the checks settled (was CI_PENDING)")
+
+
+def test_a_wake_whose_reason_is_not_recorded_claims_no_reason():
+    t, events = woken_task(None)
+    w = build_waiting(t, events=events, as_of=READ_AT)
+    newest = _ready_texts(w)[-1]
+    # MUTATION: inventing "checks settled" for a wake with no recorded reason turns this red.
+    assert "checks settled" not in newest
+    assert "reason not recorded" in newest
+
+
+def test_the_wake_reason_names_only_the_wake_it_was_recorded_for():
+    """merge_wait holds the newest wake's reason: an older wake does not inherit it."""
+    t, events = woken_task("head_moved")
+    old = event(EventType.READY, FIRST_PARK + timedelta(minutes=5),
+                {"reason": "wake_requested", "park_reason": "CI_PENDING"}, task_id=t.id, n=2)
+    w = build_waiting(t, events=[old, *events], as_of=READ_AT)
+    texts = _ready_texts(w)
+    # MUTATION: giving every wake_requested row the newest wake_reason turns this red.
+    assert "the head moved" not in texts[0] and "reason not recorded" in texts[0]
+    assert "the head moved" in texts[-1]
+
+
+def test_the_wake_requested_row_of_a_parked_step_words_the_reason():
+    t, events = ci_task()
+    t.metadata["merge_wait"] = {**t.metadata["merge_wait"],
+                                "wake_requested_at": READ_AT - timedelta(minutes=1),
+                                "wake_reason": "head_moved"}
+    w = build_waiting(t, events=events, as_of=READ_AT)
+    wake = [h for h in w["history"] if h["kind"] == "wake"]
+    # MUTATION: serving the raw code, or "checks settled", on the wake row turns this red.
+    assert wake and wake[0]["text"] == "wake requested: the head moved"
