@@ -29,7 +29,9 @@ from agent_worker import secretrelease as release_mod
 from agent_worker.errors import ExitCode
 from swarm_common.profiles import RUNNER_PROFILES
 
-from test_secretrelease import FakeRoutes, _item, _Log, _worker, agent, fake_value, spawned  # noqa: F401
+from test_secretrelease import (  # noqa: F401
+    NONCE, FakeRoutes, _ApiKeySecrets, _item, _Log, _worker, agent, fake_value, spawned)
+from worker_seeds import seed_attempt, seed_tenant
 
 HOSTS = ["staging-admin.example.dev", "admin.example.com"]
 
@@ -59,6 +61,20 @@ def handed(monkeypatch):
     return seen
 
 
+def _browser_worker(db, worker_factory, routes):
+    """test_secretrelease's `_worker`, on the one profile that declares the slot.
+
+    This unit run starts no live gate; the caller lets the agent start without
+    one (`gate_missing` False) so the release and the hand-over are reached."""
+    seed_attempt(db, runner_profile="claude-code-browser", task_input={"prompt": "use the key"})
+    seed_tenant(db, credentials=["anthropic"])
+    worker, _, _ = worker_factory(
+        runner_profile="claude-code-browser", child_api=routes, child_nonce=NONCE,
+        swarm_api_url="https://swarm-api.example", secret_client=_ApiKeySecrets(),
+    )
+    return worker
+
+
 class Gate:
     def __init__(self, refuse: bool = False) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -79,10 +95,11 @@ class Gate:
 def test_a_cf_access_item_never_reaches_the_agents_environment_files_or_work(
         db, worker_factory, agent, spawned, log_stream, monkeypatch, handed):  # noqa: F811
     monkeypatch.setattr(lifecycle.workspace_mod, "destroy", lambda ws: None)
+    monkeypatch.setattr(lifecycle.handoff_mod.HandoffPath, "gate_missing", property(lambda self: False))
     client_id, client_secret, value = _token()
     other = fake_value("f")
     routes = FakeRoutes([_cf_item(value), _item("brave-key", other)])
-    worker = _worker(db, worker_factory, routes)
+    worker = _browser_worker(db, worker_factory, routes)
     recording, at_spawn = spawned
     recording.logger = worker.log
     assert worker.run() == ExitCode.OK, db.doc("tasks/task_1").get("last_error")
@@ -100,7 +117,7 @@ def test_a_cf_access_item_never_reaches_the_agents_environment_files_or_work(
         assert needle not in json.dumps(db.documents, default=str)
     # Every field registered for redaction before the runner existed.
     assert at_spawn and {value, client_id, client_secret} <= at_spawn[-1]
-    # Handed over (to no gate: claude-code has no live browser), then dropped.
+    # Handed over (to no gate: this unit run starts no live browser), then dropped.
     assert handed == [[{"name": "platform-admin", "slot": "cf-access", "hosts": HOSTS, "value": value}]]
     assert worker.secret_release.result is not None and worker.secret_release.result.gate == []
 
