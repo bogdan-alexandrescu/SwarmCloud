@@ -64,6 +64,14 @@ def _page(x: int, y: int, *, scale: int = 1, button=BLUE):
     return WHITE + (255,)
 
 
+def _speck(x: int, y: int):
+    """The page with a 2 x 2 black speck. One black pixel averages, over its
+    4 x 4 cell, to a delta E of about 5.7: under COMPARE_DELTA_E on purpose,
+    because that is the size of a glyph edge drawn differently. Two by two is
+    a defect a person sees."""
+    return BLACK + (255,) if 150 <= x < 152 and 108 <= y < 110 else _page(x, y)
+
+
 def _run(qa, tmp_path, monkeypatch, shot: bytes, frame: bytes, *extra: str, capsys):
     (tmp_path / "shot.png").write_bytes(shot)
     (tmp_path / "frame.png").write_bytes(frame)
@@ -135,6 +143,26 @@ def test_a_frame_exported_at_twice_the_size_is_compared_at_the_shots_scale(tmp_p
     assert report["size_mismatch"] is False
 
 
+def test_a_phone_width_that_is_not_a_multiple_of_the_cell_still_matches_its_2x_frame(tmp_path, monkeypatch, capsys):
+    """390 and 380 are not multiples of COMPARE_CELL. MEASURED on the first
+    draft, which cut each image into the same NUMBER of columns on its own:
+    a 390 x 844 render against its own 2x export scored 0.34, because the
+    frame's edges fell half a CSS pixel off the shot's. That cut scores these
+    stripes 0.13 (2026-10-26), well over the threshold."""
+    qa = _command()
+
+    def stripes(x: int, y: int, scale: int = 1):
+        x, y = x // scale, y // scale
+        return (255, 255, 255, 255) if (x // 3 + y // 5) % 2 else (20, 20, 20, 255)
+
+    shot = _png(390, 60, stripes)
+    frame = _png(780, 120, lambda x, y: stripes(x, y, scale=2))
+    code, report, _artifacts = _run(qa, tmp_path, monkeypatch, shot, frame, capsys=capsys)
+
+    assert code == qa.EXIT_RETURNED, report
+    assert report["score"] == 0
+
+
 def test_a_frame_taller_than_the_render_counts_the_rows_only_it_has(tmp_path, monkeypatch, capsys):
     """A full-page frame against a viewport render: the part the render does
     not show is not a match, and the report says the heights differ."""
@@ -153,10 +181,28 @@ def test_a_frame_taller_than_the_render_counts_the_rows_only_it_has(tmp_path, mo
     assert _rgb_at(qa, diff, 50, 200) == MAGENTA
 
 
+def test_top_only_compares_a_viewport_render_with_the_top_of_a_full_page_frame(tmp_path, monkeypatch, capsys):
+    """On a phone preset a lane takes the viewport, not a full-page shot
+    (swarm_qa.py `_shot`: through the gate the first full-document shot at
+    phone-390 came out 980x2121), so --top-only scores the rows both have
+    and says how many of the frame's it left out."""
+    qa = _command()
+    shot = _png(160, 120, _page)
+    frame = _png(160, 240, _page)
+    code, report, _artifacts = _run(qa, tmp_path, monkeypatch, shot, frame, "--top-only", capsys=capsys)
+
+    assert code == qa.EXIT_RETURNED, report
+    assert report["score"] == 0
+    assert report["size_mismatch"] is True and report["top_only"] is True
+    assert report["rows_left_out"] == 30
+    width, height, _channels, _pixels = qa.decode_png(Path(report["diff"]).read_bytes())
+    assert (width, height) == (160, 120)
+
+
 def test_a_speck_is_scored_but_stays_within_the_threshold(tmp_path, monkeypatch, capsys):
     qa = _command()
     shot = _png(160, 120, _page)
-    frame = _png(160, 120, lambda x, y: BLACK + (255,) if (x, y) == (150, 110) else _page(x, y))
+    frame = _png(160, 120, _speck)
     code, report, _artifacts = _run(qa, tmp_path, monkeypatch, shot, frame, capsys=capsys)
 
     assert code == qa.EXIT_RETURNED
@@ -177,7 +223,7 @@ def test_a_transparent_frame_is_seen_over_white(tmp_path, monkeypatch, capsys):
 def test_the_threshold_is_the_callers_to_tighten(tmp_path, monkeypatch, capsys):
     qa = _command()
     shot = _png(160, 120, _page)
-    frame = _png(160, 120, lambda x, y: BLACK + (255,) if (x, y) == (150, 110) else _page(x, y))
+    frame = _png(160, 120, _speck)
     code, report, _artifacts = _run(qa, tmp_path, monkeypatch, shot, frame, "--threshold", "0", capsys=capsys)
 
     assert code == qa.EXIT_DIFFERENT

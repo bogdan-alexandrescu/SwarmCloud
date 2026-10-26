@@ -174,6 +174,8 @@ const PRESET_LABEL: Readonly<Record<string, string>> = {
   'iphone-15': 'iPhone 15',
   // QA-KIT (owner decision 2026-10-19): the 390x844 phone a visual QA sweep names.
   'phone-390': 'Phone 390',
+  // IMPLEMENT-RENDER (owner decision 2026-10-26): Phone 390, ten pixels narrower.
+  'phone-380': 'Phone 380',
   'pixel-8': 'Pixel 8',
   'iphone-se': 'iPhone SE',
   // `iPad`, as the mockup's chip reads (owner decision 2026-10-12); the
