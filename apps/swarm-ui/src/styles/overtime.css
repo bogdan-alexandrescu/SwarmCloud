@@ -180,6 +180,15 @@
 .pot-fig { font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; }
 .pot-fig.is-absent { color: var(--text-faint); font-style: italic; white-space: normal; }
 .pot-cov { display: block; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); white-space: nowrap; }
+/* A COVER WRAPS INSIDE ITS CELL (re-review of PR 2348, 2026-10-25): over the
+   chart a column is minmax(118px, 1fr), about 136 at 1440, and the table's
+   one-line cover drew "N of N attempts reported" 20px over the Cache read
+   column beside it and "k estimated from a stopped run ($x)" 76px. A cell
+   shrinks to its column and its cover wraps there; the taller readout that
+   makes is what the fit measure in PlatformOverTime.tsx then sends under the
+   chart. */
+.pot-readout .pot-readout-row { min-width: 0; }
+.pot-readout .pot-cov { white-space: normal; overflow-wrap: anywhere; }
 .pot-table td,
 .pot-table th { vertical-align: top; }
 .pot-cell { display: flex; flex-direction: column; min-width: 0; }

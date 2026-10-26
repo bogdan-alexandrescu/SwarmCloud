@@ -259,7 +259,7 @@ describe('a readout cover is never wider than its cell', () => {
       }
       // Its grid cell may shrink to its column rather than grow past it.
       const row = document.querySelector<HTMLElement>('.pot-readout .pot-readout-row')!
-      expect(getComputedStyle(row).minWidth).toBe('0px')
+      expect(getComputedStyle(row).minWidth, 'a readout cell grows past its column').toMatch(/^0(px)?$/)
     } finally {
       style.remove()
     }
