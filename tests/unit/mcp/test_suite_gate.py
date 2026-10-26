@@ -42,7 +42,7 @@ class _Wire:
         self.sent.append((method, path, payload))
         steps = (payload or {}).get("steps") or []
         return {
-            "workflow": {"id": "wf_gate", "state": "QUEUED",
+            "workflow": {"workflow_id": "wf_gate", "state": "QUEUED",
                          "steps": [{"step_id": s["step_id"], "task_id": f"task_{i}"}
                                    for i, s in enumerate(steps)]},
             "dispatch": {"strategy": (payload or {}).get("strategy")},
@@ -177,7 +177,8 @@ def test_each_shard_runs_the_named_commands_from_working_dir_and_never_fixes_cod
                  "npx playwright test --shard 1/2 --retries=1 --reporter=blob,line --project=chromium",
                  "web/.env.mock"):
         assert line in shard, line
-    assert "--with-deps" not in shard
+    # The image carries Chromium's libraries (FIX-2253); the agent is not root.
+    assert "install --with-deps" not in shard and "chromium --with-deps" not in shard
     assert "Never fix" in shard
 
 

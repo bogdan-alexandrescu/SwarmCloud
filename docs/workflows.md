@@ -2407,6 +2407,20 @@ a patch), so with `metadata.merge` absent it is accepted with no merge step
 appended, and an admin turning `merge_by_default` on breaks no tenant who
 never asked for a merge.
 
+## A repository's Playwright suite as a sharded gate: `swarm_suite_gate`
+
+The bridge tool `swarm_suite_gate` (PLAYWRIGHT-GATE, part of #2253) renders a
+workflow for a registered repository: N shard steps on `claude-code` and one
+`report` step. Each shard runs `npx playwright test --shard k/N --retries=1
+--reporter=blob,line` from `working_dir` and puts its blob in its artifacts.
+The report merges the blobs into one HTML report and a `summary.json` with
+passed, failed and flaky counts and each failure's spec and first error line.
+The caller supplies only data: the repository, a ref, `shards` (1 to 20,
+default 8), and optionally a Playwright project and a non-secret env file. It
+never supplies an image, a command or resources (invariant 10). No step fixes
+code or commits. What it costs, how to pick N and how a project wires it into
+its merge train are in [suite-gate.md](suite-gate.md).
+
 ## When not to use a workflow
 
 If steps do not exchange artifacts and do not depend on each other, submit a
