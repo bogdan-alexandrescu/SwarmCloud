@@ -159,6 +159,18 @@ describe('the Admin panel\'s badges (S1b)', () => {
     expect(count('People and roles')).toBeNull()
     expect([...document.querySelectorAll('.sk-panel [aria-label="Your workspaces"] .sk-cnt')].map((c) => c.textContent)).toEqual(['2'])
   })
+
+  it('counts a workspace admin the join requests the feed serves them (S1c, VQ-051)', async () => {
+    const item = (id: string, group = 'admin'): Json => ({ id, group, needs_you: true, title: 'lee@example.com asks to join Labs', detail: null, href: '/admin/people', at: new Date().toISOString(), read: false })
+    serve(ME(false), [PERSONAL, group('eng', 'admin'), group('ops', 'admin')], {
+      // Two requests to join a workspace of theirs; the platform's count and a non-join item are not theirs.
+      feed: FEED({ admin_pending: 4, items: [item('admin:join:r1'), item('admin:join:r2'), item('admin:workspace:w-1'), item('task:t1', 'task')] }),
+    })
+    await app('/admin/workspaces')
+    // MUTATION: draw a workspace admin no People and roles badge -> null and this fails.
+    await waitFor(() => expect(count('People and roles')).toBe('2'))
+    expect(row('People and roles')?.querySelector('.sk-cnt')?.className).toBe('sk-cnt is-alert')
+  })
 })
 
 describe('the Config panel in a personal workspace (S1e) and the panel foot (S1a)', () => {
