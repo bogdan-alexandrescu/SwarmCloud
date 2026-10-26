@@ -104,9 +104,8 @@ from ..forgechecks import evaluate, required_status_checks
 from ..forgewrite import ForgeWriteError, ForgeWriteNotFound, GitHubWriter
 from ..issueci import excerpt_at
 from ..issuecomments import bounded as bounded_body
-from ..issuecomments import neutralise_closing_keywords, neutralise_mentions
+from ..issuecomments import code, plain, prose
 from ..issueruns import TERMINAL_RUN_STATES, IssueRuns, RunState, hard_stop_hold, refuse_auto_merge
-from ..redaction import redact
 from ..repositories import Repositories, hard_stop_paths_of, platform_of
 from ..routes.runs import start_run
 from ..schemas import TaskCreate
@@ -515,44 +514,9 @@ def _window(review: Mapping[str, Any]) -> str:
     return f"{_mapping(review.get('window')).get('from')} to {_mapping(review.get('window')).get('to')}"
 
 
-#: Where Markdown prose could begin raw HTML -- a tag, a closing tag, a
-#: comment, a declaration, a processing instruction -- or an entity reference.
-_HTML_START = re.compile(r"<(?=[A-Za-z/!?])|&(?=#?[A-Za-z0-9]+;)")
-_BACKTICKS = re.compile(r"`+")
-
-
-def plain(value: str, limit: int, *, literals: Sequence[str] = (), one_line: bool = False) -> str:
-    """The investigator's text, for an issue's title, as written (ISSUE-WRITER, VQ-020).
-
-    `neutral` without its HTML escaping: masked, mentions broken, closing
-    keywords turned into `refs`, cut to `limit`. GitHub stores a title as given
-    and shows it as text, so `&gt;` there is printed as `&gt;` (#2217 read
-    'implement -&gt; review -&gt; fix').
-    """
-    masked = redact(str(value), extra=tuple(literals)).text.replace("\x00", "")
-    if one_line:
-        masked = " ".join(masked.split())
-    masked = neutralise_closing_keywords(neutralise_mentions(masked))
-    return masked if len(masked) <= limit else masked[: limit - 1] + "…"
-
-
-def prose(value: str, limit: int, *, literals: Sequence[str] = (), one_line: bool = False) -> str:
-    """`plain`, for Markdown prose: a `<` that could open HTML, and an `&` that
-    could start an entity, take a Markdown backslash escape, which GitHub renders
-    as the character itself. So `<details>` or `<!--` cannot swallow the body, and
-    `->` and `#<n>` read as written; an entity would be printed in a code span."""
-    text = plain(value, limit, literals=literals, one_line=one_line)
-    return _HTML_START.sub(lambda match: "\\" + match.group(0), text)
-
-
-def code(value: str, limit: int, *, literals: Sequence[str] = ()) -> str:
-    """`plain`, one line, as a Markdown code span: GitHub parses no HTML inside
-    one and shows every character as typed. The fence is one backtick longer
-    than any run in the value, so a backtick there cannot end the span early."""
-    text = plain(value, limit, literals=literals, one_line=True)
-    fence = "`" * (max((len(run) for run in _BACKTICKS.findall(text)), default=0) + 1)
-    pad = "" if fence == "`" else " "  # GitHub strips one space each side of a longer fence
-    return f"{fence}{pad}{text}{pad}{fence}"
+# `plain`, `prose` and `code` live in `issuecomments` now: every writer that
+# posts to GitHub writes plain text, as this one did first (BGD, 2026-10-26,
+# part of #2391).
 
 
 def render_issue(review: Mapping[str, Any], cause: Cause, component: str, *, held: bool,
