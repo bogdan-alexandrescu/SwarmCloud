@@ -709,7 +709,7 @@ const SCH={
     next:['12:00Z · in 2 h 40 m','skipped while the 00:00Z run is live'],last:['06:00Z · skipped','the 00:00Z run is still live'],
     spend:['$38.12 today','tripwire $200 a run · $1,000 a day'],wait:'merge of PR #2392 waits for the owner · 2 d 17 h left',acts:B('Open approval','p s')+B('Open','s')},
   vq:{name:'Visual QA, console',type:'visual-qa',k:'fail',repo:'example-org/example-web',scope:'QA target Console staging',when:'daily at 04:00 UTC',
-    next:['27 Oct 04:00Z · in 18 h 40 m',''],last:['04:00Z · failed','the QA sign-in was refused · 2 in a row, pauses after 3'],
+    next:['27 Oct 04:00Z · in 18&nbsp;h&nbsp;40&nbsp;m',''],last:['04:00Z · failed','the QA sign-in was refused · 2 in a row, pauses after 3'],
     spend:['$31.60 today','tripwire $40 a run · $160 a day'],acts:B('Open','s')+B('Run now','s','play')},
   swa:{name:'Issue sweep, example-api',type:'issue-sweep',k:'active',repo:'example-org/example-api',scope:'1 repository',when:'weekdays at 09:00 UTC',
     next:['Tue 27 Oct 09:00Z · tomorrow',''],last:['09:00Z · succeeded','2 issue runs started'],
@@ -724,7 +724,7 @@ const SCH={
     next:['— paused, so no next firing',''],last:['Fri 23 Oct 18:30Z · succeeded','3 labelled, 1 branch updated'],
     spend:['$0.00 today','tripwire $5 a run · $30 a day'],pause:'paused by Operator 07:15Z: “release freeze until Thursday”',acts:B('Resume','s')},
   dd:{name:'Docs drift',type:'docs-drift',k:'never',repo:'example-org/docs-site',scope:'1 repository',when:'daily at 06:00 UTC',
-    next:['27 Oct 06:00Z · in 20 h 40 m',''],last:['— never fired','created today 08:55Z by Operator'],
+    next:['27 Oct 06:00Z · in 20&nbsp;h&nbsp;40&nbsp;m',''],last:['— never fired','created today 08:55Z by Operator'],
     spend:['$0.00 today','tripwire $5 a run · $20 a day'],acts:B('Run now','s','play')+B('Dry run','s')}
 };
 function schCard(s){
@@ -743,7 +743,7 @@ function schedulesSection(ph){
     grp('failure-review','1 · root-cause and fix failures',[SCH.fr],1)+
     grp('visual-qa','1 · run a QA target, file its findings',[SCH.vq],1)+
     grp('issue-plan-only','1 · plan ready issues, then wait',[SCH.plan],1)+
-    grp('pr-shepherd','1 · label, update and unstick pull requests',[SCH.prs],1)+
+    grp('pr-shepherd','1 · label and unstick pull requests',[SCH.prs],1)+
     grp('docs-drift','1 · check docs against the code',[SCH.dd],1)+
     `<div class="tgp s2"><div class="gh"><b>more types</b><span>10 more this workspace may use</span></div><section class="cd dash" style="flex:1"><p><b style="color:var(--text)">Start from a type.</b> repo-index-refresh, observer, epic-triage, ci-flake-hunter, dependency-cve-refresh, cost-report, custom-prompt, image-tool-rescan and the two model-price types. release-health is not available here.</p><div class="acts">${B('Show all 17 types','s')}</div></section></div>`+
     `</div>`;
@@ -841,10 +841,10 @@ function wizard(){
       F('An approval waits','72 hours, then expires','v')+`<span class="hint">1 to 336 hours. Holds still stop a merge whatever is set here.</span>`+
       F('Pause after','3 failed firings in a row','v'),B('Back','q')+B('Next','p'));
   const s5=sheet(5,'What may it spend?',`<p class="hint" style="margin:0">Per run is a tripwire, not a ceiling: a run that costs more ends its firing failed and pauses the schedule. Per day is a gate: a firing that would pass it is skipped.</p>`+
-      `<div class="g2">${F('Per-run tripwire, USD','60.00','er')}${F('Per day, USD','160.00','v')}</div>`+
+      `<div class="g2">${F('Per-run tripwire, USD','60.00','er')}${F('Per day, USD','120.00','v')}</div>`+
       `<span class="ex">${I('x')}<span>Over this type’s cap: visual-qa allows at most $40.00 a run.</span></span>`+F('Live runs at most','2','v'),B('Back','q')+B('Next','p',null,true));
   const s6=sheet(6,'Check what changes',`<div class="bn bd">${I('warn')}<span><b>Someone changed this schedule since you opened it</b><span class="dim">Lee saved revision 7 at 09:14Z. Reload their change, then make yours again.</span></span></div>`+
-      T(['What','Was','Becomes'],[['When','daily at 04:00 UTC','daily at 02:00 UTC'],['Environments','staging','production, staging'],['Per day','$120.00','$160.00']])+
+      T(['What','Was','Becomes'],[['When','daily at 04:00 UTC','daily at 02:00 UTC'],['Environments','staging','production, staging'],['Per day','$160.00','$120.00']])+
       `<div class="fld"><span>Start</span>${SG(['Enabled','Dry run first','Paused'],0)}</div>`,B('Back','q')+B('Reload their change','s')+B('Save','p',null,true),true);
   return [s1,s2,s3,s3x,s4,s5,s6];
 }
@@ -924,7 +924,7 @@ function failedLanding(){
   return needsYou(false,true)+SEC('Schedules','7 schedules of 6 types · showing 3','',`<div class="grp3">${[fr,s,SCH.vq].map(schCard).join('')}</div><a class="sm12">Show all 7 ›</a>`);
 }
 function calmLanding(){
-  const four=[SCH.swa,Object.assign({},SCH.dd,{k:'active',last:['06:00Z · succeeded','no drift found'],next:['27 Oct 06:00Z · in 20 h 40 m',''],spend:['$1.10 today','tripwire $5 a run · $20 a day'],acts:B('Run now','s','play')+B('Pause','s')}),Object.assign({},SCH.plan,{k:'active',wait:'',last:['08:00Z · skipped','nothing was ready to plan'],spend:['$0.00 today','tripwire $3 a run · $30 a day'],acts:B('Run now','s','play')+B('Pause','s')}),Object.assign({},SCH.vq,{k:'active',last:['04:00Z · succeeded','2 findings filed'],acts:B('Run now','s','play')+B('Pause','s')})];
+  const four=[SCH.swa,Object.assign({},SCH.dd,{k:'active',last:['06:00Z · succeeded','no drift found'],next:['27 Oct 06:00Z · in 20&nbsp;h&nbsp;40&nbsp;m',''],spend:['$1.10 today','tripwire $5 a run · $20 a day'],acts:B('Run now','s','play')+B('Pause','s')}),Object.assign({},SCH.plan,{k:'active',wait:'',last:['08:00Z · skipped','nothing was ready to plan'],spend:['$0.00 today','tripwire $3 a run · $30 a day'],acts:B('Run now','s','play')+B('Pause','s')}),Object.assign({},SCH.vq,{k:'active',last:['04:00Z · succeeded','2 findings filed'],acts:B('Run now','s','play')+B('Pause','s')})];
   return SEC('Needs you','nothing waiting','',`<section class="cd dash"><p><b style="color:var(--text)">Nothing waits on you, and no schedule is stuck.</b> The last decision: merge PR #2355, approved by Operator on 25 Oct 15:02Z.</p><a class="sm12">All approvals ›</a></section>`)+
     SEC('Schedules','4 schedules of 4 types','',`<div class="grp3" style="grid-template-columns:repeat(4,minmax(0,1fr))">${grp('issue-sweep','1 schedule',[four[0]],1)+grp('docs-drift','1 schedule',[four[1]],1)+grp('issue-plan-only','1 schedule',[four[2]],1)+grp('visual-qa','1 schedule',[four[3]],1)}</div>`);
 }
