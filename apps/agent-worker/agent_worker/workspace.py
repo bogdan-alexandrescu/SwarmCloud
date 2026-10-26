@@ -61,7 +61,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-from .cachedirs import CACHE_DIR_NAME, CACHE_SUBDIRS, cache_env
+from .cachedirs import BROWSERS_PATH_ENV, CACHE_DIR_NAME, CACHE_SUBDIRS, cache_env
 from .errors import WorkspaceError
 
 def walk_tree(root: Path) -> Iterator[tuple[Path, list[str], list[str]]]:
@@ -302,8 +302,13 @@ class Workspace:
         )
         # THE AGENT'S CACHES AND TMPDIR, OFF THE WORKSPACE VOLUME (CACHE-SCRATCH):
         # set here, by the worker, before any runner starts. See `cachedirs`.
+        # The browser image's PLAYWRIGHT_BROWSERS_PATH (lifecycle carries it in
+        # `base`) is kept: only an image with none gets the cache's (#2436).
         if self.cache is not None:
-            env.update(cache_env(self.cache, self.tmp, own_volume=self.cache_on_own_volume()))
+            env.update(cache_env(
+                self.cache, self.tmp, own_volume=self.cache_on_own_volume(),
+                browsers_path_set=bool(
+                    env.get(BROWSERS_PATH_ENV) or os.environ.get(BROWSERS_PATH_ENV))))
         # NEVER A DISPLAY (docs/design/live-browser.md §3.2). The live browser
         # is the gate's, on a display in the sidecar the agent cannot open; a
         # headed Chromium the agent launched itself would draw where nobody

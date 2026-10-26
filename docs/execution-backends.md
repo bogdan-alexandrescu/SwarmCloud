@@ -258,7 +258,16 @@ Every pod carries:
   were 8 + 2 + 4 = 14 GiB under an 8 GiB limit, so the pod could be evicted
   before any one volume was full. The per-class layout is `GkeDisk`
   in `scheduler/dispatch.py`, and a unit test holds every class to
-  sum(sizeLimits) <= ephemeral-storage <= 10 GiB;
+  sum(sizeLimits) <= ephemeral-storage <= 10 GiB.
+  A step evicted for a full volume now has that volume's largest paths in
+  its reason (`evicted: EmptyDir volume "tmp" exceeds 3Gi; largest at
+  10:41:12Z: /tmp/pgdata 2.1 GiB, ...`), and so in the agent's last_error and
+  the attempt's error. They come from the worker's last scratch reading
+  (`reconciler/scratchreport.py`, issue #2436), which is at most one
+  heartbeat old, because kubelet evicts with no grace period and the worker
+  cannot report at the moment of eviction. Big scratch data -- databases,
+  test logs, unpacked browsers, downloads -- belongs under `$TMPDIR`, on the
+  cache volume below, and not under literal `/tmp` or the workspace;
 * a `cache` volume of its own, mounted at `/cache` and named to the worker
   as `SWARM_CACHE_ROOT`, for the agent's tool caches and TMPDIR: since
   CACHE-PVC a 20 GiB pd-balanced network disk (a generic ephemeral volume,

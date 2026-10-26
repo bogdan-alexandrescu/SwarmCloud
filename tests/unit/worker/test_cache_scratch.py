@@ -37,7 +37,14 @@ from typing import Any
 import pytest
 
 from agent_worker import workspace as workspace_mod
-from agent_worker.cachedirs import AGENT_CACHE_ENV, CACHE_ROOT_ENV
+from agent_worker.cachedirs import (
+    AGENT_CACHE_ENV,
+    BROWSERS_DIR_NAME,
+    BROWSERS_PATH_ENV,
+    CACHE_ROOT_ENV,
+    cache_env,
+    image_browsers_path,
+)
 from agent_worker.checkpoint import CheckpointManager
 from agent_worker.config import WorkerConfig
 from agent_worker.errors import ExitCode
@@ -104,6 +111,55 @@ def test_the_worker_reads_the_cache_root_from_its_environment(monkeypatch):
     assert WorkerConfig.from_env().cache_root is None
     monkeypatch.setenv(CACHE_ROOT_ENV, "/cache")
     assert WorkerConfig.from_env().cache_root == Path("/cache")
+
+
+def test_playwright_browsers_path_is_under_the_cache_when_the_image_sets_none(
+    tmp_path, monkeypatch
+):
+    """Issue #2436: task_73850f24085447368991 was evicted twice with
+    `EmptyDir volume "tmp" exceeds 3Gi`, Chromium's files among what filled
+    /tmp. An image that installs no browser leaves Playwright's install to
+    the agent: it goes to the cache volume, by name."""
+    monkeypatch.delenv(BROWSERS_PATH_ENV, raising=False)
+    cache_root = tmp_path / "cache-volume"
+    cache_root.mkdir()
+    ws = workspace_mod.create(tmp_path / "workspace", "att_1", cache_root=cache_root)
+
+    env = ws.child_env()
+
+    # MUTATION: drop PLAYWRIGHT_BROWSERS_PATH from `cache_env` -> this fails.
+    assert env[BROWSERS_PATH_ENV] == str(ws.cache / BROWSERS_DIR_NAME)
+    assert _inside(env[BROWSERS_PATH_ENV], cache_root)
+    assert cache_env(ws.cache, ws.tmp, own_volume=True)[BROWSERS_PATH_ENV] == env[BROWSERS_PATH_ENV]
+    # The runner reads it as the cache's, not as an image's browser.
+    assert image_browsers_path(env) == ""
+
+
+def test_the_browser_images_playwright_path_is_kept(tmp_path, monkeypatch):
+    """agent-runtime-browser's /opt/playwright (lifecycle's passthrough puts
+    it in `base`) is the browser the runner hands on; the cache's default
+    must never replace it."""
+    monkeypatch.setenv(BROWSERS_PATH_ENV, "/opt/playwright")
+    ws = workspace_mod.create(tmp_path / "workspace", "att_1", cache_root=tmp_path / "c")
+
+    env = ws.child_env({BROWSERS_PATH_ENV: "/opt/playwright"})
+
+    # MUTATION: ignore `browsers_path_set` in `cache_env`, or stop
+    # `child_env` filling it -> this fails.
+    assert env[BROWSERS_PATH_ENV] == "/opt/playwright"
+    assert BROWSERS_PATH_ENV not in cache_env(
+        ws.cache, ws.tmp, own_volume=True, browsers_path_set=True)
+    assert image_browsers_path(env) == "/opt/playwright"
+
+
+def test_the_live_browser_stub_is_not_overwritten_by_the_cli_runners_passthrough():
+    """cliagent copies `_PLAIN_PASSTHROUGH` from the runner's environment
+    AFTER the runner's own `extra_env`, so a PLAYWRIGHT_BROWSERS_PATH there
+    would replace claude-code's live-browser stub (`AGENT_BROWSERS_PATH`)
+    with the image's real Chromium. The claude-code runner hands the cache's
+    path on itself instead (test_scratch_note.py)."""
+    assert BROWSERS_PATH_ENV not in AGENT_CACHE_ENV
+    assert BROWSERS_PATH_ENV not in cliagent._PLAIN_PASSTHROUGH
 
 
 # ---------------------------------------------------------------------------

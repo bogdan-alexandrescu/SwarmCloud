@@ -46,7 +46,7 @@ from typing import Any
 import pytest
 
 from agent_worker.expected_outputs import skipped_names
-from agent_worker import gitops
+from agent_worker import cachedirs, gitops
 from agent_worker import workspace as workspace_mod
 from agent_worker.checkpoint import CheckpointManager
 from agent_worker.errors import ExitCode
@@ -945,9 +945,15 @@ def test_a_repository_task_is_unchanged(db, tmp_path, monkeypatch, worker_factor
     # github.com, so the stager stages nothing and says so in one line. It
     # names no destination for a deliverable; it is set aside here, and the
     # "write" check below still reads it.
-    context = [line for line in lines if line.startswith(CONTEXT_LINE_START)]
-    assert len(context) <= 1 and (not context or lines[0] == context[0]), lines
-    rest = lines[len(context):]
+    # The claude-code runner's scratch note (issue #2436,
+    # `cachedirs.scratch_note`) comes first: where big scratch data goes --
+    # $TMPDIR, not /tmp -- never where a deliverable goes. Set aside the same
+    # way; the "write" check below still reads it.
+    notes = (cachedirs.scratch_note(own_volume=True), cachedirs.scratch_note(own_volume=False))
+    assert sum(line in notes for line in lines) == 1 and lines[0] in notes, lines
+    context = [line for line in lines[1:] if line.startswith(CONTEXT_LINE_START)]
+    assert len(context) <= 1 and (not context or lines[1] == context[0]), lines
+    rest = lines[1 + len(context):]
     # The line, then the questions sentence (2026-10-05), which is about a
     # decision for the owner, not about where the deliverable goes; then the
     # publish paragraph (Proposal A, 2026-10-08), which says the worker
