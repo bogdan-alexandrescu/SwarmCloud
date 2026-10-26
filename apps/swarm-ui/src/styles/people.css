@@ -40,11 +40,14 @@
 .pp-gh.is-expired { color: var(--warn-ink); }
 .pp-claude { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s1) var(--ctl-s2); }
 /* SEVERAL LOANS ARE ONE LINE AND A DISCLOSURE (S5c, visual QA VQ-052): the
-   count and the lenders on the summary line, which does not wrap; the
-   accounts, one per line, only when it is opened. */
-.pp-loans > .pp-loan-sum { cursor: pointer; white-space: nowrap; }
+   count and the lenders on the summary line; the accounts, one per line, only
+   when it is opened. In the wide table neither wraps. A phone record is 390px
+   wide, so there the line may wrap between the count and a lender, and an
+   account between its id and its name -- never inside either (`.pp-nobr`). */
+.pp-loans > .pp-loan-sum { cursor: pointer; }
 .pp-loan-list { list-style: none; margin: var(--ctl-s1) 0 0; padding: 0; display: grid; gap: 2px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
-.pp-loan-list > li { white-space: nowrap; }
+.is-scroll > .pp-table .pp-loan-sum,
+.is-scroll > .pp-table .pp-loan-list > li { white-space: nowrap; }
 .pp-manage-cell { text-align: right; }
 /* AN ID IS ONE TOKEN: no break opportunity, at its hyphen or anywhere. The
    ids the shared workspace bodies print (a request id) are held to the same

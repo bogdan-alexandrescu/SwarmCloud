@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { Fragment, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import {
   approveWorkspace,
@@ -1385,7 +1385,13 @@ function ClaudeSummary({ c }: { c: PersonClaudeAccount }) {
   return (
     <details className="pp-loans">
       <summary className="pp-loan-sum">
-        {accounts.length} accounts · lent by <span className="pp-nobr">{lenders.join(', ')}</span>
+        <span className="pp-nobr">{accounts.length} accounts ·</span> lent by{' '}
+        {lenders.map((l, i) => (
+          <Fragment key={l}>
+            {i > 0 ? ', ' : ''}
+            <span className="pp-nobr">{l}</span>
+          </Fragment>
+        ))}
       </summary>
       <ul className="pp-loan-list">
         {accounts.map((a) => (
