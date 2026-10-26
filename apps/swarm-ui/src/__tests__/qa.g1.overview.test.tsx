@@ -107,8 +107,9 @@ describe('G1-02: Finished today says when it is only the page it read', () => {
   it('keeps the foot naming the page at 390', () => {
     const { container } = render(<LifecycleBand stats={ok(STATS)} tasks={taskPage(FINISHED, true)} />)
     const foot = container.querySelectorAll('#ov-band .ov-lc')[2]!.querySelector('.ov-lc-foot')!
-    // AND HOW FAR BACK IT REACHES (live QA OV-6, 2026-10-11).
-    expect(text(foot)).toMatch(/^of the 3 newest read · created since \d\d:\d\d UTC$/)
+    // AND HOW FAR BACK IT REACHES (live QA OV-6, 2026-10-11), in the words
+    // every partial figure on the page uses (VQ-005, 2026-10-26).
+    expect(text(foot)).toMatch(/^of the 3 newest read · partial: agents created since \d\d:\d\d UTC read$/)
     expect(painted(foot, 'display', PHONE)).not.toBe('none')
     expect(painted(foot, 'display', WIDE)).not.toBe('none')
   })
@@ -153,9 +154,9 @@ describe('G1-07: on a phone, Recent failures comes before Headroom and the pools
     const host = document.createElement('div')
     host.innerHTML =
       '<div class="ov-page"><div class="ov-g21 ov-cols">' +
-      '<div class="ov-col"><section class="ctl-card ov-card ov-running"></section><section class="ctl-card ov-card ov-waiting"></section><section class="ctl-card ov-card ov-failures"></section></div>' +
+      '<div class="ov-col"><section class="ctl-card ov-card ov-running"></section><section class="ctl-card ov-card ov-waiting"></section></div>' +
       '<div class="ov-col"><section class="ctl-card ov-card ov-spend"></section><section class="ctl-card ov-card ov-headroom"></section></div>' +
-      '<section class="ctl-card ov-card ov-pools"></section></div></div>'
+      '<section class="ctl-card ov-card ov-failures"></section><section class="ctl-card ov-card ov-pools"></section></div></div>'
     document.body.appendChild(host)
     return host
   }
@@ -182,9 +183,15 @@ describe('G1-07: on a phone, Recent failures comes before Headroom and the pools
     host.remove()
   })
 
-  it('keeps the tablet order as it was', () => {
+  // RECENT FAILURES BEFORE THE POOLS AT A TABLET'S WIDTH TOO (visual QA
+  // VQ-006, 2026-10-26): it is a full-width row ahead of the pools on a
+  // desktop now, so the one column under 1100px keeps that order. It still
+  // follows Headroom there, as O1 draws it.
+  // MUTATION: leave `.ov-failures` at order 6 and the pools at 5 under 1100px.
+  it('puts failures after Headroom and before the pools at a tablet’s width', () => {
     const host = frame()
-    expect(order(host, '.ov-failures', TABLET)).toBeGreaterThan(order(host, '.ov-pools', TABLET))
+    expect(order(host, '.ov-failures', TABLET)).toBeLessThan(order(host, '.ov-pools', TABLET))
+    expect(order(host, '.ov-failures', TABLET)).toBeGreaterThan(order(host, '.ov-headroom', TABLET))
     host.remove()
   })
 })

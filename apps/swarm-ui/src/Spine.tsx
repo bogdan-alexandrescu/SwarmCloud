@@ -338,9 +338,10 @@ export const OVERVIEW_JUMPS: readonly { id: string; label: string }[] = [
   { id: 'ov-band', label: 'Waiting, working, done' },
   { id: 'ov-running', label: 'Running now' },
   { id: 'ov-waiting', label: 'Waiting, and why' },
-  { id: 'ov-failures', label: 'Recent failures' },
   { id: 'ov-spend', label: 'Recent token cost' },
   { id: 'ov-headroom', label: 'Headroom' },
+  // A full-width row under the two columns since visual QA VQ-006 (2026-10-26).
+  { id: 'ov-failures', label: 'Recent failures' },
   { id: 'ov-pools', label: 'Pools' },
 ]
 

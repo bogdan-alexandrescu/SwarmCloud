@@ -204,11 +204,12 @@ describe('the landing screen is a lead, a band and five panels', () => {
       return (clone.textContent ?? '').trim()
     })
     // IN DOCUMENT ORDER, BY COLUMN (U12 N17/D19, owner QA 2026-10-04): the
-    // left column stacks Running now, Waiting and Recent failures, the right
-    // Cost so far and Headroom, so no column is blank beside a taller card;
-    // the pools are the full-width row under both. On a phone the sheet draws
-    // them in O1's order (qa.u12.overview.test.tsx).
-    expect(titles).toEqual(['Running now', 'Waiting, and why', 'Recent failures', 'Recent token cost', 'Headroom', 'Pools'])
+    // left column stacks Running now and Waiting, the right Cost so far and
+    // Headroom, so no column is blank beside a taller card; Recent failures
+    // (visual QA VQ-006, 2026-10-26) and the pools are full-width rows under
+    // both. On a phone the sheet draws them in O1's order
+    // (qa.u12.overview.test.tsx).
+    expect(titles).toEqual(['Running now', 'Waiting, and why', 'Recent token cost', 'Headroom', 'Recent failures', 'Pools'])
     expect(el.querySelectorAll('.ov-headroom .ov-group').length).toBe(0)
   })
 })
@@ -680,8 +681,8 @@ describe('OV-9: while the checks read, the lead says so and draws no figure', ()
 
   /**
    * A HEALTHY READ IS A REAL ALL-CLEAR, and an open check is a card: the
-   * count names the checks that found something, not the ones that ran,
-   * and the problems they found -- one per card (visual QA QA-013).
+   * count is the problems found -- one per card (visual QA QA-013) -- not
+   * the checks that ran, which follow it as a share of all of them (VQ-004).
    *
    * MUTATION: count the checks that ran as open.
    */
@@ -692,7 +693,7 @@ describe('OV-9: while the checks read, the lead says so and draws no figure', ()
       loadAccountPool: ok(accountsPage([reading('fine', 0.1)])),
     })
     const lead = el.querySelector('#ov-needs')!
-    expect(text(lead.querySelector('.ov-cnt'))).toMatch(/^checks (\d+)\/\1 · 1 found 1 problem$/)
+    expect(text(lead.querySelector('.ov-cnt'))).toMatch(/^1 problem · (\d+) of \1 checks ran$/)
     expect(lead.querySelectorAll('.ov-att:not(.is-skel)').length).toBeGreaterThan(0)
     expect(lead.querySelector('.ctl-mark.is-partial')).toBeNull()
   })
