@@ -4920,14 +4920,28 @@ titled "the theater", or one that says `'styles/'`, is not selected for
 sheets changed, and every file is read once per run. This is a related-test
 rule, not a guard: `changed-guards.sh` does not run these files.
 
-**It never prints an unfiltered command.** Every line names files. A selection
+**A UI change also runs the node runners** (#2455). Any change under
+`apps/swarm-ui/` adds one more run, after the vitest runs:
+`(cd apps/swarm-ui && npm run test:node)`, once however many files changed, as
+long as the package's `package.json` declares `test:node`. That script runs
+`tests/run.mjs` and `test/*.test.mjs` under `node --test`, not vitest, and they
+read the tree from disk -- `no-company-name.test.mjs` scans every source file
+for the company's name -- so no import reaches them and the import graph never
+selected them. CI's ui-build runs them. Four lanes (PRs #2429, #2430, #2433,
+#2437) published UI code naming the company after passing this script, and went
+red in ui-build. The node run names no files because the runner picks its own;
+it is a whole package script by design, and a cheap one.
+
+**It never prints an unfiltered vitest or pytest command.** Every pytest and
+vitest line names files (the node run above is a package script). A selection
 too big for one run comes back as a few runs: pytest cut by
 `unit_test_durations.json` weight into parts of at most ~540 CI-seconds
 (changed-guards.sh's `SHARD_HINT_WEIGHT`), vitest in runs of at most 50 files
 (~2.5 min at the whole suite's ~2.9 s a file). `--run` runs them in turn, each
 under 540 s, and stops at the first red; a run that times out is not re-run
 as-is. `tests/unit/scripts/test_related_tests.py` holds the selection for a
-UI-only, a Python-only and a mixed change, and that no command is unfiltered.
+UI-only, a Python-only and a mixed change, that no file run is unfiltered, and
+that a UI change prints and runs `npm run test:node` once, last.
 
 ## Where the suites are documented
 

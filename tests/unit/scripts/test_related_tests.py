@@ -30,6 +30,7 @@ UI = "apps/swarm-ui"
 
 PYTEST_CMD = "uv run pytest "
 VITEST_CMD = f"(cd {UI} && npx vitest run "
+NODE_CMD = f"(cd {UI} && npm run test:node)"
 
 
 def _first_effective_line(text: str) -> str:
@@ -78,7 +79,7 @@ def _select(root: Path, *changed: str) -> dict[str, list[str]]:
         capture_output=True, text=True, timeout=120,
     )
     assert result.returncode == 0, result.stderr
-    out: dict[str, list[str]] = {"pytest": [], "vitest": [], "note": []}
+    out: dict[str, list[str]] = {"pytest": [], "vitest": [], "node": [], "note": []}
     for line in result.stdout.splitlines():
         kind, _, rest = line.partition("\t")
         out[kind].append(rest)
@@ -290,14 +291,20 @@ def test_an_unresolvable_base_is_a_usage_error_not_an_empty_diff():
     assert "does not resolve" in result.stderr
 
 
+def _fake_tools(bin_dir: Path, log: Path) -> None:
+    """uv, npx and npm that only log the directory they ran in and their
+    arguments: --run is held without running a real test runner."""
+    for tool in ("uv", "npx", "npm"):
+        fake = bin_dir / tool
+        fake.write_text(f'#!/usr/bin/env bash\nprintf "%s|%s\\n" "${{PWD##*/}}" "{tool} $*" >>"{log}"\n')
+        fake.chmod(0o755)
+
+
 def test_run_executes_each_named_run_in_turn_in_the_foreground(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "calls.log"
-    for tool in ("uv", "npx"):
-        fake = bin_dir / tool
-        fake.write_text(f'#!/usr/bin/env bash\nprintf "%s|%s\\n" "${{PWD##*/}}" "{tool} $*" >>"{log}"\n')
-        fake.chmod(0o755)
+    _fake_tools(bin_dir, log)
     diff = tmp_path / "diff.txt"
     diff.write_text(f"{UI}/src/vitestWorkers.ts\nscripts/related-tests.sh\n")
     result = _run("--run", "--files", str(diff),
@@ -309,7 +316,9 @@ def test_run_executes_each_named_run_in_turn_in_the_foreground(tmp_path):
     assert any(c.startswith("swarm-ui|npx vitest run ") and "src/__tests__/vitestWorkers.test.ts" in c
                for c in calls), calls
     assert any(c.startswith("uv run pytest ") or "|uv run pytest " in c for c in calls), calls
-    assert len(calls) == len(_commands(result.stdout))
+    # The UI change also runs the node runners (one more call than the
+    # file runs; see the node-runner tests below).
+    assert len(calls) == len(_commands(result.stdout)) + result.stdout.splitlines().count(NODE_CMD)
 
 
 # --- the stylesheet guards (RELATED-CSS-GUARDS, part of #1914) ---------------
@@ -541,3 +550,91 @@ def test_the_script_selects_the_seven_named_sheet_readers_once(tmp_path):
         # MUTATION: list the readers but leave them out of the runs -> red.
         assert sum(c.count(f" {reader}") for c in commands) == 1, (reader, commands)
     _assert_every_command_names_files(commands)
+
+
+# --- the node:test runners (#2455) -------------------------------------------
+#
+# apps/swarm-ui/test/*.test.mjs (no-company-name.test.mjs among them) and
+# tests/run.mjs run under node, not vitest, through `npm run test:node`, which
+# CI's ui-build runs. No import from a vitest file reaches them, so the
+# selector named none of them and four lanes (PRs #2429, #2430, #2433, #2437)
+# published UI code naming the company and went red in ui-build.
+
+NODE_SCRIPT = "node tests/run.mjs && node --test test/*.test.mjs"
+
+
+def _with_package(root: Path, scripts: dict[str, str]) -> None:
+    _write(root, f"{UI}/package.json", json.dumps({"name": "swarm-ui", "scripts": scripts}))
+
+
+def test_a_ui_change_names_the_node_test_runners(tmp_path):
+    _tree(tmp_path)
+    _with_package(tmp_path, {"test:node": NODE_SCRIPT, "test:components": "vitest run"})
+    _write(tmp_path, f"{UI}/src/Foo.tsx", "export const Foo = () => null\n")
+    got = _select(tmp_path, f"{UI}/src/Foo.tsx")
+    # MUTATION: leave related_tests.py printing pytest and vitest runs only
+    # (the #2455 gap) -> no node run, and this is red.
+    assert got["node"] == [UI], got
+    got = _select(tmp_path, f"{UI}/src/widget.ts", "apps/foo/foo/core.py")
+    # MUTATION: print the node run once per changed UI file -> two or more.
+    assert got["node"] == [UI], got
+
+
+def test_no_node_run_without_a_ui_change_or_a_test_node_script(tmp_path):
+    _tree(tmp_path)
+    _with_package(tmp_path, {"test:node": NODE_SCRIPT})
+    # MUTATION: print the node run for every change -> a Python-only change
+    # (or a path that only starts like apps/swarm-ui) gets one.
+    assert _select(tmp_path, "apps/foo/foo/core.py")["node"] == []
+    assert _select(tmp_path, "apps/swarm-ui-old/src/x.ts")["node"] == []
+    # MUTATION: skip the package.json check -> a package with no test:node
+    # script (or no package.json at all) is told to run one.
+    _with_package(tmp_path, {"test:components": "vitest run"})
+    assert _select(tmp_path, f"{UI}/src/widget.ts")["node"] == []
+    (tmp_path / UI / "package.json").unlink()
+    assert _select(tmp_path, f"{UI}/src/widget.ts")["node"] == []
+
+
+def test_the_node_run_is_rendered_and_run_in_the_ui_package(tmp_path):
+    # This checkout's apps/swarm-ui/package.json declares test:node.
+    assert "test:node" in json.loads((REPO / UI / "package.json").read_text())["scripts"]
+    diff = tmp_path / "diff.txt"
+    diff.write_text(f"{UI}/src/vitestWorkers.ts\n")
+    result = _run("--files", str(diff))
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    # MUTATION: leave related-tests.sh rendering pytest and vitest only (or
+    # drop the node line) -> the command is never printed.
+    assert lines.count(NODE_CMD) == 1, lines
+    last_vitest = max(i for i, line in enumerate(lines) if line.startswith(VITEST_CMD))
+    assert lines.index(NODE_CMD) > last_vitest, lines
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "calls.log"
+    _fake_tools(bin_dir, log)
+    result = _run("--run", "--files", str(diff),
+                  env_extra={"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"})
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text().splitlines()
+    # MUTATION: print the node run without running it, run it from the
+    # repository root, or before the vitest runs -> red.
+    assert calls.count("swarm-ui|npm run test:node") == 1, calls
+    assert calls[-1] == "swarm-ui|npm run test:node", calls
+    assert any(c.startswith("swarm-ui|npx vitest run ") for c in calls), calls
+
+
+def test_a_red_node_run_stops_run_with_exit_1(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "calls.log"
+    _fake_tools(bin_dir, log)
+    (bin_dir / "npm").write_text("#!/usr/bin/env bash\nexit 3\n")
+    diff = tmp_path / "diff.txt"
+    diff.write_text(f"{UI}/src/vitestWorkers.ts\n")
+    result = _run("--run", "--files", str(diff),
+                  env_extra={"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"})
+    # MUTATION: ignore the node run's exit status -> exit 0 over a red
+    # no-company-name.test.mjs.
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "failed (exit 3)" in result.stderr
