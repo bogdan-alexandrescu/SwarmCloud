@@ -284,6 +284,27 @@ def test_each_check_fails_on_the_defect_it_exists_to_catch(tmp_path, case):
     assert verdict == "FAIL", f"{case}: {check} read {verdict}: {reason}"
 
 
+def test_a_refused_pr_checks_call_is_named_by_its_audited_code_and_answer(tmp_path):
+    """F16 (#2379): 'no pr_checks call succeeded' alone cannot tell a forge
+    refusal (the sandbox credential's scope) from no call at all."""
+    w = _world()
+    w["rebase"]["calls"][3].update(result="refused", code="forge_refused")
+    w["rebase"]["answers"][3] = _answer("pr-checks", _refused("forge_refused"))
+    verdict, reason = _verdicts(tmp_path, w)["rebase"]
+    assert verdict == "FAIL", reason
+    assert "audited: ['refused forge_refused']" in reason, reason
+    assert "the agent was answered forge_refused" in reason, reason
+
+
+def test_no_pr_checks_call_at_all_says_none_was_audited(tmp_path):
+    w = _world()
+    del w["rebase"]["calls"][3]
+    del w["rebase"]["answers"][3]
+    verdict, reason = _verdicts(tmp_path, w)["rebase"]
+    assert verdict == "FAIL", reason
+    assert "no pr_checks call succeeded (audited: none; the agent was answered nothing)" in reason
+
+
 def test_the_branch_may_move_by_its_own_lane_s_audited_push(tmp_path):
     """The reader runs beside the rebase lane, which rewrites that very branch."""
     w = _world()
