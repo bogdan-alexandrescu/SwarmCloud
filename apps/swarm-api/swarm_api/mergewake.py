@@ -168,6 +168,29 @@ A READ THAT FAILS IS NOT A READING. GitHub down, a credential without
 reported by task id and code, and the worker's fallback instant
 (`MERGE_CI_FALLBACK_SECONDS`) wakes the park anyway.
 
+AN OWNER-QUESTION HOLD WHOSE PULL REQUEST ENDED OUTSIDE THE WORKFLOW ENDS
+(MERGE-OUTSIDE-ENDS, part of #2441; BGD 2026-10-26). A merge step the review
+held on owner questions parks HUMAN_REQUIRED with `park_phase:
+"owner_questions"` in its `blocked_by` (#2070). Only an answer wakes it, and
+the scheduler's human-wait expiry spares it, so when JOIN-UI-ADMIN's PR 2387
+was merged by hand its merge step would have stayed PARKED for ever. The
+tick reads those holds too (`wake_owner_holds`): the same per-tenant
+equality query on HUMAN_REQUIRED, the same CI_READ_SECONDS bound, the same
+quota deferral and hold, the tenant's own token (invariant 9). It reads ONLY
+whether the pull request is open, closed or merged -- no checks, no round.
+The pull request is the one the merge's signed target's opener recorded
+(`result_summary.git.pull_request.number`), read under this tenant. Merged
+or closed, it writes `merge_wait.wake_requested_at` / `wake_reason`
+(`pull_request_merged`, `pull_request_closed`) and the same mark in
+`merge_wait.owner_hold`, which binds it to THIS park by its instant
+(`parked_at`, the park's `next_eligible_at`): a transaction guarded on the
+task still being this tenant's, PARKED on HUMAN_REQUIRED with the
+owner-questions hold, at that instant. The scheduler returns it to READY
+only on a mark bound to the park it reads, so a mark that outlived its park
+never wakes the next one; the worker re-reads the pull request and ends the
+step SUCCEEDED ("merged outside the workflow") or CANCELLED, or parks again
+on an open one. A forged mark costs one early wake, as above.
+
 A RELEASE WAIT RIDES THE SAME TICK (docs/design/agent-autonomy.md §3.8, lane
 AU-7). An agent that asked to see its change deploy (`await-release.json`)
 is PARKED on DEPENDENCY_INCOMPLETE with a `release_wait` record naming the
@@ -283,6 +306,20 @@ MERGE_TRAIN_WAITING = "merge_train_waiting"
 #: The wake reason of a queued pull request that left the queue unmerged.
 DEQUEUED = "dequeued"
 
+#: An owner-question hold (#2070, MERGE-OUTSIDE-ENDS): the worker's park
+#: code, its `blocked_by` phase, and the tick's record of the hold inside
+#: `merge_wait` -- `{parked_at, pull_request, checked_at}` and, once the pull
+#: request ended outside the workflow, `wake_requested_at` / `wake_reason`.
+#: `agent_worker.merge.OWNER_QUESTIONS_OPEN` / `OWNER_HOLD_KEY` /
+#: `PULL_REQUEST_MERGED` / `PULL_REQUEST_CLOSED` and
+#: `scheduler.loop.OWNER_HOLD_KEY`, held equal by
+#: tests/unit/control_plane/test_merge_outside_ends.py.
+OWNER_QUESTIONS_OPEN = "owner_questions_open"
+OWNER_QUESTIONS_PHASE = "owner_questions"
+OWNER_HOLD_KEY = "owner_hold"
+PULL_REQUEST_MERGED = "pull_request_merged"
+PULL_REQUEST_CLOSED = "pull_request_closed"
+
 #: Whether the pull request is still in its base's merge queue. GraphQL,
 #: because REST does not say: `isInMergeQueue` is the pull request's own field.
 _QUEUE_QUERY = (
@@ -358,6 +395,10 @@ class WakeReport:
     release_visited: int = 0
     release_woken: int = 0
     release_waiting: int = 0
+    #: Owner-question holds (MERGE-OUTSIDE-ENDS): read, marked, still open.
+    owner_visited: int = 0
+    owner_woken: int = 0
+    owner_waiting: int = 0
 
     def to_api(self) -> dict[str, Any]:
         return {
@@ -374,6 +415,8 @@ class WakeReport:
             # answers exactly as before.
             **({"releases": {"visited": self.release_visited, "woken": self.release_woken,
                              "waiting": self.release_waiting}} if self.release_visited else {}),
+            **({"owner_holds": {"visited": self.owner_visited, "woken": self.owner_woken,
+                                "waiting": self.owner_waiting}} if self.owner_visited else {}),
         }
 
     def fail(self, task_id: str, code: str) -> None:
@@ -1419,6 +1462,175 @@ def wake_release_waits(ctx: Any, tenant: Any, tenant_id: str, *, limit: int,
     return halted
 
 
+def owner_hold_of(doc: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The owner-questions hold this merge step is PARKED on (#2070), else None."""
+    if (doc.get("state") != TaskState.PARKED.value
+            or doc.get("park_reason") != ParkReason.HUMAN_REQUIRED.value):
+        return None
+    for entry in doc.get("blocked_by") or ():
+        if (isinstance(entry, Mapping) and entry.get("park_phase") == OWNER_QUESTIONS_PHASE
+                and isinstance(entry.get(OWNER_QUESTIONS_PHASE), Mapping)):
+            return entry[OWNER_QUESTIONS_PHASE]
+    return None
+
+
+def _held_pull_request(ctx: Any, tenant_id: str, doc: Mapping[str, Any]) -> IssueRef | None:
+    """The pull request a held merge would merge, read under `tenant_id`; None when unknown.
+
+    The repository is the task's own; the number is the one the opener named
+    by the merge's dispatch block recorded (`result_summary.git.pull_request`),
+    the worker's own source (`post_verdict.pull_request_number`). Both are
+    tenant-written claims: a wrong one costs one early wake, whose worker
+    checks the pull request is its workflow's branch before it ends anything.
+    """
+    repository = _repository(doc)
+    block = _mapping(_mapping(doc.get("metadata")).get(DISPATCH_METADATA_KEY))
+    opener = _mapping(block.get(MERGE_TARGET_FIELD)).get("pull_request")
+    if repository is None or not isinstance(opener, str) or not TASK_ID_RE.match(opener):
+        return None
+    try:
+        task = ctx.store.get_task(tenant_id, opener, submitted_by=None)
+    except NotFound:
+        return None
+    if getattr(task, "tenant_id", tenant_id) != tenant_id:
+        return None
+    git = _mapping(_mapping(getattr(task, "result_summary", None)).get("git"))
+    number = _mapping(git.get("pull_request")).get("number")
+    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+        return None
+    return IssueRef(owner=repository.owner, repo=repository.repo, number=number)
+
+
+def _record_owner_hold(db: Any, tenant_id: str, task_id: str, parked_at: datetime,
+                       record: dict[str, Any], reason: str | None, now: datetime) -> bool:
+    """Write the hold's reading, and with `reason` its wake mark; True only if written.
+
+    Guarded on what the tick read: the task is still this tenant's, PARKED on
+    HUMAN_REQUIRED with the owner-questions hold, parked at `parked_at`. An
+    answer that woke it, or a worker that parked it again, wins.
+    """
+    ref = db.collection(TASKS).document(task_id)
+
+    @firestore.transactional
+    def _apply(txn: Any) -> bool:
+        snap = _snapshot(txn.get(ref))
+        data = snap.to_dict() if snap.exists else None
+        if (data is None or data.get("tenant_id") != tenant_id or owner_hold_of(data) is None
+                or _moment(data.get("next_eligible_at")) != parked_at):
+            return False
+        metadata = dict(_mapping(data.get("metadata")))
+        wait = dict(_mapping(metadata.get(MERGE_WAIT_METADATA_KEY)))
+        hold = {**record, "parked_at": parked_at, "checked_at": now}
+        if reason is not None:
+            hold.update({WAKE_MARKER: now, "wake_reason": reason})
+            wait.update({WAKE_MARKER: now, "wake_reason": reason})
+        wait[OWNER_HOLD_KEY] = hold
+        metadata[MERGE_WAIT_METADATA_KEY] = wait
+        txn.update(ref, {"metadata": metadata})
+        return True
+
+    return bool(_apply(db.transaction()))
+
+
+def wake_owner_holds(ctx: Any, tenant: Any, tenant_id: str, *, limit: int,
+                     report: "WakeReport", halted: datetime | None) -> datetime | None:
+    """One tick over `tenant_id`'s owner-question holds (MERGE-OUTSIDE-ENDS, #2441).
+
+    Returns the tenant's hold, if one began. See the module docstring.
+    """
+    db = ctx.store.db
+    now = ctx.now()
+    writer: GitHubWriter = ctx.forge_writer
+    query = (
+        db.collection(TASKS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("state", "==", TaskState.PARKED.value))
+        .where(filter=FieldFilter("park_reason", "==", ParkReason.HUMAN_REQUIRED.value))
+        .limit(limit)
+    )
+    percent = forge_limits.defer_percent(ctx)
+    tenant_credential = forge_limits.tenant_credential(tenant_id)
+    token = ""
+    reading_token = ""
+    logged: set[str] = set()
+    try:
+        for snap in query.stream():
+            doc = snap.to_dict() or {}
+            # Asked again, so another tenant's task is never read with this
+            # tenant's token (invariant 9).
+            if doc.get("tenant_id") != tenant_id or owner_hold_of(doc) is None:
+                continue
+            task_id = str(doc.get("id") or snap.id)
+            parked_at = _moment(doc.get("next_eligible_at"))
+            if parked_at is None:
+                report.fail(task_id, "park_instant_unrecorded")
+                continue
+            wait = _mapping(_mapping(doc.get("metadata")).get(MERGE_WAIT_METADATA_KEY))
+            recorded = _mapping(wait.get(OWNER_HOLD_KEY))
+            if _moment(recorded.get("parked_at")) == parked_at:
+                if recorded.get(WAKE_MARKER):
+                    # Marked already: the scheduler wakes it.
+                    continue
+                if not _due(recorded, now):
+                    report.skipped += 1
+                    continue
+            if halted is not None:
+                report.deferred += 1
+                continue
+            ref = _held_pull_request(ctx, tenant_id, doc)
+            if ref is None:
+                report.fail(task_id, "pull_request_unknown")
+                continue
+            if not token:
+                try:
+                    token = ctx.forge_tokens.token_for(tenant)
+                except Exception as exc:
+                    code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
+                    log.warning("merge wake tenant=%s: no forge token (%s)", tenant_id, code)
+                    report.fail(task_id, code)
+                    return halted
+            reading_token, credential = read_credential(
+                getattr(ctx, "forge_installations", None), tenant_id, ref.owner, ref.repo)
+            if not reading_token:
+                reading_token, credential = token, tenant_credential
+            deferral = forge_limits.QUOTAS.defer(credential, percent, now=now)
+            if deferral is not None:
+                # Not read and not written: the hold waits as it was.
+                report.deferred += 1
+                if deferral.credential not in logged:
+                    logged.add(deferral.credential)
+                    forge_limits.log_deferred("merge wake", tenant_id, deferral)
+                continue
+            report.owner_visited += 1
+            record = {"pull_request": ref.number}
+            try:
+                with forge_limits.acting_as(credential):
+                    pull = writer.read_pull(ref, ref.number, reading_token)
+            except Exception as exc:
+                code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
+                log.warning("merge wake %s tenant=%s: held pull request not read (%s)",
+                            task_id, tenant_id, code)
+                report.fail(task_id, code)
+                _record_owner_hold(db, tenant_id, task_id, parked_at, record, None, now)
+                if isinstance(exc, ForgeRateLimited):
+                    halted = exc.reset or now + forge_limits.DEFAULT_HOLD
+                    forge_limits.QUOTAS.hold(forge_limits.sweep_key(MERGE_WAKE_SWEEP, tenant_id),
+                                             halted)
+                continue
+            reason = (PULL_REQUEST_MERGED if pull.merged
+                      else PULL_REQUEST_CLOSED if pull.state == "closed" else None)
+            written = _record_owner_hold(db, tenant_id, task_id, parked_at, record, reason, now)
+            if reason is not None and written:
+                report.owner_woken += 1
+                log.info("merge wake %s tenant=%s: owner-question hold, %s",
+                         task_id, tenant_id, reason)
+            else:
+                report.owner_waiting += 1
+    finally:
+        token = reading_token = ""
+    return halted
+
+
 def _due(wait: Mapping[str, Any], now: datetime) -> bool:
     """Not read in the last CI_READ_SECONDS. A `checked_at` in the future is
     ignored: the document is tenant-writable, and that would stop the reads."""
@@ -1575,7 +1787,10 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                        {"checked_at": now, WAKE_MARKER: now, "wake_reason": reason, **patch}):
                 report.woken += 1
                 log.info("merge wake %s tenant=%s: %s", task_id, tenant_id, reason)
-        # The release waits (§3.8, AU-7), under the same hold.
+        # The owner-question holds (MERGE-OUTSIDE-ENDS, #2441) and the
+        # release waits (§3.8, AU-7), under the same hold.
+        halted = wake_owner_holds(ctx, tenant, tenant_id, limit=limit, report=report,
+                                  halted=halted)
         wake_release_waits(ctx, tenant, tenant_id, limit=limit, report=report, halted=halted)
     finally:
         token = reading_token = ""
