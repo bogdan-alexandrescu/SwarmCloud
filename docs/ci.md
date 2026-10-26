@@ -4923,11 +4923,45 @@ rule, not a guard: `changed-guards.sh` does not run these files.
 **It never prints an unfiltered command.** Every line names files. A selection
 too big for one run comes back as a few runs: pytest cut by
 `unit_test_durations.json` weight into parts of at most ~540 CI-seconds
-(changed-guards.sh's `SHARD_HINT_WEIGHT`), vitest in runs of at most 50 files
-(~2.5 min at the whole suite's ~2.9 s a file). `--run` runs them in turn, each
-under 540 s, and stops at the first red; a run that times out is not re-run
-as-is. `tests/unit/scripts/test_related_tests.py` holds the selection for a
-UI-only, a Python-only and a mixed change, and that no command is unfiltered.
+(changed-guards.sh's `SHARD_HINT_WEIGHT`), vitest cut the same way by
+`tests/unit/scripts/ui_test_durations.json` into runs of at most ~540
+CI-seconds (`VITEST_RUN_WEIGHT`) and 50 files (`VITEST_FILES_PER_RUN`). `--run`
+runs them in turn, each under 540 s, and stops at the first red; a run that
+times out is not re-run as-is. `tests/unit/scripts/test_related_tests.py` holds
+the selection for a UI-only, a Python-only and a mixed change, and that no
+command is unfiltered.
+
+**Vitest runs are weighted by recorded duration** (WEIGHTED-VITEST, part of
+#2362). They used to be cut by count alone, 50 files a run on the assumption of
+~2.9 s a file. The nine `spacing.*.test.tsx` slices take 252-485 s each in an
+agent's container, and every one is reached by any change under `App.tsx`'s
+import graph (`spacingsweep.tsx` imports `{App, SECTIONS}` from `'../App'`), so
+they landed together in one run that could not finish inside the 540 s limit:
+31 timeouts in the first 7 hours of 2026-10-25, 40+ by the next morning, each
+followed by the step re-running them one by one until its own deadline. Now
+`related_tests.py`'s `vitest_runs()` mirrors `pytest_runs()`: heaviest file
+first onto the lightest run it fits, a new run whenever a file would take every
+run over 540 s or 50 files, and a file heavier than 540 s alone. A file
+`ui_test_durations.json` does not record weighs `VITEST_DEFAULT_SECONDS` = 2.9 s
+(the whole suite, 463 files, in ~22 min on 4 cores); only files far over that
+are recorded, so the file stays a few lines. Seeded 2026-10-26 from the agent
+logs #2362 cites: `spacing.accounts` 485 s and `spacing.capacity` 259 s were
+measured (the highest of each one's readings); the other six slices are an
+estimate of 300 s, the low end of the 300-485 s one lane measured for them, which
+also keeps any two slices over 540 s together.
+
+To refresh the weights, run `scripts/refresh-ui-weights.sh` and commit the
+diff. It finds main's newest successful `application.yml` run whose
+`swarm-ui component tests` jobs all ran, reads their logs with `gh run view
+--job <id> --log`, and has `scripts/lib/ui_weights.py` parse vitest's
+per-file lines (`✓ src/__tests__/x.test.tsx (1 test) 259018ms`). It keeps only
+files over 20 s. By default it never lowers a recorded figure, because the
+seeded figures are agent-container times, which are what the 540 s limit is
+measured against. A CI shard that ran a slice faster would otherwise put two
+slices back into one run; `--replace` writes the measured figures alone. It
+changes no workflow on purpose: a workflow file can only be pushed by swarm-api,
+and the first lane that tried this by editing `application.yml` could not
+publish.
 
 ## Where the suites are documented
 

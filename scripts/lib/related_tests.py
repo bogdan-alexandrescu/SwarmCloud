@@ -38,7 +38,8 @@ WHAT IS RELATED:
 OUTPUT, one line each, tab-separated:
 
     pytest<TAB><file> <file> ...     repo-relative, at most ~PYTEST_RUN_WEIGHT CI-seconds
-    vitest<TAB><file> <file> ...     relative to apps/swarm-ui, at most VITEST_FILES_PER_RUN
+    vitest<TAB><file> <file> ...     relative to apps/swarm-ui, at most ~VITEST_RUN_WEIGHT CI-seconds
+                                     and VITEST_FILES_PER_RUN files (a file heavier alone runs alone)
     note<TAB><text>
 
 Pure standard library, like select_unit_tests.py.
@@ -60,14 +61,27 @@ import select_unit_tests as sut  # noqa: E402
 
 UI = "apps/swarm-ui"
 DURATIONS = "tests/unit/scripts/unit_test_durations.json"
+# Per-file vitest CI-seconds, keyed relative to apps/swarm-ui. Only the files
+# far over the default are recorded; scripts/refresh-ui-weights.sh rewrites it
+# from the logs of main's latest green application.yml run.
+UI_DURATIONS = "tests/unit/scripts/ui_test_durations.json"
 
 # One pytest run's weight in CI-seconds. The same 540 as changed-guards.sh's
 # SHARD_HINT_WEIGHT: about 400 s on a 6-core container, under the 540 s a
 # command there is held to and the 10 minutes an agent's command may take.
 PYTEST_RUN_WEIGHT = 540
-# One vitest run's files. The whole UI suite (463 files) took ~22 min on 4
-# cores, ~2.9 s a file, so 50 is about 2.5 min: well under the command limit,
-# and few enough runs that a change to types.ts stays "a few".
+# One vitest run's weight in CI-seconds: the same 540 as PYTEST_RUN_WEIGHT and
+# related-tests.sh's RUN_SECONDS, the limit each run is held to with --run.
+# Cutting by file count alone put all nine spacing.*.test.tsx slices (252-485 s
+# each) in one 50-file run that could not finish inside it: 40+ agents timed
+# out re-running them in 2026-10-25/26 (#2362).
+VITEST_RUN_WEIGHT = 540
+# The weight of a file ui_test_durations.json does not record. The whole UI
+# suite (463 files) took ~22 min on 4 cores, ~2.9 s a file.
+VITEST_DEFAULT_SECONDS = 2.9
+# A cap on one vitest run's files whatever their weight, so a run of many
+# unrecorded files stays about 2.5 min (50 x 2.9 s) and a change to types.ts
+# stays "a few" runs.
 VITEST_FILES_PER_RUN = 50
 
 # swarm-ui files every component test runs under. No test imports them, so
@@ -243,12 +257,40 @@ def pytest_runs(root: Path, tests: list[str]) -> list[list[str]]:
     return [sorted(files) for _, files in runs if files]
 
 
-def vitest_runs(tests: list[str]) -> list[list[str]]:
+def vitest_weights(root: Path) -> dict[str, float]:
+    """ui_test_durations.json, or nothing when it is missing or unreadable."""
+    try:
+        weights = json.loads((root / UI_DURATIONS).read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(weights, dict):
+        return {}
+    return {k: float(v) for k, v in weights.items() if isinstance(v, (int, float))}
+
+
+def vitest_runs(root: Path, tests: list[str]) -> list[list[str]]:
+    """Heaviest file first onto the lightest run it fits, as pytest_runs cuts
+    pytest files; a run that would go over VITEST_RUN_WEIGHT CI-seconds or
+    VITEST_FILES_PER_RUN files takes no more, and a file heavier than the
+    weight alone runs alone."""
     if not tests:
         return []
-    count = math.ceil(len(tests) / VITEST_FILES_PER_RUN)
-    size = math.ceil(len(tests) / count)
-    return [tests[i:i + size] for i in range(0, len(tests), size)]
+    weights = vitest_weights(root)
+    weighted = sorted(((weights.get(t, VITEST_DEFAULT_SECONDS), t) for t in tests),
+                      key=lambda x: (-x[0], x[1]))
+    total = sum(w for w, _ in weighted)
+    count = max(1, math.ceil(total / VITEST_RUN_WEIGHT), math.ceil(len(tests) / VITEST_FILES_PER_RUN))
+    runs: list[tuple[float, list[str]]] = [(0.0, []) for _ in range(min(count, len(tests)))]
+    for weight, test in weighted:
+        fits = [j for j, (w, files) in enumerate(runs)
+                if len(files) < VITEST_FILES_PER_RUN and (not files or w + weight <= VITEST_RUN_WEIGHT)]
+        if fits:
+            i = min(fits, key=lambda j: runs[j][0])
+        else:
+            runs.append((0.0, []))
+            i = len(runs) - 1
+        runs[i] = (runs[i][0] + weight, [*runs[i][1], test])
+    return [sorted(files) for _, files in runs if files]
 
 
 def main(argv: list[str]) -> int:
@@ -274,7 +316,7 @@ def main(argv: list[str]) -> int:
     lines = []
     for run in pytest_runs(root, python_related(root, changed)):
         lines.append("pytest\t" + " ".join(run))
-    for run in vitest_runs(ui_related(root / UI, changed_ui)):
+    for run in vitest_runs(root, ui_related(root / UI, changed_ui)):
         lines.append("vitest\t" + " ".join(run))
     for line in lines:
         print(line)

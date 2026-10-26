@@ -22,8 +22,16 @@
 # they read every sheet from disk, so no import reaches them, and PR 1905's
 # lane passed this without running them (RELATED-CSS-GUARDS, part of #1914).
 # A selection too big for one run comes
-# back as a few runs of named files (at most ~540 CI-seconds of pytest, or 50
-# vitest files, each), printed to run ONE AFTER ANOTHER in the foreground.
+# back as a few runs of named files, printed to run ONE AFTER ANOTHER in the
+# foreground: at most ~540 CI-seconds of pytest (unit_test_durations.json), and
+# at most ~540 CI-seconds and 50 files of vitest, by
+# tests/unit/scripts/ui_test_durations.json; a file it does not record weighs
+# 2.9 s (the whole UI suite, 463 files in ~22 min on 4 cores), and a file
+# heavier than 540 s runs alone. WEIGHTED-VITEST (part of #2362): cut by file
+# count alone, the nine spacing.*.test.tsx slices (252-485 s each) shared one
+# 50-file run that could not finish inside RUN_SECONDS, and 40+ agents timed
+# out in 2026-10-25/26. scripts/refresh-ui-weights.sh rewrites the weights
+# from the logs of main's latest green application.yml run.
 #
 # The diff is changed-guards.sh's: `git diff --name-only <base>...HEAD` (the
 # merge base) plus uncommitted and untracked files. <base> is --base, else
