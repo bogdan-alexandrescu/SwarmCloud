@@ -22,7 +22,7 @@ its workspace is served unfiltered, at `as_set`, with `partial: true`.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
 from pydantic import Field, StringConstraints
@@ -32,6 +32,7 @@ from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..notifications import MAX_ID_CHARS, MAX_IDS, Notifications, Viewer
 from ..preferences import DEFAULT_REMINDER
 from ..schemas import StrictModel
+from .admin import secret_metadata
 
 router = APIRouter(prefix="/v1/notifications", tags=["notifications"])
 
@@ -42,8 +43,12 @@ class ReadRequest(StrictModel):
     ids: list[NotificationId] = Field(min_length=1, max_length=MAX_IDS)
 
 
-def _service(ctx: AppContext) -> Notifications:
-    return Notifications(ctx.db, ctx.store, now=ctx.now)
+def _service(ctx: AppContext, meta: Any | None = None) -> Notifications:
+    """`meta` is the app's one Secret Manager metadata reader, the one Admin ›
+    Platform secrets reads (`routes.admin.secret_metadata`), so the feed's
+    `platform_secrets_unset` and that page count through the same reader. Only
+    the feed reads it; marking read counts nothing."""
+    return Notifications(ctx.db, ctx.store, now=ctx.now, secret_metadata=meta)
 
 
 def _viewer(auth: AuthContext, tenant_id: str) -> Viewer:
@@ -63,11 +68,12 @@ def get_notifications(
     auth: AuthContext = Depends(current_auth),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
+    meta: Any = Depends(secret_metadata),
 ) -> dict:
     """Needs-you items oldest first, then at most 50 updates of the last 7
     days newest first, less the caller's muted topics (counted in `muted`);
     `partial: true` when a source or the preferences could not be read."""
-    return _service(ctx).feed(_viewer(auth, tenant_id))
+    return _service(ctx, meta).feed(_viewer(auth, tenant_id))
 
 
 @router.post("/read")

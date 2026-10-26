@@ -58,6 +58,15 @@ def _percent(name: str, default: int) -> int:
     return value
 
 
+def _positive(name: str, default: int) -> int:
+    """A limit that must admit at least one: 0 or below would refuse every
+    request it gates, which is an outage written as a setting."""
+    value = _int(name, default)
+    if value < 1:
+        raise ValueError(f"{name} must be 1 or more, got {value}")
+    return value
+
+
 def _bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name, "").strip().lower()
     if not raw:
@@ -254,6 +263,40 @@ class ApiSettings:
     #: empty and `Authenticator.may_act_in` never answers "platform_admin",
     #: which is the behaviour before roles exactly.
     platform_admin_reach: bool = False
+    #: Whether a platform-side workspace membership -- a signed
+    #: `workspace_memberships` grant an admin's approval of a join request
+    #: writes (`swarm_api.memberships`; docs/design/join-requests.md §3.4,
+    #: §4.5, owner answer Q1 (A), 2026-10-25) -- admits its person to that
+    #: group workspace beside its Google group. OFF by default
+    #: (PLATFORM_MEMBERSHIPS): it widens who may enter a tenant (invariant 9),
+    #: so it goes on in dev first, is exercised by the acceptance probe, and
+    #: only then goes on in prod, the same order as PLATFORM_ADMIN_REACH. Off,
+    #: no membership is ever read: `AuthContext.platform_memberships` is
+    #: empty, `Authenticator.is_tenant_member` asks only the group, and an
+    #: approval admits nobody (§3.4, design C's behaviour). Turning it off
+    #: again is the rollback: anyone admitted only by a membership loses the
+    #: workspace on their next request, and nothing has to be deleted.
+    platform_memberships: bool = False
+    #: The join-request rate limits (docs/design/join-requests.md §4.1), read
+    #: by `joinrequests.JoinStore`; each defaults to the constant of the same
+    #: meaning in `joinrequests.py`, which says why that value.
+    #: Open join requests per person across workspaces
+    #: (JOIN_OPEN_PER_PERSON). 3: a person joining a team needs one or two at
+    #: a time; more is someone trawling for codes that work.
+    join_open_per_person: int = 3
+    #: Join requests per person per 24 hours, withdrawn ones included
+    #: (JOIN_DAILY_PER_PERSON). 10: asking and withdrawing in a loop must not
+    #: ring an admin's bell all day.
+    join_daily_per_person: int = 10
+    #: Days after a denial before the same person may ask the same workspace
+    #: again (JOIN_DENIED_HOLD_DAYS). 7: a denial is not answered by asking
+    #: again a minute later, and a week is long enough for the admin's reason
+    #: to be acted on.
+    join_denied_hold_days: int = 7
+    #: Open join requests per workspace (JOIN_OPEN_PER_WORKSPACE). 50: more
+    #: than an admin will read; the refusal is shown only to someone holding
+    #: a working code, so it reveals nothing to anyone else.
+    join_open_per_workspace: int = 50
     #: How long one instance trusts a workspace role it read
     #: (ROLE_CACHE_SECONDS; `swarm_api.roles`, docs/design/workspace-roles.md
     #: §4.12). 15: the same bound `admins.ROLE_CACHE_SECONDS` puts on a
@@ -927,6 +970,11 @@ class ApiSettings:
             admin_users=admin_users,
             platform_owner=platform_owner,
             platform_admin_reach=_bool("PLATFORM_ADMIN_REACH", False),
+            platform_memberships=_bool("PLATFORM_MEMBERSHIPS", False),
+            join_open_per_person=_positive("JOIN_OPEN_PER_PERSON", 3),
+            join_daily_per_person=_positive("JOIN_DAILY_PER_PERSON", 10),
+            join_denied_hold_days=_positive("JOIN_DENIED_HOLD_DAYS", 7),
+            join_open_per_workspace=_positive("JOIN_OPEN_PER_WORKSPACE", 50),
             role_cache_seconds=float(_int("ROLE_CACHE_SECONDS", 15)),
             admin_pool_users=admin_pool_users,
             rollup_sweeper_users=rollup_sweeper_users,

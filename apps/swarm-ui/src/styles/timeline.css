@@ -66,6 +66,20 @@
   color: var(--text);
   white-space: nowrap;
 }
+/* The filters' sheet is the row itself on a wide screen; only a phone folds
+   it behind its toggle (VQ-024, the phone block at the end of this sheet). */
+.tl-sheet { display: contents; }
+.tl-sheet-toggle {
+  display: none;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: 500 var(--t-micro) / var(--lh-micro) var(--font);
+  cursor: pointer;
+}
+.tl-sheet-toggle:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .tl-flt.is-on {
   border-color: color-mix(in srgb, var(--info) 45%, transparent);
   background: color-mix(in srgb, var(--info) 12%, var(--surface));
@@ -340,6 +354,23 @@
   top: 0;
   z-index: 3;
   background: var(--surface-2);
+}
+/* THE LANE COUNT IS READ WHOLE (visual QA VQ-025, 2026-10-26): cut to the
+   column, '223 workflows · 108 standalo…' lost the very count it is there to
+   give. The top-left cell wraps instead; it is the sticky head's, so a second
+   line costs one line once, not one per lane. */
+.tl-axis .tl-lab small { white-space: normal; text-overflow: clip; overflow-wrap: anywhere; }
+/* A WORKFLOW'S SPAN, BRACKETED ON ITS GROUP ROW (timeline.html A; VQ-025):
+   from its lanes' first start to their last end, open at the foot so it
+   reads as the lanes under it. */
+.tl-wf-span {
+  position: absolute;
+  top: 13px;
+  height: 9px;
+  border: 1.5px solid var(--text-dim);
+  border-bottom: 0;
+  border-radius: 4px 4px 0 0;
+  pointer-events: none;
 }
 .tl-axis .tl-trk {
   height: 30px;
@@ -668,6 +699,20 @@
      short of the edge the span control and the selects reach. Its segments
      keep their content basis (`workflow steps` is three times `all`) and
      share what is left. */
-  .tl-ctl > .c-seg.tl-kind { flex: 1 1 100%; }
-  .tl-ctl > .c-seg.tl-kind > button { justify-content: center; }
+  .tl-sheet > .c-seg.tl-kind { flex: 1 1 100%; }
+  .tl-sheet > .c-seg.tl-kind > button { justify-content: center; }
+  /* THE FILTERS FOLD (visual QA VQ-024, 2026-10-26): State, Profile,
+     Workflow, Kind and Group by stood in four rows above the strip, and with
+     the summary they filled the first screen at 390, the first lane below
+     the fold. They sit behind one `Filters · N`, as Outcomes' do, and open
+     as a row of their own under the span and the zoom. */
+  .tl-sheet-toggle { display: inline-flex; align-items: center; min-height: 44px; }
+  .tl-sheet { display: none; }
+  .tl-sheet.is-open {
+    display: flex;
+    flex-basis: 100%;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
 }

@@ -1036,7 +1036,7 @@ describe('the eight cards', () => {
     expect(root.textContent, '"Token spend" survived the rename').not.toMatch(/Token spend/)
   })
 
-  it('Why agents failed: every class in the server’s fixed order, zeroes drawn as real zeroes', async () => {
+  it('Why agents failed: every class in the server’s fixed order, a zero drawn as its count with no bar', async () => {
     const root = await timeline()
     const c = card(root, /^Why agents failed/)
     const rows = [...c.querySelectorAll('.ol-row')]
@@ -1048,8 +1048,11 @@ describe('the eight cards', () => {
     expect(rows.map((r) => r.querySelector('.ol-row-n')!.textContent)).toEqual([
       '1', '0', '7', '0', '0', '6', '8', '0', '0', '0', '0', '0', '0', '6', '0', '0',
     ])
+    // A 0 ROW DRAWS NO BAR (visual QA VQ-022, 2026-10-26): the zero tick read
+    // as a small non-zero bar. The row and its "0" are drawn; the bar is not.
     const timeout = rows[1]!
-    expect(timeout.querySelector('.ctl-util-track.is-zero'), 'a zero class is an empty bar, not a real zero').not.toBeNull()
+    expect(timeout.querySelector('.ctl-util-track'), 'a zero class draws a bar stub').toBeNull()
+    expect(timeout.querySelector('.ol-row-none')).not.toBeNull()
     expect(c.querySelector('.ctl-card-note')!.textContent).toBe('28 · by class')
   })
 

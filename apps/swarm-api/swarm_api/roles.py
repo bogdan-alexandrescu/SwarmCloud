@@ -65,7 +65,7 @@ from swarm_common.identity import tenant_id_for_group
 
 from . import refusals
 from .admins import AUDIT_COLLECTION
-from .auth import AuthContext
+from .auth import VIA_PLATFORM_MEMBER, AuthContext
 from .errors import (
     PlatformAdminAuditUnavailable,
     RoleAdminRequired,
@@ -845,10 +845,17 @@ def roles_table() -> list[dict[str, str]]:
 
 
 def tenant_via(auth: AuthContext) -> str:
-    """`TenantChoice.via` for the tenant this request selected."""
+    """`TenantChoice.via` for the tenant this request selected:
+    "platform_member" for a group workspace reached by a platform membership
+    (lane JOIN-WIRE), the same test `GET /v1/tenants/mine` applies. A label
+    only -- the role is resolved as any member's."""
     if auth.tenant_via == VIA_PLATFORM_ADMIN:
         return VIA_PLATFORM_ADMIN
-    return VIA_PERSONAL if is_personal(auth) else VIA_MEMBER
+    if is_personal(auth):
+        return VIA_PERSONAL
+    if (auth.tenant_id, auth.tenant_principal) in auth.platform_memberships:
+        return VIA_PLATFORM_MEMBER
+    return VIA_MEMBER
 
 
 def grant_api(email: str, grant: Grant) -> dict[str, Any]:

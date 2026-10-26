@@ -84,30 +84,25 @@ describe('N4: Access head at 390 (run-4 work-b-001)', () => {
 
   // GITHUB-ACCESS-PAGE (part of #2157): Setup left the head. The setup strip
   // over every Config page links Workspace setup, and config-e.html S2 draws
-  // no second one, so the group is the switch alone, still wrapped whole.
-  it('the Mine / Members / Browser logins switch is one wrapping group, and the head draws no Setup link', async () => {
+  // no second one. GA-MOVE-VIEWS then moved Members to People and roles and
+  // Browser logins to Secrets, so the switch left too: Refresh is all there is.
+  it('the head draws Refresh alone: no Mine / Members / Browser logins switch and no Setup link', async () => {
     await mountAccess()
     const head = document.querySelector('.ac-page > .c-phead > .c-acts')
     expect(head, 'the page head draws its actions').not.toBeNull()
-    const sw = screen.getByRole('radiogroup', { name: 'Whose access' })
-    const group = sw.closest('.ur-acts')
-    // MUTATION: move `<UrRadio label="Whose access">` back out of the `.ur-acts` span in Access.tsx's PageHead.
-    expect(group, 'the switch sits in a `.ur-acts` group').not.toBeNull()
-    // The group is one item of the head's actions, so the head wraps it whole.
-    expect(group!.parentElement).toBe(head)
-    // MUTATION: set `.ur-acts { display: contents }` (the group dissolves into the head's row).
-    expect(painted(group!, 'display', PHONE)).toMatch(/^(inline-)?flex$/)
-    // Refresh stays outside the group, first in the head.
-    expect(group!.contains(document.querySelector('.c-refresh'))).toBe(false)
+    // MUTATION: put `<UrRadio label="Whose access">` back in Access.tsx's PageHead.
+    expect(screen.queryByRole('radiogroup', { name: 'Whose access' })).toBeNull()
+    expect(head!.querySelector('.ur-acts')).toBeNull()
+    expect(head!.querySelector('.c-refresh')).not.toBeNull()
     // MUTATION: put the Setup ButtonLink back in the head.
     expect(screen.queryByRole('link', { name: 'Setup' })).toBeNull()
   })
 
-  it('at 1440 the head draws Refresh and the switch on one row', async () => {
+  it('at 1440 the head draws its actions on one row', async () => {
     await mountAccess()
-    const group = screen.getByRole('radiogroup', { name: 'Whose access' }).closest('.ur-acts')!
+    const acts = document.querySelector<HTMLElement>('.ac-page > .c-phead > .c-acts')!
     // MUTATION: set `.c-phead > .c-acts { flex-wrap: wrap }` outside the phone block.
-    expect(painted(group.parentElement!, 'flex-wrap', WIDE)).toBe('nowrap')
+    expect(painted(acts, 'flex-wrap', WIDE)).toBe('nowrap')
   })
 })
 

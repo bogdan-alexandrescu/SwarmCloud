@@ -1,20 +1,19 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
-  disableAccessOwner, disconnectGitHub, enableAccessOwner, githubAppName, loadAccess, loadAccessMembers, loadAccessOwners,
+  disableAccessOwner, disconnectGitHub, enableAccessOwner, githubAppName, loadAccess, loadAccessOwners,
   loadAccessRepositories, putAccessGrant, requestAccessInstall, revokeAccessGrant, typedRepoId,
 } from './api'
-import { BrowserLoginsPane } from './BrowserLogins'
 import { Banner, Button, ButtonLink, Card, Chip, Dash, EmptyState, Tabs, ToneMark, type TabDef } from './components'
 import { useSetupSteps } from './ConfigSetup'
 import type { ApiError, Result } from './fetch'
 import { ConnectButton, Refusal } from './GitHubConnect'
-import { addressToPath } from './paths'
+import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { UrCap, UrRadio, UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import type { CapCell } from './RepositoriesData'
-import { FailedPanel, PageHead } from './Shell'
+import { PageHead } from './Shell'
 import { usePhoneTables } from './capacityPoll'
 import type {
-  AccessDisableResponse, AccessGrant, AccessMember, AccessMode, AccessOverview, AccessOwner, AccessRepository, GitHubConnection,
+  AccessDisableResponse, AccessGrant, AccessMode, AccessOverview, AccessOwner, AccessRepository, GitHubConnection,
 } from './types'
 import { humaniseUntil, timeAgo } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -76,7 +75,7 @@ import './styles/onboarding.css'
  * window regains focus.
  */
 
-type View = 'mine' | 'choose' | 'members' | 'logins'
+type View = 'mine' | 'choose'
 
 /**
  * CONNECTION AND CHOOSE REPOSITORIES ARE TWO TABS OF MINE (GITHUB-ACCESS-PAGE;
@@ -85,7 +84,12 @@ type View = 'mine' | 'choose' | 'members' | 'logins'
  * where repositories are added, and nothing else: "Repositories SwarmCloud may
  * reach as you" is Config › Repositories' (ReachableRepositories.tsx). Mine is
  * the Connection tab, at the bare path; Choose repositories is `?view=choose`.
- * Members and Browser logins stay views of the page, on the switch beside.
+ *
+ * MEMBERS AND BROWSER LOGINS LEFT FOR THE PAGES WHOSE SUBJECT THEY ARE
+ * (GA-MOVE-VIEWS, BGD 2026-10-24): Members is People and roles' Members'
+ * GitHub tab (WorkspacePeople.tsx), Browser logins is Secrets' (WorkspaceSecrets.tsx).
+ * Their old `?view=` here lands there (paths.ts `MOVED_VIEWS`), so S2 draws no
+ * switch in the head.
  */
 const GITHUB_TABS: readonly TabDef[] = [
   { key: 'mine', label: 'Connection' },
@@ -104,20 +108,13 @@ export const ADD_REPOSITORY_ADDRESS = 'config/github?view=choose'
 const REPOSITORIES_ADDRESS = 'config/repositories'
 
 /**
- * WHOSE ACCESS IS IN THE ADDRESS (live QA RSA-28, 2026-10-11). Mine / Members
- * was component state, so a reload or a shared link returned to Mine. It is
- * `?view=members` now; Mine is the bare path.
- *
- * BROWSER LOGINS (LB-7, docs/design/live-browser.md §5.5.1) are a third view,
- * `?view=logins`: the person's own saved live-browser sessions, by name, with
- * a typed Revoke (BrowserLogins.tsx). A view of Access rather than a nav tab,
- * because the design adds no tab (§6), so the issue forms' "Where" list
- * stays as it is.
+ * THE TAB IS IN THE ADDRESS (live QA RSA-28, 2026-10-11), so a reload or a
+ * shared link returns to it: Choose repositories is `?view=choose`, Connection
+ * the bare path. Any other value opens Connection.
  */
 function viewFromUrl(): View {
   if (typeof window === 'undefined') return 'mine'
-  const v = new URLSearchParams(window.location.search).get('view')
-  return v === 'choose' || v === 'members' || v === 'logins' ? v : 'mine'
+  return new URLSearchParams(window.location.search).get('view') === 'choose' ? 'choose' : 'mine'
 }
 
 function writeViewToUrl(v: View): void {
@@ -425,7 +422,10 @@ function Connection({ connection, onChange }: { connection: GitHubConnection | n
             <p className="ur-small ur-bad">
               This connection is {connection.state ?? 'not active'}
               {connection.failure !== null ? ` (${connection.failure})` : ''}, so SwarmCloud cannot act as you until you
-              reconnect: Reconnect is above. Config › Workspace Settings › Workspace setup carries the recovery steps.
+              reconnect: Reconnect is above.{' '}
+              {/* The address CONFIG-NAV's SECTIONS spell, linked at its own path rather than `/setup`'s redirect. */}
+              <a href={addressToPath(WORKSPACE_SETUP_ADDRESS)}>Config › Workspace Settings › Workspace setup</a> carries the
+              recovery steps.
             </p>
           )}
           {confirming ? (
@@ -1461,107 +1461,13 @@ function ChooseTab({ overview, reloadOverview, open }: { overview: AccessOvervie
   )
 }
 
-// ---------------------------------------------------------------------------
-// Members: Access B, for an admin
-// ---------------------------------------------------------------------------
-
-function MemberRow({ m }: { m: AccessMember }) {
-  const c = m.connection
-  const writes = m.grants.filter((g) => g.mode === 'write').length
-  const state = c === null ? 'not started' : (c.state ?? 'unknown')
-  return (
-    <li className="ac-member" data-member={m.user}>
-      <div className="ac-row-name">
-        <b>{m.user}</b>
-        <small className="ur-mu">{c?.forge_login != null ? `@${c.forge_login}` : 'no GitHub account'}</small>
-      </div>
-      <span className="ac-cell">
-        <span className="ac-cell-l">Connection</span>
-        <ToneMark tone={state === 'active' ? 'ok' : c === null ? 'unknown' : 'bad'}>{c?.failure ?? state}</ToneMark>
-      </span>
-      <span className="ac-cell">
-        <span className="ac-cell-l">Owners</span>
-        {m.orgs.length === 0 ? <Dash why="No owner enabled" /> : m.orgs.map((o) => o.owner).join(', ')}
-      </span>
-      <span className="ac-cell">
-        <span className="ac-cell-l">Repositories</span>
-        {m.grants.length} · {writes} write
-      </span>
-    </li>
-  )
-}
-
 /**
- * A 403 on the members view is the admin gate, not a failure (visual QA V047).
- * The API refuses a non-admin with its generic `forbidden` code ("the
- * tenant's members view is for admins"), which the client classifies as an
- * unrecognised refusal and the region drew red, with a Try again that can
- * never succeed. On this one admin-only route a refusal means exactly that,
- * so it is drawn as the admin gate. A tenant or domain refusal keeps its own.
- */
-function membersGated(state: Result<unknown>): ApiError | null {
-  if (state.status !== 'error') return null
-  const e = state.error
-  if (e.kind === 'admin_required') return e
-  if (e.kind === 'forbidden' && e.httpStatus === 403) return { ...e, kind: 'admin_required' }
-  return null
-}
-
-function Members() {
-  const members = useUrRead(loadAccessMembers, 'access-members')
-  const gate = membersGated(members.state)
-  return (
-    <Card className="ac-members" title="Members">
-      {gate !== null ? (
-        <FailedPanel error={gate} onRetry={members.reload} />
-      ) : (
-        <UrRegion state={members.state} route="GET /v1/access/members" what="The tenant's members" onRetry={members.reload} plural lines={4}>
-          {(d) =>
-            d.members.length === 0 ? (
-              <EmptyState kind="empty" heading="No member has started">
-                Nobody in tenant {d.tenant_id} has connected GitHub or chosen a repository yet.
-              </EmptyState>
-            ) : (
-              <>
-                {/* The rows' column names (visual QA V230); a phone's records carry their own (`.ac-cell-l`). */}
-                <div className="ac-members-h" aria-hidden="true">
-                  <span>Member</span>
-                  <span>Connection</span>
-                  <span>Owners</span>
-                  <span>Repositories</span>
-                </div>
-                <ul className="ac-grid" aria-label={`Members of ${d.tenant_id}`}>
-                  {d.members.map((m) => (
-                    <MemberRow key={m.user} m={m} />
-                  ))}
-                </ul>
-              </>
-            )
-          }
-        </UrRegion>
-      )}
-      <p className="ur-hint">
-        Each member connects as themselves. An admin sees states and names, never a value, and cannot reconnect for
-        someone else.
-      </p>
-    </Card>
-  )
-}
-
-/**
- * THE LEDE SAYS WHAT THE VIEW SHOWS (visual QA V232). It said "the orgs and
- * repositories SwarmCloud may reach as you" on Members and Browser logins
- * too, which are about neither. Since GITHUB-ACCESS-PAGE that list is on
- * Config › Repositories, so Mine's two tabs say what they hold instead.
+ * THE LEDE SAYS WHAT THE TAB SHOWS (visual QA V232). Since GITHUB-ACCESS-PAGE
+ * the reach-as-you list is on Config › Repositories, so the two tabs say what
+ * they hold instead.
  */
 function accessLede(view: View, tenant: string | null): string {
   const inTenant = tenant !== null ? ` in tenant ${tenant}` : ''
-  if (view === 'members') {
-    return `Every member${inTenant}: whether they connected GitHub, the owners they enabled and how many repositories they chose. States and names, never a value.`
-  }
-  if (view === 'logins') {
-    return 'The browser sessions you saved from a live browser in your workspace, by name and site, with when each expires. An agent names one to start signed in.'
-  }
   if (view === 'choose') {
     return `The owners the GitHub App is installed on${inTenant}, and the repositories you choose from them, each Read or Write.`
   }
@@ -1577,50 +1483,29 @@ export function AccessScreen() {
     writeViewToUrl(v)
   }
   const tenant = dataOf(overview.state)?.tenant_id ?? null
-  const mine = view === 'mine' || view === 'choose'
   return (
     <div className="ur-page ac-page">
+      {/* Refresh alone: S2 draws the page's two tabs and no switch. Setup left
+          the head with GITHUB-ACCESS-PAGE (the setup strip over every Config
+          page links Workspace setup); Members and Browser logins left it with
+          GA-MOVE-VIEWS for People and roles and Secrets. */}
       <PageHead title="GitHub access">
         <UrRefresh reads={[overview]} />
-        {/* THE SWITCH IS ITS OWN GROUP (visual QA run 4, work-b-001, part of
-            #1680), so at 390 it moves to a row whole. Setup left the head with
-            GITHUB-ACCESS-PAGE: the setup strip over every Config page links
-            Workspace setup, and S2 draws no second one. */}
-        <span className="ur-acts">
-          <UrRadio<View>
-            label="Whose access"
-            value={mine ? 'mine' : view}
-            onChange={setView}
-            options={[
-              { key: 'mine', label: 'Mine' },
-              { key: 'members', label: 'Members', title: 'Every member of the tenant: for an admin' },
-              { key: 'logins', label: 'Browser logins', title: 'Sessions you saved from a live browser in your workspace' },
-            ]}
-          />
-        </span>
       </PageHead>
       {/* `cfg-parts` (config.css, imported with the setup strip) is the Config
           pages' tab strip layout: never shrunk, never a vertical scroller --
           the underline's -1px margin made a bare strip draw a scroll arrow. */}
-      {mine && (
-        <Tabs tabs={GITHUB_TABS} current={view} label="GitHub access" className="cfg-parts" onSelect={(k) => setView(k === 'choose' ? 'choose' : 'mine')} />
-      )}
+      <Tabs tabs={GITHUB_TABS} current={view} label="GitHub access" className="cfg-parts" onSelect={(k) => setView(k === 'choose' ? 'choose' : 'mine')} />
       <p className="ur-sub">{accessLede(view, tenant)}</p>
-      {view === 'members' ? (
-        <Members />
-      ) : view === 'logins' ? (
-        <BrowserLoginsPane tenantId={tenant} />
-      ) : (
-        <UrRegion state={overview.state} route="GET /v1/access" what="Your access" onRetry={overview.reload} lines={4}>
-          {(o) =>
-            view === 'choose' ? (
-              <ChooseTab overview={o} reloadOverview={overview.reload} open={setView} />
-            ) : (
-              <Mine overview={o} reloadOverview={overview.reload} open={setView} />
-            )
-          }
-        </UrRegion>
-      )}
+      <UrRegion state={overview.state} route="GET /v1/access" what="Your access" onRetry={overview.reload} lines={4}>
+        {(o) =>
+          view === 'choose' ? (
+            <ChooseTab overview={o} reloadOverview={overview.reload} open={setView} />
+          ) : (
+            <Mine overview={o} reloadOverview={overview.reload} open={setView} />
+          )
+        }
+      </UrRegion>
     </div>
   )
 }
