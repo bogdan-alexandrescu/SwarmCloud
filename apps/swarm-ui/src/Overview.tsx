@@ -16,6 +16,7 @@ import {
   type StateRead,
 } from './OverviewRegions'
 import { addressToPath } from './paths'
+import { OverviewCounts, type PanelCount } from './Spine'
 import { accountName } from './accountName'
 import { HUMAN_PARK_MAX_MS, HandoffBanner, handoffOf, needsYou } from './Handoff'
 import { LiveControl } from './LiveBrowser'
@@ -224,12 +225,28 @@ export function OverviewScreen({ setup, waitingOnYou }: { setup?: ReactNode; wai
   const ended = read === null ? null : stateView(read, ENDED_BADLY)
   const failures = ended === null ? null : failuresOf(ended.rows, checkedAt, ended)
   const spent = dataOf(spend)
+  // THE PANEL'S "ON THIS PAGE" COUNTS (visual QA VQ-007, part of #2391): the
+  // same sums the cards below draw, handed to the shell (`OverviewCounts`).
+  const holding = read === null ? null : stateView(read, HOLDING)
+  const jumpCounts: Record<string, PanelCount> = {}
+  if (!checks.some((c) => c.status === 'reading')) {
+    jumpCounts['ov-needs'] = { n: checks.reduce((n, c) => n + (c.status === 'found' ? c.problems.length : 0), 0), why: 'problems the checks found' }
+  }
+  if (holding !== null) {
+    const whole = HOLDING.every((s) => holding.whole(s))
+    jumpCounts['ov-running'] = { n: holding.rows.length, why: 'agents holding capacity', ...(whole ? {} : { text: `≥${holding.rows.length}` }) }
+  }
+  if (waiting !== null) jumpCounts['ov-waiting'] = { n: waiting.reduce((n, g) => n + g.n, 0), why: 'agents waiting; none cost anything' }
+  if (failures !== null) {
+    jumpCounts['ov-failures'] = { n: failures.rows.length, why: `recent failures: ${failures.note}`, ...(failures.partial ? { text: `≥${failures.rows.length}` } : {}) }
+  }
 
   return (
     // THE HEAD'S CLOCK IS EVERY FOOT'S (#98): a stale foot below and the
     // refresh control above read the same instant, so they cannot disagree.
     <PageClock.Provider value={clock}>
     <div className="ov-page">
+      <OverviewCounts counts={jumpCounts} />
       {/* TITLE LEFT, ACTIONS RIGHT, NOTHING UNDER IT (#138, owner ruling
           2026-10-07): the title and the section's `?`, and on the right the
           quiet refresh carrying this screen's one ticking age and its
