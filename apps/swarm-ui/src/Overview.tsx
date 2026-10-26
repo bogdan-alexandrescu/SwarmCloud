@@ -285,13 +285,13 @@ export function OverviewScreen({ setup, waitingOnYou }: { setup?: ReactNode; wai
       <CountNote>
         <span className="ov-scope">
           {tasks.status === 'loading' ? (
-            <span className="ov-reading">tenant reading…</span>
+            <span className="ov-reading">workspace reading…</span>
           ) : tenant === null ? (
             <>
-              tenant <i className="ctl-em" title="No read carried a tenant id: not the agent list, the account pool or the capacity read.">&mdash;</i>
+              workspace <i className="ctl-em" title="No read carried a workspace id: not the agent list, the account pool or the capacity read.">&mdash;</i>
             </>
           ) : (
-            `tenant ${tenant}`
+            `workspace ${tenant}`
           )}
           <span className="ov-sep">{' · '}</span>
         </span>
@@ -1387,7 +1387,7 @@ function BadMark() {
  */
 function bindingLabel(name: string, tenant: string | undefined): string {
   if (tenant) {
-    if (name === `tenant:${tenant}`) return 'your tenant'
+    if (name === `tenant:${tenant}`) return 'your workspace'
     const own = name.endsWith(`:tenant:${tenant}`)
     if (own) return poolLabel(name.slice(0, -`:tenant:${tenant}`.length))
   }
@@ -1490,7 +1490,7 @@ function CapacityStacks({ state }: { state: Result<Capacity> }) {
               pools · tenant eng" read as thirty pools of eng's, over a list
               an admin reads with every tenant's pools in it. */}
           <span>{countOf(cap.pools.length, 'pool')} read</span>
-          <span>{tenant === undefined ? 'no tenant pool read' : `profiles as tenant ${tenant}`}</span>
+          <span>{tenant === undefined ? 'no workspace pool read' : `profiles as workspace ${tenant}`}</span>
           {footFor(state, 'not read', now) !== null && <span>{footFor(state, 'not read', now)}</span>}
         </FootRun>
       </p>
@@ -1933,7 +1933,7 @@ function RunningCard({
         <CardAbsent
           kind="zero"
           heading="No agent exists"
-          say="The read succeeded: this tenant has no agents."
+          say="The read succeeded: this workspace has no agents."
           explain="absent-vs-zero"
         />
       </>
@@ -2742,7 +2742,7 @@ function absenceSentence(
     parts.push(`${notServing.join(', ')} not serving`)
   }
   if (skipped.length > 0) {
-    parts.push(`${skipped.join(', ')} ${skipped.length === 1 ? 'is' : 'are'} being skipped by the pool for this tenant`)
+    parts.push(`${skipped.join(', ')} ${skipped.length === 1 ? 'is' : 'are'} being skipped by the pool for this workspace`)
   }
   // Only reachable with every list empty when the caller has a figure, and
   // that caller words it itself; this is the honest fallback either way.

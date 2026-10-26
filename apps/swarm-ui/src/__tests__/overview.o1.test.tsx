@@ -372,7 +372,7 @@ describe('O1: Headroom keeps its rows inside the card', () => {
     expect(text(tiles[0]!.querySelector('b'))).toBe('0')
     expect(tiles[0]!.querySelector('b')?.classList.contains('is-zero')).toBe(true)
     expect(text(tiles[1]!.querySelector('b'))).toBe('+6')
-    expect(text(tiles[1]!.querySelector('small'))).toBe('binds your tenant')
+    expect(text(tiles[1]!.querySelector('small'))).toBe('binds your workspace')
     // The pools are their own full-width card now (browser QA N17).
     expect(card.querySelectorAll('.ov-pl').length).toBe(0)
     // BUSIEST FIRST (live QA OV-15, 2026-10-11): by share of the ceiling used.

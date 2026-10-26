@@ -341,7 +341,7 @@ function quotaCheck(providers: Result<ProvidersPage>, now: number): Check {
     return { label, status: 'blind', ...blindness(providers.error) }
   }
   if (providers.status === 'empty') {
-    return { label, status: 'clear', note: 'no provider is configured for this tenant' }
+    return { label, status: 'clear', note: 'no provider is configured for this workspace' }
   }
 
   const rows = providers.data.providers
@@ -361,13 +361,13 @@ function quotaCheck(providers: Result<ProvidersPage>, now: number): Check {
         headline: `${p.provider} is ${q.state.toLowerCase()}`,
         detail:
           q.state === 'DISABLED'
-            ? 'Disabled for this tenant. Its effective limit is 0 and nothing using it will be admitted.'
+            ? 'Disabled for this workspace. Its effective limit is 0 and nothing using it will be admitted.'
             // `clearsIn`, not `timeAgo`: a reset is in the FUTURE and timeAgo
             // floors at zero, so it would render every pending reset as
             // "just now" -- the opposite of what it says.
             : `Quota is spent. Effective limit is ${q.effective_limit}${q.reset_at ? `, resetting in ${clearsIn(q.reset_at, now)}` : ''}. Work on this provider parks rather than fails.`,
         href: '#capacity/quota',
-        linkLabel: 'quota, all tenants · admin',
+        linkLabel: 'quota, all workspaces · admin',
       })
     } else if (tone === 'wait') {
       problems.push({
@@ -376,7 +376,7 @@ function quotaCheck(providers: Result<ProvidersPage>, now: number): Check {
         headline: `${p.provider} is ${q.state.toLowerCase()}`,
         detail: `${q.rate_limit_count} rate-limit responses so far; the ceiling this derives is ${q.effective_limit}${q.last_429_at ? `, last 429 ${timeAgo(q.last_429_at, now)}` : ''}. Throughput is reduced, not stopped.`,
         href: '#capacity/quota',
-        linkLabel: 'quota, all tenants · admin',
+        linkLabel: 'quota, all workspaces · admin',
       })
     }
   }

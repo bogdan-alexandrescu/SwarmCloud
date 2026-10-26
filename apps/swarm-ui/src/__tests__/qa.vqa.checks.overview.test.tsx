@@ -145,7 +145,7 @@ describe('QA-061, VQ-002: a check card’s link words never squeeze its title on
     await mount({ providers: ok(TWO_THROTTLED) })
     const card = screen.getByRole('link', { name: /^anthropic is throttled/ })
     const go = card.querySelector('.ov-att-go')!
-    expect(text(go)).toBe('quota, all tenants · admin →')
+    expect(text(go)).toBe('quota, all workspaces · admin →')
     const words = go.querySelector('.ov-att-go-w')!
     // MUTATION: drop `.ov-att-go-w` from the 560px block's visually-hidden rule.
     expect(painted(words, 'clip', PHONE)).toBe('rect(0 0 0 0)')

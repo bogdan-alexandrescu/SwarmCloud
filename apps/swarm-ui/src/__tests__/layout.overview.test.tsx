@@ -637,8 +637,8 @@ describe('OV-9: while the checks read, the lead says so and draws no figure', ()
     expect(text(lead.querySelector('.ov-cnt'))).toMatch(/^\d+ of \d+ checks still reading$/)
     const note = el.querySelector('.ov-page > .c-phead + .c-count-note')
     expect(note, 'the tenant and reads tally are not the note under the head').not.toBeNull()
-    expect(text(note!.querySelector('.ov-reading')), 'the tenant reads as missing while it is in flight').toBe('tenant reading…')
-    expect(text(note)).not.toMatch(/tenant —/)
+    expect(text(note!.querySelector('.ov-reading')), 'the tenant reads as missing while it is in flight').toBe('workspace reading…')
+    expect(text(note)).not.toMatch(/workspace —/)
   })
 
   /** MUTATION: drop the partial mark, or the blind count, for a check that could not run. */

@@ -1,6 +1,6 @@
 /**
  * VISUAL QA PASS 1 (2026-10-26, epic #2391), lane VQ-OVERVIEW: the Overview
- * findings VQ-002 to VQ-006.
+ * findings VQ-002 to VQ-006, VQ-023, and VQ-056 (the Overview's own words).
  *
  *   VQ-002  On a phone each Needs a look card printed its whole detail and
  *           two workflow-id links, and each Running now row wrapped to four
@@ -14,6 +14,9 @@
  *           sample of failures, and Finished today a third, worded apart.
  *   VQ-006  Recent failures sat in the left column, the right blank beside
  *           it under Headroom.
+ *   VQ-023  Times in three zones across the console. The Overview's share:
+ *           every time it prints says UTC, so its "today" is the UTC day.
+ *   VQ-056  The head read "tenant eng"; the console says workspace.
  *
  * Each assertion names the mutation that turns it red.
  */
@@ -130,7 +133,7 @@ const RUNNING: Task[] = [
 const WF_TITLE = 'Audit every script and Terraform module in the repository for drift against main'
 
 function serve(): void {
-  api.loadTasks.mockImplementation(async (limit: number) => ok({ tasks: PAGE().slice(0, limit), next_page_token: ********, tenant_id: 'eng' } satisfies TaskPage))
+  api.loadTasks.mockImplementation(async (limit: number) => ok({ tasks: PAGE().slice(0, limit), next_page_token: 'more', tenant_id: 'eng' } satisfies TaskPage))
   const reads: Partial<Record<TaskState, { tasks: Task[]; more: boolean }>> = {
     FAILED: { tasks: FAILED, more: true },
     CANCELLED: { tasks: CANCELLED, more: true },
@@ -138,7 +141,7 @@ function serve(): void {
   }
   api.loadTasksInState.mockImplementation(async (state: TaskState) => {
     const r = reads[state]
-    return r === undefined ? empty : ok({ tasks: r.tasks, next_page_token: ******** ? 'more' : null, tenant_id: 'eng' } satisfies TaskPage)
+    return r === undefined ? empty : ok({ tasks: r.tasks, next_page_token: r.more ? 'more' : null, tenant_id: 'eng' } satisfies TaskPage)
   })
 }
 
@@ -324,5 +327,32 @@ describe('VQ-002: a phone draws a check as one line and an agent as one line', (
     // MUTATION: let `.ov-prun-s` shrink with the title.
     expect(at(step, 'flex')).toBe('none')
     expect(text(name)).toBe(`${WF_TITLE} · scan-terraform`)
+  })
+})
+
+describe('VQ-056: the Overview says workspace, never tenant', () => {
+  it('names the workspace in the head and nowhere prints "tenant"', async () => {
+    const el = await mount(ok(THROTTLED))
+    const scope = el.querySelector('.c-count-note .ov-scope')!
+    // MUTATION: put back `tenant ${tenant}` in the head's scope.
+    expect(text(scope)).toBe('workspace eng ·')
+    // MUTATION: put back `quota, all tenants · admin` in checks.ts.
+    expect(text(el)).toContain('quota, all workspaces · admin')
+    // MUTATION: put back any reader-facing "tenant" on this page.
+    expect(text(el)).not.toMatch(/\btenants?\b/i)
+  })
+})
+
+describe('VQ-023: every time the Overview prints names its zone, and it is UTC', () => {
+  it('follows each clock time on the page with " UTC"', async () => {
+    const el = await mount(ok(THROTTLED))
+    const page = text(el)
+    const times = [...page.matchAll(/\b\d{1,2}:\d{2}(?::\d{2})?\b(.{0,4})/g)]
+    // The partial reads name their cut-off, so the page prints at least one time.
+    expect(times.length, 'no clock time on the page, so this measured nothing').toBeGreaterThan(0)
+    // MUTATION: print a cut-off with `clockTime` (the browser's zone, unlabelled).
+    for (const m of times) expect(m[0], `"${m[0]}" carries no zone`).toMatch(/ UTC/)
+    // "today" is the UTC day on this page, said where it is counted.
+    expect(page).not.toMatch(/\b(PDT|PST|America\/)/)
   })
 })
