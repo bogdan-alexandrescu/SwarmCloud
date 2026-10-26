@@ -203,13 +203,139 @@ def test_a_large_ui_selection_comes_back_as_a_few_bounded_runs(tmp_path):
     _tree(tmp_path, many=120)
     got = _select(tmp_path, f"{UI}/src/widget.ts")
     runs = got["vitest"]
+    # 123 unrecorded files weigh 123 x 2.9 = 357 CI-seconds, one run by
+    # weight: the file-count cap is what still cuts them, into ceil(123/50).
     # MUTATION: return the selection as one run -> len(runs) == 1; drop the
-    # per-run cap -> a run holds more than VITEST_FILES_PER_RUN files.
-    assert 2 <= len(runs) <= 5
+    # per-run file cap (cut by weight alone) -> one 123-file run.
+    assert len(runs) == 3
     for run in runs:
+        # MUTATION: open a new run only on weight -> a run over 50 files.
         assert 0 < len(run.split()) <= 50
     files = _files(runs)
     assert len(files) == len(set(files)) == 123
+
+
+# --- vitest runs are cut by recorded CI-seconds (#2362) ----------------------
+#
+# Cut by file count alone, the nine spacing.*.test.tsx slices (252-485 s each,
+# measured in agent logs 2026-10-25/26) landed in one 50-file run that could not
+# finish inside related-tests.sh's RUN_SECONDS=540, and 40+ agents timed out.
+
+HEAVY_SPACING = {
+    "src/__tests__/spacing.accounts.test.tsx": 437,
+    "src/__tests__/spacing.admin.test.tsx": 300,
+    "src/__tests__/spacing.capacity.test.tsx": 252,
+    "src/__tests__/spacing.config.test.tsx": 310,
+    "src/__tests__/spacing.runs.test.tsx": 320,
+    "src/__tests__/spacing.setup.test.tsx": 330,
+    "src/__tests__/spacing.submit.test.tsx": 340,
+    "src/__tests__/spacing.work.test.tsx": 353,
+}
+UI_WEIGHTS = "tests/unit/scripts/ui_test_durations.json"
+
+
+def _selector_module():
+    spec = importlib.util.spec_from_file_location("related_tests_weights", SELECTOR)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _spacing_tree(root: Path, weights: dict[str, float], light: int = 41) -> None:
+    """A sweep module every slice imports, the slices, spacing.test.tsx and
+    `light` other tests of the same module; `weights` recorded for the UI."""
+    _write(root, f"{UI}/src/App.tsx", "export const App = () => null\n")
+    _write(root, f"{UI}/src/__tests__/spacingsweep.tsx", "import { App } from '../App'\n")
+    for path in [*HEAVY_SPACING, "src/__tests__/spacing.test.tsx"]:
+        _write(root, f"{UI}/{path}", "import { sweep } from './spacingsweep'\n")
+    for i in range(light):
+        _write(root, f"{UI}/src/__tests__/light{i:02d}.test.tsx", "import { App } from '../App'\n")
+    _write(root, UI_WEIGHTS, json.dumps(weights))
+
+
+def _estimate(run: str, weights: dict[str, float]) -> float:
+    return sum(weights.get(f, 2.9) for f in run.split())
+
+
+def _assert_heavy_apart_and_bounded(runs: list[str], weights: dict[str, float]) -> None:
+    for run in runs:
+        heavy = [f for f in run.split() if f in HEAVY_SPACING]
+        # MUTATION: cut by file count (today's one 50-file run) -> all eight
+        # heavy slices in one run.
+        assert len(heavy) <= 1, run
+        files = run.split()
+        # MUTATION: open no new run when a file would take every run over
+        # VITEST_RUN_WEIGHT -> a run estimated over 540 CI-seconds.
+        assert _estimate(run, weights) <= 540 or len(files) == 1, (run, _estimate(run, weights))
+
+
+def test_heavy_spacing_slices_never_share_a_vitest_run(tmp_path):
+    _spacing_tree(tmp_path, HEAVY_SPACING)
+    got = _select(tmp_path, f"{UI}/src/App.tsx")
+    files = _files(got["vitest"])
+    # MUTATION: drop or duplicate a file while cutting -> not 50 distinct files.
+    assert len(files) == len(set(files)) == 50
+    _assert_heavy_apart_and_bounded(got["vitest"], HEAVY_SPACING)
+    # Eight heavy files, each in a run of its own.
+    assert len(got["vitest"]) >= 8
+
+
+def test_the_checked_in_weights_keep_every_spacing_slice_apart(tmp_path):
+    recorded = json.loads((REPO / UI_WEIGHTS).read_text())
+    # MUTATION: drop a slice from ui_test_durations.json -> it weighs 2.9 s
+    # and rejoins another slice's run.
+    assert set(HEAVY_SPACING) <= set(recorded), sorted(set(HEAVY_SPACING) - set(recorded))
+    _spacing_tree(tmp_path, recorded)
+    got = _select(tmp_path, f"{UI}/src/App.tsx")
+    _assert_heavy_apart_and_bounded(got["vitest"], recorded)
+
+
+def test_no_vitest_run_is_estimated_over_540_seconds(tmp_path):
+    weights = {
+        "src/__tests__/huge.test.tsx": 700,
+        "src/__tests__/big0.test.tsx": 400,
+        "src/__tests__/big1.test.tsx": 200,
+        "src/__tests__/big2.test.tsx": 150,
+        "src/__tests__/mid0.test.tsx": 90,
+        "src/__tests__/mid1.test.tsx": 60,
+    }
+    _write(tmp_path, f"{UI}/src/widget.ts", "export const w = 1\n")
+    for path in weights:
+        _write(tmp_path, f"{UI}/{path}", "import { w } from '../widget'\n")
+    for i in range(70):
+        _write(tmp_path, f"{UI}/src/__tests__/l{i:02d}.test.tsx", "import { w } from '../widget'\n")
+    _write(tmp_path, UI_WEIGHTS, json.dumps(weights))
+    got = _select(tmp_path, f"{UI}/src/widget.ts")
+    runs = got["vitest"]
+    assert len(_files(runs)) == 76
+    for run in runs:
+        # MUTATION: ignore ui_test_durations.json, or let a heavy file join a
+        # run it takes over 540 -> a run estimated over 540 CI-seconds.
+        assert _estimate(run, weights) <= 540 or run.split() == ["src/__tests__/huge.test.tsx"], run
+        assert len(run.split()) <= 50, run
+    # MUTATION: put another file beside one heavier than the limit -> the
+    # 700 s file does not run alone.
+    assert "src/__tests__/huge.test.tsx" in runs
+
+
+def test_an_unrecorded_vitest_file_weighs_the_default(tmp_path):
+    module = _selector_module()
+    # MUTATION: change the default without its measurement -> red here first.
+    assert module.VITEST_DEFAULT_SECONDS == 2.9
+    heavy = "src/__tests__/heavy.test.tsx"
+    _write(tmp_path, UI_WEIGHTS, json.dumps({heavy: 530.5}))
+    light = [f"src/__tests__/u{i}.test.tsx" for i in range(4)]
+    # 530.5 + 3 x 2.9 = 539.2 fits one run; a 4th unrecorded file (542.1) does not.
+    # MUTATION: weigh an unrecorded file 0 (or anything under ~2.4 s) -> the
+    # four light files join the heavy one.
+    # MUTATION: weigh it the recorded median, as pytest_runs does -> 530.5 s
+    # each, and the three light files do not fit beside the heavy one.
+    assert module.vitest_runs(tmp_path, [heavy, *light[:3]]) == [sorted([heavy, *light[:3]])]
+    runs = module.vitest_runs(tmp_path, [heavy, *light])
+    assert sorted(runs) == sorted([[heavy], sorted(light)]), runs
+    # A missing durations file weighs every file the default: one bounded run.
+    assert module.vitest_runs(tmp_path / "nowhere", light) == [sorted(light)]
 
 
 def test_a_heavy_pytest_selection_splits_by_ci_weight(tmp_path):
@@ -550,6 +676,155 @@ def test_the_script_selects_the_seven_named_sheet_readers_once(tmp_path):
         # MUTATION: list the readers but leave them out of the runs -> red.
         assert sum(c.count(f" {reader}") for c in commands) == 1, (reader, commands)
     _assert_every_command_names_files(commands)
+
+
+# --- the spacing slices a screen change reaches (#2362, part 2) --------------
+#
+# spacingsweep.tsx imports {App, SECTIONS} from '../App', so by import every
+# module App.tsx reaches reached all nine spacing.<group>.test.tsx slices, at
+# 252-437 CI-seconds each: 40+ agents timed out re-running them (#2362). A
+# slice renders App at its own routes only, so a change to one route's screen
+# selects the slices that walk that route, and a change to anything else App
+# renders -- the shell, the sweep, a sheet -- still selects all of them.
+
+SLICES = ("src/__tests__/spacing.capacity.test.tsx", "src/__tests__/spacing.admin.test.tsx")
+SLICE_CHECK = "src/__tests__/spacing.test.tsx"
+
+APP_TSX = """\
+import { AScreen } from './A'
+import { BScreen } from './B'
+import { Spine } from './Spine'
+
+export function App() {
+  return <Spine><SectionBody id="capacity/pools" /></Spine>
+}
+
+function SectionBody({ id }: { id: string }) {
+  switch (id) {
+    case 'capacity/pools':
+      return <AScreen />
+    case 'admin/limits':
+      return <BScreen />
+    default:
+      return null
+  }
+}
+"""
+
+SWEEP_TSX = """\
+import { App, SECTIONS } from '../App'
+import { probe } from './spaceprobe'
+
+export const SPACING_GROUPS: readonly SpacingGroup[] = [
+  { name: 'capacity', routes: ['capacity/pools'], floor: 1 },
+  {
+    name: 'admin', routes: ['admin/limits'], floor: 1,
+    centred: ['span.x [left] width 4px, centred'],
+  },
+]
+"""
+
+
+def _sweep_tree(root: Path, *, app: str = APP_TSX, sweep: str = SWEEP_TSX) -> None:
+    _write(root, f"{UI}/src/App.tsx", app)
+    _write(root, f"{UI}/src/A.tsx", "import { onlyA } from './onlyA'\nexport const AScreen = () => onlyA\n")
+    _write(root, f"{UI}/src/onlyA.ts", "export const onlyA = 1\n")
+    _write(root, f"{UI}/src/B.tsx", "export const BScreen = () => null\n")
+    _write(root, f"{UI}/src/Spine.tsx", "export const Spine = () => null\n")
+    _write(root, f"{UI}/src/styles/capacity.css", ".a { margin: 0 }\n")
+    _write(root, f"{UI}/src/__tests__/spaceprobe.ts", "export const probe = 1\n")
+    _write(root, f"{UI}/src/__tests__/spacingsweep.tsx", sweep)
+    for slice_ in SLICES:
+        _write(root, f"{UI}/{slice_}", "import { spacingGroup } from './spacingsweep'\n")
+    _write(root, f"{UI}/{SLICE_CHECK}", "import { SPACING_GROUPS } from './spacingsweep'\n")
+    _write(root, f"{UI}/src/__tests__/a.test.tsx", "import { AScreen } from '../A'\n")
+    _write(root, f"{UI}/src/__tests__/app.test.tsx", "import { App } from '../App'\n")
+
+
+def _spacing_selected(root: Path, *changed: str) -> list[str]:
+    files = _files(_select(root, *(f"{UI}/{c}" for c in changed))["vitest"])
+    return [f for f in files if "/spacing." in f]
+
+
+def test_a_screen_change_selects_only_the_spacing_slice_of_its_routes(tmp_path):
+    _sweep_tree(tmp_path)
+    for changed in ("src/A.tsx", "src/onlyA.ts"):
+        # MUTATION: leave the selection to the import graph -> A reaches App,
+        # App reaches the sweep, and spacing.admin is selected too.
+        assert _spacing_selected(tmp_path, changed) == sorted(
+            ["src/__tests__/spacing.capacity.test.tsx", SLICE_CHECK]), changed
+    assert _spacing_selected(tmp_path, "src/B.tsx") == sorted(
+        ["src/__tests__/spacing.admin.test.tsx", SLICE_CHECK])
+
+
+def test_an_app_shell_or_sweep_or_sheet_change_selects_every_spacing_slice(tmp_path):
+    _sweep_tree(tmp_path)
+    every = sorted([*SLICES, SLICE_CHECK])
+    for changed in ("src/App.tsx", "src/Spine.tsx", "src/__tests__/spacingsweep.tsx",
+                    "src/__tests__/spaceprobe.ts", "src/styles/capacity.css"):
+        # MUTATION: treat Spine as a screen, or select slices by screen alone
+        # -> a shell, sweep or sheet change drops a slice it changes.
+        assert _spacing_selected(tmp_path, changed) == every, changed
+
+
+def test_a_screen_module_app_also_imports_for_the_shell_selects_every_slice(tmp_path):
+    # A wrapper's module or a name App uses outside SectionBody's cases (a
+    # card, a hook) is rendered on every route, so its module is not a screen.
+    app = APP_TSX.replace("import { AScreen } from './A'", "import { AScreen, useA } from './A'")
+    app = app.replace("export function App() {\n", "export function App() {\n  useA()\n")
+    _sweep_tree(tmp_path, app=app)
+    # MUTATION: cut every App import of a case's screen name -> only capacity.
+    assert _spacing_selected(tmp_path, "src/A.tsx") == sorted([*SLICES, SLICE_CHECK])
+
+
+def test_an_unparseable_app_or_sweep_selects_every_spacing_slice(tmp_path):
+    every = sorted([*SLICES, SLICE_CHECK])
+    broken = {
+        "no SPACING_GROUPS": {"sweep": "import { App } from '../App'\nexport const GROUPS = []\n"},
+        "no case lines": {"app": APP_TSX.replace("case ", "when ")},
+        "an unresolvable screen": {"app": APP_TSX.replace("import { AScreen } from './A'\n", "")},
+        "a route with no case": {"sweep": SWEEP_TSX.replace("'capacity/pools'", "'capacity/gone'")},
+    }
+    for why, parts in broken.items():
+        root = tmp_path / why.replace(" ", "-")
+        _sweep_tree(root, **parts)
+        # MUTATION: answer "no slice" when the parse fails -> a screen change
+        # selects nothing and the sweep goes unrun until CI.
+        assert _spacing_selected(root, "src/B.tsx") == every, why
+
+
+def test_non_spacing_selection_is_unchanged(tmp_path):
+    _sweep_tree(tmp_path)
+    got = [f for f in _files(_select(tmp_path, f"{UI}/src/A.tsx")["vitest"]) if "/spacing." not in f]
+    # MUTATION: drop the screen's importers outside the sweep as well -> a.test
+    # or app.test goes missing.
+    assert got == ["src/__tests__/a.test.tsx", "src/__tests__/app.test.tsx"]
+
+
+def test_every_real_spacing_route_resolves_to_a_screen_module():
+    module = _selector_module()
+    ui_root = REPO / UI
+    known = set(module._ui_files(ui_root))
+    plan = module.spacing_plan(ui_root, known)
+    # MUTATION: rename SPACING_GROUPS, a SectionBody case or a screen's import
+    # -> the plan is None and every UI change selects all nine slices again.
+    assert plan is not None
+    slices = sorted(k for k in known if re.fullmatch(r"src/__tests__/spacing\.[^.]+\.test\.tsx", k))
+    assert sorted(f"src/__tests__/spacing.{g}.test.tsx" for g in plan.groups) == slices
+    for group, routes in plan.groups.items():
+        for route in routes:
+            modules = plan.routes[route]
+            assert modules, (group, route)
+            assert all(m in known for m in modules), (route, modules)
+    # And the narrowing is not empty: some screen's change selects fewer than
+    # every slice. (Screens import from each other -- Overview's cards come
+    # from several -- so one screen often reaches two or three slices.)
+    for screen in sorted(plan.cut):
+        got = [f for f in module.ui_related(ui_root, [screen]) if module._SLICE.fullmatch(f)]
+        if 0 < len(got) < len(slices):
+            break
+    else:
+        raise AssertionError(f"no screen of {sorted(plan.cut)} narrows the spacing slices")
 
 
 # --- the node:test runners (#2455) -------------------------------------------
