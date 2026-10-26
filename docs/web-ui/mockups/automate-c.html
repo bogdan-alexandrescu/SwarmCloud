@@ -1052,7 +1052,7 @@ function a5Detail(state,ph){
     member:`<div class="g3"><div class="oc"><b>If the owner approves</b><ul><li>#2392 merges at dbd00f06c5cd; 12:00Z fires as usual.</li></ul></div><div class="oc"><b>If the owner denies</b><ul><li>#2392 stays open; 12:00Z fires as usual.</li></ul></div><div class="oc"><b>If nobody decides by Thu 29 02:40Z</b><ul><li>It expires. Until then, each firing is skipped.</li></ul></div></div>`,
     approved:'',denied:'',expired:'',superseded:''
   }[state];
-  const who=CARD('Who decides','',`<dl class="kv"><dt>Approvers</dt><dd>owner only: the platform owner alone</dd><dt>Why</dt><dd>hold NEEDS_OWNER · reasons workflows, shared</dd><dt>Platform owner</dt><dd>Operator</dd>${state==='member'?'<dt>You</dt><dd>Sam Rivera, member: you can read this approval</dd>':''}</dl>`);
+  const who=CARD('Who decides','',`<dl class="kv"><dt>Approvers</dt><dd>owner only: the platform owner alone</dd><dt>Why</dt><dd>held for the platform owner: a workflow file (<span class="mn">.github/workflows/unit-weights-refresh.yml</span>) and a shared script (<span class="mn">scripts/lib/common.sh</span>) changed</dd><dt>Platform owner</dt><dd>Operator</dd>${state==='member'?'<dt>You</dt><dd>Sam Rivera, member: you can read this approval</dd>':''}</dl>`);
   const ev=CARD('Evidence','',EVID), sub=CARD('Asked by','',SUBJ);
   if(ph)return `<div class="dtl">${hdr}${lead}${a5Timeline(state,true)}${cards}${ev}${who}${sub}</div>`;
   return `<div class="dtl">${hdr}${lead}${a5Timeline(state,false)}${cards}<div class="g2">${ev}<div class="col">${who}</div></div>${sub}</div>`;
