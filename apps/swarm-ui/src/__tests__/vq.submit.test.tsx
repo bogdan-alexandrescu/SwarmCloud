@@ -100,7 +100,7 @@ describe('VQ-027: one label style for every field in the dispatch card', () => {
       'Priority',
     ])
     for (const [w, env] of ENVS) {
-      const first = look(labels[0], env)
+      const first = look(labels[0]!, env)
       expect(first, `${w}: the label is not painted at all`).toContain('font-weight=600')
       for (const l of labels) expect(look(l, env), `${w}: "${visible(l)}"`).toBe(first)
     }
@@ -112,8 +112,8 @@ describe('VQ-027: one label style for every field in the dispatch card', () => {
     const labels = fieldLabels(container as HTMLElement, 'Choose what happens to the result')
     expect(labels.map(visible)).toEqual(['How this work gets merged', 'Repository url (optional)'])
     for (const [w, env] of ENVS) {
-      for (const l of labels) expect(look(l, env), `${w}: "${visible(l)}"`).toBe(look(labels[0], env))
-      expect(look(labels[0], env)).toContain('color=var(--text)')
+      for (const l of labels) expect(look(l, env), `${w}: "${visible(l)}"`).toBe(look(labels[0]!, env))
+      expect(look(labels[0]!, env)).toContain('color=var(--text)')
     }
   })
 })
