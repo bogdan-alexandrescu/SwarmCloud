@@ -1741,14 +1741,23 @@ class AttemptState:
             `depends_on`, following each verified ancestor's `depends_on`
             only through this tenant's tasks of this workflow, one batched
             read per level, at most `WORKFLOW_ANCESTORS_MAX` documents read;
-          * a merge step's branch (#2373, `agent_worker.merge._own_doc`,
-            `_fix_round_heads`, `_recorded_fix_heads`): the root whose
+          * a merge step's own task and the branch it merges (#2373,
+            `agent_worker.merge._own_doc`, `_fix_round_heads`,
+            `_recorded_fix_heads`): the attempt's own task id, from the
+            tuple (served by `upstream` before any rule); the root whose
             `swarm/<root>` branch the pull request is on, from this task's
             signed `dispatch.merge_target.pull_request` and that task's own
             signed `dispatch.continues`; and any task of this tenant whose
-            signed dispatch block `continues` that root -- a merge's CI-fix or
-            conflict fix round, or a PR-side fixer of the same branch. The
-            worker still holds each one to its signed spec as well.
+            signed dispatch block `continues` that root -- a merge's CI-fix
+            or conflict fix round, or a PR-side fixer of the same branch.
+            Every task document is tenant-writable after signing
+            (docs/design/tenant-settings-integrity.md §1.1), so each of the
+            three `metadata.dispatch` fields followed is read only from a
+            document whose spec signature verifies HERE, by the id it was
+            read by (`verdictpublish.spec_refusal`): the merge step's own
+            (in `upstream`), the opener's and the candidate's. Unverified, a
+            rewrite of any one would serve any same-tenant task it named.
+            The worker still holds each one to its signed spec as well.
 
         The caller still refuses a task of another tenant, so a derived id
         serves only this tenant's document.
