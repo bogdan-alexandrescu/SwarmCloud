@@ -585,7 +585,78 @@ def _awaiting_input(task: Task, facts: dict[str, Any], as_of: datetime) -> dict[
     return {"detail": detail, "summary": summary, "resumes_when": resumes, "since": opened}
 
 
+#: The merge step's owner-question hold, as its park records it
+#: (`agent_worker.lifecycle._park_for_owner_questions`): `park_phase` names
+#: it and `owner_questions` holds `{code, questions, unreadable}`. Spelled
+#: again: the worker is not installed in this image.
+OWNER_QUESTIONS_PHASE = "owner_questions"
+
+
+def _owner_questions(task: Task, facts: dict[str, Any]) -> dict[str, Any]:
+    """A merge step held by the owner's questions (#2070): those questions, not a sign-in (#2313).
+
+    The merge parks HUMAN_REQUIRED because that park holds nothing and no
+    timer ends it, but nobody signs in to anything: the answer that clears
+    the last named question returns it to READY in the answer's own
+    transaction (`agent_questions._hold_cleared`, QUESTION-WAKE), and
+    `human-ready` only re-runs it into the same park. So no `answer_route`
+    is served -- EXCEPT for a hold that route cannot read whole (an
+    `unreadable` count, an entry that is not a task id and an integer
+    index): it fails closed and wakes nothing, and only `human-ready`
+    returns it, as `agent_questions.owner_questions_hold` rules.
+
+    Each question is copied field by field, never as the recorded mapping.
+    Who may answer is the answer route's rule (`answer_refusal`): the
+    asking task's submitter, or an admin. A workflow's steps carry its
+    submitter, so it is this task's.
+    """
+    hold = _mapping(facts.get("owner_questions"))
+    recorded = _int(hold.get("unreadable"))
+    unreadable = recorded if recorded is not None and recorded >= 0 else 1
+    questions: list[dict[str, Any]] = []
+    raw = hold.get("questions")
+    for q in raw if isinstance(raw, list) else ():
+        index = q.get("question_index") if isinstance(q, Mapping) else None
+        task_id = _str(q.get("task_id")) if isinstance(q, Mapping) else None
+        if (task_id is None or isinstance(index, bool) or not isinstance(index, int)
+                or index < 0):
+            unreadable += 1
+            continue
+        questions.append({"task_id": task_id, "step_id": _str(q.get("step_id")),
+                          "question_index": index, "question": _str(q.get("question"))})
+    if not isinstance(raw, list):
+        unreadable = max(unreadable, 1)
+    by = task.submitted_by
+    launched = f"workflow {task.workflow_id}" if task.workflow_id else "it"
+    detail: dict[str, Any] = {
+        "park_phase": OWNER_QUESTIONS_PHASE,
+        "questions": questions,
+        "unreadable": unreadable,
+        "who_may_answer": {"submitted_by": by, "admin": True,
+                           "text": f"{by}, who launched {launched}, or an admin"},
+    }
+    n = len(questions)
+    if n:
+        tally = ", ".join(f"{step}: {count}" for step, count in
+                          Counter(q["step_id"] or q["task_id"] for q in questions).items())
+        summary = (f"Waiting for answers to {n} owner question{'' if n == 1 else 's'} "
+                   f"before merging ({tally})")
+    else:
+        summary = "Waiting for the owner questions the review named before merging"
+    if unreadable:
+        detail["answer_route"] = f"POST /v1/tasks/{task.id}/human-ready"
+        summary += (f"; {unreadable} entr{'y' if unreadable == 1 else 'ies'} the merge cannot "
+                    f"read: say it is ready once {'it is' if n <= 1 else 'they are'} answered")
+        resumes = ("a member of the tenant calls human-ready once the questions are answered: "
+                   "the hold names an entry an answer cannot clear on its own")
+    else:
+        resumes = "the last named question is answered (it resumes on its own)"
+    return {"detail": detail, "summary": summary, "resumes_when": resumes, "since": None}
+
+
 def _human(task: Task, facts: dict[str, Any]) -> dict[str, Any]:
+    if facts.get("park_phase") == OWNER_QUESTIONS_PHASE:
+        return _owner_questions(task, facts)
     detail = {
         "who_may_answer": _who(task),
         "expires_at": _as_dt(facts.get("expires_at")),

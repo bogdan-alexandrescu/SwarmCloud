@@ -588,7 +588,8 @@ describe('the frame', () => {
     // signed-in principal in the panel's foot.
     await waitFor(() => expect(c.querySelector('.sk-tenant b')?.textContent).toBe('Bogdan'))
     expect(c.querySelector('.sk-tenant b')?.getAttribute('title')).toBe('u-bogdan')
-    expect(c.querySelector('.sk-pfoot small')?.textContent).toBe('someone@example.com')
+    // Its role line carries the address in its title (S1a, CONFIG-ADMIN-POLISH).
+    expect(c.querySelector('.sk-pfoot small')?.getAttribute('title')).toBe('someone@example.com')
   })
 
   it('never renders an identity it has not read', async () => {

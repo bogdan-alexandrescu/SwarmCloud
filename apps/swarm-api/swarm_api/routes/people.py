@@ -3,7 +3,10 @@
 Lane W2 of #847 builds the grant and remove routes; lane W7 extends this file
 with the People list, approvals, limits and loans. Every route here is
 admin-only through `admin_auth`, and none is in `auth.POOL_ADMIN_ROUTES`, so a
-pool admin or the rollup sweeper is refused.
+pool admin or the rollup sweeper is refused. The one exception is the READ of
+the People list (ADMIN-PEOPLE-ROLES; part of #2157, BGD "Both, by scope"):
+`people_scope` also answers a workspace admin, with only the group workspaces
+they administer and the people in them. Every write stays a platform admin's.
 
     PUT    /v1/admin/admins/{email}   grant admin
     DELETE /v1/admin/admins/{email}   remove admin
@@ -27,13 +30,24 @@ Lane W7 (docs/workspaces.md §6.3-§6.4):
     POST /v1/admin/workspaces/sweep                      the dispatch sweep: an
                                                          admin, or the swarm-tick
                                                          scheduler identity
-                                                         (`auth.ROLLUP_SWEEPER_ROUTES`)
+                                                         (`auth.ROLLUP_SWEEPER_ROUTES`);
+                                                         it also prunes join requests
+                                                         decided or expired 90 days
+                                                         ago (join-requests.md §4.1)
+
+Lane JOIN-API (docs/design/join-requests.md §4.6, §4.8; part of #2325): the
+People read gains the open join requests its reader decides, `pending`
+counts them, and a requester's cell reads `requested`. `join_scope`, beside
+`people_scope`, is who may decide one request: a platform admin, or an
+admin of THAT request's workspace, read fresh. The decision routes are
+`routes/join_requests.py`'s.
 
 Lane WK-RECORD (docs/design/workspace-kinds.md §4.2.2):
 
     POST /v1/admin/workspaces                    file a personal, group or service
                                                  workspace; body {kind, principal,
-                                                 display_name?, limits?}
+                                                 display_name?, limits?,
+                                                 first_admin?}
     GET  /v1/admin/workspaces?kind=&state=       records, newest first, at most 200
     GET  /v1/admin/workspaces/{workspace_id}     one record, for the progress view
 
@@ -62,14 +76,27 @@ from pydantic import Field
 from ..admins import AdminRoles, build_admin_roles
 from ..auth import AuthContext
 from ..brokerclient import AccountPool
-from ..deps import AppContext, admin_auth, get_context
+from ..deps import AppContext, admin_auth, current_auth, get_context
+from .. import roles
 from .. import workspaces as ws
+from ..errors import (
+    ApiError,
+    Forbidden,
+    JoinDeciderRequired,
+    JoinRequestInvalid,
+    JoinRequestUnknown,
+    RoleUnavailable,
+    ValidationFailed,
+)
 from ..groups import MembershipResolver
+from ..joinrequests import VIA_PLATFORM_ADMIN, VIA_WORKSPACE_ADMIN, JoinStore, RequestView
+from ..memberships import MembershipStore
 from ..people import (
     MAX_CEILING,
     MAX_LOAN_REASON,
     MAX_REASON,
     MIN_CEILING,
+    SCOPE_PLATFORM,
     People,
     name_lookup,
 )
@@ -77,8 +104,47 @@ from ..publish_workspace import WorkspacePublisher, publisher_for
 from ..schemas import StrictModel
 from ..specsigning import signer_from_settings
 from .accounts import account_pool
+from .roles import _member as group_member
 
 router = APIRouter(prefix="/v1/admin", tags=["people"])
+
+#: Where an app context keeps its one JoinStore and MembershipStore, so the
+#: membership cache is per process, not per request (as `people._NAMES_ATTR`).
+_JOINS_ATTR = "_join_store"
+_MEMBERS_ATTR = "_membership_store"
+
+
+def join_store(ctx: AppContext) -> JoinStore:
+    store = getattr(ctx, _JOINS_ATTR, None)
+    if store is None:
+        store = JoinStore(ctx.db, ctx.settings, metrics=ctx.metrics, now=ctx.now)
+        setattr(ctx, _JOINS_ATTR, store)
+    return store
+
+
+def membership_store(ctx: AppContext) -> MembershipStore:
+    store = getattr(ctx, _MEMBERS_ATTR, None)
+    if store is None:
+        store = MembershipStore(ctx.db, ctx.settings, metrics=ctx.metrics, now=ctx.now)
+        setattr(ctx, _MEMBERS_ATTR, store)
+    return store
+
+
+def workspace_labels(ctx: AppContext, tenant_ids: Any) -> dict[str, str]:
+    """tenant_id -> the workspace's display name (`tenants/{id}.display_name`,
+    what the shell draws), for each id that has one. A label only: nothing
+    decides anything by it. One that cannot be read is left out, and the
+    caller says what it shows instead."""
+    out: dict[str, str] = {}
+    for tenant_id in sorted(set(tenant_ids)):
+        try:
+            tenant = ctx.store.get_tenant(tenant_id)
+        except Exception:  # noqa: BLE001 - a label, never the answer
+            continue
+        name = getattr(tenant, "display_name", None) if tenant is not None else None
+        if isinstance(name, str) and name.strip():
+            out[tenant_id] = name.strip()
+    return out
 
 
 def _roles(ctx: AppContext) -> AdminRoles:
@@ -157,6 +223,11 @@ class NewWorkspaceRequest(StrictModel):
     principal: str = Field(min_length=3, max_length=254)
     display_name: str | None = Field(default=None, max_length=ws.MAX_DISPLAY_NAME)
     limits: RequestLimits | None = None
+    #: A GROUP workspace's first admin (WORKSPACE-ADMIN-FIELDS, part of #2157;
+    #: docs/design/workspace-roles.md §4.6, §8): one person's address, granted
+    #: `admin` in this workspace and no other. Checked by
+    #: `roles.subject_for_write` before anything is created.
+    first_admin: str | None = Field(default=None, max_length=320)
 
 
 def workspace_directory(request: Request,
@@ -212,18 +283,155 @@ def people_service(
                       getattr(ctx.settings, "worker_firestore_off_tenants", ()) or ()))
 
 
+def administered_workspaces(ctx: AppContext, auth: AuthContext) -> dict[str, str]:
+    """tenant_id -> group for every GROUP workspace the caller administers by
+    their own stored role: the `/v1/tenants/mine` entries whose role is
+    `admin` (what the console's `adminWorkspaces` reads), each asked FRESH,
+    so a role taken away a moment ago is not read from a cache. Only the
+    caller's verified memberships are asked (`tenant_choices`), never the
+    selected tenant alone and never anything the request names; their own
+    personal workspace and every `u-` id are left out. A workspace whose role
+    could not be read is not administered: an unread role is never a wider
+    one. When NO role was read and none said admin, that is "could not ask",
+    `RoleUnavailable`'s 503, as `require_admin` answers an unread admin
+    lookup: a 403 would tell a real workspace admin they are not one."""
+    store = ctx.roles
+    if store is None:
+        return {}
+    email = (auth.email or "").strip().lower()
+    out: dict[str, str] = {}
+    unread: RoleUnavailable | None = None
+    read = 0
+    for tenant_id, principal in auth.tenant_choices:
+        if principal == email or tenant_id.startswith("u-"):
+            continue
+        try:
+            role = store.person_role(tenant_id, email, fresh=True).role
+        except RoleUnavailable as exc:
+            unread = exc
+            continue
+        read += 1
+        if role == roles.ADMIN:
+            out[tenant_id] = principal
+    if not out and read == 0 and unread is not None:
+        raise unread
+    return out
+
+
+def people_scope(request: Request, auth: AuthContext = Depends(current_auth),
+                 ctx: AppContext = Depends(get_context)) -> dict[str, str] | None:
+    """WHO MAY READ ADMIN › PEOPLE AND ROLES (ADMIN-PEOPLE-ROLES; part of
+    #2157). None for a platform admin, who reads everything, exactly as
+    `admin_auth` decides it (its 503 while Cloud Identity does not answer
+    included). Otherwise the group workspaces the caller administers, which
+    is the whole of what they read; and when they administer none -- a member,
+    a viewer, someone in no group -- `admin_auth`'s own 403. A pool admin, a
+    listed service account and the platform's own identities are refused as
+    before: none of them holds a person's role."""
+    try:
+        admin_auth(request, auth)
+        return None
+    except Forbidden:
+        if (auth.is_pool_admin or auth.is_rollup_sweeper or auth.is_schedule_tick
+                or auth.member_scope or auth.tenant_member
+                or ws.is_service_identity(auth.email)):
+            raise
+        administered = administered_workspaces(ctx, auth)
+        if not administered:
+            raise
+        return administered
+
+
+def join_scope(ctx: AppContext, scope: dict[str, str] | None, ref: str) -> tuple[RequestView, str]:
+    """WHO MAY DECIDE ONE JOIN REQUEST (join-requests.md §4.6, Q3 (a)): the
+    request, read fresh, and the `via` its decision is recorded with. `scope`
+    is `people_scope`'s answer, which every decision route declares, so a
+    member, a viewer, a pool admin, a listed service account and the
+    platform's own identities are refused before this runs.
+
+    A platform admin (`scope` None) decides any request, `platform_admin`.
+    A workspace admin decides a request only for a workspace they administer
+    NOW -- `administered_workspaces` asked each role fresh -- and for the
+    group it names; anything else is 403 `join_decider_required`. An unknown
+    ref, or one whose request fails its MAC, is the SAME 403 to a workspace
+    admin, so deciding is never a way to learn which refs exist in another
+    workspace; a platform admin is told which it is."""
+    store = join_store(ctx)
+    try:
+        view = store.view(ref)
+    except (JoinRequestUnknown, JoinRequestInvalid):
+        if scope is None:
+            raise
+        raise _not_decider() from None
+    if scope is None:
+        return view, VIA_PLATFORM_ADMIN
+    group = scope.get(view.request.tenant_id)
+    if group is None or group.strip().lower() != view.request.group:
+        raise _not_decider()
+    return view, VIA_WORKSPACE_ADMIN
+
+
+def _not_decider() -> JoinDeciderRequired:
+    return JoinDeciderRequired(
+        "only an admin of this request's workspace, or a platform admin, decides it; "
+        "nothing was changed")
+
+
+def open_join_requests(ctx: AppContext, people: People,
+                       scope: dict[str, str] | None) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """The open join requests the reader of Admin › People and roles decides:
+    every one for a platform admin, else those of the workspaces in `scope`
+    whose request names the group the workspace has now. It fails alone, as
+    each section of that read does: None and the error's code."""
+    try:
+        if scope is None:
+            views = join_store(ctx).open_for(None)
+        else:
+            views = [v for v in join_store(ctx).open_for(scope)
+                     if scope.get(v.request.tenant_id, "").strip().lower() == v.request.group]
+        labels = workspace_labels(ctx, (v.request.tenant_id for v in views))
+        return people.join_rows(views, labels), None
+    except Exception as exc:  # noqa: BLE001 - one section, never the page
+        return None, getattr(exc, "code", None) or type(exc).__name__
+
+
 @router.get("/people")
 def list_people(
     request: Request,
-    auth: AuthContext = Depends(admin_auth),
+    scope: dict[str, str] | None = Depends(people_scope),
+    auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
     people: People = Depends(people_service),
 ) -> dict:
     """§6.4: everyone who has signed in, pending requests first, the last 50
     audit entries, and the accounts this admin may lend. The lendable list
     comes from the quota broker; when it does not answer, the rest of the
-    page is still served and `lendable_accounts` is null with the reason."""
-    body = people.everyone(store=ctx.store)
+    page is still served and `lendable_accounts` is null with the reason.
+
+    THE PERSON × WORKSPACE GRID (S5c, S5f): `workspaces` is one column per
+    group workspace and each row's `roles` its cell in each. A platform admin
+    (`scope: platform`) is served every registered group workspace and
+    everything above. A workspace admin (`scope: workspaces`) is served only
+    the workspaces they administer and the people in them, and none of the
+    rest (`People.in_workspaces`). Every write on this router stays a
+    platform admin's (`admin_auth`)."""
+    join_requests, join_error = open_join_requests(ctx, people, scope)
+    if scope is not None:
+        return people.in_workspaces(ctx.roles, scope, join_requests, join_error)
+    body = people.everyone(store=ctx.store, join_requests=join_requests,
+                           join_requests_error=join_error)
+    body["scope"] = SCOPE_PLATFORM
+    # The grid's columns fail alone, like the two sections below: a registry
+    # that cannot be read leaves the list served and says why.
+    try:
+        columns, grants = people.role_columns(
+            ctx.roles, ctx.authenticator.registered_group_workspaces())
+        people.add_roles(body["people"], columns, grants, join_requests)
+        body["workspaces"] = columns
+        body["workspaces_error"] = None
+    except Exception as exc:  # noqa: BLE001 - one section, never the page
+        body["workspaces"] = None
+        body["workspaces_error"] = getattr(exc, "code", None) or type(exc).__name__
     try:
         pool = account_pool(request, ctx)
         body["lendable_accounts"] = people.lendable(pool, admin_email=auth.email,
@@ -261,7 +469,63 @@ def sweep_workspaces(
         pool_error = None
     except Exception as exc:  # noqa: BLE001 - the loans wait, the sweep runs
         pool, pool_error = None, getattr(exc, "code", None) or type(exc).__name__
-    return {**people.sweep(pool), "loans_error": pool_error}
+    body = {**people.sweep(pool), "loans_error": pool_error}
+    # Join requests decided or expired more than 90 days ago (Q5 (a)); the
+    # `admin_audit` rows stay. Fails alone: the dispatch sweep has run.
+    try:
+        body["join_requests_pruned"], body["join_prune_error"] = join_store(ctx).prune(), None
+    except Exception as exc:  # noqa: BLE001 - the next sweep prunes them
+        body["join_requests_pruned"] = None
+        body["join_prune_error"] = getattr(exc, "code", None) or type(exc).__name__
+    return body
+
+
+#: A record in one of these states is still being created, so naming its
+#: first admin is part of adding it; a `ready` one already has its people.
+BEING_CREATED = frozenset({ws.REQUESTED, ws.APPROVED, ws.APPLYING, ws.NEEDS_OWNER})
+FIRST_ADMIN_REASON = "first admin, named when the workspace was added"
+
+
+def name_first_admin(ctx: AppContext, record: dict[str, Any], email: str, *,
+                     by: str) -> dict[str, Any]:
+    """Grant `email` admin in the workspace `record` is, and nowhere else,
+    through the signed, append-only override and its `admin_audit` row
+    (`roles.RoleStore.write`, the write `PUT /v1/admin/workspaces/{id}/roles/
+    person` makes). The tenant id is the stored record's, which
+    `People.create` derived from the group's address. A person not yet in
+    the group still gets the grant; it applies once they are in it (§4.6),
+    and `member` says which. A grant already standing is not written again,
+    so a repeated request is idempotent. A record no longer being created is
+    answered `granted: false`: its admins are People and roles' to change. A
+    write that fails leaves the workspace filed and says why; the request
+    repeated while it is being created writes the grant then."""
+    tenant_id = str(record.get("tenant_id") or "")
+    group = str(record.get("principal") or "")
+    answer: dict[str, Any] = {"email": email, "role": roles.ADMIN}
+    if ws.state_of(record) not in BEING_CREATED:
+        return {**answer, "granted": False, "reason": "workspace_exists"}
+    store = ctx.roles
+    if store is None:
+        return {**answer, "granted": False, "reason": "role_unavailable"}
+    try:
+        current = store.newest_valid(tenant_id, email, fresh=True)
+        member = group_member(ctx, email, tenant_id, group)
+        if current is not None and current.role == roles.ADMIN:
+            return {**answer, "granted": True, "member": member}
+        if current is not None and current.role is not None:
+            previous, from_source = current.role, roles.SOURCE_OVERRIDE
+        else:
+            previous, from_source = store.default_role(tenant_id, fresh=True)[0], \
+                roles.SOURCE_DEFAULT
+        store.write(
+            tenant_id=tenant_id, subject=email, role=roles.ADMIN, by=by,
+            via=roles.VIA_PLATFORM_ADMIN, reason=FIRST_ADMIN_REASON, previous=current,
+            action=roles.AUDIT_GRANTED,
+            detail={"from": previous, "to": roles.ADMIN, "from_source": from_source,
+                    "member": member, "first_admin": True})
+    except ApiError as exc:
+        return {**answer, "granted": False, "reason": exc.code}
+    return {**answer, "granted": True, "member": member}
 
 
 @router.post("/workspaces")
@@ -273,13 +537,29 @@ def create_workspace(
 ) -> JSONResponse:
     """File a workspace of any kind (docs/design/workspace-kinds.md §4.2).
     202 with the record when this call created it (already `approved` when
-    the requester may approve it), 200 when it already stood."""
+    the requester may approve it), 200 when it already stood.
+
+    `first_admin` (a group workspace's only) is checked BEFORE anything is
+    created -- one person's address, never a service account -- and granted
+    after (`name_first_admin`), its outcome served as `first_admin`."""
+    first_admin = None
+    if body.first_admin is not None:
+        if body.kind != ws.GROUP:
+            raise ValidationFailed(
+                "first_admin names a group workspace's first admin: a personal "
+                "workspace's person is its admin, and a service workspace has no people",
+                detail={"field": "first_admin"})
+        first_admin = roles.subject_for_write(body.first_admin)
     status, record = people.create(
         ctx.submissions.workspaces, kind=body.kind, principal=body.principal,
         display_name=body.display_name,
         limits=body.limits.model_dump(exclude_none=True) if body.limits else None,
         by=auth.email, is_owner=bool(auth.is_owner))
-    return JSONResponse(status_code=status, content=people.admin_view(record))
+    content = people.admin_view(record)
+    if first_admin is not None:
+        content["first_admin"] = name_first_admin(
+            ctx, record, first_admin, by=(auth.email or "").strip().lower())
+    return JSONResponse(status_code=status, content=content)
 
 
 @router.get("/workspaces")

@@ -266,7 +266,8 @@ describe('3. each badge explains itself on hover and on focus', () => {
     const c = card(b).textContent ?? ''
     expect(c).toMatch(/sends page text to TypeSafe/)
     expect(c).toMatch(/your own TypeSafe key/)
-    expect(c).toMatch(/Settings › API keys/)
+    // MUTATION: name the old place, Settings › API keys -> fails.
+    expect(c).toMatch(/Config › Secrets › Keys for agents and MCP/)
     expect(c).toMatch(/Last browser action: Jev, 30s ago/)
   })
 

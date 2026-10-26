@@ -852,6 +852,19 @@ export interface Task {
    */
   heartbeat?: 'read' | 'not read' | 'no lease' | string | null
   /**
+   * WHETHER A BROWSER RUNTIME USED ITS BROWSER (BROWSER-USE-FLAG, #2322), the
+   * worker's verdict lifted out of `result_summary` by
+   * `codec.browser_use_to_api`, on the list rows too. True or false only on a
+   * browser runtime that ended with its counts read; NULL IS NOT FALSE: it is
+   * a runtime with no browser, an agent not ended, one that predates the
+   * record, or counts the worker could not read (`browser_use.unknown_because`).
+   * Read it through `browserUseOf` (BrowserUse.tsx). OPTIONAL: an older API
+   * does not send it.
+   */
+  browser_used?: boolean | null
+  /** Its counts and seconds; null when the worker recorded none. */
+  browser_use?: BrowserUse | null
+  /**
    * EVERY ATTEMPT'S COST AND TIME (lane review P1, 2026-10-05), from
    * `swarm_api/attempt_totals.py` on `GET /v1/tasks/{id}` and the workflow
    * read. `result_summary` and `started_at` describe only the LAST attempt;
@@ -2815,7 +2828,10 @@ export interface Waiting extends WaitingRow {
    * [{task_id, step_id, state}], states_read. CHILDREN_INCOMPLETE: children
    * [{task_id, state}], unfinished, total, states_read. AWAITING_INPUT:
    * who_may_answer, opened_at, expires_at, answer_command. HUMAN_REQUIRED:
-   * who_may_answer, expires_at, answer_route, cause. CREDENTIAL_MISSING:
+   * who_may_answer, expires_at, answer_route, cause -- or, for a merge held
+   * by the owner's questions (park_phase owner_questions, #2313): park_phase,
+   * questions [{task_id, step_id, question_index, question}], unreadable,
+   * who_may_answer, and answer_route only when unreadable. CREDENTIAL_MISSING:
    * provider, secret_names, account_pool, forge_connection,
    * workspace_secrets, mcp_servers -- names only. BUDGET_EXHAUSTED: budget.
    * MANUAL_PAUSE: paused_by, paused_at, error.
@@ -4313,6 +4329,24 @@ export type TaskAccountStatus =
   | 'no_model_call'
   | 'not_pooled'
   | 'unread'
+
+/**
+ * `task.browser_use` (BROWSER-USE-FLAG, #2322; `codec.browser_use_to_api`).
+ * Each count is a non-negative integer or null (not read). `tool_calls` is
+ * every browser call, `mcp_calls` and `command_calls` its two kinds;
+ * `images` the images under the agent's artifacts. `complete` says the
+ * stream was read whole; `unknown_because` is set only when `browser_used`
+ * is null on a browser runtime.
+ */
+export interface BrowserUse {
+  tool_calls: number | null
+  mcp_calls: number | null
+  command_calls: number | null
+  images: number | null
+  seconds: number | null
+  complete: boolean
+  unknown_because: 'not_reported' | 'stream_unread' | 'stream_cut' | null
+}
 
 /** One account an attempt was handed and gave back (#379). */
 export interface AccountSwap {
@@ -5872,6 +5906,48 @@ export interface PersonRow {
   last_seen: string | null
   last_submitted: string | null
   last_active: string | null
+  /** The person's cell in each of `PeopleDoc.workspaces`, by tenant id (`PeopleRoleCell`). Absent from an older API. */
+  roles?: Record<string, PeopleRoleCell>
+}
+
+/**
+ * ONE CELL OF THE PERSON × WORKSPACE GRID (ADMIN-PEOPLE-ROLES; part of #2157,
+ * `people.role_cell`): their own role there, else the workspace's default when
+ * they were last seen in it, else `none`; null when that workspace's roles
+ * could not be read, which the grid draws as a dash, never as a role.
+ */
+export type PeopleRoleCell = 'admin' | 'member' | 'viewer' | 'none' | null
+
+/** One column of the grid: a group workspace (`people.role_columns`). */
+export interface PeopleWorkspaceColumn {
+  tenant_id: string
+  group: string
+  display_name: string
+  default_role: string | null
+  /** Its roles could not be read; every cell in it is null. */
+  unavailable: boolean
+}
+
+/**
+ * `GET /v1/admin/people` for a WORKSPACE admin (`scope: workspaces`,
+ * `people.in_workspaces`): only the workspaces they administer, and of each
+ * person only their cells and when they were last seen. Nothing of anyone's
+ * own workspace, account or loan, and none of the platform's sections.
+ */
+export interface ScopedPersonRow {
+  email: string
+  display_name?: string | null
+  roles: Record<string, PeopleRoleCell>
+  last_active: string | null
+}
+
+export interface ScopedPeopleDoc {
+  scope: 'workspaces'
+  workspaces: PeopleWorkspaceColumn[]
+  workspaces_error?: string | null
+  people: ScopedPersonRow[]
+  count: number
+  pending: number
 }
 
 /** One `admin_audit` entry: a workspace action names a workspace id, an admin change an email. */
@@ -5908,6 +5984,11 @@ export interface PeopleDoc {
   /** `AdminRoles.holders`: the owner first. Null, with the reason, when the roles were not read; absent from an older API. */
   admins?: AdminHolder[] | null
   admins_error?: string | null
+  /** Who it was read as (ADMIN-PEOPLE-ROLES): `platform` here; a workspace admin's is a `ScopedPeopleDoc`. Absent from an older API. */
+  scope?: 'platform'
+  /** The grid's columns, every registered group workspace; null, with the reason, when they were not read; absent from an older API. */
+  workspaces?: PeopleWorkspaceColumn[] | null
+  workspaces_error?: string | null
 }
 
 /** One `admin_roles/` holder. An ADMIN_GROUPS member has no document and is not listed. */

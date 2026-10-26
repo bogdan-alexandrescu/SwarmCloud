@@ -9,6 +9,7 @@ import { createPortal } from 'react-dom'
 // is only a rebuild if the screens stop hand-rolling their own.
 import { Em, Mark, timesRun, type ChipTone } from './AgentDetail'
 import { TaskIdLine } from './TaskIdLine'
+import { BrowserUseMark, browserUseOf, browserUseSay } from './BrowserUse'
 import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentList, agentName, shortTaskId, workflowHref, type AgentList, type RecentState } from './agentlist'
 import { TASK_PAGE_LIMIT, USE_FIXTURES, loadAttempts, loadLiveSession, loadTask, loadTasks, loadTasksInState, type LiveSession, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
@@ -362,19 +363,27 @@ export function AgentsScreen({
   // and reported through `onList` like the tab and the state.
   const [grouped, setGrouped] = useState(list?.grouped === true)
   const [failedFirst, setFailedFirst] = useState(list?.failedFirst === true)
+  // ONLY THE BROWSER AGENTS THAT DID NOT USE IT (BROWSER-USE-UI, part of
+  // #2322): `?browser=unused`, where Platform counts' "Unused browser time"
+  // links. Seeded from the address and reported through `onList` like the
+  // toggles above, so the link survives a reload and the chip that clears it
+  // writes the plain address back.
+  const [browserUnused, setBrowserUnused] = useState(list?.browserUnused === true)
   // THE ADDRESS WINS WHEN IT NAMES A TAB, and only then. Keyed on the values
   // rather than the object, which App rebuilds on every route.
   const listTab = list?.tab ?? null
   const listState = list?.state ?? null
   const listGrouped = list?.grouped === true
   const listFirst = list?.failedFirst === true
+  const listBrowserUnused = list?.browserUnused === true
   useEffect(() => {
     if (listTab === null) return
     setTab(listTab)
     setRecentState(listTab === 'recent' ? listState : null)
     setGrouped(listGrouped)
     setFailedFirst(listFirst)
-  }, [listTab, listState, listGrouped, listFirst])
+    setBrowserUnused(listBrowserUnused)
+  }, [listTab, listState, listGrouped, listFirst, listBrowserUnused])
   // RECENT'S SEARCH (#99). Held here beside `profile`, not in the address: a
   // query is a reader's scratch.
   const [query, setQuery] = useState('')
@@ -453,6 +462,8 @@ export function AgentsScreen({
           setQuery={setQuery}
           failedFirst={failedFirst}
           setFailedFirst={setFailedFirst}
+          browserUnused={browserUnused}
+          setBrowserUnused={setBrowserUnused}
         />
       )}
     </Screen>
@@ -490,6 +501,8 @@ function AgentsBody({
   setQuery,
   failedFirst,
   setFailedFirst,
+  browserUnused,
+  setBrowserUnused,
 }: {
   onOpen: (taskId: string) => void
   openTaskId: string | null
@@ -517,6 +530,9 @@ function AgentsBody({
   /** Recent's "failed first" sort (#99). */
   failedFirst: boolean
   setFailedFirst: (f: boolean) => void
+  /** Only the browser agents whose browser was not used (`?browser=unused`, #2322). */
+  browserUnused: boolean
+  setBrowserUnused: (b: boolean) => void
 }) {
   // One clock for every ticking duration on the screen, so a hundred rows do
   // not each hold their own interval. The SHARED 1s clock (useNow.ts), the
@@ -626,11 +642,15 @@ function AgentsBody({
           // not reorder it; the profile and the search still narrow it.
           browserRows(page.tasks)
             .filter((t) => profile === '' || t.runner_profile === profile)
+            .filter((t) => !browserUnused || browserUseOf(t)?.kind === 'unused')
             .filter((t) => needle === '' || matchesQuery(t, needle))
         : page.tasks
         .filter((t) => tabOf(t) === shown)
         .filter((t) => stateFilter === null || t.state === RECENT_STATE_OF[stateFilter])
         .filter((t) => profile === '' || t.runner_profile === profile)
+        // Only an explicit `false` from the worker: a null verdict is not
+        // "not used" (BrowserUse.tsx), so it is never listed here.
+        .filter((t) => !browserUnused || browserUseOf(t)?.kind === 'unused')
         .filter((t) => needle === '' || matchesQuery(t, needle))
         .sort((a, b) => {
           if (failFirst) {
@@ -640,7 +660,7 @@ function AgentsBody({
           if (startedSort !== null) return compareStarted(a, b, startedSort === 'asc')
           return listOrder(a, b, shown)
         }),
-    [page.tasks, shown, stateFilter, profile, needle, failFirst, startedSort, browsers],
+    [page.tasks, shown, stateFilter, profile, needle, failFirst, startedSort, browsers, browserUnused],
   )
 
   // EVERY ROW READ, BY ID, not only the ones this tab and its filters keep
@@ -651,24 +671,37 @@ function AgentsBody({
   // The segment's counts, from the loaded Recent rows, like the tab badges --
   // UNDER THE PROFILE FILTER (live QA WA-9): with `indexer` chosen and 15 rows
   // on screen the segment read `all 181+`, the count of every profile's rows.
-  // A count beside a filter counts what that filter lets through.
+  // A count beside a filter counts what that filter lets through -- the
+  // browser filter too (review, light-desktop-03-filtered: `all 6` over the
+  // two rows `?browser=unused` drew).
   const stateCounts = useMemo(() => {
-    const recent = page.tasks.filter((t) => tabOf(t) === 'recent' && (profile === '' || t.runner_profile === profile))
+    const recent = page.tasks.filter(
+      (t) =>
+        tabOf(t) === 'recent' &&
+        (profile === '' || t.runner_profile === profile) &&
+        (!browserUnused || browserUseOf(t)?.kind === 'unused'),
+    )
     return {
       all: recent.length,
       failed: recent.filter((t) => t.state === RECENT_STATE_OF.failed).length,
       cancelled: recent.filter((t) => t.state === RECENT_STATE_OF.cancelled).length,
       succeeded: recent.filter((t) => t.state === RECENT_STATE_OF.succeeded).length,
     }
-  }, [page.tasks, profile])
+  }, [page.tasks, profile, browserUnused])
 
   // EVERY REPORT CARRIES THE TOGGLES (G2-22): a tab click that wrote only
   // `{ tab, state }` would clear `group=wf` from the address, and the
   // address is what the screen re-reads its toggles from.
-  const report = (over: { tab?: Tab; state?: RecentState | null; grouped?: boolean; failedFirst?: boolean }) => {
+  const report = (over: { tab?: Tab; state?: RecentState | null; grouped?: boolean; failedFirst?: boolean; browserUnused?: boolean }) => {
     const t = over.tab ?? shown
     const st = over.state !== undefined ? over.state : recentState
-    onList?.(agentList(t, st, { grouped: over.grouped ?? grouped, failedFirst: over.failedFirst ?? failedFirst }))
+    onList?.(
+      agentList(t, st, {
+        grouped: over.grouped ?? grouped,
+        failedFirst: over.failedFirst ?? failedFirst,
+        browserUnused: over.browserUnused ?? browserUnused,
+      }),
+    )
   }
   const chooseTab = (next: Tab) => {
     setTab(next)
@@ -685,6 +718,10 @@ function AgentsBody({
   const chooseFailedFirst = (next: boolean) => {
     setFailedFirst(next)
     report({ failedFirst: next })
+  }
+  const clearBrowserUnused = () => {
+    setBrowserUnused(false)
+    report({ browserUnused: false })
   }
   // A ROW OPENS UNDER THE TAB IT CAME FROM (N9, owner QA 2026-10-04). The
   // landing tab is this screen's own state until a click reports one, so a
@@ -951,6 +988,25 @@ function AgentsBody({
             </a>
           )}
 
+          {/* THE ADDRESS'S BROWSER FILTER, NAMED WHILE IT IS ON (BROWSER-USE-UI,
+              #2322). It arrives from Platform counts' link, not from a control
+              here, so the list says why it is narrowed and × gives every agent
+              back. Only an explicit "not used" passes it, never a dash. */}
+          {browserUnused && (
+            <span className="ag-filter bu-filter" data-filter="browser-unused">
+              <ToneMark tone="warn">browser not used</ToneMark>
+              <button
+                type="button"
+                className="bu-filter-clear"
+                aria-label="Clear the browser filter: show every agent, not only the browser agents that did not use the browser"
+                title="Clear the browser filter"
+                onClick={clearBrowserUnused}
+              >
+                ×
+              </button>
+            </span>
+          )}
+
           <div className="ag-tools-tail">
             {failFirstOffered && (
               <label className="ag-filter check">
@@ -1022,6 +1078,19 @@ function AgentsBody({
           classes={classes}
           onOpen={openElsewhere}
         />
+      ) : rows.length === 0 && browserUnused ? (
+        // THE BROWSER FILTER FOUND NONE, IN THE LOADED ROWS ONLY. Over a capped
+        // page that is a partial answer and says so; whole, it is a real zero.
+        <div className="ctl-empty" data-empty="browser-unused">
+          <h3>
+            <Mark
+              kind={bounded ? 'partial' : 'zero'}
+              say={`No browser agent that did not use its browser among the ${page.tasks.length} loaded rows of ${shown}${needle !== '' ? ` matches “${query.trim()}”` : ''}.${bounded ? ' More rows exist beyond them, so this is not an answer for the platform.' : ''} An agent whose browser use was not recorded is not listed here.`}
+            />{' '}
+            {`no browser left unused in the ${page.tasks.length} loaded`}
+            {needle !== '' && ` matching “${query.trim()}”`}
+          </h3>
+        </div>
       ) : rows.length === 0 && bounded && (needle !== '' || stateFilter !== null) ? (
         // A SEARCH OR A STATE OVER A CAPPED PAGE FOUND NOTHING IN THE PAGE,
         // AND THAT IS ALL IT FOUND (live QA WA-1). It said `real zero`, a
@@ -1852,6 +1921,11 @@ function CompactRow({
   const name = agentName(task)
   const owner = task.submitted_by?.split('@')[0] ?? null
   const profile = task.model ? `${task.runner_profile} · ${task.model}` : task.runner_profile
+  // WHETHER ITS BROWSER WAS USED (BROWSER-USE-UI, #2322): an ended agent on a
+  // browser runtime only. A live one has no verdict yet, and its row already
+  // carries the browser's thumbnail; the inspector says "recorded when it ends".
+  const browserUse = browserUseOf(task)
+  const browserMark = browserUse !== null && browserUse.ended ? browserUse : null
   // A BROWSER AGENT WHOSE BROWSER IS NOT UP YET (QA12-20): listed under
   // Browsers with the running ones, and marked, so it is not read as a
   // browser to watch.
@@ -1888,6 +1962,7 @@ function CompactRow({
     endedAt !== null ? `ended ${whenText}` : whenText === '' ? null : whenText,
     ran,
     profile,
+    browserMark !== null ? browserUseSay(browserMark) : null,
     owner ?? 'no owner recorded',
     live || tries.over ? tries.say : null,
     startingBrowser ? 'browser starting' : null,
@@ -1969,7 +2044,10 @@ function CompactRow({
       <span className={`when${el.ticking && endedAt === null ? ' ticking' : ''}`} title={whenTitle}>
         {whenText}
       </span>
-      <span className="cr-sub">
+      {/* A BROWSER ROW WRAPS BETWEEN ITS FACTS AT EVERY WIDTH (review,
+          dark-desktop-02-inspector-used): beside the inspector its mark cut
+          the owner and the run time off the one line (agents.css `.has-bu`). */}
+      <span className={`cr-sub${browserMark !== null ? ' has-bu' : ''}`}>
         {task.state === 'RUNNING' && isLiveBrowser(task) && <DeviceThumb taskId={task.id} />}
         {/* A LIVE ROW LEADS WITH WHERE IT IS (visual QA run 2, work-a-007):
             the line is one line cut at its end (agents.css `.cr-sub`), and
@@ -2006,6 +2084,12 @@ function CompactRow({
         )}
         <span className="cr-profile">{profile}</span>
         {' · '}
+        {browserMark !== null && (
+          <>
+            <BrowserUseMark view={browserMark} />
+            {' · '}
+          </>
+        )}
         <span className="cr-owner" title={task.submitted_by ?? undefined}>
           {owner ?? <Em />}
         </span>

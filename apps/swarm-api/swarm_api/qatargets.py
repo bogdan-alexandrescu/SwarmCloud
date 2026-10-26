@@ -152,6 +152,17 @@ once. Findings are filed per leg: the file step's dedupe key is
 `[<leg>]`, and a grouped run's issues link the run group's page, whose id
 `runnable_legs` mints before it renders.
 
+WHAT AN ADMIN SAID IS NOT A SCREEN (S9b's Remove, docs/web-ui/mockups/
+config-e.html; lane QA-RUN-REMOVE, BGD 2026-10-25, part of #2157). Beside
+Promote, a workspace admin dismisses a found route
+(`POST /v1/qa-targets/{id}:dismiss-route`, `{route_id}`): its
+`qaspec.route_key` joins the target's `dismissed_routes`, which is the app's
+and not a leg's, so no environment's `new_since_last_run` offers it again, in
+this run's answer or any later one. `:restore-route` takes it out again, so a
+mistake is one click. Each is one transaction with its `admin_audit` row
+(`qa_target_route_dismissed`, `_restored`: the route's id, never its path).
+Neither bumps `revision`, and a PATCH keeps the list stored at its commit.
+
 ONE APP, SEVERAL ENVIRONMENTS (docs/design/qa-environments.md §1; lane
 QAENV-MODEL, BGD's Q1 (a), 2026-10-23, part of #2136). A target is an APP: its
 name, repository, screens, discovery settings, flows, exclusions and filing
@@ -301,6 +312,10 @@ AUDIT_BYPASS_SET = "qa_target_challenge_bypass_set"
 AUDIT_MIGRATED = "qa_target_migrated"
 #: The `live_audit` entry each answer with a target appends (§2.2).
 AUDIT_ISSUED = "qa_target_issued"
+#: S9b's Remove (lane QA-RUN-REMOVE, part of #2157): a found route a workspace
+#: admin dismissed, and one they restored.
+AUDIT_ROUTE_DISMISSED = "qa_target_route_dismissed"
+AUDIT_ROUTE_RESTORED = "qa_target_route_restored"
 
 #: The worker's signing purpose for this route; never the QA identity's, the
 #: live session's, the egress ticket's or a child's.
@@ -347,6 +362,16 @@ MISSING_DROP_AFTER = 3
 #: A claim whose submission never recorded its workflow (the process died
 #: between the two) frees the target after this.
 DISCOVERY_CLAIM_TTL = timedelta(minutes=5)
+#: The app's dismissed routes (S9b's Remove, lane QA-RUN-REMOVE): what a
+#: workspace admin said is not a screen, kept on the target (not on a leg) so
+#: no environment's later run offers it again. Each `{key, id, path, reveal?,
+#: by, at}`, `key` being `qaspec.route_key`. Never part of `revision`: what a
+#: run renders does not change, so a running leg's mark stays good.
+DISMISSED_FIELD = "dismissed_routes"
+#: A list a person reads on one page and restores from by hand; twice what
+#: one leg may ever have discovered (`qaspec.MAX_SCREENS`), so several legs'
+#: routes fit and the document stays small.
+MAX_DISMISSED = 2 * qaspec.MAX_SCREENS
 
 USERNAME_MAX = 256
 PASSWORD_MAX = 1024
@@ -481,6 +506,11 @@ UNAVAILABLE_MESSAGE = (
     "it is declared, with swarm-api's adder and accessor bindings, by lane VQ-3"
 )
 NOT_FOUND_MESSAGE = "no such QA target"
+ROUTE_NOT_FOUND_MESSAGE = "this QA target has found no route with this id"
+NOT_DISMISSED_MESSAGE = "this QA target has dismissed no route with this id"
+DISMISSED_FULL_MESSAGE = (
+    f"this QA target has dismissed {MAX_DISMISSED} routes; restore one before dismissing another"
+)
 NO_BYPASS_MESSAGE = "this QA target has no challenge_bypass; set its kind and name first"
 BYPASS_VALUE_MESSAGE = (
     f"a challenge bypass value is {BYPASS_VALUE_MIN} to {BYPASS_VALUE_MAX} characters a header and a "
@@ -883,7 +913,8 @@ def _flat_api(doc: Mapping[str, Any]) -> dict[str, Any]:
     for key in SPEC_FIELDS:
         if key in doc:
             body[key] = doc[key]
-    body.update(discovery_status(doc, screens=doc.get("screens")))
+    body.update(discovery_status(doc, screens=doc.get("screens"), dismissed=doc.get(DISMISSED_FIELD)))
+    body[DISMISSED_FIELD] = dismissed_api(doc.get(DISMISSED_FIELD))
     return body
 
 
@@ -895,7 +926,7 @@ _LEG_API_KEYS = frozenset({
 })
 
 
-def _entry_api(entry: Mapping[str, Any], *, screens: Any = None) -> dict[str, Any]:
+def _entry_api(entry: Mapping[str, Any], *, screens: Any = None, dismissed: Any = None) -> dict[str, Any]:
     """One entry's answer: its settings and the status of its values, never
     a value, a length or its map key."""
     body: dict[str, Any] = {
@@ -915,7 +946,7 @@ def _entry_api(entry: Mapping[str, Any], *, screens: Any = None) -> dict[str, An
     for key in ("read_posts", "rate", "challenge_bypass"):
         if key in entry:
             body[key] = entry[key]
-    body.update(discovery_status(entry, screens=screens))
+    body.update(discovery_status(entry, screens=screens, dismissed=dismissed))
     return body
 
 
@@ -933,19 +964,33 @@ def to_api(doc: Mapping[str, Any]) -> dict[str, Any]:
     else:
         app = {k: v for k, v in normal.items() if k not in ("environments", qaspec.MIGRATED)}
         body = {k: v for k, v in _flat_api(app).items() if k not in _LEG_API_KEYS}
-    body["environments"] = [_entry_api(e, screens=normal.get("screens")) for e in entries]
+    body["environments"] = [_entry_api(e, screens=normal.get("screens"), dismissed=normal.get(DISMISSED_FIELD))
+                            for e in entries]
     return body
 
 
-def discovery_status(doc: Mapping[str, Any], *, screens: Any = None) -> dict[str, Any]:
+def dismissed_keys(dismissed: Any) -> set[str]:
+    """The route keys a target's `dismissed_routes` holds."""
+    return {str(d["key"]) for d in dismissed or [] if isinstance(d, Mapping) and isinstance(d.get("key"), str)}
+
+
+def dismissed_api(dismissed: Any) -> list[dict[str, Any]]:
+    """The answer's `dismissed_routes`: what was dismissed, by whom and when."""
+    return [{"id": d.get("id"), "path": d.get("path"), **({"reveal": d["reveal"]} if d.get("reveal") else {}),
+             "by": d.get("by"), "at": _iso(d.get("at"))}
+            for d in dismissed or [] if isinstance(d, Mapping) and isinstance(d.get("key"), str)]
+
+
+def discovery_status(doc: Mapping[str, Any], *, screens: Any = None, dismissed: Any = None) -> dict[str, Any]:
     """What the console draws for discovery: the stored list and who ran it,
     the last failure's sentence, the running one's workflow, and the routes
     the last settled run added (`new_since_last_run`, qa-environments.md §5:
     what the card offers a workspace admin to Promote into `screens`, less
-    any `screens` already lists)."""
+    any `screens` already lists and any route the target dismissed, S9b)."""
     running = doc.get("discovering") or None
     discovered = [{k: _iso(v) for k, v in s.items()} for s in doc.get("discovered") or [] if isinstance(s, Mapping)]
     listed = {qaspec.route_key(s) for s in screens or [] if isinstance(s, Mapping) and isinstance(s.get("path"), str)}
+    listed |= dismissed_keys(dismissed)
     new_ids = set(doc.get("discovered_new") or [])
     return {
         "discovered": discovered or None,
@@ -1417,7 +1462,11 @@ class QaTargets:
             snap = _snapshot(txn.get(ref))
             if not snap.exists or (snap.to_dict() or {}).get("revision") != current.get("revision"):
                 raise Conflict("this QA target changed while it was being changed; read it again")
-            txn.set(ref, stored)
+            # A dismissal does not bump `revision`: keep the one stored now,
+            # not the one read before this change.
+            dismissed = (snap.to_dict() or {}).get(DISMISSED_FIELD)
+            txn.set(ref, {**{k: v for k, v in stored.items() if k != DISMISSED_FIELD},
+                          **({DISMISSED_FIELD: dismissed} if dismissed is not None else {})})
             _audit(txn, self._db, action=AUDIT_CHANGED, tenant_id=tenant_id, target_id=target_id,
                    by=by, now=now, detail=detail)
             if migrated and not was_migrated:
@@ -1939,6 +1988,78 @@ class QaTargets:
                     state = wf_doc.get("state")
             legs.append({**leg, "workflow_state": state})
         return {**{k: v for k, v in doc.items() if k != "legs"}, "at": _iso(doc.get("at")), "legs": legs}
+
+    # -- dismissed routes (S9b's Remove, lane QA-RUN-REMOVE, part of #2157) ---------
+
+    def _edit_dismissed(self, tenant_id: str, target_id: str, *, by: str, action: str,
+                        change: Callable[[dict[str, Any], list[dict[str, Any]]],
+                                         tuple[list[dict[str, Any]], dict[str, Any]]]) -> dict[str, Any]:
+        """One transaction over the target's `dismissed_routes`: `change`
+        maps (the target, its list) to (the new list, the route it moved),
+        refusing before anything is written, and the `admin_audit` row
+        commits with the write. `revision` is never bumped (DISMISSED_FIELD)."""
+        if not _TARGET_ID.match(target_id or ""):
+            raise NotFound(NOT_FOUND_MESSAGE)
+        now = self._now()
+        ref = self._ref(target_id)
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> dict[str, Any]:
+            snap = _snapshot(txn.get(ref))
+            doc = (snap.to_dict() or {}) if snap.exists else None
+            if doc is None or doc.get("tenant_id") != tenant_id:
+                raise NotFound(NOT_FOUND_MESSAGE)
+            dismissed = [dict(d) for d in doc.get(DISMISSED_FIELD) or [] if isinstance(d, Mapping)]
+            after, route = change(_normal(doc), dismissed)
+            new = {**doc, DISMISSED_FIELD: after}
+            txn.set(ref, new)
+            _audit(txn, self._db, action=action, tenant_id=tenant_id, target_id=target_id, by=by, now=now,
+                   detail={"route_id": route.get("id"), "dismissed": len(after)})
+            return new
+
+        new = _apply(transaction)
+        log.info("qa target route %s tenant=%s target=%s dismissed=%d", action, tenant_id, target_id,
+                 len(new[DISMISSED_FIELD]))
+        return _normal(new)
+
+    def dismiss_route(self, tenant_id: str, target_id: str, route_id: str, *, by: str) -> dict[str, Any]:
+        """Dismiss the found route `route_id` names in any entry's
+        `discovered`: its key joins `dismissed_routes`, so no leg's
+        `new_since_last_run` offers it again, this run or a later one. Saying
+        it twice keeps one. 404 when no entry has found it; 422 when the list
+        is full."""
+
+        def change(normal: dict[str, Any], dismissed: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            found = next((r for e in normal["environments"] for r in e.get("discovered") or []
+                          if isinstance(r, Mapping) and r.get("id") == route_id and isinstance(r.get("path"), str)),
+                         None)
+            if found is None:
+                raise NotFound(ROUTE_NOT_FOUND_MESSAGE)
+            key = qaspec.route_key(found)
+            if key in dismissed_keys(dismissed):
+                return dismissed, dict(found)
+            if len(dismissed) >= MAX_DISMISSED:
+                raise _invalid(DISMISSED_FULL_MESSAGE, field="route_id")
+            entry = {"key": key, "id": found["id"], "path": found["path"],
+                     **({"reveal": list(found["reveal"])} if found.get("reveal") else {}),
+                     "by": by, "at": self._now()}
+            return [*dismissed, entry], entry
+
+        return self._edit_dismissed(tenant_id, target_id, by=by, action=AUDIT_ROUTE_DISMISSED, change=change)
+
+    def restore_route(self, tenant_id: str, target_id: str, route_id: str, *, by: str) -> dict[str, Any]:
+        """Undo a dismissal: the route `route_id` names leaves
+        `dismissed_routes`, and the legs that found it in their last run offer
+        it again. 404 when the target dismissed no route with this id."""
+
+        def change(normal: dict[str, Any], dismissed: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            route = next((d for d in dismissed if d.get("id") == route_id), None)
+            if route is None:
+                raise NotFound(NOT_DISMISSED_MESSAGE)
+            return [d for d in dismissed if d is not route], route
+
+        return self._edit_dismissed(tenant_id, target_id, by=by, action=AUDIT_ROUTE_RESTORED, change=change)
 
     # -- discovery (§4.1, lane QA-DISCOVER; per entry, qa-environments.md §1.1) -------
 

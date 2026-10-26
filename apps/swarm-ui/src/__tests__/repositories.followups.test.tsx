@@ -125,7 +125,7 @@ describe('Remove on each registered card', () => {
     expect((confirm as HTMLButtonElement).disabled).toBe(false)
     const readsBefore = calls.filter((c) => c.method === 'GET' && c.url.split('?')[0] === '/v1/repositories').length
     fireEvent.click(confirm)
-    // MUTATION: read the bare 204 as a failure (as `write` alone does) and the dialog stays up, saying "Not removed".
+    // MUTATION: read the bare 204 as a failure (as `write` did before CONSOLE-SMALL-FIXES) and the dialog stays up, saying "Not removed".
     // MUTATION: never re-read the registry and the card stays drawn registered.
     await waitFor(() => expect(dashed()).toContain('example-org/example-web'), WAIT)
     expect(card('example-org/example-web')!.classList.contains('is-chosen')).toBe(true)

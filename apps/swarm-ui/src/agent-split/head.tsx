@@ -4,6 +4,7 @@ import { AgParentLink } from '../AgentChildren'
 import { SplitClock } from '../AgentDetail'
 import { agentName, rememberAgentName, workflowHref } from '../agentlist'
 import { useResourceClasses } from '../Blockers'
+import { BrowserUseFact, browserUseOf } from '../BrowserUse'
 import { HelpCard } from '../HelpCard'
 import { LiveControl, type LiveState } from '../LiveBrowser'
 import { addressToPath } from '../paths'
@@ -231,6 +232,10 @@ export function AgHeadMeta({ task }: { task: Task | null }) {
   const cls = task === null ? null : (classes?.[task.resource_class] ?? null)
   const account = task === null ? null : accountText(task.account)
   const d = task === null ? null : dispatchOf(task)
+  // WHETHER ITS BROWSER WAS USED (BROWSER-USE-UI, #2322), beside the profile
+  // it is a fact about: used, not used (warning), or a dash with its reason,
+  // the counts on a press. Nothing for a runtime with no browser.
+  const browser = task === null ? null : browserUseOf(task)
   // A WRAPPED LINE NEVER STARTS WITH A MIDDOT (G2-20, QA 2026-10-07). The
   // separator was each fact's `::before`, so on a phone a fact that wrapped
   // took its dot to the head of the next line (`· workflow wf_…`). It is the
@@ -241,6 +246,7 @@ export function AgHeadMeta({ task }: { task: Task | null }) {
       ? []
       : [
           { key: 'profile', li: <b>{task.runner_profile}</b> },
+          ...(browser === null ? [] : [{ key: 'browser-use', li: <BrowserUseFact view={browser} /> }]),
           {
             key: 'class',
             title: cls === null ? 'The class catalogue has not answered, so its size is not shown.' : undefined,

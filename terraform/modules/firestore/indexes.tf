@@ -551,6 +551,53 @@ locals {
         { field_path = "at", order = "DESCENDING" },
       ]
     }
+
+    # Platform memberships (docs/design/join-requests.md §4.4): the resolver
+    # reads every workspace a person joined with one query across tenants,
+    # in pages of 20:
+    #     workspace_memberships where subject == E order by at DESC
+    # Memberships are append-only with auto-ids, so the newest valid grant
+    # per tenant_id is the membership, and ordering is the only way to find
+    # it. subject leads, not tenant_id: the read is one person's, across
+    # workspaces, and each row's tenant_id is under its MAC. Without the
+    # index a person reachable only by membership is membership_unavailable.
+    "workspace-memberships-subject-at" = {
+      collection  = "workspace_memberships"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "subject", order = "ASCENDING" },
+        { field_path = "at", order = "DESCENDING" },
+      ]
+    }
+
+    # A workspace's join requests, newest first (the same design, §4.1 and
+    # §4.6): its admins' Waiting for you rows and the per-workspace open
+    # limit.
+    #     join_requests where tenant_id == T order by requested_at DESC
+    # tenant_id leads (invariant 9).
+    "join-requests-tenant-requested" = {
+      collection  = "join_requests"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "requested_at", order = "DESCENDING" },
+      ]
+    }
+
+    # A person's own join requests, newest first (§4.1): their list, and the
+    # per-person open and daily limits, read in the transaction that writes
+    # the request.
+    #     join_requests where requester == E order by requested_at DESC
+    # join_links needs no entry here: its lookup is one equality on
+    # code_sha256, which the default single-field index serves (§4.2).
+    "join-requests-requester-requested" = {
+      collection  = "join_requests"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "requester", order = "ASCENDING" },
+        { field_path = "requested_at", order = "DESCENDING" },
+      ]
+    }
   }
 }
 

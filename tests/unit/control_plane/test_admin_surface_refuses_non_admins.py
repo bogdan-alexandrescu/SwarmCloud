@@ -333,6 +333,30 @@ def test_each_person_is_who_the_sweep_says(world, person, tenant, role) -> None:
 # The guard
 # ---------------------------------------------------------------------------
 
+#: The one read on the platform surface a workspace admin is answered: Admin ›
+#: People and roles, scoped to the workspaces they administer
+#: (ADMIN-PEOPLE-ROLES; part of #2157, BGD "Both, by scope"). Every other
+#: person here is still refused it, and what it serves a workspace admin is
+#: held in test_people_scoped.py; `test_a_workspace_admins_people_read_is_scoped`
+#: holds it here too, so this exception cannot quietly become the whole read.
+WORKSPACE_ADMIN_READS = frozenset({("GET", "/v1/admin/people")})
+
+
+def test_a_workspace_admins_people_read_is_scoped(world) -> None:
+    db, _, _, client = world
+    before = copy.deepcopy(db.docs)
+    response = client.get("/v1/admin/people", headers=_headers("wsadmin", "eng"))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["scope"] == "workspaces"
+    assert [c["tenant_id"] for c in body["workspaces"]] == ["eng"]
+    for row in body["people"]:
+        assert set(row) <= {"email", "display_name", "roles", "last_active"}, row
+    assert not body.get("audit") and not body.get("admins") and not body.get("lendable_accounts")
+    changed = sorted(k for k in set(before) | set(db.docs)
+                     if before.get(k) != db.docs.get(k) and not k.startswith("people/"))
+    assert not changed, f"a read wrote: {changed}"
+
 @pytest.mark.parametrize("person,tenant,role", NON_ADMINS, ids=[p for p, _, _ in NON_ADMINS])
 def test_every_platform_route_refuses_a_non_admin_and_writes_nothing(world, person, tenant, role) -> None:
     db, _, _, client = world
@@ -342,7 +366,8 @@ def test_every_platform_route_refuses_a_non_admin_and_writes_nothing(world, pers
     assert client.get("/v1/tenants/me", headers=headers).status_code == 200
     before = copy.deepcopy(db.docs)
 
-    missed = not_refused(client, _as_requests(SURFACE) + INLINE_PLATFORM_WRITES, headers)
+    surface = [r for r in SURFACE if person != "wsadmin" or r not in WORKSPACE_ADMIN_READS]
+    missed = not_refused(client, _as_requests(surface) + INLINE_PLATFORM_WRITES, headers)
 
     assert not missed, (
         f"{person} ({role} of {tenant or 'their personal workspace'}) was not refused by "

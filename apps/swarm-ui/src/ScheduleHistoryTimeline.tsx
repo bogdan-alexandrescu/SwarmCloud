@@ -21,6 +21,12 @@
  * draws a dash with the reason the route gave, and a failed read draws a dash
  * on every lane of the page with the failure -- never an empty lane, which
  * would read as "ran nothing".
+ *
+ * THE LIST UNDER THE LANES (SCHED-HISTORY-FOLLOWUP, part of #1109): a row per
+ * work item of the page, in words, as the mock-up's History frame lists them
+ * -- an issue run by its issue's number and title, the link to the run, its
+ * state, and its cost as `/spans` summed it from the attempts' recorded cost.
+ * A cost nobody recorded is a dash with the route's reason, never $0.
  */
 import { useEffect, useState, type ReactNode } from 'react'
 
@@ -28,7 +34,9 @@ import type { FiringWork, ScheduleFiring } from './api'
 import { Button, Segmented } from './components'
 import { read, route, type ApiError, type Result } from './fetch'
 import { buildLane, type LaneSeg } from './lanes'
-import { InApp, localTime } from './Schedules'
+import { usd } from './measure'
+import { Mark } from './primitives'
+import { InApp, SpendFigure, localTime } from './Schedules'
 import { timeAgo } from './Shell'
 import { Seg, gridlineImage } from './TimelineLanes'
 import type { AttemptRow, Task } from './types'
@@ -69,6 +77,25 @@ export interface SpanTask {
   attempts_unread: string | null
 }
 
+/** An issue run's issue, from its run record. `title` null: the run's read of the issue failed. */
+export interface SpanIssue {
+  number: number
+  ref: string
+  url: string
+  title: string | null
+}
+
+/**
+ * An item's cost, summed from its attempts' recorded `cost_usd` the way the
+ * tick sums a firing's. `reported_usd` null: nothing was recorded, and
+ * `unread` says why. Beside a figure, `unread` says what it does not cover.
+ */
+export interface SpanCost {
+  reported_usd: number | null
+  unreported_attempts: number
+  unread: string | null
+}
+
 /** One work item of a firing: its tasks, or why none could be drawn. */
 export interface SpanItem {
   kind: FiringWork['kind'] | string
@@ -76,8 +103,11 @@ export interface SpanItem {
   /** The issue run's or workflow's own state, when it has one. */
   state: string | null
   updated_at: string | null
+  /** An issue run's issue; null for every other kind, or a run not found. */
+  issue?: SpanIssue | null
   tasks: SpanTask[]
   unread: string | null
+  cost?: SpanCost | null
 }
 
 export interface FiringSpans {
@@ -283,6 +313,130 @@ function rowsOf(f: ScheduleFiring, items: SpanItem[] | null, gap: string | null,
   return rows
 }
 
+// ---------------------------------------------------------------------------
+// The list under the lanes
+// ---------------------------------------------------------------------------
+
+/** An issue run's state as the list says it (`issueruns.RunState`). */
+const RUN_STATE_WORDS: Record<string, string> = {
+  PLANNING: 'planning',
+  PLANNED: 'plan waiting for approval',
+  APPROVED: 'plan approved',
+  RUNNING: 'workflow running',
+  CHECKING: 'checking CI on its pull request',
+  FIXING: 'fixing CI',
+  DONE: 'done',
+  FAILED: 'failed',
+  REJECTED: 'plan rejected',
+  CANCELLED: 'cancelled',
+  NOT_READY: 'not ready',
+}
+
+/** What the row's link opens, as the mock-up says it: "→ run run_8f2a". */
+const LINK_WORD: Record<string, string> = { issue_run: 'run', task: 'task', workflow: 'workflow' }
+
+const plainState = (s: string): string => s.toLowerCase().replace(/_/g, ' ')
+
+/** The item's state in words: the run's or workflow's own, a task's, or an action's outcome. */
+function itemState(it: SpanItem, w: FiringWork | undefined): string | null {
+  if (it.kind === 'issue_run' && it.state !== null) return RUN_STATE_WORDS[it.state] ?? plainState(it.state)
+  if (it.state !== null) return plainState(it.state)
+  if (it.kind === 'task' && it.tasks[0]?.state) return plainState(it.tasks[0].state)
+  if (it.kind === 'api_action') return w?.outcome ? `ended ${plainState(w.outcome)}` : 'ended when it was recorded'
+  return null
+}
+
+/** What the item is, in words. */
+function itemWhat(it: SpanItem): ReactNode {
+  if (it.kind === 'issue_run' && it.issue) {
+    return it.issue.title === null ? (
+      <>
+        <b>#{it.issue.number}</b> <i className="ctl-em">title not read</i>
+      </>
+    ) : (
+      <b>{`#${it.issue.number} ${it.issue.title}`}</b>
+    )
+  }
+  if (it.kind === 'task') return <b>{`task${it.tasks[0]?.label ? ` ${it.tasks[0].label}` : ''}`}</b>
+  if (it.kind === 'workflow') return <b>{`workflow of ${it.tasks.length} ${it.tasks.length === 1 ? 'step' : 'steps'}`}</b>
+  return (
+    <>
+      <b>{KIND_WORD[it.kind] ?? it.kind}</b> <span className="mono">{it.id}</span>
+    </>
+  )
+}
+
+/** A cost never recorded: a dash whose reason is its title (schedules.html's `.dash`). The words stay in
+ *  the text, read aloud, and schedules.css shows them under the item on a phone, where there is no hover. */
+function CostDash({ why }: { why: string }) {
+  return (
+    <i className="ctl-em sht-dash" title={why}>
+      &mdash;<span className="sht-why"> {why}</span>
+    </i>
+  )
+}
+
+/** The item's cost: the figure, a floor marked partial, or a dash with its reason -- never $0 for nothing recorded. */
+function ItemCost({ cost }: { cost: SpanCost | null | undefined }) {
+  if (cost === null || cost === undefined) return <CostDash why="its cost was not served" />
+  if (cost.reported_usd === null) return <CostDash why={cost.unread ?? 'no attempt recorded a cost'} />
+  if (cost.unread !== null) {
+    return (
+      <span className="sc-spend">
+        <Mark kind="partial" say={`${usd(cost.reported_usd)} is a floor: ${cost.unread}`} /> <span className="sc-usd">{usd(cost.reported_usd)}</span> · {cost.unread}
+      </span>
+    )
+  }
+  return <SpendFigure usdReported={cost.reported_usd} unreported={cost.unreported_attempts} what="this item" />
+}
+
+/** The mock-up's list: a row per work item of the page's firings, newest firing first. */
+function ItemList({
+  lanes,
+  now,
+  go,
+}: {
+  lanes: readonly { f: ScheduleFiring; items: SpanItem[] | null }[]
+  now: number
+  go: (to: string) => void
+}) {
+  const rows = lanes.flatMap(({ f, items }) => (items ?? []).map((it) => ({ f, it })))
+  if (rows.length === 0) return null
+  return (
+    <ul className="sc-audit sht-list" data-testid="sc-history-items" aria-label="The work of these firings">
+      {rows.map(({ f, it }) => {
+        const when = f.fired_at ?? f.slot
+        const to = workAddress(it)
+        const state = itemState(it, f.work.find((w) => w.kind === it.kind && w.id === it.id))
+        return (
+          <li key={`${f.firing_id}:${it.kind}:${it.id}`} data-work={`${it.kind}:${it.id}`}>
+            <span className="sht-words">
+              <span className="sc-who">
+                {when === null ? 'time not recorded' : <span title={localTime(when)}>{timeAgo(when, now)}</span>}
+              </span>
+              {' · '}
+              {itemWhat(it)}
+              {to !== null && (
+                <>
+                  {' → '}
+                  {LINK_WORD[it.kind] ?? it.kind}{' '}
+                  <InApp go={go} to={to} className="mono">
+                    {it.id}
+                  </InApp>
+                </>
+              )}
+              {state !== null && ` · ${state}`}
+            </span>
+            <span className="sc-sub sht-cost" data-cost="">
+              <ItemCost cost={it.cost} />
+            </span>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
 function firingStart(f: ScheduleFiring): number | null {
   return ms(f.fired_at) ?? ms(f.slot)
 }
@@ -348,7 +502,7 @@ export function HistoryTimeline({
         : spans.status === 'ok' && items === null
           ? 'its work was not served: the firing was not found'
           : null
-    return { f, start: firingStart(f), rows: spans.status === 'loading' && f.work.length > 0 ? null : rowsOf(f, items, gap, now) }
+    return { f, items, start: firingStart(f), rows: spans.status === 'loading' && f.work.length > 0 ? null : rowsOf(f, items, gap, now) }
   })
   // THE PAGE'S SCALE is its longest firing, by what has ENDED: the firing's
   // own end, and the end of every bar that closed. Something still open --
@@ -465,6 +619,7 @@ export function HistoryTimeline({
           )
         })}
       </ol>
+      <ItemList lanes={lanes} now={now} go={go} />
       {spans.status === 'error' && (
         <p className="sht-retry">
           <Button size="sm" onClick={() => setRound((n) => n + 1)}>
