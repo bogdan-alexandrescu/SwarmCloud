@@ -1,0 +1,10 @@
+{
+ "src/__tests__/spacing.accounts.test.tsx": 353.2,
+ "src/__tests__/spacing.admin.test.tsx": 353,
+ "src/__tests__/spacing.capacity.test.tsx": 252.7,
+ "src/__tests__/spacing.config.test.tsx": 353,
+ "src/__tests__/spacing.runs.test.tsx": 353,
+ "src/__tests__/spacing.setup.test.tsx": 353,
+ "src/__tests__/spacing.submit.test.tsx": 353,
+ "src/__tests__/spacing.work.test.tsx": 353
+}

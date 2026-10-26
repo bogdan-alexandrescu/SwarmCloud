@@ -38,7 +38,8 @@ WHAT IS RELATED:
 OUTPUT, one line each, tab-separated:
 
     pytest<TAB><file> <file> ...     repo-relative, at most ~PYTEST_RUN_WEIGHT CI-seconds
-    vitest<TAB><file> <file> ...     relative to apps/swarm-ui, at most VITEST_FILES_PER_RUN
+    vitest<TAB><file> <file> ...     relative to apps/swarm-ui, at most ~VITEST_RUN_WEIGHT recorded
+                                     CI-seconds and VITEST_FILES_PER_RUN files (one heavier file alone)
     note<TAB><text>
 
 Pure standard library, like select_unit_tests.py.
@@ -60,14 +61,35 @@ import select_unit_tests as sut  # noqa: E402
 
 UI = "apps/swarm-ui"
 DURATIONS = "tests/unit/scripts/unit_test_durations.json"
+UI_DURATIONS = "tests/unit/scripts/ui_test_durations.json"
 
 # One pytest run's weight in CI-seconds. The same 540 as changed-guards.sh's
 # SHARD_HINT_WEIGHT: about 400 s on a 6-core container, under the 540 s a
 # command there is held to and the 10 minutes an agent's command may take.
 PYTEST_RUN_WEIGHT = 540
-# One vitest run's files. The whole UI suite (463 files) took ~22 min on 4
-# cores, ~2.9 s a file, so 50 is about 2.5 min: well under the command limit,
-# and few enough runs that a change to types.ts stays "a few".
+# VITEST RUNS ARE CUT BY RECORDED DURATION (issue #2362). They were cut by
+# count alone, 50 files a run, on the ~2.9 s average below. The eight
+# spacing.<group>.test.tsx slices take 252-353 s EACH, and any change under
+# App.tsx's import graph selects all of them; name-sorted, they landed in one
+# run of ~45 min under a 540 s command limit, and 31 agents timed out on
+# 2026-10-25 re-running them. Now each file weighs its CI-seconds from
+# UI_DURATIONS (keyed by path relative to apps/swarm-ui, refreshed from the ui-tests job's
+# `ui-durations-<k>` artifacts, docs/ci.md), heaviest first onto the lightest
+# run that has room, as pytest_runs() cuts pytest files.
+#
+# One vitest run's estimated weight: the 540 of PYTEST_RUN_WEIGHT and of
+# related-tests.sh's RUN_SECONDS, the limit each run is held to there. A file
+# heavier than that on its own runs alone; it cannot be split smaller.
+VITEST_RUN_WEIGHT = 540
+# A file with no recorded weight. The whole UI suite (463 files) took ~22 min
+# on 4 cores, ~2.9 s a file; a file with no record is far more likely one of
+# those than a sweep (and a new sweep is recorded on the next refresh). Not
+# the median of the recorded files, as for pytest: the record seeds the heavy
+# slices, so its median is not a typical file.
+VITEST_DEFAULT_SECONDS = 2.9
+# One vitest run's files, as well as its weight: 50 unrecorded files are
+# ~2.5 min, and the cap keeps a change to types.ts (hundreds of files at the
+# default) "a few" runs of named files rather than one long one.
 VITEST_FILES_PER_RUN = 50
 
 # swarm-ui files every component test runs under. No test imports them, so
@@ -243,12 +265,34 @@ def pytest_runs(root: Path, tests: list[str]) -> list[list[str]]:
     return [sorted(files) for _, files in runs if files]
 
 
-def vitest_runs(tests: list[str]) -> list[list[str]]:
+def vitest_runs(root: Path, tests: list[str]) -> list[list[str]]:
+    """Heaviest file first onto the lightest run with room -- under
+    VITEST_RUN_WEIGHT seconds and VITEST_FILES_PER_RUN files -- opening a run
+    when none has room; an empty run takes any file, so one over the budget
+    runs alone. A file with no recorded weight counts VITEST_DEFAULT_SECONDS."""
     if not tests:
         return []
-    count = math.ceil(len(tests) / VITEST_FILES_PER_RUN)
-    size = math.ceil(len(tests) / count)
-    return [tests[i:i + size] for i in range(0, len(tests), size)]
+    try:
+        weights = json.loads((root / UI_DURATIONS).read_text())
+    except (OSError, ValueError):
+        weights = {}
+    if not isinstance(weights, dict):
+        weights = {}
+    weighted = sorted(((float(weights.get(t, VITEST_DEFAULT_SECONDS)), t) for t in tests),
+                      key=lambda x: (-x[0], x[1]))
+    count = max(math.ceil(sum(w for w, _ in weighted) / VITEST_RUN_WEIGHT),
+                math.ceil(len(tests) / VITEST_FILES_PER_RUN))
+    runs: list[tuple[float, list[str]]] = [(0, []) for _ in range(min(count, len(tests)))]
+    for weight, test in weighted:
+        room = [j for j, (total, files) in enumerate(runs)
+                if not files or (total + weight <= VITEST_RUN_WEIGHT and len(files) < VITEST_FILES_PER_RUN)]
+        if room:
+            i = min(room, key=lambda j: runs[j][0])
+        else:
+            runs.append((0, []))
+            i = len(runs) - 1
+        runs[i] = (runs[i][0] + weight, [*runs[i][1], test])
+    return [sorted(files) for _, files in runs if files]
 
 
 def main(argv: list[str]) -> int:
@@ -274,7 +318,7 @@ def main(argv: list[str]) -> int:
     lines = []
     for run in pytest_runs(root, python_related(root, changed)):
         lines.append("pytest\t" + " ".join(run))
-    for run in vitest_runs(ui_related(root / UI, changed_ui)):
+    for run in vitest_runs(root, ui_related(root / UI, changed_ui)):
         lines.append("vitest\t" + " ".join(run))
     for line in lines:
         print(line)

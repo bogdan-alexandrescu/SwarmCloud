@@ -3504,6 +3504,26 @@ seconds replacing a container's is fine. `test_unit_shards.py` fails when fewer
 than 80 % of the test files have a weight, and holds the split to within 10 %
 of an even share.
 
+**The vitest weights** (`tests/unit/scripts/ui_test_durations.json`, #2362)
+are refreshed the same way. They do not split CI's vitest shards -- vitest's
+own `--shard` does that -- but they cut an agent's related vitest files into
+runs (`scripts/lib/related_tests.py`, below), so they are absolute seconds,
+not ratios. Every `ui-tests` shard writes vitest's json report beside its
+default output and uploads each file's `endTime - startTime`, in seconds and
+keyed relative to `apps/swarm-ui`, as the artifact `ui-durations-<k>` (30
+days, red shards too):
+
+```bash
+run="$(gh run list --workflow application.yml --branch main --event push --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+gh run download "$run" -p 'ui-durations-*' -D /tmp/ui-durations
+jq -S -s 'add' /tmp/ui-durations/*/ui-durations.json > tests/unit/scripts/ui_test_durations.json
+```
+
+The file was seeded on 2026-10-26 from the agent logs issue #2362 cites:
+`spacing.accounts` 353.2 s and `spacing.capacity` 252.7 s measured, the other
+six slices at the issue's 353 s upper bound. A file with no weight counts
+2.9 s, the suite's average.
+
 ### Where pull-request CI time goes (2026-10-09)
 
 **Why this was measured.** Merging is the bottleneck: with strict up-to-date
@@ -4767,6 +4787,21 @@ changed module through relative imports (`import ... from`, `export ... from`,
 `node_modules` and can be cut into runs. A change to what every component test
 runs under (`vitest.config.ts`, `src/__tests__/setup.ts`, `package.json`, ...)
 is related to no file by import: it is named in a warning and CI runs the suite.
+
+**Vitest runs are cut by recorded duration, not file count** (#2362). Each
+selected file weighs its CI-seconds from `tests/unit/scripts/ui_test_durations.json`
+(an unrecorded file 2.9 s, the whole suite's average of ~22 min over 463
+files); the heaviest goes first onto the lightest run that has room, as pytest
+files are cut. A run holds at most ~540 estimated seconds -- the 540 s
+`RUN_SECONDS` each `--run` command is held to -- and at most 50 files, and a
+file heavier than 540 s on its own runs alone. **Why:** the runs were cut by
+count alone, 50 files at an assumed ~2.9 s each. The eight
+`spacing.<group>.test.tsx` slices take 252-353 s each, and any change under
+`App.tsx`'s import graph selects all of them (`spacingsweep.tsx` imports
+`App`); sorted by name they landed in one run of ~45 min, and on 2026-10-25
+31 agents timed out re-running them and their workflows' later steps were
+cancelled. Now any two slices are over the budget together, so each runs on
+its own. The weights are refreshed from CI ("Refreshing the shard weights").
 
 **A stylesheet change also selects the stylesheet guards** (RELATED-CSS-GUARDS,
 part of #1914, owner decision 2026-10-22). Any `.css` under `apps/swarm-ui/`

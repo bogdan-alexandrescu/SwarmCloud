@@ -1658,11 +1658,62 @@ jobs:
         # `npm run test:components` is `vitest run`; the arguments after `--`
         # reach vitest because it is the only command in that script (`npm
         # test` chains three, and a trailing argument would reach the last).
+        # The json reporter, beside the default one the log shows, writes each
+        # file's start and end for the durations step below (#2362).
         working-directory: apps/swarm-ui
         env:
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ strategy.job-total }}
-        run: npm run test:components -- --shard="${SHARD}/${SHARDS}"
+          REPORT: ${{ runner.temp }}/vitest-report.json
+        run: npm run test:components -- --shard="${SHARD}/${SHARDS}" --reporter=default --reporter=json --outputFile="${REPORT}"
+
+      - name: record this shard's measured durations
+        # scripts/lib/related_tests.py cuts an agent's related vitest files
+        # into runs by these weights (tests/unit/scripts/ui_test_durations.json),
+        # so no run is estimated past the 540 s an agent's command is held to.
+        # Cut by count alone, the eight 252-353 s spacing slices shared one
+        # run and 31 agents timed out on 2026-10-25 (#2362). Every shard
+        # uploads what it measured, per file and relative to apps/swarm-ui, so
+        # a refresh is a download and a merge (docs/ci.md, "Refreshing the
+        # shard weights"), never a local run. always(): a red shard's timings
+        # are as true as a green one's, and a missing report records nothing.
+        if: always()
+        env:
+          REPORT: ${{ runner.temp }}/vitest-report.json
+          UI_ROOT: ${{ github.workspace }}/apps/swarm-ui
+          OUT: ${{ runner.temp }}/durations/ui-durations.json
+        run: |
+          set -euo pipefail
+          if [ ! -s "${REPORT}" ]; then
+            echo "no vitest report at ${REPORT}; nothing recorded"
+            exit 0
+          fi
+          mkdir -p "$(dirname "${OUT}")"
+          python3 - <<'PY'
+          import json, os
+          report = json.load(open(os.environ["REPORT"]))
+          root = os.path.realpath(os.environ["UI_ROOT"])
+          weights = {}
+          for result in report.get("testResults", []):
+              start, end = result.get("startTime"), result.get("endTime")
+              if not result.get("name") or start is None or end is None:
+                  continue
+              rel = os.path.relpath(os.path.realpath(result["name"]), root)
+              weights[rel] = round(max((end - start) / 1000, 0.1), 1)
+          with open(os.environ["OUT"], "w") as out:
+              json.dump(dict(sorted(weights.items())), out, indent=1, sort_keys=True)
+              out.write("\n")
+          print(f"{len(weights)} file(s), {sum(weights.values()):.0f} s")
+          PY
+
+      - name: upload this shard's measured durations
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ui-durations-${{ matrix.shard }}
+          path: ${{ runner.temp }}/durations/ui-durations.json
+          retention-days: 30
+          if-no-files-found: ignore
 
   ui:
     # THE CHECK NAME `swarm-ui typecheck / component tests` IS KEPT, on a job

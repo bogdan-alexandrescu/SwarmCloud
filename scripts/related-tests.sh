@@ -22,8 +22,14 @@
 # they read every sheet from disk, so no import reaches them, and PR 1905's
 # lane passed this without running them (RELATED-CSS-GUARDS, part of #1914).
 # A selection too big for one run comes
-# back as a few runs of named files (at most ~540 CI-seconds of pytest, or 50
-# vitest files, each), printed to run ONE AFTER ANOTHER in the foreground.
+# back as a few runs of named files, printed to run ONE AFTER ANOTHER in the
+# foreground: at most ~540 recorded CI-seconds each (RUN_SECONDS below), pytest
+# weighed from unit_test_durations.json and vitest from ui_test_durations.json
+# (an unrecorded vitest file counts ~2.9 s), and at most 50 vitest files. A file
+# heavier than 540 s on its own runs alone. Vitest runs were cut by count
+# alone, 50 files at an assumed ~2.9 s each, until the eight 252-353 s
+# spacing.<group>.test.tsx slices -- all selected by any change under App.tsx
+# -- landed in one run and 31 agents timed out on 2026-10-25 (#2362).
 #
 # The diff is changed-guards.sh's: `git diff --name-only <base>...HEAD` (the
 # merge base) plus uncommitted and untracked files. <base> is --base, else

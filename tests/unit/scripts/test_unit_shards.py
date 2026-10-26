@@ -469,10 +469,60 @@ def test_vitest_is_sharded_over_the_matrix_by_vitest_itself():
     steps = [s for s in _jobs()["ui-tests"]["steps"] if "test:components" in str(s.get("run", ""))]
     assert len(steps) == 1, steps
     step = steps[0]
-    assert step["run"].strip() == 'npm run test:components -- --shard="${SHARD}/${SHARDS}"', step["run"]
-    assert step["env"] == {"SHARD": "${{ matrix.shard }}", "SHARDS": "${{ strategy.job-total }}"}, step["env"]
+    # The json reporter beside the default one feeds the `ui-durations-<k>`
+    # artifact related_tests.py's vitest weights are refreshed from (#2362).
+    # MUTATION: drop `--reporter=default` -> the log shows no test names.
+    assert step["run"].strip() == (
+        'npm run test:components -- --shard="${SHARD}/${SHARDS}"'
+        ' --reporter=default --reporter=json --outputFile="${REPORT}"'
+    ), step["run"]
+    assert step["env"] == {"SHARD": "${{ matrix.shard }}", "SHARDS": "${{ strategy.job-total }}",
+                           "REPORT": "${{ runner.temp }}/vitest-report.json"}, step["env"]
     assert step.get("working-directory") == "apps/swarm-ui"
     assert _jobs()["ui-tests"]["strategy"].get("fail-fast") is False
+
+
+def _ui_step(name: str) -> dict:
+    steps = [s for s in _jobs()["ui-tests"]["steps"] if s.get("name") == name]
+    assert len(steps) == 1, name
+    return steps[0]
+
+
+def test_each_vitest_shard_records_its_per_file_durations(tmp_path):
+    """The `ui-durations-<k>` artifact docs/ci.md folds into
+    tests/unit/scripts/ui_test_durations.json, the weights related_tests.py
+    cuts an agent's vitest runs by (#2362). The record step runs here against
+    a stand-in vitest json report."""
+    record = _ui_step("record this shard's measured durations")
+    upload = _ui_step("upload this shard's measured durations")
+    # MUTATION: record or upload only on success -> a red shard's timings,
+    # the ones a timeout most needs, are lost.
+    assert record["if"] == "always()" and upload["if"] == "always()"
+    assert upload["with"]["name"] == "ui-durations-${{ matrix.shard }}"
+    assert upload["with"]["path"] == record["env"]["OUT"]
+    assert upload["with"]["retention-days"] == 30
+    ui_root = tmp_path / "apps" / "swarm-ui"
+    report = tmp_path / "vitest-report.json"
+    out = tmp_path / "durations" / "ui-durations.json"
+    report.write_text(json.dumps({"testResults": [
+        {"name": str(ui_root / "src/__tests__/spacing.capacity.test.tsx"), "startTime": 1000, "endTime": 253700},
+        {"name": str(ui_root / "src/__tests__/quick.test.ts"), "startTime": 5000, "endTime": 5010},
+        {"name": str(ui_root / "test/Live.test.tsx"), "startTime": 0},
+    ]}))
+    env = {**os.environ, "REPORT": str(report), "UI_ROOT": str(ui_root), "OUT": str(out)}
+    proc = subprocess.run(["bash", "-c", record["run"]], env=env, capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    # MUTATION: key by absolute path, record milliseconds, or keep a file
+    # with no end time -> red.
+    assert json.loads(out.read_text()) == {
+        "src/__tests__/quick.test.ts": 0.1,
+        "src/__tests__/spacing.capacity.test.tsx": 252.7,
+    }
+    # No report (vitest never started): nothing recorded, and not a failure.
+    out.unlink()
+    report.unlink()
+    proc = subprocess.run(["bash", "-c", record["run"]], env=env, capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0 and not out.exists(), proc.stderr
 
 
 def test_the_npm_scripts_split_without_changing_npm_test():
