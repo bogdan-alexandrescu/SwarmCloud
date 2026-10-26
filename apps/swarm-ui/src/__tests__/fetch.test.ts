@@ -295,6 +295,31 @@ describe('a write', () => {
     expect(r.error.message).toContain('NOT saved')
   })
 
+  it('that got a 204 No Content back is a success, not an expired sign-in (CONSOLE-SMALL-FIXES)', async () => {
+    // FastAPI's `Response(status_code=204)`: no body, no content-type. Every
+    // DELETE route answers this way (`/v1/qa-targets/{id}`, `/v1/repositories/{id}`).
+    globalThis.fetch = vi.fn(async () => new Response(null, { status: 204 })) as unknown as typeof fetch
+    const r = await write(route('/v1/qa-targets/{target_id}', { target_id: 'qat_1' }), 'DELETE')
+    // MUTATION: drop the 204 check and this is `session_expired`, "Your change was NOT saved".
+    expect(r).toMatchObject({ status: 'ok', data: null })
+  })
+
+  it('that succeeded with an empty body and no content-type is a success', async () => {
+    respond('', { status: 200, contentType: null })
+    const r = await write(route('/v1/tasks/{id}/cancel', { id: 't1' }), 'POST')
+    // MUTATION: treat only 204 as bodiless and this 200 reads as the sign-in page.
+    expect(r).toMatchObject({ status: 'ok', data: null })
+  })
+
+  it('that got an HTML 200 back is still an expired sign-in, whatever the method', async () => {
+    respond('<!doctype html><title>Sign in</title>', { status: 200, contentType: 'text/html' })
+    const r = await write(route('/v1/qa-targets/{target_id}', { target_id: 'qat_1' }), 'DELETE')
+    if (r.status !== 'error') throw new Error('expected an error')
+    // MUTATION: call every non-JSON success a success and the page's own sign-in reads as saved.
+    expect(r.error.kind).toBe('session_expired')
+    expect(r.error.message).toContain('NOT saved')
+  })
+
   it('never reports stale: there is no previous value for a mutation', async () => {
     respond('{"message":"nope"}', { status: 503 })
     const r = await write(route('/v1/admin/pools/global'), 'PUT', {})

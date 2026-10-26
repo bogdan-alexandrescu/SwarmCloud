@@ -272,7 +272,15 @@ class AccountPool(Protocol):
         requested_by: str,
     ) -> dict[str, Any]: ...
 
-    def set_hard_max(self, provider: str, tenant_id: str, *, hard_max: int) -> dict[str, Any]: ...
+    def set_hard_max(
+        self,
+        provider: str,
+        tenant_id: str,
+        *,
+        hard_max: int,
+        requested_by: str,
+        reason: str,
+    ) -> dict[str, Any]: ...
 
 
 def urllib_transport(
@@ -648,14 +656,26 @@ class BrokerClient:
             },
         )
 
-    def set_hard_max(self, provider: str, tenant_id: str, *, hard_max: int) -> dict[str, Any]:
-        # `{hard_max}` and nothing else: the broker's `HardMaxRequest` forbids
-        # any other field, so who asked and why are audited by swarm-api
-        # (`routes/admin.py` `set_quota_hard_max`), not sent here.
+    def set_hard_max(
+        self,
+        provider: str,
+        tenant_id: str,
+        *,
+        hard_max: int,
+        requested_by: str,
+        reason: str,
+    ) -> dict[str, Any]:
         return self._call(
             "PUT",
             f"/v1/quota/{quote(provider, safe='')}/{quote(tenant_id, safe='')}/hard-max",
-            payload={"hard_max": int(hard_max)},
+            payload={
+                "hard_max": int(hard_max),
+                # The admin this service verified, and why: the broker audits
+                # the change in `quota_audit` next to the identity it verified
+                # itself -- this service's (ACCOUNT-429-FOLLOWUP).
+                "requested_by": requested_by,
+                "reason": reason,
+            },
         )
 
     # ----------------------------------------------------------------- plumbing

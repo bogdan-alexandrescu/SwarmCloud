@@ -224,8 +224,8 @@ describe('First admin (S6c): a platform admin’s field, on the group tab', () =
   async function openForm() {
     const { WorkspaceSettingsScreen } = await load()
     render(<WorkspaceSettingsScreen part="new" />)
-    fireEvent.click(await screen.findByRole('button', { name: 'New workspace' }))
-    return screen.findByRole('dialog')
+    // S6c (WS-SETTINGS-E-REST): the form is drawn on the page, in its New workspace card; no dialog to open.
+    return (await screen.findByRole('heading', { name: 'New workspace' })).closest('section') as HTMLElement
   }
 
   it('posts first_admin with the group and says the role takes effect once they are in the group', async () => {

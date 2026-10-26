@@ -21,6 +21,43 @@
   .ws-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
+/* Workspace setup (S6b): the checklist beside After the checklist and On
+   Overview; Add a new workspace (S6c): the form beside what creating it
+   does. Two to one, as the mock-up's g21; stacked under 1100px, where the
+   checklist's step buttons would crowd a half-width column. */
+.ws-grid.is-setup,
+.ws-grid.is-form { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+@media (max-width: 1099px) {
+  .ws-grid.is-setup,
+  .ws-grid.is-form { grid-template-columns: minmax(0, 1fr); }
+}
+.ws-col { display: flex; flex-direction: column; gap: var(--ctl-s3, 12px); min-width: 0; }
+.ws-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+
+/* A step row (After the checklist, What creating it does): its mark, its
+   label over its line, and its button at the end. */
+.ws-steps { list-style: none; margin: 0; padding: 0; }
+.ws-step { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.ws-step:last-child { border-bottom: 0; }
+.ws-step-t { flex: 1 1 auto; display: flex; flex-direction: column; gap: 1px; min-width: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.ws-step-t b { font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.ws-step-t small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+.ws-step > .c-btn { flex: none; }
+/* The mark: a ring; a filled tick-coloured disc when done, a dot when next,
+   dashed when nothing measured it (the strip's marks, ConfigSetup.tsx). */
+.ws-mark { flex: none; width: 18px; height: 18px; margin-top: 1px; border-radius: 50%; border: 2px solid var(--text-dim); display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; }
+.ws-step.is-done .ws-mark { background: var(--s-live); border-color: var(--s-live); }
+.ws-step.is-done .ws-mark::after { content: ""; width: 5px; height: 9px; margin-top: -2px; border: solid var(--surface); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.ws-step.is-next .ws-mark { border-color: var(--sk-ac, var(--s-live)); }
+.ws-step.is-next .ws-mark::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--sk-ac, var(--s-live)); }
+.ws-step.is-failed .ws-mark { border-color: var(--s-bad); }
+.ws-step.is-stale .ws-mark { border-color: var(--s-warn); }
+.ws-step.is-unknown .ws-mark { border-style: dashed; }
+
+/* The inline new-workspace form: its fields one gap apart, its button under them. */
+.nw-inline > form { display: flex; flex-direction: column; gap: var(--ctl-s3, 12px); min-width: 0; }
+.nw-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: var(--ctl-s3, 12px); }
+
 /* The workspace's facts: a label column and its values. */
 .ws-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
 .ws-kv dt { color: var(--text-dim); }

@@ -12,7 +12,7 @@
 //   * the form shows "Flow browser", Playwright by default or Jev, sends it,
 //     and an edit never drops it (lane VQ9-TOOL; BGD, 2026-10-23);
 //   * the credential form reads its link token from the URL and removes it
-//     from the address bar, as ProviderKeys.tsx does, and sends it once as
+//     from the address bar, as Config › Secrets' key form does, and sends it once as
 //     `link_token` with the username and password, which never stay in the DOM;
 //   * an admin's Set credential mints a link and opens the same form with the
 //     token held in memory, never drawn;
@@ -242,6 +242,29 @@ describe('QA targets: the page and who sees what', () => {
     fireEvent.click(button(card(APPROVED), 'Run')!)
     // MUTATION: swallow a refused run and nothing is said.
     await waitFor(() => expect(visible(card(APPROVED))).toContain('agents_may_file_issues is off'), WAIT)
+  })
+
+  it('Delete reports success on the API’s bare 204, never an expired sign-in (CONSOLE-SMALL-FIXES)', async () => {
+    const calls = live('admin')
+    // `routes/qatargets.py` answers a removal with `Response(status_code=204)`:
+    // no body and no content-type, which `serve` cannot spell.
+    const inner = globalThis.fetch
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'DELETE') {
+        await inner(input, init)
+        return new Response(null, { status: 204 })
+      }
+      return inner(input, init)
+    }) as unknown as typeof fetch
+    await mountPage()
+    await waitFor(() => expect(button(card(APPROVED), 'Delete')).not.toBeNull(), WAIT)
+    fireEvent.click(button(card(APPROVED), 'Delete')!)
+    fireEvent.click(button(card(APPROVED), 'Delete shop')!)
+    // MUTATION: read the bare 204 as the sign-in page (as `write` did) and the card says "NOT saved".
+    await waitFor(() => expect(visible(document.body)).toContain('Deleted shop'), WAIT)
+    expect(visible(document.body)).not.toMatch(/NOT saved|expired/)
+    expect(document.querySelector('.qa-target [role="alert"]')).toBeNull()
+    expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.url)).toEqual([`/v1/qa-targets/${APPROVED}`])
   })
 })
 
