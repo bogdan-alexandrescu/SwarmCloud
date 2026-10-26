@@ -108,8 +108,9 @@ from .roles import _member as group_member
 
 router = APIRouter(prefix="/v1/admin", tags=["people"])
 
-#: Where an app context keeps its one JoinStore and MembershipStore, so the
-#: membership cache is per process, not per request (as `people._NAMES_ATTR`).
+#: Where an app context keeps its one JoinStore, and the MembershipStore of a
+#: context whose authenticator has none, so each cache is per process, not
+#: per request (as `people._NAMES_ATTR`).
 _JOINS_ATTR = "_join_store"
 _MEMBERS_ATTR = "_membership_store"
 
@@ -123,6 +124,17 @@ def join_store(ctx: AppContext) -> JoinStore:
 
 
 def membership_store(ctx: AppContext) -> MembershipStore:
+    """The authenticator's own store, so every membership write (an approval,
+    a removal) evicts the cache the person's next request reads: a second
+    store's eviction left a removed person selecting the workspace for up to
+    `role_cache_seconds` (docs/design/join-requests.md §4.4; BGD,
+    2026-10-26, lane JOIN-ONE-STORE)."""
+    shared = getattr(ctx.authenticator, "memberships", None)
+    if shared is not None:
+        return shared
+    # Only a hand-built context reaches here: `deps.build_context` always
+    # hands the authenticator a store. Its authenticator reads none, so no
+    # resolution has a cache this one could leave stale.
     store = getattr(ctx, _MEMBERS_ATTR, None)
     if store is None:
         store = MembershipStore(ctx.db, ctx.settings, metrics=ctx.metrics, now=ctx.now)
