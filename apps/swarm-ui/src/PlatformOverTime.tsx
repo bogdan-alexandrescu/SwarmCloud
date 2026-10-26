@@ -390,6 +390,13 @@ interface Cell {
   text: string
   tone: 'plain' | 'floor' | 'absent'
   cover: string[]
+  /**
+   * The cover's short form, for the readout laid over the chart only, where a
+   * column is about 136px: a cell whose full cover is wider than that has one
+   * (re-review of PR 2348, 2026-10-26). The full words stay what a screen
+   * reader hears, and what the readout shows under the chart.
+   */
+  brief?: string[]
 }
 
 /**
@@ -445,15 +452,18 @@ function costCell(f: UsageFigures): Cell {
  */
 export function unusedBrowserCell(f: Pick<UsageFigures, 'browser'>): Cell {
   const b = f.browser
-  if (b === undefined || b === null) return { text: '—', tone: 'absent', cover: ['not in this read: the API serving it does not record browser use yet'] }
+  if (b === undefined || b === null) return { text: '—', tone: 'absent', cover: ['not in this read: the API serving it does not record browser use yet'], brief: ['not in this read'] }
   if (b.unused_s === null) {
-    return { text: '—', tone: 'absent', cover: [b.agents === 0 ? 'no agent ended on a browser runtime' : `none of ${int(b.agents)} browser agents has a measured run`] }
+    return b.agents === 0
+      ? { text: '—', tone: 'absent', cover: ['no agent ended on a browser runtime'], brief: ['no browser agent'] }
+      : { text: '—', tone: 'absent', cover: [`none of ${int(b.agents)} browser agents has a measured run`], brief: [`none of ${int(b.agents)} measured`] }
   }
   const floor = b.unknown_agents > 0
+  const brief = [`${int(b.unused_agents)} of ${int(b.agents)} agents`]
   const cover = [`${int(b.unused_agents)} of ${int(b.agents)} browser agents did not use it`]
   if (b.run_s !== null) cover.push(`of ${hours(b.run_s)} browser run time`)
   if (floor) cover.push(`${int(b.unknown_agents)} with no verdict, counted in neither`)
-  return { text: `${floor ? 'at least ' : ''}${hours(b.unused_s)}`, tone: floor ? 'floor' : 'plain', cover }
+  return { text: `${floor ? 'at least ' : ''}${hours(b.unused_s)}`, tone: floor ? 'floor' : 'plain', cover, brief }
 }
 
 /** Input plus output, one figure: a floor when either is, absent only when both are. */
@@ -463,7 +473,9 @@ function inOutCell(f: UsageFigures): Cell {
   if (i.sum === null && o.sum === null) return tokenCell(i, f.agents_ended)
   const floor = i.sum === null || o.sum === null || i.reporting < i.attempts || o.reporting < o.attempts
   const both = (i.sum ?? 0) + (o.sum ?? 0)
-  return { text: `${floor ? 'at least ' : ''}${tokens(both)}`, tone: floor ? 'floor' : 'plain', cover: [`${int(Math.min(i.reporting, o.reporting))} of ${int(i.attempts)} attempts reported`] }
+  const k = `${int(Math.min(i.reporting, o.reporting))} of ${int(i.attempts)} attempts`
+  // The brief is the table's "k of n attempts", without the trailing verb.
+  return { text: `${floor ? 'at least ' : ''}${tokens(both)}`, tone: floor ? 'floor' : 'plain', cover: [`${k} reported`], brief: [k] }
 }
 
 /** The words that make a figure a floor; drawn as a small prefix, so the figure keeps its column. */
@@ -477,7 +489,7 @@ const FLOOR = 'at least '
  * reported by every attempt. Cost always carries its "k of n agents reported"
  * (BGD, 2026-10-23).
  */
-function CellView({ cell, partialOnly = false }: { cell: Cell; partialOnly?: boolean }) {
+function CellView({ cell, partialOnly = false, brief = false }: { cell: Cell; partialOnly?: boolean; brief?: boolean }) {
   // In the table the head note says what "k of n" counts, so the cell drops
   // the trailing verb: "547 of 549 reported" was the widest thing in a row.
   const cover = partialOnly ? (cell.tone === 'plain' ? [] : cell.cover.map((c) => c.replace(/ (reported|measured)$/, ''))) : cell.cover
@@ -496,7 +508,18 @@ function CellView({ cell, partialOnly = false }: { cell: Cell; partialOnly?: boo
           cell.text
         )}
       </span>
-      {cover.map((c) => <span className="pot-cov" key={c}>{c}</span>)}
+      {brief && cell.brief !== undefined ? (
+        <>
+          {/* BOTH FORMS, AND overtime.css PICKS: over the chart the short one
+              shows and the full one is clipped to nothing but still read;
+              under it (a phone, or a readout too tall to lay over the chart)
+              only the full one is drawn. */}
+          {cover.map((c) => <span className="pot-cov is-full" key={c}>{c}</span>)}
+          {cell.brief.map((c) => <span className="pot-cov is-brief" aria-hidden key={`brief:${c}`} title={cover.join('; ')}>{c}</span>)}
+        </>
+      ) : (
+        cover.map((c) => <span className="pot-cov" key={c}>{c}</span>)
+      )}
     </span>
   )
 }
@@ -1193,7 +1216,7 @@ function Readout({
             <ReadoutRow name="Retries" cell={{ text: int(bucket.retries), tone: 'plain', cover: [] }} />
             <ReadoutRow name="Run hours" cell={runCell(bucket)} />
             <ReadoutRow name="Unused browser" cell={unusedBrowserCell(bucket)} />
-            <ReadoutRow name="Tokens in + out" cell={inOutCell(bucket)} wide />
+            <ReadoutRow name="Tokens in + out" cell={inOutCell(bucket)} />
             <ReadoutRow name="Cache read" cell={tokenCell(bucket.tokens.cache_read_input_tokens, bucket.agents_ended)} />
             <ReadoutRow name="Cache write" cell={tokenCell(bucket.tokens.cache_creation_input_tokens, bucket.agents_ended)} />
             <ReadoutRow name="Estimated cost" cell={costCell(bucket)} wide />
@@ -1205,17 +1228,19 @@ function Readout({
 }
 
 /**
- * `wide`: a row whose cover is longer than one overlay column ("N of N
- * attempts reported", "k estimated from a stopped run ($x)"). overtime.css
- * gives it two columns over the chart, so its cover stays on one line and the
- * readout keeps the height that fits over the chart (re-review of PR 2348).
+ * `wide`: Estimated cost, whose covers ("N of N agents reported", "k
+ * estimated from a stopped run ($x)") are BGD's words and longer than one
+ * overlay column. overtime.css gives it two columns over the chart, so each
+ * stays on one line. Every other row is one column, and a cover too long for
+ * it has its `brief` there instead: eight figures in three rows of three is
+ * the height that fits over the chart at 1440 (re-review of PR 2348).
  */
 function ReadoutRow({ name, cell, wide = false }: { name: string; cell: Cell; wide?: boolean }) {
   return (
     <div className="pot-readout-row" data-wide={wide ? '' : undefined}>
       <dt>{name}</dt>
       <dd>
-        <CellView cell={cell} />
+        <CellView cell={cell} brief />
       </dd>
     </div>
   )
