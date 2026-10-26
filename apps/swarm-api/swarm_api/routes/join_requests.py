@@ -543,9 +543,9 @@ def approve_join_request(
                                default=default, by=by, via=via, ref=view.request.ref) \
         if admitted else None
     same = _same_request(view)
-    # The authenticator's own store, so the write's eviction is what the
-    # person's next request reads, not a second cache's 15 s (§4.4).
-    grants = ctx.authenticator.memberships or membership_store(ctx)
+    # The authenticator's own store (`membership_store`), so the write's
+    # eviction is what the person's next request reads (§4.4).
+    grants = membership_store(ctx)
 
     def also(writer: Any, request: JoinRequest, decision: Decision) -> None:
         same(writer, request, decision)
