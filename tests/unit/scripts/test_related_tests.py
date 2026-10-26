@@ -202,13 +202,131 @@ def test_a_large_ui_selection_comes_back_as_a_few_bounded_runs(tmp_path):
     _tree(tmp_path, many=120)
     got = _select(tmp_path, f"{UI}/src/widget.ts")
     runs = got["vitest"]
-    # MUTATION: return the selection as one run -> len(runs) == 1; drop the
-    # per-run cap -> a run holds more than VITEST_FILES_PER_RUN files.
-    assert 2 <= len(runs) <= 5
+    # 123 unrecorded files weigh 123 x 2.9 = ~357 s, inside one run's 540 s
+    # budget: only the file cap cuts them, into ceil(123 / 50) = 3 runs.
+    # MUTATION: return the selection as one run, or weigh runs by duration
+    # alone and drop the file cap -> len(runs) == 1; open a run per file ->
+    # len(runs) == 123.
+    assert 3 <= len(runs) <= 5
     for run in runs:
+        # MUTATION: drop the per-run cap -> a run holds more than
+        # VITEST_FILES_PER_RUN files.
         assert 0 < len(run.split()) <= 50
     files = _files(runs)
     assert len(files) == len(set(files)) == 123
+
+
+def _selector_module():
+    """scripts/lib/related_tests.py, imported (it puts its own directory on
+    sys.path for select_unit_tests)."""
+    spec = importlib.util.spec_from_file_location("related_tests_under_test", SELECTOR)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+UI_DURATIONS = "tests/unit/scripts/ui_test_durations.json"
+SPACING_SLICES = ("accounts", "admin", "capacity", "config", "runs", "setup", "submit", "work")
+# The weights issue #2362 measured or bounded: 252-353 s a slice, and the
+# lightest two measured (capacity 252.7 s, accounts 324.3 s on its quicker run)
+# already add up past 540. These keep that property -- any two exceed 540 --
+# so no two can share a run without one going over the budget.
+SPACING_SECONDS = {"accounts": 353, "admin": 340, "capacity": 252, "config": 330,
+                   "runs": 300, "setup": 295, "submit": 310, "work": 353}
+
+
+def _spacing_selection(root: Path, extra_weights: dict[str, float] | None = None) -> list[str]:
+    """The 9 spacing files (8 heavy slices plus the light partition test) and
+    41 light files, 20 of them recorded at a second and 21 unrecorded; the
+    weights written where vitest_runs reads them."""
+    heavy = {f"src/__tests__/spacing.{g}.test.tsx": SPACING_SECONDS[g] for g in SPACING_SLICES}
+    light = [f"src/__tests__/light{i:02d}.test.tsx" for i in range(41)]
+    weights: dict[str, float] = {**heavy, **{t: 1.0 for t in light[:20]}, **(extra_weights or {})}
+    _write(root, UI_DURATIONS, json.dumps(weights))
+    return sorted([*heavy, "src/__tests__/spacing.test.tsx", *light, *(extra_weights or {})])
+
+
+def test_heavy_spacing_slices_never_share_a_vitest_run(tmp_path):
+    """Issue #2362: the 9 spacing files plus 41 light ones were one 50-file
+    run, ~45 min of work under a 540 s command limit; 31 agents timed out."""
+    module = _selector_module()
+    tests = _spacing_selection(tmp_path)
+    runs = module.vitest_runs(tmp_path, tests)
+    heavy = {f"src/__tests__/spacing.{g}.test.tsx" for g in SPACING_SLICES}
+    for run in runs:
+        # MUTATION: cut runs by file count alone (VITEST_FILES_PER_RUN = 50,
+        # today's rule) -> all eight slices share the one run.
+        assert len(heavy & set(run)) <= 1, run
+    # MUTATION: drop or duplicate a file while placing it -> red.
+    placed = [t for run in runs for t in run]
+    assert sorted(placed) == tests
+    # MUTATION: stop returning each run's files sorted -> red.
+    assert all(run == sorted(run) for run in runs)
+
+
+def test_no_vitest_run_is_estimated_over_540_seconds(tmp_path):
+    module = _selector_module()
+    # One file heavier than the whole budget: it runs, alone.
+    giant = "src/__tests__/giant.test.tsx"
+    tests = _spacing_selection(tmp_path, {giant: 700})
+    weights = json.loads((tmp_path / UI_DURATIONS).read_text())
+    # MUTATION: a run budget other than 540 (RUN_SECONDS in related-tests.sh,
+    # PYTEST_RUN_WEIGHT here) -> red.
+    assert module.VITEST_RUN_WEIGHT == 540 == module.PYTEST_RUN_WEIGHT
+    runs = module.vitest_runs(tmp_path, tests)
+    for run in runs:
+        estimate = sum(weights.get(t, module.VITEST_DEFAULT_SECONDS) for t in run)
+        if giant in run:
+            # MUTATION: let the lightest run take more files after a file that
+            # alone is over the budget -> the giant shares its run.
+            assert run == [giant], run
+        else:
+            # MUTATION: place each file on the lightest run without opening a
+            # new one when it would go over 540 -> a run estimated over 540 s.
+            assert estimate <= 540, (estimate, run)
+    assert sorted(t for run in runs for t in run) == tests
+
+
+def test_an_unrecorded_vitest_file_weighs_the_default(tmp_path):
+    module = _selector_module()
+    # MUTATION: change the default from the measured ~2.9 s a file -> red.
+    assert module.VITEST_DEFAULT_SECONDS == 2.9
+    recorded = "src/__tests__/recorded.test.tsx"
+    unrecorded = "src/__tests__/unrecorded.test.tsx"
+    # 537.0 + 2.9 = 539.9 fits one 540 s run; 537.2 + 2.9 = 540.1 does not.
+    # So the pair's split shows the unrecorded file weighs 2.9, give or take
+    # 0.1 s, through vitest_runs itself rather than a constant.
+    _write(tmp_path, UI_DURATIONS, json.dumps({recorded: 537.0}))
+    # MUTATION: weigh an unrecorded file 0 or the median of the recorded ones
+    # (pytest_runs' rule) instead of 2.9 -> the next assertion's split moves.
+    assert module.vitest_runs(tmp_path, [recorded, unrecorded]) == [[recorded, unrecorded]]
+    _write(tmp_path, UI_DURATIONS, json.dumps({recorded: 537.2}))
+    assert sorted(module.vitest_runs(tmp_path, [recorded, unrecorded])) == [[recorded], [unrecorded]]
+    # No durations file at all: every file weighs the default, and runs.
+    (tmp_path / UI_DURATIONS).unlink()
+    # MUTATION: raise on a missing or unreadable durations file -> red.
+    assert module.vitest_runs(tmp_path, [recorded, unrecorded]) == [[recorded, unrecorded]]
+    (tmp_path / UI_DURATIONS).write_text("not json")
+    assert module.vitest_runs(tmp_path, [recorded, unrecorded]) == [[recorded, unrecorded]]
+
+
+def test_the_checked_in_ui_durations_are_keyed_like_the_vitest_selection():
+    """The weights are keyed by path relative to apps/swarm-ui, as vitest_runs
+    is handed them, so a key in another shape would weigh nothing."""
+    module = _selector_module()
+    weights = json.loads((REPO / UI_DURATIONS).read_text())
+    # MUTATION: key a slice repo-relative (apps/swarm-ui/src/...) or seed
+    # fewer than the eight slices -> red.
+    for group in SPACING_SLICES:
+        key = f"src/__tests__/spacing.{group}.test.tsx"
+        assert (REPO / UI / key).is_file(), key
+        assert 250 <= weights[key] <= 360, (key, weights[key])
+    for key, seconds in weights.items():
+        # A key for a test since deleted is harmless (it is never looked up),
+        # so only the shape is held, not that the file still exists.
+        assert module.is_vitest_file(key), key
+        assert isinstance(seconds, (int, float)) and seconds > 0, (key, seconds)
 
 
 def test_a_heavy_pytest_selection_splits_by_ci_weight(tmp_path):
