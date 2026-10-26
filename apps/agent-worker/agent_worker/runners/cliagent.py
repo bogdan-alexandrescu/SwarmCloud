@@ -66,6 +66,7 @@ from .base import (
     RunnerContext,
     RunnerFailure,
 )
+from .budgetwatch import BudgetStreamWatcher, budget_watcher
 from .limits import platform_ceilings, resolve_limits
 from .streams import AgentStreamFiles
 
@@ -642,8 +643,9 @@ def _run_watched(
     limits: Any,
     log: Any,
     log_argv: list[str],
-    watcher: AccountStreamWatcher,
+    watcher: AccountStreamWatcher | None,
     stdin_data: bytes,
+    budget: BudgetStreamWatcher | None = None,
 ) -> ChildResult:
     """`run_child`, with the stream read as it is produced.
 
@@ -651,7 +653,17 @@ def _run_watched(
     is the loop, which asks the watcher after every slice and stops the CLI at
     a turn boundary when it says so -- and stops it on a SIGTERM to this
     runner, which `run_child` leaves to the worker's SIGKILL.
+
+    `budget` (#2459) reads the same stream through the same tap: it stops the
+    CLI at a turn boundary once the worker has asked, or at once when the
+    worker asked for the mid-turn stop. Either watcher may be absent.
     """
+    taps = [w.tap() for w in (watcher, budget) if w is not None]
+
+    def tap(chunk: bytes) -> None:
+        for feed in taps:
+            feed(chunk)
+
     child = ChildProcess(
         argv,
         cwd=cwd,
@@ -663,17 +675,28 @@ def _run_watched(
         logger=log,
         keep_tail=True,
         log_argv=log_argv,
-        stdout_tap=watcher.tap(),
+        stdout_tap=tap,
         stdin_data=stdin_data,
     )
     child.start()
     deadline = time.monotonic() + limits.timeout_seconds
     while True:
         exited = child.wait(_WATCH_SECONDS) is not None
-        stop = watcher.poll()
+        stop = watcher.poll() if watcher is not None else None
+        spent = budget.poll() if budget is not None else None
         if exited:
             break
+        if spent is not None:
+            log.info(
+                "stopping the agent: its budget is spent"
+                + (" (at a turn boundary)" if spent == "stop" else " (mid-turn, past 120%)"),
+                turns=budget.meter.turns,
+                tokens=budget.meter.tokens(),
+            )
+            child.terminate(limits.grace_seconds, reason=f"budget ({spent})")
+            break
         if stop is not None:
+            assert watcher is not None
             log.info(
                 "stopping the agent at a turn boundary to move it to another account",
                 reason=stop,
@@ -689,8 +712,13 @@ def _run_watched(
             child.terminate(limits.grace_seconds, reason="timeout")
             break
     result = child.finish()
-    watcher.poll()
-    watcher.write()
+    if watcher is not None:
+        watcher.poll()
+        watcher.write()
+    if budget is not None:
+        # The rest of the stream, counted; never a stop: the CLI has exited.
+        budget.poll(honour=False)
+        budget.write()
     return result
 
 
@@ -1564,6 +1592,10 @@ def run_cli_agent(
                 Path(session_file), run_session(spec, parsed_run, ctx.work_dir, started_at[0])
             )
 
+    # THE BUDGET (#2459), named by the worker only for a budgeted task: one
+    # watcher for every start below, so a resumed pass adds to the usage.
+    budget = budget_watcher()
+
     def start(
         run_argv: list[str], run_log_argv: list[str], run_prompt: str, timeout_seconds: float
     ) -> tuple[ChildResult, AccountStreamWatcher | None]:
@@ -1573,7 +1605,7 @@ def run_cli_agent(
         stdin_data = run_prompt.encode("utf-8")
         run_limits = replace(limits, timeout_seconds=timeout_seconds)
         run_watcher = _account_watcher(spec, stdout_path)
-        if run_watcher is None:
+        if run_watcher is None and budget is None:
             run_result = run_child(
                 run_argv,
                 cwd=cwd,
@@ -1596,10 +1628,10 @@ def run_cli_agent(
                 keep_tail=True,
             )
         else:
-            # On a pool account: the same child, the stream read as it is
-            # written (see `AccountStreamWatcher`), so the readings reach the
-            # worker while the agent runs and a swap can happen at a turn
-            # boundary.
+            # On a pool account, or with a budget: the same child, the stream
+            # read as it is written (see `AccountStreamWatcher`), so the
+            # readings and the usage reach the worker while the agent runs and
+            # a swap or the budget's stop can happen at a turn boundary.
             run_result = _run_watched(
                 run_argv,
                 ctx=ctx,
@@ -1612,6 +1644,7 @@ def run_cli_agent(
                 log_argv=run_log_argv,
                 watcher=run_watcher,
                 stdin_data=stdin_data,
+                budget=budget,
             )
         # Redact before anything is read back out. Everything below this
         # either becomes an artifact in GCS or a field in Firestore, and both
@@ -1627,6 +1660,14 @@ def run_cli_agent(
         combined: str,
     ) -> None:
         """Raise the signal or failure one start of the CLI ended in, if any."""
+        if budget is not None and budget.stopped_for is not None:
+            # STOPPED FOR THE BUDGET (#2459), at a turn boundary or past 120%
+            # mid-turn. Not judged as a rate limit or a refused credential, and
+            # no finish or repair pass follows: the worker reads the channel,
+            # checkpoints, publishes and ends the step `budget_exceeded`.
+            raise RunnerFailure(
+                f"{spec.name} was stopped by its budget ({budget.stopped_for})", spend=spend
+            )
         if (
             run_watcher is not None
             and run_watcher.stopped_for is not None

@@ -124,6 +124,10 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 114 | `CONTRACT.md` invariant 7: swarm-api alone starts with Cloud Run's startup CPU boost, the one recorded exception; every other Cloud Run service and every worker stays under invariant 7 as written (API-CPU-BOOST, part of #1816) | ACCEPTED by BGD 2026-10-23 (#1816 option (a)) and APPLIED by PR 2132; recorded here by lane FOLLOWUPS-1023 (part of #2150). The invariant's text is unchanged |
 | 115 | `models.py`: `Task.publish_to_pr`, the existing pull request a lane's commits are pushed onto instead of opening one, typed rather than carried in `metadata.dispatch` (PUBLISH-TO-PR, part of #2183) | open, REQUESTED 2026-10-24 by lane PUBLISH-TO-PR. Not applied, and not needed for the feature to work: the field ships in the signed `metadata.dispatch` block, as `strategy` and `continues` do |
 | 116 | `specsign.py`: `SETTINGS_MAC_FIELDS` gains a `"qa"` block, `("flows_per_step",)`, so the workspace's QA batch size is signed like `merge` and `code_intelligence` (QA-TRIPWIRE-MAC, part of #2136) | ACCEPTED by BGD 2026-10-26 (answering QA-FLOWS-CAP's question, task_23a1c31d528e450187b8). Not applied: `apps/common/swarm_common/` is frozen and a lane does not edit it |
+| 117 | `models.py`: `EndCause.BUDGET_EXCEEDED`, a step the worker stopped because it spent its budget (BUDGET-CAP, part of #2459) | open, REQUESTED 2026-10-26 by lane BUDGET-CAP; built behind with `end_cause` null and `last_error` `budget_exceeded: ...` |
+| 118 | `specsign.py`: a `"budget"` block in `SETTINGS_MAC_FIELDS`, `("unit", "amount")`, so the workspace's per-agent budget is signed (BUDGET-CAP, part of #2459) | open, REQUESTED 2026-10-26 by lane BUDGET-CAP; the writer and reader sign and verify the moment the block is listed |
+| 119 | `models.py` / `specsign.py`: `Task.budget` and `WorkflowStep.budget`, a step's budget as a typed, signed field (BUDGET-CAP, part of #2459) | open, REQUESTED 2026-10-26 by lane BUDGET-CAP; built behind in the signed `metadata.dispatch.budget` |
+| 120 | `states.py`: `EventType.BUDGET_WARNING`, the 80% warning as its own event type (BUDGET-CAP, part of #2459) | open, REQUESTED 2026-10-26 by lane BUDGET-CAP; built behind as `running` with `detail.cause: budget_warning` |
 
 ---
 
@@ -14462,3 +14466,181 @@ forger picks B's batch size within what B's admin could pick.
 **9** is what this protects: one tenant's worker must not set another
 tenant's settings. **10** holds either way: a caller names a bounded
 integer, never a spec. **1-8** are untouched.
+
+## 117. `models.py`: `EndCause.BUDGET_EXCEEDED` (BUDGET-CAP, part of #2459)
+
+**Status:** open, REQUESTED 2026-10-26 by lane BUDGET-CAP. Not applied:
+`apps/common/swarm_common/` is frozen. The feature ships without it.
+
+### What is true today
+
+BGD's decision on #2459 (2026-10-26): at 100% of its budget the worker stops
+the agent at its next turn boundary, checkpoints, publishes what it has, and
+ends the step FAILED "with the end cause `budget_exceeded`". `EndCause` has
+no such member. Until it does, the worker
+(`agent_worker/lifecycle.py::_record_finalised`, `agent_worker/budget.py`)
+ends the step FAILED with `end_cause` null -- `EndCause`'s own docstring rule
+for "a writer ended it for a reason with no value here" -- with `last_error`
+beginning `budget_exceeded:` and `result_summary.budget` carrying
+`end_cause: "budget_exceeded"`, the limits and what was used.
+
+### The change
+
+```python
+class EndCause(str, Enum):
+    ...
+    BUDGET_EXCEEDED = "budget_exceeded"   # the worker stopped the agent: it spent its budget
+```
+
+written only by the worker, beside `TIMEOUT`, and listed in the docstring's
+worker line. Never retried by the worker: another attempt of the same step
+starts from the same budget, so a resume is a person's choice.
+
+### What it would break if accepted
+
+Nothing at once. The outcome ledger (`swarm_api.outcomes`) falls back to its
+text classifier for a null cause today, so a budget stop reads as a runner
+failure there; with the member it is its own class. The worker switches from
+null to the member in the same change, and the ledger and the console read
+`budget_exceeded` from the field instead of the summary.
+
+### If it is declined
+
+The cause stays in `last_error` and `result_summary.budget.end_cause`, and
+the ledger classifies the text. A reader that branches on `end_cause` sees
+null for a budget stop.
+
+### Invariants
+
+**1** holds either way: the stopped step is FAILED, its lease released in the
+same write, and it holds nothing. **5**: the end is written under the
+attempt's generation like every worker end. **2-4, 6-10** are untouched.
+
+## 118. `specsign.py`: a `"budget"` block in `SETTINGS_MAC_FIELDS` (BUDGET-CAP, part of #2459)
+
+**Status:** open, REQUESTED 2026-10-26 by lane BUDGET-CAP. Not applied:
+`apps/common/swarm_common/` is frozen.
+
+### What is true today
+
+A workspace's per-agent budget default is `workspace_settings/{tenant_id}.
+budget: {unit, amount, updated_at, updated_by}`, written by
+`apps/swarm-api/swarm_api/budget.py::BudgetStore` beside `merge`, `qa` and
+`code_intelligence`. No block of `SETTINGS_MAC_FIELDS` covers it, so it is
+not signed, and the reader acts on it only when it is a shape the writer
+could have written (a unit of `usd` or `tokens`, a positive amount in
+bounds); anything else is no default.
+
+### Why
+
+[tenant-settings-integrity.md](design/tenant-settings-integrity.md) §1.3:
+any tenant worker can write `workspace_settings/<B>`. A forger can remove
+B's default -- so B's agents run with no limit -- or move it anywhere under
+the platform ceiling. Bounded: a step's own budget is inside the step-spec
+signature, and the ceiling lives in `control/settings`, not B's document. It
+is the same kind of write `merge.*` is signed against.
+
+### The change
+
+```python
+SETTINGS_MAC_FIELDS = MappingProxyType({
+    ...,
+    "budget": ("unit", "amount"),
+})
+```
+
+Nothing else in `specsign.py` changes. `tests/unit/common/test_settings_block.py`
+gains the entry.
+
+### The follow-up once it is applied
+
+None in `budget.py`: `SIGNED = MAC_BLOCK in SETTINGS_MAC_FIELDS` turns the
+writer's `block_mac` and the reader's `trusted_block` on with the listing.
+`judgment.WRITER_FIELDS` gains `"budget": ("unit", "amount")` in the same
+change, so `scripts/resign-workspace-settings.sh` signs stored blocks, and
+§1.3 of the design gains a row.
+
+### What it would break if accepted
+
+Nothing at once: a new block changes no other block's bytes. A tenant on the
+MAC cutover whose stored `budget` block was written before the re-sign reads
+as no default until the re-sign pass signs it.
+
+### If it is declined
+
+The default stays unsigned and its shape check is its only defence.
+
+### Invariants
+
+**9** is what this protects. **10** holds either way: a unit and a number,
+never a resource. **1-8** are untouched.
+
+## 119. `models.py` / `specsign.py`: `Task.budget` and `WorkflowStep.budget` (BUDGET-CAP, part of #2459)
+
+**Status:** open, REQUESTED 2026-10-26 by lane BUDGET-CAP. Not applied:
+`apps/common/swarm_common/` is frozen. The feature ships without it.
+
+### What is true today
+
+A task or a workflow step may send `budget: {usd: N}` or `{tokens: N}`
+(`swarm_api.schemas.StepBudget`). swarm-api resolves the attempt's budget at
+submission, min(step, workspace default, platform ceiling) per unit, and
+pins it in `metadata.dispatch.budget: {usd?, tokens?, from: {step,
+workspace, ceiling}}`, inside the block the step-spec signature covers
+(`SIGNED_METADATA_KEYS`). The worker reads it only from the verified
+document (`agent_worker.budget.Limits.from_dispatch`). `WorkflowStep`
+records no budget, so the workflow's own document does not say what each
+step asked for; the step's task does.
+
+### The change
+
+`Task.budget: dict[str, float | int] | None = None` (the RESOLVED limits,
+`usd` and/or `tokens`) and `WorkflowStep.budget` (what the step asked for),
+with a spec format that covers `Task.budget`, signed at that format only
+when it is set -- as request 104 did for `model_class`.
+
+### What it would break if accepted
+
+Nothing at once: the dispatch block's key is read as a fallback for tasks
+stored before the field, then retired.
+
+### If it is declined
+
+The budget stays in `metadata.dispatch`, beside `allow_empty_diff` and
+`publish_to_pr`, and nothing changes.
+
+### Invariants
+
+**10** holds either way: a budget only lowers a limit and chooses no image,
+command, resource or backend, as `timeout_seconds` does. **1** holds: it
+holds no capacity. **2-9** are untouched.
+
+## 120. `states.py`: `EventType.BUDGET_WARNING` (BUDGET-CAP, part of #2459)
+
+**Status:** open, REQUESTED 2026-10-26 by lane BUDGET-CAP. Not applied:
+`apps/common/swarm_common/` is frozen. The feature ships without it.
+
+### What is true today
+
+At 80% of its budget the worker records a `budget_warning` event the
+console can show (BGD, #2459). `EventType` has no such member, so it is
+written as `running` with `detail: {cause: "budget_warning", percent, told,
+limit, used}`, as `account_assigned` rides on `running` (request 44).
+
+### The change
+
+`EventType.BUDGET_WARNING = "budget_warning"`, written only by the worker.
+
+### What it would break if accepted
+
+Nothing at once: readers that look for `running` with the cause read the
+new type as well for one release, then only it.
+
+### If it is declined
+
+The warning stays a `running` event with a cause, which every reader of the
+timeline must know to look for.
+
+### Invariants
+
+None is touched: an event records, it decides nothing.

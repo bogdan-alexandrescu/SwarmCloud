@@ -441,6 +441,25 @@ SWITCHES: dict[str, Switch] = {
         "swarm-workspace-grant-key is refused 422 instead of writing a grant the release "
         "will never honour. On once every environment holds the grant key",
     ),
+    # Lane BUDGET-CAP (#2459, `budget`): a step's budget above the workspace
+    # default or the platform ceiling, and a workspace default above the
+    # ceiling. Off, the request goes through and NOTHING IS RAISED: every
+    # attempt's limit is min(step, workspace, ceiling), so the step still runs
+    # under the lower limit and the default is still capped by the ceiling.
+    # The refusal only tells the caller sooner.
+    "budget_above_limit": Switch(
+        code="budget_above_limit",
+        why="a task or workflow step whose `budget` is above the workspace's default or the "
+        "platform ceiling in the same unit is refused 422, naming both, instead of running "
+        "under the lower limit. On once the console's submit form and the plugin say what "
+        "budget a step may ask for",
+    ),
+    "budget_above_ceiling": Switch(
+        code="budget_above_ceiling",
+        why="a workspace budget default above the platform ceiling in its unit is refused 422 "
+        "naming the ceiling, instead of being saved and capped at every resolution. On once "
+        "the console's Settings shows the ceiling beside the field",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "
