@@ -85,6 +85,7 @@ export type TopicId =
   | 'attempt-documents'
   | 'binding-window'
   | 'blockers-at-an-instant'
+  | 'browser-not-used'
   | 'capacity'
   | 'ceiling-change-evicts-nothing'
   | 'people-and-roles-scope'
@@ -501,6 +502,19 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // PENDING, NOT ABSENT, WHILE THE ATTEMPT IS OPEN (AG-4). The old card said a
   // running attempt "has none, so the figure is absent" -- the encoding for
   // "nothing will ever record this", on a figure the worker is about to write.
+  'browser-not-used': {
+    group: 'an-attempt',
+    title: '“Browser not used” means a browser was paid for and never touched',
+    short:
+      'An agent on a browser runtime that ended without one browser call or one image. Its pod held a browser and its display the whole run, so that time was spent for nothing. A dash is different: the counts could not be read, or the agent has not ended, and it may have used the browser.',
+    long: [
+      'Every agent on a browser runtime records, when it ends, whether it used its browser: any browser tool call, any command that drives the browser, or any image it left in its artifacts counts as use. The worker reads the agent’s whole output to decide.',
+      '“Browser not used” is that record saying no, from an output read in full. The pod still started a browser and its display and held their memory for the whole run, so the run time was browser time nobody used. A runtime with no browser shows nothing at all.',
+      'A dash beside “browser” is not “not used”. It means the agent has not ended yet, ended before the record existed, or its output could not be read whole — a cut-off output that shows no call is not a measured zero. Platform counts leaves those agents out of unused browser time and says how many there were, so that figure is then a floor.',
+      'Unused browser time on Platform counts sums the run hours of the agents marked “browser not used” in the range. Its link opens the Agents list filtered to them.',
+    ],
+  },
+
   'peak-memory': {
     group: 'an-attempt',
     title: 'When peak memory is written',
@@ -1891,6 +1905,10 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   'oom-near-miss': {
     subject: 'The memory near-miss flag',
     act: { say: 'When the flag is set, pick a larger size for that work before it is killed.', at: 'capacity/catalogue' },
+  },
+  'browser-not-used': {
+    subject: 'A browser not used',
+    act: { say: 'Open the agent and read which step it was: a step that only reads and writes code should run on a runtime without a browser.', at: 'admin/counts' },
   },
   'peak-memory': {
     subject: 'Peak memory',

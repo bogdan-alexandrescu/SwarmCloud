@@ -58,19 +58,27 @@ export interface AgentList {
   state: RecentState | null
   grouped?: true
   failedFirst?: true
+  /**
+   * ONLY THE BROWSER AGENTS THAT DID NOT USE THE BROWSER (BROWSER-USE-UI,
+   * part of #2322): `browser=unused`, the address Admin › Platform counts'
+   * "Unused browser time" links to. A filter, not a reader's scratch, because
+   * it arrives from a link and has to survive a reload.
+   */
+  browserUnused?: true
 }
 
 /** A list address with its toggles set, written without the ones that are off. */
 export function agentList(
   tab: AgentTab,
   state: RecentState | null,
-  flags: { grouped?: boolean; failedFirst?: boolean } = {},
+  flags: { grouped?: boolean; failedFirst?: boolean; browserUnused?: boolean } = {},
 ): AgentList {
   return {
     tab,
     state: tab === 'recent' ? state : null,
     ...(flags.grouped === true ? { grouped: true as const } : {}),
     ...(flags.failedFirst === true ? { failedFirst: true as const } : {}),
+    ...(flags.browserUnused === true ? { browserUnused: true as const } : {}),
   }
 }
 
@@ -79,6 +87,8 @@ const GROUP_KEY = 'group'
 const GROUP_VALUE = 'wf'
 const FIRST_KEY = 'first'
 const FIRST_VALUE = 'failed'
+const BROWSER_KEY = 'browser'
+const BROWSER_VALUE = 'unused'
 
 /**
  * The toggles a list address names, as its query: `group=wf&first=failed`, or
@@ -90,14 +100,26 @@ export function agentListQuery(list: AgentList): string {
   const q = new URLSearchParams()
   if (list.grouped === true) q.set(GROUP_KEY, GROUP_VALUE)
   if (list.failedFirst === true) q.set(FIRST_KEY, FIRST_VALUE)
+  if (list.browserUnused === true) q.set(BROWSER_KEY, BROWSER_VALUE)
   return q.toString()
 }
 
 /** The toggles a query names. Any other value of either key is not the toggle. */
-export function listFlags(query: string): { grouped: boolean; failedFirst: boolean } {
+export function listFlags(query: string): { grouped: boolean; failedFirst: boolean; browserUnused: boolean } {
   const q = new URLSearchParams(query)
-  return { grouped: q.get(GROUP_KEY) === GROUP_VALUE, failedFirst: q.get(FIRST_KEY) === FIRST_VALUE }
+  return {
+    grouped: q.get(GROUP_KEY) === GROUP_VALUE,
+    failedFirst: q.get(FIRST_KEY) === FIRST_VALUE,
+    browserUnused: q.get(BROWSER_KEY) === BROWSER_VALUE,
+  }
 }
+
+/**
+ * THE AGENTS LIST OF BROWSER AGENTS THAT DID NOT USE THE BROWSER, as an
+ * address (`addressToPath` writes its path): Recent, because only an ended
+ * agent has a verdict, with `browser=unused`.
+ */
+export const BROWSER_UNUSED_ADDRESS = `work/running/recent?${BROWSER_KEY}=${BROWSER_VALUE}`
 
 function isTab(s: string | undefined): s is AgentTab {
   return (AGENT_TABS as readonly string[]).includes(s ?? '')

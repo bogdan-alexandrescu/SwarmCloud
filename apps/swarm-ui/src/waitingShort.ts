@@ -110,8 +110,14 @@ function byReason(reason: string, summary: string, first: string): string | null
     }
     case 'AWAITING_INPUT':
       return /^Waiting for a member of /.test(first) ? 'awaiting an answer' : null
-    case 'HUMAN_REQUIRED':
+    case 'HUMAN_REQUIRED': {
+      // A merge step held by the owner's questions parks HUMAN_REQUIRED too
+      // (#2313): it waits for answers, and nobody signs in to anything.
+      const m = /^Waiting for answers to (\d+) owner questions?/.exec(first)
+      if (m !== null) return `answers: ${m[1]} owner ${m[1] === '1' ? 'question' : 'questions'}`
+      if (/^Waiting for the owner questions/.test(first)) return 'answers: owner questions'
       return /^Waiting for a person/.test(first) ? 'needs a person to sign in' : null
+    }
     case 'CREDENTIAL_MISSING':
       return /^Credential missing/.test(first) ? cut(first.replace(/^Credential missing/, 'credential missing')) : null
     case 'BUDGET_EXHAUSTED':

@@ -246,21 +246,38 @@ SCOPE_PLATFORM = "platform"
 SCOPE_WORKSPACES = "workspaces"
 #: A grid cell for someone neither seen in a workspace nor given a role there.
 ROLE_NONE = "none"
+#: A grid cell for someone with an open join request there and nothing else
+#: (docs/design/join-requests.md §4.6, S5f).
+ROLE_REQUESTED = "requested"
 
 
 def role_cell(email: str, teams: set[str], column: Mapping[str, Any],
-              grants: Mapping[str, dict[str, str] | None]) -> str | None:
+              grants: Mapping[str, dict[str, str] | None],
+              requested: Mapping[str, set[str]] | None = None) -> str | None:
     """One person's role in one workspace, as the grid draws it: their own
     role when they hold one, else the workspace's default when they were last
-    seen in it, else `none`; None when the workspace's roles were not read.
-    The platform cannot list a Google group's members (`searchTransitiveGroups`
-    is 403 here), so "in it" is the last sighting's `teams`."""
-    over = grants.get(column["tenant_id"])
+    seen in it, else `requested` when they have an open join request there
+    (`requested`: tenant_id -> requesters), else `none`; None when the
+    workspace's roles were not read. The platform cannot list a Google
+    group's members (`searchTransitiveGroups` is 403 here), so "in it" is the
+    last sighting's `teams`."""
+    tenant_id = column["tenant_id"]
+    over = grants.get(tenant_id)
     if over is None:
         return None
     if email in over:
         return over[email]
-    return column["default_role"] if column["tenant_id"] in teams else ROLE_NONE
+    if tenant_id in teams:
+        return column["default_role"]
+    return ROLE_REQUESTED if email in (requested or {}).get(tenant_id, ()) else ROLE_NONE
+
+
+def requesters(join_requests: Iterable[Mapping[str, Any]] | None) -> dict[str, set[str]]:
+    """tenant_id -> the people with an open join request there."""
+    out: dict[str, set[str]] = {}
+    for row in join_requests or ():
+        out.setdefault(str(row["tenant_id"]), set()).add(str(row["requester"]))
+    return out
 
 
 #: A lookup of display names: emails in, each email's name (or None) out.
@@ -1499,10 +1516,17 @@ class People:
 
     # -- the list (§6.4 part 1) ------------------------------------------------------
 
-    def everyone(self, *, store: Any) -> dict[str, Any]:
+    def everyone(self, *, store: Any, join_requests: list[dict[str, Any]] | None = None,
+                 join_requests_error: str | None = None) -> dict[str, Any]:
         """Everyone who has signed in, and everyone with a workspace record:
         teams, GitHub, workspace state, Claude account source and last
-        activity. Pending requests first, then the most recently active."""
+        activity. Pending requests first, then the most recently active.
+
+        `join_requests` are the open requests to join any group workspace
+        (`join_rows`), read by the route; they count in `pending`, beside the
+        personal-workspace requests, because a platform admin decides them
+        too (docs/design/join-requests.md §4.6). None, with its error code,
+        when they could not be read: the list is still served."""
         people: dict[str, dict[str, Any]] = {}
         for snap in self._db.collection(ws.PEOPLE).limit(MAX_PEOPLE).stream():
             data = snap.to_dict() or {}
@@ -1529,7 +1553,10 @@ class People:
         return {
             "people": rows,
             "count": len(rows),
-            "pending": sum(1 for r in rows if r["workspace"]["state"] == ws.REQUESTED),
+            "pending": sum(1 for r in rows if r["workspace"]["state"] == ws.REQUESTED)
+            + len(join_requests or ()),
+            "join_requests": join_requests,
+            "join_requests_error": join_requests_error,
             # The banner's figures: whether this deployment builds workspaces
             # at all, and how many approved records wait on it.
             "provisioning": {"available": bool(self._publisher.enabled),
@@ -1568,14 +1595,34 @@ class People:
         return columns, grants
 
     def add_roles(self, rows: list[dict[str, Any]], columns: list[dict[str, Any]],
-                  grants: Mapping[str, dict[str, str] | None]) -> None:
+                  grants: Mapping[str, dict[str, str] | None],
+                  join_requests: list[dict[str, Any]] | None = None) -> None:
         """Each of `everyone()`'s rows gains `roles`: its cell in every column."""
+        requested = requesters(join_requests)
         for row in rows:
             teams = set(row.get("teams") or [])
-            row["roles"] = {c["tenant_id"]: role_cell(row["email"], teams, c, grants)
+            row["roles"] = {c["tenant_id"]: role_cell(row["email"], teams, c, grants, requested)
                             for c in columns}
 
-    def in_workspaces(self, role_store: Any, workspaces: Mapping[str, str]) -> dict[str, Any]:
+    def join_rows(self, views: Iterable[Any], labels: Mapping[str, str]) -> list[dict[str, Any]]:
+        """The open join requests as a decider is shown them (join-requests.md
+        §4.6, the Waiting for you card), newest first: the `ref` they act on,
+        the workspace (`labels`: tenant_id -> its display name), who asks and
+        their message, which was redacted when it was written. Never the
+        document id, which is what an overwrite would need, and never a MAC."""
+        rows = [{"ref": v.request.ref, "tenant_id": v.request.tenant_id,
+                 "display_name": labels.get(v.request.tenant_id) or v.request.group,
+                 "requester": v.request.requester, "requested_at": v.request.requested_at,
+                 "expires_at": v.request.expires_at, "message": v.request.message}
+                for v in views]
+        names = self._names([r["requester"] for r in rows]) if rows else {}
+        for row in rows:
+            row["requester_name"] = names.get(row["requester"])
+        return rows
+
+    def in_workspaces(self, role_store: Any, workspaces: Mapping[str, str],
+                      join_requests: list[dict[str, Any]] | None = None,
+                      join_requests_error: str | None = None) -> dict[str, Any]:
         """A WORKSPACE ADMIN'S READ (S5f): only `workspaces`, the group
         workspaces they administer, and only the people in them -- whoever was
         last seen in one (`people/{id}.teams`) or holds a role of their own in
@@ -1583,11 +1630,18 @@ class People:
         when they were last seen, and nothing else: no other workspace's id
         (a sighting's `teams` is cut to these), no personal workspace record,
         Claude account, loan, GitHub connection or submission, none of the
-        platform's admins and none of its audit. Nobody is waiting for a
-        workspace admin here: a personal workspace request and a loan are a
-        platform admin's to decide."""
+        platform's admins and none of its audit.
+
+        WHO IS WAITING (join-requests.md §4.6): the open requests to join
+        these workspaces, `join_requests` as the route read them, and each
+        requester's row with the `requested` cell, so a person with nothing
+        else here still appears. They are all `pending` counts: a personal
+        workspace request and a loan stay a platform admin's to decide."""
         columns, grants = self.role_columns(role_store, workspaces)
         wanted = set(workspaces)
+        join_requests = None if join_requests is None else [
+            r for r in join_requests if r["tenant_id"] in wanted]
+        requested = requesters(join_requests)
         seen: dict[str, dict[str, Any]] = {}
         for snap in self._db.collection(ws.PEOPLE).limit(MAX_PEOPLE).stream():
             data = snap.to_dict() or {}
@@ -1597,12 +1651,13 @@ class People:
                                "last": data.get("last_seen")}
         emails = {e for e, s in seen.items() if s["teams"]}
         emails |= {e for over in grants.values() if over for e in over}
+        emails |= {e for asking in requested.values() for e in asking}
         rows: list[dict[str, Any]] = []
         for email in emails:
             sight = seen.get(email) or {"teams": set(), "last": None}
             rows.append({
                 "email": email,
-                "roles": {c["tenant_id"]: role_cell(email, sight["teams"], c, grants)
+                "roles": {c["tenant_id"]: role_cell(email, sight["teams"], c, grants, requested)
                           for c in columns},
                 "last_active": _iso(sight["last"]),
                 "_last": sight["last"] if isinstance(sight["last"], datetime) else None,
@@ -1613,7 +1668,8 @@ class People:
             row.pop("_last")
             row["display_name"] = names.get(row["email"])
         return {"scope": SCOPE_WORKSPACES, "workspaces": columns, "workspaces_error": None,
-                "people": rows, "count": len(rows), "pending": 0}
+                "people": rows, "count": len(rows), "pending": len(join_requests or ()),
+                "join_requests": join_requests, "join_requests_error": join_requests_error}
 
     def _row(self, tenant_id: str, parts: Mapping[str, Any], *, store: Any) -> dict[str, Any] | None:
         person = parts.get("person") or {}

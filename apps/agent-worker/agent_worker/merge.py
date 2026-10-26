@@ -309,6 +309,14 @@ CI_FIX_POSTBACK_STATES = frozenset({"pending", "posted", "gave_up"})
 #: unmatched head is `head_moved` as before.
 CI_FIXER_TASKS_READ = 10
 
+#: The step's summary key naming each fix-round record it could not read
+#: (#2373): its own task, a round's, a recorded fixer's. At most
+#: FIX_RECORDS_UNREAD_MAX of them, each reason FIX_RECORDS_UNREAD_CHARS long,
+#: so a `merge_fix` record listing many rounds cannot grow the summary.
+FIX_RECORDS_UNREAD_KEY = "fix_records_unread"
+FIX_RECORDS_UNREAD_MAX = 5
+FIX_RECORDS_UNREAD_CHARS = 200
+
 #: swarm-api's record of every platform fix round's pushed head, against the
 #: PULL REQUEST (repository + number), on the task whose `swarm/<id>` branch
 #: it is on (epic #1334: HANG-LEASE's merge refused PR 1338 at the head a fix
@@ -1410,10 +1418,14 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
     summary["pinned"] = pinned
     # The step's own record of its CI-fix rounds, and the heads they pushed:
     # task-store reads that need no credential, so before the token.
-    own = _own_doc(ctx)
-    fix_heads = _distinct(_fix_round_heads(ctx, own, opener, target.pull_request)
+    unread: list[str] = []
+    own = _own_doc(ctx, unread)
+    fix_heads = _distinct(_fix_round_heads(ctx, own, opener, target.pull_request, unread)
                           + _ci_fixer_heads(ctx, opener, target.pull_request, number)
-                          + _recorded_fix_heads(ctx, opener, target.pull_request, number))
+                          + _recorded_fix_heads(ctx, opener, target.pull_request, number,
+                                                unread))
+    if unread:
+        summary[FIX_RECORDS_UNREAD_KEY] = unread[:FIX_RECORDS_UNREAD_MAX]
     return _merge_with_token(
         run, number=number, pinned=pinned,
         branch=f"{ctx.branch_prefix}{_branch_task(opener, target.pull_request)}",
@@ -1717,11 +1729,14 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default
     )
     if head is None or accepted is None:
+        unread = summary.get(FIX_RECORDS_UNREAD_KEY) or []
         return run.refuse("head_moved",
                           f"pull request #{number}'s head is {head}, not {pinned}, "
                           "the head this workflow pushed, nor one of its CI-fix or conflict "
                           "fix rounds' heads, nor a head the platform's CI fixer recorded "
-                          "for this pull request, nor GitHub's own update of any of them")
+                          "for this pull request, nor GitHub's own update of any of them"
+                          + (f"; and this step could not read {'; '.join(unread)}, so a "
+                             "round's head there was never a candidate" if unread else ""))
     updates, pushed_by = accepted
     summary["head"] = head
     summary["updates"] = updates
@@ -2308,11 +2323,29 @@ def _slot_base(ctx: ActionContext, merger: ForgeMerger) -> str | None:
     return base or merger.default_branch()
 
 
-def _own_doc(ctx: ActionContext) -> Mapping[str, Any]:
+def _unread(ctx: ActionContext, unread: list[str] | None, what: str, exc: Exception) -> None:
+    """Note in `unread` that `what` could not be read, and why (#2373).
+
+    A record the step cannot read names no round, so the head that round
+    pushed is `head_moved` -- the right answer, and on 2026-10-25 the only
+    one four MERGE-verdict PRs got, with nothing saying the read was what
+    failed (a tenant on the state routes, whose `state/upstream` serves
+    neither the step's own task nor a round's). The refusal now says so.
+    The reason is the exception's own text, scrubbed and bounded: an id and
+    a refusal code, never a document.
+    """
+    if unread is None:
+        return
+    reason = ctx.scrub(str(exc) or type(exc).__name__)[:FIX_RECORDS_UNREAD_CHARS]
+    unread.append(f"{what} ({reason})")
+
+
+def _own_doc(ctx: ActionContext, unread: list[str] | None = None) -> Mapping[str, Any]:
     """The step's own task document, or {} when it cannot be read."""
     try:
         return _mapping(ctx.fetch_upstream(ctx.task_id))
-    except Exception:  # noqa: BLE001 - an unreadable record has no rounds
+    except Exception as exc:  # noqa: BLE001 - an unreadable record has no rounds
+        _unread(ctx, unread, f"its own task {ctx.task_id}, which records its rounds", exc)
         return {}
 
 
@@ -2373,7 +2406,7 @@ def _rounds_asked(own: Mapping[str, Any]) -> int:
 
 
 def _fix_round_heads(ctx: ActionContext, own: Mapping[str, Any], opener: Mapping[str, Any],
-                     target: str) -> list[tuple[str, str]]:
+                     target: str, unread: list[str] | None = None) -> list[tuple[str, str]]:
     """(task, pushed head) of each CI-fix and conflict fix round of this merge, newest first.
 
     The rounds are named by the tenant-writable `merge_fix` record, so each
@@ -2391,6 +2424,9 @@ def _fix_round_heads(ctx: ActionContext, own: Mapping[str, Any], opener: Mapping
     `workflow_id`), never this merge's: against this merge's workflow every
     round would be `workflow_mismatch`, and its head refused. What binds it
     to this merge is the signed `continues`, not the workflow.
+
+    A round's task that cannot be read at all is noted in `unread` (#2373);
+    one that reads but fails a check is not: that is the guard working.
     """
     root = _branch_task(opener, target)
     heads: list[tuple[str, str]] = []
@@ -2401,6 +2437,10 @@ def _fix_round_heads(ctx: ActionContext, own: Mapping[str, Any], opener: Mapping
             continue
         try:
             doc = _mapping(ctx.fetch_upstream(task_id))
+        except Exception as exc:  # noqa: BLE001 - unreadable: not a round's head
+            _unread(ctx, unread, f"round task {task_id}", exc)
+            continue
+        try:
             workflow = _task_id(entry.get("workflow_id")) or _task_id(doc.get("workflow_id"))
             if workflow is None:
                 continue
@@ -2509,7 +2549,7 @@ def _fixer_head(ctx: ActionContext, task_id: str, doc: Mapping[str, Any], *,
 
 
 def _recorded_fix_heads(ctx: ActionContext, opener: Mapping[str, Any], target: str,
-                        number: int) -> list[tuple[str, str]]:
+                        number: int, unread: list[str] | None = None) -> list[tuple[str, str]]:
     """(task, pushed head) of each fix round swarm-api recorded for THIS pull request
     (epic #1334), newest first, whichever workflow the round ran in.
 
@@ -2552,7 +2592,8 @@ def _recorded_fix_heads(ctx: ActionContext, opener: Mapping[str, Any], target: s
             continue
         try:
             doc = _mapping(ctx.fetch_upstream(task_id))
-        except Exception:  # noqa: BLE001 - unreadable: not a round's head
+        except Exception as exc:  # noqa: BLE001 - unreadable: not a round's head
+            _unread(ctx, unread, f"recorded fix task {task_id}", exc)
             continue
         pushed = _fixer_head(ctx, task_id, doc, root=root, repository=repository)
         if pushed is not None and pushed == entry.get("head"):

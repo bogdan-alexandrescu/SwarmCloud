@@ -1013,11 +1013,12 @@ def set_quota_hard_max(
     broker clamps the target down to a lowered max in the same write
     (`QuotaBroker.set_hard_max`); the answer says whether it did.
 
-    AUDITED HERE, NOT BY THE BROKER. The broker's `HardMaxRequest` takes
-    `{hard_max}` and nothing else and its `set_hard_max` records nothing, so
-    this route writes one `admin_audit` entry once the broker has answered:
-    who (the admin's verified email from the token -- the body cannot name
-    one), why, and the max and target before and after.
+    AUDITED TWICE. The broker records the change in `quota_audit`, in the
+    quota document's own transaction, with the `requested_by` and `reason`
+    this route forwards (ACCOUNT-429-FOLLOWUP; BGD, 2026-10-25), and this
+    route writes one `admin_audit` entry once the broker has answered: who,
+    why, and the max and target before and after. Who is the admin's
+    verified email from the token in both -- the body cannot name one.
     """
     name = provider.strip().lower()
     if name not in known_providers():
@@ -1027,7 +1028,8 @@ def set_quota_hard_max(
         raise NotFound(f"tenant {tenant_id!r} not found")
     before = next((q for q in ctx.store.list_quota(tenant_id)
                    if q.provider == name and q.tenant_id == tenant_id), None)
-    result = broker.set_hard_max(name, tenant_id, hard_max=body.hard_max)
+    result = broker.set_hard_max(name, tenant_id, hard_max=body.hard_max,
+                                 requested_by=auth.email, reason=body.reason)
     after = result.get("quota") if isinstance(result, dict) else None
     after = after if isinstance(after, dict) else {}
     from_target = None if before is None else before.adaptive_target

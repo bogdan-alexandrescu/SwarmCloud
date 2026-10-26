@@ -22,7 +22,7 @@
 // window name is back in a tooltip only.
 
 import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
 
 import type { AccountsBoard } from '../api'
 import type { Result } from '../fetch'
@@ -143,6 +143,14 @@ describe('the list names itself and qualifies its figures (#127, #503)', () => {
   })
 
   it('says when a blocked account clears, from the broker, in its row and its sheet', async () => {
+    // Only Date is pinned, to midday UTC: run after 22:00Z, a reset two hours
+    // out falls on the next day and is drawn with its date ("Oct 26 01:41Z"),
+    // which the bare `HH:MMZ` reading below does not match.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-25T12:00:00Z'))
+    onTestFinished(() => {
+      vi.useRealTimers()
+    })
     const at = new Date(Date.now() + 2 * HOUR).toISOString()
     await mount([
       live({

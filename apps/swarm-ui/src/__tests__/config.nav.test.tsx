@@ -126,7 +126,7 @@ describe('the Config section (CONFIG-NAV)', () => {
   it('leaves People and roles out of a personal workspace\'s Config (S1e)', async () => {
     serve(ME(true, 'u-ana'), [PERSONAL])
     await app('/config/github')
-    await waitFor(() => expect(document.querySelector('.sk-pfoot small')?.textContent).toBe('ana.b@example.com'))
+    await waitFor(() => expect(document.querySelector('.sk-pfoot small')?.getAttribute('title')).toBe('ana.b@example.com'))
     // MUTATION: draw PANEL_PAGES.config unfiltered -> People and roles is listed and this fails.
     await waitFor(() =>
       expect([...document.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((e) => e.textContent)).toEqual(CONFIG_TABS.filter((t) => t !== 'People and roles')),
@@ -138,7 +138,7 @@ describe('the Config section (CONFIG-NAV)', () => {
     // workspace is still the one in hand, as `me` says.
     serve(ME(false, 'u-ana'), [])
     await app('/config/github')
-    await waitFor(() => expect(document.querySelector('.sk-pfoot small')?.textContent).toBe('ana.b@example.com'))
+    await waitFor(() => expect(document.querySelector('.sk-pfoot small')?.getAttribute('title')).toBe('ana.b@example.com'))
     // MUTATION: read "personal" off the tenants list -> an empty list draws People and roles and four steps, and this fails.
     await waitFor(() =>
       expect([...document.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((e) => e.textContent)).toEqual(CONFIG_TABS.filter((t) => t !== 'People and roles')),
@@ -164,7 +164,9 @@ describe('the Config section (CONFIG-NAV)', () => {
 describe('every old address lands on its new one', () => {
   const MOVED: readonly [string, string][] = [
     ['/access', '/config/github'],
-    ['/access?view=members', '/config/github?view=members'],
+    // GA-MOVE-VIEWS: Members is People and roles' tab, Browser logins Secrets'.
+    ['/access?view=members', '/config/people?view=members'],
+    ['/access?view=logins', '/config/secrets?view=logins'],
     ['/repositories', '/config/repositories'],
     ['/repositories/register', '/config/repositories/register'],
     ['/repositories/tokens', '/config/repositories/tokens'],

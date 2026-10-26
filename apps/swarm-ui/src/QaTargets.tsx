@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
 import { loadRepositories } from './api'
 import { Banner, Button, Card, EmptyState } from './components'
 import { repoName } from './RepositoriesData'
@@ -25,6 +25,7 @@ import {
   legsOf,
   linkSpent,
   promoteQaScreen,
+  QA_LINK_INVALID,
   repoSlug,
   runQaTarget,
   type FlowBrowserTool,
@@ -145,13 +146,21 @@ export function QaTargetsScreen({
   go,
   link,
   tabs,
+  repository = null,
 }: {
   go: (to: string) => void
   link?: QaLink | null
   /** Config › Repositories' Repositories | QA targets strip, drawn under the head as the list draws it (REPOS-PAGE). */
   tabs?: ReactNode
+  /**
+   * `owner/repo` from the address (`repository=`): only the targets filing in
+   * it are drawn, and the page says so (REPOS-FOLLOWUPS: a card's "QA targets:
+   * N" opens here). Nothing is read differently; the one list is narrowed.
+   */
+  repository?: string | null
 }) {
   const list = useUrRead(loadQaTargets, 'qa-targets')
+  const only = repository === null || repository.trim() === '' ? null : repository.trim()
   // ONLY A WORKSPACE ADMIN REGISTERS, CHANGES OR SETS A CREDENTIAL (§1); a
   // member runs. A viewer does neither. The server decides.
   const adminGate = useRoleGate('admin', 'register, change or set the credential of a QA target')
@@ -214,6 +223,14 @@ export function QaTargetsScreen({
           {adminGate}
         </p>
       )}
+      {only !== null && (
+        <p className="ur-small" data-qa-filter="">
+          Showing the QA targets that file in <b>{only}</b>.{' '}
+          <UrLink to={EVERY_TARGET} go={go}>
+            Show every QA target
+          </UrLink>
+        </p>
+      )}
       <QaLead targets={targets} admin={adminGate === null} onCredential={(t, leg) => void openCredential(t, leg)} />
       {said !== null && (
         <Banner tone={said.tone} title={said.title}>
@@ -269,7 +286,17 @@ export function QaTargetsScreen({
           </EmptyState>
         }
       >
-        {(rows) => (
+        {(all) => {
+          const rows = only === null ? all : all.filter((t) => repoSlug(t.repository)?.toLowerCase() === only.toLowerCase())
+          if (rows.length === 0) {
+            return (
+              <EmptyState kind="empty" heading={`No QA target files in ${only ?? 'this repository'}`}>
+                {all.length === 1 ? 'The workspace’s one QA target files' : `The workspace’s ${all.length} QA targets file`} in other
+                repositories.
+              </EmptyState>
+            )
+          }
+          return (
           <div className="ur-cards">
             {rows.map((row) => {
               const fresh = approved[row.id]
@@ -294,11 +321,15 @@ export function QaTargetsScreen({
               )
             })}
           </div>
-        )}
+          )
+        }}
       </UrRegion>
     </div>
   )
 }
+
+/** The unfiltered list, under Config › Repositories. */
+const EVERY_TARGET = 'config/repositories?page=qa-targets'
 
 function toolName(tool: FlowBrowserTool): string {
   return tool === 'jev' ? 'Jev' : 'Playwright'
@@ -940,6 +971,16 @@ function ApproveHostForm({
   )
 }
 
+const ENTRY_RUN: CSSProperties = { whiteSpace: 'nowrap' }
+
+/** A refusal's message as a sentence: capitalised, and ended with a full stop when it has no end of its own. */
+function asSentence(message: string): string {
+  const t = message.trim()
+  if (t === '') return t
+  const capital = t.charAt(0).toUpperCase() + t.slice(1)
+  return /[.!?]$/.test(capital) ? capital : `${capital}.`
+}
+
 /**
  * The one-time link's form: the test credential's username and password, or
  * a `challenge_bypass` link's value. The fields are UNCONTROLLED: their values
@@ -966,7 +1007,17 @@ function CredentialForm({
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
   const isBypass = link.field === 'challenge_bypass'
-  const where = link.environment === null ? name : `${name} · ${link.environment}`
+  // The entry is one unbroken run: at 390 the title broke at the name's own
+  // hyphen ("ai-studio-prod · prod-" / "reviewer"). An entry is at most 20
+  // characters (`ENTRY_NAME`), so it always fits a line.
+  const where =
+    link.environment === null ? (
+      name
+    ) : (
+      <>
+        {name} · <span style={ENTRY_RUN}>{link.environment}</span>
+      </>
+    )
 
   async function submit(e: FormEvent) {
     e.preventDefault()
@@ -995,10 +1046,17 @@ function CredentialForm({
     // those drop the token.
     if (linkSpent(r)) onSent()
     if (r.status === 'error') {
+      // The API's message is a lowercase clause with no full stop; drawn as
+      // is it ran into the next sentence ("name the one to use Nothing was
+      // saved"). `qa_credential_link_invalid`'s message already ends "ask for
+      // a new one", so that refusal is not told to ask twice.
+      const why = asSentence(writeFailure(r.error))
       setFailed(
-        linkSpent(r)
-          ? `${writeFailure(r.error)} The link is used; ask for a new one to try again.`
-          : `${writeFailure(r.error)} Nothing was saved; the link still works, fix the field and save again.`,
+        !linkSpent(r)
+          ? `${why} Nothing was saved; the link still works, fix the field and save again.`
+          : r.error.code === QA_LINK_INVALID
+            ? `${why} The link is used.`
+            : `${why} The link is used; ask for a new one to try again.`,
       )
       return
     }
@@ -1006,7 +1064,14 @@ function CredentialForm({
   }
 
   return (
-    <Card className="ur-form" title={isBypass ? `Challenge bypass value for ${where}` : `Test credential for ${where}`}>
+    <Card
+      className="ur-form"
+      title={
+        <>
+          {isBypass ? 'Challenge bypass value for' : 'Test credential for'} {where}
+        </>
+      }
+    >
       {isBypass ? (
         <p className="ur-small">
           Type the value of the challenge bypass the app&rsquo;s owner made for these runs. It goes from this page to the

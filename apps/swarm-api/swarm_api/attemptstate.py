@@ -80,6 +80,7 @@ from .provider_keys import KEYS_COLLECTION as PROVIDER_KEYS
 from .repositories import parse_repository, repo_id_for
 from .repoindex import BASE_LINE, KEPT_VERSIONS, VERSIONS_COLLECTION
 from .store import EVENTS, LEASES, TASKS
+from .verdictpublish import spec_refusal
 from .workspaces import personal_tenant_id
 
 ATTEMPTS = "attempts"
@@ -1693,7 +1694,23 @@ class AttemptState:
             the answers to `needs_owner`): from this task's own signed
             `depends_on`, following each ancestor's `depends_on` only through
             this tenant's tasks of this workflow, at most
-            `WORKFLOW_ANCESTORS_MAX` documents read.
+            `WORKFLOW_ANCESTORS_MAX` documents read;
+          * a merge step's own task and the branch it merges (#2373,
+            `agent_worker.merge._own_doc`, `_fix_round_heads`,
+            `_recorded_fix_heads`): the attempt's own task id, from the
+            tuple; the root whose `swarm/<root>` branch the pull request is
+            on, from this task's signed `dispatch.merge_target.pull_request`
+            and that task's own `dispatch.continues`; and any task of this
+            tenant whose dispatch block `continues` that root -- a merge's
+            CI-fix or conflict fix round, or a PR-side fixer of the same
+            branch. Every task document is tenant-writable after signing
+            (docs/design/tenant-settings-integrity.md §1.1), so each of the
+            three `metadata.dispatch` fields followed is read only from a
+            document whose spec signature verifies HERE, by the id it was
+            read by (`verdictpublish.spec_refusal`): the merge step's own,
+            the opener's and the candidate's. Unverified, a rewrite of any
+            one would serve any same-tenant task it named. The worker still
+            holds each one to its signed spec as well.
 
         The caller still refuses a task of another tenant, so a derived id
         serves only this tenant's document.
@@ -1701,7 +1718,36 @@ class AttemptState:
         return (self._is_index_base(attempt, task, upstream_task_id)
                 or self._is_builds_on_ancestor(attempt, task, upstream_task_id)
                 or self._is_gate_review(attempt, task, upstream_task_id)
-                or self._is_workflow_ancestor(attempt, task, upstream_task_id))
+                or self._is_workflow_ancestor(attempt, task, upstream_task_id)
+                or self._is_merge_fix_record(attempt, task, upstream_task_id))
+
+    def _is_merge_fix_record(self, attempt: AttemptTuple, task: Mapping[str, Any],
+                             upstream_task_id: str) -> bool:
+        if upstream_task_id == attempt.task_id:
+            return True
+        if not self._signed(attempt, task, attempt.task_id):
+            return False
+        target = _mapping(_mapping(_mapping(task.get("metadata")).get("dispatch"))
+                          .get("merge_target")).get("pull_request")
+        if not isinstance(target, str) or not target:
+            return False
+        opener = self._read(self._ref(TASKS, target))
+        if opener is None or not self._signed(attempt, opener, target):
+            return False
+        continued = _mapping(_mapping(opener.get("metadata")).get("dispatch")).get("continues")
+        root = continued if isinstance(continued, str) and continued else target
+        if upstream_task_id == root:
+            return True
+        doc = self._read(self._ref(TASKS, upstream_task_id))
+        if doc is None or not self._signed(attempt, doc, upstream_task_id):
+            return False
+        return _mapping(_mapping(doc.get("metadata")).get("dispatch")).get("continues") == root
+
+    def _signed(self, attempt: AttemptTuple, doc: Mapping[str, Any], task_id: str) -> bool:
+        """`doc`, read by `task_id`, is this tenant's and its spec signature verifies:
+        its `tenant_id` and `metadata.dispatch` are the ones swarm-api signed."""
+        return (doc.get("tenant_id") == attempt.tenant_id
+                and spec_refusal(self._settings, doc, task_id) is None)
 
     def _is_index_base(self, attempt: AttemptTuple, task: Mapping[str, Any],
                        upstream_task_id: str) -> bool:

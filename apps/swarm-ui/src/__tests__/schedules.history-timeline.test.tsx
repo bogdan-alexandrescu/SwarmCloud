@@ -16,7 +16,12 @@
 //   * the list under the lanes (SCHED-HISTORY-FOLLOWUP, part of #1109) names
 //     each work item in words -- an issue run by its issue's number and title,
 //     its run link, its state -- with its cost, and a cost never recorded as
-//     a dash with the reason `/spans` gave, never $0.
+//     a dash with the reason `/spans` gave, never $0;
+//   * that list is schedules.html's History frame (SCHED-HISTORY-CSS, BGD
+//     2026-10-25): 12px under the lanes, each item's cost right-aligned in its
+//     own column on a desktop ($11.30, $9.80, a dash whose reason is its
+//     title), stacked under the words on a phone (390). Asked of `painted`
+//     (cssgate's cascade), because jsdom applies no `@media` block.
 //
 // The bodies are `routes/schedules.py::schedule_to_api`'s, `firing_to_api`'s
 // and `list_firing_spans`'s shapes. Placeholders only; nothing is token-shaped.
@@ -25,6 +30,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 import { Routed } from './screenroute'
+import type { CascadeEnv } from './cssgate'
+import { painted } from './marks'
 
 const WAIT = { timeout: 4000 }
 const KEY = 'swarm.schedule.history.view'
@@ -47,13 +54,19 @@ function schedule(): Json {
   }
 }
 
-/** Firing n, fired n days ago, which made task `task_<n>`. */
+/**
+ * Firing n, fired n days ago, which made task `task_<n>`, ended an hour later.
+ * The end is offset from `at`, not read from a second `minutesAgo`: a slow
+ * runner's millisecond between two clock reads made the firing 60m + 1ms,
+ * which the page's scale rounds up to +1h15m (#2375's run, 2026-10-26).
+ */
 function firing(n: number, over: Json = {}): Json {
   const at = minutesAgo(n * 1440)
+  const ended = new Date(Date.parse(at) + 60 * 60_000).toISOString()
   return {
     firing_id: `sch_a:${n}`, schedule_id: 'sch_a', type: 'issue-sweep', slot: at, fired_at: at, trigger: 'cron',
     state: 'done', work: [{ kind: 'task', id: `task_${n}`, repo_id: 'repo_a' }], skip: null, dry_run: null,
-    approval_id: null, outcome: 'succeeded', cost: null, ended_at: minutesAgo(n * 1440 - 60),
+    approval_id: null, outcome: 'succeeded', cost: null, ended_at: ended,
     ...over,
   }
 }
@@ -348,5 +361,76 @@ describe("a schedule's History timeline", () => {
     expect(cost('api_action:label:ready')).toBe('— an API action runs no attempt, so it records no cost')
     expect(visible(row('api_action:label:ready'))).toContain('label:ready')
     expect(visible(list)).not.toContain('$0')
+  })
+
+  it('puts each cost in its own right-aligned column on a desktop, and under the words on a phone', async () => {
+    const WIDE: CascadeEnv = { width: 1440 }
+    const PHONE: CascadeEnv = { width: 390 }
+    const reason = "the run's attempts are still running; cost is written when an attempt ends"
+    await mount(
+      [firing(1, { work: [{ kind: 'issue_run', id: 'run_212' }, { kind: 'issue_run', id: 'run_207' }, { kind: 'task', id: 'task_215' }] })],
+      (url) => ({
+        status: 200,
+        body: {
+          firings: askedOf(url).map((id) => ({
+            firing_id: id,
+            items: [
+              item('run_212', [spanTask('task_a', 1, 1)], {
+                kind: 'issue_run', state: 'CHECKING',
+                issue: { number: 212, ref: 'example-org/example-api#212', url: 'https://github.com/example-org/example-api/issues/212', title: 'Orders endpoint 500 on empty cart' },
+                cost: { reported_usd: 11.3, unreported_attempts: 0, unread: null },
+              }),
+              item('run_207', [spanTask('task_b', 1, 1)], {
+                kind: 'issue_run', state: 'MERGE_WAITING',
+                issue: { number: 207, ref: 'example-org/example-api#207', url: 'https://github.com/example-org/example-api/issues/207', title: 'Totals round wrong' },
+                cost: { reported_usd: 9.8, unreported_attempts: 0, unread: null },
+              }),
+              item('task_215', [spanTask('task_215', 1, 1)], { cost: { reported_usd: null, unreported_attempts: 1, unread: reason } }),
+            ],
+          })),
+          not_found: [],
+        },
+      }),
+    )
+    const list = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('[data-testid="sc-history-items"]')
+      expect(el).not.toBeNull()
+      return el!
+    }, WAIT)
+    const rows = [...list.querySelectorAll<HTMLElement>(':scope > li')]
+    expect(rows).toHaveLength(3)
+    // MUTATION: drop `.sht-list`'s margin and the list sits on the last lane.
+    expect(painted(list, 'margin-top', WIDE)).toBe('12px')
+    expect(painted(list, 'margin-top', PHONE)).toBe('12px')
+    for (const li of rows) {
+      const words = li.querySelector<HTMLElement>(':scope > .sht-words')
+      const cost = li.querySelector<HTMLElement>(':scope > [data-cost]')
+      expect(words, 'the words are not one cell').not.toBeNull()
+      expect(cost, 'the cost is not its own cell').not.toBeNull()
+      expect(words!.contains(cost)).toBe(false)
+      // A desktop: two columns, the cost in the second, right-aligned.
+      // MUTATION: leave the li a block (the Audit list's) and the cost is a second line.
+      expect(painted(li, 'display', WIDE)).toBe('grid')
+      expect(painted(li, 'grid-template-columns', WIDE)).toBe('minmax(0, 1fr) auto')
+      expect(painted(cost!, 'grid-column', WIDE)).toBe('2')
+      expect(painted(cost!, 'text-align', WIDE)).toBe('right')
+      // A phone: one column, the cost under the words, from the left.
+      // MUTATION: drop the 640px rule and the column squeezes the words at 390.
+      expect(painted(li, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
+      expect(painted(cost!, 'grid-column', PHONE)).toBe('1')
+      expect(painted(cost!, 'text-align', PHONE)).toBe('left')
+    }
+    const costOf = (key: string) => list.querySelector<HTMLElement>(`[data-work="${key}"] [data-cost]`)!
+    expect(visible(costOf('issue_run:run_212'))).toBe('$11.30')
+    expect(visible(costOf('issue_run:run_207'))).toBe('$9.80')
+    // The dash: its reason is its title, and on a desktop the words are clipped
+    // out of the column (still read aloud); on a phone they show under the words.
+    const dash = costOf('task:task_215').querySelector<HTMLElement>('.sht-dash')
+    expect(dash, 'no dash').not.toBeNull()
+    expect(dash!.getAttribute('title')).toBe(reason)
+    expect(visible(costOf('task:task_215'))).toBe(`— ${reason}`)
+    const why = dash!.querySelector<HTMLElement>('.sht-why')!
+    expect(painted(why, 'clip-path', WIDE)).toBe('inset(50%)')
+    expect(painted(why, 'clip-path', PHONE)).toBe('none')
   })
 })

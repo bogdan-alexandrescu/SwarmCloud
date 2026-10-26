@@ -63,6 +63,18 @@
    drawn in place, so its edge is dashed -- the console's mark for something
    not there yet -- and the card's surface drops away. */
 .ur-card.is-chosen { border-style: dashed; border-color: var(--ctl-bd); background: transparent; }
+/* THE REACH TABLE'S REGISTERED COLUMN (REPOS-FOLLOWUPS, config-e.html S3a),
+   on Config › Repositories only (`has-registered`). The same tracks as
+   onboarding.css' `.ac-grant`, one more before the actions, and only where
+   that grid is columns: under 1080px its rows are records, and the cell
+   carries its own label as every other cell does. The column is paid for
+   from the Access track, cut to the Read | Write segment it holds (~106px):
+   taken from the name's share alone it broke "example-org/example-web"
+   mid-name at 1440 (review shot light-desktop-01). The actions keep their
+   216px: at 200 Remove wrapped under Verify and Push test (light-desktop-02). */
+@media (min-width: 1080px) {
+  .ac-reach.has-registered .ac-grid-h, .ac-reach.has-registered .ac-grant { grid-template-columns: minmax(0, 1fr) 112px repeat(4, 84px) 104px 216px; }
+}
 /* The freshness badge's one slot (visual QA run 6, work-a-009): the row
    under the name, from the left edge, on every card at every width. */
 .ur-cbadge { display: flex; flex-wrap: wrap; gap: var(--ctl-s2); align-items: center; justify-content: flex-start; min-width: 0; }
@@ -358,15 +370,6 @@ table.ur-mx tr.ur-grp td { background: var(--surface-2); font-weight: 600; text-
   .ur-tmap-row, .ur-always-row, .ur-suite-row { grid-template-columns: minmax(0, 1fr); }
   .ur-lookup-form { flex-direction: column; align-items: stretch; }
   .ur-acts { margin-left: 0; }
-  /* ACCESS'S HEAD WRAPS AS ONE GROUP, AS SETUP'S DOES (visual QA run 6,
-     work-b-003, part of #1680). The head's actions kept `margin-left: auto`
-     and `flex-end`, and the switch-and-Setup group's own width put it on a
-     line under Refresh, so Refresh sat alone, right-aligned, on a row between
-     the title and the switch. The actions take the full row under the title
-     from the left edge, and the group starts from no width: it stays on
-     Refresh's row, the switch beside Refresh, and Setup wraps inside it. */
-  .ac-page > .c-phead > .c-acts { flex: 1 1 100%; margin-left: 0; justify-content: flex-start; }
-  .ac-page > .c-phead > .c-acts > .ur-acts { flex: 1 1 0; min-width: 0; }
   /* The grid needs the full width (screen 13's risk): a phone reads perms-b's cards. */
   .ur-mx-wide { display: none; }
   .ur-mx-cards { display: grid; gap: 12px; }

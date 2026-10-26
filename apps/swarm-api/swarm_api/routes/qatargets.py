@@ -14,6 +14,9 @@ lane VQ-2 TARGETS, part of #1933).
                                                    {screens?, file?, environments?} (or the one-leg
                                                    `environment`), one workflow per leg, one run group
     GET    /v1/qa-runs/{group_id}                  a run group, in its own tenant (any role)
+    POST   /v1/qa-targets/{id}:dismiss-route   a workspace admin dismisses a found route, {route_id}:
+                                                   no leg's new_since_last_run offers it again (S9b)
+    POST   /v1/qa-targets/{id}:restore-route   a workspace admin undoes that, {route_id}
     POST   /v1/qa-targets/{id}:discover            a member starts its discovery (§4.1): {environment?}
     POST   /v1/qa-targets/{id}/credential-links    a one-time link to the console's form (an admin),
                                                    bound to one entry and one field:
@@ -165,6 +168,12 @@ class RunBody(StrictModel):
 class LegBody(StrictModel):
     #: The leg a discovery or a credential link is for, by name.
     environment: str | None = EnvironmentName
+
+
+class RouteBody(StrictModel):
+    #: A found route's id, as a leg's `discovered` lists it (`:dismiss-route`)
+    #: or the target's `dismissed_routes` does (`:restore-route`).
+    route_id: str = Field(min_length=1, max_length=64)
 
 
 class LinkBody(LegBody):
@@ -409,6 +418,36 @@ def get_run_group(
     """One dispatch's legs (§7's run page), in the caller's workspace only, as
     a target is read: another workspace's group answers exactly as a missing one."""
     return {"qa_run": _targets(request, ctx).group(tenant_id, group_id)}
+
+
+@router.post("/qa-targets/{target_id}:dismiss-route")
+def dismiss_route(
+    target_id: str,
+    body: RouteBody,
+    request: Request,
+    auth: AuthContext = Depends(current_auth),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """S9b's Remove: the found route leaves every leg's `new_since_last_run`,
+    now and in later runs (`QaTargets.dismiss_route`, audited). A workspace
+    admin's, refused 403 to anyone else before anything is read."""
+    by = require_workspace_admin(ctx, auth, tenant_id)
+    return {"qa_target": to_api(_targets(request, ctx).dismiss_route(tenant_id, target_id, body.route_id, by=by))}
+
+
+@router.post("/qa-targets/{target_id}:restore-route")
+def restore_route(
+    target_id: str,
+    body: RouteBody,
+    request: Request,
+    auth: AuthContext = Depends(current_auth),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Undo a dismissal (`QaTargets.restore_route`, audited); a workspace admin's."""
+    by = require_workspace_admin(ctx, auth, tenant_id)
+    return {"qa_target": to_api(_targets(request, ctx).restore_route(tenant_id, target_id, body.route_id, by=by))}
 
 
 @router.post("/qa-targets/{target_id}:discover", status_code=status.HTTP_201_CREATED)

@@ -1,15 +1,20 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react'
+import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react'
 import {
+  checkActionsRule,
   deleteBrowserLogin,
   deleteProviderKey,
+  loadActionsSecrets,
   loadRepositories,
   loadSecretsOverview,
   loadWorkspaceSecretCatalogue,
+  mintActionsLink,
   mintProviderKeyLink,
   mintRunnerKeyLink,
   putProviderKey,
   putRunnerKey,
   secretStore,
+  type ActionsEnvironmentRule,
+  type ActionsSecretList,
   type MintedLink,
   type SecretStoreApi,
   type SecretStoreTarget,
@@ -20,12 +25,16 @@ import {
   type WorkspaceSecretCatalogue,
   type WorkspaceSecretConsumer,
 } from './api'
-import { Banner, Button, Card, Segmented, TypedConfirm, routedClick } from './components'
+import { BrowserLoginsPane, isPersonalTenant } from './BrowserLogins'
+import { Banner, Button, ButtonLink, Card, Segmented, Tabs, TypedConfirm, routedClick, type TabDef } from './components'
+import { SetupContext } from './ConfigSetup'
+import { configSetupOf } from './configSetupApi'
 import { chooseTenant, type Result } from './fetch'
-import { addressToPath, secretsLinkToken, secretsLinkView } from './paths'
+import { QA_LINK_ADDRESS, SECRETS_LOGINS_VIEW, addressToPath, secretsLinkToken, secretsLinkView } from './paths'
 import { UrRefresh, UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
 import type { RepoRecord } from './RepositoriesData'
 import { JevBackendCard } from './JudgmentBackend'
+import { SecretsActions, nameProblem, readersOf, ruleWords, scLine, type ActionsFormLink } from './SecretsActions'
 import { PageHead } from './Shell'
 import { timeAgo } from './types'
 import {
@@ -73,9 +82,19 @@ import './styles/secrets.css'
  * (`SecretStoreTarget`), so a form opened on one scope cannot be submitted to
  * another; a personal secret is written only in the person's own workspace.
  *
- * THE GITHUB ACTIONS DESTINATION is SSC-UI-ACTIONS' pane: this page draws the
- * switch and SwarmCloud's record of what it wrote there (§3.8), and leaves
- * GitHub's live list, the Set form and Delete to that lane.
+ * THE GITHUB ACTIONS DESTINATION is SSC-UI-ACTIONS' pane (`SecretsActions`,
+ * mounted here by lane SECRETS-ACTIONS-MOUNT, S4b2 and S4f): this page draws
+ * the switch, and the pane GitHub's live list, environments, Set and Delete.
+ * An Actions link (`dest=actions&name=..&env=..&t=..`) hands its token to the
+ * pane's one-time form, the same way: off the bar before paint, held in a
+ * ref, sent once. The wizard's Actions path (S4c) mints that form's link for
+ * the destination and name it chose, and hands it over the same way.
+ *
+ * THE LEAD (S4a, S4h, S4i) counts what the setup strip counts: the overview's
+ * MCP and QA rows, and the workspace TypeSafe key whenever the setup read
+ * (`config_setup.secrets`, `provider_key`) lists it -- only while Jev judges
+ * with TypeSafe, which the overview cannot tell. With nothing stored and
+ * nothing needed it is "Step 3 · Add your first secret".
  */
 
 type Dest = 'agents' | 'actions'
@@ -139,15 +158,16 @@ function goView(view: string): void {
   window.dispatchEvent(new PopStateEvent('popstate'))
 }
 
-/** An in-app link, routed like the panel's own. */
-function AppLink({ address, children }: { address: string; children: ReactNode }) {
+/** An in-app link, routed like the panel's own; `kind` draws it as a button. */
+function AppLink({ address, children, label, kind }: { address: string; children: ReactNode; label?: string; kind?: 'primary' | 'secondary' }) {
   const go = (e: MouseEvent<HTMLAnchorElement>) => {
     if (!routedClick(e)) return
     e.preventDefault()
     window.history.pushState(null, '', addressToPath(address))
     window.dispatchEvent(new PopStateEvent('popstate'))
   }
-  return <a className="ctl-link" href={addressToPath(address)} onClick={go}>{children}</a>
+  if (kind !== undefined) return <ButtonLink kind={kind} size="sm" href={addressToPath(address)} aria-label={label} onClick={go}>{children}</ButtonLink>
+  return <a className="ctl-link" href={addressToPath(address)} aria-label={label} onClick={go}>{children}</a>
 }
 
 /** Drop `t` from the address bar, keeping everything else. Idempotent. */
@@ -193,6 +213,12 @@ function when(iso: string): string {
   return h < 1 ? `in ${Math.max(1, Math.round(ahead / 60_000))} min` : h < 48 ? `in ${Math.round(h)} h` : `in ${Math.round(h / 24)} d`
 }
 
+/** The API's reason as a sentence: capitalised, with its full stop. */
+function sentenceOf(text: string): string {
+  const t = text.trim()
+  return `${t.charAt(0).toUpperCase()}${t.slice(1)}${/[.!?]$/.test(t) ? '' : '.'}`
+}
+
 /** A GitHub token's kind, as git_tokens records it, in words. */
 const TOKEN_KINDS: Readonly<Record<string, string>> = Object.fromEntries([
   ['app_user', 'GitHub App user token'],
@@ -212,11 +238,30 @@ function neededOf(rows: readonly SecretsRow[]): SecretsRow[] {
 }
 
 const OVERVIEW_ROUTE = 'GET /v1/secrets/overview'
+
+/**
+ * BROWSER LOGINS, THE PAGE'S SECOND TAB (GA-MOVE-VIEWS; part of #2157, BGD
+ * 2026-10-24: "Browser logins to Config › Secrets"). It was GitHub access'
+ * Browser logins view: the person's own saved live-browser sessions, by name
+ * and site, with a typed Revoke (BrowserLogins.tsx `BrowserLoginsPane`, moved
+ * whole), beside the secrets they belong with. Its address is `?view=logins`,
+ * which `/config/github?view=logins` and `/access?view=logins` land on
+ * (paths.ts `MOVED_VIEWS`). The tab is the ROUTED view, never the bar read at
+ * mount: an old hash bookmark is rewritten to this path only after the first
+ * render. A scope, a one-time link's form or Add a secret opens the first
+ * tab whatever the address says (`secretsLinkView` keeps `view` only alone),
+ * because each is drawn there.
+ */
+const SECRETS_TABS: readonly TabDef[] = [
+  { key: 'secrets', label: 'Secrets' },
+  { key: SECRETS_LOGINS_VIEW, label: 'Browser logins' },
+]
 const CATALOGUE_ROUTE = 'GET /v1/workspace/secrets/consumers'
 
 export function SecretsScreen({ view, token = null }: { view: string | null; token?: string | null }) {
   const at = parseSecretsView(view)
   const viewKey = viewOf(at)
+  const logins = secretsLinkView(view ?? '') === `view=${SECRETS_LOGINS_VIEW}`
   // THE LINK'S TOKEN, for the form its link opened and no other: read once,
   // from App's capture or, rendered alone, off the bar. A ref, never state or
   // a prop of anything drawn.
@@ -229,6 +274,9 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
   const linked = useRef(link.current.token === null ? null : link.current.view)
   useLayoutEffect(() => {
     dropLinkToken()
+    // A link's token is for the view it opened and no other: leaving that
+    // view lets it go, so coming back never hands a spent one over again.
+    if (link.current !== null && link.current.view !== viewKey) link.current = { view: link.current.view, token: null }
   }, [viewKey])
   const takeLink = (forView: string): string | null => {
     const held = link.current
@@ -242,6 +290,24 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
   const registered = repos.state.status === 'empty' ? [] : dataOf(repos.state)
   const repoId = at.scope !== 'repository' ? null : at.repo ?? registered?.[0]?.repo_id ?? null
   const known = repoId === null || registered === null ? null : registered.some((r) => r.repo_id === repoId)
+  const picked = registered?.find((r) => r.repo_id === repoId)
+  const repoName = picked === undefined ? null : `${picked.owner}/${picked.repo}`
+  // AN ACTIONS LINK'S FORM (S4d on the Actions path): the pane's one-time
+  // form, opened with the token this view's link brought. Read without
+  // taking it, since a render may run twice; the pane keeps it in its own ref
+  // as it mounts, and `ActionsPane` lets this page's copy go once it has.
+  const actionsToken = at.scope === 'repository' && at.dest === 'actions' && at.name !== null && link.current.view === viewKey ? link.current.token : null
+  const actionsLink: ActionsFormLink | null = actionsToken === null || at.name === null ? null : { name: at.name, environment: at.env, token: actionsToken }
+  const actionsTaken = () => {
+    if (link.current !== null && link.current.view === viewKey) link.current = { view: viewKey, token: null }
+  }
+  // The wizard's hand-off: the form's link is minted for the destination and
+  // name it chose, held for that view, and the page moves there.
+  const openActions = (repo: string, name: string, environment: string | null, token: string) => {
+    const next = viewOf({ scope: 'repository', repo, dest: 'actions', name, env: environment })
+    link.current = { view: next, token }
+    goView(next)
+  }
   const overviewKey = `secrets-overview:${at.scope}:${repoId ?? ''}`
   const overview = useUrRead(
     () => (at.scope === 'repository' && (repoId === null || known !== true)
@@ -257,6 +323,7 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
   const [draft, setDraft] = useState<Draft | null>(null)
   const [wizard, setWizard] = useState<WizardStart | null>(null)
   const [done, setDone] = useState<string | null>(null)
+  const [again, setAgain] = useState(0)
   const go = (next: Partial<SecretsAt>) => goView(viewOf(next))
   const back = (words: string | null = null) => {
     setDone(words)
@@ -266,6 +333,13 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
   const canManage = ov?.can_manage === true
   const formOpen = isForm(at)
   const mayAdd = canManage || at.scope === 'personal'
+  // S4a: the workspace TypeSafe key, when the setup strip counts it missing.
+  const setup = useContext(SetupContext)
+  const setupItems = configSetupOf(dataOf(setup.doc))?.secrets?.items ?? []
+  const keyNeeded = at.scope === 'workspace' && setupItems.some((i) => i.kind === 'provider_key' && i.name === 'typesafe')
+  // S4i: nothing stored and nothing needed, for someone who may add one. Its
+  // lead carries Add a secret, so the head does not draw it a second time.
+  const first = at.scope === 'workspace' && ov !== null && canManage && !keyNeeded && neededOf(ov.rows).length === 0 && !ov.rows.some((r) => r.section === 'agents')
   // ADD A SECRET FROM ITS ADDRESS (MCP-LEAD-FORM): once the overview says the
   // reader may add one and the catalogue has answered, open the sheet with
   // the address's consumer ticked if the catalogue lists it, and nothing
@@ -285,17 +359,33 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
   }, [at.add, at.consumer, at.scope, repoId, formOpen, mayAdd, catalogueSettled, catalogueData])
   return (
     <div className="pk-page sec-page">
+      {/* The head's Refresh and Add a secret are the secrets' own, so the
+          logins tab, whose list is read by its own pane, offers neither. */}
       <PageHead title="Secrets">
-        <UrRefresh reads={[overview, repos]} ageOf={[overview]} />
-        {!formOpen && mayAdd && (
-          <Button kind="primary" size="sm" onClick={() => setWizard({ scope: at.scope, repo: repoId, consumer: null })}>
+        {!logins && <UrRefresh reads={[overview, repos]} ageOf={[overview]} />}
+        {!logins && !formOpen && mayAdd && !first && (
+          <Button kind="primary" size="sm" onClick={() => setWizard({ scope: at.scope, repo: repoId, consumer: null, dest: at.dest })}>
             Add a secret
           </Button>
         )}
       </PageHead>
-      {formOpen ? (
+      {/* `cfg-parts` (config.css): the Config pages' tab strip, as GitHub access draws it. */}
+      <Tabs tabs={SECRETS_TABS} current={logins ? SECRETS_LOGINS_VIEW : 'secrets'} label="Secrets" className="cfg-parts" onSelect={(k) => goView(k === SECRETS_LOGINS_VIEW ? `view=${SECRETS_LOGINS_VIEW}` : '')} />
+      {logins ? (
+        <>
+          {/* In a group workspace the pane says where logins live instead, so
+              a lede promising "the sessions you saved" would contradict it. */}
+          {(ov === null || isPersonalTenant(ov.tenant_id)) && (
+            <p className="ur-sub">
+              The browser sessions you saved from a live browser in your workspace, by name and site, with when each
+              expires. An agent names one to start signed in.
+            </p>
+          )}
+          <BrowserLoginsPane tenantId={ov?.tenant_id || null} />
+        </>
+      ) : formOpen ? (
         <OneTimeForm
-          key={viewKey}
+          key={`${viewKey}#${again}`}
           at={at}
           repoId={repoId}
           known={known}
@@ -304,6 +394,14 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
           catalogue={dataOf(catalogue.state)}
           draft={draft}
           takeLink={() => takeLink(viewKey)}
+          onAgain={() => {
+            // S4d's "Set another in this place": a fresh form, with its own
+            // link, for the same store; a rotate's place takes an add.
+            setDraft(null)
+            setDone(null)
+            setAgain((n) => n + 1)
+            if (at.action === 'rotate') go({ scope: at.scope, repo: repoId, action: 'add' })
+          }}
           fromLink={linked.current === viewKey}
           onBack={() => back(null)}
           onDone={(words) => {
@@ -320,12 +418,6 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
             go({ scope, repo: scope === 'repository' ? repoId : null })
           }} onRepo={(repo) => go({ scope: 'repository', repo })} />
           {done !== null && <p className="pk-saved" role="status">{done}</p>}
-          {at.dest === 'actions' && at.scope === 'repository' && at.name !== null && (
-            <Banner tone="info" title={`Opened from a one-time link for ${at.name}${at.env === null ? '' : ` in ${at.env}`}`}>
-              Writing a GitHub Actions secret comes with this repository&rsquo;s GitHub Actions pane, which this console does
-              not draw yet. Nothing was written and the link is unused; it expires ten minutes after it was minted.
-            </Banner>
-          )}
           {at.scope === 'repository' && known === false ? (
             <Banner tone="warn" title="That repository is not registered in this workspace">
               The Repository scope lists only this workspace&rsquo;s registrations. Pick one above, or register it on{' '}
@@ -341,8 +433,14 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
               {(d) => (
                 <ScopeBody
                   at={at}
+                  viewKey={viewKey}
                   overview={d}
                   repoId={repoId}
+                  repoName={repoName}
+                  actionsLink={actionsLink}
+                  onActionsTaken={actionsTaken}
+                  keyNeeded={keyNeeded}
+                  first={first}
                   personalSelected={personalSelected}
                   catalogue={catalogue}
                   onChange={overview.reload}
@@ -359,13 +457,17 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
           {at.scope === 'workspace' && <JevBackendCard />}
         </>
       )}
-      {wizard !== null && (
+      {!logins && wizard !== null && (
         <AddWizard
           start={wizard}
           repos={registered ?? []}
           tenant={ov?.tenant_id ?? null}
           personalSelected={at.scope === 'personal' ? personalSelected : null}
           catalogue={dataOf(catalogue.state)}
+          onActions={(repo, name, environment, token) => {
+            setWizard(null)
+            openActions(repo, name, environment, token)
+          }}
           onClose={() => {
             setWizard(null)
             // Leave Add a secret's address, so a reload does not reopen it.
@@ -437,8 +539,14 @@ function ScopeBar({
 
 function ScopeBody({
   at,
+  viewKey,
   overview,
   repoId,
+  repoName,
+  actionsLink,
+  onActionsTaken,
+  keyNeeded,
+  first,
   personalSelected,
   catalogue,
   onChange,
@@ -446,8 +554,18 @@ function ScopeBody({
   onAdd,
 }: {
   at: SecretsAt
+  viewKey: string
   overview: SecretsOverview
   repoId: string | null
+  /** `owner/repo` of the picked registration; null while unread. */
+  repoName: string | null
+  /** The Actions link this view opened, with its token; null without one. */
+  actionsLink: ActionsFormLink | null
+  onActionsTaken: () => void
+  /** The setup read lists the workspace TypeSafe key as needed (S4a). */
+  keyNeeded: boolean
+  /** Nothing stored and nothing needed (S4i). */
+  first: boolean
   personalSelected: boolean
   catalogue: UrRead<WorkspaceSecretCatalogue>
   onChange: () => void
@@ -457,11 +575,12 @@ function ScopeBody({
   const rows = overview.rows
   const of = (section: string) => rows.filter((r) => r.section === section)
   const needed = neededOf(rows)
+  const lead = { manages: overview.can_manage === true, tenant: overview.tenant_id, go, onAdd }
   if (at.scope === 'repository' && repoId !== null) {
-    const repository = overview.repository ?? 'this repository'
+    const repository = repoName ?? overview.repository ?? 'this repository'
     return (
       <>
-        <NeedLead rows={needed} manages={overview.can_manage === true} scope="repository" go={go} onAdd={onAdd} />
+        <NeedLead {...lead} rows={needed} keyNeeded={false} scope="repository" repository={repository} repoId={repoId} />
         <div className="sec-dest">
           <Segmented<Dest>
             label="Destination"
@@ -469,14 +588,11 @@ function ScopeBody({
             onChange={(dest) => go({ scope: 'repository', repo: repoId, dest })}
             options={[{ key: 'agents', label: 'Agents' }, { key: 'actions', label: 'GitHub Actions' }]}
           />
-          <span className="sec-hint">
-            {at.dest === 'actions'
-              ? 'Written into the repository on GitHub. SwarmCloud reads names and update times, never values.'
-              : `Released only to agents that clone ${repository}.`}
-          </span>
+          {/* The pane's own lead says where an Actions secret is written. */}
+          {at.dest === 'agents' && <span className="sec-hint">Released only to agents that clone {repository}.</span>}
         </div>
         {at.dest === 'actions' ? (
-          <ActionsRecord rows={of('actions')} repository={repository} />
+          <ActionsPane key={viewKey} repoId={repoId} repository={repository} link={actionsLink} canManage={overview.can_manage ?? null} onTaken={onActionsTaken} />
         ) : (
           <>
             <StoreCard
@@ -522,7 +638,9 @@ function ScopeBody({
   }
   return (
     <>
-      <NeedLead rows={needed} manages={overview.can_manage === true} scope="workspace" go={go} onAdd={onAdd} />
+      {first ? <FirstLead tenant={overview.tenant_id} onAdd={() => onAdd(null)} /> : (
+        <NeedLead {...lead} rows={needed} keyNeeded={keyNeeded} scope="workspace" repository={null} repoId={null} />
+      )}
       <StoreCard title="For agents" label="Workspace secrets" target={{ scope: 'workspace' }} overview={overview} catalogue={catalogue} onChange={onChange} go={go} at={at} empty={<FirstSecret tenant={overview.tenant_id} />} />
       <div className="sec-g2">
         <KeysCard rows={[...of('keys'), ...of('accounts')]} scope="workspace" go={go} onChange={onChange} onAdd={onAdd} />
@@ -532,31 +650,99 @@ function ScopeBody({
   )
 }
 
-/** The page's next action (S4a, S4h): what is needed and not set, and who sets it. */
-function NeedLead({ rows, manages, scope, go, onAdd }: { rows: SecretsRow[]; manages: boolean; scope: SecretsScope; go: (n: Partial<SecretsAt>) => void; onAdd: (c: string | null) => void }) {
-  if (rows.length === 0) return null
-  const name = (r: SecretsRow) => (r.section === 'qa_sign_in' ? `the QA sign-in for ${r.name} ${r.environment ?? ''}`.trim() : `MCP server ${r.name}’s credential`)
-  const n = rows.length
+/** One thing the lead names: a row the overview reports, or the TypeSafe key the setup read lists. */
+interface Need {
+  /** In a sentence: "MCP server kb’s credential". */
+  words: string
+  /** What follows "is not set" when it is the only one. */
+  why: string
+  act: ReactNode
+}
+
+/**
+ * The page's next action (S4a, S4h): what is needed and not set, and who sets
+ * it. A member is told it is an admin's step, pointed to Yours, and offered a
+ * note to send an admin, rather than shown buttons they cannot use.
+ */
+function NeedLead({ rows, keyNeeded, manages, scope, tenant, repository, repoId, go, onAdd }: {
+  rows: SecretsRow[]
+  keyNeeded: boolean
+  manages: boolean
+  scope: SecretsScope
+  tenant: string
+  repository: string | null
+  repoId: string | null
+  go: (n: Partial<SecretsAt>) => void
+  onAdd: (c: string | null) => void
+}) {
+  const [copied, setCopied] = useState<string | null>(null)
+  const needs: Need[] = rows.map((r) => r.section === 'qa_sign_in' ? {
+    words: `the QA sign-in for ${r.name} ${r.environment ?? ''}`.trim(),
+    why: 'QA runs there stay off until it is set.',
+    act: <AppLink key={`${r.name}-${r.environment}`} address="config/repositories?page=qa-targets">Set it on QA targets</AppLink>,
+  } : {
+    words: `MCP server ${r.name}’s credential`,
+    why: `Every call to ${r.name} fails until a secret is granted to ${r.consumer ?? `mcp:${r.name}`}.`,
+    act: <Button key={r.name} kind="primary" size="sm" onClick={() => onAdd(r.consumer)}>Add a secret for {r.name}</Button>,
+  })
+  if (keyNeeded) {
+    needs.push({
+      words: 'the TypeSafe key for the workspace',
+      why: 'Jev and browser agents read it, and Jev judges with TypeSafe here.',
+      act: <Button key="typesafe" kind={needs.length === 0 ? 'primary' : 'secondary'} size="sm" onClick={() => go({ scope: 'workspace', key: 'typesafe' })}>Set TypeSafe key</Button>,
+    })
+  }
+  if (needs.length === 0) return null
+  const n = needs.length
+  const whose = scope === 'repository' ? '' : 'workspace '
+  const listed = needs.map((x) => x.words).join('; ')
+  const where = scope === 'repository' ? `the repository ${repository ?? 'this repository'}` : `the workspace ${tenant}`
+  async function copyNote() {
+    const address = `${window.location.origin}${addressToPath(addressOf(viewOf({ scope, repo: repoId })))}`
+    const note = `Needed and not set in ${where}: ${listed}. A workspace admin sets ${n === 1 ? 'it' : 'them'} on Config › Secrets: ${address}`
+    try {
+      await navigator.clipboard.writeText(note)
+      setCopied('Note copied. Send it to a workspace admin.')
+    } catch {
+      setCopied('The note was not copied: this browser refused the clipboard.')
+    }
+  }
+  const step = scope === 'repository' ? 'This repository' : 'Step 3'
   return (
     <section className="sec-lead is-warn" aria-label="Needed and not set">
-      <span className="sec-k">{manages ? `${n} needed` : 'an admin’s step'}</span>
+      <span className="sec-k">{manages ? `${step} · ${scope === 'repository' ? `${n} missing` : 'next'}` : `${step} · an admin’s step`}</span>
       <b>
-        {n === 1 ? `${name(rows[0]!).replace(/^./, (c) => c.toUpperCase())} is not set` : `${n} secrets are needed and not set`}
+        {manages
+          ? (n === 1 ? `${needs[0]!.words.replace(/^./, (c) => c.toUpperCase())} is not set` : `${n} ${whose}secrets are needed and not set`)
+          : `${n === 1 ? `1 ${whose}secret is` : `${n} ${whose}secrets are`} needed: a workspace admin sets ${n === 1 ? 'it' : 'them'}`}
       </b>
       <span>
-        {n === 1 ? '' : `${rows.map(name).join('; ')}. `}
         {manages
-          ? (n === 1 ? (rows[0]!.section === 'qa_sign_in' ? 'QA runs there stay off until it is set.' : `Every call to ${rows[0]!.name} fails until a secret is granted to ${rows[0]!.consumer ?? `mcp:${rows[0]!.name}`}.`) : 'Each stays off until it is set.')
-          : 'A workspace admin sets them. You can set your own under Yours; yours win for your agents.'}
+          ? (n === 1 ? needs[0]!.why : `${listed.replace(/^./, (c) => c.toUpperCase())}. Each stays off until it is set.`)
+          : `${listed.replace(/^./, (c) => c.toUpperCase())}. You can set your own under Yours; yours win for your agents.`}
       </span>
       <span className="sec-acts">
-        {manages ? rows.slice(0, 2).map((r) => r.section === 'qa_sign_in' ? (
-          <AppLink key={`${r.name}-${r.environment}`} address="config/repositories?page=qa-targets">Set it on QA targets</AppLink>
-        ) : (
-          <Button key={r.name} kind="primary" size="sm" onClick={() => onAdd(r.consumer)}>Add a secret for {r.name}</Button>
-        )) : scope !== 'personal' && (
-          <Button kind="primary" size="sm" onClick={() => go({ scope: 'personal' })}>Go to Yours</Button>
+        {manages ? needs.slice(0, 2).map((x) => x.act) : (
+          <>
+            {scope !== 'personal' && <Button kind="primary" size="sm" onClick={() => go({ scope: 'personal' })}>Go to Yours</Button>}
+            <Button kind="secondary" size="sm" onClick={() => void copyNote()}>Copy a note for an admin</Button>
+          </>
         )}
+      </span>
+      {copied !== null && <span role="status">{copied}</span>}
+    </section>
+  )
+}
+
+/** The empty workspace's lead (S4i): nothing stored, nothing needed, and the one button. */
+function FirstLead({ tenant, onAdd }: { tenant: string; onAdd: () => void }) {
+  return (
+    <section className="sec-lead" aria-label="Add your first secret">
+      <span className="sec-k">Step 3 · next</span>
+      <b>Add your first secret</b>
+      <span>Nothing is stored for {tenant || 'this workspace'} yet, and nothing registered needs one yet either.</span>
+      <span className="sec-acts">
+        <Button kind="primary" size="sm" onClick={onAdd}>Add a secret</Button>
       </span>
     </section>
   )
@@ -867,59 +1053,57 @@ function GitCard({ rows, empty }: { rows: SecretsRow[]; empty: string }) {
 }
 
 function QaCard({ rows }: { rows: SecretsRow[] }) {
+  const acts = rows.some((r) => r.can_manage)
   return (
     <Card title="Sign-in for QA">
       {rows.length === 0 ? (
         <p className="ur-small">No QA target of this repository holds a sign-in.</p>
       ) : (
         <table className="mcp-servers" aria-label="Sign-in for QA">
-          <thead><tr><th scope="col">Target · environment</th><th scope="col">State</th></tr></thead>
+          <thead><tr><th scope="col">Target · environment</th><th scope="col">State</th>{acts && <th scope="col" aria-label="Actions" />}</tr></thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={`${r.target_id}-${r.environment}-${r.field}`} className={r.status === 'unset' ? 'is-need' : undefined}>
-                <th scope="row" data-label="Target" className="sec-key">
-                  {r.name} · {r.environment ?? 'default'}
-                  {r.field === 'challenge_bypass' && <small>challenge bypass</small>}
-                </th>
-                <td data-label="State">
-                  {r.status === 'set' ? <span className="sec-state is-ok">{setWords(r)}</span> : <span className="sec-chip is-warn">needed, not set</span>}
-                </td>
-              </tr>
-            ))}
+            {rows.map((r) => {
+              const what = `the QA sign-in for ${r.name} · ${r.environment ?? 'default'}${r.field === 'challenge_bypass' ? ', challenge bypass' : ''}`
+              const verb = r.status === 'set' ? 'Replace' : 'Set'
+              return (
+                <tr key={`${r.target_id}-${r.environment}-${r.field}`} className={r.status === 'unset' ? 'is-need' : undefined}>
+                  <th scope="row" data-label="Target" className="sec-key">
+                    {r.name} · {r.environment ?? 'default'}
+                    {r.field === 'challenge_bypass' && <small>challenge bypass</small>}
+                  </th>
+                  <td data-label="State">
+                    {r.status === 'set' ? <span className="sec-state is-ok">{setWords(r)}</span> : <span className="sec-chip is-warn">needed, not set</span>}
+                  </td>
+                  {acts && (
+                    <td data-label="Actions">
+                      {/* The one-time form is QA targets' own, opened per entry there. */}
+                      {r.can_manage && <AppLink address={QA_LINK_ADDRESS} label={`${verb} ${what} on QA targets`} kind={r.status === 'set' ? 'secondary' : 'primary'}>{verb}</AppLink>}
+                    </td>
+                  )}
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       )}
-      <p className="sec-hint">Set and replace on <AppLink address="config/repositories?page=qa-targets">QA targets</AppLink>, from a one-time link.</p>
+      <p className="sec-hint">Set and Replace open the target&rsquo;s one-time form on <AppLink address={QA_LINK_ADDRESS}>QA targets</AppLink>.</p>
     </Card>
   )
 }
 
-/** SwarmCloud's record of the Actions secrets it wrote (§3.8). The pane itself is SSC-UI-ACTIONS'. */
-function ActionsRecord({ rows, repository }: { rows: SecretsRow[]; repository: string }) {
-  return (
-    <Card title="Written by SwarmCloud">
-      {rows.length === 0 ? (
-        <p className="ur-small">SwarmCloud has written no GitHub Actions secret into {repository}.</p>
-      ) : (
-        <table className="mcp-servers" aria-label="GitHub Actions secrets SwarmCloud wrote">
-          <thead><tr><th scope="col">Name</th><th scope="col">Environment</th><th scope="col">Updated</th></tr></thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={`${r.environment ?? ''}-${r.name}`}>
-                <th scope="row" data-label="Name"><code>{r.name}</code></th>
-                <td data-label="Environment">{r.environment ?? 'repository level'}</td>
-                <td data-label="Updated">{setWords(r)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      <p className="sec-hint">
-        Names and times only. GitHub&rsquo;s own list, environments and their branch rules, Set and Delete arrive with
-        this repository&rsquo;s GitHub Actions pane.
-      </p>
-    </Card>
-  )
+/**
+ * THE GITHUB ACTIONS PANE (S4b2, S4f), SSC-UI-ACTIONS' `SecretsActions`. It
+ * reads a link's token into its own ref as it first renders; once it has
+ * mounted, this page lets its copy go, so the token is held in one place.
+ */
+function ActionsPane({ onTaken, ...pane }: { repoId: string; repository: string; link: ActionsFormLink | null; canManage: boolean | null; onTaken: () => void }) {
+  const handed = pane.link !== null
+  useEffect(() => {
+    if (handed) onTaken()
+    // Once, as it mounts: the pane is keyed by its view.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  return <SecretsActions {...pane} />
 }
 
 // ---------------------------------------------------------------------------
@@ -931,6 +1115,8 @@ interface WizardStart {
   repo: string | null
   /** A consumer to tick at step 3 (an MCP server that needs one). */
   consumer: string | null
+  /** The destination step 2 starts on: the page's, when it is a repository's GitHub Actions. */
+  dest?: Dest
 }
 
 /** What the wizard hands the one-time form: where, and the name, kind and grants chosen. */
@@ -951,6 +1137,7 @@ function AddWizard({
   catalogue,
   onClose,
   onOpen,
+  onActions,
 }: {
   start: WizardStart
   repos: RepoRecord[]
@@ -960,6 +1147,8 @@ function AddWizard({
   catalogue: WorkspaceSecretCatalogue | null
   onClose: () => void
   onOpen: (d: Draft) => void
+  /** The Actions path's hand-off: the pane's one-time form, with the link minted for it. */
+  onActions: (repo: string, name: string, environment: string | null, token: string) => void
 }) {
   const id = useId()
   const [step, setStep] = useState(1)
@@ -986,13 +1175,71 @@ function AddWizard({
     }
   }, [scope, personalHere])
   const repoName = repos.find((r) => r.repo_id === repo)
-  const where = scope === 'repository' ? (repoName ? `${repoName.owner}/${repoName.repo}` : 'a repository') : scope === 'personal' ? 'yours' : `the workspace${tenant === null ? '' : ` ${tenant}`}`
+  const repoLabel = repoName ? `${repoName.owner}/${repoName.repo}` : 'a repository'
+  const where = scope === 'repository' ? repoLabel : scope === 'personal' ? 'yours' : `the workspace${tenant === null ? '' : ` ${tenant}`}`
   const consumers: WorkspaceSecretConsumer[] = (catalogue?.consumers ?? []).filter((c) => GROUPS.some(([k]) => k === c.kind) || c.kind === 'mcp')
   const fits = consumers.map((c) => ({ c, cell: cellOf({ kind }, c) })).filter((x) => x.cell !== null)
+  // THE GITHUB ACTIONS PATH (S4c, S4c3, S4c4): a repository's only. The
+  // environment is chosen at step 2 (undefined until it is), from GitHub's
+  // live list; the name follows GitHub's rule; step 4 mints the pane's
+  // one-time form for exactly that destination and name.
+  const [dest, setDest] = useState<Dest>(start.dest === 'actions' && start.scope === 'repository' ? 'actions' : 'agents')
+  const actions = dest === 'actions' && scope === 'repository'
+  const [env, setEnv] = useState<string | null | undefined>(undefined)
+  const [list, setList] = useState<{ repo: string; read: Result<ActionsSecretList> } | null>(null)
+  const [rules, setRules] = useState<Readonly<Record<string, ActionsEnvironmentRule>>>({})
+  const [checking, setChecking] = useState(false)
+  const [checkFailed, setCheckFailed] = useState<string | null>(null)
+  const [minting, setMinting] = useState(false)
+  const [mintFailed, setMintFailed] = useState<string | null>(null)
+  useEffect(() => {
+    if (!actions || repo === null || list?.repo === repo) return
+    let live = true
+    setEnv(undefined)
+    setRules({})
+    void loadActionsSecrets(repo).then((read) => {
+      if (live) setList({ repo, read })
+    })
+    return () => {
+      live = false
+    }
+  }, [actions, repo, list?.repo])
+  const listed = list !== null && list.repo === repo ? dataOf(list.read) : null
+  const listFailed = list !== null && list.repo === repo && list.read.status === 'error' ? list.read.error.message : null
+  const ruleOf = (e: string | null | undefined): ActionsEnvironmentRule | null =>
+    e === null || e === undefined ? null : rules[e] ?? listed?.environments.find((x) => x.environment === e)?.rule ?? null
+  const createUrl = (env === null || env === undefined ? null : rules[env]?.create_url ?? null) ?? listed?.create_url ?? null
+  const actionsWhere = env === null || env === undefined ? repoLabel : `${repoLabel} › ${env}`
+  async function checkRule() {
+    if (repo === null || env === null || env === undefined || checking) return
+    setChecking(true)
+    setCheckFailed(null)
+    const r = await checkActionsRule(repo, env)
+    setChecking(false)
+    if (r.status === 'error') setCheckFailed(`The rule was not read: ${r.error.message}`)
+    else if (r.status === 'ok' || r.status === 'stale') setRules((m) => ({ ...m, [env]: r.data }))
+  }
+  async function openActions() {
+    if (repo === null || env === undefined || minting) return
+    setMinting(true)
+    setMintFailed(null)
+    const r = await mintActionsLink(repo, name, env)
+    setMinting(false)
+    if (r.status === 'ok' || r.status === 'stale') {
+      onActions(repo, name, env, r.data.token)
+      return
+    }
+    setMintFailed(r.status === 'error' ? `The form was not opened: ${r.error.message}` : 'The form was not opened: the API answered without a link.')
+  }
   const ok1 = scope !== 'repository' || repo !== null
-  const ok3 = NAME_RULE.test(name)
-  const wrongScope = scope === 'personal' && personalHere !== true
+  const ok2 = !actions || (env !== undefined && listed?.can_write !== false)
+  const ok3 = actions ? name !== '' && nameProblem(name) === null : NAME_RULE.test(name)
+  const wrongScope = !actions && scope === 'personal' && personalHere !== true
   const open = () => {
+    if (actions) {
+      if (ok1 && ok2 && ok3) void openActions()
+      return
+    }
     if (!ok1 || !ok3 || wrongScope) return
     const target: SecretStoreTarget = scope === 'repository' && repo !== null ? { scope: 'repository', repoId: repo } : { scope: 'workspace' }
     onOpen({ scope, target, name, provider, kind, consumers: picked.filter((p) => fits.some((f) => f.c.consumer === p && f.cell!.open)) })
@@ -1038,15 +1285,66 @@ function AddWizard({
         {step === 2 && (
           <fieldset className="sec-opts">
             <legend>Who is it for?</legend>
-            <Opt name={`${id}-dest`} on title="Agents" why={scope === 'repository' ? `Agents that clone ${where}.` : 'Agents, tools and components it is granted to.'} onPick={() => undefined} />
+            <Opt name={`${id}-dest`} on={!actions} title="Agents" why={scope === 'repository' ? `Agents that clone ${where}.` : 'Agents, tools and components it is granted to.'} onPick={() => setDest('agents')} />
             {scope === 'repository' && (
-              <Opt name={`${id}-dest`} on={false} title="GitHub Actions" why="Workflows in the repository, on GitHub."
-                disabled="Written from this repository’s GitHub Actions pane, which this console does not draw yet." onPick={() => undefined} />
+              <Opt name={`${id}-dest`} on={actions} title="GitHub Actions" why="Workflows in the repository, on GitHub." onPick={() => setDest('actions')} />
             )}
             {scope !== 'repository' && <p className="sec-hint">A GitHub Actions secret lives on one repository: pick Repository at step 1 for one.</p>}
+            {actions && (
+              <>
+                <p className="sec-hint">
+                  {listed?.can_write === true
+                    ? 'GitHub Actions needs GitHub admin of the repository: checked, you are.'
+                    : listed?.can_write === false
+                      ? `${sentenceOf(listed.cannot_write_because ?? 'GitHub was asked and did not allow it')} Only a workspace manager whom GitHub calls admin of ${repoLabel} sets these.`
+                      : 'GitHub Actions needs GitHub admin of the repository: SwarmCloud asks GitHub when the form opens and again at the write.'}
+                </p>
+                {listFailed !== null ? (
+                  <Banner tone="bad" title={`${repoLabel}’s environments were not read: ${listFailed}`} role="alert" />
+                ) : listed === null ? (
+                  <p className="ur-small">Reading {repoLabel}&rsquo;s environments from GitHub…</p>
+                ) : (
+                  <fieldset className="sec-opts">
+                    <legend>Environment</legend>
+                    <Opt name={`${id}-env`} on={env === null} title="Repository level" why="Every workflow in the repository can read it." onPick={() => setEnv(null)} />
+                    {listed.environments.map((e) => {
+                      const r = ruleOf(e.environment)
+                      return (
+                        <Opt key={e.environment} name={`${id}-env`} on={env === e.environment} title={`${e.environment} · ${ruleWords(r)}`}
+                          why={r !== null && r.main_only ? `Only workflows on ${r.branch}.` : `You will type ${e.environment} to confirm.`} onPick={() => setEnv(e.environment)} />
+                      )
+                    })}
+                    <span className="sec-acts">
+                      {createUrl !== null && <ButtonLink kind="secondary" size="sm" href={createUrl} target="_blank" rel="noreferrer">Create on GitHub ↗</ButtonLink>}
+                      <Button kind="secondary" size="sm" busy={checking ? 'Checking…' : false} disabled={env === null || env === undefined}
+                        title={env === null || env === undefined ? 'Pick an environment to read its rule' : undefined} onClick={() => void checkRule()}>Check rule</Button>
+                    </span>
+                    {env !== null && env !== undefined && rules[env] !== undefined && (
+                      <p className="sec-hint" role="status"><b>{env}</b>: {ruleWords(rules[env]!)}, read from GitHub just now.</p>
+                    )}
+                    {checkFailed !== null && <Banner tone="bad" title={checkFailed} role="alert" />}
+                    {listed.environments.length === 0 && <p className="sec-hint">No environment on {repoLabel} yet: create one on GitHub, then Check rule reads its branch rule.</p>}
+                  </fieldset>
+                )}
+              </>
+            )}
           </fieldset>
         )}
-        {step === 3 && (
+        {step === 3 && actions && (
+          <div className="sec-opts">
+            <p className="sec-hint">{readersOf(env ?? null, ruleOf(env), repoLabel)}</p>
+            <span className="sec-field">
+              <label htmlFor={`${id}-name`}>Name</label>
+              <input id={`${id}-name`} className="ur-search" value={name} maxLength={200} spellCheck={false} autoCapitalize="off" autoCorrect="off"
+                autoComplete="off" placeholder="MERGE_APP_PRIVATE_KEY" aria-describedby={`${id}-name-why`} aria-invalid={nameProblem(name) !== null}
+                onChange={(e) => setName(e.target.value.trim())} />
+              <span id={`${id}-name-why`} className="sec-hint">
+                {nameProblem(name) ?? 'Letters, digits and _; not starting with a digit or GITHUB_. Never the value.'}
+              </span>
+            </span>
+          </div>
+        )}
+        {step === 3 && !actions && (
           <div className="sec-opts">
             <span className="sec-field">
               <label htmlFor={`${id}-name`}>Name</label>
@@ -1081,7 +1379,20 @@ function AddWizard({
             </fieldset>
           </div>
         )}
-        {step === 4 && (
+        {step === 4 && actions && (
+          <div className="sec-opts">
+            <p className="sec-big">Set the value in a one-time form</p>
+            <p className="sec-hint">
+              Opens a form for <b>{name}</b> in {actionsWhere}. It works once, for ten minutes. The value is sealed in
+              SwarmCloud, written to GitHub and never shown again; SwarmCloud keeps only the name, who set it and when.
+            </p>
+            <div className="c-banner is-info sec-term">
+              <span>From a terminal instead: <code>{scLine(name, repoLabel, env ?? null)}</code></span>
+            </div>
+            {mintFailed !== null && <Banner tone="bad" title={mintFailed} role="alert" />}
+          </div>
+        )}
+        {step === 4 && !actions && (
           <div className="sec-opts">
             <p className="sec-big">Set the value in a one-time form</p>
             {wrongScope ? (
@@ -1104,9 +1415,9 @@ function AddWizard({
         <div className="sec-sheet-f">
           {step > 1 ? <Button kind="ghost" size="sm" onClick={() => setStep(step - 1)}>Back</Button> : <Button kind="ghost" size="sm" onClick={onClose}>Cancel</Button>}
           {step < 4 ? (
-            <Button kind="primary" size="sm" disabled={(step === 1 && !ok1) || (step === 3 && !ok3)} onClick={() => setStep(step + 1)}>Next</Button>
+            <Button kind="primary" size="sm" disabled={(step === 1 && !ok1) || (step === 2 && !ok2) || (step === 3 && !ok3)} onClick={() => setStep(step + 1)}>Next</Button>
           ) : (
-            <Button kind="primary" size="sm" disabled={!ok1 || !ok3 || wrongScope} onClick={open}>Open the one-time form</Button>
+            <Button kind="primary" size="sm" busy={minting ? 'Opening…' : false} disabled={!ok1 || !ok2 || !ok3 || wrongScope} onClick={open}>Open the one-time form</Button>
           )}
         </div>
       </div>
@@ -1181,6 +1492,7 @@ function OneTimeForm({
   onBack,
   onDone,
   onAnother,
+  onAgain,
 }: {
   at: SecretsAt
   repoId: string | null
@@ -1195,6 +1507,8 @@ function OneTimeForm({
   onBack: () => void
   onDone: (words: string) => void
   onAnother: () => void
+  /** S4d: a fresh one-time form for the same place. */
+  onAgain: () => void
 }) {
   const [written, setWritten] = useState<string | null>(null)
   const done = (words: string) => {
@@ -1212,7 +1526,10 @@ function OneTimeForm({
         <>
           <p className="pk-saved" role="status">{written}</p>
           <p className="pk-lead">The link is used up. The value is not shown again, here or anywhere.</p>
-          <Button kind="secondary" size="sm" onClick={onAnother}>Back to Secrets</Button>
+          <span className="sec-acts">
+            <Button kind="secondary" size="sm" onClick={onAgain}>Set another in this place</Button>
+            <Button kind="ghost" size="sm" onClick={onAnother}>Back to Secrets</Button>
+          </span>
         </>
       )}
     </Card>
@@ -1347,7 +1664,7 @@ function StoreForm({
       ) : (
         <AddSecret catalogue={catalogue} store={store} fixed={draft} takeToken={take} onAdded={(name) => void add(name)} />
       )}
-      <p className="sec-hint">The form is cleared whatever the answer.</p>
+      <p className="sec-hint">8 bytes to 8 KiB. The form is cleared whatever the answer.</p>
     </Card>
   )
 }

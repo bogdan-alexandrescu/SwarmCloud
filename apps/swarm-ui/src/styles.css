@@ -10759,6 +10759,12 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .sk-cnt.is-alert { color: var(--s-warn); font-weight: 600; }
 .sk-cnt.is-dash { color: var(--ctl-absent); cursor: help; }
+/* A WORDED COUNT IS A CHIP (CONFIG-ADMIN-POLISH-2; part of #2157): "1 near
+   ceiling", "1 waiting" draw as config-e.html S1b's small amber chip, in the
+   amber of the Config rows' `.cfg-badge.is-missing`. Words, so the sans face,
+   and never wrapped or shrunk: at 236px a row leaves the label and its chip
+   ~164px, and "12 near ceiling" is under 90 of them. A number stays bare. */
+.sk-cnt.is-chip { flex: none; font-family: var(--font); white-space: nowrap; color: var(--s-warn); font-weight: 600; background: var(--s-warnb); border-radius: 999px; padding: 1px 7px; }
 /* THE SUB-LIST ENDS WHERE A ROW DOES (QA-055, part of #1680): a 0 right
    margin ran the lit `.sk-kid` fill into the panel's border, where a lit
    `.sk-pk` stops 10px short. */

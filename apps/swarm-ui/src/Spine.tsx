@@ -39,7 +39,7 @@
  */
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { AGENT_TABS, type AgentTab } from './agentlist'
-import { USE_FIXTURES, WORKSPACE_RENAMED_EVENT, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadOnboarding, loadStats, type TenantChoice } from './api'
+import { USE_FIXTURES, WORKSPACE_RENAMED_EVENT, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadOnboarding, loadStats, type NotificationFeed, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
 import { Banner, Button, NamedMark, Toaster, acknowledge, routedClick } from './components'
 import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, preferencesUnavailableSnapshot, probeSnapshot, read, route, subscribePreferencesUnavailable, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
@@ -54,6 +54,7 @@ import { iapFronted, signingOut } from './signoutState'
 import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppStates'
 import { feedData, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
 import { firstName } from './PersonName'
+import { NEAR_CEILING } from './AdminSettings'
 import { roleOf } from './roles'
 import { ConfigBadgeMark, SetupContext, SetupMeter, setupSteps, setupUnfinished, useConfigBadges, type SetupRead } from './ConfigSetup'
 
@@ -450,11 +451,14 @@ function focusInChrome(): boolean {
 
 /**
  * THE TENANT NAMES `/v1/tenants/me` HAS GIVEN IN THIS BROWSER, by tenant id
- * (QA G1-06, 2026-10-07). `/v1/tenants/mine` names each tenant by its
- * registered group's email -- it reads nothing, by design -- so the shell
- * called one tenant "Engineering" in the panel and "eng@example.com" in the list
- * under it. The list draws the name `me` gave where one is known: the current
- * tenant's always, another's once it has been acted as here.
+ * (QA G1-06, 2026-10-07). `/v1/tenants/mine` named each tenant by its
+ * registered group's email, so the shell called one tenant "Engineering" in
+ * the panel and "eng@example.com" in the list under it. The list draws the
+ * name `me` gave where one is known: the current tenant's always, another's
+ * once it has been acted as here. Since MINE-NAMES (part of #2157) `/mine`
+ * serves a group workspace's stored name itself, marked by `group`, and that
+ * wins over this store, which could be a rename behind (`nameTenants`); the
+ * store is the fallback for an entry `/mine` could not name.
  */
 export const TENANT_NAMES_STORE = 'swarm.tenants.names'
 
@@ -480,7 +484,7 @@ function learnTenantName(id: string, name: string): void {
 
 /** A tenant the list offers, named as the panel names it, with the group it was registered by. */
 export interface NamedTenantChoice extends TenantChoice {
-  /** The registered group's email: `/v1/tenants/mine`'s own `display_name`. */
+  /** The registered group's email: `/v1/tenants/mine`'s `group`, or its `display_name` when it served none. */
   group: string
   /** The person's default workspace (§4.5), as `/v1/tenants/mine` marks it. */
   is_default: boolean
@@ -512,8 +516,10 @@ export const PROFILE_ADDRESS = 'settings/profile'
 export const PROFILE_PATH = '/settings/profile'
 
 /**
- * The one name the shell draws for a tenant: the current tenant's from `me`,
- * another's as `me` last gave it in this browser, and the group email only
+ * The one name the shell draws for a tenant: the current tenant's from `me`;
+ * another's as `/v1/tenants/mine` served it when it read the stored name
+ * (`group` present: BGD, 2026-10-25, a rename shows in everyone's switcher at
+ * once), else as `me` last gave it in this browser, and the group email only
  * for a tenant never acted as here. The caller's own personal workspace
  * (`kind: user`) is always "Your workspace". The id is always the secondary line.
  */
@@ -526,7 +532,9 @@ export function nameTenants(choices: readonly TenantChoice[], me: Me | null): Na
     // `via` rides along: the list draws a platform admin's reach entries under
     // their own heading, and the shell its banner (`isReach`).
     const via = c.via === undefined ? {} : { via: c.via }
-    return { tenant_id: c.tenant_id, display_name: current ?? known[c.tenant_id] ?? c.display_name, group: c.display_name, is_default, ...via }
+    const group = typeof c.group === 'string' && c.group !== '' ? c.group : null
+    const served = group === null ? null : c.display_name
+    return { tenant_id: c.tenant_id, display_name: current ?? served ?? known[c.tenant_id] ?? c.display_name, group: group ?? c.display_name, is_default, ...via }
   })
 }
 
@@ -924,6 +932,8 @@ export interface PanelCount {
   why?: string
   /** An amber count: something on that page needs a look. */
   alert?: boolean
+  /** Drawn instead of the bare number, "1 near ceiling" (S1b); `n` stays the count. */
+  text?: string
 }
 
 /**
@@ -1030,6 +1040,89 @@ export function panelCounts(
   return out
 }
 
+/** A count the feed serves as a number, or null when it is absent (an older API) or not one. */
+function feedCount(feed: NotificationFeed | null, key: 'admin_pending' | 'tenants_waiting' | 'platform_secrets_unset'): number | null {
+  const v = feed?.[key]
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null
+}
+
+/**
+ * How many pools are near their ceiling: Pool limits' own rule (AdminSettings
+ * `poolLead`, `NEAR_CEILING`). A paused pool, one with no ceiling set, and a
+ * ceiling of 0 with nothing in use are not ranked there and not counted here.
+ */
+export function nearCeilingCount(pools: Capacity['pools']): number {
+  return pools.filter((p) => {
+    if (p.enabled === false || p.effective_limit === null) return false
+    if (p.effective_limit <= 0) return p.active > 0
+    return p.active / p.effective_limit >= NEAR_CEILING
+  }).length
+}
+
+/**
+ * THE ADMIN PANEL'S BADGES (CONFIG-ADMIN-POLISH; part of #2157, proposal E
+ * S1b, S1c), each from a read the shell already makes -- never a poll of
+ * the page's own:
+ *
+ *   People and roles      the feed's `admin_pending`, the requests waiting
+ *                         on a platform admin (amber)
+ *   Workspaces you admin  how many group workspaces `/v1/tenants/mine`
+ *                         names the person admin of (dim: a count, not a task)
+ *   Pool limits           "N near ceiling", from the capacity read the
+ *                         meter makes, by Pool limits' own rule
+ *   Tenants               "N waiting", the feed's `tenants_waiting`
+ *   Platform secrets      "N", the feed's `platform_secrets_unset`
+ *
+ * A COUNT THAT WAS NOT READ DRAWS NO BADGE, NEVER 0: a read in flight or
+ * failed, or a feed from an API that does not serve the count (null or
+ * absent). A measured zero of something waiting is no badge either, the way
+ * Approvals' is (`approvalsBadge`). A WORKSPACE ADMIN WHO IS NOT A PLATFORM
+ * ADMIN IS COUNTED ONLY WHAT IS THEIRS (S1c): `admin_pending` is the
+ * platform's requests, so it is no badge of theirs, and the platform pages
+ * are not in their panel at all.
+ */
+export function adminPanelCounts(
+  platformAdmin: boolean,
+  feed: NotificationFeed | null,
+  cap: Result<Capacity>,
+  mine: Result<TenantChoice[]>,
+): Readonly<Record<string, PanelCount>> {
+  const out: Record<string, PanelCount> = {}
+  const choices = dataOf(mine) ?? (mine.status === 'empty' ? [] : null)
+  if (choices !== null) {
+    const n = adminWorkspaces(choices).length
+    out[WORKSPACES_YOU_ADMIN_TAB] = { n, why: `${n} group workspace${n === 1 ? '' : 's'} you administer` }
+  }
+  if (!platformAdmin) return out
+  const pending = feedCount(feed, 'admin_pending')
+  if (pending !== null && pending > 0) out.people = { n: pending, alert: true, why: `${pending} request${pending === 1 ? '' : 's'} waiting on an admin` }
+  const c = dataOf(cap)
+  const near = c === null ? 0 : nearCeilingCount(c.pools)
+  if (near > 0) out.limits = { n: near, alert: true, text: `${near} near ceiling`, why: `${near} pool${near === 1 ? ' is' : 's are'} at ${Math.round(NEAR_CEILING * 100)}% of the ceiling or more` }
+  const waiting = feedCount(feed, 'tenants_waiting')
+  if (waiting !== null && waiting > 0) out.tenants = { n: waiting, alert: true, text: `${waiting} waiting`, why: `${waiting} workspace${waiting === 1 ? '' : 's'} waiting to be created` }
+  const unset = feedCount(feed, 'platform_secrets_unset')
+  if (unset !== null && unset > 0) out['platform-secrets'] = { n: unset, alert: true, why: `${unset} platform secret${unset === 1 ? ' has' : 's have'} no enabled version` }
+  return out
+}
+
+/**
+ * THE PANEL FOOT'S ROLE LINE (S1a): who the person is here, in place of the
+ * email (which stays in its title). "Platform admin", else "Workspace admin"
+ * when `/v1/tenants/mine` names them admin of a group workspace, else
+ * "Viewer" when the group workspace in hand holds them as one -- "Member"
+ * there would claim a wider role than the server stores -- else "Member".
+ * Null until both reads have answered: an unread list is not "not an admin".
+ */
+export function roleLine(platformAdmin: boolean, mine: Result<TenantChoice[]>, tenantId: string | null): string | null {
+  if (platformAdmin) return 'Platform admin'
+  const choices = dataOf(mine) ?? (mine.status === 'empty' ? [] : null)
+  if (choices === null) return null
+  if (adminWorkspaces(choices).length > 0) return 'Workspace admin'
+  const here = choices.find((c) => c.tenant_id === tenantId)
+  return here !== undefined && here.kind === 'group' && roleOf(here) === 'viewer' ? 'Viewer' : 'Member'
+}
+
 function CountMark({ c }: { c: PanelCount | undefined }) {
   if (c === undefined) return null
   if (c.n === null) {
@@ -1040,8 +1133,8 @@ function CountMark({ c }: { c: PanelCount | undefined }) {
     )
   }
   return (
-    <span className={`sk-cnt${c.alert === true ? ' is-alert' : ''}`} title={c.why}>
-      {c.n}
+    <span className={`sk-cnt${c.alert === true ? ' is-alert' : ''}${c.text !== undefined ? ' is-chip' : ''}`} title={c.why}>
+      {c.text ?? c.n}
     </span>
   )
 }
@@ -1469,6 +1562,8 @@ export function SkyShell({
   const meter = meterOf(dataOf(cap))
   // The Approvals page carries the inbox count the Automate section does (§6.1).
   const counts = waiting === null ? panelCounts(stats, cap, fromList) : { ...panelCounts(stats, cap, fromList), approvals: waiting }
+  const adminCounts = adminPanelCounts(admin, feedData(notes), cap, mine)
+  const role = who === null ? null : roleLine(admin, mine, who.tenant.tenant_id)
   const online = useOnline()
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
   const fault = wholeAppFault(me, probes)
@@ -1968,8 +2063,10 @@ export function SkyShell({
         adminPages={adminPages}
         adminOf={adminOf}
         configPages={configPages}
+        personal={personal === true}
         nav={nav}
         counts={counts}
+        adminCounts={adminCounts}
         helpGroup={helpGroup}
         apiFailuresOnly={apiFailuresOnly}
         onApiFilter={onApiFilter}
@@ -2031,8 +2128,13 @@ export function SkyShell({
           {admin && <span className="sk-adm">admin</span>}
           {canSignOut && <SignOutButton email={who.principal.email} />}
         </span>
-        {/* One line each, cut, whole in the title (styles.css `.sk-pfoot`, V054). */}
-        {who !== null && <small title={who.principal.email}>{who.principal.email}</small>}
+        {/* THE ROLE, NOT THE EMAIL (S1a): the address is in its title. One
+            line each, cut, whole in the title (styles.css `.sk-pfoot`, V054). */}
+        {who !== null && (
+          <small className="sk-role" title={who.principal.email}>
+            {role ?? 'reading role…'}
+          </small>
+        )}
         {/* No Settings links here since NAV-PROFILE (part of #1633): the
             four that stacked under the name are the Profile panel's pages. */}
         <ThemeToggle />
@@ -2771,8 +2873,10 @@ function PanelPages({
   adminPages,
   adminOf = [],
   configPages,
+  personal = false,
   nav,
   counts,
+  adminCounts = {},
   helpGroup,
   apiFailuresOnly,
   onApiFilter,
@@ -2788,8 +2892,12 @@ function PanelPages({
   adminOf?: readonly string[]
   /** Config's pages for the workspace in hand (`configPagesFor`). */
   configPages: readonly PanelPage[]
+  /** The workspace in hand is the person's own (S1e): Config says why People and roles is missing. */
+  personal?: boolean
   nav: (to: string) => void
   counts: Readonly<Record<string, PanelCount>>
+  /** The Admin rows' badges (`adminPanelCounts`, S1b, S1c). */
+  adminCounts?: Readonly<Record<string, PanelCount>>
   helpGroup: string | null
   apiFailuresOnly: boolean
   onApiFilter?: (failuresOnly: boolean) => void
@@ -2882,9 +2990,11 @@ function PanelPages({
       {groups.map((g) => (
         <div key={g.key} className="sk-pgrp" role={g.title === null ? undefined : 'group'} aria-label={g.title ?? undefined}>
           {g.title !== null && <div className="sk-pg">{g.title}</div>}
-          <PanelRows sec={sec} rows={g.rows} lit={lit} nav={nav} counts={counts} apiFailuresOnly={apiFailuresOnly} onApiFilter={onApiFilter} />
+          <PanelRows sec={sec} rows={g.rows} lit={lit} nav={nav} counts={sec === 'admin' ? adminCounts : counts} apiFailuresOnly={apiFailuresOnly} onApiFilter={onApiFilter} />
         </div>
       ))}
+      {/* S1e: why a personal workspace's Config has no People and roles. */}
+      {sec === 'config' && personal && <p className="sk-pnote">A personal workspace has no People and roles: nobody else is in it.</p>}
       {/* A WORKSPACE ADMIN IS TOLD WHOSE PAGES THESE ARE (S1c), and that the
           platform's are not hidden behind a lock but simply not theirs. */}
       {sec === 'admin' && !platformAdmin && (

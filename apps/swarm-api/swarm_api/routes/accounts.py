@@ -104,6 +104,7 @@ from ..schemas import (
     ACCOUNT_HEALTH_SPANS,
     ACCOUNT_HEALTH_STATUSES,
     ACCOUNT_HEALTH_WINDOWS,
+    ACCOUNT_HOLD_DEADLINE,
     SUBSCRIPTION_PROVIDER,
     AccountCreate,
     AccountLending,
@@ -278,7 +279,10 @@ def list_accounts(
     return {
         # Each through `_own_view` (#2222): another tenant's account is never
         # named by a duplicate mark, whatever the broker sent.
-        "accounts": [_with_health_row(_own_view(a, tenant_id)) for a in payload.get("accounts") or []],
+        "accounts": [
+            _with_hold_deadline(_with_health_row(_own_view(a, tenant_id)))
+            for a in payload.get("accounts") or []
+        ],
         "tenant_id": tenant_id,
         # Forwarded as served. The broker has already narrowed the ids to what
         # this tenant may see -- it is the only component that knows both the
@@ -328,6 +332,26 @@ def _with_health_row(account: Any) -> Any:
         "health_24h": _health_counts(account.get("health_24h")),
         "health_status": _health_word(account.get("health_status")),
     }
+
+
+def _with_hold_deadline(account: Any) -> Any:
+    """A listing row's latest hold deadline (#2222, the Timeline's B3/B4) by
+    the allow-list: an ISO instant WITH ITS ZONE passes as served, anything
+    else is None, so the page never has to guess what a bare clock or a
+    number meant. A row with no key -- a broker older than the field -- keeps
+    none, which is how the page tells "not served" from "no live hold"."""
+    if not isinstance(account, dict) or ACCOUNT_HOLD_DEADLINE not in account:
+        return account
+    raw = account.get(ACCOUNT_HOLD_DEADLINE)
+    at = None
+    if isinstance(raw, str) and raw:
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            parsed = None
+        if parsed is not None and parsed.tzinfo is not None:
+            at = raw
+    return {**account, ACCOUNT_HOLD_DEADLINE: at}
 
 
 def _refresh_sweep(raw: Any) -> dict[str, Any]:
