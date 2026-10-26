@@ -160,7 +160,23 @@
   padding: var(--ctl-s3) var(--ctl-pad-chrome); display: flex; flex-direction: column; gap: var(--ctl-s3);
 }
 .pp-drawer-h { display: flex; align-items: center; justify-content: space-between; gap: var(--ctl-s2); min-width: 0; }
-.pp-drawer-h h2 { margin: 0; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--t-lead); line-height: var(--lh-lead); }
+.pp-drawer-h h2 { margin: 0; min-width: 0; overflow: hidden; font-size: var(--t-lead); line-height: var(--lh-lead); }
+/* THE NAME READS; ONLY THE ADDRESS MAY BE CUT (rendered review of PR 2464).
+   The h2 was one nowrap line cut with an ellipsis, and its content is the 1px
+   hidden "Manage " and PersonName's inline-flex box at `max-width: 100%`:
+   299px for 298px at 390, and an inline-flex box is atomic, so a 1px
+   overflow elided all of it and the heading read "…". As a flex row the box
+   is an item that shrinks into the room, and inside it the name and the
+   address wrap onto two lines rather than cut the name; an address too long
+   for a line of its own ends in an ellipsis, whole in the box's `title`. A
+   short one ("Carol · carol@example.com") stays one line. */
+.pp-drawer-h h2 { display: flex; align-items: baseline; }
+.pp-drawer-h h2 > .person-name { flex-wrap: wrap; }
+.pp-drawer-h h2 .person-name-email { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+/* The drawer's Claude account: "Now using" and the grid's line, the
+   disclosure's accounts under its summary. */
+.pp-now { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.3em; }
+.pp-now-what { min-width: 0; }
 .pp-dsec { display: grid; gap: var(--ctl-s2); padding-top: var(--ctl-s3); border-top: 1px solid var(--line-soft); }
 .pp-dsec > h3 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
 .pp-dsec > p { margin: 0; }
