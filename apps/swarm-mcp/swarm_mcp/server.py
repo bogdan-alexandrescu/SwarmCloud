@@ -2499,7 +2499,9 @@ TOOLS: list[dict[str, Any]] = [
             "leg is its own workflow; if any named leg cannot run (a pending host is "
             "`qa_target_host_pending`) nothing starts. Answers the run's `group_id` and "
             "`legs`, each with its `environment` and `workflow_id`; follow each with "
-            "swarm_workflow_status."
+            "swarm_workflow_status. `flows_per_step` (1-30) is how many of the target's "
+            "flows one live-browser step runs, in batches, for this run only; left out, "
+            "the workspace's `qa_flows_per_step` decides, and that defaults to 15."
         ),
         "inputSchema": {
             "type": "object",
@@ -2514,6 +2516,8 @@ TOOLS: list[dict[str, Any]] = [
                                  "maxItems": qatargets.MAX_ENVIRONMENTS, "uniqueItems": True,
                                  "items": {"type": "string",
                                            "pattern": qatargets.ENVIRONMENT_NAME.pattern}},
+                "flows_per_step": {"type": "integer", "minimum": qatargets.MIN_FLOWS_PER_STEP,
+                                   "maximum": qatargets.MAX_FLOWS_PER_STEP},
             },
             "required": ["target"],
         },
@@ -5262,7 +5266,8 @@ def _call(
             qatargets.qa_run(client, args.get("target"), screens=args.get("screens"),
                              file=args.get("file", "issues"),
                              browser_tool=args.get("browser_tool"),
-                             environments=args.get("environments")),
+                             environments=args.get("environments"),
+                             flows_per_step=args.get("flows_per_step")),
             indent=2,
         )
 

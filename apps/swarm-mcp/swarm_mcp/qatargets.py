@@ -17,8 +17,10 @@ when, by whom, which version.
 
 A run is started by NAMING a target (invariant 10): the caller sends `file`,
 an optional subset of the target's own screen ids, an optional
-`browser_tool` (`playwright` or `jev`, by name) and optionally the
-`environments` to run, by entry name, and swarm-api renders the workflow from
+`browser_tool` (`playwright` or `jev`, by name), optionally the
+`environments` to run, by entry name, and optionally `flows_per_step` (1-30,
+how many flows one live-browser step runs; QA-FLOWS-CAP), and swarm-api
+renders the workflow from
 the registration. Registering, changing and approving a target are the
 console's (§1), not the plugin's.
 
@@ -55,6 +57,15 @@ BROWSER_TOOLS = ("playwright", "jev")
 
 #: `RunBody.screens`' bound, so a longer list is refused before anything is sent.
 MAX_SCREENS = 60
+
+#: `RunBody.flows_per_step`'s bounds (`swarm_api.qaspec.MIN_FLOWS_PER_STEP`,
+#: `MAX_FLOWS_PER_STEP`; QA-FLOWS-CAP): how many flows one live-browser step
+#: of the run runs. Restated because the plugin does not import swarm-api;
+#: tests/unit/mcp/test_qa_run_flows_per_step.py holds the two equal. Left out
+#: of the body when the caller names none, so the workspace's
+#: `qa_flows_per_step` decides (else 15).
+MIN_FLOWS_PER_STEP = 1
+MAX_FLOWS_PER_STEP = 30
 
 #: A target's app-wide fields as `to_api` serves them, copied one by one. Its
 #: spec (screens, flows, exclusions...) is the console's to show; a plugin
@@ -243,10 +254,11 @@ def _leg(raw: Any) -> dict[str, Any]:
 
 
 def qa_run(client: Any, target: Any, *, screens: Any = None, file: Any = "issues",
-           browser_tool: Any = None, environments: Any = None) -> dict[str, Any]:
+           browser_tool: Any = None, environments: Any = None,
+           flows_per_step: Any = None) -> dict[str, Any]:
     """`POST /v1/qa-targets/{id}:run` with `file`, the optional screens
-    subset, the optional `browser_tool` and the optional `environments` by
-    name, and nothing else. Left out, `environments` is every entry (the
+    subset, the optional `browser_tool`, the optional `environments` by
+    name and the optional `flows_per_step`, and nothing else. Left out, `environments` is every entry (the
     API's default). A refusal (`qa_target_host_pending`, `issue_writes_off`,
     a member's missing role, a jev run without the workspace's TypeSafe key,
     an entry the target lacks) is the API's, unchanged.
@@ -267,6 +279,12 @@ def qa_run(client: Any, target: Any, *, screens: Any = None, file: Any = "issues
         payload["browser_tool"] = browser_tool
     if environments is not None:
         payload["environments"] = _environment_names(environments)
+    if flows_per_step is not None:
+        if not isinstance(flows_per_step, int) or isinstance(flows_per_step, bool) \
+                or not MIN_FLOWS_PER_STEP <= flows_per_step <= MAX_FLOWS_PER_STEP:
+            raise SwarmError(f"flows_per_step must be a whole number {MIN_FLOWS_PER_STEP} to "
+                             f"{MAX_FLOWS_PER_STEP}; nothing was sent")
+        payload["flows_per_step"] = flows_per_step
     target_id = resolve_target(client, target)
     answer = client.request("POST", f"/v1/qa-targets/{target_id}:run", payload=payload)
     answer = answer if isinstance(answer, dict) else {}
