@@ -128,7 +128,7 @@ describe('a platform admin reads every person against every workspace (S5c)', ()
   it('draws one column per workspace, each cell the role there, and keeps Manage on each row', async () => {
     await mount(platform([BOB, DEVOPS, FAY]))
     // MUTATION: draw the Teams column instead of one per workspace -> fails.
-    expect(heads()).toEqual(['Person', 'Engineering', 'Labs', 'Own workspace', 'Claude account', 'Ceiling', 'Last active', 'Manage'])
+    expect(heads()).toEqual(['Person', 'Platform role', 'Engineering', 'Labs', 'Own workspace', 'Claude account', 'Ceiling', 'Last active', 'Manage'])
     expect(cell('bob@example.com', 'eng')?.textContent).toBe('admin')
     expect(cell('bob@example.com', 'labs')?.textContent).toBe('viewer')
     expect(cell('fay@example.com', 'eng')?.textContent).toBe('member')
@@ -142,8 +142,9 @@ describe('a platform admin reads every person against every workspace (S5c)', ()
 
   it('names the platform admins in the grid', async () => {
     await mount(platform([BOB, DEVOPS]))
-    expect(visible(document.querySelector('.pp-people tr[data-email="bob@example.com"] th'))).toContain('platform admin')
-    expect(visible(document.querySelector('.pp-people tr[data-email="devops@example.com"] th'))).not.toContain('platform admin')
+    // In S5c's Platform role column (VQ-051), not beside the name.
+    expect(visible(document.querySelector('.pp-people tr[data-email="bob@example.com"] td[data-label="Platform role"]'))).toBe('platform admin')
+    expect(visible(document.querySelector('.pp-people tr[data-email="devops@example.com"] td[data-label="Platform role"]'))).not.toContain('platform admin')
   })
 
   it('leads with the oldest waiting request, and its one button goes to that request', async () => {
