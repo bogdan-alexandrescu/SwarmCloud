@@ -10,10 +10,11 @@ import {
   retryWorkspace,
   setWorkspaceCeiling,
   setWorkspaceLoan,
+  USE_FIXTURES,
 } from './api'
 import { AdminLead } from './AdminSettings'
 import { Banner, Button, buttonClass, Card, Chip, CIcon, Dash, Dialog, Segmented, ToneMark } from './components'
-import type { ApiError, Result } from './fetch'
+import { classifyFailure, route, TENANT_HEADER, write, type ApiError, type ErrorEnvelope, type Result } from './fetch'
 import { trapTab } from './focus'
 import { ApprovedWaiting, JobSteps, waitingOf } from './OnboardingWorkspace'
 import { PersonName } from './PersonName'
@@ -227,10 +228,21 @@ function holderOf(doc: PeopleDoc, email: string): AdminHolder | undefined {
 }
 
 /** One write's outcome, said where it was made from. */
-type Said = { ok: true; text: string } | { ok: false; error: ApiError }
+type Said = { ok: true; text: string; command?: string } | { ok: false; error: ApiError }
 
 function SaidLine({ said }: { said: Said | null }) {
   if (said === null) return null
+  if (said.ok && said.command !== undefined) {
+    // A join approved with platform memberships off: the one line that admits the person.
+    return (
+      <div className="pp-said-cmd" role="status">
+        <p className="ur-hint">{said.text}</p>
+        <pre className="pp-cmd">
+          <code>{said.command}</code>
+        </pre>
+      </div>
+    )
+  }
   if (said.ok) return <p className="ur-hint" role="status">{said.text}</p>
   return (
     <p className="ur-small ob-issue" role="alert" data-code={said.error.code ?? undefined}>
@@ -697,30 +709,374 @@ function Requested({ at }: { at: string | null }) {
   return <span className="ur-hint">{at !== null ? `asked ${timeAgo(at)}` : 'asked at an unknown time'}</span>
 }
 
+// ---------------------------------------------------------------------------
+// JOIN REQUESTS (JOIN-UI-ADMIN; part of #2325; docs/design/join-requests.md
+// §4.6, config-e.html S5f: "1 person is waiting to join Example Labs")
+// ---------------------------------------------------------------------------
+// A person asked to join a group workspace with its join link, and that
+// workspace's admins and the platform admins decide it here. The People read
+// carries the open requests its reader decides (`join_requests`, oldest last
+// as served; drawn oldest first), and a requester's cell reads `requested`.
+// These types live here, not in types.ts: the two join UI lanes never share
+// a file (§6's note under the table).
+
+/** One open request to join, as `People.join_rows` serves it: never a document id, never a MAC. */
+export interface JoinRequestRow {
+  /** The handle the decision routes take. Not a secret. */
+  ref: string
+  tenant_id: string
+  /** The workspace's name, or its group when it has none. */
+  display_name: string
+  requester: string
+  requester_name?: string | null
+  requested_at: string
+  expires_at: string
+  /** Redacted when it was written. */
+  message?: string | null
+}
+
+/** A grid cell with the join's word: `requested`, an open request and nothing else there. */
+type JoinCell = PeopleRoleCell | 'requested'
+
+/** What the People read adds for join requests; null with its code when they were not read; absent from an older API. */
+interface JoinFields {
+  join_requests?: JoinRequestRow[] | null
+  join_requests_error?: string | null
+}
+
+/** One platform membership, `GET /v1/workspace/members`. */
+export interface WorkspaceMember {
+  email: string
+  by: string
+  at: string
+  via?: string
+  /** The workspace's group changed since: it admits nobody now. */
+  group_changed: boolean
+  /** A fresh check finds them in the Google group too; null when the directory did not answer. */
+  still_in_group: boolean | null
+}
+
+interface WorkspaceMembersDoc {
+  platform_memberships: boolean
+  members: WorkspaceMember[]
+}
+
+/** `POST /v1/admin/join-requests/{ref}/approve`'s answer. */
+interface JoinApproval {
+  email: string
+  tenant_id: string
+  role: string
+  /** False with platform memberships off: the group decides, and `group_change` says how. */
+  admitted: boolean
+  group_change: { group: string; command: string } | null
+}
+
+/** The open join requests, oldest first (an undated one last). */
+export function openJoins(doc: JoinFields): JoinRequestRow[] {
+  const rows = Array.isArray(doc.join_requests) ? doc.join_requests : []
+  const when = (r: JoinRequestRow) => new Date(r.requested_at).getTime() || Number.POSITIVE_INFINITY
+  return [...rows].sort((a, b) => when(a) - when(b))
+}
+
+/** fetch.ts READ_INIT's form: the init's credential mode, named once (a literal reads as a key to the publish scan). */
+const MEMBERS_INIT = { sameOrigin: 'same-origin' } as const satisfies Record<string, RequestCredentials>
+
+/**
+ * ONE WORKSPACE'S PLATFORM MEMBERSHIPS: `GET /v1/workspace/members` with
+ * `X-Swarm-Tenant` naming `tenantId`, so the grid reads every column's list
+ * without switching the workspace in hand (as `loadWorkspaceSetup` reads each
+ * workspace's setup). The header selects among the reader's verified
+ * memberships and grants none, so a workspace they may not read is the API's
+ * refusal, drawn as unread. Failures go through fetch.ts's one classifier.
+ */
+export async function loadWorkspaceMembers(tenantId: string, signal?: AbortSignal): Promise<Result<WorkspaceMembersDoc>> {
+  // The fixture build serves no members list, and a mark is never a guess.
+  if (USE_FIXTURES) return { status: 'error', error: { kind: 'not_found', httpStatus: null, code: null, message: 'The fixture build serves no members list.' } }
+  const target = route('/v1/workspace/members')
+  let res: Response
+  try {
+    // Behind IAP the browser holds the session cookie; nothing here handles a token.
+    res = await globalThis.fetch(target.url, { headers: { accept: 'application/json', [TENANT_HEADER]: tenantId }, credentials: MEMBERS_INIT.sameOrigin, signal })
+  } catch (err) {
+    return { status: 'error', error: { kind: 'unreachable', httpStatus: null, code: null, message: err instanceof Error ? err.message : 'The request did not complete.' } }
+  }
+  if (!(res.headers.get('content-type') ?? '').includes('application/json')) {
+    return { status: 'error', error: { kind: 'session_expired', httpStatus: res.status, code: null, message: 'The API answered with a page instead of data, which is how an expired sign-in arrives. Reload to sign in again.' } }
+  }
+  let body: unknown = null
+  try {
+    body = await res.json()
+  } catch {
+    body = null
+  }
+  const env = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : null
+  if (!res.ok) {
+    const envelope: ErrorEnvelope | null =
+      env === null ? null : typeof env.message === 'string' ? (env as ErrorEnvelope) : { message: typeof env.detail === 'string' ? env.detail : undefined }
+    return { status: 'error', error: classifyFailure(res.status, envelope, undefined) }
+  }
+  if (env === null || !Array.isArray(env.members)) {
+    return { status: 'error', error: { kind: 'server_error', httpStatus: res.status, code: null, message: 'The members list was not readable.' } }
+  }
+  return { status: 'ok', data: body as WorkspaceMembersDoc, fetchedAt: Date.now() }
+}
+
+/** One column's members list: read (email -> membership), failed (with why), or still being read. */
+type MembersRead = { ok: true; members: ReadonlyMap<string, WorkspaceMember> } | { ok: false; why: string }
+
+/**
+ * THE "JOINED BY REQUEST" MARK'S SOURCE (§4.6; BGD 2026-10-26): each
+ * column's members list, read once per set of columns and again after a
+ * decision (`version`). A column absent from the answer is still being read
+ * or was not read: it draws no mark, never a guess.
+ */
+function useWorkspaceMembers(columns: readonly PeopleWorkspaceColumn[] | null, version: number): Readonly<Record<string, MembersRead>> {
+  const ids = (columns ?? []).filter((c) => !c.unavailable).map((c) => c.tenant_id)
+  const key = ids.join('\n')
+  const [reads, setReads] = useState<Record<string, MembersRead>>({})
+  useEffect(() => {
+    const abort = new AbortController()
+    for (const id of key === '' ? [] : key.split('\n')) {
+      void loadWorkspaceMembers(id, abort.signal).then((r) => {
+        if (abort.signal.aborted) return
+        const read: MembersRead | null =
+          r.status === 'ok' || r.status === 'stale'
+            ? { ok: true, members: new Map(r.data.members.map((m) => [m.email.toLowerCase(), m])) }
+            : r.status === 'empty'
+              ? { ok: true, members: new Map() }
+              : r.status === 'error'
+                ? { ok: false, why: r.error.code ?? r.error.kind }
+                : null
+        if (read === null) return
+        setReads((was) => ({ ...was, [id]: read }))
+      })
+    }
+    return () => abort.abort()
+  }, [key, version])
+  return reads
+}
+
+/** The membership `email` holds in `tenant`, when that column's list was read and names them. */
+function joinedIn(reads: Readonly<Record<string, MembersRead>>, tenant: string, email: string): WorkspaceMember | undefined {
+  const read = reads[tenant]
+  return read?.ok === true ? read.members.get(email.toLowerCase()) : undefined
+}
+
+/** Said once, above the grid: the columns whose members list was not read, so no mark is drawn in them. */
+function MembersUnread({ columns, reads }: { columns: readonly PeopleWorkspaceColumn[]; reads: Readonly<Record<string, MembersRead>> }) {
+  const failed = columns.flatMap((c) => {
+    const read = reads[c.tenant_id]
+    return read !== undefined && !read.ok ? [`${c.display_name} (${read.why})`] : []
+  })
+  if (failed.length === 0) return null
+  return (
+    <p className="ur-hint pp-joined-unread">
+      No “joined by request” mark is drawn for {listed(failed)}: {failed.length === 1 ? 'its members list' : 'their members lists'} could not be read.
+    </p>
+  )
+}
+
+/** The mark beside a role (§4.6): this person is in by a platform membership, not by the Google group alone. */
+function JoinedMark({ member }: { member: WorkspaceMember }) {
+  const word = member.group_changed ? 'joined by request, group changed' : 'joined by request'
+  const why = member.group_changed
+    ? `Let in by ${member.by} ${timeAgo(member.at)}. The workspace's group changed since, so this membership admits nobody.`
+    : `Let in by ${member.by} ${timeAgo(member.at)}${member.still_in_group === true ? '; also in the Google group' : ''}.`
+  return (
+    <span className={`pp-joined${member.group_changed ? ' is-changed' : ''}`} title={why}>
+      {word}
+    </span>
+  )
+}
+
+/** What an approval gives (Q4 (a)): the workspace's default, or viewer below it; never admin. */
+function offeredRoles(defaultRole: string | null | undefined): string[] {
+  const out = defaultRole === 'member' || defaultRole === 'viewer' ? [defaultRole] : []
+  if (!out.includes('viewer')) out.push('viewer')
+  return out
+}
+
+function joinWrite<T>(path: string, ref: string, body: unknown): Promise<Result<T>> {
+  if (USE_FIXTURES) {
+    return Promise.resolve({ status: 'error', error: { kind: 'not_found', httpStatus: null, code: null, message: 'The fixture build does not decide join requests.' } })
+  }
+  return write(route(path, { ref }), 'POST', body) as Promise<Result<T>>
+}
+
+/**
+ * APPROVE A JOIN. The role is the workspace's default, preselected; the one
+ * below it, viewer, is the only other choice, and a default sends no role at
+ * all, so the API gives whatever the default is when it decides. With
+ * platform memberships off the API admits nobody (`admitted: false`) and
+ * answers the group command, which the card says with the command in full.
+ */
+function JoinApprove({ join, defaultRole, reload, onSaid }: { join: JoinRequestRow; defaultRole: string | null | undefined; reload: () => void; onSaid: (s: Said) => void }) {
+  const roles = offeredRoles(defaultRole)
+  const known = defaultRole === 'member' || defaultRole === 'viewer'
+  const [role, setRole] = useState(roles[0] ?? 'viewer')
+  const [busy, setBusy] = useState(false)
+  const go = async () => {
+    if (busy) return
+    setBusy(true)
+    const r = await joinWrite<JoinApproval>('/v1/admin/join-requests/{ref}/approve', join.ref, known && role === defaultRole ? {} : { role })
+    setBusy(false)
+    if (r.status === 'error') onSaid({ ok: false, error: r.error })
+    else if (r.status === 'ok' || r.status === 'stale') {
+      const d = r.data
+      onSaid(
+        d.admitted || d.group_change === null
+          ? { ok: true, text: `Approved: ${d.email} joined ${join.display_name} as ${d.role}.` }
+          : {
+              ok: true,
+              text: `Approved, waiting for the group change: platform memberships are off here, so ${d.email} is not in ${join.display_name} until they are added to ${d.group_change.group}. Run:`,
+              command: d.group_change.command,
+            },
+      )
+    } else onSaid({ ok: true, text: `Approved ${join.requester}.` })
+    reload()
+  }
+  return (
+    <span className="pp-join-approve">
+      {roles.length > 1 && (
+        <select className="c-inp pp-join-role" aria-label={`Role for ${join.requester}`} value={role} disabled={busy} onChange={(e) => setRole(e.target.value)}>
+          {roles.map((r) => (
+            <option key={r} value={r}>
+              {r === defaultRole ? `${r} (the default)` : r}
+            </option>
+          ))}
+        </select>
+      )}
+      <Button size="sm" kind="primary" disabled={busy} onClick={() => void go()}>
+        {busy ? 'Approving…' : 'Approve'}
+      </Button>
+    </span>
+  )
+}
+
+/** DENY A JOIN: a reason is required and shown to the person (§4.3), so a blank one is never sent. */
+function JoinDeny({ join, reload, onSaid }: { join: JoinRequestRow; reload: () => void; onSaid: (s: Said) => void }) {
+  const [open, setOpen] = useState(false)
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const blank = reason.trim() === ''
+  const denyId = useId()
+  const reasonRef = useRef<HTMLTextAreaElement>(null)
+  const wasOpen = useRef(open)
+  useEffect(() => {
+    if (wasOpen.current === open) return
+    wasOpen.current = open
+    if (open) reasonRef.current?.focus()
+    else document.getElementById(denyId)?.focus()
+  }, [open])
+  const go = async () => {
+    if (busy || blank) return
+    setBusy(true)
+    const r = await joinWrite('/v1/admin/join-requests/{ref}/deny', join.ref, { reason: reason.trim() })
+    setBusy(false)
+    if (r.status !== 'error') {
+      setOpen(false)
+      setReason('')
+    }
+    onSaid(outcome(r, () => `Denied ${join.requester}’s request to join ${join.display_name}. They see the reason.`))
+    reload()
+  }
+  if (!open) {
+    return (
+      <Button size="sm" id={denyId} onClick={() => setOpen(true)}>
+        Deny
+      </Button>
+    )
+  }
+  return (
+    <span className="pp-deny">
+      <label className="c-field">
+        <span className="c-lbl">Reason, shown to {join.requester}</span>
+        <textarea ref={reasonRef} className="c-inp" value={reason} maxLength={JOIN_REASON_MAX} rows={2} onChange={(e) => setReason(e.target.value)} />
+      </label>
+      <span className="ob-acts">
+        <Button size="sm" onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
+        <Button size="sm" kind="primary" disabled={blank || busy} onClick={() => void go()}>
+          {busy ? 'Denying…' : 'Deny'}
+        </Button>
+      </span>
+    </span>
+  )
+}
+
+/** `joinrequests.REASON_MAX`: the API refuses a longer reason, so the field stops there. */
+const JOIN_REASON_MAX = 200
+
+/** One open join on Waiting for you: who, to join which workspace, when, their message, and the decision. */
+function JoinReq({ join, columns, reload, onSaid }: { join: JoinRequestRow; columns: readonly PeopleWorkspaceColumn[] | null; reload: () => void; onSaid: (s: Said) => void }) {
+  const defaultRole = columns?.find((c) => c.tenant_id === join.tenant_id)?.default_role
+  return (
+    <li className="pp-req" data-kind="join" data-ref={join.ref} data-email={join.requester}>
+      <div className="pp-req-who">
+        <Avatar email={join.requester} />
+        <span className="pp-who" title={join.requester}>
+          <PersonName email={join.requester} name={join.requester_name ?? null} variant="full" />
+        </span>
+      </div>
+      <div className="pp-req-what">
+        <span>
+          to join <b>{join.display_name}</b> · <Requested at={join.requested_at} />
+        </span>
+        {typeof join.message === 'string' && join.message.trim() !== '' && <q className="pp-join-msg">{join.message}</q>}
+      </div>
+      <div className="pp-req-acts">
+        <JoinApprove join={join} defaultRole={defaultRole} reload={reload} onSaid={onSaid} />
+        <JoinDeny join={join} reload={reload} onSaid={onSaid} />
+      </div>
+    </li>
+  )
+}
+
+/** The join requests were not read: the rest of the page is served, and this says why nobody may appear to wait. */
+function JoinsUnread({ code }: { code: string }) {
+  return (
+    <Banner tone="warn" title="The requests to join could not be read">
+      Who is waiting to join a workspace is not shown ({code}). Read again shortly.
+    </Banner>
+  )
+}
+
+/** Bring a Waiting for you row into view and focus its first decision. */
+function reviewRow(match: (li: HTMLElement) => boolean): void {
+  const li = [...document.querySelectorAll<HTMLElement>('.pp-waiting li.pp-req')].find(match)
+  if (li === undefined) return
+  li.scrollIntoView?.({ block: 'center' })
+  ;(li.querySelector<HTMLElement>('button, select, input') ?? li).focus()
+}
+
 /**
  * WAITING FOR YOU (#1206 part 1). Every open request, oldest first, each with
  * its decision beside it. Not drawn when nothing is open. Once a decision is
  * made the request leaves the list on the next read, so its outcome is said
  * under the list, and the card stays for that sentence.
  */
-function WaitingCard({ doc, rows, reload }: { doc: PeopleDoc; rows: PersonRow[]; reload: () => void }) {
+function WaitingCard({ doc, rows, reload }: { doc: PeopleDoc & JoinFields; rows: PersonRow[]; reload: () => void }) {
   const [said, setSaid] = useState<Said | null>(null)
   const items = waitingRequests(rows)
-  if (items.length === 0 && said === null) return null
-  const oldest = items.find((i) => i.at !== null)?.at ?? null
+  // JOIN-UI-ADMIN: a platform admin decides every join request too (§4.6).
+  const joins = openJoins(doc)
+  const total = items.length + joins.length
+  if (total === 0 && said === null) return null
+  const oldest = oldestAt([...items.map((i) => i.at), ...joins.map((j) => j.requested_at)])
   return (
     <Card
       className="pp-waiting"
       title="Waiting for you"
       action={
-        items.length > 0 ? (
+        total > 0 ? (
           <Chip>
-            {items.length} waiting{oldest !== null ? ` · oldest ${timeAgo(oldest)}` : ''}
+            {total} waiting{oldest !== null ? ` · oldest ${timeAgo(oldest)}` : ''}
           </Chip>
         ) : undefined
       }
     >
-      {items.length === 0 ? (
+      {total === 0 ? (
         <p className="ur-hint">Nothing else is waiting.</p>
       ) : (
         <ul className="pp-reqs" aria-label="Open requests">
@@ -763,11 +1119,59 @@ function WaitingCard({ doc, rows, reload }: { doc: PeopleDoc; rows: PersonRow[];
               )}
             </li>
           ))}
+          {joins.map((j) => (
+            <JoinReq key={`join:${j.ref}`} join={j} columns={gridColumns(doc)} reload={reload} onSaid={setSaid} />
+          ))}
         </ul>
       )}
       <SaidLine said={said} />
     </Card>
   )
+}
+
+/**
+ * WAITING FOR YOU, A WORKSPACE ADMIN'S (S5f): the requests to join the
+ * workspaces they administer, and nothing else -- a personal workspace and a
+ * loan are a platform admin's. Not drawn when nothing is open.
+ */
+function JoinWaitingCard({ joins, columns, reload }: { joins: JoinRequestRow[]; columns: readonly PeopleWorkspaceColumn[]; reload: () => void }) {
+  const [said, setSaid] = useState<Said | null>(null)
+  if (joins.length === 0 && said === null) return null
+  const oldest = oldestAt(joins.map((j) => j.requested_at))
+  return (
+    <Card
+      className="pp-waiting"
+      title="Waiting for you"
+      action={
+        joins.length > 0 ? (
+          <Chip>
+            {joins.length} waiting{oldest !== null ? ` · oldest ${timeAgo(oldest)}` : ''}
+          </Chip>
+        ) : undefined
+      }
+    >
+      {joins.length === 0 ? (
+        <p className="ur-hint">Nothing else is waiting.</p>
+      ) : (
+        <ul className="pp-reqs" aria-label="Open requests">
+          {joins.map((j) => (
+            <JoinReq key={j.ref} join={j} columns={columns} reload={reload} onSaid={setSaid} />
+          ))}
+        </ul>
+      )}
+      <SaidLine said={said} />
+    </Card>
+  )
+}
+
+/** The earliest of these times, or null when none is dated. */
+function oldestAt(times: readonly (string | null)[]): string | null {
+  let best: string | null = null
+  for (const t of times) {
+    if (t === null || !Number.isFinite(new Date(t).getTime())) continue
+    if (best === null || new Date(t).getTime() < new Date(best).getTime()) best = t
+  }
+  return best
 }
 
 function Avatar({ email }: { email: string }) {
@@ -820,7 +1224,21 @@ function gridColumns(doc: { workspaces?: PeopleWorkspaceColumn[] | null }): Peop
  * not seen there and no role of their own. A dash is only for a workspace
  * whose roles were not read, and says why.
  */
-function RoleCell({ cell, column }: { cell: PeopleRoleCell | undefined; column: PeopleWorkspaceColumn }) {
+function RoleCell({
+  cell,
+  column,
+  email,
+  join,
+  joined,
+}: {
+  cell: JoinCell | undefined
+  column: PeopleWorkspaceColumn
+  email: string
+  /** Their open request to join this workspace, when `cell` is `requested` and the request was served. */
+  join?: JoinRequestRow
+  /** Their platform membership here, when this column's members list was read and names them. */
+  joined?: WorkspaceMember
+}) {
   const role = cell === undefined || cell === null || column.unavailable ? 'unread' : cell
   return (
     <td role="cell" data-label={column.display_name} data-tenant={column.tenant_id} data-role={role} className="pp-role">
@@ -828,11 +1246,41 @@ function RoleCell({ cell, column }: { cell: PeopleRoleCell | undefined; column: 
         <Dash why={`${column.display_name}’s roles could not be read`} />
       ) : role === 'none' ? (
         <span className="pp-role-none">none</span>
+      ) : role === 'requested' ? (
+        // JOIN-UI-ADMIN (§4.6): an open request to join, and nothing else here.
+        <span className="pp-role-w is-requested" title={`${email} asked to join ${column.display_name} ${join !== undefined ? timeAgo(join.requested_at) : 'at an unknown time'}`}>
+          requested
+        </span>
       ) : (
         <span className={`pp-role-w is-${role}`}>{role}</span>
       )}
+      {role !== 'unread' && joined !== undefined && (
+        <>
+          {' '}
+          <JoinedMark member={joined} />
+        </>
+      )}
     </td>
   )
+}
+
+/** The props a row's cells need for join requests: the open requests, and each column's members list. */
+interface JoinGrid {
+  joins: readonly JoinRequestRow[]
+  members: Readonly<Record<string, MembersRead>>
+}
+
+function roleCells(row: { email: string; roles?: Record<string, PeopleRoleCell> }, columns: readonly PeopleWorkspaceColumn[], grid: JoinGrid): ReactNode[] {
+  return columns.map((c) => (
+    <RoleCell
+      key={c.tenant_id}
+      cell={row.roles?.[c.tenant_id]}
+      column={c}
+      email={row.email}
+      join={grid.joins.find((j) => j.tenant_id === c.tenant_id && j.requester === row.email)}
+      joined={joinedIn(grid.members, c.tenant_id, row.email)}
+    />
+  ))
 }
 
 /**
@@ -917,10 +1365,12 @@ function Row({
   doc,
   columns,
   phone,
+  grid,
   onManage,
 }: {
   row: PersonRow
   doc: PeopleDoc
+  grid: JoinGrid
   /** The grid's columns as narrowed by the workspace filter; null for an older API's doc. */
   columns: PeopleWorkspaceColumn[] | null
   phone: boolean
@@ -940,7 +1390,7 @@ function Row({
         <PersonCell row={row} doc={doc} />
       </th>
       {columns !== null
-        ? columns.map((c) => <RoleCell key={c.tenant_id} cell={row.roles?.[c.tenant_id]} column={c} />)
+        ? roleCells(row, columns, grid)
         : !phone && (
             <td role="cell" data-label="Teams">
               {row.teams.length > 0 ? row.teams.join(', ') : <Dash why="Resolves to no team" />}
@@ -1629,24 +2079,36 @@ function count(n: number, one: string, many: string): string {
  * its row is scrolled into view and its first decision focused. Green when
  * nothing is open, and then no button.
  */
-function PeopleLead({ rows }: { rows: readonly PersonRow[] }) {
+function PeopleLead({ rows, joins, joinsError }: { rows: readonly PersonRow[]; joins: readonly JoinRequestRow[]; joinsError: string | null }) {
   const items = waitingRequests(rows)
-  const oldest = items[0]
-  if (oldest === undefined) {
-    return <AdminLead tone="ok" kicker="Nothing waiting" title="Nobody is waiting for an admin" body="A new workspace request or a request to borrow a Claude account appears here first." />
+  // JOIN-UI-ADMIN: a join request counts with the others (§4.6), and the
+  // oldest of all of them is the one named.
+  const first = items[0]
+  const join = joins[0]
+  const named = join !== undefined && (first === undefined || first.at === null || new Date(join.requested_at).getTime() < new Date(first.at).getTime()) ? join : null
+  if (first === undefined && join === undefined) {
+    if (joinsError !== null) {
+      // Nobody else waits, but the joins were not read: "nobody" would be a guess.
+      return <AdminLead tone="unread" kicker="Not read" title="—, who is waiting to join a workspace could not be read" body={`No workspace or loan request is open; the join requests were not read (${joinsError}).`} />
+    }
+    return <AdminLead tone="ok" kicker="Nothing waiting" title="Nobody is waiting for an admin" body="A new workspace request, a request to join a workspace or a request to borrow a Claude account appears here first." />
   }
-  const open = () => {
-    const li = [...document.querySelectorAll<HTMLElement>('.pp-waiting li.pp-req')].find((el) => el.dataset.kind === oldest.kind && el.dataset.email === oldest.row.email)
-    if (li === undefined) return
-    li.scrollIntoView?.({ block: 'center' })
-    ;(li.querySelector<HTMLElement>('button, select, input') ?? li).focus()
-  }
+  const open = () =>
+    named !== null
+      ? reviewRow((el) => el.dataset.kind === 'join' && el.dataset.ref === named.ref)
+      : first !== undefined && reviewRow((el) => el.dataset.kind === first.kind && el.dataset.email === first.row.email)
+  const oldest =
+    named !== null
+      ? `${named.requester} asked to join ${named.display_name} ${timeAgo(named.requested_at)}`
+      : first !== undefined
+        ? `${first.row.email} asked for ${askedFor(first)} ${first.at !== null ? timeAgo(first.at) : 'at an unknown time'}`
+        : ''
   return (
     <AdminLead
       tone="warn"
       kicker="Needs an admin"
-      title={`${count(items.length, 'request is', 'requests are')} waiting for an admin`}
-      body={`The oldest: ${oldest.row.email} asked for ${askedFor(oldest)} ${oldest.at !== null ? timeAgo(oldest.at) : 'at an unknown time'}.`}
+      title={`${count(items.length + joins.length, 'request is', 'requests are')} waiting for an admin`}
+      body={`The oldest: ${oldest}.`}
       action={
         <Button kind="primary" onClick={open}>
           Review the oldest
@@ -1821,21 +2283,47 @@ function NobodyShown({ view }: { view: GridView<GridRow> }) {
  * workspace request and a loan are a platform admin's, so the lead says that
  * rather than drawing decisions this reader cannot make.
  */
-function ScopedBody({ doc }: { doc: ScopedPeopleDoc }) {
+function ScopedBody({ doc, reload }: { doc: ScopedPeopleDoc & JoinFields; reload: () => void }) {
   const columns = Array.isArray(doc.workspaces) ? doc.workspaces : []
   const rows: ScopedPersonRow[] = Array.isArray(doc.people) ? doc.people : []
   const phone = usePhoneTables()
   const names = listed(columns.map((c) => c.display_name))
   const view = useGridView(rows, columns)
   const shown = view.columns ?? columns
+  // JOIN-UI-ADMIN (S5f): the requests to join these workspaces are this reader's to decide.
+  const joins = openJoins(doc)
+  const joinsError = doc.join_requests_error ?? null
+  const [version, setVersion] = useState(0)
+  const members = useWorkspaceMembers(columns, version)
+  const decided = () => {
+    reload()
+    setVersion((v) => v + 1)
+  }
+  const grid: JoinGrid = { joins, members }
+  const body = `Showing ${names}, the ${columns.length === 1 ? 'workspace' : 'workspaces'} you administer. A request for a personal workspace or a Claude account is a platform admin’s to decide.`
+  const asking = new Set(joins.map((j) => j.requester)).size
+  const into = listed([...new Set(joins.map((j) => j.display_name))])
   return (
     <>
-      <AdminLead
-        tone="ok"
-        kicker="Your workspaces"
-        title={`Nobody is waiting for you in ${names}`}
-        body={`Showing ${names}, the ${columns.length === 1 ? 'workspace' : 'workspaces'} you administer. A request for a personal workspace or a Claude account is a platform admin’s to decide.`}
-      />
+      {joins.length > 0 ? (
+        <AdminLead
+          tone="warn"
+          kicker="Your workspaces"
+          title={`${count(asking, 'person is', 'people are')} waiting to join ${into}`}
+          body={body}
+          action={
+            <Button kind="primary" onClick={() => reviewRow((el) => el.dataset.kind === 'join' && el.dataset.ref === joins[0]?.ref)}>
+              {joins.length === 1 ? 'Review it' : `Review the ${joins.length}`}
+            </Button>
+          }
+        />
+      ) : joinsError !== null ? (
+        <AdminLead tone="unread" kicker="Your workspaces" title={`—, who is waiting to join ${names} could not be read`} body={`${body} (${joinsError})`} />
+      ) : (
+        <AdminLead tone="ok" kicker="Your workspaces" title={`Nobody is waiting for you in ${names}`} body={body} />
+      )}
+      {joinsError !== null && <JoinsUnread code={joinsError} />}
+      <JoinWaitingCard joins={joins} columns={columns} reload={decided} />
       <Card
         className="pp-people"
         title="People and their roles"
@@ -1847,6 +2335,7 @@ function ScopedBody({ doc }: { doc: ScopedPeopleDoc }) {
         }
       >
         {rows.length > 0 && <FindPerson view={view} />}
+        <MembersUnread columns={columns} reads={members} />
         {rows.length === 0 ? (
           <p className="ur-hint">Nobody has been seen in {names} yet, and nobody holds a role there.</p>
         ) : view.rows.length === 0 ? (
@@ -1874,9 +2363,7 @@ function ScopedBody({ doc }: { doc: ScopedPeopleDoc }) {
                         </span>
                       </span>
                     </th>
-                    {shown.map((c) => (
-                      <RoleCell key={c.tenant_id} cell={row.roles?.[c.tenant_id]} column={c} />
-                    ))}
+                    {roleCells(row, shown, grid)}
                     <td role="cell" data-label="Last active">
                       {row.last_active !== null ? timeAgo(row.last_active) : <Dash why="Not seen since roles were recorded" />}
                     </td>
@@ -1895,7 +2382,7 @@ function isScoped(doc: PeopleDoc | ScopedPeopleDoc): doc is ScopedPeopleDoc {
   return doc.scope === 'workspaces'
 }
 
-function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
+function PeopleBody({ doc, reload }: { doc: PeopleDoc & JoinFields; reload: () => void }) {
   const rows = pendingFirst(Array.isArray(doc.people) ? doc.people : [])
   const phone = usePhoneTables()
   // The drawer follows the person, not a snapshot of their row: each read
@@ -1907,11 +2394,22 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
   const columns = view.columns
   const [granting, setGranting] = useState(false)
   const [said, setSaid] = useState<Said | null>(null)
+  // JOIN-UI-ADMIN: the open join requests, and each column's members list for the mark.
+  const joins = openJoins(doc)
+  const joinsError = doc.join_requests_error ?? null
+  const [version, setVersion] = useState(0)
+  const members = useWorkspaceMembers(all, version)
+  const decided = () => {
+    reload()
+    setVersion((v) => v + 1)
+  }
+  const grid: JoinGrid = { joins, members }
   return (
     <>
-      <PeopleLead rows={rows} />
+      <PeopleLead rows={rows} joins={joins} joinsError={joinsError} />
       <BuildingOff doc={doc} />
-      <WaitingCard doc={doc} rows={rows} reload={reload} />
+      {joinsError !== null && <JoinsUnread code={joinsError} />}
+      <WaitingCard doc={doc} rows={rows} reload={decided} />
       {doc.workspaces_error != null && <ColumnsUnread code={doc.workspaces_error} />}
       <Card
         className="pp-people"
@@ -1937,6 +2435,7 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
       >
         <SaidLine said={said} />
         {rows.length > 0 && <FindPerson view={view} />}
+        {all !== null && <MembersUnread columns={all} reads={members} />}
         {rows.length === 0 ? (
           <p className="ur-hint">
             <span aria-label="no one has signed in (measured)">no one has signed in</span>
@@ -1972,7 +2471,7 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
               </thead>
               <tbody role="rowgroup">
                 {view.rows.map((row) => (
-                  <Row key={row.email} row={row} doc={doc} columns={columns} phone={phone} onManage={setManaging} />
+                  <Row key={row.email} row={row} doc={doc} columns={columns} phone={phone} grid={grid} onManage={setManaging} />
                 ))}
               </tbody>
             </table>
@@ -2015,7 +2514,7 @@ export function PeopleScreen() {
           : 'Every person against every workspace, what they are waiting for, and who is an admin.'}
       </p>
       <UrRegion state={people.state} route="GET /v1/admin/people" what="People" plural onRetry={people.reload} lines={6}>
-        {(d) => (isScoped(d) ? <ScopedBody doc={d} /> : <PeopleBody doc={d} reload={people.reload} />)}
+        {(d) => (isScoped(d) ? <ScopedBody doc={d} reload={people.reload} /> : <PeopleBody doc={d} reload={people.reload} />)}
       </UrRegion>
     </div>
   )

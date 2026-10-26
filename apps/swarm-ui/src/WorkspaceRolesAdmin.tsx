@@ -81,8 +81,8 @@ export function WorkspaceRolesCard() {
   return (
     <Card className="wra-card" title="Workspace roles" action={<UrRefresh reads={[first]} />}>
       <p className="ur-hint">
-        Each group workspace&rsquo;s default role, its admins and the people with a role of their own. A group workspace has no admin until
-        one is named here; a personal workspace&rsquo;s only admin is its person.
+        Each group workspace&rsquo;s default role, its admins and the people with a role of their own. A group workspace has no named admin until
+        one is named here, though every platform admin holds admin in it; a personal workspace&rsquo;s only admin is its person.
       </p>
       <ListPage read={first} last={more.length === 0} onMore={next} />
       {more.map((token, i) => (
@@ -272,8 +272,9 @@ function Roster({
           {data.default_role ?? <Dash why="The API named no default" />}
           {data.default_source === 'migration' && <span className="ur-hint"> · as before roles, until an admin sets it</span>}
         </dd>
-        <dt>Admins</dt>
-        <dd className="wra-admins">{admins.length === 0 ? 'no admin yet' : admins.map((p) => p.email).join(', ')}</dd>
+        {/* Named admins only (VQ-044): a platform admin holds admin here too, and is never one of these rows. */}
+        <dt>Named admins</dt>
+        <dd className="wra-admins">{admins.length === 0 ? 'none named yet' : admins.map((p) => p.email).join(', ')}</dd>
         <dt>Own roles</dt>
         <dd className="wra-count">
           {n} {n === 1 ? 'override' : 'overrides'}

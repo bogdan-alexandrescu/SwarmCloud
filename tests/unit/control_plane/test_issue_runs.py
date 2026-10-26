@@ -512,10 +512,19 @@ def test_approving_the_digest_shown_submits_one_new_workflow(client, db, objects
     assert list(workflows) == [f"workflows/{approved['workflow_id']}"]
     steps = [s["step_id"] for s in workflows[f"workflows/{approved['workflow_id']}"]["steps"]]
     assert steps == ["impl-sort-key", "impl-ui", "review", "fix"]
-    # Every step is a claude-code task of the caller's tenant, pointed at the issue.
+    # Every step is a task of the caller's tenant, pointed at the issue: the
+    # builds and the fix on claude-code, the review on the browser until the
+    # scheduler resolves it from the diff (#2322, `browser_if_ui`).
     step_tasks = [t for t in _docs(db, "tasks").values() if t.get("workflow_id") == approved["workflow_id"]]
     assert len(step_tasks) == 4
-    assert all(t["runner_profile"] == "claude-code" and t["tenant_id"] == "eng" for t in step_tasks)
+    assert all(t["tenant_id"] == "eng" for t in step_tasks)
+    assert {t["step_id"]: t["runner_profile"] for t in step_tasks} == {
+        "impl-sort-key": "claude-code", "impl-ui": "claude-code",
+        "review": "claude-code-browser", "fix": "claude-code",
+    }
+    review = next(t for t in step_tasks if t["step_id"] == "review")
+    assert review["metadata"]["runtime"]["policy"] == "browser_if_ui"
+    assert review["metadata"]["runtime"]["alternate"]["runner_profile"] == "claude-code"
     assert all(t["input"]["issue"] == 42 for t in step_tasks)
     assert all(t["repository_url"] == "https://github.com/example-org/widgets" for t in step_tasks)
     # Approving twice does not submit twice.
@@ -671,7 +680,11 @@ def test_the_plan_compiles_to_implement_review_and_a_gated_fix():
     assert by_id["fix"].input_from == {"review": "verdict.json"}
     # The plan's prompts reach the steps, and nothing in the plan picked a profile.
     assert "Add a name sort key" in by_id["impl-sort-key"].input["prompt"]
-    assert all(s.runner_profile == "claude-code" for s in spec.steps)
+    assert all(s.runner_profile == "claude-code" for s in spec.steps if s.step_id != "review")
+    # The review asks for a browser only if the change is UI (#2322).
+    assert by_id["review"].runner_profile == "claude-code-browser"
+    assert by_id["review"].metadata["runtime"] == {
+        "policy": "browser_if_ui", "browser": "claude-code-browser", "code": "claude-code"}
     assert spec.metadata["issue_run"]["run_id"] == "run_x"
     assert spec.metadata["issue_run"]["fix_rounds"] == 3
 
@@ -823,7 +836,10 @@ CHAIN_AS_BEFORE = {
         },
         {
             "step_id": "review",
-            "runner_profile": "claude-code",
+            # Browser only if the change is UI (#2322): resolved at READY.
+            "runner_profile": "claude-code-browser",
+            "metadata": {"runtime": {"policy": "browser_if_ui",
+                                     "browser": "claude-code-browser", "code": "claude-code"}},
             "input": {
                 "issue": 42,
                 "prompt": (
@@ -915,7 +931,8 @@ def test_dependencies_compile_to_parallel_stages():
     assert "impl-api/swarm-work.patch" in by_id["impl-wire"].input["prompt"]
     # Signed fields that do not depend on the shape are unchanged.
     assert spec.strategy == "integrate"
-    assert all(s.runner_profile == "claude-code" for s in spec.steps)
+    assert all(s.runner_profile == "claude-code" for s in spec.steps if s.step_id != "review")
+    assert by_id["review"].runner_profile == "claude-code-browser"
     assert spec.metadata["issue_run"]["plan_digest"] == plan_digest(STAGED_PLAN)
     assert issueruns.plan_stages(STAGED_PLAN) == [["api", "ui"], ["docs", "wire"]]
 
@@ -926,7 +943,11 @@ def test_the_review_depends_on_every_implementation_step_and_the_fix_stays_gated
     impl = ["impl-api", "impl-ui", "impl-docs", "impl-wire"]
     assert by_id["review"].depends_on == impl
     assert by_id["review"].input_from == {sid: "swarm-work.patch" for sid in impl}
-    assert by_id["review"].metadata == {"input_layout": "by_parent"}
+    assert by_id["review"].metadata == {
+        "input_layout": "by_parent",
+        "runtime": {"policy": "browser_if_ui", "browser": "claude-code-browser",
+                    "code": "claude-code"},
+    }
     assert by_id["review"].builds_on == "impl-wire"
     for sid in impl:
         assert f"{sid}/swarm-work.patch" in by_id["review"].input["prompt"]

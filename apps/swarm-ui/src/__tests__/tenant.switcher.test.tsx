@@ -306,7 +306,7 @@ describe('the spine tenant block', () => {
     await waitFor(() => expect(switcher()).not.toBeNull())
     const btn = switcher()!
     expect(document.querySelector('.sk-tenant select'), 'the select is back').toBeNull()
-    expect(btn.querySelector('small')?.textContent).toBe('tenant · 1 of 2')
+    expect(btn.querySelector('small')?.textContent).toBe('workspace · 1 of 2')
     expect(btn.getAttribute('aria-expanded')).toBe('false')
     // The copy id stays with the block.
     expect(document.querySelector('.sk-tenant .sk-cp')).not.toBeNull()
@@ -314,15 +314,15 @@ describe('the spine tenant block', () => {
     fireEvent.click(btn)
     const list = picker()!
     expect(list.getAttribute('aria-label')).toBe('Act as')
-    expect(list.textContent).toContain('Act as · 2 tenants you are a member of')
+    expect(list.textContent).toContain('Act as · 2 workspaces you are a member of')
     // The current tenant is named as the panel names it (QA G1-06), not by its group email.
     expect(rowFor('Engineering')?.getAttribute('aria-current')).toBe('true')
-    expect(rowFor('research@example.com')?.getAttribute('aria-current')).toBeNull()
+    expect(rowFor('research')?.getAttribute('aria-current')).toBeNull()
     const readsBefore = screenReads
     const callsBefore = f.mock.calls.length
 
     await act(async () => {
-      fireEvent.click(rowFor('research@example.com')!)
+      fireEvent.click(rowFor('research')!)
     })
 
     expect(picker()).toBeNull()
@@ -343,10 +343,10 @@ describe('the spine tenant block', () => {
     await waitFor(() => expect(switcher()).not.toBeNull())
     fireEvent.click(switcher()!)
     await act(async () => {
-      fireEvent.click(rowFor('research@example.com')!)
+      fireEvent.click(rowFor('research')!)
     })
     const toast = document.querySelector('.c-toast')
-    expect(toast?.textContent).toContain('Now acting as research@example.com')
+    expect(toast?.textContent).toContain('Now acting as research')
     const back = [...document.querySelectorAll<HTMLButtonElement>('.c-toast button')].find((b) => b.textContent === 'Back to Engineering')
     expect(back, 'the toast has no way back').toBeDefined()
     await act(async () => {
@@ -363,12 +363,12 @@ describe('the spine tenant block', () => {
     await shell()
     await waitFor(() => expect(switcher()).not.toBeNull())
     expect(switcher()!.querySelector('b')?.textContent).toBe('Your workspace')
-    expect(switcher()!.querySelector('small')?.textContent).toBe('tenant · 1 of 2')
+    expect(switcher()!.querySelector('small')?.textContent).toBe('workspace · 1 of 2')
     fireEvent.click(switcher()!)
     expect(rowFor('Your workspace')?.getAttribute('aria-current')).toBe('true')
     expect(rowFor('Your workspace')?.querySelector('small')?.textContent).toBe('u-ana-b')
     await act(async () => {
-      fireEvent.click(rowFor('eng@example.com')!)
+      fireEvent.click(rowFor('eng')!)
     })
     expect(window.sessionStorage.getItem(TENANT_PREF)).toBe('eng')
     const back = [...document.querySelectorAll<HTMLButtonElement>('.c-toast button')].find((b) => b.textContent === 'Back to Your workspace')
@@ -393,7 +393,7 @@ describe('the spine tenant block', () => {
     expect(tile.getAttribute('aria-label')).toContain('Engineering')
     fireEvent.click(tile)
     expect(picker()?.className).toContain('is-tile')
-    expect(rowFor('research@example.com')).toBeDefined()
+    expect(rowFor('research')).toBeDefined()
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(picker()).toBeNull()
   })
@@ -448,9 +448,9 @@ describe('the default workspace in the tenant block (§4.5)', () => {
     await shell()
     await waitFor(() => expect(document.querySelector('.sk-tenant b')?.textContent).toBe('Research'))
     // Research is not the default, so the block does not call it one.
-    expect(switcher()!.querySelector('small')?.textContent).toBe('tenant · 2 of 2')
+    expect(switcher()!.querySelector('small')?.textContent).toBe('workspace · 2 of 2')
     fireEvent.click(switcher()!)
-    expect(rowFor('eng@example.com')?.textContent).toContain('default')
+    expect(rowFor('eng')?.textContent).toContain('default')
     expect(rowFor('Research')?.textContent).not.toContain('default')
     expect(picker()?.textContent).toContain('Kept for this tab’s session')
     fireEvent.keyDown(document, { key: 'Escape' })
@@ -461,7 +461,7 @@ describe('the default workspace in the tenant block (§4.5)', () => {
     })
     expect(window.sessionStorage.getItem(TENANT_PREF), 'Back to default kept the switch').toBeNull()
     await waitFor(() => expect(document.querySelector('.sk-tenant b')?.textContent).toBe('Engineering'))
-    expect(switcher()!.querySelector('small')?.textContent).toBe('tenant · 1 of 2 · default')
+    expect(switcher()!.querySelector('small')?.textContent).toBe('workspace · 1 of 2 · default')
     // In the default already, there is nothing to go back to.
     expect(backButton()).toBeUndefined()
   })
@@ -480,7 +480,7 @@ describe('the default workspace in the tenant block (§4.5)', () => {
     expect(document.querySelector('.sk-panel .sk-tenant + .sk-tprefs')).not.toBeNull()
     fireEvent.click(switcher()!)
     await act(async () => {
-      fireEvent.click(rowFor('research@example.com')!)
+      fireEvent.click(rowFor('research')!)
     })
     await waitFor(() => expect(document.querySelector('.sk-tprefs')).toBeNull())
   })
@@ -516,7 +516,7 @@ describe('an unsent form across a tenant switch (2A)', () => {
 
     fireEvent.click(switcher()!)
     await act(async () => {
-      fireEvent.click(rowFor('research@example.com')!)
+      fireEvent.click(rowFor('research')!)
     })
 
     // The draft survived: the same input, still holding what was typed.
@@ -524,10 +524,10 @@ describe('an unsent form across a tenant switch (2A)', () => {
     // What the form was drawn from was read again, as the new tenant.
     await waitFor(() => expect(formReads).toBeGreaterThan(readsBefore))
     // The button and the banner name where it will now go.
-    expect(screen.getByRole('button', { name: 'Submit as research@example.com' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Submit as research' })).toBeTruthy()
     const banner = document.querySelector('.sk-kept .c-banner')
-    expect(banner?.textContent).toContain('You switched to research@example.com with an unsent form open.')
-    expect(banner?.textContent).toContain('it will now submit as research@example.com')
+    expect(banner?.textContent).toContain('You switched to research with an unsent form open.')
+    expect(banner?.textContent).toContain('it will now submit as research')
     const back = [...banner!.querySelectorAll('button')].find((b) => b.textContent === 'Switch back to Engineering')
     expect(back, 'the banner has no way back').toBeDefined()
     await act(async () => {
@@ -549,7 +549,7 @@ describe('an unsent form across a tenant switch (2A)', () => {
     await waitFor(() => expect(switcher()).not.toBeNull())
     fireEvent.click(switcher()!)
     await act(async () => {
-      fireEvent.click(rowFor('research@example.com')!)
+      fireEvent.click(rowFor('research')!)
     })
     expect((screen.getByLabelText('draft') as HTMLInputElement).value).toBe('')
     expect(document.querySelector('.sk-kept')).toBeNull()

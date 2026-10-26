@@ -331,6 +331,13 @@ _OUTCOME: dict[str, str] = {
     TaskState.CANCELLED.value: "cancelled",
 }
 _TERMINAL_VALUES = frozenset(s.value for s in TERMINAL_STATES)
+
+#: Firestore runs a query with `in` filters as their disjunctive normal form
+#: and refuses one past 30 disjunctions. The terminal count asks `state in`
+#: every terminal state and `tenant_id in` a chunk, so a chunk is as many
+#: tenants as leave the product at or under 30: 7 with the four terminal states.
+_DISJUNCTIONS_MAX = 30
+_COUNT_TENANT_CHUNK = max(1, _DISJUNCTIONS_MAX // len(_TERMINAL_VALUES))
 _FAILED_VALUES = frozenset({TaskState.FAILED.value, TaskState.DEAD_LETTERED.value})
 
 
@@ -3648,27 +3655,44 @@ class Outcomes:
     ) -> int | None:
         """count() of terminal tasks with no completed_at: what the ledger cannot place.
 
-        Equality-only filters, which single-field indexes should serve by merge
-        join. NOT VERIFIED against real Firestore -- the emulator does not
-        enforce indexes -- so a failed count is null, never 0.
+        ONE count() PER CHUNK OF TENANTS, NOT ONE PER TERMINAL STATE PER TENANT
+        (#2422). It was a count() per state per tenant, run one after another:
+        four round trips for a tenant, four times the tenant set for an admin's
+        filtered platform view, and VQ-021 measured the headline that waited on
+        it at 22.6 s at p95. Now `state in` the terminal states, with the
+        tenant as an equality for one tenant and an `in` over at most
+        `_COUNT_TENANT_CHUNK` tenants otherwise, so the count is one round trip
+        in tenant scope and in the unfiltered platform view, and
+        ceil(tenants / 7) in a filtered one. The total is the same sum: the
+        states are disjoint, so their union counts each task once.
+
+        Every query still names its tenants (invariant 9): only the admin's
+        unfiltered, complete platform view (`whole_platform`) drops the filter.
+        Equality and `in` filters only, which single-field indexes should
+        serve by merge join, one disjunction at a time. NOT VERIFIED against
+        real Firestore -- the emulator does not enforce indexes -- so a failed
+        count is null, never 0.
         """
-        scopes: list[str | None] = [None] if whole_platform else list(tenants)
+        scopes: list[list[str] | None] = (
+            [None] if whole_platform else [list(c) for c in _chunks(list(tenants), _COUNT_TENANT_CHUNK)]
+        )
         total = 0
         try:
-            for tenant_id in scopes:
-                for state in sorted(_TERMINAL_VALUES):
-                    query: Any = self._db.collection(TASKS)
-                    if tenant_id is not None:
-                        query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
-                    query = query.where(filter=FieldFilter("state", "==", state)).where(
-                        filter=FieldFilter("completed_at", "==", None)
-                    )
-                    meter.add(1)
-                    for row in query.count().get():
-                        for item in row:
-                            total += int(item.value)
-                            break
+            for chunk in scopes:
+                query: Any = self._db.collection(TASKS)
+                if chunk is not None and len(chunk) == 1:
+                    query = query.where(filter=FieldFilter("tenant_id", "==", chunk[0]))
+                elif chunk is not None:
+                    query = query.where(filter=FieldFilter("tenant_id", "in", chunk))
+                query = query.where(
+                    filter=FieldFilter("state", "in", sorted(_TERMINAL_VALUES))
+                ).where(filter=FieldFilter("completed_at", "==", None))
+                meter.add(1)
+                for row in query.count().get():
+                    for item in row:
+                        total += int(item.value)
                         break
+                    break
         except Exception:
             log.warning("terminal_without_completed_at could not be counted", exc_info=True)
             return None
@@ -3727,8 +3751,8 @@ class Outcomes:
         docs and their shards, the live day's delta since its cut, and any day
         it has to derive. Three sections read more, once per entry and only
         when first asked for: `previous` the span before's day docs, `coverage`
-        one count() per terminal state per tenant
-        (`terminal_without_completed_at`), and `workflows_failed` the listed
+        one count() per chunk of seven tenants (`terminal_without_completed_at`;
+        one in tenant scope), and `workflows_failed` the listed
         workflows and their steps. What every request pays is the tenant
         listing in platform scope, which is part of the key. `reads` is what
         THIS request read; `cached` is true when it read nothing for its

@@ -45,7 +45,7 @@ from urllib.parse import urlsplit
 
 from swarm_common.profiles import MODEL_CLASSES, RESOURCE_CLASSES
 
-from . import artifacts, checkout, compact, config, keys, progress, qatargets
+from . import artifacts, checkout, compact, config, keys, progress, qatargets, suitegate
 from . import secrets as secret_tools
 from . import profiles as catalogue
 from . import workflows
@@ -929,7 +929,19 @@ TOOLS: list[dict[str, Any]] = [
             "`offset` set to `next_offset` for the rest. A name the task does not "
             "list is an error naming the ones it does.\n"
             "\n"
-            "TO LOOK AT AN IMAGE (a screenshot, a rendered mock-up slice): pass "
+            "AN IMAGE IS SHOWN TO YOU (a screenshot, a rendered mock-up slice). An "
+            "artifact named .png, .jpg, .jpeg, .webp or .gif whose bytes are an image "
+            "(the API checks the extension AND the magic bytes, and so does this tool) "
+            "comes back as image content, after metadata `{status: \"image\", name, "
+            "bytes, content_type, redaction: \"not-applied\"}`. Image bytes are NOT "
+            "redacted: no scanner reads pixels, so a screenshot of a page that showed a "
+            "value carries it, exactly as the console's image viewer does. An image over "
+            "5 MiB answers `{status: \"image_too_large\", bytes, max_bytes, console}` "
+            "and no bytes. Pass `as_image: true` to skip the text read and go straight to "
+            "the image read. Anything that is not an image stays as above: text is the "
+            "redacted window, a binary is `binary` with no bytes.\n"
+            "\n"
+            "TO KEEP AN IMAGE AS A FILE: pass "
             "`save_to`, a directory under your working directory or your "
             "scratchpad. An artifact named .png, .jpg, .jpeg, .webp or .gif that "
             "the API serves as an image is written to "
@@ -953,6 +965,15 @@ TOOLS: list[dict[str, Any]] = [
                 "limit_bytes": {
                     "type": "integer",
                     "description": "Window size. The API clamps it into its own range and says so.",
+                },
+                "as_image": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Read an image-named artifact straight through the image read, "
+                        "without the text read first. Bytes that are not an image still "
+                        "answer the redacted text read or `binary`, never raw."
+                    ),
                 },
                 "save_to": {
                     "type": "string",
@@ -1292,6 +1313,17 @@ TOOLS: list[dict[str, Any]] = [
                                     "(result_summary.no_change) instead of "
                                     "failing on an empty diff; dependants that "
                                     "need its patch are SKIPPED."
+                                ),
+                            },
+                            "runtime": {
+                                "type": "string",
+                                "enum": ["browser_if_ui"],
+                                "description": (
+                                    "For a review: run on claude-code-browser only when "
+                                    "an upstream step's change touches UI (test files "
+                                    "excluded), on claude-code otherwise; the platform "
+                                    "decides as the step is readied. Name no "
+                                    "runner_profile, or claude-code-browser."
                                 ),
                             },
                             "inputs": _INPUTS_SCHEMA,
@@ -2477,6 +2509,48 @@ TOOLS: list[dict[str, Any]] = [
                                    "maximum": qatargets.MAX_FLOWS_PER_STEP},
             },
             "required": ["target"],
+        },
+    },
+    {
+        "name": "swarm_suite_gate",
+        "description": (
+            "Run a registered repository's whole Playwright suite as a sharded gate "
+            "(docs/suite-gate.md). The bridge renders the workflow, you name only data: "
+            "`shards` steps on `claude-code` each run, from `working_dir`, `npm ci`, "
+            "`npx playwright install chromium` and `npx playwright test --shard k/N "
+            "--retries=1 --reporter=blob,line` (with `--project` when named, after loading "
+            "`env_file` when named), and put their blob report in their artifacts; one "
+            "`report` step depending on all of them merges the blobs "
+            "(`npx playwright merge-reports`) into playwright-report.zip and writes "
+            "summary.md and summary.json: passed, failed, flaky, and each failure's spec and "
+            "first error line. Every step runs tests only: none fixes code or commits "
+            "(strategy collect, no merge). Never an image, a command or resources from the "
+            "caller (invariant 10). Returns as soon as the workflow is accepted; follow it "
+            "with swarm_workflow_status, then read the report step with swarm_result and "
+            "swarm_artifact. A shard that produced no blob fails, and the gate with it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "repository": {"type": "string", "maxLength": 220,
+                               "description": "owner/repo, registered by your workspace."},
+                "ref": {"type": "string", "maxLength": 200,
+                        "description": "The branch, tag or commit SHA to test."},
+                "suite": {"type": "string", "enum": list(suitegate.SUITES)},
+                "working_dir": {"type": "string", "maxLength": 200,
+                                "description": "The repo-relative directory holding package.json "
+                                               "and the Playwright config, e.g. `web`; default the root."},
+                "shards": {"type": "integer", "minimum": suitegate.MIN_SHARDS,
+                           "maximum": suitegate.MAX_SHARDS, "default": suitegate.DEFAULT_SHARDS},
+                "project": {"type": "string", "maxLength": 100,
+                            "description": "A Playwright project name, passed as --project."},
+                "env_file": {"type": "string", "maxLength": 200,
+                             "description": "A repo-relative file of NON-SECRET env the suite "
+                                            "needs (a mock server's URL, say), loaded before the tests."},
+                "target": _TARGET_SCHEMA,
+            },
+            "required": ["repository", "ref", "suite"],
         },
     },
     {
@@ -4789,7 +4863,9 @@ def _workflow_created(
     return json.dumps(created, indent=2)
 
 
-def _answered(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bool = False) -> str:
+def _answered(
+    client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bool = False
+) -> str | artifacts.ImageAnswer:
     """`_call`'s answer, after which the build board is told what happened
     (BOARD-WIRE, part of #1773): a submission, a launch or a check refreshes
     it, a follow that saw a state change refreshes it at most every two
@@ -4805,19 +4881,22 @@ def _answered(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive
     try:
         from . import buildboard
 
-        buildboard.after_tool(client, name, text)
+        buildboard.after_tool(client, name, text if isinstance(text, str) else text.text)
     except Exception as exc:  # noqa: BLE001 - the board never fails the tool behind it
         print(f"swarm-mcp: build board: the refresh was not started ({type(exc).__name__}: {exc})",
               file=sys.stderr)
     return text
 
 
-def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bool = False) -> str:
+def _call(
+    client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bool = False
+) -> str | artifacts.ImageAnswer:
     """One tool call's answer. `keepalive` says the caller is sending the host
     progress notifications for as long as this runs (`_Keepalive`), so a
     progress hold may take its full `compact.MAX_WAIT_SECONDS`; without it the
     hold stops at `compact.SILENT_MAX_WAIT_SECONDS`, inside the host's idle
-    timeout."""
+    timeout. The answer is text, except `swarm_artifact`'s image, which is an
+    `artifacts.ImageAnswer` that `serve` sends as text and image blocks."""
     _refuse_unknown_arguments(name, args)
     if name == "swarm_dispatch" and args.get("tasks") is not None:
         # Before any request, `/v1/stats` included: neither the call nor a
@@ -5167,6 +5246,22 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             indent=2,
         )
 
+    if name == "swarm_suite_gate":
+        # WHERE IT GOES first (S8), as swarm_workflow: under `local` nothing is
+        # read or sent. Then every argument is checked and the registration
+        # read before the one POST.
+        placed = _placement(name, {k: v for k, v in args.items() if k == "target"},
+                            profiles=[suitegate.PROFILE])
+        envelope, rendered = suitegate.gate(client, args)
+        reply = json.loads(_workflow_created(
+            without_credentials(envelope), placed=placed,
+            repository={"url": rendered["repository_url"], "ref": rendered["repository_ref"],
+                        "source": "given"},
+            given=[str(step.get("step_id")) for step in rendered["steps"]],
+            name=rendered["title"]))
+        reply["suite_gate"] = suitegate.reply_fields(rendered)
+        return json.dumps(reply, indent=2)
+
     if name == "swarm_qa_target_credential_link":
         # The url and its expiry, nothing else: `qatargets.credential_link`
         # copies those two fields, so not even the API's `path` (which holds
@@ -5229,13 +5324,32 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                 saved = artifacts.save_image(client, str(args["task_id"]), str(args["name"]), plan)
                 if saved is not None:
                     return json.dumps(saved, indent=2)
-        window = client.artifact_content(
-            args["task_id"],
-            str(args["name"]),
-            offset=_int_arg(args, "offset", 0),
-            # Absent is the route's own default window, not a size of ours.
-            limit_bytes=None if args.get("limit_bytes") is None else _int_arg(args, "limit_bytes", 0),
-        )
+
+        def _window() -> dict[str, Any]:
+            return client.artifact_content(
+                args["task_id"],
+                str(args["name"]),
+                offset=_int_arg(args, "offset", 0),
+                # Absent is the route's own default window, not a size of ours.
+                limit_bytes=None if args.get("limit_bytes") is None else _int_arg(args, "limit_bytes", 0),
+            )
+
+        # SHOWN AS AN IMAGE (ARTIFACT-IMAGES, part of #2136): only a name with
+        # an image extension, only once the text read said `binary` (or the
+        # caller asked for the image), and only bytes `show_image` itself
+        # sniffs as an image. Text never takes this path, so it stays redacted.
+        art = str(args["name"])
+        window = None if args.get("as_image") is True and artifacts.is_image_name(art) else _window()
+        if artifacts.is_image_name(art) and (window is None or window.get("status") == "binary"):
+            shown = artifacts.show_image(
+                client, str(args["task_id"]), art,
+                stored_bytes=(window or {}).get("total_bytes"),
+                console=lambda: console_link(client.task(args["task_id"])),
+            )
+            if shown is not None:
+                return shown
+        if window is None:
+            window = _window()
         return json.dumps(window, indent=2, default=str)
 
     if name == "swarm_workflow_spec":
@@ -6083,7 +6197,10 @@ def serve(stdin=None, stdout=None) -> int:
             finally:
                 if alive is not None:
                     alive.stop()
-            _respond(message_id, {"content": [{"type": "text", "text": text}]})
+            if isinstance(text, artifacts.ImageAnswer):
+                _respond(message_id, {"content": text.content()})
+            else:
+                _respond(message_id, {"content": [{"type": "text", "text": text}]})
         except SwarmError as exc:
             # isError, not a JSON-RPC error: the CALL failed, the protocol
             # did not, and a host that saw a transport error would drop the

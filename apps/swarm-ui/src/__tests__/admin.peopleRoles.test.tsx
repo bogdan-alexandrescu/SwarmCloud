@@ -200,9 +200,10 @@ describe('a workspace admin reads only their workspaces (S5f)', () => {
     expect(visible(lead)).toContain('platform admin')
   })
 
-  it('reads only the one route, and writes nothing', async () => {
+  it("reads only the People route and its workspaces' members lists, and writes nothing", async () => {
     const calls = await mount(SCOPED)
+    // The joined-by-request mark reads each column's members list (BGD, 2026-10-26); SCOPED has one column.
+    await waitFor(() => expect(calls.map((c) => c.url)).toEqual(['/v1/admin/people', '/v1/workspace/members']), WAIT)
     expect(calls.filter((c) => c.method !== 'GET')).toEqual([])
-    expect(calls.map((c) => c.url)).toEqual(['/v1/admin/people'])
   })
 })

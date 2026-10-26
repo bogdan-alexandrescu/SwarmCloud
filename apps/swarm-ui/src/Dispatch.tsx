@@ -200,7 +200,7 @@ export function DispatchChoice({
           keep exactly one of their own -- five of the console's eighty-two came
           from this one file. Every one of them explained the control it sat on,
           and every one of those controls already says what it does: the legends
-          are sentences (`how this work gets merged`, `what carries work between
+          are sentences (`How this work gets merged`, `What carries work between
           steps`), each strategy prints its own consequence in numbers beside
           it, the task form says in one line where the strategy it cannot take
           lives, and the repository field says in its own label whether the
@@ -208,7 +208,12 @@ export function DispatchChoice({
           thing no label could carry -- that the control records a preference
           nothing acts on -- and it is printed as a plain line with a link to
           `#help/dispatch-carrier`, with `CARRIER_FIXED_NOTE` as its accessible name. */}
-      <legend className="t-label">how this work gets merged</legend>
+      {/* `.dsp-head`, NOT `.t-label` (visual QA VQ-027): the forms that draw
+          this control set "If a step fails" and "Priority" beside it, and a
+          muted lower-case label next to a bold sentence-case one read as two
+          kinds of field. Every field label in the card is `.dsp-head`, in
+          sentence case. */}
+      <legend className="dsp-head">How this work gets merged</legend>
 
       <div className="dsp-options" role="radiogroup" aria-label="dispatch strategy">
         {offered.map((s) => {
@@ -264,7 +269,7 @@ export function DispatchChoice({
           {/* NO `<label for>` (QA-074, the owner's choice of 2026-10-20).
               There is no control to label: the question and its answer are
               two lines of text, read in order. */}
-          <span className="t-label dsp-label">what carries work between steps</span>
+          <span className="dsp-head dsp-label">What carries work between steps</span>
           {/* SHOWN FIXED, NOT OFFERED (QA G4-28, 2026-10-07), AS TEXT
               (QA-074, owner 2026-10-20). It was a live select for a value the
               platform does not act on, so choosing `branches` changed nothing
@@ -290,8 +295,8 @@ export function DispatchChoice({
       )}
       {errors?.carrier && <p id={refusedSayId('carrier')} tabIndex={-1} className="warn-text" role="alert">{errors.carrier}</p>}
 
-      <label className="t-label dsp-label" htmlFor="dsp-repo">
-        repository url {repoRequired ? '(required by this choice)' : '(optional)'}
+      <label className="dsp-head dsp-label" htmlFor="dsp-repo">
+        Repository url {repoRequired ? '(required by this choice)' : '(optional)'}
       </label>
       {/* NOT `type="url"`. The form has no `noValidate`, so the browser would
           enforce its own URL grammar on submit -- and `git@github.com:o/r.git`,

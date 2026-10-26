@@ -132,21 +132,21 @@ describe('N26: "lands as" speaks of waiting for a room of 0 and for a room not r
     const container = await form()
     fireEvent.click(radio(container, 'claude-code'))
     // MUTATION: drop the room-0 clause -> a full pool says nothing about not starting yet.
-    expect(landsAs(container)).toBe('lands asREADY or PARKED · waits for room · costs nothing')
+    expect(landsAs(container)).toBe('lands asready or parked · waits for room · costs nothing')
   })
 
   it('room unknown (claude-code-browser): it may wait, because the room was not read', async () => {
     const container = await form()
     fireEvent.click(radio(container, 'claude-code-browser'))
     // MUTATION: test `headroomFor(profile).agents === 0` alone again -> an unread room says nothing (the run-4 line).
-    expect(landsAs(container)).toBe('lands asREADY or PARKED · may wait for room: room not read · costs nothing')
+    expect(landsAs(container)).toBe('lands asready or parked · may wait for room: room not read · costs nothing')
   })
 
   it('room to spare (mock): the plain line', async () => {
     const container = await form()
     fireEvent.click(radio(container, 'mock'))
     // MUTATION: say a wait unconditionally -> a runner with room is told it waits.
-    expect(landsAs(container)).toBe('lands asREADY or PARKED · costs nothing')
+    expect(landsAs(container)).toBe('lands asready or parked · costs nothing')
   })
 })
 

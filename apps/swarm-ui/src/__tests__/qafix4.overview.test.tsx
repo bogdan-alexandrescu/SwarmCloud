@@ -149,8 +149,8 @@ describe('N11: the failed-agents card links each workflow it names', () => {
     expect(p.workflows?.map((w) => w.id)).toEqual([WF_A, WF_B])
     // MUTATION: give a workflow the list's address rather than its own.
     expect(p.workflows?.map((w) => toPath(w.href))).toEqual([`/workflows/${WF_A}`, `/workflows/${WF_B}`])
-    // The card's own link is unchanged: the page, then the state (QA-109).
-    expect(p.linkLabel).toBe('Agents · FAILED')
+    // The card's own link is unchanged: the page, then the state (QA-109), as a word (VQ-003).
+    expect(p.linkLabel).toBe('Agents · failed')
     expect(p.href).toBe('#work/running/recent/failed')
   })
 
@@ -172,10 +172,10 @@ describe('N11: the failed-agents card links each workflow it names', () => {
     const main = [...container.querySelectorAll(`a[href="${FAILED_LIST}"]`)]
     expect(main).toHaveLength(1)
     // MUTATION: change the main link's words.
-    expect(text(main[0])).toContain('Agents · FAILED')
+    expect(text(main[0])).toContain('Agents · failed')
     // MUTATION: move the card's accessible name off its main link.
     // Its destination first (5b:wg-dark-D1), then the card's words.
-    expect(main[0]!.getAttribute('aria-label')).toBe(`Agents · FAILED: ${p.headline}. ${p.detail}`)
+    expect(main[0]!.getAttribute('aria-label')).toBe(`Agents · failed: ${p.headline}. ${p.detail}`)
     // The rest of the card opens the FIRST WORKFLOW, not the list (BGD's
     // decision of 2026-10-23, #1680 box 6343766999): the first named
     // workflow's link carries the stretched cover, and the list's link is a
