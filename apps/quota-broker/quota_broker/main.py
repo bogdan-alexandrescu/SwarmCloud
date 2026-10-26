@@ -91,8 +91,10 @@ from .accountstore import COLLECTION as ACCOUNTS_COLLECTION
 from .accountstore import MALFORMED_ERRORS, AccountStore, MalformedAccountError
 from .accountstore import (
     HEALTH_ASSIGN_REFUSED,
+    HEALTH_DOCUMENT,
     HEALTH_EXHAUSTED,
     HEALTH_RATE_LIMIT,
+    HEALTH_SUBCOLLECTION,
     PROVIDER_ERROR_KINDS,
     health_counts,
     health_status,
@@ -433,7 +435,18 @@ class AccountErrorReport(StrictModel):
 
 
 class HardMaxRequest(StrictModel):
+    """A platform caller's configured max for one tenant, audited in `quota_audit`."""
+
     hard_max: int = Field(ge=0, le=100_000)
+    #: The person a platform caller acts for. swarm-api's admin proxy sends
+    #: its admin's verified email, from the token; only a platform caller
+    #: reaches this field. Optional, so a caller that names no one is still
+    #: audited -- as the identity the broker verified.
+    requested_by: str | None = Field(default=None, max_length=320)
+    #: Why, in the operator's words. Optional here, unlike a target reset's:
+    #: swarm-api requires one, and a direct platform call without one is
+    #: recorded as having none rather than refused.
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class AdaptiveTargetRequest(StrictModel):
@@ -771,6 +784,14 @@ def account_to_api(
                 #: counts at half (`Account.headroom`).
                 "aged_reading": aged,
             })
+    # A RECORDED 429 THAT HAS NOT RESET (`Account.is_limited`): `choose()`
+    # skips the account until it does, so the page says so, with when.
+    limited = getattr(account, "is_limited", None)
+    if callable(limited) and limited(now):
+        blocked_by.append({
+            "limited_until": _iso(getattr(account, "limited_until", None)),
+            "window": getattr(account, "limited_window", None),
+        })
     max_agents = getattr(account, "max_agents", None)
     live_holds = getattr(account, "live_holds", None)
     if isinstance(max_agents, int) and callable(live_holds):
@@ -831,6 +852,17 @@ def account_to_api(
         })
     next_reset = getattr(account, "next_reset", None)
     next_eligible = next_reset(now) if callable(next_reset) else None
+    # THE LATEST INSTANT ANY AGENT CAN STILL HOLD IT (#2222, the Timeline's
+    # frames B3/B4): each live hold's own deadline, `Hold.expires_at`, which
+    # is when the quota sweep stops counting a hold whose worker never
+    # released it. The latest, not the soonest: a full account frees when ONE
+    # agent finishes, which no clock says, so the page draws this as "latest",
+    # never as "expected". An expired hold has already stopped counting, so
+    # its deadline is not the account's.
+    latest_hold = None
+    if callable(live_holds):
+        deadlines = [h.expires_at for h in live_holds(now)]
+        latest_hold = max(deadlines) if deadlines else None
     return {
         "account_id": account.account_id,
         "owner_tenant": account.owner_tenant,
@@ -878,6 +910,10 @@ def account_to_api(
         #: a full account frees when an agent on it finishes, which no clock
         #: says.
         "next_eligible_at": _iso(next_eligible),
+        #: The latest deadline among the agents holding it now, or null when
+        #: none holds it. A deadline, not a forecast: the hold stops counting
+        #: then whether or not its agent is still running.
+        "latest_hold_deadline": _iso(latest_hold),
         "windows": windows,
         "observed_at": observed_at.isoformat() if observed_at else None,
         #: True when no reading has arrived recently enough to be trusted.
@@ -1784,11 +1820,16 @@ def set_state_and_moves(
     operator has just put back in service.
 
     Writes what `AccountStore.set_state` writes (state, reason, and clearing
-    `state_before_reauth` because a person decided), plus the holds.
+    `state_before_reauth` because a person decided), plus the holds. AND
+    AVAILABLE ENDS A RECORDED 429's HOLD (`Account.is_limited`), on the
+    account and its health record in this transaction, for the reason
+    `AccountStore.set_state` gives: a bad report can hold an account for
+    days, and a person putting it back in service can say it is wrong.
     """
     from google.cloud import firestore
 
     ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    health_ref = ref.collection(HEALTH_SUBCOLLECTION).document(HEALTH_DOCUMENT)
     transaction = db.transaction()
 
     @firestore.transactional
@@ -1802,6 +1843,10 @@ def set_state_and_moves(
             replace(h, move=SWAP_DRAIN if draining else (None if h.move == SWAP_DRAIN else h.move))
             for h in live
         ]
+        resumed: dict[str, Any] = {}
+        if state is AccountState.AVAILABLE:
+            resumed = {"limited_until": None, "limited_window": None}
+            txn.set(health_ref, {"limited_until": None}, merge=True)
         txn.update(
             ref,
             {
@@ -1809,6 +1854,7 @@ def set_state_and_moves(
                 "reason": reason,
                 "state_before_reauth": "",
                 **_hold_payload(marked),
+                **resumed,
             },
         )
         _close_expired(txn, db, account_id, expired)
@@ -3070,12 +3116,28 @@ def create_app(
         body: HardMaxRequest,
         authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, Any]:
+        """Set a tenant's configured max. PLATFORM ONLY; audited in `quota_audit`
+        in the same transaction as the quota document, with who asked
+        (`requested_by`, and the identity the broker verified) and why."""
         name = _known_provider(provider)
-        _, is_platform = request.app.state.identity.resolve(authorization)
+        identity = request.app.state.identity
+        _, is_platform = identity.resolve(authorization)
         if not is_platform:
             request.app.state.metrics.auth_failures.labels(kind="not_platform").inc()
             raise BrokerAuthError("only the platform may change a configured hard max")
-        state = request.app.state.broker.set_hard_max(name, tenant_id, body.hard_max)
+        verified = getattr(identity, "verified_email", None)
+        caller = verified(authorization) if callable(verified) else ""
+        state = request.app.state.broker.set_hard_max(
+            name,
+            tenant_id,
+            body.hard_max,
+            requested_by=(body.requested_by or "").strip().lower(),
+            reason=body.reason or "",
+            caller=caller,
+        )
+        request.app.state.metrics.admin_changes.labels(
+            provider=name, action="hard_max_set"
+        ).inc()
         request.app.state.metrics.observe(state)
         return {"quota": quota_to_api(state)}
 

@@ -68,6 +68,19 @@ const profile = (isAdmin: boolean): Json => ({
   unavailable: [],
 })
 
+/** The acting workspace's roles read (`GET /v1/workspace/roles`): its default is viewer. */
+const ROLES: Json = {
+  tenant_id: 'eng',
+  kind: 'group',
+  default_role: 'viewer',
+  default_source: 'set',
+  people: [],
+  roles: [],
+  audit: [],
+  me: { email: 'ana.b@example.com', role: 'member', source: 'default', via: '' },
+  can_manage: false,
+}
+
 const WS_ID = 'research'
 const created = (): Json => ({
   workspace_id: WS_ID,
@@ -84,6 +97,7 @@ function api(isAdmin: boolean): Calls {
     if (m === 'GET' && url === '/v1/profile') return { status: 200, body: profile(isAdmin) }
     if (m === 'GET' && url === '/v1/onboarding') return { status: 200, body: ONBOARDING }
     if (m === 'GET' && url === '/v1/code-intelligence') return { status: 200, body: CODE_INTEL }
+    if (m === 'GET' && url === '/v1/workspace/roles') return { status: 200, body: ROLES }
     if (m === 'GET' && url === '/v1/judgment') return { status: 404, body: { detail: 'Not Found' } }
     if (m === 'POST' && url === '/v1/admin/workspaces') return { status: 201, body: created() }
     if (m === 'GET' && url === `/v1/admin/workspaces/${WS_ID}`) return { status: 200, body: { workspace: created() } }
@@ -202,7 +216,7 @@ describe('Workspace setup\'s GitHub steps link to Config › GitHub access', () 
 })
 
 describe('Add a new workspace: a platform admin\'s part only', () => {
-  it('is a part of the page for a platform admin, and files through POST /v1/admin/workspaces once', async () => {
+  it('is a part of the page for a platform admin, its form drawn on the page, and files through POST /v1/admin/workspaces once', async () => {
     const calls = api(true)
     const { WorkspaceSettingsScreen } = await load()
     render(<WorkspaceSettingsScreen part="new" />)
@@ -210,17 +224,26 @@ describe('Add a new workspace: a platform admin\'s part only', () => {
     const tab = await within(parts()).findByRole('link', { name: 'Add a new workspace' })
     expect(tab.getAttribute('href')).toBe('/config/workspace?part=new')
     expect(tab.getAttribute('aria-current')).toBe('page')
-    // MUTATION: open a form of this page's own, or none -> the existing dialog's fields are missing, fails.
-    fireEvent.click(await screen.findByRole('button', { name: 'New workspace' }))
-    const dialog = await screen.findByRole('dialog')
-    fireEvent.click(within(dialog).getByRole('tab', { name: 'Group' }))
-    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Group address' }), { target: { value: 'research@example.com' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create workspace' }))
-    // MUTATION: post to a route of this page's own, or post twice -> fails.
+    // S6c: the form is on the page, beside what creating it does; no dialog to open first.
+    // MUTATION: keep the New workspace button that opens a dialog -> no form on the page, fails.
+    const form = (await screen.findByRole('heading', { name: 'New workspace' })).closest('section') as HTMLElement
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'New workspace' })).toBeNull()
+    // MUTATION: drop the list of what creating it does -> fails.
+    const does = (await screen.findByRole('heading', { name: 'What creating it does' })).closest('section') as HTMLElement
+    expect(visible(does)).toContain('Worker account')
+    expect(visible(does)).toContain('Final check')
+    // MUTATION: draw a form of this page's own with other fields -> the dialog's tabs and fields are missing, fails.
+    fireEvent.click(within(form).getByRole('tab', { name: 'Group' }))
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Group address' }), { target: { value: 'research@example.com' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Create workspace' }))
+    // MUTATION: post to a route of this page's own, post twice, or post another body -> fails.
     await waitFor(() => expect(calls.filter((c) => c.method === 'POST').length).toBe(1))
     const post = calls.find((c) => c.method === 'POST')!
     expect(post.url).toBe('/v1/admin/workspaces')
     expect(post.body).toEqual({ kind: 'group', principal: 'research@example.com', display_name: null })
+    // The record's progress replaces the form in place.
+    expect(await within(form).findByRole('list', { name: 'Workspace job steps' })).toBeTruthy()
   })
 
   it('is absent for a member, who cannot reach it by its address either', async () => {
@@ -232,8 +255,9 @@ describe('Add a new workspace: a platform admin\'s part only', () => {
     await screen.findByText(/for platform admins/)
     // MUTATION: show the part to everyone -> fails.
     expect(within(parts()).queryByRole('link', { name: 'Add a new workspace' })).toBeNull()
-    // MUTATION: draw the New workspace button for a member who types the address -> fails.
-    expect(screen.queryByRole('button', { name: 'New workspace' })).toBeNull()
+    // MUTATION: draw the form for a member who types the address -> fails.
+    expect(screen.queryByRole('button', { name: 'Create workspace' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'New workspace' })).toBeNull()
     expect(calls.filter((c) => c.method === 'POST')).toEqual([])
   })
 
@@ -260,5 +284,123 @@ describe('the Add a new workspace address', () => {
     expect(r.tab).toBe('workspace')
     expect(r.view).toBe('part=new')
     expect(paths.addressToPath(App.canonical(r))).toBe('/config/workspace?part=new')
+  })
+})
+
+describe('the leads follow the strip once the checklist is done (S6a, S6b)', () => {
+  /** Every checklist step done; the strip's Secrets set still open (2 to set) and People invited open (only you). */
+  const setup = (secrets: number, people: boolean): Json => ({
+    ...ONBOARDING,
+    steps: [step('signed_in', 'done'), step('github_connected', 'done', { login: 'ana' }), step('repos_chosen', 'done', { repositories: ['eng/api'] }), step('ready', 'done')],
+    next_step: null,
+    complete: true,
+    config_setup: {
+      secrets: {
+        needed: secrets,
+        items: secrets === 0 ? [] : [{ kind: 'mcp_server', name: 'kb-token', needed_by: 'kb', where: 'config/secrets', environment: null }, { kind: 'qa_target', name: 'studio', needed_by: null, where: null, environment: 'production' }],
+        sources: { mcp_servers: { needed: secrets === 0 ? 0 : 1, reason: null }, qa_targets: { needed: secrets === 0 ? 0 : 1, reason: null } },
+      },
+      people: { applies: true, done: people, holders: people ? 2 : 0, admins: 1, reason: null },
+    },
+  })
+
+  async function withSetup(part: 'settings' | 'setup', doc: Json, personal = false) {
+    api(false)
+    const [{ WorkspaceSettingsScreen }, { SetupContext }] = await Promise.all([load(), import('../ConfigSetup')])
+    render(
+      <SetupContext.Provider value={{ doc: { status: 'ok', fetchedAt: Date.now(), data: doc as never }, personal }}>
+        <WorkspaceSettingsScreen part={part} />
+      </SetupContext.Provider>,
+    )
+  }
+
+  it('leads Settings with the strip\'s Secrets step, not "every step is done", while Secrets is open', async () => {
+    await withSetup('settings', setup(2, false))
+    const lead = await screen.findByRole('region', { name: 'Setup’s next step' })
+    // MUTATION: follow the onboarding checklist alone -> "Every step is done" in green, fails.
+    expect(visible(lead)).toContain('Setup’s next step is on Secrets')
+    expect(visible(document.body)).not.toContain('Every step is done')
+    expect(lead.className).not.toContain('is-ok')
+    // MUTATION: send the lead anywhere but Config › Secrets -> fails.
+    expect(within(lead).getByRole('link', { name: 'Go to Secrets' }).getAttribute('href')).toBe('/config/secrets')
+  })
+
+  it('leads Settings with People and roles once Secrets is set, and is green only when the strip is complete', async () => {
+    await withSetup('settings', setup(0, false))
+    const lead = await screen.findByRole('region', { name: 'Setup’s next step' })
+    // MUTATION: stop at the checklist -> no People step named, fails.
+    expect(visible(lead)).toContain('Setup’s next step is on People and roles')
+    expect(within(lead).getByRole('link', { name: 'Go to People and roles' }).getAttribute('href')).toBe('/config/people')
+    cleanup()
+    await withSetup('settings', setup(0, true))
+    // MUTATION: never go green -> fails.
+    const done = await screen.findByRole('region', { name: 'Nothing here needs you' })
+    expect(done.className).toContain('is-ok')
+    expect(visible(done)).toContain('Every step is done')
+  })
+
+  it('moves Workspace setup\'s lead on to the strip\'s step 3 when the checklist is complete', async () => {
+    await withSetup('setup', setup(2, false))
+    // MUTATION: stop at "Setup is complete" while Secrets is open -> fails.
+    const lead = await screen.findByRole('region', { name: 'Step 3 of 4 · next' })
+    expect(visible(lead)).toContain('Secrets set: 2 to set: kb-token and 1 more')
+    expect(within(lead).getByRole('link', { name: 'Open Secrets' }).getAttribute('href')).toBe('/config/secrets')
+    expect(screen.queryByRole('region', { name: 'Setup is complete' })).toBeNull()
+  })
+
+  it('lists the strip\'s steps 3-4 in an After the checklist card, each with its button', async () => {
+    await withSetup('setup', setup(2, false))
+    const card = (await screen.findByRole('heading', { name: 'After the checklist' })).closest('section') as HTMLElement
+    // MUTATION: drop the card, or a row -> fails.
+    const secrets = within(card).getByRole('listitem', { name: 'Secrets set' })
+    expect(visible(secrets)).toContain('2 to set: kb-token and 1 more')
+    // MUTATION: point Set anywhere but Config › Secrets -> fails.
+    expect(within(secrets).getByRole('link', { name: 'Set' }).getAttribute('href')).toBe('/config/secrets')
+    const people = within(card).getByRole('listitem', { name: 'People invited' })
+    expect(visible(people)).toContain('only you so far')
+    // MUTATION: point Invite anywhere but Config › People and roles -> fails.
+    expect(within(people).getByRole('link', { name: 'Invite' }).getAttribute('href')).toBe('/config/people')
+  })
+
+  it('has no People invited row in a personal workspace, which has nobody to invite', async () => {
+    await withSetup('setup', setup(2, false), true)
+    const card = (await screen.findByRole('heading', { name: 'After the checklist' })).closest('section') as HTMLElement
+    // MUTATION: list step 4 in a personal workspace -> fails.
+    expect(within(card).getAllByRole('listitem').length).toBe(1)
+    expect(within(card).queryByRole('link', { name: 'Invite' })).toBeNull()
+  })
+
+  it('holds Show on Overview in its own On Overview card while the checklist is hidden there', async () => {
+    const calls = api(false)
+    const [{ WorkspaceSettingsScreen }, { SetupContext }] = await Promise.all([load(), import('../ConfigSetup')])
+    const hidden = { ...ONBOARDING, dismissed: true }
+    render(
+      <SetupContext.Provider value={{ doc: { status: 'ok', fetchedAt: Date.now(), data: hidden as never }, personal: false }}>
+        <WorkspaceSettingsScreen part="setup" />
+      </SetupContext.Provider>,
+    )
+    const card = (await screen.findByRole('heading', { name: 'On Overview' })).closest('section') as HTMLElement
+    // MUTATION: leave the On Overview card out -> fails.
+    expect(visible(card)).toContain('hidden on Overview')
+    fireEvent.click(within(card).getByRole('button', { name: 'Show on Overview' }))
+    // MUTATION: post anything but {dismissed: false} -> fails.
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST')).toBe(true))
+    const write = calls.find((c) => c.method === 'POST')!
+    expect(write.url).toBe('/v1/onboarding/dismiss')
+    expect(write.body).toEqual({ dismissed: false })
+  })
+})
+
+describe('Settings: This workspace names the default role (S6a)', () => {
+  it('shows the workspace\'s default role, linking to People and roles', async () => {
+    api(false)
+    const { WorkspaceSettingsScreen } = await load()
+    render(<WorkspaceSettingsScreen part="settings" />)
+    const ws = (await screen.findByRole('heading', { name: 'This workspace' })).closest('section') as HTMLElement
+    // MUTATION: drop the Default role row, or draw another field as the default -> fails.
+    await waitFor(() => expect(visible(ws)).toContain('Default role'))
+    await waitFor(() => expect(visible(within(ws).getByTestId('ws-default-role'))).toContain('viewer'))
+    // MUTATION: link the row anywhere but Config › People and roles -> fails.
+    expect(within(ws).getByRole('link', { name: 'People and roles' }).getAttribute('href')).toBe('/config/people')
   })
 })

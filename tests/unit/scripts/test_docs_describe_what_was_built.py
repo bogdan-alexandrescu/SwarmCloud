@@ -2129,6 +2129,8 @@ SSC_UNBUILT = ("SSC-SECRETS-APP",)
 #: Lanes marked built by their own lane, before their PR had a number: §9
 #: says "(built, lane <name>" and §12 has a "**<name> (lane <name>" entry.
 SSC_BUILT_BY_LANE = ("SSC-UI",)
+#: The lane that mounted SSC-UI-ACTIONS' pane on Config › Secrets (part of #2158).
+SSC_MOUNT = "SECRETS-ACTIONS-MOUNT"
 #: Lanes the build added, each answered on #2158 from §2.1's rule.
 SSC_ADDED = {"SSC-REPO-DELETE": 2239, "SSC-REPO-DELETE-TXN": 2245, "SSC-UNREGISTER-TXN": 2249,
              "LINK-ADMIN-WRITES": 2229, "PLATFORM-SECRETS-500": 2221}
@@ -2184,9 +2186,16 @@ def _check_ssc_lanes(text: str) -> None:
         assert f"**{lane} (PR {pr.group(1)}" in built, f"§12 has no entry for {lane} with PR {pr.group(1)}"
     for lane, pr in SSC_ADDED.items():
         assert f"**{lane} (PR {pr})" in built or f"PR {pr} ({lane})" in built, lane
-    # The pane stays "not mounted" only while Secrets.tsx does not import it.
-    if "./SecretsActions" in _text(REPO / "apps" / "swarm-ui" / "src" / "Secrets.tsx"):
-        raise AssertionError("Secrets.tsx mounts SSC-UI-ACTIONS' pane: drop 'not mounted' from the status, §9 and §12")
+    # SECRETS-ACTIONS-MOUNT mounted SSC-UI-ACTIONS' pane on Config › Secrets:
+    # the status, §9 and §12 say so, and nothing says it is still unmounted.
+    assert "./SecretsActions" in _text(REPO / "apps" / "swarm-ui" / "src" / "Secrets.tsx"), \
+        "Secrets.tsx no longer mounts SSC-UI-ACTIONS' pane: the documents say it does"
+    flat = _flat(text)
+    for stale in ("does not mount", "not mounted", "not yet mounted", "not written yet", "does not offer that form yet"):
+        assert stale not in flat, f"secrets-scopes.md still says the pane is unmounted: {stale!r}"
+    assert f"**{SSC_MOUNT} (lane {SSC_MOUNT}" in built, f"§12 has no entry for {SSC_MOUNT}"
+    assert SSC_MOUNT in rows["SSC-UI-ACTIONS"], f"§9's SSC-UI-ACTIONS row does not name {SSC_MOUNT}"
+    assert SSC_MOUNT in _ssc_head(text), f"the status line does not name {SSC_MOUNT}"
 
 
 def _check_ssc_code(text: str) -> None:
@@ -2289,8 +2298,10 @@ _SSC_MUTATIONS = [
     ("lanes", "| 1 | **SSC-OVERVIEW** (built, PR 2248) |", "| 1 | **SSC-OVERVIEW** |"),
     ("lanes", "**SSC-OVERVIEW (PR 2248).** §4 and §6.2: `GET /v1/secrets/overview` reads",
      "**SSC-OVERVIEW.** §4 and §6.2: `GET /v1/secrets/overview` reads"),
-    ("status", "and mounting the GitHub Actions pane.** Designed 2026-10-23 (lane SECRETS-SCOPES-DESIGN, PR 2159);",
-     "and mounting the GitHub Actions pane.** Nothing in this document is built (lane SECRETS-SCOPES-DESIGN, PR 2159);"),
+    ("status", "**Status: built 2026-10-24 (lane SSC-DOCS, part of #2158), except phase 0.** Designed 2026-10-23",
+     "**Status: built 2026-10-24 (lane SSC-DOCS, part of #2158), except phase 0.** Nothing in this document is built. 2026-10-23"),
+    ("lanes", "| 3 | **SSC-UI-ACTIONS** (built, PR 2300; mounted on Config › Secrets by lane SECRETS-ACTIONS-MOUNT, §12) |",
+     "| 3 | **SSC-UI-ACTIONS** (built, PR 2300; `Secrets.tsx` does not mount it yet, §12) |"),
     ("code", "| `grant_key_required` | a repository grant is written unattested, and the release drops it, "
      "because a repository grant is released only when attested (§2.2) | every environment holds the grant key |",
      ""),

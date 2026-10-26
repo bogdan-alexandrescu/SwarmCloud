@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { loadAccess, putAccessGrant, revokeAccessGrant, verifyAccessGrant } from './api'
 import { AccessRefusal, AskFirst, GitHubLink, LossAsk, takesAccessAway, type Choice } from './Access'
 import { Banner, Button, Card, Dash, EmptyState } from './components'
@@ -24,7 +24,18 @@ import './styles/onboarding.css'
  * Two ways to mount it: `ReachableRepositories` with the grants of a
  * `GET /v1/access` the page already read, or `ReachableRepositoriesRead`,
  * which makes that read itself.
+ *
+ * ITS COPY IS THE PAGE'S, BY PROP (REPOS-FOLLOWUPS; BGD, 2026-10-25). Left
+ * alone it reads as it did on GitHub access, where the owners sit above it
+ * and orgs are shown: "Choose repositories from an enabled owner above" and
+ * the org-removal sentence. Config › Repositories shows no owner and no org,
+ * so it passes its own empty-state sentence (a link to GitHub access,
+ * config-e.html S3c) and `orgNote={false}`, and the Registered column
+ * (S3a), which only that page can fill: it holds the registry.
  */
+
+/** The empty state as GitHub access words it: the owners are above it there. */
+const EMPTY_HERE = 'Choose repositories from an enabled owner above, or type owner/repo.'
 
 const CHECKS: readonly { key: AccessCheckName; label: string }[] = [
   { key: 'clone', label: 'Clone' },
@@ -67,7 +78,22 @@ function PushTestCell({ grant, check }: { grant: AccessGrant; check: AccessCheck
 }
 
 /** "Repositories SwarmCloud may reach as you": the person's grants, verified (Verify A). */
-export function ReachableRepositories({ grants, onChange }: { grants: AccessGrant[]; onChange: () => void }) {
+export function ReachableRepositories({
+  grants,
+  onChange,
+  empty = EMPTY_HERE,
+  orgNote = true,
+  registered,
+}: {
+  grants: AccessGrant[]
+  onChange: () => void
+  /** The empty state's sentence; GitHub access' own when not given. */
+  empty?: ReactNode
+  /** The org-removal sentence: only where orgs are shown (GitHub access). */
+  orgNote?: boolean
+  /** Each row's Registered cell (S3a); no column when not given. */
+  registered?: (g: AccessGrant) => ReactNode
+}) {
   const [busy, setBusy] = useState<string | null>(null)
   const [failures, setFailures] = useState<Record<string, AccessVerifyFailure[]>>({})
   /** The grant whose push test is waiting for a yes. Nothing is written before it. */
@@ -140,7 +166,7 @@ export function ReachableRepositories({ grants, onChange }: { grants: AccessGran
   // `.ac-page` carries the phone's 44px targets (onboarding.css). The card
   // brings it along, so it keeps them on a page that is not GitHub access.
   return (
-    <div className="ac-page ac-reach">
+    <div className={`ac-page ac-reach${registered !== undefined ? ' has-registered' : ''}`}>
       <Card
         className="ac-grants"
         title="Repositories SwarmCloud may reach as you"
@@ -162,7 +188,7 @@ export function ReachableRepositories({ grants, onChange }: { grants: AccessGran
       >
         {grants.length === 0 ? (
           <EmptyState kind="empty" heading="No repository chosen yet">
-            Choose repositories from an enabled owner above, or type owner/repo.
+            {empty}
           </EmptyState>
         ) : (
           <>
@@ -183,6 +209,7 @@ export function ReachableRepositories({ grants, onChange }: { grants: AccessGran
                 <span key={c.key}>{c.label}</span>
               ))}
               <span>Push test</span>
+              {registered !== undefined && <span>Registered</span>}
               <span />
             </div>
             <ul className="ac-grid" aria-label="Your granted repositories, failures first">
@@ -228,6 +255,12 @@ export function ReachableRepositories({ grants, onChange }: { grants: AccessGran
                       <span className="ac-cell-l">Push test</span>
                       <PushTestCell grant={g} check={pushCheck} />
                     </span>
+                    {registered !== undefined && (
+                      <span className="ac-cell" data-check="registered">
+                        <span className="ac-cell-l">Registered</span>
+                        {registered(g)}
+                      </span>
+                    )}
                     <span className="ac-grant-acts">
                       <Button size="sm" busy={busy === g.repo_id} onClick={() => void verify(g).then(onChange)}>
                         Verify
@@ -304,10 +337,12 @@ export function ReachableRepositories({ grants, onChange }: { grants: AccessGran
             </ul>
           </>
         )}
-        <p className="ur-hint">
-          Removing an org deletes its grants at once, and agents naming its repositories are refused from then on. GitHub
-          still lets your token reach an installed org until an org owner uninstalls the App or you disconnect.
-        </p>
+        {orgNote && (
+          <p className="ur-hint">
+            Removing an org deletes its grants at once, and agents naming its repositories are refused from then on. GitHub
+            still lets your token reach an installed org until an org owner uninstalls the App or you disconnect.
+          </p>
+        )}
       </Card>
     </div>
   )

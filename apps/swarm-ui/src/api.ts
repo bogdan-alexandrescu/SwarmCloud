@@ -5684,6 +5684,172 @@ export async function setAccountMaxAgents(accountId: string, maxAgents: number):
   })
 }
 
+// ---------------------------------------------------------------------------
+// One account's health (#2302, ACCOUNT-HEALTH-SHEET)
+// ---------------------------------------------------------------------------
+// `GET /v1/accounts/{id}/health` (ACCOUNT-429-SCOPE, PR 2305) as
+// `routes/accounts.py` `health_view` serves it: allow-lists, not types, on
+// both sides. The broker owns the record; swarm-api serves a value outside
+// its lists as nothing, and this read keeps what it does not know as nothing
+// too -- a count it was not sent is `null`, never a 0, because a 0 drawn for a
+// count nobody measured is the one thing the Health section must never show.
+
+/** The four words, by the broker's rule (`accountstore.health_status`). */
+export type AccountHealthStatus = 'healthy' | 'limited' | 'erroring' | 'reauth_needed'
+export const ACCOUNT_HEALTH_STATUSES: readonly AccountHealthStatus[] = ['healthy', 'limited', 'erroring', 'reauth_needed']
+
+/** `ACCOUNT_HEALTH_KINDS` in swarm-api's schemas.py, in its order. */
+export type AccountHealthKind =
+  | 'rate_limit'
+  | 'exhausted'
+  | 'auth'
+  | 'overloaded'
+  | 'server_error'
+  | 'network'
+  | 'assign_refused'
+  | 'reauth'
+  | 'refresh_failed'
+export const ACCOUNT_HEALTH_KINDS: readonly AccountHealthKind[] = [
+  'rate_limit',
+  'exhausted',
+  'auth',
+  'overloaded',
+  'server_error',
+  'network',
+  'assign_refused',
+  'reauth',
+  'refresh_failed',
+]
+
+/** `ACCOUNT_HEALTH_WINDOWS`: the window a rate-limit event names. */
+export type AccountHealthWindow = 'five_hour' | 'seven_day' | 'other'
+const HEALTH_WINDOWS: readonly AccountHealthWindow[] = ['five_hour', 'seven_day', 'other']
+
+/** One span's counts by kind. Every kind is present; a kind the broker did not send is 0 (swarm-api's `_health_counts`). */
+export type AccountHealthCounts = Record<AccountHealthKind, number>
+
+export interface AccountHealthEvent {
+  at: string
+  kind: AccountHealthKind
+  /** null for a borrower reading another workspace's event, which also has no task and no message. */
+  tenant_id: string | null
+  task_id: string | null
+  window: AccountHealthWindow | null
+  reset_at: string | null
+  /** Redacted twice: by the worker before it sent it and by swarm-api on the way out. */
+  message: string | null
+  own: boolean
+}
+
+export interface AccountHealthHour {
+  hour: string
+  counts: Partial<AccountHealthCounts>
+  total: number
+}
+
+export interface AccountHealth {
+  account_id: string
+  /** null when the record carries no word swarm-api knows: drawn as a dash, never as `healthy`. */
+  status: AccountHealthStatus | null
+  limited_until: string | null
+  /** Each span null when the broker sent none. */
+  counts: { last_1h: AccountHealthCounts | null; last_24h: AccountHealthCounts | null; last_7d: AccountHealthCounts | null }
+  /** The 7-day hourly series; an hour with no events may be absent. */
+  hourly: AccountHealthHour[]
+  /** The record's last 50, newest first. */
+  events: AccountHealthEvent[]
+  observed_at: string | null
+}
+
+const isHealthKind = (v: unknown): v is AccountHealthKind => ACCOUNT_HEALTH_KINDS.includes(v as AccountHealthKind)
+const healthStr = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null)
+const count = (v: unknown): number => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : 0)
+
+function healthCounts(raw: unknown): AccountHealthCounts | null {
+  if (!isRecord(raw)) return null
+  const out = {} as AccountHealthCounts
+  for (const k of ACCOUNT_HEALTH_KINDS) out[k] = count(raw[k])
+  return out
+}
+
+/** The served body, by the same allow-lists the route applies; null when it is not a health record at all. */
+export function normaliseAccountHealth(raw: unknown, accountId: string): AccountHealth | null {
+  if (!isRecord(raw)) return null
+  const counts = isRecord(raw.counts) ? raw.counts : {}
+  const hourly: AccountHealthHour[] = []
+  for (const h of Array.isArray(raw.hourly) ? raw.hourly : []) {
+    if (!isRecord(h) || healthStr(h.hour) === null || Number.isNaN(Date.parse(h.hour as string))) continue
+    const c: Partial<AccountHealthCounts> = {}
+    let total = 0
+    if (isRecord(h.counts)) {
+      for (const k of ACCOUNT_HEALTH_KINDS) {
+        const n = count(h.counts[k])
+        if (n > 0) {
+          c[k] = n
+          total += n
+        }
+      }
+    }
+    hourly.push({ hour: h.hour as string, counts: c, total })
+  }
+  const events: AccountHealthEvent[] = []
+  for (const e of Array.isArray(raw.events) ? raw.events : []) {
+    if (!isRecord(e) || !isHealthKind(e.kind) || healthStr(e.at) === null || Number.isNaN(Date.parse(e.at as string))) continue
+    events.push({
+      at: e.at as string,
+      kind: e.kind,
+      tenant_id: healthStr(e.tenant_id),
+      task_id: healthStr(e.task_id),
+      window: HEALTH_WINDOWS.includes(e.window as AccountHealthWindow) ? (e.window as AccountHealthWindow) : null,
+      reset_at: healthStr(e.reset_at),
+      message: typeof e.message === 'string' ? e.message : null,
+      own: e.own === true,
+    })
+  }
+  // NEWEST FIRST, whatever order arrived: the list draws them in this order.
+  events.sort((x, y) => Date.parse(y.at) - Date.parse(x.at))
+  return {
+    account_id: healthStr(raw.account_id) ?? accountId,
+    status: ACCOUNT_HEALTH_STATUSES.includes(raw.status as AccountHealthStatus) ? (raw.status as AccountHealthStatus) : null,
+    limited_until: healthStr(raw.limited_until),
+    counts: {
+      last_1h: healthCounts(counts.last_1h),
+      last_24h: healthCounts(counts.last_24h),
+      last_7d: healthCounts(counts.last_7d),
+    },
+    hourly,
+    events,
+    observed_at: healthStr(raw.observed_at),
+  }
+}
+
+/**
+ * `GET /v1/accounts/{id}/health`: one read, made when the account's sheet
+ * opens and when its reader asks again. Never `empty`: a record with no
+ * events is a measured zero the section says in words, and it needs the
+ * record in hand to say it. A 404 comes back as the error it is -- the
+ * section reads `not_found` as "this deployment does not serve the record",
+ * never as zero events.
+ */
+export async function loadAccountHealth(accountId: string): Promise<Result<AccountHealth>> {
+  if (USE_FIXTURES) return fixtureAccountHealth(accountId)
+  const res = await read<unknown>(route('/v1/accounts/{account_id}/health', { account_id: accountId }), () => false)
+  if (res.status !== 'ok' && res.status !== 'stale') return res as Result<AccountHealth>
+  const data = normaliseAccountHealth(res.data, accountId)
+  if (data === null) {
+    return {
+      status: 'error',
+      error: {
+        kind: 'server_error',
+        httpStatus: 200,
+        code: null,
+        message: 'The health read answered, but not with a health record.',
+      },
+    }
+  }
+  return { ...res, data }
+}
+
 /** `PUT /v1/accounts/{id}/state`. `reason` is for the next person, so it is required here. */
 export async function setAccountState(
   accountId: string,
@@ -6184,6 +6350,126 @@ async function fixtureName(accountId: string, displayName: string | null): Promi
   const account: Account = { ...found, display_name: name }
   fixtureAccounts = fixtureAccounts.map((a) => (a.account_id === accountId ? account : a))
   return { status: 'ok', fetchedAt: Date.now(), data: { account } }
+}
+
+/**
+ * THE HEALTH RECORD THE FIXTURE SERVES (#2302): one account per state the
+ * Health section draws, so a local render shows each without a deployment.
+ * `primary` has a week of events and a closed 5-hour limit; `five-hour-floor`
+ * is limited now; `retired-laptop` needs re-auth; `never-polled` was read and
+ * is empty; `eng:shared` is a deployment whose broker predates the record (a
+ * 404). Every other account is a quiet healthy one with a single event.
+ */
+async function fixtureAccountHealth(accountId: string): Promise<Result<AccountHealth>> {
+  await new Promise((r) => setTimeout(r, 160))
+  if (!fixtureAccounts.some((a) => a.account_id === accountId)) {
+    return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: 'not_found', message: `no account '${accountId}'` } }
+  }
+  if (accountId === 'eng:shared') {
+    return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: null, message: 'Not Found' } }
+  }
+  const now = Date.now()
+  const H = 3_600_000
+  const at = (hoursAgo: number) => new Date(now - hoursAgo * H).toISOString()
+  const task = () => `task_${Math.random().toString(16).slice(2, 12)}${Math.random().toString(16).slice(2, 12)}`
+  type Ev = [number, AccountHealthKind, Partial<AccountHealthEvent>?]
+  const ev = (list: Ev[]): AccountHealthEvent[] =>
+    list.map(([h, kind, over]) => ({
+      // Another workspace's event is floored to its hour, as the route floors it.
+      at: over?.own === false ? new Date(now - h * H - ((now - h * H) % H)).toISOString() : at(h),
+      kind,
+      tenant_id: 'u-bogdan',
+      task_id: task(),
+      window: null,
+      reset_at: null,
+      message: FIXTURE_HEALTH_MESSAGES[kind],
+      own: true,
+      ...over,
+    }))
+  let status: AccountHealthStatus = 'healthy'
+  let limitedUntil: string | null = null
+  let events: AccountHealthEvent[]
+  if (accountId === 'u-bogdan:never-polled') {
+    events = []
+  } else if (accountId === 'u-bogdan:primary') {
+    events = ev([
+      [0.4, 'overloaded'],
+      [3.2, 'network'],
+      [26, 'rate_limit', { window: 'five_hour', reset_at: at(23) }],
+      [25.5, 'exhausted'],
+      [25, 'assign_refused', { window: 'five_hour', message: 'not assigned: window under its floor' }],
+      [24.6, 'assign_refused', { window: 'five_hour', message: 'not assigned: window under its floor' }],
+      [52, 'server_error'],
+      [52.2, 'overloaded'],
+      [98, 'network', { tenant_id: null, task_id: null, message: null, own: false }],
+      [140, 'overloaded'],
+    ])
+  } else if (accountId === 'u-bogdan:five-hour-floor') {
+    status = 'limited'
+    limitedUntil = at(-40 / 60)
+    events = ev([
+      [0.2, 'assign_refused', { window: 'five_hour', message: 'not assigned: window under its floor' }],
+      [1.1, 'assign_refused', { window: 'five_hour', message: 'not assigned: window under its floor' }],
+      [2.6, 'exhausted'],
+      [2.8, 'rate_limit', { window: 'five_hour', reset_at: limitedUntil }],
+      [74, 'rate_limit', { window: 'five_hour', reset_at: at(71) }],
+      [73.6, 'exhausted'],
+    ])
+  } else if (accountId === 'u-bogdan:retired-laptop') {
+    status = 'reauth_needed'
+    events = ev([
+      [0.3, 'assign_refused', { message: 'not assigned: account marked reauth_needed' }],
+      [0.9, 'assign_refused', { message: 'not assigned: account marked reauth_needed' }],
+      [1.4, 'reauth'],
+      [1.41, 'auth'],
+      [1.6, 'refresh_failed'],
+      [2.1, 'refresh_failed'],
+    ])
+  } else {
+    events = ev([[61, 'network']])
+  }
+  events.sort((x, y) => Date.parse(y.at) - Date.parse(x.at))
+  const span = (hours: number): AccountHealthCounts => {
+    const c = {} as AccountHealthCounts
+    for (const k of ACCOUNT_HEALTH_KINDS) c[k] = 0
+    for (const e of events) if (now - Date.parse(e.at) <= hours * H) c[e.kind] += 1
+    return c
+  }
+  const byHour = new Map<string, AccountHealthHour>()
+  for (const e of events) {
+    const t = Date.parse(e.at)
+    const hour = new Date(t - (t % H)).toISOString()
+    const row = byHour.get(hour) ?? { hour, counts: {}, total: 0 }
+    row.counts[e.kind] = (row.counts[e.kind] ?? 0) + 1
+    row.total += 1
+    byHour.set(hour, row)
+  }
+  return {
+    status: 'ok',
+    fetchedAt: now,
+    data: {
+      account_id: accountId,
+      status,
+      limited_until: limitedUntil,
+      counts: { last_1h: span(1), last_24h: span(24), last_7d: span(168) },
+      hourly: [...byHour.values()].sort((x, y) => Date.parse(x.hour) - Date.parse(y.hour)),
+      events,
+      observed_at: new Date(now).toISOString(),
+    },
+  }
+}
+
+/** What the worker and broker write for each kind, already redacted (mock-up A's `msgOf`). */
+const FIXTURE_HEALTH_MESSAGES: Record<AccountHealthKind, string> = {
+  rate_limit: 'rate_limit_event status=rejected',
+  exhausted: 'PROVIDER_QUOTA_EXHAUSTED · parked at checkpoint 4, capacity released',
+  assign_refused: 'not assigned: window under its floor',
+  overloaded: '529 overloaded_error: Overloaded',
+  server_error: '503 service unavailable, retry later',
+  network: 'connect ECONNRESET api.anthropic.com:443',
+  auth: '401 authentication_error: OAuth access expired · credential [redacted]',
+  refresh_failed: 'refresh failed: invalid_grant · credential [redacted]',
+  reauth: 'marked reauth_needed by the worker after a 401',
 }
 
 async function fixtureMaxAgents(accountId: string, maxAgents: number): Promise<Result<unknown>> {
@@ -6823,6 +7109,29 @@ const fixtureFileIssues = new Map<string, boolean>()
  */
 const fixtureWorkflowFiles = new Map<string, boolean>()
 
+/**
+ * The fixture registrations the fixture build removed (`deleteRepository`):
+ * gone from its list and its counts, and still among its grants, so the
+ * page draws each again as a dashed "chosen, not registered" card.
+ */
+const fixtureRemoved = new Set<string>()
+
+/**
+ * `GET /v1/repositories/counts` for the fixture registrations: secrets and QA
+ * targets, counts only. Both are 0 because the fixture build serves no QA
+ * target (`loadQaTargets`) and no secret granted to a repository
+ * (`fixtureWorkspaceSecrets`): a card saying "QA targets: 1" would link to a
+ * list that says there are none.
+ */
+function fixtureRepositoryCounts(): unknown {
+  return {
+    tenant_id: FIXTURE_TENANT,
+    counts: FIXTURE_REPOS.map((r) => ({
+      repo_id: r.repo_id, repository: `example-org/${r.repo}`, secrets: 0, qa_targets: 0,
+    })).filter((c) => !fixtureRemoved.has(c.repo_id)),
+  }
+}
+
 function fixtureRepositories(): unknown {
   return {
     repositories: FIXTURE_REPOS.map((r, i) => ({
@@ -6841,7 +7150,7 @@ function fixtureRepositories(): unknown {
       index_credential: { source: 'tenant', secret_name: `swarm-tenant-${FIXTURE_TENANT}-git` },
       agents_may_file_issues: fixtureFileIssues.get(r.repo_id) ?? false,
       workflow_files: fixtureWorkflowFiles.get(r.repo_id) ?? false,
-    })),
+    })).filter((x) => !fixtureRemoved.has(x.repo_id)),
   }
 }
 
@@ -7257,6 +7566,7 @@ const FIXTURE_READS: Readonly<Record<string, (url: string) => FixtureBody | unde
   // Config › Secrets and Admin › Platform secrets (SSC-UI).
   '/v1/secrets/overview': (url) => ({ body: fixtureSecretsOverview(url) }),
   '/v1/admin/platform-secrets': () => (fixtureIsAdmin ? { body: fixturePlatformSecrets() } : 'admin'),
+  '/v1/repositories/counts': () => ({ body: fixtureRepositoryCounts() }),
   '/v1/repositories/{repo_id}/index': (url) => {
     const body = fixtureRepoIndex(fixtureSegment(url, 3))
     return body === undefined ? undefined : { body }
@@ -7474,6 +7784,55 @@ export async function registerRepository(body: RegisterRepositoryBody): Promise<
   return writeTo(route('/v1/repositories'), 'POST', body)
 }
 
+/**
+ * `DELETE /v1/repositories/{repo_id}`: unregister (member role). The API
+ * disables every grant on the registration's secrets in the transaction that
+ * removes it (`delete_repository`), so a re-registration revives none. The
+ * person's own grant on the repository (`/v1/access`) is not touched.
+ */
+export async function deleteRepository(repoId: string): Promise<Result<unknown>> {
+  const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
+  if (USE_FIXTURES) {
+    if (!FIXTURE_REPOS.some((r) => r.repo_id === repoId) || fixtureRemoved.has(repoId)) return repoNotServed<unknown>(target)
+    await new Promise((r) => setTimeout(r, 180))
+    noteFixtureProbe(target, 180, true)
+    fixtureRemoved.add(repoId)
+    return { status: 'ok', fetchedAt: Date.now(), data: null }
+  }
+  // The API answers 204 with no body; `write` reads that as the success it is.
+  return write(target, 'DELETE')
+}
+
+/** One registration's counts: its repository secrets for agents and its QA targets. Never a name. */
+export interface RepoCounts {
+  repo_id: string
+  secrets: number | null
+  qa_targets: number | null
+}
+
+const countOf = (v: unknown): number | null => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null)
+
+/** The served counts by `repo_id`; a row without a `repo_id` is dropped, a count not a whole number is null. */
+export function normRepoCounts(raw: unknown): Record<string, RepoCounts> {
+  const rows = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>).counts : null
+  const out: Record<string, RepoCounts> = {}
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (typeof row !== 'object' || row === null) continue
+    const r = row as Record<string, unknown>
+    if (typeof r.repo_id !== 'string') continue
+    out[r.repo_id] = { repo_id: r.repo_id, secrets: countOf(r.secrets), qa_targets: countOf(r.qa_targets) }
+  }
+  return out
+}
+
+/**
+ * `GET /v1/repositories/counts`: every registration's secret and QA-target
+ * counts in one read (REPOS-FOLLOWUPS), for Config › Repositories' cards.
+ */
+export async function loadRepositoryCounts(): Promise<Result<Record<string, RepoCounts>>> {
+  return readAs(route('/v1/repositories/counts'), normRepoCounts)
+}
+
 /** `POST /v1/repositories/{repo_id}/index:run`: queue an index run now. */
 export async function runRepositoryIndex(repoId: string, kind: 'full' | 'incremental'): Promise<Result<unknown>> {
   return writeTo(route('/v1/repositories/{repo_id}/index:run', { repo_id: repoId }), 'POST', { kind })
@@ -7501,8 +7860,8 @@ export async function verifyGitToken(tokenId: string): Promise<Result<unknown>> 
 
 // ---------------------------------------------------------------------------
 // Provider keys a person or an admin sets: TypeSafe (KEYS-API, PR #1284;
-// docs/provider-keys.md). Settings › API keys (ProviderKeys.tsx) is the only
-// caller. THE KEY IS AN ARGUMENT OF `putProviderKey` AND NOTHING ELSE: it goes
+// docs/provider-keys.md). Config › Secrets' TypeSafe key form (Secrets.tsx)
+// is the only caller. THE KEY IS AN ARGUMENT OF `putProviderKey` AND NOTHING ELSE: it goes
 // into that one request's body and is not kept, logged or returned here, and
 // no response carries it back. The status is copied field by field
 // (`normKeyStatus`), so anything a response carried by mistake is never drawn.

@@ -1,4 +1,4 @@
-// SETTINGS › MCP SERVERS, PROFILE, API KEYS AND PEOPLE, VISUAL QA RUN 6
+// SETTINGS › MCP SERVERS, PROFILE AND PEOPLE, VISUAL QA RUN 6
 // (lane QAFIX6-SETTINGS; part of #1680). One case per item, each named by its
 // run-6 finding and its #1680 box:
 //
@@ -17,9 +17,12 @@
 //      'resets in 19h 43m';
 //   g. 6:overview-automate-019 (box 6343758363) -- the register form's
 //      profile help spoke about the API, not to the person;
-//   h. box 6343757522 -- the table stacks at 390;
-//   i. box 6343774758 -- People said 'You are this workspace's admin' while
-//      API keys said only 'an admin' could set the key, and offered nothing.
+//   h. box 6343757522 -- the table stacks at 390.
+//
+// Item i (box 6343774758, People and API keys reading the same role) went with
+// Settings › API keys (CONSOLE-SMALL-FIXES, BGD 2026-10-25): Config › Secrets
+// draws a key's actions from the API's `can_manage`, the role decision the API
+// already makes, and secrets.keyform.test.tsx holds that.
 //
 // Layout is read off the shipped sheets with `painted` (the cascade at a
 // stated width, since jsdom applies no `@media`). Fixtures only; no network.
@@ -347,82 +350,5 @@ describe('h. box 6343757522: at 390 the MCP servers table stacks', () => {
     const table = await mountMcp(capacity('declared'))
     // MUTATION: drop the phone block's `.mcp-servers { display: block }` -> eight columns scroll sideways: red.
     expect(painted(table, 'display', PHONE)).toBe('block')
-  })
-})
-
-describe("i. box 6343774758: People and API keys read the same role", () => {
-  function meBody(admin: boolean, kind: 'group' | 'user'): Json {
-    return {
-      tenant: { tenant_id: kind === 'user' ? 'u-carol' : 'eng', kind, display_name: null },
-      principal: { email: 'carol@example.com', domain: 'example.com', groups: [], is_admin: admin },
-      environment: 'dev',
-      environment_declared: true,
-    }
-  }
-  function keysBody(tenant: string): Json {
-    const off = { available: true, set: false, set_at: null, set_by: null, version: null, secret_id: null }
-    return { provider: 'typesafe', user: off, tenant: { ...off, tenant_id: tenant }, resolution: { tenant_id: tenant, uses: 'none', secret_id: null }, consumed_by: [] }
-  }
-  const PERSONAL: Json = {
-    tenant_id: 'u-carol', kind: 'user', default_role: null, default_source: null,
-    me: { email: 'carol@example.com', role: 'admin', source: 'personal', via: 'personal' },
-    people: [], roles: [], can_manage: false, audit: [],
-  }
-
-  async function both(kind: 'group' | 'user'): Promise<{ people: string; keys: string }> {
-    const tenant = kind === 'user' ? 'u-carol' : 'eng'
-    serve((m, url) => {
-      if (m === 'GET' && url.startsWith('/v1/tenants/me')) return { status: 200, body: meBody(false, kind) }
-      if (m === 'GET' && url.startsWith('/v1/provider-keys/typesafe')) return { status: 200, body: keysBody(tenant) }
-      if (m === 'GET' && url === '/v1/workspace/roles') return { status: 200, body: PERSONAL }
-      return null
-    })
-    vi.stubEnv('VITE_LIVE', '1')
-    vi.resetModules()
-    const { ProviderKeysScreen } = await import('../ProviderKeys')
-    const { WorkspacePeopleScreen } = await import('../WorkspacePeople')
-    const keys = render(<ProviderKeysScreen link={null} />)
-    await screen.findByText(new RegExp(`your agents in ${tenant} would use`, 'i'))
-    const people = render(<WorkspacePeopleScreen />)
-    await waitFor(() => expect(visible(people.container)).toMatch(/admin/))
-    return { people: visible(people.container), keys: visible(keys.container) }
-  }
-
-  it("never tells the personal workspace's admin that only an admin can set its key", async () => {
-    const { people, keys } = await both('user')
-    expect(people).toMatch(/You are this workspace’s admin/)
-    // MUTATION: draw the non-admin refusal on a personal workspace -> 'only an admin can set' to its admin: red.
-    expect(keys).not.toMatch(/only an admin can/)
-    expect(keys).toMatch(/u-carol is your personal workspace, so its key is Your key above/)
-  })
-
-  async function keysAs(me: Json): Promise<string> {
-    serve((m, url) => {
-      if (m === 'GET' && url.startsWith('/v1/tenants/me')) return { status: 200, body: me }
-      if (m === 'GET' && url.startsWith('/v1/provider-keys/typesafe')) return { status: 200, body: keysBody('eng') }
-      return null
-    })
-    vi.stubEnv('VITE_LIVE', '1')
-    vi.resetModules()
-    const { ProviderKeysScreen } = await import('../ProviderKeys')
-    const { container } = render(<ProviderKeysScreen link={null} />)
-    await screen.findByText(/your agents in eng would use/i)
-    return visible(container)
-  }
-
-  it("offers the tenant key to the group workspace's admin, whom the API admits", async () => {
-    // People calls this persona the workspace's admin (`can_manage`); the
-    // tenant routes admit it before the platform rule (`_require_tenant_admin`).
-    await keysAs({ ...meBody(false, 'group'), role: { name: 'admin', source: 'override' } })
-    // MUTATION: read `principal.is_admin` alone -> no tenant key row for the workspace admin: red.
-    expect(screen.getByRole('region', { name: /tenant key/i })).toBeTruthy()
-    expect(visible(document.body)).not.toMatch(/only .*admin.* can set/)
-  })
-
-  it('names both roles that may set it to a member who is neither', async () => {
-    const text = await keysAs({ ...meBody(false, 'group'), role: { name: 'member', source: 'default' } })
-    expect(screen.queryByRole('region', { name: /tenant key/i })).toBeNull()
-    // MUTATION: say 'only an admin' -> a reader cannot tell which admin: red.
-    expect(text).toMatch(/only this workspace’s admins or a platform admin can set or remove it/)
   })
 })
