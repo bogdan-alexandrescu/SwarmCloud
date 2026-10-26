@@ -54,6 +54,7 @@ import { RunnerSizesScreen } from './RunnerSizes'
 import { ProfilesScreen } from './Profiles'
 import { ProfileScreen } from './Profile'
 import { WorkspacePeopleScreen } from './WorkspacePeople'
+import { JOIN_PATH, JoinWorkspaceScreen, joinCodeFrom } from './JoinWorkspace'
 import { WorkspacesYouAdminScreen } from './WorkspacesYouAdmin'
 import { QuotaDetailScreen } from './QuotaDetail'
 import { tableMode, usePhoneTables } from './capacityPoll'
@@ -606,6 +607,16 @@ const SUBMIT_HELP: SectionQuestionDef = {
 const GITHUB_CALLBACK = GITHUB_CALLBACK_ADDRESS
 
 /**
+ * THE JOIN PAGE (`/join#<code>`, lane JOIN-UI-PERSON; join-requests.md §4.2;
+ * part of #2325). Not a section and not a tab, for the reason the GitHub
+ * callback is not one: a link a workspace admin shared leads here, nothing in
+ * the nav does. Its code is in the FRAGMENT, read once by `App`
+ * (`joinCodeFrom`) before the bar is rewritten to `/join` without it, and
+ * never in an address this app writes.
+ */
+const JOIN = 'join'
+
+/**
  * SETTINGS (KEYS-UI, then PROFILE-NAV): the person's own pages, not a
  * section, for the reason API reads was not one. It held Settings › API keys
  * until SSC-UI (part of #2158) moved it into Config › Secrets as Keys for
@@ -938,6 +949,9 @@ function missingSection(pathname: string): Route['sectionId'] {
 
 export function fromLocation(): Route {
   const { pathname, search, hash } = window.location
+  // Before the legacy-hash check: the fragment on `/join` is a join code,
+  // never an old `#...` address, whatever it happens to spell.
+  if (pathname === JOIN_PATH || pathname === `${JOIN_PATH}/`) return { sectionId: JOIN, tab: '', taskId: null, taskPane: 'detail' }
   if (isLegacyHash(hash, LEGACY_HEADS, pathname)) return fromHash()
   const p = pathToAddress(pathname, search, hash)
   if (p === null) return { ...fromAddress(''), missing: pathname }
@@ -1173,6 +1187,7 @@ export function canonical(r: Route): string {
   }
   if (r.sectionId === SUBMIT) return SUBMIT
   if (r.sectionId === GITHUB_CALLBACK) return GITHUB_CALLBACK
+  if (r.sectionId === JOIN) return JOIN
   if (r.sectionId === SETTINGS) return r.view ? `${SETTINGS}/${r.tab}?${r.view}` : `${SETTINGS}/${r.tab}`
   if (r.sectionId === HELP) return r.tab === '' ? HELP : `${HELP}/${r.tab}`
   // A list address is written only while no drawer is open: the drawer's own
@@ -1273,6 +1288,13 @@ export function App() {
   useEffect(() => {
     if (onQaPage) qaLink.current = null
   }, [onQaPage])
+  // THE JOIN LINK'S CODE (`/join#<code>`), read off the bar here, before the
+  // normalise effect rewrites it to `/join` without the fragment. Held in
+  // this state alone and handed to the page, which posts it in a body: never
+  // a route, a URL, storage or a log. A second link pasted into the same tab
+  // only changes the fragment, so `onHash` below reads it the same way.
+  const [joinCode, setJoinCode] = useState<string | null>(() =>
+    typeof window === 'undefined' ? null : joinCodeFrom(window.location.pathname, window.location.hash))
   const lastList = useRef<AgentList | null>(at.list ?? null)
   if (at.taskId === null) lastList.current = at.list ?? null
 
@@ -1280,6 +1302,7 @@ export function App() {
   const pathFor = useCallback(
     (r: Route) => {
       if (r.missing != null) return r.missing
+      if (r.sectionId === JOIN) return JOIN_PATH
       const list = r.list ?? lastList.current
       const path = addressToPath(canonical(r), list?.tab ?? 'live')
       // AN OPEN AGENT KEEPS ITS LIST'S STATE AND TOGGLES in its query (G2-22),
@@ -1343,6 +1366,12 @@ export function App() {
         return
       }
       echo = null
+      const code = joinCodeFrom(window.location.pathname, hash)
+      if (code !== null) {
+        setJoinCode(code)
+        window.history.replaceState(null, '', JOIN_PATH)
+        return
+      }
       if (isLegacyHash(hash, LEGACY_HEADS, window.location.pathname)) setAt(fromAddress(hash.replace(/^#/, '')))
     }
     // A click on an old-style `href="#work/..."` link, or on a same-origin
@@ -1452,9 +1481,11 @@ export function App() {
         ? 'Help'
         : at.sectionId === GITHUB_CALLBACK
           ? 'Connect GitHub'
-          : at.sectionId === SETTINGS
-            ? PROFILE_LABEL
-            : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
+          : at.sectionId === JOIN
+            ? 'Join a workspace'
+            : at.sectionId === SETTINGS
+              ? PROFILE_LABEL
+              : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
   const object = at.missing ? null : documentObjectOf(at)
   useEffect(() => {
     document.title = documentTitleOf(title, object)
@@ -1549,6 +1580,9 @@ export function App() {
                   <SubmitChooser go={go} />
                 ) : at.sectionId === GITHUB_CALLBACK ? (
                   <GitHubCallbackScreen go={go} />
+                ) : at.sectionId === JOIN ? (
+                  // Keyed by the code, so a second link pasted into the tab asks afresh.
+                  <JoinWorkspaceScreen key={joinCode ?? ''} code={joinCode} />
                 ) : (
                   // Settings › Profile: the last page that is not a section.
                   // API keys was beside it until SSC-UI moved it to Config ›
