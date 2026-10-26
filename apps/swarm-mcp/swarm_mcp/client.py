@@ -2107,7 +2107,9 @@ class SwarmClient:
             )
         return data
 
-    def artifact_raw(self, task_id: str, name: str, *, max_bytes: int) -> RawBody:
+    def artifact_raw(
+        self, task_id: str, name: str, *, max_bytes: int, disposition: str | None = None
+    ) -> RawBody:
         """`GET /v1/tasks/{id}/artifacts/raw`: one artifact's BYTES (#184, #2182).
 
         The same NAME-not-path resolution and the same tenant boundary as
@@ -2120,8 +2122,15 @@ class SwarmClient:
         Never through the shared reads: a body of bytes is one caller's, read
         once, and is not a JSON answer to hand a second waiter. A GET's 429 is
         still retried, and a cached credential's 401 still retried once.
+
+        `disposition` is the route's own (`inline` or `attachment`, its
+        default); it changes the Content-Disposition header, never the bytes
+        or their classification.
         """
-        query = urllib.parse.urlencode([("name", name)])
+        params = [("name", name)]
+        if disposition is not None:
+            params.append(("disposition", disposition))
+        query = urllib.parse.urlencode(params)
         path = f"/v1/tasks/{task_id}/artifacts/raw?{query}"
         if self._shared is None:
             return self._request_once("GET", path, raw_limit=max_bytes)

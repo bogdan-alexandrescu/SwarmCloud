@@ -34,7 +34,11 @@ and while its session can still be continued, the claude-code runner
    `scripts/refresh-build-mirror.sh --check` needs gcloud and the mirror
    bucket, which this container has no credential for.
 3. On a failure, resumes the session for ONE fix turn with each failing
-   check's output, then runs the set again.
+   check's output, then runs the set again. When that fix turn itself broke
+   a check that had passed (F07, #2379: vitest failed, the fix turn cleared
+   it and broke tsc), ONE more turn with what fails now, then the set again
+   -- only with `MIN_GATE_SECONDS` of the step's budget left, the bound the
+   gate starts under. Never a third.
 4. If anything still fails, publishes anyway -- work is never dropped -- and
    writes `PR_SECTION_NAME` into the artifacts directory, which the worker
    appends to the pull request's body under "Pre-publish checks failed"
@@ -216,6 +220,9 @@ PR_SECTION_HEADING = "## Pre-publish checks failed"
 
 #: One fix turn and one conflict turn (owner decision 2026-10-14): a second
 #: start rarely clears what one named failure did not, and each costs a turn.
+#: The exception is a check the fix turn itself broke after it had passed
+#: (owner decision 2026-10-26, #2379 F07): that failure was never named to
+#: the agent, so it gets one more turn, and only one (`Gate._second_turn`).
 FIX_TURNS = 1
 CONFLICT_TURNS = 1
 #: Below this much of the step's budget the gate does not start: a check set
@@ -1755,8 +1762,18 @@ def _files_line(files: Sequence[str], cap: int = 20) -> str:
 
 
 def fix_prompt(failed: Sequence[Outcome], secrets: Sequence[str],
-               timed_out: Sequence[Outcome] = ()) -> str:
-    lines = [
+               timed_out: Sequence[Outcome] = (), broke: Sequence[str] = ()) -> str:
+    """The fix turn's prompt; `broke` names the checks that passed before the
+    previous fix turn and fail after it, which makes this the second turn."""
+    lines = []
+    if broke:
+        lines += [
+            "Your fix turn broke " + ", ".join(broke) + ", which passed before it. You have "
+            "ONE more turn, the last: fix every check below without breaking the others "
+            "again, commit, and end with a short report.",
+            "",
+        ]
+    lines += [
         "Before publishing your branch, the worker ran the repository's own checks on the "
         "files you changed, and these failed. You have ONE turn to fix them: fix the cause "
         "in the code (not the check), commit, and end with a short report. The checks run "
@@ -1801,7 +1818,7 @@ def pr_section(rebase: Mapping[str, Any] | None, outcomes: Sequence[Outcome],
     parts = [
         PR_SECTION_HEADING, "",
         "The worker ran these checks on the files this branch changes before publishing, "
-        "gave the agent one turn to fix them, and they still did not pass. The branch was "
+        "gave the agent a turn to fix them, and they still did not pass. The branch was "
         "published anyway so no work is lost; read this before merging.",
     ]
     if conflicted and rebase is not None:
@@ -2001,6 +2018,7 @@ class Gate:
     def run(self) -> dict[str, Any]:
         record = self.record
         record.update({"rebase": None, "rounds": [], "fix_turn": False,
+                       "second_turn": False, "broken_by_fix_turn": [],
                        "conflict_turn": False, "failed": [], "pr_section": False,
                        "guards": self._guards, "restored": []})
         if self.remaining() < MIN_GATE_SECONDS:
@@ -2034,7 +2052,9 @@ class Gate:
                                  failed=[o.name for o in failed])
                 if self.resume(fix_prompt(failed, self.secrets, timed_out)):
                     record["fix_turn"] = True
+                    before = {o.name: o.status for o in outcomes}
                     outcomes = self._round(base, guard_parts=parts)
+                    outcomes = self._second_turn(base, before, outcomes, parts)
                     parts = 0
                 else:
                     record["fix_skipped"] = "no_session_or_budget"
@@ -2059,6 +2079,33 @@ class Gate:
             target.unlink(missing_ok=True)
         self._advise(outcomes)
         return record
+
+    def _second_turn(self, base: str, before: Mapping[str, str],
+                     outcomes: list[Outcome], parts: int) -> list[Outcome]:
+        """F07 (#2379): a check that passed before the fix turn and fails
+        after it was broken BY that turn, and published as-is it is a red CI
+        run the gate saw coming. One more turn, with what fails now, when the
+        step's budget still holds a round (`MIN_GATE_SECONDS`, the bound the
+        gate starts under); otherwise what the fix turn left is published."""
+        failed = [o for o in outcomes if o.status == FAILED and not o.timed_out]
+        broke = [o.name for o in failed if before.get(o.name) == PASSED]
+        self.record["broken_by_fix_turn"] = broke
+        if not broke:
+            return outcomes
+        if self.remaining() < MIN_GATE_SECONDS:
+            self.record["second_turn_skipped"] = "budget"
+            self.log.warning("the fix turn broke a check that had passed; too little of the "
+                             "step's budget is left for another turn", broke=broke,
+                             remaining_seconds=round(self.remaining(), 1))
+            return outcomes
+        self.log.warning("the fix turn broke a check that had passed; one more turn",
+                         broke=broke, failed=[o.name for o in failed])
+        timed_out = [o for o in outcomes if o.timed_out]
+        if not self.resume(fix_prompt(failed, self.secrets, timed_out, broke=broke)):
+            self.record["second_turn_skipped"] = "no_session_or_budget"
+            return outcomes
+        self.record["second_turn"] = True
+        return self._round(base, guard_parts=parts)
 
     def _advise(self, outcomes: Sequence[Outcome]) -> None:
         """The advisory section: never a failure, never sent to the agent."""
