@@ -1692,8 +1692,32 @@ it is behind its switch (`refusals.SWITCHES`, the 2026-10-08 rule), but it
 beforehand (below); `REFUSAL_REJECT_APPROVER_REQUIRED=off` lets any member
 reject again. A consequence to know: under a `second_member` hold the run's
 creator, its last plan editor and its schedule's last gate editor may no
-longer reject it either; a second member must. The run's own
-`POST /v1/runs/{id}/plan:reject` (Work › Runs) is not changed by this.
+longer reject it either; a second member must, or a workspace admin (next
+paragraph). The run's own `POST /v1/runs/{id}/plan:reject` (Work › Runs) is
+not changed by this; BGD answered on 2026-10-26 that it follows the same rule,
+in a follow-up lane.
+
+**A workspace admin decides a `second_member` hold alone** (BGD, 2026-10-26:
+"let an admin approve it, no need for two approvers"), asked when the reject
+rule above made a held run's creator need a second member to reject it as
+well as to approve it. So the hold's exclusion -- the run's
+creator, its last plan editor and its schedule's last gate editor -- does
+not apply to an **admin of the run's workspace**: a person whose own role
+grant there is `admin`, or a platform admin acting there (`admin` in a group
+workspace, Q5). They approve alone, even as one of those people, and because
+`:reject` passes exactly the checks `:approve` does, they reject alone too.
+It holds on every approve path, because it lives in the hold check they all
+share (`approvals._hold_refusal`): the inbox, `plan:approve`, and a GitHub
+comment. The role is read fresh, past the role cache, so an admin demoted a
+moment ago is excluded again; a role that cannot be read is not admin, so the
+hold keeps its rule (`approvals.workspace_admin` fails closed). A non-admin
+keeps the second-member rule exactly, and an admin of another workspace is
+not an admin of this one. It changes only the hold: the gate's `approvers`
+(`owner_only`, a named list), a `NEEDS_OWNER` hold and a merge-tier item's
+last-editor rule (SD5) are asked as before. The refusal a non-admin meets
+says a second member or a workspace admin may decide, and `may_decide`'s
+`deciders` serves `["second_member", "workspace_admins"]`; for a named list
+under the hold, an admin the hold would have excluded stays in the list.
 
 **What the decision page reads** (lane AUTO-API-APPROVALS). Every field is
 derived on each read, stored nowhere, and **absent rather than invented**
@@ -1701,7 +1725,7 @@ when what it is read from is not there:
 
 | field | where | read from |
 |---|---|---|
-| `may_decide {approve, reject, why, deciders}` | every item, list and detail (not an await-input step, which is answered on its own route) | the decision routes' own checks for the reader, run without a digest, a move or a log line: the role floor, the platform-scope rule, then `_who_refusal`. `reject` follows `approve` while the switch is on. `why` is one sentence when either is false, masked like the summary. `deciders` is the narrowest rule that applies: the named approvers still eligible, else `owner_only`, `platform_admins`, `second_member` or `members`. Absent when the reader's role cannot be read. A one-person workspace's own hold counts as `approve: true`: its approve passes once the matched paths are typed |
+| `may_decide {approve, reject, why, deciders}` | every item, list and detail (not an await-input step, which is answered on its own route) | the decision routes' own checks for the reader, run without a digest, a move or a log line: the role floor, the platform-scope rule, then `_who_refusal`. `reject` follows `approve` while the switch is on. `why` is one sentence when either is false, masked like the summary. `deciders` is the narrowest rule that applies: the named approvers still eligible, else `owner_only`, `platform_admins`, `second_member` (with `workspace_admins` beside it) or `members`. Absent when the reader's role cannot be read. A one-person workspace's own hold counts as `approve: true`: its approve passes once the matched paths are typed |
 | `superseded_by {approval_id, head_sha, at}` | a superseded merge, detail | a merge request's id is derived from its run and head, so the run's head now names the request made for it; served when that record exists in this tenant and is another one |
 | `head_sha_now` | a merge, detail | the run's `pull_request.head_sha` as read |
 | `merge.checks {passed, failed, pending}` | a merge, detail | the run's last CI reading (`pull_request.check_counts`), only while that reading is of the head the approval names |
@@ -1724,7 +1748,8 @@ when what it is read from is not there:
   paths and security-class plans. In a one-person tenant (a `u-*` workspace)
   there is no second member, so that person approves their own after a typed
   confirmation that names the matched paths, and the audit records it.
-  **Owner decision 2026-10-08 (SD11).**
+  **Owner decision 2026-10-08 (SD11).** A workspace admin is never excluded:
+  they approve and reject alone (§4.5, BGD 2026-10-26).
 * **A named list.** Each name must be a member at creation **and** at approval,
   because membership is asked of the directory.
 * **A merge-tier approval needs a second person** (SD5). The member who last

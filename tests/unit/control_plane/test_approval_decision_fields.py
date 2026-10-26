@@ -24,15 +24,26 @@ No credentials, no network, no emulator.
 
 from __future__ import annotations
 
+import secrets
 from datetime import datetime, timezone
 
 import pytest
 
-from swarm_api import approvals, refusals
+from swarm_api import approvals, forge, forgewrite, refusals
+from swarm_api.auth import StaticTokenVerifier
+from swarm_api.credentials import InMemoryCredentials
+from swarm_api.deps import build_context
+from swarm_api.groups import StaticGroups
+from swarm_api.metrics import ApiMetrics
+from swarm_api.waker import NullWaker
 
-from .conftest import auth_header, seed_tenant
+from . import forge_fakes
+from .conftest import api_settings, auth_header, seed_grant, seed_tenant
 from .test_approvals import (  # noqa: F401  (fixtures)
+    ADMIN,
     FULL_PLAN,
+    OWNER,
+    SWEEPER,
     _bootstrap_plan,
     _checking,
     _decide,
@@ -40,7 +51,6 @@ from .test_approvals import (  # noqa: F401  (fixtures)
     _grants,
     _inbox,
     _planned,
-    api_context,
     built_types,
     client,
     clock,
@@ -54,6 +64,30 @@ from .test_schedule_tick import seed_schedule
 
 REJECT_SWITCH = refusals.env_name("reject_approver_required")
 SCHEDULE = "sch_000000000001"
+
+
+@pytest.fixture
+def api_context(db, tokens, group_map, objects, writes, clock, pr_files):
+    """test_approvals' context with a settings key, so a test can name a
+    workspace admin: a role grant is signed, and an unsigned one is refused."""
+    tokens = dict(tokens)
+    tokens["token-sweeper"] = {"email": SWEEPER, "email_verified": True, "sub": "sub-sweeper"}
+    return build_context(
+        settings=api_settings(platform_owner=OWNER, rollup_sweeper_users=(SWEEPER,),
+                              settings_key=secrets.token_hex(32)),
+        db=db,
+        verifier=StaticTokenVerifier(tokens),
+        groups=StaticGroups(group_map),
+        credentials=InMemoryCredentials(),
+        waker=NullWaker(),
+        metrics=ApiMetrics(),
+        objects=objects,
+        now=clock,
+        forge_tokens=forge_fakes.AnyTenantTokens(),
+        forge=forge.GitHubIssues(send=forge_fakes.GitHub(issues=[forge_fakes.issue(42)],
+                                                         files={PR: pr_files})),
+        forge_writer=forgewrite.GitHubWriter(send=writes, locate=writes.locate, fetch=writes.fetch),
+    )
 
 
 def _detail(client, item_id, user="alice") -> dict:
@@ -136,7 +170,7 @@ def test_a_held_plans_creator_may_not_reject_it_and_a_second_member_may(client, 
     item_id = f"run:{run['id']}"
     (item,) = _inbox(client)
     assert item["may_decide"]["approve"] is False and item["may_decide"]["reject"] is False
-    assert item["may_decide"]["deciders"] == ["second_member"]
+    assert item["may_decide"]["deciders"] == ["second_member", "workspace_admins"]
 
     refused = _decide(client, item_id, "reject", reason="out of scope")
     assert refused.status_code == 403 and refused.json()["code"] == "reject_approver_required"
@@ -148,6 +182,91 @@ def test_a_held_plans_creator_may_not_reject_it_and_a_second_member_may(client, 
     rejected = _decide(client, item_id, "reject", user="dave", reason="out of scope")
     assert rejected.status_code == 200, rejected.text
     assert db.docs[f"issue_runs/{run['id']}"]["state"] == "REJECTED"
+
+    # BGD 2026-10-26, "let an admin approve it, no need for two approvers":
+    # once alice is eng's admin, her own held run is hers to reject.
+    again = _planned(client, db, objects, _bootstrap_plan())
+    _name_admin(client, "alice@example.com")
+    (mine,) = _inbox(client)
+    assert mine["may_decide"]["approve"] is True and mine["may_decide"]["reject"] is True
+    assert mine["may_decide"]["why"] is None
+    assert _decide(client, f"run:{again['id']}", "reject", reason="out of scope").status_code == 200
+    assert db.docs[f"issue_runs/{again['id']}"]["state"] == "REJECTED"
+
+
+def _name_admin(client, email: str, tenant: str = "eng") -> None:
+    """`root` (a platform admin) names `email` an admin of the workspace."""
+    response = client.put(f"/v1/admin/workspaces/{tenant}/roles/person", headers=auth_header("root"),
+                          json={"email": email, "role": "admin"})
+    assert response.status_code == 200, response.text
+
+
+def test_a_workspace_admin_approves_their_own_held_run_alone(client, db, objects, switch_on):
+    """Under a `second_member` hold a workspace admin needs no second member,
+    even as the run's creator (BGD 2026-10-26)."""
+    _name_admin(client, "alice@example.com")
+    run = _planned(client, db, objects, _bootstrap_plan())
+    assert run["approval_hold"]["approvers"] == "second_member"
+    (item,) = _inbox(client)
+    seen = item["may_decide"]
+    assert seen["approve"] is True and seen["reject"] is True and seen["why"] is None
+    assert seen["deciders"] == ["second_member", "workspace_admins"]
+    approved = _decide(client, item["approval_id"], "approve", digest=run["plan_digest"])
+    assert approved.status_code == 200, approved.text
+    assert db.docs[f"issue_runs/{run['id']}"]["approved_by"] == "alice@example.com"
+
+
+def test_a_non_admin_creator_may_neither_approve_nor_reject_and_is_told_an_admin_may(
+        client, db, objects, switch_on):
+    run = _planned(client, db, objects, _bootstrap_plan())
+    (item,) = _inbox(client)
+    seen = item["may_decide"]
+    assert seen["approve"] is False and seen["reject"] is False
+    assert "workspace admin" in seen["why"]
+    refused = _decide(client, item["approval_id"], "approve", digest=run["plan_digest"])
+    assert refused.status_code == 403 and refused.json()["code"] == "hold_approver_required"
+    assert "workspace admin" in refused.json()["message"]
+    assert db.docs[f"issue_runs/{run['id']}"]["state"] == "PLANNED"
+
+
+def test_a_platform_admin_acting_in_the_workspace_approves_their_own_held_run(client, db, objects, switch_on):
+    """erin is a platform admin, not the owner, and holds no workspace grant."""
+    seed_grant(db, "eng", ADMIN, "example-org/widgets")
+    run = _planned(client, db, objects, _bootstrap_plan(), user="erin")
+    (item,) = _inbox(client, user="erin")
+    assert item["may_decide"]["approve"] is True and item["may_decide"]["reject"] is True
+    approved = _decide(client, item["approval_id"], "approve", user="erin", digest=run["plan_digest"])
+    assert approved.status_code == 200, approved.text
+
+
+def test_a_workspace_admin_of_another_workspace_is_still_excluded(client, db, objects, switch_on):
+    """Admin of `research` is not admin of `eng`: alice's eng run keeps the rule."""
+    _name_admin(client, "alice@example.com", tenant="research")
+    run = _planned(client, db, objects, _bootstrap_plan())
+    (item,) = _inbox(client)
+    assert item["may_decide"]["approve"] is False
+    refused = _decide(client, item["approval_id"], "approve", digest=run["plan_digest"])
+    assert refused.status_code == 403 and refused.json()["code"] == "hold_approver_required"
+
+
+def test_an_unreadable_role_admits_nobody_the_hold_excludes(db, monkeypatch):
+    """The admin exception fails closed: a role that cannot be read is not admin."""
+    from swarm_api.roles import RoleUnavailable
+
+    class Store:
+        def person_role(self, *a, **k):
+            raise RoleUnavailable("unreadable")
+
+    class Authenticator:
+        def holds_platform_admin(self, *a, **k):
+            return False
+
+    class Ctx:
+        roles = Store()
+        authenticator = Authenticator()
+
+    assert approvals.workspace_admin(Ctx(), "eng", "alice@example.com") is False
+    assert approvals.workspace_admin(Ctx(), "eng", approvals.AUTO_APPROVER) is False
 
 
 def test_a_report_only_hold_refuses_neither_the_approve_nor_the_reject(client, db, objects):
@@ -336,7 +455,7 @@ def test_deciders_name_the_narrowest_rule_that_applies():
     hold = {"code": "NEEDS_SECOND_MEMBER", "approvers": "second_member", "reasons": ["iam"], "matched": []}
     common = {"schedule": None, "merge_tier": False}
     assert approvals.deciders(None, "eng", kind="plan", approvers=None, hold=hold, platform_scope=False,
-                              **common) == ["second_member"]
+                              **common) == ["second_member", "workspace_admins"]
     assert approvals.deciders(None, "eng", kind="spec", approvers="members", hold=None, platform_scope=False,
                               **common) == ["platform_admins"]
     assert approvals.deciders(None, "eng", kind="run", approvers="owner_only", hold=None, platform_scope=False,

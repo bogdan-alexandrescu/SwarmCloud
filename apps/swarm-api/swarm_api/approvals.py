@@ -42,7 +42,9 @@ WHO MAY DECIDE (§4.6). Any member of the item's tenant by default (SD5) --
 `tenant_scope` puts only the caller's own tenant's items in reach, and a
 platform admin decides another tenant's item by no route here. `owner_only`:
 PLATFORM_OWNER, as a member of the tenant. `second_member`: any member but
-the run's creator, its last plan editor and its schedule's last gate editor;
+the run's creator, its last plan editor and its schedule's last gate editor
+-- except that a workspace admin decides alone, even as one of those (BGD
+2026-10-26, "let an admin approve it, no need for two approvers");
 a one-person `u-*` tenant types a confirmation naming the matched paths
 (SD11). A named list: each a member now, asked of the directory. A
 merge-tier (R3) item: never the schedule's last gate, scope or spec editor
@@ -444,6 +446,29 @@ def hold_excluded(ctx: Any, run: IssueRun) -> set[str]:
     return {str(p).strip().lower() for p in people if p}
 
 
+def workspace_admin(ctx: Any, tenant_id: str, email: str) -> bool:
+    """Whether `email` is an admin of workspace `tenant_id`: a platform admin
+    acting there (`admin` in a group workspace, Q5), or a person whose own
+    role grant there is `admin` -- what `roles.RoleStore.resolve` answers for
+    their request, asked from the address because a hold is checked on paths
+    that carry no request (`routes.runs._approve`, the GitHub inbox).
+
+    Read FRESH, as `require_decider` reads the role floor: an admin demoted a
+    moment ago decides alone no longer. FAILS CLOSED: a role that cannot be
+    read, or an auto-approval, is not an admin, so the hold keeps its rule."""
+    email = (email or "").strip().lower()
+    if not email or email == AUTO_APPROVER:
+        return False
+    try:
+        if ctx.authenticator.holds_platform_admin(email, fresh=True):
+            return True
+        store = getattr(ctx, "roles", None)
+        return store is not None and store.person_role(tenant_id, email, fresh=True).role == roles.ADMIN
+    except Exception as exc:  # noqa: BLE001 - an unread role never widens a hold
+        log.warning("hold admin check unreadable tenant=%s (%s)", tenant_id, type(exc).__name__)
+        return False
+
+
 def _hold_refusal(ctx: Any, run: IssueRun, hold: Mapping[str, Any], *, email: str, is_owner: bool,
                   confirm: str | None) -> tuple[str, dict[str, Any]] | None:
     if email == AUTO_APPROVER:
@@ -461,9 +486,13 @@ def _hold_refusal(ctx: Any, run: IssueRun, hold: Mapping[str, Any], *, email: st
                 return None
             return ("this one-person workspace approves its own held run only with a typed "
                     "confirmation naming the matched paths", {"confirm": expected})
-        if email.strip().lower() in hold_excluded(ctx, run):
-            return ("a second member must approve this held run: not its creator, its last "
-                    "plan editor or its schedule's last gate editor", {})
+        # BGD 2026-10-26, "let an admin approve it, no need for two
+        # approvers": a workspace admin is never one the hold excludes. Asked
+        # only of someone excluded, so a second member costs no role read.
+        if email.strip().lower() in hold_excluded(ctx, run) and not workspace_admin(ctx, run.tenant_id, email):
+            return ("a second member or a workspace admin must approve this held run: not its "
+                    "creator, its last plan editor or its schedule's last gate editor unless "
+                    "they are an admin of the workspace", {})
         return None
     return f"the hold's approvers {hold.get('approvers')!r} are not ones this platform knows", {}
 
@@ -1169,6 +1198,9 @@ def superseded_by(db: Any, doc: Mapping[str, Any], head_now: str | None) -> dict
 #: item names nobody in particular (§4.6).
 DECIDERS_MEMBERS = "members"
 DECIDERS_PLATFORM_ADMINS = "platform_admins"
+#: Beside `second_member`: a workspace admin decides a `second_member` hold
+#: alone (BGD 2026-10-26).
+DECIDERS_WORKSPACE_ADMINS = "workspace_admins"
 
 
 def deciders(ctx: Any, tenant_id: str, *, kind: str, approvers: Any, hold: Mapping[str, Any] | None,
@@ -1179,11 +1211,13 @@ def deciders(ctx: Any, tenant_id: str, *, kind: str, approvers: Any, hold: Mappi
 
     Addresses where the item names people -- a named list, less the
     schedule's last editor of a merge-tier item in a group tenant (SD5) and,
-    under a `second_member` hold, those the hold does not admit -- else one
-    rule word from `approvers`' vocabulary: `owner_only` (the gate, or a
-    `NEEDS_OWNER` hold), `platform_admins` (a `custom-prompt` spec, or a
-    platform-scope schedule's item), `second_member`, `members`. Never the
-    reader's own judgement: the decision routes still decide."""
+    under a `second_member` hold, those the hold does not admit (a workspace
+    admin it admits: BGD 2026-10-26) -- else one rule word from `approvers`'
+    vocabulary: `owner_only` (the gate, or a `NEEDS_OWNER` hold),
+    `platform_admins` (a `custom-prompt` spec, or a platform-scope
+    schedule's item), `second_member` with `workspace_admins` beside it,
+    `members`. Never the reader's own judgement: the decision routes still
+    decide."""
     if kind == SPEC:
         return [DECIDERS_PLATFORM_ADMINS]
     if owner_alone(approvers, hold):
@@ -1197,12 +1231,12 @@ def deciders(ctx: Any, tenant_id: str, *, kind: str, approvers: Any, hold: Mappi
                 excluded.add(editor)
         if hold and hold.get("approvers") == APPROVERS_SECOND_MEMBER and run is not None \
                 and not one_person(ctx, tenant_id):
-            excluded |= hold_excluded(ctx, run)
+            excluded |= {p for p in hold_excluded(ctx, run) if not workspace_admin(ctx, tenant_id, p)}
         return list(dict.fromkeys(n for n in names if n not in excluded))
     if platform_scope:
         return [DECIDERS_PLATFORM_ADMINS]
     if hold and hold.get("approvers") == APPROVERS_SECOND_MEMBER:
-        return [APPROVERS_SECOND_MEMBER]
+        return [APPROVERS_SECOND_MEMBER, DECIDERS_WORKSPACE_ADMINS]
     return [DECIDERS_MEMBERS]
 
 
