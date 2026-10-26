@@ -1190,10 +1190,15 @@ def _span_task(task: Any, step_label: str | None, attempts: list[Any] | None,
                unread: str | None) -> dict[str, Any]:
     """One task as the timeline draws it: the fields `lanes.buildLane` reads,
     and its attempts' spans. Not the input, the spec or the result: the
-    timeline draws when capacity was held, and nothing of what was asked."""
+    timeline draws when capacity was held, and nothing of what was asked.
+    The one exception is `metadata.title`, the name the History gives a
+    schedule-made task (VQ-028, part of #2391); null when unset, and no other
+    metadata key is served."""
     shown = None if attempts is None else attempts[:SPAN_ATTEMPTS]
+    title = (task.metadata or {}).get("title")
     return _json({
         "task_id": task.id,
+        "title": title if isinstance(title, str) and title.strip() else None,
         "step_id": task.step_id,
         "label": step_label or task.step_id or task.runner_profile,
         "state": _val(task.state),
