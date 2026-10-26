@@ -468,7 +468,7 @@ describe('Not finished yet, in platform scope', () => {
     await waitFor(() => expect(c.querySelector('.ol-open-counts')).not.toBeNull())
     await waitFor(() => expect(c.textContent).toContain('No provider key is registered for this tenant 2'))
     expect(c.querySelector('.ol-open-counts')!.textContent).toContain('14 parked')
-    expect(c.querySelector('.ol-reason-scope')?.textContent).toBe('park reasons: tenant eng only')
+    expect(c.querySelector('.ol-reason-scope')?.textContent).toBe('park reasons: workspace eng only')
   })
 
   it('says so when the tenant has nothing parked, where the platform may', async () => {
@@ -478,7 +478,7 @@ describe('Not finished yet, in platform scope', () => {
     })
     const c = card(root, /^Not finished yet/)
     await waitFor(() => expect(c.querySelector('.ol-reason-scope')).not.toBeNull())
-    expect(c.querySelector('.ol-reason-scope')!.textContent).toBe('park reasons: tenant eng only · none parked there')
+    expect(c.querySelector('.ol-reason-scope')!.textContent).toBe('park reasons: workspace eng only · none parked there')
   })
 
   it('counts "reasons for k of n" in the tenant the reasons came from, never over the platform', async () => {
