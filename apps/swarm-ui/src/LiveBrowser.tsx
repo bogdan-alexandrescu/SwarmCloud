@@ -6,9 +6,11 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ClipboardEvent,
   type KeyboardEvent,
   type MouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject,
   type SyntheticEvent,
@@ -34,10 +36,12 @@ import {
 import { SaveAsLoginOffer } from './BrowserLogins'
 import { BrowserBadges, browserStatusOf } from './BrowserBadges'
 import { qaIdentityOf } from './QaIdentityGrants'
-import { Button } from './components'
+import { usePhoneTables } from './capacityPoll'
+import { Button, buttonClass } from './components'
 import { HandoffStrip } from './Handoff'
 import { LiveToolMenu } from './LiveToolMenu'
 import { agentPath } from './OverviewRegions'
+import { RecordingsPanel } from './Recordings'
 import { StartupProgress } from './StartupProgress'
 import { TheaterButton, TheaterHost, useTheater, type TheaterHandoff, type TheaterSession } from './Theater'
 import { TERMINAL_STATES, type Task, type TaskState } from './types'
@@ -428,7 +432,10 @@ export type StripTone = 'unknown' | 'ok' | 'warn' | 'mismatch' | 'refused'
 /** The strip's colour and the one sentence that says why. */
 export function stripVerdict(s: LiveSession): { tone: StripTone; say: string } {
   const o = s.origin
-  if (o === null) return { tone: 'unknown', say: 'The gate has not reported the page’s address yet.' }
+  // A BLANK PAGE HAS NO ADDRESS TO REPORT (BT-014, part of #2423). MEASURED
+  // 2026-10-26: "has not reported the page's address yet" over a frame whose
+  // own address bar read about:blank -- the likelier of the two causes.
+  if (o === null) return { tone: 'unknown', say: 'The page is blank (about:blank), or the gate has not reported the page’s address yet.' }
   const refused = controlRefusal(o)
   if (refused !== null) return { tone: 'refused', say: refused }
   const wait = s.human_wait
@@ -582,6 +589,7 @@ export function LiveControl({
   session,
   reload,
   takeOnly = false,
+  refusal = 'line',
 }: {
   taskId: string
   session: LiveSession | null
@@ -594,6 +602,13 @@ export function LiveControl({
    * offered Take control until the task was read again (QA12-22).
    */
   takeOnly?: boolean
+  /**
+   * How a page the gate refuses control on (`controlRefusal`) is said: as a
+   * line beside the disabled button, or as its title only, where the origin
+   * strip already says it as a line (the Browser tab, BT-010: a plain-HTTP
+   * page's refusal was said twice and wrapped the header).
+   */
+  refusal?: 'line' | 'title'
 }) {
   const [ask, setAsk] = useState<'none' | 'first' | 'mismatch'>('none')
   const [busy, setBusy] = useState(false)
@@ -678,7 +693,9 @@ export function LiveControl({
       <Button
         kind="primary"
         busy={busy ? 'Taking control…' : false}
-        disabledReason={refused ?? undefined}
+        disabledReason={refused === null || refusal === 'title' ? undefined : refused}
+        disabled={refused !== null}
+        title={refusal === 'title' && refused !== null ? refused : undefined}
         onClick={() => setAsk('first')}
       >
         {label}
@@ -760,6 +777,11 @@ export function LiveBrowserPane({
   const [frame, setFrame] = useState<FrameSize | null>(null)
   // The device the person in control last asked for, on the session they asked on (`LiveDevice`'s `onAsked`).
   const [asked, setAsked] = useState<DeviceAsk | null>(null)
+  // The canvas as it last drew, kept when the screen goes (`LiveScreen`'s
+  // `onLastFrame`): a live agent that finishes while watched leaves it here.
+  const [lastFrame, setLastFrame] = useState<string | null>(null)
+  // The logs column's share of the body, in percent (`LogSplit`).
+  const [split, setSplit] = useState(readSplit)
   const session = live.status === 'ok' ? live.session : null
   const open = session !== null && session.state === 'open' ? session : null
   // A CHANGE IS WAITED ON UNTIL THE GATE REPORTS IT (LIVE-POLL, #1343): read
@@ -801,11 +823,14 @@ export function LiveBrowserPane({
   if (live.status === 'idle') {
     // No attempt in flight: between attempts (a hand-off parked, or READY
     // after "I'm ready to sign in"), or finished.
-    return note(
-      TERMINAL_STATES.has(task.state)
-        ? 'This agent has finished, and its live browser closed with it. Its recordings are on Attempts.'
-        : 'The agent’s browser is not running. It starts when the agent is admitted again, and appears here.',
-    )
+    if (TERMINAL_STATES.has(task.state)) {
+      return (
+        <FinishedBrowser task={task} lastFrame={lastFrame} logs={logs} split={split} onSplit={setSplit}>
+          {banner()}
+        </FinishedBrowser>
+      )
+    }
+    return note('The agent’s browser is not running. It starts when the agent is admitted again, and appears here.')
   }
   if (live.status === 'loading') {
     return note('Reading the agent’s live browser.')
@@ -856,11 +881,26 @@ export function LiveBrowserPane({
     live: true,
     browser: session, reload, // the device, the controller and the return, for the theater (LB-UX2a)
   }
+  const who =
+    session.controller === null
+      ? 'Nobody is in control: the agent is driving.'
+      : mine
+        ? 'You are in control.'
+        : `${session.controller.email} is in control.`
+  // ONE LINE: THE ADDRESS, WHO DRIVES, AND THE BADGES (BT-003, part of
+  // #2423). MEASURED 2026-10-26 at 1440: the strip was three lines, 103 px
+  // of a 407 px pane, mostly the sentence explaining a green address. That
+  // sentence is folded under ⓘ; a warning (a hand-off naming no site, the
+  // wrong site, a page the gate refuses control on) is the point of the
+  // strip, and stays a line of its own -- the one place the tab says it
+  // (BT-010).
+  const warns = verdict.tone === 'warn' || verdict.tone === 'mismatch' || verdict.tone === 'refused'
   const strip = (
     <div className={`live-strip is-${verdict.tone}`} data-tone={verdict.tone} role="status">
-        <span className="live-origin">
+      <div className="live-strip-line">
+        <span className="live-origin" title={o === null ? undefined : o.origin}>
           {o === null ? (
-            '—'
+            'no web address'
           ) : (
             <>
               <span className="live-origin-scheme">{o.scheme}//</span>
@@ -868,25 +908,30 @@ export function LiveBrowserPane({
             </>
           )}
         </span>
-        <span className="live-strip-say">{verdict.say}</span>
-        {/* THE GATE'S WORD IS IN THE STRIP (STRIP-LABEL, part of #1341).
-            MEASURED 2026-10-15: under the screen, it sat below the fold
-            behind the theater. The strip is drawn in both. */}
-        {cover !== null && (
-          <span className="live-strip-cover" data-testid="live-cover">
-            {cover}.
-          </span>
-        )}
-        <span className="live-strip-who">
-          {session.controller === null
-            ? 'Nobody is in control: the agent is driving.'
-            : mine
-              ? 'You are in control.'
-              : `${session.controller.email} is in control.`}
+        <span className="live-strip-who" title={who}>
+          {who}
         </span>
+        {!warns && (
+          <details className="live-strip-why">
+            <summary title="About this address" aria-label="About this address">
+              ⓘ
+            </summary>
+            <span className="live-strip-say">{verdict.say}</span>
+          </details>
+        )}
         <BrowserBadges status={tools} qaIdentity={qaIdentityOf(task.input)} />
-        {unused && <AgentUnused task={task} />}
       </div>
+      {warns && <span className="live-strip-say">{verdict.say}</span>}
+      {/* THE GATE'S WORD IS IN THE STRIP (STRIP-LABEL, part of #1341).
+          MEASURED 2026-10-15: under the screen, it sat below the fold
+          behind the theater. The strip is drawn in both. */}
+      {cover !== null && (
+        <span className="live-strip-cover" data-testid="live-cover">
+          {cover}.
+        </span>
+      )}
+      {unused && <AgentUnused task={task} />}
+    </div>
   )
   return (
     <TheaterHost
@@ -902,7 +947,8 @@ export function LiveBrowserPane({
       <div className={`live-tab${logs ? ' with-logs' : ''}`}>
         {banner(
           <>
-            <LiveControl taskId={task.id} session={session} reload={reload} takeOnly />
+            {/* The refusal is the strip's line (BT-010); here it is the disabled button's title. */}
+            <LiveControl taskId={task.id} session={session} reload={reload} takeOnly refusal="title" />
             <OpenInTheater />
           </>,
         )}
@@ -917,13 +963,15 @@ export function LiveBrowserPane({
           waiting={waiting}
         />
         <SaveAsLoginOffer taskId={task.id} tenantId={task.tenant_id} site={o?.origin ?? null} controlReturned={returned} />
-        {/* LOGS ON THE LEFT, THE DEVICE ON THE RIGHT (the mockup's ◫ logs). */}
-        <div className="live-body">
+        {/* LOGS ON THE LEFT, THE DEVICE ON THE RIGHT (the mockup's ◫ logs),
+            split where the person drags it; stacked in a narrow tab (live.css). */}
+        <div className="live-body" style={splitStyle(split)}>
           {logs && (
             <div className="live-logs">
               <AgentLogs task={task} />
             </div>
           )}
+          {logs && <LogSplit value={split} onChange={setSplit} />}
           <LiveScreen
             key={session.session_id}
             taskId={task.id}
@@ -933,7 +981,9 @@ export function LiveBrowserPane({
             onScreen={setScreenNode}
             onGateSays={setCover}
             onFrame={setFrame}
+            onLastFrame={setLastFrame}
             device={deviceSize(session)}
+            fitTo={fitShape(deviceSize(session), frame)}
             caption={
               <span className="live-caption">
                 {deviceCaption(session, frame)}
@@ -1047,7 +1097,11 @@ export function deviceCaption(
         : size === null
           ? presetLabel(d.preset)
           : `${presetLabel(d.preset)} · ${size.width}×${size.height}`
-  const path = session.origin?.path
+  // No origin at all is the strip's "no web address" (BT-014): a blank page
+  // has no path to report, and "path not reported" read as a fault under a
+  // frame showing about:blank.
+  if (session.origin == null) return `${device} · no web address`
+  const path = session.origin.path
   return `${device} · ${typeof path === 'string' && path !== '' ? path : 'path not reported'}`
 }
 
@@ -1098,10 +1152,198 @@ export function fitDevice(
 }
 
 /**
- * THE TOOLBAR, LEFT TO RIGHT AS THE MOCKUP DRAWS IT (owner decisions
- * 2026-10-12): the device chips, `⟲ rotate`, `touch: on|off`, `◫ logs`, and
- * at the right `⤢ Theater`. "Let any member take control" stays in the
- * toolbar, after Theater, exactly as built (the owner kept it).
+ * THE PROPORTIONS THE FRAME IS FITTED TO (BT-014, part of #2423): the frame
+ * the gate sends, once noVNC reports it and it is the way round the device
+ * is, else the device's. MEASURED 2026-10-26 at 1440: the desktop preset is
+ * 1440×900 but the gate's screen is 1440×987 (the browser's own bar is in
+ * it), so a box of the preset's proportions drew the canvas 554 px wide in
+ * 609 px, with black bars each side. A frame that contradicts the device is
+ * not trusted for the fit (`frameContradicts`), and with no device there is
+ * no fit at all, as before.
+ */
+export function fitShape(
+  device: { width: number; height: number } | null,
+  frame: FrameSize | null,
+): { width: number; height: number } | null {
+  if (device === null) return null
+  if (frame === null || frame.width <= 0 || frame.height <= 0 || frameContradicts(device, frame) !== null) {
+    return { width: device.width, height: device.height }
+  }
+  return { width: frame.width, height: frame.height }
+}
+
+// ---------------------------------------------------------------------------
+// The logs beside the frame: a split the person drags (BT-002)
+// ---------------------------------------------------------------------------
+
+/** The logs column's share of the body, in percent: its default and its bounds. */
+const SPLIT_DEFAULT = 45
+const SPLIT_MIN = 20
+const SPLIT_MAX = 75
+const SPLIT_STEP = 5
+/** Where the share is kept, so the next agent's tab opens split the same way. */
+const SPLIT_KEY = 'swarm.live.logsSplit'
+
+function clampSplit(v: number): number {
+  return Math.round(Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, v)))
+}
+
+function readSplit(): number {
+  try {
+    const v = Number(window.localStorage.getItem(SPLIT_KEY))
+    return Number.isFinite(v) && v > 0 ? clampSplit(v) : SPLIT_DEFAULT
+  } catch {
+    return SPLIT_DEFAULT
+  }
+}
+
+function keepSplit(v: number): void {
+  try {
+    window.localStorage.setItem(SPLIT_KEY, String(v))
+  } catch {
+    /* storage refused: the split holds for this tab only */
+  }
+}
+
+/** The body's `--live-split`, which live.css reads for the logs column's width. */
+function splitStyle(split: number): CSSProperties {
+  return { '--live-split': `${split}%` } as CSSProperties
+}
+
+/**
+ * THE SPLIT BETWEEN THE LOGS AND THE FRAME (BT-002, part of #2423). MEASURED
+ * 2026-10-26: a fixed 2:3 split gave the log 241 px at 1440 and 208 at 1024,
+ * and the frame a quarter of its page. The person drags it (or moves it with
+ * the arrow keys, Home and End), between 20% and 75% of the body; in a
+ * narrow tab the two stack and this is not drawn (live.css `@container`).
+ */
+function LogSplit({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const set = (v: number) => {
+    const next = clampSplit(v)
+    onChange(next)
+    keepSplit(next)
+  }
+  const drag = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const body = e.currentTarget.parentElement
+    if (body === null) return
+    e.preventDefault()
+    const box = body.getBoundingClientRect()
+    if (box.width <= 0) return
+    const move = (ev: globalThis.MouseEvent) => set(((ev.clientX - box.left) / box.width) * 100)
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
+  }
+  return (
+    <div
+      className="live-split"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Logs width"
+      aria-valuemin={SPLIT_MIN}
+      aria-valuemax={SPLIT_MAX}
+      aria-valuenow={value}
+      tabIndex={0}
+      title="Drag to share the width between the logs and the browser"
+      onPointerDown={drag}
+      onKeyDown={(e) => {
+        const to =
+          e.key === 'ArrowLeft'
+            ? value - SPLIT_STEP
+            : e.key === 'ArrowRight'
+              ? value + SPLIT_STEP
+              : e.key === 'Home'
+                ? SPLIT_MIN
+                : e.key === 'End'
+                  ? SPLIT_MAX
+                  : null
+        if (to === null) return
+        e.preventDefault()
+        set(to)
+      }}
+    />
+  )
+}
+
+// ---------------------------------------------------------------------------
+// A finished agent's Browser tab (BT-006)
+// ---------------------------------------------------------------------------
+
+/**
+ * WHAT IS LEFT OF THE BROWSER ONCE THE AGENT HAS FINISHED (BT-006, part of
+ * #2423). MEASURED 2026-10-26: one sentence in an empty pane, "Its
+ * recordings are on Attempts" with Attempts plain text, the recordings
+ * 2,450 px down that tab under its history, no end time, and the frame and
+ * the logs vanishing the instant a watched agent finished. Now: when it
+ * ended, links to the recordings' heading on Attempts and to the screenshots
+ * on Artifacts, the last frame the screen drew (when this tab was watching
+ * it), the logs if they were open, and the recordings with their player,
+ * here. The recordings are RecordingsPanel's, the one Attempts draws.
+ */
+function FinishedBrowser({
+  task,
+  lastFrame,
+  logs,
+  split,
+  onSplit,
+  children,
+}: {
+  task: Task
+  lastFrame: string | null
+  logs: boolean
+  split: number
+  onSplit: (v: number) => void
+  children?: ReactNode
+}) {
+  const base = agentPath(task)
+  const ended = task.completed_at == null ? null : new Date(task.completed_at)
+  const at = ended === null || Number.isNaN(ended.getTime()) ? null : ended.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  return (
+    <div className={`live-tab is-finished${logs ? ' with-logs' : ''}`}>
+      {children}
+      <p className="live-note live-ended">
+        <span className="live-ended-when">{at === null ? 'ended' : `ended ${at}`}</span>
+        {' · '}This agent has finished, and its live browser closed with it. Its recordings are below and on{' '}
+        <a href={`${base}/attempts#rec-h-${task.id}`}>Attempts</a>; the screenshots it saved are on <a href={`${base}/artifacts`}>Artifacts</a>.
+      </p>
+      {(lastFrame !== null || logs) && (
+        <div className={`live-body${lastFrame === null ? ' is-logs-only' : ''}`} style={splitStyle(split)}>
+          {logs && (
+            <div className="live-logs">
+              <AgentLogs task={task} />
+            </div>
+          )}
+          {logs && lastFrame !== null && <LogSplit value={split} onChange={onSplit} />}
+          {lastFrame !== null && (
+            <figure className="live-last">
+              <img src={lastFrame} alt="The agent’s browser as it last drew, before it closed." />
+              <figcaption className="live-caption">The last frame this tab saw, before the browser closed.</figcaption>
+            </figure>
+          )}
+        </div>
+      )}
+      <RecordingsPanel task={task} />
+    </div>
+  )
+}
+
+/**
+ * THE TOOLBAR IS TWO GROUPS (BT-011, part of #2423): at the left what
+ * changes THE AGENT'S BROWSER -- the device menu and "Let any member take
+ * control" -- and at the right what changes THIS VIEW, `◫ logs` and
+ * `⤢ Theater`. MEASURED 2026-10-26: the member checkbox sat right beside
+ * Theater (one thumb-width from it at 390) and the device chips looked like
+ * view toggles. This replaces the 2026-10-12 order (checkbox after
+ * Theater), which BGD's 2026-10-26 review asked to change.
+ *
+ * THE CHIPS ARE ONE MENU (BT-003): `Device: <preset> ▾`. Eight chips were
+ * 408 px of a 611 px pane and took the toolbar to two rows above the frame.
+ * At phone width LiveToolMenu's `⋯` holds them instead, as before.
  *
  * THE DEVICE CONTROLS ARE SWITCHED BY THE PERSON IN CONTROL (§6.1, Q13;
  * LB-DEV-B): enabled when `you.can_switch_device`, disabled with why for
@@ -1129,17 +1371,77 @@ function LiveToolbar({
 }) {
   return (
     <div className="live-toolbar" role="toolbar" aria-label="Browser view">
-      <LiveToolMenu>
-        <LiveDevice taskId={taskId} session={session} reload={reload} onAsked={onAsked} waiting={waiting} />
+      <span className="live-toolbar-control" role="group" aria-label="The agent’s browser">
+        <LiveToolMenu>
+          <DeviceMenu session={session}>
+            <LiveDevice taskId={taskId} session={session} reload={reload} onAsked={onAsked} waiting={waiting} />
+          </DeviceMenu>
+        </LiveToolMenu>
+        {session.you.can_open && <MemberControl taskId={taskId} session={session} reload={reload} />}
+      </span>
+      <span className="live-toolbar-end" role="group" aria-label="This view">
         <Button size="sm" aria-pressed={logs} onClick={onLogs} title={logs ? 'Hide the logs' : 'Show the logs beside the browser'}>
           ◫ logs
         </Button>
-      </LiveToolMenu>
-      <span className="live-toolbar-end">
         <TheaterButton />
-        {session.you.can_open && <MemberControl taskId={taskId} session={session} reload={reload} />}
       </span>
     </div>
+  )
+}
+
+/**
+ * `Device: <preset> ▾` and its menu of chips, rotate and touch (BT-003). It
+ * names the device the gate reported, so a viewer who may not switch it
+ * still reads it without opening anything; the chips inside say why they
+ * are disabled (`LiveDevice`). At phone width it is not drawn: LiveToolMenu's
+ * `⋯` is already the menu, and a menu in a menu is one press too many.
+ */
+function DeviceMenu({ session, children }: { session: LiveSession; children: ReactNode }) {
+  const phone = usePhoneTables()
+  const [open, setOpen] = useState(false)
+  const box = useRef<HTMLSpanElement>(null)
+  const button = useRef<HTMLButtonElement>(null)
+
+  // Closed by a press outside it, as any menu is; Escape is handled on the menu.
+  useEffect(() => {
+    if (!open) return
+    const away = (e: PointerEvent) => {
+      if (box.current !== null && !box.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('pointerdown', away)
+    return () => document.removeEventListener('pointerdown', away)
+  }, [open])
+
+  if (phone) return <>{children}</>
+  const d = session.device
+  const name = d === null ? 'not reported' : presetLabel(d.preset)
+  return (
+    <span className="live-device-menu" ref={box}>
+      <button
+        ref={button}
+        type="button"
+        className={buttonClass({ size: 'sm' }, false, 'live-device-btn')}
+        aria-haspopup="true"
+        aria-expanded={open}
+        title={session.you.can_switch_device ? 'Change the device the agent’s browser emulates' : DEVICE_WHY}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {`Device: ${name}`} ▾
+      </button>
+      {open && (
+        <div
+          className="live-device-pop"
+          onKeyDown={(e) => {
+            if (e.key !== 'Escape') return
+            e.stopPropagation()
+            setOpen(false)
+            button.current?.focus()
+          }}
+        >
+          {children}
+        </div>
+      )}
+    </span>
   )
 }
 
@@ -1463,45 +1765,14 @@ const DESKTOP_BEZEL = 0
 const HAIRLINE = 1
 /** The gap between the device and its caption (`.live-stage`'s `gap`). */
 const STAGE_GAP = 6
+/**
+ * Under this many pixels of tab the tab stacks and reads top to bottom
+ * (live.css's `@container live-tab (max-width: 479px)`): the pane is sized to
+ * its content there, so the stage has no height to take and is given one.
+ */
+const NARROW_TAB = 480
 /** A mobile preset this wide on its short side is a tablet (iPad: 810), and gets the tablet's outline. */
 const TABLET_MIN = 600
-/** `.live-stage`'s floor in live.css: a stage never drawn shorter than this. */
-const STAGE_MIN = 320
-/**
- * The window's height the stage leaves to the console around it -- the agent
- * header, the tabs, the strip and the toolbar -- when it asks for more than
- * the pane had: the device is never drawn taller than the window less this,
- * so the screen and its caption fit in view once the pane is scrolled to them.
- */
-const STAGE_CHROME = 120
-/** The proportions a device the gate has not reported is drawn in: the desktop preset's, 1440×900. */
-const UNREPORTED = { width: 1440, height: 900, mobile: false }
-
-/**
- * THE STAGE IS AS TALL AS THE DEVICE AT THE PANE'S FULL WIDTH (QA12-19).
- * MEASURED in QA p12 at 1440 with the agent list open: the stage was the
- * height left under a hand-off banner, strip and toolbar -- its 320px floor
- * -- and the device fitted into that was 424×291 with the pane's width
- * empty beside it. The stage now asks for the height that lets the device
- * use the whole width at its own proportions (its outline and caption
- * included), up to the window less `STAGE_CHROME`, and never less than its
- * floor; where the pane is shorter, the pane scrolls rather than the device
- * shrinking. Null when there is nothing measured yet.
- */
-export function stageFloor(
-  width: number,
-  device: { width: number; height: number; mobile: boolean } | null,
-  viewport: number,
-  caption: number,
-): number | null {
-  const d = device ?? UNREPORTED
-  if (width <= 0 || d.width <= 0 || d.height <= 0) return null
-  const edge = 2 * ((d.mobile ? MOBILE_BEZEL : DESKTOP_BEZEL) + HAIRLINE)
-  const want = Math.ceil(((width - edge) * d.height) / d.width) + edge + caption + STAGE_GAP
-  const most = viewport > 0 ? Math.floor(viewport - STAGE_CHROME) : want
-  return Math.max(STAGE_MIN, Math.min(want, most))
-}
-
 /** Focus is on no control at all: the page's body, as after the focused element left the page. */
 function nowhere(): boolean {
   return document.activeElement === null || document.activeElement === document.body
@@ -1515,8 +1786,10 @@ function LiveScreen({
   onScreen,
   onGateSays,
   device = null,
+  fitTo = null,
   caption,
   onFrame,
+  onLastFrame,
   onControlChange,
   onSessionMoved,
 }: {
@@ -1534,10 +1807,14 @@ function LiveScreen({
   onGateSays?: (reason: string | null) => void
   /** The device as turned (`deviceSize`): the frame is fitted to its proportions, in an outline when it is mobile. */
   device?: { width: number; height: number; mobile: boolean } | null
+  /** The proportions the frame is fitted to (`fitShape`): the gate's frame once reported, else the device's. */
+  fitTo?: { width: number; height: number } | null
   /** Under the device frame: what it is, its size and the page's path. */
   caption?: ReactNode
   /** Told the framebuffer's size when it connects and whenever noVNC rescales it, and null when it goes (`frameContradicts`). */
   onFrame?: (frame: FrameSize | null) => void
+  /** Told the canvas as it last drew (a data URL) when this screen goes: a finished agent's tab keeps it (BT-006). */
+  onLastFrame?: (dataUrl: string) => void
   /** Called when swarm-api's status frames say control or the session changed: the pane re-reads the session. */
   onControlChange?: () => void
   /**
@@ -1571,7 +1848,30 @@ function LiveScreen({
   const [hasFocus, setHasFocus] = useState(false)
   const stage = useRef<HTMLDivElement>(null)
   const below = useRef<HTMLDivElement>(null)
-  const [room, setRoom] = useState<{ width: number; height: number; viewport: number; caption: number } | null>(null)
+  const [room, setRoom] = useState<{ width: number; height: number; caption: number; narrow: boolean } | null>(null)
+  const lastRef = useRef(onLastFrame)
+  lastRef.current = onLastFrame
+  // noVNC has reported a frame of some size: the canvas holds a picture worth keeping.
+  const drew = useRef(false)
+
+  // THE LAST FRAME OUTLIVES THE SCREEN (BT-006). Declared before the
+  // connection's effect, so this cleanup reads the canvas before noVNC's
+  // disconnect can take it away. A canvas that never drew a frame, or that
+  // cannot be read, leaves nothing.
+  useEffect(() => {
+    const node = host.current
+    return () => {
+      if (!drew.current) return
+      const canvas = node?.querySelector('canvas') ?? null
+      if (canvas === null || canvas.width === 0 || canvas.height === 0) return
+      try {
+        const url = canvas.toDataURL('image/png')
+        if (typeof url === 'string' && url.startsWith('data:image/')) lastRef.current?.(url)
+      } catch {
+        /* unreadable: nothing is kept */
+      }
+    }
+  }, [])
 
   // THE ROOM THE DEVICE HAS: the stage's box, less the caption under the
   // device and the outline around it. Measured before paint and again
@@ -1582,18 +1882,20 @@ function LiveScreen({
     if (node === null) return
     const measure = () => {
       const caption = below.current?.offsetHeight ?? 0
+      // A tab of no measured width (no layout) is not taken for a narrow one.
+      const tab = node.closest<HTMLElement>('.live-tab')?.clientWidth ?? 0
       const next = {
         width: node.clientWidth,
         height: node.clientHeight - caption - STAGE_GAP,
-        viewport: typeof window === 'undefined' ? 0 : window.innerHeight,
         caption,
+        narrow: tab > 0 && tab < NARROW_TAB,
       }
       setRoom((was) =>
         was !== null &&
         was.width === next.width &&
         was.height === next.height &&
-        was.viewport === next.viewport &&
-        was.caption === next.caption
+        was.caption === next.caption &&
+        was.narrow === next.narrow
           ? was
           : next,
       )
@@ -1613,12 +1915,28 @@ function LiveScreen({
   // Fitted is the box noVNC scales its canvas into -- inside the outline AND
   // the screen's hairline -- so the canvas fills it, edge to edge.
   const edge = bezel + HAIRLINE
+  const proportions = fitTo ?? device
   const fit =
-    device === null || room === null
+    proportions === null || room === null
       ? null
-      : fitDevice({ width: room.width - 2 * edge, height: room.height - 2 * edge }, device)
+      : fitDevice({ width: room.width - 2 * edge, height: room.height - 2 * edge }, proportions)
+  // A NARROW TAB'S STAGE IS AS TALL AS THE DEVICE AT ITS WIDTH (review of
+  // BT-003, 2026-10-26). There the pane is sized to its content and the
+  // drawer scrolls, so `flex: 1 1 0` gave the stage nothing and it fell to
+  // live.css's 160 px floor: rendered at 390, a desktop 182x115 in a 358 px
+  // column and a phone preset ~74x160. QA12-19's width-led floor is kept
+  // there, and only there, held to the window's height so a phone preset is
+  // never taller than the screen; a wider tab is bounded by its pane and
+  // takes the room left (BT-003).
+  const floorFit =
+    proportions === null || room === null || !room.narrow
+      ? null
+      : fitDevice({ width: room.width - 2 * edge, height: Number.POSITIVE_INFINITY }, proportions)
+  const floor =
+    floorFit === null || room === null
+      ? null
+      : Math.min(floorFit.height + 2 * edge + room.caption + STAGE_GAP, window.innerHeight)
   const kind = device === null || !device.mobile ? 'desktop' : Math.min(device.width, device.height) >= TABLET_MIN ? 'tablet' : 'phone'
-  const floor = room === null ? null : stageFloor(room.width, device, room.viewport, room.caption)
 
   useEffect(() => {
     onScreen?.(host.current)
@@ -1790,6 +2108,7 @@ function LiveScreen({
           const sized = () => {
             const [width, height] = [r._fbWidth, r._fbHeight]
             if (!stopped && typeof width === 'number' && typeof height === 'number') {
+              if (width > 0 && height > 0) drew.current = true
               frameRef.current?.(width > 0 && height > 0 ? { width, height } : null)
             }
           }
@@ -1896,6 +2215,13 @@ function LiveScreen({
           would move the pixels away from where noVNC maps a click. The screen
           element carries no size of its own, so the theater, which borrows
           it, sizes it to its stage instead. */}
+      {/* THE STAGE IS THE ROOM THE PANE HAS LEFT, AND NO MORE (BT-003, part
+          of #2423). MEASURED 2026-10-26 at 1440x757: the stage asked for the
+          device at the pane's full width (QA12-19's floor), 380 px of frame
+          in a pane with ~280 left, so the pane scrolled and 42% of the frame,
+          its caption and 'View only.' sat below its edge. The device is
+          fitted into the stage both ways; the pane scrolls only under
+          live.css's small floor. */}
       <div ref={stage} className="live-stage" style={floor === null ? undefined : { minHeight: `${floor}px` }}>
         <div
           // ITS OWN BOX IN EVERY STATE (visual QA run 6, task-006): a
@@ -1941,28 +2267,31 @@ function LiveScreen({
             )}
           </div>
         </div>
+        {/* The caption and the connection's state share one line under the
+            frame (BT-003): a line of its own below the stage was one more
+            row the frame did not get. */}
         <div ref={below} className="live-stage-caption">
           {caption}
+          <span className="live-screen-say" role="status">
+            {conn === 'connecting'
+              ? 'Connecting to the agent’s browser.'
+              : conn === 'connected'
+                ? control && refused !== null
+                  ? `The relay refused this connection’s control (${refused}). Your input does not reach the agent’s browser.`
+                  : control
+                  ? hasFocus
+                    ? 'Your keys go to the agent’s browser. Click outside it to use the console.'
+                    : 'Click the browser to type into it.'
+                  : 'View only.'
+                : conn === 'failed'
+                  ? `The live connection keeps failing: ${why ?? ''}`
+                  : why}
+          </span>
         </div>
         {/* Until the first frame, the start-up over the empty screen: it
             steps aside when noVNC connects or the pod reports the frame. */}
         {conn === 'connecting' && <StartupProgress taskId={taskId} overlay hideWhenDone />}
       </div>
-      <p className="live-screen-say" role="status">
-        {conn === 'connecting'
-          ? 'Connecting to the agent’s browser.'
-          : conn === 'connected'
-            ? control && refused !== null
-              ? `The relay refused this connection’s control (${refused}). Your input does not reach the agent’s browser.`
-              : control
-              ? hasFocus
-                ? 'Your keys go to the agent’s browser. Click outside it to use the console.'
-                : 'Click the browser to type into it.'
-              : 'View only.'
-            : conn === 'failed'
-              ? `The live connection keeps failing: ${why ?? ''}`
-              : why}
-      </p>
     </div>
   )
 }

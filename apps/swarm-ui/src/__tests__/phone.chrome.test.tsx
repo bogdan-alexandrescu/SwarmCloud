@@ -560,5 +560,8 @@ describe('#139 at 390: the first Agents row starts above the midpoint', () => {
     const total = blocks.reduce((a, b) => a + b.px, 0)
     const breakdown = blocks.map((b) => `  ${b.px.toFixed(1).padStart(6)}px  ${b.what}`).join('\n')
     expect(total, `the first Agents row starts by ${total.toFixed(1)}px of ${SCREEN_H}:\n${breakdown}`).toBeLessThan(SCREEN_H / 2)
-  })
+    // A fresh App after `resetModules` re-transforms the whole shell: it
+    // timed out at 30s on a ui shard whose spacing test took 659s (CI run
+    // 40279737042), so it gets the headroom the other full-App tests have.
+  }, 120_000)
 })
