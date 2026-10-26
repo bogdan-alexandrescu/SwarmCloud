@@ -41,6 +41,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass
@@ -78,10 +79,12 @@ from .forgeapp import GRANTS
 from .mergesettings import COLLECTION as WORKSPACE_SETTINGS
 from .provider_keys import KEYS_COLLECTION as PROVIDER_KEYS
 from .repositories import parse_repository, repo_id_for
-from .repoindex import BASE_LINE, KEPT_VERSIONS, VERSIONS_COLLECTION
+from .repoindex import BASE_LINE, INDEXER_PROFILE, KEPT_VERSIONS, VERSIONS_COLLECTION
 from .store import EVENTS, LEASES, TASKS
 from .verdictpublish import spec_refusal
 from .workspaces import personal_tenant_id
+
+log = logging.getLogger(__name__)
 
 ATTEMPTS = "attempts"
 QUOTA = "quota"
@@ -536,6 +539,14 @@ class Claimant:
     task_id: str
     attempt_id: str
     submitted_at: datetime
+
+
+@dataclass
+class _Walk:
+    """One `state/upstream` request's tally of task documents of this tenant
+    whose spec signature did not verify: each stops the rule that read it,
+    and the count is logged, so a rewrite is never mistaken for an absence."""
+    unverified: int = 0
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -1653,17 +1664,47 @@ class AttemptState:
         """`fetch_parent_states` and `inputs.fetch_upstream_task`: ONLY an id
         this task declares -- its `depends_on`, its `metadata.input_from` or
         its dispatch block's `input_parents`, all covered by the spec
-        signature -- and only one of this tenant. Anything else is the same
-        403, whether or not it exists."""
+        signature -- or one `_derived_upstream` derives, and only one of this
+        tenant. Anything else is the same 403, whether or not it exists.
+
+        Every id is taken from the SIGNED copy of the document it is read
+        from (SIGNED-UPSTREAM, BGD 2026-10-26, part of #2373): a task document
+        is tenant-writable after signing (docs/design/tenant-settings-
+        integrity.md §1.1), so a field rewritten then would otherwise widen
+        what this attempt's reads may name to any task of its tenant
+        (invariant 9). The attempt's own task is verified once, here, under
+        the tuple's id; one whose spec does not verify declares nothing and
+        serves only itself, whose id is the tuple's rather than a field. Each
+        document a walk follows is verified before its fields are; one that
+        fails is counted in the log, never skipped as if absent.
+        swarm-api rewrites none of the signed fields once a task is stored:
+        it signs at submission (`specsigning`), and every later write to a
+        task (`transition`, `park`, `finish`, `handoff`) touches unsigned
+        keys only."""
         task = self._own_task(attempt)
+        if upstream_task_id == attempt.task_id:
+            return {"ok": True, "task": jsonable(task)}
+        refusal = spec_refusal(self._settings, task, attempt.task_id)
+        if refusal is not None:
+            # The reason names the check, never a value from the document.
+            log.warning("state upstream unverified own task tenant=%s task=%s attempt=%s: %s",
+                        attempt.tenant_id, attempt.task_id, attempt.attempt_id, refusal)
+            raise UpstreamNotDeclared(
+                "this task's spec does not verify, so it declares no upstream")
         declared: set[str] = {d for d in task.get("depends_on") or [] if isinstance(d, str)}
         metadata = _mapping(task.get("metadata"))
         declared |= {k for k in _mapping(metadata.get("input_from")) if isinstance(k, str)}
         declared |= {k for k in _mapping(_mapping(metadata.get("dispatch")).get("input_parents"))
                      if isinstance(k, str)}
         refused = UpstreamNotDeclared("that task is not one this task declares as upstream")
+        walk = _Walk()
         if upstream_task_id not in declared and not self._derived_upstream(
-                attempt, task, upstream_task_id):
+                attempt, task, upstream_task_id, walk):
+            if walk.unverified:
+                log.warning("state upstream unverified=%d tenant=%s task=%s attempt=%s: a "
+                            "document the rules followed failed its spec signature",
+                            walk.unverified, attempt.tenant_id, attempt.task_id,
+                            attempt.attempt_id)
             raise refused
         doc = self._read(self._ref(TASKS, upstream_task_id))
         if doc is None:
@@ -1673,73 +1714,76 @@ class AttemptState:
         return {"ok": True, "task": jsonable(doc)}
 
     def _derived_upstream(self, attempt: AttemptTuple, task: Mapping[str, Any],
-                          upstream_task_id: str) -> bool:
-        """The three reads a worker makes past its declared set (#1457,
-        owner decision 2026-10-17), each id derived HERE from documents this
-        service reads, never taken from the request:
+                          upstream_task_id: str, walk: "_Walk") -> bool:
+        """The reads a worker makes past its declared set (#1457, owner
+        decision 2026-10-17), each id derived HERE from documents this
+        service reads, never taken from the request. `task` is the
+        attempt's own, already verified by `upstream`; every other task
+        document whose fields a rule follows is verified by the id it was
+        read by (`_verified`) before it is, and one that fails stops that
+        rule there and is counted in `walk`:
 
           * an index run's base version's task: the `task_id` of the
             `index_versions/<sha>` entry, under this tenant's registration of
             the signed repository, for the one base line of the signed prompt
-            (`lifecycle._stage_base`);
+            (`lifecycle._stage_base`), when that task's own signed spec is an
+            index run of this repository at that commit;
           * an ancestor along `builds_on` (`lifecycle._builds_on_base`): from
             this task's own signed `dispatch.builds_on`, following each
-            ancestor's `builds_on` only through this tenant's tasks of this
-            workflow, at most `BUILDS_ON_MAX_DEPTH` tasks deep;
+            verified ancestor's `builds_on` only through this tenant's tasks
+            of this workflow, at most `BUILDS_ON_MAX_DEPTH` tasks deep;
           * the verdict gate's review task (`lifecycle._reviewed_patches`):
-            the signed `dispatch.verdict_gate.task_id`, when that task is a
-            step of this task's workflow;
+            the signed `dispatch.verdict_gate.task_id`, when that task's
+            signed `workflow_id` is this task's workflow;
           * a workflow ancestor along `depends_on` (#2070,
             `owner_questions.workflow_ancestors` and the merge's re-read of
             the answers to `needs_owner`): from this task's own signed
-            `depends_on`, following each ancestor's `depends_on` only through
-            this tenant's tasks of this workflow, at most
-            `WORKFLOW_ANCESTORS_MAX` documents read;
+            `depends_on`, following each verified ancestor's `depends_on`
+            only through this tenant's tasks of this workflow, one batched
+            read per level, at most `WORKFLOW_ANCESTORS_MAX` documents read;
           * a merge step's own task and the branch it merges (#2373,
             `agent_worker.merge._own_doc`, `_fix_round_heads`,
             `_recorded_fix_heads`): the attempt's own task id, from the
-            tuple; the root whose `swarm/<root>` branch the pull request is
-            on, from this task's signed `dispatch.merge_target.pull_request`
-            and that task's own `dispatch.continues`; and any task of this
-            tenant whose dispatch block `continues` that root -- a merge's
-            CI-fix or conflict fix round, or a PR-side fixer of the same
-            branch. Every task document is tenant-writable after signing
+            tuple (served by `upstream` before any rule runs); the root whose
+            `swarm/<root>` branch the pull request is on, from this task's
+            signed `dispatch.merge_target.pull_request` and that task's own
+            signed `dispatch.continues`; and any task of this tenant whose
+            signed dispatch block `continues` that root -- a merge's CI-fix or
+            conflict fix round, or a PR-side fixer of the same branch. Every
+            task document is tenant-writable after signing
             (docs/design/tenant-settings-integrity.md §1.1), so each of the
             three `metadata.dispatch` fields followed is read only from a
             document whose spec signature verifies HERE, by the id it was
-            read by (`verdictpublish.spec_refusal`): the merge step's own,
-            the opener's and the candidate's. Unverified, a rewrite of any
-            one would serve any same-tenant task it named. The worker still
-            holds each one to its signed spec as well.
+            read by (`verdictpublish.spec_refusal`): the merge step's own
+            (verified once in `upstream`), the opener's and the candidate's.
+            Unverified, a rewrite of any one would serve any same-tenant task
+            it named. The worker still holds each one to its signed spec as
+            well.
 
         The caller still refuses a task of another tenant, so a derived id
         serves only this tenant's document.
         """
-        return (self._is_index_base(attempt, task, upstream_task_id)
-                or self._is_builds_on_ancestor(attempt, task, upstream_task_id)
-                or self._is_gate_review(attempt, task, upstream_task_id)
-                or self._is_workflow_ancestor(attempt, task, upstream_task_id)
-                or self._is_merge_fix_record(attempt, task, upstream_task_id))
+        return (self._is_index_base(attempt, task, upstream_task_id, walk)
+                or self._is_builds_on_ancestor(attempt, task, upstream_task_id, walk)
+                or self._is_gate_review(attempt, task, upstream_task_id, walk)
+                or self._is_workflow_ancestor(attempt, task, upstream_task_id, walk)
+                or self._is_merge_fix_record(attempt, task, upstream_task_id, walk))
 
     def _is_merge_fix_record(self, attempt: AttemptTuple, task: Mapping[str, Any],
-                             upstream_task_id: str) -> bool:
-        if upstream_task_id == attempt.task_id:
-            return True
-        if not self._signed(attempt, task, attempt.task_id):
-            return False
+                             upstream_task_id: str, walk: "_Walk") -> bool:
         target = _mapping(_mapping(_mapping(task.get("metadata")).get("dispatch"))
                           .get("merge_target")).get("pull_request")
         if not isinstance(target, str) or not target:
             return False
         opener = self._read(self._ref(TASKS, target))
-        if opener is None or not self._signed(attempt, opener, target):
+        if opener is None or not self._verified(attempt, opener, target, walk):
             return False
         continued = _mapping(_mapping(opener.get("metadata")).get("dispatch")).get("continues")
         root = continued if isinstance(continued, str) and continued else target
         if upstream_task_id == root:
             return True
         doc = self._read(self._ref(TASKS, upstream_task_id))
-        if doc is None or not self._signed(attempt, doc, upstream_task_id):
+        if doc is None or not self._verified(attempt, doc, upstream_task_id, walk):
             return False
         return _mapping(_mapping(doc.get("metadata")).get("dispatch")).get("continues") == root
 
@@ -1749,8 +1793,32 @@ class AttemptState:
         return (doc.get("tenant_id") == attempt.tenant_id
                 and spec_refusal(self._settings, doc, task_id) is None)
 
+    def _verified(self, attempt: AttemptTuple, doc: Mapping[str, Any], task_id: str,
+                  walk: "_Walk") -> bool:
+        """`_signed`, counting in `walk` a document of this tenant that failed:
+        another tenant's is refused, as it always was, and is not this tenant's
+        rewrite to count."""
+        if self._signed(attempt, doc, task_id):
+            return True
+        if doc.get("tenant_id") == attempt.tenant_id:
+            walk.unverified += 1
+        return False
+
+    def _read_tasks(self, task_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """The task documents of `task_ids` that exist, by id, in ONE batched read."""
+        if not task_ids:
+            return {}
+        refs = [self._ref(TASKS, task_id) for task_id in task_ids]
+        try:
+            snaps = list(self._db.get_all(refs))
+        except gexc.GoogleAPIError as exc:
+            raise StateUnavailable(
+                f"the state store did not answer ({type(exc).__name__}); retry"
+            ) from None
+        return {snap.id: snap.to_dict() or {} for snap in snaps if snap.exists}
+
     def _is_index_base(self, attempt: AttemptTuple, task: Mapping[str, Any],
-                       upstream_task_id: str) -> bool:
+                       upstream_task_id: str, walk: "_Walk") -> bool:
         prompt = _mapping(task.get("input")).get("prompt")
         bases = set(_BASE_SHA_LINE.findall(prompt)) if isinstance(prompt, str) else set()
         repo = owner_repo(task.get("repository_url"))
@@ -1760,11 +1828,21 @@ class AttemptState:
         registration = self._read(ref)
         if registration is None or registration.get("tenant_id") != attempt.tenant_id:
             return False
-        version = self._read(ref.collection(VERSIONS_COLLECTION).document(bases.pop()))
-        return version is not None and version.get("task_id") == upstream_task_id
+        base = bases.pop()
+        version = self._read(ref.collection(VERSIONS_COLLECTION).document(base))
+        if version is None or version.get("task_id") != upstream_task_id:
+            return False
+        # `index_versions/<sha>` carries no signature, so the id it names is
+        # held to that task's own signed spec: an index run
+        # (`repoindex.indexer_task`) of this repository at exactly this commit.
+        doc = self._read(self._ref(TASKS, upstream_task_id))
+        return (doc is not None and self._verified(attempt, doc, upstream_task_id, walk)
+                and doc.get("runner_profile") == INDEXER_PROFILE
+                and doc.get("repository_ref") == base
+                and owner_repo(doc.get("repository_url")) == repo)
 
     def _is_builds_on_ancestor(self, attempt: AttemptTuple, task: Mapping[str, Any],
-                               upstream_task_id: str) -> bool:
+                               upstream_task_id: str, walk: "_Walk") -> bool:
         workflow_id = task.get("workflow_id")
         current = _builds_on(_mapping(task.get("metadata")))
         seen: set[str] = {attempt.task_id}
@@ -1775,7 +1853,7 @@ class AttemptState:
                 return True
             seen.add(current)
             doc = self._read(self._ref(TASKS, current))
-            if (doc is None or doc.get("tenant_id") != attempt.tenant_id
+            if (doc is None or not self._verified(attempt, doc, current, walk)
                     or not isinstance(workflow_id, str) or not workflow_id
                     or doc.get("workflow_id") != workflow_id):
                 return False
@@ -1783,30 +1861,35 @@ class AttemptState:
         return False
 
     def _is_workflow_ancestor(self, attempt: AttemptTuple, task: Mapping[str, Any],
-                              upstream_task_id: str) -> bool:
+                              upstream_task_id: str, walk: "_Walk") -> bool:
         workflow_id = task.get("workflow_id")
         if not isinstance(workflow_id, str) or not workflow_id:
             return False
         level = {d for d in task.get("depends_on") or [] if isinstance(d, str)}
         seen: set[str] = {attempt.task_id}
         while level and len(seen) <= WORKFLOW_ANCESTORS_MAX:
+            pending = sorted(level - seen)
+            # The same bound as one read at a time: at most
+            # WORKFLOW_ANCESTORS_MAX documents across the walk.
+            batch = pending[:WORKFLOW_ANCESTORS_MAX + 1 - len(seen)]
+            seen.update(batch)
+            docs = self._read_tasks(batch)
             following: set[str] = set()
-            for current in sorted(level - seen):
-                if len(seen) > WORKFLOW_ANCESTORS_MAX:
-                    return False
-                seen.add(current)
-                doc = self._read(self._ref(TASKS, current))
-                if (doc is None or doc.get("tenant_id") != attempt.tenant_id
+            for current in batch:
+                doc = docs.get(current)
+                if (doc is None or not self._verified(attempt, doc, current, walk)
                         or doc.get("workflow_id") != workflow_id):
                     continue
                 if current == upstream_task_id:
                     return True
                 following |= {d for d in doc.get("depends_on") or [] if isinstance(d, str)}
+            if len(batch) < len(pending):
+                return False
             level = following - seen
         return False
 
     def _is_gate_review(self, attempt: AttemptTuple, task: Mapping[str, Any],
-                        upstream_task_id: str) -> bool:
+                        upstream_task_id: str, walk: "_Walk") -> bool:
         gate = _mapping(_mapping(_mapping(task.get("metadata")).get("dispatch"))
                         .get("verdict_gate"))
         review = gate.get("task_id")
@@ -1815,7 +1898,8 @@ class AttemptState:
                 or not isinstance(workflow_id, str) or not workflow_id):
             return False
         doc = self._read(self._ref(TASKS, upstream_task_id))
-        return doc is None or doc.get("workflow_id") == workflow_id
+        return doc is None or (self._verified(attempt, doc, upstream_task_id, walk)
+                               and doc.get("workflow_id") == workflow_id)
 
     def repository(self, attempt: AttemptTuple) -> dict[str, Any]:
         """`indexrun.resolve_base` and `graphstage`'s reads: the registration

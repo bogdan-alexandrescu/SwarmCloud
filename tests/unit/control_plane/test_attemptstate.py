@@ -626,10 +626,20 @@ def _index_run(client, db, worker: Worker, *, version_task: str, registered_by: 
     db.docs[f"repositories/{repo_id}/index_versions/{'c' * 40}"] = {"task_id": "task_older"}
 
 
+def _index_task(db, task_id: str, *, sha: str = BASE_SHA, repo: str = REPO_URL) -> dict[str, Any]:
+    """The index run that built `sha`, signed as `repoindex.indexer_task` is at submission."""
+    from swarm_api.repoindex import INDEXER_PROFILE
+
+    doc = seed_task(db, task_id=task_id, tenant_id="eng", state="SUCCEEDED",
+                    runner_profile=INDEXER_PROFILE)
+    doc.update({"repository_url": repo, "repository_ref": sha})
+    return SIGNER.sign_document(doc, task_id)
+
+
 def test_upstream_serves_the_index_runs_base_version_task(client, db):
     worker = Worker()
     _index_run(client, db, worker, version_task="task_base")
-    seed_task(db, task_id="task_base", tenant_id="eng", state="SUCCEEDED")
+    _index_task(db, "task_base")
     response = worker.get(client, "upstream", "upstream_task_id=task_base")
     assert response.status_code == 200, response.text
     assert response.json()["task"]["id"] == "task_base"
@@ -673,6 +683,7 @@ def _step(db, task_id: str, *, builds_on: str | None, tenant: str = "eng",
     doc = seed_task(db, task_id=task_id, tenant_id=tenant, state="SUCCEEDED")
     doc["workflow_id"] = workflow
     doc["metadata"] = {"dispatch": {"builds_on": builds_on} if builds_on else {}}
+    SIGNER.sign_document(doc, task_id)
 
 
 def _chain(client, db, worker: Worker, length: int) -> list[str]:
@@ -770,10 +781,11 @@ def test_upstream_refuses_a_task_the_gate_does_not_name(client, db):
 
 
 def _ancestor(db, task_id: str, *, depends_on: tuple[str, ...] = (), tenant: str = "eng",
-              workflow: str = WORKFLOW) -> None:
+              workflow: str = WORKFLOW) -> dict[str, Any]:
     doc = seed_task(db, task_id=task_id, tenant_id=tenant, state="SUCCEEDED",
                     depends_on=depends_on)
     doc["workflow_id"] = workflow
+    return SIGNER.sign_document(doc, task_id)
 
 
 def test_upstream_serves_a_workflow_ancestor_along_depends_on(client, db):
@@ -964,6 +976,207 @@ def test_upstream_serves_a_merge_its_recorded_fixer_and_its_conflict_round_state
         response = worker.get(client, "upstream", f"upstream_task_id={upstream}")
         assert response.status_code == 200, (upstream, response.text)
         assert response.json()["task"]["state"] == "SUCCEEDED"
+
+
+# --------------------------------------------------------------------------
+# upstream: every id from the SIGNED copy (SIGNED-UPSTREAM, part of #2373)
+#
+# The merge rule above was the first; BGD chose on 2026-10-26 that every
+# declared and derived read is held so. A worker still holding the Firestore
+# write role (docs/design/tenant-settings-integrity.md §1.1) can rewrite its
+# own task, or an ancestor, after signing: each test rewrites one field the
+# rules read and asks for a same-tenant task it now names.
+# --------------------------------------------------------------------------
+
+
+def _bystander(db, task_id: str = "task_victim", *, workflow: str = WORKFLOW) -> dict[str, Any]:
+    """A signed task of this tenant (and workflow) that nothing signed names."""
+    return _ancestor(db, task_id, workflow=workflow)
+
+
+@pytest.mark.parametrize("rewrite", [
+    pytest.param(lambda doc: doc["depends_on"].append("task_victim"), id="depends_on"),
+    pytest.param(lambda doc: doc["metadata"].setdefault("input_from", {}).update(
+        {"task_victim": {"artifacts": ["*"]}}), id="input_from"),
+    pytest.param(lambda doc: doc["metadata"]["dispatch"].setdefault("input_parents", {}).update(
+        {"task_victim": ["*"]}), id="input_parents"),
+    pytest.param(lambda doc: doc["metadata"]["dispatch"].update(
+        {"builds_on": "task_victim"}), id="builds_on"),
+    pytest.param(lambda doc: doc["metadata"]["dispatch"].update(
+        {"verdict_gate": {"task_id": "task_victim", "verdict_in": ["NOT_YET"]}}),
+        id="verdict_gate"),
+])
+def test_upstream_serves_nothing_a_field_rewritten_after_signing_names(client, db, rewrite):
+    worker = Worker()
+    own = opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_up"],
+                 metadata={"dispatch": {"strategy": "direct-pr"}})
+    _ancestor(db, "task_up")
+    _bystander(db)
+    signed = worker.get(client, "upstream", "upstream_task_id=task_up")
+    assert signed.status_code == 200, signed.text
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+    rewrite(own)
+    # MUTATION: read the ids from the stored task without verifying its spec
+    # and the rewritten field serves the bystander: a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+    # A spec that no longer verifies declares nothing, its signed ids included...
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_up"))
+    # ...but the tuple's own task id is not a field: it stays readable.
+    assert worker.get(client, "upstream",
+                      f"upstream_task_id={worker.tuple.task_id}").status_code == 200
+
+
+def test_upstream_serves_no_index_base_a_rewritten_prompt_or_repository_names(client, db):
+    from swarm_api.repoindex import BASE_LINE
+    from swarm_api.repositories import repo_id_for
+
+    worker = Worker()
+    _index_run(client, db, worker, version_task="task_base")
+    _index_task(db, "task_base")
+    _index_task(db, "task_older", sha="c" * 40)
+    assert worker.get(client, "upstream", "upstream_task_id=task_base").status_code == 200
+    own = db.docs[f"tasks/{worker.tuple.task_id}"]
+    own["input"] = {"prompt": f"index\n{BASE_LINE}{'c' * 40}\n"}
+    # MUTATION: take the prompt unverified and the older version's task is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_older"))
+    own["input"] = {"prompt": f"index\n{BASE_LINE}{BASE_SHA}\n"}
+    other = repo_id_for("eng", "acme", "gadgets")
+    db.docs[f"repositories/{other}"] = {"tenant_id": "eng", "repo_id": other}
+    db.docs[f"repositories/{other}/index_versions/{BASE_SHA}"] = {"task_id": "task_victim"}
+    _bystander(db)
+    own["repository_url"] = "https://github.com/acme/gadgets.git"
+    # MUTATION: take the repository unverified and the other registration's task is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+
+
+@pytest.mark.parametrize("named", [
+    pytest.param(lambda db: _bystander(db), id="not-an-index-run"),
+    pytest.param(lambda db: _index_task(db, "task_victim", sha="c" * 40), id="another-commit"),
+    pytest.param(lambda db: _index_task(db, "task_victim",
+                                        repo="https://github.com/acme/gadgets.git"),
+                 id="another-repository"),
+    pytest.param(lambda db: _index_task(db, "task_victim")["metadata"].update(
+        {"dispatch": {"role": "rewritten"}}), id="unsigned-index-run"),
+])
+def test_upstream_serves_no_task_a_rewritten_index_version_names(client, db, named):
+    """`index_versions/<sha>` is no signed document: its `task_id` is held to
+    the named task's own signed spec, an index run of this repository at
+    exactly that commit (`repoindex.indexer_task`)."""
+    worker = Worker()
+    _index_run(client, db, worker, version_task="task_base")
+    _index_task(db, "task_base")
+    named(db)
+    from swarm_api.repositories import repo_id_for
+
+    db.docs[f"repositories/{repo_id_for('eng', 'acme', 'widgets')}/index_versions/{BASE_SHA}"][
+        "task_id"] = "task_victim"
+    # MUTATION: take the version's `task_id` as it is stored and this is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+
+
+def test_upstream_breaks_a_builds_on_walk_at_an_ancestor_rewritten_after_signing(client, db):
+    worker = Worker()
+    ids = _chain(client, db, worker, 3)
+    _bystander(db)
+    db.docs[f"tasks/{ids[0]}"]["metadata"]["dispatch"]["builds_on"] = "task_victim"
+    # MUTATION: follow the ancestor's `builds_on` unverified and the bystander is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+    # The walk breaks THERE: what the signed chain named past it is not reached...
+    assert _refused(worker.get(client, "upstream", f"upstream_task_id={ids[1]}"))
+    # ...and the id this task's own signed spec names still is.
+    assert worker.get(client, "upstream", f"upstream_task_id={ids[0]}").status_code == 200
+
+
+def test_upstream_breaks_a_depends_on_walk_at_an_ancestor_rewritten_after_signing(client, db):
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_fix"])
+    _ancestor(db, "task_fix", depends_on=("task_review",))
+    _ancestor(db, "task_review", depends_on=("task_impl",))
+    _ancestor(db, "task_impl")
+    _bystander(db)
+    assert worker.get(client, "upstream", "upstream_task_id=task_impl").status_code == 200
+    db.docs["tasks/task_fix"]["depends_on"] = ["task_review", "task_victim"]
+    # MUTATION: follow the ancestor's `depends_on` unverified and the bystander is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_impl"))
+    assert worker.get(client, "upstream", "upstream_task_id=task_fix").status_code == 200
+
+
+def test_upstream_walks_through_no_task_whose_workflow_was_rewritten(client, db):
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_fix"])
+    _ancestor(db, "task_fix", depends_on=("task_elsewhere",))
+    _ancestor(db, "task_elsewhere", depends_on=("task_beyond",), workflow="wf_other")
+    _ancestor(db, "task_beyond", workflow="wf_other")
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_elsewhere"))
+    db.docs["tasks/task_elsewhere"]["workflow_id"] = WORKFLOW
+    db.docs["tasks/task_beyond"]["workflow_id"] = WORKFLOW
+    # MUTATION: trust an ancestor's `workflow_id` unverified and both are 200s.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_elsewhere"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_beyond"))
+
+
+def test_upstream_serves_no_gate_review_whose_workflow_was_rewritten(client, db):
+    worker = Worker()
+    _gated(client, db, worker, "task_review")
+    _step(db, "task_review", builds_on=None, workflow="wf_other")
+    db.docs["tasks/task_review"]["workflow_id"] = WORKFLOW
+    # MUTATION: trust the review's `workflow_id` unverified and it is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_review"))
+
+
+def test_upstream_still_refuses_another_tenants_task_a_signed_field_names(client, db):
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_theirs"],
+           metadata={"dispatch": {"builds_on": "task_theirs_too"}})
+    _ancestor(db, "task_theirs", tenant="research")
+    _step(db, "task_theirs_too", builds_on=None, tenant="research")
+    for upstream in ("task_theirs", "task_theirs_too"):
+        response = worker.get(client, "upstream", f"upstream_task_id={upstream}")
+        assert _refused(response), upstream
+        assert "research" not in response.text
+
+
+def test_upstream_counts_every_document_that_failed_verification(client, db, caplog):
+    worker = Worker()
+    own = opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_fix"])
+    _ancestor(db, "task_fix", depends_on=("task_review",))
+    _ancestor(db, "task_review")
+    db.docs["tasks/task_fix"]["depends_on"] = ["task_review", "task_victim"]
+    caplog.set_level("WARNING", logger="swarm_api.attemptstate")
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+    # MUTATION: skip the rewritten ancestor as if it were absent and nothing is logged.
+    counted = [r.getMessage() for r in caplog.records if "unverified" in r.getMessage()]
+    assert counted and "unverified=1" in counted[-1], counted
+    assert worker.tuple.task_id in counted[-1]
+    caplog.clear()
+    own["depends_on"] = ["task_fix", "task_victim"]
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+    counted = [r.getMessage() for r in caplog.records if "unverified" in r.getMessage()]
+    assert counted and "own task" in counted[-1], counted
+
+
+def test_upstream_reads_each_level_of_a_depends_on_walk_in_one_batch(client, db, monkeypatch):
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_a", "task_b", "task_c"])
+    _ancestor(db, "task_a", depends_on=("task_root",))
+    _ancestor(db, "task_b", depends_on=("task_root",))
+    _ancestor(db, "task_c")
+    _ancestor(db, "task_root")
+    _bystander(db)
+    batches: list[list[str]] = []
+    original = type(db).get_all
+
+    def counting(self, references, *args, **kwargs):
+        references = list(references)
+        batches.append(sorted(ref.path for ref in references))
+        return original(self, references, *args, **kwargs)
+
+    monkeypatch.setattr(type(db), "get_all", counting)
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+    # MUTATION: read the walk one document at a time and there is no batch.
+    walk = [b for b in batches if any(p.startswith("tasks/") for p in b)]
+    assert walk == [["tasks/task_a", "tasks/task_b", "tasks/task_c"], ["tasks/task_root"]], batches
 
 
 # --------------------------------------------------------------------------
