@@ -19,10 +19,10 @@ extra_labels = {
 
 # --- network ---------------------------------------------------------------
 # Deliberately disjoint from anything agents-staging-vpc might use.
-subnet_cidr         = "10.40.0.0/20"
-pods_cidr           = "10.44.0.0/14"
-services_cidr       = "10.48.0.0/20"
-gke_master_cidr     = "172.16.32.0/28"
+subnet_cidr     = "10.40.0.0/20"
+pods_cidr       = "10.44.0.0/14"
+services_cidr   = "10.48.0.0/20"
+gke_master_cidr = "172.16.32.0/28"
 # 1 -> 2: BGD, 2026-10-26, before the raised pools (BROWSER-POOL-100: 180 GKE
 # pods platform-wide, a tenant up to 100) fill the one address's 64,512 ports;
 # 655 packets were already dropped for lack of a port in the 7 days to
