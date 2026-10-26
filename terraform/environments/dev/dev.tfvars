@@ -156,10 +156,18 @@ cleanup_dry_run = false
 #   resource:browser       browser alone                  20 -> 100
 #   runner:claude-code-browser   browser alone           (global) -> 100, stated
 #   backend:GKE_AUTOPILOT  shared with claude-code       100 -> 180 (below)
-#   provider:anthropic     shared with claude-code       120 -> 180 (below)
-#   tenant:<t>, provider:anthropic:tenant:<t>            NOT raised: each is one
-#     tenant's ceiling (eng 45, provider_tenant 40), and how much of the 180 one
-#     tenant may hold is the owner's call, asked in the BROWSER-POOL-100 PR.
+#   provider:anthropic     shared with claude-code       120 -> 200 (below)
+#   provider:<p>:tenant:<t>      every tenant's floor     40 -> 100 (owner, below)
+#   tenant:<t>             NOT raised: each is one tenant's own ceiling (eng 45,
+#     smoke 20, a workspace its record's), which still binds below 100.
+#
+# provider_tenant 40 -> 100: BGD, 2026-10-26, answering BROWSER-POOL-100's
+# question "should any single tenant be able to hold the 100 browser units?"
+# with "raise every tenant's floor". It lifts provider:<p>:tenant:<t> for every
+# provider a tenant declares, so the platform-wide pools must follow
+# (variables.tf's floor rule): anthropic 2 x 100 = 200, openai 1 x 100 = 100.
+# A tenant's own tenant:<t> pool is NOT raised by this, so eng still runs at
+# most 45 at once until its capacity is raised through the admin API.
 #
 # A browser pod is 4 vCPU requested (worker 2 + display 2; limits 4 + 3) and
 # 8 GiB, request == limit (invariant 7), so 180 pods ask for 720 vCPU and
@@ -176,7 +184,7 @@ cleanup_dry_run = false
 pool_limits = {
   global          = 180
   default_tenant  = 40
-  provider_tenant = 40
+  provider_tenant = 100
 
   resource_classes = {
     standard = 80
@@ -225,8 +233,8 @@ pool_limits = {
     # per-tenant one and the per-tenant ceiling stops meaning anything. The
     # rule at variables.tf:337 enforces this; it is not a guideline.
     #
-    #   anthropic  eng + smoke             = 2 x 40 = 80    (set: 180)
-    #   openai     eng                     = 1 x 40 = 40    (set: 40)
+    #   anthropic  eng + smoke             = 2 x 100 = 200  (set: 200)
+    #   openai     eng                     = 1 x 100 = 100  (set: 100)
     #
     # anthropic stays at 120 after u-bogdan left this map (W9, 2026-10-09),
     # above the floor of 80, because u-bogdan still runs on the shared
@@ -241,9 +249,13 @@ pool_limits = {
     # 120 -> 180: BROWSER-POOL-100 (2026-10-26). claude-code and
     # claude-code-browser are both anthropic, so 80 standard beside 100
     # browser is 180 anthropic leases; at 120 this pool would bind at 40
-    # browser tasks. Still above the floor of 80, and still a ceiling AIMD
-    # searches below (the 429 back-off above), not a promise.
-    anthropic = 180
+    # browser tasks. Still a ceiling AIMD searches below (the 429 back-off
+    # above), not a promise.
+    #
+    # 180 -> 200: provider_tenant 100 (owner, 2026-10-26) sets the floor at
+    # 2 x 100, and the plan refuses anything below it. `global` (180) still
+    # binds first, so this admits no more than 180 at once.
+    anthropic = 200
 
     # Exactly the floor provider_tenant = 40 implies, and the live value since
     # the 2026-10-02 doubling. It is NOT a measurement: the account-pool reasoning
@@ -254,7 +266,11 @@ pool_limits = {
     # If that uniformity turns out to be wrong, the fix is a per-provider
     # tenant ceiling, not a smaller number here -- a number below this floor
     # does not fail at runtime, it fails the plan.
-    openai = 40
+    #
+    # 40 -> 100: the floor provider_tenant 100 implies (owner, 2026-10-26). It
+    # is a ceiling with no OpenAI account pool behind it; codex's own
+    # runner:codex (20) still binds first.
+    openai = 100
   }
 }
 

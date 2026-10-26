@@ -65,7 +65,13 @@ LIVE_POOLS = {
 #: these into LIVE_POOLS, with the date read, once they are live.
 PENDING_POOLS = {
     # provider:anthropic was 120 here (#628); BROWSER-POOL-100 below raises it.
-    "provider:anthropic:tenant:smoke": 40,
+    # provider_tenant 40 -> 100 (BGD, 2026-10-26, BROWSER-POOL-100's question):
+    # every per-tenant provider pool, and the platform-wide pools its floor
+    # forces (anthropic 2 x 100, openai 1 x 100).
+    "provider:anthropic:tenant:smoke": 100,
+    "provider:anthropic:tenant:eng": 100,
+    "provider:openai:tenant:eng": 100,
+    "provider:openai": 100,
     # BROWSER-POOL-100 (BGD, 2026-10-26, part of #2136): 100 browser units
     # beside claude-code's 80 standard, so every pool both draw on is 180
     # (dev.tfvars says why). This supersedes #628's provider:anthropic 120 and
@@ -73,7 +79,7 @@ PENDING_POOLS = {
     # runs `scripts/pool-limit.sh --pool <pool> --limit <n>` for each.
     "global": 180,
     "backend:GKE_AUTOPILOT": 180,
-    "provider:anthropic": 180,
+    "provider:anthropic": 200,
     "resource:browser": 100,
     # oracle-api's tenant (#1568): min(max_active 4, capacity_units 8).
     "tenant:u-or-9a0792": 4,
