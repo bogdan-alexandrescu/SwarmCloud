@@ -435,6 +435,20 @@ ol.sc-pobj { padding-left: 18px; }
 /* The label column is the Timeline page's plus 40px: a row's second line is
    "run_8f2a · succeeded · 2 attempts", which 240px cut at "1 att…". */
 .sht { --tl-labw: 280px; min-width: 0; }
+/* THE SECOND LINE READS WHOLE (VQ-SCHEDULES re-review): one line at 255px
+   drew "claude-code · succeeded · 2 attemp…" (259 > 255) and any longer
+   profile cut deeper. It wraps instead, only between its " · " parts, each
+   part kept on one line, so "claude-code-browser · succeeded · 12 attempts"
+   is two lines rather than a cut. Wider columns were not the fix: the next
+   profile name would outgrow them, and the bars give up the width. */
+.sht .tl-lab small.sht-sub { white-space: normal; overflow: visible; text-overflow: clip; }
+.sht-sub-p { white-space: nowrap; }
+/* Beside a two-line label the track grows with its row, so its gridlines and
+   its dash reach the row's rule; 46px stays its floor. On a phone the label
+   sits over the track, which keeps its 28px (timeline.css). */
+@media (min-width: 641px) {
+  .sht-tl .tl-trk { height: auto; min-height: 46px; }
+}
 .sht-bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin: 0 0 8px; }
 .sht-bar > .sht-h { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); }
 .sht-legend { margin: 0 0 8px; }

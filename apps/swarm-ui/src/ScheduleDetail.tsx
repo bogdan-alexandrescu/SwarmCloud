@@ -538,7 +538,7 @@ function useSwitchBlock(s: Schedule, ask: boolean): SwitchBlock | null {
         rule = editor !== null && editor === self ? 'second_person' : null
       }
       if (rule === null) return setBlock(null)
-      const name = tenant.display_name || tenant.principal || tenant.tenant_id || 'this tenant'
+      const name = tenant.display_name || tenant.principal || tenant.tenant_id || 'this workspace'
       setBlock({ rule, tenant: name, admins: null })
       if (!principal.is_admin) return
       const people = await loadPeople()
@@ -555,7 +555,7 @@ function useSwitchBlock(s: Schedule, ask: boolean): SwitchBlock | null {
 }
 
 const BLOCK_REASON: Record<SwitchBlock['rule'], string> = {
-  second_person: 'You last changed this schedule’s gate, scope or spec, so another member of this tenant must make this switch.',
+  second_person: 'You last changed this schedule’s gate, scope or spec, so another member of this workspace must make this switch.',
   platform_admin: 'This schedule reaches a platform repository, where only a platform admin may switch merging to automatic.',
 }
 
@@ -599,12 +599,12 @@ function BlockedSwitch({ id, s, block, go }: { id: string; s: Schedule; block: S
           admins !== null ? (
             <p>Another member of {block.tenant} can switch it, or a platform admin: {admins}.</p>
           ) : (
-            <p>Another member of {block.tenant} can switch it, or a platform admin of this tenant ({people} lists them).</p>
+            <p>Another member of {block.tenant} can switch it, or a platform admin of this workspace ({people} lists them).</p>
           )
         ) : admins !== null ? (
           <p>A platform admin must switch it: {admins}.</p>
         ) : (
-          <p>A platform admin of this tenant must switch it ({people} lists them).</p>
+          <p>A platform admin of this workspace must switch it ({people} lists them).</p>
         )}
         {said !== '' && <p role="status">{said}</p>}
       </div>
@@ -772,7 +772,7 @@ export function MergeSwitch({ s, onChanged, go }: { s: Schedule; onChanged: () =
           ) : (
             <label className="c-field">
               <span className="c-lbl">
-                Type <code>{s.name}</code> to switch merging to automatic. In a tenant of one person, this typed name stands in for the
+                Type <code>{s.name}</code> to switch merging to automatic. In a workspace of one person, this typed name stands in for the
                 second person.
               </span>
               <input
@@ -1033,8 +1033,9 @@ function DetailBody({
             onDeleted={() => go(SCHEDULES_ADDRESS)}
           />
           <Button className="sc-fold-edit" id={`${foldId}-edit`} onClick={() => at({ tab, edit: true })}>Edit</Button>
+          {/* Open, it says what pressing it does now (VQ-SCHEDULES re-review). */}
           <Button className="sc-more" aria-expanded={more} aria-controls={`${foldId} ${foldId}-edit`} onClick={() => setMore((m) => !m)}>
-            More
+            {more ? 'Less' : 'More'}
           </Button>
         </div>
       </div>

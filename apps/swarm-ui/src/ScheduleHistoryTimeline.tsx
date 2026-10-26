@@ -28,7 +28,7 @@
  * state, and its cost as `/spans` summed it from the attempts' recorded cost.
  * A cost nobody recorded is a dash with the route's reason, never $0.
  */
-import { useEffect, useId, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useId, useState, type ReactNode } from 'react'
 
 import type { FiringWork, ScheduleFiring } from './api'
 import { Button, Segmented } from './components'
@@ -220,7 +220,8 @@ interface Row {
   label: string
   /** Where its label links: the task's page, or the item's. */
   to: string | null
-  sub: string
+  /** The second line's parts, drawn " · " apart; it wraps between them. */
+  sub: string[]
   segs: LaneSeg[]
   multi: boolean
   /** A dash with this reason instead of bars. */
@@ -280,11 +281,11 @@ function taskSegs(t: SpanTask, now: number): LaneSeg[] {
 
 function rowsOf(f: ScheduleFiring, items: SpanItem[] | null, gap: string | null, now: number): Row[] {
   if (f.work.length === 0) {
-    return [{ key: 'none', label: '', to: null, sub: '', segs: [], multi: false, gap: null, none: 'this firing made no work' }]
+    return [{ key: 'none', label: '', to: null, sub: [], segs: [], multi: false, gap: null, none: 'this firing made no work' }]
   }
   if (items === null) {
     return f.work.map((w) => ({
-      key: `${w.kind}:${w.id}`, label: w.id, to: workAddress(w), sub: KIND_WORD[w.kind] ?? w.kind,
+      key: `${w.kind}:${w.id}`, label: w.id, to: workAddress(w), sub: [KIND_WORD[w.kind] ?? w.kind],
       segs: [], multi: false, gap, none: null,
     }))
   }
@@ -296,21 +297,23 @@ function rowsOf(f: ScheduleFiring, items: SpanItem[] | null, gap: string | null,
     // An issue run's lane rows say its number; the whole title is the list's.
     const short = it.kind === 'issue_run' && it.issue ? `#${it.issue.number}` : it.id
     if (it.tasks.length === 0) {
-      rows.push({ key: `${it.kind}:${it.id}`, label: it.kind === 'issue_run' && it.issue ? name : it.id, to: itemAt, sub: kind, segs: [], multi: false, gap: it.unread ?? 'nothing was served for it', none: null })
+      rows.push({ key: `${it.kind}:${it.id}`, label: it.kind === 'issue_run' && it.issue ? name : it.id, to: itemAt, sub: [kind], segs: [], multi: false, gap: it.unread ?? 'nothing was served for it', none: null })
       continue
     }
     for (const t of it.tasks) {
       // A task item is named by what it is, its profile said beside it; a
       // step of a run or a workflow by its step, its item beside it. The
-      // profile goes bare, with no "on": "on claude-code · succeeded · 1
-      // attempt" is wider than the 255px --tl-labw leaves and the ellipsis
-      // ate the attempt count this line exists to give (VQ-SCHEDULES review).
+      // profile goes bare, with no "on" (VQ-SCHEDULES review). The line no
+      // longer has to fit one line of the 255px label column: it wraps
+      // between its parts (`.sht-sub`, schedules.css), so "claude-code ·
+      // succeeded · 2 attempts", which drew "2 attemp…" at 259px, and
+      // "claude-code-browser · succeeded · 12 attempts" read whole
+      // (VQ-SCHEDULES re-review).
       const profile = profileOf(t)
       const label = it.kind === 'task' ? name : t.label ?? t.task_id
       const beside = it.kind === 'task' ? (profile === null ? t.label : profile) : short
       const sub = [beside, t.state?.toLowerCase().replace(/_/g, ' '), t.attempts === null ? null : attemptsWord(t.attempts.length, t.attempts_truncated === true)]
         .filter((x): x is string => x !== null && x !== undefined)
-        .join(' · ')
       rows.push({
         key: `${it.kind}:${it.id}:${t.task_id}`,
         label,
@@ -332,7 +335,7 @@ function rowsOf(f: ScheduleFiring, items: SpanItem[] | null, gap: string | null,
         key: `${it.kind}:${it.id}:waiting`,
         label: waiting,
         to: itemAt,
-        sub: `${short} · holds nothing`,
+        sub: [short, 'holds nothing'],
         segs: [{ kind: 'park', from: since, to: now, gen: null, open: true, endKnown: true, future: false, label: null, attemptId: null, reason: waiting, current: false }],
         multi: false,
         gap: null,
@@ -341,7 +344,7 @@ function rowsOf(f: ScheduleFiring, items: SpanItem[] | null, gap: string | null,
       })
     }
     if (it.unread !== null) {
-      rows.push({ key: `${it.kind}:${it.id}:rest`, label: it.id, to: itemAt, sub: kind, segs: [], multi: false, gap: it.unread, none: null })
+      rows.push({ key: `${it.kind}:${it.id}:rest`, label: it.id, to: itemAt, sub: [kind], segs: [], multi: false, gap: it.unread, none: null })
     }
   }
   return rows
@@ -653,7 +656,16 @@ export function HistoryTimeline({
                             {r.to === null ? <span className="tl-name mono">{r.label}</span> : <InApp go={go} to={r.to} className="tl-name">{r.label}</InApp>}
                           </b>
                         )}
-                        {r.sub !== '' && <small title={r.sub}>{r.sub}</small>}
+                        {r.sub.length > 0 && (
+                          <small className="sht-sub">
+                            {r.sub.map((p, i) => (
+                              <Fragment key={i}>
+                                {i > 0 && ' · '}
+                                <span className="sht-sub-p">{p}</span>
+                              </Fragment>
+                            ))}
+                          </small>
+                        )}
                       </div>
                       <div className="tl-trk">
                         {r.gap !== null ? (
