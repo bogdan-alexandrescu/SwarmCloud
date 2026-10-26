@@ -144,6 +144,7 @@ from swarm_redaction import RULES as CREDENTIAL_RULES
 from swarm_redaction import redact as redact_text
 
 from . import artifact_manifest as manifest_mod
+from . import budget as budget_mod
 from . import cachedirs as cachedirs_mod
 from . import children as children_mod
 from . import continuation as continuation_mod
@@ -1134,6 +1135,10 @@ class Worker:
         self._channel_seen: int | None = None
         self._swaps = 0
         self._just_swapped = False
+        #: The attempt's budget (#2459, `budget`), built with the first child
+        #: environment of a budgeted CLI task; None for every other attempt,
+        #: which then runs exactly as before.
+        self.budget: budget_mod.BudgetGuard | None = None
         # EVERY AGENT RUN, COUNTED (SWAP-RUNS, #2457). An attempt can start
         # several runners -- an account swap, a short rate limit and a
         # reloaded credential all restart the agent in place -- and the
@@ -3707,6 +3712,12 @@ class Worker:
                 with self._heartbeat_meanwhile("account channel"):
                     self._watch_account()
 
+            if self.budget is not None:
+                # A file stat when nothing changed; a price asked of swarm-api
+                # at most every `budget.PRICE_INTERVAL_SECONDS` (#2459).
+                with self._heartbeat_meanwhile("budget"):
+                    self.budget.watch()
+
             if now >= next_poll:
                 next_poll = now + cfg.control_poll_seconds
                 try:
@@ -4368,6 +4379,23 @@ class Worker:
             summary[verdict_mod.RENDERED_REVIEW_KEY] = self._scrub(dict(self._rendered_review))
 
         runner_result = self._add_runner_block(summary)
+
+        if self.budget is not None:
+            # The limits, what the attempt used and, when it stopped the
+            # agent, how (#2459); on every budgeted attempt, however it ended.
+            summary[budget_mod.SUMMARY_KEY] = self.budget.summary()
+        if self.budget is not None and self.budget.exceeded:
+            # STOPPED BY ITS BUDGET: checkpointed and published above, as a
+            # timed-out step is. FAILED with the cause `budget_exceeded`;
+            # `end_cause` stays null until contract request 118 types it --
+            # the contract's own rule for an end with no value of its own.
+            self._finish_terminal(
+                state=TaskState.FAILED,
+                exit_code=result.exit_code,
+                error=self.budget.error(),
+                result_summary=summary,
+            )
+            return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
         if result.timed_out:
             error = f"runner exceeded its {self.cfg.timeout_seconds}s timeout and was killed"
@@ -9186,6 +9214,9 @@ class Worker:
         # task, from its document as swarm-api recorded it at submission --
         # never from `input` (invariant 10). See `gitidentity`.
         base.update(git_identity_env(self._task))
+        # THE BUDGET (#2459): where the runner reports usage and reads the
+        # stop, on a budgeted task only. Nothing for any other.
+        base.update(self._budget_env())
         for name in ("CLAUDE_CODE_BIN", "CLAUDE_CODE_ARGS", "CODEX_BIN", "CODEX_ARGS"):
             # Platform-set, never caller-set: they live in the Job definition.
             if os.environ.get(name):
@@ -9494,6 +9525,31 @@ class Worker:
         return outcome
 
     # -- the account mid-run (S13-S15) ---------------------------------------
+    def _budget_env(self) -> dict[str, str]:
+        """The runner's budget files (#2459), building the guard on first use.
+
+        Only for a coding-agent CLI (`cli_agent_spec`) whose signed dispatch
+        block carries a budget: every other attempt gets nothing, and its
+        runner, settings and supervision are what they were before.
+        """
+        if self.budget is None:
+            spec = cli_agent_spec(self.cfg.runner_profile)
+            limits = budget_mod.Limits.from_dispatch(self._dispatch_block())
+            if spec is None or limits is None or self.ws is None:
+                return {}
+            self.budget = budget_mod.BudgetGuard(
+                limits,
+                private=self.ws.private,
+                emit=lambda detail: self.control.emit(EventType.RUNNING, detail),
+                log=self.log,
+                pricer=self.spend_pricer.price,
+                # claude-code's PostToolUse hook is the one way to tell an
+                # agent mid-run; `codex exec` takes nothing once started.
+                can_tell=spec.name == "claude-code",
+            )
+            self.log.info("this attempt has a budget", limit=limits.as_dict())
+        return self.budget.env()
+
     def _account_channel_paths(self) -> tuple[Path, Path]:
         """(stream, move): the runner's channel, in the worker's own `private/`.
 
@@ -15340,6 +15396,8 @@ class Worker:
         self._stop_sampler()
         before = dict(self._spend)
         self._collect_spend()
+        if self.budget is not None:
+            self.budget.runner_ended()
         self._close_run(result, spent_before=before)
 
     def _open_run(self, *, resumed: bool) -> None:

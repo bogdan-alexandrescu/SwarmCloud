@@ -441,6 +441,32 @@ SWITCHES: dict[str, Switch] = {
         "swarm-workspace-grant-key is refused 422 instead of writing a grant the release "
         "will never honour. On once every environment holds the grant key",
     ),
+    # Lane BUDGET-CAP (#2459, `budget`): a step's budget above the workspace
+    # default or the platform ceiling, and a workspace default above the
+    # ceiling. SHIP ON (default=True) by BGD's answer of 2026-10-26 (~22:15Z,
+    # question 5, "enforce at once"), unlike a new refusal's usual
+    # report-only start (the 2026-10-08 rule): no caller sends a `budget`
+    # before this feature, so the first deploy refuses nobody who worked
+    # before it. Off loses no limit, which is why the switch stays: every
+    # attempt's limit is min(step, workspace, ceiling), so off, the step still
+    # runs under the lower limit and the default is still capped by the
+    # ceiling. Set REFUSAL_BUDGET_ABOVE_LIMIT=off or
+    # REFUSAL_BUDGET_ABOVE_CEILING=off to let the request through again.
+    "budget_above_limit": Switch(
+        code="budget_above_limit",
+        why="a task or workflow step whose `budget` is above the workspace's default or the "
+        "platform ceiling in the same unit is refused 422, naming both, instead of running "
+        "under the lower limit. Ships on by BGD's decision 2026-10-26 (enforce at once); "
+        "off, the step runs under the lower limit",
+        default=True,
+    ),
+    "budget_above_ceiling": Switch(
+        code="budget_above_ceiling",
+        why="a workspace budget default above the platform ceiling in its unit is refused 422 "
+        "naming the ceiling, instead of being saved and capped at every resolution. Ships on "
+        "by BGD's decision 2026-10-26 (enforce at once); off, the default is saved and capped",
+        default=True,
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "
