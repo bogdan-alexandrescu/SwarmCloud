@@ -42,7 +42,7 @@ A `browser_take_screenshot` with no filename is saved under
 `$SWARM_ARTIFACTS_DIR/screenshots` and comes back to the model as an image.
 **The size is a preset, never a resize**: `swarm-handoff device <preset>`
 switches between `desktop` (1440×900), `iphone-15` (393×852), `phone-390`
-(390×844), `pixel-8` (412×915), `iphone-se` (375×667) and `ipad-7` (810×1080),
+(390×844), `phone-380` (380×800), `pixel-8` (412×915), `iphone-se` (375×667) and `ipad-7` (810×1080),
 and `browser_resize` is refused, so the person watching sees the device the
 page is laid out for. `swarm-handoff theme dark|light|system` sets the colour
 scheme every page is told to prefer, across navigations and new tabs. Every

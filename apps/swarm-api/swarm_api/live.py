@@ -799,6 +799,7 @@ LIVE_PRESETS: tuple[dict[str, Any], ...] = (
     {"name": "desktop", "width": 1440, "height": 900, "scale": 1.0, "mobile": False},
     {"name": "iphone-15", "width": 393, "height": 852, "scale": 3.0, "mobile": True},
     {"name": "phone-390", "width": 390, "height": 844, "scale": 3.0, "mobile": True},
+    {"name": "phone-380", "width": 380, "height": 800, "scale": 3.0, "mobile": True},
     {"name": "pixel-8", "width": 412, "height": 915, "scale": 2.625, "mobile": True},
     {"name": "iphone-se", "width": 375, "height": 667, "scale": 2.0, "mobile": True},
     {"name": "ipad-7", "width": 810, "height": 1080, "scale": 2.0, "mobile": True},
