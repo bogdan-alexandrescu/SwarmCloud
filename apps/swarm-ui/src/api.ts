@@ -8264,6 +8264,13 @@ export async function deleteProviderKey(provider: string, scope: ProviderKeyScop
 export interface WorkspaceSecretGrant {
   consumer: string
   enabled: boolean
+  /** The slot it fills; null when the list did not say. */
+  slot: string | null
+  /**
+   * The hosts a host-scoped slot's secret may be sent to (`cf-access`,
+   * swarm_api `slot_hosts`), as served: sorted, empty for every other slot.
+   */
+  hosts: string[]
 }
 
 /** One stored secret: never a value, its length, a prefix or a suffix. */
@@ -8343,8 +8350,9 @@ function normWorkspaceSecret(raw: unknown): WorkspaceSecret | null {
   if (name === null) return null
   const grants = (Array.isArray(r.grants) ? r.grants : []).flatMap((g): WorkspaceSecretGrant[] => {
     if (typeof g !== 'object' || g === null) return []
-    const consumer = wsText((g as Record<string, unknown>).consumer)
-    return consumer === null ? [] : [{ consumer, enabled: (g as Record<string, unknown>).enabled === true }]
+    const r = g as Record<string, unknown>
+    const consumer = wsText(r.consumer)
+    return consumer === null ? [] : [{ consumer, enabled: r.enabled === true, slot: wsText(r.slot), hosts: wsStrings(r.hosts) }]
   })
   const rotated = wsText(r.rotated_at)
   return {
@@ -8392,9 +8400,11 @@ function normWorkspaceSecretConsumers(raw: unknown): WorkspaceSecretConsumer[] {
 }
 
 /**
- * The fixture build's list: one secret on the personal workspace, which its
- * owner manages, granted to two consumers and not a third. No value: the API
- * serves none.
+ * The fixture build's list: secrets on the personal workspace, which its
+ * owner manages. One is granted to two consumers and not a third; the other
+ * is a Cloudflare Access service token in claude-code-browser's `cf-access`
+ * slot, its grant holding two hosts (CF-ACCESS-HOSTS-UI, part of #2442). No
+ * value: the API serves none.
  */
 async function fixtureWorkspaceSecrets(target: ApiRoute): Promise<Result<WorkspaceSecretList>> {
   await new Promise((r) => setTimeout(r, 80))
@@ -8414,6 +8424,10 @@ async function fixtureWorkspaceSecrets(target: ApiRoute): Promise<Result<Workspa
           { consumer: 'component:judge', enabled: true },
           { consumer: 'profile:claude-code', enabled: false },
         ],
+      }, {
+        name: 'admin-access', provider: 'other', kind: 'oauth_client', current_version: '1',
+        created_at: at, created_by: 'alice@example.com', rotated_at: null, rotated_by: null,
+        grants: [{ consumer: 'profile:claude-code-browser', slot: 'cf-access', enabled: true, hosts: ['admin.example.com', 'api.admin.example.com'] }],
       }],
     }),
   }
@@ -8440,10 +8454,20 @@ export async function loadWorkspaceSecrets(): Promise<Result<WorkspaceSecretList
 const FIXTURE_SECRET_KINDS = ['api_key', 'bearer_token', 'basic_auth', 'oauth_client', 'opaque']
 const FIXTURE_NO_SLOT = 'declares no secret slot yet; a grant would deliver nothing'
 
-/** The fixture build's catalogue: some of `_catalogue()`'s profiles, and its tools and components, with the slots §2.4 gives them. */
+/**
+ * The fixture build's catalogue: some of `_catalogue()`'s profiles, and its
+ * tools and components, with the slots §2.4 gives them. claude-code-browser
+ * also reads `cf-access`, the slot contract request 117 (accepted
+ * 2026-10-26, not yet applied) gives it, so the grant matrix's hosts field
+ * can be drawn for review.
+ */
 const FIXTURE_SECRET_CONSUMERS = [
   ...['browser', 'claude-code', 'claude-code-browser', 'codex'].map((name) => ({
-    consumer: `profile:${name}`, kind: 'profile', name, slots: [{ slot: 'files', kinds: FIXTURE_SECRET_KINDS }], grantable: true, note: '',
+    consumer: `profile:${name}`, kind: 'profile', name,
+    slots: name === 'claude-code-browser'
+      ? [{ slot: 'files', kinds: FIXTURE_SECRET_KINDS }, { slot: 'cf-access', kinds: ['oauth_client'] }]
+      : [{ slot: 'files', kinds: FIXTURE_SECRET_KINDS }],
+    grantable: true, note: '',
   })),
   { consumer: 'tool:jev-browser', kind: 'tool', name: 'jev-browser', slots: [{ slot: 'typesafe', kinds: ['api_key'] }], grantable: true, note: '' },
   { consumer: 'tool:dev-browser', kind: 'tool', name: 'dev-browser', slots: [], grantable: false, note: FIXTURE_NO_SLOT },
@@ -8507,16 +8531,26 @@ export async function rotateWorkspaceSecret(name: string, body: WorkspaceSecretR
 }
 
 /**
+ * A grant write's body: `{enabled}`, `slot` only for a consumer that declares
+ * several, and `hosts` only for a host-scoped slot (`cf-access`). Never a
+ * value: a grant names who may read a secret, not what it is.
+ */
+function grantBody(enabled: boolean, slot: string | null, hosts: readonly string[] | null): Record<string, unknown> {
+  return { enabled, ...(slot === null ? {} : { slot }), ...(hosts === null ? {} : { hosts: [...hosts] }) }
+}
+
+/**
  * `PUT /v1/workspace/secrets/{name}/grants/{consumer}`: ONE cell of the
  * matrix, `{enabled}` and nothing else. No slot: every consumer in the
  * catalogue reads one, and the API defaults to it (§2.2); `slot` is sent
- * only for a consumer that declares several. The answer is the record's
- * grants after the write, or null when it carried none.
+ * only for a consumer that declares several, and `hosts` only for a
+ * host-scoped slot's cell. The answer is the record's grants after the
+ * write, or null when it carried none.
  */
-export async function setWorkspaceSecretGrant(name: string, consumer: string, enabled: boolean, slot: string | null = null): Promise<Result<WorkspaceSecret | null>> {
+export async function setWorkspaceSecretGrant(name: string, consumer: string, enabled: boolean, slot: string | null = null, hosts: readonly string[] | null = null): Promise<Result<WorkspaceSecret | null>> {
   const target = route('/v1/workspace/secrets/{name}/grants/{consumer}', { name, consumer })
   if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<null>
-  const r = await write(target, 'PUT', slot === null ? { enabled } : { enabled, slot })
+  const r = await write(target, 'PUT', grantBody(enabled, slot, hosts))
   if (r.status === 'error') return r
   return { status: 'ok', fetchedAt: Date.now(), data: servedSecret(r) }
 }
@@ -8934,7 +8968,7 @@ export interface SecretStoreApi {
   create(body: WorkspaceSecretCreate, linkToken: string | null): Promise<Result<null>>
   rotate(name: string, body: WorkspaceSecretRotate, linkToken: string | null): Promise<Result<WorkspaceSecret | null>>
   remove(name: string): Promise<Result<unknown>>
-  grant(name: string, consumer: string, enabled: boolean, slot?: string | null): Promise<Result<WorkspaceSecret | null>>
+  grant(name: string, consumer: string, enabled: boolean, slot?: string | null, hosts?: readonly string[] | null): Promise<Result<WorkspaceSecret | null>>
   mintLink(action: 'add' | 'rotate', name: string | null): Promise<Result<MintedLink>>
 }
 
@@ -8996,7 +9030,7 @@ const WORKSPACE_STORE: SecretStoreApi = {
   create: createWorkspaceSecret,
   rotate: rotateWorkspaceSecret,
   remove: deleteWorkspaceSecret,
-  grant: (name, consumer, enabled, slot = null) => setWorkspaceSecretGrant(name, consumer, enabled, slot),
+  grant: (name, consumer, enabled, slot = null, hosts = null) => setWorkspaceSecretGrant(name, consumer, enabled, slot, hosts),
   mintLink: (action, name) => mint(route('/v1/workspace/secrets/links'), linkBody(action, name)),
 }
 
@@ -9028,10 +9062,10 @@ function repositoryStore(repoId: string): SecretStoreApi {
       if (USE_FIXTURES) return fixtureSecretsNotServed(target)
       return write(target, 'DELETE', { name })
     },
-    async grant(name, consumer, enabled, slot = null) {
+    async grant(name, consumer, enabled, slot = null, hosts = null) {
       const target = route('/v1/repositories/{repo_id}/secrets/{name}/grants/{consumer}', { repo_id, name, consumer })
       if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<null>
-      const r = await write(target, 'PUT', slot === null ? { enabled } : { enabled, slot })
+      const r = await write(target, 'PUT', grantBody(enabled, slot, hosts))
       return r.status === 'error' ? r : { status: 'ok', fetchedAt: Date.now(), data: servedSecret(r) }
     },
     mintLink: (action, name) => mint(route('/v1/repositories/{repo_id}/secrets/links', { repo_id }), linkBody(action, name)),
