@@ -28,8 +28,10 @@ import {
   incidents,
   poolIncidents,
   type AccountHealthRecord,
+  type HealthAccount,
   type HealthEvent,
   type HealthKind,
+  type HealthStatus,
   type PoolHealth,
 } from '../accountHealthModel'
 
@@ -209,10 +211,10 @@ describe('the page groups by the shared rule, not a copy of it', () => {
   it('names each of incidentsOf’s incidents for its account, and nothing else, across the development pool', async () => {
     const r = await loadAccountHealthBoard()
     if (r.status !== 'ok' || r.data.health.kind !== 'ok') throw new Error('the fixture board did not load')
-    const row = new Map(r.data.page.accounts.map((a) => [a.account_id, a.health_status]))
+    const row = new Map((r.data.page.accounts as HealthAccount[]).map((a) => [a.account_id, a.health_status]))
     let compared = 0
     for (const rec of r.data.health.pool.accounts) {
-      const status = row.get(rec.account_id) ?? null
+      const status = (row.get(rec.account_id) ?? null) as HealthStatus | null
       const page = incidents(rec, status, r.data.readAt)
       const shared = incidentsOf(rec.events as unknown as AccountHealthEvent[], status, r.data.readAt)
       expect(page.map(({ account_id, label, family, ...x }) => ({ fam: family, ...x }))).toEqual(shared)

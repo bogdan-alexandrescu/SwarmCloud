@@ -418,7 +418,7 @@ describe('review fixes: the phone, the swimlane, the list and the development po
     // Healthy row: the two halves of one page disagreeing.
     const r = await loadAccountHealthBoard()
     if (r.status !== 'ok' || r.data.health.kind !== 'ok') throw new Error('the fixture board did not load')
-    const row = new Map(r.data.page.accounts.map((a) => [a.account_id, a.health_status]))
+    const row = new Map((r.data.page.accounts as HealthAccount[]).map((a) => [a.account_id, a.health_status]))
     const { open } = poolIncidents(r.data.health.pool, (id) => (row.get(id) ?? null) as HealthStatus | null, r.data.readAt)
     const limits = open.filter((x) => x.family === 'lim')
     expect(limits.length).toBeGreaterThan(0)
