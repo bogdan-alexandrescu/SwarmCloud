@@ -447,6 +447,21 @@ SWITCHES: dict[str, Switch] = {
         "3). On once a schedule's failures are visible in the console (S7), so a "
         "pause has a screen that says why",
     ),
+    # The inbox's reject rule (docs/schedules.md §4.5; BGD 2026-10-26, #2417
+    # A5f): only someone who may APPROVE an item may reject it. Until then
+    # any member could. SHIPS ON (default=True), unlike a new refusal's usual
+    # report-only start: BGD's picked decision page (A5f) drew the 403 and
+    # hides Reject from a member who may not approve, and every caller can
+    # read who may beforehand from the item's `may_decide`. Set
+    # REFUSAL_REJECT_APPROVER_REQUIRED=off to let any member reject again.
+    "reject_approver_required": Switch(
+        code="reject_approver_required",
+        why="a member whom an item's approve would refuse -- its gate's approvers, its hold, the "
+        "last-editor rule or the custom-prompt spec rule -- is refused 403 on :reject of it too. "
+        "Ships on by BGD's decision 2026-10-26 (#2417 A5f); the console reads may_decide.reject "
+        "and offers Reject only to those who may approve",
+        default=True,
+    ),
     # Join requests (docs/design/join-requests.md §4.9, lane JOIN-STORE, part
     # of #2325) have NO switch here, deliberately: join_link_unknown,
     # join_already_member, join_already_reaches, join_not_offered,
