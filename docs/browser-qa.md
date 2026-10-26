@@ -205,3 +205,54 @@ compare within one run for now).
   2), rather than capture at another size.
 * **A schedule.** It runs on demand. A weekly or nightly sweep is the owner's
   call (design §7 Q6).
+
+---
+
+## 5. Running a repository's own Playwright suite
+
+A step on either Claude profile can run the repository's own headless suite
+(`npx playwright test`), with the Chromium revision that repository's
+`@playwright/test` pins. BGD chose this on 2026-10-26 (fix (c) on #2253) after
+three steps of one Product Oracle run could not. Neither image carries the
+repository's revision: the step installs it, and Chromium's system libraries
+and fonts are already in both images, so **never pass `--with-deps`**. The agent
+is not root, so the flag can only fail on `su` after a download.
+
+**On `claude-code`** (agent-runtime-base), run the commands as they are:
+
+```bash
+npx playwright install chromium   # into $XDG_CACHE_HOME/ms-playwright
+npx playwright test
+```
+
+The worker points `XDG_CACHE_HOME` at the attempt's cache
+(`apps/agent-worker/agent_worker/cachedirs.py`), which is writable and is never
+checkpointed, so the revision (~170 MB) stays out of the agent's diff and out
+of the 2 GiB checkpoint. A resumed attempt downloads it again. The image
+carries the libraries that Playwright's own `install-deps chromium` list names
+for Debian 12, plus fontconfig, Liberation and Noto Color Emoji. It does not
+carry a browser
+(`images/agent-runtime-base/Dockerfile`). Before #2253 the launch failed on a
+missing `libglib-2.0.so.0`, and a renderer with no font fontconfig could find
+died with `Skia FontConfig FATAL`. CJK and Thai fonts are not in the base
+image, so a screenshot assertion over such text renders it as boxes there.
+
+**On `claude-code-browser`**, prefix each command with `swarm-test-browsers`:
+
+```bash
+swarm-test-browsers npx playwright install chromium
+swarm-test-browsers npx playwright test
+```
+
+The agent's own `PLAYWRIGHT_BROWSERS_PATH` is the live-browser stub
+(BROWSER-ENFORCE, #1030), so a bare `npx playwright test` fails to launch,
+and that is deliberate: the agent's own browsing goes through the live browser
+the person watching sees. `swarm-test-browsers` runs that one command with
+`PLAYWRIGHT_BROWSERS_PATH="$SWARM_TEST_BROWSERS_PATH"`. That is a writable
+directory in the attempt's cache, seeded with links to the image's own
+revisions, so a suite that pins the image's revision downloads nothing.
+Calling a test runner without the wrapper, with
+`PLAYWRIGHT_BROWSERS_PATH="$SWARM_TEST_BROWSERS_PATH" npx playwright test`, does
+the same thing. The wrapper is the form the agent's note names. The design, and
+what the exception does and does not relax, are in
+[live-browser.md, "The test-runner exception"](design/live-browser.md#the-test-runner-exception-pw-testrunner-2253).

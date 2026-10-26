@@ -224,3 +224,14 @@ def test_claude_code_without_the_browser_image_is_unchanged(monkeypatch, tmp_pat
     assert "swarm-test-browsers" not in seen["prompt"]
     assert not xdg.exists()
     assert not hasattr(claude_code, "TEST_RUNNER_NOTE") or claude_code.TEST_RUNNER_NOTE not in seen["prompt"]
+
+
+def test_the_note_names_the_test_path_and_how_a_runner_uses_it():
+    # FIX-2253: a test runner the wrapper cannot prefix (a script that starts
+    # its own `npx`, a Makefile target) is pointed at the directory by name.
+    from agent_worker.runners import claude_code
+
+    note = claude_code.TEST_RUNNER_NOTE
+    # MUTATION: drop the variable from the note -- the agent learns no path to give a runner.
+    assert f"${claude_code.TEST_BROWSERS_ENV}" in note
+    assert f'PLAYWRIGHT_BROWSERS_PATH="${claude_code.TEST_BROWSERS_ENV}" npx playwright test' in note
