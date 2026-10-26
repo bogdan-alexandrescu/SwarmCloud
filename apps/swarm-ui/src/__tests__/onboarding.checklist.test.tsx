@@ -111,7 +111,7 @@ describe('the Setup page draws the server-derived checklist', () => {
     expect(steps().map((li) => li.dataset.state)).toEqual(['done', 'todo', 'todo', 'todo', 'todo', 'todo', 'todo'])
     expect(stepEl('github_connected').getAttribute('aria-current')).toBe('step')
     expect(steps().filter((li) => li.getAttribute('aria-current') === 'step')).toHaveLength(1)
-    expect(visible(stepEl('signed_in'))).toContain('dev@swarm.example.com · tenant eng')
+    expect(visible(stepEl('signed_in'))).toContain('dev@swarm.example.com · workspace eng')
     expect(screen.getByText('1 of 7 done')).toBeTruthy()
     expect(screen.getByRole('img', { name: '1 of 7 setup steps done' })).toBeTruthy()
   })

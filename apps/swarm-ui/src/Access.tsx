@@ -1034,7 +1034,7 @@ export function TypedRepository({ tenantId, onChange }: { tenantId: string; onCh
       setRefused(res.error)
       return
     }
-    setDone(res.status === 'ok' ? `${res.data.grant.repository} granted ${res.data.grant.mode}${res.data.registered ? ', and registered for the tenant' : ''}.` : null)
+    setDone(res.status === 'ok' ? `${res.data.grant.repository} granted ${res.data.grant.mode}${res.data.registered ? ', and registered for the workspace' : ''}.` : null)
     setValue('')
     onChange()
   }
@@ -1773,7 +1773,7 @@ function ChooseTab({ overview, reloadOverview, open, startOwner }: { overview: A
  * they hold instead.
  */
 function accessLede(view: View, tenant: string | null): string {
-  const inTenant = tenant !== null ? ` in tenant ${tenant}` : ''
+  const inTenant = tenant !== null ? ` in workspace ${tenant}` : ''
   if (view === 'choose') {
     return `The owners the GitHub App is installed on${inTenant}, and the repositories you choose from them, each Read or Write.`
   }
