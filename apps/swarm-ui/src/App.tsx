@@ -1673,6 +1673,12 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
       return 'help'
     case GITHUB_CALLBACK:
       return 'work'
+    // THE JOIN PAGE LIGHTS PROFILE (JOIN-UI-PERSON review): it is the
+    // person's own page -- their requests to join -- and with no tab the
+    // Profile panel marks none of its pages current. `default` is Submit,
+    // which named a page the person was not on.
+    case JOIN:
+      return 'profile'
     // EVERY SETTINGS PAGE LIGHTS PROFILE (NAV-PROFILE; part of #1633): its
     // panel holds them. Only Profile's exact address is one since SSC-UI;
     // `#settings/<anything else>` is Pool limits (LEGACY), and lights Admin.

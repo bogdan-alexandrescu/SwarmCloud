@@ -260,15 +260,20 @@ function MyRequests({ rows, onChange }: { rows: JoinRequestMine[]; onChange: () 
                 <td data-label="State"><b>{words.state}</b></td>
                 <td data-label="When" title={at}>{at === '' ? '' : timeAgo(at)}</td>
                 <td data-label="What it means">{words.meaning}</td>
-                <td data-label="Actions">
-                  {r.state === 'requested' && (
+                {/* ONLY AN OPEN REQUEST HAS AN ACTION: a decided one keeps
+                    the column's cell but no `data-label`, so its phone card
+                    prints no empty "Actions" caption. */}
+                {r.state === 'requested' ? (
+                  <td data-label="Actions">
                     <Button size="sm" aria-label={`Withdraw your request to join ${r.display_name}`}
                       busy={busy === r.ref} disabled={busy !== null && busy !== r.ref}
                       onClick={() => void withdraw(r)}>
                       Withdraw
                     </Button>
-                  )}
-                </td>
+                  </td>
+                ) : (
+                  <td />
+                )}
               </tr>
             )
           })}
