@@ -1134,6 +1134,17 @@ class Worker:
         self._channel_seen: int | None = None
         self._swaps = 0
         self._just_swapped = False
+        # EVERY AGENT RUN, COUNTED (SWAP-RUNS, #2457). An attempt can start
+        # several runners -- an account swap, a short rate limit and a
+        # reloaded credential all restart the agent in place -- and the
+        # summary's `duration_seconds` used to be the LAST one's alone: two
+        # 7,200 s timeouts on 2026-10-26 read "agent ran 4,600 s" because a
+        # swap at minute 42 restarted it. One entry per runner start, closed
+        # when it is reaped (`_close_run`); one per swap (`_emit_swapped`).
+        # `_run_open` is the run now running, with what was spent before it.
+        self._runs: list[dict[str, Any]] = []
+        self._swap_log: list[dict[str, Any]] = []
+        self._run_open: dict[str, Any] | None = None
         # WHAT THIS ATTEMPT SPENT, summed over every runner it started. An
         # attempt can start several -- a short rate limit and a reloaded
         # credential both restart in place -- and each one's result.json is
@@ -3577,6 +3588,7 @@ class Worker:
         # The session this runner reports for: its own, or an earlier
         # runner's it continues with `--resume` (`_account_channel_env`).
         self._note_runner_spend_start(resumed=bool(child_env.get(RESUME_SESSION_ENV)))
+        self._open_run(resumed=bool(child_env.get(RESUME_SESSION_ENV)))
 
         if self.phases.current != "runner":
             # The last startup line. An in-place restart is not a new phase.
@@ -3759,7 +3771,7 @@ class Worker:
                 break
 
         result = child.finish()
-        self._child_ended()
+        self._child_ended(result)
         # An agent that ended with a hand-off open is waiting for nobody now:
         # resolved while the task is still RUNNING (live-browser §4.1).
         self.handoff.agent_exited(ws.work)
@@ -4332,6 +4344,12 @@ class Worker:
             summary["branch"] = self._scrub(dict(self._carrier_pushed))
         summary["exit_code"] = result.exit_code
         summary["duration_seconds"] = round(result.duration_seconds, 3)
+        if len(self._runs) > 1:
+            # EVERY RUN (SWAP-RUNS, #2457): the attempt's agent time is the
+            # sum of its runs; the last run's own figure keeps its own name.
+            summary["duration_seconds"] = round(
+                sum(float(run.get("duration_s") or 0.0) for run in self._runs), 3)
+            summary["last_run_duration_seconds"] = round(result.duration_seconds, 3)
         if self._index_phases is not None:
             summary["repo_index_phases"] = [r.as_dict() for r in self._index_phases]
         if self._verdict is not None:
@@ -4624,6 +4642,8 @@ class Worker:
         ws = self.ws
         if ws is None:
             return None
+        # Every run and swap, when there was more than one run (SWAP-RUNS).
+        summary.update(_runs_summary(self._runs, self._swap_log))
         if self._spend.get("cost_estimated"):
             # The attempt's `cost_usd` includes an estimate for a run stopped
             # before it reported one (#627). Said here, at the top, because a
@@ -9782,6 +9802,14 @@ class Worker:
             account_id=taken.account_id,
             reason=reason,
         )
+        # The summary's record of it (SWAP-RUNS): after which run, and when.
+        self._swap_log.append({
+            "at": _rfc3339_now(),
+            "from": left.account_id,
+            "to": taken.account_id,
+            "reason": reason,
+            "after_run": len(self._runs),
+        })
         try:
             self.control.emit(
                 EventType.RUNNING,
@@ -15300,16 +15328,76 @@ class Worker:
         }
 
     # -- spend -------------------------------------------------------------
-    def _child_ended(self) -> None:
+    def _child_ended(self, result: ChildResult | None = None) -> None:
         """Everything that has to happen the moment a runner is gone.
 
-        Called at every site that reaps a runner, so a new site gets both
-        halves by calling one thing: the resource sample is stopped and
-        written, and the run's spend is taken before a restart can overwrite
-        the result.json it is in.
+        Called at every site that reaps a runner, so a new site gets every
+        part by calling one thing: the resource sample is stopped and
+        written, the run's spend is taken before a restart can overwrite
+        the result.json it is in, and the run is closed in `_runs` with what
+        it spent. `result` is the reaped runner's, where the site kept it.
         """
         self._stop_sampler()
+        before = dict(self._spend)
         self._collect_spend()
+        self._close_run(result, spent_before=before)
+
+    def _open_run(self, *, resumed: bool) -> None:
+        """Start this runner's entry in `_runs` (SWAP-RUNS). Never raises."""
+        account = self._account
+        self._run_open = {
+            "run": len(self._runs) + 1,
+            "started_at": _rfc3339_now(),
+            "account": account.account_id if account is not None else None,
+            "resumed": resumed,
+            # `_just_swapped` is set by a swap and read after the next run
+            # ends, so here it says this run is the one the swap started.
+            "after_swap": bool(self._just_swapped),
+        }
+
+    def _close_run(self, result: ChildResult | None, *, spent_before: dict[str, Any]) -> None:
+        """Close the run `_open_run` started, once. Never raises.
+
+        Its duration and exit are the reaped runner's; its tokens and cost
+        are what `_collect_spend` added for it -- the difference, because a
+        resumed session reports the session's running totals (`_add_spend`).
+        A run that followed a swap also carries `reread`: the seconds and
+        tokens it spent before its first action (`cliagent.is_action`), as
+        the runner's account channel measured them, or everything it spent
+        when it never acted (`reached: false`).
+        """
+        entry, self._run_open = self._run_open, None
+        if entry is None:
+            return
+        try:
+            child = self._child
+            if result is not None:
+                seconds, exit_code, timed_out = (
+                    result.duration_seconds, result.exit_code, result.timed_out)
+            else:
+                seconds = child.elapsed_seconds if child is not None else 0.0
+                exit_code = child.poll() if child is not None else None
+                timed_out = False
+            entry["ended_at"] = _rfc3339_now()
+            entry["duration_s"] = round(float(seconds), 3)
+            entry["exit_code"] = exit_code
+            if timed_out:
+                entry["timed_out"] = True
+            tokens = {
+                key: self._spend[key] - spent_before.get(key, 0)
+                for key in _RUN_TOKEN_KEYS
+                if key in self._spend
+            }
+            if tokens:
+                entry["tokens"] = tokens
+            if "total_cost_usd" in self._spend:
+                entry["cost_usd"] = round(
+                    self._spend["total_cost_usd"] - spent_before.get("total_cost_usd", 0), 10)
+            if entry.get("after_swap") and self.ws is not None:
+                entry["reread"] = _reread_of(self._read_account_channel())
+        except Exception as exc:  # pragma: no cover - defensive; teardown path
+            self.log.warning("could not close the run's record", error=str(exc))
+        self._runs.append(entry)
 
     def _collect_spend(self) -> None:
         """Add the runner that just ended to this attempt's spend. Never raises.
@@ -18912,6 +19000,84 @@ def _tail_text(path: Path, limit: int = 2000) -> str:
     if not path.exists():
         return ""
     return path.read_text(errors="replace")[-limit:]
+
+
+#: The token counts a run's entry in `_runs` carries, each its own share.
+_RUN_TOKEN_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
+
+
+def _runs_summary(runs: list[dict[str, Any]], swaps: list[dict[str, Any]]) -> dict[str, Any]:
+    """`runs`, `swaps` and `swap_cost` for a summary, or {} (SWAP-RUNS, #2457).
+
+    AN ATTEMPT OF ONE RUN GETS NOTHING NEW: {} when it started one runner and
+    swapped nothing, so its summary is exactly what it was before these keys
+    existed. `swap_cost` sums the `reread` of every run that followed a swap:
+    what the swaps cost the attempt in seconds and tokens before the agent
+    acted again.
+    """
+    if len(runs) <= 1 and not swaps:
+        return {}
+    out: dict[str, Any] = {
+        "runs": [dict(run) for run in runs],
+        "swaps": [dict(swap) for swap in swaps],
+    }
+    measured = [
+        run["reread"] for run in runs
+        if isinstance(run.get("reread"), dict) and "seconds" in run["reread"]
+    ]
+    if measured:
+        tokens: dict[str, int] = {}
+        for reread in measured:
+            for key, value in (reread.get("tokens") or {}).items():
+                tokens[key] = tokens.get(key, 0) + int(value)
+        out["swap_cost"] = {
+            "reread_seconds": round(sum(float(r.get("seconds") or 0) for r in measured), 3),
+            "reread_tokens": tokens,
+            "measured_runs": len(measured),
+            "reached_action": sum(1 for r in measured if r.get("reached")),
+        }
+    return out
+
+
+def _reread_of(channel: dict[str, Any]) -> dict[str, Any]:
+    """A run's re-read cost from its account channel (`cliagent.AccountStreamWatcher`).
+
+    `reached: true` with the seconds and tokens spent before the run's first
+    action and the tool it was; `reached: false` with everything the run
+    spent when it never acted; `measured: false` when the channel said
+    nothing (a runner that wrote none). Numbers only, never stream text.
+    """
+    def figures(block: Any) -> dict[str, Any] | None:
+        if not isinstance(block, dict):
+            return None
+        seconds = block.get("seconds")
+        tokens = block.get("tokens")
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+            return None
+        counts = {
+            key: int(tokens[key])
+            for key in _RUN_TOKEN_KEYS
+            if isinstance(tokens, dict) and isinstance(tokens.get(key), int)
+            and not isinstance(tokens.get(key), bool)
+        }
+        return {"seconds": round(float(seconds), 3), "tokens": counts}
+
+    first = channel.get("first_action")
+    reached = figures(first)
+    if reached is not None:
+        tool = first.get("tool") if isinstance(first, dict) else None
+        if isinstance(tool, str) and tool:
+            reached["tool"] = tool[:80]
+        return {"reached": True, **reached}
+    spent = figures(channel.get("spent"))
+    if spent is not None:
+        return {"reached": False, **spent}
+    return {"measured": False}
 
 
 def _rfc3339_now() -> str:
