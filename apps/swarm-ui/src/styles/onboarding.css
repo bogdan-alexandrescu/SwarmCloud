@@ -236,7 +236,9 @@
 /* The summary chip names the optional steps, so it is longer than a phone's
    card head: it wraps instead of being cut at "Request your wo…" (RSA-26). */
 .ob-card .c-card-h > .ur-acts { min-width: 0; max-width: 100%; flex-wrap: wrap; }
-.c-chip.ob-count { white-space: normal; overflow-wrap: anywhere; line-height: var(--lh-meta); max-width: 100%; }
+/* Workspace setup's count is a line of the card's body (visual QA VQ-048): the
+   card's sans type, on its content's left edge, wrapping like any sentence. */
+.ob-summary { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); overflow-wrap: anywhere; }
 
 /* ---- Access › Browser logins (LB-7) ----------------------------------------- */
 /* AN EXPIRED LOGIN LOOKS EXPIRED (visual QA V234): "expired 24h ago" was the

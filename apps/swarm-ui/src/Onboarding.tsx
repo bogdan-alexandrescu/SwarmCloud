@@ -359,7 +359,12 @@ export function Checklist({ doc, reload }: { doc: OnboardingDoc; reload: () => v
               <p className="ob-step-h">
                 {/* The title only: the step's id is the API's name for it, not copy (RSA-25). It stays on `data-step`. */}
                 <b>{STEP_LABEL[s.step] ?? s.step}</b>
-                <span className="ob-state">{STATE_WORD[s.state] ?? s.state}</span>
+                {/* An optional step says so on its own row, as S6b draws it ("done · optional"): the summary
+                    named it optional while the row read like any other (visual QA VQ-048). */}
+                <span className="ob-state">
+                  {STATE_WORD[s.state] ?? s.state}
+                  {!stepRequired(s) && ' · optional'}
+                </span>
                 {next && <Chip>next</Chip>}
               </p>
               {(said || at) && (
@@ -474,7 +479,6 @@ export function OnboardingScreen() {
               title={d.complete ? 'Setup is complete' : 'Set up SwarmCloud'}
               action={
                 <span className="ur-acts">
-                  <Chip className="ob-count">{countLabel(d)}</Chip>
                   {d.dismissed === true && !d.complete && <ShowOnOverview reload={doc.reload} />}
                   <UrRefresh reads={[doc]} />
                 </span>
@@ -486,6 +490,10 @@ export function OnboardingScreen() {
                 </>
               }
             >
+              {/* THE COUNT IS A SENTENCE IN THE BODY, NOT A CHIP IN THE HEAD (visual QA VQ-048): the chip,
+                  which names the optional steps, wrapped under the title as a monospace pill set in from
+                  the card's edge. Here it reads in the card's own type, on its content's left edge. */}
+              <p className="ob-summary">{countLabel(d)}</p>
               <StepBar doc={d} />
               <Checklist doc={d} reload={doc.reload} />
             </Card>

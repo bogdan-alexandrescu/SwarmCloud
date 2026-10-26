@@ -75,10 +75,40 @@ afterEach(() => {
   window.history.replaceState(null, '', '/')
 })
 
+describe('VQ-047: the lead and the body give one statement of who holds what, in one size', () => {
+  it('says nobody else holds a role of their own in the lead and the body alike, and never "Nobody in eng"', async () => {
+    const lead = await draw(roles(true, [person('carol@example.com', 'admin')]), step4({ done: false, holders: 0, admins: 0 }))
+    const said = visible(lead)
+    const body = visible(screen.getByLabelText('Default role'))
+    // MUTATION: put back "Only you hold a role" in the lead or "Nobody in eng holds a role of their own" -> fails.
+    expect(said).not.toContain('Only you hold')
+    expect(body).toContain('Everyone else in eng holds viewer')
+    expect(body).toContain('nobody else holds a role of their own yet')
+    expect(visible(document.body)).not.toContain('Nobody in eng holds a role of their own')
+    expect(visible(document.body)).not.toContain('everyone holds the default')
+  })
+
+  it('names the people listed below when others hold their own', async () => {
+    await draw(roles(true, [person('dana@example.com', 'member')]), step4({ holders: 1, admins: 0 }))
+    const body = visible(screen.getByLabelText('Default role'))
+    expect(body).toContain('unless they are listed below with a role of their own')
+    expect(body).not.toContain('nobody else')
+  })
+
+  it('sets the caller’s role and the default in the same type, and the roles in the console’s key/value list', async () => {
+    await draw(roles(true, []), step4({ holders: 0, admins: 0 }))
+    // MUTATION: set the default's line `ur-small` again -> fails (two sizes, the QA's finding).
+    expect(screen.getByLabelText('Your role').className).toBe('pk-lead')
+    expect(screen.getByLabelText('Default role').className).toBe('pk-lead')
+    const dl = screen.getByRole('heading', { name: 'What each role permits' }).closest('section')!.querySelector('dl')!
+    expect(dl.classList.contains('pf-facts')).toBe(true)
+  })
+})
+
 describe('Config › People and roles: the admin’s lead (S5b, S5e)', () => {
   it('invites someone when nobody else holds a role, with one button to the role form', async () => {
     const lead = await draw(roles(true, [person('carol@example.com', 'admin')]), step4({ done: false, holders: 0, admins: 0 }))
-    expect(visible(lead)).toContain('Only you hold a role in eng so far')
+    expect(visible(lead)).toContain('Nobody else in eng holds a role of their own yet')
     expect(lead.classList.contains('is-ok')).toBe(false)
     const buttons = within(lead).getAllByRole('button')
     expect(buttons).toHaveLength(1)
