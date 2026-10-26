@@ -11032,7 +11032,16 @@ span.sk-ttile { cursor: default; }
      Spine.tsx on the bar that holds `.sk-tchip`. The hidden `Top` slot keeps
      its width (N1, run 4 note 6329568327). */
   .sk-pbar.has-chip { gap: 6px; }
-  .sk-pbar.has-chip > b { min-width: 0; }
+  /* THE PAGE NAME FIRST, NOW THE CHIP HOLDS A KEY (visual QA VQ-001, part
+     of #2391). The note above gave the chip the room while it held the
+     workspace's whole name, and the page name went to `O…` on every page
+     at 390. The chip now holds the short key (`eng`) and the admin tag has
+     moved to the drawer, so the title keeps its 5.5em floor beside the chip
+     as beside the plain label, and takes its own width before either gives
+     way: `flex: 1 1 auto`, and the workspace shrinks a hundred times faster
+     (`flex-shrink: 100`, after the chip's and the label's own rules
+     below), so the key is cut before the page name is. */
+  .sk-pbar b { flex: 1 1 auto; }
   .sk-pbar .sk-tn { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-spine-ink); }
   /* THE TENANT GIVES WAY AFTER THE TITLE, NEVER PAST THE GLASS (#139). With
      no floor and no cap, a long tenant name -- a user tenant's is its email
@@ -11069,6 +11078,8 @@ span.sk-ttile { cursor: default; }
      `↑ Top` cut at the glass. The name gives way inside it, as above. */
   .sk-pbar > .sk-tchip { min-width: 0; }
   .sk-tchip > .sk-tcn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The workspace gives way before the page name (VQ-001, above). */
+  .sk-pbar > .sk-tchip, .sk-pbar .sk-tn { flex-shrink: 100; }
   .sk-app.has-drawer .sk-dclose { width: 44px; height: 44px; }
   .sk-side { display: none; }
   .sk-app.has-drawer .sk-side { display: flex; position: fixed; left: 0; top: 0; bottom: 0; height: auto; width: min(320px, 88vw); z-index: 26; box-shadow: var(--sk-sh); }
