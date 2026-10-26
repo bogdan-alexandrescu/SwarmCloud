@@ -58,9 +58,17 @@
 .pot-spark { display: block; width: 100%; max-width: 160px; height: 26px; margin: var(--ctl-s1) 0; }
 .pot-spark polyline { fill: none; stroke: var(--series-1); stroke-width: 1.5; stroke-linejoin: round; }
 .pot-spark circle.is-open { fill: var(--surface); stroke: var(--series-1); stroke-width: 1.5; }
+/* SIX TILES ARE TWO ROWS OF THREE above the phone (review,
+   light-desktop-04-counts-tile): the auto-fit grid holds five at 1440, so
+   Unused browser time pushed Estimated cost onto a row of its own with a
+   four-tile hole beside it. The unread page draws five and keeps auto-fit. */
+@media (min-width: 561px) {
+  .pot-tiles.is-six { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 @media (max-width: 560px) {
   .pot-tiles { grid-template-columns: 1fr 1fr; gap: var(--ctl-s2); }
-  .pot-tile.is-cost { grid-column: 1 / -1; }
+  .pot-tile.is-cost,
+  .pot-tile.is-tokens { grid-column: 1 / -1; }
   .pot-run { margin-left: 0; }
   /* The span words go on a phone, so the three buckets are one row; the note
      under the controls names the span. */

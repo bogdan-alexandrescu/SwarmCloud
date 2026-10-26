@@ -33,13 +33,31 @@
 /* New since last run (S9b, QA-RUN-NEW-ROUTES): the table below the columns. */
 .qr-route { font-family: var(--mono); font-size: var(--t-micro); }
 .qr-gate { margin: 8px 0 0; }
+/* S9b: Promote then Remove, side by side in the row's last cell. */
+.qr-acts { display: inline-flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 /* S9d: the phone record (QaRunGroup.tsx NewRoutesCard, `.is-stacked`, the
-   styles/people.css Manage pattern). Promote is the button alone, across the
-   record at a touch target's height: its key would say "Promote" beside a
-   button saying "Promote". The cell keeps `data-label`. */
-.is-stacked > .qr-new-table > tbody > tr > td.qr-promote-cell { display: block; padding-top: var(--ctl-s2); }
-.is-stacked > .qr-new-table > tbody > tr > td.qr-promote-cell::before { content: none; }
-.is-stacked > .qr-new-table > tbody > tr > td.qr-promote-cell > .c-btn { width: 100%; min-height: 44px; }
+   styles/people.css Manage pattern). Promote and Remove are the buttons alone,
+   across the record at a touch target's height, sharing its width: a key
+   would say "Actions" beside two buttons that say what they do. The cell
+   keeps `data-label`. */
+.is-stacked > .qr-new-table > tbody > tr > td.qr-act-cell { display: block; padding-top: var(--ctl-s2); }
+.is-stacked > .qr-new-table > tbody > tr > td.qr-act-cell::before { content: none; }
+.is-stacked > .qr-new-table > tbody > tr > td.qr-act-cell > .qr-acts { display: flex; width: 100%; }
+.is-stacked > .qr-new-table > tbody > tr > td.qr-act-cell .c-btn { flex: 1 1 0; min-height: 44px; }
+/* QA-RUN-REMOVE: "N dismissed · Show", and the list it opens, each with Restore. */
+.qr-dismissed { margin-top: 10px; }
+.qr-dismissed-line { margin: 0; }
+.qr-linkish { padding: 0; border: 0; background: none; color: var(--sk-ac); font: inherit; cursor: pointer; text-decoration: underline; }
+.qr-linkish:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.qr-dismissed-list { list-style: none; margin: 6px 0 0; padding: 0; }
+.qr-dismissed-list > li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+.qr-dismissed-list > li:last-child { border-bottom: 0; }
+.qr-dismissed-tx { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  /* S9d: Show and Restore at a touch target's height. */
+  .qr-linkish { display: inline-flex; align-items: center; min-height: 44px; }
+  .qr-dismissed-list > li .c-btn { min-height: 44px; }
+}
 .qr-sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 @media (max-width: 1079px) {

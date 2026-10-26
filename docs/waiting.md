@@ -73,6 +73,7 @@ copy, or "waiting for the scheduler's next pass" when there is none.
 | CHILDREN_INCOMPLETE | `children [{task_id, state}]`, `unfinished`, `total`, `states_read` |
 | AWAITING_INPUT | `who_may_answer {tenant_id, text}`, `opened_at`, `expires_at`, `answer_command` (`/sc answer WF STEP`) |
 | HUMAN_REQUIRED | `who_may_answer`, `expires_at` (null: no park records it), `answer_route` (`POST /v1/tasks/{id}/human-ready`), `cause` |
+| HUMAN_REQUIRED, a merge held by owner questions (`park_phase: owner_questions`, #2313) | `park_phase`, `questions [{task_id, step_id, question_index, question}]` (each asking step's question; the answer that clears the last one returns the merge to READY on its own), `unreadable`, `who_may_answer {submitted_by, admin, text}` (the answer route's rule: the submitter or an admin). NO `answer_route`: `human-ready` would only re-run the merge into the same park, and the summary says "Waiting for answers to N owner questions before merging (step: n, ...)", never "sign in". A hold with an `unreadable` entry is the exception: the answer route fails closed on it, so `answer_route` (`human-ready`) is served and the summary says to press it once the questions are answered |
 | CREDENTIAL_MISSING | `provider`, `secret_names`, `account_pool`, `forge_connection`, `workspace_secrets [{consumer, slot}]`, `mcp_servers [{name, code}]` |
 | BUDGET_EXHAUSTED | `budget` (null: no writer records it today) |
 | MANUAL_PAUSE | `paused_by` (null unless recorded), `paused_at` (the park event's time), `error` |

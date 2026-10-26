@@ -27,6 +27,9 @@ import {
   type UsageGrouping,
   type UsageSeries,
 } from './platformTimeApi'
+import { BROWSER_UNUSED_ADDRESS } from './agentlist'
+import { addressToPath } from './paths'
+import { HELP } from './help'
 import { Mark } from './primitives'
 import { timeAgo } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -431,6 +434,28 @@ function costCell(f: UsageFigures): Cell {
   return { text: `${floor ? 'at least ' : ''}${usd(c.sum_usd)}`, tone: floor ? 'floor' : 'plain', cover }
 }
 
+/**
+ * UNUSED BROWSER TIME (BROWSER-USE-UI, #2322): the run hours of the ended
+ * browser-runtime agents the worker found never used their browser
+ * (`usage.*.browser`, BROWSER-USE-FLAG). A DASH WITH ITS REASON, never 0 h,
+ * when the read carries no `browser` (an API older than the record) or no
+ * browser agent in the row has a measured run. A FLOOR when some browser
+ * agents have no verdict: theirs may be unused too, and they are counted in
+ * neither verdict.
+ */
+export function unusedBrowserCell(f: Pick<UsageFigures, 'browser'>): Cell {
+  const b = f.browser
+  if (b === undefined || b === null) return { text: '—', tone: 'absent', cover: ['not in this read: the API serving it does not record browser use yet'] }
+  if (b.unused_s === null) {
+    return { text: '—', tone: 'absent', cover: [b.agents === 0 ? 'no agent ended on a browser runtime' : `none of ${int(b.agents)} browser agents has a measured run`] }
+  }
+  const floor = b.unknown_agents > 0
+  const cover = [`${int(b.unused_agents)} of ${int(b.agents)} browser agents did not use it`]
+  if (b.run_s !== null) cover.push(`of ${hours(b.run_s)} browser run time`)
+  if (floor) cover.push(`${int(b.unknown_agents)} with no verdict, counted in neither`)
+  return { text: `${floor ? 'at least ' : ''}${hours(b.unused_s)}`, tone: floor ? 'floor' : 'plain', cover }
+}
+
 /** Input plus output, one figure: a floor when either is, absent only when both are. */
 function inOutCell(f: UsageFigures): Cell {
   const i = f.tokens.input_tokens
@@ -662,11 +687,22 @@ function change(
   return `${arrow} ${Math.abs(Math.round(d))}% ${which}${floors}`
 }
 
+/** The tile's name, and the label Help and the tests find it by. */
+export const UNUSED_BROWSER = 'Unused browser time'
+
+/**
+ * A tile's layout class. On a phone the tiles are two columns, and the two
+ * long figures, tokens and cost, take a row each, so six tiles fill the grid
+ * with no hole (styles/overtime.css).
+ */
+const TILE_CLASS: Readonly<Record<string, string>> = { 'Estimated cost': ' is-cost', 'Tokens, input + output': ' is-tokens' }
+
 function Tiles({ data, unread, unit }: { data: PlatformTime; unread: number; unit: string }) {
   const u = data.usage
   const t = u.totals
   const n = u.buckets.length
   const runs = runCell(t)
+  const unusedBrowser = unusedBrowserCell(t)
   const inout = inOutCell(t)
   const cost = costCell(t)
   const cacheRead = tokenCell(t.tokens.cache_read_input_tokens, t.agents_ended)
@@ -677,7 +713,7 @@ function Tiles({ data, unread, unit }: { data: PlatformTime; unread: number; uni
   }
   const readNote = unread > 0 ? `; ${n - unread} of ${n} ${unit}s read` : ''
   const never = () => false
-  const tiles: Array<{ name: string; value: ReactNode; series: (b: ReadBucket) => number | null; floor: (b: ReadBucket) => boolean; foot: string[]; tone: Cell['tone'] }> = [
+  const tiles: Array<{ name: string; value: ReactNode; series: (b: ReadBucket) => number | null; floor: (b: ReadBucket) => boolean; foot: string[]; tone: Cell['tone']; links?: Array<{ href: string; text: string; title: string }> }> = [
     { name: 'Agents', value: int(t.agents), tone: 'plain', series: (b) => b.agents, floor: never, foot: [`submitted in the span, each counted once${readNote}`] },
     {
       name: 'Retries',
@@ -700,6 +736,32 @@ function Tiles({ data, unread, unit }: { data: PlatformTime; unread: number; uni
           : `all ${int(t.run_s.attempts)} attempts measured`,
       ],
     },
+    // BESIDE THE RUN HOURS IT IS A PART OF (BROWSER-USE-UI, #2322): browser
+    // runtime hours whose agent never used the browser, with the agents they
+    // were, linked to the Agents list of exactly those (`?browser=unused`).
+    {
+      name: UNUSED_BROWSER,
+      value: unusedBrowser.text,
+      tone: unusedBrowser.tone,
+      series: (b) => (b.browser === undefined || b.browser === null || b.browser.unused_s === null ? null : b.browser.unused_s / 3600),
+      floor: (b) => unusedBrowserCell(b).tone === 'floor',
+      foot: unusedBrowser.cover,
+      // WHAT "NOT USED" MEANS IS A LINK HERE, NOT A `?` (B7.4: the console's
+      // glyph budget is spent), and only once the figure is drawn: before Run
+      // the page holds to its word budget.
+      links: [
+        ...(t.browser === undefined || t.browser === null
+          ? []
+          : [
+              {
+                href: addressToPath(BROWSER_UNUSED_ADDRESS),
+                text: 'Agents that did not use it ›',
+                title: 'The Agents list, Recent, filtered to browser agents whose browser was not used. It lists the agents loaded there, not this span.',
+              },
+            ]),
+        { href: `#${HELP['browser-not-used'].anchor}`, text: 'What “not used” means', title: HELP['browser-not-used'].title },
+      ],
+    },
     {
       name: 'Tokens, input + output',
       value: inout.text,
@@ -711,11 +773,11 @@ function Tiles({ data, unread, unit }: { data: PlatformTime; unread: number; uni
     { name: 'Estimated cost', value: cost.text, tone: cost.tone, series: (b) => b.cost.sum_usd, floor: (b) => costCell(b).tone === 'floor', foot: ['list price, not a bill', cost.cover.join(' · ')] },
   ]
   return (
-    <div className="pot-tiles">
+    <div className={`pot-tiles${tiles.length === 6 ? ' is-six' : ''}`}>
       {tiles.map((tile) => {
         const moved = change(u.buckets, tile.series, tile.floor, unit)
         return (
-          <div className={`pot-tile${tile.name === 'Estimated cost' ? ' is-cost' : ''}`} key={tile.name} data-tile={tile.name}>
+          <div className={`pot-tile${TILE_CLASS[tile.name] ?? ''}`} key={tile.name} data-tile={tile.name}>
             <p className="pot-tile-label">{tile.name}</p>
             {typeof tile.value === 'string' && tile.value.startsWith(FLOOR) ? (
               <p className={`pot-tile-value is-${tile.tone}`}>
@@ -729,6 +791,13 @@ function Tiles({ data, unread, unit }: { data: PlatformTime; unread: number; uni
             {moved !== null && <p className="pot-tile-move">{moved}</p>}
             {tile.foot.map((f) => (
               <p className="pot-tile-foot" key={f}>{f}</p>
+            ))}
+            {tile.links?.map((l) => (
+              <p className="pot-tile-foot" key={l.href}>
+                <a className="ctl-link pot-tile-link" href={l.href} title={l.title}>
+                  {l.text}
+                </a>
+              </p>
             ))}
           </div>
         )
@@ -1123,6 +1192,7 @@ function Readout({
             <ReadoutRow name="Agents" cell={{ text: int(bucket.agents), tone: 'plain', cover: [`${int(bucket.agents_ended)} ended`] }} />
             <ReadoutRow name="Retries" cell={{ text: int(bucket.retries), tone: 'plain', cover: [] }} />
             <ReadoutRow name="Run hours" cell={runCell(bucket)} />
+            <ReadoutRow name="Unused browser" cell={unusedBrowserCell(bucket)} />
             <ReadoutRow name="Tokens in + out" cell={inOutCell(bucket)} wide />
             <ReadoutRow name="Cache read" cell={tokenCell(bucket.tokens.cache_read_input_tokens, bucket.agents_ended)} />
             <ReadoutRow name="Cache write" cell={tokenCell(bucket.tokens.cache_creation_input_tokens, bucket.agents_ended)} />
