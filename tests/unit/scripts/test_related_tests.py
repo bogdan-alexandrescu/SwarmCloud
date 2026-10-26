@@ -202,13 +202,139 @@ def test_a_large_ui_selection_comes_back_as_a_few_bounded_runs(tmp_path):
     _tree(tmp_path, many=120)
     got = _select(tmp_path, f"{UI}/src/widget.ts")
     runs = got["vitest"]
+    # 123 unrecorded files weigh 123 x 2.9 = 357 CI-seconds, one run by
+    # weight: the file-count cap is what still cuts them, into ceil(123/50).
     # MUTATION: return the selection as one run -> len(runs) == 1; drop the
-    # per-run cap -> a run holds more than VITEST_FILES_PER_RUN files.
-    assert 2 <= len(runs) <= 5
+    # per-run file cap (cut by weight alone) -> one 123-file run.
+    assert len(runs) == 3
     for run in runs:
+        # MUTATION: open a new run only on weight -> a run over 50 files.
         assert 0 < len(run.split()) <= 50
     files = _files(runs)
     assert len(files) == len(set(files)) == 123
+
+
+# --- vitest runs are cut by recorded CI-seconds (#2362) ----------------------
+#
+# Cut by file count alone, the nine spacing.*.test.tsx slices (252-485 s each,
+# measured in agent logs 2026-10-25/26) landed in one 50-file run that could not
+# finish inside related-tests.sh's RUN_SECONDS=540, and 40+ agents timed out.
+
+HEAVY_SPACING = {
+    "src/__tests__/spacing.accounts.test.tsx": 437,
+    "src/__tests__/spacing.admin.test.tsx": 300,
+    "src/__tests__/spacing.capacity.test.tsx": 252,
+    "src/__tests__/spacing.config.test.tsx": 310,
+    "src/__tests__/spacing.runs.test.tsx": 320,
+    "src/__tests__/spacing.setup.test.tsx": 330,
+    "src/__tests__/spacing.submit.test.tsx": 340,
+    "src/__tests__/spacing.work.test.tsx": 353,
+}
+UI_WEIGHTS = "tests/unit/scripts/ui_test_durations.json"
+
+
+def _selector_module():
+    spec = importlib.util.spec_from_file_location("related_tests_weights", SELECTOR)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _spacing_tree(root: Path, weights: dict[str, float], light: int = 41) -> None:
+    """A sweep module every slice imports, the slices, spacing.test.tsx and
+    `light` other tests of the same module; `weights` recorded for the UI."""
+    _write(root, f"{UI}/src/App.tsx", "export const App = () => null\n")
+    _write(root, f"{UI}/src/__tests__/spacingsweep.tsx", "import { App } from '../App'\n")
+    for path in [*HEAVY_SPACING, "src/__tests__/spacing.test.tsx"]:
+        _write(root, f"{UI}/{path}", "import { sweep } from './spacingsweep'\n")
+    for i in range(light):
+        _write(root, f"{UI}/src/__tests__/light{i:02d}.test.tsx", "import { App } from '../App'\n")
+    _write(root, UI_WEIGHTS, json.dumps(weights))
+
+
+def _estimate(run: str, weights: dict[str, float]) -> float:
+    return sum(weights.get(f, 2.9) for f in run.split())
+
+
+def _assert_heavy_apart_and_bounded(runs: list[str], weights: dict[str, float]) -> None:
+    for run in runs:
+        heavy = [f for f in run.split() if f in HEAVY_SPACING]
+        # MUTATION: cut by file count (today's one 50-file run) -> all eight
+        # heavy slices in one run.
+        assert len(heavy) <= 1, run
+        files = run.split()
+        # MUTATION: open no new run when a file would take every run over
+        # VITEST_RUN_WEIGHT -> a run estimated over 540 CI-seconds.
+        assert _estimate(run, weights) <= 540 or len(files) == 1, (run, _estimate(run, weights))
+
+
+def test_heavy_spacing_slices_never_share_a_vitest_run(tmp_path):
+    _spacing_tree(tmp_path, HEAVY_SPACING)
+    got = _select(tmp_path, f"{UI}/src/App.tsx")
+    files = _files(got["vitest"])
+    # MUTATION: drop or duplicate a file while cutting -> not 50 distinct files.
+    assert len(files) == len(set(files)) == 50
+    _assert_heavy_apart_and_bounded(got["vitest"], HEAVY_SPACING)
+    # Eight heavy files, each in a run of its own.
+    assert len(got["vitest"]) >= 8
+
+
+def test_the_checked_in_weights_keep_every_spacing_slice_apart(tmp_path):
+    recorded = json.loads((REPO / UI_WEIGHTS).read_text())
+    # MUTATION: drop a slice from ui_test_durations.json -> it weighs 2.9 s
+    # and rejoins another slice's run.
+    assert set(HEAVY_SPACING) <= set(recorded), sorted(set(HEAVY_SPACING) - set(recorded))
+    _spacing_tree(tmp_path, recorded)
+    got = _select(tmp_path, f"{UI}/src/App.tsx")
+    _assert_heavy_apart_and_bounded(got["vitest"], recorded)
+
+
+def test_no_vitest_run_is_estimated_over_540_seconds(tmp_path):
+    weights = {
+        "src/__tests__/huge.test.tsx": 700,
+        "src/__tests__/big0.test.tsx": 400,
+        "src/__tests__/big1.test.tsx": 200,
+        "src/__tests__/big2.test.tsx": 150,
+        "src/__tests__/mid0.test.tsx": 90,
+        "src/__tests__/mid1.test.tsx": 60,
+    }
+    _write(tmp_path, f"{UI}/src/widget.ts", "export const w = 1\n")
+    for path in weights:
+        _write(tmp_path, f"{UI}/{path}", "import { w } from '../widget'\n")
+    for i in range(70):
+        _write(tmp_path, f"{UI}/src/__tests__/l{i:02d}.test.tsx", "import { w } from '../widget'\n")
+    _write(tmp_path, UI_WEIGHTS, json.dumps(weights))
+    got = _select(tmp_path, f"{UI}/src/widget.ts")
+    runs = got["vitest"]
+    assert len(_files(runs)) == 76
+    for run in runs:
+        # MUTATION: ignore ui_test_durations.json, or let a heavy file join a
+        # run it takes over 540 -> a run estimated over 540 CI-seconds.
+        assert _estimate(run, weights) <= 540 or run.split() == ["src/__tests__/huge.test.tsx"], run
+        assert len(run.split()) <= 50, run
+    # MUTATION: put another file beside one heavier than the limit -> the
+    # 700 s file does not run alone.
+    assert "src/__tests__/huge.test.tsx" in runs
+
+
+def test_an_unrecorded_vitest_file_weighs_the_default(tmp_path):
+    module = _selector_module()
+    # MUTATION: change the default without its measurement -> red here first.
+    assert module.VITEST_DEFAULT_SECONDS == 2.9
+    heavy = "src/__tests__/heavy.test.tsx"
+    _write(tmp_path, UI_WEIGHTS, json.dumps({heavy: 530.5}))
+    light = [f"src/__tests__/u{i}.test.tsx" for i in range(4)]
+    # 530.5 + 3 x 2.9 = 539.2 fits one run; a 4th unrecorded file (542.1) does not.
+    # MUTATION: weigh an unrecorded file 0 (or anything under ~2.4 s) -> the
+    # four light files join the heavy one.
+    # MUTATION: weigh it the recorded median, as pytest_runs does -> 530.5 s
+    # each, and the three light files do not fit beside the heavy one.
+    assert module.vitest_runs(tmp_path, [heavy, *light[:3]]) == [sorted([heavy, *light[:3]])]
+    runs = module.vitest_runs(tmp_path, [heavy, *light])
+    assert sorted(runs) == sorted([[heavy], sorted(light)]), runs
+    # A missing durations file weighs every file the default: one bounded run.
+    assert module.vitest_runs(tmp_path / "nowhere", light) == [sorted(light)]
 
 
 def test_a_heavy_pytest_selection_splits_by_ci_weight(tmp_path):
