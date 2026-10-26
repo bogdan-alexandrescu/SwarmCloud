@@ -3,7 +3,6 @@ import { Fragment } from 'react'
 import { loadAdminQuota } from './api'
 import { QUOTA_POLL_MS, capacityPoll, poolHref, tableMode, usePhoneTables } from './capacityPoll'
 import type { TopicId } from './help'
-import { HelpLinks } from './HelpCard'
 import { WarnMark } from './marks'
 import { Screen, timeAgo } from './Shell'
 import './styles/capacity.css'
@@ -38,7 +37,7 @@ import {
  * cooldown and the reset window -- while `Last 429` keeps its time, so `0`
  * beside `25h ago` is correct and was drawn as a contradiction. The column
  * name carries the window (B7.4 route 2); `#help/quota-row-fields`, in the
- * footer index, defines the run (route 3).
+ * screen's index behind the title's `?`, defines the run (route 3).
  */
 const QUOTA_CAP = 'Quota cap (units)'
 const FEEDS_POOL = 'Feeds pool'
@@ -62,6 +61,9 @@ export function QuotaDetailScreen() {
   return (
     <Screen
       title="Provider quota"
+      // THE PAGE'S ONE `?` OPENS THE SCREEN'S TOPICS (VQ-033, BGD 2026-10-26),
+      // which were the `Reading this screen:` footer under the tables.
+      help={QUOTA_TOPICS}
       load={loadAdminQuota}
       pollMs={capacityPoll(QUOTA_POLL_MS)}
       summary={(d) => {
@@ -175,7 +177,6 @@ function Grouped({ rows }: { rows: QuotaState[] }) {
             </div>
           </section>
         ))}
-      <HelpLinks topics={QUOTA_TOPICS} />
     </>
   )
 }
@@ -455,8 +456,9 @@ function Em({ what }: { what: string }) {
  *
  * `quota-row-fields` (CP-8, CP-10, #85) is what the two renamed columns name
  * and cannot finish saying: that the cap is one input to the pool beside it,
- * and where a rate-limit run starts and ends. It is in the footer index
- * rather than a `?` in the table, which is route 3 of B7.4.
+ * and where a rate-limit run starts and ends. It is in the screen's index
+ * rather than a `?` in the table, which is route 3 of B7.4 -- the index the
+ * title's `?` opens since VQ-033 (BGD 2026-10-26), where the footer was.
  */
 const QUOTA_TOPICS: readonly TopicId[] = [
   'provider-quota-states',
