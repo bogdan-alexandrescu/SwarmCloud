@@ -173,8 +173,9 @@ estimate below.
   (`docs/workflows.md:243-259`). Navigation caused by a click is not checked;
   the NetworkPolicy is the real control (`profiles.py:353-371`). No cookie,
   storage state or credential input.
-* **Cost.** One `browser` pod, 1 unit, from the `resource:browser` pool (20 in
-  dev, `dev.tfvars:145`). No model tokens: the profile declares
+* **Cost.** One `browser` pod, 1 unit, from the `resource:browser` pool (100 in
+  dev since BROWSER-POOL-100, `pool_limits.resource_classes.browser` in
+  `dev.tfvars`). No model tokens: the profile declares
   `ANTHROPIC_API_KEY` (`profiles.py:1562-1563`) but the runner never calls a
   model. Cold start: one reading, 38.1 s node wait
   (`docs/browser-startup-speed.md:644`); an older one, STARTING at p50 15 s,

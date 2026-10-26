@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from swarm_common.models import pool_names_for
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
 
 REPO = Path(__file__).resolve().parents[3]
@@ -63,13 +64,25 @@ LIVE_POOLS = {
 #: smoke, which lifts the provider floor to 3 x provider_tenant = 120. Move
 #: these into LIVE_POOLS, with the date read, once they are live.
 PENDING_POOLS = {
-    "provider:anthropic": 120,
-    "provider:anthropic:tenant:smoke": 40,
-    # Contract request 53, accepted by the owner 2026-10-07: GKE_AUTOPILOT
-    # 40 -> 100 ahead of claude-code's move to GKE (dev.tfvars says why). Live
-    # once an operator runs
-    # `scripts/pool-limit.sh --pool backend:GKE_AUTOPILOT --limit 100`.
-    "backend:GKE_AUTOPILOT": 100,
+    # provider:anthropic was 120 here (#628); BROWSER-POOL-100 below raises it.
+    # provider_tenant 40 -> 100 (BGD, 2026-10-26, BROWSER-POOL-100's question):
+    # every per-tenant provider pool, and the platform-wide pools its floor
+    # forces (anthropic 2 x 100, openai 1 x 100).
+    "provider:anthropic:tenant:smoke": 100,
+    "provider:anthropic:tenant:eng": 100,
+    "provider:openai:tenant:eng": 100,
+    "provider:openai": 100,
+    # eng 45 -> 100 (BGD, 2026-10-26): min(max_active, capacity_units).
+    "tenant:eng": 100,
+    # BROWSER-POOL-100 (BGD, 2026-10-26, part of #2136): 100 browser units
+    # beside claude-code's 80 standard, so every pool both draw on is 180
+    # (dev.tfvars says why). This supersedes #628's provider:anthropic 120 and
+    # contract request 53's backend:GKE_AUTOPILOT 100. Live once an operator
+    # runs `scripts/pool-limit.sh --pool <pool> --limit <n>` for each.
+    "global": 180,
+    "backend:GKE_AUTOPILOT": 180,
+    "provider:anthropic": 200,
+    "resource:browser": 100,
     # oracle-api's tenant (#1568): min(max_active 4, capacity_units 8).
     "tenant:u-or-9a0792": 4,
 }
@@ -90,6 +103,8 @@ LIVE_TENANTS = {
 #: its pool into LIVE_POOLS, with the date read, once it is live.
 PENDING_TENANTS = {
     "u-or-9a0792": (4, 8),
+    # BGD, 2026-10-26: one tenant may hold the 100 browser units.
+    "eng": (100, 100),
 }
 
 #: Live pools no tfvars key can create. `mock-provider` is the provider the mock
@@ -250,3 +265,43 @@ def test_the_doubled_provider_pools_still_satisfy_the_provider_tenant_floor():
         holders = sum(1 for cfg in tenants.values() if p in cfg["providers"])
         floor = holders * int(limits["provider_tenant"])
         assert providers.get(p, int(limits["global"])) >= floor, p
+
+
+#: BROWSER-POOL-100 (BGD, 2026-10-26, part of #2136): the browser pool
+#: provides 100 units, and they run BESIDE claude-code's 80 standard ones.
+BROWSER_UNITS = 100
+STANDARD_BESIDE = ("claude-code", 80)
+BROWSER_PROFILE = "claude-code-browser"
+
+
+def test_the_browser_class_provides_100_units():
+    limits, _ = _dev()
+    assert _numbers(limits["resource_classes"])["browser"] == BROWSER_UNITS
+
+
+def test_no_pool_a_browser_task_needs_binds_before_100_browser_units_beside_80_standard():
+    # Admission is all-or-nothing across pool_names_for() (invariant 2), so a
+    # browser ceiling of 100 means nothing if any other pool on the same list
+    # is smaller than what both workloads draw from it together. The tenant
+    # pools are left out: each is ONE tenant's ceiling, and no single tenant
+    # is meant to hold the whole fleet (dev.tfvars, beside pool_limits).
+    derived = _derived_pools()
+    demand: dict[str, int] = {}
+    for name, units in ((BROWSER_PROFILE, BROWSER_UNITS), (STANDARD_BESIDE[0], STANDARD_BESIDE[1])):
+        profile = RUNNER_PROFILES[name]
+        for pool in pool_names_for(
+            tenant_id="eng",
+            provider=profile.provider,
+            resource_class=profile.resource_class,
+            runner_profile=name,
+            backend=getattr(resolve_backend(profile), "value", resolve_backend(profile)),
+        ):
+            if pool.startswith("tenant:") or pool.endswith(":tenant:eng"):
+                continue
+            demand[pool] = demand.get(pool, 0) + units
+    # The browser profile's pools are all present, so the loop did run.
+    assert {"global", "resource:browser", f"runner:{BROWSER_PROFILE}", "backend:GKE_AUTOPILOT",
+            "provider:anthropic"} <= set(demand)
+    short = {pool: {"needs": need, "tfvars": derived[pool]} for pool, need in demand.items()
+             if derived[pool] < need}
+    assert not short, f"these pools bind before 100 browser units beside 80 standard: {short}"

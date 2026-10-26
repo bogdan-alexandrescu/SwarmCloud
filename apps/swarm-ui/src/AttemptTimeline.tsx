@@ -88,7 +88,7 @@ export function AttemptTimelineScreen({ taskId }: { taskId: string }) {
         load={load}
         summary={(t) =>
           `${pluralise(t.attempts.length, 'attempt')} · ` +
-          (t.events === null ? 'events unread' : pluralise(t.events.length, 'event'))
+          (t.events === null ? 'events unread' : pluralise(t.events.length, 'event') + beforeSay(t))
         }
         empty={{
           // ONE `real zero`, THE PRIMITIVE'S. `No attempt · real zero` said it a
@@ -220,6 +220,20 @@ function grouped(t: AttemptTimeline): Group[] {
 }
 
 /**
+ * THE EVENTS NO ATTEMPT HOLDS, NAMED WHERE THE TOTAL IS (VQ-011, BGD's
+ * visual QA 2026-10-26): the head read `1 attempt · 28 events` over one card
+ * saying `27 events`, and nothing said the 28th was the task's `submitted`,
+ * filed before any attempt. The totals say how many of them there are, in
+ * the words of the card that holds them (`Before any attempt`). Nothing when
+ * there are none, or when there is no attempt for them to come before.
+ */
+function beforeSay(t: AttemptTimeline): string {
+  if (t.attempts.length === 0) return ''
+  const n = grouped(t).find((g) => g.key === '@preface')?.events.length ?? 0
+  return n === 0 ? '' : `, ${n} before any attempt`
+}
+
+/**
  * WHAT LEFT THIS SCREEN, AND WHERE IT WENT.
  *
  * Three paragraphs stood between the toolbar and the first attempt card, and a
@@ -250,6 +264,7 @@ function Body({ t }: { t: AttemptTimeline }) {
   const groups = grouped(t)
   const blind = groups.filter((g) => g.attempt !== null && g.events.length === 0)
   const count = t.events?.length ?? 0
+  const before = beforeSay(t)
   const prev = previousOf(t.events ?? [])
   // THE FULL TIMELINE LIVES HERE NOW (#101), so the proof Details drew with
   // it comes too: a terminal task always writes a terminal event, so a
@@ -308,14 +323,14 @@ function Body({ t }: { t: AttemptTimeline }) {
                   kind="unread"
                   say="Zero events came back, yet an agent is written with its submitted event in the same batch — so this is a failed query, not an empty history."
                 />{' '}
-                {pluralise(count, 'event')} · first page
+                {pluralise(count, 'event')}{before} · first page
               </>
             ) : (
               <span
                 className="att-ev-cap"
-                aria-label={`${count} events, the first page, oldest first. This screen reads one page and does not follow the page token the events route returns, so newer events may exist that it has not fetched.`}
+                aria-label={`${count} events${before}, the first page, oldest first. This screen reads one page and does not follow the page token the events route returns, so newer events may exist that it has not fetched.`}
               >
-                {pluralise(count, 'event')} · first page
+                {pluralise(count, 'event')}{before} · first page
               </span>
             )}
             {blind.length > 0 && (

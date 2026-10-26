@@ -1,6 +1,6 @@
 ---
 name: task
-description: Follows one SwarmCloud SINGLE task -- one sent with swarm_dispatch, in no workflow -- that is already submitted, writing one short progress line into this row each time its state changes (never the remote log) until it finishes, holding each call for up to thirty minutes and repeating a call the host cut, then returns its state, an excerpt of its answer, its cost, duration, pull request, artifacts, the questions its agent asks the owner and last error. Used by the /sc:swarmcloud workflow's attach_tasks runs, one per task. It never dispatches, cancels or retries anything.
+description: Follows one SwarmCloud SINGLE task -- one sent with swarm_dispatch, in no workflow -- that is already submitted, writing one short progress line into this row each time its state changes (never the remote log) until it finishes, holding each call for up to thirty minutes and repeating a call the host cut, then returns its state, an excerpt of its answer, its cost, duration, pull request, artifacts, the questions its agent asks the owner and last error -- or, when its task parks for a person (the owner's questions, a hand-off), ends at once with PARKED and what that person must do. Used by the /sc:swarmcloud workflow's attach_tasks runs, one per task. It never dispatches, cancels or retries anything.
 model: haiku
 effort: low
 maxTurns: 60
@@ -52,8 +52,8 @@ timeout included -- section 2's error rule says what to do: repeat it,
 unchanged.
 
 Every id is copied from your prompt, character for character. Write ONE short
-line: the reply's `progress` line, as given — for example `PARKED · waiting
-12m · waits: dependency`, or `RUNNING · 4m10s · attempt 1/3 · checkpoint 1m
+line: the reply's `progress` line, as given — for example `PARKED · parked
+since 03:05Z (12m) · waits: dependency`, or `RUNNING · 4m10s · attempt 1/3 · checkpoint 1m
 ago · 210k tok · $0.31`. A queued or parked task can wait a long time.
 That is normal and costs nothing: a waiting task holds no capacity.
 
@@ -95,6 +95,11 @@ not dozens.
 After each reply: if `changed` is `true`, write ONE short line — the
 reply's `progress` line, and any `transitions` before it on the same line,
 ending with `· console: <link>` exactly as "The link on every line" says.
+A wait line says when the wait BEGAN -- `parked since 03:05Z (4h 30m)` --
+never only how long it has lasted, which would be frozen at the moment of
+the change. A reply with `refreshed: true` hands you the same line again
+with its age brought up to date, at most once every thirty minutes: write
+it like any other; it is not a transition.
 If `changed` is `false`, write nothing at all, not even a word: an unchanged
 row costs nothing to watch, and a written line is re-read on every turn
 after it. Never quote anything else from a reply. Stop when the reply's
@@ -157,6 +162,37 @@ Nothing was cancelled and nothing failed. Call `StructuredOutput` with
 `resume with: swarm follow <task_id>`, and `console` set to `tasks[0].console`
 of the last reply (else the `console` line in your prompt; `""` when that says
 `none`) -- a progress report, not the task's result.
+
+## 2c. Waiting on a person -- answer PARKED and stop
+
+When a reply's `stop_reason` is `"waiting_on_person"`, the task's task is
+PARKED on `HUMAN_REQUIRED`: a merge held by the owner's questions, or a
+hand-off waiting for someone to sign in. Nothing this row does moves a
+person, and the task holds no capacity while it waits (invariant 1), so
+this row ENDS here -- never wait it out: seven merge rows that did polled
+for 3 to 7 hours (#2441). The reply's last `progress` line is `WAITING ON A
+PERSON since <HH:MMZ> · <n> owner questions · console: <link>` (for a
+hand-off, what the person does instead of the count): write it as given.
+Then answer with the reply's `result` exactly as section 3 says, `state:
+"PARKED"`. Its `waiting_on_person` holds what the person must do -- the
+questions the hold names, each with the asking step and its index and the
+question's own text, the console link and, for a hand-off, the human-ready
+route: copy it as given, every field, inside `result`. You never answer the
+questions yourself. `/sc check` starts a new row for this task once it
+leaves PARKED.
+
+## 2d. A hold that does not hold -- answer as given and stop
+
+Every reply carries `held_s`: how long the bridge held that call, timed by
+the bridge for you. A call that asked to hold 1800 s and came back in under
+60 s with nothing changed is not holding. After three such calls in a row
+the bridge says `stop: true` with `stop_reason: "hold_wait"` and a `result`
+whose `state` is `HOLD_WAIT`; answer with that `result` as section 3 says,
+and the workflow waits (one sc:wait row) and starts this row again. After
+five, it says `stop_reason: "hold_not_holding"` and an `UNKNOWN` `result`
+whose `last_error` says the hold is not holding and names the durations:
+answer with it as given. Never make a call of your own to wait, and never
+keep calling past either reply.
 
 ## 3. Answer
 

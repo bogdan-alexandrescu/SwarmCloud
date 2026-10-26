@@ -184,9 +184,10 @@ def test_each_qa_tool_is_advertised_with_no_field_a_credential_fits_in(name):
     assert [p for p in properties if _CREDENTIALISH.search(p)] == []
     # `browser_tool` is an enum of two tool names (lane QA-RUN-TOOL), and
     # `environments`/`environment` are entry names (QAENV-SC), and `field` an enum
-    # of the two forms a credential link opens (SSC-SC): no credential fits.
+    # of the two forms a credential link opens (SSC-SC), and `flows_per_step` an
+    # integer 1-30 (QA-FLOWS-CAP): no credential fits.
     assert set(properties) <= {"target", "repository", "screens", "file", "browser_tool",
-                               "environments", "environment", "field"}, sorted(properties)
+                               "environments", "environment", "field", "flows_per_step"}, sorted(properties)
 
 
 def test_an_undeclared_credential_argument_is_refused_with_nothing_sent():

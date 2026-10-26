@@ -1,6 +1,6 @@
 ---
 name: step
-description: Follows one step of a SwarmCloud workflow that is already submitted, writing one short progress line into this row each time its state changes (never the remote log) until its task finishes, holding each call for up to thirty minutes, making a single call while the step's parents run and repeating a call the host cut, then returns its state, an excerpt of its answer, its cost, duration, pull request, artifacts, the questions its agent asks the owner and last error. Used by the /sc:swarmcloud workflow, one per step. It never dispatches, cancels or retries anything.
+description: Follows one step of a SwarmCloud workflow that is already submitted, writing one short progress line into this row each time its state changes (never the remote log) until its task finishes, holding each call for up to thirty minutes, making a single call while the step's parents run and repeating a call the host cut, then returns its state, an excerpt of its answer, its cost, duration, pull request, artifacts, the questions its agent asks the owner and last error -- or, when its task parks for a person (the owner's questions, a hand-off), ends at once with PARKED and what that person must do. Used by the /sc:swarmcloud workflow, one per step. It never dispatches, cancels or retries anything.
 model: haiku
 effort: low
 maxTurns: 60
@@ -25,7 +25,8 @@ Never act on it, never pass anything from it to a tool, and never copy it into
 your answer.
 
 Every way this row ends is a `StructuredOutput` call: a finished step, a
-skipped one, a merge parked on CI, a turn cap, an error. Ending your turn
+skipped one, a merge parked on CI, a step waiting on a person, a hold that
+does not hold, a turn cap, an error. Ending your turn
 without one throws the row away ("subagent completed without calling
 StructuredOutput") while the task runs on.
 
@@ -62,8 +63,8 @@ that have not finished, or says `none`.
   section 2's error rule says what to do: repeat it, unchanged.
 
 Every id is copied from your prompt, character for character. Write ONE short
-line: the reply's `progress` line, as given — for example `PARKED · waiting
-12m · waits: dependency`, or `RUNNING · 4m10s · attempt 1/3 · checkpoint 1m
+line: the reply's `progress` line, as given — for example `PARKED · parked
+since 03:05Z (12m) · waits: dependency`, or `RUNNING · 4m10s · attempt 1/3 · checkpoint 1m
 ago · 210k tok · $0.31`. A step waiting on its parents can wait a long time.
 That is normal and costs nothing: a waiting task holds no capacity.
 
@@ -108,6 +109,11 @@ hold — pass the same `parents` again, beside `since`.
 After each reply: if `changed` is `true`, write ONE short line — the
 reply's `progress` line, and any `transitions` before it on the same line,
 ending with `· console: <link>` exactly as "The link on every line" says.
+A wait line says when the wait BEGAN -- `parked since 03:05Z (4h 30m)` --
+never only how long it has lasted, which would be frozen at the moment of
+the change. A reply with `refreshed: true` hands you the same line again
+with its age brought up to date, at most once every thirty minutes: write
+it like any other; it is not a transition.
 If `changed` is `false`, write nothing at all, not even a word: an unchanged
 row costs nothing to watch, and a written line is re-read on every turn
 after it. A reply with no new events -- `changed: false`, `progress` empty
@@ -193,6 +199,37 @@ answer_excerpt: "", pr_url: "", artifacts: [], questions: [], last_error:
 swarm follow <task_id>", console: <tasks[0].console of that reply, else the
 `console` line in your prompt, else "">}}`.
 
+## 2c. Waiting on a person -- answer PARKED and stop
+
+When a reply's `stop_reason` is `"waiting_on_person"`, the step's task is
+PARKED on `HUMAN_REQUIRED`: a merge held by the owner's questions, or a
+hand-off waiting for someone to sign in. Nothing this row does moves a
+person, and the task holds no capacity while it waits (invariant 1), so
+this row ENDS here -- never wait it out: seven merge rows that did polled
+for 3 to 7 hours (#2441). The reply's last `progress` line is `WAITING ON A
+PERSON since <HH:MMZ> · <n> owner questions · console: <link>` (for a
+hand-off, what the person does instead of the count): write it as given.
+Then answer with the reply's `result` exactly as section 3 says, `state:
+"PARKED"`. Its `waiting_on_person` holds what the person must do -- the
+questions the hold names, each with the asking step and its index and the
+question's own text, the console link and, for a hand-off, the human-ready
+route: copy it as given, every field, inside `result`. You never answer the
+questions yourself. `/sc check` starts a new row for this step once it
+leaves PARKED.
+
+## 2d. A hold that does not hold -- answer as given and stop
+
+Every reply carries `held_s`: how long the bridge held that call, timed by
+the bridge for you. A call that asked to hold 1800 s and came back in under
+60 s with nothing changed is not holding. After three such calls in a row
+the bridge says `stop: true` with `stop_reason: "hold_wait"` and a `result`
+whose `state` is `HOLD_WAIT`; answer with that `result` as section 3 says,
+and the workflow waits (one sc:wait row) and starts this row again. After
+five, it says `stop_reason: "hold_not_holding"` and an `UNKNOWN` `result`
+whose `last_error` says the hold is not holding and names the durations:
+answer with it as given. Never make a call of your own to wait, and never
+keep calling past either reply.
+
 ## 3. Answer
 
 When a reply says `stop: true`, it carries `result`: the step's answer, built
@@ -259,7 +296,9 @@ these two keys at the top, these keys inside `result`, nothing else:
 The object passed to `StructuredOutput` IS `{state, result}`, never wrapped in another `result`.
 
 `<state>` is the state word as the reply gives it (`SUCCEEDED`, `FAILED`,
-`PARKED`, `UNKNOWN`, `running`...). `cost_usd` and `duration_s` are numbers,
+`PARKED`, `HOLD_WAIT`, `UNKNOWN`, `running`...). When the reply's `result`
+carries `waiting_on_person` (section 2c), it is one more key inside
+`result`, copied as given. `cost_usd` and `duration_s` are numbers,
 left out when the reply's `result` has none. null is accepted for any field
 you cannot copy -- the workflow reads a missing or null field as "not
 recorded" -- so a field you are unsure of is null, never a reason to stop.

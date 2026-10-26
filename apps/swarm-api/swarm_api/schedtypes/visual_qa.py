@@ -197,7 +197,7 @@ def create(firing: Any) -> list[dict[str, Any]]:
             continue
         task_ids = browser_task_ids(firing.ctx.db, tenant_id, item["id"], leg.browser)
         targets.record_run(tenant_id=tenant_id, target=leg.target, workflow_id=item["id"],
-                           task_ids=task_ids, file=FILE, by=by, group_id=group_id)
+                           task_ids=task_ids, file=FILE, by=by, group_id=group_id, leg=leg)
         targets.leg_submitted(group_id, leg.name, workflow_id=item["id"])
         items.append(item)
         log.info("schedule %s firing %s: QA run %s of target %s, leg %s", schedule["schedule_id"],

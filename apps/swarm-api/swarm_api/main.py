@@ -72,6 +72,7 @@ from .routes import (
     people,
     platform,
     qa_identity,
+    qa_settings,
     qatargets,
     repositories,
     roles,
@@ -396,6 +397,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # A workspace's code-intelligence setting (CTXQ-SET,
     # docs/design/context-quality.md §4.7): its owner or a platform admin, audited.
     app.include_router(codeintel.router)
+    # A workspace's visual-QA settings: how many flows one live-browser step
+    # runs when a run names none (QA-FLOWS-CAP): its owner or admin, audited.
+    app.include_router(qa_settings.router)
     # Connect GitHub as yourself (docs/onboarding.md §3.2, lane OB3):
     # authorise, exchange, disconnect, and the refresh sweep the
     # swarm-forge-refresh job calls. No route returns a token.

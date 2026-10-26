@@ -68,12 +68,17 @@ const WIDTH: Readonly<Record<string, number>> = {
   Artifacts: 130,
   Checkpoints: 118,
 }
-const MORE = 110
+// More is measured from what it draws (VQ-008 review, BT-004): its label
+// (`More <n>`) and its chevron; the host's own box is the width CSS squeezed
+// it to and is never read for the fit.
+const MORE_LABEL = 46
+const MORE_CHEVRON = 10
 let room = 358
 const proto = HTMLElement.prototype
 const had = {
   client: Object.getOwnPropertyDescriptor(proto, 'clientWidth'),
   offset: Object.getOwnPropertyDescriptor(proto, 'offsetWidth'),
+  scroll: Object.getOwnPropertyDescriptor(proto, 'scrollWidth'),
 }
 beforeEach(() => {
   room = 358
@@ -86,14 +91,21 @@ beforeEach(() => {
   Object.defineProperty(proto, 'offsetWidth', {
     configurable: true,
     get(this: HTMLElement) {
-      if (this.classList.contains('ag-tabs-more-host')) return MORE
+      if (this.classList.contains('ag-tabs-more-host')) return 0
+      if (this.getAttribute('aria-hidden') === 'true' && this.parentElement?.classList.contains('ag-tabs-more')) return MORE_CHEVRON
       if (this.getAttribute('role') !== 'tab' || this.closest('.ag-tabs-edge') === null) return 0
       return WIDTH[this.querySelector('.c-tab-label')?.textContent ?? ''] ?? 0
     },
   })
+  Object.defineProperty(proto, 'scrollWidth', {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.classList.contains('ag-tabs-more-label') ? MORE_LABEL : 0
+    },
+  })
 })
 afterEach(() => {
-  for (const [k, d] of [['clientWidth', had.client], ['offsetWidth', had.offset]] as const) {
+  for (const [k, d] of [['clientWidth', had.client], ['offsetWidth', had.offset], ['scrollWidth', had.scroll]] as const) {
     if (d) Object.defineProperty(proto, k, d)
     else delete (proto as unknown as Record<string, unknown>)[k]
   }
