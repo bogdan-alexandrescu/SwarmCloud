@@ -1,6 +1,6 @@
 /**
  * LANE BROWSER-TAB-TABS (part of #2423). A Claude-in-Chrome walk of seven
- * claude-code-browser agents on swarm.saga.xyz, 2026-10-26, at 1440, 1024 and
+ * claude-code-browser agents on the deployed console, 2026-10-26, at 1440, 1024 and
  * 390, measured the agent's tab strip:
  *
  *   BT-004  at 390 the strip holding the open tab was squeezed to 0 px beside
