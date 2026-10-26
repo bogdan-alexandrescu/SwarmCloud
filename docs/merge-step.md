@@ -57,7 +57,7 @@ request is needed; swarm-api serves the questions as before and does not
 read `built`.
 
 **The merge compares the pick with the build.** Once every `needs_owner`
-question is answered, the step reads each asking task's validated
+question is answered, the step reads each asking agent's validated
 `questions.json` again (`owner_questions.questions_of`) and, for every
 question that names a `built` label, compares the answer's `choice` with it.
 Another option, or free text with no option, refuses `owner_pick_not_built`,
