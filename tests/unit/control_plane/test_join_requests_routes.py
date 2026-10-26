@@ -213,7 +213,7 @@ def test_the_code_is_shown_once_and_never_again(client, db) -> None:
         assert joinrequests.code_hash(code) not in text
 
 
-def test_only_the_workspaces_admin_or_a_platform_admin_sets_its_link(client, db) -> None:
+def test_only_the_workspaces_admin_or_a_platform_admin_sets_its_link(client, ctx, db) -> None:
     for method in ("GET", "PUT"):
         response = client.request(method, "/v1/workspace/join-link", headers=h("bob", "eng"),
                                   json={"on": True} if method == "PUT" else None)
@@ -225,7 +225,8 @@ def test_only_the_workspaces_admin_or_a_platform_admin_sets_its_link(client, db)
     assert response.status_code == 409, response.text
     assert response.json()["code"] == "join_not_offered"
     assert not db.dump(f"{joinrequests.LINKS}/")
-    # A platform admin reaches it.
+    # A platform admin reaches it, through the reach (PLATFORM_ADMIN_REACH).
+    object.__setattr__(ctx.settings, "platform_admin_reach", True)
     assert link_on(client, "ops", "eng")
 
 
@@ -416,8 +417,8 @@ def test_with_the_switch_on_approval_writes_the_decision_membership_role_and_aud
                                   "via": "workspace_admin"}
     (added,) = audit(db, memberships.AUDIT_ADDED)
     assert added["detail"] == {"ref": ref, "via": "join_request"}
-    (granted,) = audit(db, roles.AUDIT_GRANTED)
-    assert granted["target_email"] == LEE and granted["detail"]["to"] == "viewer"
+    (granted,) = [r for r in audit(db, roles.AUDIT_GRANTED) if r.get("target_email") == LEE]
+    assert granted["detail"]["to"] == "viewer" and granted["detail"]["join_request"] == ref
 
 
 def test_an_approval_at_the_default_writes_no_role_override(client, ctx, db) -> None:

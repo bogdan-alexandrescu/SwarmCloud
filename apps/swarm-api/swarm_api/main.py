@@ -92,6 +92,7 @@ from .routes import (
 from .routes import repository_secrets
 from .routes import actions_secrets
 from .routes import secrets_overview
+from .routes import join_requests
 from .qa_identity import QaIdentityOrigin
 from .validation import FORBIDDEN_CALLER_FIELDS
 
@@ -153,6 +154,13 @@ UNCAPTURED_ROUTES = frozenset({
     # a GitHub personal access token, and the GitHub App's authorization code.
     "/v1/onboarding/github/token",
     "/v1/onboarding/github/exchange",
+    # A workspace's join code (docs/design/join-requests.md §4.2, lane
+    # JOIN-API): the two bodies that carry one, and the answer that makes one.
+    # A code admits nobody, but it is what lets a person ask, so it stays out
+    # of every log like the URL fragment it travels in.
+    join_requests.LOOKUP_ROUTE,
+    join_requests.ASK_ROUTE,
+    join_requests.LINK_ROUTE,
 })
 
 # --------------------------------------------------------------------------
@@ -436,6 +444,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # Admin roles in Firestore: grant and remove, audited (docs/workspaces.md
     # §6.5, lane W2). Admin-only; W7 adds the People list to the same router.
     app.include_router(people.router)
+    # Join requests (docs/design/join-requests.md §4.8, lane JOIN-API): a
+    # person asks with a workspace's join link; its admins decide.
+    app.include_router(join_requests.router)
     # The schedule tick (docs/schedules.md §2, lane S2): one route, admitted
     # to the `swarm-schedule-tick` identity alone (SD10).
     app.include_router(schedule_tick.router)
