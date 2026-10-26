@@ -175,10 +175,11 @@ describe('Config › People and roles: the member’s lead (S5g, S5h)', () => {
 describe('Config › People and roles: the roster on a phone', () => {
   it('is the stacking table, every cell labelled with its column', async () => {
     await draw(roles(true, [person('dana@example.com', 'member'), person('lee@example.com', 'viewer')]), step4({}))
-    const table = screen.getByRole('table', { name: 'People with their own role' })
+    const table = screen.getByRole('table', { name: 'Who holds which role in eng' })
     expect(table.classList.contains('mcp-servers')).toBe(true)
     const cells = [...table.querySelectorAll('tbody th, tbody td')]
-    expect(cells.length).toBe(12)
+    // Two people with their own role and the caller's own row (S5b, CONFIG-PEOPLE-S5), six columns each.
+    expect(cells.length).toBe(18)
     for (const cell of cells) expect(cell.getAttribute('data-label'), cell.textContent ?? '').toMatch(/^(Person|Role|Given by|When|Reason|Actions)$/)
   })
 })
