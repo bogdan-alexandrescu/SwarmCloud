@@ -38,7 +38,7 @@ const KEY = 'swarm.schedule.history.view'
 
 type Json = Record<string, unknown>
 
-const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
+const minutesAgo = (m: number, now = Date.now()) => new Date(now - m * 60_000).toISOString()
 
 function schedule(): Json {
   return {
@@ -54,13 +54,16 @@ function schedule(): Json {
   }
 }
 
-/** Firing n, fired n days ago, which made task `task_<n>`. */
+/** Firing n, fired n days ago, which made task `task_<n>`. One clock read,
+ *  so it ends exactly an hour after it fired: two reads a millisecond apart
+ *  made it 60m + 1ms, and the page's scale rounded up to +1h15m. */
 function firing(n: number, over: Json = {}): Json {
-  const at = minutesAgo(n * 1440)
+  const now = Date.now()
+  const at = minutesAgo(n * 1440, now)
   return {
     firing_id: `sch_a:${n}`, schedule_id: 'sch_a', type: 'issue-sweep', slot: at, fired_at: at, trigger: 'cron',
     state: 'done', work: [{ kind: 'task', id: `task_${n}`, repo_id: 'repo_a' }], skip: null, dry_run: null,
-    approval_id: null, outcome: 'succeeded', cost: null, ended_at: minutesAgo(n * 1440 - 60),
+    approval_id: null, outcome: 'succeeded', cost: null, ended_at: minutesAgo(n * 1440 - 60, now),
     ...over,
   }
 }
