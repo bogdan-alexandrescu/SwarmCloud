@@ -147,6 +147,8 @@ open question for the owner in the pull request that built this.
 question answered before the review ran goes in neither of the review's lists
 (`owner_questions.guidance`), so a pick made then is not compared here.
 
+## Revised 2026-10-14: auto fix rounds (lane SPEED-D2)
+
 Owner decision 2026-10-14 ("Auto fix rounds", the delivery speed plan),
 taken on a measurement over the last 150 merged pull requests: 0.52 red CI
 runs per pull request, 23% of SwarmCloud lanes needing a hand fix-up, and
