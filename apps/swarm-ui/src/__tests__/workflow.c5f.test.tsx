@@ -202,7 +202,7 @@ describe('G3-06: a row whose steps the task window missed reads them as it scrol
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_fresh', 'wf_old']))
     // Before the old row is in view: its id alone, and the note says so.
-    expect(row('wf_old').querySelector('.wfl-name > a')!.textContent).toBe('wf_old')
+    expect(row('wf_old').querySelector('.wfl-line > a')!.textContent).toBe('wf_old')
     const note = document.querySelector('.wfl .c-count-note')
     expect(note?.textContent).toBe('1 of 2 rows have their steps read; older rows show ids only until they scroll into view')
     // The note sits above the table, once.
@@ -212,7 +212,7 @@ describe('G3-06: a row whose steps the task window missed reads them as it scrol
     expect(api.loadWorkflow).not.toHaveBeenCalledWith('wf_fresh')
 
     scrollIn(row('wf_old'))
-    await waitFor(() => expect(row('wf_old').querySelector('.wfl-name > a')!.textContent).toBe('Commits SwarmCloud old title'))
+    await waitFor(() => expect(row('wf_old').querySelector('.wfl-line > a')!.textContent).toBe('Commits SwarmCloud old title'))
     expect(api.loadWorkflow).toHaveBeenCalledWith('wf_old')
     expect(api.loadWorkflow).toHaveBeenCalledTimes(1)
     // The duration the detail page knows: submission to the last end.
@@ -233,7 +233,7 @@ describe('G3-06: a row whose steps the task window missed reads them as it scrol
         '1 of 2 rows have their steps read; older rows show ids only until they scroll into view; 1 could not be read',
       ),
     )
-    expect(row('wf_old').querySelector('.wfl-name > a')!.textContent).toBe('wf_old')
+    expect(row('wf_old').querySelector('.wfl-line > a')!.textContent).toBe('wf_old')
   })
 })
 
@@ -242,7 +242,7 @@ describe('G3-06: a row whose steps the task window missed reads them as it scrol
 // ---------------------------------------------------------------------------
 
 describe('G3-09: the Workflow column holds at least 280px at 1440 and the id never wraps', () => {
-  it('drops Shape and Runners below 1680 and carries the runner mix on the name’s second line', async () => {
+  it('drops Shape and Runners below 1680 and carries the runner mix on the name’s line', async () => {
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_fresh', 'wf_old']))
     const heads = [...document.querySelectorAll('.wfl-table thead th')]
@@ -268,7 +268,7 @@ describe('G3-09: the Workflow column holds at least 280px at 1440 and the id nev
   it('cuts the id on one line with an ellipsis', async () => {
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_fresh', 'wf_old']))
-    const id = row('wf_fresh').querySelector('.wfl-name > .id')!
+    const id = row('wf_fresh').querySelector('.wfl-line > .id')!
     expect(at(id, 'white-space')).toBe('nowrap')
     expect(at(id, 'overflow')).toBe('hidden')
     expect(at(id, 'text-overflow')).toBe('ellipsis')

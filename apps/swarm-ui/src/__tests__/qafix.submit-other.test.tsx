@@ -121,7 +121,7 @@ describe('QA-073: the issue form\'s summary is one type treatment', () => {
     const container = await issueForm()
     const send = container.querySelector('.sbf-send.in-send')!
     const lands = fact(send, 'lands as')
-    expect(visible(lands)).toMatch(/^lands as\s*PLANNING, then PLANNED/)
+    expect(visible(lands)).toMatch(/^lands as\s*planning, then planned/)
     for (const [w, env] of ENVS) {
       // MUTATION: drop the `in-fact-long` class (or its rule) -> the value wraps right-aligned beside the key.
       expect(painted(lands, 'flex-direction', env), `${w}: "lands as" is beside its key`).toBe('column')
@@ -138,7 +138,7 @@ describe('QA-074: the fixed carrier is a value, not a control (owner 2026-10-20)
     await screen.findByRole('button', { name: 'Submit this workflow' }, WAIT)
     // MUTATION: put the disabled `<select id="dsp-carrier">` back -- a screen
     // reader announces a disabled combobox again.
-    expect(screen.queryByRole('combobox', { name: 'what carries work between steps' })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: 'What carries work between steps' })).toBeNull()
     expect(container.querySelector('#dsp-carrier select, select#dsp-carrier')).toBeNull()
     const value = container.querySelector<HTMLElement>('#dsp-carrier')!
     // MUTATION: drop the plain-text value -- the form no longer says what it sends.
@@ -146,7 +146,7 @@ describe('QA-074: the fixed carrier is a value, not a control (owner 2026-10-20)
     // MUTATION: keep the label as a `<label for>` with no control to name.
     expect(container.querySelector('label[for="dsp-carrier"]')).toBeNull()
     const label = value.previousElementSibling!
-    expect(visible(label)).toBe('what carries work between steps')
+    expect(visible(label)).toBe('What carries work between steps')
     // The note still follows the value, unchanged.
     expect(visible(value.nextElementSibling)).toMatch(/^not acted on yet/)
     for (const [w, env] of ENVS) {

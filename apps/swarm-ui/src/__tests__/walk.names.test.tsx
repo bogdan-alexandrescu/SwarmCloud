@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { App } from '../App'
 import { agentName } from '../agentlist'
+import { rememberWorkflow } from '../Spine'
 import type { CascadeEnv } from './cssgate'
 import { painted, TABLES } from './marks'
 import { resolveVars } from './spaceprobe'
@@ -57,6 +58,35 @@ describe('G: an agent is named from what it is', () => {
     await waitFor(() => {
       expect(document.querySelector('.ctl-crumb [aria-current="page"]')?.textContent).toBe('claude-code agent · a073aff5')
     })
+  })
+})
+
+describe('VQ-015: an open workflow’s breadcrumb is its name, in the reading face', () => {
+  // MUTATION: draw the crumb as `id ctl-crumb-obj` whatever it says, and a
+  // workflow's prose name is set in the id's monospace face.
+  it('drops the id face once the workflow’s name is known', async () => {
+    window.location.hash = '#work/workflows?wf=wf_vq015_named'
+    rememberWorkflow('wf_vq015_named', 'RUNNING', 'Audit the operator scripts and the Terraform')
+    render(<App />)
+    const crumb = await waitFor(() => {
+      const c = document.querySelector<HTMLElement>('.ctl-crumb [aria-current="page"]')
+      expect(c?.textContent).toBe('Audit the operator scripts and the Terraform')
+      return c!
+    })
+    expect(crumb.classList.contains('ctl-crumb-obj')).toBe(true)
+    expect(crumb.classList.contains('id'), 'a prose name drawn in the id face').toBe(false)
+    expect(crumb.title).toBe('wf_vq015_named')
+  })
+
+  it('keeps the id face while the crumb is the id', async () => {
+    window.location.hash = '#work/workflows?wf=wf_vq015_unnamed'
+    render(<App />)
+    const crumb = await waitFor(() => {
+      const c = document.querySelector<HTMLElement>('.ctl-crumb [aria-current="page"]')
+      expect(c?.textContent).toBe('wf_vq015_unnamed')
+      return c!
+    })
+    expect(crumb.classList.contains('id')).toBe(true)
   })
 })
 

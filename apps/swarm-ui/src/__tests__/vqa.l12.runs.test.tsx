@@ -221,7 +221,10 @@ describe('V112: a phone draws each run as one compact card', () => {
     expect(painted(container.querySelector('.rn-table tbody')!, 'gap', PHONE)).toBe('8px')
     const cell = (label: string) => row.querySelector(`td[data-label="${label}"]`)!
     expect(painted(cell('Run'), 'flex', PHONE)).toBe('1 1 0')
-    expect(painted(cell('State'), 'flex', PHONE)).toBe('none')
+    // The State cell gives its mark to the card (VQ-018, vq.runs.test.tsx):
+    // the mark is the `flex: none` item beside the id.
+    expect(painted(cell('State'), 'display', PHONE)).toBe('contents')
+    expect(painted(cell('State').querySelector('.c-pill')!, 'flex', PHONE)).toBe('none')
     expect(painted(cell('Issue'), 'flex', PHONE)).toBe('0 0 100%')
     for (const label of ['Plan approval', 'Workflow', 'Created', 'By']) {
       expect(painted(cell(label), 'content', PHONE, 'before'), label).toBe('attr(data-label)')

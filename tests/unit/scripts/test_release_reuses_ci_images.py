@@ -23,8 +23,8 @@ that decides "reuse only" versus "reuse or build" evaluated for each event:
     after trivy is installed (test_release_prod_gate.py holds the promotion
     behind the approval);
   * application.yml builds every commit the release would ship, with no tag of
-    its own, and a run on main is neither cancelled nor -- while still queued
-    -- replaced by the next push;
+    its own (since 2026-10-26 a newer push to main cancels an older run, and
+    that release ends superseded: test_release_newest_only.py);
   * since observer proposal H (2026-10-08) application.yml's build is
     INCREMENTAL -- unchanged images keep their previous digest under this
     commit's tag, and the record still names every image -- while the
@@ -436,52 +436,3 @@ def test_application_builds_every_commit_the_release_would_ship():
         "application.yml's build names its own tag; the tag is the commit's, derived once "
         "(git_sha), so a release that builds a commit itself tags it the same way"
     )
-
-
-def test_a_build_on_main_is_not_cancelled_by_the_next_push():
-    """The release waits for this run's build. Cancelling it part-way strands
-    that release, and never stopped the Cloud Build anyway."""
-    cancel = _workflow("application.yml")["concurrency"]["cancel-in-progress"]
-    assert _evaluate(cancel, **{"github.ref": "refs/heads/main"}) is False, (
-        f"cancel-in-progress is {cancel!r}: a push to main cancels the build the previous "
-        "commit's release is waiting for"
-    )
-    assert _evaluate(cancel, **{"github.ref": "refs/pull/1/merge"}) is True, (
-        f"cancel-in-progress is {cancel!r}: pull requests no longer cancel superseded runs"
-    )
-
-
-def test_a_queued_build_on_main_is_never_replaced_by_the_next_push():
-    """cancel-in-progress is not enough. GitHub keeps ONE pending run per
-    concurrency group and cancels the older pending run when a newer one
-    queues, whatever cancel-in-progress says. Measured on 2026-09-24: release
-    run 36035365877, pending in release-dev, was cancelled at 17:41:28 -- two
-    seconds after 36036058352 queued -- with zero jobs.
-
-    With one group for all of main, a push made while commit B's application
-    run was queued behind A's cancelled B's run. release.yml has a path filter
-    and application.yml has none, so when that push touched only docs, tests
-    or the README it started no release to replace B's: B's release, still
-    pending, then found its commit never built and went red, and B's change
-    did not reach dev until the next push that starts a release. So on main
-    each commit's run has a group of its own; on a pull request a newer push
-    still supersedes the older run."""
-    group = _workflow("application.yml")["concurrency"]["group"]
-
-    def rendered(ref: str, sha: str) -> str:
-        return _render(group, **{"github.ref": ref, "github.sha": sha})
-
-    main_a = rendered("refs/heads/main", "a" * 40)
-    main_b = rendered("refs/heads/main", "b" * 40)
-    assert main_a != main_b, (
-        f"every commit on main shares the concurrency group {main_a!r}: a queued run is cancelled "
-        "by the next push to main, and the release waiting for its build is stranded"
-    )
-    pr_a = rendered("refs/pull/7/merge", "a" * 40)
-    pr_b = rendered("refs/pull/7/merge", "b" * 40)
-    assert pr_a == pr_b, (
-        f"a pull request's pushes land in different groups ({pr_a!r}, {pr_b!r}): a superseded "
-        "run is no longer cancelled"
-    )
-    assert rendered("refs/pull/8/merge", "a" * 40) != pr_a, "two pull requests share one group"
-    assert main_a != pr_a, "a pull request can queue in main's group"

@@ -173,7 +173,7 @@ describe('5b:QA-007: each pane tab’s accessible name holds its visible text, i
   it('in More: an item’s text is in its name too', () => {
     room = 358
     bar(failed())
-    fireEvent.click(screen.getByRole('button', { name: /^\d+ more: / }))
+    fireEvent.click(screen.getByRole('button', { name: /^More \d+ tabs: / }))
     const menu = screen.getByRole('group', { name: 'More agent panes' })
     const items = within(menu)
       .getAllByRole('button')
@@ -304,24 +304,26 @@ describe('Logs toolbar', () => {
     localStorage.clear()
     api.loadAttempts.mockResolvedValue(ok({ attempts: threeAttempts() }))
     api.loadTaskLogs.mockResolvedValue(ok(logs()))
-    api.loadTranscript.mockImplementation(async (_id: string, opts: { offset?: number } = {}) =>
-      opts.offset === 1000
-        ? ok(
-            transcript(
-              [
-                step(5, { kind: 'tool_call', tool: { id: 'toolu_1', name: 'Bash', input: '{}' } }),
-                step(6, { kind: 'tool_result', role: 'user', text: null, tool_result: { tool_use_id: 'toolu_1', is_error: true, content: 'exit 1', images: 0 } }),
-              ],
-              null,
-            ),
-          )
-        : ok(transcript([step(1, { text: 'reading the repository' }), step(2, { text: 'running the suite' })], 1000)),
-    )
+    api.loadTranscript.mockImplementation(async (_id: string, opts: { offset?: number } = {}) => {
+      if (opts.offset !== 1000) return ok(transcript([step(1, { text: 'reading the repository' }), step(2, { text: 'running the suite' })], 1000))
+      // The second window as the route serves it: from byte 1000, past the first step.
+      const t = transcript(
+        [
+          step(5, { kind: 'tool_call', tool: { id: 'toolu_1', name: 'Bash', input: '{}' } }),
+          step(6, { kind: 'tool_result', role: 'user', text: null, tool_result: { tool_use_id: 'toolu_1', is_error: true, content: 'exit 1', images: 0 } }),
+        ],
+        null,
+      )
+      return ok({ ...t, stream: { ...t.stream, offset: 1000 }, window_starts_mid_stream: true })
+    })
   })
 
   describe('5b:ff-desktop-07: what the error control shows, its name and its disabled state agree', () => {
     it('counts an error line the transcript’s next window draws, without a redraw of the bar', async () => {
       render(<AgentLogs task={failed()} />)
+      // A finished transcript opens on its newest window (BT-018, #2423); this
+      // case pages forward from the first, as a reader who asks for it does.
+      fireEvent.click(await within(dock()).findByRole('button', { name: 'Read from the first window' }))
       const next = await within(dock()).findByRole('button', { name: 'next window' })
       const err = () => dock().querySelector<HTMLButtonElement>('button[aria-keyshortcuts="E"]')!
       expect(err().disabled).toBe(true)
@@ -339,6 +341,7 @@ describe('Logs toolbar', () => {
 
     it('keeps the owner’s `0 err ln`, disabled, while nothing matched', async () => {
       render(<AgentLogs task={failed()} />)
+      fireEvent.click(await within(dock()).findByRole('button', { name: 'Read from the first window' }))
       await within(dock()).findByRole('button', { name: 'next window' })
       const b = dock().querySelector<HTMLButtonElement>('button[aria-keyshortcuts="E"]')!
       // MUTATION: change the zero count's short words -- the owner kept `0 err ln` (N13).

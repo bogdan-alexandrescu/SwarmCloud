@@ -167,7 +167,10 @@ describe('Admin › People: the Workspace roles card', () => {
     expect(carol).toContain('given by owner@example.com (platform admin), 30m ago')
     // A group the workspace job made is listed beside the Terraform ones.
     const ops = await loaded('ops')
-    expect(visible(ops.querySelector('.wra-admins'))).toBe('no admin yet')
+    // VQ-044: the row lists NAMED admins; a platform admin holds admin here too, so never "no admin".
+    expect(visible(ops.querySelector('.wra-admins'))).toBe('none named yet')
+    expect(visible(ops)).toContain('Named admins')
+    expect(visible(card)).toContain('every platform admin holds admin in it')
     expect(visible(ops)).toContain('made by the workspace job')
     expect(visible(ops)).toContain('as before roles')
     const reads = calls.filter((c) => c.method === 'GET' && c.url.startsWith('/v1/admin/workspaces/'))

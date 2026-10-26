@@ -134,6 +134,53 @@ counts for 7 days and the last 50 events
 `GET /v1/accounts/{id}/health` and summarised (24 h counts, one-word status)
 on every row of `GET /v1/accounts`.
 
+**The whole pool's records are one read**, `GET /v1/accounts/health`
+(ACCOUNT-HEALTH-PAGE): every account the caller's tenant may run on, owned or
+lent, each record the per-account read's, shown by the same viewer rule (owner,
+borrower, or a platform admin with `scope=platform`) and redacted again on the
+way out. Capacity › Account health polls it every minute. It is one broker call
+and one swarm-api call, not one per account, because proposal B's per-account
+reads would have been 30 a minute on a pool of 30; and swarm-api drops a record
+for an account the tenant neither owns nor borrows even if the broker sent it.
+
+#### Incidents: how the console groups an account's events
+
+At phone width the page lists **incidents**, not events (BGD's pick of proposal
+D for the phone, 2026-10-25). The grouping is the console's, not the broker's:
+the broker serves events, and `incidentsOf` in
+`apps/swarm-ui/src/accountHealth.ts` groups each account's served events (the
+page's `incidents()` and the side sheet both call it, so there is one rule),
+oldest first, by one fixed rule:
+
+1. **The family.** Limits (rate-limit hit, exhausted report, refusal at
+   assignment), provider errors (529, 5xx, network) and credential (401,
+   failed refresh, re-auth mark). A **refusal that names no window** is the
+   broker withholding an account that needs re-auth, so it joins the
+   **credential** incident, not the limits.
+2. **Joining.** An event joins the newest incident of its family when:
+   - *limits:* that incident has a reset and the event comes at or before it.
+     A rate-limit hit opens a limit incident that later limit events join until
+     its window resets; a later reset extends it. A limit incident with no
+     reset (an exhausted report on its own) is joined by nothing.
+   - *errors and credential:* the event comes within **45 minutes** of that
+     incident's last event. A burst of one kind is one incident; **two storms
+     50 minutes apart are two incidents**, and a test holds that
+     (`accounthealth.incidents.test.ts`).
+3. Otherwise the event **opens a new incident**.
+
+**Open or closed.** A limit incident is open until its reset passes. An error
+incident is open while it is the account's newest error incident, the
+account's status is `erroring` and its last event is under an hour old. A
+credential incident is open while it is the newest and the account is
+`reauth_needed`. Open incidents come first, credential then errors then limits,
+each with its fix (Sign in again; when the limit clears).
+
+**What it cannot see.** Only the last 50 events per account are served, so an
+incident older than those is in the counts and the hourly series and in no
+incident. 45 minutes is a judgement, not a measurement: it is short enough that
+a morning's two separate provider incidents read as two, and long enough that a
+retrying worker's errors a few minutes apart read as one.
+
 ### The invariant that must never break
 
 ```

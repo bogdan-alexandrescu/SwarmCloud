@@ -115,7 +115,7 @@ its pull request; the pieces that came last, and where each one lives:
   changed. The answer is the org record, never the token. It is sent from
   `uv run sc setup token --owner <org>`, which reads stdin
   (`apps/swarm-mcp/swarm_mcp/sc.py::cmd_setup_token`), and from Admin
-  settings (`apps/swarm-ui/src/AdminSettings.tsx` (`export function FallbackTokenCard() {`)).
+  settings (`apps/swarm-ui/src/AdminSettings.tsx` (`export function FallbackTokenCard(`)).
   Submission picks that slot for a granted repository of that owner
   (`apps/swarm-api/swarm_api/service.py::SubmissionService._person_slot`).
   Removing the owner disables every version of it

@@ -144,9 +144,12 @@ A rough monthly ceiling:
 max_monthly_cloud_cost ≈ global_limit x avg_class_hourly x utilisation x 730
 ```
 
-With `global = 100`, `standard` at roughly $0.20/hour and 40% utilisation, the
-cloud side lands near $5.8k/month. The provider side is separate and typically
-larger.
+With dev's `global = 180` (100 until BROWSER-POOL-100, 2026-10-26, which made
+room for 100 browser units beside claude-code's 80 standard), `standard` at
+roughly $0.20/hour and 40% utilisation, the cloud side lands near
+$10.5k/month; it was $5.8k at 100. A `browser` pod is `standard`'s size since
+contract request 79, so the same hourly figure covers it. The provider side is
+separate and typically larger.
 
 **There are no per-tenant dollar budgets. They are not built and not planned**
 (owner decision, 2026-10-01). A tenant's spend is bounded by the pools above —

@@ -234,3 +234,32 @@
 @media (prefers-reduced-motion: reduce) {
   .pp-fold-ic { transition: none; }
 }
+
+/* JOIN REQUESTS (JOIN-UI-ADMIN; part of #2325; join-requests.md §4.6, S5f).
+   `requested` is an open request to join and nothing else there: the amber
+   of Waiting for you, where it is decided. "joined by request" sits beside a
+   role and tells a platform membership from a Google-group member; a
+   membership whose group changed admits nobody, so it reads as a warning.
+   The approval's group command is one copyable line that scrolls inside the
+   card on a phone, never past it. */
+.pp-role-w.is-requested { color: var(--warn-ink); font-weight: 600; }
+.pp-joined {
+  display: inline-block; padding: 0 6px; border: 1px solid var(--line); border-radius: var(--r-ctl);
+  color: var(--text-dim); font-size: var(--t-meta); line-height: var(--lh-meta); white-space: nowrap;
+}
+.pp-joined.is-changed { border-color: var(--warn); color: var(--warn-ink); }
+.pp-joined-unread { margin: 0 0 var(--ctl-s2); }
+.pp-join-msg { color: var(--text-dim); font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+.pp-join-approve { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); min-width: 0; }
+.pp-join-role { width: auto; max-width: 12rem; min-height: var(--h-ctl); }
+.pp-said-cmd { display: grid; gap: var(--ctl-s1); min-width: 0; }
+.pp-said-cmd .ur-hint { margin: 0; }
+.pp-cmd {
+  margin: 0; padding: var(--ctl-s1) var(--ctl-s2); max-width: 100%; overflow-x: auto;
+  border: 1px solid var(--line-soft); border-radius: var(--r-ctl); background: var(--surface-2);
+  font: var(--t-meta)/var(--lh-meta) var(--mono); user-select: all;
+}
+@media (max-width: 560px) {
+  .pp-req[data-kind='join'] .pp-join-approve { flex: 1 1 100%; }
+  .pp-req[data-kind='join'] .pp-join-role { flex: 1 1 0; max-width: none; min-height: 44px; }
+}

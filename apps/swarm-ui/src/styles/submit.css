@@ -388,12 +388,12 @@ input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: ins
    present". In inline flow the space binds the dot to the fact before it. */
 .wfb-step > .wfb-cost { display: block; }
 
-/* "If a step fails" and "Priority", in step 2 (G1 frames 7-8). */
+/* "If a step fails" and "Priority", in step 2 (G1 frames 7-8). Their type
+   is `.dsp-head` in styles.css, the dispatch control's labels' own, so the
+   card's labels are one style (VQ-027); this rule only spaces them. */
 .sb-step .sb-sub {
   display: block;
   margin: 12px 0 4px;
-  font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600;
-  color: var(--text);
 }
 /* "If a step fails" IS THE DISPATCH CONTROL'S CARD (QA G4-35): `.dsp-option`
    in styles.css draws both of the workflow form's radio groups, so the two

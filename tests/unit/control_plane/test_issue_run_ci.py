@@ -262,10 +262,11 @@ def test_a_run_without_auto_merge_stops_at_a_green_pull_request_and_never_merges
     assert run["state"] == after["state"] == "DONE" and run["green_sha"] == SHA_B
     assert _stored(db, running["id"])["pull_request"]["merged"] is False
     # Nothing it ran could merge: every task -- the compiled workflow's and
-    # the fix round's -- is a claude-code step publishing through a pull
-    # request, never `single-pr` and never the `merge` profile.
+    # the fix round's -- is a claude-code step (the review a browser one
+    # until its diff is read, #2322) publishing through a pull request, never
+    # `single-pr` and never the `merge` profile.
     tasks = [doc for doc in _docs(db, "tasks").values() if doc.get("workflow_id")]
-    assert tasks and {t["runner_profile"] for t in tasks} == {"claude-code"}
+    assert tasks and {t["runner_profile"] for t in tasks} <= {"claude-code", "claude-code-browser"}
     assert {t["metadata"]["dispatch"]["strategy"] for t in tasks} <= {"integrate", "direct-pr"}
     # And swarm-api itself asked GitHub to merge nothing.
     assert not [path for method, path in writes.writes() if method == "PUT" or path.endswith("/merge")]

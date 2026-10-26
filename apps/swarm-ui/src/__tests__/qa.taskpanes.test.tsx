@@ -169,10 +169,11 @@ describe('QA-113: the Attempts tab says its figures in words', () => {
   it('counts attempts and events in words in the summary and the toolbar', async () => {
     const el = await twoAttempts()
     // MUTATION: summary back to `${n} att · ${n} ev`.
-    expect(screen.getByText('2 attempts · 2 events')).toBeTruthy()
+    // The `submitted` event is no attempt's, and the totals say so (VQ-011).
+    expect(screen.getByText('2 attempts · 2 events, 1 before any attempt')).toBeTruthy()
     const toolbar = el.querySelector<HTMLElement>('.ctl-toolbar .is-end')!
     // MUTATION: toolbar back to `2 ev · first page · 1 blind`.
-    expect(toolbar.textContent).toMatch(/2 events · first page/)
+    expect(toolbar.textContent).toMatch(/2 events, 1 before any attempt · first page/)
     expect(toolbar.textContent).toMatch(/· partial 1 attempt without events\b/)
     expect(toolbar.textContent).not.toMatch(/\bev\b|\bblind\b/)
   })
