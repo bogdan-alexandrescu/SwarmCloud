@@ -1,0 +1,245 @@
+/* CAPACITY › ACCOUNT HEALTH (ACCOUNT-HEALTH-PAGE, part of #2302;
+   docs/web-ui/mockups/account-health-b.html F1, F3, account-health-a.html F4,
+   account-health-d.html P1). Imported by AccountHealthPage.tsx only. Type from the
+   scale tokens; colour from the shell's. The three families keep a fixed
+   series slot AND a fixed shape (diamond, circle, square), so none is read by
+   hue alone. */
+
+.ah-page { display: flex; flex-direction: column; gap: 12px; }
+
+/* ---- the status word: icon and word ---- */
+.ah-st {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ah-st-ic { width: 12px; height: 12px; flex: none; }
+.ah-st.is-healthy { color: var(--ok-ink); }
+.ah-st.is-limited { color: var(--warn-ink); }
+.ah-st.is-erroring { color: var(--bad-ink); }
+.ah-st.is-reauth_needed { color: var(--bad-ink); }
+/* A Limited row's reset time, under its word in the list: it may wrap, so the
+   Status column gives way and the table fits its card at 1440. */
+.ah-st-until { display: block; margin-top: 2px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--warn-ink); }
+.ah-dash { color: var(--text-dim); font-weight: 600; cursor: help; }
+.ah-mu { color: var(--text-dim); }
+
+.ah-fm { width: 10px; height: 10px; flex: none; }
+.ah-fm.is-err { fill: var(--series-1); }
+.ah-fm.is-lim { fill: var(--series-2); }
+.ah-fm.is-cred { fill: var(--series-3); }
+.ah-kd { display: inline-flex; align-items: center; gap: 6px; }
+
+/* ---- callouts (F4) ---- */
+.ah-callout {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--text-dim);
+  border-radius: 12px;
+  padding: 12px 16px;
+}
+.ah-callout > b { font-size: var(--t-body); line-height: var(--lh-body); }
+.ah-callout > p { margin: 4px 0 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.ah-callout.is-bad { border-left-color: var(--bad-ink); }
+.ah-callout.is-reauth { border-left-color: var(--bad-ink); }
+.ah-acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+
+/* ---- the tiles (F1) ---- */
+.ah-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(0, 1.4fr);
+  gap: 10px;
+}
+.ah-tile {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.ah-tile-w { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+.ah-tile-n {
+  font-size: var(--t-figure);
+  line-height: var(--lh-figure);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.ah-tile-n > small { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 500; color: var(--text-dim); }
+.ah-tile > small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.ah-tile.is-verdict { border-left: 4px solid var(--info); }
+.ah-tiles-note { grid-column: 1 / -1; margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+
+/* ---- the list (F1) ---- */
+.ah-list table { width: 100%; }
+.ah-num { text-align: right; font-variant-numeric: tabular-nums; }
+.ah-nm { font-weight: 600; white-space: nowrap; }
+.ah-id { display: block; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.ah-last { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ah-last > small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.ah-msg {
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.ah-open { text-align: right; white-space: nowrap; }
+/* The Last event column is held to a width and its message cut to one line
+   (the whole of it is the line's title), so the table fits its card at 1440:
+   unbounded, a long message pushed the row's "Sign in again ›" off the edge. */
+.ah-last-td .ah-last { max-width: 280px; }
+.ah-msg.is-one-line { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
+.ah-foot { margin: 8px 0 0; padding: 0 var(--ctl-pad-chrome) var(--ctl-pad-chrome); font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.ah-empty-line { margin: 0; padding: var(--ctl-pad-chrome); font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+
+/* ---- the swimlane (F3) ---- */
+.ah-chart-scroll { overflow-x: auto; padding: 0 var(--ctl-pad-chrome); }
+.ah-swim { display: block; height: auto; overflow: visible; }
+.ah-swim text { font-size: var(--t-micro); line-height: var(--lh-micro); fill: var(--text-dim); }
+.ah-swim text.is-nm { fill: var(--text); font-weight: 600; }
+.ah-swim text.is-band { fill: var(--warn-ink); }
+.ah-grid { stroke: var(--line); stroke-width: 1; }
+.ah-lane { fill: var(--surface-2); }
+.ah-band { fill: color-mix(in srgb, var(--warn) 16%, transparent); }
+.ah-band-l { stroke: var(--warn-ink); stroke-width: 1.5; }
+.ah-now { stroke: var(--text-dim); stroke-width: 1; stroke-dasharray: 3 3; }
+.ah-bar.is-err { fill: var(--series-1); }
+.ah-bar.is-lim { fill: var(--series-2); }
+.ah-bar.is-cred { fill: var(--series-3); }
+/* The chart is drawn at its own pixel size; the marks sit on it as buttons.
+   `min-height: 0` because `:where(.app button)` gives every button 28 px: a
+   28 px `.ah-hit` centred its mark 8 px below the lane position the chart
+   computes, so a credential square hung into the lane below (PR 2357's
+   fourth review). */
+.ah-swim-box { position: relative; }
+.ah-hit {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.ah-hit > .ah-fm { width: 10px; height: 10px; stroke: var(--surface); stroke-width: 1; }
+.ah-hit:focus-visible, .ah-hit.is-on { outline: 2px solid var(--text); outline-offset: 1px; }
+.ah-picked {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  align-items: baseline;
+  margin: 8px var(--ctl-pad-chrome) 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-size: var(--t-meta);
+  line-height: var(--lh-meta);
+}
+.ah-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 8px var(--ctl-pad-chrome) 0;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  color: var(--text-dim);
+}
+.ah-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.ah-band-k {
+  display: inline-block;
+  width: 14px;
+  height: 10px;
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+  border-left: 2px solid var(--warn-ink);
+}
+.ah-quiet { padding: var(--ctl-pad-chrome); }
+.ah-quiet > p { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.ah-quiet > p.ah-quiet-h {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+  font-weight: 600;
+  color: var(--ok-ink);
+}
+
+/* ---- the phone (F5, proposal D's P1) ---- */
+.ah-switch { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.ah-switch > button {
+  flex: 1;
+  min-height: 40px;
+  border: 0;
+  background: var(--surface);
+  color: var(--text-dim);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ah-switch > button[aria-pressed='true'] { background: var(--surface-2); color: var(--text); }
+.ah-sumline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: center;
+  font-size: var(--t-meta);
+  line-height: var(--lh-meta);
+}
+.ah-sec-h { margin: 4px 0 8px; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
+.ah-open-list, .ah-closed-list { display: flex; flex-direction: column; gap: 8px; }
+.ah-closed-list ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ah-closed-list li { display: flex; flex-direction: column; gap: 2px; padding: 8px 0; border-top: 1px solid var(--line); }
+.ah-closed-list li > small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.ah-inc {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.ah-inc.is-open.is-cred, .ah-inc.is-open.is-err { border-left-color: var(--bad-ink); }
+.ah-inc.is-open.is-lim { border-left-color: var(--warn-ink); }
+.ah-inc-h { display: flex; align-items: center; gap: 8px; }
+.ah-inc-h > h3 { margin: 0; flex: 1; min-width: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
+.ah-inc > p { margin: 4px 0 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.ah-inc-when, .ah-inc-sum { color: var(--text-dim); }
+.ah-chip {
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  color: var(--text-dim);
+  background: var(--surface-2);
+}
+.ah-chip.is-open { color: var(--bad-ink); background: color-mix(in srgb, var(--bad) 18%, transparent); }
+.ah-fix { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; color: var(--warn-ink); }
+.ah-cards { display: flex; flex-direction: column; gap: 8px; }
+.ah-acard {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--text);
+  text-decoration: none;
+}
+.ah-acard-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ah-meta { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+
+@media (max-width: 899px) {
+  .ah-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ah-tile.is-verdict { grid-column: 1 / -1; }
+}

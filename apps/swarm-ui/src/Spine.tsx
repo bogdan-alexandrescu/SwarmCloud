@@ -148,6 +148,8 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
       to: 'capacity/accounts',
       kids: [
         { key: 'accounts', label: 'Subscription accounts', to: 'capacity/accounts' },
+        // ACCOUNT-HEALTH-PAGE (part of #2302): what went wrong on each account, after the list.
+        { key: 'account-health', label: 'Account health', to: 'capacity/account-health' },
         { key: 'quota', label: 'Provider quota', to: 'capacity/quota', admin: true },
       ],
     },
@@ -303,6 +305,7 @@ function rowFor(section: PanelSection, tab: string): string {
   if (section === 'work' && (tab === 'running' || tab === '')) return 'agents'
   if (section === 'capacity' && tab === 'profiles') return 'pools'
   if (section === 'capacity' && tab === 'quota') return 'accounts'
+  if (section === 'capacity' && tab === 'account-health') return 'accounts'
   // The one-time key link (paths.ts KEY_LINK_ADDRESS) opens API keys.
   if (section === 'profile' && tab.startsWith('keys/')) return 'keys'
   return tab

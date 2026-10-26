@@ -1,4 +1,14 @@
 import type { PoolFields } from './accountsPool'
+import {
+  HEALTH_KINDS,
+  normPoolHealth,
+  type AccountHealthRecord,
+  type HealthEvent,
+  type HealthKind,
+  type HealthRead,
+  type HealthStatus,
+  type PoolHealth,
+} from './accountHealthModel'
 import { noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
@@ -6271,6 +6281,187 @@ async function fixtureAccountsBoard(): Promise<Result<AccountsBoard>> {
       tenantsDetail: 'Admin group membership is required for this endpoint.',
       readAt: Date.now(),
       fixture: true,
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Capacity › Account health (ACCOUNT-HEALTH-PAGE, part of #2302)
+// ---------------------------------------------------------------------------
+
+/**
+ * Everything Capacity › Account health draws, in one load of two reads:
+ *
+ *  - `/v1/accounts` IS the screen, as on Accounts: the rows, each with the
+ *    broker's `health_status` and `health_24h`, and the pool's own answer to
+ *    "can it take work" (`can_take_new_agent`, `max_agents`), which the fifth
+ *    tile repeats in one line and links back to. A failure here is a failure.
+ *  - `/v1/accounts/health` is every account's record in ONE read (status,
+ *    counts, the hourly series, the last 50 events). Its failure does not
+ *    blank the page: a 404 is a deployment that does not serve the record
+ *    (`not_served`, a dash with its reason, never a zero) and anything else
+ *    is a read that failed (`unreadable`), each said once on the page.
+ */
+export interface AccountHealthBoard {
+  page: AccountsPage
+  health: HealthRead
+  /** When the reads were made: the page's one clock ("now", "ago", open or closed). */
+  readAt: number
+}
+
+export async function loadAccountHealthBoard(): Promise<Result<AccountHealthBoard>> {
+  if (USE_FIXTURES) return fixtureAccountHealthBoard()
+  const [accounts, health] = await Promise.all([
+    read<AccountsPage>(route('/v1/accounts'), () => false),
+    read<unknown>(route('/v1/accounts/health'), () => false),
+  ])
+  if (accounts.status === 'loading' || accounts.status === 'error' || accounts.status === 'empty') {
+    return accounts as Result<AccountHealthBoard>
+  }
+  return {
+    status: accounts.status,
+    fetchedAt: accounts.fetchedAt,
+    ...(accounts.status === 'ok' ? { serverAt: accounts.serverAt } : {}),
+    data: { page: accounts.data, health: healthReadOf(health), readAt: accounts.fetchedAt },
+  } as Result<AccountHealthBoard>
+}
+
+function healthReadOf(r: Result<unknown>): HealthRead {
+  if (r.status === 'ok' || r.status === 'stale') {
+    const pool = normPoolHealth(r.data)
+    return pool === null
+      ? { kind: 'unreadable', reason: 'The health read answered in a shape this console does not know.' }
+      : { kind: 'ok', pool }
+  }
+  if (r.status === 'error' && r.error.httpStatus === 404) {
+    return {
+      kind: 'not_served',
+      reason:
+        'GET /v1/accounts/health answers 404: this deployment predates the pool-wide health read (ACCOUNT-HEALTH-PAGE).',
+    }
+  }
+  if (r.status === 'error') return { kind: 'unreadable', reason: r.error.message }
+  return { kind: 'unreadable', reason: 'The health read did not complete.' }
+}
+
+/**
+ * THE DEVELOPMENT POOL'S HEALTH, one of every state the page draws: a storm of
+ * provider errors (erroring), two windows limited, a credential that died
+ * (needs re-auth, with the refusals that follow it), quiet healthy accounts
+ * and one with no events in 7 days. Built off the fixture accounts, so the
+ * rows, the tiles and the lanes agree, and relative to FIXTURE_NOW.
+ */
+function fixturePoolHealth(): PoolHealth {
+  const H = 3_600_000
+  const M = 60_000
+  const top = Math.floor(FIXTURE_NOW / H) * H
+  type Ev = [number, HealthKind, { w?: string; r?: number; m?: string; t?: string }?]
+  const plan: Record<string, Ev[]> = {
+    'u-bogdan:primary': [[-50 * H, 'network', { m: 'the connection to the provider was reset' }], [-98 * H, 'overloaded']],
+    'u-bogdan:overflow': [
+      ...Array.from({ length: 9 }, (_, i): Ev => [-(40 - i * 4) * M, i % 3 === 0 ? 'server_error' : 'overloaded']),
+      [-30 * H, 'overloaded'], [-30 * H + 8 * M, 'overloaded'],
+    ],
+    'u-bogdan:weekly-burn': [
+      [-3 * H, 'rate_limit', { w: 'seven_day', r: 20 * H }],
+      [-2 * H, 'assign_refused', { w: 'seven_day', m: 'not assigned: its 7-day window is under its floor' }],
+      [-27 * H, 'exhausted'],
+    ],
+    'u-bogdan:five-hour-floor': [
+      [-90 * M, 'rate_limit', { w: 'five_hour', r: 50 * M }],
+      [-70 * M, 'rate_limit', { w: 'five_hour', r: 50 * M }],
+      [-52 * H, 'rate_limit', { w: 'five_hour', r: -48 * H }],
+      [-120 * H, 'rate_limit', { w: 'five_hour', r: -117 * H }],
+    ],
+    // The re-auth story sits on the account whose state IS REAUTH_REQUIRED, so
+    // its row, its callout and the phone's re-auth card tell one story.
+    'u-bogdan:retired-laptop': [
+      [-30 * H, 'refresh_failed', { m: 'the credential refresh was refused · credential [redacted]' }],
+      [-70 * M, 'refresh_failed', { m: 'the credential refresh was refused · credential [redacted]' }],
+      [-62 * M, 'auth', { m: '401 from the provider: the sign-in expired · credential [redacted]' }],
+      [-61 * M, 'reauth', { m: 'marked as needing re-auth by the worker after a 401' }],
+      [-40 * M, 'assign_refused', { m: 'not assigned: the account needs re-auth' }],
+      [-12 * M, 'assign_refused', { m: 'not assigned: the account needs re-auth' }],
+    ],
+    'u-bogdan:full-six': [[-140 * H, 'network', { m: 'read timeout after 600 s, stream closed' }]],
+  }
+  // accountstore.health_status's order: re-auth, then limited -- by the window
+  // readings OR by a 429 short of its reset (`limited_until`), so an account
+  // whose phone card is an open limit never has a Healthy row -- then erroring.
+  const status = (a: ServedAccount, limitedUntil: string | null): HealthStatus =>
+    a.state === 'REAUTH_REQUIRED' ? 'reauth_needed'
+    : a.can_take_new_agent === false && (a.blocked_by ?? []).some((b) => 'window' in b) ? 'limited'
+    : limitedUntil !== null && Date.parse(limitedUntil) > FIXTURE_NOW ? 'limited'
+    : a.account_id === 'u-bogdan:overflow' ? 'erroring'
+    : 'healthy'
+  const accounts = fixtureAccounts.map((a): AccountHealthRecord => {
+    const events: HealthEvent[] = (plan[a.account_id] ?? [])
+      .map(([dt, kind, o = {}]) => ({
+        at: ISO(dt),
+        kind,
+        tenant_id: o.t ?? FIXTURE_TENANT,
+        task_id: `task_${a.label.replace(/[^a-z0-9]/g, '')}${Math.abs(dt) % 9973}`,
+        window: o.w ?? null,
+        reset_at: o.r === undefined ? null : ISO(o.r),
+        message: o.m ?? (kind === 'rate_limit' ? 'the provider rejected a request at its rate limit' : kind === 'overloaded' ? '529 from the provider: overloaded' : kind === 'server_error' ? '503 service unavailable, retry later' : kind === 'exhausted' ? 'quota exhausted · parked at checkpoint 4, capacity released' : ''),
+        own: true,
+      }))
+      .sort((x, y) => Date.parse(y.at) - Date.parse(x.at))
+    const hourly = Array.from({ length: 168 }, (_, i) => {
+      const at = top - (167 - i) * H
+      const counts: Partial<Record<HealthKind, number>> = {}
+      for (const e of events) {
+        const t = Date.parse(e.at)
+        if (t >= at && t < at + H) counts[e.kind] = (counts[e.kind] ?? 0) + 1
+      }
+      return { hour: new Date(at).toISOString(), counts, total: Object.values(counts).reduce((n, v) => n + (v ?? 0), 0) }
+    })
+    const since = (h: number) => {
+      const c = Object.fromEntries(HEALTH_KINDS.map((k) => [k, 0])) as Record<HealthKind, number>
+      for (const e of events) if (Date.parse(e.at) >= FIXTURE_NOW - h * H) c[e.kind] += 1
+      return c
+    }
+    const limit = events.find((e) => e.kind === 'rate_limit' && e.reset_at !== null && Date.parse(e.reset_at) > FIXTURE_NOW)
+    return {
+      account_id: a.account_id,
+      label: a.label,
+      owner_tenant: a.owner_tenant,
+      status: status(a, limit?.reset_at ?? null),
+      limited_until: limit?.reset_at ?? null,
+      counts: { last_1h: since(1), last_24h: since(24), last_7d: since(168) },
+      hourly,
+      events,
+      observed_at: ISO(0),
+    }
+  })
+  return { tenant_id: FIXTURE_TENANT, accounts, events_max: 50, truncated: false, observed_at: ISO(0) }
+}
+
+async function fixtureAccountHealthBoard(): Promise<Result<AccountHealthBoard>> {
+  await new Promise((r) => setTimeout(r, 180))
+  noteFixtureProbe(route('/v1/accounts'), 180, true)
+  noteFixtureProbe(route('/v1/accounts/health'), 120, true)
+  const pool = fixturePoolHealth()
+  const byId = new Map(pool.accounts.map((r) => [r.account_id, r]))
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      page: {
+        accounts: fixtureAccounts.map((a) => ({
+          ...a,
+          health_status: byId.get(a.account_id)?.status ?? null,
+          health_24h: byId.get(a.account_id)?.counts.last_24h ?? null,
+        })),
+        tenant_id: FIXTURE_TENANT,
+        unreadable_documents: [],
+        unreadable_document_count: 0,
+      },
+      health: { kind: 'ok', pool },
+      // The fixture's events are dated off FIXTURE_NOW, so that is when it was
+      // read: the page's clock is the read's, and a real clock would show every
+      // limit as long cleared and every incident closed.
+      readAt: FIXTURE_NOW,
     },
   }
 }
