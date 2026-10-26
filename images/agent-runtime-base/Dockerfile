@@ -918,6 +918,56 @@ RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
  && rm -rf /tmp/toolbox \
  && test "$(/usr/local/bin/jq --version)" = "jq-${JQ_VERSION}"
 
+# The CodeRabbit CLI (CODERABBIT-IMAGE, part of #2442; owner decision
+# 2026-10-26): a lane whose repository's rules ask for a local CodeRabbit
+# review runs `coderabbit review` itself (docs/worker-images.md, "CodeRabbit").
+#
+# 0.9.1 is the release the vendor's installer binds Linux to
+# (BUNDLED_LINUX_VERSION in https://cli.coderabbit.ai/install.sh, read
+# 2026-10-26). Checksum: the coderabbit-linux-x64.zip line of
+# https://cli.coderabbit.ai/releases/0.9.1/SHA256SUMS, recomputed over the
+# downloaded file, and that SHA256SUMS's signature (SHA256SUMS.sig) verified
+# with `openssl dgst -sha256 -verify` against the release public key the
+# installer carries, on 2026-10-26. The installer itself is NOT run: it
+# writes to ~/.local/bin, edits shell profiles and offers a login.
+#
+# FROM UPSTREAM, NOT THE TOOL MIRROR: the mirror's manifest admits only
+# github.com and releases.hashicorp.com objects (scripts/lib/build-mirror.sh
+# tool_mirror_rows), and the CLI is served from cli.coderabbit.ai, as gcloud
+# is served from packages.cloud.google.com above. Moving it into the mirror
+# is a change to that list and a bucket refresh, an operator's step.
+#
+# SIZE: the zip is 42.9 MB (what a node pulls, compressed); the binary it
+# holds is 95,487,968 bytes, 91.1 MiB, on disk -- a single-file executable
+# with its JavaScript runtime inside, paid on every claude-code and codex
+# start. That is the price of the owner's decision to carry it here rather
+# than have each lane download it.
+# SCAN: trivy 0.75.0 `rootfs --scanners vuln --severity HIGH,CRITICAL
+# --ignore-unfixed` over the extracted binary, 2026-10-26, finds no package
+# it can analyse in it: nothing for the promote gate to refuse.
+#
+# ROOT-OWNED, outside the agent's reach: /opt/coderabbit/coderabbit, mode
+# 0755, so the pin holds -- the CLI's self-update cannot replace it, and the
+# launcher switches the attempt off anyway. What PATH finds is the launcher,
+# images/agent-runtime-base/coderabbit, which hands the CLI the workspace's
+# key when the worker released one: the CLI reads its key only from
+# `--api-key`, never from the environment (its own --help, 0.9.1). The build
+# runs the binary once, with a throwaway HOME, and fails unless it reports
+# the pinned version.
+ARG CODERABBIT_VERSION=0.9.1
+ARG CODERABBIT_SHA256=9558e02f1b6570ade33d8191b33e10ffae2472ab2680d4518d03261bcebc80bc
+RUN mkdir -p /tmp/toolbox /opt/coderabbit \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/coderabbit.zip \
+      "https://cli.coderabbit.ai/releases/${CODERABBIT_VERSION}/coderabbit-linux-x64.zip" \
+ && echo "${CODERABBIT_SHA256}  /tmp/toolbox/coderabbit.zip" | sha256sum -c - \
+ && unzip -q /tmp/toolbox/coderabbit.zip coderabbit -d /tmp/toolbox \
+ && install -o root -g root -m 0755 /tmp/toolbox/coderabbit /opt/coderabbit/coderabbit \
+ && rm -rf /tmp/toolbox \
+ && crhome="$(mktemp -d)" \
+ && test "$(HOME="${crhome}" CODERABBIT_CLI_DISABLE_AUTO_UPDATE=true CR_CLI_TELEMETRY_DISABLED=true /opt/coderabbit/coderabbit --version)" = "${CODERABBIT_VERSION}" \
+ && rm -rf "${crhome}"
+COPY --chmod=0555 images/agent-runtime-base/coderabbit /usr/local/bin/coderabbit
+
 # checkov is Python, so it gets its OWN environment (/opt/uv-tools/checkov,
 # entry point in /usr/local/bin) and can never change the worker's /opt/venv
 # or the agent's `pip install` target. 3.3.17 is the version CI's
@@ -1070,7 +1120,7 @@ print({c.name: _resolve_program(c.argv[0]) for c in GENERIC_COMMANDS.values()})"
 # The PostgreSQL binaries must also say POSTGRES_MAJOR: the test-service
 # catalogue offers 16 alone (docs/design/test-services.md §3.1), and a server
 # of another major on the PATH is a broken tool, not a working one.
-RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov trivy shellcheck make docker postgres initdb pg_ctl pg_isready" \
+RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov trivy shellcheck make docker postgres initdb pg_ctl pg_isready coderabbit" \
  && if [ "${INSTALL_TOFU}" = "1" ]; then tools="$tools tofu"; fi \
  && if [ "${INSTALL_TFLINT}" = "1" ]; then tools="$tools tflint"; fi \
  && HOME="$(mktemp -d)" && export HOME \
