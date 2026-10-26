@@ -232,7 +232,9 @@ def test_a_section_reads_only_what_it_shows(warmed, tokens, group_map, clock):
     for section in ("buckets", "retries", "latency", "groups"):
         assert _reads(warmed, tokens, group_map, clock, section=section) == scan, section
     assert _reads(warmed, tokens, group_map, clock, section="previous") > scan
-    assert _reads(warmed, tokens, group_map, clock, section="coverage") == scan + 4, "one count() per terminal state"
+    assert _reads(warmed, tokens, group_map, clock, section="coverage") == scan + 1, (
+        "one count() for the tenant, not one per terminal state (#2422)"
+    )
     assert _reads(warmed, tokens, group_map, clock, section="workflows_failed") > scan
     full = _reads(warmed, tokens, group_map, clock)
     assert full == (
@@ -272,18 +274,20 @@ def test_each_section_alone_is_that_key_of_the_full_response_on_a_cold_store(tok
 # What the whole Timeline page costs, counted at the store
 # --------------------------------------------------------------------------
 
-def _page_sections(source: str) -> tuple[list[str], dict[str, list[str]]]:
-    """LEDGER_SECTIONS and CARD_SECTIONS as Activity.tsx states them -- read
-    from the page, so a card that starts asking for more is priced here."""
+def _page_sections(source: str) -> tuple[list[str], dict[str, list[str]], list[str]]:
+    """LEDGER_SECTIONS, CARD_SECTIONS and LEDGER_LATE_SECTIONS (the headline's
+    second read, #2422) as Activity.tsx states them -- read from the page, so
+    a card that starts asking for more is priced here."""
     ledger = re.search(r"const LEDGER_SECTIONS = \[(.*?)\] as const", source, flags=re.DOTALL)
     cards = re.search(r"const CARD_SECTIONS = \{(.*?)\} as const", source, flags=re.DOTALL)
-    assert ledger and cards, "the page's section lists moved; this check would be vacuous"
+    late = re.search(r"const LEDGER_LATE_SECTIONS = \[(.*?)\] as const", source, flags=re.DOTALL)
+    assert ledger and cards and late, "the page's section lists moved; this check would be vacuous"
     parsed = {
         name: re.findall(r"'(\w+)'", body)
         for name, body in re.findall(r"(\w+): \[(.*?)\]", cards.group(1), flags=re.DOTALL)
     }
     assert len(parsed) == 7, parsed
-    return re.findall(r"'(\w+)'", ledger.group(1)), parsed
+    return re.findall(r"'(\w+)'", ledger.group(1)), parsed, re.findall(r"'(\w+)'", late.group(1))
 
 
 class Counter:
@@ -332,8 +336,9 @@ def test_the_whole_timeline_page_costs_one_full_read(warmed, tokens, group_map, 
     review measured a fully scrolled page at 73 reads (identical asks shared)
     and 91 (not shared) against 24 for the one full read it replaced.
 
-    THE BOUND: headline + all seven cards on one query, in one minute, cost at
-    most the old full read plus, for each of the seven extra requests, what a
+    THE BOUND: headline, its second read (#2422) and all seven cards on one
+    query, in one minute, cost at most the old full read plus, for each of the
+    eight extra requests, what a
     request costs that the fold serves entirely -- authentication, the tenant
     check and, in platform scope, the tenant listing that is part of the
     cache key. Those are per request by design (the listing is what keeps one
@@ -342,7 +347,7 @@ def test_the_whole_timeline_page_costs_one_full_read(warmed, tokens, group_map, 
     in the same minute. Everything the outcome service reads beyond that --
     the day documents, the previous span, the terminal counts, the workflow
     lookups -- is paid once per page, which the per-card `reads` pins too."""
-    ledger, cards = _page_sections((REPO / "apps/swarm-ui/src/Activity.tsx").read_text())
+    ledger, cards, late = _page_sections((REPO / "apps/swarm-ui/src/Activity.tsx").read_text())
     counter = Counter(monkeypatch)
     old = fresh(warmed, tokens, group_map, clock)
     bodies: list[dict[str, Any]] = []
@@ -352,7 +357,7 @@ def test_the_whole_timeline_page_costs_one_full_read(warmed, tokens, group_map, 
     metered_full, metered_repeat = bodies[0]["reads"], bodies[1]["reads"]
 
     page = fresh(warmed, tokens, group_map, clock)
-    asks = [ledger, *cards.values()]
+    asks = [ledger, late, *cards.values()]
     if order == "cards_first":
         asks = asks[::-1]
     served = []
@@ -362,9 +367,9 @@ def test_the_whole_timeline_page_costs_one_full_read(warmed, tokens, group_map, 
             served.append(ok(page, user, **WEEK, **extra, section=sections))
 
     cost = counter.cost(scroll_the_whole_page)
-    assert cost <= full + 7 * overhead, (cost, full, overhead)
+    assert cost <= full + 8 * overhead, (cost, full, overhead)
     # The service's own meter says the same, exactly: nothing it reads is
     # paid twice across the page, and in tenant scope a repeat reads nothing.
-    assert sum(body["reads"] for body in served) == metered_full + 7 * metered_repeat
+    assert sum(body["reads"] for body in served) == metered_full + 8 * metered_repeat
     if extra.get("scope") != "platform":
         assert metered_repeat == 0

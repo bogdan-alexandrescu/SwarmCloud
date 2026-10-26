@@ -148,6 +148,8 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
       to: 'capacity/accounts',
       kids: [
         { key: 'accounts', label: 'Subscription accounts', to: 'capacity/accounts' },
+        // ACCOUNT-HEALTH-PAGE (part of #2302): what went wrong on each account, after the list.
+        { key: 'account-health', label: 'Account health', to: 'capacity/account-health' },
         { key: 'quota', label: 'Provider quota', to: 'capacity/quota', admin: true },
       ],
     },
@@ -303,6 +305,7 @@ function rowFor(section: PanelSection, tab: string): string {
   if (section === 'work' && (tab === 'running' || tab === '')) return 'agents'
   if (section === 'capacity' && tab === 'profiles') return 'pools'
   if (section === 'capacity' && tab === 'quota') return 'accounts'
+  if (section === 'capacity' && tab === 'account-health') return 'accounts'
   // The one-time key link (paths.ts KEY_LINK_ADDRESS) opens API keys.
   if (section === 'profile' && tab.startsWith('keys/')) return 'keys'
   return tab
@@ -338,9 +341,10 @@ export const OVERVIEW_JUMPS: readonly { id: string; label: string }[] = [
   { id: 'ov-band', label: 'Waiting, working, done' },
   { id: 'ov-running', label: 'Running now' },
   { id: 'ov-waiting', label: 'Waiting, and why' },
-  { id: 'ov-failures', label: 'Recent failures' },
   { id: 'ov-spend', label: 'Recent token cost' },
   { id: 'ov-headroom', label: 'Headroom' },
+  // A full-width row under the two columns since visual QA VQ-006 (2026-10-26).
+  { id: 'ov-failures', label: 'Recent failures' },
   { id: 'ov-pools', label: 'Pools' },
 ]
 
@@ -502,9 +506,37 @@ export const OWN_WORKSPACE_LABEL = 'Your workspace'
  * (`kind: user` in `/v1/tenants/mine`) is `OWN_WORKSPACE_LABEL` everywhere;
  * any other is its `/v1/tenants/me` name, or its id.
  */
-export function workspaceName(tenant: { tenant_id: string; display_name?: string | null }, choices: readonly TenantChoice[]): string {
+export function workspaceName(tenant: { tenant_id: string; display_name?: string | null; kind?: string }, choices: readonly TenantChoice[]): string {
   const own = choices.some((c) => c.kind === 'user' && c.tenant_id === tenant.tenant_id)
-  return own ? OWN_WORKSPACE_LABEL : (tenant.display_name ?? tenant.tenant_id)
+  if (own) return OWN_WORKSPACE_LABEL
+  // A personal workspace's document may be named by its owner's address; only
+  // a group workspace's address is its registration, not its name (VQ-056).
+  if (tenant.kind === 'user') return tenant.display_name || tenant.tenant_id
+  return displayNameOf(tenant.display_name) ?? tenant.tenant_id
+}
+
+/**
+ * A NAME THAT IS AN ADDRESS IS NOT A DISPLAY NAME (visual QA VQ-056, part of
+ * #2391). A workspace with no stored name was served its registered group's
+ * email as `display_name`, so `smoke` showed as `smoke@…` in the switcher
+ * while every other place called it `smoke`. Such a workspace is named by its
+ * id, as everywhere else; the email stays the list row's `registered as` title.
+ */
+export function displayNameOf(name: string | null | undefined): string | null {
+  if (name === null || name === undefined) return null
+  const n = name.trim()
+  return n === '' || /^[^\s@]+@[^\s@]+$/.test(n) ? null : n
+}
+
+/**
+ * THE WORKSPACE'S SHORT KEY, for the phone header (visual QA VQ-001, part of
+ * #2391): a group workspace's id (`eng`), which the switcher's list prints
+ * under each name; the person's own workspace keeps its one name, which a
+ * personal id (`u-…`) is not.
+ */
+export function workspaceKey(tenant: { tenant_id: string; display_name?: string | null; kind?: string }, choices: readonly TenantChoice[]): string {
+  const own = tenant.kind === 'user' || choices.some((c) => c.kind === 'user' && c.tenant_id === tenant.tenant_id)
+  return own ? workspaceName(tenant, choices) : tenant.tenant_id
 }
 
 /**
@@ -533,8 +565,9 @@ export function nameTenants(choices: readonly TenantChoice[], me: Me | null): Na
     // their own heading, and the shell its banner (`isReach`).
     const via = c.via === undefined ? {} : { via: c.via }
     const group = typeof c.group === 'string' && c.group !== '' ? c.group : null
-    const served = group === null ? null : c.display_name
-    return { tenant_id: c.tenant_id, display_name: current ?? served ?? known[c.tenant_id] ?? c.display_name, group: group ?? c.display_name, is_default, ...via }
+    const served = group === null ? null : displayNameOf(c.display_name)
+    const name = displayNameOf(current) ?? served ?? displayNameOf(known[c.tenant_id]) ?? displayNameOf(c.display_name) ?? c.tenant_id
+    return { tenant_id: c.tenant_id, display_name: name, group: group ?? c.display_name, is_default, ...via }
   })
 }
 
@@ -967,6 +1000,42 @@ function subscribeListCounts(w: () => void): () => void {
 }
 function listCountsSnapshot(): ListCounts | null {
   return listCounts
+}
+
+/**
+ * OVERVIEW'S OWN COUNTS, BESIDE ITS JUMPS (visual QA VQ-007, part of #2391;
+ * overview.html O1's panel: `Needs a look 3`, `Running now 12`, `Waiting,
+ * and why 37`, `Recent failures 6`). The panel's "On this page" list had
+ * none. The counts are the page's -- the same reads and the same sums its
+ * cards draw (`OverviewCounts`, mounted by Overview.tsx) -- not a second
+ * read, so the panel and the card beside it cannot disagree (U10a D27). A
+ * section with no count yet (its read in flight) draws no mark; a count read
+ * from part of the population is drawn `≥N`, as its card says it.
+ */
+let overviewCounts: Readonly<Record<string, PanelCount>> | null = null
+const overviewWatchers = new Set<() => void>()
+export function publishOverviewCounts(next: Readonly<Record<string, PanelCount>> | null): void {
+  overviewCounts = next
+  for (const w of overviewWatchers) w()
+}
+function subscribeOverviewCounts(w: () => void): () => void {
+  overviewWatchers.add(w)
+  return () => overviewWatchers.delete(w)
+}
+function overviewCountsSnapshot(): Readonly<Record<string, PanelCount>> | null {
+  return overviewCounts
+}
+
+/** Publishes Overview's section counts for the panel while the page is mounted, by jump id. */
+export function OverviewCounts({ counts }: { counts: Readonly<Record<string, PanelCount>> }) {
+  const key = JSON.stringify(counts)
+  const latest = useRef(counts)
+  latest.current = counts
+  useEffect(() => {
+    publishOverviewCounts(latest.current)
+  }, [key])
+  useEffect(() => () => publishOverviewCounts(null), [])
+  return null
 }
 
 /** CONTRACT invariant 1: the four states that hold capacity, counted from LEASED. */
@@ -1563,6 +1632,7 @@ export function SkyShell({
   // The Approvals page carries the inbox count the Automate section does (§6.1).
   const counts = waiting === null ? panelCounts(stats, cap, fromList) : { ...panelCounts(stats, cap, fromList), approvals: waiting }
   const adminCounts = adminPanelCounts(admin, feedData(notes), cap, mine)
+  const jumpCounts = useSyncExternalStore(subscribeOverviewCounts, overviewCountsSnapshot, overviewCountsSnapshot)
   const role = who === null ? null : roleLine(admin, mine, who.tenant.tenant_id)
   const online = useOnline()
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
@@ -1611,6 +1681,11 @@ export function SkyShell({
   // enough to hold it -- its reads land after the route does.
   const scrolledAt = useRef(new Map<string, number>())
   const restoreTo = useRef<number | null>(null)
+  /** The page (section and tab) the scroll belongs to, and whether the chrome's own `nav` moved it. */
+  const pageNow = useRef('')
+  pageNow.current = `${section}|${tab}`
+  const pageAt = useRef(pageNow.current)
+  const navigated = useRef(false)
   useEffect(() => {
     const scroller = scrollerRef.current
     if (scroller === null) return
@@ -1657,11 +1732,29 @@ export function SkyShell({
     // SAID, as well as focused (CH-15): a page with no heading yet takes
     // focus on its scroller, which has no name to read. Not on the first
     // load, which the browser announces by the document title.
-    if (placed.current) setArrived(titleNow.current)
+    const first = !placed.current
+    if (!first) setArrived(titleNow.current)
     placed.current = true
+    const newPage = navigated.current || pageAt.current !== pageNow.current
+    navigated.current = false
+    pageAt.current = pageNow.current
     const want = restoreTo.current
     restoreTo.current = null
-    if (want === null) return
+    if (want === null) {
+      // A NEW PAGE OPENS AT ITS TOP (visual QA VQ-053, part of #2391). The
+      // page scrolls in `.ctl-scroll`, which outlives the route, so a page
+      // opened from the panel kept the last page's offset: scrolled down
+      // Admin › Tenants, Platform counts opened halfway down with its head
+      // and Run buttons off-screen. A new page -- another section or tab, or
+      // any address the chrome itself went to -- starts at 0. An agent or a
+      // run opened from its list is the same page (the list stays where it
+      // was beside it), and an in-page jump (`#…`) is left where it went.
+      if (!first && newPage && window.location.hash === '') {
+        scroller.scrollTop = 0
+        setScroll('top')
+      }
+      return
+    }
     let tries = 0
     let timer: ReturnType<typeof setTimeout> | undefined
     const stop = () => {
@@ -1685,6 +1778,11 @@ export function SkyShell({
       window.removeEventListener('keydown', stop)
     }
   }, [place])
+  // A `nav` that went nowhere new (the row already lit) is spent on the
+  // render it caused, so it cannot send a later in-page open to the top.
+  useEffect(() => {
+    navigated.current = false
+  })
 
   // THE PHONE DRAWER IS A DIALOG IN BEHAVIOUR: focus moves into it on open, Tab
   // wraps inside it, Escape closes it, and focus returns to the button that
@@ -1854,6 +1952,7 @@ export function SkyShell({
       setDrawer(false)
       setFly(null)
       setPicker(null)
+      navigated.current = true
       go(to)
     },
     [go],
@@ -1918,7 +2017,7 @@ export function SkyShell({
       setPicker(null)
       if (who === null || to.tenant_id === who.tenant.tenant_id) return
       const named = choices.find((c) => c.tenant_id === who.tenant.tenant_id)
-      const from = { id: who.tenant.tenant_id, name: named?.display_name ?? who.tenant.display_name ?? who.tenant.tenant_id }
+      const from = { id: who.tenant.tenant_id, name: named?.display_name ?? displayNameOf(who.tenant.display_name) ?? who.tenant.tenant_id }
       noteTenantSwitch({ from, to: { id: to.tenant_id, name: to.display_name }, kept: keepOnSwitch })
       chooseTenant(to.tenant_id)
       // A TOAST, because it acknowledges what the viewer just did -- and it
@@ -2067,6 +2166,7 @@ export function SkyShell({
         nav={nav}
         counts={counts}
         adminCounts={adminCounts}
+        jumpCounts={jumpCounts}
         helpGroup={helpGroup}
         apiFailuresOnly={apiFailuresOnly}
         onApiFilter={onApiFilter}
@@ -2172,7 +2272,7 @@ export function SkyShell({
   // the server's `via` for the tenant `/v1/tenants/me` says is in force, so it
   // never claims a reach the API did not answer as.
   const reachName =
-    who !== null && choices.some((c) => c.tenant_id === who.tenant.tenant_id && isReach(c)) ? who.tenant.display_name || who.tenant.tenant_id : null
+    who !== null && choices.some((c) => c.tenant_id === who.tenant.tenant_id && isReach(c)) ? displayNameOf(who.tenant.display_name) ?? who.tenant.tenant_id : null
   const reachBanner =
     reachName === null ? null : (
       <div className="sk-kept" data-banner="platform-admin">
@@ -2237,23 +2337,37 @@ export function SkyShell({
         <b>{title}</b>
         {/* THE PHONE'S TENANT IS A CHIP that opens a bottom sheet (2A), for
             someone who can switch; a plain label for everyone else. */}
+        {/* THE WORKSPACE BY ITS SHORT KEY (visual QA VQ-001, part of
+            #2391; overview.html's phone frame: `≡ Hive Overview  eng DEV`).
+            Its full name squeezed the page name to `O…` at 390; the key
+            (`eng`) is what the switcher's list prints under each name, and
+            the whole name is the control's title and accessible name. */}
         {who !== null &&
           (switchable ? (
-            <button type="button" className="sk-tchip" aria-haspopup="dialog" aria-expanded={picker === 'sheet'} onClick={() => setPicker('sheet')}>
-              <span className="sk-tcn">{workspaceName(who.tenant, dataOf(mine) ?? [])}</span>
+            <button
+              type="button"
+              className="sk-tchip"
+              aria-haspopup="dialog"
+              aria-expanded={picker === 'sheet'}
+              aria-label={`Workspace: ${workspaceName(who.tenant, dataOf(mine) ?? [])}. Switch workspace`}
+              title={workspaceName(who.tenant, dataOf(mine) ?? [])}
+              onClick={() => setPicker('sheet')}
+            >
+              <span className="sk-tcn">{workspaceKey(who.tenant, dataOf(mine) ?? [])}</span>
               <Icon name="swap" />
             </button>
           ) : (
             // Cut with an ellipsis on a narrow phone (styles.css), so the whole name is its title.
             <span className="sk-tn" title={workspaceName(who.tenant, dataOf(mine) ?? [])}>
-              {workspaceName(who.tenant, dataOf(mine) ?? [])}
+              {workspaceKey(who.tenant, dataOf(mine) ?? [])}
             </span>
           ))}
         <EnvPill label={t.label} prod={t.bar} title={t.explain} mini />
-        {/* AN ADMIN IS MARKED ON THE PHONE TOO (#139, CH-20): the same grey
-            hairline tag as the panel's foot, last in the one row, after the
-            environment it sits beside. */}
-        {admin && <span className="sk-adm">admin</span>}
+        {/* NO ROLE TAG IN THE PHONE HEADER (visual QA VQ-001, part of #2391;
+            navigation.html V2: "on a phone both live in the drawer"). The
+            `admin` tag here was one more fixed-width item the page name gave
+            way to; it is in the drawer's foot, beside the name, as on the
+            desktop panel. */}
         {/* THE BELL JOINS THE PHONE HEADER (V178): one 44px band, not a
             second sticky one under it. After the tags, before `Top`. */}
         {phone && bell !== null && <span className="sk-pbell">{bell}</span>}
@@ -2284,7 +2398,12 @@ export function SkyShell({
           aria-hidden={scroll === 'far' ? undefined : true}
           tabIndex={scroll === 'far' ? undefined : -1}
         >
-          &#8593; Top
+          {/* THE ARROW ALONE (VQ-001): its slot is held in the row from the
+              first frame, so `↑ Top`'s word was width the page name never
+              had. Its name is the aria-label; its title says it on hover. */}
+          <span aria-hidden="true" title="Top">
+            &#8593;
+          </span>
         </button>
       </header>
       {drawer && <div className="sk-scrim" onClick={() => setDrawer(false)} aria-hidden />}
@@ -2451,7 +2570,7 @@ function TenantBlock({
         <span className="sk-tg">·</span>
         <span className="sk-tt">
           <b>{me.status === 'loading' ? 'reading…' : 'not read'}</b>
-          <small>tenant</small>
+          <small>workspace</small>
         </span>
       </div>
     )
@@ -2461,7 +2580,7 @@ function TenantBlock({
     const c = typeof navigator === 'undefined' ? undefined : navigator.clipboard
     if (c === undefined) return setSaid('copy refused; select the id instead')
     c.writeText(id).then(
-      () => setSaid('tenant id copied'),
+      () => setSaid('workspace id copied'),
       () => setSaid('copy refused; select the id instead'),
     )
   }
@@ -2482,7 +2601,7 @@ function TenantBlock({
   // label-content-name-mismatch). The tenant still follows, for a reader.
   const copyId = (
     <>
-      <button type="button" className="sk-cp" aria-label={`copy id: tenant ${id}`} title={id} onClick={copy}>
+      <button type="button" className="sk-cp" aria-label={`copy id: workspace ${id}`} title={id} onClick={copy}>
         copy id
       </button>
       <span className="sk-said" role="status">
@@ -2490,6 +2609,9 @@ function TenantBlock({
       </span>
     </>
   )
+  // A WORKSPACE, IN EVERY WORD A PERSON READS (visual QA VQ-056, part of
+  // #2391; BGD on #2157): the tile said `tenant · 1 of 3` and its list `3
+  // tenants you are a member of` beside Config's Workspace Settings.
   if (choices.length > 1) {
     const at = choices.findIndex((c) => c.tenant_id === id)
     return withPrefs(
@@ -2501,7 +2623,7 @@ function TenantBlock({
           <span className="sk-tt">
             <b>{name}</b>
             <small>
-              tenant · {at === -1 ? 'not in the list' : `${at + 1} of ${choices.length}`}
+              workspace · {at === -1 ? 'not in the list' : `${at + 1} of ${choices.length}`}
               {isDefault ? ' · default' : ''}
             </small>
           </span>
@@ -2525,13 +2647,13 @@ function TenantBlock({
         <small>
           {mine.status === 'error' ? (
             <>
-              tenant · others not read{' '}
+              workspace · others not read{' '}
               <button type="button" className="sk-tretry" onClick={onRetryList}>
                 retry
               </button>
             </>
           ) : (
-            <>tenant {isDefault ? '· default ' : ''}</>
+            <>workspace {isDefault ? '· default ' : ''}</>
           )}
           {copyId}
           {back}
@@ -2713,7 +2835,7 @@ function TenantPicker({
     <div className={`sk-tpop is-${at}`} role="dialog" aria-modal={at === 'sheet' ? true : undefined} aria-label="Act as" ref={box} onBlur={onBlur} onKeyDown={onKeyDown}>
       {at === 'sheet' && <span className="sk-grab" aria-hidden />}
       <span className="sk-th">
-        Act as · {members.length} tenants you are a member of
+        Act as · {members.length} {members.length === 1 ? 'workspace' : 'workspaces'} you are a member of
       </span>
       {members.map(row)}
       {reach.length > 0 && (
@@ -2877,6 +2999,7 @@ function PanelPages({
   nav,
   counts,
   adminCounts = {},
+  jumpCounts = null,
   helpGroup,
   apiFailuresOnly,
   onApiFilter,
@@ -2898,6 +3021,8 @@ function PanelPages({
   counts: Readonly<Record<string, PanelCount>>
   /** The Admin rows' badges (`adminPanelCounts`, S1b, S1c). */
   adminCounts?: Readonly<Record<string, PanelCount>>
+  /** Overview's own section counts, by jump id (`OverviewCounts`, VQ-007). */
+  jumpCounts?: Readonly<Record<string, PanelCount>> | null
   helpGroup: string | null
   apiFailuresOnly: boolean
   onApiFilter?: (failuresOnly: boolean) => void
@@ -2928,6 +3053,7 @@ function PanelPages({
             }}
           >
             <span className="sk-pl">{j.label}</span>
+            <CountMark c={jumpCounts?.[j.id]} />
           </a>
         ))}
       </>

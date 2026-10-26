@@ -582,8 +582,9 @@ test('agoIso and NOW agree, so every age in this file means what it says', () =>
 // MUTATION: point either back at `#work/running`, or label it by the tab.
 
 // QA-109 (visual QA 2026-10-20): the word is the page's own title, Agents,
-// and the state the item counts, FAILED -- not "failed agents", a fourth
-// name for the page that nothing else on it carries.
+// and the state the item counts -- not "failed agents", a fourth name for
+// the page that nothing else on it carries. The state is a word, not the
+// enum in capitals (visual QA VQ-003, 2026-10-26).
 test('OV-10: the failures item opens the failed agents, and says so', () => {
   const checks = deriveChecks(
     inputs({ tasks: ok(taskPage([task({ id: 't1', state: 'FAILED', lastError: 'exit 1' })])) }),
@@ -591,7 +592,7 @@ test('OV-10: the failures item opens the failed agents, and says so', () => {
   )
   const [p] = checkNamed(checks, 'Failures').problems
   assert.equal(p.href, '#work/running/recent/failed')
-  assert.equal(p.linkLabel, 'Agents · FAILED')
+  assert.equal(p.linkLabel, 'Agents · failed')
 })
 
 test('OV-10: every parked item opens the waiting agents, and says so', () => {
@@ -664,13 +665,19 @@ test('OV-2: a phone page with no failure on it still finds the 11 the FAILED rea
   assert.doesNotMatch(p.headline, /≥/)
 })
 
-/** A FAILED read with more behind it is a lower bound, and says from when. */
+/**
+ * A FAILED read with more behind it is a lower bound, and says from when, in
+ * the words and over the sample Recent failures uses (visual QA VQ-005,
+ * 2026-10-26: "FAILED agents created since 06:04 UTC read" above "partial:
+ * agents created since 09:06 UTC read").
+ */
 test('OV-2: a FAILED read with more behind it is ≥N, and says how far back it reaches', () => {
   const page = phonePage()
   page.byState[0].complete = false
   const [p] = checkNamed(deriveChecks(inputs({ tasks: ok(page) }), NOW), 'Failures').problems
   assert.match(p.headline, /^≥11 failed agents in the last 24 hours/)
-  assert.match(p.headline, /FAILED agents created since \d\d:\d\d UTC read/)
+  assert.match(p.headline, / · partial: agents created since \d\d:\d\d UTC read/)
+  assert.doesNotMatch(p.headline, /FAILED/)
 })
 
 /**
@@ -683,7 +690,7 @@ test('OV-2: without the FAILED read, a partial page is blind while stats count f
   const stats = (FAILED) => ok({ tenant_id: 'u-test', tasks_by_state: { FAILED }, dispatch_paused: false, limits: {}, generated_at: agoIso(0) })
   const blind = checkNamed(deriveChecks(inputs({ tasks: ok(phonePage({ withFailedRead: false })), stats: stats(83) }), NOW), 'Failures')
   assert.equal(blind.status, 'blind')
-  assert.match(blind.why, /83 FAILED/)
+  assert.match(blind.why, /83 failed in all/)
   // The control: an exact zero clears it.
   const clear = checkNamed(deriveChecks(inputs({ tasks: ok(phonePage({ withFailedRead: false })), stats: stats(0) }), NOW), 'Failures')
   assert.equal(clear.status, 'clear')

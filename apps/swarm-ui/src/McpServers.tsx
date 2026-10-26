@@ -317,10 +317,40 @@ function joined(names: readonly string[]): string {
   return names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
 }
 
-/** The page's lead: one sentence, at most one button (proposal E). */
-function McpServersLead() {
+/**
+ * The page's lead: one sentence, at most one button (proposal E).
+ *
+ * NONE REGISTERED IS ITS OWN LEAD (VQ-046, S5a: every page opens with its next
+ * action). The setup read counts missing credentials, not registrations, so
+ * with no server at all it says "nothing missing" -- which drew a green
+ * "Nothing waiting" over an empty list. The list's own read says none is
+ * registered, and the lead carries Register an MCP server for someone who may.
+ */
+function McpServersLead({ list, onRegister }: { list: McpServerList | null; onRegister: () => void }) {
   const { doc } = useContext(SetupContext)
   const lead = mcpLeadOf(doc)
+  if (list !== null && list.servers.length === 0) {
+    return (
+      <section className="ws-lead" aria-label="No MCP server yet">
+        <div className="ws-lead-t">
+          <span className="ws-lead-k">No MCP server yet</span>
+          <b>No MCP server is registered for {list.tenant_id || 'this workspace'} yet.</b>
+          <span className="ws-lead-s">
+            {list.can_manage
+              ? 'Register one to let an agent call it during its run.'
+              : 'A platform admin registers a group workspace’s MCP servers.'}
+          </span>
+        </div>
+        {list.can_manage && (
+          <div className="ws-lead-a">
+            <Button kind="primary" size="sm" onClick={onRegister}>
+              Register an MCP server
+            </Button>
+          </div>
+        )}
+      </section>
+    )
+  }
   if (lead === null) return null
   if (lead.kind === 'unknown') {
     return (
@@ -375,16 +405,19 @@ function useMissingCredentials(): ReadonlySet<string> {
 export function McpServersScreen() {
   const list = useUrRead(loadMcpServers, 'mcp-servers')
   const [registering, setRegistering] = useState(false)
-  const manages = (list.state.status === 'ok' || list.state.status === 'stale') && list.state.data.can_manage
+  const read = list.state.status === 'ok' || list.state.status === 'stale' ? list.state.data : null
+  const manages = read !== null && read.can_manage
+  // With none registered the lead carries Register an MCP server, so the card does not draw it a second time.
+  const none = read !== null && read.servers.length === 0
   return (
     <div className="pk-page">
       <PageHead title="MCP servers" />
-      <McpServersLead />
+      <McpServersLead list={read} onRegister={() => setRegistering(true)} />
       <Card
         title="Registered MCP servers"
         action={(
           <span className="mcp-head-a">
-            {manages && (
+            {manages && (!none || registering) && (
               <Button size="sm" aria-expanded={registering} onClick={() => setRegistering((was) => !was)}>
                 Register an MCP server
               </Button>
