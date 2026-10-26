@@ -298,7 +298,7 @@ describe('Setup (VQA2-R5)', () => {
     expect(main.querySelector(':scope > p.ob-line')).toBeNull()
     for (const p of el.querySelectorAll<HTMLElement>('p.ob-line')) expect(visible(p)).not.toBe('')
     // A step with a line keeps it.
-    expect(visible(document.querySelector('li.ob-step[data-step="signed_in"] > .ob-step-main > p.ob-line'))).toMatch(/tenant eng · checked /)
+    expect(visible(document.querySelector('li.ob-step[data-step="signed_in"] > .ob-step-main > p.ob-line'))).toMatch(/workspace eng · checked /)
 
     const acts = el.querySelector<HTMLElement>('.ob-ws .ob-acts')!
     const add = within(acts).getByRole('link', { name: 'Add key' })
