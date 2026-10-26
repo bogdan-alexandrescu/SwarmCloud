@@ -235,6 +235,43 @@ describe('the overlaid readout never holds more than it shows', () => {
 })
 
 /**
+ * A COVER NEVER RUNS PAST ITS CELL (re-review of PR 2348, 2026-10-25): the
+ * overlay sizes the readout's columns at minmax(118px, 1fr), about 136 at
+ * 1440, and `.pot-cov` kept its table rule `white-space: nowrap`, so "N of N
+ * attempts reported" drew 20px over the Cache read column beside it, "N of N
+ * agents reported" 18px and "k estimated from a stopped run ($x)" 76px, over
+ * the chart and under it, in both themes. jsdom lays nothing out, so the rule
+ * that decides it is read: every cover in the readout wraps inside its cell.
+ */
+describe('a readout cover is never wider than its cell', () => {
+  it('wraps every cover in the readout, and no wide-plot rule sets it back to one line', async () => {
+    const style = document.createElement('style')
+    style.textContent = css
+    document.head.appendChild(style)
+    try {
+      await drawn()
+      fireEvent.click(hits()[BUCKETS.length - 1]!)
+      const covers = Array.from(document.querySelectorAll<HTMLElement>('.pot-readout .pot-cov'))
+      expect(covers.length, 'the readout drew no cover to measure').toBeGreaterThan(0)
+      for (const c of covers) {
+        // MUTATION: drop `.pot-readout .pot-cov { white-space: normal }`.
+        expect(getComputedStyle(c).whiteSpace, `"${c.textContent}" stays on one line past its cell`).not.toBe('nowrap')
+      }
+      // Its grid cell may shrink to its column rather than grow past it.
+      const row = document.querySelector<HTMLElement>('.pot-readout .pot-readout-row')!
+      expect(getComputedStyle(row).minWidth).toBe('0px')
+    } finally {
+      style.remove()
+    }
+    // jsdom skips a container rule, so the overlay's own block is read.
+    const at = css.indexOf('@container pot-plot (min-width: 640px)')
+    const block = css.slice(at, css.indexOf('\n}', at))
+    expect(block, 'the overlay puts a readout cover back on one line').not.toMatch(/\.pot-cov\s*\{[^}]*white-space:\s*nowrap/)
+    expect(block).not.toMatch(/\.pot-readout-row\s*\{[^}]*min-width:\s*(?!0)/)
+  })
+})
+
+/**
  * THE AXIS LABELS. A label is --t-micro, 12px, in the drawing's own units,
  * and overtime.css lets a drawing grow to 1.2 times its authored width. Two
  * value labels need their 12 units plus 4 between them; two x labels need
