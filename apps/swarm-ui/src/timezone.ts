@@ -43,7 +43,11 @@ import type { Me, Profile } from './types'
  * A SAVE replaces the whole preference set at the revision read (the API's
  * rule), so `setZone` reads the profile fresh and puts it back with the new
  * zone, once more after a 409. Saves run one after another, so the last pick
- * is the one stored. A failed save keeps the pick in this browser. After a
+ * is the one stored. A failed save keeps the pick in this browser. Because
+ * a zone save moves the revision on, a page that read before it would meet a
+ * false "changed in another tab" 409 on its next save; `putPreferences`
+ * waits for zone saves in flight and sends such a save at the revision the
+ * zone save produced (`revisionAfterZoneSaves`). After a
  * pick, no read on this page moves the zone: the pick is the person's latest
  * word, and a read that began before it would undo it.
  *
@@ -150,6 +154,8 @@ let seen = false
 let moved = false
 /** The saves in flight, one after another. */
 let saving: Promise<boolean> = Promise.resolve(true)
+/** Each revision a zone save moved on, to the revision it produced (`revisionAfterZoneSaves`). */
+let zoneMoves = new Map<number, number>()
 const listeners = new Set<() => void>()
 
 function publish(next: string): void {
@@ -173,6 +179,8 @@ export function currentZone(): string {
 export function notePerson(email: string): void {
   if (email.trim() === '') return
   if (person === email) return
+  // The revisions a zone save moved were another person's preferences.
+  if (person !== null) zoneMoves = new Map()
   person = email
   publish(readKey(keyFor(email)))
 }
@@ -224,7 +232,10 @@ async function putZone(z: string, onlyIfUnsaved: boolean, tries = 2): Promise<bo
     revision: p.revision,
     time_zone: z,
   })
-  if (w.status === 'ok' || w.status === 'stale') return true
+  if (w.status === 'ok' || w.status === 'stale') {
+    zoneMoves.set(p.revision, w.data.revision)
+    return true
+  }
   if (w.status === 'error' && w.error.httpStatus === 409 && tries > 1) return putZone(z, onlyIfUnsaved, tries - 1)
   return false
 }
@@ -238,6 +249,22 @@ function saveZone(z: string, onlyIfUnsaved = false): Promise<boolean> {
 /** The last save's outcome, once every save in flight has finished. For tests. */
 export function zoneSaved(): Promise<boolean> {
   return saving
+}
+
+/**
+ * The revision a save read at `revision` should go at, once every zone save
+ * in flight has finished. A zone save changes only the zone, with everything
+ * else as read, so a page that read `revision` before it (Profile's name,
+ * default-workspace and bell saves, which leave the zone as stored) is still
+ * up to date at the revision it produced. Only revisions a zone save on this
+ * page moved are followed: one moved by a save anywhere else is not here, so
+ * that save still meets its 409. `api.ts` `putPreferences` asks this.
+ */
+export async function revisionAfterZoneSaves(revision: number): Promise<number> {
+  await saving
+  let at = revision
+  for (let next = zoneMoves.get(at); next !== undefined && next > at; next = zoneMoves.get(at)) at = next
+  return at
 }
 
 /** Take the person and their zone from a profile read; false when it names nobody. */
@@ -327,6 +354,7 @@ export function resetTimeZone(): void {
   seen = false
   moved = false
   saving = Promise.resolve(true)
+  zoneMoves = new Map()
   zone = guessZone()
   for (const fn of listeners) fn()
 }

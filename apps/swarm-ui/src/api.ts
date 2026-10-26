@@ -20,7 +20,7 @@ import { CONCURRENCY_STATES, MODEL_PRICE_RATES, TERMINAL_STATES } from './types'
 import { sumReported } from './measure'
 import { TASK_PAGE_LIMIT } from './pageLimits'
 import { normUtilisation, type UtilisationRead } from './utilisation'
-import { noteProfile } from './timezone'
+import { noteProfile, revisionAfterZoneSaves } from './timezone'
 import type { Outcomes } from './outcomes'
 import { ledgerFixture } from './outcomes.fixture'
 import {
@@ -9586,10 +9586,13 @@ export async function loadProfile(): Promise<Result<Profile>> {
  * `PUT /v1/profile/preferences`: replace the whole set at `body.revision`. A
  * stale revision is a 409 `preferences_changed` (another tab saved first); a
  * refused name is a 422 with its `display_name_*` code and a message that names
- * the rule.
+ * the rule. A save that leaves the zone as stored goes at the revision a zone
+ * pick on this page moved `body.revision` to (`revisionAfterZoneSaves`), so
+ * Profile's next save after a pick is not refused as changed elsewhere.
  */
 export async function putPreferences(body: PreferencesWrite): Promise<Result<PreferencesSaved>> {
-  const r = await writeTo(route('/v1/profile/preferences'), 'PUT', body)
+  const sent = body.time_zone === undefined ? { ...body, revision: await revisionAfterZoneSaves(body.revision) } : body
+  const r = await writeTo(route('/v1/profile/preferences'), 'PUT', sent)
   if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPreferencesSaved(r.data) }
   if (r.status === 'empty') return { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The save answered with nothing to read back. Reload to see what was stored.', method: 'PUT' } }
   return r
