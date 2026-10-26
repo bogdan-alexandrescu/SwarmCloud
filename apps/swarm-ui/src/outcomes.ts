@@ -935,12 +935,13 @@ export function spanCoverage(d: Outcomes): SpanCoverage {
 
 /**
  * `coverage.days`'s unit, in words, for a count of `n`: `UTC days` in tenant
- * scope, `tenant-days` in platform scope. The route counts rollup documents,
+ * scope, `workspace-days` in platform scope (a reader's word is workspace,
+ * VQ-056; the rollup's document is still per tenant). The route counts rollup documents,
  * one per tenant per UTC day, so "56 days sealed" over a 14-day platform view
  * of four tenants would name a unit the figure is not in.
  */
 export function dayDocWords(d: Pick<Outcomes, 'scope'>, n: number): string {
-  if (d.scope.kind === 'platform') return n === 1 ? 'tenant-day' : 'tenant-days'
+  if (d.scope.kind === 'platform') return n === 1 ? 'workspace-day' : 'workspace-days'
   return n === 1 ? 'UTC day' : 'UTC days'
 }
 
