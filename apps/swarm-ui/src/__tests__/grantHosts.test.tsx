@@ -290,7 +290,7 @@ describe('the hosts cell wraps inside its column', () => {
   const rule = (sel: string): string => {
     const m = new RegExp(`(?:^|\\n)${sel.replace(/[.*+?^${}()|[\]\\>]/g, '\\$&')}\\s*\\{([^}]*)\\}`).exec(css)
     expect(m, `${sel} not found`).not.toBeNull()
-    return m![1]
+    return m![1] ?? ''
   }
 
   it('resets the matrix\'s nowrap and caps its width, so a refusal wraps at phone-390', () => {
