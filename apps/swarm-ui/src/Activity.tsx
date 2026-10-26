@@ -38,6 +38,7 @@ import {
   OUTCOMES_CACHE_S,
   SPANS,
   VERIFY_TENANT,
+  spanWords,
   cacheable,
   alignedWords,
   dayDocWords,
@@ -279,6 +280,21 @@ export function ActivityScreen({
   // from it. A failed read is forgotten, so "try again" reads again; a filter
   // change or a refresh starts afresh.
   const parts = useRef(new Map<string, Promise<Result<Outcomes>>>())
+  // THE CHART DRAWS FROM THE FIRST CARD READ THAT LANDS (visual QA VQ-021,
+  // 2026-10-26). The headline's read also asks for `coverage` and `previous`,
+  // which cost reads of their own (`CARD_SECTIONS`), and QA met it at ~25 s
+  // (read p95 22.6 s) while the cards below had long drawn "partial · 10 of
+  // 14 days" from the same fold: a grey sweep the chart's size, with no word
+  // on it, under cards that had their figures. Every card asks for `buckets`
+  // and `totals`, which are all the chart, the rate and the partial mark
+  // draw, so until the headline lands the chart draws from the first card
+  // read of this query -- no request of its own, so the headline is still
+  // the only read on open (#377) -- and the sealed days, the delta and the
+  // foot say they are still being read.
+  const [early, setEarly] = useState<{ key: string; data: Outcomes } | null>(null)
+  /** The query the headline has drawn, so a card landing after it re-renders nothing here. */
+  const drawnKey = useRef<string | null>(null)
+  drawnKey.current = good?.key ?? null
   const loadPart = useCallback((query: string, sections: readonly OutcomeSection[], ask: string) => {
     const k = `${ask}\n${sections.join(',')}`
     let p = parts.current.get(k)
@@ -296,7 +312,9 @@ export function ActivityScreen({
       parts.current.set(k, p)
       const mine = p
       void mine.then((r) => {
-        if (r.status !== 'ok' && r.status !== 'stale' && parts.current.get(k) === mine) parts.current.delete(k)
+        if (r.status === 'ok' || r.status === 'stale') {
+          if (drawnKey.current !== query) setEarly({ key: query, data: r.data })
+        } else if (parts.current.get(k) === mine) parts.current.delete(k)
       })
     }
     return p
@@ -497,6 +515,8 @@ export function ActivityScreen({
   const failure: ApiError | null = !pending && settled?.status === 'error' ? settled.error : null
   const data = good?.data ?? null
   const dim = pending || (good !== null && good.key !== key)
+  /** This query's first `buckets` + `totals`, while its headline has not drawn (VQ-021). */
+  const first = early !== null && early.key === key && (good === null || good.key !== key) ? early.data : null
 
   // A zoom changes the buckets, so an open bucket's rows (named by its start) close with it.
   const zoom = (b: OutcomeBucket) =>
@@ -567,10 +587,32 @@ export function ActivityScreen({
         <LedgerFailed error={failure} onRetry={refresh} onMine={mine} />
       ) : (
         <>
-          {data === null ? (
-            <div className="ol-body">
+          {first !== null ? (
+            // THE CHART BEFORE ITS HEADLINE'S READ (VQ-021): the buckets and
+            // totals that landed, with what is still out said in words.
+            <div className="ol-body" aria-busy="true">
+              <LedgerFacts data={null} first={first} pending view={view} />
+              <LedgerSection
+                data={first}
+                first
+                continuing={false}
+                // Its figures ARE a card's read, so there is no headline to set beside the cards'.
+                cardsWhole={null}
+                view={view}
+                picked={picked}
+                onPick={setPicked}
+                onZoom={zoom}
+                figureLink={figureLink}
+              />
+            </div>
+          ) : data === null ? (
+            <div className="ol-body" aria-busy="true">
               <LedgerFacts data={null} pending view={view} />
-              {/* STILL READING IS NOT NOTHING REPORTED (§8.7): the moving sweep, at the chart's own geometry. */}
+              {/* STILL READING IS NOT NOTHING REPORTED (§8.7): the moving sweep,
+                  at the chart's own geometry, and beside it what is being read
+                  (VQ-021: a grey sweep with no word on it for ~25 s read as a
+                  broken page). The sweep carries no text; the caption is its sibling. */}
+              <p className="ol-reading">{`Reading the outcome ledger for ${spanWords(view)}…`}</p>
               <div className="ctl-pending ol-pending" aria-hidden="true" />
             </div>
           ) : (
@@ -901,6 +943,7 @@ export function deltaWords(d: Outcomes): string | null {
  */
 function LedgerSection({
   data,
+  first = false,
   continuing,
   cardsWhole,
   view,
@@ -910,6 +953,12 @@ function LedgerSection({
   figureLink,
 }: {
   data: Outcomes
+  /**
+   * Drawn from a `buckets` + `totals` read while the headline's own read --
+   * `coverage` and `previous` too -- is still out (VQ-021): no delta and no
+   * orphan count, which those two carry, and words saying so.
+   */
+  first?: boolean
   /** The next read is already scheduled to continue this partial build. */
   continuing: boolean
   /** How many of the cards read so far covered the whole span, or null before any did. */
@@ -921,8 +970,8 @@ function LedgerSection({
   figureLink: (outcome: RowOutcome, at: string | null) => RowLink
 }) {
   const t = data.totals
-  const delta = deltaWords(data)
-  const orphans = data.coverage.terminal_without_completed_at
+  const delta = first ? null : deltaWords(data)
+  const orphans = first ? 0 : data.coverage.terminal_without_completed_at
   const cov = spanCoverage(data)
   return (
     <section className="section ol-ledger" aria-labelledby="ol-rate-title">
@@ -995,6 +1044,7 @@ function LedgerSection({
           </span>
         )}
         {delta !== null && <span className="ol-delta">{delta}</span>}
+        {first && <span className="ol-q ol-reading">still reading the sealed days and the span before</span>}
       </p>
       {orphans === null ? (
         <p className="ctl-panel-note">
@@ -1014,7 +1064,7 @@ function LedgerSection({
       {view.table ? (
         <LedgerTable data={data} />
       ) : (
-        <OutcomeLedger data={data} picked={picked} onPick={onPick} onZoom={onZoom} figureLink={figureLink} />
+        <OutcomeLedger data={data} sealGraceS={first ? null : data.coverage.seal_grace_s} picked={picked} onPick={onPick} onZoom={onZoom} figureLink={figureLink} />
       )}
     </section>
   )
@@ -1025,13 +1075,31 @@ function LedgerSection({
  * how much is sealed, and whose figures these are. The server resolves and
  * echoes the range; nothing here re-derives it.
  */
-function LedgerFacts({ data, pending, view }: { data: Outcomes | null; pending: boolean; view: LedgerView }) {
+function LedgerFacts({
+  data,
+  first = null,
+  pending,
+  view,
+}: {
+  data: Outcomes | null
+  /** The `buckets` + `totals` drawn before the headline's read landed (VQ-021): how much of the span they cover. */
+  first?: Outcomes | null
+  pending: boolean
+  view: LedgerView
+}) {
   if (data === null) {
     return (
       <ul className="ctl-facts ol-facts">
         <li className="ctl-fact">
           <Mark kind="pending" say="The outcome ledger is still being read." /> {view.span ?? 'range'}
         </li>
+        {/* HOW FAR THE READ IS, in the buckets' own unit; the sealed days are
+            `coverage`'s and are not printed until it lands. */}
+        {first !== null && (
+          <li className="ctl-fact">
+            {first.totals.buckets_read} of {first.totals.buckets} {unitWord(first.bucket)} read
+          </li>
+        )}
       </ul>
     )
   }
@@ -1289,9 +1357,9 @@ function SubmittedBy({ view, setView }: { view: LedgerView; setView: (v: LedgerV
  * only; profile, submitter and kind; the Table toggle at the end. Every
  * control writes the address, and the server applies every filter.
  *
- * AT 390 (§7.2) the span keeps its 44px segments, with 24h and the range moved
- * into the filter sheet; everything else collapses behind `Filters · N`, and
- * the Table toggle stays in view.
+ * AT 390 (§7.2) the span keeps its 44px segments, every one of them on one row
+ * (VQ-024); everything else collapses behind `Filters · N`, and the Table
+ * toggle stays in view.
  */
 function LedgerToolbar({
   view,
@@ -1327,23 +1395,25 @@ function LedgerToolbar({
           ? 'all'
           : `all ${tenants.length}`
   // THE SPAN CONTROL, the canonical segmented control (#503 swap): every span
-  // and `from–to` on a wide screen; on a phone 24h and `from–to` move to the
-  // sheet (`is-wide-only` here, `ol-span-more` there).
+  // and `from–to`, at every width. On a phone it is one row that scrolls
+  // sideways if it must (visual QA VQ-024, 2026-10-26): 24h and `from–to`
+  // used to move into the sheet, and the four left wrapped 3+1 with 90d
+  // alone, so a phone offered fewer periods than the desktop and hid two of
+  // them behind `Filters`.
   const pickSpan = (k: Span | 'range') => (k === 'range' ? setRange(!range) : choose(k))
   const aligned = data === null ? null : alignedWords(data)
-  const spanOptions = (sheet: boolean) => [
-    ...SPANS.filter((s) => !sheet || s === '24h').map((s) => ({
+  const spanOptions = [
+    ...SPANS.map((s) => ({
       key: s as Span | 'range',
       label: s,
-      ...(!sheet && s === '24h' ? { className: 'is-wide-only' } : {}),
       // THE CHOSEN SPAN SAYS HOW IT WAS ALIGNED (QA G3-08): `24h` here is whole hours, not Lanes' last 24 hours.
       ...(aligned !== null && data?.requested.span === s ? { title: aligned } : {}),
     })),
-    { key: 'range' as const, label: 'from–to', ...(sheet ? {} : { className: 'is-wide-only' }) },
+    { key: 'range' as const, label: 'from–to' },
   ]
   return (
     <div className="ctl-toolbar ol-toolbar" role="group" aria-label="Timeline filters">
-      <Segmented className="ol-span" label="Span" value={view.span ?? 'range'} options={spanOptions(false)} onChange={pickSpan} />
+      <Segmented className="ol-span" label="Span" value={view.span ?? 'range'} options={spanOptions} onChange={pickSpan} />
       {back !== null && (
         // A zoom is a span change, and the chip is the way back to the span it came from.
         <button type="button" className="c-link is-sm ol-back" onClick={() => setView(back)}>
@@ -1359,9 +1429,10 @@ function LedgerToolbar({
       >
         Filters · {n}
       </button>
+      {/* OUTSIDE THE SHEET, since `from–to` is in the span control at every
+          width (VQ-024): on a phone the sheet is closed when it is tapped. */}
+      {(range || view.span === null) && <RangeInputs view={view} setView={setView} />}
       <div className={sheet ? 'ol-sheet is-open' : 'ol-sheet'} id="ol-sheet">
-        <Segmented className="ol-span-more" label="More spans" value={view.span ?? 'range'} options={spanOptions(true)} onChange={pickSpan} />
-        {(range || view.span === null) && <RangeInputs view={view} setView={setView} />}
         <label className="ol-field">
           Group by{' '}
           <select
