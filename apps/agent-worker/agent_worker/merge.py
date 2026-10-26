@@ -120,9 +120,6 @@ from one table of cases (§8) until that workflow is retired.
 
 from __future__ import annotations
 
-import base64
-import binascii
-import difflib
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -358,14 +355,6 @@ GITHUB_COMMITTER_EMAIL = "noreply@github.com"
 #: merge step FAILED head_moved that auto-merge.yml's `is_pure_base_merge`
 #: accepts from anyone. Each entry is `_commit_record`'s.
 PURE_BASE_MERGES_KEY = "pure_base_merges"
-#: How many files of one merge both parents changed, and so need a line
-#: merge to show the merge clean, and how large each of their versions may
-#: be. Past either the merge is not shown clean and stays head_moved: the
-#: proof reads every such file's four versions from GitHub, and a merge of
-#: main that touches more than this many files main also changed is one for
-#: a person to look at, not one to wave through on a bounded read.
-CLEAN_MERGE_MAX_LINE_MERGES = 20
-CLEAN_MERGE_MAX_BLOB_BYTES = 1_000_000
 
 #: A 405/422 from the merge call that means the branch is behind: the
 #: update row, not a refusal.
@@ -736,8 +725,6 @@ class TreeFacts:
 
     entries: Mapping[str, tuple[str, str]]
     truncated: bool = False
-    #: The size GitHub gave each blob, by path.
-    sizes: Mapping[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -803,8 +790,6 @@ class ForgeMerger(Protocol):
     def merge_base(self, first: str, second: str) -> str | None: ...
 
     def tree(self, sha: str) -> TreeFacts: ...
-
-    def blob(self, sha: str) -> bytes: ...
 
     def update_branch(self, number: int, *, expected_head_sha: str) -> UpdateAnswer: ...
 
@@ -1054,27 +1039,13 @@ class GitHubMerger:
         data = _mapping(self._client.get_ok(f"{self._base}/git/trees/{quote(sha, safe='')}",
                                             query={"recursive": "1"}))
         entries: dict[str, tuple[str, str]] = {}
-        sizes: dict[str, int] = {}
         for raw in data.get("tree") or []:
             entry = _mapping(raw)
             path, kind = _str(entry.get("path")), _str(entry.get("type"))
             if path is None or kind == "tree":
                 continue
             entries[path] = (_str(entry.get("mode")) or "", _str(entry.get("sha")) or "")
-            size = _int(entry.get("size"))
-            if size is not None:
-                sizes[path] = size
-        return TreeFacts(entries=entries, truncated=data.get("truncated") is True, sizes=sizes)
-
-    def blob(self, sha: str) -> bytes:
-        """The blob's bytes. Raises ValueError on an encoding GitHub never serves."""
-        data = _mapping(self._client.get_ok(f"{self._base}/git/blobs/{quote(sha, safe='')}"))
-        content, encoding = _str(data.get("content")) or "", data.get("encoding")
-        if encoding == "base64":
-            return base64.b64decode(content)
-        if encoding == "utf-8":
-            return content.encode("utf-8")
-        raise ValueError(f"blob {sha} is served as {encoding!r}")
+        return TreeFacts(entries=entries, truncated=data.get("truncated") is True)
 
     def on_base(self, base: str, sha: str) -> bool:
         """Whether `sha` is already on `base`: `compare` says the commit is
@@ -1803,13 +1774,14 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     if pr.draft:
         return run.refuse("draft", f"pull request #{number} is a draft")
     head = pr.head_sha
+    proven: dict[str, str | None] = {}
     accepted = None if head is None else _accept(
-        merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default
+        merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default, proven=proven
     )
     if head is None or accepted is None:
         unread = summary.get(FIX_RECORDS_UNREAD_KEY) or []
         record = None if head is None else _head_record(
-            merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default)
+            merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default, proven=proven)
         outcome = run.refuse(
             "head_moved",
             f"pull request #{number}'s head is {head}, not {pinned}, "
@@ -2228,16 +2200,17 @@ def _merge_impurity(merger: ForgeMerger, commit: CommitFacts) -> str | None:
     """None when `commit`'s tree is the clean merge of its two parents; else why not.
 
     What auto-merge.yml's `is_pure_base_merge` asks of `git merge-tree`,
-    asked of GitHub's tree and blob API, since the merge step has no clone.
-    Path by path over the merge base B, the first parent O and the second T
-    (each a (mode, sha), or absent): O and T agree, or one of them is B and
-    the other is taken, and the merge must carry exactly that. A path both
-    changed differently is merged line by line (`_merge_lines`) and the
-    merge's bytes must equal the result. A path either side renamed, a
-    submodule or binary both changed, a line both changed, a tree GitHub
-    truncated, or a read past the CLEAN_MERGE_* bounds is not shown clean,
-    and a merge not shown clean stays head_moved: this proof only ever
-    refuses what git would accept, never accepts what git would refuse.
+    asked of GitHub's tree API, since the merge step has no clone. Path by
+    path over the merge base B, the first parent O and the second T (each a
+    (mode, sha), or absent): O and T agree, or one of them is B and the other
+    is taken, and the merge must carry exactly that. Then `_rename_risk`.
+
+    THIS PROOF MAY REFUSE WHAT GIT ACCEPTS, NEVER ACCEPT WHAT GIT REFUSES. So a
+    path both parents changed differently is not shown clean, even on lines
+    apart: a line merge here (difflib) aligned lines differently from git's
+    diff and took merges git conflicts on or merges to other bytes (the
+    review of FIX-MERGE-PURE-BASE-MERGE measured 107 of 1427). Nor is a tree
+    GitHub truncated. A merge not shown clean stays head_moved.
     """
     ours, theirs = commit.parents
     base = merger.merge_base(ours, theirs)
@@ -2253,11 +2226,9 @@ def _merge_impurity(merger: ForgeMerger, commit: CommitFacts) -> str | None:
         if facts.truncated:
             return f"GitHub truncated {name}'s tree"
         tree_of[sha] = facts
-    b, o, t, m = (tree_of[sha] for sha in (base, ours, theirs, commit.sha))
-    line_merges = 0
-    for path in sorted(set(b.entries) | set(o.entries) | set(t.entries) | set(m.entries)):
-        at_b, at_o, at_t = (x.entries.get(path) for x in (b, o, t))
-        at_m = m.entries.get(path)
+    b, o, t, m = (tree_of[sha].entries for sha in (base, ours, theirs, commit.sha))
+    for path in sorted(set(b) | set(o) | set(t) | set(m)):
+        at_b, at_o, at_t, at_m = b.get(path), o.get(path), t.get(path), m.get(path)
         if at_o == at_t:
             want = at_o
         elif at_o == at_b:
@@ -2265,75 +2236,51 @@ def _merge_impurity(merger: ForgeMerger, commit: CommitFacts) -> str | None:
         elif at_t == at_b:
             want = at_o
         else:
-            line_merges += 1
-            why = _line_merge_impurity(merger, path, at_b, at_o, at_t, at_m,
-                                       [x.sizes.get(path) for x in (b, o, t, m)],
-                                       line_merges)
-            if why is not None:
-                return why
-            continue
+            return f"both parents change {path}"
         if at_m != want:
             return f"{path} is not the clean merge of its parents"
-    return None
+    return _rename_risk(b, o, t)
 
 
-def _line_merge_impurity(merger: ForgeMerger, path: str, *entries: Any) -> str | None:
-    """None when the merge's `path` is the line merge of a file both parents changed."""
-    at_b, at_o, at_t, at_m, sizes, count = entries
-    if count > CLEAN_MERGE_MAX_LINE_MERGES:
-        return (f"both parents change more than {CLEAN_MERGE_MAX_LINE_MERGES} of the same "
-                "files, past what this step merges line by line")
-    if at_b is None or at_o is None or at_t is None or at_m is None:
-        return f"{path} is added, deleted or renamed on one side and changed on the other"
-    if not (at_b[0] == at_o[0] == at_t[0] == at_m[0]) or not at_b[0].startswith("100"):
-        return f"{path} changes mode or is not a plain file on both sides"
-    if any(size is not None and size > CLEAN_MERGE_MAX_BLOB_BYTES for size in sizes):
-        return f"{path} is larger than {CLEAN_MERGE_MAX_BLOB_BYTES} bytes"
-    try:
-        blobs = [merger.blob(entry[1]) for entry in (at_b, at_o, at_t, at_m)]
-    except (ValueError, binascii.Error):
-        return f"{path} could not be read"
-    if any(len(blob) > CLEAN_MERGE_MAX_BLOB_BYTES or b"\0" in blob for blob in blobs):
-        return f"{path} is binary or larger than {CLEAN_MERGE_MAX_BLOB_BYTES} bytes"
-    merged = _merge_lines(*blobs[:3])
-    if merged is None:
-        return f"both parents change the same lines of {path}"
-    if merged != blobs[3]:
-        return f"{path} is not the clean merge of its parents"
-    return None
+def _rename_risk(base: Mapping[str, Any], *sides: Mapping[str, Any]) -> str | None:
+    """Why git's rename detection might merge these trees differently from
+    the path-wise walk, or None.
 
-
-def _merge_lines(base: bytes, ours: bytes, theirs: bytes) -> bytes | None:
-    """The three-way line merge of `ours` and `theirs` over `base`, or None
-    when they conflict.
-
-    Each side's changes are its non-equal opcodes against the base. Two
-    changes from different sides conflict when their base ranges overlap or
-    touch (an insertion at the same line included) and are not the same
-    change; that is stricter than git, which only ever makes this refuse a
-    merge git would make, never accept one it would not.
+    The walk merges path by path; git pairs a side's deleted path with one
+    it added as a rename, and a directory a side removes entirely as a
+    directory rename. A rename on one side meets the other only through its
+    source, its target or that directory, so the trees are refused when one
+    side both deletes and adds paths (it may have renamed) and the other
+    changes or deletes a path it deleted (rename/delete, rename/rename) or
+    adds a path it added (rename/add); or when one side adds a path under a
+    directory the other removed entirely (git moves it, and merge-tree
+    reports the move as a conflict).
     """
-    lines = base.splitlines(keepends=True)
+    for side, other in ((sides[0], sides[1]), (sides[1], sides[0])):
+        removed = sorted(p for p in base if p not in side)
+        added = sorted(p for p in side if p not in base)
+        if removed and added:
+            for path in removed:
+                if other.get(path) != base[path]:
+                    return (f"{path} is deleted by one parent, which may have renamed it, "
+                            "and changed or deleted by the other")
+            for path in added:
+                if path in other:
+                    return (f"{path} is added by one parent, which may have renamed a file "
+                            "to it, and by the other")
+        gone = {d for p in base for d in _dirs(p)} - {d for p in side for d in _dirs(p)}
+        for path in sorted(p for p in other if p not in base):
+            for d in _dirs(path):
+                if d in gone:
+                    return (f"{path} is added in {d}/, which the other parent removes "
+                            "entirely, so git may move it as a directory rename")
+    return None
 
-    def changes(side: bytes) -> list[tuple[int, int, tuple[bytes, ...]]]:
-        new = side.splitlines(keepends=True)
-        matcher = difflib.SequenceMatcher(None, lines, new, autojunk=False)
-        return [(i1, i2, tuple(new[j1:j2]))
-                for tag, i1, i2, j1, j2 in matcher.get_opcodes() if tag != "equal"]
 
-    mine, yours = changes(ours), changes(theirs)
-    for a in mine:
-        for b in yours:
-            if a != b and a[0] <= b[1] and b[0] <= a[1]:
-                return None
-    out: list[bytes] = []
-    at = 0
-    for start, end, new in sorted(set(mine) | set(yours)):
-        out.extend(lines[at:start])
-        out.extend(new)
-        at = end
-    out.extend(lines[at:])
-    return b"".join(out)
+def _dirs(path: str) -> list[str]:
+    """Every directory `path` sits under, outermost first."""
+    parts = path.split("/")
+    return ["/".join(parts[:i]) for i in range(1, len(parts))]
 
 
 def _update_branch(run: _Run, merger: ForgeMerger, *, number: int, head: str, updates: int,
@@ -2418,7 +2365,8 @@ def _update_branch(run: _Run, merger: ForgeMerger, *, number: int, head: str, up
 
 
 def _accept(merger: ForgeMerger, *, head: str, pinned: str,
-            fix_heads: list[tuple[str, str]], base: str
+            fix_heads: list[tuple[str, str]], base: str,
+            proven: dict[str, str | None] | None = None
             ) -> tuple[int, str | None, list[dict[str, Any]]] | None:
     """(base merges on top, the CI-fix round's task or None, the record of each
     base merge GitHub did not commit), or None.
@@ -2426,13 +2374,14 @@ def _accept(merger: ForgeMerger, *, head: str, pinned: str,
     The live head is accepted when it is the pinned head or a head one of
     this workflow's CI-fix rounds pushed (`fix_heads`, newest first), itself
     or under clean base merges (`_updates_onto`). Exact matches are tried
-    first, so the common case reads nothing more from GitHub.
+    first, so the common case reads nothing more from GitHub. `proven` caches
+    `_merge_impurity` by commit, and is shared with `_head_record`.
     """
     candidates: list[tuple[str | None, str]] = [(None, pinned), *fix_heads]
     for task_id, pushed in candidates:
         if head == pushed:
             return 0, task_id, []
-    proven: dict[str, str | None] = {}
+    proven = {} if proven is None else proven
     for task_id, pushed in candidates:
         walked = _updates_onto(merger, head=head, pushed=pushed, base=base, proven=proven)
         if walked is not None:
@@ -2441,18 +2390,22 @@ def _accept(merger: ForgeMerger, *, head: str, pinned: str,
 
 
 def _head_record(merger: ForgeMerger, *, head: str, pinned: str,
-                 fix_heads: list[tuple[str, str]], base: str) -> dict[str, Any]:
+                 fix_heads: list[tuple[str, str]], base: str,
+                 proven: dict[str, str | None] | None = None) -> dict[str, Any]:
     """The commit a `head_moved` refusal names: its parents, who committed it,
     whether it is signed, whether its first parent is an accepted head, and
     the first reason the walk did not take it. Read best-effort: a read that
-    fails says so in `unreadable`, and the refusal stands either way."""
+    fails says so in `unreadable`, and the refusal stands either way.
+    `proven` is the walk's `_merge_impurity` cache, so no tree is proved twice."""
+    proven = {} if proven is None else proven
     record: dict[str, Any] = {"sha": head}
     try:
         commit = merger.commit(head)
         record.update(_commit_record(commit))
         first = commit.parents[0] if commit.parents else None
         accepted = first is not None and _accept(
-            merger, head=first, pinned=pinned, fix_heads=fix_heads, base=base) is not None
+            merger, head=first, pinned=pinned, fix_heads=fix_heads, base=base,
+            proven=proven) is not None
         record["first_parent_accepted"] = accepted
         if len(commit.parents) != 2:
             record["why"] = "it is not a two-parent merge"
@@ -2461,8 +2414,10 @@ def _head_record(merger: ForgeMerger, *, head: str, pinned: str,
         elif not merger.on_base(base, commit.parents[1]):
             record["why"] = f"its second parent is not on {base}"
         elif not commit.by_github:
-            record["why"] = _merge_impurity(merger, commit) or "it is the clean merge of its parents"
-    except (forge_mod.ForgeError, ValueError, binascii.Error) as exc:
+            if commit.sha not in proven:
+                proven[commit.sha] = _merge_impurity(merger, commit)
+            record["why"] = proven[commit.sha] or "it is the clean merge of its parents"
+    except (forge_mod.ForgeError, ValueError) as exc:
         record["unreadable"] = f"{type(exc).__name__}: {getattr(exc, 'status', None) or exc}"[:200]
     return record
 
