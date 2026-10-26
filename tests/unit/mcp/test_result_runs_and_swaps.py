@@ -70,3 +70,17 @@ def test_a_one_run_task_reports_exactly_what_it_did_before() -> None:
         assert key not in produced, key
     assert render.runs_line(produced) is None
     assert "runs" not in "\n".join(render.produced_lines(produced, render.PLAIN))
+
+
+def test_the_progress_duration_says_it_sums_the_runs() -> None:
+    from swarm_mcp import progress
+
+    # No started/completed pair: the duration is the runner summary's.
+    assert progress._duration({"result_summary": TWO_RUNS}) == {
+        "duration_s": 7189.6,
+        "duration_basis": "the last attempt's 2 agent runs, summed",
+    }
+    assert progress._duration({"result_summary": {"duration_seconds": 60.6}}) == {
+        "duration_s": 60.6,
+        "duration_basis": "the last attempt's runner",
+    }
