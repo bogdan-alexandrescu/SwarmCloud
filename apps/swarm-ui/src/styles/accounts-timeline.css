@@ -519,6 +519,17 @@
   border-top: 2px dotted var(--info);
   border-radius: 0;
 }
+.acct-tl-legend .lg-held {
+  width: 10px;
+  height: 10px;
+  background: var(--info);
+  border: 1px solid var(--info);
+}
+.acct-tl-legend .lg-holdbar {
+  height: 6px;
+  background: var(--info);
+  border-radius: 3px;
+}
 .acct-tl > .acct-forecast {
   margin: 0 12px 12px;
 }

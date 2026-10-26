@@ -222,8 +222,10 @@ def test_the_agent_is_told_the_names_and_the_absolute_artifacts_path(tmp_path, m
 QUESTIONS_LINE = (
     "If a decision is the owner's to make, ask instead of guessing: write "
     "questions.json there, a JSON list of {question, options: [{label, "
-    "description}], recommended, context}; it is shown to the owner and "
-    "never acted on."
+    "description}], recommended, context, built}, built being the label of "
+    "the option your branch implements, or null when the answer changes "
+    "nothing it builds; it is shown to the owner, and a merge does not go "
+    "ahead while the owner's pick differs from built."
 )
 
 

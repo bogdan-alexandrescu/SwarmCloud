@@ -219,6 +219,14 @@ qatarget.py):
   (`qa_sign_in_busy`). An agent connection refused meanwhile is told why
   (`held_for_qa_sign_in`).
 
+THE CLOUDFLARE ACCESS TOKEN (CF-ACCESS-TOKEN, part of #2442). When the gate
+holds the attempt's Cloudflare Access service tokens (`cf_access`,
+cfaccess.py), every agent-bound message passes `CfAccess.scrub` on the
+agent's link, a base64 body the scrub cannot decode is refused
+(`cf_access_body`), and the agent may not continue a paused request to a new
+URL (`CfAccess.agent_refusal`). The headers themselves are added by the
+gate's `CfAccessInjector`, on its own sessions, to listed hosts only.
+
 THE DEVICE AGAIN AFTER A CLIPPED CAPTURE (QA-REASSERT; part of #1981). A
 `Page.captureScreenshot` carrying a `clip`, sent from an agent's session,
 lifts the device the gate set on that page from its own session (device.py
@@ -267,6 +275,7 @@ from urllib.parse import urlsplit
 from .. import browser_tools
 from . import cdppolicy
 from .cdppolicy import PolicyPaths
+from .cfaccess import CfAccess
 from .qaidentity import ConsoleRequests, QaIdentity
 from .qatarget import (
     BROWSER_GONE,
@@ -568,6 +577,7 @@ class CdpProxy:
         qa_target: QaTarget | None = None,
         qa_sleep: Callable[[float], Awaitable[None]] | None = None,
         agent_send_seconds: float = AGENT_SEND_SECONDS,
+        cf_access: CfAccess | None = None,
     ) -> None:
         self._send = send_to_chromium
         self._agent_send_seconds = agent_send_seconds
@@ -584,6 +594,9 @@ class CdpProxy:
                           if qa_target is not None else None)
         self._qa_signing = False
         self._qa_tasks: set[asyncio.Task[None]] = set()
+        #: The attempt's Cloudflare Access tokens, or None (module docstring,
+        #: THE CLOUDFLARE ACCESS TOKEN).
+        self._cf_access = cf_access
         self._paths = paths
         self._record = record
         self._on_control_ended = on_control_ended
@@ -771,6 +784,8 @@ class CdpProxy:
             link = _ScrubbedLink(link, self._qa)
         if self._qa_target is not None:
             link = _ScrubbedLink(link, self._qa_target)
+        if self._cf_access is not None:
+            link = _ScrubbedLink(link, self._cf_access)
         connection = AgentConnection(link=link, browser_session=session,
                                      client=client if client in browser_tools.TOOLS else None)
         self._owner[session] = connection
@@ -928,6 +943,13 @@ class CdpProxy:
                 self._note(method, params, "method_policy")
                 await self._reply_error(connection, message, why)
                 return
+        if self._cf_access is not None:
+            why = self._cf_access.agent_refusal(method, params if isinstance(params, Mapping) else {})
+            if why is not None:
+                self._record("cdp_method_refused", {"method": method, "cause": "cf_access"})
+                self._note(method, params, "method_policy")
+                await self._reply_error(connection, message, why)
+                return
         if self._mode != _OPEN:
             self._held.append((connection, dict(message)))
             return
@@ -1020,6 +1042,12 @@ class CdpProxy:
                 message = {"error": {"code": _ERROR_CODE, "message": (
                     f"refused by the live gate: {pending.method} for a body the gate cannot read "
                     "while it holds the QA target's sign-in")}}
+            elif (self._cf_access is not None and pending.method in _BODY_METHODS
+                  and self._cf_access.undecodable_body(result)):
+                self._record("cdp_method_refused", {"method": pending.method, "cause": "cf_access_body"})
+                message = {"error": {"code": _ERROR_CODE, "message": (
+                    f"refused by the live gate: {pending.method} for a body the gate cannot read "
+                    "while it holds a Cloudflare Access token")}}
         reply: dict[str, Any] = {"id": pending.agent_id}
         if "error" in message:
             reply["error"] = message["error"]
@@ -1532,7 +1560,8 @@ class _Scrubber(Protocol):
 
 
 class _ScrubbedLink:
-    """An agent's link, every message through `QaIdentity.scrub` or `QaTarget.scrub` (module docstring)."""
+    """An agent's link, every message through `QaIdentity.scrub`, `QaTarget.scrub` or
+    `CfAccess.scrub` (module docstring)."""
 
     def __init__(self, link: AgentLink, qa: _Scrubber) -> None:
         self._link = link

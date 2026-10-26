@@ -124,6 +124,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 114 | `CONTRACT.md` invariant 7: swarm-api alone starts with Cloud Run's startup CPU boost, the one recorded exception; every other Cloud Run service and every worker stays under invariant 7 as written (API-CPU-BOOST, part of #1816) | ACCEPTED by BGD 2026-10-23 (#1816 option (a)) and APPLIED by PR 2132; recorded here by lane FOLLOWUPS-1023 (part of #2150). The invariant's text is unchanged |
 | 115 | `models.py`: `Task.publish_to_pr`, the existing pull request a lane's commits are pushed onto instead of opening one, typed rather than carried in `metadata.dispatch` (PUBLISH-TO-PR, part of #2183) | open, REQUESTED 2026-10-24 by lane PUBLISH-TO-PR. Not applied, and not needed for the feature to work: the field ships in the signed `metadata.dispatch` block, as `strategy` and `continues` do |
 | 116 | `specsign.py`: `SETTINGS_MAC_FIELDS` gains a `"qa"` block, `("flows_per_step",)`, so the workspace's QA batch size is signed like `merge` and `code_intelligence` (QA-TRIPWIRE-MAC, part of #2136) | ACCEPTED by BGD 2026-10-26 (answering QA-FLOWS-CAP's question, task_23a1c31d528e450187b8). Not applied: `apps/common/swarm_common/` is frozen and a lane does not edit it |
+| 117 | `profiles.py`: a `cf-access` secret slot on `claude-code-browser`, kind `oauth_client`, whose value the live gate sends as Cloudflare Access service-token headers to the hosts its grant lists and the agent never holds (CF-ACCESS-TOKEN, part of #2442) | open, ACCEPTED 2026-10-26 by BGD (requested by lane CF-ACCESS-TOKEN as 116, renumbered: QA-TRIPWIRE-MAC took 116 first). Not applied yet: until it is, a grant into `cf-access` is refused and no token is released |
 
 ---
 
@@ -14462,3 +14463,65 @@ forger picks B's batch size within what B's admin could pick.
 **9** is what this protects: one tenant's worker must not set another
 tenant's settings. **10** holds either way: a caller names a bounded
 integer, never a spec. **1-8** are untouched.
+
+## 117. `profiles.py`: a `cf-access` secret slot on `claude-code-browser` (CF-ACCESS-TOKEN, part of #2442)
+
+**Status:** ACCEPTED 2026-10-26 by BGD, not applied yet (filed by lane CF-ACCESS-TOKEN as 116 and renumbered, since QA-TRIPWIRE-MAC took 116 on main first). Not applied:
+`apps/common/swarm_common/` is frozen. The feature is built and tested
+against a catalogue with the slot added, and does nothing until it is.
+
+### What is true today
+
+BGD decided on 2026-10-26 that browser visual-QA agents reach a site behind
+Cloudflare Access with a Cloudflare Access service token
+(docs/runbooks/cf-access-service-token.md). The lane built every reader of
+it: swarm-api stores a host list on a grant into a host-scoped slot and signs
+it in grant form "v3" (`workspace_secrets.HOST_SCOPED_SLOTS`,
+`grant_attest.FORM_HOSTS`), the release answers the item with its `hosts`,
+the worker holds it in its heap and hands it to the live gate
+(`secretrelease.GATE_SLOTS`, `agent_worker/cf_access.py`), and the gate sends
+`CF-Access-Client-Id` / `CF-Access-Client-Secret` to listed hosts only
+(`livegate/cfaccess.py`). `claude-code-browser` declares one slot, `files`,
+so `check_grant` refuses a grant into `cf-access` and the worker refuses an
+item in it.
+
+### The requested change
+
+In `profiles.py`, beside `_FILES_SLOT`:
+
+    _CF_ACCESS_SLOT = SecretSlot(
+        kinds=("oauth_client",),
+        means="a Cloudflare Access service token ({client_id, client_secret}); the live "
+              "gate sends it as CF-Access-Client-Id and CF-Access-Client-Secret to the "
+              "hosts its grant lists and to no other; never a file, never in the "
+              "agent's environment",
+    )
+
+and on `claude-code-browser` only:
+`secret_slots={"files": _FILES_SLOT, "cf-access": _CF_ACCESS_SLOT}`. Optional
+(`required=False`): a step whose workspace granted none starts and reaches
+the site signed out.
+
+### What it would break if accepted
+
+Nothing that exists. The console's grant matrix gains a column for the slot;
+until the console has a host-list field, a grant into it is set through the
+API (`hosts` in `PUT .../grants/{consumer}`), and a tick without hosts is
+refused with a message saying why. `check-contract-parity.sh` is unaffected:
+no shell restates the slot list. `consumer_slots` in the worker and
+`attempt_consumers` in swarm-api pick the slot up from the catalogue.
+
+### If it is declined
+
+The headers are never sent and the platform admin stays unreachable to
+agents, as today. The alternatives are worse: the `files` slot would hand
+the token to the agent, and a slot declared outside the contract would be a
+second statement of the catalogue in swarm-api and the worker, the drift
+rule 1 exists to prevent.
+
+### Invariants
+
+**9** is the point: the token is the workspace's own secret, released only
+to that workspace's attempts, and held by its gate, never by the agent.
+**10** holds: a caller names nothing; the admin's host list is a property of
+the grant, signed by swarm-api. **1-8** are untouched.

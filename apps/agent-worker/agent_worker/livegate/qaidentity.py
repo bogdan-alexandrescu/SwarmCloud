@@ -546,8 +546,13 @@ class QaInjector:
 
     # ------------------------------------------------------------- events
 
+    def _armed(self) -> bool:
+        """Whether this injector's rules apply: the QA identity names a host.
+        `cfaccess.CfAccessInjector` walks the same sessions under its own."""
+        return self._qa.host is not None
+
     def on_event(self, message: Mapping[str, Any]) -> None:
-        if self._closed or self._qa.host is None:
+        if self._closed or not self._armed():
             return
         method = message.get("method")
         raw = message.get("params")

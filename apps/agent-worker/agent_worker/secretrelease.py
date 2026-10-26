@@ -43,6 +43,15 @@ asked again by its next attempt; with optional slots only it starts without
 them. A 409 is the fence (invariant 5): `SecretReleaseFenced`, a
 `ChildSubmitFenced`, so the lifecycle stands down without touching the lease.
 
+A GATE SLOT IS NEVER A FILE (CF-ACCESS-TOKEN, part of #2442). An item in a
+slot of `GATE_SLOTS` -- `cf-access`, a Cloudflare Access service token -- is
+for the live gate, which adds it to requests for the hosts its grant lists,
+and the agent must never read it. `private/` is the agent's uid's to read, so
+such an item is held in this heap (`Released.gate`, with the grant's `hosts`)
+and never written, never named in the manifest and never in `env`; the
+lifecycle hands it to the gate over ctl.sock (`agent_worker.cf_access`) and
+drops it. Its fields are registered for redaction like every other value.
+
 REMOVED ON EVERY EXIT. `remove` deletes `private/secrets/` and is the first
 cleanup step after the runner is gone (`lifecycle.Worker._cleanup`).
 """
@@ -79,6 +88,13 @@ MANIFEST_NAME = "manifest.json"
 #: becomes a file name here, so nothing else is written.
 _NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 _SLOT = re.compile(r"[a-z][a-z0-9-]{0,31}")
+
+#: Slots whose items go to the live gate and never to a file (module docstring).
+#: `swarm_api.workspace_secrets.HOST_SCOPED_SLOTS`, restated (this image does
+#: not carry swarm-api); tests/unit/worker/test_cf_access_worker.py holds them equal.
+GATE_SLOTS = ("cf-access",)
+#: A gate slot's host list, bounded as swarm-api bounds it (`MAX_SLOT_HOSTS`).
+MAX_GATE_HOSTS = 16
 
 #: The structured kinds (design §2.1): a JSON object whose fields are each
 #: registered for redaction too, so a password echoed alone is still caught.
@@ -117,6 +133,9 @@ class Released:
     delivered: list[tuple[str, str]] = field(default_factory=list)
     #: Required slots this attempt has nothing in.
     missing_required: list[str] = field(default_factory=list)
+    #: Gate-slot items, held in this heap for the live gate and never written:
+    #: `{name, slot, hosts, value}` each (module docstring). Emptied once handed over.
+    gate: list[dict[str, Any]] = field(default_factory=list, repr=False)
     #: None when swarm-api answered; else why not (NO_KEY, UNREACHABLE, a code).
     unreachable: str | None = None
     asked: bool = False
@@ -169,6 +188,12 @@ def _register(logger: Any, kind: str, value: str) -> None:
                     logger.register_secret(part)
 
 
+def _gate_hosts(hosts: Any) -> bool:
+    """A gate slot's list as swarm-api sends it: 1 to MAX_GATE_HOSTS host names."""
+    return (isinstance(hosts, list) and 0 < len(hosts) <= MAX_GATE_HOSTS
+            and all(isinstance(h, str) and h for h in hosts))
+
+
 class SecretRelease:
     """The release for one attempt. `children` is its `ChildPath`, whose key
     and API this signs with and calls; nothing here holds the key."""
@@ -215,19 +240,24 @@ class SecretRelease:
         if not isinstance(items, list):
             return self._unreachable(result, "bad_answer", required)
         accepted = self._accept(items, slots)
+        result.gate = [{"name": name, "slot": slot, "hosts": hosts, "value": value}
+                       for name, slot, _, value, hosts in accepted if slot in GATE_SLOTS]
+        accepted = [item for item in accepted if item[1] not in GATE_SLOTS]
         try:
             self._write(accepted, private_dir, result)
         except OSError as exc:
             remove(private_dir)
             result.delivered.clear()
             result.env.clear()
+            result.gate.clear()
             return self._unreachable(result, f"write_failed:{type(exc).__name__}", required)
-        filled = {slot for _, slot in result.delivered}
+        filled = {slot for _, slot in result.delivered} | {item["slot"] for item in result.gate}
         result.missing_required = [slot for slot in required if slot not in filled]
         withheld = payload.get("withheld") if isinstance(payload.get("withheld"), list) else []
         self.log.info(
             "workspace secrets released",
             names=[name for name, _ in result.delivered],
+            for_the_gate=[item["name"] for item in result.gate],
             withheld=[w.get("name") for w in withheld if isinstance(w, dict)],
             missing_required=result.missing_required,
         )
@@ -241,11 +271,12 @@ class SecretRelease:
         return result
 
     def _accept(self, items: list[Any], slots: Mapping[str, SecretSlot]
-                ) -> list[tuple[str, str, str, str]]:
-        """`(name, slot, kind, value)` for each item this attempt may hold.
+                ) -> list[tuple[str, str, str, str, list[str]]]:
+        """`(name, slot, kind, value, hosts)` for each item this attempt may
+        hold; `hosts` is a gate slot's list, empty for every other slot.
         Every value is registered for redaction here, before anything else
         reads it -- a refused one included, since it has been in this heap."""
-        out: list[tuple[str, str, str, str]] = []
+        out: list[tuple[str, str, str, str, list[str]]] = []
         seen: set[tuple[str, str]] = set()
         for item in items:
             if not isinstance(item, dict):
@@ -267,6 +298,10 @@ class SecretRelease:
                 reason = "value"
             elif (name, slot) in seen:
                 reason = "duplicate"
+            elif slot in GATE_SLOTS and not _gate_hosts(item.get("hosts")):
+                # A gate item with no list would be sent nowhere; one with a bad
+                # list is not this worker's to repair. The gate checks again.
+                reason = "hosts"
             if reason:
                 self.log.warning("workspace secret refused by this worker",
                                  name=name if isinstance(name, str) and _NAME.fullmatch(name)
@@ -275,17 +310,18 @@ class SecretRelease:
                                  else None, reason=reason)
                 continue
             seen.add((name, slot))
-            out.append((name, slot, str(kind), value))
+            hosts = list(item["hosts"]) if slot in GATE_SLOTS else []
+            out.append((name, slot, str(kind), value, hosts))
         return out
 
-    def _write(self, accepted: list[tuple[str, str, str, str]], private_dir: Path,
+    def _write(self, accepted: list[tuple[str, str, str, str, list[str]]], private_dir: Path,
                result: Released) -> None:
         if not accepted:
             return
         root = secrets_dir(private_dir)
         _private_dir(root)
         manifest: list[dict[str, str]] = []
-        for name, slot, kind, value in accepted:
+        for name, slot, kind, value, _ in accepted:
             directory = root / slot
             _private_dir(directory)
             path = directory / name

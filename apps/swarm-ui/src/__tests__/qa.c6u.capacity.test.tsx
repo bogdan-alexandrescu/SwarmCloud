@@ -318,7 +318,14 @@ describe('G5-08: at 390 a capacity or admin table is a record per row', () => {
     await pools()
     const tables = [...document.querySelectorAll('.cap-families .cap-pools')]
     expect(tables.length).toBeGreaterThan(1)
-    for (const t of tables) expectRecord(t, 'Pools')
+    // A Pools record is the compact row since VQ-032: one grid per pool, its
+    // cells unkeyed, rather than the shared keyed record.
+    for (const t of tables) {
+      expect(t.classList.contains('is-stacked'), 'Pools is not stacked at 390').toBe(true)
+      expect(painted(t, 'overflow-x', PHONE)).toBe('visible')
+      expect(painted(t.querySelector('tbody > tr')!, 'display', PHONE)).toBe('grid')
+      expect(painted(t.querySelector('tbody > tr > td[data-label]')!, 'content', PHONE, 'before')).toBe('none')
+    }
     document.body.innerHTML = ''
     vi.unstubAllGlobals()
     await pools()

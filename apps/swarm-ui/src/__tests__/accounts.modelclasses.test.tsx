@@ -135,7 +135,7 @@ describe('an account shows which model classes it serves', () => {
     const pane = await mount([lent], 'other:lent')
     expect(classesFact(pane).textContent).toBe('sonnet, haiku')
     expect(within(pane).queryByRole('checkbox')).toBeNull()
-    expect(within(pane).queryByRole('button', { name: 'save classes' })).toBeNull()
+    expect(within(pane).queryByRole('button', { name: 'Save classes' })).toBeNull()
   })
 })
 
@@ -143,7 +143,7 @@ describe('the owner edits the served classes', () => {
   it('sends the chosen subset in vocabulary order', async () => {
     api.setAccountModelClasses.mockResolvedValue(ok({ account: account({ model_classes: ['opus', 'haiku'] }) }))
     const pane = await mount([account({ model_classes: ['haiku'] })], 'eng:primary')
-    const save = within(pane).getByRole('button', { name: 'save classes' }) as HTMLButtonElement
+    const save = within(pane).getByRole('button', { name: 'Save classes' }) as HTMLButtonElement
     expect(save.disabled, 'an unchanged list armed the save').toBe(true)
     fireEvent.click(box(pane, 'opus'))
     expect(save.disabled).toBe(false)
@@ -162,7 +162,7 @@ describe('the owner edits the served classes', () => {
     const pane = await mount([account({ model_classes: ['opus', 'fable', 'sonnet'] })], 'eng:primary')
     expect(pane.textContent).toContain('All four or none saves as every class.')
     fireEvent.click(box(pane, 'haiku'))
-    fireEvent.click(within(pane).getByRole('button', { name: 'save classes' }))
+    fireEvent.click(within(pane).getByRole('button', { name: 'Save classes' }))
     await waitFor(() => expect(api.setAccountModelClasses).toHaveBeenCalledWith('eng:primary', []), WAIT)
   })
 
@@ -179,7 +179,7 @@ describe('the owner edits the served classes', () => {
     })
     const pane = await mount([account({ model_classes: [] })], 'eng:primary')
     fireEvent.click(box(pane, 'fable'))
-    fireEvent.click(within(pane).getByRole('button', { name: 'save classes' }))
+    fireEvent.click(within(pane).getByRole('button', { name: 'Save classes' }))
     const alert = await within(pane).findByRole('alert', undefined, WAIT)
     expect(alert.textContent).toContain('The class list was not changed.')
     expect(api.setAccountModelClasses).toHaveBeenCalledWith('eng:primary', ['opus', 'sonnet', 'haiku'])

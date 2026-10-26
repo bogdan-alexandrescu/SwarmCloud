@@ -25,16 +25,29 @@ questions. The task's own outcome never depends on it: an invalid file is a
 line in the summary, not a failed attempt.
 
 DATA, NEVER A CHANNEL. Nothing in the platform reads these questions to decide
-anything: no state, retry, dispatch or merge looks at them. They are text for
+anything: no state, retry or dispatch looks at them. They are text for
 the operator, served back through the artifacts route (which redacts it) by
 `swarm_result` and the follow outcome. An agent cannot use the file to ask the
-platform for anything.
+platform for anything. The one reader that decides is a merge step, and it
+can only REFUSE: it holds for the questions its review named (#2070), and
+refuses to merge where the owner picked an option other than the one the
+asking agent said its branch builds (`built`, below).
+
+WHAT THE BRANCH BUILDS (ANSWER-CONTENT-CHECK, part of #2441; owner decision
+2026-10-26). A question may say `"built": "<label>"`, the option its branch
+implements, or `"built": null` when the answer changes nothing the branch
+builds. On 2026-10-26 the owner picked options three lanes had not built
+(VQ-CAPACITY, VQ-CONFIG-B, BROWSER-POOL-100), and the merge, which checked
+only that each question was answered, would have merged the opposite of each
+choice. `merge.run_merge` now refuses when an answered `needs_owner`
+question's pick differs from its `built`. A file with no `built` key, written
+before this, is read as it was: answered is enough.
 
 THE SHAPE IS STRICT so the bridge can show it without guessing: a list of at
-most `MAX_QUESTIONS` objects, each with exactly the four keys above (the last
-two may be null or absent), `options` a list of 1 to `MAX_OPTIONS` objects
+most `MAX_QUESTIONS` objects, each with the four keys above (the last two may
+be null or absent) and, optionally, `blocking` and `built`, `options` a list of 1 to `MAX_OPTIONS` objects
 with exactly `label` and `description`, labels unique, and `recommended` one
-of the labels or null. Every text is bounded, and the whole file is at most
+of the labels or null, and so is `built`. Every text is bounded, and the whole file is at most
 `MAX_BYTES` -- the bridge reads it in one window. A reason never quotes the
 file: it names a position and a key, so a secret in the file cannot reach the
 summary through the reason.
@@ -95,7 +108,8 @@ MAX_LABEL_CHARS = 200
 MAX_DESCRIPTION_CHARS = 2_000
 MAX_CONTEXT_CHARS = 8_000
 
-QUESTION_KEYS = frozenset({"question", "options", "recommended", "context", "blocking"})
+QUESTION_KEYS = frozenset({"question", "options", "recommended", "context", "blocking",
+                           "built"})
 OPTION_KEYS = frozenset({"label", "description"})
 
 
@@ -149,6 +163,9 @@ def _question(entry: Any, where: str) -> None:
     blocking = entry.get("blocking")
     if blocking is not None and not isinstance(blocking, bool):
         raise Rejected(f"{where}: `blocking` is not true or false")
+    built = entry.get("built")
+    if built is not None and built not in labels:
+        raise Rejected(f"{where}: `built` is not one of its options' labels")
 
 
 def validate(data: bytes) -> list[dict[str, Any]]:
