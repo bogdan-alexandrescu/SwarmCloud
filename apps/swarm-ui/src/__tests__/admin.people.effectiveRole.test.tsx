@@ -105,6 +105,19 @@ describe("a platform admin's cell is their effective role (VQ-ROLES)", () => {
     expect(cell('ops@example.com', 'eng')?.dataset.role).toBe('admin')
   })
 
+  it('draws "(platform admin)" on a line of its own, under "admin"', async () => {
+    await mount(platform([OPS, FAY]))
+    // The cell is `white-space: nowrap`: on one line, "admin (platform admin)"
+    // widened the grid from 1009px to 1102px at 1440 and pushed Manage behind
+    // the table's scroll (rendered review, 2026-10-26). A <br> is the break.
+    // MUTATION: drop the <br> -> one line again, and this fails.
+    const td = cell('ops@example.com', 'eng')
+    const br = td?.querySelector('br')
+    expect(br).not.toBeNull()
+    expect(br?.previousElementSibling?.textContent).toBe('admin')
+    expect(br?.nextElementSibling?.textContent).toBe('(platform admin)')
+  })
+
   it("leaves a plain member's cell as the API said it", async () => {
     await mount(platform([OPS, FAY]))
     expect(visible(cell('fay@example.com', 'eng'))).toBe('member')
