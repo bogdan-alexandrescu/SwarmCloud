@@ -415,10 +415,20 @@ describe('QA targets: the link\u2019s entry and a refusal that leaves the link u
 
   const puts = (calls: { method: string; url: string; body: unknown }[]) => calls.filter((c) => c.method === 'PUT')
 
+  /** The text of the title's one run held unbroken (`white-space: nowrap`), or null. */
+  const entryInTitle = (form: HTMLElement): string | null => {
+    const h = form.closest('section')?.querySelector('h2') ?? null
+    const run = Array.from(h?.querySelectorAll<HTMLElement>('span') ?? []).find((s) => s.style.whiteSpace === 'nowrap')
+    return run?.textContent ?? null
+  }
+
   it('a link for entry b sends `environment: "b"` with the credential and names the entry in the title', async () => {
     const token = runtimeValue()
     const { calls, form } = await openAt(`/qa-targets/${LOGIN}/credential?t=${token}&environment=b`)
     await waitFor(() => expect(visible(document.body)).toContain('Test credential for portal \u00b7 b'), WAIT)
+    // Rendered at 390 the title broke inside the entry's own hyphen ("prod-" / "reviewer").
+    // MUTATION: draw the entry as bare title text and this finds no unbroken run.
+    expect(entryInTitle(form)).toBe('b')
     expect(window.location.href).not.toContain(token)
     const password = fill(form)
     fireEvent.submit(form)
@@ -440,6 +450,10 @@ describe('QA targets: the link\u2019s entry and a refusal that leaves the link u
     fill(form)
     fireEvent.submit(form)
     await waitFor(() => expect(visible(document.body)).toContain('Nothing was saved; the link still works, fix the field and save again.'), WAIT)
+    // The API's message is a sentence of its own: rendered, it ran into the
+    // console's ("name the one to use Nothing was saved"), as #2280 quotes.
+    // MUTATION: join the two with a bare space and this fails.
+    expect(visible(document.body)).toContain('This QA target has several environments; name the one to use. Nothing was saved;')
     // MUTATION: call `onSent()` after every answer (as before #2280) and this says the link is used.
     expect(visible(document.body)).not.toContain('The link is used')
     fill(form)
@@ -454,11 +468,18 @@ describe('QA targets: the link\u2019s entry and a refusal that leaves the link u
     const token = runtimeValue()
     const { calls, form } = await openAt(`/qa-targets/${LOGIN}/credential?t=${token}`, () => ({
       status: 403,
-      body: { code: 'qa_credential_link_invalid', message: 'this credential link is not valid; ask for a new one' },
+      // `LINK_INVALID_MESSAGE` in swarm_api/qatargets.py, verbatim: it already says to ask for a new one.
+      body: {
+        code: 'qa_credential_link_invalid',
+        message: 'this credential link is unknown, already used, expired, or was minted for someone else or another target; ask for a new one',
+      },
     }))
     fill(form)
     fireEvent.submit(form)
-    await waitFor(() => expect(visible(document.body)).toContain('The link is used; ask for a new one to try again.'), WAIT)
+    await waitFor(() => expect(visible(document.body)).toContain('or another target; ask for a new one. The link is used.'), WAIT)
+    // Rendered, the line asked twice ("ask for a new one The link is used; ask for a new one to try again").
+    // MUTATION: append the generic spent-link sentence to this code too and this fails.
+    expect(visible(document.body).split('ask for a new one').length - 1).toBe(1)
     // MUTATION: keep the token on every refusal and this sends a second PUT.
     fill(form)
     fireEvent.submit(form)
@@ -484,6 +505,7 @@ describe('QA targets: the link\u2019s entry and a refusal that leaves the link u
     const { calls, form } = await openAt(`/qa-targets/${LOGIN}/challenge-bypass?t=${token}&environment=b`)
     expect(form.getAttribute('data-field')).toBe('challenge_bypass')
     await waitFor(() => expect(visible(document.body)).toContain('Challenge bypass value for portal \u00b7 b'), WAIT)
+    expect(entryInTitle(form)).toBe('b')
     expect(form.querySelector('input[name="username"]')).toBeNull()
     const input = form.querySelector<HTMLInputElement>('input[name="bypass_value"]')!
     expect(input.type).toBe('password')

@@ -1156,8 +1156,9 @@ function keptKeys(sectionId: string, tab: string): readonly string[] {
   // One inbox item rides on the page's address (`/approvals/<id>`, paths.ts),
   // and the inbox's kind filter beside it (AUT-15).
   if (sectionId === AUTOMATE && tab === 'approvals') return ['approval', 'kind']
-  // GitHub access' Mine / Members / Browser logins view (Access.tsx reads it off the bar).
-  if (sectionId === CONFIG && tab === 'github') return ['view']
+  // GitHub access' Choose repositories tab, and People and roles' Members'
+  // GitHub tab (GA-MOVE-VIEWS): each page reads `view` off the bar.
+  if (sectionId === CONFIG && (tab === 'github' || tab === 'people')) return ['view']
   if (sectionId !== CAPACITY) return []
   if (tab === 'pools') return ['pool']
   if (tab === 'holders') return ['pool', 'tenant']
@@ -2254,7 +2255,7 @@ function SectionBody({
     case 'config/mcp-servers':
       return <McpServersScreen />
     case 'config/people':
-      return <WorkspacePeopleScreen />
+      return <WorkspacePeopleScreen view={view} />
     case 'config/workspace':
       return <WorkspaceSettingsScreen part={workspacePartOf(view)} go={go} />
 

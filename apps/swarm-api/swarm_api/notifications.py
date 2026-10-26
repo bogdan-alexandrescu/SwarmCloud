@@ -787,25 +787,9 @@ class _Derived:
     tenants_waiting: int | None = None
 
 
-#: The metadata reader for each project, built on first use and kept, so a
-#: feed read builds no Secret Manager client once one exists.
-_READERS: dict[str, psec.SecretManagerMetadata] = {}
 #: Each reader's last count and when it was read (`PLATFORM_SECRETS_TTL`).
 _SECRET_COUNTS: "weakref.WeakKeyDictionary[Any, tuple[datetime, int | None]]" = weakref.WeakKeyDictionary()
 _SECRET_COUNTS_LOCK = threading.Lock()
-
-
-def _reader_for(db: Any) -> Any | None:
-    """The project's metadata reader, from the Firestore client's own project
-    (deps.py builds it with `settings.project_id`); None when it names none."""
-    project = getattr(db, "project", None)
-    if not isinstance(project, str) or not project:
-        return None
-    with _SECRET_COUNTS_LOCK:
-        reader = _READERS.get(project)
-        if reader is None:
-            reader = _READERS[project] = psec.SecretManagerMetadata(project)
-    return reader
 
 
 def platform_secrets_unset(meta: Any, db: Any, now: datetime) -> int | None:
@@ -840,7 +824,8 @@ class Notifications:
         self._store = store
         self._now = now
         self._sources = tuple(sources)
-        #: The platform secrets' metadata reader; None reads the project's own.
+        #: The platform secrets' metadata reader, the app's one (routes/notifications.py
+        #: hands it over); None counts nothing.
         self._secret_metadata = secret_metadata
 
     def _ref(self, viewer: Viewer) -> Any:
@@ -933,8 +918,10 @@ class Notifications:
     def _platform_secrets_unset(self, viewer: Viewer) -> int | None:
         if not viewer.is_admin:
             return None
-        meta = self._secret_metadata if self._secret_metadata is not None else _reader_for(self._db)
-        return None if meta is None else platform_secrets_unset(meta, self._db, _aware(self._now()))
+        meta = self._secret_metadata
+        if meta is None:
+            return None
+        return platform_secrets_unset(meta, self._db, _aware(self._now()))
 
     def _write(self, viewer: Viewer, ids: Iterable[str], *, all_read: bool) -> None:
         now = _aware(self._now())
