@@ -851,4 +851,5 @@ def test_the_wake_requested_row_of_a_parked_step_words_the_reason():
     w = build_waiting(t, events=events, as_of=READ_AT)
     wake = [h for h in w["history"] if h["kind"] == "wake"]
     # MUTATION: serving the raw code, or "checks settled", on the wake row turns this red.
-    assert wake and wake[0]["text"] == "wake requested: the head moved"
+    assert wake and wake[0]["text"] == (
+        "wake requested: swarm-api's tick read that the head moved")
