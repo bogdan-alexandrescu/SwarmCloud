@@ -224,8 +224,8 @@ describe('G3-31: zooming does not move the controls', () => {
 })
 
 describe('G3-15: no tick label within 14 px of `now`', () => {
-  // 21:07 local, the QA's clock.
-  const at = new Date(2026, 9, 7, 21, 7).getTime()
+  // 21:07 on the QA's clock, in the zone setting's default (UTC).
+  const at = Date.UTC(2026, 9, 7, 21, 7)
   const since = at - 24 * HOUR
 
   it('drops `18:00` at a phone’s track width and keeps it on a wide one', () => {
