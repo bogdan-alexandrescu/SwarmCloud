@@ -128,6 +128,9 @@ describe('work-a-004: a workflow title is cut the way a lane name is', () => {
     const b = await waitFor(() => {
       const el = document.querySelector<HTMLElement>('.tl-row.is-group[data-group="wf_long"] .tl-lab b')
       expect(el?.textContent).toContain(LABEL)
+      // The title shows before the read fails; until it does the note says
+      // "steps: reading…", so wait for the note too.
+      expect(document.querySelector('.tl-row.is-group[data-group="wf_long"] .tl-lab small')?.textContent).toMatch(/^steps not read: /)
       return el!
     })
     expect(document.querySelector('.tl-row.is-group[data-group="wf_long"] .tl-lab small')!.textContent).toMatch(/^steps not read: .* · retry · wf_long$/)
