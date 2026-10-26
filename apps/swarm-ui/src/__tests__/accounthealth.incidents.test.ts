@@ -8,12 +8,21 @@
 // incident. D's own risk was "two storms 50 minutes apart read as two
 // incidents" -- the rule must say which, and this file holds it there.
 //
+// THE RULE ITSELF is accountHealth.ts's `incidentsOf`, shared with the account
+// sheet (BGD, 2026-10-25) and tested there, in accountHealth.test.ts. This
+// file holds the page to it: `incidents` is that rule with each incident named
+// for its account, the cases below still read the rule through the page, and
+// the pool's ordering and its event-less re-auth card are the page's own.
+//
 // BREAK IT: widen the gap to 60 minutes, let a limit event join after its
-// reset, file a windowless refusal with the limits, or open an error incident
-// on a healthy account -- a case below turns red.
+// reset, file a windowless refusal with the limits, open an error incident on
+// a healthy account, or give the page its own copy of the rule again -- a case
+// below turns red.
 
 import { describe, expect, it } from 'vitest'
 
+import { incidentsOf } from '../accountHealth'
+import { loadAccountHealthBoard, type AccountHealthEvent } from '../api'
 import {
   INCIDENT_GAP_MS,
   incidents,
@@ -193,5 +202,34 @@ describe('the pool: an account that needs re-auth always has an open credential 
 
     expect(got.open).toHaveLength(1)
     expect(got.open[0]!.events).toHaveLength(2)
+  })
+})
+
+describe('the page groups by the shared rule, not a copy of it', () => {
+  it('names each of incidentsOf’s incidents for its account, and nothing else, across the development pool', async () => {
+    const r = await loadAccountHealthBoard()
+    if (r.status !== 'ok' || r.data.health.kind !== 'ok') throw new Error('the fixture board did not load')
+    const row = new Map(r.data.page.accounts.map((a) => [a.account_id, a.health_status]))
+    let compared = 0
+    for (const rec of r.data.health.pool.accounts) {
+      const status = row.get(rec.account_id) ?? null
+      const page = incidents(rec, status, r.data.readAt)
+      const shared = incidentsOf(rec.events as unknown as AccountHealthEvent[], status, r.data.readAt)
+      expect(page.map(({ account_id, label, family, ...x }) => ({ fam: family, ...x }))).toEqual(shared)
+      expect(page.every((x) => x.account_id === rec.account_id && x.label === (rec.label || rec.account_id))).toBe(true)
+      compared += page.length
+    }
+    expect(compared).toBeGreaterThan(5)
+  })
+
+  it('groups only the newest 50 events, as the sheet does, when a record holds more', () => {
+    // 60 network errors 2 hours apart: 60 one-event incidents by the gap rule,
+    // of which the shared rule keeps the newest 50 (RECORD_KEEPS).
+    const many = Array.from({ length: 60 }, (_, i) => ev(10 + i * 120, 'network'))
+    const got = incidents(record('eng:a', many), 'healthy', NOW)
+
+    expect(got).toHaveLength(50)
+    expect(got[0]!.from).toBe(NOW - 10 * MIN)
+    expect(got[49]!.from).toBe(NOW - (10 + 49 * 120) * MIN)
   })
 })
