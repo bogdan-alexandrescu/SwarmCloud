@@ -19,6 +19,7 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { App } from '../App'
+import { HELP, type TopicId } from '../help'
 import { addressToPath } from '../paths'
 import type { CascadeEnv } from './cssgate'
 import { THEMES, painted, resolveColour } from './marks'
@@ -71,14 +72,70 @@ describe('V062: the Submit pages ask their own question behind the title `?`', (
     expect(new Set(visited).size).toBe(4)
   })
 
-  // Holders, not Accounts: Accounts' title `?` now opens its own topics, the
-  // footer it replaced (VQ-033, BGD 2026-10-26), as Pools' and Provider
-  // quota's do. Holders passes no `help`, so its head keeps the section's.
+  // ACCOUNTS, WHICH ALSO CARRIES ITS OWN TOPICS (VQ-033, BGD 2026-10-26).
+  // Its title `?` opens the footer's topics now, and it is still the head's
+  // one `?`: the section's question leads the same card (Q2).
+  // MUTATION: drop `lead` from PageHead's `<HelpCard>` and Accounts' head
+  // draws no `.ctl-q-glyph`, so this names it.
   it('a section page keeps its section’s question (Q2: section-level help stays)', async () => {
-    const q = await headQuestion('/capacity/holders')
+    const q = await headQuestion('/capacity/accounts')
     expect(q.text).toContain('Capacity answers')
     expect(q.text).not.toContain('Submit answers')
+    expect(q.name).toBe('Help: Capacity answers')
   })
+})
+
+describe('VQ-033 with Q2: a Capacity page’s one head `?` asks the section and lists the page’s topics', () => {
+  const PAGES: ReadonlyArray<readonly [string, readonly TopicId[]]> = [
+    ['/capacity/pools', ['units-not-agents', 'pools-all-at-once', 'pool-freshness', 'tenant-scope', 'absent-vs-zero']],
+    [
+      '/capacity/accounts',
+      [
+        'accounts-table-shape',
+        'binding-window',
+        'no-amber-band',
+        'unreadable-documents',
+        'skipped-for-this-tenant',
+        'refresh-token-required',
+        'advisory-vs-lease',
+        'never-assigned-pool',
+      ],
+    ],
+    [addressToPath('capacity/quota'), ['provider-quota-states', 'quota-row-fields', 'quota-document-absent', 'absent-vs-zero']],
+  ]
+
+  // MUTATION: give PageHead's `<HelpCard topics>` no `lead` and each head's
+  // `?` is "Help: Reading this screen" without the section's question; drop a
+  // topic from a page's `help` list and its anchors stop matching.
+  it('draws one `?` by the title, opening Capacity’s question and every footer topic', async () => {
+    const visited: string[] = []
+    for (const [path, topics] of PAGES) {
+      window.history.replaceState(null, '', path)
+      render(<App />)
+      const head = await waitFor(() => {
+        const h = document.querySelector<HTMLElement>('.c-phead')
+        expect(h?.querySelector('.ctl-q-glyph'), `${path} draws no head \`?\``).toBeTruthy()
+        return h!
+      }, WAIT)
+      const glyphs = [...head.querySelectorAll<HTMLButtonElement>('button[aria-label^="Help: "]')]
+      expect(glyphs.length, `${path}: the head draws ${glyphs.length} help glyphs`).toBe(1)
+      expect(glyphs[0]!.getAttribute('aria-label'), path).toBe('Help: Capacity answers')
+      fireEvent.focus(glyphs[0]!)
+      const card = await waitFor(() => {
+        const c = document.querySelector('.ctl-q-card')
+        expect(c, `${path}: the \`?\` opened nothing`).not.toBeNull()
+        return c!
+      }, WAIT)
+      expect(card.textContent, path).toMatch(/is there room for another/)
+      const hrefs = [...card.querySelectorAll('a[href^="#help/"]')].map((a) => a.getAttribute('href'))
+      expect(hrefs, path).toEqual(topics.map((id) => `#${HELP[id].anchor}`))
+      cleanup()
+      window.history.replaceState(null, '', '/')
+      visited.push(path)
+    }
+    // Empty output is not success: three distinct pages were opened.
+    expect(new Set(visited).size).toBe(3)
+  }, 30_000)
 })
 
 describe('V108: the absent mark’s hatch stands clear of its rounded border', () => {
