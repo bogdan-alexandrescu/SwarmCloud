@@ -10471,8 +10471,18 @@ class Worker:
             self._lease_live_until = started + self.control.heartbeat_extension_seconds
         self._last_beat_started = started
         self._heartbeats += 1
+        scratch = self._scratch_reading()
+        fresh = scratch is not None and self._scratch_crossed(scratch)
+        if self._heartbeats % HEARTBEAT_EVENT_EVERY == 1 or fresh:
+            # OUT OF CADENCE when a scratch volume crossed a mark (#2436): kubelet
+            # evicts with no grace, so the reading the reconciler reports must
+            # be the newest there was. A whole reading, not `scratch` alone:
+            # `reconciler.memory` takes the limit from the newest HEARTBEAT.
+            detail = self._usage_reading()
+            if scratch:
+                detail["scratch"] = scratch
+            self.control.emit(EventType.HEARTBEAT, detail)
         if self._heartbeats % HEARTBEAT_EVENT_EVERY == 1:
-            self.control.emit(EventType.HEARTBEAT, self._usage_reading())
             # THE LIVE READING DETAILS DRAWS, on the attempt itself (contract
             # request #15): the same cadence as the event, so a running
             # attempt's figures are never more than one reading behind it.
@@ -10480,6 +10490,57 @@ class Worker:
             # reading's time is what says the worker is still reading, and an
             # idle agent's unchanged figures skipped would age as a stall.
             self._record_cpu(periodic=True)
+
+    #: The pod's local scratch volumes (`scratchusage.parse_volumes`), read
+    #: once; [] on Cloud Run, where nothing is sampled. And per volume, the
+    #: used bytes at its last out-of-cadence reading.
+    _scratch_volumes: list[tuple[str, Path, int]] | None = None
+    _scratch_marks: dict[str, int] | None = None
+
+    def _scratch_reading(self) -> dict[str, Any] | None:
+        """This beat's walk of the scratch volumes (#2436), or None without any. Never raises."""
+        from . import scratchusage as scratch_mod
+
+        if self._scratch_volumes is None:
+            self._scratch_volumes = scratch_mod.parse_volumes(os.environ.get(scratch_mod.SCRATCH_VOLUMES_ENV))
+            self._scratch_marks = {}
+        if not self._scratch_volumes:
+            return None
+        try:
+            return scratch_mod.sample(self._scratch_volumes, scrub=self.log.scrub_text)
+        except Exception as exc:
+            self.log.warning("could not read the scratch volumes", error=f"{type(exc).__name__}: {exc}")
+            return None
+
+    def _scratch_crossed(self, scratch: dict[str, Any]) -> bool:
+        """Whether a volume passed two thirds of its limit, or grew another 10% of it past.
+
+        The first crossing is warned once per volume per attempt, in the
+        worker's log; every crossing asks for an out-of-cadence reading.
+        """
+        from . import scratchusage as scratch_mod
+
+        marks = self._scratch_marks if self._scratch_marks is not None else {}
+        self._scratch_marks = marks
+        crossed = False
+        for name, mount, limit in self._scratch_volumes or []:
+            entry = scratch.get(name)
+            if not entry or entry["used_bytes"] < scratch_mod.warn_threshold(limit):
+                continue
+            used = entry["used_bytes"]
+            if name not in marks:
+                self.log.warning(
+                    f"{mount} is at {scratch_mod.size_words(used)} of its "
+                    f"{scratch_mod.limit_words(limit)} limit; past it kubelet evicts this pod. "
+                    f"Largest: {scratch_mod.format_top(entry)}. "
+                    "Move large scratch data under $TMPDIR (the cache volume).",
+                    volume=name, used_bytes=used, limit_bytes=limit,
+                )
+            elif used < marks[name] + limit // 10:
+                continue
+            marks[name] = used
+            crossed = True
+        return crossed
 
     def _usage_reading(self) -> dict[str, Any]:
         """One HEARTBEAT event's detail: the attempt's usage so far.
