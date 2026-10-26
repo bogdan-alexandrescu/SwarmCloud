@@ -1760,32 +1760,42 @@ function GroupHead({
 }) {
   let title: string
   let note: ReactNode
+  let noteTitle: string | undefined
   let gap: string | null = null
   if (block.kind === 'workflow') {
     title = name ?? block.key
-    // NAME, THEN ID · STEPS (timeline.html A; VQ-025): with a name in the
-    // title the id leads the subtitle, so the row still says which workflow
-    // it is; nameless, the id is the title and is not said twice.
-    const id = name === null ? '' : `${block.key} · `
+    // NAME, THEN STEPS · ID (timeline.html A; VQ-025): with a name in the
+    // title the id closes the subtitle, so the row still says which workflow
+    // it is; nameless, the id is the title and is not said twice. The id goes
+    // LAST, after the steps and the state (review of VQ-025): leading, a
+    // real-length id (`wf_5e5ad3b6f7da4299a839 · `) filled the 215px note cell
+    // at 1440 and cut the steps count and the state off. The whole note is the
+    // `<small>`'s title, so what the width cuts is read on hover.
+    const id = name === null ? '' : ` · ${block.key}`
     // A FAILED WORKFLOW READ IS SAID IN WORDS, with the route in the title
     // only (QA G3-07): the subtitle printed the raw route and status, which
     // the label's width cut to `steps — (/v1/workflows/wf_55…`.
-    note =
-      workflow === null ? (
-        `${id}steps: reading…`
-      ) : workflow.status === 'error' ? (
+    if (workflow === null) {
+      note = `steps: reading…${id}`
+      noteTitle = note
+    } else if (workflow.status === 'error') {
+      const why = `steps not read: ${workflow.limited ? 'rate-limited' : workflow.why}`
+      note = (
         <>
-          {id}
           <span className="tl-wf-unread" title={`${workflow.route} ${workflow.why}`}>
-            steps not read: {workflow.limited ? 'rate-limited' : workflow.why} ·{' '}
+            {why} ·{' '}
             <button type="button" className="c-link is-sm tl-wf-retry" onClick={onRetry}>
               retry
             </button>
           </span>
+          {id}
         </>
-      ) : (
-        `${id}${stepsNote(workflow.read, ran)}`
       )
+      noteTitle = `${why}${id}`
+    } else {
+      note = `${stepsNote(workflow.read, ran)}${id}`
+      noteTitle = note
+    }
     if (workflow?.status === 'ok') gap = stepsGap(workflow.read, ran, empty)
   } else if (block.kind === 'standalone') {
     title = 'Standalone'
@@ -1822,7 +1832,7 @@ function GroupHead({
             </span>
           )}
         </b>
-        <small>{note}</small>
+        <small title={noteTitle}>{note}</small>
         {gap !== null && <small className="tl-wf-gap">{gap}</small>}
       </div>
       <div className="tl-trk">

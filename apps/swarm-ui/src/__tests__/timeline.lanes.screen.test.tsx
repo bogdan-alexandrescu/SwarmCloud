@@ -694,7 +694,7 @@ describe('VQ-025: a workflow group row names the workflow, its id and steps, and
   const named = () =>
     TASKS.map((t) => (t.id === 'task_plan' ? { ...t, metadata: { title: 'refactor-broker' } } : t)) as Task[]
 
-  it('names the workflow from its own lanes before the workflow read lands, with the id beside the steps note', async () => {
+  it('names the workflow from its own lanes before the workflow read lands, with the id after the steps note', async () => {
     api.loadTasks.mockResolvedValue(ok({ tasks: named() } as TaskPage))
     api.loadWorkflow.mockReturnValue(new Promise(() => {}))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
@@ -702,11 +702,14 @@ describe('VQ-025: a workflow group row names the workflow, its id and steps, and
     const head = document.querySelector<HTMLElement>('.tl-row.is-group[data-group="wf_7c1e"]')!
     // MUTATION: name the group from `wfNames` (the workflow read) alone again.
     expect(head.querySelector('.tl-name-k')!.textContent).toBe('refactor-broker')
-    expect(head.querySelector('.tl-lab small')!.textContent).toBe('wf_7c1e · steps: reading…')
+    // MUTATION: lead the note with the id again (`${block.key} · `): a
+    // real-length id filled the note cell and cut the steps off (review of VQ-025).
+    expect(head.querySelector('.tl-lab small')!.textContent).toBe('steps: reading… · wf_7c1e')
+    expect(head.querySelector('.tl-lab small')!.getAttribute('title'), 'what the width cuts is read on hover').toBe('steps: reading… · wf_7c1e')
     expect(head.textContent, 'the old wording').not.toContain('workflow: reading')
   })
 
-  it('keeps the id beside the steps once the read lands', async () => {
+  it('keeps the id after the steps once the read lands', async () => {
     api.loadTasks.mockResolvedValue(ok({ tasks: named() } as TaskPage))
     api.loadWorkflow.mockResolvedValue(
       ok({ workflow: { workflow_id: 'wf_7c1e', state: 'FAILED', steps: [{}, {}, {}] }, tasks: [named()[1]!, named()[2]!, NEVER_RAN] } as unknown as WorkflowRead),
@@ -715,7 +718,8 @@ describe('VQ-025: a workflow group row names the workflow, its id and steps, and
     await waitFor(() => expect(lane('task_publish')).not.toBeNull())
     const head = document.querySelector<HTMLElement>('.tl-row.is-group[data-group="wf_7c1e"]')!
     expect(head.querySelector('.tl-name-k')!.textContent).toBe('refactor-broker')
-    expect(head.querySelector('.tl-lab small')!.textContent).toBe('wf_7c1e · 2 of 3 steps have attempts in this span · failed')
+    expect(head.querySelector('.tl-lab small')!.textContent).toBe('2 of 3 steps have attempts in this span · failed · wf_7c1e')
+    expect(head.querySelector('.tl-lab small')!.getAttribute('title')).toBe('2 of 3 steps have attempts in this span · failed · wf_7c1e')
   })
 
   it('draws a bracket over the workflow’s span: its lanes’ first start to their last end', async () => {

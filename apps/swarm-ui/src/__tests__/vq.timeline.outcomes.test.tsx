@@ -157,6 +157,19 @@ describe('VQ-022: Why agents failed draws no bar for 0, and cuts a long label be
       expect(painted(long, 'text-overflow', env)).toBe('ellipsis')
       expect(painted(long, 'min-width', env)).toBe('0')
     }
+    // ONE COUNT COLUMN AT EVERY WIDTH (review of VQ-022): the count is the
+    // grid's next cell after the drawn ones before it, so a 0 row and a
+    // non-zero row put it in the same column only if they draw as many cells
+    // before it. At 390 the bar is hidden, so the empty cell must be too.
+    const before = (row: Element, env: { width: number }) => {
+      const cells = Array.from(row.children)
+      const n = cells.indexOf(row.querySelector('.ol-row-n')!)
+      return cells.slice(0, n).filter((el) => painted(el, 'display', env) !== 'none').length
+    }
+    for (const env of [{ width: 1440 }, { width: 390 }]) {
+      // MUTATION: drop `.ol-row > .ol-row-none { display: none }` from the 560px block.
+      expect(before(timeout, env), `a 0 row's count column at ${env.width}`).toBe(before(runner, env))
+    }
   })
 })
 

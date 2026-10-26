@@ -10284,6 +10284,11 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     min-height: 44px;
   }
   .ol-row { grid-template-columns: minmax(96px, 120px) minmax(40px, 1fr) 40px; }
+  /* A 0 ROW'S EMPTY BAR CELL GOES WHERE THE BAR GOES (review of VQ-022): the
+     phone block hides every `.ctl-util-track`, so a non-zero row's count
+     takes the bar's column. The empty cell kept its column, so a 0 row's
+     count sat one column right of the rest: two count columns at 390. */
+  .ol-row > .ol-row-none { display: none; }
 }
 
 /* diff viewer (#310), a file list and one file (owner decision 2026-10-01)
