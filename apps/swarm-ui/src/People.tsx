@@ -214,7 +214,15 @@ function accountWithId(a: { account_id: string; label: string | null; display_na
 function claudeText(c: PersonClaudeAccount): ReactNode {
   if (c.source === 'own') return `own (${c.own})`
   if (c.source === 'lent' && c.lent_accounts !== undefined && c.lent_accounts.length > 0) {
-    return c.lent_accounts.map((a) => `${accountWithId(a)}, lent by ${a.owner_name ?? a.owner_tenant}`).join('; ')
+    // Each id is one token (`ai-eng-4` broke as "ai-" over "eng-4" at 390,
+    // rendered review of PR 2464): the line wraps between words, not in one.
+    return c.lent_accounts.map((a, i) => (
+      <Fragment key={`${a.owner_tenant}/${a.account_id}`}>
+        {i > 0 ? '; ' : ''}
+        <span className="pp-nobr">{a.account_id}</span>
+        {accountWithId(a).slice(a.account_id.length)}, lent by <span className="pp-nobr">{a.owner_name ?? a.owner_tenant}</span>
+      </Fragment>
+    ))
   }
   // The lenders' tenant ids are tokens like the workspace ids beside them:
   // "lent by u-" over "bogdan" read as a lender called "u-" (rendered review).
@@ -1397,8 +1405,13 @@ function ClaudeSummary({ c }: { c: PersonClaudeAccount }) {
       <ul className="pp-loan-list">
         {accounts.map((a) => (
           <li key={`${a.owner_tenant}/${a.account_id}`}>
-            {accountWithId(a)}
-            {lenders.length > 1 ? `, lent by ${lenderOf(a)}` : ''}
+            <span className="pp-nobr">{a.account_id}</span>
+            {accountWithId(a).slice(a.account_id.length)}
+            {lenders.length > 1 && (
+              <>
+                , lent by <span className="pp-nobr">{lenderOf(a)}</span>
+              </>
+            )}
           </li>
         ))}
       </ul>
