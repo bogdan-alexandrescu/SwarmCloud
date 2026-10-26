@@ -5,7 +5,7 @@ import {
 } from './api'
 import { Banner, Button, Card, Dash, EmptyState, Tabs, ToneMark, type TabDef } from './components'
 import { SetupContext } from './ConfigSetup'
-import { UrRefresh, UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
+import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { DEFAULT_ROLES, ROLES, sourceWords } from './roles'
 import { FailedPanel, PageHead } from './Shell'
 import { timeAgo, type AccessMember, type WorkspaceRoleEvent, type WorkspaceRoleOverride, type WorkspaceRoles } from './types'
@@ -213,8 +213,6 @@ export function WorkspacePeopleScreen({ view: routed }: { view?: string | null }
     setViewState(named)
   }
   const admin = usePlatformAdmin()
-  const roles = useUrRead(loadWorkspaceRoles, 'workspace-roles')
-  const inviteId = useId()
   function setView(v: PeopleView) {
     setViewState(v)
     writePeopleView(v)
@@ -222,24 +220,28 @@ export function WorkspacePeopleScreen({ view: routed }: { view?: string | null }
   return (
     <div className="pk-page wp-page">
       <PageHead title="People and roles" />
-      {/* The lead is the Roles tab's: its one button goes to the role form there. */}
-      {view === 'roles' && <PeopleLead state={roles.state} inviteId={inviteId} />}
       {/* `cfg-parts` (config.css): the Config pages' tab strip, as GitHub access draws it. */}
       {(admin === true || view === 'members') && (
         <Tabs tabs={PEOPLE_TABS} current={view} label="People and roles" className="cfg-parts" onSelect={(k) => setView(k === 'members' ? 'members' : 'roles')} />
       )}
-      {view === 'members' ? <Members /> : <RolesCard roles={roles} inviteId={inviteId} />}
+      {view === 'members' ? <Members /> : <RolesCard />}
     </div>
   )
 }
 
-function RolesCard({ roles, inviteId }: { roles: UrRead<WorkspaceRoles>; inviteId: string }) {
+/** The Roles tab: the lead over the roles card (CONFIG-S5-LEADS), both from the one roles read. */
+function RolesCard() {
+  const roles = useUrRead(loadWorkspaceRoles, 'workspace-roles')
+  const inviteId = useId()
   return (
-    <Card title="Roles in this workspace" action={<UrRefresh reads={[roles]} />}>
-      <UrRegion state={roles.state} route={ROUTE} what="This workspace's roles" plural onRetry={roles.reload}>
-        {(d) => <Roles data={d} onChange={roles.reload} inviteId={inviteId} />}
-      </UrRegion>
-    </Card>
+    <>
+      <PeopleLead state={roles.state} inviteId={inviteId} />
+      <Card title="Roles in this workspace" action={<UrRefresh reads={[roles]} />}>
+        <UrRegion state={roles.state} route={ROUTE} what="This workspace's roles" plural onRetry={roles.reload}>
+          {(d) => <Roles data={d} onChange={roles.reload} inviteId={inviteId} />}
+        </UrRegion>
+      </Card>
+    </>
   )
 }
 

@@ -262,3 +262,207 @@
   .acct-card-w2 .acct-floor > .ctl-util-track { display: flex; }
   .acct-split.is-ranked > .acct-pane { border-top: 0; }
 }
+
+/* ---- one account, opened: the side sheet (#2222, mock-up A F4) ----
+   A sheet over the page's right side, not a pane under the table: the table
+   is the page, and a reader who opens a row reads that account beside the
+   ranking it came from. FIXED, SO IT SCROLLS ITSELF: unlike the old pane
+   (capacity-010), the sheet is the height of the window, and its own scroll
+   reaches Remove. It ends above the API-reads line (`--dock-h`, as the agent
+   drawer does). On a phone (560 and under) it is the page instead, P3: the
+   list steps aside (capacity.css `.is-detail`), `‹ Accounts` goes back, and
+   no scrim is drawn. */
+.acct-scrim { display: none; }
+@media (min-width: 561px) {
+  .acct-split.has-sheet > .acct-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 39;
+    background: color-mix(in srgb, #06101e 35%, transparent);
+  }
+  .acct-split.is-ranked > .acct-sheet {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: var(--dock-h, 28px);
+    z-index: 40;
+    width: min(520px, 100vw);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    margin: 0;
+    padding: 0 20px 24px;
+    border-top: 0;
+    border-left: 1px solid var(--line);
+    background: var(--surface);
+    box-shadow: var(--sk-sh);
+  }
+}
+.acct-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+}
+.acct-sheet-crumb { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.acct-sheet-close { margin-left: auto; }
+@media (min-width: 561px) {
+  /* The head sticks, so Close is always one Tab away however far down the sheet is read. */
+  .acct-sheet > .acct-sheet-head {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    background: var(--surface);
+    margin: 0 -20px;
+    padding: 8px 20px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+}
+@media (max-width: 560px) {
+  /* `‹ Accounts` UNDER THE HEADER (phone review, dark-phone-01): opening an
+     account scrolls the page to the sheet, and the sticky phone header
+     (`--sk-pbar-h`) covered its first line, the way back. */
+  .acct-split.is-ranked > .acct-sheet { scroll-margin-top: calc(var(--sk-pbar-h, 44px) + 8px); }
+  /* P3 DRAWS BOTH WINDOWS WITH THEIR FLOORS, as the phone list's cards do
+     (`.acct-card-w2` above): styles.css hides every `.ctl-util-track` at 560
+     and under, and the sheet's two are its picture, as
+     `.cap-pools.is-stacked` keeps its own. */
+  .acct-ss-wins .acct-floor { display: block; }
+  .acct-ss-wins .acct-floor > .ctl-util-track { display: flex; }
+  .acct-sheet-head { min-height: 0; }
+  .acct-sheet-crumb,
+  .acct-sheet-close { display: none; }
+  /* THE ACCOUNT IS THE SCREEN, NOT A CARD ON IT (P3, dark-phone-01): the
+     split's frame -- border, rounded inset and surface -- belongs to the list;
+     the opened account sits straight under the app bar, as P3 draws it. */
+  /* `overflow: visible`: the clip was for the card's rounded corners, and it cut
+     the focus ring of `‹ Accounts`, the screen's first control. */
+  .acct-split.is-ranked.is-detail { border: 0; border-radius: 0; background: none; overflow: visible; }
+  .acct-split.is-ranked.is-detail > .acct-sheet { padding: 0; }
+}
+.acct-sheet .acct-dhead-name > h3 { font-size: var(--t-lead); line-height: var(--lh-lead); }
+
+/* The verdict, as the row says it. */
+.acct-sv { display: flex; flex-direction: column; gap: 6px; }
+.acct-sv > p { margin: 0; max-width: none; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.acct-sv-chip > .acct-chip { white-space: normal; }
+.acct-sv-k { color: var(--text-dim); }
+.acct-sv .acct-why-part { display: inline; }
+.acct-sv .acct-why-part + .acct-why-part::before { content: ' · '; }
+
+/* One section of the sheet: a hairline above, a heading, its lines. */
+.acct-ss { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.acct-ss > h4 { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+.acct-ss > p { margin: 0; max-width: none; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.acct-ss-note { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.acct-ss > p.acct-ss-note { font-size: var(--t-micro); line-height: var(--lh-micro); }
+.acct-ss-k { margin: 4px 0 0; font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim); }
+/* ONE ROW PER WINDOW (mock-up A F4): each track runs the sheet's width, so the
+   5-hour and 7-day floors line up one above the other and read as one scale. */
+.acct-ss-wins { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.acct-ss-wins small { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.acct-ss-wins .acct-floor { max-width: none; }
+.acct-ss-dup { border: 1px solid var(--warn-ink); border-radius: 10px; padding: 10px 12px; background: color-mix(in srgb, var(--warn) 10%, var(--surface)); }
+
+.acct-kv { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.acct-kv > dt { color: var(--text-dim); }
+.acct-kv > dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  .acct-kv { grid-template-columns: 96px minmax(0, 1fr); }
+}
+
+.acct-cap { display: flex; flex-direction: column; gap: 6px; }
+.acct-cap > p { margin: 0; }
+.acct-cap-edit { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.acct-cap-edit label { display: inline-flex; align-items: center; gap: 8px; font-size: var(--t-meta); }
+.acct-cap-edit input { width: 72px; }
+.acct-cap-edit > small { flex: 1 1 100%; font-size: var(--t-micro); line-height: var(--lh-micro); }
+.acct-cap-err { flex: 1 1 100%; margin: 0; }
+.acct-lending-edit { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.acct-lending-edit > .acct-action { align-self: stretch; }
+/* The sheet's text controls sit in a line of text, at its height. */
+.acct-ss .c-link { min-height: 0; display: inline; }
+/* The page's action panels, inside the sheet: a section each, as mock-up A
+   draws them, so Pause, Replace the credential and Remove read as parts of
+   one account and not as a second page under it. */
+.acct-sheet .acct-detail > .acct-action { border-top: 1px solid var(--line); padding-top: 12px; }
+/* The section's grid gap spaces its note; `.muted.small`'s own 10px on top of
+   it stood "Replace the credential" 24px over its first line (light-desktop-02). */
+.acct-sheet .acct-action > p.muted.small { margin-top: 0; }
+.acct-sheet .acct-detail > .acct-action.danger { border-top-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
+.acct-sheet .acct-detail > .acct-facts { font-size: var(--t-micro); line-height: var(--lh-micro); }
+
+/* ---------------------------------------------------------------------------
+   HEALTH, IN THE SHEET (#2302, ACCOUNT-HEALTH-SHEET; mock-up A's F2 and F4, D's
+   P2 at 390). The three families carry a shape as well as a colour (circle,
+   diamond, square), so the series reads in greyscale; the colours are the
+   series palette's first, fourth and second, fixed to the family and never to
+   rank. They are strokes and fills only, never text (styles.css §series).
+   --------------------------------------------------------------------------- */
+.acct-hs-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.acct-hs-head > h4 { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+.acct-hs-head > .acct-hs-refresh { margin-left: auto; }
+.acct-hs-st { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border: 1px solid transparent; border-radius: 99px; font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; white-space: nowrap; }
+.acct-hs-st.is-healthy { color: var(--ok-ink); background: color-mix(in srgb, var(--ok) 18%, transparent); }
+.acct-hs-st.is-limited { color: var(--warn-ink); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.acct-hs-st.is-erroring { color: var(--bad-ink); background: color-mix(in srgb, var(--bad) 18%, transparent); }
+.acct-hs-st.is-reauth_needed { color: var(--bad-ink); border-color: var(--bad-ink); }
+.acct-hs-st.is-unknown { color: var(--text-dim); border: 1px dashed var(--line); }
+.acct-hs-fm { width: 10px; height: 10px; flex: none; display: inline-block; vertical-align: -1px; margin-right: 6px; }
+.acct-hs-fm.is-err { fill: var(--series-1); }
+.acct-hs-fm.is-lim { fill: var(--series-4); }
+.acct-hs-fm.is-cred { fill: var(--series-2); }
+.acct-hs-callout { border: 1px solid var(--bad-ink); border-radius: 10px; padding: 10px 12px; background: color-mix(in srgb, var(--bad) 8%, var(--surface)); font-size: var(--t-meta); line-height: var(--lh-meta); }
+.acct-hs-callout > p { margin: 4px 0 0; }
+.acct-hs-zero { color: var(--ok-ink); font-weight: 600; }
+.acct-hs-sub { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-top: 6px; }
+.acct-hs-sub > h5 { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim); }
+
+.acct-hs-counts { width: 100%; border-collapse: collapse; font-size: var(--t-meta); line-height: var(--lh-meta); font-variant-numeric: tabular-nums; }
+.acct-hs-counts th, .acct-hs-counts td { padding: 4px 8px; border-bottom: 1px solid var(--line); text-align: right; font-weight: 400; }
+.acct-hs-counts thead th { font-size: var(--t-micro); font-weight: 600; color: var(--text-dim); }
+.acct-hs-counts th:first-child { text-align: left; }
+.acct-hs-counts tr.is-fam > * { font-weight: 600; background: var(--surface-2); font-size: var(--t-micro); }
+.acct-hs-counts tr.is-tot > * { font-weight: 650; border-bottom: 0; }
+.acct-hs-counts .is-z { color: var(--text-dim); }
+.acct-hs-counts .is-nz { font-weight: 600; }
+
+.acct-hs-series { margin: 0; min-width: 0; }
+.acct-hs-chart { display: block; width: 100%; height: auto; }
+.acct-hs-chart text { fill: var(--text-dim); font-size: var(--t-micro); }
+.acct-hs-chart .acct-hs-grid { stroke: var(--line); stroke-width: 1; }
+.acct-hs-chart .acct-hs-now { stroke: var(--text-dim); stroke-width: 1; stroke-dasharray: 3 3; }
+.acct-hs-chart .acct-hs-band > rect { fill: color-mix(in srgb, var(--warn) 14%, transparent); }
+.acct-hs-chart .acct-hs-band > line { stroke: var(--warn-ink); stroke-width: 1; }
+.acct-hs-chart .acct-hs-band-mark { fill: var(--warn-ink); }
+.acct-hs-chart .acct-hs-bar > .is-err { fill: var(--series-1); }
+.acct-hs-chart .acct-hs-bar > .is-lim { fill: var(--series-4); }
+.acct-hs-chart .acct-hs-bar > .is-cred { fill: var(--series-2); }
+.acct-hs-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.acct-hs-legend > span { display: inline-flex; align-items: center; }
+.acct-hs-bandkey { display: inline-block; width: 16px; height: 10px; margin-right: 6px; border: 1px solid var(--warn-ink); border-top-width: 3px; border-radius: 2px; background: color-mix(in srgb, var(--warn) 14%, transparent); }
+
+.acct-hs-evs { list-style: none; margin: 0; padding: 0; }
+.acct-hs-ev { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.acct-hs-ev:last-child { border-bottom: 0; }
+.acct-hs-ev-l1 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.acct-hs-ev-t { font-variant-numeric: tabular-nums; font-weight: 600; }
+.acct-hs-kd { display: inline-flex; align-items: center; }
+.acct-hs-msg { padding: 3px 7px; border-radius: 6px; background: var(--surface-2); font-family: var(--mono); font-size: var(--t-micro); line-height: var(--lh-micro); overflow-wrap: anywhere; }
+.acct-hs-ev-l3 { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+
+/* D's P2: the three counts stacked, then the series, then the incidents. */
+.acct-hs-stats { display: flex; flex-direction: column; gap: 8px; }
+.acct-hs-stat { display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 0 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.acct-hs-stat-k { grid-column: 1 / -1; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); font-weight: 600; }
+.acct-hs-stat-v { font-size: var(--t-figure); line-height: var(--lh-figure); font-weight: 650; font-variant-numeric: tabular-nums; }
+.acct-hs-stat > small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.acct-hs-inc { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--line); border-left-width: 3px; border-radius: 10px; }
+.acct-hs-inc.is-err { border-left-color: var(--series-1); }
+.acct-hs-inc.is-lim { border-left-color: var(--series-4); }
+.acct-hs-inc.is-cred { border-left-color: var(--series-2); }
+.acct-hs-inc-h { display: flex; align-items: center; gap: 0 6px; }
+.acct-hs-inc-h > h5 { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+.acct-hs-inc-chip { margin-left: auto; padding: 0 8px; border-radius: 99px; font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim); border: 1px solid var(--line); }
+.acct-hs-inc-chip.is-open { color: var(--bad-ink); border-color: transparent; background: color-mix(in srgb, var(--bad) 18%, transparent); }
+.acct-hs-inc > .c-link { align-self: flex-start; }

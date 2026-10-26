@@ -273,7 +273,9 @@ describe('Workspaces you admin, each with its own setup progress (S10a)', () => 
     expect(ops!.querySelector('.cfg-progress-h b')?.textContent).toBe('Setup 2 of 4')
     expect(ops!.querySelector('.cfg-progress-next a')?.getAttribute('href')).toBe('/config/repositories')
     // MUTATION: drop the comparison -> nothing says which is behind and this fails.
-    expect(document.querySelector('.wya-behind')?.textContent).toBe('ops@example.com is behind: next, repositories chosen (not yet).')
+    const lead = screen.getByRole('region', { name: 'Your workspaces' })
+    expect(lead.querySelector('b')?.textContent).toBe('ops@example.com is behind')
+    expect(lead.querySelector('.ws-lead-s')?.textContent).toBe('Next: repositories chosen (not yet).')
     // Reading one workspace's setup does not switch the one in hand.
     const { chosenTenant } = await import('../fetch')
     expect(chosenTenant()).toBeNull()
@@ -288,6 +290,6 @@ describe('Workspaces you admin, each with its own setup progress (S10a)', () => 
     expect(ops.querySelector('.cfg-progress')).toBeNull()
     expect(ops.querySelector('.wya-reading')?.textContent).toMatch(/^Setup not read/)
     // One read is no comparison.
-    expect(document.querySelector('.wya-behind')).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Your workspaces' })).toBeNull()
   })
 })

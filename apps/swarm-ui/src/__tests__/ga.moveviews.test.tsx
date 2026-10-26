@@ -19,6 +19,7 @@
  * Fixtures only; no network. Nothing here is credential-shaped.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { useEffect, useState } from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 
@@ -56,8 +57,8 @@ const MEMBERS: Json = {
 }
 
 const SECRETS: Json = { tenant_id: 'u-ana', kind: 'user', can_manage: true, secrets: [] }
-/** Config › Secrets' own read (Secrets.tsx, SSC-UI): the scope's rows, and whose workspace it is. */
-const OVERVIEW: Json = { tenant_id: 'u-ana', scope: 'workspace', personal_tenant_id: 'u-ana', can_manage: true, rows: [] }
+// Config › Secrets' one read since SSC-UI (Secrets.tsx): its tenant is the one the logins tab is in.
+const OVERVIEW: Json = { tenant_id: 'u-ana', scope: 'workspace', repo_id: null, repository: null, personal_tenant_id: 'u-ana', can_manage: true, rows: [] }
 const LOGIN = { name: 'github-qa', site: 'https://github.com', saved_at: '2026-10-20T10:00:00Z', expires_at: '2099-01-01T00:00:00Z', saved_by: 'ana.b@example.com' }
 
 afterEach(() => {
@@ -244,20 +245,32 @@ describe('Members is a tab of Config › People and roles', () => {
 describe('Browser logins is a tab of Config › Secrets', () => {
   function api() {
     return serve((m, url) => {
-      if (m === 'GET' && url.includes('/v1/workspace/secrets/consumers')) return { status: 200, body: { kinds: [], providers: [], consumers: [] } }
-      if (m === 'GET' && url.includes('/v1/workspace/secrets')) return { status: 200, body: SECRETS }
       if (m === 'GET' && url.startsWith('/v1/secrets/overview')) return { status: 200, body: OVERVIEW }
       if (m === 'GET' && url.startsWith('/v1/repositories')) return { status: 200, body: { repositories: [] } }
+      if (m === 'GET' && url.includes('/v1/workspace/secrets/consumers')) return { status: 200, body: { kinds: [], providers: [], consumers: [] } }
       if (m === 'GET' && url === '/v1/browser-logins') return { status: 200, body: { tenant_id: 'u-ana', logins: [LOGIN] } }
       if (m === 'DELETE' && url === '/v1/browser-logins/github-qa') return { status: 200, body: { name: 'github-qa', revoked: true } }
       return null
     })
   }
+  /**
+   * The page as App routes it: its view is the bar's query, and a tab moves
+   * the bar (Secrets.tsx `goView`), which App reads back on popstate.
+   */
   async function mount() {
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
     const { SecretsScreen } = await import('../Secrets')
-    return render(<SecretsScreen />)
+    function Routed() {
+      const [view, setView] = useState(window.location.search.slice(1))
+      useEffect(() => {
+        const on = () => setView(window.location.search.slice(1))
+        window.addEventListener('popstate', on)
+        return () => window.removeEventListener('popstate', on)
+      }, [])
+      return <SecretsScreen view={view} />
+    }
+    return render(<Routed />)
   }
 
   it('the tab draws the person\'s saved logins, and its address is ?view=logins', async () => {
@@ -268,7 +281,7 @@ describe('Browser logins is a tab of Config › Secrets', () => {
     expect(new URLSearchParams(window.location.search).get('view')).toBe('logins')
     const list = await screen.findByRole('list', { name: /browser logins/i })
     expect(visible(list)).toContain('github-qa')
-    fireEvent.click(screen.getByRole('tab', { name: 'Workspace secrets' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Secrets' }))
     expect(window.location.search).toBe('')
   })
 
@@ -288,10 +301,9 @@ describe('Browser logins is a tab of Config › Secrets', () => {
 
   it('in a group workspace the tab says only where logins live, and the head offers no Refresh of the secrets (seen on the render)', async () => {
     serve((m, url) => {
-      if (m === 'GET' && url.includes('/v1/workspace/secrets/consumers')) return { status: 200, body: { kinds: [], providers: [], consumers: [] } }
-      if (m === 'GET' && url.includes('/v1/workspace/secrets')) return { status: 200, body: { ...SECRETS, tenant_id: 'eng', kind: 'group' } }
       if (m === 'GET' && url.startsWith('/v1/secrets/overview')) return { status: 200, body: { ...OVERVIEW, tenant_id: 'eng' } }
       if (m === 'GET' && url.startsWith('/v1/repositories')) return { status: 200, body: { repositories: [] } }
+      if (m === 'GET' && url.includes('/v1/workspace/secrets/consumers')) return { status: 200, body: { kinds: [], providers: [], consumers: [] } }
       return null
     })
     window.history.replaceState(null, '', '/config/secrets?view=logins')
@@ -299,21 +311,20 @@ describe('Browser logins is a tab of Config › Secrets', () => {
     await screen.findByText('Not kept in a group tenant')
     // MUTATION: draw the "browser sessions you saved" lede whatever the tenant -> fails.
     expect(visible(document.body)).not.toMatch(/The browser sessions you saved/)
-    // MUTATION: keep the head's UrRefresh on the Browser logins tab -> fails.
+    // MUTATION: keep the head's UrRefresh or Add a secret on the Browser logins tab -> fails.
     expect(document.querySelector('.c-phead .c-refresh')).toBeNull()
-    fireEvent.click(screen.getByRole('tab', { name: 'Workspace secrets' }))
-    expect(document.querySelector('.c-phead .c-refresh')).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'Add a secret' })).toBeNull()
+    fireEvent.click(screen.getByRole('tab', { name: 'Secrets' }))
+    await waitFor(() => expect(document.querySelector('.c-phead .c-refresh')).not.toBeNull())
   })
 
   it('a one-time add link opens the secrets, whatever the view', async () => {
     api()
     window.history.replaceState(null, '', '/config/secrets?action=add&view=logins')
-    vi.stubEnv('VITE_LIVE', '1')
-    vi.resetModules()
-    const { SecretsScreen } = await import('../Secrets')
-    render(<SecretsScreen view="action=add&view=logins" token={'t-' + 'x'.repeat(8)} />)
-    expect(screen.getByRole('tab', { name: 'Workspace secrets' }).getAttribute('aria-selected')).toBe('true')
-    expect(screen.getByText('Opened from a one-time link')).toBeTruthy()
+    await mount()
+    // MUTATION: keep `view=logins` beside a link's action in paths.ts `secretsLinkView` -> fails.
+    expect(screen.getByRole('tab', { name: 'Secrets' }).getAttribute('aria-selected')).toBe('true')
+    expect((await screen.findAllByText(/one-time form/i)).length).toBeGreaterThan(0)
   })
 })
 
@@ -354,10 +365,9 @@ describe('an old bookmark lands on the new page with its tab drawn (GA-MOVE-VIEW
       if (url.includes('/v1/tenants/me')) return { status: 200, body: ME(true) }
       if (url.includes('/v1/workspace/roles')) return { status: 200, body: ROLES }
       if (url.includes('/v1/access/members')) return { status: 200, body: MEMBERS }
+      if (m === 'GET' && url.startsWith('/v1/secrets/overview')) return { status: 200, body: OVERVIEW }
       if (m === 'GET' && url.includes('/v1/workspace/secrets/consumers')) return { status: 200, body: { kinds: [], providers: [], consumers: [] } }
       if (m === 'GET' && url.includes('/v1/workspace/secrets')) return { status: 200, body: SECRETS }
-      if (m === 'GET' && url.startsWith('/v1/secrets/overview')) return { status: 200, body: OVERVIEW }
-      if (m === 'GET' && url.startsWith('/v1/repositories')) return { status: 200, body: { repositories: [] } }
       if (m === 'GET' && url === '/v1/browser-logins') return { status: 200, body: { tenant_id: 'u-ana', logins: [LOGIN] } }
       return null
     })

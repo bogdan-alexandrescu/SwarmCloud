@@ -145,13 +145,21 @@ export function QaTargetsScreen({
   go,
   link,
   tabs,
+  repository = null,
 }: {
   go: (to: string) => void
   link?: QaLink | null
   /** Config › Repositories' Repositories | QA targets strip, drawn under the head as the list draws it (REPOS-PAGE). */
   tabs?: ReactNode
+  /**
+   * `owner/repo` from the address (`repository=`): only the targets filing in
+   * it are drawn, and the page says so (REPOS-FOLLOWUPS: a card's "QA targets:
+   * N" opens here). Nothing is read differently; the one list is narrowed.
+   */
+  repository?: string | null
 }) {
   const list = useUrRead(loadQaTargets, 'qa-targets')
+  const only = repository === null || repository.trim() === '' ? null : repository.trim()
   // ONLY A WORKSPACE ADMIN REGISTERS, CHANGES OR SETS A CREDENTIAL (§1); a
   // member runs. A viewer does neither. The server decides.
   const adminGate = useRoleGate('admin', 'register, change or set the credential of a QA target')
@@ -214,6 +222,14 @@ export function QaTargetsScreen({
           {adminGate}
         </p>
       )}
+      {only !== null && (
+        <p className="ur-small" data-qa-filter="">
+          Showing the QA targets that file in <b>{only}</b>.{' '}
+          <UrLink to={EVERY_TARGET} go={go}>
+            Show every QA target
+          </UrLink>
+        </p>
+      )}
       <QaLead targets={targets} admin={adminGate === null} onCredential={(t, leg) => void openCredential(t, leg)} />
       {said !== null && (
         <Banner tone={said.tone} title={said.title}>
@@ -269,7 +285,17 @@ export function QaTargetsScreen({
           </EmptyState>
         }
       >
-        {(rows) => (
+        {(all) => {
+          const rows = only === null ? all : all.filter((t) => repoSlug(t.repository)?.toLowerCase() === only.toLowerCase())
+          if (rows.length === 0) {
+            return (
+              <EmptyState kind="empty" heading={`No QA target files in ${only ?? 'this repository'}`}>
+                {all.length === 1 ? 'The workspace’s one QA target files' : `The workspace’s ${all.length} QA targets file`} in other
+                repositories.
+              </EmptyState>
+            )
+          }
+          return (
           <div className="ur-cards">
             {rows.map((row) => {
               const fresh = approved[row.id]
@@ -294,11 +320,15 @@ export function QaTargetsScreen({
               )
             })}
           </div>
-        )}
+          )
+        }}
       </UrRegion>
     </div>
   )
 }
+
+/** The unfiltered list, under Config › Repositories. */
+const EVERY_TARGET = 'config/repositories?page=qa-targets'
 
 function toolName(tool: FlowBrowserTool): string {
   return tool === 'jev' ? 'Jev' : 'Playwright'

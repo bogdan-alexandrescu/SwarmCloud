@@ -86,7 +86,8 @@ const MINUTES = 60_000
 /** Answer each read by its URL, so the test says which route got what. */
 function serve(byPath: { holders?: AccountHolders; history?: HoldHistory }) {
   reads.read.mockImplementation(async (target: { url: string }) => {
-    if (target.url.includes('/holders')) return ok(byPath.holders)
+    // The sheet reads who holds it as it opens (#2222): nobody, unless a case says.
+    if (target.url.includes('/holders')) return ok(byPath.holders ?? { account_id: 'eng:laptop', viewer: 'owner', total: 0, holders: [], others: 0 })
     if (target.url.includes('/history')) return ok(byPath.history)
     throw new Error(`unexpected read ${target.url}`)
   })
@@ -95,8 +96,8 @@ function serve(byPath: { holders?: AccountHolders; history?: HoldHistory }) {
 async function openRow(a: Account, tenant = 'eng') {
   api.loadAccountsBoard.mockResolvedValue(ok(board(a, tenant)))
   render(<AccountsScreen />)
-  // The list item, not any button naming the account: the pane opens the
-  // first account on its own now (#503), and its controls name it too.
+  // The row's name, not any button naming the account: nothing is open
+  // until it is clicked (#2222), and the sheet's controls name it too.
   await screen.findByText('Subscription accounts', undefined, WAIT)
   const open = document.querySelector<HTMLButtonElement>('button.acct-open')!
   if (open.getAttribute('aria-current') !== 'true') fireEvent.click(open)
@@ -124,7 +125,7 @@ describe('D24: Accounts › History is the picked table', () => {
       },
     })
     await openRow(account())
-    fireEvent.click(await screen.findByRole('tab', { name: 'History' }, WAIT))
+    fireEvent.click(await screen.findByRole('button', { name: 'History' }, WAIT))
     await screen.findByRole('link', { name: 'task_mine' }, WAIT)
     expect(document.querySelector('ul.acct-spans'), 'the bulleted list is back').toBeNull()
     const table = document.querySelector<HTMLTableElement>('table.acct-hist')!

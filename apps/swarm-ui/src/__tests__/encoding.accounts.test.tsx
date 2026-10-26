@@ -195,22 +195,18 @@ describe('an account state is a mark and a word', () => {
 // Visual QA 2026-09-25, Accounts (#85). Pushed before the fixes they demand.
 // ---------------------------------------------------------------------------
 
-describe('the state buttons speak the case the state chip does (CP-23)', () => {
-  it('labels every "move to" button in lowercase, beside a lowercase chip', async () => {
+describe('the state buttons are verbs, never the enum (CP-23; #2222 mock-up A F4)', () => {
+  it('labels them Pause, Drain and Resume, and none shouts', async () => {
     api.loadAccountsBoard.mockResolvedValue(
       ok(board([account({ account_id: 'eng:held', label: 'held', state: 'PAUSED' })])),
     )
     render(<AccountsScreen />)
     expect(await screen.findByText('eng:held', undefined, WAIT)).toBeTruthy()
-    // Open the row: the controls live in its detail.
-    const open = document.querySelector<HTMLButtonElement>('.acct-open')!
-    if (open.getAttribute('aria-expanded') !== 'true') fireEvent.click(open)
-    const moves = await screen.findAllByRole('button', { name: /^move to /i }, WAIT)
-    expect(moves.length, 'no state buttons were drawn, so this checked nothing').toBeGreaterThan(0)
-    for (const b of moves) {
-      const label = b.textContent ?? ''
-      expect(label, `"${label}" shouts`).toBe(label.toLowerCase())
-    }
+    // Open the row: the controls live in its sheet.
+    fireEvent.click(document.querySelector<HTMLButtonElement>('.acct-open')!)
+    const moves = [...document.querySelectorAll<HTMLButtonElement>('.acct-buttons button')]
+    expect(moves.map((b) => b.textContent)).toEqual(['Resume', 'Pause', 'Drain'])
+    for (const b of moves) expect(b.textContent).not.toMatch(/[A-Z]{2}/)
   })
 })
 
