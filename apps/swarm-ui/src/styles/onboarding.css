@@ -180,6 +180,46 @@
 .ac-foot { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: flex-end; padding-top: 10px; border-top: 1px solid var(--line); font-size: var(--t-meta); line-height: var(--lh-meta); }
 .ac-foot > .ac-foot-n { margin-right: auto; min-width: 0; overflow-wrap: anywhere; }
 
+/* ---- GITHUB-ACCESS-S2B (part of #2391; config-e.html S2b) ----------------- */
+/* THE LEAD (VQ-038 minor): the kicker, the step's action as its title and one
+   sentence on the left, the one primary button at the right, as S2b's
+   `.lead` draws it. The row wraps the button under the words when both do
+   not fit; the tint stays config.css's `.ac-lead > .c-card`. */
+.c-card.ac-lead-c { flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--ctl-s3) 16px; }
+.ac-lead-t { flex: 1; min-width: 240px; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.ac-lead-k { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--sk-ac, var(--s-live)); }
+.ac-lead-t > h2 { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; }
+.ac-lead-t > .ur-small { color: var(--text-dim); }
+.ac-lead-a { flex: none; display: flex; flex-wrap: wrap; gap: var(--ctl-s2); align-items: center; }
+/* S2B'S TWO COLUMNS (VQ-038): the GitHub card and Where the App is installed
+   on the left, the rules checklist on the right, at S2b's 2:1. One column
+   below 900px, where the right column would be under 260px of words. */
+.ac-body { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: var(--ctl-s3); align-items: start; }
+.ac-main { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
+/* THE QUOTA LINES sit in the GitHub card, each its mark, a gap, then its words
+   (the mark was jammed against the text as a bullet between cards). */
+.ac-quota { list-style: none; padding: 0; display: flex; flex-direction: column; gap: var(--ctl-s1); color: var(--text-dim); }
+.ac-quota > li { display: flex; gap: 6px; align-items: baseline; }
+.ac-quota > li > [data-mark] { flex: none; }
+.ac-quota > li > span:not([data-mark]) { min-width: 0; overflow-wrap: anywhere; }
+/* THE RULES CHECKLIST: a check, the headline and one short line per rule,
+   hairlines between, and how each is held one fold away. `display: block`,
+   not the base rule's flex column at `gap: 0`: the rows are one list divided
+   by hairlines, and a flex parent at a 0px gutter is what the spacing sweep
+   reads as stacked surfaces touching (the `.rows` precedent in styles.css). */
+.ac-rules.is-check { display: block; list-style: none; padding-left: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
+.ac-rules.is-check > li { display: flex; gap: 10px; align-items: flex-start; padding: var(--ctl-s2) 0; border-bottom: 1px solid var(--line); }
+.ac-rules.is-check > li:last-child { border-bottom: 0; }
+.ac-rules.is-check > li > [data-mark] { flex: none; margin-top: 2px; }
+.ac-rule-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.ac-rule-t > small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.ac-rule-how > summary { width: max-content; cursor: pointer; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--sk-ac, var(--s-live)); }
+.ac-rule-how > summary:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: 4px; }
+.ac-rule-how > p { margin: 4px 0 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+@media (max-width: 899px) {
+  .ac-body { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* ---- narrower screens, and the 390px phone frame ---------------------------- */
 @media (max-width: 1079px) {
   .ac-grant { grid-template-columns: minmax(0, 1fr) auto; }
@@ -215,6 +255,10 @@
   .ac-installs-t td.ac-installs-a { text-align: left; white-space: normal; padding-top: 6px; }
   .ac-installs-t td.ac-installs-a .c-btn, .ac-installs-t td.ac-installs-a a { min-height: 44px; }
   .ac-foot .c-btn { min-height: 44px; }
+  /* S2b's lead on a phone: the words take the row, the button the full width under them. */
+  .ac-lead-t { min-width: 0; flex-basis: 100%; }
+  .ac-lead-a { width: 100%; }
+  .ac-lead-a > .c-btn { flex: 1; justify-content: center; }
 }
 
 /* #847 W8: the workspace and Claude-account steps' bodies, and Admin › People. */

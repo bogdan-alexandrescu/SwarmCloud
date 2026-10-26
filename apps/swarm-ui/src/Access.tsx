@@ -4,7 +4,7 @@ import {
   loadAccessRepositories, putAccessGrant, requestAccessInstall, revokeAccessGrant, typedRepoId,
 } from './api'
 import { Banner, Button, ButtonLink, Card, Chip, Dash, EmptyState, Tabs, ToneMark, type TabDef } from './components'
-import { useSetupSteps } from './ConfigSetup'
+import { setupCount, setupNext, useSetupSteps } from './ConfigSetup'
 import type { ApiError, Result } from './fetch'
 import { ConnectButton, Refusal } from './GitHubConnect'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
@@ -285,11 +285,12 @@ export function AccessRefusal({ error, title, onRetry }: { error: ApiError; titl
 // What SwarmCloud may do as you: the owner's decisions, stated (D6, D8, D9)
 // ---------------------------------------------------------------------------
 
-/** The owner's three rules: each one's headline, and the sentences under it. */
-const POLICY_RULES: ReadonlyArray<{ rule: string; head: string; body: ReactNode }> = [
+/** The owner's three rules: each one's headline, S2b's short line, and the sentences that say how it is held. */
+const POLICY_RULES: ReadonlyArray<{ rule: string; head: string; line: string; body: ReactNode }> = [
   {
     rule: 'D9',
     head: 'Read means read, and SwarmCloud enforces it.',
+    line: 'A read grant never pushes, whatever GitHub would allow.',
     body: (
       <>
         A repository granted Read is cloned and never pushed: submission refuses an agent that would push to it, and the
@@ -301,6 +302,7 @@ const POLICY_RULES: ReadonlyArray<{ rule: string; head: string; body: ReactNode 
   {
     rule: 'D8',
     head: 'No workflow changes.',
+    line: 'SwarmCloud never asks for the workflows permission.',
     body: (
       <>
         The SwarmCloud App asks GitHub for contents, pull requests, issues and checks (read). It does not ask for
@@ -311,6 +313,7 @@ const POLICY_RULES: ReadonlyArray<{ rule: string; head: string; body: ReactNode 
   {
     rule: 'D6',
     head: 'Verifying only reads.',
+    line: 'Push test is opt-in, per repository.',
     body: (
       <>
         Clone reads the upload-pack advertisement, Push the receive-pack advertisement and your push permission, Pull
@@ -325,7 +328,13 @@ const POLICY_RULES: ReadonlyArray<{ rule: string; head: string; body: ReactNode 
 /**
  * ON A PHONE THE RULES OPEN FOLDED (visual QA V122): each is its headline, a
  * summary that opens its sentences, so the card is three lines rather than
- * the first screen of every visit. Wider screens draw the whole list.
+ * the first screen of every visit.
+ *
+ * WIDER, THE RULES ARE S2B'S CHECKLIST (VQ-038, GITHUB-ACCESS-S2B): the
+ * right-hand column beside the GitHub card, each rule a check, its headline
+ * and one short line. Three bulleted paragraphs at full width were the page's
+ * longest block; how each rule is held stays one fold away ("How"), so no
+ * sentence leaves the page.
  */
 export function AccessPolicy() {
   const phone = usePhoneTables()
@@ -345,10 +354,18 @@ export function AccessPolicy() {
           ))}
         </ul>
       ) : (
-        <ul className="ac-rules">
+        <ul className="ac-rules is-check">
           {POLICY_RULES.map((r) => (
             <li key={r.rule} data-rule={r.rule}>
-              <b>{r.head}</b> {r.body}
+              <ToneMark tone="ok" />
+              <span className="ac-rule-t">
+                <b>{r.head}</b>
+                <small>{r.line}</small>
+                <details className="ac-rule-how">
+                  <summary>How</summary>
+                  <p>{r.body}</p>
+                </details>
+              </span>
             </li>
           ))}
         </ul>
@@ -361,7 +378,7 @@ export function AccessPolicy() {
 // The connection
 // ---------------------------------------------------------------------------
 
-function Connection({ connection, onChange }: { connection: GitHubConnection | null; onChange: () => void }) {
+function Connection({ connection, quota, onChange }: { connection: GitHubConnection | null; quota: GitHubQuota[]; onChange: () => void }) {
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<ApiError | null>(null)
@@ -452,6 +469,7 @@ function Connection({ connection, onChange }: { connection: GitHubConnection | n
           )}
         </>
       )}
+      <GitHubQuotaLines quota={quota} />
       {refused !== null && <Refusal error={refused} title="GitHub was not disconnected" />}
     </Card>
   )
@@ -1361,14 +1379,16 @@ function resetsAt(iso: string): string {
 function GitHubQuotaLines({ quota }: { quota: GitHubQuota[] }) {
   if (quota.length === 0) return null
   return (
-    <ul className="ur-small" aria-label="GitHub quota">
+    <ul className="ur-small ac-quota" aria-label="GitHub quota">
       {quota.map((q) => (
         <li key={`${q.kind}:${q.name}:${q.resource}`} data-low={q.low ? 'true' : undefined}>
           <ToneMark tone={q.low ? 'warn' : 'ok'} />
-          GitHub quota for {quotaFor(q)}: <b>{q.remaining.toLocaleString('en-US')}</b> /{' '}
-          {q.limit.toLocaleString('en-US')}
-          {q.reset_at !== null ? ` · resets ${resetsAt(q.reset_at)}` : ''}
-          {q.low ? ' · background reads wait until then' : ''}
+          <span>
+            GitHub quota for {quotaFor(q)}: <b>{q.remaining.toLocaleString('en-US')}</b> /{' '}
+            {q.limit.toLocaleString('en-US')}
+            {q.reset_at !== null ? ` · resets ${resetsAt(q.reset_at)}` : ''}
+            {q.low ? ' · background reads wait until then' : ''}
+          </span>
         </li>
       ))}
     </ul>
@@ -1380,41 +1400,66 @@ function GitHubQuotaLines({ quota }: { quota: GitHubQuota[] }) {
  * style (the tint in styles/config.css; its buttons' borders, which clear 3:1
  * on the tint, in styles.css after the button floor). CONFIG-LEAD-TINT;
  * measured in contrast.config-lead.test.tsx.
+ *
+ * S2B'S SHAPE (VQ-038 minor, GITHUB-ACCESS-S2B): the kicker over the title
+ * over the sentence on the left, the one button at the right, which wraps
+ * under the words when the row is too narrow for both.
  */
-function Lead({ kicker, title, actions, children }: { kicker?: string; title: string; actions: ReactNode; children: ReactNode }) {
+function Lead({ kicker, title, actions, children }: { kicker?: string; title: string; actions?: ReactNode; children: ReactNode }) {
   return (
     <section className="ac-lead" aria-label="Next step">
-      <Card title={title}>
-        <p className="ur-small">
-          {kicker !== undefined && <b className="ur-mu">{kicker}</b>} {children}
-        </p>
-        <div className="ur-gh-acts">{actions}</div>
+      <Card className="ac-lead-c">
+        <div className="ac-lead-t">
+          {kicker !== undefined && <b className="ac-lead-k">{kicker}</b>}
+          <h2>{title}</h2>
+          <p className="ur-small">{children}</p>
+        </div>
+        {actions !== undefined && <div className="ac-lead-a">{actions}</div>}
       </Card>
     </section>
   )
 }
 
 /**
+ * A later step's action, as the lead titles it and its one button names its
+ * page: the words the strip's next step reads as from GitHub access.
+ */
+const LATER: Readonly<Record<string, { title: string; button: string }>> = {
+  secrets: { title: 'Set the secrets your repositories need', button: 'Next: Secrets' },
+  people: { title: 'Invite the people who work here', button: 'Next: People and roles' },
+}
+
+/**
  * THE ONE NEXT ACTION THAT LEADS THE PAGE (proposal E: "one next-action
- * sentence and button leading each page"). It is read off this page's own
- * `GET /v1/access` -- the connection's state and how many repositories are
- * chosen -- so it never says a step is left that the read says is done. The
- * step's number is its place in the setup strip above (three steps in a
- * personal workspace, four in a group one).
+ * sentence and button leading each page").
+ *
+ * THE STEP IS THE STRIP'S (VQ-037, 2026-10-26). The lead built "Step 2 of 3 ·
+ * in progress" from this page's own grant count while the strip right above
+ * it, fed by the setup read (`useSetupSteps`), marked step 2 done and step 3
+ * next, and the Choose tab's button said "Next: Repositories". Now the step,
+ * its word and the button are read off the same steps the strip draws:
+ *   * GitHub not connected or not active: step 1, from this page's own
+ *     connection read, which is the fresher of the two for its own step;
+ *   * the strip's Repositories chosen not done: step 2, "next" or "in
+ *     progress" as the strip says it (no word while the read is unmeasured);
+ *   * done: the strip's next step, by its number, titled by its action, with
+ *     its page as the one button; with nothing next, setup is complete.
+ * The page's count is only in the sentence, as what this read shows.
  */
 function GitHubLead({ view, overview, open }: { view: 'mine' | 'choose'; overview: AccessOverview; open: (v: View) => void }) {
-  const steps = useSetupSteps().length
+  const steps = useSetupSteps()
+  const of = steps.length
   const c = overview.connection
   const chosen = overview.grants.length
   const login = c?.forge_login != null ? `@${c.forge_login}` : null
-  const lead = (kicker: string, title: string, sentence: ReactNode, actions: ReactNode) => (
+  const lead = (kicker: string, title: string, sentence: ReactNode, actions?: ReactNode) => (
     <Lead kicker={kicker} title={title} actions={actions}>
       {sentence}
     </Lead>
   )
   if (c === null || c.state === 'revoked') {
     return lead(
-      `Step 1 of ${steps} · start here.`,
+      `Step 1 of ${of} · start here.`,
       'Connect GitHub to start',
       'SwarmCloud lists the orgs and repositories you reach, and clones, pushes and opens pull requests as you. Choosing repositories waits for this one step.',
       <ConnectButton />,
@@ -1422,38 +1467,66 @@ function GitHubLead({ view, overview, open }: { view: 'mine' | 'choose'; overvie
   }
   if (c.state !== 'active') {
     return lead(
-      `Step 1 of ${steps} · needs you.`,
+      `Step 1 of ${of} · needs you.`,
       'Reconnect GitHub',
       `This connection is ${c.state ?? 'not active'}, so SwarmCloud cannot act as you until you reconnect.`,
       <ConnectButton label="Reconnect" />,
     )
   }
-  const counted = `${chosen} ${chosen === 1 ? 'repository' : 'repositories'} chosen`
-  const as = `GitHub is connected${login !== null ? ` as ${login}` : ''}.`
-  if (view === 'choose') {
+  const counted = `${chosen} ${chosen === 1 ? 'repository is' : 'repositories are'} chosen`
+  const as = `GitHub is connected${login !== null ? ` as ${login}` : ''}`
+  const chooseButton = (
+    <Button kind="primary" size="sm" onClick={() => open('choose')}>
+      Choose repositories
+    </Button>
+  )
+  const repos = steps.find((s) => s.key === 'repositories') ?? null
+  if (repos === null || repos.state !== 'done') {
+    const word = repos === null || repos.state === 'unknown' ? '' : repos.state === 'in_progress' ? ' · in progress' : ' · next'
+    const kicker = `Step ${repos === null ? 2 : steps.indexOf(repos) + 1} of ${of}${word}.`
+    if (view === 'choose') {
+      return lead(
+        kicker,
+        'Choose the repositories SwarmCloud may reach',
+        `${chosen === 0 ? 'Nothing is chosen yet.' : `${counted}.`} Choices save as you make them; Config › Repositories registers them and verifies each.`,
+        chosen === 0 ? undefined : (
+          <ButtonLink kind="primary" size="sm" href={addressToPath(REPOSITORIES_ADDRESS)}>
+            Next: Repositories
+          </ButtonLink>
+        ),
+      )
+    }
     return lead(
-      `Step 2 of ${steps} · ${chosen === 0 ? 'next' : 'in progress'}.`,
-      chosen === 0 ? 'Nothing chosen yet' : counted,
-      'Choices save as you make them. Config › Repositories lists every repository SwarmCloud may reach as you, and verifies each.',
-      <ButtonLink kind="primary" size="sm" href={addressToPath(REPOSITORIES_ADDRESS)}>
-        Next: Repositories
-      </ButtonLink>,
+      kicker,
+      'Choose the repositories SwarmCloud may reach',
+      chosen === 0 ? `${as}. Pick Read or Write for each repository.` : `${as} and ${counted}. Add more, or register them on Config › Repositories.`,
+      chooseButton,
+    )
+  }
+  const next = setupNext(steps)
+  const later = next === null ? undefined : LATER[next.key]
+  if (next === null || later === undefined) {
+    const { done } = setupCount(steps)
+    return lead(
+      done === of ? `Setup complete · ${done} of ${of}.` : `Step ${steps.indexOf(repos) + 1} of ${of} · done.`,
+      'GitHub access is set up',
+      `${as} and ${counted}. Choose more at any time; Config › Repositories lists and verifies them.`,
+      view === 'choose' ? (
+        <ButtonLink kind="primary" size="sm" href={addressToPath(REPOSITORIES_ADDRESS)}>
+          Open Repositories
+        </ButtonLink>
+      ) : (
+        chooseButton
+      ),
     )
   }
   return lead(
-    `Step 2 of ${steps} · ${chosen === 0 ? 'next' : 'in progress'}.`,
-    chosen === 0 ? 'Choose the repositories SwarmCloud may reach' : counted,
-    chosen === 0 ? `${as} Pick Read or Write for each repository.` : `${as} Add more on Choose repositories; Config › Repositories lists and verifies them.`,
-    <>
-      <Button kind="primary" size="sm" onClick={() => open('choose')}>
-        Choose repositories
-      </Button>
-      {chosen > 0 && (
-        <ButtonLink size="sm" href={addressToPath(REPOSITORIES_ADDRESS)}>
-          Repositories
-        </ButtonLink>
-      )}
-    </>,
+    `Step ${steps.indexOf(next) + 1} of ${of} · next.`,
+    later.title,
+    `${as} and ${counted}, so this page is done. Next: ${next.label}, ${next.line}.`,
+    <ButtonLink kind="primary" size="sm" href={addressToPath(next.to)}>
+      {later.button}
+    </ButtonLink>,
   )
 }
 
@@ -1637,7 +1710,7 @@ function Installs({ grants, open }: { grants: AccessGrant[]; open: Open }) {
   )
 }
 
-/** The Connection tab: the lead, the connection, what comes after or where the App is installed, the GitHub quota and the rules (S2a, S2b). */
+/** The Connection tab: the lead, then the connection (with the GitHub quota) and what comes after or where the App is installed beside the rules (S2a, S2b). */
 function Mine({ overview, reloadOverview, open }: { overview: AccessOverview; reloadOverview: () => void; open: Open }) {
   // `github_quota` is read here rather than added to types.ts's
   // AccessOverview: older servers do not send it, and absent is no lines.
@@ -1646,14 +1719,20 @@ function Mine({ overview, reloadOverview, open }: { overview: AccessOverview; re
   return (
     <>
       <GitHubLead view="mine" overview={overview} open={open} />
-      <Connection connection={c} onChange={reloadOverview} />
-      {c === null || c.state === 'revoked' ? (
-        <WhatComesAfter />
-      ) : (
-        c.state === 'active' && <Installs grants={overview.grants} open={open} />
-      )}
-      <GitHubQuotaLines quota={quota} />
-      <AccessPolicy />
+      {/* S2B'S TWO COLUMNS (VQ-038): the GitHub card, its quota lines inside
+          it, and what comes after or where the App is installed on the left;
+          the rules checklist on the right. One column on a phone. */}
+      <div className="ac-body">
+        <div className="ac-main">
+          <Connection connection={c} quota={quota} onChange={reloadOverview} />
+          {c === null || c.state === 'revoked' ? (
+            <WhatComesAfter />
+          ) : (
+            c.state === 'active' && <Installs grants={overview.grants} open={open} />
+          )}
+        </div>
+        <AccessPolicy />
+      </div>
     </>
   )
 }
