@@ -336,7 +336,9 @@ describe('the Timeline', () => {
     // ("Oct 26 00:55Z"), which the `at HH:MMZ` reading below does not match.
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-10-25T12:00:00Z'))
-    onTestFinished(() => vi.useRealTimers())
+    onTestFinished(() => {
+      vi.useRealTimers()
+    })
     window.history.replaceState(null, '', '/#capacity/accounts?view=timeline')
     await mount(b3(Date.now()), 3)
     const tl = await screen.findByRole('region', { name: 'Subscription accounts, timeline' }, WAIT)
