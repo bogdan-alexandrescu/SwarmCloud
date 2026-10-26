@@ -1778,9 +1778,12 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
   // Browser tab's findings were measured on running browser agents with
   // logs of 20 and more steps, and a four-step log cannot show a log beside
   // the frame that runs past its pane. Forty browser actions, each a call
-  // and its result, for the render to be checked against.
-  const browserSteps = (from: number): TranscriptStep[] =>
-    Array.from({ length: 40 }, (_, i) => {
+  // and its result, for the render to be checked against. THE FINISHED
+  // BROWSER AGENT, task_f523c160 (FIXTURE-BROWSER-DONE, part of #2423), has
+  // a short one, six actions and its result: its Browser tab is reviewed
+  // for the end time, the links and the recordings, not for a long log.
+  const browserSteps = (from: number, count: number): TranscriptStep[] =>
+    Array.from({ length: count }, (_, i) => {
       const id = `toolu_b${String(i).padStart(2, '0')}`
       const action = ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type'][i % 4]!
       return [
@@ -1788,7 +1791,7 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
         step(from + 2 * i + 1, { kind: 'tool_result', role: 'user', tool_result: { tool_use_id: id, is_error: false, content: `Step ${i + 1}: ${action} done; the page says "Example Domain".`, images: 0 } }),
       ]
     }).flat()
-  const long = taskId === 'task_b40e5a1c' ? browserSteps(4) : []
+  const long = taskId === 'task_b40e5a1c' ? browserSteps(4, 40) : taskId === 'task_f523c160' ? browserSteps(4, 6) : []
   const steps: TranscriptStep[] = started
     ? [
         step(0, { kind: 'init', role: 'system', meta: { model: 'claude-opus-5', permission_mode: 'bypassPermissions', tool_count: 14 } }),
@@ -5100,7 +5103,16 @@ function fixtureTaskRows(): Task[] {
     }),
     mk('task_99284d38', 'SUCCEEDED', 'claude-code', 50),
     mk('task_f278adec', 'SUCCEEDED', 'claude-code', 48),
-    mk('task_f523c160', 'SUCCEEDED', 'claude-code', 47),
+    // THE FINISHED BROWSER AGENT (FIXTURE-BROWSER-DONE, part of #2423; BGD
+    // 2026-10-26 "Convert one"): this row was an ordinary claude-code one
+    // no test named, converted rather than a row added so every fixture
+    // total stands. A finished agent's Browser tab (BT-006, BT-007) renders
+    // from it: its end time, the links to Attempts and Artifacts, and the
+    // recordings panel, empty here because the fixture build does not serve
+    // recordings. task_b40e5a1c stays the one RUNNING browser agent.
+    mk('task_f523c160', 'SUCCEEDED', 'claude-code-browser', 47, {
+      input: { prompt: 'Browser QA agent: open https://example.com, follow its one link, and report both pages.' },
+    }),
     mk('task_812d51aa', 'SUCCEEDED', 'claude-code', 46),
     mk('task_108ef29c', 'SUCCEEDED', 'mock', 90),
     mk('task_1beb89a5', 'CANCELLED', 'claude-code', 62, {
