@@ -234,7 +234,7 @@ describe('1. prev, next and OTHER LIVE are fed', () => {
   })
 })
 
-// BT-008 (#2423, measured on swarm.saga.xyz 2026-10-26): 3 s after opening,
+// BT-008 (#2423, measured on the live deployment 2026-10-26): 3 s after opening,
 // OTHER LIVE said "No other live browser agent." with prev and next disabled
 // while four were running; ~20 s later the read answered and listed them. A
 // read in flight is not an empty list. MUTATION: hand the theater

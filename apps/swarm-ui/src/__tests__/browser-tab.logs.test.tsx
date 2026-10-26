@@ -1,5 +1,5 @@
 // LANE BROWSER-TAB-LOGS (part of #2423). A Claude-in-Chrome walk over seven
-// claude-code-browser agents on swarm.saga.xyz, 2026-10-26, measured the log
+// claude-code-browser agents on the live deployment, 2026-10-26, measured the log
 // beside the live browser and in the theater's Logs panel:
 //
 //   BT-001  it never follows: it opened at scrollTop 0 of 1632, stayed at 860
