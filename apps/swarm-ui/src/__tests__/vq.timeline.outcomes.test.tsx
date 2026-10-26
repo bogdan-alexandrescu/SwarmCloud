@@ -129,7 +129,7 @@ describe('VQ-021: the chart region says what it is reading, and draws what has l
     const facts = container.querySelector('.ol-facts')!.textContent ?? ''
     expect(facts).toContain(`${d.totals.buckets_read} of ${d.totals.buckets} days read`)
     expect(facts, 'the sealed count is not invented before coverage lands').not.toMatch(/sealed/)
-    // The early read is the one the "Why agents failed" card asks for: one request, not two.
+    // The chart asks for nothing of its own: its buckets are the cards' one shared read.
     const calls = api.loadOutcomes.mock.calls.filter((c) => sectionsOf(c).join(',') === 'buckets,totals')
     expect(calls.length).toBe(1)
   })

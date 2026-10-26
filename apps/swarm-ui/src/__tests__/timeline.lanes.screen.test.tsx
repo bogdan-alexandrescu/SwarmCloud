@@ -715,7 +715,7 @@ describe('VQ-025: a workflow group row names the workflow, its id and steps, and
     await waitFor(() => expect(lane('task_publish')).not.toBeNull())
     const head = document.querySelector<HTMLElement>('.tl-row.is-group[data-group="wf_7c1e"]')!
     expect(head.querySelector('.tl-name-k')!.textContent).toBe('refactor-broker')
-    expect(head.querySelector('.tl-lab small')!.textContent).toBe('wf_7c1e · 3 steps · failed')
+    expect(head.querySelector('.tl-lab small')!.textContent).toBe('wf_7c1e · 2 of 3 steps have attempts in this span · failed')
   })
 
   it('draws a bracket over the workflow’s span: its lanes’ first start to their last end', async () => {
@@ -725,12 +725,15 @@ describe('VQ-025: a workflow group row names the workflow, its id and steps, and
     // MUTATION: draw the group's track empty again (`<div className="tl-trk" />`).
     const br = head.querySelector<HTMLElement>('.tl-trk .tl-wf-span')
     expect(br, 'no span bracket on the group row').not.toBeNull()
-    // task_plan's attempt began 240 minutes ago and task_test's ended 110
-    // minutes ago, in a 24-hour window ending now.
+    // The workflow's lanes draw from their tasks' wait, created 300 minutes
+    // ago, to the end marks at the tasks' completed_at, 100 minutes ago, in a
+    // 24-hour window ending now.
     const left = Number.parseFloat(br!.style.left)
     const width = Number.parseFloat(br!.style.width)
-    expect(left).toBeCloseTo(((1440 - 240) / 1440) * 100, 0)
-    expect(left + width).toBeCloseTo(((1440 - 110) / 1440) * 100, 0)
+    const drawn = [...document.querySelectorAll<HTMLElement>('[data-lane="task_plan"] .tl-seg, [data-lane="task_test"] .tl-seg')]
+    expect(Math.min(...drawn.map((e) => Number.parseFloat(e.style.left))), 'the bracket starts where the first bar does').toBeCloseTo(left, 0)
+    expect(left).toBeCloseTo(((1440 - 300) / 1440) * 100, 0)
+    expect(left + width).toBeCloseTo(((1440 - 100) / 1440) * 100, 0)
     expect(br!.getAttribute('aria-hidden')).toBe('true')
     // The standalone block is not one thing with a span: no bracket.
     expect(document.querySelector('.tl-row.is-group[data-group="standalone"] .tl-wf-span')).toBeNull()

@@ -121,17 +121,19 @@ describe('work-a-004: a workflow title is cut the way a lane name is', () => {
   })
 
   it('cuts a title that is not a link the same way', async () => {
-    // The workflow read fails, so the group is titled by its id in plain text.
+    // The workflow read fails, so the group is titled in plain text -- by the
+    // label its own lane carries (VQ-025), the id leading the note under it.
     api.loadWorkflow.mockResolvedValue({ status: 'error', error: { kind: 'server', httpStatus: 503, code: null, message: 'down' } })
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     const b = await waitFor(() => {
       const el = document.querySelector<HTMLElement>('.tl-row.is-group[data-group="wf_long"] .tl-lab b')
-      expect(el?.textContent).toContain('wf_long')
+      expect(el?.textContent).toContain(LABEL)
       return el!
     })
+    expect(document.querySelector('.tl-row.is-group[data-group="wf_long"] .tl-lab small')!.textContent).toMatch(/^wf_long · steps not read/)
     // MUTATION: leave the plain title as a bare text run in the flex `<b>` and
     // there is no element here to give way: it is sheared at the edge.
-    const title = [...b.children].find((c) => c.textContent === 'wf_long') as HTMLElement | undefined
+    const title = [...b.children].find((c) => c.textContent === LABEL) as HTMLElement | undefined
     expect(title, 'the plain title is an element of its own').toBeDefined()
     expect(painted(title!, 'min-width', WIDE)).toBe('0')
     expect(painted(title!, 'text-overflow', WIDE)).toBe('ellipsis')

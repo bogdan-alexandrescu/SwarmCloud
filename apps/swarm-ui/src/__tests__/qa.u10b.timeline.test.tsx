@@ -193,10 +193,20 @@ describe('D37: the footer carries dates', () => {
 
 describe('D10: a stale read dims the lanes, not the open summary', () => {
   it('leaves the summary drawn inside the chart at full strength', () => {
-    document.body.innerHTML =
+    // A HOST OF ITS OWN, REMOVED AFTER (VQ-TIMELINE, 2026-10-26): written into
+    // `document.body` and left there, this `.tl` was the first one the next
+    // file in the same worker found (qa.u11b's N16 read it for the chart's
+    // and found no lane in it).
+    const host = document.createElement('div')
+    host.innerHTML =
       '<div class="tl-chart is-stale"><div class="tl"><div class="tl-row"></div><section class="tl-detail"></section></div></div>'
-    const env: CascadeEnv = { width: 1440 }
-    expect(painted(document.querySelector('.tl-row')!, 'opacity', env)).toBe('0.5')
-    expect(painted(document.querySelector('.tl-detail')!, 'opacity', env)).toBeNull()
+    document.body.appendChild(host)
+    try {
+      const env: CascadeEnv = { width: 1440 }
+      expect(painted(host.querySelector('.tl-row')!, 'opacity', env)).toBe('0.5')
+      expect(painted(host.querySelector('.tl-detail')!, 'opacity', env)).toBeNull()
+    } finally {
+      host.remove()
+    }
   })
 })
