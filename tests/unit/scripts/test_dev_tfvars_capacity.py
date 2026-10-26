@@ -64,11 +64,11 @@ LIVE_POOLS = {
 #: smoke, which lifts the provider floor to 3 x provider_tenant = 120. Move
 #: these into LIVE_POOLS, with the date read, once they are live.
 PENDING_POOLS = {
-    "provider:anthropic": 120,
+    # provider:anthropic was 120 here (#628); BROWSER-POOL-100 below raises it.
     "provider:anthropic:tenant:smoke": 40,
     # BROWSER-POOL-100 (BGD, 2026-10-26, part of #2136): 100 browser units
     # beside claude-code's 80 standard, so every pool both draw on is 180
-    # (dev.tfvars says why). This supersedes provider:anthropic 120 above and
+    # (dev.tfvars says why). This supersedes #628's provider:anthropic 120 and
     # contract request 53's backend:GKE_AUTOPILOT 100. Live once an operator
     # runs `scripts/pool-limit.sh --pool <pool> --limit <n>` for each.
     "global": 180,
