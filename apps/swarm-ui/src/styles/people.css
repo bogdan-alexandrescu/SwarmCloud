@@ -215,6 +215,20 @@
 .pp-grid td.pp-prole { white-space: nowrap; }
 /* The name line may still wrap its GitHub mark under it; the address never breaks. */
 .pp-grid .pp-person { flex-wrap: wrap; }
+/* THE NAME OVER THE ADDRESS, THE AVATAR ON THE NAME'S LINE (visual QA VQ-052,
+   review of ADMIN-PEOPLE-VQ). On one line, "Bogdan Alexandrescu · bob@example.com"
+   needed more than the 15rem cap, the address does not shrink (PersonName),
+   so the name was cut to "Bogdan Alexan…"; and the capped 240px who no longer
+   fit beside the avatar, so the cell wrapped to three lines (avatar; cut
+   name; GitHub mark) -- a row 89px tall where the others are 56px. Stacked,
+   the who is as wide as the longer of the two, the name never shares a line
+   with the address, and the cell is two lines. In the wide table it does not
+   wrap, so the avatar and the GitHub mark stay on the name's line; a phone
+   record keeps the wrap above for a long address. */
+.pp-person { align-items: flex-start; }
+.pp-person > .pp-who > .person-name { flex-direction: column; }
+.pp-person > .pp-who .person-name-dot { display: none; }
+.is-scroll > .pp-table .pp-person { flex-wrap: nowrap; }
 .pp-nobr { white-space: nowrap; }
 
 /* THE GRID'S OWN CONTROLS (ADMIN-PEOPLE-FILTER; part of #2157, S5c, S5f).
