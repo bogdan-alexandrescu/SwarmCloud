@@ -1375,8 +1375,9 @@ function lenderOf(a: PersonLentAccount): string {
  * times and made the row about 200px tall. Two or more loans are a count and
  * their lenders, each named once, with the accounts behind a disclosure; a
  * lender is repeated in it only when there is more than one. One loan, and
- * every other source, is already one line. The Manage drawer still lists
- * every account in full (`ClaudeSection`): it has the room.
+ * every other source, is already one line. The Manage drawer draws the same
+ * line (`ClaudeSection`, rendered review of PR 2464): a phone's grid has no
+ * Claude column, so the drawer is the only place a phone draws loans.
  */
 function ClaudeSummary({ c }: { c: PersonClaudeAccount }) {
   const accounts = c.source === 'lent' ? (c.lent_accounts ?? []) : []
@@ -1515,8 +1516,15 @@ function ClaudeSection({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; r
   return (
     <section className="pp-dsec" data-section="claude">
       <h3>Claude account</h3>
-      <p>
-        Now using {claudeText(row.claude_account)}
+      {/* THE GRID'S ONE LINE, NOT THE SEMICOLON PARAGRAPH (rendered review of
+          PR 2464): seven loans printed "lent by Engineering" seven times, and
+          on a phone this is the only place loans are drawn. A div, because a
+          disclosure is not phrasing content a <p> may hold. */}
+      <div className="pp-now">
+        Now using{' '}
+        <div className="pp-now-what">
+          <ClaudeSummary c={row.claude_account} />
+        </div>
         {row.loan_request?.state === 'requested' && (
           <>
             {' '}
@@ -1534,7 +1542,7 @@ function ClaudeSection({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; r
             </Chip>
           </>
         )}
-      </p>
+      </div>
       {row.claude_account.source === 'lent' && lent.length === 0 && lendable !== null && (
         <p className="ur-hint">Lent by an owner whose accounts you may not lend, so it is not yours to reclaim.</p>
       )}
