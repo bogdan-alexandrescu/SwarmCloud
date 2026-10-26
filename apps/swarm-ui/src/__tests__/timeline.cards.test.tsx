@@ -476,6 +476,22 @@ describe('the headline never waits on coverage or previous (#2422)', () => {
     return li!
   }
 
+  /** The foot's clauses, one per nowrap child of the run, as read. */
+  function footClauses(root: HTMLElement): string[] {
+    return [...root.querySelectorAll<HTMLElement>('.ol-prov > span')].map((el) => (el.textContent ?? '').trim())
+  }
+  /**
+   * The second read's own clauses only: the headline's cost clause is
+   * pre-existing and outside this check. The text includes the mark's pill, as
+   * drawn. The review measured the joined 57-character clause ("reading sealed
+   * days and the span before: still being read") running 57 px past a 390 px
+   * foot, cut at "still"; 40 characters leaves it well inside.
+   */
+  const FOOT_CLAUSE_MAX = 40
+  function longest(root: HTMLElement): number {
+    return Math.max(...footClauses(root).filter((t) => t.includes('sealed days') || t.includes('span before')).map((t) => t.length))
+  }
+
   /** Serve every read at once except the second, which waits on `late`. */
   function holdLate(late: Promise<Result<Outcomes>>): void {
     api.loadOutcomes.mockImplementation((_q: URLSearchParams, sections?: readonly string[]) =>
@@ -497,6 +513,10 @@ describe('the headline never waits on coverage or previous (#2422)', () => {
     const foot = root.querySelector('.ol-prov')!
     expect(foot.querySelector('.ctl-mark.is-pending')).not.toBeNull()
     expect(foot.textContent).not.toContain('sealed ·')
+    // MUTATION: join the two back into one clause. A nowrap clause longer than a
+    // 390 px foot is cut by its clip (#2422 review: "still" kept, "being read" lost).
+    expect(footClauses(root)).toEqual(expect.arrayContaining(['reading sealed days: still being read', 'span before: still being read']))
+    expect(longest(root), 'a foot clause too long to fit a phone').toBeLessThanOrEqual(FOOT_CLAUSE_MAX)
 
     const whole = ledgerFixture()
     await act(async () => {
@@ -522,7 +542,8 @@ describe('the headline never waits on coverage or previous (#2422)', () => {
     expect(delta?.textContent).toContain('not read, no delta')
     expect(delta?.querySelector('.ctl-mark')!.getAttribute('aria-label')).toContain('count timed out')
     expect(root.querySelector('.ol-ledger')!.textContent).toContain('terminal agents without completed_at: not read')
-    expect(root.querySelector('.ol-prov')!.textContent).toContain('sealed days and the span before: not read')
+    expect(footClauses(root)).toEqual(expect.arrayContaining(['not read sealed days: not read', 'span before: not read']))
+    expect(longest(root), 'a foot clause too long to fit a phone').toBeLessThanOrEqual(FOOT_CLAUSE_MAX)
     expect(root.querySelector('.ol-figure')!.textContent, 'a failed second read took the figure with it').toBe('90.7 %')
   })
 })

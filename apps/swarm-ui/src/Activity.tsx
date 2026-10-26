@@ -1262,20 +1262,26 @@ function Provenance({ data, late }: { data: Outcomes; late: LedgerLate }) {
     // THE SECOND READ IS OUT OR FAILED (#2422): no day count, no build count,
     // no zero standing in for either.
     return (
+      // Two short clauses, not one: each child of the run is nowrap, and the
+      // joined 50-character clause was cut at "still" in a 390 px foot (#2422).
       <p className="ol-prov ctl-foot-run">
-        <span>
-          {late.state === 'reading' ? (
-            <>
+        {late.state === 'reading' ? (
+          <>
+            <span>
               <Mark kind="pending" say="The sealed days and the span before are still being read, in their own request after the headline." /> sealed
-              days and the span before: still being read
-            </>
-          ) : (
-            <>
-              <Mark kind="unread" say={`The sealed days and the span before could not be read (${late.error.message}).`} /> sealed days and
-              the span before: not read
-            </>
-          )}
-        </span>
+              days: still being read
+            </span>
+            <span>span before: still being read</span>
+          </>
+        ) : (
+          <>
+            <span>
+              <Mark kind="unread" say={`The sealed days and the span before could not be read (${late.error.message}).`} /> sealed days: not
+              read
+            </span>
+            <span>span before: not read</span>
+          </>
+        )}
         <span>{head}</span>
         <span>{cacheable(data) ? `cached ${OUTCOMES_CACHE_S} s` : 'not cached: partial, the next read continues the build'}</span>
         <span>generated {generated}</span>
