@@ -21,7 +21,7 @@
 //
 // The arithmetic is in accountHealthModel.ts; this file draws it.
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useLayoutEffect, useState, type ReactNode } from 'react'
 
 import {
   FAMILIES,
@@ -46,7 +46,6 @@ import {
   span,
   spanStart,
   statusOf,
-  tally,
   when,
   whenS,
   windowWord,
@@ -60,6 +59,7 @@ import {
   type Incident,
   type LaneMark,
   type StatusCell,
+  type Tally,
 } from './accountHealthModel'
 import { verdictOf, type PoolAccount } from './accountsPool'
 import { HelpLinks } from './HelpCard'
@@ -114,6 +114,30 @@ interface Model {
   shortfall: number
 }
 
+/**
+ * A row's status: the health record's word (`statusOf`), or, when the health
+ * read cannot say, the row's own `state`. REAUTH_REQUIRED is the broker's own
+ * answer that the provider refused the credential, so a deployment that does
+ * not serve health (or a read that failed) still leads that account with
+ * Sign in again rather than a dash. Its figures stay dashes with their reason:
+ * the state says nothing about counts.
+ */
+function cellOf(a: HealthAccount, record: AccountHealthRecord | undefined): StatusCell {
+  const c = statusOf(a, record)
+  return c.status === null && a.state === 'REAUTH_REQUIRED' ? { status: 'reauth_needed' } : c
+}
+
+/** The tiles and the summary line count the statuses the list draws, from `cellOf`. */
+function tallyOf(m: Model): Tally {
+  const t: Tally = { healthy: 0, limited: 0, erroring: 0, reauth_needed: 0, unknown: 0 }
+  for (const a of m.accounts) {
+    const s = m.cell(a).status
+    if (s === null) t.unknown += 1
+    else t[s] += 1
+  }
+  return t
+}
+
 function modelOf(board: AccountHealthBoard, now: number): Model {
   const accounts = board.page.accounts as HealthAccount[]
   const records = new Map<string, AccountHealthRecord>(
@@ -125,7 +149,7 @@ function modelOf(board: AccountHealthBoard, now: number): Model {
     // Not served: there is no health to sort by, so the order registered.
     sorted: served ? worstFirst(accounts, records) : [...accounts].sort((x, y) => x.account_id.localeCompare(y.account_id)),
     records,
-    cell: (a) => statusOf(a, records.get(a.account_id)),
+    cell: (a) => cellOf(a, records.get(a.account_id)),
     health: board.health,
     served,
     now,
@@ -134,9 +158,15 @@ function modelOf(board: AccountHealthBoard, now: number): Model {
   }
 }
 
+type PhoneView = 'incidents' | 'accounts'
+
 export function AccountHealthBody({ board, now, phone }: { board: AccountHealthBoard; now: number; phone: boolean }) {
+  // The phone's Incidents/Accounts choice is held HERE, above the breakpoint
+  // switch: held in PhoneBody, a resize across the breakpoint unmounted it
+  // and dropped the choice back to Incidents.
+  const [view, setView] = useState<PhoneView>('incidents')
   const m = modelOf(board, now)
-  return phone ? <PhoneBody m={m} /> : <DesktopBody m={m} />
+  return phone ? <PhoneBody m={m} view={view} setView={setView} /> : <DesktopBody m={m} />
 }
 
 function DesktopBody({ m }: { m: Model }) {
@@ -236,10 +266,16 @@ function nameOf(a: HealthAccount): string {
 // F4: the deployment does not serve it, or the read failed
 // ---------------------------------------------------------------------------
 
-/** A server's message ends with a full stop before the page's next sentence follows it. */
+/**
+ * A server's message as a sentence of the page's: a capital first letter (the
+ * callout's paragraph starts with it) and a full stop before the page's next
+ * sentence follows it.
+ */
 function sentence(s: string): string {
   const t = s.trim()
-  return t === '' || /[.!?…]$/.test(t) ? t : `${t}.`
+  if (t === '') return t
+  const c = t.charAt(0).toUpperCase() + t.slice(1)
+  return /[.!?…]$/.test(c) ? c : `${c}.`
 }
 
 function HealthBanner({ m, tiles = true }: { m: Model; tiles?: boolean }) {
@@ -251,7 +287,7 @@ function HealthBanner({ m, tiles = true }: { m: Model; tiles?: boolean }) {
           <span className="ah-dash">—</span> This deployment does not serve account health
         </b>
         <p>
-          <code>GET /v1/accounts</code> rows carry no <code>health_status</code>, and {sentence(reason || NOT_SERVED_WHY)} Rate-limit
+          <code>GET /v1/accounts</code> rows carry no <code>health_status</code>. {sentence(reason || NOT_SERVED_WHY)} Rate-limit
           hits, errors and refusals are <b>unknown</b>, not zero. The pool’s capacity is still read, so{' '}
           {tiles ? 'the last tile stands' : 'the summary’s last line stands'}.
         </p>
@@ -320,7 +356,7 @@ function ReauthCallouts({ m }: { m: Model }) {
 const TILE_ORDER: readonly HealthStatus[] = ['healthy', 'limited', 'erroring', 'reauth_needed']
 
 function Tiles({ m }: { m: Model }) {
-  const t = tally(m.accounts, m.records)
+  const t = tallyOf(m)
   const v = verdictOf(m.accounts as PoolAccount[], m.scope, m.shortfall)
   return (
     <div className="ah-tiles" role="list" aria-label="Accounts by health status">
@@ -507,6 +543,13 @@ const STRIP_TOP = 22
 const STRIP_H = 72
 const LANE_H = 46
 const LANES_TOP = 112
+/**
+ * Half a mark button (`.ah-hit` is 12 px): the hours end this far inside the
+ * chart's right edge, so a mark at now is drawn whole. Mapped to the edge
+ * itself, the newest marks reached 3-6 px past the box at 390 (PR 2357's
+ * fourth review).
+ */
+const MARK_R = 6
 
 function markSay(mk: LaneMark, name: string, now: number): string {
   const e = mk.event
@@ -528,10 +571,16 @@ function markSay(mk: LaneMark, name: string, now: number): string {
  * (`--ctl-pad-chrome`, 16 px a side), and a chart sized to it started 16 px in
  * and ran 32 px past the box, so the newest hour scrolled out of sight and
  * "now 12:00Z" read "now 12:0" (PR 2357's re-review).
+ *
+ * `undefined` until the box has been measured once: the chart is not drawn
+ * before then, and the measure runs in a LAYOUT effect, before the browser
+ * paints, so no frame is drawn at `W_DEFAULT` and then refitted (at 390 the
+ * first frame was 1040 px wide in a 324 px box). `null` is a box measured with
+ * no width (a hidden tab, or a test DOM), which draws at `W_DEFAULT`.
  */
-function useBoxWidth(el: HTMLElement | null): number | null {
-  const [w, setW] = useState<number | null>(null)
-  useEffect(() => {
+function useBoxWidth(el: HTMLElement | null): number | null | undefined {
+  const [w, setW] = useState<number | null | undefined>(undefined)
+  useLayoutEffect(() => {
     if (el === null) return
     const measure = () => {
       const cs = getComputedStyle(el)
@@ -596,7 +645,7 @@ function Timeline({ m }: { m: Model }) {
       </section>
     )
   }
-  const W = boxW === null ? W_DEFAULT : Math.max(W_MIN, Math.floor(boxW))
+  const W = boxW === null || boxW === undefined ? W_DEFAULT : Math.max(W_MIN, Math.floor(boxW))
   const narrow = W < 640
   const GUTTER = narrow ? 88 : 130
   // A lane name longer than the gutter is cut with an ellipsis; its full name is the lane's title.
@@ -604,13 +653,13 @@ function Timeline({ m }: { m: Model }) {
     const most = Math.floor((GUTTER - 8) / 6.5)
     return n.length <= most ? n : `${n.slice(0, most - 1)}…`
   }
-  const bw = (W - GUTTER) / SPAN_HOURS
+  const bw = (W - MARK_R - GUTTER) / SPAN_HOURS
   const xOf = (t: number) => GUTTER + ((t - start) / HOUR_MS) * bw
   const hours = poolHours(pool, start)
   const mx = Math.max(1, ...hours.map((h) => h.total))
   const tallest = hours.reduce((best, h) => (h.total > best.total ? h : best), hours[0]!)
   const H = LANES_TOP + rows.length * LANE_H + 24
-  const nowX = Math.min(W, xOf(m.now))
+  const nowX = Math.min(W - MARK_R, xOf(m.now))
   const days: number[] = []
   for (let t = Math.ceil(start / (24 * HOUR_MS)) * 24 * HOUR_MS; t < start + SPAN_HOURS * HOUR_MS; t += 24 * HOUR_MS) days.push(t)
   // A day narrower than its label labels every other day (the phone); the grid line still marks each.
@@ -626,121 +675,123 @@ function Timeline({ m }: { m: Model }) {
         </span>
       </div>
       <div className="ah-chart-scroll" ref={setFit}>
-        <div className="ah-swim-box" style={{ width: W, height: H }} data-chart-width={W}>
-          <svg
-            className="ah-swim"
-            viewBox={`0 0 ${W} ${H}`}
-            width={W}
-            height={H}
-            role="group"
-            aria-label="Rate-limit hits and errors per account over 7 days"
-          >
-            <text className="ah-ax" x={nowX} y={12} textAnchor="end">
-              now {hm(m.now)}
-            </text>
-            <text className="ah-ax is-nm" x={0} y={34}>
-              {narrow ? 'Pool, per hour' : 'Whole pool, per hour'}
-            </text>
-            <text className="ah-ax" x={0} y={50}>
-              {narrow ? `top ${tallest.total} at ${hm(tallest.at)}` : `tallest: ${tallest.total} at ${hm(tallest.at)}`}
-            </text>
-            {hours.map((h, i) => {
-              if (h.total === 0) return null
-              const x = GUTTER + i * bw + 0.3
-              const w = Math.max(1, bw - 0.6)
-              let y = STRIP_TOP + STRIP_H
-              return (
-                <g key={`h${i}`} data-pool-hour={h.total}>
-                  <title>
-                    {`${day(h.at)} ${hm(h.at)}: ${h.lim} limits · ${h.err} provider errors · ${h.cred} credential`}
-                  </title>
-                  {(['err', 'lim', 'cred'] as const).map((f) => {
-                    if (h[f] === 0) return null
-                    const hh = Math.max(1.5, (h[f] / mx) * STRIP_H)
-                    y -= hh
-                    return <rect key={f} className={`ah-bar is-${f}`} x={x} y={y} width={w} height={hh} />
-                  })}
-                </g>
-              )
-            })}
-            <line className="ah-grid" x1={GUTTER} x2={W} y1={STRIP_TOP + STRIP_H} y2={STRIP_TOP + STRIP_H} />
-            {days.map((t, i) => {
-              const x = xOf(t)
-              const label = day(t)
-              const edge = x + 3 + label.length * 7 > W
-              return (
-                <g key={t}>
-                  <line className="ah-grid" x1={x} x2={x} y1={STRIP_TOP} y2={H - 18} />
-                  {(days.length - 1 - i) % labelEvery === 0 && (
-                    <text className="ah-ax" x={edge ? W : x + 3} y={H - 4} textAnchor={edge ? 'end' : 'start'}>
-                      {label}
+        {boxW !== undefined && (
+          <div className="ah-swim-box" style={{ width: W, height: H }} data-chart-width={W}>
+            <svg
+              className="ah-swim"
+              viewBox={`0 0 ${W} ${H}`}
+              width={W}
+              height={H}
+              role="group"
+              aria-label="Rate-limit hits and errors per account over 7 days"
+            >
+              <text className="ah-ax" x={nowX} y={12} textAnchor="end">
+                now {hm(m.now)}
+              </text>
+              <text className="ah-ax is-nm" x={0} y={34}>
+                {narrow ? 'Pool, per hour' : 'Whole pool, per hour'}
+              </text>
+              <text className="ah-ax" x={0} y={50}>
+                {narrow ? `top ${tallest.total} at ${hm(tallest.at)}` : `tallest: ${tallest.total} at ${hm(tallest.at)}`}
+              </text>
+              {hours.map((h, i) => {
+                if (h.total === 0) return null
+                const x = GUTTER + i * bw + 0.3
+                const w = Math.max(1, bw - 0.6)
+                let y = STRIP_TOP + STRIP_H
+                return (
+                  <g key={`h${i}`} data-pool-hour={h.total}>
+                    <title>
+                      {`${day(h.at)} ${hm(h.at)}: ${h.lim} limits · ${h.err} provider errors · ${h.cred} credential`}
+                    </title>
+                    {(['err', 'lim', 'cred'] as const).map((f) => {
+                      if (h[f] === 0) return null
+                      const hh = Math.max(1.5, (h[f] / mx) * STRIP_H)
+                      y -= hh
+                      return <rect key={f} className={`ah-bar is-${f}`} x={x} y={y} width={w} height={hh} />
+                    })}
+                  </g>
+                )
+              })}
+              <line className="ah-grid" x1={GUTTER} x2={W} y1={STRIP_TOP + STRIP_H} y2={STRIP_TOP + STRIP_H} />
+              {days.map((t, i) => {
+                const x = xOf(t)
+                const label = day(t)
+                const edge = x + 3 + label.length * 7 > W
+                return (
+                  <g key={t}>
+                    <line className="ah-grid" x1={x} x2={x} y1={STRIP_TOP} y2={H - 18} />
+                    {(days.length - 1 - i) % labelEvery === 0 && (
+                      <text className="ah-ax" x={edge ? W : x + 3} y={H - 4} textAnchor={edge ? 'end' : 'start'}>
+                        {label}
+                      </text>
+                    )}
+                  </g>
+                )
+              })}
+              {rows.map(({ a, r }, i) => {
+                const y = LANES_TOP + i * LANE_H
+                return (
+                  <g key={a.account_id} data-lane={a.account_id}>
+                    <rect className="ah-lane" x={GUTTER} y={y + 3} width={W - GUTTER} height={LANE_H - 6} rx={4} />
+                    <text className="ah-ax is-nm" x={0} y={y + LANE_H / 2 + 4}>
+                      <title>{nameOf(a)}</title>
+                      {fitName(nameOf(a))}
                     </text>
-                  )}
-                </g>
-              )
-            })}
+                    {limitBands(r).map((b) => {
+                      const x0 = Math.max(GUTTER, xOf(b.from))
+                      const x1 = Math.min(W, xOf(b.to))
+                      return (
+                        <g key={`b${b.from}`} data-band={b.window ?? ''}>
+                          <title>{`${nameOf(a)}: ${windowWord(b.window) || 'a'} window · hit ${when(b.from, m.now)} · resets ${when(b.to, m.now)} · ${b.hits} ${b.hits === 1 ? 'hit' : 'hits'}`}</title>
+                          <rect className="ah-band" x={x0} y={y + 3} width={Math.max(3, x1 - x0)} height={LANE_H - 6} />
+                          <line className="ah-band-l" x1={x0} x2={x0} y1={y + 3} y2={y + LANE_H - 3} />
+                          {x1 - x0 > 44 && (
+                            <text className="ah-ax is-band" x={x0 + 4} y={y + 15}>
+                              {windowWord(b.window)}
+                            </text>
+                          )}
+                        </g>
+                      )
+                    })}
+                  </g>
+                )
+              })}
+              <line className="ah-now" x1={nowX} x2={nowX} y1={16} y2={H - 18} />
+            </svg>
+            {/* THE MARKS ARE BUTTONS, laid over the chart at its own coordinates
+                (it is drawn at a fixed pixel size, so a chart unit is a pixel).
+                Each is one served event: hover names it, a press or Enter shows
+                its time, kind, tenant and task under the chart. HTML rather than
+                an SVG `<g tabindex>`, because the console's focus model
+                (focus.ts, the keyboard sweep) reaches HTML controls only. */}
             {rows.map(({ a, r }, i) => {
               const y = LANES_TOP + i * LANE_H
-              return (
-                <g key={a.account_id} data-lane={a.account_id}>
-                  <rect className="ah-lane" x={GUTTER} y={y + 3} width={W - GUTTER} height={LANE_H - 6} rx={4} />
-                  <text className="ah-ax is-nm" x={0} y={y + LANE_H / 2 + 4}>
-                    <title>{nameOf(a)}</title>
-                    {fitName(nameOf(a))}
-                  </text>
-                  {limitBands(r).map((b) => {
-                    const x0 = Math.max(GUTTER, xOf(b.from))
-                    const x1 = Math.min(W, xOf(b.to))
-                    return (
-                      <g key={`b${b.from}`} data-band={b.window ?? ''}>
-                        <title>{`${nameOf(a)}: ${windowWord(b.window) || 'a'} window · hit ${when(b.from, m.now)} · resets ${when(b.to, m.now)} · ${b.hits} ${b.hits === 1 ? 'hit' : 'hits'}`}</title>
-                        <rect className="ah-band" x={x0} y={y + 3} width={Math.max(3, x1 - x0)} height={LANE_H - 6} />
-                        <line className="ah-band-l" x1={x0} x2={x0} y1={y + 3} y2={y + LANE_H - 3} />
-                        {x1 - x0 > 44 && (
-                          <text className="ah-ax is-band" x={x0 + 4} y={y + 15}>
-                            {windowWord(b.window)}
-                          </text>
-                        )}
-                      </g>
-                    )
-                  })}
-                </g>
-              )
+              return laneMarks(r, start, m.now).map((mk, j) => {
+                const x = xOf(mk.at)
+                const yy = y + LANE_H / 2 + 5 + (mk.family === 'err' ? -8 : mk.family === 'lim' ? 0 : 8)
+                const say = markSay(mk, nameOf(a), m.now)
+                const on = picked !== null && picked.event === mk.event
+                return (
+                  <button
+                    key={`${a.account_id}-${j}`}
+                    type="button"
+                    className={`ah-hit is-${mk.family}${on ? ' is-on' : ''}`}
+                    style={{ left: x - 6, top: yy - 6 }}
+                    data-mark={mk.family}
+                    data-mark-of={a.account_id}
+                    title={say}
+                    aria-label={say}
+                    aria-pressed={on}
+                    onClick={() => pick(mk)}
+                  >
+                    <FamilyMark f={mk.family} />
+                  </button>
+                )
+              })
             })}
-            <line className="ah-now" x1={nowX} x2={nowX} y1={16} y2={H - 18} />
-          </svg>
-          {/* THE MARKS ARE BUTTONS, laid over the chart at its own coordinates
-              (it is drawn at a fixed pixel size, so a chart unit is a pixel).
-              Each is one served event: hover names it, a press or Enter shows
-              its time, kind, tenant and task under the chart. HTML rather than
-              an SVG `<g tabindex>`, because the console's focus model
-              (focus.ts, the keyboard sweep) reaches HTML controls only. */}
-          {rows.map(({ a, r }, i) => {
-            const y = LANES_TOP + i * LANE_H
-            return laneMarks(r, start, m.now).map((mk, j) => {
-              const x = xOf(mk.at)
-              const yy = y + LANE_H / 2 + 5 + (mk.family === 'err' ? -8 : mk.family === 'lim' ? 0 : 8)
-              const say = markSay(mk, nameOf(a), m.now)
-              const on = picked !== null && picked.event === mk.event
-              return (
-                <button
-                  key={`${a.account_id}-${j}`}
-                  type="button"
-                  className={`ah-hit is-${mk.family}${on ? ' is-on' : ''}`}
-                  style={{ left: x - 6, top: yy - 6 }}
-                  data-mark={mk.family}
-                  data-mark-of={a.account_id}
-                  title={say}
-                  aria-label={say}
-                  aria-pressed={on}
-                  onClick={() => pick(mk)}
-                >
-                  <FamilyMark f={mk.family} />
-                </button>
-              )
-            })
-          })}
-        </div>
+          </div>
+        )}
       </div>
       {picked !== null && <PickedEvent mk={picked} name={nameById.get(picked.account_id) ?? picked.account_id} now={m.now} />}
       <Legend />
@@ -808,8 +859,7 @@ function Legend() {
 // F5: the phone (proposal D, P1)
 // ---------------------------------------------------------------------------
 
-function PhoneBody({ m }: { m: Model }) {
-  const [view, setView] = useState<'incidents' | 'accounts'>('incidents')
+function PhoneBody({ m, view, setView }: { m: Model; view: PhoneView; setView: (v: PhoneView) => void }) {
   const statusFor = (id: string) => {
     const a = m.accounts.find((x) => x.account_id === id)
     return a === undefined ? null : m.cell(a).status
@@ -838,10 +888,17 @@ function PhoneBody({ m }: { m: Model }) {
         <>
           <SummaryLine m={m} open={inc?.open ?? null} />
           {inc === null ? (
-            <p className="ah-empty-line" data-state="no-incidents">
+            <>
+              {/* The incidents need the health read; a re-auth does not. The
+                  list's own status (or the row's state) still says which
+                  account needs signing in again, and that fix is the one card
+                  Incidents must not lose. */}
+              <ReauthCallouts m={m} />
+              <p className="ah-empty-line" data-state="no-incidents">
               <Dash why={recordWhy(m)} /> Incidents cannot be drawn: {recordWhy(m)} An empty list would claim nothing went
               wrong.
-            </p>
+              </p>
+            </>
           ) : (
             <>
               <section className="ah-open-list" aria-label="Open incidents" data-section="open">
@@ -888,7 +945,7 @@ function PhoneBody({ m }: { m: Model }) {
 }
 
 function SummaryLine({ m, open }: { m: Model; open: Incident[] | null }) {
-  const t = tally(m.accounts, m.records)
+  const t = tallyOf(m)
   const v = verdictOf(m.accounts as PoolAccount[], m.scope, m.shortfall)
   const on = open === null ? null : new Set(open.map((x) => x.account_id)).size
   return (
