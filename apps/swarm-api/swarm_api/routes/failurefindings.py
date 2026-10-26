@@ -31,6 +31,13 @@ cause sentence is the investigator's, so the digest's opaque references to
 OTHER failures (`f-002`) and to other tenants (`t2`) are replaced
 before it is served (`tenant_text`), and it is redacted again.
 
+PLAIN TEXT, NOT HTML. `Filing.report` stores the cause and the fix as written
+(`plain`: masked, mentions broken, closing keywords turned into `refs`, but not
+HTML-escaped), and this route serves the cause untouched: the console shows it
+through React, which escapes it once itself, so a stored `&gt;` read '-&gt;'
+(FAILURE-STORE-PLAIN, part of #2391; the owner's "Store plain", 2026-10-26). A
+document written before keeps its entities: nothing migrates or unescapes them.
+
 NOTHING HERE CREATES DEMAND (invariants 1-3): it reads documents only. No
 caller names an image, a command, a resource spec or a profile (10).
 """
@@ -55,7 +62,7 @@ router = APIRouter(prefix="/v1/failure-findings", tags=["failure-findings"])
 #: The most findings one read serves: a bell drop-down and a detail page, not
 #: a history. A tenant's findings are one per cause and failed agent.
 SCAN = 200
-#: The cause sentence as `Filing.report` bounds it (`neutral(..., 2000)`).
+#: The cause sentence as `Filing.report` bounds it (`plain(..., 2000)`).
 CAUSE_CHARS = 2000
 #: The evidence fields a finding may carry: what the platform wrote about the
 #: tenant's OWN failure (`failure_review._evidence_of`). Nothing else passes.
