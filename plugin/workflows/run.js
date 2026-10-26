@@ -830,13 +830,25 @@ function readHandle(given) {
   return { path: path, digest: digest }
 }
 
-// The row mode the bridge chose (the sc plugin's `rows` setting, or 'pane'
-// when this project's layout is the pane: `/sc layout pane`): 'summary',
-// 'per-step' or 'pane'; null for anything else, which runs a row per step --
-// what every bridge older than the setting launched.
+// The row mode the bridge chose (the sc plugin's `rows` setting, 'pane'
+// when this project's layout is the pane: `/sc layout pane`, or 'band' when
+// it is the band: `/sc layout band`, which starts no row at all): 'summary',
+// 'per-step', 'pane' or 'band'; null for anything else, which runs a row per
+// step -- what every bridge older than the setting launched.
 function readRows(given) {
   const mode = typeof given === 'string' ? given.trim().toLowerCase() : ''
-  return mode === 'summary' || mode === 'per-step' || mode === 'pane' ? mode : null
+  return mode === 'summary' || mode === 'per-step' || mode === 'pane' || mode === 'band' ? mode : null
+}
+
+// THE BAND LAYOUT (SC-BAND, BGD 2026-10-26): the sc plugin's strip above the
+// prompt follows the work with direct reads and says when a workflow finishes
+// or waits on a person, so this run starts NO row. A spec is still submitted
+// here; an attach given 'band' (a copy written before the switch) follows
+// nothing. The result says so: `followed_by: 'band'`.
+const BANDED = 'no row: the SwarmCloud strip above the prompt follows it (layout band; /sc layout rows or pane brings rows back)'
+
+function banded(result) {
+  return Object.assign(result, { rows: 'band', followed_by: 'band', note: BANDED })
 }
 
 // Whether a mode follows a whole workflow with ONE row: the summary row, or
@@ -1859,6 +1871,10 @@ async function followTaskRow(task, name) {
 // `max_rows`, else MAX_ATTACHED_TASKS), all at once, grouped by workspace;
 // each ends when its task does. Nothing is submitted.
 async function attachTasks(given, cap, rowMode) {
+  if (rowMode === 'band') {
+    log(given.length + ' single task(s) · ' + BANDED)
+    return banded({ tasks: given.map((task) => withConsole({ task_id: task.task_id, title: task.title || null }, task.console)) })
+  }
   const limit = liveRowCap(cap, MAX_ATTACHED_TASKS)
   const tasks = groupByWorkspace(given)
   const follow = tasks.slice(0, limit)
@@ -2504,6 +2520,10 @@ async function summarizeTasks(tasks) {
 // `rowMode` is the row mode (readRows) and `share` a per-step copy's share of
 // the steps (readShare), or null.
 async function attachOne(workflowId, givenTitle, givenWorkspace, givenDetails, rowMode, share) {
+  if (rowMode === 'band') {
+    log(workflowId + ' · ' + BANDED)
+    return banded({ workflow_id: workflowId, state: null, steps: [] })
+  }
   let attached = null
   let attachFailure = null
   try {
@@ -2688,6 +2708,17 @@ async function unverifiedWithRows(submitted, back, differs, workflowConsole) {
     flatText(submitted.workspace) || flatText(back.workspace), given.details)
   const finished = (step) => TERMINAL.indexOf(step.state) >= 0
   const open = back.steps.filter((step) => step.task_id && !finished(step))
+  if (given.rows === 'band') {
+    log(id + ' · the read-back differs from the spec · ' + BANDED + workspaceNote(wf.workspace) + consoleSuffix(workflowConsole))
+    return banded(withConsole({
+      workflow_id: id,
+      workspace: wf.workspace,
+      title: wf.title,
+      state: 'SUBMITTED_UNVERIFIED',
+      steps: back.steps.map((step) => ({ step_id: step.step_id, task_id: step.task_id || null, state: step.state || null })),
+      error: 'SwarmCloud accepted workflow ' + id + ', but its steps as read back do not match the spec given: ' + differs.join('; ') + '. The SwarmCloud strip above the prompt follows it. The workflow runs regardless: cancel it with swarm_workflow_cancel if it is not what was meant.',
+    }, workflowConsole))
+  }
   const known = {}
   for (const step of back.steps) known[step.step_id] = step
   log(id + ' · the read-back differs from the spec · following its ' + open.length + ' unfinished step(s) anyway' + workspaceNote(wf.workspace) + consoleSuffix(workflowConsole))
@@ -2904,6 +2935,18 @@ if (knownShape && knownShape.length > 0) {
   log(submitted.workflow_id + ' · SwarmCloud appended ' + knownShape.map((step) => step.step_id).join(', ') + ' for ' + knownShape[0].why)
 } else if (addedSteps.length > 0) {
   log(submitted.workflow_id + ' · SwarmCloud added ' + addedSteps.map((step) => step.step_id).join(', '))
+}
+
+// The band layout: submitted, and no row -- the strip above the prompt follows it.
+if (given.rows === 'band') {
+  log(submitted.workflow_id + ' · ' + BANDED)
+  return verified(banded(withConsole({
+    workflow_id: submitted.workflow_id,
+    workspace: wf.workspace,
+    title: wf.title,
+    state: 'SUBMITTED',
+    steps: submitted.steps.map((step) => ({ step_id: step.step_id, task_id: step.task_id || null })),
+  }, submitted.console)))
 }
 
 // ONE summary row for the whole workflow (PLUGIN-ROW-SPLIT): nothing has
