@@ -268,8 +268,11 @@ def questions_line() -> str:
     `deliverables_line`, so "there" is the folder that line named and the
     prompt still names `$SWARM_ARTIFACTS_DIR` once. The shape is given inline
     because the agent cannot read this platform's docs; the worker checks it
-    (`agent_worker.questions`). "Never acted on" is said because it is true:
-    the file is data for the operator, not a request to the platform.
+    (`agent_worker.questions`). The file is data for the operator, not a
+    request to the platform; the one thing that reads it to decide is a merge
+    step, which refuses to merge an option the branch did not build
+    (`built`, ANSWER-CONTENT-CHECK, owner decision 2026-10-26), so the agent
+    is told to say which option it built.
 
     Shared by claude-code and codex, like the line before it: both are told
     about the folder in the one place, `agent_instructions`.
@@ -277,8 +280,10 @@ def questions_line() -> str:
     return (
         "If a decision is the owner's to make, ask instead of guessing: write "
         "questions.json there, a JSON list of {question, options: [{label, "
-        "description}], recommended, context}; it is shown to the owner and "
-        "never acted on."
+        "description}], recommended, context, built}, built being the label of "
+        "the option your branch implements, or null when the answer changes "
+        "nothing it builds; it is shown to the owner, and a merge does not go "
+        "ahead while the owner's pick differs from built."
     )
 
 
