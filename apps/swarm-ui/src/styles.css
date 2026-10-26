@@ -11056,6 +11056,19 @@ span.sk-ttile { cursor: default; }
      first, down to a short page name whole; past that the tenant chip and
      label (`min-width: 0` through their `overflow: hidden`) shrink instead. */
   .sk-pbar b { font-size: var(--t-body); flex: 1 1 auto; min-width: 5.5em; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* A LONG PAGE NAME WRAPS ONTO A SECOND LINE, NEVER CUT (PHONE-BAR-LABEL,
+     part of #2391; BGD, 2026-10-26): one `nowrap` line read `People an…`,
+     and `Pe…` beside the admin's workspace chip. The name breaks at a space
+     only (`overflow-wrap`/`word-break` left normal, so never mid-word), at
+     the same 14px. Two lines at `--lh-figure` (1.10, the scale's tight
+     leading; `--lh-title`'s 1.30 would be 36.4px) are 31px: inside the
+     bar's 44px and its 36px once compacted, so the bar's height and its
+     controls stay where they were. The clamp is a stop, not a cut: the longest name in
+     SECTIONS (`Submit from a GitHub issue`) sets in two lines at 390.
+     `flex: 1 1 0%` gives the name the room the controls leave; with an
+     `auto` basis its whole one-line width was the claim, and the chip
+     (`flex-shrink: 100`) was squeezed to pay for it. The floor stays. */
+  .sk-pbar b { flex: 1 1 0%; white-space: normal; text-overflow: clip; line-height: var(--lh-figure); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
   /* BESIDE THE SWITCHABLE CHIP THE TITLE GIVES WAY FIRST, ALL THE WAY
      (visual QA run 6, 6:admin-007, part of #1680). The floor above is for
      the member's bar, whose plain label is short. A platform admin's bar

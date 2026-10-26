@@ -113,7 +113,9 @@ describe('VQ-001: the phone header names the page, and the workspace by its key'
     // chip's `flex-shrink: 100`.
     const title = build('div.sk-app > header.sk-pbar.has-chip > b', hosts)
     expect(painted(title, 'min-width', PHONE)).toBe('5.5em')
-    expect(painted(title, 'flex', PHONE)).toBe('1 1 auto')
+    // The room the controls leave, not its one-line width (PHONE-BAR-LABEL:
+    // the name wraps onto a second line instead).
+    expect(painted(title, 'flex', PHONE)).toBe('1 1 0%')
     const chip = build('div.sk-app > header.sk-pbar.has-chip > button.sk-tchip', hosts)
     expect(painted(chip, 'flex-shrink', PHONE)).toBe('100')
     const label = build('div.sk-app > header.sk-pbar > span.sk-tn', hosts)
