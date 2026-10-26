@@ -402,10 +402,12 @@ describe('the workflow page head (#503, workflows.html frame B)', () => {
     // The shape names its stages (visual QA QA-119): `1 → 2 → 1` alone said
     // nothing of what it counted.
     expect(sub).toContain('4 steps in 3 stages (1 → 2 → 1)')
-    // The id is still on the page, whole, as the head's chip.
-    expect(document.querySelector('.wfp-head .id')!.textContent).toBe('wf_broker')
-    // Copy link and Cancel workflow sit in the head's own row.
+    // The id is still on the page, whole, behind the head's Copy id (VQ-015:
+    // drawn once, as that control's title, not as a text chip).
     const head = document.querySelector('.wfp-head')!
+    expect(head.querySelector('.id'), 'the head prints the id as text').toBeNull()
+    expect(within(head as HTMLElement).getByRole('button', { name: 'Copy workflow id wf_broker' }).getAttribute('title')).toBe('wf_broker')
+    // Copy link and Cancel workflow sit in the head's own row.
     expect(within(head as HTMLElement).getByRole('button', { name: 'Copy link' })).toBeTruthy()
     expect(within(head as HTMLElement).getByRole('button', { name: 'Cancel workflow' })).toBeTruthy()
     expect(at(head, 'align-items')).toBe('center')

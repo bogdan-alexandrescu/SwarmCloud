@@ -584,11 +584,13 @@
    (WorkflowViews.tsx) sizes the column at 0.6em a character plus 22px of
    chrome, and the face's measured advance is 0.602em (dag.ts
    `MONO_ADVANCE_EM`), so a 14-character `scan-terraform` was 0.4px over
-   and drew as `scan-terraf…`. The cell's right padding gives the name 4px:
-   enough for a 140-character name, and the next column's own 6px still
-   spaces the two. */
+   and drew as `scan-terraf…`. `stepColumnWidth` now uses that advance, and
+   the cell's LEFT padding gives the name 2px more: its right padding stays
+   6px, so with State's own 6px the two columns' text is still 12px apart
+   (walk.steps.test.tsx `crowded(…, 12)`; a 2px right padding drew them 8px
+   apart). */
 @media (min-width: 900px) {
-  .wf-card .ctl-table.wf-table td[data-col="step"] { padding: 4px 2px 4px 6px; }
+  .wf-card .ctl-table.wf-table td[data-col="step"] { padding: 4px 6px 4px 4px; }
 }
 /* A STEP'S NAME IS ONE LINE (D12): the button is the cell's width at most and
    the id inside it is cut with an ellipsis, its whole text in its title, so

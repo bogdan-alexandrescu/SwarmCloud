@@ -579,8 +579,8 @@ describe('VQ-WORKFLOWS re-review minors', () => {
     expect(drift.getAttribute('aria-label')).toBe('Stored as queued; the steps say running.')
   })
 
-  // MUTATION: put the Step cell's right padding back to 6px: `scan-terraform`
-  // (14) drew as `scan-terraf…`.
+  // MUTATION: put the Step cell's padding back to 6px a side (or the right
+  // side's 2px back on it): `scan-terraform` (14) drew as `scan-terraf…`.
   it('lets the Table’s longest step name read whole in the column sized for it', async () => {
     const terraform = workflow('wf_tf', 'RUNNING', [step('plan', [], { task_id: 'task_plan' }), step('scan-terraform', ['plan'], { task_id: 'task_build' })], 600)
     serve([terraform], chainTasks)

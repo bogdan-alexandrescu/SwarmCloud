@@ -125,14 +125,26 @@ describe('D12: the step table of an issue run', () => {
   it('draws each step name on one line, cut, with the whole id as its title', async () => {
     const wrap = await steps()
     const rows = [...wrap.querySelectorAll('tbody tr[data-step]')]
+    let cut = 0
     for (const row of rows) {
       const id = row.querySelector<HTMLElement>('td[data-col="step"] .wf-pick-id')!
       expect(id.getAttribute('title')).toBe(row.getAttribute('data-step'))
+      // THE SELECTED STEP'S NAME READS WHOLE (VQ-WORKFLOWS re-review 2,
+      // #2391): the page's arrival pick is pressed, and that one name wraps
+      // so the name the step card is about is never cut
+      // (vq.workflows.test.tsx asks it at the capped column). Every other
+      // row keeps D12's one line, cut.
+      if (row.querySelector('td[data-col="step"] > .wf-pick')!.getAttribute('aria-pressed') === 'true') {
+        expect(nowrap(id, WIDE), 'the selected name is cut').toBe(false)
+        continue
+      }
       expect(nowrap(id, WIDE), 'the name wraps').toBe(true)
       expect(painted(id, 'text-overflow', WIDE)).toBe('ellipsis')
       expect(painted(id, 'overflow', WIDE)).toBe('hidden')
+      cut++
     }
     expect(rows.length).toBeGreaterThan(1)
+    expect(cut, 'no unselected row was asked').toBeGreaterThanOrEqual(rows.length - 1)
   })
 
   it('does not draw Why when no step has one, and the name takes its room', () => {
