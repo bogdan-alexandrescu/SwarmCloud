@@ -180,6 +180,28 @@ describe('VQ-052: the Claude account cell is one short line', () => {
   })
 })
 
+describe('VQ-052: the loan line wraps only where a phone needs it to', () => {
+  const loans =
+    '<details class="pp-loans"><summary class="pp-loan-sum"><span class="pp-nobr">7 accounts ·</span> lent by <span class="pp-nobr">Engineering</span></summary>' +
+    '<ul class="pp-loan-list"><li>ai-eng-1 (eng 1)</li></ul></details>'
+
+  it('holds the summary and each account to one line in the wide table', () => {
+    document.body.innerHTML = `<div class="ctl-table is-scroll"><table class="pp-table"><tbody><tr><td>${loans}</td></tr></tbody></table></div>`
+    // MUTATION: drop the wide-table rule -> the summary wraps under a long name.
+    expect(painted(document.querySelector('.pp-loan-sum')!, 'white-space', WIDE)).toBe('nowrap')
+    expect(painted(document.querySelector('.pp-loan-list > li')!, 'white-space', WIDE)).toBe('nowrap')
+  })
+
+  it('lets a phone record wrap it between whole words, never inside the count or a lender', () => {
+    document.body.innerHTML = `<div class="pp-record">${loans}</div>`
+    const PHONE: CascadeEnv = { width: 390 }
+    // MUTATION: make the summary nowrap everywhere -> a 390px record overflows.
+    expect(painted(document.querySelector('.pp-loan-sum')!, 'white-space', PHONE)).toBeNull()
+    expect(painted(document.querySelector('.pp-loan-list > li')!, 'white-space', PHONE)).toBeNull()
+    for (const span of document.querySelectorAll('.pp-loan-sum .pp-nobr')) expect(painted(span, 'white-space', PHONE)).toBe('nowrap')
+  })
+})
+
 describe('VQ-051: the grid has S5c\'s Platform role column', () => {
   it('draws Platform role after Person, and the role in it rather than beside the name', async () => {
     await mount(platform([person('bob@example.com'), person('owner@example.com'), person('devops@example.com')]))
