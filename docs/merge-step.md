@@ -155,7 +155,7 @@ code, as it starts CI and conflict rounds.
       pick task_... question 0 (step implement): picked 'Needs a look', the
       branch builds 'Needs action'; question: Which tile does a full pool show?
 
-  The line starts with the asking task and the question index, which is how
+  The line starts with the asking agent's id and the question index, which is how
   the tick records the picks a round is sent for. A free-text answer's line
   carries the owner's text instead of a label. No credential is read. The
   park holds nothing (invariant 1).
@@ -166,7 +166,7 @@ code, as it starts CI and conflict rounds.
   `merge_fix.pick_rounds` under the guard the CI and conflict rounds are
   claimed under, recording `pull_head` (the head the round starts from) and
   `picks`. Only for a pull request on the root's own branch, as the merge
-  task's submitter while still a member, it submits a one-step **claude-code**
+  agent's submitter while still a member, it submits a one-step **claude-code**
   continuation (`pick_fix_continuation`, step `pick-fix`). Its brief names
   each pick, nonce-fenced as data, and asks for `picks-built.json`. The park
   stays the same document until the worker parks again, so a round claimed at
@@ -178,7 +178,7 @@ code, as it starts CI and conflict rounds.
   against the pull request.
 * **The report.** The round writes `$SWARM_ARTIFACTS_DIR/picks-built.json`,
   one `{task_id, question_index, picked, builds_pick}` per pick. The merge
-  counts a pick as built only when the round's task is this branch's round
+  counts a pick as built only when the round's agent is this branch's round
   (signed spec verified against the round's own workflow, signed `continues`
   the root) and SUCCEEDED, it pushed a head other than `pull_head`, and its
   report says `builds_pick: true` for the pick as the owner now answers it.
@@ -201,7 +201,7 @@ code, as it starts CI and conflict rounds.
 **Invariants.** 1: the pick park holds no lease, pool count or execution,
 and the round is an ordinary agent admitted all-or-nothing like any other.
 5: the next merge attempt is fenced under a new generation, and the round is
-fenced as any task is. The worker accepts its head only from its signed
+fenced as any agent is. The worker accepts its head only from its signed
 spec. 9: the tick reads with the merge agent's own tenant's token, and the
 round is submitted as the merge's submitter while a member. 10: the round's
 profile is `claude-code`, chosen by the platform.
