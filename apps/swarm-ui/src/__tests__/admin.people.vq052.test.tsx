@@ -170,10 +170,25 @@ describe('VQ-052: the Claude account cell is one short line', () => {
     expect(visible(drawer.querySelector('[data-section="claude"]'))).toContain('ai-eng-7 (eng 7), lent by Engineering')
   })
 
-  it('reads the name whole at 1440: it does not shrink below its own width, up to the cap', async () => {
+  it('reads the name whole at 1440: the name over the address, the avatar on its line, the cell two lines', async () => {
     await mount(platform([borrower('bogdan@example.com', SEVEN, { display_name: 'Bogdan Alexandrescu' })]))
-    const who = rowOf('bogdan@example.com').querySelector('.pp-who')!
-    // MUTATION: drop the rule -> the cell shrinks the name to "Bogdan Alexand…" again.
+    const cell = rowOf('bogdan@example.com').querySelector('.pp-person')!
+    const who = cell.querySelector('.pp-who')!
+    const card = who.querySelector('.person-name')!
+    // The cell holds the avatar, the who and the GitHub mark, in that order.
+    expect([...cell.children].map((c) => c.className)).toEqual(['pp-avatar', 'pp-who', 'pp-gh'])
+    // The name and the address are separate boxes; nothing else prints between them.
+    expect(who.querySelector('.person-name-name')?.textContent).toBe('Bogdan Alexandrescu')
+    expect(who.querySelector('.person-name-email')?.textContent).toBe('bogdan@example.com')
+    // MUTATION: draw the name and the address on one line -> together they pass
+    // the 15rem cap, the address does not shrink, and the name is cut.
+    expect(painted(card, 'flex-direction', WIDE)).toBe('column')
+    expect(painted(who.querySelector('.person-name-dot')!, 'display', WIDE)).toBe('none')
+    // MUTATION: let the wide cell wrap -> the capped who falls under the
+    // avatar and the GitHub mark under that: three lines, 89px against 56px.
+    expect(painted(cell, 'flex-wrap', WIDE)).toBe('nowrap')
+    expect(painted(cell, 'align-items', WIDE)).toBe('flex-start')
+    // The who keeps its own width up to the cap; only an address past it is cut.
     expect(painted(who, 'flex-shrink', WIDE)).toBe('0')
     expect(painted(who, 'width', WIDE)).toBe('max-content')
     expect(painted(who, 'max-width', WIDE)).toBe('15rem')
