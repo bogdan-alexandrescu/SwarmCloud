@@ -1737,6 +1737,37 @@ async function fixtureAnswer(taskId: string): Promise<Result<TaskAnswer>> {
   }
 }
 
+/** The fixture agent with a live browser (`loadLiveSession`). */
+const BROWSER_FIXTURE_TASK = 'task_b40e5a1c'
+
+/**
+ * A LONG BROWSING LOG FOR THE LIVE-BROWSER FIXTURE (BROWSER-TAB-LIVE, part of
+ * #2423): the Browser tab's `◫ logs` column is reviewed against a log that
+ * overflows it, as a running browser agent's does (33 events on
+ * task_9e022a6b21d7437dbf7c, measured 2026-10-26). Eighteen navigate,
+ * snapshot and click steps, each a call and its result, after the four
+ * steps every fixture transcript starts with.
+ */
+function fixtureBrowsing(step: (n: number, over: Partial<TranscriptStep>) => TranscriptStep): TranscriptStep[] {
+  const tools = ['browser_navigate', 'browser_snapshot', 'browser_click'] as const
+  const out: TranscriptStep[] = []
+  for (let i = 0; i < 18; i += 1) {
+    const name = `mcp__playwright__${tools[i % tools.length]}`
+    const id = `toolu_b${String(i).padStart(2, '0')}`
+    const input =
+      i % 3 === 0 ? `{\n  "url": "https://example.com/page-${i}"\n}` : i % 3 === 1 ? '{}' : `{\n  "element": "link ${i}",\n  "ref": "e${i}"\n}`
+    out.push(step(5 + 2 * i, { kind: 'tool_call', tool: { id, name, input } }))
+    out.push(
+      step(6 + 2 * i, {
+        kind: 'tool_result',
+        role: 'user',
+        tool_result: { tool_use_id: id, is_error: false, content: `- Page URL: https://example.com/page-${i}\n- Page Title: Example Domain ${i}`, images: 0 },
+      }),
+    )
+  }
+  return out
+}
+
 async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<Result<TaskTranscript>> {
   await new Promise((r) => setTimeout(r, 60))
   noteFixtureProbe(route('/v1/tasks/{id}/transcript', { id: taskId }), 60, true)
@@ -1770,6 +1801,7 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
         step(1, { text: 'Reading the repository before changing anything.' }),
         step(2, { kind: 'tool_call', tool: { id: 'toolu_01', name: 'Read', input: '{\n  "file_path": "CONTRACT.md"\n}' } }),
         step(3, { kind: 'tool_result', role: 'user', tool_result: { tool_use_id: 'toolu_01', is_error: false, content: '# The contract\n...', images: 0 } }),
+        ...(taskId === BROWSER_FIXTURE_TASK ? fixtureBrowsing(step) : []),
         ...(finished && result !== null
           ? [step(4, { kind: 'result', role: null, text: result.text, meta: { subtype: result.subtype, is_error: result.is_error, num_turns: 7 } })]
           : []),

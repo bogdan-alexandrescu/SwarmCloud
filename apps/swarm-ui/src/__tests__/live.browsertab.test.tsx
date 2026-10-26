@@ -30,7 +30,7 @@
 // alone in `fitShape`; say "not reported" for a null origin; render the
 // banner's Take control with `refusal="line"`.
 
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import LIVE_CSS from '../styles/live.css?raw'
@@ -54,12 +54,27 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...api, USE_FIXTURES: false }
 })
 
-vi.mock('@novnc/novnc/core/rfb.js', () => ({
-  default: class {
-    addEventListener() {}
+/** noVNC's RFB, as far as LiveBrowser.tsx touches it: a canvas, and a 1440×987 frame reported on connect. */
+const rfb = vi.hoisted(() => {
+  class FakeRfb {
+    _fbWidth = 1440
+    _fbHeight = 987
+    constructor(readonly target: HTMLElement) {
+      const canvas = document.createElement('canvas')
+      canvas.width = 1440
+      canvas.height = 987
+      target.appendChild(canvas)
+    }
+    addEventListener(name: string, cb: () => void) {
+      if (name === 'connect') cb()
+    }
     disconnect() {}
-  },
-}))
+    clipboardPasteFrom() {}
+  }
+  return { FakeRfb }
+})
+
+vi.mock('@novnc/novnc/core/rfb.js', () => ({ default: rfb.FakeRfb }))
 
 const { LiveBrowserPane, deviceCaption, fitShape, stripVerdict } = await import('../LiveBrowser')
 
@@ -286,14 +301,21 @@ describe('BT-006: a finished agent’s tab says when it ended and plays its reco
     expect(document.querySelector('.live-ended')?.textContent).toContain(`ended ${hhmm}`)
   })
 
-  it('keeps the last frame, and the logs that were open, when the agent finishes while watched', () => {
+  it('keeps the last frame, and the logs that were open, when the agent finishes while watched', async () => {
     vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,QUJD')
+    api.mintLiveTicket.mockResolvedValue({
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: { session_id: 'ls_bt', ticket: 'x'.repeat(8), expires_at: new Date(Date.now() + 30_000).toISOString() },
+    })
+    api.openLiveSocket.mockImplementation(async (_s: string, _t: string, onOpen: (ws: WebSocket) => void) => {
+      onOpen({ readyState: 1, close() {} } as unknown as WebSocket)
+    })
     const { rerender } = pane(session())
     fireEvent.click(within(toolbar()).getByRole('button', { name: '◫ logs' }))
-    const canvas = document.createElement('canvas')
-    canvas.width = 1440
-    canvas.height = 987
-    document.querySelector('[data-live-screen]')!.appendChild(canvas)
+    // The screen drew a frame: noVNC is connected and has reported its size.
+    await waitFor(() => expect(document.querySelector('[data-live-screen] canvas')).not.toBeNull())
+    await waitFor(() => expect(document.querySelector('.live-caption')?.textContent).toMatch(/^Desktop · 1440×900/))
     rerender(<LiveBrowserPane task={done()} live={{ status: 'idle' }} reload={() => {}} />)
     const last = screen.getByRole('img', { name: /last drew/ }) as HTMLImageElement
     expect(last.getAttribute('src')).toBe('data:image/png;base64,QUJD')

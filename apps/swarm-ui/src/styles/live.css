@@ -14,22 +14,46 @@
    was drawn 424×291 and the lower half of the window was empty. Every box
    from the pane to the stage now takes the room left -- the window less the
    header, tabs, strip, toolbar and caption -- with no ceiling anywhere.
-   AND THE WIDTH TOO (QA12-19, QA p12): under a hand-off banner the room
-   left was the stage's floor again, and the device 424×291 beside an empty
-   width. LiveScreen gives the stage a min-height (`stageFloor`) that lets
-   the device fill the pane's width; the pane scrolls when that is more than
-   it has. The gutter is kept, so a scrollbar appearing does not narrow the
-   pane, change the floor and take the scrollbar away again. */
+   QA12-19 then gave the stage a min-height that let the device fill the
+   pane's width, and the pane scrolled when that was more than it had.
+   MEASURED 2026-10-26 (BT-003, part of #2423): it was more, on every running
+   agent -- 42% of the frame, its caption and 'View only.' sat below a 407 px
+   pane. The stage now takes the room left and no more, the chrome above it
+   is shorter (one-line strip, one-row toolbar) to leave it more room, and
+   the pane scrolls only under `.live-stage`'s small floor. The gutter is
+   kept, so a scrollbar appearing does not narrow the pane. */
 .ag-split-pane.is-browser > .th-host { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
-.live-tab { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
+.live-tab { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; container: live-tab / inline-size; }
 .live-note { color: var(--text-dim); font-size: var(--t-body); padding: 12px 0; }
 
 
+/* ONE LINE (BT-003, part of #2423): the address, who drives, ⓘ and the
+   badges, never wrapped; the address and who shrink to an ellipsis, their
+   whole text their title. A warning, the gate's word and "isn't using this
+   browser" are lines of their own under it, because they are the point.
+   MEASURED 2026-10-26: three lines, 103 px of a 407 px pane. */
 .live-strip {
-  display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline;
-  padding: 6px 12px; border-radius: var(--radius);
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 4px 12px; border-radius: var(--radius);
   border: 1px solid var(--line); border-left-width: 4px;
   font-size: var(--t-meta);
+}
+.live-strip-line { display: flex; flex-wrap: nowrap; gap: 12px; align-items: center; min-width: 0; }
+.live-strip-line > .live-origin, .live-strip-line > .live-strip-who {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.live-strip-line > .live-origin { flex: 0 1 auto; }
+.live-strip-line > .live-strip-who { flex: 0 1 auto; }
+/* ⓘ: the address's explanation, opened over the frame below it, not into the strip. */
+.live-strip-why { position: relative; flex: none; }
+.live-strip-why > summary { list-style: none; cursor: pointer; color: var(--text-dim); padding: 0 2px; }
+.live-strip-why > summary::-webkit-details-marker { display: none; }
+.live-strip-why > summary:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 1px; }
+.live-strip-why > .live-strip-say {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 30;
+  width: max-content; max-width: min(320px, calc(100vw - 24px));
+  padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface); color: var(--text); white-space: normal;
 }
 .live-strip.is-ok { border-left-color: var(--ok); }
 .live-strip.is-warn { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
@@ -41,14 +65,34 @@
 .live-origin { font-family: var(--mono); font-size: var(--t-body); }
 .live-origin-scheme, .live-origin-sub { color: var(--text-dim); }
 .live-origin-puny { margin-left: 8px; color: var(--bad-ink); font-size: var(--t-meta); }
-.live-strip-who { margin-left: auto; color: var(--text-dim); }
+.live-strip-who { color: var(--text-dim); }
 
 /* The mockup's toolbar: chips, rotate, touch, logs, and ⤢ Theater at the
    right with "Let any member take control". ONE ROW WHERE IT FITS (LB-V1,
    visual QA 5 U3): no group breaks inside itself, and the why of a disabled
    device bar is its tooltip, not a line here, so the toolbar wraps only when
    its controls are wider than the pane. */
-.live-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: var(--t-meta); }
+/* TWO GROUPS (BT-011): what changes the agent's browser at the left, in a
+   dashed box, what changes this view at the right. The inline end keeps
+   clear of the pane's edge, where an overlay scrollbar covered the last
+   letter of "Let any member take control" (MEASURED 2026-10-26). */
+.live-toolbar {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: var(--t-meta);
+  padding-inline-end: 12px;
+}
+.live-toolbar-control {
+  display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  padding: 2px 8px 2px 2px; border: 1px dashed var(--line); border-radius: var(--radius);
+}
+.live-device-menu { position: relative; display: inline-flex; }
+.live-device-pop {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 20;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  width: max-content; max-width: min(460px, calc(100vw - 24px)); padding: 10px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.16);
+}
+.live-device-pop > .live-chips { flex-wrap: wrap; }
 .live-device { display: inline-flex; gap: 6px; align-items: center; }
 .live-open { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
 /* The member-control confirm (QA12-11) opens under its checkbox, as Take control's does under its button. */
@@ -63,8 +107,60 @@
    measured from it, and a row sized to the canvas is what drew a phone 1552px
    tall in a 900px window (LB-V1). */
 .live-body { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 8px; flex: 1; min-height: 0; }
-.live-tab.with-logs .live-body { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
-.live-logs { min-height: 0; overflow: auto; }
+/* THE SPLIT IS THE PERSON'S (BT-002, part of #2423): `--live-split` is the
+   logs column's share, set by LiveBrowser.tsx's separator. MEASURED
+   2026-10-26: a fixed 2:3 split left the log 241 px at 1440 and 208 px at
+   1024. */
+.live-tab.with-logs .live-body {
+  grid-template-columns: minmax(0, var(--live-split, 45%)) 6px minmax(0, 1fr);
+  grid-template-areas: "logs split screen";
+  gap: 0 4px;
+}
+.live-tab.with-logs .live-logs { grid-area: logs; }
+.live-tab.with-logs .live-split { grid-area: split; }
+.live-tab.with-logs .live-screen-wrap, .live-tab.with-logs .live-last { grid-area: screen; }
+.live-tab.with-logs .live-body.is-logs-only { grid-template-columns: minmax(0, 1fr); grid-template-areas: "logs"; }
+.live-split {
+  cursor: col-resize; touch-action: none; border-radius: 3px;
+  background: var(--line);
+}
+.live-split:hover, .live-split:focus-visible { background: var(--sk-ac); outline: none; }
+/* THE LOGS COLUMN NEVER SCROLLS AS ONE BOX (BT-002): it hands its height to
+   AgentLogs' `.ag-logs`, a flex column whose body is the scroller, so the
+   log's own toolbar stays put and only the lines scroll. MEASURED
+   2026-10-26: the column scrolled as a whole, and at 1024 its body started
+   4 px below the pane's edge. */
+.live-logs { display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
+.live-logs > .ag-logs { flex: 1 1 auto; min-height: 0; margin-bottom: 0; }
+
+/* STACKED IN A NARROW TAB (BT-002): under 480 px of tab -- a phone -- the
+   frame on top and the logs under it, each with a share of the height. The
+   1024 pane (527 px) and the 1440 one (611 px) stay side by side, where the
+   separator shares the width. A tab this narrow is also too narrow for the
+   address, who and the badges on one line: there the strip's line wraps,
+   and the badges' row wraps inside itself. */
+@container live-tab (max-width: 479px) {
+  .live-tab.with-logs .live-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 3fr) minmax(160px, 2fr);
+    grid-template-areas: "screen" "logs";
+    gap: 8px;
+  }
+  .live-split { display: none; }
+  .live-strip-line { flex-wrap: wrap; }
+}
+
+/* A FINISHED AGENT'S TAB (BT-006): the last frame and the logs, if this tab
+   was watching, then the recordings. It is read top to bottom and the pane
+   scrolls, so its body keeps a height of its own. */
+.live-tab.is-finished { flex: none; }
+.live-tab.is-finished .live-body { flex: none; height: min(60vh, 520px); }
+.live-ended-when { color: var(--text); font-weight: 600; }
+.live-last { margin: 0; min-height: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.live-last > img {
+  flex: 1 1 0; min-height: 0; max-width: 100%; object-fit: contain;
+  border: 1px solid var(--line); border-radius: var(--radius);
+}
 
 /* THE STAGE (LB-V1, visual QA 5 B3): the device fitted into it both ways
    and centred, the caption under it. The stage takes the room the tab has
@@ -73,7 +169,7 @@
    `.live-frame` to the fit; noVNC scales its canvas to the screen inside. */
 .live-screen-wrap { display: flex; flex-direction: column; gap: 4px; min-height: 0; }
 .live-stage {
-  flex: 1 1 0; min-height: 320px; overflow: hidden;
+  flex: 1 1 0; min-height: 160px; overflow: hidden;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
 }
 .live-frame { box-sizing: content-box; flex: none; display: flex; width: 100%; height: 100%; }
@@ -92,7 +188,9 @@
    frame is still a bordered, rounded box. */
 .live-frame.is-desktop.is-bordered { box-shadow: inset 0 0 0 1px var(--line); border-radius: var(--radius); }
 .live-frame.is-tablet > .live-screen { border-radius: 12px; }
-.live-stage-caption { flex: none; }
+.live-stage-caption {
+  flex: none; display: flex; flex-wrap: wrap; justify-content: center; gap: 0 12px;
+}
 .live-screen {
   flex: 1; min-width: 0; min-height: 0; border-radius: var(--radius);
   border: 1px solid var(--line); background: var(--bg); overflow: hidden;
@@ -107,7 +205,7 @@
   padding: 2px 8px; border-radius: var(--radius); background: var(--warn); color: var(--bg);
   font-size: var(--t-meta); white-space: nowrap;
 }
-.live-screen-say { color: var(--text-dim); font-size: var(--t-meta); }
+.live-screen-say { color: var(--text-dim); font-size: var(--t-meta); text-align: center; }
 
 .live-control { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; position: relative; }
 .live-control-view { color: var(--text-dim); font-size: var(--t-meta); }

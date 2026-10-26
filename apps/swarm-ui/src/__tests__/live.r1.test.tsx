@@ -157,9 +157,12 @@ describe('LB-R1: the stage takes the height the pane has left', () => {
     }
   })
 
-  it('gives the stage a floor of 320 px and no ceiling', () => {
+  // The floor was 320 px until BT-003 (#2423) measured it, with the old
+  // width-led min-height, pushing the frame below a 407 px pane; it is now a
+  // small floor, and the stage is the room the pane has left.
+  it('gives the stage a floor of 160 px and no ceiling', () => {
     const { stage, chain } = inPane()
-    expect(getComputedStyle(stage).minHeight).toBe('320px')
+    expect(getComputedStyle(stage).minHeight).toBe('160px')
     for (const el of chain) {
       const max = getComputedStyle(el).maxHeight
       expect(max === '' || max === 'none', `${describeBox(el)} max-height ${max}`).toBe(true)
