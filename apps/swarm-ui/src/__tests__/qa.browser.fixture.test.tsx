@@ -95,12 +95,13 @@ describe('the fixture build has one live-browser agent', () => {
     const read = await loadTranscript(FINISHED)
     if (read.status !== 'ok') throw new Error(`the transcript of ${FINISHED} read ${read.status}`)
     expect(read.data.complete).toBe(true)
-    const calls = read.data.steps.filter((s) => s.kind === 'tool_call' && s.tool?.name.startsWith('browser_'))
+    const steps = read.data.steps ?? []
+    const calls = steps.filter((s) => s.kind === 'tool_call' && (s.tool?.name ?? '').startsWith('browser_'))
     // MUTATION: give it no browser steps, or the running agent's forty -> fails.
     expect(calls.length).toBeGreaterThan(0)
     expect(calls.length).toBeLessThanOrEqual(10)
     // It ends as a finished log does: its result last.
-    expect(read.data.steps.at(-1)?.kind).toBe('result')
+    expect(steps.at(-1)?.kind).toBe('result')
   })
 
   it('answers live_browser true with an open session for that task only', async () => {
