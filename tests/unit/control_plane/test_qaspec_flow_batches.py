@@ -237,7 +237,7 @@ def test_a_leg_over_the_workflow_step_bound_is_refused_naming_the_smallest_batch
 
 def test_a_150_flow_leg_fits_the_apis_input_bound() -> None:
     bound = next(f.default for f in dataclasses.fields(Settings) if f.name == "max_input_bytes")
-    longest = "g" * 480
+    longest = "g" * 495
     target = _target(flows=_flows(150, goal=longest), widths=list(qaspec.PRESETS))
     for per_step in (5, 15, 30):
         spec = qaspec.render(target, flows_per_step=per_step)
@@ -247,6 +247,17 @@ def test_a_150_flow_leg_fits_the_apis_input_bound() -> None:
         # "workflow input"): MUTATION: restate every width's recording under
         # every flow and this passes the bound.
         assert size < bound, (per_step, size)
+
+
+def test_a_leg_whose_prompts_pass_the_input_bound_is_refused_with_the_reason() -> None:
+    # 500 two-byte characters a goal: 150 KB of goals before any instruction.
+    target = _target(flows=_flows(150, goal="\u00e9" * 495), widths=list(qaspec.PRESETS),
+                     screens=[{"id": f"s{i}", "path": f"/page/{i}"} for i in range(60)])
+    with pytest.raises(qaspec.QaSpecError) as err:
+        qaspec.render(target, flows_per_step=5)
+    # MUTATION: drop the input check and the submission refuses it as "workflow input", unexplained.
+    assert str(qaspec.MAX_INPUT_BYTES) in err.value.message
+    assert "flows_per_step" in err.value.message and "goals" in err.value.message
 
 
 def test_the_number_of_batches_is_the_ceiling_of_flows_over_the_batch_size() -> None:

@@ -1350,7 +1350,9 @@ runs the legs it names
   when unset). Each name is checked against the target at create, at edit
   and at every firing; a name the target lacks is refused
   `qa_target_environment_unknown`. Nothing else about the run is a schedule
-  parameter. The URL, sign-in, screens, flows and filing rules all
+  parameter. A firing names no `flows_per_step` (QA-FLOWS-CAP, 2026-10-26),
+  so its flows run in batches of the workspace's `qa_flows_per_step`, else 15,
+  and its `qa_target_runs` rows record which. The URL, sign-in, screens, flows and filing rules all
   belong to the target, which a workspace admin sets (design §1.1). So a
   schedule can only start a run a member could start by hand (invariant 10).
 * **The tenant.** The target must be the schedule's tenant's own. At create
