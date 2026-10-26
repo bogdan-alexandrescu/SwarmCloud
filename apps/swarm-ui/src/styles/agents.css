@@ -599,12 +599,21 @@
    log grew to its content, the parent scrolled instead, and Follow set the
    body's `scrollTop` to no effect -- the log opened at its top (scrollTop 0
    of 1632) and stayed put as steps arrived. There it is the parent's
-   height, border included, and its body scrolls. */
-.live-logs > .ag-logs,
-.th-left-body > .ag-logs {
+   height, border included, and its body scrolls. Not in the phone theater
+   (theater.css `max-width: 640px`): there the Logs panel is a strip of about
+   51px, so the log at its height left its body 8px -- unreadable -- and
+   `.th-left-body` scrolls the whole log instead, as it did before. */
+.live-logs > .ag-logs {
   box-sizing: border-box;
   height: 100%;
   margin-bottom: 0;
+}
+@media (min-width: 641px) {
+  .th-left-body > .ag-logs {
+    box-sizing: border-box;
+    height: 100%;
+    margin-bottom: 0;
+  }
 }
 /* ONE ROW OF CONTROLS (U10a D13; U11a N11 at the 380px split). The four
    streams are a segmented control that never scrolls or spills; the search

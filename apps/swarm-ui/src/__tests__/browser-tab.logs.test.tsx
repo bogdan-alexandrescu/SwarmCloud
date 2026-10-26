@@ -12,7 +12,8 @@
 //
 // MUTATIONS, one per block: put `follow` back in `BAR_SPILL` and spill it
 // under More; drop the body's ResizeObserver in AgentLogs.tsx; drop the
-// `.live-logs > .ag-logs, .th-left-body > .ag-logs` rule (styles/agents.css);
+// `.live-logs > .ag-logs, .th-left-body > .ag-logs` rule (styles/agents.css),
+// or its theater half's `min-width: 641px` scope;
 // drop the `max-width: 259px` streams grid; have `readTranscriptWindow` return
 // the first window for a finished agent, or drop the open-at-end effect.
 
@@ -273,6 +274,22 @@ describe('BT-001: the log beside the browser follows, and says so', () => {
       }
       // The Logs tab's own flex layout is untouched.
       expect(painted(tab!, 'height', env)).toBeNull()
+    } finally {
+      host.remove()
+    }
+  })
+
+  it('in the phone theater, the log keeps its content height, so the 51px Logs panel scrolls a readable log', () => {
+    const host = document.createElement('div')
+    host.innerHTML = '<div class="th-left-body"><section class="ag-logs"></section></div>'
+    document.body.appendChild(host)
+    try {
+      const theater = host.querySelector('.ag-logs')!
+      // Measured on the review render at 390: the panel was 51px, the log
+      // 35px and its body 8-9px.
+      expect(painted(theater, 'height', { width: 390 })).not.toBe('100%')
+      expect(painted(theater, 'height', { width: 640 })).not.toBe('100%')
+      expect(painted(theater, 'height', { width: 641 })).toBe('100%')
     } finally {
       host.remove()
     }
