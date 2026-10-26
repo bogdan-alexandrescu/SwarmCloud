@@ -159,11 +159,11 @@ async function shell(profile: Response): Promise<{ container: HTMLElement; asked
 const line = (c: HTMLElement) => c.querySelector<HTMLElement>('.sk-pfoot .sk-pfrow > b')
 
 describe("the panel's signed-in line", () => {
-  it("shows the caller's saved first name, the full name in its title, and the email below unchanged", async () => {
+  it("shows the caller's saved first name, the full name in its title, and the email in the role line's title", async () => {
     const { container, asked } = await shell(json(200, { identity: { email: EMAIL, display_name: 'Bogdan Alexandrescu' } }))
     await waitFor(() => expect(line(container)?.textContent).toBe('Bogdan'), { timeout: 4000 })
     expect(line(container)!.getAttribute('title')).toBe('Bogdan Alexandrescu')
-    expect(container.querySelector('.sk-pfoot small')?.textContent).toBe(EMAIL)
+    expect(container.querySelector('.sk-pfoot small')?.getAttribute('title')).toBe(EMAIL)
     // Once per session, not once per render.
     expect(asked()).toBe(1)
   })
@@ -172,7 +172,7 @@ describe("the panel's signed-in line", () => {
     const { container, asked } = await shell(json(200, { identity: { email: EMAIL, display_name: null } }))
     await waitFor(() => expect(asked()).toBe(1), { timeout: 4000 })
     await waitFor(() => expect(line(container)?.textContent).toBe('bogdan'), { timeout: 4000 })
-    expect(container.querySelector('.sk-pfoot small')?.textContent).toBe(EMAIL)
+    expect(container.querySelector('.sk-pfoot small')?.getAttribute('title')).toBe(EMAIL)
   })
 
   it('shows the local part when the profile cannot be read', async () => {

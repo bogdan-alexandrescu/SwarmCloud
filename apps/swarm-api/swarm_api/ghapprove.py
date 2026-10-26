@@ -15,6 +15,16 @@ second-person rule with its owner waiver (#2259) and the audit are the
 console's, and two comments racing the console's approve make one
 transition: the loser meets `already_decided`.
 
+A PLATFORM-SCOPE SCHEDULE'S PLAN AND MERGE ARE A PLATFORM ADMIN'S (BGD,
+2026-10-25; PLATFORM-SCHED-ROUTES, part of #2157), here as in the inbox:
+when the schedule the run's or the record's STORED reference names is
+platform-scope, `_platform_only` asks the directory, fresh, whether the
+member the comment resolved to is a platform admin (`member_auth` builds
+nobody wider than a member), and refuses anyone else with the inbox's
+`platform_admin_required` and its log line, before the hold or anything
+moves. PLATFORM_OWNER is a platform admin, so the owner waiver still
+applies to the owner; nobody else gains anything.
+
 THE POLL IS BOUNDED BY THE INBOX. It reads comments only on the threads of
 PLANNED issue runs (the inbox's projected `plan` and `hold` items) and of
 pending `merge` records, at most `POLL_PER_TICK` threads a tick and
@@ -395,6 +405,28 @@ def _require_member(ctx: Any, auth: Any) -> None:
         raise Refused("the member's role could not be read now", reply=False, retry=True) from None
 
 
+def _platform_only(ctx: Any, auth: Any, schedule: Mapping[str, Any] | None, action: str) -> None:
+    """`routes.approvals._platform_only` for the member a comment resolved to.
+
+    Their AuthContext is a member's (`is_admin` False), so only for a
+    platform-scope schedule is the directory asked, fresh, whether they are a
+    platform admin; the answer is used for this check alone. A lookup that
+    fails is `UpstreamUnavailable`, which `handle` retries. The reply is
+    constant text with the code in it."""
+    from .routes import approvals as approval_routes
+    from .routes import schedules as schedule_routes
+
+    if schedule is not None and not auth.is_owner and schedule_routes._platform_scope(schedule):
+        auth = dataclasses.replace(auth, is_admin=ctx.authenticator.holds_platform_admin(auth.email, fresh=True))
+    try:
+        approval_routes._platform_only(auth, schedule, action)
+    except ApiError as exc:
+        if exc.code != "platform_admin_required":
+            raise
+        raise Refused("platform_admin_required: this run belongs to a platform-scope schedule, and only a "
+                      "platform admin approves its plan or its merge") from None
+
+
 def _audit_detail(item: Item, comment: Comment, email: str) -> dict[str, Any]:
     return {"via": VIA, "comment_id": comment.id, "login": comment.login, "member": email}
 
@@ -408,6 +440,8 @@ def _approve_plan(ctx: Any, item: Item, auth: Any, comment: Comment) -> None:
     run = IssueRuns(ctx.db, now=ctx.now).get(item.tenant_id, item.run.id)
     if run.state != RunState.PLANNED:
         raise Refused(ALREADY_DECIDED, reply=False)
+    _platform_only(ctx, auth, approvals.read_schedule(ctx.db, item.tenant_id,
+                                                      (run.schedule or {}).get("schedule_id")), "approve")
     try:
         moved = run_routes._approve(ctx, auth, item.tenant_id, run, digest=item.digest, by=auth.email)
     except InvalidRunTransition:
@@ -426,6 +460,7 @@ def _approve_merge(ctx: Any, item: Item, auth: Any, comment: Comment) -> None:
     """The inbox's approve of a `merge` record (`routes.approvals.approve`), by comment."""
     record = item.record or {}
     schedule = approvals.read_schedule(ctx.db, item.tenant_id, (record.get("subject") or {}).get("schedule_id"))
+    _platform_only(ctx, auth, schedule, "approve")
     run = IssueRuns(ctx.db, now=ctx.now).get(item.tenant_id, item.run.id)
     if run.approval_hold:
         approvals.check_hold(ctx, run, email=auth.email, is_owner=auth.is_owner)

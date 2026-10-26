@@ -49,7 +49,11 @@ test('Admin asks what each of its tabs answers, in tab order (AH-23)', () => {
     // which moved there. Workspaces you admin's clause, last, since
     // NAV-ADMIN-ROLE (part of #1633, owner decision 2026-10-19 "All under
     // Profile; Admin by role"): a workspace admin reaches Admin for it.
-    'What is each ceiling set to, who is registered to use this platform, how many agents are in each state, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer?',
+    // Platform counts' clause asks about time since COUNTS-PAGE (part of
+    // #2149): the page draws how many agents ran per day, week or month, for
+    // how long and at what estimated cost, below its state counts.
+    // MUTATION: restore the clause without "over time" in App.tsx.
+    'What is each ceiling set to, who is registered to use this platform, how many agents are in each state and how many ran over time, for how long and at what estimated cost, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer?',
   )
 })
 

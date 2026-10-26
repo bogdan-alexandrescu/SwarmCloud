@@ -315,6 +315,8 @@ CODECS: tuple[Codec, ...] = (
             "repository_url_redaction_count", "waiting_for", "waiting", "account", "links",
             "heartbeat_at", "heartbeat_grace_seconds", "heartbeat",
             "forge_credential_source",
+            # BROWSER-USE-FLAG (part of #2322): lifted from `result_summary`.
+            "browser_used", "browser_use",
         ),
     ),
     Codec(

@@ -12,7 +12,16 @@
 //   * a firing whose attempts could not be read draws a dash with its reason,
 //     never an empty lane; a failed read dashes every lane with the failure;
 //   * one read per page of firings: the page's ids, at most SPAN_PAGE, and
-//     Older reads the next page's.
+//     Older reads the next page's;
+//   * the list under the lanes (SCHED-HISTORY-FOLLOWUP, part of #1109) names
+//     each work item in words -- an issue run by its issue's number and title,
+//     its run link, its state -- with its cost, and a cost never recorded as
+//     a dash with the reason `/spans` gave, never $0;
+//   * that list is schedules.html's History frame (SCHED-HISTORY-CSS, BGD
+//     2026-10-25): 12px under the lanes, each item's cost right-aligned in its
+//     own column on a desktop ($11.30, $9.80, a dash whose reason is its
+//     title), stacked under the words on a phone (390). Asked of `painted`
+//     (cssgate's cascade), because jsdom applies no `@media` block.
 //
 // The bodies are `routes/schedules.py::schedule_to_api`'s, `firing_to_api`'s
 // and `list_firing_spans`'s shapes. Placeholders only; nothing is token-shaped.
@@ -21,6 +30,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 import { Routed } from './screenroute'
+import type { CascadeEnv } from './cssgate'
+import { painted } from './marks'
 
 const WAIT = { timeout: 4000 }
 const KEY = 'swarm.schedule.history.view'
@@ -277,5 +288,143 @@ describe("a schedule's History timeline", () => {
     await waitFor(() => expect(lanes().map((l) => l.dataset.firingLane)).toEqual(['sch_a:11', 'sch_a:12']), WAIT)
     await waitFor(() => expect(reads()).toHaveLength(2), WAIT)
     expect(reads()[1]).toEqual(['sch_a:11', 'sch_a:12'])
+  })
+
+  it('lists each work item under the lanes: its issue, its run link, its state in words and its cost', async () => {
+    const planner = spanTask('task_plan', 1, 2, { label: 'plan' })
+    const half = spanTask('task_half', 1, 2)
+    const none = spanTask('task_none', 1, 1)
+    const { go } = await mount(
+      [firing(1, { work: [
+        { kind: 'issue_run', id: 'run_212' }, { kind: 'issue_run', id: 'run_9' }, { kind: 'task', id: 'task_half' },
+        { kind: 'task', id: 'task_none' }, { kind: 'api_action', id: 'label:ready', outcome: 'succeeded' },
+      ] })],
+      (url) => ({
+        status: 200,
+        body: {
+          firings: askedOf(url).map((id) => ({
+            firing_id: id,
+            items: [
+              item('run_212', [planner], {
+                kind: 'issue_run', state: 'CHECKING', updated_at: minutesAgo(1440 - 30),
+                issue: { number: 212, ref: 'example-org/example-api#212', url: 'https://github.com/example-org/example-api/issues/212', title: 'Orders endpoint 500 on empty cart' },
+                cost: { reported_usd: 1.75, unreported_attempts: 0, unread: null },
+              }),
+              item('run_9', [], {
+                kind: 'issue_run', state: 'PLANNING', unread: 'it ran no task yet',
+                issue: { number: 9, ref: 'example-org/example-api#9', url: 'https://github.com/example-org/example-api/issues/9', title: null },
+                cost: { reported_usd: null, unreported_attempts: 0, unread: 'it ran no task yet' },
+              }),
+              item('task_half', [half], { cost: { reported_usd: 2, unreported_attempts: 1, unread: null } }),
+              item('task_none', [none], { cost: { reported_usd: null, unreported_attempts: 1, unread: 'no attempt recorded a cost' } }),
+              item('label:ready', [], { kind: 'api_action', unread: 'an API action runs no attempt: it ended when it was recorded',
+                cost: { reported_usd: null, unreported_attempts: 0, unread: 'an API action runs no attempt, so it records no cost' } }),
+            ],
+          })),
+          not_found: [],
+        },
+      }),
+    )
+    const list = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('[data-testid="sc-history-items"]')
+      expect(el).not.toBeNull()
+      return el!
+    }, WAIT)
+    const row = (key: string) => list.querySelector<HTMLElement>(`[data-work="${key}"]`)!
+    const cost = (key: string) => visible(row(key).querySelector<HTMLElement>('[data-cost]'))
+    // An issue run: its issue's number and title, the run link, its state in words, its cost.
+    const run = row('issue_run:run_212')
+    expect(visible(run)).toContain('#212 Orders endpoint 500 on empty cart')
+    expect(visible(run)).toContain('checking CI on its pull request')
+    const link = [...run.querySelectorAll('a')].find((a) => visible(a) === 'run_212')
+    expect(link, 'the row does not link its run').toBeTruthy()
+    fireEvent.click(link!)
+    expect(go).toHaveBeenCalledWith('work/runs?run=run_212')
+    expect(cost('issue_run:run_212')).toBe('$1.75')
+    // A title the run never read is said, and the number still names it.
+    expect(visible(row('issue_run:run_9'))).toContain('#9')
+    expect(visible(row('issue_run:run_9'))).toContain('title not read')
+    expect(visible(row('issue_run:run_9'))).toContain('planning')
+    // A floor is marked partial, with the attempts it does not cover.
+    expect(cost('task:task_half')).toContain('$2.00')
+    expect(cost('task:task_half')).toContain('1 attempt unreported')
+    expect(visible(row('task:task_half'))).toContain('succeeded')
+    // A cost never recorded is a dash with its reason, never $0.
+    expect(cost('task:task_none')).toBe('— no attempt recorded a cost')
+    expect(cost('issue_run:run_9')).toBe('— it ran no task yet')
+    expect(cost('api_action:label:ready')).toBe('— an API action runs no attempt, so it records no cost')
+    expect(visible(row('api_action:label:ready'))).toContain('label:ready')
+    expect(visible(list)).not.toContain('$0')
+  })
+
+  it('puts each cost in its own right-aligned column on a desktop, and under the words on a phone', async () => {
+    const WIDE: CascadeEnv = { width: 1440 }
+    const PHONE: CascadeEnv = { width: 390 }
+    const reason = "the run's attempts are still running; cost is written when an attempt ends"
+    await mount(
+      [firing(1, { work: [{ kind: 'issue_run', id: 'run_212' }, { kind: 'issue_run', id: 'run_207' }, { kind: 'task', id: 'task_215' }] })],
+      (url) => ({
+        status: 200,
+        body: {
+          firings: askedOf(url).map((id) => ({
+            firing_id: id,
+            items: [
+              item('run_212', [spanTask('task_a', 1, 1)], {
+                kind: 'issue_run', state: 'CHECKING',
+                issue: { number: 212, ref: 'example-org/example-api#212', url: 'https://github.com/example-org/example-api/issues/212', title: 'Orders endpoint 500 on empty cart' },
+                cost: { reported_usd: 11.3, unreported_attempts: 0, unread: null },
+              }),
+              item('run_207', [spanTask('task_b', 1, 1)], {
+                kind: 'issue_run', state: 'MERGE_WAITING',
+                issue: { number: 207, ref: 'example-org/example-api#207', url: 'https://github.com/example-org/example-api/issues/207', title: 'Totals round wrong' },
+                cost: { reported_usd: 9.8, unreported_attempts: 0, unread: null },
+              }),
+              item('task_215', [spanTask('task_215', 1, 1)], { cost: { reported_usd: null, unreported_attempts: 1, unread: reason } }),
+            ],
+          })),
+          not_found: [],
+        },
+      }),
+    )
+    const list = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('[data-testid="sc-history-items"]')
+      expect(el).not.toBeNull()
+      return el!
+    }, WAIT)
+    const rows = [...list.querySelectorAll<HTMLElement>(':scope > li')]
+    expect(rows).toHaveLength(3)
+    // MUTATION: drop `.sht-list`'s margin and the list sits on the last lane.
+    expect(painted(list, 'margin-top', WIDE)).toBe('12px')
+    expect(painted(list, 'margin-top', PHONE)).toBe('12px')
+    for (const li of rows) {
+      const words = li.querySelector<HTMLElement>(':scope > .sht-words')
+      const cost = li.querySelector<HTMLElement>(':scope > [data-cost]')
+      expect(words, 'the words are not one cell').not.toBeNull()
+      expect(cost, 'the cost is not its own cell').not.toBeNull()
+      expect(words!.contains(cost)).toBe(false)
+      // A desktop: two columns, the cost in the second, right-aligned.
+      // MUTATION: leave the li a block (the Audit list's) and the cost is a second line.
+      expect(painted(li, 'display', WIDE)).toBe('grid')
+      expect(painted(li, 'grid-template-columns', WIDE)).toBe('minmax(0, 1fr) auto')
+      expect(painted(cost!, 'grid-column', WIDE)).toBe('2')
+      expect(painted(cost!, 'text-align', WIDE)).toBe('right')
+      // A phone: one column, the cost under the words, from the left.
+      // MUTATION: drop the 640px rule and the column squeezes the words at 390.
+      expect(painted(li, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
+      expect(painted(cost!, 'grid-column', PHONE)).toBe('1')
+      expect(painted(cost!, 'text-align', PHONE)).toBe('left')
+    }
+    const costOf = (key: string) => list.querySelector<HTMLElement>(`[data-work="${key}"] [data-cost]`)!
+    expect(visible(costOf('issue_run:run_212'))).toBe('$11.30')
+    expect(visible(costOf('issue_run:run_207'))).toBe('$9.80')
+    // The dash: its reason is its title, and on a desktop the words are clipped
+    // out of the column (still read aloud); on a phone they show under the words.
+    const dash = costOf('task:task_215').querySelector<HTMLElement>('.sht-dash')
+    expect(dash, 'no dash').not.toBeNull()
+    expect(dash!.getAttribute('title')).toBe(reason)
+    expect(visible(costOf('task:task_215'))).toBe(`— ${reason}`)
+    const why = dash!.querySelector<HTMLElement>('.sht-why')!
+    expect(painted(why, 'clip-path', WIDE)).toBe('inset(50%)')
+    expect(painted(why, 'clip-path', PHONE)).toBe('none')
   })
 })

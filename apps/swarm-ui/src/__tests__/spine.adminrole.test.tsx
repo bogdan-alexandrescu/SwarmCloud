@@ -84,7 +84,8 @@ const adminItem = () => document.querySelector<HTMLAnchorElement>('.sk-spine a[d
 /** The Admin pages in the panel, without the "In Automate" links under them (S1b, CONFIG-PANEL-E). */
 const panelRows = () => [...document.querySelectorAll('.sk-panel .sk-pk:not(.sk-pk-out) .sk-pl')].map((e) => e.textContent)
 /** The session is read once the panel foot names the person. */
-const signedIn = () => expect(document.querySelector('.sk-pfoot small')?.textContent).toBe('ana.b@example.com')
+// The foot's second line is the role since CONFIG-ADMIN-POLISH (S1a); the email is its title.
+const signedIn = () => expect(document.querySelector('.sk-pfoot small')?.getAttribute('title')).toBe('ana.b@example.com')
 
 afterEach(() => {
   cleanup()
@@ -148,22 +149,25 @@ describe('who sees Admin (NAV-ADMIN-ROLE)', () => {
     expect(adminItem()).toBeNull()
   })
 
-  it('shows a workspace admin of eng only Workspaces you admin, and Admin opens it', async () => {
+  it('shows a workspace admin of eng only People and roles and Workspaces you admin, and Admin opens the second', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin'), group('ops', 'member')])
     await shell('admin', 'workspaces')
     await waitFor(() => expect(adminItem()).not.toBeNull())
     expect(adminItem()!.getAttribute('href')).toBe('/admin/workspaces')
     expect(adminItem()!.querySelector('.sk-lkd, .sk-ic.sk-lk')).toBeNull()
-    expect(panelRows()).toEqual(['Workspaces you admin'])
+    // ADMIN-PEOPLE-ROLES (part of #2157): People and roles is theirs too,
+    // scoped to the workspaces they administer.
+    expect(panelRows()).toEqual(['People and roles', 'Workspaces you admin'])
   })
 
-  it('shows a platform admin the six Admin pages, their workspaces\' group first and Runner sizes beside Pool limits (SIZES-UI)', async () => {
+  it('shows a platform admin the seven Admin pages, their workspaces\' group first and Runner sizes beside Pool limits (SIZES-UI)', async () => {
     serve(ME(true), [PERSONAL, group('eng', 'admin', { role: { name: 'admin', source: 'platform_admin' } })])
     await shell('admin', 'limits')
     await waitFor(() => expect(adminItem()).not.toBeNull())
     expect(adminItem()!.getAttribute('href')).toBe('/admin/limits')
     // Their workspaces' group first, then the platform's (S1b, CONFIG-PANEL-E).
-    expect(panelRows()).toEqual(['People', 'Workspaces you admin', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts'])
+    // Platform secrets (SSC-UI, part of #2158) last of the platform's, as proposal E S1b draws it.
+    expect(panelRows()).toEqual(['People and roles', 'Workspaces you admin', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets'])
   })
 })
 
@@ -186,11 +190,11 @@ describe('Admin › Workspaces you admin (NAV-ADMIN-ROLE)', () => {
     expect(eng.querySelector('.wya-name b')?.textContent).toBe('eng@example.com')
     const links = [...eng.querySelectorAll<HTMLAnchorElement>('.wya-links a')]
     expect(links.map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
-      // The pages' own addresses are still `settings/*`; they land on Config since CONFIG-NAV.
-      ['Workspace', '/config/workspace'],
+      // The Config tabs' own names and addresses (S10a, CONFIG-ADMIN-POLISH).
+      ['Workspace Settings', '/config/workspace'],
       ['MCP servers', '/config/mcp-servers'],
       ['People and roles', '/config/people'],
-      ['Workspace key', '/settings/keys'],
+      ['Secrets', '/config/secrets'],
     ])
     const { chosenTenant } = await import('../fetch')
     expect(chosenTenant()).toBeNull()

@@ -341,11 +341,29 @@ def test_a_day_stored_under_v8_is_derived_again_under_v9():
         "ended": outcomes._encode_rows([], outcomes.ENDED_COLS),
         "arrived": outcomes._encode_rows([], outcomes.ARRIVED_COLS),
     }
-    # MUTATION: leave DERIVE_VERSION at 8 and this is 8.
-    assert outcomes.DERIVE_VERSION == 9
+    # MUTATION: leave DERIVE_VERSION at 8 and this is 8. (10 since #2322.)
+    assert outcomes.DERIVE_VERSION >= 9
     # MUTATION: accept another derive version and the v8 day is served as is.
     assert outcomes._decode_stored(base, []) is None
-    assert outcomes._decode_stored({**base, "derive_version": 9}, []) is not None
+    assert outcomes._decode_stored({**base, "derive_version": outcomes.DERIVE_VERSION}, []) is not None
+
+
+def test_a_day_stored_under_v9_is_derived_again_under_v10():
+    """#2322 BROWSER-USE-FLAG: the browser columns are new in version 10."""
+    base = {
+        "derive_version": 9,
+        "classifier_version": outcomes.CLASSIFIER_VERSION,
+        "built_at": T_SUBMIT,
+        "sealed": True,
+        "ended": outcomes._encode_rows([], outcomes.ENDED_COLS),
+        "arrived": outcomes._encode_rows([], outcomes.ARRIVED_COLS),
+    }
+    # MUTATION: add the columns without the bump and a v9 day is served without them.
+    assert outcomes.DERIVE_VERSION == 10
+    assert outcomes._decode_stored(base, []) is None
+    assert outcomes._decode_stored({**base, "derive_version": 10}, []) is not None
+    for column in ("browser_s", "browser_used"):
+        assert column in outcomes.ENDED_COLS
     for column in ("pool_account", "provider", "run_s", "attempts", "cost_estimated", *TOKENS):
         # MUTATION: drop a column from the tuple and a v9 day cannot hold it.
         assert column in outcomes.ENDED_COLS

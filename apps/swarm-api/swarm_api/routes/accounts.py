@@ -81,6 +81,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, status
 from pydantic import Field, StrictInt
+from swarm_redaction import redact as redact_text
 
 from .. import roles
 from ..accountholds import (
@@ -99,6 +100,11 @@ from ..brokerclient import AccountPool, BrokerClient
 from ..deps import AppContext, current_auth, get_context
 from ..errors import Forbidden, NotFound, ValidationFailed
 from ..schemas import (
+    ACCOUNT_HEALTH_KINDS,
+    ACCOUNT_HEALTH_SPANS,
+    ACCOUNT_HEALTH_STATUSES,
+    ACCOUNT_HEALTH_WINDOWS,
+    ACCOUNT_HOLD_DEADLINE,
     SUBSCRIPTION_PROVIDER,
     AccountCreate,
     AccountLending,
@@ -115,6 +121,7 @@ router = APIRouter(prefix="/v1/accounts", tags=["accounts"])
 #: platform view is refused like any non-admin -- the `outcomes.py` pattern.
 HOLDERS_PLATFORM_ROUTE = ("GET", "/v1/accounts/{account_id}/holders")
 HISTORY_PLATFORM_ROUTE = ("GET", "/v1/accounts/{account_id}/history")
+HEALTH_PLATFORM_ROUTE = ("GET", "/v1/accounts/{account_id}/health")
 
 
 def account_pool(
@@ -271,7 +278,10 @@ def list_accounts(
     return {
         # Each through `_own_view` (#2222): another tenant's account is never
         # named by a duplicate mark, whatever the broker sent.
-        "accounts": [_own_view(a, tenant_id) for a in payload.get("accounts") or []],
+        "accounts": [
+            _with_hold_deadline(_with_health_row(_own_view(a, tenant_id)))
+            for a in payload.get("accounts") or []
+        ],
         "tenant_id": tenant_id,
         # Forwarded as served. The broker has already narrowed the ids to what
         # this tenant may see -- it is the only component that knows both the
@@ -292,6 +302,55 @@ def list_accounts(
         #: unknown -- never as a sweep that is fine.
         "refresh_sweep": _refresh_sweep(payload.get("refresh_sweep")),
     }
+
+
+def _health_counts(raw: Any) -> dict[str, int] | None:
+    """Counts by kind, by the allow-list; None when the broker sent none."""
+    if not isinstance(raw, dict):
+        return None
+    return {
+        kind: int(raw[kind])
+        if isinstance(raw.get(kind), int) and not isinstance(raw.get(kind), bool)
+        else 0
+        for kind in ACCOUNT_HEALTH_KINDS
+    }
+
+
+def _health_word(raw: Any) -> str | None:
+    return raw if raw in ACCOUNT_HEALTH_STATUSES else None
+
+
+def _with_health_row(account: Any) -> Any:
+    """A listing row's two health fields (#2302) by the allow-list: the last
+    24 h's counts and the status. None for each when the broker sent nothing
+    usable -- an older broker -- never a made-up `healthy`."""
+    if not isinstance(account, dict):
+        return account
+    return {
+        **account,
+        "health_24h": _health_counts(account.get("health_24h")),
+        "health_status": _health_word(account.get("health_status")),
+    }
+
+
+def _with_hold_deadline(account: Any) -> Any:
+    """A listing row's latest hold deadline (#2222, the Timeline's B3/B4) by
+    the allow-list: an ISO instant WITH ITS ZONE passes as served, anything
+    else is None, so the page never has to guess what a bare clock or a
+    number meant. A row with no key -- a broker older than the field -- keeps
+    none, which is how the page tells "not served" from "no live hold"."""
+    if not isinstance(account, dict) or ACCOUNT_HOLD_DEADLINE not in account:
+        return account
+    raw = account.get(ACCOUNT_HOLD_DEADLINE)
+    at = None
+    if isinstance(raw, str) and raw:
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            parsed = None
+        if parsed is not None and parsed.tzinfo is not None:
+            at = raw
+    return {**account, ACCOUNT_HOLD_DEADLINE: at}
 
 
 def _refresh_sweep(raw: Any) -> dict[str, Any]:
@@ -963,3 +1022,137 @@ def account_history(
     )
     served["next_cursor"] = _opaque_cursor(served.get("next_cursor"))
     return served
+
+
+# ---------------------------------------------------------------------------
+# An account's health (#2302)
+# ---------------------------------------------------------------------------
+#
+# THE SAME READ RULE AS THE HOLDER READS ABOVE (`_viewer`): the account's
+# owner, a workspace it is lent to, or a platform admin with `scope=platform`;
+# anyone else gets the 404 an unknown id gets. The broker's record names every
+# tenant and task that met the account, so what each viewer sees of an event
+# is decided here:
+#
+#   * platform -- everything;
+#   * owner    -- every event with its tenant; a TASK only on its own
+#                 tenant's events, and only a task that tenant owns
+#                 (`TaskCheck.owns`, as the holder reads do);
+#   * borrower -- its own events in full (task by the same check); another
+#                 tenant's with no tenant, task or message, and its time
+#                 floored to the UTC hour, the grid the history read puts a
+#                 borrower on (#361) so it cannot time another tenant's work.
+#
+# Every message goes through `swarm_redaction` here, whoever reads it: the
+# worker redacts before it sends, and this is the second line, on the way out.
+
+
+def _health_event(
+    raw: Any, *, viewer: str, tenant_id: str | None, check: TaskCheck
+) -> dict[str, Any] | None:
+    if not isinstance(raw, dict) or raw.get("kind") not in ACCOUNT_HEALTH_KINDS:
+        return None
+    at = _utc(raw.get("at"))
+    if at is None:
+        return None
+    reset = _utc(raw.get("reset_at"))
+    owner = raw.get("tenant_id") if isinstance(raw.get("tenant_id"), str) else None
+    task = raw.get("task_id") if isinstance(raw.get("task_id"), str) else None
+    message = redact_text(str(raw.get("message") or "")).text[:200]
+    mine = viewer == "platform" or (owner is not None and owner == tenant_id)
+    if viewer == "platform":
+        shown_task = task
+    elif mine and task and owner and check.owns(owner, task):
+        shown_task = task
+    else:
+        shown_task = None
+    if viewer == "borrower" and not mine:
+        return {
+            "at": _floor_hour(at).isoformat(),
+            "kind": raw["kind"],
+            "tenant_id": None,
+            "task_id": None,
+            "window": raw.get("window") if raw.get("window") in ACCOUNT_HEALTH_WINDOWS else None,
+            "reset_at": reset.isoformat() if reset else None,
+            "message": None,
+            "own": False,
+        }
+    return {
+        "at": at.isoformat(),
+        "kind": raw["kind"],
+        "tenant_id": owner,
+        "task_id": shown_task,
+        "window": raw.get("window") if raw.get("window") in ACCOUNT_HEALTH_WINDOWS else None,
+        "reset_at": reset.isoformat() if reset else None,
+        "message": message,
+        "own": owner is not None and owner == tenant_id,
+    }
+
+
+def health_view(
+    payload: Any, *, account_id: str, viewer: str, tenant_id: str | None, check: TaskCheck
+) -> dict[str, Any]:
+    """The broker's health record, by allow-list, as `viewer` may see it."""
+    data = payload if isinstance(payload, dict) else {}
+    counts_raw = data.get("counts") if isinstance(data.get("counts"), dict) else {}
+    series: list[dict[str, Any]] = []
+    for entry in data.get("hourly") or []:
+        hour = _utc(entry.get("hour")) if isinstance(entry, dict) else None
+        if hour is None:
+            continue
+        counts = {k: v for k, v in (_health_counts(entry.get("counts")) or {}).items() if v}
+        series.append({"hour": hour.isoformat(), "counts": counts, "total": sum(counts.values())})
+    events = [
+        e
+        for e in (
+            _health_event(raw, viewer=viewer, tenant_id=tenant_id, check=check)
+            for raw in data.get("events") or []
+        )
+        if e is not None
+    ]
+    limited = _utc(data.get("limited_until"))
+    return {
+        "account_id": account_id,
+        "status": _health_word(data.get("status")),
+        "limited_until": limited.isoformat() if limited else None,
+        "counts": {span: _health_counts(counts_raw.get(span)) for span in ACCOUNT_HEALTH_SPANS},
+        "hourly": series,
+        "events": events,
+        "observed_at": data.get("observed_at") if isinstance(data.get("observed_at"), str) else None,
+    }
+
+
+@router.get("/{account_id}/health")
+def account_health(
+    account_id: str,
+    scope: str | None = Query(default=None, description="tenant | platform"),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """One account's health (#2302): counts for the last 1 h / 24 h / 7 d by
+    kind, an hourly series for 7 days, the last 50 events newest first, and a
+    one-word status. THE STATUS RULE is the broker's
+    (`quota_broker.accountstore.health_status`), first match wins:
+
+      1. `reauth_needed` -- the account is REAUTH_REQUIRED;
+      2. `limited` -- a recorded 429 has not reached its reset, or its window
+         readings keep it from a new agent;
+      3. `erroring` -- 3 or more errors (auth, overloaded, 5xx, network,
+         refused at assignment, refresh failed) in the last hour;
+      4. `healthy` -- otherwise.
+
+    Read by the account's owner, a workspace it is lent to, or a platform
+    admin (`scope=platform`); anyone else is answered 404, as for an id that
+    does not exist. What each sees of an event: see the section above.
+    """
+    viewer, tenant_id, _visible = _viewer(
+        scope, account_id, auth, ctx, pool, HEALTH_PLATFORM_ROUTE
+    )
+    return health_view(
+        pool.account_health(account_id),
+        account_id=account_id,
+        viewer=viewer,
+        tenant_id=tenant_id,
+        check=_check(ctx),
+    )

@@ -306,6 +306,9 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
         "heartbeat": "what the heartbeat reading is (#179); declared by the UI lane after PR #432",
         "claude_session": "the Claude Code session that submitted it (SC-SESSION-SCOPE), read by the "
         "sc plugin's check, attach-all and watch; the console does not scope by it",
+        # `browser_used` and `browser_use` (BROWSER-USE-FLAG, #2322) were
+        # excused here while the API served them ahead of the client; types.ts
+        # declares both since lane BROWSER-USE-UI.
         # `model_class` and `model_class_defaulted` (contract request 104,
         # #1435) were excused here while the API served them ahead of the
         # client. types.ts declares both since lane MODEL-UI, so they are held

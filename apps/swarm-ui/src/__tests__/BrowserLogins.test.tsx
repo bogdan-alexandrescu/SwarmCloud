@@ -232,20 +232,23 @@ describe('Config › Secrets › Browser logins (Access › Browser logins until
   it('is a tab of Config › Secrets, in the address as ?view=logins (GA-MOVE-VIEWS)', async () => {
     window.history.replaceState(null, '', '/config/secrets?view=logins')
     serve((m, url) => {
+      if (m === 'GET' && url.startsWith('/v1/secrets/overview')) {
+        return { status: 200, body: { tenant_id: 'u-alice', scope: 'workspace', repo_id: null, repository: null, personal_tenant_id: 'u-alice', can_manage: true, rows: [] } }
+      }
+      if (m === 'GET' && url.startsWith('/v1/repositories')) return { status: 200, body: { repositories: [] } }
       if (m === 'GET' && url.startsWith('/v1/workspace/secrets/consumers')) return { status: 200, body: { kinds: [], providers: [], consumers: [] } }
-      if (m === 'GET' && url.startsWith('/v1/workspace/secrets')) return { status: 200, body: { tenant_id: 'u-alice', kind: 'user', can_manage: true, secrets: [] } }
       if (m === 'GET' && url === '/v1/browser-logins') return { status: 200, body: { tenant_id: 'u-alice', logins: [LOGIN('github-qa', 'https://github.com')] } }
       return null
     })
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
-    const { WorkspaceSecretsScreen } = await import('../WorkspaceSecrets')
-    render(<WorkspaceSecretsScreen link={null} />)
+    const { SecretsScreen } = await import('../Secrets')
+    render(<SecretsScreen view="view=logins" />)
     expect(screen.getByRole('tab', { name: /browser logins/i }).getAttribute('aria-selected')).toBe('true')
     const list = await screen.findByRole('list', { name: /browser logins/i })
     expect(visible(list)).toContain('github-qa')
     // Back to the secrets drops the view from the address.
-    fireEvent.click(screen.getByRole('tab', { name: /^workspace secrets$/i }))
+    fireEvent.click(screen.getByRole('tab', { name: /^secrets$/i }))
     expect(window.location.search).toBe('')
   })
 })

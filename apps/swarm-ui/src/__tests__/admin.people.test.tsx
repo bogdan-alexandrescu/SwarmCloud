@@ -119,7 +119,7 @@ async function mount(body: Json, writes: Record<string, (body: unknown) => { sta
   vi.resetModules()
   const { PeopleScreen } = await import('../People')
   const utils = render(<PeopleScreen />)
-  await screen.findByRole('heading', { name: 'People', level: 1 }, WAIT)
+  await screen.findByRole('heading', { name: 'People and roles', level: 1 }, WAIT)
   return { ...utils, calls }
 }
 
@@ -132,6 +132,10 @@ async function manage(email: string): Promise<HTMLElement> {
   return screen.findByRole('dialog', { name: `Manage ${email}` }, WAIT)
 }
 const writesOf = (calls: { method: string; url: string; body: unknown }[]) => calls.filter((c) => c.method !== 'GET')
+/** Recent admin actions opens folded (ADMIN-PEOPLE-FILTER, S5c): open it to read its entries. */
+async function openAudit(): Promise<void> {
+  fireEvent.click(await screen.findByRole('button', { name: /Recent admin actions/ }, WAIT))
+}
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -168,7 +172,7 @@ describe('the tab', () => {
   it('is in the Admin section, admin only', () => {
     const admin = SECTIONS.find((s) => s.id === 'admin')!
     const tab = admin.tabs.find((t) => t.id === 'people')
-    expect(tab).toEqual({ id: 'people', label: 'People', admin: true })
+    expect(tab).toEqual({ id: 'people', label: 'People and roles', admin: true })
   })
 
   // A tab and a route are not enough: the panel draws PANEL_PAGES, and a page
@@ -188,14 +192,14 @@ describe('the tab', () => {
     vi.resetModules()
     const { SkyShell: LiveShell } = await import('../Spine')
     render(
-      <LiveShell section="admin" tab="people" title="People" go={vi.fn()} foot={null}>
+      <LiveShell section="admin" tab="people" title="People and roles" go={vi.fn()} foot={null}>
         {null}
       </LiveShell>,
     )
     await waitFor(() => expect(document.querySelectorAll('.sk-panel .sk-pk').length).toBeGreaterThan(0), WAIT)
     const labels = [...document.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((el) => el.textContent)
-    expect(labels).toContain('People')
-    expect(document.querySelector('.sk-panel .sk-pk.is-on .sk-pl')?.textContent).toBe('People')
+    expect(labels).toContain('People and roles')
+    expect(document.querySelector('.sk-panel .sk-pk.is-on .sk-pl')?.textContent).toBe('People and roles')
   })
 })
 
@@ -471,6 +475,7 @@ describe('live QA admin: nothing writes on the first click', () => {
     })
     const audit = [purged(0), purged(1), ...Array.from({ length: 48 }, (_, i) => purged(i + 2))]
     await mount(people(ROWS, { audit }))
+    await openAudit()
     // Housekeeping is folded away until asked for (#1206).
     fireEvent.click(await screen.findByRole('button', { name: 'Show housekeeping' }, WAIT))
     await waitFor(() => expect(document.querySelector('.pp-audit-list')).not.toBeNull(), WAIT)
@@ -483,6 +488,7 @@ describe('live QA admin: nothing writes on the first click', () => {
 
   it('ADM-5: a single task-scoped entry shows its target_id, never a bare ?', async () => {
     await mount(people(ROWS, { audit: [{ action: 'history_purged', target_kind: 'task', target_id: 'task_0001', by: 'bob@example.com', at: now(), detail: { tenant_id: 'smoke' } }] }))
+    await openAudit()
     fireEvent.click(await screen.findByRole('button', { name: 'Show housekeeping' }, WAIT))
     await waitFor(() => expect(document.querySelector('.pp-audit-list')).not.toBeNull(), WAIT)
     const line = visible(document.querySelector('.pp-audit-list'))
@@ -609,6 +615,7 @@ describe('admins and the audit', () => {
 
   it('lists the audit entries under the table, or a measured zero', async () => {
     await mount(people(ROWS, { audit: [{ action: 'approve', target_workspace_id: 'w-3f9a2c', by: 'bob@example.com', at: now(), detail: {} }] }))
+    await openAudit()
     await waitFor(() => expect(document.querySelector('.pp-audit-list')).not.toBeNull(), WAIT)
     expect(visible(document.querySelector('.pp-audit-list'))).toContain('approve w-3f9a2c by bob@example.com')
   })
@@ -755,7 +762,7 @@ describe('visual QA (VQA-L06)', () => {
     }
     const titles = [...document.querySelectorAll('.pp-page .c-card h2, .pp-page .c-card h3')].map((h) => h.textContent?.trim())
     expect(titles.length, 'no card title was drawn').toBeGreaterThan(0)
-    expect(titles).not.toContain('People')
+    expect(titles).not.toContain('People and roles')
   })
 
   it('V082: the typed Remove admin of an unread list is bordered too', async () => {

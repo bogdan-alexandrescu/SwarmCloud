@@ -304,9 +304,10 @@ async function accountsScreen(accounts: Account[]): Promise<void> {
 }
 
 function listItem(label: string): HTMLElement {
-  const btn = [...document.querySelectorAll('.acct-li > .acct-open')].find((b) => b.textContent?.includes(label))
+  const btn = [...document.querySelectorAll('button.acct-open')].find((b) => b.textContent?.includes(label))
   expect(btn, `no account ${label}`).toBeTruthy()
-  return btn!.closest('li') as HTMLElement
+  // #2222: an account is a row of the ranked table.
+  return btn!.closest('tr') as HTMLElement
 }
 
 // ---------------------------------------------------------------------------
@@ -478,10 +479,11 @@ describe('G5-23: format and wording', () => {
     expect(listItem('devops-main').querySelector('.acct-given')!.textContent).toBe('given out 1d 20h ago')
   })
 
-  it('names the window beside the list figure', async () => {
+  it('names the window beside the row figure', async () => {
     await accountsScreen([account('eng:devops-main', 'devops-main')])
-    const fig = listItem('devops-main').querySelector('[data-label="5h used"]')!
-    expect(fig.textContent!.replace(/\s+/g, ' ').trim()).toBe('69% 5h')
+    // #2222: the figure is what is LEFT, against the floor, and the window is named first.
+    const fig = listItem('devops-main').querySelector('.acct-fig .acct-win-l')!
+    expect(fig.textContent!.replace(/\s+/g, ' ').trim()).toBe('5-hour 31% left')
   })
 
   it('puts the chosen account in the address, and opens the account the address names', async () => {

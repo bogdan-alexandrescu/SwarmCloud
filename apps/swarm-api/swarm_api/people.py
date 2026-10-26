@@ -119,6 +119,7 @@ from .errors import (
     ApiError,
     Conflict,
     NotFound,
+    RoleUnavailable,
     ValidationFailed,
     WorkspaceApprovalOwnerOnly,
     WorkspaceGroupUnreadable,
@@ -236,6 +237,30 @@ PENDING_LOANS = "pending_loans"
 LOAN_APPLIED = "applied"
 LOAN_PENDING = "pending"
 LOAN_RECLAIMED = "reclaimed"
+
+
+#: Who `GET /v1/admin/people` was read as (ADMIN-PEOPLE-ROLES): a platform
+#: admin, every person and every registered group workspace; a workspace
+#: admin, only the group workspaces they administer and the people in them.
+SCOPE_PLATFORM = "platform"
+SCOPE_WORKSPACES = "workspaces"
+#: A grid cell for someone neither seen in a workspace nor given a role there.
+ROLE_NONE = "none"
+
+
+def role_cell(email: str, teams: set[str], column: Mapping[str, Any],
+              grants: Mapping[str, dict[str, str] | None]) -> str | None:
+    """One person's role in one workspace, as the grid draws it: their own
+    role when they hold one, else the workspace's default when they were last
+    seen in it, else `none`; None when the workspace's roles were not read.
+    The platform cannot list a Google group's members (`searchTransitiveGroups`
+    is 403 here), so "in it" is the last sighting's `teams`."""
+    over = grants.get(column["tenant_id"])
+    if over is None:
+        return None
+    if email in over:
+        return over[email]
+    return column["default_role"] if column["tenant_id"] in teams else ROLE_NONE
 
 
 #: A lookup of display names: emails in, each email's name (or None) out.
@@ -1511,6 +1536,84 @@ class People:
                              "approved_waiting": approved},
             "audit": self.audit(),
         }
+
+    # -- the person × workspace grid (ADMIN-PEOPLE-ROLES; part of #2157) --------
+
+    def role_columns(self, role_store: Any, workspaces: Mapping[str, str],
+                     ) -> tuple[list[dict[str, Any]], dict[str, dict[str, str] | None]]:
+        """One column per group workspace in `workspaces` (tenant_id -> group),
+        in its order, and each one's overrides as email -> role: one roster
+        read and one default read per workspace, never one per cell. A
+        workspace whose roles could not be read is a column marked
+        `unavailable` with None for its overrides, so its cells say "not
+        read" and never a guessed role.
+
+        A column is named by its GROUP EMAIL, as `GET /v1/tenants/mine` names
+        the workspace: the switcher and the Admin panel's note print that
+        name, and the same workspace under a second name on the next line
+        reads as two workspaces (rendered review, 2026-10-25). It is unique
+        where a tenant document's label is not, and it costs no read."""
+        columns: list[dict[str, Any]] = []
+        grants: dict[str, dict[str, str] | None] = {}
+        for tenant_id, group in workspaces.items():
+            column: dict[str, Any] = {"tenant_id": tenant_id, "group": group, "display_name": group}
+            try:
+                default, _ = role_store.default_role(tenant_id)
+                grants[tenant_id] = {email: g.role for email, g in role_store.overrides(tenant_id)}
+                column.update(default_role=default, unavailable=False)
+            except RoleUnavailable:
+                grants[tenant_id] = None
+                column.update(default_role=None, unavailable=True)
+            columns.append(column)
+        return columns, grants
+
+    def add_roles(self, rows: list[dict[str, Any]], columns: list[dict[str, Any]],
+                  grants: Mapping[str, dict[str, str] | None]) -> None:
+        """Each of `everyone()`'s rows gains `roles`: its cell in every column."""
+        for row in rows:
+            teams = set(row.get("teams") or [])
+            row["roles"] = {c["tenant_id"]: role_cell(row["email"], teams, c, grants)
+                            for c in columns}
+
+    def in_workspaces(self, role_store: Any, workspaces: Mapping[str, str]) -> dict[str, Any]:
+        """A WORKSPACE ADMIN'S READ (S5f): only `workspaces`, the group
+        workspaces they administer, and only the people in them -- whoever was
+        last seen in one (`people/{id}.teams`) or holds a role of their own in
+        one. Each row is the person, their cell in each of these columns and
+        when they were last seen, and nothing else: no other workspace's id
+        (a sighting's `teams` is cut to these), no personal workspace record,
+        Claude account, loan, GitHub connection or submission, none of the
+        platform's admins and none of its audit. Nobody is waiting for a
+        workspace admin here: a personal workspace request and a loan are a
+        platform admin's to decide."""
+        columns, grants = self.role_columns(role_store, workspaces)
+        wanted = set(workspaces)
+        seen: dict[str, dict[str, Any]] = {}
+        for snap in self._db.collection(ws.PEOPLE).limit(MAX_PEOPLE).stream():
+            data = snap.to_dict() or {}
+            email = str(data.get("principal") or "").strip().lower()
+            if email:
+                seen[email] = {"teams": set(data.get("teams") or []) & wanted,
+                               "last": data.get("last_seen")}
+        emails = {e for e, s in seen.items() if s["teams"]}
+        emails |= {e for over in grants.values() if over for e in over}
+        rows: list[dict[str, Any]] = []
+        for email in emails:
+            sight = seen.get(email) or {"teams": set(), "last": None}
+            rows.append({
+                "email": email,
+                "roles": {c["tenant_id"]: role_cell(email, sight["teams"], c, grants)
+                          for c in columns},
+                "last_active": _iso(sight["last"]),
+                "_last": sight["last"] if isinstance(sight["last"], datetime) else None,
+            })
+        rows.sort(key=lambda r: (-(r["_last"].timestamp() if r["_last"] else 0.0), r["email"]))
+        names = self._names([row["email"] for row in rows]) if rows else {}
+        for row in rows:
+            row.pop("_last")
+            row["display_name"] = names.get(row["email"])
+        return {"scope": SCOPE_WORKSPACES, "workspaces": columns, "workspaces_error": None,
+                "people": rows, "count": len(rows), "pending": 0}
 
     def _row(self, tenant_id: str, parts: Mapping[str, Any], *, store: Any) -> dict[str, Any] | None:
         person = parts.get("person") or {}
