@@ -884,7 +884,7 @@ export function TimelineLanesScreen({
               one !== undefined
                 ? { status: 'ok', read: one }
                 : isData(r)
-                  ? { status: 'error', why: 'not found in this tenant', route, limited: false }
+                  ? { status: 'error', why: 'not found in this workspace', route, limited: false }
                   : r.status === 'error'
                     ? { status: 'error', why: failureWords(r.error), route, limited: r.error.httpStatus === 429 }
                     : { status: 'error', why: 'not read', route, limited: false },
