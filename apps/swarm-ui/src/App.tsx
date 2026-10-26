@@ -1997,6 +1997,21 @@ const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
   // its topic rides the section's `?` rather than a second glyph by the title,
   // which the console's glyph ceiling (tests/help.test.ts) has no room for.
   'admin/people': 'people-and-roles-scope',
+  // VQ-055 (visual QA 2026-10-26): every Config page's `?` opened the same
+  // section card, whose `Help →` led to Help's first group. Each page now
+  // says, and links, its own topic in Help's Config and Admin groups.
+  'config/github': 'config-github-access',
+  'config/repositories': 'config-repositories',
+  'config/secrets': 'secret-scopes',
+  'config/mcp-servers': 'mcp-servers',
+  'config/people': 'workspace-roles',
+  'config/workspace': 'workspace-settings',
+  'admin/limits': 'ceiling-change-evicts-nothing',
+  'admin/runner-sizes': 'runner-sizes',
+  'admin/tenants': 'tenant-fields',
+  'admin/counts': 'platform-counts',
+  'admin/platform-secrets': 'platform-secrets',
+  'admin/workspaces': 'workspaces-you-admin',
 }
 
 function SectionQuestion({ section, topic = null }: { section: SectionQuestionDef; topic?: TopicId | null }) {
