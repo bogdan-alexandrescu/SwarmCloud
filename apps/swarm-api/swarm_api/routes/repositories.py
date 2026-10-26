@@ -13,6 +13,10 @@ with the tenant's token otherwise. Everything about the token is
 `swarm_api.forge`'s and `swarm_api.repositories`'s; these routes log the
 outcome's code -- never the token, never the forge's text.
 
+`GET /v1/repositories/counts` is Config › Repositories' one read of each
+registration's repository secrets and QA targets, as counts (REPOS-FOLLOWUPS,
+part of #2157): names and values stay on the repository's own routes.
+
 Who may register: anyone holding the workspace role `member` or above, as
 for issue runs (WORKSPACE ROLES below). The design's "an admin of the tenant"
 (repo-index.md §1, git-tokens.md §1) was decided as `member` by the owner's
@@ -104,6 +108,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import JSONResponse
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.models import Tenant
 
@@ -116,7 +121,9 @@ from .access import get_access
 from .workspace_secrets import SecretWriter, secret_writer
 from ..errors import ValidationFailed
 from ..grant_attest import GrantPolicy
-from ..workspace_secrets import WorkspaceSecrets
+from ..workspace_secrets import ACTIVE as SECRET_ACTIVE
+from ..workspace_secrets import SCOPE_REPOSITORY, SECRETS_COLLECTION, WorkspaceSecrets
+from ..qatargets import QaTargets
 from ..forge import FirestoreSlotIndex, ForgeReadError, service_credential_view
 from ..impact import (
     DEPTH_MAX,
@@ -164,6 +171,7 @@ from ..repoindex import (
     select_tests,
     version_to_api,
 )
+from ..repositories import COLLECTION as REPOSITORIES_COLLECTION
 from ..repositories import (
     MAX_READABLE_PAGES,
     Repositories,
@@ -342,6 +350,73 @@ def readable_repositories(
         tenant_id, page, len(body["repositories"]),
     )
     return {**body, "tenant_id": tenant_id}
+
+
+#: The query parameters `GET /counts` takes; any other is a 422, not ignored.
+COUNTS_PARAMETERS = frozenset({"repo_id"})
+
+#: How many `repo_id`s one counts read may name: a page's worth of cards.
+MAX_COUNTED = 200
+
+
+# Declared before `/{repo_id}`, which would otherwise match "counts".
+@router.get("/counts")
+def repository_counts(
+    request: Request,
+    repo_id: list[str] | None = Query(default=None, max_length=MAX_COUNTED),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Each registration's secrets for agents and QA targets, as COUNTS
+    (REPOS-FOLLOWUPS, part of #2157; config-e.html S3a's "Secrets: N" and
+    "QA targets: N" lines). One call for the page's cards: per card, the
+    console would need `GET /{repo_id}/secrets` once each.
+
+    A secret counts when it is a live repository secret of THIS workspace
+    bound to that registration (`scope: repository`, its `repo_id`), as
+    `WorkspaceSecrets.list(tenant_id, repo_id)` lists them; a QA target when
+    it is this workspace's and files in that registration (`repo_id`). No
+    name, kind or value is served: the card says how many, and the
+    repository's Secrets tab names them.
+
+    A read, open to every member as the list is (a viewer included). With
+    `repo_id` the answer is those registrations only, and another
+    workspace's `repo_id` is the same 404 as a missing one (`Repositories.
+    get` reads with the caller's tenant); without it, every registration of
+    the workspace, a registration with nothing counted as zero."""
+    extra = sorted(set(request.query_params) - COUNTS_PARAMETERS)
+    if extra:
+        raise ValidationFailed(f"unknown parameter(s): {', '.join(extra)}; this route takes "
+                               "repo_id", detail={"field": extra[0]})
+    store = _store(ctx)
+    if repo_id:
+        rows = [store.get(tenant_id, rid) for rid in dict.fromkeys(repo_id)]
+    else:
+        rows = [snap.to_dict() or {} for snap in ctx.db.collection(REPOSITORIES_COLLECTION)
+                .where(filter=FieldFilter("tenant_id", "==", tenant_id)).stream()]
+        rows = sorted((r for r in rows if r.get("tenant_id") == tenant_id),
+                      key=lambda r: str(r.get("repo_id")))
+    wanted = {str(r.get("repo_id")) for r in rows}
+    secret_counts: dict[str, int] = dict.fromkeys(wanted, 0)
+    for snap in ctx.db.collection(SECRETS_COLLECTION) \
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id)) \
+            .where(filter=FieldFilter("state", "==", SECRET_ACTIVE)).stream():
+        doc = snap.to_dict() or {}
+        bound = doc.get("repo_id")
+        if doc.get("tenant_id") == tenant_id and doc.get("state") == SECRET_ACTIVE \
+                and doc.get("scope") == SCOPE_REPOSITORY and bound in secret_counts:
+            secret_counts[bound] += 1
+    targets: dict[str, int] = dict.fromkeys(wanted, 0)
+    for target in QaTargets(ctx.db, now=ctx.now).list(tenant_id):
+        if target.get("repo_id") in targets:
+            targets[target["repo_id"]] += 1
+    log.info("repository counts tenant=%s repositories=%d", tenant_id, len(rows))
+    return {
+        "tenant_id": tenant_id,
+        "counts": [{"repo_id": r["repo_id"], "repository": f"{r.get('owner')}/{r.get('repo')}",
+                    "secrets": secret_counts[r["repo_id"]], "qa_targets": targets[r["repo_id"]]}
+                   for r in rows],
+    }
 
 
 @router.get("/{repo_id}")

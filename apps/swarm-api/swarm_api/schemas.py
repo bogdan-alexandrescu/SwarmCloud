@@ -649,10 +649,11 @@ class AdaptiveTargetRequest(StrictModel):
 class HardMaxRequest(StrictModel):
     """`PUT /v1/admin/quota/{provider}/{tenant_id}/hard-max` (POOL-LIMITS-QUOTA).
 
-    The broker's own body is `{hard_max}` and nothing else, so `reason` stays
-    here: it is the point of swarm-api's `admin_audit` entry for the change.
-    No `requested_by`: who asked is the admin's verified email, taken from
-    the token, and a body that names one is refused (`extra="forbid"`).
+    `reason` is the point of the change's audit entries: swarm-api's
+    `admin_audit` one, and the broker's `quota_audit` one, which it is
+    forwarded to. No `requested_by`: who asked is the admin's verified email,
+    taken from the token, and a body that names one is refused
+    (`extra="forbid"`).
     """
 
     hard_max: int = Field(ge=0, le=100_000)
@@ -818,6 +819,12 @@ ACCOUNT_HEALTH_KINDS = (
 ACCOUNT_HEALTH_WINDOWS = ("five_hour", "seven_day", "other")
 #: The count windows the record serves.
 ACCOUNT_HEALTH_SPANS = ("last_1h", "last_24h", "last_7d")
+#: The listing row's latest hold deadline (#2222, the Timeline's B3/B4): the
+#: latest `expires_at` among the account's live holds, as the broker
+#: (`quota_broker.main.account_to_api`) serves it. Allowed only as an ISO
+#: instant with its zone; `routes/accounts.py` serves anything else as null,
+#: and keeps a row from an older broker without the key.
+ACCOUNT_HOLD_DEADLINE = "latest_hold_deadline"
 
 
 class AccountLending(StrictModel):

@@ -119,8 +119,9 @@ describe('the Name is shown in place of the label, with the id still printed', (
     expect(row('eng:ai-eng-2').id).toBe('eng:ai-eng-2')
     // MUTATION: print `account.label` in the pane's <h3> (Accounts.tsx Detail).
     expect(pane.querySelector('.acct-dhead h3')!.textContent).toBe('AI Eng 2')
-    // MUTATION: drop the id from the pane's subtitle (`.acct-idt`).
-    expect(pane.querySelector('.acct-idt')!.textContent).toContain('eng:ai-eng-2')
+    // MUTATION: drop the id from the sheet's Account list (AccountSheet.tsx
+    // SheetAccount's `Id`), where it moved from the subtitle (#2222, F4).
+    expect(pane.querySelector('.acct-kv .acct-id')!.textContent).toBe('eng:ai-eng-2')
   })
 
   it('shows an unnamed account by its label, exactly as before', async () => {

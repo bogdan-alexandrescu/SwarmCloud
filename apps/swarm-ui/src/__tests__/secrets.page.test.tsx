@@ -244,8 +244,9 @@ describe('Add a secret: the wizard', () => {
     next()
     expect(current()).toBe('Destination')
     expect(visible(sheet)).toMatch(/who is it for/i)
-    // GitHub Actions is drawn, and its pane is SSC-UI-ACTIONS': not offered here yet.
-    expect((within(sheet).getByRole('radio', { name: /github actions/i }) as HTMLInputElement).disabled).toBe(true)
+    // GitHub Actions is offered (SECRETS-ACTIONS-MOUNT, secrets.actionsMount.test.tsx); Agents is the default.
+    expect((within(sheet).getByRole('radio', { name: /github actions/i }) as HTMLInputElement).checked).toBe(false)
+    expect((within(sheet).getByRole('radio', { name: /^agents/i }) as HTMLInputElement).checked).toBe(true)
     next()
     expect(current()).toBe('Who reads it')
     const nextBtn = within(sheet).getByRole('button', { name: /^next$/i }) as HTMLButtonElement
