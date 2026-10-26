@@ -45,6 +45,13 @@ function figures(agents: number, usd: number): UsageFigures {
       cache_creation_input_tokens: tok(agents * 300),
     },
     cost: { sum_usd: usd, estimated_usd: null, estimated: 0, agents, reporting: agents },
+    // An eighth of the agents on a browser runtime, a fifth of those never
+    // touching it, and at least one with no verdict, as the dev fixture has.
+    browser: (() => {
+      const on = Math.round(agents / 8)
+      const unused = Math.round(on / 5)
+      return { agents: on, run_s: on * 1500, measured: on, unused_agents: unused, unused_s: unused * 1500, unknown_agents: Math.max(1, Math.round(on / 20)) }
+    })(),
   }
 }
 
@@ -272,76 +279,110 @@ describe('a readout cover is never wider than its cell, by the rule (jsdom lays 
 })
 
 /**
- * THE OVERLAY STILL FITS WITH EVERY COVER ON ITS LINE (re-review of PR 2348,
+ * THE OVERLAY STILL FITS AT 1440, PICKED AND HOVERED (re-review of PR 2348,
  * 2026-10-25): wrapping the covers ended the overlap but gave up F6 -- each
  * long cover took a second line in its 136px column, the overlay's content
  * grew to 254-289px in its 248px box, and the fit measure sent 25 of 26 picked
  * readouts, and every hovered one with a stopped-run estimate, under the
  * chart, so the page under it jumped 153px as the pointer crossed the bars.
+ * Then main's Unused browser row (#2322) made the figures eight, with three
+ * covers of up to 37 characters each.
  *
- * jsdom lays nothing out, so the 1440 render's geometry is modelled from what
- * the review measured there: a column 136px wide (minmax(118px, 1fr) at that
- * plot width), 8px between columns, a cover about 5.6px a character ("N of N
- * attempts reported", 28 characters, drew 156px). A row takes as many columns
- * as the overlay's own rules in overtime.css give it (read here: jsdom skips a
- * container rule). Every cover that does not fit its cell adds its second
- * line, 17px, to the readout, which with every cover on one line is 236px in
- * the 248px it has.
+ * jsdom lays nothing out, so the 1440 render is modelled: the overlay's grid
+ * at three columns 136px wide (minmax(118px, 1fr) at that plot width) with
+ * 8px between them, a row spanning as many columns as the overlay's own rules
+ * in overtime.css give it, and only the covers those rules leave on the page
+ * (jsdom skips a container rule, so its block is read here). A cover is about
+ * 5.6px a character ("N of N attempts reported", 28 characters, drew 156px)
+ * and wraps at its cell; a line of it is --t-micro at --lh-micro, 17.4px. A
+ * grid row is its name and figure, 37.7px, and the lines of its tallest cell;
+ * the rows have 4px between them, and the head (its 32px close), padding and
+ * border take 46. That model gives the review's measured 254px for a week
+ * without an estimate and 289px for one with it, in the 248px the overlay has.
  */
+const COLUMNS = 3
 const COLUMN_PX = 136
 const COLUMN_GAP_PX = 8
 const GLYPH_PX = 5.6
-const ONE_LINE_PX = 236
+const LINE_PX = 17.4
+const ROW_HEAD_PX = 37.7
+const ROW_GAP_PX = 4
+const CHROME_PX = 46
 const ROOM_PX = 248
-const SECOND_LINE_PX = 17
 
-/** The overlay's rules that set a readout row's `grid-column: span N`, as [selector, N]. */
-function overlaySpans(): Array<[string, number]> {
+/** The overlay's own rules, comments dropped, as [selector, declarations]. */
+function overlayRules(): Array<[string, string]> {
   const at = css.indexOf('@container pot-plot (min-width: 640px)')
-  const block = css.slice(at, css.indexOf('\n}', at)).replace(/\/\*[\s\S]*?\*\//g, '')
-  return Array.from(block.matchAll(/([^{}]+)\{([^}]*)\}/g))
-    .map((m) => [m[1]!.trim(), /grid-column:\s*span\s+(\d+)/.exec(m[2]!)?.[1]] as const)
-    .filter((r): r is readonly [string, string] => r[1] !== undefined && /pot-readout-row/.test(r[0]))
-    .map(([sel, n]) => [sel, Number(n)])
+  const block = css.slice(at + '@container pot-plot (min-width: 640px) {'.length, css.indexOf('\n}', at)).replace(/\/\*[\s\S]*?\*\//g, '')
+  return Array.from(block.matchAll(/([^{}]+)\{([^}]*)\}/g)).map((m) => [m[1]!.trim(), m[2]!])
 }
 
-/** How many of the readout's covers would take a second line at 1440. */
-function wrappedCovers(ro: HTMLElement): number {
-  const spans = overlaySpans()
-  let wrapped = 0
-  for (const row of Array.from(ro.querySelectorAll<HTMLElement>('.pot-readout-row'))) {
-    const span = spans.find(([sel]) => row.matches(sel))?.[1] ?? 1
-    const cell = COLUMN_PX * span + COLUMN_GAP_PX * (span - 1)
-    for (const c of Array.from(row.querySelectorAll('.pot-cov'))) if ((c.textContent ?? '').length * GLYPH_PX > cell) wrapped += 1
+/** A property's value over the chart: the page's rule, then the overlay's last rule that matches. */
+function overChart(el: Element, prop: string): string {
+  let value = getComputedStyle(el).getPropertyValue(prop)
+  for (const [sel, decls] of overlayRules()) {
+    const v = new RegExp(`(?:^|;)\\s*${prop}:\\s*([^;]+)`).exec(decls)?.[1]
+    if (v !== undefined && el.matches(sel)) value = v.trim()
   }
-  return wrapped
+  return value
+}
+
+/** The covers a reader sees over the chart: neither display: none nor taken out of the flow. */
+function shownCovers(row: Element): Element[] {
+  return Array.from(row.querySelectorAll('.pot-cov')).filter((c) => overChart(c, 'display') !== 'none' && overChart(c, 'position') !== 'absolute')
+}
+
+/** The readout's content height at 1440, laid out as the overlay's grid lays it. */
+function content1440(ro: HTMLElement): number {
+  const rows = Array.from(ro.querySelectorAll<HTMLElement>('.pot-readout-row'))
+  if (rows.length === 0) return CHROME_PX + ROW_HEAD_PX
+  const gridRows: number[] = []
+  let col = COLUMNS
+  for (const row of rows) {
+    const span = Math.min(COLUMNS, Number(/span\s+(\d+)/.exec(overChart(row, 'grid-column'))?.[1] ?? 1))
+    const cell = COLUMN_PX * span + COLUMN_GAP_PX * (span - 1)
+    const lines = shownCovers(row).reduce((n, c) => n + Math.max(1, Math.ceil(((c.textContent ?? '').length * GLYPH_PX) / cell)), 0)
+    if (col + span > COLUMNS) {
+      gridRows.push(0)
+      col = 0
+    }
+    col += span
+    gridRows[gridRows.length - 1] = Math.max(gridRows[gridRows.length - 1]!, lines)
+  }
+  return CHROME_PX + gridRows.reduce((h, lines) => h + ROW_HEAD_PX + LINE_PX * lines, 0) + ROW_GAP_PX * (gridRows.length - 1)
 }
 
 function laidOut1440(): () => void {
+  const style = document.createElement('style')
+  style.textContent = css
+  document.head.appendChild(style)
   const sh = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
   const ch = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight')
-  const content = (el: HTMLElement) => ONE_LINE_PX + SECOND_LINE_PX * wrappedCovers(el)
-  Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get() { return this.classList.contains('pot-readout') ? content(this) : 0 } })
+  Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get() { return this.classList.contains('pot-readout') ? content1440(this) : 0 } })
   Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
     configurable: true,
-    get() { return this.classList.contains('pot-readout') ? (this.dataset.place === 'under' ? content(this) : ROOM_PX) : 0 },
+    get() { return this.classList.contains('pot-readout') ? (this.dataset.place === 'under' ? content1440(this) : ROOM_PX) : 0 },
   })
   return () => {
+    style.remove()
     Object.defineProperty(HTMLElement.prototype, 'scrollHeight', sh ?? { configurable: true, value: 0 })
     Object.defineProperty(HTMLElement.prototype, 'clientHeight', ch ?? { configurable: true, value: 0 })
   }
 }
 
-describe('the overlaid readout keeps every cover on one line at 1440, so it stays over the chart (F6)', () => {
-  it('stays over the chart picked and hovered, with a stopped-run estimate too', async () => {
-    // Every third week carries a stopped-run estimate, as the dev fixture does.
-    const estimated: UsageBucket[] = BUCKETS.map((b, i) => {
-      if (i % 3 !== 0) return b
+describe('the overlaid readout fits over the chart at 1440 with all eight figures, so it stays there (F6)', () => {
+  it('stays over the chart picked and hovered, with a stopped-run estimate, a browser floor and an older read', async () => {
+    // Every third week carries a stopped-run estimate, as the dev fixture
+    // does; every browser figure is a floor (some agents with no verdict), as
+    // the dev fixture's are; every fourth week comes from an API older than
+    // the browser record.
+    const weeks: UsageBucket[] = BUCKETS.map((b, i) => {
       const f = figures(100 + i * 9, USD[i]!)
-      return { start: b.start, end: b.end, state: 'sealed', in_progress: false, unread_reason: null, ...f, cost: { ...f.cost, estimated: 40, estimated_usd: 123.45 } }
+      const cost = i % 3 === 0 ? { ...f.cost, estimated: 40, estimated_usd: 123.45 } : f.cost
+      return { start: b.start, end: b.end, state: 'sealed', in_progress: false, unread_reason: null, ...f, cost, browser: i % 4 === 2 ? null : f.browser }
     })
     const p = payload()
-    if (p.status === 'ok') p.data.usage.buckets = estimated
+    if (p.status === 'ok') p.data.usage.buckets = weeks
     loadPlatformTime.mockResolvedValue(p)
     const restore = laidOut1440()
     try {
@@ -349,14 +390,17 @@ describe('the overlaid readout keeps every cover on one line at 1440, so it stay
       fireEvent.click(screen.getByRole('button', { name: /^Run/ }))
       await waitFor(() => expect(document.querySelector('.pot-agents')).not.toBeNull())
       let seen = 0
-      for (let i = 0; i < estimated.length; i += 1) {
-        // MUTATION: drop the overlay's `grid-column: span 2` on the long-cover
-        // rows, and "100 of 100 attempts reported" takes a second line in its
-        // 136px column, the readout outgrows its room and goes under the chart.
+      for (let i = 0; i < weeks.length; i += 1) {
+        // MUTATION: give every cover its full words over the chart, or drop
+        // the overlay's `grid-column: span 2` on Estimated cost, and the
+        // readout outgrows its 248px and goes under the chart.
         fireEvent.click(hits()[i]!)
         const picked = document.querySelector<HTMLElement>('.pot-readout')!
-        expect(picked.querySelectorAll('.pot-cov').length, 'the readout drew no cover to measure').toBeGreaterThan(0)
-        expect(wrappedCovers(picked), `week ${i}: a cover takes a second line over the chart`).toBe(0)
+        // Fitting by dropping a figure is not fitting.
+        expect(Array.from(picked.querySelectorAll('.pot-readout-row dt')).map((d) => d.textContent)).toEqual([
+          'Agents', 'Retries', 'Run hours', 'Unused browser', 'Tokens in + out', 'Cache read', 'Cache write', 'Estimated cost',
+        ])
+        expect(content1440(picked), `week ${i}: the picked readout is taller than its room`).toBeLessThanOrEqual(ROOM_PX)
         expect(picked.hasAttribute('data-place'), `week ${i}: the picked readout went under the chart`).toBe(false)
         fireEvent.keyDown(document.querySelector<HTMLElement>('.pot-agents .pot-chart')!, { key: 'Escape' })
         fireEvent.mouseEnter(hits()[i]!)
@@ -365,10 +409,32 @@ describe('the overlaid readout keeps every cover on one line at 1440, so it stay
         fireEvent.mouseLeave(hits()[i]!.closest('svg')!)
         seen += 1
       }
-      expect(seen).toBe(estimated.length)
-      expect(estimated.some((b) => (b.cost?.estimated ?? 0) > 0), 'no week carried an estimate').toBe(true)
+      expect(seen).toBe(weeks.length)
+      expect(weeks.some((b) => (b.cost?.estimated ?? 0) > 0), 'no week carried an estimate').toBe(true)
+      expect(weeks.some((b) => (b.browser?.unknown_agents ?? 0) > 0), 'no week carried a browser floor').toBe(true)
     } finally {
       restore()
+    }
+  })
+
+  it('keeps every cover in full words under the chart, where a phone shows it', async () => {
+    const style = document.createElement('style')
+    style.textContent = css
+    document.head.appendChild(style)
+    try {
+      await drawn()
+      fireEvent.click(hits()[0]!)
+      const ro = document.querySelector<HTMLElement>('.pot-readout')!
+      // The page's own rules, outside the overlay: every full cover shows,
+      // and no short form is drawn beside it.
+      const shown = Array.from(ro.querySelectorAll('.pot-cov')).filter((c) => getComputedStyle(c).display !== 'none').map((c) => c.textContent)
+      // MUTATION: draw the short form everywhere, or both forms under the chart.
+      expect(shown).toContain('100 of 100 attempts reported')
+      expect(shown).toContain('100 of 100 agents reported')
+      expect(shown.some((t) => /browser agents did not use it$/.test(t ?? ''))).toBe(true)
+      expect(shown).not.toContain('100 of 100 attempts')
+    } finally {
+      style.remove()
     }
   })
 })
