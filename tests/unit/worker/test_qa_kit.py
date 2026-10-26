@@ -68,13 +68,8 @@ class Display:
         pass
 
 
-class Scale:
-    def set_scale(self, scale: float) -> None:
-        pass
-
-
 def _controller(chromium: Chromium, records: list[tuple[str, dict[str, str]]]) -> DeviceController:
-    return DeviceController(chromium, Display(), Scale(), record=lambda k, f: records.append((k, dict(f))))
+    return DeviceController(chromium, Display(), record=lambda k, f: records.append((k, dict(f))))
 
 
 def _scheme(value: str) -> dict[str, Any]:
