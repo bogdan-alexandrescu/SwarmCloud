@@ -603,7 +603,8 @@ that the serialised response contains neither the sentinel nor any key named
   "display_name": "Ada Lovelace",
   "default_workspace": "team-x",
   "notifications": {"muted": ["finished"], "reminder": "every_4h"},
-  "revision": 4
+  "revision": 4,
+  "time_zone": "Europe/London"
 }
 ```
 
@@ -620,11 +621,20 @@ that the serialised response contains neither the sentinel nor any key named
 * `muted` is a subset of `TOPICS`, without duplicates. Any topic may be
   muted, needs-you topics included (Q3). `reminder` is one of `as_set`,
   `every_4h`, `daily` or `never` (§4.6).
+* `time_zone` is an IANA zone (`Europe/London`, `America/Los_Angeles`,
+  `UTC`), else a 422 `unknown_time_zone`. It is the one field that may be
+  left out, and left out it keeps the stored zone: the name, default and bell
+  saves predate it, and resetting a person's zone because a save did not
+  mention it would be a silent reset. It is kept **with the person's
+  profile**, so it follows them to every browser they sign in to; the
+  console's per-person browser copy (`timezone.ts`) is only the first-paint
+  cache. Profile's Time zone card says "saved" only once this save has
+  answered, and says the zone is kept in this browser only when it failed.
 * `revision` must equal the stored revision, or the request is a 409
   `preferences_changed`, and the page reloads. Two open tabs cannot silently
   overwrite each other.
 * The response is the `GET`'s `identity.display_name`, `default_workspace`,
-  `notifications` and `revision` sections. The instance drops its 15-second
+  `notifications`, `time_zone`, `time_zone_source` and `revision` sections. The instance drops its 15-second
   preference cache entry and its 60-second name cache entry for the caller,
   so the next request on that instance sees the change. Other instances see
   it within 15 s (the default) or 60 s (the name). The page says "applies to
