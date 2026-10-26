@@ -284,3 +284,22 @@ describe('the form\'s rule is the API\'s', () => {
     expect(joined).toContain(hostsNeeded('{slot}').replace(`1 to ${MAX_SLOT_HOSTS}`, '1 to {MAX_SLOT_HOSTS}'))
   })
 })
+
+describe('the hosts cell wraps inside its column', () => {
+  const css = readFileSync(join(__dirname, '..', 'styles', 'secrets.css'), 'utf8')
+  const rule = (sel: string): string => {
+    const m = new RegExp(`(?:^|\\n)${sel.replace(/[.*+?^${}()|[\]\\>]/g, '\\$&')}\\s*\\{([^}]*)\\}`).exec(css)
+    expect(m, `${sel} not found`).not.toBeNull()
+    return m![1]
+  }
+
+  it('resets the matrix\'s nowrap and caps its width, so a refusal wraps at phone-390', () => {
+    // The matrix's cells inherit `white-space: nowrap`; without the reset the
+    // API's refusal drew as one 624px line in a 326px viewport (review of
+    // CF-ACCESS-HOSTS-UI, dark-phone-390-02). MUTATION: drop either -> fails.
+    const hosts = rule('.sec-hosts')
+    expect(hosts).toMatch(/white-space:\s*normal/)
+    expect(hosts).toMatch(/max-width:\s*\d+px/)
+    expect(rule('.sec-matrix > tbody > tr > td.sec-hosted')).toMatch(/white-space:\s*normal/)
+  })
+})
