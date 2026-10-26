@@ -224,3 +224,14 @@ def test_swarm_suite_gate_is_advertised_with_its_bounds():
     assert props["shards"]["default"] == 8
     assert props["suite"]["enum"] == ["playwright"]
     assert set(tool["inputSchema"]["required"]) == {"repository", "ref", "suite"}
+
+
+def test_the_plugin_moved_to_a_bridge_that_has_the_suite_gate():
+    """Installed plugins fetch the bridge at the tag their version pins (0.5.70 was ARTIFACT-IMAGES)."""
+    from pathlib import Path
+
+    manifest = json.loads(
+        (Path(__file__).resolve().parents[3] / "plugin" / ".claude-plugin" / "plugin.json").read_text()
+    )
+    assert manifest["version"] == "0.5.71", manifest["version"]  # MUTATION: no bump.
+    assert any("@sc-v0.5.71#" in arg for arg in manifest["mcpServers"]["swarmcloud"]["args"])

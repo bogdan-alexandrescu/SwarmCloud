@@ -929,7 +929,19 @@ TOOLS: list[dict[str, Any]] = [
             "`offset` set to `next_offset` for the rest. A name the task does not "
             "list is an error naming the ones it does.\n"
             "\n"
-            "TO LOOK AT AN IMAGE (a screenshot, a rendered mock-up slice): pass "
+            "AN IMAGE IS SHOWN TO YOU (a screenshot, a rendered mock-up slice). An "
+            "artifact named .png, .jpg, .jpeg, .webp or .gif whose bytes are an image "
+            "(the API checks the extension AND the magic bytes, and so does this tool) "
+            "comes back as image content, after metadata `{status: \"image\", name, "
+            "bytes, content_type, redaction: \"not-applied\"}`. Image bytes are NOT "
+            "redacted: no scanner reads pixels, so a screenshot of a page that showed a "
+            "value carries it, exactly as the console's image viewer does. An image over "
+            "5 MiB answers `{status: \"image_too_large\", bytes, max_bytes, console}` "
+            "and no bytes. Pass `as_image: true` to skip the text read and go straight to "
+            "the image read. Anything that is not an image stays as above: text is the "
+            "redacted window, a binary is `binary` with no bytes.\n"
+            "\n"
+            "TO KEEP AN IMAGE AS A FILE: pass "
             "`save_to`, a directory under your working directory or your "
             "scratchpad. An artifact named .png, .jpg, .jpeg, .webp or .gif that "
             "the API serves as an image is written to "
@@ -953,6 +965,15 @@ TOOLS: list[dict[str, Any]] = [
                 "limit_bytes": {
                     "type": "integer",
                     "description": "Window size. The API clamps it into its own range and says so.",
+                },
+                "as_image": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Read an image-named artifact straight through the image read, "
+                        "without the text read first. Bytes that are not an image still "
+                        "answer the redacted text read or `binary`, never raw."
+                    ),
                 },
                 "save_to": {
                     "type": "string",
@@ -4827,7 +4848,9 @@ def _workflow_created(
     return json.dumps(created, indent=2)
 
 
-def _answered(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bool = False) -> str:
+def _answered(
+    client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bool = False
+) -> str | artifacts.ImageAnswer:
     """`_call`'s answer, after which the build board is told what happened
     (BOARD-WIRE, part of #1773): a submission, a launch or a check refreshes
     it, a follow that saw a state change refreshes it at most every two
@@ -4843,19 +4866,22 @@ def _answered(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive
     try:
         from . import buildboard
 
-        buildboard.after_tool(client, name, text)
+        buildboard.after_tool(client, name, text if isinstance(text, str) else text.text)
     except Exception as exc:  # noqa: BLE001 - the board never fails the tool behind it
         print(f"swarm-mcp: build board: the refresh was not started ({type(exc).__name__}: {exc})",
               file=sys.stderr)
     return text
 
 
-def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bool = False) -> str:
+def _call(
+    client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bool = False
+) -> str | artifacts.ImageAnswer:
     """One tool call's answer. `keepalive` says the caller is sending the host
     progress notifications for as long as this runs (`_Keepalive`), so a
     progress hold may take its full `compact.MAX_WAIT_SECONDS`; without it the
     hold stops at `compact.SILENT_MAX_WAIT_SECONDS`, inside the host's idle
-    timeout."""
+    timeout. The answer is text, except `swarm_artifact`'s image, which is an
+    `artifacts.ImageAnswer` that `serve` sends as text and image blocks."""
     _refuse_unknown_arguments(name, args)
     if name == "swarm_dispatch" and args.get("tasks") is not None:
         # Before any request, `/v1/stats` included: neither the call nor a
@@ -5282,13 +5308,32 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                 saved = artifacts.save_image(client, str(args["task_id"]), str(args["name"]), plan)
                 if saved is not None:
                     return json.dumps(saved, indent=2)
-        window = client.artifact_content(
-            args["task_id"],
-            str(args["name"]),
-            offset=_int_arg(args, "offset", 0),
-            # Absent is the route's own default window, not a size of ours.
-            limit_bytes=None if args.get("limit_bytes") is None else _int_arg(args, "limit_bytes", 0),
-        )
+
+        def _window() -> dict[str, Any]:
+            return client.artifact_content(
+                args["task_id"],
+                str(args["name"]),
+                offset=_int_arg(args, "offset", 0),
+                # Absent is the route's own default window, not a size of ours.
+                limit_bytes=None if args.get("limit_bytes") is None else _int_arg(args, "limit_bytes", 0),
+            )
+
+        # SHOWN AS AN IMAGE (ARTIFACT-IMAGES, part of #2136): only a name with
+        # an image extension, only once the text read said `binary` (or the
+        # caller asked for the image), and only bytes `show_image` itself
+        # sniffs as an image. Text never takes this path, so it stays redacted.
+        art = str(args["name"])
+        window = None if args.get("as_image") is True and artifacts.is_image_name(art) else _window()
+        if artifacts.is_image_name(art) and (window is None or window.get("status") == "binary"):
+            shown = artifacts.show_image(
+                client, str(args["task_id"]), art,
+                stored_bytes=(window or {}).get("total_bytes"),
+                console=lambda: console_link(client.task(args["task_id"])),
+            )
+            if shown is not None:
+                return shown
+        if window is None:
+            window = _window()
         return json.dumps(window, indent=2, default=str)
 
     if name == "swarm_workflow_spec":
@@ -6136,7 +6181,10 @@ def serve(stdin=None, stdout=None) -> int:
             finally:
                 if alive is not None:
                     alive.stop()
-            _respond(message_id, {"content": [{"type": "text", "text": text}]})
+            if isinstance(text, artifacts.ImageAnswer):
+                _respond(message_id, {"content": text.content()})
+            else:
+                _respond(message_id, {"content": [{"type": "text", "text": text}]})
         except SwarmError as exc:
             # isError, not a JSON-RPC error: the CALL failed, the protocol
             # did not, and a host that saw a transport error would drop the

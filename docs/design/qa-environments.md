@@ -297,6 +297,26 @@ step walks the same graph), and captures the **new** routes it **owns**:
   `sha256(path)[:6]` rather than `route_id`'s counter, so a path has the
   same id in every step and every run, and the filing step's de-duplication
   key (`visual-qa:<target_id>:<screen>:<title>`) stays stable.
+* **A dismissed route is not crawled** (added by QA-CRAWL-SKIP, PR 2374;
+  BGD 2026-10-25, part of #2157). A QA run group's **Remove** records a
+  found route on the target's `dismissed_routes`, so that no later run
+  offers it again. Removing it from one run's list is not enough on its own:
+  the next run's crawl would find the same link, capture it as new, and
+  offer it once more. So the renderer (`qaspec.render()`) gives every
+  capture step's route list, on every leg, an optional `dismissed` list
+  (`route_list()`, filled by `dismissed_hashes()`): each dismissed route's
+  key (its path, plus the texts that reveal it for a tab state) as sha256
+  hex, sorted. The crawl treats a dismissed route like an excluded one. It
+  is never listed, so it takes none of the crawl's pages; it is never
+  loaded, so a route reachable only through it is never reached; and it is
+  never captured, so it spends no `found_per_step` slot. The key is the
+  state's, so dismissing a tab bars that tab, not the page it sits on.
+  **A route already stored is still captured**, dismissed or not: the bar
+  is on the walk, and a stored route is captured from the list. A
+  target with no dismissals writes no `dismissed`, so its spec is byte for
+  byte what it was. **Hashes, not paths:** a dismissed route was found by a
+  crawl, and no path a crawl found reaches a prompt (the last point under
+  "Security of the new path" below).
 
 **What this misses, stated plainly.** If the owner step never reaches a
 route that another step saw (a page that rendered a link for one session
@@ -421,6 +441,13 @@ manifest lists the new routes' images like any other, so the report's
 image count with the review's `reviewed`. Where a capture tar is missing,
 the expected count is computed from the stored routes as today and the
 report says the found routes' count is unknown.
+
+When the step's route list carries `dismissed` (§3.1), `skipped` also has
+`dismissed`: the number of routes the crawl reached and did not list
+because an admin had removed them (added by QA-CRAWL-SKIP, PR 2374). A run
+whose list has no `dismissed` writes no `skipped.dismissed`, so its
+`found.json` is what it was before the lane, and a reader can tell "no
+dismissals" (absent) apart from "none reached" (`0`).
 
 The report gains one section per leg, "Coverage": stored routes captured,
 new routes captured (with their paths), found but over the cap, found but
