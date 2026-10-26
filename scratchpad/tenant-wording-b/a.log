@@ -1,0 +1,129 @@
+
+ RUN  v3.2.7 /workspace/att_8f91f7a698624f18a360/work/repo/apps/swarm-ui
+
+ ✓ src/__tests__/activity.timeline.test.tsx (101 tests) 20427ms
+   ✓ the read > asks for 14 days by default, in the viewer’s zone, with the previous span for the delta  313ms
+   ✓ the read > reads the span the hash names, and writes a new span to the hash  1040ms
+   ✓ the read > offers 24h, 7d, 14d, 30d, 90d and a from–to range, and no Rows control  473ms
+   ✓ the read > sends a from–to range as since and an exclusive until  659ms
+   ✓ the readout > swaps to one bucket on hover, tap or focus, and back on "all", Escape or leaving  702ms
+   ✓ the readout > zooms the page to a picked day, and a chip goes back to the span it came from  470ms
+   ✓ reading, failing and re-reading > dims the last drawing rather than blanking it while a new filter is read  592ms
+   ✓ what the route serves, said as the route means it > refuses a range the route would refuse, with the reason, and sends nothing  647ms
+   ✓ the eight cards > Reliability: the group-by writes the hash, and a tenant grouping is offered only in platform scope  539ms
+   ✓ the eight cards > Not finished yet: re-reads its live counts when a filter changes, not only on refresh  524ms
+   ✓ the eight cards > draws a card’s mini strips in the band its bucket count needs, so the sheet can drop them where they do not fit  316ms
+   ✓ a figure lists the tasks behind it (#116) > closes an open bucket’s rows on a zoom, since the zoomed buckets no longer start there  478ms
+   ✓ a figure lists the tasks behind it (#116) > closes, and the address forgets the figure  366ms
+   ✓ the tenants table > AH-20: wraps the credential tags so they do not run together  348ms
+   ✓ VQA-L13: lane captions and table edges > V109: fades a card table’s right edge while columns are off it, and only then  319ms
+ ✓ src/__tests__/access.page.test.tsx (38 tests) 38729ms
+   ✓ the page states what SwarmCloud may do as you > says Read is enforced by SwarmCloud, there is no workflows write, and verifying only reads  1129ms
+   ✓ GitHub quota > draws one line per credential with what is left and the reset, amber when low  511ms
+   ✓ owners (chooser A, left) > lists every owner with its state and the action it needs  770ms
+   ✓ owners (chooser A, left) > enables an installed owner with POST /v1/access/orgs  725ms
+   ✓ owners (chooser A, left) > removes an owner only after a confirm, and says what GitHub still allows  2073ms
+   ✓ repositories (chooser A, right) > reads the selected owner's first page and shows push ability before Write  1133ms
+   ✓ repositories (chooser A, right) > pages with next_page and searches server-side  4089ms
+   ✓ repositories (chooser A, right) > grants Read or Write with PUT, and Not chosen revokes with DELETE  1737ms
+   ✓ repositories (chooser A, right) > prints a refused grant's §2.3 copy word for word  848ms
+   ✓ a typed owner/repo > is PUT to the id repositories.repo_id_for mints, and its REPO_NOT_INSTALLED copy is drawn  1856ms
+   ✓ a typed owner/repo > refuses a value that is not owner/repo before calling anything  1628ms
+   ✓ the grants, verified (Verify A) > lists failures first, a read grant needs no push, and a write grant offers the push test  501ms
+   ✓ the grants, verified (Verify A) > verifies one grant with POST and prints each failure's copy inline  413ms
+   ✓ the grants, verified (Verify A) > Re-check all verifies every grant  737ms
+   ✓ the grants, verified (Verify A) > changes a grant from Write to Read with PUT  892ms
+   ✓ not connected > offers Connect GitHub and reads nothing from GitHub  649ms
+   ✓ connected but not installed (#780) > says plainly the App is installed nowhere, and offers Install on the account and on an organisation  554ms
+   ✓ connected but not installed (#780) > names the App by the name the API serves, and says "the SwarmCloud GitHub App" when it serves none  485ms
+   ✓ connected but not installed (#780) > draws mixed rows: Enable for the installed owner, Install for the other, and no notice  488ms
+   ✓ connected but not installed (#780) > reads the owners again on Refresh and when the window regains focus  1125ms
+   ✓ no value reaches the page > draws nothing token-shaped even when a response carries one  649ms
+   ✓ (1) the token expiry counts forward > draws a token eight hours ahead as expires in 7h 5xm, renewed automatically, never just now  651ms
+   ✓ (2) the chooser says GitHub is being asked > shows Asking GitHub for your repositories… while the owners are read, and not after  1054ms
+   ✓ (3) Enable, then the repositories > reads the new owner only after the POST answered, and retries one 409 with Still setting up…  2849ms
+   ✓ (4) the controls survive a background re-read > keeps the typed owner/repo, and the first Grant saves, when a re-read on focus fails  3498ms
+   ✓ (4) the controls survive a background re-read > keeps an Enable that is out when the owners re-read fails, and the first click lands  1322ms
+   ✓ visual QA (VQA-L06) > V042: the grants head and every grant row paint one set of fixed columns  575ms
+   ✓ visual QA (VQA-L06) > V043: a long owner name takes the room beside its chip and wraps, the chip keeps its width  630ms
+   ✓ visual QA (VQA-L06) > V122: on a phone the policy opens folded to its three headlines; wider, the whole list  806ms
+   ✓ visual QA (VQA-L06) > QA-067: on a phone each folded rule is a legible row: a body-size headline, a marker that reads, a hairline between  1377ms
+   ✓ visual QA (VQA-L06) > V122: on a desktop the policy is the whole list, unfolded  1035ms
+   ✓ visual QA (VQA-L06) > V123: on a phone every Access control is 44px tall, and a segment or chip in a row is as wide as its words  1251ms
+ ✓ src/__tests__/onboarding.checklist.test.tsx (15 tests) 6293ms
+   ✓ the Setup page draws the server-derived checklist > renders the seven steps in order with their states, and marks the next one  510ms
+   ✓ the Setup page draws the server-derived checklist > links the Connect GitHub step to Config › GitHub access, where the App is connected  541ms
+   ✓ the Setup page draws the server-derived checklist > prints a failed step's §2.3 copy word for word, with the GitHub page it names  1152ms
+   ✓ the Setup page draws the server-derived checklist > re-reads the checklist on Re-check  544ms
+   ✓ the Setup page draws the server-derived checklist > offers the first task once every step is done  557ms
+   ✓ the Install the App step (#780, 2026-10-08) > sits between Connect GitHub and the orgs, says the App is installed nowhere, and links its install page  561ms
+   ✓ the Setup card on Overview (Entry A) > shows while setup is incomplete, with Open setup  615ms
+   ✓ the Setup card on Overview (Entry A) > Hide keeps the card hidden on remount, and the steps keep their state  478ms
+ ✓ src/__tests__/access.push-test.test.tsx (9 tests) 9812ms
+   ✓ the opt-in push test (D6) > is offered on write grants only, and the policy no longer says it is not offered  789ms
+   ✓ the opt-in push test (D6) > asks before it writes, and Cancel posts nothing  1636ms
+   ✓ the opt-in push test (D6) > posts only push_test once confirmed, and draws ok  1319ms
+   ✓ the opt-in push test (D6) > draws missing with the failure's §2.3 copy  1215ms
+   ✓ the opt-in push test (D6) > draws unknown as unknown, never as a pass  1166ms
+   ✓ the opt-in push test (D6) > names a branch the delete left behind  1143ms
+   ✓ owners: via token, and an install someone else approves > says an owner enabled through the person's token is via token  627ms
+   ✓ owners: via token, and an install someone else approves > Request install opens the install page and records the request  944ms
+   ✓ owners: via token, and an install someone else approves > draws ORG_APPROVAL_PENDING's copy word for word on a requested org, with Re-check and Withdraw  973ms
+ ✓ src/__tests__/access.e-rest.test.tsx (7 tests) 7969ms
+   ✓ S2a: not connected, What comes after names steps 2 to 4 > draws the dashed card with each step and what it waits for  604ms
+   ✓ S2a: not connected, What comes after names steps 2 to 4 > is not drawn once GitHub is connected  1157ms
+   ✓ S2b: connected, Where the App is installed is on the Connection tab > draws Owner / Install / Chosen for every owner the connection reaches  940ms
+   ✓ S2b: connected, Where the App is installed is on the Connection tab > offers Request install for an owner without the App, which opens GitHub and records the request  1174ms
+   ✓ S2b: connected, Where the App is installed is on the Connection tab > an installed owner's Choose opens Choose repositories on that owner  1698ms
+   ✓ S2c: the foot bar of Choose repositories > counts the grants changed and when, and carries the Refresh that left the card head  1570ms
+   ✓ S2c: the foot bar of Choose repositories > Refresh in the foot bar reads the owners and the overview again  826ms
+ ✓ src/__tests__/access.ask-first.test.tsx (7 tests) 14543ms
+   ✓ a grant is never removed or narrowed on one click (RSA-1) > Remove on a grant row writes nothing until Remove access; Keep and Esc leave it  2266ms
+   ✓ a grant is never removed or narrowed on one click (RSA-1) > a grant moved from Write to Read writes nothing until Change to Read  1179ms
+   ✓ a grant is never removed or narrowed on one click (RSA-1) > the chooser asks before Read to Not chosen and Write to Read, and not before a new grant  2619ms
+   ✓ an ask-first banner is reachable from the keyboard (RSA-27) > takes focus to the safe button, and Esc is Keep: Disconnect sends nothing  3445ms
+   ✓ an ask-first banner is reachable from the keyboard (RSA-27) > focuses Keep Write when a grant Remove asks  688ms
+   ✓ Chosen is every grant under the owner (RSA-29) > lists a grant GitHub put on page 2, and drops the page pager  3486ms
+   ✓ the tab is in the address (RSA-28) > writes ?view=choose, and a mount on it opens Choose repositories  860ms
+ ✓ src/__tests__/access.phone-chooser.test.tsx (6 tests) 4796ms
+   ✓ on a phone the owner column is a select > lists every owner with its count or state, and draws only the selected owner and its repositories  428ms
+   ✓ on a phone the owner column is a select > shows an owner not enabled yet with its own actions, and no other owner’s repositories under it  1296ms
+   ✓ on a phone the owner column is a select > keeps the selected owner across a reload, in this tab’s session  776ms
+   ✓ on a phone the owner column is a select > falls back to the first enabled owner when the stored one is no longer reached  386ms
+   ✓ on a phone the owner column is a select > still opens from the deep link, with one owner as with several  651ms
+   ✓ on a desktop the chooser is as it was > draws every owner card and no select, and ignores an owner a phone stored  1258ms
+ ✓ src/__tests__/github.connect.test.tsx (6 tests) 4313ms
+   ✓ the card says how your tasks reach GitHub > through the tenant token: says so and offers Connect, which opens GitHub  966ms
+   ✓ the card says how your tasks reach GitHub > a refused authorize is shown, and the browser stays  440ms
+   ✓ the card says how your tasks reach GitHub > through your App connection: "Connected as @<login>" and the accounts it reaches  541ms
+   ✓ the card says how your tasks reach GitHub > a connection whose refresh failed says so in §2.3 words and offers Reconnect  438ms
+   ✓ Disconnect asks first > sends nothing on the first press, backs out on Keep connected, and DELETEs only on the confirm  1563ms
+   ✓ at 390 > stacks the card's actions one per row  364ms
+ ✓ src/__tests__/onboarding.count.test.tsx (9 tests) 3450ms
+   ✓ the setup count counts required steps only > reads 8 of 8 required done, with the undone optional step named apart  795ms
+   ✓ the setup count counts required steps only > reads as it always did when every step is required and done  459ms
+   ✓ VQ-048: Workspace setup says the count once, in the card body, and marks optional rows > marks each optional step "optional" on its own row, and no required one  351ms
+   ✓ an incomplete probe shows its error with its age > names the error, the time it was seen, and that it is re-checked hourly  333ms
+   ✓ an incomplete probe shows its error with its age > shows a leftover error on a complete probe nowhere  580ms
+ ✓ src/__tests__/access.github-page.test.tsx (7 tests) 6561ms
+   ✓ GitHub access is the GitHub App integration and Choose repositories > draws a Connection tab and a Choose repositories tab, Connection open on the bare path  1089ms
+   ✓ GitHub access is the GitHub App integration and Choose repositories > offers Connect GitHub when nothing is connected, once, as the lead the page opens with  652ms
+   ✓ GitHub access is the GitHub App integration and Choose repositories > opens Choose repositories from its tab, and the lead offers it once connected  1144ms
+   ✓ the reach-as-you list is not on GitHub access > is drawn on neither tab, and the page links to Config › Repositories for it  1246ms
+   ✓ the deep link opens Choose repositories > mounts on /config/github?view=choose with the chooser open  1727ms
+   ✓ the deep link opens Choose repositories > on the deep link with nothing connected, says to connect first and offers the Connection tab  701ms
+ ✓ src/__tests__/onboarding.dismiss.test.tsx (4 tests) 1368ms
+   ✓ Hide on the Overview card > keeps the card and says so when the dismiss is refused  308ms
+   ✓ Work › Setup and a dismissed checklist > still shows every step, and Show on Overview posts dismissed: false  685ms
+ ✓ src/__tests__/onboarding.liveqa.test.tsx (3 tests) 1105ms
+   ✓ RSA-25: a step row is written for a person > names no raw step id in its visible text  303ms
+   ✓ RSA-26: the summary wraps instead of being cut > the count, at a phone width, may wrap  534ms
+ ✓ src/__tests__/ledger.modelgroups.test.tsx (3 tests) 930ms
+   ✓ Reliability groups by model and by model class > offers both, for a tenant and on the platform view  622ms
+   ✓ Reliability groups by model and by model class > asks for the group it names  302ms
+
+ Test Files  13 passed (13)
+      Tests  215 passed (215)
+   Start at  18:25:55
+   Duration  127.57s (transform 4.42s, setup 242ms, collect 5.93s, tests 120.30s, environment 443ms, prepare 87ms)
+

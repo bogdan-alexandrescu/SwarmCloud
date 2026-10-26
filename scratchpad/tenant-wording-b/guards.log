@@ -1,0 +1,164 @@
+==> 13 changed path(s) in origin/main...HEAD and the work tree; 49 test file(s) read them or guard the repository:
+warn the selection weighs 564 CI-seconds (tests/unit/scripts/unit_test_durations.json), more than one 540 s run may hold: it runs as 2 parts in turn; under a 10-minute command limit, run it as 2 commands: scripts/changed-guards.sh --shard 1/2 ... --shard 2/2
+tests/unit/scripts/test_docs_describe_what_was_built.py
+tests/unit/scripts/test_docs_spec_amendments.py
+tests/unit/control_plane/test_runtimes_screen.py
+tests/unit/common/test_specsign_covers.py
+tests/unit/scripts/test_collection_stays_cheap.py
+tests/unit/common/test_awaiting_input_readers.py
+tests/unit/control_plane/test_artifacts_read_path.py
+tests/unit/control_plane/test_declared_dependencies.py
+tests/unit/control_plane/test_spec_signing_every_submitter.py
+tests/unit/scheduler/test_mcp_admission.py
+tests/unit/worker/test_helpers_import_by_unique_name.py
+tests/unit/scripts/test_docs_agent_vocabulary.py
+tests/unit/common/test_startup_progress_contract.py
+tests/unit/control_plane/test_reconciler_cloud_run_stall_guard.py
+tests/unit/scripts/test_cloudbuild_connection_retired.py
+tests/unit/worker/test_spec_verify_keys_configmap.py
+tests/unit/scripts/test_workspace_apply_approval.py
+tests/unit/worker/test_kubernetes_manifests.py
+tests/unit/control_plane/test_dispatch_judgment.py
+tests/unit/control_plane/test_gke_cache_volume.py
+tests/unit/control_plane/test_gke_worker_metadata_env.py
+tests/unit/control_plane/test_schedules_migration_seed.py
+tests/unit/control_plane/test_tfvars_refusal_switches.py
+tests/unit/control_plane/test_workspace_gate_dev.py
+tests/unit/scripts/test_create_secrets_workspace_grant_key.py
+tests/unit/scripts/test_deployer_role_count_prose.py
+tests/unit/scripts/test_github_app_runbook.py
+tests/unit/scripts/test_owner_pinned_jobs.py
+tests/unit/scripts/test_tenancy_retired_295_identities.py
+tests/unit/worker/test_checkpoint_retention.py
+tests/unit/worker/test_workspace_provisioner_scope.py
+tests/unit/scripts/test_swarm_verify_image_helpers.py
+tests/unit/scripts/test_fork_prs_off_self_hosted.py
+tests/unit/scripts/test_workflow_step_reachability.py
+tests/unit/scripts/test_image_streaming.py
+tests/unit/scripts/test_pr_image_scan.py
+tests/unit/scripts/test_ui_node_line.py
+tests/unit/worker/test_jev_browser_image.py
+tests/unit/worker/test_repo_index_extract.py
+tests/unit/scripts/test_auto_merge_base_merge.py
+tests/unit/scripts/test_issue_forms.py
+tests/unit/scripts/test_verify_deployer_trust.py
+tests/unit/control_plane/test_forgeapp.py
+tests/unit/control_plane/test_schedtypes_dependency_cve_refresh.py
+tests/unit/control_plane/test_schedtypes_release_health.py
+tests/unit/control_plane/test_workflow_step_measurements.py
+tests/unit/scripts/test_register_tenant_workspace.py
+tests/unit/worker/test_live_viewer_metrics.py
+tests/unit/worker/test_testservices_process.py
+bash scripts/lib/check-contract-parity.sh
+==> running the selection as 2 parts, each under 540 s
+==> 13 changed path(s) in /cache/att_8f91f7a698624f18a360/tmp/tmp.OzXjSIZ2WL/changed; 49 test file(s) read them or guard the repository:
+==> part 1 of 2: 1 of the 49 file(s)
+tests/unit/scripts/test_register_tenant_workspace.py
+bash scripts/lib/check-contract-parity.sh
+
+== pytest: 1 file(s), -n auto ==
+  File "/workspace/att_8f91f7a698624f18a360/work/repo/.venv/lib/python3.11/site-packages/pluggy/_callers.py", line 121 in _multicall
+  File "/workspace/att_8f91f7a698624f18a360/work/repo/.venv/lib/python3.11/site-packages/pluggy/_manager.py", line 120 in _hookexec
+  File "/workspace/att_8f91f7a698624f18a360/work/repo/.venv/lib/python3.11/site-packages/pluggy/_hooks.py", line 512 in __call__
+  File "/workspace/att_8f91f7a698624f18a360/work/repo/.venv/lib/python3.11/site-packages/xdist/remote.py", line 427 in <module>
+  File "/workspace/att_8f91f7a698624f18a360/work/repo/.venv/lib/python3.11/site-packages/execnet/gateway_base.py", line 1291 in executetask
+  File "/workspace/att_8f91f7a698624f18a360/work/repo/.venv/lib/python3.11/site-packages/execnet/gateway_base.py", line 341 in run
+  File "/workspace/att_8f91f7a698624f18a360/work/repo/.venv/lib/python3.11/site-packages/execnet/gateway_base.py", line 411 in _perform_spawn
+  File "/workspace/att_8f91f7a698624f18a360/work/repo/.venv/lib/python3.11/site-packages/execnet/gateway_base.py", line 389 in integrate_as_primary_thread
+  File "/workspace/att_8f91f7a698624f18a360/work/repo/.venv/lib/python3.11/site-packages/execnet/gateway_base.py", line 1273 in serve
+  File "/workspace/att_8f91f7a698624f18a360/work/repo/.venv/lib/python3.11/site-packages/execnet/gateway_base.py", line 1806 in serve
+  File "<string>", line 8 in <module>
+  File "<string>", line 1 in <module>
+....................                  [100%]
+============================= slowest 10 durations =============================
+80.98s call     tests/unit/scripts/test_register_tenant_workspace.py::test_a_rerun_after_a_failure_makes_only_what_is_missing
+58.95s setup    tests/unit/scripts/test_register_tenant_workspace.py::test_a_service_create_runs_s1_a2_to_a8_s2_a9_in_that_order
+53.97s setup    tests/unit/scripts/test_register_tenant_workspace.py::test_a_group_create_makes_its_team_slot_label_and_group_tenant
+53.35s setup    tests/unit/scripts/test_register_tenant_workspace.py::test_an_existing_marker_is_left_as_it_is
+43.73s call     tests/unit/scripts/test_register_tenant_workspace.py::test_a_front_door_iap_refuses_stops_for_the_owner
+40.26s call     tests/unit/scripts/test_register_tenant_workspace.py::test_an_account_the_owner_already_admitted_finishes_with_the_read_alone
+37.93s call     tests/unit/scripts/test_register_tenant_workspace.py::test_limits_repairs_a_workspace_failed_on_its_quota_alone
+37.65s setup    tests/unit/scripts/test_register_tenant_workspace.py::test_verify_names_the_type_of_a_missing_object_never_its_name
+37.64s setup    tests/unit/scripts/test_register_tenant_workspace.py::test_create_runs_every_step_and_ends_ready
+37.64s setup    tests/unit/scripts/test_register_tenant_workspace.py::test_limits_refuses_any_other_failed_workspace[other-code]
+127 passed in 266.24s (0:04:26)
+  ok part 1 of 2: 1 of 49 test file(s) and contract parity pass
+==> 13 changed path(s) in /cache/att_8f91f7a698624f18a360/tmp/tmp.OzXjSIZ2WL/changed; 49 test file(s) read them or guard the repository:
+==> part 2 of 2: 48 of the 49 file(s)
+tests/unit/common/test_awaiting_input_readers.py
+tests/unit/common/test_specsign_covers.py
+tests/unit/common/test_startup_progress_contract.py
+tests/unit/control_plane/test_artifacts_read_path.py
+tests/unit/control_plane/test_declared_dependencies.py
+tests/unit/control_plane/test_dispatch_judgment.py
+tests/unit/control_plane/test_forgeapp.py
+tests/unit/control_plane/test_gke_cache_volume.py
+tests/unit/control_plane/test_gke_worker_metadata_env.py
+tests/unit/control_plane/test_reconciler_cloud_run_stall_guard.py
+tests/unit/control_plane/test_runtimes_screen.py
+tests/unit/control_plane/test_schedtypes_dependency_cve_refresh.py
+tests/unit/control_plane/test_schedtypes_release_health.py
+tests/unit/control_plane/test_schedules_migration_seed.py
+tests/unit/control_plane/test_spec_signing_every_submitter.py
+tests/unit/control_plane/test_tfvars_refusal_switches.py
+tests/unit/control_plane/test_workflow_step_measurements.py
+tests/unit/control_plane/test_workspace_gate_dev.py
+tests/unit/scheduler/test_mcp_admission.py
+tests/unit/scripts/test_auto_merge_base_merge.py
+tests/unit/scripts/test_cloudbuild_connection_retired.py
+tests/unit/scripts/test_collection_stays_cheap.py
+tests/unit/scripts/test_create_secrets_workspace_grant_key.py
+tests/unit/scripts/test_deployer_role_count_prose.py
+tests/unit/scripts/test_docs_agent_vocabulary.py
+tests/unit/scripts/test_docs_describe_what_was_built.py
+tests/unit/scripts/test_docs_spec_amendments.py
+tests/unit/scripts/test_fork_prs_off_self_hosted.py
+tests/unit/scripts/test_github_app_runbook.py
+tests/unit/scripts/test_image_streaming.py
+tests/unit/scripts/test_issue_forms.py
+tests/unit/scripts/test_owner_pinned_jobs.py
+tests/unit/scripts/test_pr_image_scan.py
+tests/unit/scripts/test_swarm_verify_image_helpers.py
+tests/unit/scripts/test_tenancy_retired_295_identities.py
+tests/unit/scripts/test_ui_node_line.py
+tests/unit/scripts/test_verify_deployer_trust.py
+tests/unit/scripts/test_workflow_step_reachability.py
+tests/unit/scripts/test_workspace_apply_approval.py
+tests/unit/worker/test_checkpoint_retention.py
+tests/unit/worker/test_helpers_import_by_unique_name.py
+tests/unit/worker/test_jev_browser_image.py
+tests/unit/worker/test_kubernetes_manifests.py
+tests/unit/worker/test_live_viewer_metrics.py
+tests/unit/worker/test_repo_index_extract.py
+tests/unit/worker/test_spec_verify_keys_configmap.py
+tests/unit/worker/test_testservices_process.py
+tests/unit/worker/test_workspace_provisioner_scope.py
+
+== pytest: 48 file(s), -n auto ==
+........................................................................ [ 69%]
+........................................................................ [ 74%]
+........................................................................ [ 80%]
+........................................................................ [ 85%]
+........................................................................ [ 90%]
+........................................................................ [ 96%]
+..................................................                       [100%]/workspace/att_8f91f7a698624f18a360/work/repo/.venv/lib/python3.11/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient as TestClient  # noqa
+/workspace/att_8f91f7a698624f18a360/work/repo/.venv/lib/python3.11/site-packages/google/api_core/_python_version_support.py:254: FutureWarning: You are using a Python version (3.11.16) which Google will stop supporting in new releases of google.api_core once it reaches its end of life (2027-10-24). Please upgrade to the latest Python version, or at least Python 3.12, to continue receiving updates for google.api_core past that date.
+  warnings.warn(message, FutureWarning)
+/workspace/att_8f91f7a698624f18a360/work/repo/.venv/lib/python3.11/site-packages/google/api_core/_python_version_support.py:254: FutureWarning: You are using a Python version (3.11.16) which Google will stop supporting in new releases of google.cloud.firestore_v1 once it reaches its end of life (2027-10-24). Please upgrade to the latest Python version, or at least Python 3.12, to continue receiving updates for google.cloud.firestore_v1 past that date.
+  warnings.warn(message, FutureWarning)
+
+============================= slowest 10 durations =============================
+13.00s call     tests/unit/control_plane/test_spec_signing_every_submitter.py::test_only_the_signing_paths_create_a_task_document
+7.46s call     tests/unit/scripts/test_docs_spec_amendments.py::test_every_citation_is_a_symbol_or_an_anchor_that_resolves[contract-change-requests.md]
+5.55s call     tests/unit/scripts/test_docs_describe_what_was_built.py::test_test_services_checks_fail_on_a_one_line_mutation[exists-4]
+4.64s call     tests/unit/scripts/test_docs_describe_what_was_built.py::test_test_services_checks_fail_on_a_one_line_mutation[exists-5]
+4.56s call     tests/unit/scripts/test_docs_describe_what_was_built.py::test_test_services_checks_fail_on_a_one_line_mutation[cites-18]
+4.37s call     tests/unit/common/test_specsign_covers.py::test_the_scan_sees_the_keys_the_worker_is_known_to_read
+4.34s call     tests/unit/scripts/test_docs_spec_amendments.py::test_every_citation_is_a_symbol_or_an_anchor_that_resolves[child-tasks.md]
+3.99s call     tests/unit/scripts/test_docs_describe_what_was_built.py::test_every_citation_is_a_symbol_or_an_anchor_that_resolves[BUILD_PROMPT_V2.md]
+3.77s call     tests/unit/common/test_specsign_covers.py::test_every_metadata_key_the_worker_reads_is_signed
+3.73s call     tests/unit/scripts/test_docs_describe_what_was_built.py::test_test_services_docs_cite_only_what_resolves[design-test-services.md]
+1346 passed in 69.41s (0:01:09)
+  ok part 2 of 2: 48 of 49 test file(s) pass
+  ok all 2 parts: 49 guard and source-reading test file(s) and contract parity pass
