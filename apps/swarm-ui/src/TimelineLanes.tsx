@@ -1776,8 +1776,8 @@ function GroupHead({
     // only (QA G3-07): the subtitle printed the raw route and status, which
     // the label's width cut to `steps — (/v1/workflows/wf_55…`.
     if (workflow === null) {
-      note = `steps: reading…${id}`
-      noteTitle = note
+      noteTitle = `steps: reading…${id}`
+      note = noteTitle
     } else if (workflow.status === 'error') {
       const why = `steps not read: ${workflow.limited ? 'rate-limited' : workflow.why}`
       note = (
@@ -1793,8 +1793,8 @@ function GroupHead({
       )
       noteTitle = `${why}${id}`
     } else {
-      note = `${stepsNote(workflow.read, ran)}${id}`
-      noteTitle = note
+      noteTitle = `${stepsNote(workflow.read, ran)}${id}`
+      note = noteTitle
     }
     if (workflow?.status === 'ok') gap = stepsGap(workflow.read, ran, empty)
   } else if (block.kind === 'standalone') {
