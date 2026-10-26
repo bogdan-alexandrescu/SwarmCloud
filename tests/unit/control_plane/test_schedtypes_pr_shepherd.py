@@ -482,6 +482,78 @@ def test_a_run_in_a_ci_fix_round_is_left_to_it(db, ctx, gh, repo_id) -> None:
     assert not [w for w in work if w["kind"] == "workflow"] and 5 not in gh.comments
 
 
+CI_FIX_TASK = "task_" + "9a" * 10
+
+
+def seed_ci_fix(db, *, tenant_id="eng", state="RUNNING", pull_request=5, continues=INTEGRATOR):
+    """A standalone CI fix (scripts/ci-fix.sh) continuing the run's integrator."""
+    seed_task(db, task_id=CI_FIX_TASK, tenant_id=tenant_id, state=state,
+              runner_profile="claude-code", workflow_id="wf_" + "9a" * 4)
+    db.docs[f"tasks/{CI_FIX_TASK}"]["metadata"] = {
+        "dispatch": {"strategy": "direct-pr", "continues": continues},
+        "ci_fix": {"pull_request": pull_request, "attempt": 1, "max_attempts": 2,
+                   "postback": "pending"},
+    }
+
+
+def _conflict_fixes(db) -> list[dict[str, Any]]:
+    return [t for t in tasks(db) if "pr_shepherd" in (t.get("metadata") or {})]
+
+
+def test_a_live_ci_fix_on_the_pull_request_holds_the_conflict_fix(db, ctx, gh, repo_id) -> None:
+    """#2456, measured 2026-10-26 on PR #2381: a CI fix (task_2f5b70aa, 01:21Z)
+    and this type's conflict fix (task_2239a847, 01:23Z) both cloned 15cc7ea;
+    the CI fix pushed first and the conflict fix's push was rejected."""
+    seed_issue_run(db)
+    seed_ci_fix(db)
+    gh.add_pull(5, labels=("stale",), mergeable=False, state="dirty", branch=f"swarm/{INTEGRATOR}")
+    schedule = shepherd(db, repo_id, params={"fix_conflicts": True}, gate={"run": "auto"})
+
+    work = pr_shepherd.create(firing_for(ctx, schedule))
+
+    # MUTATION: drop the live-writer read from `_plan_one` -- a second writer
+    # clones the branch the CI fix is about to push.
+    assert not [w for w in work if w["kind"] == "workflow"]
+    assert _conflict_fixes(db) == []
+    # MUTATION: leave plan.conflict at "comment" -- the shepherd comments on a
+    # pull request a fix is already on.
+    assert 5 not in gh.comments
+    (pull,) = item(work, "actions")["detail"]["pulls"]
+    reasons = [p["reason"] for p in pull["passed_over"] if p["action"] == "conflict_fix"]
+    assert len(reasons) == 1 and reasons[0].startswith("fix_live"), pull["passed_over"]
+    assert CI_FIX_TASK in reasons[0]
+
+
+def test_a_terminal_ci_fix_does_not_hold_the_conflict_fix(db, ctx, gh, repo_id) -> None:
+    seed_issue_run(db)
+    seed_ci_fix(db, state="SUCCEEDED")
+    gh.add_pull(5, labels=("stale",), mergeable=False, state="dirty", branch=f"swarm/{INTEGRATOR}")
+    schedule = shepherd(db, repo_id, params={"fix_conflicts": True}, gate={"run": "auto"})
+
+    work = pr_shepherd.create(firing_for(ctx, schedule))
+
+    # MUTATION: count any ci_fix task as live -- a finished fix holds the
+    # conflict fix for ever.
+    assert [w for w in work if w["kind"] == "workflow"]
+    assert len(_conflict_fixes(db)) == 1
+
+
+@pytest.mark.parametrize("where", [{"pull_request": 6}, {"tenant_id": "research"}],
+                         ids=["another_pull_request", "another_tenant"])
+def test_a_ci_fix_on_another_pull_request_or_tenant_does_not_hold_it(db, ctx, gh, repo_id, where) -> None:
+    seed_issue_run(db)
+    seed_ci_fix(db, **where)
+    gh.add_pull(5, labels=("stale",), mergeable=False, state="dirty", branch=f"swarm/{INTEGRATOR}")
+    schedule = shepherd(db, repo_id, params={"fix_conflicts": True}, gate={"run": "auto"})
+
+    work = pr_shepherd.create(firing_for(ctx, schedule))
+
+    # MUTATION: drop the pull-request check, or the tenant filter (invariant
+    # 9) -- another pull request's or tenant's fix holds this one.
+    assert [w for w in work if w["kind"] == "workflow"]
+    assert len(_conflict_fixes(db)) == 1
+
+
 # ---------------------------------------------------------------------------
 # The credential
 # ---------------------------------------------------------------------------
