@@ -650,6 +650,8 @@ export function TimelineLanesScreen({
   const [trackPx, setTrackPx] = useState<number | null>(null)
   /** The phone's filter sheet, behind `Filters · N` (visual QA VQ-024). */
   const [sheet, setSheet] = useState(false)
+  /** The phone's legend, behind `Key` (VQ-024, decided 2026-10-26). */
+  const [key, setKey] = useState(false)
   const lastSpan = useRef(spanKey)
   if (lastSpan.current !== spanKey) {
     lastSpan.current = spanKey
@@ -1218,6 +1220,20 @@ export function TimelineLanesScreen({
         >
           Filters · {lanesFiltersSet(view)}
         </button>
+        {/* THE LEGEND FOLDS ON A PHONE TOO (VQ-024, "Fold the legend",
+            BGD 2026-10-26): with the filters folded, the legend's seven marks
+            still stood between the strip and the first lane at 390. Closed by
+            default there; a wide screen shows it always and has no button.
+            The outcome strip's counts are not folded with it. */}
+        <button
+          type="button"
+          className="tl-key-toggle"
+          aria-expanded={key}
+          aria-controls="tl-key"
+          onClick={() => setKey(!key)}
+        >
+          Key
+        </button>
         <div className={sheet ? 'tl-sheet is-open' : 'tl-sheet'} id="tl-sheet">
           <TlPicker
             label="State"
@@ -1298,7 +1314,7 @@ export function TimelineLanesScreen({
         </p>
       )}
 
-      <Legend />
+      <Legend open={key} />
 
       {att.status === 'error' ? (
         <div className="tl-state is-bad" role="alert">
@@ -1566,9 +1582,9 @@ function TlPicker({
   )
 }
 
-function Legend() {
+function Legend({ open }: { open: boolean }) {
   return (
-    <p className="tl-legend">
+    <p className={open ? 'tl-legend tl-key is-open' : 'tl-legend tl-key'} id="tl-key">
       <span>
         <i className="tl-lg is-hold" /> held capacity (leased → running)
       </span>
