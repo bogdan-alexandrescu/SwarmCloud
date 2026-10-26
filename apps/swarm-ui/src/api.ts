@@ -6335,7 +6335,7 @@ function healthReadOf(r: Result<unknown>): HealthRead {
  * and one with no events in 7 days. Built off the fixture accounts, so the
  * rows, the tiles and the lanes agree, and relative to FIXTURE_NOW.
  */
-function fixtureAccountHealth(): PoolHealth {
+function fixturePoolHealth(): PoolHealth {
   const H = 3_600_000
   const M = 60_000
   const top = Math.floor(FIXTURE_NOW / H) * H
@@ -6421,7 +6421,7 @@ async function fixtureAccountHealthBoard(): Promise<Result<AccountHealthBoard>> 
   await new Promise((r) => setTimeout(r, 180))
   noteFixtureProbe(route('/v1/accounts'), 180, true)
   noteFixtureProbe(route('/v1/accounts/health'), 120, true)
-  const pool = fixtureAccountHealth()
+  const pool = fixturePoolHealth()
   const byId = new Map(pool.accounts.map((r) => [r.account_id, r]))
   return {
     status: 'ok',
