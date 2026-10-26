@@ -4963,6 +4963,34 @@ changes no workflow on purpose: a workflow file can only be pushed by swarm-api,
 and the first lane that tried this by editing `application.yml` could not
 publish.
 
+**A UI change selects only the spacing slices whose screens it reaches**
+(SPACING-NARROW, part of #2362). Weighting keeps the slices apart, but each
+still costs 252-437 s, and by import every change under `App.tsx` reached all
+of them: `spacingsweep.tsx` imports `{App, SECTIONS}` from `'../App'`. A slice
+renders `App` at its own `SPACING_GROUPS` routes only, so `related_tests.py`
+(`spacing_plan()`, `spacing_dropped()`) reads those routes from
+`spacingsweep.tsx` and, from `App.tsx`'s `SectionBody`, the components each
+`case '<route>':` renders, resolved through `App.tsx`'s imports to modules. A
+`spacing.<group>.test.tsx` is then kept when the change reaches a module one of
+its routes renders, or reaches the slice by a path that avoids every
+`App.tsx` -> screen import: the shell (`Spine.tsx`, a hook App calls),
+`App.tsx` itself, `spacingsweep.tsx` or `spaceprobe.ts`, which render on every
+route. An import counts as a screen's only when every name it brings in is
+used in `SectionBody`'s cases and nowhere else in `App.tsx`; a module App also
+takes a card or a hook from (`Schedules`, `Workflows`, `Activity`) stays a
+shell path. Screens import from one another -- Overview's cards come from
+several -- so one screen's change usually keeps two or three slices of eight,
+not one. A changed `src/styles.css` or `src/styles/*.css` keeps every slice,
+because the sweep reads every sheet into every route's cascade by `?raw` import
+and `import.meta.glob`, which no import edge follows. `spacing.test.tsx` is kept
+whenever a slice is. Anything that does not parse -- no `SPACING_GROUPS`, no
+`SectionBody`, a route with no case, or a component `App.tsx` neither imports
+nor defines -- keeps every slice: a reshaped `App.tsx` costs time, never a
+missed slice. `spacingsweep.tsx` and `App.tsx` are read, never edited for this;
+`test_every_real_spacing_route_resolves_to_a_screen_module` holds the parse
+against this checkout, so a renamed screen fails a test instead of quietly
+turning the narrowing off.
+
 ## Where the suites are documented
 
 [`testing.md`](testing.md) is still the reference for **what each suite covers

@@ -33,7 +33,13 @@ WHAT IS RELATED:
   * a change to a swarm-ui stylesheet also selects every vitest file that
     names that sheet in a quoted string -- reads it from disk by its path
     relative to src or by its file name -- since no import reaches those
-    either (the named-sheet readers, beside STYLESHEET_GUARDS).
+    either (the named-sheet readers, beside STYLESHEET_GUARDS);
+  * except the spacing slices (SPACING-NARROW, #2362): a spacing.<group>.test.tsx
+    the import graph reaches is kept only when the change reaches a module one
+    of its SPACING_GROUPS routes' SectionBody cases renders, or reaches it
+    other than through an App.tsx -> screen import (App.tsx, the shell, the
+    sweep, spaceprobe). A changed src/styles sheet, or an App.tsx or sweep that
+    does not parse, keeps every slice; spacing.test.tsx is kept with any slice.
 
 OUTPUT, one line each, tab-separated:
 
@@ -54,6 +60,7 @@ import posixpath
 import re
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -201,7 +208,155 @@ def ui_related(ui_root: Path, changed_ui: list[str]) -> list[str]:
         reached.update(stylesheet_guards(known))
         reached.update(t for t, names in sheets_named.items()
                        if any(names_sheet(n, s) for n in names for s in changed_sheets))
+        # The sweep reads every one of these into every route's cascade, by
+        # `?raw` import and import.meta.glob, which no edge above follows.
+        if any(s == "src/styles.css" or _SWEPT_SHEET.fullmatch(s) for s in changed_sheets):
+            reached.update(k for k in known if _SLICE.fullmatch(k) or k == SLICE_CHECK)
+    reached -= spacing_dropped(ui_root, known, importers, reached, changed_ui)
     return sorted(r for r in reached if is_vitest_file(r))
+
+
+# THE SPACING SLICES A CHANGE REACHES (SPACING-NARROW, part of #2362).
+# spacingsweep.tsx imports {App, SECTIONS} from '../App', so by import every
+# module App.tsx reaches reached all nine spacing.<group>.test.tsx slices, at
+# 252-437 CI-seconds each: 40+ agents timed out re-running them on 2026-10-25/26
+# for changes to one screen. A slice renders App at its SPACING_GROUPS routes
+# only, so it is kept when the change reaches a module one of its routes'
+# SectionBody case renders, OR reaches the slice by a path that avoids every
+# App -> screen import -- the shell (Spine, a hook App calls), the sweep or
+# spaceprobe, which render on every route. An App import counts as a screen's
+# only when every name it brings in appears in App.tsx inside SectionBody's
+# cases and nowhere else; a module App also imports a card or hook from stays
+# a shell path. A changed sheet keeps every slice: the sweep globs every
+# src/styles/*.css into every route's cascade. Whatever does not parse -- no
+# SPACING_GROUPS, no SectionBody, a route with no case or a tag App neither
+# imports nor defines -- keeps every slice, so a reshaped App.tsx costs time,
+# never a missed slice. spacingsweep.tsx and App.tsx are read, never edited.
+APP = "src/App.tsx"
+SWEEP = "src/__tests__/spacingsweep.tsx"
+SLICE_CHECK = "src/__tests__/spacing.test.tsx"
+_SLICE = re.compile(r"src/__tests__/spacing\.([^./]+)\.test\.tsx")
+_SWEPT_SHEET = re.compile(r"src/styles/[^/]+\.css")
+_GROUPS = re.compile(r"\bexport\s+const\s+SPACING_GROUPS\b[^=]*=\s*\[(.*?)^\]", re.S | re.M)
+_GROUP = re.compile(r"\bname:\s*'([^']+)'\s*,\s*routes:\s*\[([^\]]*)\]")
+_CASE = re.compile(r"^(\s*)case\s+'([^']+)'\s*:", re.M)
+_TAG = re.compile(r"<([A-Z][A-Za-z0-9_]*)")
+_COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
+_IMPORT = re.compile(r"^import\s+(?!type\s)([^'\";]*?)\s+from\s*['\"]([^'\"]+)['\"]", re.M)
+
+
+class SpacingPlan(NamedTuple):
+    groups: dict[str, list[str]]   # slice name -> its routes
+    routes: dict[str, set[str]]    # route -> the modules its case renders (APP for a local one)
+    cut: set[str]                  # modules App imports only for SectionBody's cases
+
+
+def _imported_names(clause: str) -> list[str]:
+    """Local names of `Default, { a, b as c, type T }`."""
+    names = []
+    head, _, rest = clause.partition("{")
+    for part in [head, *rest.rstrip("} \n").split(",")]:
+        part = part.strip().strip(",").strip()
+        if not part or part.startswith(("type ", "* as")):
+            continue
+        names.append(part.split(" as ")[-1].strip())
+    return [n for n in names if n.isidentifier()]
+
+
+def spacing_plan(ui_root: Path, known: set[str]) -> SpacingPlan | None:
+    """SPACING_GROUPS' routes and the modules App.tsx's SectionBody case for
+    each renders, or None when any of it does not parse."""
+    if APP not in known or SWEEP not in known:
+        return None
+    sweep = (ui_root / SWEEP).read_text(errors="replace")
+    block = _GROUPS.search(sweep)
+    if not block:
+        return None
+    groups = {m.group(1): re.findall(r"'([^']+)'", m.group(2)) for m in _GROUP.finditer(block.group(1))}
+    if not groups or len(groups) != len(re.findall(r"\bname:\s*'", block.group(1))):
+        return None
+    app = (ui_root / APP).read_text(errors="replace")
+    start = app.find("function SectionBody")
+    if start < 0:
+        return None
+    end = re.compile(r"^(?:export\s+)?(?:function|const|class)\s", re.M).search(app, start + 1)
+    body = app[start:end.start() if end else len(app)]
+    # Each case's text runs to the next label; fall-through labels share the
+    # next label's return.
+    marks = [*_CASE.finditer(body), *re.finditer(r"^\s*default\s*:", body, re.M)]
+    marks.sort(key=lambda m: m.start())
+    raw: dict[str, str] = {}
+    rest = app[:start] + body[:marks[0].start()] if marks else app
+    for i, mark in enumerate(marks):
+        stop = marks[i + 1].start() if i + 1 < len(marks) else len(body)
+        if mark.re is _CASE:
+            raw[mark.group(2)] = body[mark.end():stop]
+        else:
+            rest += body[mark.start():stop]
+    rest += app[start + len(body):]
+    segments: dict[str, str] = {}
+    shared = ""
+    for route in reversed(list(raw)):
+        text = _COMMENT.sub("", raw[route])
+        shared = segments[route] = text if text.strip() else shared
+    imports: dict[str, str] = {}
+    for m in _IMPORT.finditer(app):
+        target = _resolve(APP, m.group(2), known)
+        if target:
+            imports.update(dict.fromkeys(_imported_names(m.group(1)), target))
+    local = set(re.findall(r"^(?:export\s+)?(?:function|const|class)\s+([A-Z]\w*)", app, re.M))
+    routes: dict[str, set[str]] = {}
+    for route in (r for rs in groups.values() for r in rs):
+        tags = set(_TAG.findall(segments.get(route, "")))
+        if not tags or not tags <= set(imports) | local:
+            return None
+        routes[route] = {imports.get(t, APP) for t in tags}
+    # App's import of a module is a screen's when each name it brings in is
+    # used inside SectionBody's cases and nowhere else in App.tsx.
+    rest = _IMPORT.sub("", _COMMENT.sub("", rest))
+    in_cases = "\n".join(segments.values())
+    by_module: dict[str, set[str]] = {}
+    for name, target in imports.items():
+        by_module.setdefault(target, set()).add(name)
+    bare = {t for spec in re.findall(r"^import\s*['\"]([^'\"]+)['\"]", app, re.M)
+            if (t := _resolve(APP, spec, known))}
+
+    def used(name: str, text: str) -> bool:
+        return re.search(rf"\b{re.escape(name)}\b", text) is not None
+
+    cut = {mod for mod, names in by_module.items()
+           if mod not in bare and all(used(n, in_cases) and not used(n, rest) for n in names)}
+    return SpacingPlan(groups, routes, cut)
+
+
+def spacing_dropped(ui_root: Path, known: set[str], importers: dict[str, set[str]],
+                    reached: set[str], changed_ui: list[str]) -> set[str]:
+    """The reached spacing slices the change cannot alter (SPACING-NARROW)."""
+    slices = {r: m.group(1) for r in reached if (m := _SLICE.fullmatch(r))}
+    if not slices or any(c.endswith(".css") for c in changed_ui):
+        return set()
+    plan = spacing_plan(ui_root, known)
+    if plan is None:
+        return set()
+    # Reachability with every App -> screen edge cut.
+    kept: set[str] = set()
+    todo = [c for c in changed_ui if c in known]
+    while todo:
+        rel = todo.pop()
+        if rel in kept:
+            continue
+        kept.add(rel)
+        todo.extend(i for i in importers.get(rel, ()) if not (i == APP and rel in plan.cut))
+    dropped = set()
+    for path, name in slices.items():
+        if name not in plan.groups:
+            continue
+        screens = set().union(*(plan.routes[r] for r in plan.groups[name])) - {APP}
+        if path not in kept and not screens & reached:
+            dropped.add(path)
+    if SLICE_CHECK in reached and SLICE_CHECK not in kept and set(slices) <= dropped:
+        dropped.add(SLICE_CHECK)
+    return dropped
 
 
 def names_sheet(literal: str, sheet: str) -> bool:

@@ -33,6 +33,14 @@
 # out in 2026-10-25/26. scripts/refresh-ui-weights.sh rewrites the weights
 # from the logs of main's latest green application.yml run.
 #
+# SPACING-NARROW (part of #2362): by import, every change under App.tsx reached
+# every spacing slice, since spacingsweep.tsx imports {App, SECTIONS} from
+# '../App'. A slice renders only its SPACING_GROUPS routes, so it is kept when
+# the change reaches a module one of its routes' SectionBody cases renders, or
+# reaches the slice other than through an App -> screen import (App.tsx, the
+# shell, the sweep, spaceprobe). A changed sheet, or an App.tsx or sweep that
+# does not parse, keeps every slice. docs/ci.md says how the routes are read.
+#
 # The diff is changed-guards.sh's: `git diff --name-only <base>...HEAD` (the
 # merge base) plus uncommitted and untracked files. <base> is --base, else
 # SWARM_CLONE_BASE, else origin/main; an unresolvable base exits 2 rather than
