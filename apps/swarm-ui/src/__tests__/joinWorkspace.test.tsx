@@ -105,6 +105,16 @@ describe('/join: the code travels in a body, never a path', () => {
     expect(canonical(r)).toBe('join')
   })
 
+  it('lights Profile on the spine, not Submit, and marks no panel page current', async () => {
+    personApi(() => [])
+    await openApp(`/join#${CODE}`)
+    await screen.findByRole('heading', { name: 'Ask to join Example Labs' })
+    const spine = screen.getByRole('navigation', { name: 'Sections' })
+    const current = Array.from(spine.querySelectorAll('[aria-current="page"]'))
+    expect(current.map((a) => a.getAttribute('data-sec'))).toEqual(['profile'])
+    expect(document.querySelectorAll('.sk-pk[aria-current="page"]')).toHaveLength(0)
+  })
+
   it('reads the code from the fragment, posts it in the lookup body, and takes it off the bar', async () => {
     const calls = personApi(() => [])
     await openApp(`/join#${CODE}`)
@@ -194,6 +204,11 @@ describe('/join: the person’s own requests, in every state', () => {
     expect(visible(byState('expired'))).toMatch(/Ops.*Expired.*ask again/)
     expect(screen.getAllByRole('button', { name: /^Withdraw/ })).toHaveLength(1)
     expect(within(byState('requested')).getByRole('button', { name: 'Withdraw your request to join Example Labs' })).toBeTruthy()
+    // A decided request has nothing to do: its phone card prints no empty "Actions" caption.
+    expect(byState('requested').querySelectorAll('[data-label="Actions"]')).toHaveLength(1)
+    for (const s of ['approved', 'denied', 'withdrawn', 'expired']) {
+      expect(byState(s).querySelectorAll('[data-label="Actions"]'), `${s} carries an Actions label`).toHaveLength(0)
+    }
   })
 
   it('withdraws by its ref, and re-reads', async () => {
