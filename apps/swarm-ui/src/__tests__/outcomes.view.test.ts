@@ -192,8 +192,8 @@ describe('what the route means by its payload (#196)', () => {
     expect(dayDocWords(d, 15)).toBe('UTC days')
     expect(dayDocWords(d, 1)).toBe('UTC day')
     const p = { ...d, scope: { kind: 'platform' as const, tenants: ['eng', 'research'], excluded: [], tenants_complete: true } }
-    expect(dayDocWords(p, 30)).toBe('tenant-days')
-    expect(dayDocWords(p, 1)).toBe('tenant-day')
+    expect(dayDocWords(p, 30)).toBe('workspace-days')
+    expect(dayDocWords(p, 1)).toBe('workspace-day')
   })
 
   it('calls a payload cached only when the route would have cached it', () => {
