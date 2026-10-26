@@ -25,7 +25,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import { AwaitInputCard } from '../AwaitInputCard'
-import { FILE_WARNING, MAX_ANSWER_BYTES, filesProblem } from '../awaitInput'
+import { FILE_WARNING, MAX_ANSWER_BYTES, filesProblem, waitingTitle } from '../awaitInput'
 
 const WAIT = { timeout: 4000 }
 const T0 = Date.parse('2026-10-18T10:00:00.000Z')
@@ -332,13 +332,29 @@ describe('the waiting pill', () => {
     const pill = within(card).getByTestId('ai-pill')
     expect(pill.textContent).toBe('waiting for a member')
     expect(card.textContent).not.toContain('waiting for you')
-    expect(pill.getAttribute('title')).toContain('eng')
+    expect(pill.getAttribute('title')).toBe('Any member of workspace eng may answer.')
     expect(card.textContent).toContain('expires in 3 h 20 m')
   })
 
   it('a member who may not answer is told so and shown no form', async () => {
     const { card } = await mount(view({ may_answer: false }))
-    expect(within(card).getByTestId('ai-not-member').textContent).toContain('eng')
+    expect(within(card).getByTestId('ai-not-member').textContent).toBe(
+      'Only a member of workspace eng may answer, checked when the answer arrives. Switch to eng to answer it.')
     expect(within(card).queryByRole('button', { name: 'Approve' })).toBeNull()
+  })
+
+  // VQ-056 (BGD, 2026-10-26): the console speaks of workspaces; the `tenant`
+  // field keeps its name, the words a person reads do not say "tenant".
+  it('says workspace, never tenant, in anything a reader sees', async () => {
+    for (const may of [true, false]) {
+      const { card, unmount } = await mount(view({ may_answer: may }))
+      const read = [card.textContent ?? '', ...Array.from(card.querySelectorAll('[title]'), (e) => e.getAttribute('title') ?? '')]
+      expect(read.filter((t) => /\btenants?\b/i.test(t))).toEqual([])
+      unmount()
+    }
+    expect(waitingTitle('eng')).toBe(
+      'Waiting for any member of workspace eng to answer. Holds no capacity; it ends on the first answer or at its declared expiry.')
+    expect(waitingTitle(null)).toBe(
+      'Waiting for any member of its workspace to answer. Holds no capacity; it ends on the first answer or at its declared expiry.')
   })
 })
