@@ -1123,10 +1123,10 @@ function Readout({
             <ReadoutRow name="Agents" cell={{ text: int(bucket.agents), tone: 'plain', cover: [`${int(bucket.agents_ended)} ended`] }} />
             <ReadoutRow name="Retries" cell={{ text: int(bucket.retries), tone: 'plain', cover: [] }} />
             <ReadoutRow name="Run hours" cell={runCell(bucket)} />
-            <ReadoutRow name="Tokens in + out" cell={inOutCell(bucket)} />
+            <ReadoutRow name="Tokens in + out" cell={inOutCell(bucket)} wide />
             <ReadoutRow name="Cache read" cell={tokenCell(bucket.tokens.cache_read_input_tokens, bucket.agents_ended)} />
             <ReadoutRow name="Cache write" cell={tokenCell(bucket.tokens.cache_creation_input_tokens, bucket.agents_ended)} />
-            <ReadoutRow name="Estimated cost" cell={costCell(bucket)} />
+            <ReadoutRow name="Estimated cost" cell={costCell(bucket)} wide />
           </dl>
         </>
       )}
@@ -1134,9 +1134,15 @@ function Readout({
   )
 }
 
-function ReadoutRow({ name, cell }: { name: string; cell: Cell }) {
+/**
+ * `wide`: a row whose cover is longer than one overlay column ("N of N
+ * attempts reported", "k estimated from a stopped run ($x)"). overtime.css
+ * gives it two columns over the chart, so its cover stays on one line and the
+ * readout keeps the height that fits over the chart (re-review of PR 2348).
+ */
+function ReadoutRow({ name, cell, wide = false }: { name: string; cell: Cell; wide?: boolean }) {
   return (
-    <div className="pot-readout-row">
+    <div className="pot-readout-row" data-wide={wide ? '' : undefined}>
       <dt>{name}</dt>
       <dd>
         <CellView cell={cell} />

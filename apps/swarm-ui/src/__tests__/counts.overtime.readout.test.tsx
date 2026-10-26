@@ -298,7 +298,7 @@ const SECOND_LINE_PX = 17
 /** The overlay's rules that set a readout row's `grid-column: span N`, as [selector, N]. */
 function overlaySpans(): Array<[string, number]> {
   const at = css.indexOf('@container pot-plot (min-width: 640px)')
-  const block = css.slice(at, css.indexOf('\n}', at))
+  const block = css.slice(at, css.indexOf('\n}', at)).replace(/\/\*[\s\S]*?\*\//g, '')
   return Array.from(block.matchAll(/([^{}]+)\{([^}]*)\}/g))
     .map((m) => [m[1]!.trim(), /grid-column:\s*span\s+(\d+)/.exec(m[2]!)?.[1]] as const)
     .filter((r): r is readonly [string, string] => r[1] !== undefined && /pot-readout-row/.test(r[0]))

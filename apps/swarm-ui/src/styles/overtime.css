@@ -165,6 +165,14 @@
   .pot-readout[data-side='left'] { left: 60px; }
   .pot-readout[data-side='right'] { right: 32px; }
   .pot-readout .pot-readout-list { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: var(--ctl-s1) var(--ctl-s2); }
+  /* TWO COLUMNS FOR A LONG COVER (re-review of PR 2348, 2026-10-25): wrapped
+     in one 136px column, "N of N attempts reported", "N of N agents reported"
+     and "k estimated from a stopped run ($x)" took a second line each, and the
+     taller readout went under the chart for 25 of 26 picked weeks. Tokens in
+     + out and Estimated cost take two columns, so at three to a row the seven
+     figures still fill three rows, every cover sits on one line, and the
+     readout keeps the height that fits over the chart. */
+  .pot-readout .pot-readout-row[data-wide] { grid-column: span 2; }
   .pot-readout .pot-readout-layers { columns: 150px; font: var(--t-micro)/var(--lh-micro) var(--font); margin-bottom: var(--ctl-s1); padding-bottom: var(--ctl-s1); }
   .pot-readout[data-place='under'] { position: static; width: auto; max-height: none; overflow: visible; box-shadow: none; background: var(--surface-2); }
 }
@@ -184,9 +192,8 @@
    chart a column is minmax(118px, 1fr), about 136 at 1440, and the table's
    one-line cover drew "N of N attempts reported" 20px over the Cache read
    column beside it and "k estimated from a stopped run ($x)" 76px. A cell
-   shrinks to its column and its cover wraps there; the taller readout that
-   makes is what the fit measure in PlatformOverTime.tsx then sends under the
-   chart. */
+   shrinks to its column and its cover wraps there if it must; over the chart
+   the long-cover rows take two columns (above), so none has to. */
 .pot-readout .pot-readout-row { min-width: 0; }
 .pot-readout .pot-cov { white-space: normal; overflow-wrap: anywhere; }
 .pot-table td,
