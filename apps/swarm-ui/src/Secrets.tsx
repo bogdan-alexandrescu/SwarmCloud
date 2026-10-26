@@ -25,11 +25,12 @@ import {
   type WorkspaceSecretCatalogue,
   type WorkspaceSecretConsumer,
 } from './api'
-import { Banner, Button, ButtonLink, Card, Segmented, TypedConfirm, routedClick } from './components'
+import { BrowserLoginsPane, isPersonalTenant } from './BrowserLogins'
+import { Banner, Button, ButtonLink, Card, Segmented, Tabs, TypedConfirm, routedClick, type TabDef } from './components'
 import { SetupContext } from './ConfigSetup'
 import { configSetupOf } from './configSetupApi'
 import { chooseTenant, type Result } from './fetch'
-import { QA_LINK_ADDRESS, addressToPath, secretsLinkToken, secretsLinkView } from './paths'
+import { QA_LINK_ADDRESS, SECRETS_LOGINS_VIEW, addressToPath, secretsLinkToken, secretsLinkView } from './paths'
 import { UrRefresh, UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
 import type { RepoRecord } from './RepositoriesData'
 import { JevBackendCard } from './JudgmentBackend'
@@ -237,11 +238,30 @@ function neededOf(rows: readonly SecretsRow[]): SecretsRow[] {
 }
 
 const OVERVIEW_ROUTE = 'GET /v1/secrets/overview'
+
+/**
+ * BROWSER LOGINS, THE PAGE'S SECOND TAB (GA-MOVE-VIEWS; part of #2157, BGD
+ * 2026-10-24: "Browser logins to Config › Secrets"). It was GitHub access'
+ * Browser logins view: the person's own saved live-browser sessions, by name
+ * and site, with a typed Revoke (BrowserLogins.tsx `BrowserLoginsPane`, moved
+ * whole), beside the secrets they belong with. Its address is `?view=logins`,
+ * which `/config/github?view=logins` and `/access?view=logins` land on
+ * (paths.ts `MOVED_VIEWS`). The tab is the ROUTED view, never the bar read at
+ * mount: an old hash bookmark is rewritten to this path only after the first
+ * render. A scope, a one-time link's form or Add a secret opens the first
+ * tab whatever the address says (`secretsLinkView` keeps `view` only alone),
+ * because each is drawn there.
+ */
+const SECRETS_TABS: readonly TabDef[] = [
+  { key: 'secrets', label: 'Secrets' },
+  { key: SECRETS_LOGINS_VIEW, label: 'Browser logins' },
+]
 const CATALOGUE_ROUTE = 'GET /v1/workspace/secrets/consumers'
 
 export function SecretsScreen({ view, token = null }: { view: string | null; token?: string | null }) {
   const at = parseSecretsView(view)
   const viewKey = viewOf(at)
+  const logins = secretsLinkView(view ?? '') === `view=${SECRETS_LOGINS_VIEW}`
   // THE LINK'S TOKEN, for the form its link opened and no other: read once,
   // from App's capture or, rendered alone, off the bar. A ref, never state or
   // a prop of anything drawn.
@@ -339,15 +359,31 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
   }, [at.add, at.consumer, at.scope, repoId, formOpen, mayAdd, catalogueSettled, catalogueData])
   return (
     <div className="pk-page sec-page">
+      {/* The head's Refresh and Add a secret are the secrets' own, so the
+          logins tab, whose list is read by its own pane, offers neither. */}
       <PageHead title="Secrets">
-        <UrRefresh reads={[overview, repos]} ageOf={[overview]} />
-        {!formOpen && mayAdd && !first && (
+        {!logins && <UrRefresh reads={[overview, repos]} ageOf={[overview]} />}
+        {!logins && !formOpen && mayAdd && !first && (
           <Button kind="primary" size="sm" onClick={() => setWizard({ scope: at.scope, repo: repoId, consumer: null, dest: at.dest })}>
             Add a secret
           </Button>
         )}
       </PageHead>
-      {formOpen ? (
+      {/* `cfg-parts` (config.css): the Config pages' tab strip, as GitHub access draws it. */}
+      <Tabs tabs={SECRETS_TABS} current={logins ? SECRETS_LOGINS_VIEW : 'secrets'} label="Secrets" className="cfg-parts" onSelect={(k) => goView(k === SECRETS_LOGINS_VIEW ? `view=${SECRETS_LOGINS_VIEW}` : '')} />
+      {logins ? (
+        <>
+          {/* In a group workspace the pane says where logins live instead, so
+              a lede promising "the sessions you saved" would contradict it. */}
+          {(ov === null || isPersonalTenant(ov.tenant_id)) && (
+            <p className="ur-sub">
+              The browser sessions you saved from a live browser in your workspace, by name and site, with when each
+              expires. An agent names one to start signed in.
+            </p>
+          )}
+          <BrowserLoginsPane tenantId={ov?.tenant_id || null} />
+        </>
+      ) : formOpen ? (
         <OneTimeForm
           key={`${viewKey}#${again}`}
           at={at}
@@ -421,7 +457,7 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
           {at.scope === 'workspace' && <JevBackendCard />}
         </>
       )}
-      {wizard !== null && (
+      {!logins && wizard !== null && (
         <AddWizard
           start={wizard}
           repos={registered ?? []}

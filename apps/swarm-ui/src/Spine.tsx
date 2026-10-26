@@ -451,11 +451,14 @@ function focusInChrome(): boolean {
 
 /**
  * THE TENANT NAMES `/v1/tenants/me` HAS GIVEN IN THIS BROWSER, by tenant id
- * (QA G1-06, 2026-10-07). `/v1/tenants/mine` names each tenant by its
- * registered group's email -- it reads nothing, by design -- so the shell
- * called one tenant "Engineering" in the panel and "eng@example.com" in the list
- * under it. The list draws the name `me` gave where one is known: the current
- * tenant's always, another's once it has been acted as here.
+ * (QA G1-06, 2026-10-07). `/v1/tenants/mine` named each tenant by its
+ * registered group's email, so the shell called one tenant "Engineering" in
+ * the panel and "eng@example.com" in the list under it. The list draws the
+ * name `me` gave where one is known: the current tenant's always, another's
+ * once it has been acted as here. Since MINE-NAMES (part of #2157) `/mine`
+ * serves a group workspace's stored name itself, marked by `group`, and that
+ * wins over this store, which could be a rename behind (`nameTenants`); the
+ * store is the fallback for an entry `/mine` could not name.
  */
 export const TENANT_NAMES_STORE = 'swarm.tenants.names'
 
@@ -481,7 +484,7 @@ function learnTenantName(id: string, name: string): void {
 
 /** A tenant the list offers, named as the panel names it, with the group it was registered by. */
 export interface NamedTenantChoice extends TenantChoice {
-  /** The registered group's email: `/v1/tenants/mine`'s own `display_name`. */
+  /** The registered group's email: `/v1/tenants/mine`'s `group`, or its `display_name` when it served none. */
   group: string
   /** The person's default workspace (§4.5), as `/v1/tenants/mine` marks it. */
   is_default: boolean
@@ -513,8 +516,10 @@ export const PROFILE_ADDRESS = 'settings/profile'
 export const PROFILE_PATH = '/settings/profile'
 
 /**
- * The one name the shell draws for a tenant: the current tenant's from `me`,
- * another's as `me` last gave it in this browser, and the group email only
+ * The one name the shell draws for a tenant: the current tenant's from `me`;
+ * another's as `/v1/tenants/mine` served it when it read the stored name
+ * (`group` present: BGD, 2026-10-25, a rename shows in everyone's switcher at
+ * once), else as `me` last gave it in this browser, and the group email only
  * for a tenant never acted as here. The caller's own personal workspace
  * (`kind: user`) is always "Your workspace". The id is always the secondary line.
  */
@@ -527,7 +532,9 @@ export function nameTenants(choices: readonly TenantChoice[], me: Me | null): Na
     // `via` rides along: the list draws a platform admin's reach entries under
     // their own heading, and the shell its banner (`isReach`).
     const via = c.via === undefined ? {} : { via: c.via }
-    return { tenant_id: c.tenant_id, display_name: current ?? known[c.tenant_id] ?? c.display_name, group: c.display_name, is_default, ...via }
+    const group = typeof c.group === 'string' && c.group !== '' ? c.group : null
+    const served = group === null ? null : c.display_name
+    return { tenant_id: c.tenant_id, display_name: current ?? served ?? known[c.tenant_id] ?? c.display_name, group: group ?? c.display_name, is_default, ...via }
   })
 }
 
