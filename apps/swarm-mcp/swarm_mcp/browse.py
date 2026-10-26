@@ -155,7 +155,9 @@ def workflow_row(envelope: dict[str, Any], now: datetime) -> dict[str, Any]:
 
 def _park_phase(task: dict[str, Any] | None) -> str | None:
     """Why a HUMAN_REQUIRED task holds, as the API serves it (`blocked_by[].park_phase`,
-    else `waiting.detail.park_phase`): `owner_questions` is a merge held by them."""
+    else `waiting.detail.park_phase`): `owner_questions` is a merge held by them.
+    An AWAITING_INPUT park (a control_plane step waiting for a member's answer)
+    is never a merge held on owner questions, so it has no park phase here."""
     if not task or task.get("park_reason") != "HUMAN_REQUIRED":
         return None
     for block in task.get("blocked_by") or []:
