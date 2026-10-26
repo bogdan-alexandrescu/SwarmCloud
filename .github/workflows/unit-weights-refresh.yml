@@ -1,0 +1,98 @@
+# Refresh the unit-test shard weights from main's green runs (#2364).
+#
+# WHY. tests/unit/scripts/unit_test_durations.json is what
+# scripts/lib/unit_shards.py balances the python-unit shards by. A person
+# refreshed it by hand, new test files outran the refresh, and a hard 80 %
+# coverage floor turned main and every pull request red (1069 of 1337 weighted
+# at 82638be8, until #2312). The floor is a warning now; this keeps the
+# weights fresh so it does not fire.
+#
+# WHAT ONE RUN DOES is scripts/refresh-unit-weights.sh, which says why in
+# full: find the newest successful push run of application.yml on main that
+# uploaded `unit-durations-*` (walking back past runs that skipped
+# python-unit), merge what it measured over the stored weights, and -- only if
+# the file changed -- force-update the bot-owned branch
+# chore/unit-weights-refresh and open or retitle its one pull request. The
+# pull request is not queued for auto-merge: a person merges it.
+#
+# WHEN. Daily, and on demand. Main's push runs upload their measurements for
+# 30 days, so a missed day loses nothing.
+#
+# CREDENTIALS. The merge App's installation token, minted as merge-train.yml
+# mints it, for the push and the pull request: a branch pushed or a pull
+# request opened with the GITHUB_TOKEN starts no workflow, so the refresh
+# would sit with no CI (auto-merge.yml says why at length). contents: write
+# pushes the one branch; pull-requests: write opens and edits its pull
+# request. No `workflows` scope: the pushed commit changes one JSON file on
+# top of main. The workflow's own token only reads runs and downloads their
+# artifacts. Neither token is printed.
+#
+# tests/unit/scripts/test_unit_weights_refresh.py holds the triggers, the
+# environment, the credential and that the logic stays in the script.
+
+name: unit-weights-refresh
+
+on:
+  schedule:
+    # 05:17 UTC, off the hour when scheduled runs pile up.
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  refresh:
+    name: refresh the unit shard weights
+    # Self-hosted pool, SHORT form: this workflow starts only on schedule or
+    # dispatch, never `pull_request` (test_fork_prs_off_self_hosted.py checks
+    # the triggers). SELF_HOSTED_CI=off sends it back to ubuntu-24.04.
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    # The merge App's key (MERGE_APP_PRIVATE_KEY) lives in environment
+    # `repo-secrets`, whose deployment branches are `main` only (BGD,
+    # 2026-10-23, REPO-SECRETS-ENV; docs/ci.md). A schedule runs on main's
+    # ref; a dispatch from another branch is refused by the environment and by
+    # the `if:` below. `deployment: false`: no deployment record.
+    # test_repo_secrets_environment.py.
+    environment:
+      name: repo-secrets
+      deployment: false
+    # A run is a few API calls, a download of under a megabyte and one push.
+    # Fifteen is the backstop for a gh call that hangs.
+    timeout-minutes: 15
+    # One refresh at a time: two would race to force-update the same branch.
+    concurrency:
+      group: unit-weights-refresh
+      cancel-in-progress: false
+    if: github.repository == 'bogdan-alexandrescu/SwarmCloud' && github.ref == 'refs/heads/main'
+    # The workflow's own token:
+    #   contents: read   the checkout of main;
+    #   actions: read    list application.yml's runs and download their artifacts.
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: mint the merge App's token for this repository
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.MERGE_APP_ID }}
+          private-key: ${{ secrets.MERGE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: refresh the weights and open or update the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          REPO_DIR: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          scripts/refresh-unit-weights.sh
