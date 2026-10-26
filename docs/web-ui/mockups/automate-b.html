@@ -55,6 +55,7 @@ button{font:inherit;color:inherit}
 .scroller{overflow-x:auto;border-radius:12px;border:1px solid var(--line);max-width:100%;background:var(--bg)}
 .pair{display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start;margin-top:18px}
 .pair>.fr{margin:0;flex:0 1 auto;max-width:100%}
+.pair>.fr figcaption{max-width:390px}
 .dt{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin-top:14px}
 table.doct{border-collapse:collapse;width:100%;min-width:640px;font-size:14px}
 table.doct th,table.doct td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
@@ -598,7 +599,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <section class="frame" id="A6" data-frame="A6">
 <span class="flab">Frame A6</span>
 <h2><span class="n">A6</span>Empty and honest states</h2>
-<div class="sub" id="A6a" data-frame="A6a"><h3><span class="n">A6a</span>No schedules yet</h3><p>The lead is the way to make the first one. The tiles are the first three types <code>GET /v1/schedule-types</code> serves to this tenant. The inbox still lists approvals from issue runs, which need no schedule.</p>
+<div class="sub" id="A6a" data-frame="A6a"><h3><span class="n">A6a</span>No schedules yet</h3><p>The lead is the way to make the first one. The tiles are the first three types <code>GET /v1/schedule-types</code> serves to this tenant. Waiting on you reads 0 here because nothing waits. It would still list approvals from issue runs, which need no schedule.</p>
 <figure class="fr"><div class="scroller" data-f="a6-none"></div></figure></div>
 <div class="sub" id="A6b" data-frame="A6b"><h3><span class="n">A6b</span>Automate not served by this deployment</h3><p>The schedules routes answer 404. The section stays in the nav, so the address still works, and the page says plainly that there is nothing to read here. It does not draw empty tables.</p>
 <figure class="fr"><div class="scroller" data-f="a6-off"></div></figure></div>
@@ -621,14 +622,14 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 
 <section class="frame" id="fields" data-frame="fields">
 <span class="flab">Fields</span>
-<h2><span class="n">·</span>New fields this proposal needs</h2>
+<h2>New fields this proposal needs</h2>
 <p>Every other figure on this page is served today by <code>apps/swarm-api</code> (<code>routes/schedules.py</code>, <code>routes/approvals.py</code>) or derived from served fields, as each caption says.</p>
 <div class="newf" style="margin-top:12px">
   <div><h3>1 · <code>merge.checks</code> on a merge approval: <code>{passed, failed, pending}</code> at the head</h3><p><b>What:</b> the pull request's check counts at <code>merge.green_sha</code>, read when the approval is read. <b>Why:</b> A5 card 1 draws "10 passed · 0 failed · 0 pending". Today the detail serves <code>green_sha</code>, <code>requirements_met</code> and <code>requirements_unmet[]</code>, which say "green" but not how many checks it took. If it is not added, card 1 keeps the checklist and draws the count as a dash with "not served".</p></div>
   <div><h3>2 · <code>work[].pull_request</code> on a firing's issue-run work item</h3><p><b>What:</b> the PR number an issue run opened, and its state (<code>open</code>, <code>merged</code> or <code>closed</code>), copied onto the firing's work item. <b>Why:</b> A2's history draws each firing's PR. Today the PR lives only on the issue run, so 50 firings would need 50 extra reads.</p></div>
   <div><h3>3 · <code>superseded_by</code> and <code>head_sha_now</code> on a superseded approval</h3><p><b>What:</b> the id of the request that replaced it, and the head it was replaced for. <b>Why:</b> A5e links to the newer request and names the new head. Today a superseded item says only "a newer request replaced it" (<code>Approvals.tsx</code>).</p></div>
   <div><h3>4 · <code>reason_files</code> on a hold: which matched file each reason came from</h3><p><b>What:</b> <code>{workflows: [".github/workflows/unit-weights-refresh.yml"], shared: ["scripts/lib/common.sh"]}</code>. <b>Why:</b> A5 card 2 would pair each reason with its file. This page does <b>not</b> pair them: <code>hold.reasons[]</code> and <code>hold.matched[]</code> are drawn as two lists, as served. The field is optional, and the card says so.</p></div>
-  <div><h3>Not new: what the inbox and the schedule page compose</h3><p>The inbox needs no new route. It is <code>GET /v1/approvals</code> (pending items, with <code>expires_at</code>) together with <code>GET /v1/schedules</code> (<code>state: auto_paused</code> with <code>pause.code</code> for the tripwire, and <code>consecutive_failures</code> with <code>policy.max_consecutive_failures</code> for failing), sorted in the browser by the urgency rule. A2's next firings are <code>POST /v1/schedules:preview</code> with the schedule's cron and timezone. The time-left bar is computed from <code>requested_at</code> and <code>expires_at</code>. One contract-adjacent note: <code>policy.max_consecutive_failures</code> is read by the tick but cannot be set through the API body. A2 draws it as "2 of 3" and A3 does not offer it.</p></div>
+  <div><h3>Not new: what the inbox and the schedule page compose</h3><p>The inbox needs no new route. It is <code>GET /v1/approvals</code> (pending items, with <code>expires_at</code>) together with <code>GET /v1/schedules</code> (<code>state: auto_paused</code> with <code>pause.code</code> for the tripwire, and <code>consecutive_failures</code> with <code>policy.max_consecutive_failures</code> for failing), sorted in the browser by the urgency rule. A2's next firings are <code>POST /v1/schedules:preview</code> with the schedule's cron and timezone. The time-left bar is computed from <code>requested_at</code> and <code>expires_at</code>. One contract-adjacent note: <code>policy.max_consecutive_failures</code> is read by the tick but cannot be set through the API body. A2 draws it as "0 of 3" and A3 does not offer it.</p></div>
 </div>
 </section>
 </main>
@@ -788,8 +789,8 @@ function a3(edit){
   return ph=>{
     const tile=(n,d,on,x)=>`<div class="opt ${on?'on':''} ${x?'x':''}"><span class="rd"></span><span><b>${n}</b><small>${d}</small></span></div>`;
     const type=edit?CARD('1 · Type','',`<p><b style="color:var(--text)"><code>issue-sweep</code></b>: find open issues that match and start an issue run for each. The type is fixed once a schedule exists. Make a new schedule to change it.</p>`)
-      :CARD('1 · Type and template',`<span class="dim sm12">from GET /v1/schedule-types</span>`,`<div class="tiles">${tile('issue-sweep','Open issues that match become issue runs. Shortest every 15 min.',1)}${tile('issue-plan-only','Plans only; each plan waits for approval.')}${tile('pr-shepherd','Keep open pull requests green and current.')}${tile('docs-drift','Find docs the code has moved past.')}${tile('ci-flake-hunter','Find tests that fail and pass on the same code.')}${tile('custom-prompt','Your own prompt; every run is approved.')}</div><p style="margin-top:8px">Template: <b style="color:var(--text)">tier R2</b> · gate run auto, plan auto, merge approve · caps $15 a run, $120 a day, 8 live · shortest interval 15 minutes. ${B('All 14 types ›','q s')}</p>`);
-    const name=F('Name',edit?'Bug sweep':'Bug sweep','v');
+      :CARD('1 · Type and template',`<span class="dim sm12">from GET /v1/schedule-types</span>`,`<div class="tiles">${tile('issue-sweep','Open issues that match become issue runs. Shortest every 15 min.',1)}${tile('issue-plan-only','Plans only; each plan waits for approval.')}${tile('pr-shepherd','Keep open pull requests green and current.')}${tile('docs-drift','Find docs the code has moved past.')}${tile('ci-flake-hunter','Find tests that fail and pass on the same code.')}${tile('custom-prompt','Your own prompt; every run is approved.')}</div><p style="margin-top:8px">Template: <b style="color:var(--text)">tier R2</b> · gate run auto, plan auto, merge approve · caps $15 a run, $120 a day, 8 live · shortest interval 15 minutes. ${B('All 17 types ›','q s')}</p>`);
+    const name=F('Name',edit?'Bug sweep':'Flaky test sweep','v');
     const target=CARD('2 · Target','',`<div class="col" style="gap:10px">${name}<span class="fld"><span>Scope</span>${SG(['Chosen repositories','Every registered repository'],0)}</span><span class="fld"><span>Repositories (1 of at most 25)</span><span class="acts">${CHK(REPO,1)}${CHK('bogdan-alexandrescu/saga-prompt-lab',0)}</span></span>${F('Issues that match','label:bug is:open','v')}</div>`);
     const cron=edit?'0 * * * *':'*/10 * * * *';
     const cad=CARD('3 · Cadence','',`<div class="col" style="gap:10px"><span class="fld"><span>Presets</span>${SG(['Every hour','Weekdays at 09:00','Nightly','Weekly on Monday','Custom'],edit?0:4)}</span><div class="g2">${F('Cron expression',`<span class="mn">${cron}</span>`,edit?'v':'v bad',edit?'':ERR('Every 10 minutes is shorter than issue-sweep’s shortest interval, 15 minutes.'))}${F('Timezone','UTC','v')}</div><span class="hint">${edit?'Every hour, at minute 0.':'Try <code>*/15 * * * *</code>: every 15 minutes, the shortest issue-sweep allows.'}</span><div class="g2">${F('If the last firing is still running','skip the firing','v')}${F('After an outage','skip what was missed','v')}</div></div>`);
@@ -828,7 +829,7 @@ function a4(only){
     ].filter(r=>!only||r[1].includes('merge'));
     const E=[
       [C('merge','ln'),'Merge pull request #2341 (issue #2318)','20 Oct 09:15Z','23 Oct 09:15Z','not merged; the pull request is still open'],
-      [C('run','ln'),'Run Docs drift’s 24 Oct 05:30Z firing','24 Oct 05:30Z','24 Oct 17:30Z','the firing ended expired']
+      [C('run','ln'),'Run Docs drift’s 23 Oct 05:30Z firing','23 Oct 05:30Z','23 Oct 17:30Z','the firing ended expired']
     ].filter(r=>!only||r[0].includes('merge'));
     return `<div class="scope"><span class="lbl">Kind</span>${kinds}<span class="r">${SG(['Mine to decide','Everything'],1)}</span></div>`+
       CARD(`Waiting · ${W.length}`,`<span class="dim sm12">oldest first · a pending approval holds no capacity</span>`,T(['Kind','What','Asked','Expires','Who decides',''],W))+
@@ -860,7 +861,7 @@ function a5(st){
       `<p style="margin-top:10px">Matched files</p><div class="files"><code>.github/workflows/unit-weights-refresh.yml</code><code>scripts/lib/common.sh</code></div><span class="hint">Reasons and files are served as two lists, so this card does not say which file raised which reason.</span>`);
     const dig=CARD('3 · What you approve','',`<p>A decision is sent with this digest. If the head moves before it arrives, the server refuses it.</p><dl class="kv"><dt>Verdict</dt><dd>merge</dd><dt>At head</dt><dd><code>dbd00f06c5cd</code></dd></dl>`);
     const ask=CARD('4 · What asked for it','',`<div class="chain"><div><span class="dim">Schedule</span><span><a>Failure review</a> <small class="mn">sch_54e9828e6772</small></span></div><div><span class="dim">Firing</span><span><a>25 Oct 18:00Z</a> <small>cron</small></span></div><div><span class="dim">Run</span><span><a class="mn">${RUN_ID}</a></span></div><div><span class="dim">Issue</span><span><a>#2364</a></span></div><div><span class="dim">Pull request</span><span><a>#2392</a></span></div></div>`);
-    const ev=ph?pr+held+dig+ask:`<div class="g2">${pr}${held}${dig}${ask}</div>`;
+    const ev=ph?pr+held+dig+ask:`<div class="g2" style="align-items:start"><div class="col">${pr}${dig}</div><div class="col">${held}${ask}</div></div>`;
     let bar;
     const pin=`<span class="pinned">${I('info')}Pinned to the bottom of the screen while the evidence scrolls</span>`;
     if(st==='pending') bar=`<div class="dbar"><div class="dl"><b>You decide this: you are the platform owner</b><small>Expires 29 Oct 02:40Z, in 2 d 17 h. If you last edited the schedule, your decision is recorded as an owner waiver.</small></div><div class="why">${F('Reason (needed to deny)','Say why it is denied','')}</div><div class="acts">${B('Deny','d','x')}${B('Approve and merge','p','check')}</div></div>`;
@@ -876,7 +877,7 @@ const A5HD=st=>({cr:'Automate › Approvals',h:'Merge pull request #2392',ph:'Ap
 
 /* ---------- A6: empty and honest ---------- */
 const a6none=ph=>LEAD('No schedules yet','Make the first: pick what should run here by itself','A schedule fires on a cadence, inside a budget, and asks you first where its gate says so.',B('New schedule','p','plus'))+
-  CARD('Start from a type',B('All 14 types ›','q s'),`<div class="tiles"><div class="opt"><span><b>issue-sweep</b><small>Open issues that match become issue runs. Each merge is approved.</small></span></div><div class="opt"><span><b>observer</b><small>Read and report on a schedule; changes nothing.</small></span></div><div class="opt"><span><b>docs-drift</b><small>Find docs the code has moved past, daily at most.</small></span></div></div>`)+
+  CARD('Start from a type',B('All 17 types ›','q s'),`<div class="tiles"><div class="opt"><span><b>issue-sweep</b><small>Open issues that match become issue runs. Each merge is approved.</small></span></div><div class="opt"><span><b>observer</b><small>Read and report on a schedule; changes nothing.</small></span></div><div class="opt"><span><b>docs-drift</b><small>Find docs the code has moved past, daily at most.</small></span></div></div>`)+
   inbox([],{count:'0',sub:'nothing from issue runs either',foot:'Approvals from issue runs show here too: they need no schedule.'});
 const a6off=ph=>LEAD('Not served here','This deployment does not serve Automate','GET /v1/schedules answered 404 at 09:12Z: the API here was built without the schedules and approvals routes. Nothing is missing and nothing failed; there is nothing to read. Turning it on takes a build that serves those routes.',B('What Automate does','s','help'),'nu');
 const a6fail=ph=>`<div class="bn wn">${I('warn')}<span><b>The approvals read failed: 503 at 09:12Z</b>Schedules were read. Approvals were not, so the count below is a dash, not 0. Reading again in 30 s.</span>${B('Read again','s')}</div>`+
