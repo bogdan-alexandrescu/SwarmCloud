@@ -335,7 +335,11 @@ function laidOut1440(): () => void {
 describe('the overlaid readout keeps every cover on one line at 1440, so it stays over the chart (F6)', () => {
   it('stays over the chart picked and hovered, with a stopped-run estimate too', async () => {
     // Every third week carries a stopped-run estimate, as the dev fixture does.
-    const estimated = BUCKETS.map((b, i) => (i % 3 === 0 ? { ...b, cost: { ...b.cost, estimated: 40, estimated_usd: 123.45 } } : b))
+    const estimated: UsageBucket[] = BUCKETS.map((b, i) => {
+      if (i % 3 !== 0) return b
+      const f = figures(100 + i * 9, USD[i]!)
+      return { start: b.start, end: b.end, state: 'sealed', in_progress: false, unread_reason: null, ...f, cost: { ...f.cost, estimated: 40, estimated_usd: 123.45 } }
+    })
     const p = payload()
     if (p.status === 'ok') p.data.usage.buckets = estimated
     loadPlatformTime.mockResolvedValue(p)
@@ -362,7 +366,7 @@ describe('the overlaid readout keeps every cover on one line at 1440, so it stay
         seen += 1
       }
       expect(seen).toBe(estimated.length)
-      expect(estimated.some((b) => b.cost.estimated > 0), 'no week carried an estimate').toBe(true)
+      expect(estimated.some((b) => (b.cost?.estimated ?? 0) > 0), 'no week carried an estimate').toBe(true)
     } finally {
       restore()
     }
