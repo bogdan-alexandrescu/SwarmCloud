@@ -145,14 +145,42 @@ cleanup_dry_run = false
 # `provider:mock-provider:tenant:eng` (100). mock-provider is what the mock
 # runner reports at runtime and no catalogue profile names it, so terraform
 # creates neither pool and `--check` does not compare them.
+# BROWSER-POOL-100 (BGD, 2026-10-26, part of #2136): the browser pool provides
+# 100 units, and they run BESIDE claude-code's 80 standard, not instead of them.
+# A claude-code-browser task acquires every pool of pool_names_for() in one
+# transaction (invariant 2), so each pool it shares with claude-code had to hold
+# both: 100 browser x 1 unit (1 since contract request 79, 2026-10-14) + 80
+# standard x 1 unit = 180. The pools, and what each needed:
+#
+#   global                 shared with claude-code       100 -> 180
+#   resource:browser       browser alone                  20 -> 100
+#   runner:claude-code-browser   browser alone           (global) -> 100, stated
+#   backend:GKE_AUTOPILOT  shared with claude-code       100 -> 180 (below)
+#   provider:anthropic     shared with claude-code       120 -> 180 (below)
+#   tenant:<t>, provider:anthropic:tenant:<t>            NOT raised: each is one
+#     tenant's ceiling (eng 45, provider_tenant 40), and how much of the 180 one
+#     tenant may hold is the owner's call, asked in the BROWSER-POOL-100 PR.
+#
+# A browser pod is 4 vCPU requested (worker 2 + display 2; limits 4 + 3) and
+# 8 GiB, request == limit (invariant 7), so 180 pods ask for 720 vCPU and
+# 1,440 GiB. It fits the quota: us-central1 regional CPUS read 216 of 3,000 in
+# use on 2026-10-21 (docs/scaling.md), and 216 + 720 = 936. Not re-read for this
+# change: this lane's identity has no compute.regions.get. No compute class pins
+# a family (no ComputeClass, nodeSelector or machine-family in kubernetes/,
+# terraform/ or the scheduler's pod spec, grep 2026-10-26), so T2D's 128 vCPU
+# quota (below) caps none of these pods.
+#
+# AS EVERYWHERE IN THIS BLOCK, NONE OF THIS CHANGES THE LIVE POOLS (the
+# ignore_changes note above): each needs
+# `scripts/pool-limit.sh --pool <pool> --limit <n>`.
 pool_limits = {
-  global          = 100
+  global          = 180
   default_tenant  = 40
   provider_tenant = 40
 
   resource_classes = {
     standard = 80
-    browser  = 20
+    browser  = 100
     large    = 40
   }
 
@@ -162,6 +190,9 @@ pool_limits = {
     claude-code = 80
     codex       = 20
     browser     = 20
+    # Stated rather than left to fall back to `global`, which is 180 now and
+    # would say nothing about browser: resource:browser's 100.
+    claude-code-browser = 100
   }
 
   # GKE_AUTOPILOT 40 -> 100: owner, 2026-10-07, accepting contract request 53
@@ -173,6 +204,11 @@ pool_limits = {
   # us-central1 regional CPUS read 2,990 of 3,000 free on 2026-10-07, and
   # 100 x 4 vCPU = 400.
   #
+  # GKE_AUTOPILOT 100 -> 180: BROWSER-POOL-100 (2026-10-26). claude-code's 80
+  # standard plus 100 browser units, every one of them a GKE pod; at 100 this
+  # pool would bind at 20 browser tasks beside a full claude-code. 180 x 4 vCPU
+  # = 720 against the 3,000 regional CPUS (the arithmetic above pool_limits).
+  #
   # NO COMPUTE CLASS MAY PIN T2D. T2D_CPUS quota in us-central1 is 128 vCPUs,
   # 32 standard pods; the pods carry no nodeSelector, so Autopilot's default
   # class picks from every family, and a T2D pin (or a ComputeClass listing
@@ -181,7 +217,7 @@ pool_limits = {
   # resources" (request 53, "What the probe saw go wrong").
   backends = {
     CLOUD_RUN_JOB = 100
-    GKE_AUTOPILOT = 100
+    GKE_AUTOPILOT = 180
   }
 
   providers = {
@@ -189,7 +225,7 @@ pool_limits = {
     # per-tenant one and the per-tenant ceiling stops meaning anything. The
     # rule at variables.tf:337 enforces this; it is not a guideline.
     #
-    #   anthropic  eng + smoke             = 2 x 40 = 80    (set: 120)
+    #   anthropic  eng + smoke             = 2 x 40 = 80    (set: 180)
     #   openai     eng                     = 1 x 40 = 40    (set: 40)
     #
     # anthropic stays at 120 after u-bogdan left this map (W9, 2026-10-09),
@@ -201,7 +237,13 @@ pool_limits = {
     # (#628): 100 is below the new floor and the plan would refuse it. The
     # floor is what forces 120, not a measurement; smoke's own pool is
     # min(max_active, capacity_units) = 20, so acceptance can add at most 20.
-    anthropic = 120
+    #
+    # 120 -> 180: BROWSER-POOL-100 (2026-10-26). claude-code and
+    # claude-code-browser are both anthropic, so 80 standard beside 100
+    # browser is 180 anthropic leases; at 120 this pool would bind at 40
+    # browser tasks. Still above the floor of 80, and still a ceiling AIMD
+    # searches below (the 429 back-off above), not a promise.
+    anthropic = 180
 
     # Exactly the floor provider_tenant = 40 implies, and the live value since
     # the 2026-10-02 doubling. It is NOT a measurement: the account-pool reasoning
