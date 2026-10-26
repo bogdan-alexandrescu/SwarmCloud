@@ -22,7 +22,9 @@ from __future__ import annotations
 from datetime import timedelta
 
 from swarm_api import issueci, mergewake
-from swarm_common.states import ParkReason
+from swarm_common.models import WorkflowStep
+from swarm_common.states import ParkReason, TaskState
+from swarm_rollup import derive, read_steps
 
 from .test_merge_wake import (  # noqa: F401 -- fixtures, used by name
     HEAD, NOW, NUMBER, ROOT, _check_reads, _fix_record, _tick, _wait, clock, fixable_merge,
@@ -190,3 +192,59 @@ def test_the_brief_takes_only_well_formed_pick_lines():
                                  f"pick {IMPLEMENT} question 3 (step implement): y"])
     assert picks == [{"task_id": IMPLEMENT, "question_index": 0},
                      {"task_id": IMPLEMENT, "question_index": 3}]
+
+
+# --------------------------------------------------------------------------
+# ROLLUP-PICK-FIX (part of #2441; BGD 2026-10-26): the round is a step
+# `pick-fix:<n>` of the lane's workflow, as a CI or conflict round is.
+# --------------------------------------------------------------------------
+
+LANE = "wf_" + "e" * 20
+
+
+def lane_pick_merge(db, github) -> dict:
+    """`pick_merge`, as the merge step of a lane workflow LANE."""
+    doc = pick_merge(db, github)
+    doc["workflow_id"] = LANE
+    db.docs[f"workflows/{LANE}"] = {
+        "workflow_id": LANE, "tenant_id": "eng", "created_at": NOW, "updated_at": NOW,
+        "state": "RUNNING", "submitted_by": "alice@example.com", "on_step_failure": "fail_workflow",
+        "priority": 0, "cancel_requested": False,
+        "steps": [
+            {"step_id": "implement", "runner_profile": "claude-code", "input": {},
+             "depends_on": [], "input_from": {}, "task_id": ROOT},
+            {"step_id": "merge", "runner_profile": "merge", "input": {}, "depends_on": ["implement"],
+             "input_from": {}, "task_id": "task_merge"},
+        ],
+    }
+    return doc
+
+
+def test_a_pick_round_is_appended_to_the_lanes_workflow_as_pick_fix_1(db, wake_client, github):
+    lane_pick_merge(db, github)
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["fixing"] == 1, body
+    (workflow,) = _pick_workflows(db)
+    (fix_step,) = workflow["steps"]
+    # MUTATION: leave `pick` out of swarm_rollup.FIX_ROUND_STEP_RE and
+    # `_append_round_step` refuses the step: the lane shows no round.
+    steps = db.docs[f"workflows/{LANE}"]["steps"]
+    assert [s["step_id"] for s in steps] == ["implement", "merge", "pick-fix:1"]
+    round_step = steps[-1]
+    assert round_step["task_id"] == fix_step["task_id"]
+    assert round_step["runner_profile"] == "claude-code"
+    assert round_step["input"]["merge_fix_round"] == {
+        "kind": "pick", "round": 1, "head_sha": HEAD, "pull_request": NUMBER,
+        "merge_task": "task_merge", "workflow_id": workflow["workflow_id"]}
+
+    # And the rollup reads it as a round of the merge, not a step of its own.
+    readings = read_steps(
+        [WorkflowStep(step_id=s["step_id"], runner_profile=s["runner_profile"], input={},
+                      task_id=s["task_id"]) for s in steps],
+        {ROOT: TaskState.SUCCEEDED, "task_merge": TaskState.SUCCEEDED,
+         fix_step["task_id"]: TaskState.FAILED})
+    rollup = derive(readings)
+    assert rollup.fix_round_steps == ["pick-fix:1"]
+    assert rollup.state == "SUCCEEDED", rollup

@@ -49,15 +49,20 @@ from swarm_common.states import (
 #: import the worker's.
 SKIPPED_SUMMARY_KEY = "skipped"
 
-#: The step id of a merge fix round (lane SPEED-D2): `ci-fix:<n>` or
-#: `conflict-fix:<n>`, appended to the merge's workflow by swarm-api's wake
-#: tick (`swarm_api.mergewake.round_step_id`) when it hands a red or
-#: conflicting pull request to a round. A caller can never submit one: a
+#: The step id of a merge fix round (lane SPEED-D2): `ci-fix:<n>`,
+#: `conflict-fix:<n>` or `pick-fix:<n>`, appended to the merge's workflow by
+#: swarm-api's wake tick (`swarm_api.mergewake.round_step_id`) when it hands
+#: a red or conflicting pull request, or one whose owner picked an option the
+#: branch did not build, to a round. `pick` since ROLLUP-PICK-FIX (BGD,
+#: 2026-10-26: a pick-fix round is a step of the lane, as the other rounds
+#: are); every kind in `mergewake.ROUND_KIND` must match, or the tick's
+#: append is refused -- tests/unit/control_plane/test_merge_auto_fix_rounds.py
+#: holds the two equal. A caller can never submit one: a
 #: submitted step id holds no ':' (`WorkflowStepCreate.step_id`'s pattern),
 #: so the id alone marks a step only the platform appended. The id, not the
 #: step's input, because the reconciler decodes steps without their input
 #: (`reconciler.model.WorkflowView`) and must derive what this derives.
-FIX_ROUND_STEP_RE = re.compile(r"^(?:ci|conflict)-fix:[1-9][0-9]{0,2}$")
+FIX_ROUND_STEP_RE = re.compile(r"^(?:ci|conflict|pick)-fix:[1-9][0-9]{0,2}$")
 
 
 def is_fix_round_step(step_id: str) -> bool:

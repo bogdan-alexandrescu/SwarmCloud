@@ -151,8 +151,9 @@ whose own loop fixes CI before it merges). Three things come with them:
   recorded with its `error` and the round is claimed, or the step woken,
   in the same tick: the refusal costs nothing.
 * EACH ROUND IS A STEP OF THE MERGE'S WORKFLOW. After the round's own
-  workflow is submitted, the tick appends a step `ci-fix:<n>` or
-  `conflict-fix:<n>` naming the round's task to the workflow the merge task
+  workflow is submitted, the tick appends a step `ci-fix:<n>`,
+  `conflict-fix:<n>` or `pick-fix:<n>` (ROLLUP-PICK-FIX) naming the round's
+  task to the workflow the merge task
   belongs to (`_append_round_step`), so the lane's workflow, its API read
   and the console show the round where the operator looks. The id cannot be
   submitted (no ':' in a caller's step id), which is how the rollup
