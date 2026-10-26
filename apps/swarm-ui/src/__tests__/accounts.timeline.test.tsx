@@ -26,7 +26,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AccountsBoard } from '../api'
 import type { Result } from '../fetch'
@@ -331,12 +331,6 @@ describe('the Table / Timeline toggle', () => {
 
 describe('the Timeline', () => {
   it('draws a lane per account in the Table’s order, the pool row from the verdict’s N, and the queue', async () => {
-    // Only Date is pinned, to midday UTC: run near midnight, the queue's clocks
-    // (an hour or so out) fall on the next day and are drawn with their date
-    // ("Oct 26 00:55Z"), which the `at HH:MMZ` reading below does not match.
-    vi.useFakeTimers({ toFake: ['Date'] })
-    vi.setSystemTime(new Date('2026-10-25T12:00:00Z'))
-    onTestFinished(() => vi.useRealTimers())
     window.history.replaceState(null, '', '/#capacity/accounts?view=timeline')
     await mount(b3(Date.now()), 3)
     const tl = await screen.findByRole('region', { name: 'Subscription accounts, timeline' }, WAIT)
