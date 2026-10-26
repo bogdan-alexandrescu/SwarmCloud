@@ -17,8 +17,10 @@ What these hold:
     `budget_above_limit`, naming both, and nothing is stored;
   * a workspace default above the ceiling is 422 `budget_above_ceiling`,
     naming the ceiling, and nothing is written;
-  * both refusals ship report-only (`refusals.SWITCHES`), and off, the step
-    still runs under the lower limit and the default is still capped;
+  * both refusals ship ON (`refusals.SWITCHES`, BGD's answer to question 5,
+    2026-10-26: "enforce at once"), so with no `REFUSAL_*` variable set the
+    422s are served; switched off, the step still runs under the lower limit
+    and the default is still capped;
   * the resolved budget is pinned inside the SIGNED dispatch block;
   * with no default and no step budget the stored dispatch block has no
     `budget` key at all.
@@ -53,6 +55,15 @@ def refusals_on(monkeypatch):
 
 @pytest.fixture
 def refusals_off(monkeypatch):
+    """Both switches off, as `REFUSAL_<CODE>=off` turns a default-on one off."""
+    for code in (budget.ABOVE_LIMIT, budget.ABOVE_CEILING):
+        monkeypatch.setenv(refusals.env_name(code), refusals.OFF)
+
+
+@pytest.fixture
+def refusals_unset(monkeypatch):
+    """Neither variable set: what the first deploy runs, before terraform
+    names either switch."""
     for code in (budget.ABOVE_LIMIT, budget.ABOVE_CEILING):
         monkeypatch.delenv(refusals.env_name(code), raising=False)
 
@@ -111,9 +122,13 @@ def test_no_step_budget_and_no_workspace_default_is_no_budget_whatever_the_ceili
     assert resolve(budget.NONE, budget.NONE, budget.NONE) is None
 
 
-def test_both_refusals_ship_off():
+def test_both_refusals_ship_on():
+    # BGD, 2026-10-26 (question 5, "enforce at once"): unlike a new refusal's
+    # usual report-only start, these two are enforced from the first deploy.
     for code in (budget.ABOVE_LIMIT, budget.ABOVE_CEILING):
-        assert refusals.SWITCHES[code].default is False, code
+        assert refusals.SWITCHES[code].default is True, code
+        assert refusals.enforced(code, environ={}), code
+        assert not refusals.enforced(code, environ={refusals.env_name(code): refusals.OFF}), code
 
 
 def test_a_step_may_lower_but_never_raise(refusals_on):
@@ -247,6 +262,25 @@ def test_a_step_that_raises_its_limit_is_refused_naming_both(client, db, refusal
     assert body["detail"]["workspace_default"] == {"usd": 2.0}
     assert body["detail"]["ceiling"] == {"usd": 10.0}
     assert _tasks(db) == []
+
+
+def test_with_no_switch_set_a_step_above_its_limit_is_refused(client, db, refusals_unset):
+    assert _put_ceiling(client, {"usd": 10}).status_code == 200
+    assert _put_default(client, "eng", "root", {"unit": "usd", "amount": 2}).status_code == 200
+    response = _submit(client, budget={"usd": 5})
+    # MUTATION: ship `budget_above_limit` report-only and this is 201.
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == budget.ABOVE_LIMIT
+    assert _tasks(db) == []
+
+
+def test_with_no_switch_set_a_default_above_the_ceiling_is_refused(client, db, refusals_unset):
+    assert _put_ceiling(client, {"usd": 10}).status_code == 200
+    response = _put_default(client, "eng", "root", {"unit": "usd", "amount": 25})
+    # MUTATION: ship `budget_above_ceiling` report-only and this is 200.
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == budget.ABOVE_CEILING
+    assert "workspace_settings/eng" not in db.docs
 
 
 def test_a_step_above_the_ceiling_is_refused_with_no_default(client, db, refusals_on):
