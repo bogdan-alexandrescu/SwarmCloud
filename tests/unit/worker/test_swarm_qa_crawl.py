@@ -750,3 +750,83 @@ def test_the_reveal_rules_are_qaspecs_start_click_rules(qa):
         _qaspec_constant("START_CLICK_CSS_MAX"))
     # MUTATION: a screen cap above swarm-api's and a step captures past what a leg stores.
     assert qa.MAX_SCREENS == _qaspec_constant("MAX_SCREENS") and qa.MAX_STEPS == _qaspec_constant("MAX_GROUPS")
+
+
+# --------------------------------------------------------------------------
+# Dismissed routes (lane QA-CRAWL-SKIP; BGD 2026-10-25, part of #2157)
+# --------------------------------------------------------------------------
+
+
+def _dismissed(*keys: str) -> list[str]:
+    """The route list's `dismissed`: each dismissed route's key as sha256 hex,
+    the way qaspec.render writes it."""
+    return sorted(hashlib.sha256(k.encode("utf-8")).hexdigest() for k in keys)
+
+
+def _gotos(page) -> list[str]:
+    return [e[1][len(APP):] for e in page.log if e[0] == "goto"]
+
+
+def test_a_dismissed_route_is_neither_crawled_nor_captured(qa, crawl):
+    crawl.page.links = {"/": [APP + "/keep", APP + "/gone"], "/gone": [APP + "/behind-gone"]}
+    stored = {"format": 1, "groups": {"g1": [{"id": "home", "path": "/", "ready": "body"}]},
+              "dismissed": _dismissed("/gone")}
+    code, found, bundle = _run(qa, crawl, step="1", steps="1", stored=stored)
+    assert code == 0
+    listed = [r["path"] for r in found["captured_new"] + found["over_cap"] + found["not_owned"]]
+    # MUTATION: ignore `dismissed` and /gone is listed and captured again.
+    assert "/gone" not in listed and "/keep" in listed, found
+    assert "/gone" not in _captured_paths(bundle)
+    # MUTATION: list it and only drop it from the capture, and the walk still loads it.
+    assert "/gone" not in _gotos(crawl.page)
+    assert "/behind-gone" not in listed
+    # MUTATION: skip it silently and the coverage section cannot say why it is absent.
+    assert found["skipped"]["dismissed"] == 1
+
+
+def test_a_dismissed_state_is_skipped_and_its_path_is_not(qa, crawl):
+    crawl.page.controls = {"/": [_control("Billing", role="tab", expanded=None)]}
+    crawl.page.effects = {("/", "Billing"): {"text": True}}
+    stored = {"format": 1, "groups": {}, "dismissed": _dismissed("/" + qa.STATE_MARK + "Billing")}
+    _code, found, _bundle = _run(qa, crawl, step="1", steps="1", stored=stored)
+    # MUTATION: key a dismissal by its path alone and / itself is barred too.
+    assert [r["path"] for r in found["captured_new"]] == ["/"], found
+    # MUTATION: ignore a dismissed state and the Billing tab is captured again.
+    assert not any(r.get("reveal") for r in found["captured_new"] + found["over_cap"])
+
+
+def test_the_found_route_cap_counts_only_routes_not_dismissed(qa, crawl):
+    owned = _paths_owned_by(1, 1, 5)
+    crawl.page.links = {"/": [APP + p for p in owned]}
+    stored = {"format": 1, "groups": {"g1": [{"id": "home", "path": "/", "ready": "body"}]},
+              "dismissed": _dismissed(*owned[:2])}
+    _code, found, bundle = _run(qa, crawl, "--found-per-step", "2", step="1", steps="1", stored=stored)
+    # MUTATION: count the dismissed routes toward the cap and the two slots go to them.
+    assert [r["path"] for r in found["captured_new"]] == owned[2:4], found
+    assert [r["path"] for r in found["over_cap"]] == owned[4:]
+    assert _captured_paths(bundle) == sorted(["/", *owned[2:4]])
+
+
+def test_dismissed_routes_do_not_spend_the_walks_page_bound(qa, crawl):
+    owned = _paths_owned_by(1, 1, 4)
+    crawl.page.links = {"/": [APP + p for p in owned]}
+    stored = {"format": 1, "groups": {}, "dismissed": _dismissed(*owned[:2])}
+    _code, found, _bundle = _run(qa, crawl, "--max-pages", "3", step="1", steps="1", stored=stored)
+    # MUTATION: list a dismissed route before barring it and it takes a page slot.
+    assert [r["path"] for r in found["captured_new"]] == ["/", *owned[2:]], found
+
+
+def test_a_run_list_with_no_dismissed_routes_writes_found_json_as_before(qa, crawl):
+    crawl.page.links = {"/": [APP + "/x"]}
+    _code, found, _bundle = _run(qa, crawl)
+    # MUTATION: always add the `dismissed` count and a run with none writes another shape.
+    assert "dismissed" not in found["skipped"]
+
+
+@pytest.mark.parametrize("dismissed", ["abc", ["not-hex"], ["A" * 64], [1]])
+def test_load_routes_refuses_a_dismissed_list_that_is_not_sha256_hex(qa, tmp_path, dismissed):
+    path = tmp_path / "routes.json"
+    path.write_text(json.dumps({"format": 1, "groups": {}, "dismissed": dismissed}), encoding="utf-8")
+    # MUTATION: accept any value and a path could reach the tool in place of its hash.
+    with pytest.raises(qa.UsageError):
+        qa.load_routes(path, allow_empty=True)

@@ -169,7 +169,7 @@ describe('QA-108: no room left reads as a task that will wait', () => {
     const lands = [...panel.querySelectorAll('.ctl-fact')].find((li) => li.querySelector('b')?.textContent === 'lands as')!
     // MUTATION: drop the room-0 clause and the panel reads "Ready to send"
     // with nothing saying the task will not start yet.
-    expect(lands.textContent).toBe('lands asREADY or PARKED · waits for room · costs nothing')
+    expect(lands.textContent).toBe('lands asready or parked · waits for room · costs nothing')
   })
 
   it('a runner with room keeps the plain line', async () => {
@@ -178,7 +178,7 @@ describe('QA-108: no room left reads as a task that will wait', () => {
     const panel = container.querySelector<HTMLElement>('.sbf-send')!
     const lands = [...panel.querySelectorAll('.ctl-fact')].find((li) => li.querySelector('b')?.textContent === 'lands as')!
     // MUTATION: say "waits" unconditionally and a runner with room is told it waits.
-    expect(lands.textContent).toBe('lands asREADY or PARKED · costs nothing')
+    expect(lands.textContent).toBe('lands asready or parked · costs nothing')
   })
 })
 

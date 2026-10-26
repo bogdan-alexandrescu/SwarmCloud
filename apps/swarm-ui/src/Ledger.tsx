@@ -125,18 +125,22 @@ function Row({
   strip?: ReactNode
   href?: string | undefined
 }) {
-  // A MEASURED ZERO IS THE TRACK'S TICK (§8.6), not an empty bar: the row is
-  // drawn, the tick says the scale starts here and the value is at its start.
-  const pctOf = count === 0 ? 0 : of === 0 ? 0 : (count / of) * 100
-  const label = href === undefined ? <span className="ol-row-name">{name}</span> : (
-    <a className="ctl-link ol-row-name" href={href}>
+  // A 0 ROW DRAWS NO BAR (visual QA VQ-022, 2026-10-26): the track's zero
+  // tick beside "0" read as a short bar, a small non-zero amount. The count
+  // says 0 -- a measured zero, in the row's own figure -- and the bar column
+  // keeps an empty cell so the counts stay in one column.
+  const pctOf = of === 0 ? 0 : (count / of) * 100
+  // THE LABEL CUTS BEFORE THE BAR COLUMN, its whole name in its title (VQ-022):
+  // "spec signature invalid" ran under its bar and was overprinted.
+  const label = href === undefined ? <span className="ol-row-name" title={name}>{name}</span> : (
+    <a className="ctl-link ol-row-name" href={href} title={name}>
       {name}
     </a>
   )
   return (
     <div className="ol-row" data-row={name}>
       {label}
-      <UsageTrack pct={pctOf} zeroTitle={`${name}: a measured zero`} />
+      {count === 0 ? <span className="ol-row-none" aria-hidden="true" /> : <UsageTrack pct={pctOf} />}
       <span className="ol-row-n">{count}</span>
       {strip}
     </div>

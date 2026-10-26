@@ -128,7 +128,7 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
         <div className="sb-card sb-choice">
           <h2><TaskGlyph />Start an agent</h2>
           <p className="sb-note">
-            One agent, one runner. It lands READY or PARKED and costs nothing until the scheduler admits it.
+            One agent, one runner. It lands ready or parked and costs nothing until the scheduler admits it.
           </p>
           <span className="sb-row">
             <Button kind="primary" aria-keyshortcuts={CAP[TASK_FORM]} onClick={() => go(TASK_FORM)}>

@@ -510,14 +510,9 @@ class GitExec:
             raise GitExecError("bad_ref", f"haves are at most {MAX_HAVES} 40-hex shas")
         with self._call() as scratch:
             repo = self._init(scratch)
-            known: list[str] = []
             with self._credential(scratch, host, token) as cred:
-                for have in haves:
-                    run = self._git(scratch, repo, ["fetch", "--quiet", "--no-tags",
-                                                    "--no-write-fetch-head", "--depth=1", "--",
-                                                    url, have], token=token, credential=cred)
-                    if run.code == 0:
-                        known.append(have)
+                known = [have for have in haves
+                         if self._fetch_tip(scratch, repo, url, have, token, cred)]
                 self._must(self._git(scratch, repo, ["fetch", "--quiet", "--no-tags",
                                                      "--no-write-fetch-head", "--", url,
                                                      f"{ref}:{WANT_REF}"],
@@ -540,6 +535,37 @@ class GitExec:
             if deliver is not None:
                 return FetchedBundle(sha, None, size, delivered=deliver(out, size))
             return FetchedBundle(sha, out.read_bytes(), size)
+
+    def _fetch_tip(self, scratch: Path, repo: Path, url: str, sha: str, token: str,
+                   cred: Path) -> bool:
+        """`sha`, fetched from the remote at depth 1: True when it landed."""
+        run = self._git(scratch, repo, ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
+                                        "--depth=1", "--", url, sha], token=token, credential=cred)
+        return run.code == 0
+
+    # -- which of these does the remote have (#2413) -------------------------
+
+    def confirm_shas(self, *, url: str, token: str, shas: Sequence[str]) -> list[str]:
+        """The `shas` the remote has, as commits, in the order asked.
+
+        Each is fetched at depth 1, exactly as `fetch_bundle` learns its haves,
+        and kept only if it then resolves to itself as a commit (a tag's sha
+        peels to another). A sha the remote does not have is left out, not an
+        error. Nothing is bundled: the answer is the names. The worker's push
+        asks this before it refuses `foreign_author` over a commit somebody
+        else wrote, so origin's own history is never the task's to answer for,
+        and a ref the agent wrote in its clone never has to be believed.
+        """
+        url, host = self._check_url(url)
+        shas = list(dict.fromkeys(shas))
+        if len(shas) > MAX_HAVES or not all(isinstance(s, str) and _SHA.match(s) for s in shas):
+            raise GitExecError("bad_ref", f"confirm names at most {MAX_HAVES} 40-hex shas")
+        with self._call() as scratch:
+            repo = self._init(scratch)
+            with self._credential(scratch, host, token) as cred:
+                landed = [sha for sha in shas
+                          if self._fetch_tip(scratch, repo, url, sha, token, cred)]
+            return [sha for sha in landed if self._resolve(scratch, repo, sha, token) == sha]
 
     # -- bundle → push -----------------------------------------------------
 

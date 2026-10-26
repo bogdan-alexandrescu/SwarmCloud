@@ -44,7 +44,21 @@ those are what the agent would want to fool.
 
 WHAT THE WORKER TRUSTS AS "ORIGIN HAS IT": only shas it learnt itself -- the
 clone base it recorded before the agent ran, every sha a fetch resolved to,
-every tip a push answered with. Never a ref in the agent's clone.
+every tip a push answered with, and every sha swarm-api CONFIRMED origin has
+when a push asked (#2413). Never a ref in the agent's clone.
+
+WHY A PUSH ASKS (#2413). A step that runs `git fetch origin B && git reset
+--hard B` in its own shell, B a pull request head that does not descend from
+the clone base A, teaches the relay nothing, and the publish repository is
+shallow AT A (`gitops.prepare_publish_repo` takes the recorded base as the
+upload side's boundary), so `^A` excludes A alone. Every commit of B's
+history then reads as new, and the first by somebody else -- old history,
+long on origin/main -- was refused `foreign_author`. So before it refuses,
+the push asks swarm-api which of the foreign commits origin has (`git_fetch`
+with `confirm`, at most `MAX_CONFIRM`, the newest of each line, answered from
+the forge) and excludes exactly those and their history from the check, the
+scan and the bundle. The answer is read as a subset of the question. A
+commit origin does not have is refused as before, and the refusal says so.
 
 Wiring this into `ChildPath`'s tick and naming the shim in the runners is lane
 G6; the route it calls is lane G5.
@@ -144,6 +158,11 @@ ANSWERS_ARTIFACT = "git-answers.jsonl"
 ANSWERS_STEP = "worker"
 #: The largest line the relay appends; a longer answer is not recorded.
 _MAX_ANSWER_LINE = 64 * 1024
+#: The most foreign commits one push asks origin about (#2413): swarm-api's
+#: `gitexec.MAX_HAVES`, one depth-1 fetch each there. Only the newest commit
+#: of each foreign line is asked -- origin having it means origin has its
+#: history -- so a pull request head is one sha, not its thousand ancestors.
+MAX_CONFIRM = 16
 
 
 # --------------------------------------------------------------------------
@@ -752,7 +771,16 @@ class GitTools:
             commits = self._new_commits(repo, negatives)
             if not commits:
                 raise GitToolRefused("nothing_to_push", "every commit of HEAD is already on origin")
-            self._check_authorship(repo, commits)
+            authorship = self._authorship(repo)
+            on_origin = self._confirm_foreign(repo, commits, negatives, authorship,
+                                              request_id=request_id)
+            if on_origin.confirmed:
+                negatives = [*negatives, *on_origin.confirmed]
+                commits = self._new_commits(repo, negatives)
+                if not commits:
+                    raise GitToolRefused("nothing_to_push",
+                                         "every commit of HEAD is already on origin")
+            self._check_authorship(repo, commits, authorship=authorship, on_origin=on_origin)
             hits = self.leaks(repo, commits)
             if hits:
                 raise GitToolRefused(
@@ -802,20 +830,56 @@ class GitTools:
         code, _ = self._git_in(repo, ["cat-file", "-e", f"{sha}^{{commit}}"], "gittools-have")
         return code == 0
 
-    def _new_commits(self, repo: Path, negatives: Iterable[str]) -> list[str]:
-        """Every commit the bundle would carry, oldest first: HEAD not reachable
-        from anything origin is known to have."""
+    def _new_commits(self, repo: Path, negatives: Iterable[str],
+                     tip: str = f"refs/heads/{_PUBLISH_BRANCH}") -> list[str]:
+        """Every commit the bundle would carry, oldest first: HEAD (or `tip`)
+        not reachable from anything origin is known to have."""
         code, text = self._git_in(
-            repo, ["rev-list", "--reverse", f"refs/heads/{_PUBLISH_BRANCH}",
-                   *(f"^{sha}" for sha in negatives)], "gittools-commits")
+            repo, ["rev-list", "--reverse", tip, *(f"^{sha}" for sha in negatives)],
+            "gittools-commits")
         if code != 0:
             raise GitToolRefused("push_failed", "could not list the commits to push")
         return text.split()
 
-    def _check_authorship(self, repo: Path, commits: list[str]) -> None:
-        """`gitops.verify_worker_authorship`'s rule, over exactly the commits
-        sent -- which, after a rebase onto origin's newer tip, is not the
-        first-parent chain from the clone base that function walks."""
+    def _confirm_foreign(self, repo: Path, commits: list[str], negatives: list[str],
+                         authorship: "_Authorship", *, request_id: str) -> "_OnOrigin":
+        """Ask swarm-api which of the range's foreign commits origin has (#2413).
+
+        Newest first, a foreign commit is asked about unless an asked one
+        already reaches it, so one sha stands for a whole line of somebody
+        else's history; at most `MAX_CONFIRM`. Nothing is asked when every
+        commit is the task's own. The answer is kept only where it names a sha
+        that was asked: it can narrow the question, never widen it. A platform
+        that cannot answer (one from before `confirm`) leaves the range as it
+        was, and the refusal says origin could not be asked; one that is
+        unavailable is the agent's to ask again."""
+        asked: list[str] = []
+        covered: set[str] = set()
+        for sha in reversed(commits):
+            if sha in covered or not authorship.problems(sha):
+                continue
+            asked.append(sha)
+            if len(asked) == MAX_CONFIRM:
+                break
+            covered.update(self._new_commits(repo, negatives, tip=sha))
+        if not asked:
+            return _OnOrigin()
+        try:
+            payload = self.call("git_fetch", {"confirm": asked}, request_id=request_id)
+        except GitToolRefused as exc:
+            if exc.retryable:
+                raise
+            return _OnOrigin(asked=asked, unanswered=exc.code)
+        listed = payload.get("confirmed") if isinstance(payload, dict) else None
+        if not isinstance(listed, list):
+            return _OnOrigin(asked=asked, unanswered="no_answer")
+        confirmed = [sha for sha in asked if sha in listed]
+        for sha in confirmed:
+            self.origin.learn(sha)
+        return _OnOrigin(asked=asked, confirmed=confirmed)
+
+    def _authorship(self, repo: Path) -> "_Authorship":
+        """This task's identities, asked of git once, and a reader of commits."""
         def run(argv: list[str], slug: str) -> tuple[int, str]:
             return self._git_in(repo, argv[1:], slug)
 
@@ -839,16 +903,37 @@ class GitTools:
         # and the committer is the one identity this attempt rebases as.
         rebased = [(mine, committer) for mine, _ in also]
         authors = [author, *(mine for mine, _ in also)]
-        for sha in commits:
+
+        def judge(sha: str) -> tuple[Any, list[str]]:
             commit = gitops._read_commit(run, g, sha)
-            problems = gitops._foreign(commit, author, committer, also=[*also, *rebased])
+            return commit, gitops._foreign(commit, author, committer, also=[*also, *rebased])
+
+        return _Authorship(judge, authors, [committer, *(c for _, c in also)])
+
+    def _check_authorship(self, repo: Path, commits: list[str], *,
+                          authorship: "_Authorship | None" = None,
+                          on_origin: "_OnOrigin | None" = None) -> None:
+        """`gitops.verify_worker_authorship`'s rule, over exactly the commits
+        sent -- which, after a rebase onto origin's newer tip, is not the
+        first-parent chain from the clone base that function walks.
+
+        A commit origin said it does NOT have is named first: it is the one
+        the agent has to remove, where the oldest foreign commit may be
+        history origin was never asked about."""
+        authorship = authorship or self._authorship(repo)
+        on_origin = on_origin or _OnOrigin()
+        denied = [sha for sha in commits if on_origin.found(sha) is False]
+        rest = [sha for sha in commits if sha not in set(denied)]
+        for sha in [*denied, *rest]:
+            commit, problems = authorship.read(sha)
             if problems:
-                raise self._foreign_author(commit, problems, authors,
-                                           [committer, *(c for _, c in also)])
+                raise self._foreign_author(commit, problems, authorship.authors,
+                                           authorship.committers, on_origin)
 
     def _foreign_author(self, commit: Any, problems: list[str],
                         authors: list[tuple[str, str]],
-                        committers: list[tuple[str, str]]) -> GitToolRefused:
+                        committers: list[tuple[str, str]],
+                        on_origin: "_OnOrigin | None" = None) -> GitToolRefused:
         """The refusal, naming the commit, the field(s) and both identities.
 
         A field is `author` or `committer` when that identity is none of this
@@ -870,12 +955,13 @@ class GitTools:
             fields.append("message")
         expected = list(dict.fromkeys(e for _, e in authors))
         found = {"author": commit.author[1], "committer": commit.committer[1]}
+        on_origin = on_origin or _OnOrigin()
         message = (
             f"commit {commit.sha[:12]} ({', '.join(fields)}): its author is "
             f"{commit.author[0]} <{commit.author[1]}> and its committer "
             f"{commit.committer[0]} <{commit.committer[1]}>; this task pushes only commits "
             f"authored as {' or '.join(f'{n} <{e}>' for n, e in authors)}"
-            f" ({'; '.join(problems)}). Nothing was uploaded"
+            f" ({'; '.join(problems)}); {on_origin.says(commit.sha)}. Nothing was uploaded"
         )
         scrub = (lambda text: str(scrub_text(text, self._secrets))) if self._secrets else str
         return GitToolRefused("foreign_author", scrub(message), detail={
@@ -883,6 +969,7 @@ class GitTools:
             "fields": fields,
             "found": {k: scrub(v) for k, v in found.items()},
             "expected": [scrub(e) for e in expected],
+            "on_origin": on_origin.found(commit.sha),
         })
 
     def leaks(self, repo: Path, commits: list[str]) -> list[str]:
@@ -967,6 +1054,48 @@ class GitTools:
         except OSError:
             text = ""
         return result.exit_code, text
+
+
+@dataclass(frozen=True)
+class _Authorship:
+    """`GitTools._authorship`: this task's identities and a memoised reader of
+    what each commit's identities get wrong (`gitops._foreign`)."""
+
+    judge: Callable[[str], tuple[Any, list[str]]]
+    authors: list[tuple[str, str]]
+    committers: list[tuple[str, str]]
+    _read: dict[str, tuple[Any, list[str]]] = field(default_factory=dict)
+
+    def read(self, sha: str) -> tuple[Any, list[str]]:
+        if sha not in self._read:
+            self._read[sha] = self.judge(sha)
+        return self._read[sha]
+
+    def problems(self, sha: str) -> list[str]:
+        return self.read(sha)[1]
+
+
+@dataclass(frozen=True)
+class _OnOrigin:
+    """What swarm-api said about the foreign commits a push asked it about."""
+
+    asked: list[str] = field(default_factory=list)
+    confirmed: list[str] = field(default_factory=list)
+    #: The refusal's code when the platform could not answer at all.
+    unanswered: str | None = None
+
+    def found(self, sha: str) -> bool | None:
+        """False when origin was asked and lacks `sha`; None when unknown."""
+        if self.unanswered is None and sha in self.asked:
+            return sha in self.confirmed
+        return None
+
+    def says(self, sha: str) -> str:
+        if self.found(sha) is False:
+            return "origin does not have it (swarm-api checked)"
+        if self.unanswered is not None:
+            return f"origin could not be asked whether it has it ({self.unanswered})"
+        return "it was not checked against origin"
 
 
 @dataclass

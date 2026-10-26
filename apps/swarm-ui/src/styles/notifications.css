@@ -169,11 +169,13 @@
 .nt-main:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: 4px; }
 .nt-title { font-size: var(--t-body); color: var(--text-dim); overflow-wrap: anywhere; }
 .nt-item.is-unread .nt-title { font-weight: 600; color: var(--text); }
-.nt-detail { font-size: var(--t-meta); color: var(--text-dim); overflow-wrap: anywhere; }
-.nt-question { font-size: var(--t-meta); color: var(--text); overflow-wrap: anywhere; }
-.nt-dest { font-size: var(--t-meta); color: var(--sk-ac); }
+/* ONE LINE UNDER THE TITLE (VQ-057): cut at the panel's edge, the whole text
+   its tooltip and on the page the item opens. An agent's question reads in
+   the text colour, a detail dimmed. */
+.nt-excerpt { font-size: var(--t-meta); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nt-excerpt.nt-question { color: var(--text); }
 .nt-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); white-space: nowrap; }
-.nt-mark { border: 0; padding: 0; background: none; color: var(--sk-ac); font: inherit; cursor: pointer; }
+/* Mark read is the console's small ghost button (`.c-btn.is-sm.is-ghost`), not a text link in the time's monospace (VQ-057). */
 .nt-empty { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 28px 20px; text-align: center; }
 .nt-empty-ic { width: 28px; height: 28px; fill: none; stroke: var(--s-live); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .nt-empty-h { margin: 4px 0 0; font-weight: 600; }
