@@ -118,6 +118,13 @@ class FakeApi:
         return {"branch": body["branch"], "old_sha": old, "new_sha": new}
 
     def git_fetch(self, body: dict[str, Any]) -> dict[str, Any]:
+        if "confirm" in body:
+            # swarm-api's answer to "which of these does origin have" (#2413):
+            # the shas that are commits in the bare origin, nothing else.
+            return {"confirmed": [sha for sha in body["confirm"]
+                                  if subprocess.run(["git", "-C", str(self.origin), "cat-file",
+                                                     "-e", f"{sha}^{{commit}}"],
+                                                    capture_output=True).returncode == 0]}
         ref = body["ref"]
         sha = _git(self.origin, "rev-parse", f"{ref}^{{commit}}")
         if sha in body["haves"]:
@@ -276,11 +283,14 @@ def test_a_malformed_request_is_refused_before_any_request(
 
 
 def test_a_commit_the_task_did_not_write_is_foreign_author(world: World):
-    _commit(world.clone, "src/app.py", "x = 1\n", "work",
-            who=("Mallory", "mallory@example.invalid"))
+    theirs = _commit(world.clone, "src/app.py", "x = 1\n", "work",
+                     who=("Mallory", "mallory@example.invalid"))
     answer = world.spool("git_push_branch", {})
     assert answer["refused"]["code"] == "foreign_author"
-    assert world.api.calls == []
+    assert answer["refused"]["on_origin"] is False
+    # The one request is the question "does origin have it?" (#2413); no push.
+    assert [(c["path"].rsplit("/", 1)[1], c["body"].get("confirm")) for c in world.api.calls] \
+        == [("git_fetch", [theirs])]
 
 
 # --------------------------------------------------------------------------
