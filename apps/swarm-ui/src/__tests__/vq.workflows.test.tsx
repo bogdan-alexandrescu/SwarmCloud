@@ -675,6 +675,7 @@ describe('VQ-WORKFLOWS re-review minors', () => {
           openStages={{}}
           onToggleStage={() => {}}
           picked="build"
+          onPick={() => {}}
           reload={() => {}}
         />
       </div>,
