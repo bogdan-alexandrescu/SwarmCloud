@@ -79,7 +79,7 @@ h2 .n{font:500 14px var(--f-mono);color:var(--accent);margin-right:10px}
 <p>Under each frame, the tabs switch between the four proposals’ versions. The preview is that proposal’s own frame, live and scaled down; it shows the top of the frame. To read a frame, open it at full size: the link opens the proposal at that frame. Every figure in the proposals is an <span class="ex">example</span>. Your picks and notes are kept in this browser for convenience; the copied text is the record.</p>
 <ul class="toc"><li><a href="#proposals">The four proposals</a></li><li><a href="#A1">A1 Landing</a></li><li><a href="#A2">A2 One schedule</a></li><li><a href="#A3">A3 New or edited schedule</a></li><li><a href="#A4">A4 Approvals</a></li><li><a href="#A5">A5 One approval</a></li><li><a href="#A6">A6 Empty and honest states</a></li><li><a href="#A7">A7 Phone</a></li></ul>
 
-<h2 id="proposals"><span class="n">·</span>The four proposals</h2>
+<h2 id="proposals">The four proposals</h2>
 <p class="need">Each proposal’s idea, and the fields it needs that the API does not serve today, as its own “New fields” list names them. Every other figure it draws is served by <code>apps/swarm-api</code> today or derived from served fields.</p>
 <div class="grid">
 <article class="pc" data-p="a"><div class="ph2"><span class="badge">A</span><h3>List and side sheet</h3></div>
@@ -185,7 +185,7 @@ function show(sec,p){var f=sec.getAttribute('data-f'),panel=sec.querySelector('.
   var pv=panel.querySelector('.pv'),old=pv.querySelector('iframe');if(old)old.remove();
   var ld=pv.querySelector('.pvload');ld.textContent='Loading '+p.toUpperCase()+'’s '+f+'…';ld.hidden=false;
   var ifr=document.createElement('iframe');ifr.title='Proposal '+p.toUpperCase()+', '+sec.getAttribute('data-name')+', scaled preview';
-  ifr.setAttribute('loading','lazy');ifr.setAttribute('scrolling','no');ifr.tabIndex=-1;ifr.setAttribute('aria-hidden','true');ifr.width=1440;ifr.height=900;ifr.src=u+'#'+f;
+  ifr.setAttribute('loading','lazy');ifr.setAttribute('scrolling','no');ifr.tabIndex=-1;ifr.setAttribute('aria-hidden','true');ifr.width=1440;ifr.height=900;ifr.src=u;
   ifr.addEventListener('load',function(){pushTheme(ifr);ld.hidden=true;try{var d=ifr.contentDocument,el=d&&d.getElementById(f);if(d)d.querySelectorAll('body *').forEach(function(x){var ps=ifr.contentWindow.getComputedStyle(x).position;if((ps==='sticky'||ps==='fixed')&&!x.closest('[data-f]'))x.style.position='static'});if(el)ifr.contentWindow.scrollTo(0,el.getBoundingClientRect().top+ifr.contentWindow.scrollY)}catch(_){}});
   pv.appendChild(ifr);fit(pv)}
 document.querySelectorAll('section.frame').forEach(function(sec){var f=sec.getAttribute('data-f'),name=sec.getAttribute('data-name');
@@ -226,7 +226,7 @@ document.addEventListener('click',function(e){var t=e.target.closest&&e.target.c
   if(t.hasAttribute('data-pick')){var v=t.getAttribute('data-pick').split(':');picks[v[0]]=picks[v[0]]===v[1]?undefined:v[1];
     if(picks[v[0]]&&v[1]!=='none'){var sec=document.getElementById(v[0]);if(tabs[v[0]]!==v[1])show(sec,v[1])}render();return}
   if(t.hasAttribute('data-all')){var p=t.getAttribute('data-all');FR.forEach(function(f){picks[f]=p;if(tabs[f]!==p)show(document.getElementById(f),p)});render();return}
-  if(t.hasAttribute('data-clear')){picks={};notes={};document.querySelectorAll('[data-note]').forEach(function(n){n.value=''});try{localStorage.setItem(NK,'{}')}catch(_){}render();tray.querySelector('.done').textContent='Cleared.';return}
+  if(t.hasAttribute('data-clear')){if(!confirm('Clear every pick and every note? The notes cannot be brought back.'))return;picks={};notes={};document.querySelectorAll('[data-note]').forEach(function(n){n.value=''});try{localStorage.setItem(NK,'{}')}catch(_){}render();tray.querySelector('.done').textContent='Cleared.';return}
   if(t.hasAttribute('data-copy')){var s=text(),done=tray.querySelector('.done');
     var fallback=function(){var ta=tray.querySelector('textarea');ta.value=s;ta.select();var ok=false;try{ok=document.execCommand('copy')}catch(_){}if(ok){done.textContent='Copied. Paste it into #2417.'}else{ta.classList.add('show');ta.removeAttribute('aria-hidden');ta.setAttribute('aria-label','Your picks as text');done.textContent='This browser would not copy. The text is in the box: select it and copy it.'}};
     if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(s).then(function(){done.textContent='Copied. Paste it into #2417.'},fallback);else fallback();}});
