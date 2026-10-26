@@ -783,3 +783,58 @@ describe('VQ-024: on a phone the Lanes filters fold behind one Filters button', 
     expect(painted(sheet, 'display', { width: 390 })).toBe('flex')
   })
 })
+
+describe('VQ-024: on a phone the Lanes legend folds behind a Key toggle', () => {
+  it('folds the legend closed by default on a phone, beside `Filters · N`', async () => {
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(lane('task_plan')).not.toBeNull())
+    // MUTATION: drop the `.tl-key-toggle` button from TimelineLanes.tsx.
+    const key = document.querySelector<HTMLButtonElement>('.tl-ctl > .tl-sheet-toggle + .tl-key-toggle')
+    expect(key, 'no Key button beside Filters').not.toBeNull()
+    expect(key!.tagName).toBe('BUTTON')
+    expect(key!.textContent).toBe('Key')
+    expect(key!.getAttribute('aria-expanded')).toBe('false')
+    const legend = document.getElementById(key!.getAttribute('aria-controls')!)!
+    expect(legend.classList.contains('tl-legend')).toBe(true)
+    // MUTATION: drop the `.tl-legend.tl-key` phone rule from timeline.css.
+    expect(painted(legend, 'display', { width: 390 })).toBe('none')
+    expect(painted(key!, 'display', { width: 390 })).toBe('inline-flex')
+    expect(painted(key!, 'min-height', { width: 390 })).toBe('44px')
+  })
+
+  it('opens the legend on the toggle, its content unchanged, and closes it again', async () => {
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(lane('task_plan')).not.toBeNull())
+    const key = document.querySelector<HTMLButtonElement>('.tl-key-toggle')!
+    const legend = document.getElementById(key.getAttribute('aria-controls')!)!
+    const words = legend.textContent
+    expect(words).toContain('held capacity (leased → running)')
+    expect(words).toContain('failed · dead-lettered')
+    // MUTATION: make the button's onClick a no-op.
+    fireEvent.click(key)
+    expect(key.getAttribute('aria-expanded')).toBe('true')
+    expect(legend.classList.contains('is-open')).toBe(true)
+    expect(painted(legend, 'display', { width: 390 })).toBe('flex')
+    expect(legend.textContent).toBe(words)
+    expect(legend.querySelectorAll('.tl-lg')).toHaveLength(4)
+    // The outcome strip's counts are not folded with it.
+    expect(document.querySelector('.tl-strip')).not.toBeNull()
+    // Keyboard: a native button, so Enter and Space reach it from Tab.
+    key.focus()
+    expect(document.activeElement).toBe(key)
+    fireEvent.click(key)
+    expect(key.getAttribute('aria-expanded')).toBe('false')
+    expect(painted(legend, 'display', { width: 390 })).toBe('none')
+  })
+
+  it('always shows the legend on a desktop, with no Key button', async () => {
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(lane('task_plan')).not.toBeNull())
+    const key = document.querySelector<HTMLButtonElement>('.tl-key-toggle')!
+    const legend = document.getElementById(key.getAttribute('aria-controls')!)!
+    expect(painted(key, 'display', { width: 1440 })).toBe('none')
+    expect(painted(legend, 'display', { width: 1440 })).toBe('flex')
+    fireEvent.click(key)
+    expect(painted(legend, 'display', { width: 1440 })).toBe('flex')
+  })
+})
