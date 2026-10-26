@@ -104,7 +104,7 @@ from ..forgechecks import evaluate, required_status_checks
 from ..forgewrite import ForgeWriteError, ForgeWriteNotFound, GitHubWriter
 from ..issueci import excerpt_at
 from ..issuecomments import bounded as bounded_body
-from ..issuecomments import code, neutral, plain, prose
+from ..issuecomments import code, plain, prose
 from ..issueruns import TERMINAL_RUN_STATES, IssueRuns, RunState, hard_stop_hold, refuse_auto_merge
 from ..repositories import Repositories, hard_stop_paths_of, platform_of
 from ..routes.runs import start_run
@@ -754,8 +754,11 @@ class _Filing:
                 "finding_id": fid, "tenant_id": tenant_id, "kind": where.get("kind"),
                 "task_id": failure if where.get("kind") == "agent" else None,
                 "failure_id": failure, "fingerprint": cause.fingerprint,
-                "cause": neutral(cause.cause, 2000, one_line=True),
-                "fix": neutral(cause.fix, MAX_FIELD_CHARS),
+                # Plain, as written (FAILURE-STORE-PLAIN, part of #2391): the
+                # console shows these through React, which escapes them itself,
+                # so a stored `&gt;` read '-&gt;'. Masked and neutralised still.
+                "cause": plain(cause.cause, 2000, one_line=True),
+                "fix": plain(cause.fix, MAX_FIELD_CHARS),
                 "evidence": dict(_mapping(evidence.get(ref))),
                 "schedule_id": self.review["schedule_id"], "firing_id": self.review["firing_id"],
                 "state": "open", "created_at": self.ctx.now(),
@@ -827,7 +830,7 @@ class _Filing:
         if not progress.get("observed"):
             # Idempotent for one firing: a second observation counts nothing.
             self.causes.observe(cause, failure_ids=failure_ids, firing_id=self.review["firing_id"],
-                                title=neutral(cause.cause, MAX_TITLE_CHARS, one_line=True))
+                                title=plain(cause.cause, MAX_TITLE_CHARS, one_line=True))
             progress = self._progress(cause.fingerprint, {**progress, "observed": True})
         if cause.where == "tenant_repo":
             return self._progress(cause.fingerprint, {**progress, "action": Action.REPORT.value,
@@ -858,7 +861,7 @@ class _Filing:
         action = Action(progress["action"])
         if action == Action.NO_CHANGE:
             self.causes.record_no_change(cause.fingerprint, firing_id=self.review["firing_id"],
-                                         fix=neutral(cause.fix, MAX_FIELD_CHARS),
+                                         fix=plain(cause.fix, MAX_FIELD_CHARS),
                                          evidence=[e.model_dump() for e in cause.evidence[:MAX_EVIDENCE]])
             return self._progress(cause.fingerprint, {**progress, "done": True})
         if action in (Action.FILE_AND_RUN, Action.FILE_HELD):
