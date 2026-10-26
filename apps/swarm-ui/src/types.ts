@@ -459,12 +459,18 @@ export const POOL_FAMILY_ORDER: readonly PoolKind[] = [
  * headroom" -- that rename was about telling a per-tenant measurement from the
  * platform-wide catalogue beside it in the rail, and it does not reach in
  * here. A pool family named after the thing it is scoped by is unambiguous on
- * the capacity board, where every other row is `Tenants`, `Backends` or
+ * the capacity board, where every other row is `Workspaces`, `Backends` or
  * `Providers`.
+ *
+ * `tenant` IS TITLED `Workspaces` (BGD, 2026-10-26, TENANT-WORDING-C's
+ * question 0): the console calls a tenant a workspace everywhere a reader
+ * meets it, so the family reads `Workspaces` and its tables `Workspaces
+ * ceilings`. Only the title moved: the `tenant:` pool key, the PoolKind and
+ * Admin › Tenants keep their names.
  */
 export const FAMILY_TITLE: Readonly<Record<PoolKind, string>> = {
   global: 'Global',
-  tenant: 'Tenants',
+  tenant: 'Workspaces',
   resource: 'Resource classes',
   runner: 'Runner profiles',
   backend: 'Backends',
