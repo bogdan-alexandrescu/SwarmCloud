@@ -123,7 +123,7 @@ function PeopleLead({ state, inviteId }: { state: Result<WorkspaceRoles>; invite
   }
   if (step.holders === 0) {
     return (
-      <Lead tone="next" kicker="Step 4 · this page" title={`Only you hold a role in ${name} so far: give each person who will run agents their own.`}
+      <Lead tone="next" kicker="Step 4 · this page" title={`Nobody else in ${name} holds a role of their own yet: give each person who will run agents their own.`}
         action={
           <Button kind="primary" size="sm" onClick={() => {
             const field = document.getElementById(inviteId)
@@ -336,6 +336,8 @@ function Roles({ data, onChange, inviteId }: { data: WorkspaceRoles; onChange: (
   const [done, setDone] = useState<string | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
   const name = data.tenant_id || 'this workspace'
+  // People other than the caller who hold a role of their own: what the lead's step 4 counts as holders.
+  const others = data.people.filter((p) => p.email.toLowerCase() !== (data.me.email || '').toLowerCase()).length
 
   if (data.kind === 'user') {
     return <p className="pk-lead">You are this workspace&rsquo;s admin; a personal workspace has only you.</p>
@@ -363,22 +365,25 @@ function Roles({ data, onChange, inviteId }: { data: WorkspaceRoles; onChange: (
         {data.me.granted_by !== undefined && <> by {data.me.granted_by}</>}
         {data.me.granted_at !== undefined && <span title={data.me.granted_at}> {timeAgo(data.me.granted_at)}</span>}.
       </p>
+      {/* ONE STATEMENT OF WHO HOLDS WHAT, IN ONE TYPE SIZE (visual QA VQ-047): the lead said "Only you hold
+          a role", a second line said "Nobody in eng holds a role of their own", and the caller's role and the
+          default were set in two sizes. The default's sentence now says whether anyone else holds their own,
+          in the lead's words, and every line of it is `pk-lead`. */}
       {data.me.via === 'platform_admin' && (
-        <p className="ur-small">
+        <p className="pk-lead">
           You are not in {name}&rsquo;s group: you reach it as a platform admin, and every action you take here is
           recorded in its audit log.
         </p>
       )}
-      <p className="ur-small" aria-label="Default role">
+      <p className="pk-lead" aria-label="Default role">
         Everyone else in {name} holds <b>{data.default_role ?? 'no readable default'}</b>, the workspace&rsquo;s
-        default{data.default_source === 'migration' ? ': nobody has set it yet, so it is what every member could do before roles' : ''}.
+        default{others === 0 ? ': nobody else holds a role of their own yet' : ', unless they are listed below with a role of their own'}.
+        {data.default_source === 'migration' && ' Nobody has set the default yet, so it is what every member could do before roles.'}
       </p>
 
       <RoleTable summaries={data.roles} />
 
-      {data.people.length === 0 ? (
-        <p className="ur-small">Nobody in {name} holds a role of their own: everyone holds the default.</p>
-      ) : (
+      {data.people.length === 0 ? null : (
         <Overrides people={data.people} canManage={data.can_manage}
           onClear={(email) => act(() => clearWorkspacePersonRole(email),
             (a) => `${a.email} holds the default again (${a.role}).`, `${email} was not returned to the default`)} />

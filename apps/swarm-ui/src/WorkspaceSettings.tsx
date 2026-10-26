@@ -395,7 +395,10 @@ function ThisWorkspace({ profile, roles, go }: { profile: Profile; roles: UrRead
   const read = me.state.status === 'ok' || me.state.status === 'stale' ? me.state.data : null
   const stored = read !== null && ws !== null && read.tenant.tenant_id === ws.tenant_id ? read.tenant.display_name || null : null
   const name = renamed ?? stored ?? ws?.display_name ?? ''
-  const mayRename = ws !== null && ws.kind === 'group' && ws.role.name === 'admin'
+  // WHO MAY RENAME IS WHO THE API LETS (workspace_name.py): the workspace's own admin
+  // OR A PLATFORM ADMIN. The stored role alone hid Rename from a platform admin
+  // whose stored role in the group is member (visual QA VQ-045).
+  const mayRename = ws !== null && ws.kind === 'group' && (ws.role.name === 'admin' || profile.identity.is_admin === true)
   return (
     <Card
       title="This workspace"
