@@ -67,6 +67,9 @@ REVIEW_OUTPUT = "verdict.json"
 #: The verdict keys the guidance names; `verdict.read_verdict` reads both.
 NEEDS_OWNER_KEY = "needs_owner"
 OPEN_QUESTIONS_KEY = "open_questions"
+#: A question's record of the option its asker's branch builds, or null when
+#: the answer changes nothing it builds (`questions`, ANSWER-CONTENT-CHECK).
+BUILT_KEY = "built"
 #: The most task documents the ancestor walk reads: every ancestor is a
 #: distinct step of one workflow, so the most steps a workflow may have, read
 #: from the FROZEN `Settings` default as `lifecycle._MAX_WORKFLOW_STEPS` is.
@@ -175,7 +178,7 @@ def questions_of(
     rows: list[dict[str, Any]] = []
     for index, question in enumerate(asked):
         answer = answers.get(index)
-        rows.append({
+        row: dict[str, Any] = {
             "task_id": task_id,
             "step_id": step_id,
             "question_index": index,
@@ -186,7 +189,13 @@ def questions_of(
             "blocking": question.get("blocking") is True,
             "answer": None if answer is None else {
                 "choice": answer.get("choice"), "text": answer.get("text")},
-        })
+        }
+        # Only where the asker wrote it: a file from before ANSWER-CONTENT-CHECK
+        # has no `built`, and the merge reads its absence as "answered is
+        # enough", never as null.
+        if BUILT_KEY in question:
+            row[BUILT_KEY] = question[BUILT_KEY]
+        rows.append(row)
     return rows
 
 
@@ -209,7 +218,9 @@ def guidance(path: Path | str, rows: list[dict[str, Any]]) -> str:
         f"\n\nEarlier steps of this workflow asked the owner {len(rows)} question(s), "
         f"{open_count} still unanswered. They are in {path}, a JSON list of "
         "{task_id, step_id, question_index, question, options, recommended, context, "
-        "blocking, answer}, with answer null while the owner has not answered. Read it "
+        "blocking, answer}, with answer null while the owner has not answered, and "
+        "`built`, where the asker wrote it, the option label its branch implements "
+        "(null: the answer changes nothing it builds). Read it "
         f"before you write verdict.json. In verdict.json, put in `{NEEDS_OWNER_KEY}` a "
         "list of {task_id, step_id, question_index, question}, one for each UNANSWERED "
         "question that must hold the merge: one whose answer could reverse a recorded "
@@ -217,7 +228,8 @@ def guidance(path: Path | str, rows: list[dict[str, Any]]) -> str:
         "contract, and one the asker marked blocking. Put every other unanswered "
         f"question, in the same shape, in `{OPEN_QUESTIONS_KEY}`, so the pull request "
         f"lists it. The merge step will not merge while a `{NEEDS_OWNER_KEY}` question "
-        "is unanswered; it merges past the others. An answered question goes in neither."
+        "is unanswered, nor once its answer picks an option other than its `built`; "
+        "it merges past the others. An answered question goes in neither."
     )
 
 

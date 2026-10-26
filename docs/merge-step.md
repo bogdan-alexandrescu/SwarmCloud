@@ -26,12 +26,69 @@ the "Revised 2026-10-06" section below is that design and its build plan
 one at a time, in submission order -- the section after the next.**
 **Revised 2026-10-11: a head the PR-side CI fixer pushed for the pull request
 is a fix round's, and a conflicting pull request goes to a conflict fix round
-instead of a six-hour wait for checks -- the second section below.**
+instead of a six-hour wait for checks -- the third section below.**
 **Revised 2026-10-14: a lane workflow's red or conflicting pull request runs
 bounded fix rounds by itself, two by default, re-running a flaky job before
-it spends an agent -- the first section below.**
+it spends an agent -- the second section below.**
+**Revised 2026-10-26: a merge woken by the owner's answers refuses an
+option its branch did not build -- the first section below.**
 
-## Revised 2026-10-14: auto fix rounds (lane SPEED-D2)
+## Revised 2026-10-26: a woken merge merges only the option its branch built (ANSWER-CONTENT-CHECK)
+
+Owner decision 2026-10-26, part of #2441 (finding 5). A merge step parks on
+the owner questions its review names (`verdict.needs_owner`, #2070), and an
+answer to the last of them wakes it (QUESTION-WAKE). Until this it then
+checked only THAT each question was answered (`metadata.owner_answers` holds
+its index), not WHAT was picked. On 2026-10-26 the owner picked options the
+branch had not built on three lanes -- VQ-CAPACITY ("Needs a look" where the
+pull request built "Needs action"), VQ-CONFIG-B ("Show state only on the
+card" where it kept the switches) and BROWSER-POOL-100 ("Raise
+provider_tenant" where it left it) -- and the operator cancelled each
+workflow by hand so it would not merge the opposite of the choice.
+
+**The asking agent records what its branch builds.** Each question in
+`questions.json` may carry `built`: the label of the option the branch
+implements, or `null` when the answer changes nothing it builds. The worker's
+validator (`agent_worker.questions`) takes the key, and refuses the file when
+`built` is neither null nor one of the question's labels. The sentence that
+tells an agent how to write the file (`expected_outputs.questions_line`) asks
+for it. The shape is the worker's, not the frozen contract's, so no contract
+request is needed; swarm-api serves the questions as before and does not
+read `built`.
+
+**The merge compares the pick with the build.** Once every `needs_owner`
+question is answered, the step reads each asking task's validated
+`questions.json` again (`owner_questions.questions_of`) and, for every
+question that names a `built` label, compares the answer's `choice` with it.
+Another option, or free text with no option, refuses `owner_pick_not_built`,
+end cause `MERGE_REFUSED`, before any credential is read:
+
+    owner_pick_not_built: the owner picked an option this pull request does not
+    build: step implement question 0: picked 'Needs a look', the branch builds
+    'Needs action'. Build the picked option in a fix round, then merge again
+
+`result_summary.merge.unbuilt_picks` lists each one as `{task_id, step_id,
+question_index, question, picked, built}` (`picked` null for free text). A
+counted `questions.json` the check cannot read ends `INPUTS_UNAVAILABLE`,
+code `owner_questions_unreadable`, as an unreadable upstream does.
+
+**What passes as before.** A pick equal to `built`; `built: null`; and a
+question with no `built` key at all -- a file written before this check -- so
+a lane parked on its answers today is not stranded behind a field its agent
+was never asked for.
+
+**Why a refusal, not a fix round.** The workflow is a DAG fixed at
+submission: its one fix step runs on the review's `NOT_YET`, before the
+merge (`validation.REREVIEW_ROUNDS`), and the merge's own fix rounds are CI
+and conflict rounds that swarm-api's tick starts from a park code. There is
+no round a merge can ask to build a different option, so the step ends FAILED
+with the pull request open and the reason on the console, for the operator
+to send it back; whether the merge should start such a round itself is an
+open question for the owner in the pull request that built this.
+
+**What it does not cover.** Only `needs_owner` questions are compared. A
+question answered before the review ran goes in neither of the review's lists
+(`owner_questions.guidance`), so a pick made then is not compared here.
 
 Owner decision 2026-10-14 ("Auto fix rounds", the delivery speed plan),
 taken on a measurement over the last 150 merged pull requests: 0.52 red CI

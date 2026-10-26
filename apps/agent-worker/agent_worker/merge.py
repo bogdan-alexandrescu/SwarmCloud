@@ -112,6 +112,20 @@ listed, in the asking task's own words, in the comment that records the
 merge -- so a merge made by `auto-merge.yml` rather than this step lists
 none.
 
+ANSWERED IS NOT ENOUGH: THE PICK MUST BE WHAT THE BRANCH BUILT
+(ANSWER-CONTENT-CHECK, part of #2441; owner decision 2026-10-26). Once every
+`needs_owner` question is answered, the step reads each one's validated
+`questions.json` again and compares the answer's `choice` with the question's
+`built`, the option label the asking agent said its branch implements. A
+different option, or free text that names none, refuses `owner_pick_not_built`
+naming each question, the pick and the build (`unbuilt_picks`), before any
+credential: the merge ends FAILED with the pull request open, for a fix
+round that builds the pick. `built: null` (the answer changes nothing the
+branch builds) passes, and so does a question with no `built` at all, written
+before this check, so a lane parked on its answers is not stranded. On
+2026-10-26 three lanes (VQ-CAPACITY, VQ-CONFIG-B, BROWSER-POOL-100) would
+have merged the opposite of the owner's pick without it.
+
 THE RULES `auto-merge.yml` ALSO STATES are the module-level functions
 `title_is_placeholder`, `other_check_blocks` and `required_check_state`, so
 tests/unit/scripts/test_auto_merge_workflow.py holds them to the gate's shell
@@ -158,6 +172,13 @@ MERGE_TARGET_FIELD = "merge_target"
 
 #: The code an owner-question hold parks with (#2070).
 OWNER_QUESTIONS_OPEN = "owner_questions_open"
+#: The code a merge refuses with when the owner picked an option the asking
+#: branch did not build (ANSWER-CONTENT-CHECK, owner decision 2026-10-26), the
+#: `result_summary` key naming each such pick, and the code for a counted
+#: `questions.json` the check could not read.
+OWNER_PICK_NOT_BUILT = "owner_pick_not_built"
+UNBUILT_PICKS_KEY = "unbuilt_picks"
+OWNER_QUESTIONS_UNREADABLE = "owner_questions_unreadable"
 #: `metadata.owner_answers`, swarm-api's record of each answer
 #: (`questions.OWNER_ANSWERS_KEY`).
 OWNER_ANSWERS_KEY = questions_mod.OWNER_ANSWERS_KEY
@@ -1451,6 +1472,16 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         held = _unanswered(ctx, verdict.needs_owner)
         if held or verdict.needs_owner_unreadable:
             return run.wait_for_owner(held, unreadable=verdict.needs_owner_unreadable)
+        # ANSWER-CONTENT-CHECK: answered is not enough; the pick must be
+        # the option the asking branch built.
+        try:
+            unbuilt = _unbuilt_picks(ctx, verdict.needs_owner)
+        except InputUnavailable as exc:
+            summary["refusal"] = {"code": OWNER_QUESTIONS_UNREADABLE, "message": str(exc)}
+            return _outcome(TaskState.FAILED, EndCause.INPUTS_UNAVAILABLE, summary, str(exc))
+        if unbuilt:
+            summary[UNBUILT_PICKS_KEY] = unbuilt
+            return run.refuse(OWNER_PICK_NOT_BUILT, unbuilt_picks_message(unbuilt))
         still_open = _unanswered(ctx, verdict.open_questions, asked_text=True)
         if still_open:
             summary["open_questions"] = still_open
@@ -1489,6 +1520,59 @@ def _answered(doc: Mapping[str, Any], index: int) -> bool:
                 and entry.get("question_index") == index:
             return True
     return False
+
+
+def _unbuilt_picks(ctx: ActionContext,
+                   refs: tuple[verdict_mod.OwnerQuestionRef, ...]) -> list[dict[str, Any]]:
+    """Each answered `refs` question whose pick is not the option its branch built.
+
+    Called once every ref is answered and of this workflow (`_unanswered`
+    found none held), so each task is read again here, with its validated
+    `questions.json` (`owner_questions.questions_of`, which raises
+    `InputUnavailable` for a counted file it cannot read). A question passes
+    when its asker wrote no `built` (a file from before this check),
+    `built: null` (the answer changes nothing the branch builds), or the
+    answer's `choice` is `built`. Anything else -- another option, or free
+    text with no option -- is a row naming the question, the pick (None for
+    free text) and the build.
+    """
+    out: list[dict[str, Any]] = []
+    asked: dict[str, dict[int, Mapping[str, Any]]] = {}
+    for ref in refs:
+        if ref.task_id not in asked:
+            doc = ctx.fetch_upstream(ref.task_id)
+            rows = owner_questions_mod.questions_of(
+                ref.task_id, doc, store=ctx.store, tenant_id=ctx.tenant_id)
+            asked[ref.task_id] = {row["question_index"]: row for row in rows}
+        row = asked[ref.task_id].get(ref.question_index)
+        built = row.get(owner_questions_mod.BUILT_KEY) if row is not None else None
+        if row is None or not isinstance(built, str):
+            continue
+        choice = _mapping(row.get("answer")).get("choice")
+        if choice == built:
+            continue
+        out.append({
+            "task_id": ref.task_id,
+            "step_id": row.get("step_id") or ref.step_id,
+            "question_index": ref.question_index,
+            "question": row.get("question"),
+            "picked": choice if isinstance(choice, str) else None,
+            "built": built,
+        })
+    return out
+
+
+def unbuilt_picks_message(rows: list[Mapping[str, Any]]) -> str:
+    """The refusal's reason: each question, what the owner picked, what the branch built."""
+    named = []
+    for row in rows:
+        where = f"step {row.get('step_id') or row.get('task_id')} question {row.get('question_index')}"
+        picked = row.get("picked")
+        pick = (f"picked {picked!r}" if picked is not None
+                else "answered in free text that names no option")
+        named.append(f"{where}: {pick}, the branch builds {row.get('built')!r}")
+    return ("the owner picked an option this pull request does not build: "
+            + "; ".join(named) + ". Build the picked option in a fix round, then merge again")
 
 
 def _unanswered(ctx: ActionContext,
