@@ -168,7 +168,11 @@ export function StartChoice({ value, onChange }: { value: Start; onChange: (s: S
   )
 }
 
-/** "tenant eng · 6 of 25 used", from the tenant's own list. */
+/**
+ * "workspace eng · 6 of 25 used", from the workspace's own list. The console
+ * says workspace, never tenant (VQ-056, BGD 2026-10-26); `tenant_id` is the
+ * API's field and keeps its name.
+ */
 export function TenantRoom() {
   const [r, setR] = useState<Result<{ schedules: Schedule[]; tenant_id: string }> | null>(null)
   useEffect(() => {
@@ -181,7 +185,7 @@ export function TenantRoom() {
     }
   }, [])
   if (r === null || r.status === 'loading') {
-    return <p className="sc-room" data-testid="sc-room">Reading how many schedules this tenant has…</p>
+    return <p className="sc-room" data-testid="sc-room">Reading how many schedules this workspace has…</p>
   }
   if (r.status === 'error') {
     return (
@@ -199,8 +203,8 @@ export function TenantRoom() {
   const full = typeof served === 'number' && used >= limit
   return (
     <p className="sc-room" data-testid="sc-room" data-full={full ? 'true' : 'false'}>
-      tenant {r.data.tenant_id} · {used} of {limit} used
-      {full ? ' · this tenant has every schedule it may have, so a new one will be refused' : ''}
+      workspace {r.data.tenant_id} · {used} of {limit} used
+      {full ? ' · this workspace has every schedule it may have, so a new one will be refused' : ''}
     </p>
   )
 }

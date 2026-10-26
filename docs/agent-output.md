@@ -435,6 +435,7 @@ the repair turns, while the session can still be continued
    | an image's `Dockerfile` or `tool-mirror.sha256` | the build mirror's manifest-vs-Dockerfile tests |
    | a file the graph's `tests` layer, a changed test or a sibling `X.test.tsx` covers (CTXQ-G) | `graph-pytest`: those Python test files `changed-guards.sh --list` did not already select, with `pytest -n auto`; `vitest`: the JavaScript ones, with the package's own `node_modules/.bin/vitest run`, from the package |
    | a `.ts`/`.tsx` file of a package with a `tsconfig.json` | `tsc` with the package's own `typecheck` arguments |
+   | any file of a package whose `package.json` declares a `test:node` script (apps/swarm-ui) | `node-tests`: `npm run test:node`, from the package. Its node:test `.mjs` files run nowhere else before publish -- the `vitest` selection drops `.mjs`/`.cjs` -- and four lanes (#2429, #2430, #2433, #2437) went red in CI's ui-build on `no-company-name.test.mjs` (#2455) |
    | `*.tf` anywhere | `terraform fmt -check -diff <files>` |
 
    A check that cannot run is `skipped` with its reason and never sent to the
@@ -444,8 +445,9 @@ the repair turns, while the session can still be continued
    gcloud and the mirror bucket, and the container has no cloud credential,
    so the gate runs the tests that hold the manifest equal to the Dockerfiles
    instead. `vitest` and `tsc` are skipped when the package has no
-   `node_modules` (the gate does not run `npm install`), and `terraform-fmt`
-   when terraform is not on PATH. ruff is configured here (lint only, [docs/ci.md](ci.md#ruff-lint-is-the-house-python-linter-and-formatting-is-not-adopted)),
+   `node_modules` (the gate does not run `npm install`), `node-tests` when
+   it has none or npm is not on PATH, and `terraform-fmt` when terraform is
+   not on PATH. ruff is configured here (lint only, [docs/ci.md](ci.md#ruff-lint-is-the-house-python-linter-and-formatting-is-not-adopted)),
    and formatting excludes every file, so `ruff format --check` passes
    whatever a lane touched and `ruff check` is the one that can fail.
 

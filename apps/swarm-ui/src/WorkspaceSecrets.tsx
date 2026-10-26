@@ -5,6 +5,7 @@ import {
   type WorkspaceSecretCatalogue,
   type WorkspaceSecretConsumer,
   type WorkspaceSecretCreate,
+  type WorkspaceSecretGrant,
   type WorkspaceSecretList,
   type WorkspaceSecretRotate,
 } from './api'
@@ -46,6 +47,15 @@ import './styles/keys.css'
  * with `{enabled}`, for exactly the box ticked. The box moves at once and goes
  * back if the API refuses; a running attempt keeps what it was released
  * (§4.3), so the page says the change takes effect at the next attempt.
+ *
+ * A HOST-SCOPED SLOT IS ITS OWN COLUMN (CF-ACCESS-HOSTS-UI, part of #2442).
+ * A grant into `cf-access` carries the exact hosts its secret may be sent to
+ * (swarm_api `slot_hosts`), so that cell has a hosts field beside its box:
+ * the grant's current list, add and remove, checked here as the API checks
+ * it, and written with the box (`{enabled, slot, hosts}`) or by Save. A tick
+ * with no host is refused before any call, in the API's own words. The field
+ * edits who may read the secret and where it goes, never what it is: nothing
+ * here reads or holds a value.
  *
  * WHO MAY MANAGE is the API's `can_manage`. Only an explicit true offers
  * Rotate, Delete or a live box; the API is still the gate.
@@ -322,16 +332,88 @@ export function cellOf(secret: Pick<WorkspaceSecret, 'kind'>, c: WorkspaceSecret
     const kinds = Array.from(new Set(c.slots.flatMap((sl) => sl.kinds)))
     return { open: false, locked: false, reason: `${c.name} reads ${kinds.map((k) => KIND_PHRASE[k] ?? k).join(' or ')}`, title: undefined, slot: null }
   }
-  return { open: true, locked: false, reason: null, title: undefined, slot: c.slots.length > 1 ? fits[0]!.slot : null }
+  // A host-scoped slot is offered only by its own column (`columnsOf`), where
+  // its hosts are asked for: Add's grants and the plain cell fill another.
+  const pick = fits.find((sl) => !isHostScoped(sl.slot)) ?? fits[0]!
+  return { open: true, locked: false, reason: null, title: undefined, slot: c.slots.length > 1 ? pick.slot : null }
 }
 
-const cellKey = (name: string, consumer: string) => `${name}\u0000${consumer}`
+/**
+ * HOST-SCOPED SLOTS AND THEIR RULE, as swarm_api/workspace_secrets.py states
+ * them (`HOST_SCOPED_SLOTS`, `MAX_SLOT_HOSTS`, `SLOT_HOST`, `slot_hosts`).
+ * The API is still the gate; these let the form refuse before the call, in
+ * the API's words, and a test holds them to that module.
+ */
+export const HOST_SCOPED_SLOTS: readonly string[] = ['cf-access']
+export const MAX_SLOT_HOSTS = 16
+/** A lower-case DNS name with a dot: no port, IP literal, wildcard, scheme or path. Matched exactly. */
+export const SLOT_HOST = /^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/
+/** `slot_hosts`' refusal of an enabled grant with no host. */
+export const hostsNeeded = (slot: string) =>
+  `a grant into the ${slot} slot names the hosts its secret may be sent to (\`hosts\`, 1 to ${MAX_SLOT_HOSTS} host names); it is sent to no other`
+/** `slot_hosts`' refusal of a list over the cap. */
+export const HOSTS_TOO_MANY = `\`hosts\` is a list of 1 to ${MAX_SLOT_HOSTS} host names`
+/** `slot_hosts`' refusal of a host `SLOT_HOST` does not match. */
+export const HOST_REFUSED = 'each host is a lower-case DNS name with a dot, matched exactly: no scheme, port, path, wildcard or IP address'
+
+export function isHostScoped(slot: string | null): boolean {
+  return slot !== null && HOST_SCOPED_SLOTS.includes(slot)
+}
+
+/** Why `host` cannot join `hosts`, in the API's words, or null when it can. */
+export function hostProblem(hosts: readonly string[], host: string): string | null {
+  if (!SLOT_HOST.test(host)) return HOST_REFUSED
+  if (hosts.includes(host)) return `${host} is listed already`
+  if (hosts.length >= MAX_SLOT_HOSTS) return HOSTS_TOO_MANY
+  return null
+}
 
 /**
- * THE GRANT MATRIX (§5): a row per secret, a column per catalogue consumer,
- * grouped Profiles · Tools · Components, a box per cell. A tick moves the
- * box at once and writes ONE grant; a refusal puts it back and says why.
- * A wide matrix scrolls inside its own `.table-wrap`, so the page does not.
+ * ONE COLUMN OF THE MATRIX: a consumer, or one host-scoped slot of it. `view`
+ * is the consumer as that column offers it (its other slots, or that slot
+ * alone), which `cellOf` decides from; `hostSlot` names the slot a
+ * host-scoped column always writes.
+ */
+export interface Column {
+  key: string
+  consumer: WorkspaceSecretConsumer
+  view: WorkspaceSecretConsumer
+  hostSlot: string | null
+}
+
+export function columnsOf(c: WorkspaceSecretConsumer): Column[] {
+  const hosted = c.slots.filter((sl) => isHostScoped(sl.slot))
+  if (hosted.length === 0) return [{ key: c.consumer, consumer: c, view: c, hostSlot: null }]
+  const rest = c.slots.filter((sl) => !isHostScoped(sl.slot))
+  return [
+    ...(rest.length === 0 ? [] : [{ key: c.consumer, consumer: c, view: { ...c, slots: rest }, hostSlot: null }]),
+    ...hosted.map((sl) => ({ key: `${c.consumer}#${sl.slot}`, consumer: c, view: { ...c, slots: [sl] }, hostSlot: sl.slot })),
+  ]
+}
+
+/** A column's cell: `cellOf` on its view, naming the slot whenever the consumer reads more than one. */
+export function cellAt(secret: Pick<WorkspaceSecret, 'kind'>, col: Column): Cell | null {
+  const cell = cellOf(secret, col.view)
+  if (cell === null || !cell.open || col.consumer.slots.length < 2) return cell
+  const slot = col.hostSlot ?? cell.slot ?? col.view.slots.find((sl) => sl.kinds.includes(secret.kind))?.slot ?? null
+  return { ...cell, slot }
+}
+
+/** The consumer's grant when it fills this column's slot: a plain column's is any slot not host-scoped. */
+function grantIn(secret: WorkspaceSecret, col: Column): WorkspaceSecretGrant | undefined {
+  const g = secret.grants.find((x) => x.consumer === col.consumer.consumer)
+  if (g === undefined) return undefined
+  return (col.hostSlot === null ? !isHostScoped(g.slot) : g.slot === col.hostSlot) ? g : undefined
+}
+
+const cellKey = (name: string, column: string) => `${name}\u0000${column}`
+
+/**
+ * THE GRANT MATRIX (§5): a row per secret, a column per catalogue consumer
+ * (and per host-scoped slot of one, `columnsOf`), grouped Profiles · Tools ·
+ * Components, a box per cell. A tick moves the box at once and writes ONE
+ * grant; a refusal puts it back and says why. A wide matrix scrolls inside
+ * its own `.table-wrap`, so the page does not.
  */
 export function GrantMatrix({ data, store, catalogue, onChange }: { data: WorkspaceSecretList | null; store: SecretStoreApi; catalogue: WorkspaceSecretCatalogue; onChange: () => void }) {
   const id = useId()
@@ -340,85 +422,142 @@ export function GrantMatrix({ data, store, catalogue, onChange }: { data: Worksp
   const [moved, setMoved] = useState<Readonly<Record<string, boolean>>>({})
   const [busy, setBusy] = useState<Readonly<Record<string, true>>>({})
   const [said, setSaid] = useState<{ ok: boolean; words: string } | null>(null)
+  // A host-scoped cell's list as edited here, and what the form refused in
+  // it; both cleared when the list is read again, which then shows the
+  // grant's own hosts.
+  const [drafts, setDrafts] = useState<Readonly<Record<string, readonly string[]>>>({})
+  const [refused, setRefused] = useState<Readonly<Record<string, string>>>({})
   useEffect(() => {
     setMoved({})
+    setDrafts({})
+    setRefused({})
   }, [data])
   if (data === null) return null
-  const groups = GROUPS.map(([kind, label]) => ({ label, cols: catalogue.consumers.filter((c) => c.kind === kind) }))
+  const groups = GROUPS.map(([kind, label]) => ({ label, cols: catalogue.consumers.filter((c) => c.kind === kind).flatMap(columnsOf) }))
     .filter((g) => g.cols.length > 0)
   const cols = groups.flatMap((g) => g.cols)
   if (cols.length === 0) return <p className="ur-small">The catalogue names no consumer, so there is nothing to grant to.</p>
   if (data.secrets.length === 0) return <p className="ur-small">No secret is stored yet, so there is nothing to grant.</p>
 
-  async function tick(secret: WorkspaceSecret, c: WorkspaceSecretConsumer, cell: Cell, next: boolean) {
-    const key = cellKey(secret.name, c.consumer)
+  const hostsOf = (secret: WorkspaceSecret, col: Column): readonly string[] =>
+    drafts[cellKey(secret.name, col.key)] ?? grantIn(secret, col)?.hosts ?? []
+  const refuse = (key: string, words: string | null) =>
+    setRefused((r) => {
+      const { [key]: _was, ...rest } = r
+      return words === null ? rest : { ...rest, [key]: words }
+    })
+
+  async function write(secret: WorkspaceSecret, col: Column, cell: Cell, next: boolean) {
+    const key = cellKey(secret.name, col.key)
     if (!data?.can_manage || !cell.open || busy[key]) return
+    const hosts = col.hostSlot === null ? null : hostsOf(secret, col)
+    if (col.hostSlot !== null && next && hosts !== null && hosts.length === 0) {
+      // `slot_hosts` refuses this; say so here and send nothing.
+      refuse(key, hostsNeeded(col.hostSlot))
+      return
+    }
+    refuse(key, null)
     setMoved((m) => ({ ...m, [key]: next }))
     setBusy((b) => ({ ...b, [key]: true }))
     setSaid(null)
-    const r = await store.grant(secret.name, c.consumer, next, cell.slot)
+    // An untick keeps a host-scoped grant's list, so a tick back finds it.
+    const sent = hosts !== null && hosts.length > 0 ? hosts : null
+    const r = await store.grant(secret.name, col.consumer.consumer, next, cell.slot, sent)
     setBusy((b) => {
       const { [key]: _done, ...rest } = b
       return rest
     })
+    const where = col.hostSlot === null ? '' : ` in its ${col.hostSlot} slot`
     if (r.status === 'error') {
       setMoved((m) => {
         const { [key]: _back, ...rest } = m
         return rest
       })
-      setSaid({ ok: false, words: `${c.consumer} on ${secret.name} was not changed: ${r.error.message}` })
+      setSaid({ ok: false, words: `${col.consumer.consumer}${where} on ${secret.name} was not changed: ${r.error.message}` })
       return
     }
-    const served = r.status === 'ok' ? r.data : null
-    const now = served?.grants.find((g) => g.consumer === c.consumer)?.enabled ?? next
+    const served = r.status === 'ok' && r.data !== null ? grantIn(r.data, col) : undefined
+    const now = r.status === 'ok' && r.data !== null ? served?.enabled === true : next
     setMoved((m) => ({ ...m, [key]: now }))
+    if (served !== undefined && col.hostSlot !== null) setDrafts((d) => ({ ...d, [key]: served.hosts }))
+    const to = now && sent !== null ? `, sent only to ${(served?.hosts ?? sent).join(', ')}` : ''
     setSaid({
       ok: true,
-      words: `${c.consumer} ${now ? 'may now read' : 'may no longer read'} ${secret.name}. This takes effect at the next attempt; an attempt already running keeps what it was given.`,
+      words: `${col.consumer.consumer} ${now ? 'may now read' : 'may no longer read'} ${secret.name}${where}${to}. This takes effect at the next attempt; an attempt already running keeps what it was given.`,
     })
     onChange()
+  }
+
+  function edit(secret: WorkspaceSecret, col: Column, on: boolean, next: readonly string[]) {
+    const key = cellKey(secret.name, col.key)
+    setDrafts((d) => ({ ...d, [key]: next }))
+    refuse(key, on && next.length === 0 && col.hostSlot !== null ? hostsNeeded(col.hostSlot) : null)
   }
 
   return (
     <>
       <p className="pk-lead">
         Tick a box to let that runner profile, tool or platform component read the secret. A box that cannot be
-        ticked says why: the consumer reads another kind, or reads no secret yet.
+        ticked says why: the consumer reads another kind, or reads no secret yet. A <code>cf-access</code> grant
+        also names the hosts its secret may be sent to, exactly, and no other.
       </p>
       {!data.can_manage && <p className="ur-small">You can read the grants here; only someone who manages this workspace&rsquo;s secrets can change them.</p>}
       <div className="table-wrap" role="region" aria-label="Grant matrix" tabIndex={0}>
-        <table className="pools" aria-label="Secret grants">
+        <table className="pools sec-matrix" aria-label="Secret grants">
           <thead>
             <tr>
               <th scope="col" rowSpan={2}>Secret</th>
               {groups.map((g) => <th key={g.label} scope="colgroup" colSpan={g.cols.length}>{g.label}</th>)}
             </tr>
             <tr>
-              {cols.map((c) => <th key={c.consumer} scope="col" title={c.consumer}><code>{c.name}</code></th>)}
+              {cols.map((col) => (
+                <th key={col.key} scope="col" title={col.hostSlot === null ? col.consumer.consumer : `${col.consumer.consumer}, its ${col.hostSlot} slot`}>
+                  <code>{col.consumer.name}</code>
+                  {col.hostSlot !== null && <span className="sec-sub">{col.hostSlot} · hosts</span>}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
             {data.secrets.map((s) => (
               <tr key={s.name}>
                 <th scope="row"><code>{s.name}</code></th>
-                {cols.map((c) => {
-                  const cell = cellOf(s, c)
-                  if (cell === null) return <td key={c.consumer} />
-                  const key = cellKey(s.name, c.consumer)
-                  const served = s.grants.some((g) => g.consumer === c.consumer && g.enabled)
+                {cols.map((col) => {
+                  const cell = cellAt(s, col)
+                  if (cell === null) return <td key={col.key} />
+                  const key = cellKey(s.name, col.key)
+                  const served = grantIn(s, col)?.enabled === true
                   const checked = cell.locked || (moved[key] ?? served)
-                  const why = cell.reason === null ? undefined : `${id}-${s.name}-${c.consumer}`
+                  const why = cell.reason === null ? undefined : `${id}-${s.name}-${col.key}`
+                  const label = col.hostSlot === null
+                    ? `Grant ${s.name} to ${col.consumer.consumer}`
+                    : `Grant ${s.name} to ${col.consumer.consumer} in its ${col.hostSlot} slot`
                   return (
-                    <td key={c.consumer} title={cell.title}>
+                    <td key={col.key} title={cell.title} className={col.hostSlot !== null && cell.open ? 'sec-hosted' : undefined}>
                       <input
                         type="checkbox"
-                        aria-label={`Grant ${s.name} to ${c.consumer}`}
+                        aria-label={label}
                         aria-describedby={why}
                         checked={checked}
                         disabled={!data.can_manage || !cell.open || busy[key] === true}
-                        onChange={(e) => void tick(s, c, cell, e.target.checked)}
+                        onChange={(e) => void write(s, col, cell, e.target.checked)}
                       />
                       {cell.reason !== null && <span id={why} className="jb-note"> {cell.reason}</span>}
+                      {col.hostSlot !== null && cell.open && (
+                        <HostList
+                          secret={s.name}
+                          consumer={col.consumer.consumer}
+                          slot={col.hostSlot}
+                          hosts={hostsOf(s, col)}
+                          saved={grantIn(s, col)?.hosts ?? []}
+                          on={checked}
+                          canEdit={data.can_manage && busy[key] !== true}
+                          refused={refused[key] ?? null}
+                          onEdit={(next) => edit(s, col, checked, next)}
+                          onRefuse={(words) => refuse(key, words)}
+                          onSave={() => void write(s, col, cell, true)}
+                        />
+                      )}
                     </td>
                   )
                 })}
@@ -431,6 +570,95 @@ export function GrantMatrix({ data, store, catalogue, onChange }: { data: Worksp
         ? <p className="pk-saved" role="status">{said.words}</p>
         : <Banner tone="bad" title={said.words} role="alert" />)}
     </>
+  )
+}
+
+/**
+ * A HOST-SCOPED CELL'S HOSTS: the list, each with Remove, and a field to add
+ * one. Checked as `slot_hosts` checks it, so a bad host, a duplicate or a
+ * 17th is refused here in the API's words. On an enabled grant an edit is a
+ * draft until Save writes it; on an unticked one the tick sends it. Only
+ * host names pass through here: no value is read, held or drawn.
+ */
+function HostList({
+  secret,
+  consumer,
+  slot,
+  hosts,
+  saved,
+  on,
+  canEdit,
+  refused,
+  onEdit,
+  onRefuse,
+  onSave,
+}: {
+  secret: string
+  consumer: string
+  slot: string
+  hosts: readonly string[]
+  saved: readonly string[]
+  on: boolean
+  canEdit: boolean
+  refused: string | null
+  onEdit: (next: readonly string[]) => void
+  onRefuse: (words: string) => void
+  onSave: () => void
+}) {
+  const field = useRef<HTMLInputElement>(null)
+  const what = `${secret} in ${consumer}'s ${slot} slot`
+  const changed = hosts.length !== saved.length || hosts.some((h, i) => h !== saved[i])
+  function add(e: FormEvent) {
+    e.preventDefault()
+    const input = field.current
+    if (input === null) return
+    const host = input.value.trim()
+    if (host === '') return
+    const problem = hostProblem(hosts, host)
+    if (problem !== null) {
+      onRefuse(problem)
+      return
+    }
+    input.value = ''
+    onEdit([...hosts, host].sort())
+  }
+  return (
+    <div className="sec-hosts">
+      {hosts.length === 0
+        ? <p className="jb-note">No host yet: it is sent to none.</p>
+        : (
+          <ul className="sec-hosts-list" aria-label={`Hosts for ${what}`}>
+            {hosts.map((h) => (
+              <li key={h}>
+                <code>{h}</code>
+                {canEdit && (
+                  <button type="button" className="sec-hosts-x" aria-label={`Remove ${h} from ${what}`} onClick={() => onEdit(hosts.filter((x) => x !== h))}>
+                    &times;
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      {canEdit && (
+        <form className="sec-hosts-add" aria-label={`Add a host for ${what}`} onSubmit={add}>
+          <input
+            ref={field}
+            type="text"
+            className="pk-input"
+            aria-label={`Host for ${what}`}
+            placeholder="admin.example.com"
+            autoComplete="off"
+            spellCheck={false}
+            inputMode="url"
+          />
+          <Button kind="secondary" size="sm" type="submit">Add</Button>
+          {on && changed && <Button kind="primary" size="sm" onClick={onSave}>Save hosts</Button>}
+        </form>
+      )}
+      <span className="jb-note">{hosts.length} of {MAX_SLOT_HOSTS} hosts, matched exactly</span>
+      {refused !== null && <p className="sec-hosts-bad" role="alert">{refused}</p>}
+    </div>
   )
 }
 

@@ -40,12 +40,19 @@ WHAT IS RELATED:
     other than through an App.tsx -> screen import (App.tsx, the shell, the
     sweep, spaceprobe). A changed src/styles sheet, or an App.tsx or sweep that
     does not parse, keeps every slice; spacing.test.tsx is kept with any slice.
+  * swarm-ui (node:test): any change under apps/swarm-ui/ also names the
+    package's `npm run test:node` (once), when its package.json declares that
+    script. test/*.test.mjs and tests/run.mjs run under node, not vitest, and
+    read the source tree from disk -- no-company-name.test.mjs greps every
+    file for the company's name -- so no import reaches them. CI's ui-build
+    runs them; four lanes that never did went red there (#2455).
 
 OUTPUT, one line each, tab-separated:
 
     pytest<TAB><file> <file> ...     repo-relative, at most ~PYTEST_RUN_WEIGHT CI-seconds
     vitest<TAB><file> <file> ...     relative to apps/swarm-ui, at most ~VITEST_RUN_WEIGHT CI-seconds
                                      and VITEST_FILES_PER_RUN files (a file heavier alone runs alone)
+    node<TAB><package dir>           run `npm run test:node` there; after the vitest runs
     note<TAB><text>
 
 Pure standard library, like select_unit_tests.py.
@@ -448,6 +455,15 @@ def vitest_runs(root: Path, tests: list[str]) -> list[list[str]]:
     return [sorted(files) for _, files in runs if files]
 
 
+def declares_test_node(package_dir: Path) -> bool:
+    """Whether the package.json in package_dir has a `test:node` script."""
+    try:
+        scripts = json.loads((package_dir / "package.json").read_text()).get("scripts")
+    except (OSError, ValueError, AttributeError):
+        return False
+    return isinstance(scripts, dict) and "test:node" in scripts
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--changed", required=True, help="file of changed paths, one a line")
@@ -473,6 +489,10 @@ def main(argv: list[str]) -> int:
         lines.append("pytest\t" + " ".join(run))
     for run in vitest_runs(root, ui_related(root / UI, changed_ui)):
         lines.append("vitest\t" + " ".join(run))
+    # The node:test runners read the tree from disk, so any UI change reaches
+    # them (#2455); one run, whichever and however many files changed.
+    if changed_ui and declares_test_node(root / UI):
+        lines.append(f"node\t{UI}")
     for line in lines:
         print(line)
     return 0

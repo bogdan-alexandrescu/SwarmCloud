@@ -2438,7 +2438,8 @@ submission, from the workflow's own `metadata`:
   it is a 422. Before spending a round on a red head the platform re-runs the
   failing Actions jobs once; a re-run that passes spends nothing. Each round
   appears as a step of this workflow, `ci-fix:<n>` (or `conflict-fix:<n>`
-  for a conflicting pull request, capped at 2 whatever this says), and a
+  for a conflicting pull request, capped at 2 whatever this says, or
+  `pick-fix:<n>` for an owner pick the branch did not build), and a
   round that failed does not fail a workflow whose merge then succeeded.
   The why is in
   [merge-step.md](merge-step.md#revised-2026-10-14-auto-fix-rounds-lane-speed-d2).

@@ -168,13 +168,13 @@ function stepLine(step: OnboardingStep, doc: OnboardingDoc): ReactNode {
     case 'signed_in': {
       const email = str(ev.email)
       const tenant = str(ev.tenant_id) ?? doc.tenant_id
-      return email === null ? `tenant ${tenant}` : `${email} · tenant ${tenant}`
+      return email === null ? `workspace ${tenant}` : `${email} · workspace ${tenant}`
     }
     case 'github_connected': {
       const view = connectionOf(doc)
       if (view.kind === 'app') return `connected as @${view.login ?? '?'} · GitHub App`
       if (view.kind === 'own-token') return `your own stored token${view.login !== null ? ` (@${view.login})` : ''}`
-      if (view.kind === 'tenant') return `agents act through the tenant token${view.login !== null ? ` (@${view.login})` : ''}, not as you`
+      if (view.kind === 'tenant') return `agents act through the workspace token${view.login !== null ? ` (@${view.login})` : ''}, not as you`
       return 'no GitHub account connected'
     }
     case 'app_installed': {
@@ -486,7 +486,7 @@ export function OnboardingScreen() {
               foot={
                 <>
                   Derived {d.derived_at ? timeAgo(d.derived_at) : <Dash why="The read carried no time" />} for{' '}
-                  {d.user} in tenant {d.tenant_id}.
+                  {d.user} in workspace {d.tenant_id}.
                 </>
               }
             >

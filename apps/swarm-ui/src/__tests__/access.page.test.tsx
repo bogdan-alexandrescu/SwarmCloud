@@ -952,14 +952,24 @@ describe('visual QA (VQA-L06)', () => {
     }
   })
 
-  it('V122: on a desktop the policy is the whole list, unfolded', async () => {
+  it('V122, S2b: on a desktop the policy is the checklist, every headline and short line open, how each is held one fold away', async () => {
+    // GITHUB-ACCESS-S2B (VQ-038): the three long paragraphs became S2b's
+    // right-hand checklist; the sentences stay in the page under "How".
     media(false)
     api()
     await mount()
     await policyDrawn()
     const rules = document.querySelector<HTMLElement>('.ac-rules')!
     expect(rules.classList.contains('is-folded')).toBe(false)
-    expect(rules.querySelector('details')).toBeNull()
+    expect(rules.classList.contains('is-check')).toBe(true)
+    // MUTATION: fold the headline itself behind a summary on a desktop, as the phone does.
+    expect([...rules.querySelectorAll('summary')].map((s) => s.textContent)).toEqual(['How', 'How', 'How'])
+    expect([...rules.querySelectorAll('.ac-rule-t > b')].map((b) => b.textContent)).toEqual([
+      'Read means read, and SwarmCloud enforces it.',
+      'No workflow changes.',
+      'Verifying only reads.',
+    ])
+    expect(visible(document.querySelector('[data-rule="D9"]'))).toContain('GitHub itself would let the push through')
   })
 
   it('V123: on a phone every Access control is 44px tall, and a segment or chip in a row is as wide as its words', async () => {
