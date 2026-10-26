@@ -722,3 +722,82 @@ def test_a_dry_run_says_what_it_would_review_and_writes_nothing(db, ctx, writes)
 def test_the_executor_module_declares_what_the_tick_loads() -> None:
     assert schedulefire.load_executor(ENTRY) is failure_review
     assert Path(failure_review.__file__).name == "failure_review.py"
+
+
+# ---------------------------------------------------------------------------
+# The issue's text is plain: GitHub escapes for display itself (ISSUE-WRITER,
+# part of #2391; VQ-020). #2217 was filed titled 'implement -&gt; review -&gt;
+# fix' with a Signature of '#&lt;n&gt;': GitHub stores a title as given and a
+# code span shows an entity as typed, so every surface printed the entities.
+# ---------------------------------------------------------------------------
+
+ARROWS = "An issue run compiles implement -> review -> fix gated on NOT_YET."
+ENTITIES = ("&gt;", "&lt;", "&amp;")
+
+
+def plain_cause(text: str = ARROWS, signature: str = "issue #12 refused: plan -> step 3 failed",
+                **kwargs: Any) -> dict[str, Any]:
+    item = cause(text=text, **kwargs)
+    item["fingerprint_of"]["signature"] = signature
+    return item
+
+
+def test_a_filed_issue_keeps_arrows_and_placeholders_unescaped(db, ctx, writes, monkeypatch) -> None:
+    schedule, investigator, firing = first_firing(db, ctx)
+    end(db, investigator)
+    _artifacts(monkeypatch, ctx, {investigator["id"]: rca(firing.firing["firing_id"], plain_cause(
+        fix="Gate the review on the plan -> run edge, & test it."))})
+    failure_review.create(fire(ctx, schedule, NOW + timedelta(hours=6)))
+
+    (issue,) = filed(writes)
+    # MUTATION: `neutral` (which writes `&gt;`) for the title and this is '-&gt; review -&gt;'.
+    assert issue["title"] == ARROWS
+    assert "issue #<n> refused: plan -> step <n> failed" in issue["body"]
+    assert "implement -> review -> fix" in issue["body"]
+    assert "plan -> run edge, & test it." in issue["body"]
+    for entity in ENTITIES:
+        assert entity not in issue["title"] and entity not in issue["body"]
+
+
+def _review() -> dict[str, Any]:
+    return {"schedule_id": SCHEDULE_ID, "firing_id": "f1", "tenant_id": "eng",
+            "window": {"from": "a", "to": "b"}, "refs": {}}
+
+
+def _cause(**over: Any) -> failurecauses.Cause:
+    fields: dict[str, Any] = dict(
+        fingerprint="fr-" + "0" * 12, signature="issue #<n> -> <n>", failures=("f-001",), cause=ARROWS,
+        evidence=(failurecauses.Evidence(command="rg -n '->' apps", result="a -> b"),),
+        fix="Stop escaping: a -> b.", files=("apps/x.py",), hold="none", where="platform", known=False)
+    fields.update(over)
+    return failurecauses.Cause(**fields)
+
+
+def test_the_issue_and_its_comment_carry_no_entity() -> None:
+    title, body = failure_review.render_issue(_review(), _cause(), "worker", held=False)
+    comment = failure_review.render_comment(_review(), _cause(), 1, action=failurecauses.Action.COMMENT,
+                                            record={})
+    assert title == ARROWS
+    assert "`issue #<n> -> <n>`" in body and "`rg -n '->' apps`: a -> b" in body
+    assert "`rg -n '->' apps`: a -> b" in comment
+    for text in (title, body, comment):
+        for entity in ENTITIES:
+            assert entity not in text
+
+
+def test_prose_still_cannot_open_html_and_a_code_span_still_closes() -> None:
+    """What `neutral`'s escaping was for, kept without an entity: an HTML opener
+    in prose is a Markdown backslash escape, which GitHub renders as the character;
+    a value with a backtick gets a longer fence, so it cannot leave its span."""
+    marker = failurecauses.marker("fr-" + "1" * 12)
+    _, body = failure_review.render_issue(
+        _review(), _cause(cause=f"a <details> and {marker} and <img src=x>", signature="a ` <b> c"),
+        "worker", held=False)
+    assert body.startswith(failurecauses.marker("fr-" + "0" * 12))
+    # MUTATION: write prose raw and `<details>` swallows the rest of the body.
+    assert "a \\<details> and \\<!-- failure-review" in body and "\\<img src=x>" in body
+    assert "Signature: `` a ` <b> c ``" in body
+    # A mention and a closing keyword are still neutralised.
+    _, body = failure_review.render_issue(_review(), _cause(cause="@octocat fixes #12 -> done"),
+                                          "worker", held=False)
+    assert "@octocat" not in body and "fixes #12" not in body and "-> done" in body
