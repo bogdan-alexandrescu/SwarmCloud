@@ -301,10 +301,13 @@ function rowsOf(f: ScheduleFiring, items: SpanItem[] | null, gap: string | null,
     }
     for (const t of it.tasks) {
       // A task item is named by what it is, its profile said beside it; a
-      // step of a run or a workflow by its step, its item beside it.
+      // step of a run or a workflow by its step, its item beside it. The
+      // profile goes bare, with no "on": "on claude-code · succeeded · 1
+      // attempt" is wider than the 255px --tl-labw leaves and the ellipsis
+      // ate the attempt count this line exists to give (VQ-SCHEDULES review).
       const profile = profileOf(t)
       const label = it.kind === 'task' ? name : t.label ?? t.task_id
-      const beside = it.kind === 'task' ? (profile === null ? t.label : `on ${profile}`) : short
+      const beside = it.kind === 'task' ? (profile === null ? t.label : profile) : short
       const sub = [beside, t.state?.toLowerCase().replace(/_/g, ' '), t.attempts === null ? null : attemptsWord(t.attempts.length, t.attempts_truncated === true)]
         .filter((x): x is string => x !== null && x !== undefined)
         .join(' · ')

@@ -461,7 +461,10 @@ describe('what each firing made, by name (VQ-028)', () => {
     }, WAIT)
     // MUTATION: `label = t.label ?? t.task_id` back and the lane is "claude-code".
     expect(visible(row.querySelector('.tl-lab b'))).toBe('issue-sweep task')
-    expect(visible(row.querySelector('.tl-lab small'))).toBe('on claude-code · succeeded · 1 attempt')
+    // The lane's second line is the one that fit the 255px label column
+    // before VQ-028; "on claude-code · …" ran past it and its ellipsis hid
+    // the attempt count. MUTATION: `on ${profile}` back and this fails.
+    expect(visible(row.querySelector('.tl-lab small'))).toBe('claude-code · succeeded · 1 attempt')
     const li = await waitFor(() => {
       const el = document.querySelector<HTMLElement>('[data-testid="sc-history-items"] [data-work="task:task_1"]')
       expect(el).not.toBeNull()
