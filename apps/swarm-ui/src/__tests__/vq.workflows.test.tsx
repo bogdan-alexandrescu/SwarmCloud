@@ -317,9 +317,20 @@ describe('VQ-015: one back path, by name, and Stop step', () => {
   // MUTATION: hand the card StopRun's inline `stop` again.
   it('gives the step card a Stop step button in the page head’s danger style', async () => {
     render(<Routed initial="wf=wf_chain" />)
-    const group = await screen.findByRole('group', { name: 'Stop step' })
+    // Found by selector, then by role inside it: a role query over the whole
+    // page walks every node's accessible name and ran past findBy's 1s.
+    const group = await waitFor(
+      () => {
+        const g = document.querySelector<HTMLElement>('.wf-inspect-acts[role="group"]')
+        expect(g).toBeTruthy()
+        return g!
+      },
+      { timeout: 5000 },
+    )
+    expect(group.getAttribute('aria-label')).toBe('Stop step')
     const stop = within(group).getByRole('button', { name: 'Stop step' })
-    const cancel = screen.getByRole('button', { name: 'Cancel workflow' })
+    const head = document.querySelector<HTMLElement>('.wfp:not(.is-loading) .wfp-head')!
+    const cancel = within(head).getByRole('button', { name: 'Cancel workflow' })
     // The head's Cancel workflow: the danger outline at the default size.
     expect(cancel.classList.contains('is-danger')).toBe(true)
     expect(stop.classList.contains('is-danger'), 'Stop step is not the danger outline').toBe(true)
