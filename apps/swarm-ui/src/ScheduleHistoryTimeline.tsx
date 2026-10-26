@@ -63,6 +63,8 @@ export interface SpanAttempt {
 /** One task a work item ran. `attempts` null: not read, `attempts_unread` says why. */
 export interface SpanTask {
   task_id: string
+  /** The task's `metadata.title`, null when unset (VQ-028): what the History names a schedule-made task by. */
+  title?: string | null
   step_id?: string | null
   label: string | null
   state?: Task['state']
@@ -254,12 +256,15 @@ function profileOf(t: SpanTask): string | null {
 
 /**
  * WHAT A WORK ITEM IS, IN WORDS (schedules.html detail A; VQ-028): an issue
- * run by its issue, anything else by what the firing's type made -- "docs-drift
- * task", "issue-sweep workflow". Every row was its runner profile
+ * run by its issue, a task by its title (its `metadata.title`, BGD 2026-10-26),
+ * anything else -- and a task with no title -- by what the firing's type made:
+ * "docs-drift task", "issue-sweep workflow". Every row was its runner profile
  * ("claude-code"), which named no firing apart from another.
  */
-export function itemName(it: Pick<SpanItem, 'kind' | 'id' | 'issue'>, type: string): string {
+export function itemName(it: Pick<SpanItem, 'kind' | 'id' | 'issue'> & { tasks?: SpanTask[] }, type: string): string {
   if (it.kind === 'issue_run' && it.issue) return it.issue.title === null ? `#${it.issue.number}` : `#${it.issue.number} ${it.issue.title}`
+  const title = it.kind === 'task' ? it.tasks?.[0]?.title : null
+  if (typeof title === 'string' && title.trim() !== '') return title
   if (it.kind === 'task' || it.kind === 'workflow') return `${type} ${it.kind}`
   return KIND_WORD[it.kind] ?? it.kind
 }
