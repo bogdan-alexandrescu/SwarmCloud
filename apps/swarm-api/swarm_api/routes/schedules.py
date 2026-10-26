@@ -102,12 +102,12 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 from swarm_common.admission import _snapshot
 from swarm_common.states import TERMINAL_STATES
 
-from .. import cronexpr, roles, schedulefire, schedules, scheduletypes
+from .. import approvals, cronexpr, roles, schedulefire, schedules, scheduletypes
 from ..attempt_totals import totals_for
 from ..auth import AuthContext
 from ..deps import AppContext, admin_auth, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import Conflict, NoClaudeAccount, NotFound, ValidationFailed, WorkspaceNotReady
-from ..issueruns import TERMINAL_RUN_STATES, IssueRuns, RunState
+from ..issueruns import RUNS_COLLECTION, TERMINAL_RUN_STATES, IssueRuns, RunState
 from ..repositories import COLLECTION as REPOSITORIES
 from ..repositories import Repositories, platform_of
 from ..schedules import ScheduleConflict, ScheduleForbidden, ScheduleInvalid
@@ -515,12 +515,15 @@ def schedule_to_api(doc: Mapping[str, Any], now: datetime, *, pending: int = 0,
                     live: list[Mapping[str, Any]] | None = None) -> dict[str, Any]:
     """The stored fields and what is computed on read. `live` (the schedule's
     `created` firings) is read only by the one-schedule route, which then
-    serves `budget_use`; the list does not scan each schedule's firings."""
+    serves `budget_use`; the list does not scan each schedule's firings.
+    `pending` is how many waiting approvals name the schedule (`_waiting`),
+    and `state_word` is `schedules.state_word`'s, from that same count."""
     out = _json(dict(doc))
     out["words"] = _words(doc.get("cron"))
     out["tier"] = _tier(doc)
     out["spend_today"] = _spend_today(doc, now)
     out["pending_approvals"] = pending
+    out["state_word"] = schedules.state_word(doc, waiting=pending)
     if live is not None:
         out["budget_use"] = _budget_use(doc, now, live)
     return out
@@ -528,6 +531,29 @@ def schedule_to_api(doc: Mapping[str, Any], now: datetime, *, pending: int = 0,
 
 def firing_to_api(doc: Mapping[str, Any]) -> dict[str, Any]:
     return _json({k: v for k, v in doc.items() if k not in _FIRING_PRIVATE})
+
+
+def _inbox(ctx: AppContext, tenant_id: str) -> list[dict[str, Any]] | None:
+    """The Approvals tab's own inbox (`approvals.inbox`, oldest first), so a
+    count here is the count there. None when it cannot be read: the schedules
+    are still listed, and the summary says what it could not count."""
+    try:
+        return approvals.inbox(ctx, tenant_id)
+    except Exception as exc:  # one read's failure does not blank the list
+        log.warning("schedules: the approvals inbox of %s not read: %s", tenant_id, type(exc).__name__)
+        return None
+
+
+def _waiting(items: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """Waiting approvals per schedule: every inbox item whose subject names
+    one -- a firing waiting to run, a scheduled run's plan or hold, and its
+    pull request's merge (`approvals.request`, `approvals.project_run`)."""
+    counts: dict[str, int] = {}
+    for item in items:
+        sid = (item.get("subject") or {}).get("schedule_id")
+        if sid:
+            counts[str(sid)] = counts.get(str(sid), 0) + 1
+    return counts
 
 
 def _pending(ctx: AppContext, tenant_id: str | None = None) -> dict[str, int]:
@@ -631,11 +657,18 @@ def list_schedules(
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    """The tenant's schedules, each with its `state_word`, and the `summary`
+    Automate's landing leads with (`schedules.summarize`). Both count the
+    waiting approvals from the Approvals tab's own inbox; when it cannot be
+    read, each schedule falls back to its firings waiting to run."""
     now = _now(ctx)
-    pending = _pending(ctx, tenant_id)
+    inbox = _inbox(ctx, tenant_id)
+    pending = _waiting(inbox) if inbox is not None else _pending(ctx, tenant_id)
     rows = sorted(_tenant_schedules(ctx, tenant_id), key=lambda d: str(d.get("name", "")).casefold())
+    listed = [schedule_to_api(row, now, pending=pending.get(row["schedule_id"], 0)) for row in rows]
     return {
-        "schedules": [schedule_to_api(row, now, pending=pending.get(row["schedule_id"], 0)) for row in rows],
+        "schedules": listed,
+        "summary": _json(schedules.summarize((row["state_word"] for row in listed), inbox)),
         "tenant_id": tenant_id,
     }
 
@@ -725,14 +758,19 @@ def get_schedule(
 ) -> dict:
     doc = _read(ctx, tenant_id, schedule_id)
     firings = _history(ctx, tenant_id, schedule_id, HISTORY)
-    pending = sum(1 for f in firings if f.get("state") == schedulefire.AWAITING_APPROVAL)
+    # The list's count, so the sheet's word is the list's word.
+    inbox = _inbox(ctx, tenant_id)
+    if inbox is not None:
+        pending = _waiting(inbox).get(schedule_id, 0)
+    else:
+        pending = sum(1 for f in firings if f.get("state") == schedulefire.AWAITING_APPROVAL)
     # Every `created` firing, not only those among the newest 50: a live one
     # older than the history still holds its reservation.
     live = [f for f in schedulefire.Ticker(ctx)._of_schedule(schedule_id, [schedulefire.CREATED])
             if f.get("tenant_id") == tenant_id]
     return {
         "schedule": schedule_to_api(doc, _now(ctx), pending=pending, live=live),
-        "firings": [firing_to_api(f) for f in firings],
+        "firings": _firings_api(ctx, tenant_id, firings),
     }
 
 
@@ -1148,7 +1186,7 @@ def list_firings(
 ) -> dict:
     _read(ctx, tenant_id, schedule_id)
     rows = _history(ctx, tenant_id, schedule_id, paged_limit(ctx, limit))
-    return {"firings": [firing_to_api(f) for f in rows]}
+    return {"firings": _firings_api(ctx, tenant_id, rows)}
 
 
 @router.get("/v1/schedules/{schedule_id}/firings/{firing_id}")
@@ -1166,7 +1204,7 @@ def get_firing(
     row = snap.to_dict() if snap.exists else None
     if not row or row.get("tenant_id") != tenant_id or row.get("schedule_id") != schedule_id:
         raise NotFound(f"firing {firing_id[:96]!r} not found")
-    return {"firing": firing_to_api(row)}
+    return {"firing": _firings_api(ctx, tenant_id, [row])[0]}
 
 
 #: Why an item draws a dash instead of bars, in words the UI shows as served.
@@ -1290,6 +1328,157 @@ def _item_cost(kind: str, task_ids: list[str], totals: Mapping[str, Mapping[str,
         else:
             unread = _COST_NONE_RECORDED
     return {"reported_usd": None, "unreported_attempts": unreported, "unread": unread}
+
+
+# --------------------------------------------------------------------------
+# What a firing serves beyond its document (AUTO-API-SCHEDULES, part of #2417)
+# --------------------------------------------------------------------------
+
+#: The words `issueci` stores on a run whose pull request was closed unmerged
+#: (`RunState.FAILED`, its `error`). Nothing else on the run records a close:
+#: `pull_request` keeps the last reading, and a run failed for another reason
+#: (its fix rounds spent) leaves its pull request open. A test holds these
+#: words to `issueci`'s.
+_PR_CLOSED_WORDS = "was closed without being merged"
+
+#: Why a firing's `largest_run_usd` is null, never $0.
+_LARGEST_NO_RUN = "it started no run"
+_LARGEST_PARTIAL = "a run has attempts that reported no cost, so the largest is not known"
+_LARGEST_OLDER = (f"only the newest {SPAN_FIRINGS} firings of a read are costed: "
+                  "open the firing to read its largest run")
+
+
+def _pr_state(run: Mapping[str, Any], merge_waiting: bool) -> str:
+    """`merged` once the CI loop read it merged; `waiting_on_approval` while a
+    merge approval waits at the head it was asked at; `closed` when the run
+    failed because it was closed unmerged; `open` otherwise, as last read."""
+    if (run.get("pull_request") or {}).get("merged") is True:
+        return "merged"
+    if merge_waiting:
+        return "waiting_on_approval"
+    if run.get("state") == RunState.FAILED.value and _PR_CLOSED_WORDS in str(run.get("error") or ""):
+        return "closed"
+    return "open"
+
+
+def _pull_requests(ctx: AppContext, tenant_id: str,
+                   rows: list[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    """`{number, state}` per issue run of `rows`' work that opened a pull
+    request: the runs in one batched read, the waiting merges in one more,
+    only when a run is at the merge point. A run of another tenant, missing,
+    or with no pull request is left out, and its item carries no field."""
+    run_ids = list(dict.fromkeys(
+        str(item.get("id")) for row in rows for item in row.get("work") or []
+        if item.get("kind") == "issue_run" and item.get("id")
+    ))
+    if not run_ids:
+        return {}
+    col = ctx.db.collection(RUNS_COLLECTION)
+    runs: dict[str, dict[str, Any]] = {}
+    for snap in ctx.db.get_all([col.document(i) for i in run_ids]):
+        data = snap.to_dict() if snap.exists else None
+        if data and data.get("tenant_id") == tenant_id and (data.get("pull_request") or {}).get("number"):
+            runs[str(data.get("id"))] = data
+    # `approvals._live_merge`'s rule: a merge record waits only while its run
+    # is CHECKING at the head it was asked at.
+    at_merge = {rid: str(r["pull_request"].get("head_sha")) for rid, r in runs.items()
+                if r.get("state") == RunState.CHECKING.value and r["pull_request"].get("merged") is not True}
+    waiting: set[str] = set()
+    if at_merge:
+        for doc in approvals.pending(ctx.db, tenant_id):
+            rid = str((doc.get("subject") or {}).get("run_id"))
+            if doc.get("kind") == approvals.MERGE and rid in at_merge \
+                    and (doc.get("digest") or {}).get("head_sha") == at_merge[rid]:
+                waiting.add(rid)
+    return {rid: {"number": int(r["pull_request"]["number"]), "state": _pr_state(r, rid in waiting)}
+            for rid, r in runs.items()}
+
+
+def _largest(costs: list[tuple[str, Mapping[str, Any]]]) -> tuple[float | None, str | None]:
+    """The costliest run among a firing's items, each `(kind, _item_cost)`. An
+    API action is not a run. Null with the reason when any run's cost is not
+    wholly reported: the unknown one could be the largest."""
+    runs = [cost for kind, cost in costs if kind != "api_action"]
+    if not runs:
+        return None, _LARGEST_NO_RUN
+    for cost in runs:
+        if cost.get("reported_usd") is None:
+            return None, cost.get("unread") or _COST_NONE_RECORDED
+        if cost.get("unread") or cost.get("unreported_attempts"):
+            return None, cost.get("unread") or _LARGEST_PARTIAL
+    return max(float(cost["reported_usd"]) for cost in runs), None
+
+
+def _stored_largest(row: Mapping[str, Any]) -> tuple[float | None, str | None]:
+    """What the firing's own document says, for a firing past the costed ones:
+    the tick's `cost` IS its one run's cost when it ran one task or workflow
+    and every attempt reported. (Not an issue run's: the tick sums no task of
+    an issue run into `cost`.)"""
+    work = [item for item in row.get("work") or [] if item.get("kind") != "api_action"]
+    if not work:
+        return None, _LARGEST_NO_RUN
+    cost = row.get("cost") or {}
+    if len(work) == 1 and work[0].get("kind") in ("task", "workflow") and row.get("state") == schedulefire.DONE \
+            and cost.get("reported_usd") is not None and not cost.get("unreported_attempts"):
+        return float(cost["reported_usd"]), None
+    return None, _LARGEST_OLDER
+
+
+def _largest_runs(ctx: AppContext, tenant_id: str,
+                  rows: list[Mapping[str, Any]]) -> dict[str, tuple[float | None, str | None]]:
+    """`largest_run_usd` for the newest `SPAN_FIRINGS` of `rows`, read as
+    `/spans` reads an item's cost (`_item_tasks`, `_item_cost`), within its
+    `SPAN_TASKS` cap, so the firing and its spans cannot disagree."""
+    budget = SPAN_TASKS
+    plan: dict[str, list[tuple[str, str | None, list[str]]] | None] = {}
+    every: list[str] = []
+    for row in rows[:SPAN_FIRINGS]:
+        items: list[tuple[str, str | None, list[str]]] | None = []
+        for item in row.get("work") or []:
+            kind = str(item.get("kind"))
+            if kind == "api_action":
+                items.append((kind, None, []))
+                continue
+            pairs, facts = _item_tasks(ctx, tenant_id, item) if budget > 0 else ([], {})
+            if budget <= 0 or len(pairs) > budget:
+                items = None
+                break
+            budget -= len(pairs)
+            ids = [t for t, _ in pairs]
+            every.extend(ids)
+            items.append((kind, facts.get("unread") or (None if ids else "it ran no task yet"), ids))
+        plan[str(row.get("firing_id"))] = items
+    tasks = ctx.store.tasks_by_id(tenant_id, every) if every else {}
+    live = {t for t, task in tasks.items() if task.state not in TERMINAL_STATES}
+    found = [t for t in every if t in tasks]
+    totals = totals_for(ctx.db, tenant_id, found) if found else {}
+    out: dict[str, tuple[float | None, str | None]] = {}
+    for fid, items in plan.items():
+        if items is None:
+            out[fid] = (None, _UNREAD_CAP)
+            continue
+        out[fid] = _largest([(kind, _item_cost(kind, ids, totals, live, None if ids else unread))
+                             for kind, unread, ids in items])
+    return out
+
+
+def _firings_api(ctx: AppContext, tenant_id: str, rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Firings as served: `firing_to_api`, each issue-run work item that
+    opened a pull request with its `pull_request`, and `largest_run_usd`
+    with `largest_run_unread` saying why when it is null."""
+    prs = _pull_requests(ctx, tenant_id, rows)
+    largest = _largest_runs(ctx, tenant_id, rows)
+    out = []
+    for row in rows:
+        shown = firing_to_api(row)
+        for item in shown.get("work") or []:
+            if item.get("kind") == "issue_run" and str(item.get("id")) in prs:
+                item["pull_request"] = prs[str(item.get("id"))]
+        usd, unread = largest.get(str(row.get("firing_id"))) or _stored_largest(row)
+        shown["largest_run_usd"] = usd
+        shown["largest_run_unread"] = unread
+        out.append(shown)
+    return out
 
 
 @router.get("/v1/schedules/{schedule_id}/spans")
