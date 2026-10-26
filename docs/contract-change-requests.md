@@ -14466,8 +14466,8 @@ integer, never a spec. **1-8** are untouched.
 
 ## 117. `profiles.py`: a `cf-access` secret slot on `claude-code-browser` (CF-ACCESS-TOKEN, part of #2442)
 
-**Status:** ACCEPTED 2026-10-26 by BGD (filed by lane CF-ACCESS-TOKEN as 116
-and renumbered, since QA-TRIPWIRE-MAC took 116 on main first). APPLIED by lane
+**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (filed by lane CF-ACCESS-TOKEN
+as 116 and renumbered, since QA-TRIPWIRE-MAC took 116 on main first). APPLIED by lane
 CF-ACCESS-CONTRACT (part of #2442), in the pull request that rewrote row 117
 of the index above: `_CF_ACCESS_SLOT` in `profiles.py`, worded as below, and
 `claude-code-browser`'s `secret_slots` is `{"files": _FILES_SLOT,
