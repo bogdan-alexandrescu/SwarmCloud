@@ -631,6 +631,21 @@ describe('members (Access B, on People and roles)', () => {
     expect(visible(rows[2]!)).toContain('not started')
   })
 
+  it('an empty member list names the workspace, not the tenant (VQ-056, TENANT-WORDING-C)', async () => {
+    // MUTATION: put back "Nobody in tenant {d.tenant_id}" in WorkspacePeople.tsx.
+    api((m, url) => (m === 'GET' && url === '/v1/access/members' ? { status: 200, body: { tenant_id: 'eng', members: [] } } : null))
+    await mountMembers()
+    await waitFor(() => expect(visible(document.querySelector('.ac-members'))).toContain('Nobody in workspace eng has connected GitHub'))
+    expect(visible(document.querySelector('.ac-members'))).not.toMatch(/tenant/i)
+  })
+
+  it('a members route this API does not serve says the workspace\'s members, not the tenant\'s (VQ-056)', async () => {
+    // MUTATION: put back `what="The tenant's members"` in WorkspacePeople.tsx.
+    api((m, url) => (m === 'GET' && url === '/v1/access/members' ? { status: 501, body: { detail: 'Not Implemented' } } : null))
+    await mountMembers()
+    await waitFor(() => expect(visible(document.querySelector('.ac-members'))).toContain("The workspace's members are not served by this API yet"))
+  })
+
   it('tells a non-admin the view is for admins', async () => {
     api((m, url) => (m === 'GET' && url === '/v1/access/members' ? { status: 403, body: { code: 'admin_required', message: "the tenant's members view is for admins" } } : null))
     await mountMembers()
