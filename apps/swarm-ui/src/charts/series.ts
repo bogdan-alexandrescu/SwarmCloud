@@ -18,11 +18,14 @@
 // repository that imports a charting library, and it imports this one for
 // every decision that is about the DATA rather than about pixels.
 
+import { currentZone, formatClock, formatDateTime, startOfDay, zoneLabel } from '../timezone'
+
 /**
  * One point of a series.
  *
  * `at` is a position in milliseconds on the chart's time axis: an epoch
- * instant for `TimeSeries`, whose axis is wall-clock UTC, or milliseconds
+ * instant for `TimeSeries`, whose axis is drawn in UTC (`clockTicks`
+ * below is what puts an axis on the person's zone instead), or milliseconds
  * since a stated origin for a T+n chart (`PeakMemory.tsx` measures from the
  * attempt's `started_at`, and says so on its axis). It is present on BOTH
  * arms on purpose: when a cost was not reported, the *time* of the attempt is
@@ -260,4 +263,110 @@ export function stepAfter(points: readonly ChartPoint[]): ChartPoint[] {
     }
   })
   return out
+}
+
+// ---------------------------------------------------------------------------
+// The time axis, on the person's clock
+// ---------------------------------------------------------------------------
+
+/**
+ * THE TIME AXIS'S TICKS AND THEIR WORDS FOLLOW THE PERSON'S ZONE (VQ-023,
+ * owner decision 2026-10-26, "A per-person setting"; lane TIMEZONE-SHARED,
+ * part of #2391), UTC until they pick one. Lanes placed its ticks on the
+ * browser's own clock, unlabelled, while Overview counted its day in UTC: an
+ * hour tick and "today" could be in two zones on one screen. Every axis that
+ * names a time of day takes its ticks from `clockTicks`, its words from
+ * `clockTickText` and its one zone label from `axisZone`, all through
+ * `timezone.ts`, so it cannot drift from the zone the rest of the page uses.
+ *
+ * A DAY TICK IS THE ZONE'S MIDNIGHT (`startOfDay`), not 00:00 UTC: in Los
+ * Angeles "Oct 26" sits at 07:00Z, where the person's Oct 26 begins.
+ */
+const MIN = 60_000
+const HOUR = 3_600_000
+const DAY = 86_400_000
+
+/** Every tick step an axis may use, each one a divisor of a day or a whole number of days. */
+export const CLOCK_STEPS: readonly number[] = [
+  MIN, 2 * MIN, 5 * MIN, 10 * MIN, 15 * MIN, 30 * MIN,
+  HOUR, 2 * HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR,
+  DAY, 2 * DAY, 7 * DAY, 14 * DAY, 30 * DAY,
+]
+
+/** Minutes since the zone's midnight on its wall clock: `formatClock`'s "HH:MM", read back. */
+function wallMinutes(t: number, z: string): number {
+  const hm = formatClock(t, z).slice(0, 5)
+  return Number(hm.slice(0, 2)) * 60 + Number(hm.slice(3, 5))
+}
+
+/** The zone's next midnight after the one at `day`: 36 hours on lands inside the next date whatever its length. */
+const nextDay = (day: number, z: string) => startOfDay(day + 36 * HOUR, z)
+
+/**
+ * Ticks on `z`'s wall clock across [since, until), at most about `most` of
+ * them: the first of `steps` that fits.
+ *
+ * Inside a day a tick is a whole multiple of the step from the zone's
+ * midnight ("09:00", never "09:17"), checked on the wall clock, so on the day
+ * summer time starts or ends the ticks stay on round hours and a wall time
+ * the day skips is not drawn. A step of days puts every tick on a midnight of
+ * the zone, counted from the zone's first day of 1970 so the same day is a
+ * tick whatever window it is seen in.
+ */
+export function clockTicks(
+  since: number,
+  until: number,
+  most: number,
+  z: string = currentZone(),
+  steps: readonly number[] = CLOCK_STEPS,
+): number[] {
+  const width = until - since
+  if (!(width > 0) || steps.length === 0) return []
+  const step = steps.find((s) => width / s <= most) ?? steps[steps.length - 1]!
+  const out: number[] = []
+  if (step < DAY) {
+    const per = step / MIN
+    for (let day = startOfDay(since, z); day < until; day = nextDay(day, z)) {
+      const end = nextDay(day, z)
+      // Only the steps near the window: a summer-time change moves a tick by an hour at most.
+      const from = Math.max(0, Math.floor((since - day - HOUR) / step))
+      for (let k = from; k * per < 1440 && day + k * step - HOUR < until; k += 1) {
+        const want = k * per
+        // Measured from midnight, then moved by however far the wall clock disagrees (an hour, on a change day).
+        let t = day + k * step
+        const drift = (want - wallMinutes(t, z) + 1440 + 720) % 1440 - 720
+        t += drift * MIN
+        if (t < day || t >= end || wallMinutes(t, z) !== want) continue
+        if (t >= since && t < until && t !== out[out.length - 1]) out.push(t)
+      }
+    }
+    return out
+  }
+  const n = Math.round(step / DAY)
+  const origin = startOfDay(12 * HOUR, z)
+  let day = startOfDay(since, z)
+  if (day < since) day = nextDay(day, z)
+  // To the first midnight whose day number is a multiple of n, then n days at a time.
+  const lag = ((Math.round((day - origin) / DAY) % n) + n) % n
+  if (lag !== 0) day = startOfDay(day + (n - lag) * DAY + 12 * HOUR, z)
+  for (; day < until; day = startOfDay(day + n * DAY + 12 * HOUR, z)) out.push(day)
+  return out
+}
+
+/**
+ * A tick's words on `z`'s clock, without the zone (the axis says it once,
+ * `axisZone`): its date ("Oct 26") when the ticks are a day or more apart or
+ * it sits on the zone's midnight, its hour ("09:00") otherwise.
+ */
+export function clockTickText(t: number, ticks: readonly number[], z: string = currentZone()): string {
+  const daily = ticks.length > 1 && ticks[1]! - ticks[0]! >= 23 * HOUR
+  if (daily || startOfDay(t, z) === t) return formatDateTime(t, z).split(' ').slice(0, 2).join(' ')
+  return formatClock(t, z).slice(0, 5)
+}
+
+/** The zone an axis over [since, until] is drawn in: "PDT", or "PDT–PST" across a change. */
+export function axisZone(since: number, until: number, z: string = currentZone()): string {
+  const a = zoneLabel(since, z)
+  const b = zoneLabel(until, z)
+  return a === b ? a : `${a}–${b}`
 }

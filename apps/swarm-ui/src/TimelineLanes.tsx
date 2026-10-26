@@ -58,6 +58,7 @@ import {
   PILL_MIN_PX,
   attemptWord,
   axisTicks,
+  axisTickText,
   buildLane,
   filterLanes,
   groupLanes,
@@ -223,15 +224,11 @@ export function axisLabels(
   nowAt: number,
   trackPx: number | null = null,
 ): { t: number; pct: number; label: string }[] {
+  // On the person's clock, ticks and words alike (`lanes.ts`, VQ-023).
   const ticks = axisTicks(since, until)
-  const daily = ticks.length > 1 && ticks[1]! - ticks[0]! >= 23 * 3_600_000
   const nowShown = until >= nowAt - 60_000
   const placed = ticks
-    .map((t) => {
-      const d = new Date(t)
-      const midnight = d.getHours() === 0 && d.getMinutes() === 0
-      return { t, pct: pct(t, since, until), label: daily || midnight ? DAY.format(t) : CLOCK.format(t) }
-    })
+    .map((t) => ({ t, pct: pct(t, since, until), label: axisTickText(t, ticks) }))
     .filter((x) => !(nowShown && x.pct > 100 - NOW_GAP_PCT))
   if (trackPx === null || !(trackPx > 0)) return placed
   const limit = nowShown ? trackPx - NOW_LABEL_PX - VALUE_LABEL_GAP_PX : trackPx

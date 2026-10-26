@@ -136,7 +136,7 @@ describe('D4: a day tick says its date', () => {
   }
 
   it('labels hours inside a day, and a midnight tick inside a day by its date', () => {
-    const midnight = new Date(2026, 9, 2, 0, 0, 0).getTime()
+    const midnight = Date.UTC(2026, 9, 2) // UTC: the zone setting's default
     const labels = axisLabels(midnight - 12 * HOUR, midnight + 11 * HOUR, 0).map((l) => l.label)
     expect(labels).toContain('Oct 2')
     expect(labels.filter((l) => /^\d\d:\d\d$/.test(l)).length).toBeGreaterThanOrEqual(2)
@@ -147,7 +147,7 @@ describe('D5: the last tick never overprints now', () => {
   it('drops a tick that sits within the now label of the right edge', () => {
     // A 24h window whose end lands 30 minutes after a 3-hour tick: the owner's
     // "18:00" 10px left of "now".
-    const until = new Date(2026, 9, 3, 18, 30, 0).getTime()
+    const until = Date.UTC(2026, 9, 3, 18, 30) // on the default zone's clock, UTC
     const ticks = axisLabels(until - DAY, until, until)
     expect(ticks.length).toBeGreaterThanOrEqual(3)
     for (const t of ticks) expect(t.pct, `${t.label} at ${t.pct.toFixed(1)}%`).toBeLessThanOrEqual(94)
