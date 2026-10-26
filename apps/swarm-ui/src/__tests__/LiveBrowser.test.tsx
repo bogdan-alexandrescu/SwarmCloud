@@ -345,13 +345,19 @@ describe('the Browser tab follows Details for a running browser agent', () => {
     expect(tabs().map(label)).not.toContain('Browser')
   })
 
-  it('does not ask a finished agent for a live session at all', async () => {
+  // A FINISHED BROWSER AGENT KEEPS ITS TAB (BROWSER-TAB-TABS, BT-007, #2423,
+  // 2026-10-26): the tab was drawn only on `/browser`, so leaving it took
+  // Browser off the strip and out of More, with no way back but the address.
+  // The runner names a browser agent; the session is still not read here.
+  it('does not ask a finished agent for a live session at all, and keeps its Browser tab, second', async () => {
     api.loadTask.mockResolvedValue(ok(agent({ state: 'SUCCEEDED', completed_at: new Date().toISOString() })))
     api.loadLiveSession.mockResolvedValue(ok<LiveRead>({ live_browser: true, session: session() }))
     render(<Routed onGo={() => {}} />)
     await waitFor(() => expect(label(tabs()[0]!)).toBe('Details'))
     expect(api.loadLiveSession).not.toHaveBeenCalled()
-    expect(tabs().map(label)).not.toContain('Browser')
+    // MUTATION: draw the tab only on `/browser` (or while the session is read) and it is gone here.
+    expect(label(tabs()[1]!)).toBe('Browser')
+    expect(tabs()[0]!.getAttribute('aria-selected')).toBe('true')
   })
 })
 

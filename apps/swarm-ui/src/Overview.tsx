@@ -16,6 +16,7 @@ import {
   type StateRead,
 } from './OverviewRegions'
 import { addressToPath } from './paths'
+import { OverviewCounts, type PanelCount } from './Spine'
 import { accountName } from './accountName'
 import { HUMAN_PARK_MAX_MS, HandoffBanner, handoffOf, needsYou } from './Handoff'
 import { LiveControl } from './LiveBrowser'
@@ -36,7 +37,7 @@ import {
   type LiveSession,
   type SpendRollup,
 } from './api'
-import { PHONE_PAGE_LIMIT, agentKind, shortTaskId } from './agentlist'
+import { PHONE_PAGE_LIMIT, agentKind, agentName, shortTaskId } from './agentlist'
 import { totalCostCell, totalCostOf } from './dag'
 import { usd } from './measure'
 import { blindness, deriveChecks, type Check, type Problem } from './checks'
@@ -46,10 +47,12 @@ import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { Button, Dash, NamedMark, Skeleton, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
 import { Absent, Mark } from './primitives'
 import { disabledSentence } from './ProfileMatrix'
+import { parkWord } from './words'
 import { AGED_AFTER_MS, CountNote, PageHead, RefreshControl, staleFoot, timeAgo, useClaimPageAge, useIdleStop, usePoll } from './Shell'
 import { AGE_TICK_MS, PageClock, usePageClock, useNow as useAgeClock } from './useNow'
 import {
   CONCURRENCY_STATES,
+  PARK_REASONS,
   ageSpan,
   bindingWindow,
   formatDuration,
@@ -187,14 +190,19 @@ export function OverviewScreen({ setup, waitingOnYou }: { setup?: ReactNode; wai
   // `Date.now()` is taken here and the dependencies are the reads, not a
   // clock: re-deriving on a ticking clock would re-render every card once a
   // second to move a threshold that is twelve minutes wide.
-  const checks = useMemo(
-    () =>
-      deriveChecks(
-        { capacity, tasks, leases, providers, accounts, workflows, stats, phonePage: phoneWidth() },
-        Date.now(),
-      ),
-    [capacity, tasks, leases, providers, accounts, workflows, stats],
-  )
+  //
+  // ONE INSTANT FOR THE CHECKS AND RECENT FAILURES (visual QA VQ-005,
+  // 2026-10-26): the failure check counted its 24 hours from the instant of
+  // this derivation and Recent failures from each render's own clock, so a
+  // failure crossing the 24-hour edge between the two read 68 above and 67
+  // below. Both count from `checkedAt`.
+  const { checks, checkedAt } = useMemo(() => {
+    const at = Date.now()
+    return {
+      checks: deriveChecks({ capacity, tasks, leases, providers, accounts, workflows, stats, phonePage: phoneWidth() }, at),
+      checkedAt: at,
+    }
+  }, [capacity, tasks, leases, providers, accounts, workflows, stats])
   // The newest reading behind this screen, for the head's one age (#98).
   const newest = reads.reduce<number | null>((m, r) => {
     const at = ageOf(r)
@@ -215,14 +223,30 @@ export function OverviewScreen({ setup, waitingOnYou }: { setup?: ReactNode; wai
   const waiting = page === null ? null : waitGroups(page)
   const read = dataOf(tasks)
   const ended = read === null ? null : stateView(read, ENDED_BADLY)
-  const failures = ended === null ? null : failuresOf(ended.rows, Date.now(), ended)
+  const failures = ended === null ? null : failuresOf(ended.rows, checkedAt, ended)
   const spent = dataOf(spend)
+  // THE PANEL'S "ON THIS PAGE" COUNTS (visual QA VQ-007, part of #2391): the
+  // same sums the cards below draw, handed to the shell (`OverviewCounts`).
+  const holding = read === null ? null : stateView(read, HOLDING)
+  const jumpCounts: Record<string, PanelCount> = {}
+  if (!checks.some((c) => c.status === 'reading')) {
+    jumpCounts['ov-needs'] = { n: checks.reduce((n, c) => n + (c.status === 'found' ? c.problems.length : 0), 0), why: 'problems the checks found' }
+  }
+  if (holding !== null) {
+    const whole = HOLDING.every((s) => holding.whole(s))
+    jumpCounts['ov-running'] = { n: holding.rows.length, why: 'agents holding capacity', ...(whole ? {} : { text: `≥${holding.rows.length}` }) }
+  }
+  if (waiting !== null) jumpCounts['ov-waiting'] = { n: waiting.reduce((n, g) => n + g.n, 0), why: 'agents waiting; none cost anything' }
+  if (failures !== null) {
+    jumpCounts['ov-failures'] = { n: failures.rows.length, why: `recent failures: ${failures.note}`, ...(failures.partial ? { text: `≥${failures.rows.length}` } : {}) }
+  }
 
   return (
     // THE HEAD'S CLOCK IS EVERY FOOT'S (#98): a stale foot below and the
     // refresh control above read the same instant, so they cannot disagree.
     <PageClock.Provider value={clock}>
     <div className="ov-page">
+      <OverviewCounts counts={jumpCounts} />
       {/* TITLE LEFT, ACTIONS RIGHT, NOTHING UNDER IT (#138, owner ruling
           2026-10-07): the title and the section's `?`, and on the right the
           quiet refresh carrying this screen's one ticking age and its
@@ -261,13 +285,13 @@ export function OverviewScreen({ setup, waitingOnYou }: { setup?: ReactNode; wai
       <CountNote>
         <span className="ov-scope">
           {tasks.status === 'loading' ? (
-            <span className="ov-reading">tenant reading…</span>
+            <span className="ov-reading">workspace reading…</span>
           ) : tenant === null ? (
             <>
-              tenant <i className="ctl-em" title="No read carried a tenant id: not the agent list, the account pool or the capacity read.">&mdash;</i>
+              workspace <i className="ctl-em" title="No read carried a workspace id: not the agent list, the account pool or the capacity read.">&mdash;</i>
             </>
           ) : (
-            `tenant ${tenant}`
+            `workspace ${tenant}`
           )}
           <span className="ov-sep">{' · '}</span>
         </span>
@@ -303,11 +327,12 @@ export function OverviewScreen({ setup, waitingOnYou }: { setup?: ReactNode; wai
           2026-10-04). As two rows of two, each row was as tall as its taller
           card, and the shorter one's column was blank beside it: ~157px
           beside Cost so far and ~388px beside Headroom. Each column now
-          stacks its own cards at their own heights -- Running now, Waiting
-          and Recent failures on the left, Recent token cost and Headroom on the
-          right -- so a short card is followed by the next card in its
-          column, not by blank. The pools stay a full-width row under both
-          (N17). On a narrower screen it is one column in O1's order. */}
+          stacks its own cards at their own heights -- Running now and
+          Waiting on the left, Recent token cost and Headroom on the right --
+          so a short card is followed by the next card in its column, not by
+          blank. Recent failures (VQ-006) and the pools (N17) are full-width
+          rows under both. On a narrower screen it is one column in O1's
+          order. */}
       <div className="ov-g21 ov-cols">
         <div className="ov-col">
           <section className="ctl-card ov-card ov-running" id="ov-running">
@@ -321,18 +346,6 @@ export function OverviewScreen({ setup, waitingOnYou }: { setup?: ReactNode; wai
               cta="All waiting"
             />
             <WaitingWhy tasks={tasks} />
-          </section>
-          <section className="ctl-card ov-card ov-failures" id="ov-failures">
-            <CardHead
-              title="Recent failures"
-              note={failures === null ? undefined : failures.note}
-              // THE WHOLE RECENT TAB (QA G1-10, 2026-10-07): the card lists
-              // failed, dead-lettered and cancelled rows, and `?state=` takes
-              // one state, so the failed filter dropped half of what it listed.
-              href="/agents/recent"
-              cta="All recent"
-            />
-            <RecentFailures tasks={tasks} />
           </section>
         </div>
         <div className="ov-col">
@@ -355,6 +368,25 @@ export function OverviewScreen({ setup, waitingOnYou }: { setup?: ReactNode; wai
             <HeadroomBody capacity={capacity} accounts={accounts} />
           </section>
         </div>
+
+        {/* RECENT FAILURES IS A FULL-WIDTH ROW UNDER BOTH COLUMNS (visual QA
+            VQ-006, 2026-10-26; O1 draws it so). At the foot of the left
+            column it left the right one blank under Headroom for the whole
+            list, about 550px at 1512. It comes before the pools for the
+            reason G1-07 put it before them on a phone: it is the card a
+            reader acts on, and the pools can be dozens of rows. */}
+        <section className="ctl-card ov-card ov-failures" id="ov-failures">
+          <CardHead
+            title="Recent failures"
+            note={failures === null ? undefined : failures.note}
+            // THE WHOLE RECENT TAB (QA G1-10, 2026-10-07): the card lists
+            // failed, dead-lettered and cancelled rows, and `?state=` takes
+            // one state, so the failed filter dropped half of what it listed.
+            href="/agents/recent"
+            cta="All recent"
+          />
+          <RecentFailures tasks={tasks} now={checkedAt} />
+        </section>
 
         {/* THE POOLS ARE THEIR OWN FULL-WIDTH ROW (browser QA N17, 2026-10-04):
             under Headroom, a long pool list made that card ~1100px taller than
@@ -883,7 +915,7 @@ function NeedsALook({ checks }: { checks: Check[] }) {
   const clear = checks.filter((c): c is Extract<Check, { status: 'clear' }> => c.status === 'clear')
   const found = checks.filter((c) => c.status === 'found').length
   const ran = clear.length + found
-  const blindSay = blind.map((c) => `${c.label.toLowerCase()} — ${c.why}`).join('; ')
+  const blindSay = parkProse(blind.map((c) => `${c.label.toLowerCase()} — ${c.why}`).join('; '))
   // Read once a mount, so a poll's redraw does not change what is held.
   const [held] = useState(needsRoom)
   const settled = reading.length === 0
@@ -900,22 +932,23 @@ function NeedsALook({ checks }: { checks: Check[] }) {
           aria-label={
             `${ran} of ${checks.length} checks ran and found ${problems.length} ${problems.length === 1 ? 'problem' : 'problems'}.` +
             (blind.length > 0 ? ` ${blind.length} could not run, so this row is incomplete: ${blindSay}` : '') +
-            (clear.length > 0 ? ` Clear: ${clear.map((c) => `${c.label.toLowerCase()} — ${c.note}`).join('; ')}` : '') +
+            (clear.length > 0 ? ` Clear: ${clear.map((c) => `${c.label.toLowerCase()} — ${parkProse(c.note)}`).join('; ')}` : '') +
             // WHERE THE CHECKS COME FROM, AND WHAT THIS IS NOT -- derived from
             // the checks themselves, so a seventh cannot go unnamed.
             ` Derived on every read from ${sourceList(checks)}. Nothing stores, routes or acknowledges an alert on this platform, so this is not an inbox.`
           }
         >
-          {/* THE LEAD FRACTION, LABELLED (#98, owner ruling 2026-10-07):
-              `checks 8/8` is how many of the checks ran, so it cannot be
-              read as the reads tally or as a count of problems.
-              THE PROBLEMS ARE COUNTED TOO (visual QA QA-013, 2026-10-20):
-              "6 found something" sat over ten cards, one per problem, and
-              read as the card count. The checks that fired are still the
-              figure; the problems they found, one card each, follow it. */}
+          {/* ONE COUNT, THEN WHAT IT IS OVER (visual QA VQ-004, 2026-10-26;
+              O1's "3 checks of 11 · derived on this read"). The head read
+              "checks 8/8 · 3 found 3 problems": two figures for one fact,
+              in a sentence that did not parse. The problems -- one card
+              each (QA-013, 2026-10-20) -- are the figure; the checks that
+              ran follow it, labelled as checks and as a share of all of
+              them (#98, owner ruling 2026-10-07), so neither is read as the
+              reads tally. Which checks fired is the accessible name's. */}
           {reading.length > 0
             ? `${reading.length} of ${checks.length} checks still reading`
-            : `checks ${ran}/${checks.length} · ${found} found ${problems.length} ${problems.length === 1 ? 'problem' : 'problems'}`}
+            : `${problems.length} ${problems.length === 1 ? 'problem' : 'problems'} · ${ran} of ${checks.length} checks ran`}
           {blind.length > 0 && (
             <span className={blind.every((c) => c.admin) ? 'ov-info' : 'ov-warn'}> · {blind.length} blind</span>
           )}
@@ -1180,7 +1213,13 @@ function HandoffTakeControl({ taskId }: { taskId: string }) {
  * card's last line, clamped to four at every width (overview-automate-010),
  * and its whole text is the title.
  */
-export function CheckCard({ problem: p }: { problem: Problem }) {
+export function CheckCard({ problem }: { problem: Problem }) {
+  // A PARK REASON IS A WORD (visual QA VQ-003, 2026-10-26): the parked
+  // checks' detail read "CI_PENDING ×2 — Waiting for the pull request
+  // checks…". `checks.ts` keeps the reason token, because the node-run check
+  // tests read it and that module may not import the pill's words; the card
+  // prints the pill's word for it.
+  const p: Problem = { ...problem, headline: parkProse(problem.headline), detail: parkProse(problem.detail) }
   // A SHORT TITLE, THEN TWO LINES OF REGULAR TEXT (visual QA Q5, 2026-10-02;
   // O1's check card). The headline's first clause is the title; the clauses
   // after it -- the age, the workflow and worker ids -- are the second line,
@@ -1235,7 +1274,7 @@ export function CheckCard({ problem: p }: { problem: Problem }) {
             </a>
           ))}
           <a className="ov-att-go" href={toPath(p.href)} aria-label={`${go}: ${p.headline}. ${p.detail}`}>
-            {go} &rarr;
+            <span className="ov-att-go-w">{go}</span> &rarr;
           </a>
         </span>
       </div>
@@ -1255,7 +1294,12 @@ export function CheckCard({ problem: p }: { problem: Problem }) {
           {detail}
         </small>
       </span>
-      <span className="ov-att-go">{p.linkLabel ?? 'Open'} &rarr;</span>
+      {/* THE WORDS ARE THEIR OWN SPAN (visual QA VQ-002, 2026-10-26): a
+          phone draws the card as one line, mark, title and the arrow, and
+          steps the words aside; the card's accessible name keeps them. */}
+      <span className="ov-att-go">
+        <span className="ov-att-go-w">{p.linkLabel ?? 'Open'}</span> &rarr;
+      </span>
     </a>
   )
 }
@@ -1298,6 +1342,18 @@ export function toPath(href: string): string {
   return href.startsWith('#') ? addressToPath(href.slice(1)) : href
 }
 
+/**
+ * Every park reason a check's sentence names, as the parked pill says it
+ * (`parkWord`): "CI_PENDING ×2" reads "waiting for CI ×2". Only the reasons
+ * this build knows are worded; an unknown one stays as written, which is what
+ * makes a reason newer than the bundle visible (`reasonCopy`'s rule).
+ */
+const PARK_TOKEN = new RegExp(`\\b(${PARK_REASONS.join('|')})\\b`, 'g')
+
+export function parkProse(text: string): string {
+  return text.replace(PARK_TOKEN, (r) => parkWord(r))
+}
+
 /** ` — ` with a no-break space before the dash, so the dash cannot open a line. */
 export function keepDash(text: string): string {
   return text.replace(/ — /g, '\u00a0— ')
@@ -1331,7 +1387,7 @@ function BadMark() {
  */
 function bindingLabel(name: string, tenant: string | undefined): string {
   if (tenant) {
-    if (name === `tenant:${tenant}`) return 'your tenant'
+    if (name === `tenant:${tenant}`) return 'your workspace'
     const own = name.endsWith(`:tenant:${tenant}`)
     if (own) return poolLabel(name.slice(0, -`:tenant:${tenant}`.length))
   }
@@ -1434,7 +1490,7 @@ function CapacityStacks({ state }: { state: Result<Capacity> }) {
               pools · tenant eng" read as thirty pools of eng's, over a list
               an admin reads with every tenant's pools in it. */}
           <span>{countOf(cap.pools.length, 'pool')} read</span>
-          <span>{tenant === undefined ? 'no tenant pool read' : `profiles as tenant ${tenant}`}</span>
+          <span>{tenant === undefined ? 'no workspace pool read' : `profiles as workspace ${tenant}`}</span>
           {footFor(state, 'not read', now) !== null && <span>{footFor(state, 'not read', now)}</span>}
         </FootRun>
       </p>
@@ -1877,7 +1933,7 @@ function RunningCard({
         <CardAbsent
           kind="zero"
           heading="No agent exists"
-          say="The read succeeded: this tenant has no agents."
+          say="The read succeeded: this workspace has no agents."
           explain="absent-vs-zero"
         />
       </>
@@ -1915,8 +1971,8 @@ function RunningCard({
           heading="Nothing running"
           say={
             (whole && (page.next_page_token ?? null) !== null
-              ? 'No agent is in LEASED, DISPATCHED, STARTING or RUNNING: each of those states was read on its own. '
-              : `No agent on the ${page.tasks.length} most recently created is in LEASED, DISPATCHED, STARTING or RUNNING. `) +
+              ? 'No agent is leased, dispatched, starting or running: each of those states was read on its own. '
+              : `No agent on the ${page.tasks.length} most recently created is leased, dispatched, starting or running. `) +
             (counted === null
               ? 'The exact count could not be read, so this is the page’s answer rather than the platform’s.'
               : counted === 0
@@ -2004,8 +2060,22 @@ function PhoneRunRow({ task: t, title, leasedAt }: { task: Task; title: string |
     <li>
       <StateMark state={t.state} />
       <span className="ov-prun-m">
+        {/* ONE LINE, AND THE STEP IS THE PART KEPT (visual QA VQ-002,
+            2026-10-26; O1's 390 frame, "Fix flaky lease heartbeat … 18m").
+            Wrapped whole (ffp-002, 2026-10-21) a long title took three or
+            four lines and the card showed about three agents a screen. Cut
+            at the end, as ffp-002 found, every step of one workflow read
+            "<its title> · sc…" alike. So the workflow's title gives way with
+            an ellipsis and the step after it does not; whole in the title. */}
         <a className="ov-prun-n" href={agentPath(t)} title={`${rowLabel(t, title)} · ${t.id}`}>
-          {rowLabel(t, title)}
+          {title === null ? (
+            <span className="ov-prun-t">{agentName(t)}</span>
+          ) : (
+            <>
+              <span className="ov-prun-t">{title}</span>
+              <span className="ov-prun-s">{` · ${agentName(t)}`}</span>
+            </>
+          )}
         </a>
         {/* THE SECOND LINE IS THE DESKTOP'S STATE AND PROFILE COLUMNS
             (QA G1-08, 2026-10-07): a dot and "implement" twice could
@@ -2672,7 +2742,7 @@ function absenceSentence(
     parts.push(`${notServing.join(', ')} not serving`)
   }
   if (skipped.length > 0) {
-    parts.push(`${skipped.join(', ')} ${skipped.length === 1 ? 'is' : 'are'} being skipped by the pool for this tenant`)
+    parts.push(`${skipped.join(', ')} ${skipped.length === 1 ? 'is' : 'are'} being skipped by the pool for this workspace`)
   }
   // Only reachable with every list empty when the caller has a figure, and
   // that caller words it itself; this is the honest fallback either way.

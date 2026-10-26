@@ -173,7 +173,7 @@ describe('5b:QA-007: each pane tab’s accessible name holds its visible text, i
   it('in More: an item’s text is in its name too', () => {
     room = 358
     bar(failed())
-    fireEvent.click(screen.getByRole('button', { name: /^\d+ more: / }))
+    fireEvent.click(screen.getByRole('button', { name: /^More \d+ tabs: / }))
     const menu = screen.getByRole('group', { name: 'More agent panes' })
     const items = within(menu)
       .getAllByRole('button')

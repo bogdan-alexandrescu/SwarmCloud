@@ -328,7 +328,7 @@ describe('Pool limits shows a ceiling as a value with one editor open at a time 
     expect(screen.queryAllByRole('button', { name: 'Save' })).toHaveLength(0)
     expect(screen.queryAllByRole('button', { name: 'Cancel' })).toHaveLength(0)
     for (const tr of document.querySelectorAll('tbody tr')) {
-      expect(within(tr as HTMLElement).getByRole('button', { name: /^Edit ceiling for / }).textContent).toBe('edit')
+      expect(within(tr as HTMLElement).getByRole('button', { name: /^Edit ceiling for / }).textContent, 'VQ-054: the console says Edit').toBe('Edit')
       expect(tr.querySelector('td[data-label^="Ceiling"] .adm-ceiling')!.textContent).toMatch(/^\d+$/)
     }
 

@@ -610,7 +610,7 @@ describe('the frame', () => {
   it('says it is still reading rather than showing an empty slot', async () => {
     const c = await sky(null)
     expect(c.querySelector('.sk-tenant b')?.textContent).toBe('reading…')
-    expect(c.querySelector('.sk-tenant small')?.textContent).toBe('tenant')
+    expect(c.querySelector('.sk-tenant small')?.textContent).toBe('workspace')
     expect(c.querySelector('.sk-pfoot b')?.textContent).toBe('reading…')
     expect(c.querySelector('.sk-cp')).toBeNull()
   })
@@ -723,7 +723,7 @@ describe('CH-20: the identity at phone width', () => {
       // Said, not silent: the outcome is announced beside the control, and
       // the announcement is not drawn.
       const said = c.querySelector('.sk-tenant [role="status"]')!
-      expect(said.textContent ?? '').toMatch(/tenant id copied/)
+      expect(said.textContent ?? '').toMatch(/workspace id copied/)
       expect(painted(said, 'width', WIDE_W)).toBe('1px')
       expect(painted(said, 'overflow', WIDE_W)).toBe('hidden')
     } finally {
@@ -749,7 +749,7 @@ describe('CH-20: the identity at phone width', () => {
         fireEvent.click(copy)
       })
       const said = c.querySelector('.sk-tenant [role="status"]')?.textContent ?? ''
-      expect(said).not.toMatch(/tenant id copied/)
+      expect(said).not.toMatch(/workspace id copied/)
       expect(said).toMatch(/refused/)
     } finally {
       delete (navigator as unknown as { clipboard?: unknown }).clipboard

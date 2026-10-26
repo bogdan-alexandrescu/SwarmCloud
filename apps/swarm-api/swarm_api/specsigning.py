@@ -31,14 +31,14 @@ from __future__ import annotations
 import base64
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol, Sequence
 
 from swarm_common import specsign
 from swarm_common.models import Task
 
 from .errors import UpstreamUnavailable
-from .validation import InvalidInput
+from .validation import RUNTIME_METADATA_KEY, RUNTIME_SWAP_FIELDS, InvalidInput
 
 log = logging.getLogger(__name__)
 
@@ -157,16 +157,36 @@ def signer_from_settings(settings: Any) -> SpecSigner | None:
     return None
 
 
+def _runtime_alternate(task: Task) -> dict[str, Any] | None:
+    """A `browser_if_ui` step's alternate profile fields (#2322), or None."""
+    block = task.metadata.get(RUNTIME_METADATA_KEY) if isinstance(task.metadata, dict) else None
+    alternate = block.get("alternate") if isinstance(block, dict) else None
+    return alternate if isinstance(alternate, dict) else None
+
+
 def sign_task_specs(tasks: Sequence[Task], signer: SpecSigner | None) -> None:
     """Set `spec_signature`, `spec_key_version` and `spec_format` on every task.
 
     Canonicalises EVERY task before signing ANY, so a refusal calls KMS for
     none of them. Raises `NonCanonicalInput` (422) or `SpecSigningUnavailable`
     (503); on either, no task carries a signature.
+
+    A `browser_if_ui` step (#2322) is signed TWICE, under the same task id:
+    as stored, and with its `metadata.runtime.alternate` profile fields in
+    place, whose signature goes into that alternate. The scheduler, which
+    holds no key, swaps a step to its other profile only with the signature
+    made here, so the worker still runs only a spec swarm-api signed.
     """
+    subjects: list[Task] = []
+    for task in tasks:
+        subjects.append(task)
+        alternate = _runtime_alternate(task)
+        if alternate is not None:
+            subjects.append(replace(
+                task, **{name: alternate.get(name) for name in RUNTIME_SWAP_FIELDS}))
     digests: list[bytes] = []
     formats: list[int] = []
-    for task in tasks:
+    for task in subjects:
         stored = task.to_firestore()
         # Format 1 for a task that names no parent, so a worker built before
         # contract request 42 keeps verifying every non-child task.
@@ -186,6 +206,10 @@ def sign_task_specs(tasks: Sequence[Task], signer: SpecSigner | None) -> None:
             ) from None
         digests.append(specsign.spec_digest(canonical))
     if signer is None:
+        for task in tasks:
+            alternate = _runtime_alternate(task)
+            if alternate is not None:
+                alternate.update(spec_signature=None, spec_key_version=None, spec_format=None)
         if tasks:
             log.warning(
                 "no SPEC_SIGNING_KEY_VERSION: %d task(s) written UNSIGNED; every worker in "
@@ -204,7 +228,17 @@ def sign_task_specs(tasks: Sequence[Task], signer: SpecSigner | None) -> None:
         raise SpecSigningUnavailable(
             "the step spec could not be signed; nothing was stored"
         ) from exc
-    for task, result, spec_format in zip(tasks, signed, formats):
+    results = iter(zip(signed, formats))
+    for task in tasks:
+        result, spec_format = next(results)
         task.spec_signature = base64.b64encode(result.signature).decode("ascii")
         task.spec_key_version = result.key_version
         task.spec_format = spec_format
+        alternate = _runtime_alternate(task)
+        if alternate is not None:
+            result, spec_format = next(results)
+            alternate.update(
+                spec_signature=base64.b64encode(result.signature).decode("ascii"),
+                spec_key_version=result.key_version,
+                spec_format=spec_format,
+            )

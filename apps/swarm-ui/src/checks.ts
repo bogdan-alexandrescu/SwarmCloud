@@ -1,5 +1,5 @@
 import { PHONE_PAGE_LIMIT, TASK_PAGE_LIMIT } from './pageLimits'
-import { hhmmUtc, stateView, type OverviewTaskPage } from './overviewReads'
+import { ENDED_BADLY, readReach, stateView, type OverviewTaskPage } from './overviewReads'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import {
   CONCURRENCY_STATES,
@@ -341,7 +341,7 @@ function quotaCheck(providers: Result<ProvidersPage>, now: number): Check {
     return { label, status: 'blind', ...blindness(providers.error) }
   }
   if (providers.status === 'empty') {
-    return { label, status: 'clear', note: 'no provider is configured for this tenant' }
+    return { label, status: 'clear', note: 'no provider is configured for this workspace' }
   }
 
   const rows = providers.data.providers
@@ -352,29 +352,31 @@ function quotaCheck(providers: Result<ProvidersPage>, now: number): Check {
     // reports on a provider, so its absence means "never used", not "broken".
     if (!q) continue
     const tone = providerTone(q.state)
+    // "anthropic is throttled", never "is THROTTLED" (visual QA VQ-003,
+    // 2026-10-26): a state is a word on this page, as the clear note says.
     if (tone === 'bad') {
       problems.push({
         severity: 'bad',
         n: 1,
-        headline: `${p.provider} is ${q.state}`,
+        headline: `${p.provider} is ${q.state.toLowerCase()}`,
         detail:
           q.state === 'DISABLED'
-            ? 'Disabled for this tenant. Its effective limit is 0 and nothing using it will be admitted.'
+            ? 'Disabled for this workspace. Its effective limit is 0 and nothing using it will be admitted.'
             // `clearsIn`, not `timeAgo`: a reset is in the FUTURE and timeAgo
             // floors at zero, so it would render every pending reset as
             // "just now" -- the opposite of what it says.
             : `Quota is spent. Effective limit is ${q.effective_limit}${q.reset_at ? `, resetting in ${clearsIn(q.reset_at, now)}` : ''}. Work on this provider parks rather than fails.`,
         href: '#capacity/quota',
-        linkLabel: 'quota, all tenants · admin',
+        linkLabel: 'quota, all workspaces · admin',
       })
     } else if (tone === 'wait') {
       problems.push({
         severity: 'warn',
         n: 1,
-        headline: `${p.provider} is ${q.state}`,
+        headline: `${p.provider} is ${q.state.toLowerCase()}`,
         detail: `${q.rate_limit_count} rate-limit responses so far; the ceiling this derives is ${q.effective_limit}${q.last_429_at ? `, last 429 ${timeAgo(q.last_429_at, now)}` : ''}. Throughput is reduced, not stopped.`,
         href: '#capacity/quota',
-        linkLabel: 'quota, all tenants · admin',
+        linkLabel: 'quota, all workspaces · admin',
       })
     }
   }
@@ -531,9 +533,16 @@ function failureCheck(tasks: Result<OverviewTaskPage>, stats: Result<Stats>, now
     const view = stateView(tasks.data, ['FAILED'])
     const failed = newestEndedFirst(view.rows.filter((t) => endedWithin(t, now, DAY_MS)))
     const whole = view.whole('FAILED')
-    const reach = whole ? 'every FAILED agent read' : `FAILED agents created since ${hhmmUtc(view.since ?? '')} read`
+    // RECENT FAILURES' SAMPLE AND ITS WORDS (visual QA VQ-005, 2026-10-26):
+    // this said "FAILED agents created since 06:04 UTC read" off the FAILED
+    // read alone while Recent failures, over the same rows, said "partial:
+    // agents created since 09:06 UTC read" off all three states it lists. The
+    // reach is that card's now -- the latest instant every one of them was
+    // read from, so it is never more than was read -- in the same words
+    // (`readReach`). The state is a word, not the enum (VQ-003).
+    const reach = whole ? 'every failed agent read' : readReach(stateView(tasks.data, ENDED_BADLY).since)
     if (failed.length === 0) {
-      return { label, status: 'clear', note: `no agent FAILED in the last 24 hours · ${reach}` }
+      return { label, status: 'clear', note: `no agent failed in the last 24 hours · ${reach}` }
     }
     return { label, status: 'found', problems: [failedProblem(failed, now, `${whole ? '' : '≥'}${failed.length}`, ` in the last 24 hours${whole ? '' : ` · ${reach}`}`)] }
   }
@@ -553,16 +562,16 @@ function failureCheck(tasks: Result<OverviewTaskPage>, stats: Result<Stats>, now
           admin: false,
           why:
             typeof counted === 'number'
-              ? `None of the ${rows.length} most recently created agents is FAILED, but the state counts say ${counted} FAILED in all and the read of FAILED agents did not land, so whether any failed recently is not established.`
-              : `None of the ${rows.length} most recently created agents is FAILED, but more agents exist beyond them and neither the read of FAILED agents nor the state counts landed, so whether any failed recently is not established.`,
+              ? `None of the ${rows.length} most recently created agents has failed, but the state counts say ${counted} failed in all and the read of failed agents did not land, so whether any failed recently is not established.`
+              : `None of the ${rows.length} most recently created agents has failed, but more agents exist beyond them and neither the read of failed agents nor the state counts landed, so whether any failed recently is not established.`,
         }
       }
-      return { label, status: 'clear', note: `the state counts say no agent has ever FAILED${widths}` }
+      return { label, status: 'clear', note: `the state counts say no agent has ever failed${widths}` }
     }
     return {
       label,
       status: 'clear',
-      note: `none of the ${rows.length} most recently created agents is FAILED${widths}`,
+      note: `none of the ${rows.length} most recently created agents has failed${widths}`,
     }
   }
 
@@ -616,9 +625,11 @@ function failedProblem(failed: Task[], now: number, count: string, scope: string
     // THE PAGE'S OWN NAME (visual QA QA-109, 2026-10-20): "failed agents"
     // was a name the list it opens carries nowhere -- the page is titled
     // Agents and filters by state. So the word is the page, then the state
-    // this item counts.
+    // this item counts. THE STATE AS A WORD (visual QA VQ-003, 2026-10-26):
+    // `FAILED` in capitals was the one enum on a page that says "running",
+    // "parked" and "failed" everywhere else; the page still comes first.
     href: '#work/running/recent/failed',
-    linkLabel: 'Agents · FAILED',
+    linkLabel: 'Agents · failed',
     // EACH WORKFLOW THE HEADLINE NAMES OPENS ITSELF (visual QA N11): the
     // same two `workflowClause` names, in its order.
     workflows: namedWorkflows(failed).map(([id]) => ({ id, href: `#work/workflows?wf=${encodeURIComponent(id)}` })),
@@ -883,10 +894,10 @@ function workflowCheck(workflows: Result<WorkflowPage>, now: number): Check {
         (others.length > 0
           ? `Also ${others.slice(0, 2).map((w) => `${w.workflow_id} (${timeAgo(w.updated_at, now)})`).join(', ')}${others.length > 2 ? ` and ${others.length - 2} more` : ''}. `
           : '') +
-        `No step of any of them is LEASED, DISPATCHED, STARTING or RUNNING, so none is holding capacity and none is costing anything — ` +
+        `No step of any of them is leased, dispatched, starting or running, so none is holding capacity and none is costing anything — ` +
         `this is a progress problem, not a full pool. ` +
         (eligible.length > 0
-          ? `${eligible.length} ${eligible.length === 1 ? 'has a step' : 'have steps'} READY: eligible, and picked up by nothing.`
+          ? `${eligible.length} ${eligible.length === 1 ? 'has a step' : 'have steps'} ready: eligible, and picked up by nothing.`
           : 'Every stalled step is parked or not yet started; the parked check says on what.'),
       href: stalled.length === 1 ? `#work/workflows?wf=${encodeURIComponent(worst.workflow_id)}` : '#work/workflows',
       ...(stalled.length === 1 ? { linkLabel: 'workflow' } : {}),

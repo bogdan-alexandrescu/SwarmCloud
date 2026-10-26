@@ -404,3 +404,62 @@ describe('Settings: This workspace names the default role (S6a)', () => {
     expect(within(ws).getByRole('link', { name: 'People and roles' }).getAttribute('href')).toBe('/config/people')
   })
 })
+
+describe('Settings: This workspace names the role the API acts on (VQ-044)', () => {
+  /** Bogdan's case: a platform admin acting in eng, a group he is in, whose stored role there is the default, member. */
+  const PLATFORM_ADMIN_PROFILE: Json = {
+    ...(profile(true) as Json),
+    workspaces: [
+      { tenant_id: 'u-ana', display_name: 'ana.b@example.com', kind: 'user', role: { name: 'admin', source: 'personal' }, is_acting: false },
+      { tenant_id: 'eng', display_name: 'Engineering', kind: 'group', role: { name: 'member', source: 'default' }, is_acting: true },
+    ],
+  }
+  const ROLES_AS_PLATFORM_ADMIN: Json = {
+    ...ROLES,
+    me: { email: 'ana.b@example.com', role: 'admin', source: 'platform_admin', via: 'member' },
+    can_manage: true,
+  }
+  const yourRole = (ws: HTMLElement) => visible(within(ws).getByTestId('ws-your-role'))
+
+  function serveAs(prof: Json, roles: Json | null) {
+    serve((m, url) => {
+      if (m === 'GET' && url === '/v1/profile') return { status: 200, body: prof }
+      if (m === 'GET' && url === '/v1/onboarding') return { status: 200, body: ONBOARDING }
+      if (m === 'GET' && url === '/v1/code-intelligence') return { status: 200, body: CODE_INTEL }
+      if (m === 'GET' && url === '/v1/workspace/roles') return roles === null ? { status: 503, body: { detail: 'unavailable' } } : { status: 200, body: roles }
+      return null
+    })
+  }
+
+  it('says "admin (platform admin)" for a platform admin whose stored role is member, as People and roles does', async () => {
+    serveAs(PLATFORM_ADMIN_PROFILE, ROLES_AS_PLATFORM_ADMIN)
+    const { WorkspaceSettingsScreen } = await load()
+    render(<WorkspaceSettingsScreen part="settings" />)
+    const ws = (await screen.findByRole('heading', { name: 'This workspace' })).closest('section') as HTMLElement
+    // MUTATION: draw the profile's stored `ws.role.name` again -> 'member', fails.
+    await waitFor(() => expect(yourRole(ws)).toBe('admin (platform admin)'))
+    // The same answer gates Rename: the rename route resolves a platform admin as admin.
+    expect(within(ws).getByRole('button', { name: 'Rename' })).toBeTruthy()
+  })
+
+  it('still says admin (platform admin) when the roles read failed, by the API\'s own rule', async () => {
+    serveAs(PLATFORM_ADMIN_PROFILE, null)
+    const { WorkspaceSettingsScreen } = await load()
+    render(<WorkspaceSettingsScreen part="settings" />)
+    const ws = (await screen.findByRole('heading', { name: 'This workspace' })).closest('section') as HTMLElement
+    await waitFor(() => expect(within(ws).getByTestId('ws-default-role').querySelector('.c-dash')?.getAttribute('title')).toContain('GET /v1/workspace/roles'))
+    // MUTATION: drop the `identity.is_admin` rule -> 'member', fails.
+    expect(yourRole(ws)).toBe('admin (platform admin)')
+  })
+
+  it('says member for a member, from the roles read', async () => {
+    serveAs(profile(false), ROLES)
+    const { WorkspaceSettingsScreen } = await load()
+    render(<WorkspaceSettingsScreen part="settings" />)
+    const ws = (await screen.findByRole('heading', { name: 'This workspace' })).closest('section') as HTMLElement
+    await waitFor(() => expect(visible(within(ws).getByTestId('ws-default-role'))).toContain('viewer'))
+    // MUTATION: call everyone a platform admin -> fails.
+    expect(yourRole(ws)).toBe('member')
+    expect(within(ws).queryByRole('button', { name: 'Rename' })).toBeNull()
+  })
+})

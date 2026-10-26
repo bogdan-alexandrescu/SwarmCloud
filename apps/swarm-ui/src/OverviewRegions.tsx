@@ -35,7 +35,7 @@ import { StateMark } from './marks'
 import { addressToPath } from './paths'
 import { staleFoot } from './Shell'
 import { usePageClock } from './useNow'
-import { ENDED_BADLY, WHOLE, hhmmUtc, stateView, type Coverage, type OverviewTaskPage, type StateView } from './overviewReads'
+import { ENDED_BADLY, WHOLE, hhmmUtc, readReach, stateView, type Coverage, type OverviewTaskPage, type StateView } from './overviewReads'
 import { CONCURRENCY_STATES, TERMINAL_STATES, clockTime, reasonCopy, timeAgo, whyAgent, type Stats, type Task, type TaskPage, type TaskState } from './types'
 
 /**
@@ -200,7 +200,13 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
         // HOW FAR BACK, SAID (live QA OV-6): `≥35` on a phone beside `≥184`
         // on the desktop was a factor of five nobody could account for. The
         // read reaches back to the oldest task it holds; the foot says when.
-        const since = partial && finished?.since ? ` · created since ${hhmmUtc(finished.since)}` : ''
+        // IN THE WORDS EVERY PARTIAL FIGURE ON THE PAGE USES (visual QA
+        // VQ-005, 2026-10-26, `readReach`): "created since 18:46 UTC" here
+        // beside "partial: agents created since 09:06 UTC read" on Recent
+        // failures read as two rules for one thing. The instants differ
+        // because the samples do -- succeeded agents are read off the page
+        // alone -- and the window, today since 00:00 UTC, is the head's.
+        const since = partial && finished?.since ? ` · ${readReach(finished.since)}` : ''
         const why =
           read.status === 'loading'
             ? 'still reading'
@@ -440,7 +446,7 @@ const DAY_MS = 24 * 60 * 60 * 1000
 
 // The state reads and their coverage live in `overviewReads.ts`, which the
 // pure check layer imports too; re-exported for the screen and its tests.
-export { ENDED_BADLY, WHOLE, hhmmUtc, stateView, type Coverage, type OverviewTaskPage, type StateRead, type StateView } from './overviewReads'
+export { ENDED_BADLY, WHOLE, hhmmUtc, readReach, stateView, type Coverage, type OverviewTaskPage, type StateRead, type StateView } from './overviewReads'
 
 /**
  * The failed, dead-lettered and cancelled rows of the last 24 hours, newest
@@ -490,7 +496,7 @@ export function failuresOf(
     `${n('DEAD_LETTERED')} dead-lettered`,
     ...(dated.some((t) => t.state === 'CANCELLED') || !cover.whole('CANCELLED') ? [`${n('CANCELLED')} cancelled`] : []),
     ...(undated.length > 0 ? [`${undated.length} with no recorded end`] : []),
-    ...(partial ? [cover.since === null ? 'partial: not every agent was read' : `partial: agents created since ${hhmmUtc(cover.since)} read`] : []),
+    ...(partial ? [readReach(cover.since)] : []),
   ].join(' · ')
   return { rows: [...dated, ...undated], note, partial }
 }
@@ -535,9 +541,11 @@ function EndedAgo({ task: t, now }: { task: Task; now: number }) {
  * design, newest first -- one tap away, and a step the cascade cancelled still
  * names the parent that failed.
  */
-export function RecentFailures({ tasks }: { tasks: Result<OverviewTaskPage> }) {
+export function RecentFailures({ tasks, now = Date.now() }: { tasks: Result<OverviewTaskPage>; now?: number }) {
+  // `now` IS THE CHECKS' INSTANT on the Overview (visual QA VQ-005,
+  // 2026-10-26), so this card's 24 hours and Needs a look's end at the same
+  // moment and count the same failures.
   const all = rows(tasks)
-  const now = Date.now()
   const view = tasks.status === 'ok' || tasks.status === 'stale' ? stateView(tasks.data, ENDED_BADLY) : null
   const found = view === null ? null : failuresOf(view.rows, now, view)
   // `failuresOf` lists each kind newest first, so a split keeps both orders.
