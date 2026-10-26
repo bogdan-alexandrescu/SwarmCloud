@@ -439,7 +439,9 @@ describe('review fixes: the phone, the swimlane, the list and the development po
     const r = await loadAccountHealthBoard()
     if (r.status !== 'ok' || r.data.health.kind !== 'ok') throw new Error('the fixture board did not load')
     const { pool } = r.data.health
-    const row = new Map(r.data.page.accounts.map((a) => [a.account_id, (a as HealthAccount).health_status ?? null]))
+    const row = new Map<string, HealthStatus | null>(
+      r.data.page.accounts.map((a) => [a.account_id, ((a as HealthAccount).health_status ?? null) as HealthStatus | null]),
+    )
     const { open } = poolIncidents(pool, (id) => row.get(id) ?? null, r.data.readAt)
     const limits = open.filter((x) => x.family === 'lim')
     // The pool still shows an open limit somewhere: the case is drawn, on an account that is limited.
