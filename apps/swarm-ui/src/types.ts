@@ -459,12 +459,18 @@ export const POOL_FAMILY_ORDER: readonly PoolKind[] = [
  * headroom" -- that rename was about telling a per-tenant measurement from the
  * platform-wide catalogue beside it in the rail, and it does not reach in
  * here. A pool family named after the thing it is scoped by is unambiguous on
- * the capacity board, where every other row is `Tenants`, `Backends` or
+ * the capacity board, where every other row is `Workspaces`, `Backends` or
  * `Providers`.
+ *
+ * `tenant` IS TITLED `Workspaces` (BGD, 2026-10-26, TENANT-WORDING-C's
+ * question 0): the console calls a tenant a workspace everywhere a reader
+ * meets it, so the family reads `Workspaces` and its tables `Workspaces
+ * ceilings`. Only the title moved: the `tenant:` pool key, the PoolKind and
+ * Admin › Tenants keep their names.
  */
 export const FAMILY_TITLE: Readonly<Record<PoolKind, string>> = {
   global: 'Global',
-  tenant: 'Tenants',
+  tenant: 'Workspaces',
   resource: 'Resource classes',
   runner: 'Runner profiles',
   backend: 'Backends',
@@ -3039,10 +3045,13 @@ export const PARK_WAITS_ON_A_STEP: ReadonlySet<string> = new Set<ParkReason>([
  * you are at your own ceiling and only an admin can move it; the global and
  * resource-class limits mean the platform is busy and waiting is the answer.
  * That is why the field is surfaced verbatim rather than collapsed to "busy".
+ *
+ * The keys keep the contract's enum names (`TENANT_LIMIT`); the sentences say
+ * "workspace", the console's word for a tenant (BGD, 2026-10-26, VQ-056).
  */
 export const REASON_COPY: Readonly<Record<string, string>> = {
   GLOBAL_CONCURRENCY_LIMIT: 'The platform is at its overall limit. Waiting is the answer.',
-  TENANT_LIMIT: 'Your tenant is at its own limit. Only an admin can raise it.',
+  TENANT_LIMIT: 'Your workspace is at its own limit. Only an admin can raise it.',
   PROVIDER_CONCURRENCY_LIMIT: 'This provider is at its concurrency limit.',
   RESOURCE_CLASS_LIMIT: 'This resource class is busy platform-wide.',
   RUNNER_LIMIT: 'This runner profile is at its limit.',
@@ -3056,9 +3065,9 @@ export const REASON_COPY: Readonly<Record<string, string>> = {
   CHILDREN_INCOMPLETE: 'Waiting for the child agents it submitted. Holds no capacity.',
   CI_PENDING: 'Waiting for the pull request checks to finish. Holds no capacity.',
   BUDGET_EXHAUSTED: 'The budget for this work is spent.',
-  CREDENTIAL_MISSING: 'No provider key is registered for this tenant.',
+  CREDENTIAL_MISSING: 'No provider key is registered for this workspace.',
   HUMAN_REQUIRED: 'The agent asked for a person and nobody came in time. Holds no capacity until someone says they are ready.',
-  AWAITING_INPUT: 'A workflow step waits for a member of its tenant to answer. Holds no capacity; it ends on the first answer or at its declared expiry.',
+  AWAITING_INPUT: 'A workflow step waits for a member of its workspace to answer. Holds no capacity; it ends on the first answer or at its declared expiry.',
   POOL_LIMIT_UNSET: 'This pool has no limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.',
 }
 
