@@ -283,7 +283,7 @@ function PermCard({
     setOpen(!healthy)
   }
   const bodyId = useId()
-  const kindWord = kind === 'app' ? 'GitHub App' : kind === 'token' ? 'tenant token' : kind
+  const kindWord = kind === 'app' ? 'GitHub App' : kind === 'token' ? 'workspace token' : kind
   return (
     <Card
       level={3}
@@ -634,7 +634,7 @@ export function AppCard({
   )
 }
 
-/** A token-backed repository's own card: what the tenant token was measured to do there. */
+/** A token-backed repository's own card: what the workspace token was measured to do there. */
 function TokenCard({ row }: { row: ForgeRepoStatus }) {
   const lines: Line[] = row.blocked_by.map((g, n) => ({ key: `b:${n}`, words: g.needed_for, jargon: gapJargon(g) }))
   const status = repoStatus(row)
@@ -647,7 +647,7 @@ function TokenCard({ row }: { row: ForgeRepoStatus }) {
       lines={lines}
       error={row.error}
       sig={`${status.tone}:${lines.length}:${row.error ?? ''}`}
-      hint={lines.length > 0 ? 'This repository is reached through the tenant token, not the App: a token with more access fixes it (Git tokens).' : status.tone === 'unknown' && row.error === null ? status.tip : undefined}
+      hint={lines.length > 0 ? 'This repository is reached through the workspace token, not the App: a token with more access fixes it (Git tokens).' : status.tone === 'unknown' && row.error === null ? status.tip : undefined}
     />
   )
 }
