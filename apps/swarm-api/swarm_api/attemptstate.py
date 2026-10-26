@@ -1693,7 +1693,16 @@ class AttemptState:
             the answers to `needs_owner`): from this task's own signed
             `depends_on`, following each ancestor's `depends_on` only through
             this tenant's tasks of this workflow, at most
-            `WORKFLOW_ANCESTORS_MAX` documents read.
+            `WORKFLOW_ANCESTORS_MAX` documents read;
+          * a merge step's own task and the branch it merges (#2373,
+            `agent_worker.merge._own_doc`, `_fix_round_heads`,
+            `_recorded_fix_heads`): the attempt's own task id, from the
+            tuple; the root whose `swarm/<root>` branch the pull request is
+            on, from this task's signed `dispatch.merge_target.pull_request`
+            and that task's own `dispatch.continues`; and any task of this
+            tenant whose dispatch block `continues` that root -- a merge's
+            CI-fix or conflict fix round, or a PR-side fixer of the same
+            branch. The worker still holds each one to its signed spec.
 
         The caller still refuses a task of another tenant, so a derived id
         serves only this tenant's document.
@@ -1701,7 +1710,28 @@ class AttemptState:
         return (self._is_index_base(attempt, task, upstream_task_id)
                 or self._is_builds_on_ancestor(attempt, task, upstream_task_id)
                 or self._is_gate_review(attempt, task, upstream_task_id)
-                or self._is_workflow_ancestor(attempt, task, upstream_task_id))
+                or self._is_workflow_ancestor(attempt, task, upstream_task_id)
+                or self._is_merge_fix_record(attempt, task, upstream_task_id))
+
+    def _is_merge_fix_record(self, attempt: AttemptTuple, task: Mapping[str, Any],
+                             upstream_task_id: str) -> bool:
+        if upstream_task_id == attempt.task_id:
+            return True
+        target = _mapping(_mapping(_mapping(task.get("metadata")).get("dispatch"))
+                          .get("merge_target")).get("pull_request")
+        if not isinstance(target, str) or not target:
+            return False
+        opener = self._read(self._ref(TASKS, target))
+        if opener is None or opener.get("tenant_id") != attempt.tenant_id:
+            return False
+        continued = _mapping(_mapping(opener.get("metadata")).get("dispatch")).get("continues")
+        root = continued if isinstance(continued, str) and continued else target
+        if upstream_task_id == root:
+            return True
+        doc = self._read(self._ref(TASKS, upstream_task_id))
+        if doc is None or doc.get("tenant_id") != attempt.tenant_id:
+            return False
+        return _mapping(_mapping(doc.get("metadata")).get("dispatch")).get("continues") == root
 
     def _is_index_base(self, attempt: AttemptTuple, task: Mapping[str, Any],
                        upstream_task_id: str) -> bool:

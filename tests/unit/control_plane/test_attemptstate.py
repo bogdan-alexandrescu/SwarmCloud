@@ -811,6 +811,81 @@ def test_upstream_refuses_a_step_of_this_workflow_that_is_no_ancestor(client, db
     assert _refused(worker.get(client, "upstream", "upstream_task_id=task_sibling"))
 
 
+def _merge_step(client, db, worker: Worker, *, opener_dispatch: dict[str, Any] | None = None,
+                opener_tenant: str = "eng") -> None:
+    """A merge step whose signed target is the fix step `task_fix`, which opened the
+    pull request from its own branch (#2373: strategy `integrate`, the integrator)."""
+    opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_review"],
+           metadata={"dispatch": {"strategy": "integrate", "carrier": "checkpoints",
+                                  "merge_target": {"pull_request": "task_fix"}},
+                     "merge_fix": {"conflict_rounds": [
+                         {"round": 1, "task_id": "task_round", "workflow_id": "wf_round"}]}})
+    opener = seed_task(db, task_id="task_fix", tenant_id=opener_tenant, state="SUCCEEDED",
+                       workflow_id=WORKFLOW)
+    opener["metadata"] = {"dispatch": opener_dispatch or {"strategy": "integrate",
+                                                          "role": "integrator"}}
+
+
+def _continuation(db, task_id: str, continues: str, *, tenant: str = "eng") -> None:
+    doc = seed_task(db, task_id=task_id, tenant_id=tenant, state="SUCCEEDED",
+                    workflow_id="wf_round")
+    doc["metadata"] = {"dispatch": {"strategy": "direct-pr", "continues": continues}}
+
+
+def test_upstream_serves_a_merge_its_own_task_and_its_rounds(client, db):
+    """#2373: on the state routes the merge read neither the `merge_fix` record on
+    its own task nor the round's task, and refused the round's head `head_moved`."""
+    worker = Worker()
+    _merge_step(client, db, worker)
+    _continuation(db, "task_round", "task_fix")
+    # MUTATION: drop `_is_merge_fix_record` and both are the 403.
+    own = worker.get(client, "upstream", f"upstream_task_id={worker.tuple.task_id}")
+    assert own.status_code == 200, own.text
+    assert own.json()["task"]["metadata"]["merge_fix"]["conflict_rounds"][0]["task_id"] == (
+        "task_round")
+    found = worker.get(client, "upstream", "upstream_task_id=task_round")
+    assert found.status_code == 200, found.text
+    assert found.json()["task"]["id"] == "task_round"
+
+
+def test_upstream_serves_a_continued_openers_branch_task_and_its_rounds(client, db):
+    worker = Worker()
+    _merge_step(client, db, worker, opener_dispatch={"strategy": "direct-pr",
+                                                     "continues": "task_branch"})
+    _continuation(db, "task_branch", "task_none")
+    _continuation(db, "task_round", "task_branch")
+    for upstream in ("task_branch", "task_round"):
+        response = worker.get(client, "upstream", f"upstream_task_id={upstream}")
+        assert response.status_code == 200, (upstream, response.text)
+
+
+def test_upstream_refuses_a_merge_a_task_of_another_branch_or_tenant(client, db):
+    worker = Worker()
+    _merge_step(client, db, worker)
+    _continuation(db, "task_round", "task_other_branch")
+    _continuation(db, "task_theirs", "task_fix", tenant="research")
+    seed_task(db, task_id="task_sibling", tenant_id="eng", state="SUCCEEDED")
+    # MUTATION: serve any task the `merge_fix` record names and the first is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_round"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_theirs"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_sibling"))
+
+
+def test_upstream_serves_no_round_to_a_step_that_merges_nothing(client, db):
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_fix"])
+    seed_task(db, task_id="task_fix", tenant_id="eng", state="SUCCEEDED")
+    _continuation(db, "task_round", "task_fix")
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_round"))
+
+
+def test_upstream_follows_no_merge_target_of_another_tenant(client, db):
+    worker = Worker()
+    _merge_step(client, db, worker, opener_tenant="research")
+    _continuation(db, "task_round", "task_fix")
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_round"))
+
+
 # --------------------------------------------------------------------------
 # merge slot: a wake only for this tenant's listed waiter
 # --------------------------------------------------------------------------
