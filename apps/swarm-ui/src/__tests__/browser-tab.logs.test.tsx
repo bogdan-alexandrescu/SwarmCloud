@@ -8,14 +8,19 @@
 //   BT-009  the stream switch was 238px in a 213px (1440) or 180px (1024)
 //           bar, cut by `overflow: hidden`: `Run` at 1440, no Runner at 1024.
 //   BT-018  a finished agent's transcript opened on its first window, ending
-//           `later steps are in the next window`.
+//           `later steps are in the next window`. Follow-up: its newest
+//           window's mark called it a live tail, and 'show records' read
+//           from byte 0 whichever window was open.
 //
 // MUTATIONS, one per block: put `follow` back in `BAR_SPILL` and spill it
 // under More; drop the body's ResizeObserver in AgentLogs.tsx; drop the
 // `.live-logs > .ag-logs, .th-left-body > .ag-logs` rule (styles/agents.css),
-// or its theater half's `min-width: 641px` scope;
+// its theater half's `min-width: 641px` scope, or the phone's bounded
+// `.live-logs > .ag-logs` height;
 // drop the `max-width: 259px` streams grid; have `readTranscriptWindow` return
-// the first window for a finished agent, or drop the open-at-end effect.
+// the first window for a finished agent, or drop the open-at-end effect;
+// word the newest window's mark as a live tail again, or read 'with records'
+// from byte 0 (Artifacts.tsx).
 
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -294,6 +299,25 @@ describe('BT-001: the log beside the browser follows, and says so', () => {
       host.remove()
     }
   })
+
+  it('beside the browser on a phone, the log has a bounded height, so its body is the scroller', () => {
+    const host = document.createElement('div')
+    host.innerHTML = '<div class="live-logs"><section class="ag-logs"></section></div>'
+    document.body.appendChild(host)
+    try {
+      const beside = host.querySelector('.ag-logs')!
+      // Measured on the review render at 390 with '◫ logs' on: the
+      // `.live-body` row grew to its content, so `100%` was the log's own
+      // 2777px and the drawer scrolled instead of the body.
+      for (const width of [390, 759]) {
+        expect(painted(beside, 'height', { width })).not.toBe('100%')
+        expect(painted(beside, 'height', { width })).toMatch(/^min\(70vh, ?560px\)$/)
+      }
+      expect(painted(beside, 'height', { width: 760 })).toBe('100%')
+    } finally {
+      host.remove()
+    }
+  })
 })
 
 describe('BT-009: every stream can be chosen in a narrow bar', () => {
@@ -363,6 +387,45 @@ describe('BT-018: a finished agent’s transcript opens on how it finished', () 
     expect(within(dock()).getByRole('button', { name: 'next window' })).toBeTruthy()
     fireEvent.click(within(dock()).getByRole('button', { name: 'Read the newest window' }))
     await waitFor(() => expect(dock().textContent).toContain('step 22'))
+  })
+
+  it('says the window is the finished transcript’s newest, not a live tail', async () => {
+    render(<AgentLogs task={finished()} />)
+    await waitFor(() => expect(dock().textContent).toContain('step 22'))
+    const note = Array.from(dock().querySelectorAll('.arts-window-note')).find((p) => /earlier steps are not in this window/.test(p.textContent ?? ''))!
+    const say = note.querySelector('.ctl-mark')!.getAttribute('aria-label')!
+    expect(say).not.toMatch(/live tail/)
+    expect(say).toMatch(/newest window of the finished transcript/)
+  })
+
+  it('a live tail that starts part-way is still said to be a live tail', async () => {
+    api.loadTranscript.mockImplementation(async () => ok(win([7, 8], { offset: 500, size: 500, total: 1000, source: 'live' })))
+    render(<AgentLogs task={running()} />)
+    await waitFor(() => expect(dock().textContent).toContain('step 8'))
+    const note = Array.from(dock().querySelectorAll('.arts-window-note')).find((p) => /earlier steps are not in this window/.test(p.textContent ?? ''))!
+    expect(note.querySelector('.ctl-mark')!.getAttribute('aria-label')).toMatch(/live tail/)
+  })
+
+  it('with records opens on the window the tab opened on, and on the first when the reader picked it', async () => {
+    render(<AgentLogs task={finished()} />)
+    await waitFor(() => expect(dock().textContent).toContain('step 22'))
+    api.loadTranscript.mockClear()
+    fireEvent.click(within(dock()).getByRole('button', { name: 'show records' }))
+    await waitFor(() => expect(within(dock()).getByRole('button', { name: 'hide records' })).toBeTruthy())
+    expect(api.loadTranscript).toHaveBeenCalledWith(ID, expect.objectContaining({ includeRaw: true, offset: 2000, source: 'final' }))
+    expect(dock().textContent).toContain('step 22')
+    expect(within(dock()).queryByText('step 1')).toBeNull()
+    fireEvent.click(within(dock()).getByRole('button', { name: 'hide records' }))
+    fireEvent.click(within(dock()).getByRole('button', { name: 'Read from the first window' }))
+    await waitFor(() => expect(dock().textContent).toContain('step 1'))
+    api.loadTranscript.mockClear()
+    fireEvent.click(within(dock()).getByRole('button', { name: 'show records' }))
+    await waitFor(() => expect(within(dock()).getByRole('button', { name: 'hide records' })).toBeTruthy())
+    const calls = api.loadTranscript.mock.calls as [string, { includeRaw?: boolean; offset?: number }][]
+    const raw = calls.filter(([, o]) => o.includeRaw === true)
+    expect(raw.length).toBeGreaterThan(0)
+    for (const [, o] of raw) expect(o.offset ?? 0).toBe(0)
+    expect(dock().textContent).toContain('step 1')
   })
 
   it('a running agent’s live tail is read as it was: no second read at an offset, no window choice', async () => {

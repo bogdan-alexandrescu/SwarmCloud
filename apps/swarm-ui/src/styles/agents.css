@@ -608,6 +608,15 @@
   height: 100%;
   margin-bottom: 0;
 }
+/* Beside the browser on a phone (under 760px, as `.ag-split.ctl-drawer`
+   above) the `.live-body` row grows to its content, so `100%` is the log's
+   own 2777px and the drawer scrolled instead of its body: Follow showed
+   pressed over the oldest step. A bounded height makes the body the
+   scroller again (measured on the review render: clientHeight 385, followed
+   to its end). */
+@media (max-width: 759px) {
+  .live-logs > .ag-logs { height: min(70vh, 560px); }
+}
 @media (min-width: 641px) {
   .th-left-body > .ag-logs {
     box-sizing: border-box;
