@@ -1,0 +1,973 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><link rel="icon" href="data:,"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>SwarmCloud Automate, proposal D: Config E sections</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;650;700&display=swap" rel="stylesheet">
+<style>
+/*
+ * Automate proposal D, "Config E sections" (AUTOMATE-MOCKS-D, part of #2417), drawn in Config E's house style (#2157).
+ * The tokens are the console's own (apps/swarm-ui/src/styles.css): --bg, --surface,
+ * --surface-2, --line, --line-soft, --text, --text-dim, --text-faint, the five state
+ * colours and their -ink variants, --ctl-bd and --ctl-onac, light and dark. The page
+ * and every frame read them, so the theme toggle repaints the frames too.
+ * PICKS.md rules: 12px type floor, no all-caps, no letter-spacing.
+ */
+:root{--bg:#f3f6f9;--surface:#ffffff;--surface-2:#eef4fa;--line:#d6e0ea;--line-soft:#dde5ee;--text:#0d1724;--text-dim:#4f5d6e;--text-faint:#606a77;--ok:#1a7f37;--warn:#6e4a00;--bad:#681117;--info:#0369a1;--paused:#7139db;--ok-ink:#15662c;--warn-ink:#805500;--bad-ink:#a71b25;--info-ink:#075985;--paused-ink:#6629d8;--ctl-bd:#7d8ea3;--ctl-onac:#ffffff;--warn-dot:#b7791f;--s1:#3f86d8;--s2:#9c7620;--s3:#8a6ad6;--s4:#1f948a;--font:"Inter Tight",system-ui,-apple-system,sans-serif;--mono:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#06101e;--surface:#0c1a2e;--surface-2:#11233b;--line:#1e3350;--line-soft:#1d3049;--text:#eef4fa;--text-dim:#9fb0c4;--text-faint:#828d9b;--ok:#58c668;--warn:#ffd60a;--bad:#f85149;--info:#7cc8f8;--paused:#b288f8;--ok-ink:#42bf53;--warn-ink:#d29922;--bad-ink:#fa7872;--info-ink:#b9e3fc;--paused-ink:#b892f9;--ctl-bd:#5f7087;--ctl-onac:#06101e;--warn-dot:#f5c451;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#06101e;--surface:#0c1a2e;--surface-2:#11233b;--line:#1e3350;--line-soft:#1d3049;--text:#eef4fa;--text-dim:#9fb0c4;--text-faint:#828d9b;--ok:#58c668;--warn:#ffd60a;--bad:#f85149;--info:#7cc8f8;--paused:#b288f8;--ok-ink:#42bf53;--warn-ink:#d29922;--bad-ink:#fa7872;--info-ink:#b9e3fc;--paused-ink:#b892f9;--ctl-bd:#5f7087;--ctl-onac:#06101e;--warn-dot:#f5c451;color-scheme:dark}
+:root{--t-ok:color-mix(in srgb,var(--ok) 13%,var(--surface));--t-warn:color-mix(in srgb,var(--warn-ink) 14%,var(--surface));--t-bad:color-mix(in srgb,var(--bad-ink) 12%,var(--surface));--t-info:color-mix(in srgb,var(--info) 11%,var(--surface));--t-pa:color-mix(in srgb,var(--paused) 12%,var(--surface));--l-info:color-mix(in srgb,var(--info) 40%,var(--line))}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 var(--font);overflow-x:hidden}
+a{color:var(--info)}
+code,.mono{font-family:var(--mono);font-size:13px;background:var(--surface-2);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--info);outline-offset:2px}
+
+/* ---------- the document around the frames ---------- */
+.topbar{position:relative;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(6px);border-bottom:1px solid var(--line)}
+.topbar .in{max-width:1520px;margin:0 auto;padding:8px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.topbar b{font-size:14px;font-weight:650}
+.topbar .sp0{flex:1}
+.doc{max-width:1520px;margin:0 auto;padding:28px 16px 80px}
+.doc .kick{font:500 13px var(--mono);color:var(--info);margin:0}
+.doc h1{font-size:clamp(26px,4vw,38px);line-height:1.15;margin:8px 0 12px;font-weight:650}
+.doc h2{font-size:24px;margin:64px 0 6px;font-weight:650;scroll-margin-top:60px}
+.doc h2 .n{font:500 14px var(--mono);color:var(--info);margin-right:10px}
+.doc h3.fh{font-size:17px;margin:28px 0 8px;font-weight:600}
+.doc p,.doc li{max-width:82ch}
+.doc .lede{font-size:17px;color:var(--text-dim)}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 0;padding:0;list-style:none}
+.toc a{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:99px;color:var(--text);text-decoration:none;font-size:13px;background:var(--surface)}
+.toc a:hover{border-color:var(--info);color:var(--info)}
+.idea{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px;margin-top:20px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.idea h4{margin:0 0 6px;font-size:15px;color:var(--info)}
+.idea p,.idea ul{margin:0;font-size:14px}.idea ul{padding-left:18px}.idea li{margin:3px 0}
+.rules{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 18px;margin-top:16px;font-size:14px}
+.rules ul{margin:6px 0 0;padding-left:18px}
+.fr{margin:18px 0 0;min-width:0}
+.fr figcaption{font-size:13.5px;color:var(--text-dim);margin-top:8px;max-width:110ch}
+.fr figcaption b{color:var(--text)}
+.scroller{overflow-x:auto;border-radius:12px;border:1px solid var(--line);max-width:100%;background:var(--bg)}
+.pair{display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start;margin-top:18px}
+.pair>.fr{margin:0;flex:0 1 auto;max-width:100%}
+.dt{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin-top:14px}
+table.doct{border-collapse:collapse;width:100%;min-width:640px;font-size:14px}
+table.doct th,table.doct td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+table.doct th{font-size:13px;color:var(--text-dim);font-weight:600}
+table.doct tr:last-child td{border-bottom:0}
+table.doct th:last-child,table.doct td:last-child{white-space:nowrap}
+.yes{color:var(--ok-ink);font-weight:600}.no{color:var(--text-dim)}
+
+/* the page's theme control, the same control the frames' panel foot draws */
+.tseg{display:inline-flex;border:1px solid var(--ctl-bd);border-radius:8px;overflow:hidden;background:var(--surface)}
+.tseg button{border:0;background:none;padding:4px 10px;font-size:13px;cursor:pointer;color:var(--text-dim);display:inline-flex;gap:5px;align-items:center;border-right:1px solid var(--line)}
+.tseg button:last-child{border-right:0}
+.tseg button[aria-pressed="true"]{background:var(--t-info);color:var(--info-ink);font-weight:600}
+
+/* ---------- frames: shared ---------- */
+.ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.F{font:14px/1.45 var(--font);color:var(--text);text-align:left}
+.F a{color:var(--info);text-decoration:none}
+/* 1440 wide, or the page's own width when the window is narrower, so no frame is cut at its right edge */
+.app{display:flex;width:clamp(1180px,100%,1440px);min-height:760px;background:var(--bg)}
+.app.crop{width:320px;min-height:640px}
+.app.crop .ct{display:none}
+.scroller:has(>.crop){width:max-content;max-width:100%}
+
+/* spine: deep blue in both themes, like the built Spine.tsx */
+.sp{width:84px;flex:none;background:linear-gradient(180deg,#0b3a7a,#06101e);display:flex;flex-direction:column;align-items:center;padding:14px 0 12px;gap:2px;color:#bcd6ee}
+.sp .hv{margin:0 0 12px}
+.sp .si{width:74px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;border-radius:10px;font-size:12px;line-height:1.15;color:#bcd6ee;position:relative;text-align:center}
+.sp .si .ic{width:20px;height:20px}
+.sp .si.on{background:rgba(124,200,248,.2);color:#fff}
+.sp .si.on::before{content:"";position:absolute;left:-5px;top:10px;bottom:10px;width:3px;border-radius:2px;background:#7cc8f8}
+.sp .si.go{background:#38bdf8;color:#06101e;width:56px;border-radius:12px;font-weight:600;margin-bottom:8px}
+.sp .si .dt0{position:absolute;top:4px;right:14px;width:8px;height:8px;border-radius:50%;background:#f5c451;box-shadow:0 0 0 2px #0b3a7a}
+.sp .gr{flex:1}
+.sp .av{margin-top:6px}
+.av{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#38bdf8,#0b3a7a);color:#fff;font:600 12px/30px var(--font);text-align:center;flex:none}
+
+/* panel */
+.pn{width:236px;flex:none;background:var(--surface);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:14px 0 0}
+.pn .wm{display:flex;align-items:center;gap:8px;padding:0 16px 10px;font-weight:650;font-size:16px}
+.pn .wm span{color:var(--info)}
+.pill{font:500 12px/1 var(--mono);padding:4px 7px;border-radius:99px;color:var(--info-ink);background:var(--t-info);border:1px solid var(--l-info);margin-left:auto}
+.wsb{margin:0 12px 10px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;display:flex;gap:9px;align-items:center}
+.wsb .tg{width:26px;height:26px;border-radius:7px;background:var(--t-info);color:var(--info-ink);font:650 12px/26px var(--font);text-align:center;flex:none}
+.wsb .tt{display:flex;flex-direction:column;line-height:1.25;min-width:0;flex:1}
+.wsb .tt b{font-size:13px}.wsb .tt small{font-size:12px;color:var(--text-dim)}
+.pn .sec{font-size:15px;font-weight:650;padding:4px 20px 6px}
+.pg{font-size:12px;color:var(--text-dim);font-weight:600;padding:12px 20px 4px}
+.pi{display:flex;align-items:center;gap:9px;min-height:34px;padding:0 10px;margin:1px 10px;border-radius:8px;color:var(--text-dim);position:relative;font-size:13.5px}
+.pi .lb{flex:1;color:var(--text)}
+.pi.on{background:var(--t-info);color:var(--info)}.pi.on .lb{color:var(--info-ink);font-weight:600}
+.pi.on::before{content:"";position:absolute;left:-10px;top:7px;bottom:7px;width:3px;border-radius:2px;background:var(--info)}
+.pi.kid{min-height:30px;margin-left:36px;padding-left:10px;font-size:13px}
+.pnote{font-size:12px;color:var(--text-dim);padding:6px 20px 0;line-height:1.4}
+.pmeter{margin:4px 12px 8px;padding:9px 10px;border-radius:10px;background:var(--surface-2);font-size:12px;color:var(--text-dim)}
+.pmeter .row{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.pmeter b{color:var(--text)}
+.segs{display:flex;gap:3px}.segs i{flex:1;height:6px;border-radius:3px;background:var(--line)}
+.segs i.d{background:var(--ok)}.segs i.n{background:var(--info)}
+.pgrow{flex:1}
+.pf{border-top:1px solid var(--line);padding:10px 14px 12px;display:flex;flex-direction:column;gap:8px}
+.pf .who{display:flex;gap:9px;align-items:center}
+.pf .who span:not(.av){display:flex;flex-direction:column;line-height:1.25}.pf .who b{font-size:13px}.pf .who small{font-size:12px;color:var(--text-dim)}
+.pf .tseg button{padding:3px 8px;font-size:12px;flex:1;justify-content:center}
+
+/* content */
+.ct{flex:1;min-width:0;padding:18px 28px 32px;display:flex;flex-direction:column;gap:14px}
+.hd{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.hd .tl{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}
+.hd .cr{font-size:12px;color:var(--text-dim)}
+.hd .h{font-size:22px;font-weight:650;line-height:1.2}
+.hd .age{font:12px var(--mono);color:var(--text-dim)}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.tabs span{padding:7px 12px;font-size:13.5px;color:var(--text-dim);border-bottom:2px solid transparent;margin-bottom:-1px;display:inline-flex;gap:6px;align-items:center}
+.tabs span.on{color:var(--info-ink);border-color:var(--info);font-weight:600}
+
+/* the setup strip: the proposal's spine of meaning */
+.ss{display:flex;border:1px solid var(--line);border-radius:12px;background:var(--surface);overflow:hidden}
+.ss .st0{flex:1;min-width:0;display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-right:1px solid var(--line-soft);position:relative}
+.ss .st0 .tx{display:flex;flex-direction:column;min-width:0;line-height:1.3}
+.ss .st0 b{font-size:13.5px;font-weight:600}
+.ss .st0 small{font-size:12px;color:var(--text-dim)}
+.ss .st0.nx{background:var(--t-info);box-shadow:inset 0 -3px 0 var(--info)}
+.ss .st0.nx small{color:var(--info-ink)}
+.ss .st0.off b{color:var(--text-dim);font-weight:500}
+.ss .end{display:flex;flex-direction:column;justify-content:center;align-items:flex-end;padding:8px 14px;gap:2px;font-size:12px;color:var(--text-dim);flex:none}
+.ss .end b{font-size:13px;color:var(--text)}
+.ss.done{align-items:center;padding:8px 14px;gap:10px;font-size:13px}
+.sm{width:22px;height:22px;border-radius:50%;flex:none;display:inline-flex;align-items:center;justify-content:center;border:2px solid var(--ctl-bd);color:var(--text-dim);font:600 12px var(--font)}
+.sm.d{background:var(--ok);border-color:var(--ok);color:var(--surface)}
+.sm.n{border-color:var(--info);color:var(--info)}
+.sm.n::after{content:"";width:8px;height:8px;border-radius:50%;background:var(--info)}
+.sm.u{border-style:dashed}
+.sm .ic{width:13px;height:13px;stroke-width:2.6}
+
+/* the lead: every page opens with its next action */
+.lead{display:flex;gap:16px;align-items:center;padding:14px 18px;border-radius:12px;background:var(--t-info);border:1px solid var(--l-info);flex-wrap:wrap}
+.lead .lt{flex:1;min-width:240px;display:flex;flex-direction:column;gap:2px}
+.lead .lt .k{font-size:12px;color:var(--info-ink);font-weight:600}
+.lead .lt b{font-size:16px;font-weight:600}
+.lead .lt span{font-size:13px;color:var(--text-dim)}
+.lead.ok{background:var(--t-ok);border-color:color-mix(in srgb,var(--ok) 35%,var(--line))}
+.lead.ok .lt .k{color:var(--ok-ink)}
+.lead.wn{background:var(--t-warn);border-color:color-mix(in srgb,var(--warn-ink) 40%,var(--line))}
+.lead.wn .lt .k{color:var(--warn-ink)}
+.acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+.cd{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;min-width:0}
+.cd .ch{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.cd .ch b{font-size:15px;font-weight:600}
+.cd .ch .r{margin-left:auto}
+.cd p{margin:0 0 8px;font-size:13.5px;color:var(--text-dim)}
+.cd.dash{border-style:dashed;background:transparent}
+.g2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.g3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.g21{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:14px}
+.col{display:flex;flex-direction:column;gap:14px;min-width:0}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;font-size:13.5px}
+.kv dt{color:var(--text-dim)}.kv dd{margin:0}
+.dim{color:var(--text-dim)}.faint{color:var(--text-faint)}
+.sm12{font-size:12px}
+.mn{font-family:var(--mono);font-size:12.5px}
+
+.b{height:32px;padding:0 12px;border-radius:8px;border:1px solid var(--ctl-bd);background:var(--surface);color:var(--text);font:600 13px var(--font);display:inline-flex;align-items:center;gap:6px;white-space:nowrap;cursor:default}
+.b.p{background:var(--info);color:var(--ctl-onac);border-color:var(--info)}
+.b.q{border-color:transparent;background:none;color:var(--info);padding:0 6px}
+.b.d{color:var(--bad-ink)}
+.b.s{height:28px;font-size:12.5px;padding:0 10px}
+.b[aria-disabled="true"]{opacity:.55}
+.c{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--surface-2);color:var(--text-dim);white-space:nowrap;display:inline-flex;gap:4px;align-items:center;line-height:1.5}
+.c.ok{background:var(--t-ok);color:var(--ok-ink)}
+.c.wn{background:var(--t-warn);color:var(--warn-ink)}
+.c.bd{background:var(--t-bad);color:var(--bad-ink)}
+.c.in{background:var(--t-info);color:var(--info-ink)}
+.c.pa{background:var(--t-pa);color:var(--paused-ink)}
+.c.ln{background:none;border:1px solid var(--line)}
+.c .ic{width:12px;height:12px}
+.st{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.st .ic{width:14px;height:14px}
+.st.ok{color:var(--ok-ink)}.st.wn{color:var(--warn-ink)}.st.bd{color:var(--bad-ink)}.st.in{color:var(--info-ink)}.st.nu{color:var(--text-dim)}
+.sg{display:inline-flex;border:1px solid var(--ctl-bd);border-radius:8px;overflow:hidden;background:var(--surface);flex:none}
+.sg span{padding:5px 11px;font-size:13px;color:var(--text-dim);border-right:1px solid var(--line);white-space:nowrap;display:inline-flex;gap:5px;align-items:center}
+.sg span:last-child{border-right:0}
+.sg span.on{background:var(--t-info);color:var(--info-ink);font-weight:600}
+.sg span.x{opacity:.5}
+.fld{display:flex;flex-direction:column;gap:4px;font-size:13px;min-width:0}
+.fld>span{color:var(--text-dim);font-weight:600;font-size:12.5px}
+.inp{height:34px;border:1px solid var(--ctl-bd);border-radius:8px;background:var(--surface);display:flex;align-items:center;padding:0 10px;font-size:13.5px;color:var(--text-faint);gap:8px;min-width:0}
+.inp.v{color:var(--text)}
+.inp .ic{color:var(--text-dim)}
+.chk{display:inline-flex;align-items:center;gap:8px;font-size:13.5px}
+.chk i{width:16px;height:16px;border-radius:4px;border:1.5px solid var(--ctl-bd);flex:none;display:inline-flex;align-items:center;justify-content:center}
+.chk i.y{background:var(--info);border-color:var(--info);color:var(--ctl-onac)}
+.chk i .ic{width:11px;height:11px;stroke-width:3}
+.chk.x{opacity:.55}
+.hint{font-size:12.5px;color:var(--text-dim)}
+.bn{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-radius:10px;font-size:13px;border:1px solid var(--line);background:var(--surface-2)}
+.bn.in{background:var(--t-info);border-color:var(--l-info)}
+.bn.wn{background:var(--t-warn);border-color:color-mix(in srgb,var(--warn-ink) 40%,var(--line))}
+.bn b{display:block}
+.bn .ic{margin-top:2px}
+
+/* tables; .rs turns rows into cards on the phone */
+.tw{border:1px solid var(--line);border-radius:10px;overflow-x:auto;background:var(--surface)}
+table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
+.t th{font-size:12px;font-weight:600;color:var(--text-dim);text-align:left;padding:8px 10px;background:var(--surface-2);border-bottom:1px solid var(--line);white-space:nowrap}
+.t td{padding:8px 10px;border-bottom:1px solid var(--line-soft);vertical-align:middle}
+.t tr:last-child td{border-bottom:0}
+.t .n{text-align:right}
+.t tr.need td{background:color-mix(in srgb,var(--warn-ink) 6%,var(--surface))}
+.t tr.tot td{font-weight:600;background:var(--surface-2)}
+.t td small{display:block;font-size:12px;color:var(--text-dim)}
+
+/* wizard */
+.wz{display:flex;gap:6px;flex-wrap:wrap}
+.wz span{display:inline-flex;gap:6px;align-items:center;font-size:12.5px;color:var(--text-dim);padding:3px 10px 3px 4px;border-radius:99px;border:1px solid var(--line)}
+.wz span i{width:20px;height:20px;border-radius:50%;background:var(--surface-2);font:600 12px/20px var(--font);text-align:center;font-style:normal}
+.wz span.d i{background:var(--ok);color:var(--surface)}
+.wz span.on{border-color:var(--info);color:var(--info-ink);font-weight:600}
+.wz span.on i{background:var(--info);color:var(--ctl-onac)}
+.opt{border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;gap:10px;align-items:flex-start;font-size:13.5px;background:var(--surface)}
+.opt.on{border-color:var(--info);background:var(--t-info)}
+.opt.x{opacity:.6}
+.opt .rd{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--ctl-bd);flex:none;margin-top:2px}
+.opt.on .rd{border:5px solid var(--info)}
+.opt b{display:block;font-size:13.5px}
+.opt small{font-size:12.5px;color:var(--text-dim);display:block}
+.sheet{border:1px solid var(--line);border-radius:14px;background:var(--surface);box-shadow:0 12px 32px rgba(11,58,122,.16);padding:16px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.sheet .sh{display:flex;align-items:center;gap:8px}.sheet .sh b{font-size:16px;flex:1}
+
+/* charts */
+.chart svg{display:block;width:100%;height:auto}
+.chart text{font:12px var(--font);fill:var(--text-dim)}
+.chart .gl{stroke:var(--line-soft);stroke-width:1}
+.chart .lab{fill:var(--text);font-weight:600}
+.lg{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12.5px;color:var(--text-dim)}
+.lg i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.sent{font-size:20px;font-weight:600;line-height:1.35}
+.sent em{font-style:normal;color:var(--info-ink)}
+
+/* run group columns */
+.cols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.mtr{display:flex;gap:8px;align-items:center;font-size:13px}
+.bar{flex:1;height:6px;border-radius:3px;background:var(--line);overflow:hidden;display:flex}
+.bar i{display:block;height:100%;background:var(--info)}
+
+/* ---------- phone ---------- */
+.ph{width:390px;max-width:100%;border:1px solid var(--line);border-radius:28px;overflow:hidden;background:var(--bg);position:relative}
+.phd{height:52px;background:#0b3a7a;color:#eef4fa;display:flex;align-items:center;gap:10px;padding:0 14px}
+.phd b{font-size:15px;font-weight:650;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.phd .wsc{font-size:12px;padding:3px 8px;border-radius:99px;background:rgba(124,200,248,.18);color:#cfe9fb;border:1px solid rgba(124,200,248,.45);white-space:nowrap}
+.pss{display:flex;flex-direction:column;gap:6px;padding:10px 14px;background:var(--surface);border-bottom:1px solid var(--line);font-size:12.5px}
+.pss .row{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.pss b{font-size:13px}
+.pss a{font-weight:600}
+.pb{padding:14px;display:flex;flex-direction:column;gap:12px}
+.ph .ct{padding:0;gap:12px}
+.ph .hd .h{font-size:20px}
+.ph .g2,.ph .g3,.ph .g21,.ph .cols{grid-template-columns:minmax(0,1fr)}
+.ph .ss{display:none}
+.ph .lead{padding:12px 14px}
+.ph .lead .lt{min-width:0}
+.ph .lead .acts{width:100%}
+.ph .cd{padding:12px}
+/* a long count chip in a card's head wraps inside the card on a phone rather than running into its edge (S6b phone) */
+.ph .cd .ch .r{min-width:0;max-width:100%}
+.ph .cd .ch .r .c{white-space:normal;border-radius:10px}
+.ph .tw{border:0;background:none;overflow:visible}
+.ph .rs thead{display:none}
+.ph .rs,.ph .rs tbody,.ph .rs tr,.ph .rs td{display:block;width:100%}
+.ph .rs tr{border:1px solid var(--line);border-radius:10px;background:var(--surface);margin-bottom:8px;padding:6px 0}
+/* label left, everything else grouped right; a cell's small second line gets its own line, right-aligned */
+.ph .rs td{display:flex;justify-content:flex-end;gap:4px 12px;border:0;padding:4px 12px;text-align:right;align-items:flex-start;flex-wrap:wrap}
+.ph .rs td>*{text-align:right}
+.ph .rs td::before{content:attr(data-l);color:var(--text-dim);font-size:12px;text-align:left;flex:none;margin-right:auto}
+.ph .rs td:first-child{font-weight:600;justify-content:flex-start;text-align:left}
+.ph .rs td:first-child::before{display:none}
+.ph .rs td:empty{display:none}
+.ph .rs td small{text-align:right;flex-basis:100%}
+.ph .rs td:first-child small{flex-basis:auto;text-align:left}
+/* a dash with its reason on one line (S3b's read-grant cells) */
+.t td .nw{white-space:nowrap}.t td .nw small{display:inline;flex-basis:auto}
+.ph .hd:has(.acts) .tl{flex-basis:100%}
+.ph .tabs{flex-wrap:nowrap;overflow:hidden}
+.ph .tabs span{padding:7px 7px;font-size:13px;white-space:nowrap}
+.ph .sg{flex-wrap:wrap}
+.ph .kv{grid-template-columns:1fr}
+.ph .kv dd{margin-bottom:6px}
+.ph .hide-ph{display:none}
+.show-ph{display:none}
+.ph .show-ph{display:revert}
+.ph.dr{height:760px}
+.scrim{position:absolute;inset:52px 0 0 0;background:rgba(6,16,30,.5)}
+.drw{position:absolute;left:0;top:0;bottom:0;width:330px;display:flex;background:var(--surface);box-shadow:0 10px 30px rgba(0,0,0,.35);z-index:2}
+.drw .sp{width:74px}.drw .sp .si{width:66px}
+.drw .pn{flex:1;width:auto;border-right:0}
+/* rows used by the chooser and the cards; the phone wraps them */
+.rr{display:flex;gap:12px;align-items:center;padding:9px 12px;border-bottom:1px solid var(--line-soft);flex-wrap:wrap}
+.rr:last-child{border-bottom:0}
+.rr .nm{flex:1;min-width:180px;display:flex;flex-direction:column;line-height:1.3}
+.rr .nm b{font-size:13.5px;font-weight:600}.rr .nm small{font-size:12px;color:var(--text-dim)}
+.lst{border:1px solid var(--line);border-radius:10px;background:var(--surface);overflow:hidden}
+.own{display:flex;flex-direction:column;gap:6px}
+.own .o{border:1px solid var(--line);border-radius:10px;padding:9px 12px;background:var(--surface);display:flex;flex-direction:column;gap:2px;font-size:13px}
+.own .o.on{border-color:var(--info);background:var(--t-info)}
+.own .o b{font-size:13.5px}.own .o small{font-size:12px;color:var(--text-dim)}
+.foot{display:flex;gap:12px;align-items:center;justify-content:flex-end;padding:10px 14px;border:1px solid var(--line);border-radius:12px;background:var(--surface);flex-wrap:wrap;font-size:13px}
+.foot .dim{margin-right:auto}
+.scope{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.scope>.lbl{font-size:12.5px;font-weight:600;color:var(--text-dim)}
+.scope .r{margin-left:auto}
+.ph .scope .r{margin-left:0}
+.stp{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line-soft);font-size:13.5px}
+.stp:last-child{border-bottom:0}
+.stp .tx{flex:1;display:flex;flex-direction:column}
+.stp .tx small{font-size:12.5px;color:var(--text-dim)}
+.fold{display:flex;gap:10px;align-items:center;padding:10px 14px;border:1px solid var(--line);border-radius:10px;background:var(--surface);font-size:13.5px}
+.fold b{flex:1 0 auto}
+.fold>.dim{text-align:right;min-width:0}
+/* a filter's label travels with its control when the row wraps */
+.fgrp{display:flex;gap:6px 8px;align-items:center;flex-wrap:wrap}
+/* the wizard: one side sheet over the page, and its other steps drawn on their own */
+.wzwrap{position:relative}
+.wzwrap>.wzsheet{position:absolute;top:0;right:0;width:500px;z-index:2}
+.sheetfig{width:420px;max-width:100%}
+.envh{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 8px}
+.envh b{font-size:14px}
+.repc{display:flex;flex-direction:column;gap:6px;font-size:13px}
+.repc .top{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.repc .top b{font-size:14.5px;flex:1;min-width:0}
+.dimbox{opacity:.45;pointer-events:none}
+/* ---------- proposal D: frame boxes, sections, schedule cards ---------- */
+.frame{margin:56px 0 0;border:1px solid var(--line);border-radius:16px;padding:14px 16px 18px;background:color-mix(in srgb,var(--surface) 55%,var(--bg));scroll-margin-top:60px;min-width:0}
+.frame>h2{margin:0 0 4px;overflow-wrap:anywhere}
+.doc h1,.doc h2,.fr figcaption,.sublab{overflow-wrap:anywhere}
+/* at phone width a frame box runs edge to edge, so a phone frame is drawn the full 390 */
+@media (max-width:480px){.frame{margin-left:-16px;margin-right:-16px;border-radius:0;border-left:0;border-right:0;padding:12px 0 16px}.frame>h2,.frame>.flabel,.frame .sublab,.frame figcaption{padding-left:12px;padding-right:12px}.frame .pair{gap:20px}.frame .ph{border-radius:0;border-left:0;border-right:0}.frame .scroller{border-radius:0;border-left:0;border-right:0}}
+.flabel{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 4px}
+.fid{font:600 13px var(--mono);color:var(--ctl-onac);background:var(--info);border-radius:6px;padding:2px 8px}
+.flabel .dim{font-size:13px}
+.sub{margin:22px 0 0;min-width:0}
+.sublab{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:14px;margin:0 0 8px}
+.sublab .sid{font:600 12.5px var(--mono);color:var(--info-ink);background:var(--t-info);border:1px solid var(--l-info);border-radius:6px;padding:1px 7px}
+.sublab b{font-weight:600}
+.sublab .dim{font-size:13px}
+.app.short{min-height:0}
+
+/* a section of the landing: a heading, a count and its own action */
+.sec2{display:flex;flex-direction:column;gap:10px;min-width:0}
+.sec2>.sh2{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.sec2>.sh2 h3{margin:0;font-size:16px;font-weight:650}
+.sec2>.sh2 .r{margin-left:auto}
+
+/* schedule cards, grouped by type: a group spans as many columns as it has cards */
+.grp3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.tgp{display:flex;flex-direction:column;gap:8px;min-width:0}
+.tgp.s2{grid-column:span 2}
+.tgp .gh{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px;color:var(--text-dim)}
+.tgp .gh b{font:500 13px var(--mono);color:var(--text)}
+.tgp .gi{display:grid;gap:14px;grid-template-columns:repeat(var(--n,1),minmax(0,1fr));flex:1}
+.sc{display:flex;flex-direction:column;gap:8px}
+.sc .top{display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap}
+.sc .top b{font-size:15px;font-weight:600;flex:1;min-width:0}
+.sc .kv{font-size:13px;gap:3px 12px}
+.sc .kv dd small{display:block;font-size:12px;color:var(--text-dim)}
+.sc .acts{margin-top:auto;padding-top:4px}
+.sc.wt{border-color:color-mix(in srgb,var(--warn-ink) 45%,var(--line))}
+.sc.bdx{border-color:color-mix(in srgb,var(--bad-ink) 45%,var(--line))}
+.lead.bd{background:var(--t-bad);border-color:color-mix(in srgb,var(--bad-ink) 40%,var(--line))}
+.lead.bd .lt .k{color:var(--bad-ink)}
+.lead.nu{background:var(--surface-2);border-color:var(--line)}
+.lead.nu .lt .k{color:var(--text-dim)}
+
+/* a row list inside a card (Needs you) */
+.rl{display:flex;flex-direction:column}
+.rl .ri{display:flex;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line-soft);flex-wrap:wrap}
+.rl .ri:last-child{border-bottom:0}
+.rl .ri .tx{flex:1;min-width:200px;display:flex;flex-direction:column;line-height:1.35;font-size:13.5px}
+.rl .ri .tx small{font-size:12px;color:var(--text-dim)}
+.rl .ri .exp{font-size:12.5px;color:var(--warn-ink);white-space:nowrap}
+
+/* spend against the tripwire: the bar is the day, the tick is the tripwire */
+.spend{display:flex;flex-direction:column;gap:6px;font-size:13px}
+.spend .bar{height:8px;position:relative;overflow:visible;flex:none}
+.spend .bar i{border-radius:4px}
+.spend .bar i.un{background:repeating-linear-gradient(135deg,var(--ctl-bd) 0 3px,transparent 3px 6px)}
+.spend .row{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.runs{display:flex;align-items:flex-end;gap:6px;height:96px;padding:0 2px;border-bottom:1px solid var(--line);position:relative}
+.runs .rb{flex:1;min-width:0;background:var(--info);border-radius:3px 3px 0 0;position:relative}
+.runs .rb.wt{background:var(--warn-dot)}
+.runs .trip{position:absolute;left:0;right:0;border-top:2px dashed var(--bad-ink)}
+.runs .trip span{position:absolute;right:0;top:-20px;font-size:12px;color:var(--bad-ink);background:var(--surface);padding:0 4px}
+.runx{display:flex;gap:6px;padding:4px 2px 0}
+.runx span{flex:1;min-width:0;text-align:center;font-size:12px;color:var(--text-dim);white-space:nowrap}
+
+/* next firings */
+.nf{display:flex;flex-direction:column;margin:0;padding:0;list-style:none;font-size:13.5px}
+.nf li{display:flex;gap:10px;padding:6px 0;border-bottom:1px solid var(--line-soft);align-items:baseline;flex-wrap:wrap}
+.nf li:last-child{border-bottom:0}
+.nf li .mn{min-width:128px}
+.nf li small{font-size:12px;color:var(--text-dim)}
+.paths{margin:6px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:4px}
+.paths li{font-size:13px}
+.paths code{font-size:12.5px}
+.bn.bd{background:var(--t-bad);border-color:color-mix(in srgb,var(--bad-ink) 40%,var(--line))}
+.bn.ok{background:var(--t-ok);border-color:color-mix(in srgb,var(--ok) 35%,var(--line))}
+.tl2{display:flex;flex-direction:column;margin:0;padding:0;list-style:none}
+.tl2 li{display:flex;gap:10px;padding:6px 0;font-size:13.5px;align-items:flex-start}
+.tl2 li i{width:10px;height:10px;border-radius:50%;margin-top:6px;flex:none;background:var(--ctl-bd)}
+.tl2 li i.ok{background:var(--ok)}.tl2 li i.bd{background:var(--bad-ink)}.tl2 li i.wn{background:var(--warn-dot)}.tl2 li i.in{background:var(--info)}
+.tl2 li span{display:flex;flex-direction:column}
+.tl2 li small{font-size:12px;color:var(--text-dim)}
+.quote{border-left:3px solid var(--bad-ink);padding:2px 0 2px 10px;margin:4px 0;font-size:14px}
+.types{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.wzwrap>.wzsheet.w4{width:470px}
+.ex{font-size:12.5px;color:var(--bad-ink);display:flex;gap:6px;align-items:flex-start}
+.ex .ic{width:14px;height:14px;margin-top:2px}
+.inp.er{border-color:var(--bad-ink);color:var(--text)}
+
+/* phone */
+.ph .grp3{grid-template-columns:minmax(0,1fr)}
+.ph .tgp.s2{grid-column:auto}
+.ph .tgp .gi{grid-template-columns:minmax(0,1fr)}
+.ph .rl .ri .tx{min-width:0;flex-basis:100%}
+.ph .nf li .mn{min-width:0}
+.ph .types{grid-template-columns:minmax(0,1fr)}
+.ph .sc .kv{grid-template-columns:max-content minmax(0,1fr)}
+.ph .sc .kv dd{margin-bottom:0}
+.ph .sec2>.sh2 .r{margin-left:0}
+.ph .lead .acts .b{flex:1 1 auto;justify-content:center}
+.kv dd small{display:block;font-size:12px;color:var(--text-dim)}
+.sheet .sg{flex-wrap:wrap}
+.newf td:first-child{white-space:nowrap}
+.doct.newf td:last-child,.doct.newf th:last-child{white-space:normal}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<linearGradient id="g-hive-b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#7dd3fc"/></linearGradient>
+<symbol id="hive" viewBox="0 0 44 44"><g fill="url(#g-hive-b)"><path d="M22 4l6.5 3.75v7.5L22 19l-6.5-3.75v-7.5z"/><path d="M11 22.5l6.5 3.75v7.5L11 37.5l-6.5-3.75v-7.5z" opacity=".85"/><path d="M33 22.5l6.5 3.75v7.5L33 37.5l-6.5-3.75v-7.5z" opacity=".85"/><path d="M22 22.5l5 2.9v5.8l-5 2.9-5-2.9v-5.8z" opacity=".7"/><path d="M11 6.5l4.5 2.6v5.2L11 16.9l-4.5-2.6V9.1z" opacity=".55"/><path d="M33 6.5l4.5 2.6v5.2L33 16.9l-4.5-2.6V9.1z" opacity=".55"/><path d="M22 36l3.5 2v4L22 44l-3.5-2v-4z" opacity=".45"/></g></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-overview" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5"/><rect x="13.5" y="11" width="7" height="9.5" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
+<symbol id="i-work" viewBox="0 0 24 24"><rect x="5" y="7.5" width="14" height="11" rx="3"/><path d="M12 4v3.5M9 12.5v1M15 12.5v1"/></symbol>
+<symbol id="i-automate" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+<symbol id="i-capacity" viewBox="0 0 24 24"><path d="M12 3.5 3.5 8 12 12.5 20.5 8Z"/><path d="m3.5 12 8.5 4.5 8.5-4.5"/><path d="m3.5 16 8.5 4.5 8.5-4.5"/></symbol>
+<symbol id="i-config" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+<symbol id="i-admin" viewBox="0 0 24 24"><path d="M12 3.5 19.5 6v5.5c0 4.5-3.2 8-7.5 9-4.3-1-7.5-4.5-7.5-9V6Z"/><path d="m9 12 2.2 2.2L15.5 10"/></symbol>
+<symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 0 1 4.8 1c0 1.7-2.4 2-2.4 3.5"/><path d="M12 17.2v.1"/></symbol>
+<symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></symbol>
+<symbol id="i-repo" viewBox="0 0 24 24"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5Z"/><path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3"/></symbol>
+<symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 8.5-8.5M16 7l2.5 2.5M14 9l2 2"/></symbol>
+<symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0Z"/><path d="M12 17v4"/></symbol>
+<symbol id="i-people" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5a5.5 5.5 0 0 1 11 0"/><path d="M16 5.5a3 3 0 0 1 0 6M18.5 19.5a5 5 0 0 0-2.5-4.3"/></symbol>
+<symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+<symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4 21 19.5H3Z"/><path d="M12 10v4.5M12 17v.1"/></symbol>
+<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.1"/></symbol>
+<symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol>
+<symbol id="i-ext" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+<symbol id="i-chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+<symbol id="i-chevd" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></symbol>
+<symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10Z"/></symbol>
+<symbol id="i-sys" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="12" rx="2"/><path d="M9 20h6M12 16.5V20"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol>
+<symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18M10.6 6.1A9.8 9.8 0 0 1 12 6c5 0 8.5 4.5 9.5 6-.5.8-1.5 2.1-2.9 3.3M6.6 6.6C4.6 7.9 3.2 9.8 2.5 12c1 1.5 4.5 6 9.5 6a9.6 9.6 0 0 0 4.4-1.1M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
+<symbol id="i-play" viewBox="0 0 24 24"><path d="M7 5v14l11-7Z"/></symbol>
+<symbol id="i-env" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M3.5 9h17M7 7h.1M9.5 7h.1"/></symbol>
+<symbol id="i-person" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/></symbol>
+<symbol id="i-building" viewBox="0 0 24 24"><path d="M4 20V6.5L12 3.5l8 3V20"/><path d="M9 20v-4.5h6V20M8.5 9.5h1M14.5 9.5h1M8.5 12.5h1M14.5 12.5h1"/></symbol>
+<symbol id="i-counts" viewBox="0 0 24 24"><path d="M4 19.5h16"/><path d="M6.5 16v-4M10.5 16V8M14.5 16v-6M18.5 16V5"/></symbol>
+<symbol id="i-sizes" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2.5"/><path d="M9 4v16M4 9h5M4 14h5"/></symbol>
+<symbol id="i-cal" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M8.5 3v4M15.5 3v4"/></symbol>
+<symbol id="i-qa" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="12" rx="2"/><path d="m9 10.5 2 2 4-4M9 20h6"/></symbol>
+</defs></svg>
+
+<div class="topbar"><div class="in">
+  <b>Automate proposal D · Config E sections</b>
+  <span class="sp0"></span>
+  <span class="sm12 dim">Theme for the page and every frame</span>
+  <div class="tseg" role="group" aria-label="Theme" data-tseg>
+    <button type="button" data-theme-set="light"><svg class="ic"><use href="#i-sun"/></svg>Light</button><button type="button" data-theme-set="dark"><svg class="ic"><use href="#i-moon"/></svg>Dark</button><button type="button" data-theme-set="system" aria-pressed="true"><svg class="ic"><use href="#i-sys"/></svg>System</button>
+  </div>
+</div></div>
+
+<main class="doc">
+<p class="kick">AUTOMATE-MOCKS-D · part of #2417 · drawn 2026-10-26 · not picked</p>
+<h1>Automate: proposal D, Config E's sections</h1>
+<p class="lede">One of four competing proposals (A to D) for BGD's redesign of the console's Automate section. BGD picks frames across the four on the picks page, so every proposal draws the same frames under the same ids, A1 to A7. This one draws Automate the way Config E draws Config: a setup strip, then sections, then detail pages that open with a lead and stack their cards. Every desktop frame is drawn at 1440 wide (or this page's width when the window is narrower) with the console's nav open; the phone frames are drawn 390 wide. The theme control at the top repaints the page and every frame light, dark or as the system says, and so does the control in each frame's panel foot.</p>
+
+<div class="rules">
+  <b>What every frame obeys</b>
+  <ul>
+    <li>PICKS.md: nothing below 12px, no all-caps, no letter-spacing, a light / dark / system toggle in the panel's user foot, and honesty: an unknown figure is a dash with its reason, never 0. State words are lower-case words ("waiting on you", "approved", "rejected"), never the API's enums.</li>
+    <li>The V2 Sky spine and the console's tokens, light and dark, taken from Config E (config-e.html, #2157) and Subscription accounts A (accounts-a.html, #2222): the same lead, cards, tables, chips, buttons, wizard sheet and phone rows-as-cards. Nothing here is a new visual language.</li>
+    <li>Example data. The viewer is Operator, the owner of the group workspace Example Team and a platform admin; A5f is drawn for Lee, a member. The approval in A5 is the real <code>apr_31f74dc3dc84349da9b83697</code> with its real fields. Times are UTC and "now" is Monday 2026-10-26 09:20Z.</li>
+  </ul>
+</div>
+
+<section class="idea" aria-label="Proposal D: idea, how it differs, risks">
+  <div><h4>Idea</h4><p>Automate is led by what it is waiting for. A <b>setup strip</b> runs across the top: schedule types enabled → approvers set → budget tripwires set → merge App set, each step read, never ticked by hand. Under it the landing has three sections in a fixed order: <b>Needs you</b> (approvals waiting and schedules that are stuck), <b>Schedules</b> (cards grouped by type, each with its next firing and last outcome) and <b>Recent firings</b>. One schedule and one approval are Config E detail pages: a header, one lead sentence with its button, then a stack of cards. Making or editing a schedule is Config E's six-step wizard in a side sheet.</p></div>
+  <div><h4>How it differs from the console today</h4><ul>
+    <li>Today Schedules is one table (Name · type, Repository, When, Next run, Last run, Spend today, Approvals, State) and Approvals is a split list beside a detail. Here the table becomes cards grouped by type, under the two things a table cannot say first: what waits on you, and what is stuck.</li>
+    <li>Automate keeps its two pages, Schedules and Approvals (SD1). The landing's Needs you shows the waiting approvals, but the full inbox, its kind filter and its decided history stay a page of their own, because they do not fit in a section.</li>
+    <li>ScheduleDetail's five tabs (History, Budget, Gate, Settings, Audit) become one stack of cards with a lead; ScheduleEdit's one long form becomes six steps; one approval gets a page of its own rather than the right half of the inbox.</li>
+  </ul></div>
+  <div><h4>Risks</h4><ul>
+    <li>The strip costs about 56px on the landing even when done; it folds to one line (A6d), but it is still there.</li>
+    <li>Two of the strip's steps are read across schedules (approvers, tripwires) and two need reads that do not exist: whether the merge App is set, and nothing serves "types enabled per workspace" (see New fields).</li>
+    <li>Cards hold fewer schedules on one screen than the table: about nine at 1440 against the table's twenty. A workspace with forty schedules wants the table back; the Schedules heading keeps a Cards / Table switch for that.</li>
+    <li>Recent firings across every schedule needs one tenant-wide read; today it is one read per schedule.</li>
+  </ul></div>
+</section>
+
+<ul class="toc">
+  <li><a href="#A1">A1 Landing</a></li><li><a href="#A2">A2 One schedule</a></li><li><a href="#A3">A3 New or edited schedule</a></li><li><a href="#A4">A4 Approvals</a></li><li><a href="#A5">A5 One approval</a></li><li><a href="#A6">A6 Empty and honest states</a></li><li><a href="#A7">A7 Phone</a></li><li><a href="#newfields">New fields</a></li><li><a href="#open">Open questions</a></li>
+</ul>
+
+<section class="frame" id="A1" data-frame="A1">
+  <h2><span class="n">A1</span>Automate's landing</h2>
+  <div class="flabel"><span class="fid">A1</span><span class="dim">Automate › Schedules · desktop 1440 · nav open · platform admin and owner</span></div>
+  <figure class="fr sub" data-sub="A1"><div class="scroller" data-f="a1-d"></div><figcaption><b>A1 · The landing.</b> The strip reads 3 of 4: the merge App is the next step. Needs you lists the three waiting approvals oldest first with the time each has left, and the two stuck schedules with the one action that unsticks each. Seven schedules of six types, grouped by type, cover every state: active, paused by a person, paused by its spend tripwire, waiting on an approval (two), failing, and never fired. Recent firings is today's, newest first, with each firing's work and cost; its seven rows are the last seven of twelve. Approvals waiting reads 3 in the panel and in Needs you: one read, drawn twice at two sizes.</figcaption></figure>
+</section>
+
+<section class="frame" id="A2" data-frame="A2">
+  <h2><span class="n">A2</span>One schedule</h2>
+  <div class="flabel"><span class="fid">A2</span><span class="dim">Automate › Schedules › Failure review · desktop 1440</span></div>
+  <figure class="fr sub" data-sub="A2"><div class="scroller" data-f="a2-d"></div><figcaption><b>A2 · Failure review, sch_54e9828e6772.</b> The lead is what the schedule waits for: its 00:00Z firing's merge approval (A5). Then what it does, its cadence and next five firings (with the overlap rule that will skip one), its firing history with each firing's run, issue and pull request, spend against the tripwire (each run's cost against the $200 per-run line, and the day against $1,000), its gates and approvers, and its actions: Run now, Dry run, Pause, Edit and, folded under More, Delete.</figcaption></figure>
+</section>
+
+<section class="frame" id="A3" data-frame="A3">
+  <h2><span class="n">A3</span>A new or edited schedule</h2>
+  <div class="flabel"><span class="fid">A3</span><span class="dim">Config E's wizard: one side sheet, six steps · desktop 1440, then each step on its own</span></div>
+  <figure class="fr sub" data-sub="A3a"><div class="sublab"><span class="sid">A3a</span><b>New schedule, step 3 of 6, over the landing</b></div><div class="scroller" data-f="a3-d"></div><figcaption><b>A3a · The sheet over the landing.</b> Type → Target → When → Gates → Budget → Review: the order the built form (ScheduleEdit.tsx) asks them in, one question a step. Drawn at step 3: the cron, its words, the next five firings from <code>POST /v1/schedules:preview</code>, and the shortest gap against the type's.</figcaption></figure>
+  <div class="pair">
+    <figure class="fr sub sheetfig" data-sub="A3b"><div class="sublab"><span class="sid">A3b</span><b>Step 1, type and template</b></div><div data-f="a3-1"></div><figcaption>The types the API serves, each with its template (budget caps, shortest interval, the type's own notes). An unavailable type is drawn greyed with its reason.</figcaption></figure>
+    <figure class="fr sub sheetfig" data-sub="A3c"><div class="sublab"><span class="sid">A3c</span><b>Step 2, target</b></div><div data-f="a3-2"></div><figcaption>Scope, the repository and, for visual-qa, the QA target and its environments.</figcaption></figure>
+    <figure class="fr sub sheetfig" data-sub="A3d"><div class="sublab"><span class="sid">A3d</span><b>Step 3, refused</b></div><div data-f="a3-3x"></div><figcaption>The preview's refusal, in the type's words, with the gap that broke it. Next is off until it is fixed.</figcaption></figure>
+    <figure class="fr sub sheetfig" data-sub="A3e"><div class="sublab"><span class="sid">A3e</span><b>Step 4, gates and approvers</b></div><div data-f="a3-4"></div><figcaption>Run and merge gates, who decides, and how long an approval waits.</figcaption></figure>
+    <figure class="fr sub sheetfig" data-sub="A3f"><div class="sublab"><span class="sid">A3f</span><b>Step 5, budget and tripwire, with a validation message</b></div><div data-f="a3-5"></div><figcaption>Per run is a tripwire, per day a gate; a value over the type's cap is refused in place.</figcaption></figure>
+    <figure class="fr sub sheetfig" data-sub="A3g"><div class="sublab"><span class="sid">A3g</span><b>Edit, step 6, review, after someone else saved</b></div><div data-f="a3-6"></div><figcaption>Editing Visual QA, console: the review lists only what changed, and the revision check's answer is a banner with the way out.</figcaption></figure>
+  </div>
+</section>
+
+<section class="frame" id="A4" data-frame="A4">
+  <h2><span class="n">A4</span>Approvals</h2>
+  <div class="flabel"><span class="fid">A4</span><span class="dim">Automate › Approvals · desktop 1440</span></div>
+  <figure class="fr sub" data-sub="A4a"><div class="sublab"><span class="sid">A4a</span><b>Every kind</b></div><div class="scroller" data-f="a4-d"></div><figcaption><b>A4a · The inbox.</b> Waiting, oldest first, with the time each has left and who may decide it; decided in the last seven days, with who decided, when and the reason; expired and superseded. The kind filter is the built one (Every kind, Run, Plan, Held plan, Merge, Proposal, Spec, Answer), each with its waiting count.</figcaption></figure>
+  <figure class="fr sub" data-sub="A4b"><div class="sublab"><span class="sid">A4b</span><b>Filtered to merge</b></div><div class="scroller" data-f="a4m-d"></div><figcaption><b>A4b · Kind: merge.</b> The same three sections, only merges. The lead follows the filter.</figcaption></figure>
+</section>
+
+<section class="frame" id="A5" data-frame="A5">
+  <h2><span class="n">A5</span>One approval: apr_31f74dc3dc84349da9b83697</h2>
+  <div class="flabel"><span class="fid">A5</span><span class="dim">Automate › Approvals › merge PR #2392 · desktop 1440 · six states</span></div>
+  <figure class="fr sub" data-sub="A5a"><div class="sublab"><span class="sid">A5a</span><b>Pending</b><span class="dim">seen by the owner, who may decide</span></div><div class="scroller" data-f="a5-pending"></div><figcaption><b>A5a · Pending.</b> The lead asks the question and carries both answers. Approving posts the digest <code>dbd00f06c5cd:MERGE</code>, so it can only ever merge that head.</figcaption></figure>
+  <figure class="fr sub" data-sub="A5b"><div class="sublab"><span class="sid">A5b</span><b>Approved</b></div><div class="scroller" data-f="a5-approved"></div><figcaption><b>A5b · Approved.</b> Who, when, at which head, and what happened next: the pull request merged.</figcaption></figure>
+  <figure class="fr sub" data-sub="A5c"><div class="sublab"><span class="sid">A5c</span><b>Denied</b><span class="dim">drawn "rejected", the API's and the built console's word</span></div><div class="scroller" data-f="a5-rejected"></div><figcaption><b>A5c · Denied, with the reason.</b> A rejection needs a reason (the API refuses one without), so the reason is the lead.</figcaption></figure>
+  <figure class="fr sub" data-sub="A5d"><div class="sublab"><span class="sid">A5d</span><b>Expired</b></div><div class="scroller" data-f="a5-expired"></div><figcaption><b>A5d · Expired.</b> Nobody decided in the 72 hours; nothing merged.</figcaption></figure>
+  <figure class="fr sub" data-sub="A5e"><div class="sublab"><span class="sid">A5e</span><b>Superseded</b><span class="dim">the head moved after the request</span></div><div class="scroller" data-f="a5-superseded"></div><figcaption><b>A5e · Superseded.</b> A fix round pushed 7a3e51c09b2f after the request; this approval was for dbd00f06c5cd and can no longer merge anything. The lead links the newer approval (a new field, <code>superseded_by</code>).</figcaption></figure>
+  <figure class="fr sub" data-sub="A5f"><div class="sublab"><span class="sid">A5f</span><b>Seen by a member who is not an approver</b></div><div class="scroller" data-f="a5-member"></div><figcaption><b>A5f · Lee, a member.</b> Approve and Reject are not offered; the lead says who can decide and why. Today the API only answers that with a 403 after the click: the page needs <code>may_decide</code> (New fields).</figcaption></figure>
+</section>
+
+<section class="frame" id="A6" data-frame="A6">
+  <h2><span class="n">A6</span>Empty and honest states</h2>
+  <div class="flabel"><span class="fid">A6</span><span class="dim">desktop 1440 · four states</span></div>
+  <figure class="fr sub" data-sub="A6a"><div class="sublab"><span class="sid">A6a</span><b>No schedules yet</b></div><div class="scroller" data-f="a6-empty"></div><figcaption><b>A6a · A new workspace.</b> The strip's later steps wait for the first schedule and say so; the Schedules section is the way to make it, with three types to start from.</figcaption></figure>
+  <figure class="fr sub" data-sub="A6b"><div class="sublab"><span class="sid">A6b</span><b>Automate not served by this deployment</b></div><div class="scroller" data-f="a6-noserve"></div><figcaption><b>A6b · Not served.</b> <code>GET /v1/schedule-types</code> answered 404: this deployment's API has no schedules. The section takes over the content area (states.html tier 1) with the nav still usable, and draws no strip, no count and no empty list, because none of them was read.</figcaption></figure>
+  <figure class="fr sub" data-sub="A6c"><div class="sublab"><span class="sid">A6c</span><b>A read that failed</b></div><div class="scroller" data-f="a6-failed"></div><figcaption><b>A6c · Approvals could not be read.</b> The schedules read; the approvals did not. Every figure that comes from the failed read is a dash with its reason, in the panel and in Needs you: never 0, which would say nothing waits. The Failure review card keeps the one fact the schedules read serves (1 approval pending) and says where the rest would come from. One schedule's spend is still being summed and says so.</figcaption></figure>
+  <figure class="fr sub" data-sub="A6d"><div class="sublab"><span class="sid">A6d</span><b>Nothing waiting</b></div><div class="scroller" data-f="a6-calm"></div><figcaption><b>A6d · Setup complete, nothing waits.</b> The strip folds to one line; Needs you says nothing waits and when the last thing was decided, rather than vanishing.</figcaption></figure>
+</section>
+
+<section class="frame" id="A7" data-frame="A7">
+  <h2><span class="n">A7</span>Phone at 390</h2>
+  <div class="flabel"><span class="fid">A7</span><span class="dim">A1, A2 and A5 at 390 wide</span></div>
+  <div class="pair">
+    <figure class="fr sub" data-sub="A7a"><div class="sublab"><span class="sid">A7a</span><b>A1, the landing</b></div><div data-f="a7-a1"></div><figcaption>The strip becomes a meter with its next step; the sections stack; cards are one column; firings become row cards.</figcaption></figure>
+    <figure class="fr sub" data-sub="A7b"><div class="sublab"><span class="sid">A7b</span><b>A2, one schedule</b></div><div data-f="a7-a2"></div><figcaption>The lead and its button first; actions wrap under the title.</figcaption></figure>
+    <figure class="fr sub" data-sub="A7c"><div class="sublab"><span class="sid">A7c</span><b>A5, one approval, pending</b></div><div data-f="a7-a5"></div><figcaption>Approve and Reject fill the lead's width.</figcaption></figure>
+  </div>
+</section>
+
+<h2 id="newfields">New fields this proposal needs</h2>
+<p>Every other field a frame draws is served today by <code>apps/swarm-api</code>: the schedule (<code>state</code>, <code>pause</code>, <code>cron</code>, <code>timezone</code>, <code>words</code>, <code>next_run_at</code>, <code>last_firing</code>, <code>consecutive_failures</code>, <code>spend_today</code>, <code>budget</code>, <code>budget_use</code>, <code>gate</code>, <code>pending_approvals</code>, <code>tier</code>), its firings (<code>slot</code>, <code>trigger</code>, <code>state</code>, <code>outcome</code>, <code>skip</code>, <code>work</code>, <code>cost</code>, <code>approval_id</code>), the preview (<code>words</code>, <code>next</code>, <code>min_gap_minutes</code>, <code>refusal</code>), the schedule types (<code>available</code>, <code>disabled_reason</code>, <code>budget_caps</code>, <code>min_interval_minutes</code>, <code>gate_notes</code>), and the approval (<code>kind</code>, <code>summary</code>, <code>state</code>, <code>subject</code>, <code>digest</code>, <code>approvers</code>, <code>hold</code>, <code>requested_at</code>, <code>expires_at</code>, <code>decided_by_name</code>, <code>decided_at</code>, <code>reason</code>, and the merge block's <code>pull_request.check_counts</code>, <code>head_sha</code>, <code>merged_at</code>).</p>
+<div class="dt"><table class="doct newf">
+<thead><tr><th>Field</th><th>Frames</th><th>What it is</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td><code>merge_app{state, checked_at}</code> on a new <code>GET /v1/automate/setup</code></td><td>A1, A6 strip step 4</td><td><code>configured</code>, <code>missing</code> or <code>unknown</code>, and when it was read.</td><td>Nothing in swarm-api reads the merge App. The runbook (docs/runbooks/merge-app.md) says the App is this platform's own CI merge identity (<code>MERGE_APP_ID</code>), not the merge step a tenant's schedule uses, so the step may belong only to a platform admin's view: see Open questions.</td></tr>
+<tr><td><code>types{available, total, unavailable[]}</code> on the same read</td><td>A1, A6 strip step 1</td><td>How many types this workspace may create, and which not, with the reason.</td><td>"Enabled per workspace" does not exist: <code>available</code> is platform-wide and <code>creatable_scopes</code> is per caller. The strip counts those today; a per-workspace switch would be new.</td></tr>
+<tr><td><code>approval.may_decide{allowed, why, deciders[]}</code></td><td>A5f</td><td>Whether the viewer may decide this approval, and if not, who may.</td><td>The API serves only the rule (<code>owner_only</code>, <code>members</code>, <code>second_member</code>, a list) and answers a viewer who may not with a 403 (<code>approver_not_allowed</code>, <code>hold_approver_required</code>, <code>second_person_required</code>) after the click. A5f must not offer a button that can only fail.</td></tr>
+<tr><td><code>approval.superseded{head_sha, at, superseded_by}</code></td><td>A4, A5e</td><td>The head that replaced the approved one, when, and the newer approval's id.</td><td>Today <code>state: superseded</code> says only that the head moved. The lead's "Open the newer approval" needs the id it moved to.</td></tr>
+<tr><td><code>firing.failure{code, detail}</code> (and on <code>last_firing</code>)</td><td>A1 Visual QA card and Recent firings, A6c</td><td>One sentence on why a failed firing failed.</td><td>A firing has <code>skip{code, detail}</code> for a skip, but a failed one carries only <code>outcome: failed</code>; the reason lives in its run. A card must say "the QA sign-in was refused" without opening the run.</td></tr>
+<tr><td><code>policy.max_consecutive_failures</code>, served and writable</td><td>A1 "pauses after 3", A3e "Pause after"</td><td>How many failed firings in a row pause the schedule.</td><td>The tick reads it (default 3) but <code>PolicyIn</code> does not accept it and the read does not serve the default, so "failing, pauses after 3" has nothing to read.</td></tr>
+<tr><td><code>GET /v1/firings?since=&amp;limit=</code></td><td>A1 Recent firings</td><td>The workspace's firings across every schedule, newest first.</td><td>Today firings are read per schedule (<code>GET /v1/schedules/{id}/firings</code>): seven schedules is seven reads for one section.</td></tr>
+</tbody></table></div>
+
+<h2 id="open">Open questions, and what this proposal decided</h2>
+<ul>
+  <li><b>"Denied" or "rejected".</b> The brief says denied; the API's state is <code>rejected</code>, its route <code>:reject</code>, and the built console says Reject… and Rejected. The frames draw "rejected" so as not to rename a built word; A5c is labelled denied so the picks line up.</li>
+  <li><b>The merge App step.</b> Drawn as the strip's fourth step, as the brief asks, and as the next step in A1. If BGD agrees the App is the platform's CI identity rather than a workspace's, the step shows only to a platform admin and a workspace's strip has three.</li>
+  <li><b>"Active" for <code>enabled</code>.</b> The cards say active, paused, paused by its spend tripwire (<code>auto_paused</code> with <code>RUN_OVER_BUDGET</code>), waiting on you (enabled with a pending approval), failing (enabled with failures in a row) and never fired: the state a person acts on, not the stored enum. Disabled (a platform admin's) would read "turned off by a platform admin".</li>
+  <li><b>Two pages, kept.</b> Automate keeps Schedules and Approvals: the landing summarises approvals, but the inbox's filter and history are a page.</li>
+</ul>
+</main>
+<script>
+(function(){
+'use strict';
+/* ---------- the helpers are Config E's ---------- */
+const I=(n,c)=>`<svg class="ic ${c||''}" aria-hidden="true"><use href="#i-${n}"/></svg>`;
+const B=(t,c,ic,dis)=>`<span class="b ${c||''}" role="button"${dis?' aria-disabled="true"':''}>${ic?I(ic):''}${t}</span>`;
+const C=(t,c,ic)=>`<span class="c ${c||''}">${ic?I(ic):''}${t}</span>`;
+const SI={ok:'check',wn:'warn',bd:'x',in:'info',nu:'info'};
+const S=(k,t)=>`<span class="st ${k}">${I(SI[k])}<span>${t}</span></span>`;
+const DASH=(why)=>`<span class="dim">— <small class="sm12">${why}</small></span>`;
+const strip=s=>s.replace(/<[^>]+>/g,'');
+const SG=(opts,on,x)=>`<span class="sg">${opts.map((o,i)=>`<span class="${i===on?'on':''}${x&&x.includes(i)?' x':''}">${o}</span>`).join('')}</span>`;
+const F=(l,v,cls)=>`<label class="fld"><span>${l}</span><span class="inp ${cls||''}">${v}</span></label>`;
+function T(cols,rows){
+  const h=cols.map(c=>{const n=c.startsWith('#');return `<th class="${n?'n':''}">${n?c.slice(1):c}</th>`}).join('');
+  const b=rows.map(r=>{const cells=Array.isArray(r)?r:r.c;const cls=Array.isArray(r)?'':(r.cls||'');
+    return `<tr class="${cls}">${cells.map((v,i)=>{const c=cols[i]||'';const n=c.startsWith('#');return `<td data-l="${strip(n?c.slice(1):c)}" class="${n?'n':''}">${v}</td>`}).join('')}</tr>`}).join('');
+  return `<div class="tw"><table class="t rs"><thead><tr>${h}</tr></thead><tbody>${b}</tbody></table></div>`;
+}
+const CARD=(title,right,body,cls)=>`<section class="cd ${cls||''}"><div class="ch"><b>${title}</b>${right?`<span class="r acts">${right}</span>`:''}</div>${body}</section>`;
+const LEAD=(k,t,s,acts,cls)=>`<section class="lead ${cls||''}"><div class="lt"><span class="k">${k}</span><b>${t}</b>${s?`<span>${s}</span>`:''}</div>${acts?`<div class="acts">${acts}</div>`:''}</section>`;
+const segs=(arr)=>`<span class="segs">${arr.map(m=>`<i class="${m==='d'?'d':m==='n'?'n':''}"></i>`).join('')}</span>`;
+const KV=(pairs)=>`<dl class="kv">${pairs.map(p=>`<dt>${p[0]}</dt><dd>${p[1]}</dd>`).join('')}</dl>`;
+const SEC=(title,count,right,body)=>`<section class="sec2"><div class="sh2"><h3>${title}</h3>${count?`<span class="dim sm12">${count}</span>`:''}${right?`<span class="r acts">${right}</span>`:''}</div>${body}</section>`;
+
+/* ---------- the setup strip: each step read, never ticked by hand ---------- */
+const SETUP={
+  main:[['d','Schedule types enabled','16 of 17 available here'],['d','Approvers set','7 of 7 gates name who decides'],['d','Budget tripwires set','7 of 7 · 1 tripped today'],['n','Merge App set','Next: not configured']],
+  fresh:[['d','Schedule types enabled','16 of 17 available here'],['n','Approvers set','Next: set with the first schedule'],['t','Budget tripwires set','set with the first schedule'],['t','Merge App set','not configured']],
+  done:[['d','Schedule types enabled','16 of 17'],['d','Approvers set','4 of 4'],['d','Budget tripwires set','4 of 4'],['d','Merge App set','configured']]
+};
+function stripD(k){
+  const s=SETUP[k];const d=s.filter(x=>x[0]==='d').length;
+  if(d===s.length) return `<div class="ss done"><span class="sm d">${I('check')}</span><b>Setup complete</b><span class="dim">${d} of ${s.length} · checked 2 min ago</span><a style="margin-left:auto">Show steps</a></div>`;
+  return `<div class="ss" role="list" aria-label="Automate setup">${s.map((x,i)=>`<div class="st0 ${x[0]==='n'?'nx':''} ${x[0]==='t'?'off':''}" role="listitem"><span class="sm ${x[0]==='d'?'d':x[0]==='n'?'n':x[0]==='u'?'u':''}">${x[0]==='d'?I('check'):''}</span><span class="tx"><b>${i+1}. ${x[1]}</b><small>${x[2]}</small></span></div>`).join('')}<div class="end"><b>${d} of ${s.length} done</b><a>What each step reads</a></div></div>`;
+}
+function stripP(k){
+  const s=SETUP[k];const d=s.filter(x=>x[0]==='d').length;const n=s.find(x=>x[0]==='n');
+  return `<div class="pss"><div class="row"><b>Setup ${d} of ${s.length}</b>${n?`<a>${n[1]} ›</a>`:'<span class="dim">complete</span>'}</div>${segs(s.map(x=>x[0]))}${n?`<span class="dim">${n[2]}</span>`:''}</div>`;
+}
+
+/* ---------- spine and panel ---------- */
+function spine(x){
+  const it=(id,lb,ic)=>`<span class="si ${x.sec===id?'on':''}">${I(ic)}${lb}</span>`;
+  return `<nav class="sp" aria-label="Sections"><svg class="hv" width="44" height="44" aria-label="SwarmCloud"><use href="#hive"/></svg>`+
+    `<span class="si go">${I('plus')}Submit</span>`+it('overview','Overview','overview')+it('work','Work','work')+it('automate','Automate','automate')+it('capacity','Capacity','capacity')+
+    it('config','Config','config')+(x.role!=='member'?it('admin','Admin','admin'):'')+
+    `<span class="gr"></span>`+it('help','Help','help')+`<span class="si"><span class="av">${x.role==='member'?'LE':'OP'}</span></span></nav>`;
+}
+function pfoot(x){
+  const m=x.role==='member';
+  return `<div class="pf"><div class="who"><span class="av">${m?'LE':'OP'}</span><span><b>${m?'Lee':'Operator'}</b><small>${m?'Member of Example Team':'Owner · platform admin'}</small></span></div>`+
+  `<div class="tseg" role="group" aria-label="Theme"><button type="button" data-theme-set="light">Light</button><button type="button" data-theme-set="dark">Dark</button><button type="button" data-theme-set="system">System</button></div></div>`;
+}
+const PI=(on,ic,lb,badge)=>`<span class="pi ${on?'on':''}">${ic?I(ic):''}<span class="lb">${lb}</span>${badge||''}</span>`;
+const BADGE={
+  main:{sch:'<span class="sm12 dim">7</span>',apr:C('3 waiting','wn')},
+  fresh:{sch:'<span class="sm12 dim">0</span>',apr:''},
+  failed:{sch:'<span class="sm12 dim">7</span>',apr:'<span class="sm12 dim">— not read</span>'},
+  done:{sch:'<span class="sm12 dim">4</span>',apr:''},
+  noserve:{sch:'',apr:''}
+};
+function panel(x){
+  const m=x.role==='member';
+  let h=`<aside class="pn" aria-label="Pages"><div class="wm"><span style="color:var(--text)">Swarm</span><span>Cloud</span><span class="pill">dev</span></div>`;
+  h+=`<div class="wsb"><span class="tg">ET</span><span class="tt"><b>Example Team</b><small>group · ${m?'you are a member':'you are the owner'}</small></span>${I('chevd')}</div><div class="sec">Automate</div>`;
+  const st=x.setup;
+  if(st&&SETUP[st]){const s=SETUP[st];const d=s.filter(q=>q[0]==='d').length;h+=`<div class="pmeter"><div class="row"><span>Setup</span><b>${d} of ${s.length}</b></div>${segs(s.map(q=>q[0]))}</div>`}
+  const bd=Object.assign({},BADGE[x.badge||st||'main']);if(x.waiting)bd.apr=C(x.waiting,'wn');
+  h+=PI(x.page==='sch','cal','Schedules',bd.sch)+PI(x.page==='apr','check','Approvals',bd.apr);
+  return h+`<span class="pgrow"></span>${pfoot(x)}</aside>`;
+}
+function head(hd){
+  return `<div class="hd"><div class="tl"><span class="cr">${hd.cr}</span><span class="h">${hd.h}</span></div>${hd.right?`<div class="acts">${hd.right}</div>`:''}${hd.age?`<span class="age">${hd.age}</span>`:''}</div>`;
+}
+function desk(x,hd,body){return `<div class="F app ${x.short?'short':''}">${spine(x)}${panel(x)}<main class="ct">${head(hd)}${x.strip?stripD(x.strip):''}${body(false)}</main></div>`}
+function phone(x,hd,body){
+  return `<div class="F ph"><div class="phd">${I('menu')}<svg width="26" height="26" aria-hidden="true"><use href="#hive"/></svg><b>${hd.ph||hd.h}</b><span class="wsc">Example Team</span></div>${x.strip?stripP(x.strip):''}<div class="pb"><div class="ct">${head(hd)}${body(true)}</div></div></div>`;
+}
+const X=(o)=>Object.assign({role:'owner',sec:'automate',page:'sch',setup:'main'},o);
+
+/* ================= the schedules (one read: GET /v1/schedules) ================= */
+const ST={
+  active:C('active','ok'),paused:C('paused','pa'),trip:C('paused by its spend tripwire','bd'),
+  wait:C('waiting on you','wn'),fail:C('failing','bd'),never:C('never fired','ln')
+};
+const SCH={
+  fr:{id:'sch_54e9828e6772',name:'Failure review',type:'failure-review',k:'wait',repo:'bogdan-alexandrescu/SwarmCloud',scope:'the platform',when:'every 6 hours, on the hour, UTC',
+    next:['12:00Z · in 2 h 40 m','skipped while the 00:00Z run is live'],last:['06:00Z · skipped','the 00:00Z run is still live'],
+    spend:['$38.12 today','tripwire $200 a run · $1,000 a day'],wait:'merge of PR #2392 waits for the owner · 2 d 17 h left',acts:B('Open approval','p s')+B('Open','s')},
+  vq:{name:'Visual QA, console',type:'visual-qa',k:'fail',repo:'example-org/example-web',scope:'QA target Console staging',when:'daily at 04:00 UTC',
+    next:['27 Oct 04:00Z · in 18 h 40 m',''],last:['04:00Z · failed','the QA sign-in was refused · 2 in a row, pauses after 3'],
+    spend:['$31.60 today','tripwire $40 a run · $160 a day'],acts:B('Open','s')+B('Run now','s','play')},
+  swa:{name:'Issue sweep, example-api',type:'issue-sweep',k:'active',repo:'example-org/example-api',scope:'1 repository',when:'weekdays at 09:00 UTC',
+    next:['Tue 27 Oct 09:00Z · tomorrow',''],last:['09:00Z · succeeded','2 issue runs started'],
+    spend:['$6.20 today + 1 attempt not reported yet','tripwire $15 a run · $120 a day'],acts:B('Run now','s','play')+B('Pause','s')},
+  swb:{name:'Issue sweep, example-web',type:'issue-sweep',k:'trip',repo:'example-org/example-web',scope:'1 repository',when:'every 2 hours, UTC',
+    next:['— paused, so no next firing',''],last:['08:00Z · failed','a run cost $17.40, over its $15.00 tripwire; paused 08:41Z'],
+    spend:['$27.90 today','tripwire $15 a run · $120 a day'],acts:B('Resume','s')+B('Edit budget','s')},
+  plan:{name:'Plan only, docs-site',type:'issue-plan-only',k:'wait',repo:'example-org/docs-site',scope:'1 repository',when:'every 4 hours, UTC',
+    next:['12:00Z · in 2 h 40 m',''],last:['08:00Z · waiting on you','the plan for #77'],
+    spend:['$0.84 today','tripwire $3 a run · $30 a day'],wait:'plan for #77 waits for any member · 2 d 22 h left',acts:B('Open approval','p s')+B('Open','s')},
+  prs:{name:'PR shepherd',type:'pr-shepherd',k:'paused',repo:'example-org/example-api',scope:'1 repository',when:'every 30 minutes, 09:00 to 18:30 on weekdays, UTC',
+    next:['— paused, so no next firing',''],last:['Fri 23 Oct 18:30Z · succeeded','3 labelled, 1 branch updated'],
+    spend:['$0.00 today','tripwire $5 a run · $30 a day'],pause:'paused by Operator 07:15Z: “release freeze until Thursday”',acts:B('Resume','s')},
+  dd:{name:'Docs drift',type:'docs-drift',k:'never',repo:'example-org/docs-site',scope:'1 repository',when:'daily at 06:00 UTC',
+    next:['27 Oct 06:00Z · in 20 h 40 m',''],last:['— never fired','created today 08:55Z by Operator'],
+    spend:['$0.00 today','tripwire $5 a run · $20 a day'],acts:B('Run now','s','play')+B('Dry run','s')}
+};
+function schCard(s){
+  const cls=s.k==='wait'?'wt':(s.k==='trip'||s.k==='fail')?'bdx':'';
+  const rows=[['Next',`${s.next[0]}${s.next[1]?`<small>${s.next[1]}</small>`:''}`],['Last',`${s.last[0]}<small>${s.last[1]}</small>`],['Spend',`${s.spend[0]}<small>${s.spend[1]}</small>`]];
+  if(s.wait) rows.unshift(['Waits',`<span style="color:var(--warn-ink)">${s.wait}</span>`]);
+  if(s.pause) rows.unshift(['Paused',s.pause]);
+  return `<section class="cd sc ${cls}"><div class="top"><b>${s.name}</b>${ST[s.k]}</div><span class="dim sm12">${s.repo} · ${s.when}</span>${KV(rows)}<div class="acts">${s.acts}</div></section>`;
+}
+function grp(type,desc,cards,span){
+  return `<div class="tgp ${span===2?'s2':''}"><div class="gh"><b>${type}</b><span>${desc}</span></div><div class="gi" style="--n:${span}">${cards.map(schCard).join('')}</div></div>`;
+}
+function schedulesSection(ph){
+  const g=`<div class="grp3">`+
+    grp('issue-sweep','2 schedules · start an issue run for each ready open issue',[SCH.swa,SCH.swb],2)+
+    grp('failure-review','1 · root-cause and fix failures',[SCH.fr],1)+
+    grp('visual-qa','1 · run a QA target, file its findings',[SCH.vq],1)+
+    grp('issue-plan-only','1 · plan ready issues, then wait',[SCH.plan],1)+
+    grp('pr-shepherd','1 · label, update and unstick pull requests',[SCH.prs],1)+
+    grp('docs-drift','1 · check docs against the code',[SCH.dd],1)+
+    `<div class="tgp s2"><div class="gh"><b>more types</b><span>10 more this workspace may use</span></div><section class="cd dash" style="flex:1"><p><b style="color:var(--text)">Start from a type.</b> repo-index-refresh, observer, epic-triage, ci-flake-hunter, dependency-cve-refresh, cost-report, custom-prompt, image-tool-rescan and the two model-price types. release-health is not available here.</p><div class="acts">${B('Show all 17 types','s')}</div></section></div>`+
+    `</div>`;
+  return SEC('Schedules','7 schedules of 6 types · grouped by type',ph?'':SG(['Cards','Table'],0),g);
+}
+const APRW=[
+  {kind:'merge',t:'Merge PR #2392 for issue #2364',from:'Failure review · asked 02:40Z',left:'2 d 17 h left',who:'the owner only'},
+  {kind:'plan',t:'Plan for example-org/docs-site#77',from:'Plan only, docs-site · asked 08:05Z',left:'2 d 22 h left',who:'any member'},
+  {kind:'answer',t:'“Which changelog section?”',from:'workflow release-notes, step draft · asked 08:50Z',left:'23 h 30 m left',who:'any member'}
+];
+function needsYou(ph,failed){
+  const apr=failed
+    ?CARD('Approvals waiting',DASH('not read'),`<div class="bn wn">${I('warn')}<span><b>Could not read approvals</b><span class="dim">GET /v1/approvals answered 503 at 09:18Z. What waits on you is unknown, not none.</span></span></div><div class="acts" style="margin-top:10px">${B('Read again','s')}${B('Open Approvals','s q')}</div>`)
+    :CARD('Approvals waiting',`<span class="dim sm12">3 · oldest first</span>`,`<div class="rl">${APRW.map(a=>`<div class="ri">${C(a.kind,'ln')}<span class="tx"><b>${a.t}</b><small>${a.from} · ${a.who} decides</small></span><span class="exp">${a.left}</span>${B('Open','s')}</div>`).join('')}</div><a class="sm12">All approvals ›</a>`);
+  const stuck=CARD('Schedules stuck','<span class="dim sm12">2</span>',`<div class="rl">`+
+    `<div class="ri">${C('tripwire','bd')}<span class="tx"><b>Issue sweep, example-web</b><small>Paused 08:41Z: a run cost $17.40, over its $15.00 tripwire</small></span>${B('Resume','s')}${B('Edit budget','s')}</div>`+
+    `<div class="ri">${C('failing','bd')}<span class="tx"><b>Visual QA, console</b><small>2 failed firings in a row: the QA sign-in was refused. A third pauses it.</small></span>${B('Open','s')}</div></div>`);
+  return SEC('Needs you',failed?'— approvals not read · 2 schedules stuck':'3 approvals · 2 schedules','',`<div class="g2">${apr}${stuck}</div>`);
+}
+function firingsSection(){
+  const R=(t,n,tr,o,w,c)=>[t,n,tr,o,w,c];
+  return SEC('Recent firings','today, newest first · the last 7 of 12',`<a class="sm12">Every firing ›</a>`,T(['Fired','Schedule','Trigger','Outcome','Work','#Cost'],[
+    R('09:00Z','Issue sweep, example-api','on schedule',S('ok','succeeded'),'2 issue runs: #812, #815','$6.20<small>+ 1 attempt not reported</small>'),
+    R('08:00Z','Plan only, docs-site','on schedule',S('wn','waiting on you'),'plan for #77','$0.84'),
+    R('08:00Z','Issue sweep, example-web','on schedule',S('bd','failed'),'1 issue run: #141 · over its $15.00 tripwire','$17.40'),
+    R('06:00Z','Failure review','on schedule',S('nu','skipped'),'<span class="dim">overlap: the 00:00Z run is still live</span>','<span class="dim">nothing ran</span>'),
+    R('06:00Z','Issue sweep, example-web','on schedule',S('ok','succeeded'),'1 issue run: #139','$4.10'),
+    R('04:00Z','Visual QA, console','on schedule',S('bd','failed'),'the QA sign-in was refused on staging','$31.60'),
+    R('00:00Z','Failure review','on schedule',S('wn','waiting on you'),'<span class="mn">run_682b9c60…</span> · #2364 → PR #2392','$38.12')]));
+}
+const LANDHD=(ph)=>({cr:'Automate',h:'Schedules',age:'read 20 s ago',right:ph?B('New schedule','p s','plus'):SG(['Mine','All workspaces'],0)+B('New schedule','p','plus')});
+function landing(ph){return needsYou(ph)+schedulesSection(ph)+firingsSection()}
+
+/* ================= A2 one schedule ================= */
+const FRHD=(ph)=>({cr:'Automate › Schedules',h:`Failure review ${ST.wait}`,ph:'Failure review',age:'read 20 s ago',
+  right:B('Run now','s','play')+B('Dry run','s')+B('Pause','s')+B('Edit','s')+B('More','s q','chevd')});
+function frHistory(){
+  return T(['Fired','Trigger','Outcome','Run','Issue and pull request','#Cost'],[
+    ['26 Oct 06:00Z','on schedule',S('nu','skipped'),DASH('overlap: the 00:00Z run is live'),'','<span class="dim">nothing ran</span>'],
+    {cls:'need',c:['26 Oct 00:00Z','on schedule',S('wn','waiting on you'),'<span class="mn">run_682b9c60673341fdaa8e</span>','#2364 → PR #2392 · merge waits','$38.12']},
+    ['25 Oct 18:00Z','on schedule',S('ok','succeeded'),'<span class="mn">run_51c0e2a8d9f4417b9e02</span>','<span class="dim">nothing failed in the window</span>','$0.40'],
+    ['25 Oct 12:00Z','on schedule',S('ok','succeeded'),'<span class="mn">run_c7d1f03b55e24a6c8a91</span>','#2351 → PR #2355 · merged','$61.30'],
+    ['25 Oct 06:00Z','on schedule',S('wn','partial'),'<span class="mn">run_0e94b7a1c2d8435fb6e3</span>','#2340 → PR #2344 · merged; #2341 refused','$88.05'],
+    ['25 Oct 01:10Z','run now · Operator',S('ok','succeeded'),'<span class="mn">run_9a2f6d14e8b0473c91d5</span>','#2333 → PR #2336 · merged','$12.10']]);
+}
+function runsChart(){
+  /* each run's cost against the $200 per-run tripwire; 96px is $240 */
+  const runs=[['25 Oct 01:10',12.10],['25 Oct 06:00',88.05],['25 Oct 12:00',61.30],['25 Oct 18:00',0.40],['26 Oct 00:00',38.12,'wt']];
+  const px=v=>Math.max(2,Math.round(v/240*96));
+  return `<div class="runs"><div class="trip" style="bottom:${px(200)}px"><span>tripwire $200 a run</span></div>${runs.map(r=>`<div class="rb ${r[2]||''}" style="height:${px(r[1])}px" title="$${r[1].toFixed(2)}"></div>`).join('')}</div><div class="runx">${runs.map(r=>`<span>$${r[1].toFixed(2)}</span>`).join('')}</div><div class="runx">${runs.map(r=>`<span>${r[0].slice(0,6)}<br>${r[0].slice(7)}Z</span>`).join('')}</div>`;
+}
+function oneSchedule(ph){
+  const what=CARD('What it does',C('failure-review','ln'),`<p>Every 6 hours, root-cause every agent, workflow and issue run that failed in the last 7, file one issue per cause and start its fix run; hold IAM, contract, secrets, tenancy, shared and cost fixes for the owner.</p>`+
+    KV([['Type','failure-review'],['Target repository','bogdan-alexandrescu/SwarmCloud'],['Scope','the platform (a platform admin’s schedule)'],['Owner','Operator'],['Tier','R2: it opens pull requests and merges behind approval'],['Id','<span class="mn">sch_54e9828e6772</span>']]));
+  const when=CARD('When it fires',`<span class="mn">0 */6 * * *</span>`,`<p>Every 6 hours, on the hour, UTC. Catch-up: skip a missed slot. Overlap: skip while a run is live.</p><ul class="nf">`+
+    [['26 Oct 12:00Z','in 2 h 40 m · skipped if 00:00Z’s run is live'],['26 Oct 18:00Z','in 8 h 40 m'],['27 Oct 00:00Z','in 14 h 40 m'],['27 Oct 06:00Z','in 20 h 40 m'],['27 Oct 12:00Z','in 1 d 2 h']].map(n=>`<li><span class="mn">${n[0]}</span><small>${n[1]}</small></li>`).join('')+`</ul>`);
+  const hist=CARD('Firing history',`<span class="dim sm12">the last 6 of 41</span>${B('Every firing','s q')}`,frHistory());
+  const spend=CARD('Spend against its tripwire',`<span class="dim sm12">today and the last 5 runs</span>`,
+    `<div class="spend"><div class="row"><b>$38.12 of $1,000 today</b><span class="dim">per day: a firing that would pass it is skipped</span></div><div class="bar"><i style="width:3.8%"></i></div><div class="row"><span class="dim">reported $38.12 · 0 attempts not reported · 1 run live</span></div></div>`+
+    `<p style="margin-top:12px">Per run, $200 is a tripwire, not a ceiling: a run that costs more ends its firing failed and pauses the schedule. The largest run in these five cost $88.05.</p>${runsChart()}`);
+  const gates=CARD('Gates and approvers',B('Edit gates','s'),KV([['Run','starts by itself'],['Plan','starts by itself'],['Merge','waits for an approval'],['Who decides','the workspace owner only'],['An approval waits','72 hours, then expires'],['Holds','every hold category stops a merge whatever the gate: IAM, contract, protected paths, security, workflows, secrets, tenancy, shared, cost']])+
+    `<p class="hint" style="margin:8px 0 0">Merge automatically is the audited switch, made once by the owner; it is off.</p>`);
+  const lead=LEAD('Waiting on you · expires in 2 d 17 h','Its 00:00Z firing’s merge of PR #2392 waits for the owner','The run is green at dbd00f0 with 10 of 10 checks passed. It is held for the owner because it changes a workflow and a shared file.',B('Open the approval','p'),'wn');
+  if(ph) return lead+what+when+spend+gates+hist;
+  return lead+`<div class="g21"><div class="col">${what}${spend}</div><div class="col">${when}${gates}</div></div>`+hist;
+}
+
+/* ================= A3 the wizard ================= */
+const OPT=(t,s,on,x)=>`<div class="opt ${on?'on':''} ${x?'x':''}"><span class="rd"></span><span><b>${t}</b><small>${s}</small></span></div>`;
+function sheet(n,title,body,foot,edit){
+  const names=['Type','Target','When','Gates','Budget','Review'];
+  return `<div class="sheet"><div class="sh"><b>${edit?'Edit Visual QA, console':'New schedule'}</b>${I('x')}</div><div class="wz">${names.map((s,i)=>`<span class="${i+1<n?'d':i+1===n?'on':''}"><i>${i+1<n?'✓':i+1}</i>${s}</span>`).join('')}</div><div style="font-size:15px;font-weight:600">${title}</div>${body}<div class="acts" style="justify-content:flex-end">${foot}</div></div>`;
+}
+const NEXT5=['27 Oct 02:00Z','28 Oct 02:00Z','29 Oct 02:00Z','30 Oct 02:00Z','31 Oct 02:00Z'];
+function wizard(){
+  const s1=sheet(1,'What kind of work?',`<div class="types">`+
+      OPT('visual-qa','Run a QA target, file its findings',true)+OPT('issue-sweep','An issue run for each ready issue')+OPT('issue-plan-only','Plan ready issues, then wait')+OPT('docs-drift','Check docs against the code')+
+      OPT('failure-review','The owner’s, on the platform')+OPT('release-health','Not available: its executor is not deployed here',false,true)+`</div><a class="sm12">Show all 17 types ›</a>`+
+      CARD('visual-qa’s template','',KV([['Budget caps','$40 a run · $160 a day · 2 live'],['Shortest interval','24 hours'],['Catch-up','skip a missed slot'],['Note','created by a workspace admin of the tenant; a pending host refuses the firing']]))+
+      F('Name','Visual QA, docs-site','v'),B('Cancel','q')+B('Next','p'));
+  const s2=sheet(2,'What does it run against?',OPT('Chosen repositories','Up to 25 registered repositories.',true)+OPT('Every registered repository','New registrations join it.')+OPT('The platform','A platform admin’s scope, for the platform’s own work.')+
+      F('Repository',`example-org/docs-site ${I('chevd')}`,'v')+F('QA target',`Docs site · qat_5d0e7c2a91b3f468 ${I('chevd')}`,'v')+
+      `<div class="fld"><span>Environments</span><span class="acts">${C('production','in','check')}${C('staging','in','check')}</span><span class="hint">Unset runs every environment the target has.</span></div>`,B('Back','q')+B('Next','p'));
+  const prev=(cron,ok)=>`<div class="fld"><span>Start from</span><span class="acts">${['Every hour','Weekdays at 09:00','Nightly','Weekly on Monday'].map((t,i)=>C(t,ok&&i===2?'in':'ln')).join('')}</span></div>`+
+      `<div class="g2">${F('Cron expression',`<span class="mn">${cron}</span>`,ok?'v':'er')}${F('Timezone',`UTC ${I('chevd')}`,'v')}</div>`;
+  const s3=sheet(3,'When does it run?',prev('0 2 * * *',true)+
+      `<div class="bn in">${I('info')}<span><b>Every day at 02:00 UTC</b><span class="dim">Shortest gap 24 h · visual-qa allows one firing every 24 hours.</span></span></div>`+
+      `<div class="fld"><span>The next five firings</span><ul class="nf">${NEXT5.map((n,i)=>`<li><span class="mn">${n}</span><small>${['in 16 h 40 m','in 1 d 16 h','in 2 d 16 h','in 3 d 16 h','in 4 d 16 h'][i]}</small></li>`).join('')}</ul></div>`,B('Back','q')+B('Next','p'));
+  const s3x=sheet(3,'When does it run?',prev('0 */6 * * *',false)+
+      `<span class="ex">${I('x')}<span>This type would refuse it: visual-qa fires at most once every 24 hours, and this fires every 6 hours.</span></span>`+
+      `<div class="fld"><span>The next five firings, if it were allowed</span><ul class="nf">${['26 Oct 12:00Z','26 Oct 18:00Z','27 Oct 00:00Z','27 Oct 06:00Z','27 Oct 12:00Z'].map((n,i)=>`<li><span class="mn">${n}</span><small>${i?'6 h after the last':'in 2 h 40 m'}</small></li>`).join('')}</ul></div>`,B('Back','q')+B('Next','p',null,true));
+  const s4=sheet(4,'Who has to say yes?',`<div class="fld"><span>Run</span>${SG(['Starts by itself','Waits for an approval'],0)}</div>`+
+      `<div class="fld"><span>Merge</span>${SG(['Off','Waits for an approval'],0)}<span class="hint">visual-qa files issues and opens no pull request, so merge stays off.</span></div>`+
+      `<div class="fld"><span>Who decides an approval</span>${OPT('Any member','Any member of Example Team.',true)}${OPT('The owner only','Operator.')}${OPT('Named people','Up to 20 members, by email.')}</div>`+
+      F('An approval waits','72 hours, then expires','v')+`<span class="hint">1 to 336 hours. Holds still stop a merge whatever is set here.</span>`+
+      F('Pause after','3 failed firings in a row','v'),B('Back','q')+B('Next','p'));
+  const s5=sheet(5,'What may it spend?',`<p class="hint" style="margin:0">Per run is a tripwire, not a ceiling: a run that costs more ends its firing failed and pauses the schedule. Per day is a gate: a firing that would pass it is skipped.</p>`+
+      `<div class="g2">${F('Per-run tripwire, USD','60.00','er')}${F('Per day, USD','160.00','v')}</div>`+
+      `<span class="ex">${I('x')}<span>Over this type’s cap: visual-qa allows at most $40.00 a run.</span></span>`+F('Live runs at most','2','v'),B('Back','q')+B('Next','p',null,true));
+  const s6=sheet(6,'Check what changes',`<div class="bn bd">${I('warn')}<span><b>Someone changed this schedule since you opened it</b><span class="dim">Lee saved revision 7 at 09:14Z. Reload their change, then make yours again.</span></span></div>`+
+      T(['What','Was','Becomes'],[['When','daily at 04:00 UTC','daily at 02:00 UTC'],['Environments','staging','production, staging'],['Per day','$120.00','$160.00']])+
+      `<div class="fld"><span>Start</span>${SG(['Enabled','Dry run first','Paused'],0)}</div>`,B('Back','q')+B('Reload their change','s')+B('Save','p',null,true),true);
+  return [s1,s2,s3,s3x,s4,s5,s6];
+}
+function wizOver(ph){return `<div class="wzwrap"><div class="dimbox">${landing(ph)}</div><div class="wzsheet w4">${wizard()[2]}</div></div>`}
+
+/* ================= A4 approvals ================= */
+const KINDS=(on)=>`<div class="scope"><span class="lbl">Kind</span>${SG(['Every kind · 3','Run','Plan · 1','Held plan','Merge · 1','Proposal','Spec','Answer · 1'],on)}</div>`;
+function inbox(ph,merge){
+  const W=[
+    ['merge','Merge PR #2392 for issue #2364<small>green at dbd00f0 · held for the owner: workflows, shared</small>','Failure review','<span class="nw">26 Oct 02:40Z</span><small>6 h 40 m ago</small>','<span style="color:var(--warn-ink)">2 d 17 h</span><small class="nw">29 Oct 02:40Z</small>','the owner only',B('Open','s')],
+    ['plan','Plan for example-org/docs-site#77<small>3 steps · touches docs/ only</small>','Plan only, docs-site','<span class="nw">26 Oct 08:05Z</span><small>1 h 15 m ago</small>','<span style="color:var(--warn-ink)">2 d 22 h</span><small class="nw">29 Oct 08:05Z</small>','any member',B('Open','s')],
+    ['answer','“Which changelog section?”<small>a question from a running step</small>','workflow release-notes · step draft','<span class="nw">26 Oct 08:50Z</span><small>30 min ago</small>','<span style="color:var(--warn-ink)">23 h 30 m</span><small class="nw">27 Oct 08:50Z</small>','any member',B('Open','s')]];
+  const D=[
+    ['merge','Merge PR #2355 for issue #2351',S('ok','approved'),'Operator<small>25 Oct 15:02Z</small>','<span class="dim">no reason given</span>'],
+    ['plan','Plan for example-org/example-web#140',S('bd','rejected'),'Lee<small>25 Oct 16:20Z</small>','“Touches the billing module; out of this sweep’s scope.”'],
+    ['run','PR shepherd, the 23 Oct 14:30Z firing',S('ok','approved'),'Operator<small>23 Oct 14:32Z</small>','<span class="dim">no reason given</span>'],
+    ['held plan','Plan for example-org/example-api#806<small>held for a second member: secrets</small>',S('ok','approved'),'Lee<small>22 Oct 11:47Z</small>','“Checked: it only renames the secret’s reference.”']];
+  const E=[
+    ['merge','Merge PR #2381 for issue #2377',S('nu','superseded'),'25 Oct 07:44Z<small>the head moved to 0b77e41</small>','Failure review'],
+    ['merge','Merge PR #2318 for issue #2301',S('nu','expired'),'24 Oct 11:00Z<small>nobody decided in 72 h</small>','Issue sweep, example-api']];
+  const f=r=>!merge||r[0]==='merge';
+  const w=W.filter(f),d=D.filter(f),e=E.filter(f);
+  const lead=LEAD(`Waiting on you · ${w.length} ${merge?'merge':'in all'}`,'The oldest, merge PR #2392, expires in 2 d 17 h',merge?'It is the only merge waiting.':'Then a plan for docs-site#77 and a workflow’s question, which expires first: in 23 h 30 m.',B('Open the oldest','p'),'wn');
+  return lead+KINDS(merge?4:0)+
+    CARD('Waiting',`<span class="dim sm12">${w.length} · oldest first</span>`,T(['Kind','What','From','Asked','#Time left','Who decides',''],w.map(r=>[C(r[0],'ln'),...r.slice(1)])))+
+    CARD('Decided',`<span class="dim sm12">the last 7 days · ${d.length}</span>`,T(['Kind','What','Decision','By and when','Reason'],d.map(r=>[C(r[0],'ln'),...r.slice(1)])))+
+    CARD('Expired and superseded',`<span class="dim sm12">the last 7 days · ${e.length}</span>`,T(['Kind','What','State','When','From'],e.map(r=>[C(r[0],'ln'),...r.slice(1)])));
+}
+
+/* ================= A5 one approval ================= */
+const APR='apr_31f74dc3dc84349da9b83697';
+function oneApproval(state,ph){
+  const member=state==='member';
+  const L={
+    pending:LEAD('Waiting on you · expires in 2 d 17 h','Merge PR #2392 at dbd00f0 for issue #2364?','Green at dbd00f06c5cd with 10 of 10 checks passed. Held for the owner because it changes a workflow and a shared file.',B('Approve merge at dbd00f0','p','check')+B('Reject…','d'),'wn'),
+    approved:LEAD('Approved · merged','Operator approved the merge at dbd00f0 on 26 Oct 09:12Z','PR #2392 merged at 09:13Z, one minute later.',B('Open PR #2392','s','ext'),'ok'),
+    rejected:LEAD('Rejected by Operator · 26 Oct 09:12Z','“unit-weights-refresh.yml gains a write permission; I want to read that workflow by hand before it merges.”','Nothing merged. PR #2392 stays open, and the firing ended rejected.',B('Open PR #2392','s','ext'),'bd'),
+    expired:LEAD('Expired · 29 Oct 02:40Z','Nobody decided within 72 hours','Nothing merged. PR #2392 stays open, and the firing ended expired.',B('Open the schedule','s'),'nu'),
+    superseded:LEAD('Superseded · 26 Oct 05:02Z','The head moved after the request: PR #2392 is at 7a3e51c, not dbd00f0','A fix round pushed 7a3e51c09b2f. This approval was for dbd00f06c5cd only and can merge nothing; the newer approval asks about the new head.',B('Open the newer approval','p'),'nu'),
+    member:LEAD('Waiting on the owner · expires in 2 d 17 h','Only the workspace owner can decide this','It is held for the owner because it changes a workflow and a shared file. Operator owns Example Team. You can read everything here.',B('Copy link','s'),'nu')
+  }[state];
+  const chip={pending:C('waiting','wn'),approved:C('approved','ok'),rejected:C('rejected','bd'),expired:C('expired','ln'),superseded:C('superseded','ln'),member:C('waiting','wn')}[state];
+  const asks=CARD('What it asks',C('merge','ln'),`<p class="quote" style="border-color:var(--info);color:var(--text)">bogdan-alexandrescu/SwarmCloud#2364: pull request #2392 is green at dbd00f06c5cd and waits to merge</p>`+
+    KV([['Pull request','<a>#2392 ↗</a> · bogdan-alexandrescu/SwarmCloud'],['Head',state==='superseded'?'<span class="mn">dbd00f06c5cd</span><small>now 7a3e51c09b2f</small>':'<span class="mn">dbd00f06c5cd</span>'],['Checks at dbd00f0',`${S('ok','10 passed')} · 0 failed · 0 pending`],['Verdict','merge, at head dbd00f06c5cd']]));
+  const held=CARD('Why it is held',C('held for the owner','wn'),`<p>Every hold category stops a merge whatever the schedule’s gate. This one matched two:</p>`+
+    `<div class="rl"><div class="ri">${C('workflows','ln')}<span class="tx"><b>It changes a GitHub Actions workflow</b><small><code>.github/workflows/unit-weights-refresh.yml</code></small></span></div>`+
+    `<div class="ri">${C('shared','ln')}<span class="tx"><b>It changes a file every component shares</b><small><code>scripts/lib/common.sh</code></small></span></div></div>`);
+  const digest=['rejected','expired','superseded'].includes(state)?'':CARD(state==='approved'?'What approving did':'What approving does','',`<p>${state==='approved'?'Approving posted':'Approving posts'} the digest <code>dbd00f06c5cd:MERGE</code>. It can only merge that head: if the head moves first, the approval is superseded and nothing merges.</p>`);
+  const who=CARD('Who may decide','',KV([['Rule','the workspace owner only'],['Owner',member?'Operator':'Operator · you']])+
+    (member?`<div class="bn" style="margin-top:8px">${I('lock')}<span>You are a member, so Approve and Reject are not offered here. The owner sees them.</span></div>`:''));
+  const from=CARD('Where it came from','',KV([['Schedule','<a>Failure review</a> · <span class="mn">sch_54e9828e6772</span>'],['Firing','26 Oct 00:00Z, on schedule<small class="mn">sch_54e9828e6772:29882880</small>'],['Run','<a class="mn">run_682b9c60673341fdaa8e</a>'],['Issue','<a>#2364 ↗</a>']]));
+  const ev=[['in','Asked by the merge step','26 Oct 02:40Z']];
+  if(state==='approved') ev.push(['ok','Approved by Operator at dbd00f0','26 Oct 09:12Z'],['ok','PR #2392 merged','26 Oct 09:13Z']);
+  else if(state==='rejected') ev.push(['bd','Rejected by Operator, with a reason','26 Oct 09:12Z']);
+  else if(state==='expired') ev.push(['nu','Expired: nobody decided','29 Oct 02:40Z']);
+  else if(state==='superseded') ev.push(['nu','Head moved to 7a3e51c09b2f: superseded','26 Oct 05:02Z']);
+  else ev.push(['wn','Expires unless decided','29 Oct 02:40Z · in 2 d 17 h']);
+  const tl=CARD('Timeline',`<span class="mn">${ph?'apr_31f74dc3…':APR}</span>`,`<ul class="tl2">${ev.map(e=>`<li><i class="${e[0]}"></i><span>${e[1]}<small>${e[2]}</small></span></li>`).join('')}</ul>`);
+  const body=L+(ph?asks+held+who+from+digest+tl:`<div class="g21"><div class="col">${asks}${held}${digest}</div><div class="col">${who}${from}${tl}</div></div>`);
+  return {chip,body};
+}
+const APRHD=(state)=>({cr:'Automate › Approvals',h:`Merge pull request #2392 ${oneApproval(state).chip}`,ph:'Merge PR #2392',age:'read 20 s ago'});
+
+/* ================= A6 empty and honest states ================= */
+function emptyLanding(){
+  return SEC('Needs you','nothing yet','',`<section class="cd dash"><p><b style="color:var(--text)">Nothing waits on you.</b> Approvals a schedule asks for land here, oldest first.</p></section>`)+
+    SEC('Schedules','none yet','',`<section class="cd dash"><p><b style="color:var(--text)">No schedules yet.</b> A schedule runs one type of work on a cadence, behind the gates and budget you set. Start from one of these, or pick any of the 16 types.</p>`+
+      `<div class="g3" style="margin:10px 0">${OPT('issue-sweep','An issue run for each ready open issue; merges wait for an approval.')}${OPT('repo-index-refresh','Keep a repository’s index fresh, never duplicating a run in flight.')}${OPT('visual-qa','Run a QA target daily and file its findings as issues.')}</div><div class="acts">${B('New schedule','p','plus')}</div></section>`)+
+    SEC('Recent firings','none yet','',`<section class="cd dash"><p>Nothing has fired. The first firing shows here with its work and cost.</p></section>`);
+}
+function noServe(){
+  return `<section class="cd" style="padding:28px 28px;display:flex;flex-direction:column;gap:10px;max-width:760px">${I('info')}<b style="font-size:18px">This deployment does not serve Automate</b><p style="font-size:14px">Its API answered 404 to <code>GET /v1/schedule-types</code> at 09:19Z: it has no schedules and no approvals inbox. Nothing here was read, so nothing is counted: no setup, no schedules, no approvals.</p><p style="font-size:14px">An operator turns Automate on by deploying a swarm-api that serves it. Work, Capacity and Config are unaffected.</p><div class="acts">${B('Read again','s')}${B('Open Help: Automate','s q')}</div></section>`;
+}
+function failedLanding(){
+  const s=Object.assign({},SCH.swa,{spend:['— still being summed','coverage partial: 1 attempt not reported · tripwire $15 a run']});
+  const fr=Object.assign({},SCH.fr,{wait:'1 approval pending · what it asks is in the approvals read, which failed',acts:B('Open','s')});
+  return needsYou(false,true)+SEC('Schedules','7 schedules of 6 types · showing 3','',`<div class="grp3">${[fr,s,SCH.vq].map(schCard).join('')}</div><a class="sm12">Show all 7 ›</a>`);
+}
+function calmLanding(){
+  const four=[SCH.swa,Object.assign({},SCH.dd,{k:'active',last:['06:00Z · succeeded','no drift found'],next:['27 Oct 06:00Z · in 20 h 40 m',''],spend:['$1.10 today','tripwire $5 a run · $20 a day'],acts:B('Run now','s','play')+B('Pause','s')}),Object.assign({},SCH.plan,{k:'active',wait:'',last:['08:00Z · skipped','nothing was ready to plan'],spend:['$0.00 today','tripwire $3 a run · $30 a day'],acts:B('Run now','s','play')+B('Pause','s')}),Object.assign({},SCH.vq,{k:'active',last:['04:00Z · succeeded','2 findings filed'],acts:B('Run now','s','play')+B('Pause','s')})];
+  return SEC('Needs you','nothing waiting','',`<section class="cd dash"><p><b style="color:var(--text)">Nothing waits on you, and no schedule is stuck.</b> The last decision: merge PR #2355, approved by Operator on 25 Oct 15:02Z.</p><a class="sm12">All approvals ›</a></section>`)+
+    SEC('Schedules','4 schedules of 4 types','',`<div class="grp3" style="grid-template-columns:repeat(4,minmax(0,1fr))">${grp('issue-sweep','1 schedule',[four[0]],1)+grp('docs-drift','1 schedule',[four[1]],1)+grp('issue-plan-only','1 schedule',[four[2]],1)+grp('visual-qa','1 schedule',[four[3]],1)}</div>`);
+}
+
+/* ================= the frames ================= */
+const FR={
+  'a1-d':()=>desk(X({strip:'main'}),LANDHD(false),landing),
+  'a2-d':()=>desk(X({strip:''}),FRHD(false),oneSchedule),
+  'a3-d':()=>desk(X({strip:'main'}),LANDHD(false),wizOver),
+  'a3-1':()=>`<div class="F">${wizard()[0]}</div>`,
+  'a3-2':()=>`<div class="F">${wizard()[1]}</div>`,
+  'a3-3x':()=>`<div class="F">${wizard()[3]}</div>`,
+  'a3-4':()=>`<div class="F">${wizard()[4]}</div>`,
+  'a3-5':()=>`<div class="F">${wizard()[5]}</div>`,
+  'a3-6':()=>`<div class="F">${wizard()[6]}</div>`,
+  'a4-d':()=>desk(X({page:'apr'}),{cr:'Automate',h:'Approvals',age:'read 20 s ago'},ph=>inbox(ph,false)),
+  'a4m-d':()=>desk(X({page:'apr'}),{cr:'Automate',h:'Approvals',age:'read 20 s ago'},ph=>inbox(ph,true)),
+  'a6-empty':()=>desk(X({strip:'fresh',setup:'fresh',short:true}),{cr:'Automate',h:'Schedules',age:'read 20 s ago'},emptyLanding),
+  'a6-noserve':()=>desk(X({setup:'',badge:'noserve',short:true}),{cr:'Automate',h:'Schedules',age:'answered 404 · 1 min ago'},noServe),
+  'a6-failed':()=>desk(X({strip:'main',badge:'failed',short:true}),LANDHD(false),failedLanding),
+  'a6-calm':()=>desk(X({strip:'done',setup:'done',short:true}),LANDHD(false),calmLanding),
+  'a7-a1':()=>phone(X({strip:'main'}),LANDHD(true),landing),
+  'a7-a2':()=>phone(X({}),FRHD(true),oneSchedule),
+  'a7-a5':()=>phone(X({page:'apr'}),APRHD('pending'),ph=>oneApproval('pending',ph).body)
+};
+['pending','approved','rejected','expired','superseded','member'].forEach(s=>{
+  FR['a5-'+s]=()=>desk(X({page:'apr',role:s==='member'?'member':'owner',waiting:{approved:'2 waiting',rejected:'2 waiting',superseded:'3 waiting',expired:'1 waiting'}[s]}),APRHD(s),ph=>oneApproval(s,ph).body);
+});
+let drawn=0;
+document.querySelectorAll('[data-f]').forEach(el=>{const f=FR[el.dataset.f];if(!f){el.textContent='Missing frame: '+el.dataset.f;return}el.innerHTML=f();drawn++});
+document.documentElement.dataset.frames=String(drawn);
+
+/* ---------- the theme toggle: the page's and every frame's panel foot ---------- */
+const root=document.documentElement;
+function apply(t){
+  if(t==='system')delete root.dataset.theme;else root.dataset.theme=t;
+  document.querySelectorAll('[data-theme-set]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.themeSet===t)));
+  try{localStorage.setItem('automate-d-theme',t)}catch(e){}
+}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-theme-set]');if(b)apply(b.dataset.themeSet)});
+let saved='system';try{saved=localStorage.getItem('automate-d-theme')||'system'}catch(e){}
+apply(saved);
+})();
+</script>
+</body>
+</html>
