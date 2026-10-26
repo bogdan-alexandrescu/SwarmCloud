@@ -1035,7 +1035,7 @@ export function panelCounts(
 
 /** A count the feed serves as a number, or null when it is absent (an older API) or not one. */
 function feedCount(feed: NotificationFeed | null, key: 'admin_pending' | 'tenants_waiting' | 'platform_secrets_unset'): number | null {
-  const v = feed === null ? undefined : (feed as unknown as Record<string, unknown>)[key]
+  const v = feed?.[key]
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null
 }
 
@@ -1126,7 +1126,7 @@ function CountMark({ c }: { c: PanelCount | undefined }) {
     )
   }
   return (
-    <span className={`sk-cnt${c.alert === true ? ' is-alert' : ''}`} title={c.why}>
+    <span className={`sk-cnt${c.alert === true ? ' is-alert' : ''}${c.text !== undefined ? ' is-chip' : ''}`} title={c.why}>
       {c.text ?? c.n}
     </span>
   )

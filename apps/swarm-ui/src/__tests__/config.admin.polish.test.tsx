@@ -120,7 +120,7 @@ describe('the Admin panel\'s badges (S1b)', () => {
     expect(count('Workspaces you admin')).toBe('2')
     expect(count('Platform secrets')).toBe('3')
     // Something waiting is amber; how many workspaces you admin is only a count.
-    expect(row('Tenants')?.querySelector('.sk-cnt')?.className).toBe('sk-cnt is-alert')
+    expect(row('Tenants')?.querySelector('.sk-cnt')?.className).toBe('sk-cnt is-alert is-chip')
     expect(row('Workspaces you admin')?.querySelector('.sk-cnt')?.className).toBe('sk-cnt')
     // Nothing counts Runner sizes or Platform counts.
     expect(count('Runner sizes')).toBeNull()
@@ -236,5 +236,43 @@ describe('no stale place names in this lane\'s files', () => {
   it('points the workspace roles address at Config › People and roles, as SECTIONS spells it', async () => {
     const { WORKSPACE_PEOPLE_ADDRESS } = await import('../roles')
     expect(WORKSPACE_PEOPLE_ADDRESS).toBe('config/people')
+  })
+})
+
+/**
+ * CONFIG-ADMIN-POLISH-2 (part of #2157; BGD, 2026-10-25): a worded count
+ * draws as a small amber chip, the way config-e.html S1b's `C('1 waiting',
+ * 'wn')` does; a plain number stays a bare count. And the feed's two platform
+ * counts are declared on `NotificationFeed`, so Spine reads them uncast.
+ */
+describe('the Admin panel\'s worded counts are chips (S1b)', () => {
+  it('draws a worded count as a chip and a number count without one', async () => {
+    serve(ME(true), [PERSONAL, group('eng', 'admin'), group('ops', 'admin')], {
+      feed: FEED({ admin_pending: 2, tenants_waiting: 1, platform_secrets_unset: 3 }),
+      capacity: CAPACITY([pool('global', 46, 50)]),
+    })
+    await app('/admin/platform-secrets')
+    await waitFor(() => expect(count('Tenants')).toBe('1 waiting'))
+    await waitFor(() => expect(count('Pool limits')).toBe('1 near ceiling'))
+    const cls = (label: string) => row(label)?.querySelector('.sk-cnt')?.classList
+    // MUTATION: draw a worded count as bare text -> no chip and these fail.
+    expect(cls('Tenants')?.contains('is-chip')).toBe(true)
+    expect(cls('Pool limits')?.contains('is-chip')).toBe(true)
+    // MUTATION: chip every count -> these fail. Amber numbers stay bare numbers.
+    for (const label of ['People and roles', 'Platform secrets', 'Workspaces you admin']) expect(cls(label)?.contains('is-chip'), label).toBe(false)
+    expect(count('Platform secrets')).toBe('3')
+  })
+
+  it('reads the feed\'s two platform counts as declared, with no cast', () => {
+    const api = readFileSync(join(__dirname, '..', 'api.ts'), 'utf8')
+    const feed = api.slice(api.indexOf('export interface NotificationFeed {'))
+    const body = feed.slice(0, feed.indexOf('\n}'))
+    // MUTATION: leave either count undeclared -> fails.
+    expect(body).toMatch(/\btenants_waiting\?: number \| null\b/)
+    expect(body).toMatch(/\bplatform_secrets_unset\?: number \| null\b/)
+    const spine = readFileSync(join(__dirname, '..', 'Spine.tsx'), 'utf8')
+    const fn = spine.slice(spine.indexOf('function feedCount('))
+    // MUTATION: keep the `as unknown as Record` cast -> fails.
+    expect(fn.slice(0, fn.indexOf('\n}'))).not.toMatch(/\bas unknown\b|\bas Record\b/)
   })
 })
