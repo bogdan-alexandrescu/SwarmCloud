@@ -53,19 +53,23 @@ counts each attempt's own usage, so a continuation of a step that ended
 * **The ceiling alone turns nothing on.** With no workspace default and no
   step budget there is no budget at all, whatever the ceiling says ("off
   until a workspace admin sets one"). Once either is set, the ceiling is one
-  of the three limits in the min. Owner question 1 asks whether a ceiling
-  should also cap workspaces that set nothing.
+  of the three limits in the min. BGD kept this on 2026-10-26 (~22:15Z,
+  question 4): a ceiling does not cap a workspace that sets nothing.
 * **A ceiling lowered under a default saved earlier still binds**: the min
   takes it at the next submission.
-* **Both refusals ship report-only** (`refusals.SWITCHES`, the owner's rule
-  of 2026-10-08 for every new refusal): `budget_above_limit` (a step asking
-  for more than the default or the ceiling) and `budget_above_ceiling` (a
-  default above the ceiling). Off loses nothing the owner asked for, because
-  the min holds either way: a step that asks for more runs under the lower
-  limit, and a default above the ceiling is capped. On
-  (`REFUSAL_BUDGET_ABOVE_LIMIT=on`, `REFUSAL_BUDGET_ABOVE_CEILING=on`, through
-  terraform's `api_refusals`), the caller is told at once with a 422 naming
-  the limits. Owner question 2 asks whether to turn them on from the start.
+* **Both refusals ship ON** (`refusals.SWITCHES`, `default=True`), by BGD's
+  answer of 2026-10-26 (~22:15Z, question 5, "enforce at once") rather than
+  the 2026-10-08 rule's report-only start: `budget_above_limit` (a step
+  asking for more than the default or the ceiling, 422 naming both) and
+  `budget_above_ceiling` (a default above the ceiling, 422 naming the
+  ceiling) are served from the first deploy, with no `REFUSAL_*` variable
+  and nothing in terraform's `api_refusals`. Report-only lost no limit,
+  because the min holds either way; it is on so the caller is told at once
+  rather than finding the lower limit in `dispatch.budget` later. The
+  switches stay as kill switches: `REFUSAL_BUDGET_ABOVE_LIMIT=off` or
+  `REFUSAL_BUDGET_ABOVE_CEILING=off` (through `api_refusals`) lets the
+  request through, and the step then runs under the lower limit and the
+  default is capped.
 
 ## 5. Enforcement: two processes, one stream
 
@@ -129,8 +133,8 @@ finished run, not as a budget stop.
 * **codex is not stopped mid-run today.** The `codex` profile runs `codex
   exec` without `--json`, so its stdout is prose and carries no usage. The
   meter reads codex's `turn.completed` usage events when a stream carries
-  them; owner question 3 asks whether to switch the profile to `--json`.
-  Until then a codex step's budget is pinned and shown, and enforced by
+  them. BGD answered "switch codex to `--json`" on 2026-10-26 (question 6);
+  a follow-up lane makes that switch after this lands. Until then a codex step's budget is pinned and shown, and enforced by
   nothing.
 * **A profile with no CLI stream** (mock, generic, the worker actions) has
   nothing to enforce from, and gets no guard.
@@ -141,7 +145,9 @@ finished run, not as a budget stop.
 
 118 `EndCause.BUDGET_EXCEEDED`; 119 a `budget` block in
 `SETTINGS_MAC_FIELDS`; 120 `Task.budget` / `WorkflowStep.budget`; 121
-`EventType.BUDGET_WARNING`. Each is built behind, as above, and each is in
+`EventType.BUDGET_WARNING`. BGD ACCEPTED all four on 2026-10-26 (~22:15Z); a
+follow-up lane applies them after this lands. Until then each is built
+behind, as above, and each is in
 [contract-change-requests.md](../contract-change-requests.md).
 
 ## 8. Invariants

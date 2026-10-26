@@ -443,22 +443,29 @@ SWITCHES: dict[str, Switch] = {
     ),
     # Lane BUDGET-CAP (#2459, `budget`): a step's budget above the workspace
     # default or the platform ceiling, and a workspace default above the
-    # ceiling. Off, the request goes through and NOTHING IS RAISED: every
-    # attempt's limit is min(step, workspace, ceiling), so the step still runs
-    # under the lower limit and the default is still capped by the ceiling.
-    # The refusal only tells the caller sooner.
+    # ceiling. SHIP ON (default=True) by BGD's answer of 2026-10-26 (~22:15Z,
+    # question 5, "enforce at once"), unlike a new refusal's usual
+    # report-only start (the 2026-10-08 rule): no caller sends a `budget`
+    # before this feature, so the first deploy refuses nobody who worked
+    # before it. Off loses no limit, which is why the switch stays: every
+    # attempt's limit is min(step, workspace, ceiling), so off, the step still
+    # runs under the lower limit and the default is still capped by the
+    # ceiling. Set REFUSAL_BUDGET_ABOVE_LIMIT=off or
+    # REFUSAL_BUDGET_ABOVE_CEILING=off to let the request through again.
     "budget_above_limit": Switch(
         code="budget_above_limit",
         why="a task or workflow step whose `budget` is above the workspace's default or the "
         "platform ceiling in the same unit is refused 422, naming both, instead of running "
-        "under the lower limit. On once the console's submit form and the plugin say what "
-        "budget a step may ask for",
+        "under the lower limit. Ships on by BGD's decision 2026-10-26 (enforce at once); "
+        "off, the step runs under the lower limit",
+        default=True,
     ),
     "budget_above_ceiling": Switch(
         code="budget_above_ceiling",
         why="a workspace budget default above the platform ceiling in its unit is refused 422 "
-        "naming the ceiling, instead of being saved and capped at every resolution. On once "
-        "the console's Settings shows the ceiling beside the field",
+        "naming the ceiling, instead of being saved and capped at every resolution. Ships on "
+        "by BGD's decision 2026-10-26 (enforce at once); off, the default is saved and capped",
+        default=True,
     ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",

@@ -20,13 +20,13 @@ BGD's decisions, 2026-10-26 (#2459):
   own: with a step in dollars and a workspace default in tokens, both are
   limits and each is checked.
 
-BOTH REFUSALS SHIP REPORT-ONLY (`refusals.SWITCHES`, the owner's rule of
-2026-10-08 for every new refusal): `REFUSAL_BUDGET_ABOVE_LIMIT=on` and
-`REFUSAL_BUDGET_ABOVE_CEILING=on` turn them on. Off loses nothing the owner
-asked for, because the min holds either way: a step that asks for more runs
-under the lower limit, and a default above the ceiling is capped by it at
-every resolution. Off, the caller is only told later -- by the limit the
-task's `dispatch.budget` shows.
+BOTH REFUSALS SHIP ON (`refusals.SWITCHES`, default on, by BGD's answer of
+2026-10-26, "enforce at once"): the 422s are served from the first deploy.
+`REFUSAL_BUDGET_ABOVE_LIMIT=off` and `REFUSAL_BUDGET_ABOVE_CEILING=off` turn
+them off, and off loses no limit, because the min holds either way: a step
+that asks for more runs under the lower limit, and a default above the
+ceiling is capped by it at every resolution. Off, the caller is only told
+later -- by the limit the task's `dispatch.budget` shows.
 
 RESOLVED AT SUBMISSION, PINNED IN THE SIGNED SPEC. `resolve` runs in
 `SubmissionService._build_task`, for every task, batch entry, workflow step
