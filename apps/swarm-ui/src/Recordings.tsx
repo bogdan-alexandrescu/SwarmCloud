@@ -29,7 +29,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react'
 import { USE_FIXTURES, loadLiveRecordings, type LiveRecording } from './api'
 import { Button } from './components'
-import { errorHeading, route, tenantQuery, type ApiError } from './fetch'
+import { apiHeaders, chosenTenant, dropRefusedTenant, errorHeading, route, tenantQuery, type ApiError } from './fetch'
 import { Mark } from './primitives'
 import { bytesLabel, type Task } from './types'
 
@@ -81,7 +81,7 @@ async function loadListing(task: Pick<Task, 'id' | 'tenant_id'>): Promise<Listin
 /**
  * THE FIXTURE BUILD'S RECORDINGS: twelve one-minute parts of one attempt of
  * the fixture's live-browser agent (`task_b40e5a1c`, api.ts), sized across the
- * 52-778 KiB range measured on swarm.saga.xyz on 2026-10-26 (BT-012), so
+ * 52-778 KiB range measured on the deployed console on 2026-10-26 (BT-012), so
  * the list's layout can be reviewed without a deployment. The fixture build
  * serves no video bytes, and its player says so rather than fetching.
  * Every other task is `unserved` there, as before.
@@ -257,8 +257,24 @@ export function TakePlayer({ taskId, take }: { taskId: string; take: Take }) {
       let failed: string | null = null
       for (let i = 0; i < parts.length; i++) {
         try {
-          const res = await fetch(recordingSrc(taskId, parts[i]!), { credentials: PART_READ.sameOrigin, signal: stop.signal })
-          if (!res.ok) throw new Error(`the route answered ${res.status}`)
+          const tenant = chosenTenant()
+          const res = await fetch(recordingSrc(taskId, parts[i]!), {
+            credentials: PART_READ.sameOrigin,
+            signal: stop.signal,
+            headers: apiHeaders({}),
+          })
+          if (!res.ok) {
+            // A stored tenant the caller is no longer in is forgotten, as
+            // read() and write() do.
+            let code: string | null = null
+            try {
+              const env: unknown = await res.json()
+              const c = typeof env === 'object' && env !== null ? (env as { code?: unknown }).code : null
+              code = typeof c === 'string' ? c : null
+            } catch { code = null }
+            dropRefusedTenant(res.status, code, tenant)
+            throw new Error(`the route answered ${res.status}`)
+          }
           const bytes = await res.arrayBuffer()
           if (gone) return
           await appendPart(buffer, bytes)

@@ -1,7 +1,7 @@
 // ONE ATTEMPT'S RECORDING PLAYS AS ONE VIDEO, AND ITS PLAYER FITS THE PANE
 // (BT-012, lane BROWSER-TAB-RECORDINGS, part of #2423).
 //
-// Measured on swarm.saga.xyz on 2026-10-26: an attempt's recording was 12
+// Measured on the deployed console on 2026-10-26: an attempt's recording was 12
 // rows of one-minute .webm parts, each with its own Play button; the player
 // reported a duration of Infinity and could not seek (the relay muxed to a
 // pipe: tests/unit/live/test_recorder_duration.py); a 1440x987 frame drawn

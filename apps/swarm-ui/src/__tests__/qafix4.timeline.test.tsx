@@ -253,7 +253,9 @@ describe('N19 work-a-008: a workflow group says how many of its steps the span d
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     const head = await waitFor(() => {
       const el = document.querySelector<HTMLElement>('.tl-row.is-group[data-group="wf_five"] .tl-lab')
-      expect(el?.textContent).toMatch(/steps/)
+      // A count, not the word: the label reads `wf_fivesteps: reading…` while
+      // the group's steps load, and /steps/ alone matched that.
+      expect(el?.textContent).toMatch(/\d steps/)
       return el!
     })
     // MUTATION: print `${steps.length} steps` again and the header says 5
