@@ -1289,7 +1289,11 @@ function RoleCell({
     <td role="cell" data-label={column.display_name} data-tenant={column.tenant_id} data-role={role} data-source={platformAdmin ? 'platform_admin' : undefined} className="pp-role">
       {platformAdmin ? (
         <>
-          <span className="pp-role-w is-admin">admin</span> <span className="pp-role-w">(platform admin)</span>
+          {/* Two lines: the cell is nowrap, and on one line it widened the grid
+              from 1009px to 1102px at 1440, pushing Manage behind the scroll
+              (rendered review, 2026-10-26). The space keeps the text one phrase. */}
+          <span className="pp-role-w is-admin">admin</span> <br />
+          <span className="pp-role-w">(platform admin)</span>
         </>
       ) : role === 'unread' ? (
         <Dash why={`${column.display_name}’s roles could not be read`} />
