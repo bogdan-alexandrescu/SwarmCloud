@@ -164,8 +164,10 @@ def neutral(text: str, limit: int, *, literals: Iterable[str] = (), one_line: bo
 
 
 #: Where Markdown prose could begin raw HTML -- a tag, a closing tag, a
-#: comment, a declaration, a processing instruction -- or an entity reference.
-_HTML_START = re.compile(r"<(?=[A-Za-z/!?])|&(?=#?[A-Za-z0-9]+;)")
+#: comment, a declaration, a processing instruction -- or an entity reference,
+#: with any backslashes already in front of it: `\\` is one literal backslash
+#: to CommonMark, so `\<details>` would undo a single added escape.
+_HTML_START = re.compile(r"(\\*)(<(?=[A-Za-z/!?])|&(?=#?[A-Za-z0-9]+;))")
 _BACKTICKS = re.compile(r"`+")
 
 
@@ -186,13 +188,20 @@ def plain(text: str, limit: int, *, literals: Iterable[str] = (), one_line: bool
 
 
 def prose(text: str, limit: int, *, literals: Iterable[str] = (), one_line: bool = False) -> str:
-    """`plain`, for Markdown prose: a `<` that could open HTML, and an `&` that
+    r"""`plain`, for Markdown prose: a `<` that could open HTML, and an `&` that
     could start an entity, take a Markdown backslash escape, which GitHub renders
     as the character itself. So `<details>`, `<!--` or `<img>` cannot swallow the
     body, fake a marker or ping a host, and `->` and `#<n>` read as written; an
-    entity would be printed in a code span."""
+    entity would be printed in a code span.
+
+    A backslash already in front of the opener is doubled, so it prints as
+    typed and the added escape still holds. And `-->` becomes `--\>`, so no
+    output contains a marker (`<!-- ... -->`) as a substring: `\<!-- x -->`
+    still holds `<!-- x -->`, which `apply_keyword_block` would take for its
+    end marker."""
     text = plain(text, limit, literals=literals, one_line=one_line)
-    return _HTML_START.sub(lambda match: "\\" + match.group(0), text)
+    text = _HTML_START.sub(lambda match: match.group(1) * 2 + "\\" + match.group(2), text)
+    return text.replace("-->", "--\\>")
 
 
 def code(text: str, limit: int, *, literals: Iterable[str] = ()) -> str:

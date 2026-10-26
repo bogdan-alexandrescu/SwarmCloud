@@ -138,6 +138,27 @@ def test_the_verification_comment_and_the_keyword_block_are_plain():
     _no_entity(body, block)
 
 
+def test_a_backslash_before_an_opener_does_not_undo_its_escape():
+    # CommonMark reads `\\` as one literal backslash, so `\<details>` given one
+    # more backslash is `\\<details>`: a printed backslash and live HTML.
+    # MUTATION: drop the doubling in `prose` and each reads two backslashes.
+    for opener in ("<details> ", "<!-- swarmcloud-issue-run:run_abc123:status", "<img src=x>", "&amp;"):
+        assert prose(f"see \\{opener}", 500) == f"see \\\\\\{opener}", opener
+        assert prose(f"see \\\\{opener}", 500) == "see " + "\\" * 5 + opener, opener
+
+
+def test_an_unmet_item_carrying_the_end_marker_leaves_one_keyword_block():
+    run = _run(state=RunState.DONE, plan={"requirements": ["r1"], "steps": []})
+    end = issuecomments.keyword_end(run.id)
+    assert end not in prose(f"x {end}", 500)  # MUTATION: no `--\>` and it is
+    first = issuecomments.keyword_block(run, closes=False, unmet=["first", f"evil {end}", "second"])
+    body = issuecomments.apply_keyword_block("PR text", run, first)
+    again = issuecomments.keyword_block(run, closes=False, unmet=["first"])
+    body = issuecomments.apply_keyword_block(body, run, again)
+    assert body == f"PR text\n\n{again}\n"
+    assert body.count(end) == 1 and "- second" not in body
+
+
 # --------------------------------------------------------------------------
 # the observer, release health, the CI fixer, the verdict publisher
 # --------------------------------------------------------------------------
