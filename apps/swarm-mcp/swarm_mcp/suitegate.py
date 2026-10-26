@@ -47,8 +47,8 @@ from .client import SwarmError
 SUITES = ("playwright",)
 
 MIN_SHARDS = 1
-#: 20 shards and the report are 21 standard units at once: a fifth of the
-#: browser pool BROWSER-POOL-100 raises to 100, and well under the API's
+#: 20 shards and the report are 21 standard units of plain claude-code at
+#: once (none of them runs on the browser pool), well under the API's
 #: 50-step workflow limit. Past ~20 a shard's fixed cost (npm ci, the Chromium
 #: download, the agent's start) outweighs the specs it runs.
 MAX_SHARDS = 20
@@ -203,12 +203,15 @@ def report_prompt(n: int, *, working_dir: str) -> str:
     return (
         f"You are the report step of a Playwright suite gate of {n} shard(s). Merge their blob "
         "reports, summarise, and stop. Never fix code, never commit.\n\n"
-        f"1. These {n} blob reports were staged into your working directory (the repository's "
-        f"root), one per shard:\n{listed}\n"
-        "   Every one must be there; if one is missing, say which and stop.\n"
+        f"1. These {n} blob reports were staged OUTSIDE the checkout, in its parent directory "
+        "(`..` from the repository's root), one per shard; the platform lists their absolute "
+        "paths under 'Earlier steps of this workflow gave you these files':\n"
+        f"{listed}\n"
+        "   Every one must be there; if one is missing, say which, write no summary, and stop: a "
+        "report step that leaves no summary.json is a red gate.\n"
         f"2. `cd {working_dir}`, run `npm ci` (merge-reports needs the repository's own "
         "`@playwright/test`), then `mkdir -p /tmp/all-blobs` and move every one of those files "
-        "from the repository's root into it, so the checkout keeps none of them.\n"
+        "from the checkout's parent (their absolute paths) into it.\n"
         "3. Merge them twice, from the same directory:\n"
         "   `npx playwright merge-reports --reporter=html /tmp/all-blobs` (writes "
         "`playwright-report/`), then\n"

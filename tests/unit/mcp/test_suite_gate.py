@@ -169,6 +169,22 @@ def test_the_report_prompt_names_every_shards_blob():
     assert "npx playwright merge-reports" in report["input"]["prompt"]
 
 
+def test_the_report_prompt_finds_the_blobs_in_the_checkouts_parent_not_its_root():
+    # The worker stages input_from files into work/, the checkout's PARENT,
+    # while the agent starts in work/repo (agent_worker/inputs.py, #226).
+    # MUTATION: a prompt that sends the agent to the repository's root finds
+    # none of the blobs, stops, and the step SUCCEEDS with no summary.
+    wire = _Wire()
+    _gate(wire, shards=3)
+    prompt = {s["step_id"]: s for s in _body(wire)["steps"]}["report"]["input"]["prompt"]
+    assert "staged into your working directory" not in prompt
+    assert "from the repository's root into it" not in prompt
+    assert "parent directory" in prompt
+    assert "`..` from the repository's root" in prompt
+    assert "Earlier steps of this workflow gave you these files" in prompt
+    assert "absolute paths" in prompt
+
+
 def test_each_shard_runs_the_named_commands_from_working_dir_and_never_fixes_code():
     wire = _Wire()
     _gate(wire, shards=2, project="chromium", env_file="web/.env.mock")

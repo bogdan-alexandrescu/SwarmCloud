@@ -95,6 +95,7 @@ every step's task id and a `suite_gate` block that names the report step. Then:
 | SUCCEEDED | `failed == 0` | green |
 | SUCCEEDED | `failed > 0` | red: the failures are listed |
 | FAILED (a shard or the report) | none | red: part of the suite did not run, so nothing can be said |
+| SUCCEEDED | missing | red: the report merged nothing (a blob it was given was absent, or it stopped early), and a step with no dependants is not failed for a missing output |
 
 Flaky tests (failed once, passed on retry) are counted and listed, and do not
 turn the gate red. A project that wants them to should read `flaky`.
@@ -154,7 +155,7 @@ script that composes it, runs the gate and judges by the gate's answer:
    that as `ref`. A SHA pins exactly what was tested.
 2. Call `swarm_suite_gate` with it, and keep the workflow id.
 3. Land the train only when the workflow is SUCCEEDED **and**
-   `summary.json`'s `failed` is 0. On red, eject or bisect as the train's own
+   `summary.json` exists **and** its `failed` is 0. On red, eject or bisect as the train's own
    rules say, using `failures[].spec` to name what broke.
 4. Keep `playwright-report.zip` with the train's record, so the person who
    reads a red train sees the merged report rather than eight partial ones.
