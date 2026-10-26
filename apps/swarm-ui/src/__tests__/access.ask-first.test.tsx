@@ -12,7 +12,7 @@
 //     button: Disconnect sends nothing after Esc;
 //   * Chosen lists every grant under the owner, including one GitHub put on
 //     page 2, and drops the pager that pages GitHub's list;
-//   * Mine / Members is in the address, so a reload keeps Members.
+//   * The tab is in the address, so a reload keeps Choose repositories.
 //
 // Fixtures only; no network. Nothing here is token-shaped.
 
@@ -245,16 +245,18 @@ describe('Chosen is every grant under the owner (RSA-29)', () => {
   })
 })
 
-describe('Mine / Members is in the address (RSA-28)', () => {
-  it('writes ?view=members, and a mount on it opens Members', async () => {
+describe('the tab is in the address (RSA-28)', () => {
+  // Members was the switch's second view until GA-MOVE-VIEWS moved it to
+  // People and roles (ga.moveviews.test.tsx); the address now carries the tab.
+  it('writes ?view=choose, and a mount on it opens Choose repositories', async () => {
     api()
     const first = await mount()
-    fireEvent.click(screen.getByRole('radio', { name: 'Members' }))
-    expect(new URLSearchParams(window.location.search).get('view')).toBe('members')
+    fireEvent.click(screen.getByRole('tab', { name: 'Choose repositories' }))
+    expect(new URLSearchParams(window.location.search).get('view')).toBe('choose')
     first.unmount()
     await mount()
-    expect(screen.getByRole('radio', { name: 'Members' }).getAttribute('aria-checked')).toBe('true')
-    fireEvent.click(screen.getByRole('radio', { name: 'Mine' }))
+    expect(screen.getByRole('tab', { name: 'Choose repositories' }).getAttribute('aria-selected')).toBe('true')
+    fireEvent.click(screen.getByRole('tab', { name: 'Connection' }))
     expect(window.location.search).toBe('')
   })
 })

@@ -21,7 +21,7 @@
 //     with Install on <login> and Install on an organisation…; mixed owners
 //     get an Install button per uninstalled row; Refresh and returning to the
 //     tab read the owners again;
-//   * Members (admin) lists states and names; a non-admin is told so;
+//   * Members (admin; on People and roles since GA-MOVE-VIEWS) lists states and names; a non-admin is told so;
 //   * nothing token-shaped reaches the DOM.
 //
 // Fixtures only; no network. Fake values are built at runtime.
@@ -593,7 +593,19 @@ describe('connected but not installed (#780)', () => {
   })
 })
 
-describe('members (Access B)', () => {
+/**
+ * Members' GitHub: Access B, on Config › People and roles since GA-MOVE-VIEWS
+ * (part of #2157), opened at its own address.
+ */
+async function mountMembers() {
+  window.history.replaceState(null, '', '/config/people?view=members')
+  vi.stubEnv('VITE_LIVE', '1')
+  vi.resetModules()
+  const { WorkspacePeopleScreen } = await import('../WorkspacePeople')
+  return render(<WorkspacePeopleScreen />)
+}
+
+describe('members (Access B, on People and roles)', () => {
   it('lists every member by state and name for an admin', async () => {
     api((m, url) =>
       m === 'GET' && url === '/v1/access/members'
@@ -610,8 +622,7 @@ describe('members (Access B)', () => {
           }
         : null,
     )
-    await mount()
-    fireEvent.click(screen.getByRole('radio', { name: 'Members' }))
+    await mountMembers()
     const list = await screen.findByRole('list', { name: 'Members of eng' })
     const rows = [...list.querySelectorAll('li.ac-member')] as HTMLElement[]
     expect(rows.map((r) => r.dataset.member)).toEqual(['operator@swarm.example.com', 'second@swarm.example.com', 'third@swarm.example.com'])
@@ -622,8 +633,7 @@ describe('members (Access B)', () => {
 
   it('tells a non-admin the view is for admins', async () => {
     api((m, url) => (m === 'GET' && url === '/v1/access/members' ? { status: 403, body: { code: 'admin_required', message: "the tenant's members view is for admins" } } : null))
-    await mount()
-    fireEvent.click(screen.getByRole('radio', { name: 'Members' }))
+    await mountMembers()
     await waitFor(() => expect(visible(document.querySelector('.ac-members'))).toMatch(/admin/i))
     expect(screen.queryByRole('list', { name: 'Members of eng' })).toBeNull()
   })
@@ -633,8 +643,7 @@ describe('members (Access B)', () => {
     // generic `forbidden` code, which drew a red failure with a Try again
     // that can never succeed.
     api((m, url) => (m === 'GET' && url === '/v1/access/members' ? { status: 403, body: { code: 'forbidden', message: "the tenant's members view is for admins" } } : null))
-    await mount()
-    fireEvent.click(screen.getByRole('radio', { name: 'Members' }))
+    await mountMembers()
     await waitFor(() => expect(document.querySelector('.ac-members .state.admin-gate')).not.toBeNull())
     const card = document.querySelector<HTMLElement>('.ac-members')!
     expect(card.querySelector('.state.failed')).toBeNull()
