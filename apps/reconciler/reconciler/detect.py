@@ -1754,6 +1754,26 @@ def eviction_cause(message: str) -> tuple[str, bool]:
     return _one_line(f"evicted: {message}"), False
 
 
+#: What `evicted_volume` names for a pod-level or container-level limit: the
+#: whole pod's local disk, so no one emptyDir is the cause.
+EVERY_VOLUME = "every volume"
+
+
+def evicted_volume(message: str) -> str | None:
+    """The kubelet volume a disk-LIMIT eviction names, `EVERY_VOLUME`, or None (#2436).
+
+    `tmp` for `Usage of EmptyDir volume "tmp" exceeds ...`, the name the
+    worker's scratch readings are keyed by (`agent_worker.scratchusage`);
+    `EVERY_VOLUME` for the pod's or a container's total; None for anything
+    that is not this step's own limit, such as a node's pressure.
+    """
+    for pattern, _ in _LIMIT_EVICTIONS:
+        matched = pattern.search(message)
+        if matched:
+            return matched.groupdict().get("volume") or EVERY_VOLUME
+    return None
+
+
 def detect_evicted(
     snapshot: ControlSnapshot,
     executions: Iterable[ExecutionView],
@@ -1837,6 +1857,8 @@ def detect_evicted(
                 detail={
                     "eviction": str(eviction),
                     "disk_limit": disk_limit,
+                    # Whose largest paths the repair reports (#2436).
+                    "volume": evicted_volume(str(eviction)),
                     "execution": where,
                     "exit_code": getattr(ended, "exit_code", None),
                     "backend_detail": str(getattr(ended, "detail", "") or ""),
