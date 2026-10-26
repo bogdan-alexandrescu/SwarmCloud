@@ -2442,8 +2442,11 @@ def _check_qaenv_safety(text: str) -> None:
 def _check_qaenv_schedule(text: str) -> None:
     body = _flat(_section(text, QAENV_SCHEDULE))
     per_run, per_day, concurrent = _qaenv_caps()
-    assert (per_run, per_day, concurrent) == (40, 160, 2)
+    assert (per_run, per_day, concurrent) == (80, 160, 2)
     assert f"`per_run_usd` {per_run} a leg" in body
+    # BGD raised the leg from $40 to $80 on 2026-10-26 (QA-TRIPWIRE-MAC), from
+    # the bench median of $0.14 a flow run: 132 flows at 2 widths are about $37.
+    assert "BGD raised it to $80 on 2026-10-26" in body and "$0.14" in body
     assert f"`per_day_usd` {per_day}" in body and f"`max_concurrent` {concurrent}" in body
     assert "BGD on 2026-10-23" in body and "Q9 (a)" in body and "VQ7-CAPS" in body
     assert "`max_concurrent` 1, set by BGD" not in body
