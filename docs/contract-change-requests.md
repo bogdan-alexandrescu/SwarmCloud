@@ -14540,7 +14540,7 @@ BGD's decision on #2459 (2026-10-26): at 100% of its budget the worker stops
 the agent at its next turn boundary, checkpoints, publishes what it has, and
 ends the step FAILED "with the end cause `budget_exceeded`". `EndCause` has
 no such member. Until it does, the worker
-(`agent_worker/lifecycle.py::_record_finalised`, `agent_worker/budget.py`)
+(`agent_worker/lifecycle.py::Worker._record_finalised`, `agent_worker/budget.py`)
 ends the step FAILED with `end_cause` null -- `EndCause`'s own docstring rule
 for "a writer ended it for a reason with no value here" -- with `last_error`
 beginning `budget_exceeded:` and `result_summary.budget` carrying
@@ -14644,7 +14644,7 @@ never a resource. **1-8** are untouched.
 
 ### What is true today
 
-A task or a workflow step may send `budget: {usd: N}` or `{tokens: N}`
+An agent or a workflow step may send `budget: {usd: N}` or `{tokens: N}`
 (`swarm_api.schemas.StepBudget`). swarm-api resolves the attempt's budget at
 submission, min(step, workspace default, platform ceiling) per unit, and
 pins it in `metadata.dispatch.budget: {usd?, tokens?, from: {step,
@@ -14652,7 +14652,7 @@ workspace, ceiling}}`, inside the block the step-spec signature covers
 (`SIGNED_METADATA_KEYS`). The worker reads it only from the verified
 document (`agent_worker.budget.Limits.from_dispatch`). `WorkflowStep`
 records no budget, so the workflow's own document does not say what each
-step asked for; the step's task does.
+step asked for; the step's agent does.
 
 ### The change
 
@@ -14663,7 +14663,7 @@ when it is set -- as request 104 did for `model_class`.
 
 ### What it would break if accepted
 
-Nothing at once: the dispatch block's key is read as a fallback for tasks
+Nothing at once: the dispatch block's key is read as a fallback for agents
 stored before the field, then retired.
 
 ### If it is declined

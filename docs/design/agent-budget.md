@@ -72,7 +72,7 @@ counts each attempt's own usage, so a continuation of a step that ended
 The CLI's stream is read by the RUNNER, through the stdout capture's tap
 (`cliagent._run_watched`), so a stream past the capture's cap is still read
 whole -- the same reason the account channel reads the pipe, not the file.
-The runner cannot price anything and cannot write task events; the WORKER
+The runner cannot price anything and cannot write the agent's events; the WORKER
 can. So the work splits as the account channel's does:
 
 1. The runner's `BudgetStreamWatcher` writes the usage it has seen to a
