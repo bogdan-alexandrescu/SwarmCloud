@@ -2480,6 +2480,7 @@ function InspectorSlot({
       now={now}
       load={loadAttempts}
       stepHeading={page}
+      idInHead={page}
     >
       {/* WHY IT FAILED, WHOLE, ON THE CARD (visual QA QA-120, 2026-10-20).
           The node's note is one ellipsed line ('exit status 1: pytest

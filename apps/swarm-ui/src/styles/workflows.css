@@ -1169,10 +1169,3 @@
    that had not answered. Reading is upright and faint -- not the absence's
    italic, and not `.wf-spend`'s dim ink, one step from a figure. */
 .wf-spend.is-reading { color: var(--text-faint); font-style: normal; }
-
-/* THE ID ONCE ON A WORKFLOW'S PAGE (VQ-015 re-review): the head's Copy id
-   carries it, and the inspector's same-step row printed it a second time. On
-   the page that row's position names the workflow and its strip's titles
-   name each one, and a step there opens that workflow's page, whose head
-   carries its id. The list's board card keeps it: no head there says it. */
-.wfp-screen .wf-scrub[data-scrub="workflow"] > .id { display: none; }
