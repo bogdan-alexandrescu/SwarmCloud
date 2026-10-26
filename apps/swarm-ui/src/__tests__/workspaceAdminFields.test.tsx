@@ -141,6 +141,16 @@ describe('Rename (S6a): the workspace’s admins only, the display name only', (
     })
   }
 
+  it('offers Rename to a platform admin whose stored role is member, as the rename route admits them (VQ-044)', async () => {
+    api(profile('member', { isAdmin: true }))
+    const { WorkspaceSettingsScreen } = await load()
+    render(<WorkspaceSettingsScreen part="settings" />)
+    const ws = await card()
+    // MUTATION: gate Rename on the stored role again -> fails.
+    expect(await within(ws).findByRole('button', { name: 'Rename' }, WAIT)).toBeTruthy()
+    expect(visible(within(ws).getByTestId('ws-your-role'))).toBe('admin (platform admin)')
+  })
+
   it('offers no Rename in a personal workspace, which the switcher always calls Your workspace', async () => {
     api(profile('member', { acting: 'u-ana' }))
     const { WorkspaceSettingsScreen } = await load()
