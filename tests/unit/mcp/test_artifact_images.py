@@ -172,6 +172,10 @@ def test_an_image_over_the_cap_answers_its_size_and_the_console_link_not_bytes(s
     task_id = "task_00000000000imgbig0"
     _finished(world, task_id, {"shots/huge.png": PNG})
     monkeypatch.setattr(artifacts, "MAX_INLINE_IMAGE_BYTES", len(PNG) - 1)
+    # This world's API has no console origin; a deployment's serves one on the task.
+    link = f"https://console.invalid/agents/{task_id}"
+    read_task = swarm.task
+    monkeypatch.setattr(swarm, "task", lambda tid: {**read_task(tid), "links": {"console": link}})
 
     answer = server._call(swarm, "swarm_artifact", {"task_id": task_id, "name": "shots/huge.png"})
 
@@ -181,7 +185,7 @@ def test_an_image_over_the_cap_answers_its_size_and_the_console_link_not_bytes(s
     assert reply["bytes"] == len(PNG)
     assert reply["max_bytes"] == len(PNG) - 1
     assert reply["redaction"] == "not-applied"
-    assert "console" in reply, reply
+    assert reply["console"] == link, reply
     assert "data" not in reply and "content" not in reply, reply
     assert not any("/artifacts/raw" in path for path, _ in seen), seen
 
@@ -230,3 +234,47 @@ def test_the_plugin_moved_to_a_bridge_that_shows_images():
     )
     assert manifest["version"] == "0.5.70", manifest["version"]
     assert any("@sc-v0.5.70#" in arg for arg in manifest["mcpServers"]["swarmcloud"]["args"])
+
+
+def test_as_image_reads_the_image_without_the_text_read_first(swarm, world, seen):
+    task_id = "task_00000000000imgasis"
+    _finished(world, task_id, {"shot.png": PNG})
+
+    meta, block = _image(
+        server._call(swarm, "swarm_artifact", {"task_id": task_id, "name": "shot.png", "as_image": True})
+    )
+
+    assert base64.b64decode(block["data"]) == PNG and meta["status"] == "image"
+    assert not any("/artifacts/content" in path for path, _ in seen), seen
+
+
+def test_as_image_on_text_is_still_the_redacted_text_read(swarm, world, seen):
+    task_id = "task_00000000000imgastx"
+    leaked = "ghp_" + secrets.token_hex(18)
+    _finished(world, task_id, {"fake.png": f"token={leaked}\n"})
+
+    answer = server._call(swarm, "swarm_artifact", {"task_id": task_id, "name": "fake.png", "as_image": True})
+
+    assert isinstance(answer, str), answer
+    assert json.loads(answer)["status"] == "ok"
+    assert leaked not in answer
+
+
+def test_save_to_also_refuses_a_body_whose_magic_bytes_are_not_an_image(swarm, monkeypatch, tmp_path):
+    from swarm_mcp import checkout
+
+    monkeypatch.setenv(checkout.CHECKOUT_DIR_ENV, str(tmp_path))
+    leaked = "ghp_" + secrets.token_hex(18)
+    body = f"token={leaked}\n".encode()
+    monkeypatch.setattr(swarm, "artifact_content", lambda *a, **k: {"status": "binary", "name": "x.png"})
+    monkeypatch.setattr(
+        swarm, "artifact_raw",
+        lambda *a, **k: RawBody(body, {"content-type": "image/png", "x-artifact-kind": "image"}),
+    )
+
+    answer = server._call(
+        swarm, "swarm_artifact", {"task_id": "task_00000000000imgsvlie", "name": "x.png", "save_to": str(tmp_path)}
+    )
+
+    assert json.loads(answer)["status"] == "binary"
+    assert not (tmp_path / "task_00000000000imgsvlie").exists()
