@@ -19,6 +19,11 @@ function stubFetch(isAdmin: boolean): string[] {
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input)
     calls.push(url)
+    // THE OVER-TIME READ, which the page's one Run also starts for an admin
+    // (COUNTS-ONE-RUN): refused here, since this file is about /v1/stats.
+    if (url.startsWith('/v1/outcomes')) {
+      return new Response(JSON.stringify({ detail: 'not in this test' }), { status: 503, headers: { 'content-type': 'application/json' } })
+    }
     const body = url.startsWith('/v1/tenants/me')
       ? {
           tenant: { tenant_id: 'eng' },

@@ -423,7 +423,11 @@ describe('#138: the breadcrumb is the trail to the page, in links, and never the
     // MUTATION: the cost beside the button again, or the button bare.
     window.history.replaceState(null, '', '/admin/counts')
     render(<App />)
-    const button = await screen.findByRole('button', { name: /^Run the count · \d+(–\d+)? reads$/ })
+    // Every price `runPrice` draws: the state counts alone, or with the
+    // over-time view's half (#2149) as a total or a per-workspace rate.
+    const button = await screen.findByRole('button', {
+      name: /^Run the count · (\d+(–\d+)? reads|(\d+ reads, or )?\d+ reads \+ ~\d+ a workspace|(\d+–)?~\d+ reads)$/,
+    })
     expect(button.querySelector('.counts-cost'), 'the price is not inside the control').not.toBeNull()
   })
 })

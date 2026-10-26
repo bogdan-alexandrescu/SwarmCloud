@@ -54,6 +54,13 @@ const api = vi.hoisted(() => ({
   loadAdminQuota: vi.fn(),
 }))
 vi.mock('../api', () => api)
+// The over-time read, which Platform counts' one Run starts once its count
+// shows an admin (COUNTS-ONE-RUN). It never answers here, so Over time's
+// words are measured in the state the budget below was set in.
+vi.mock('../platformTimeApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../platformTimeApi')>()),
+  loadPlatformTime: vi.fn(() => new Promise(() => {})),
+}))
 
 const { AdminSettingsScreen } = await import('../AdminSettings')
 const { PlatformCountsScreen } = await import('../PlatformCounts')
@@ -203,7 +210,14 @@ const BUDGET = {
   // "5 of 5 units in use." and the Open button, 15 tokens. The green lead is 6.
   // The margin is three tokens: a renamed word fits, a second sentence does not.
   'Pool limits': 60,
-  'Platform counts': 32,
+  // RAISED 32 -> 46, 2026-10-25, BY BGD'S DECISION OF 2026-10-25 (COUNTS-ONE-RUN,
+  // #2149): the page in mock-up F1's order, Over time first and the state
+  // counts under F1's own heading, "Right now: agents in each state", with
+  // its one line, "A snapshot, read by the same Run." -- twelve words that
+  // say the counts are not part of the span above them and that the head's
+  // one Run reads them. Measured 31 before and 43 with them; the margin is
+  // three words, so a renamed label fits and a second sentence does not.
+  'Platform counts': 46,
   // THE PLATFORM TICKS, MOVED ONTO PLATFORM COUNTS BY THE OWNER'S DECISION OF
   // 2026-10-13 (SCHED-ONE-PAGE: Admin › Schedules folded into Automate ›
   // Schedules, and its "Platform ticks" table came here with the same intro

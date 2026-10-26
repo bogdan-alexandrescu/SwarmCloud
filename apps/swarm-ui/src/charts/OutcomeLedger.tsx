@@ -807,7 +807,9 @@ export interface OutcomeLedgerProps {
   data: Outcomes
   /**
    * `coverage.seal_grace_s`, which the page reads after first paint (#2422):
-   * null until then, and an open bucket says "settling" without a minute count.
+   * null until then -- and while the chart draws from the first `buckets` +
+   * `totals` read (visual QA VQ-021) -- when an open bucket says "settling"
+   * without a minute count it does not have.
    */
   sealGraceS: number | null
   /** The picked bucket, by its start -- never by index, which a re-read would silently repoint. */

@@ -10,7 +10,11 @@
 //   * every credential present reads the green "nothing waiting" lead, with
 //     no button;
 //   * a source that could not be read is "—" and its reason, never green;
-//   * the page's body is as built: the table is still drawn under the lead.
+//   * the page's body is as built: the table is still drawn under the lead;
+//   * none registered (VQ-046): the lead says so, never the green "nothing
+//     waiting", and carries Register an MCP server as its one button, which
+//     the card then does not draw a second time; a reader who may not
+//     register is told who does, with no button.
 //
 // MUTATIONS, each of which turns a case red: drop the lead; read green while
 // an item is listed; read green when `sources.mcp_servers.needed` is null.
@@ -18,7 +22,7 @@
 // Fixtures only; no network. Nothing here is credential-shaped.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 
 type Json = Record<string, unknown>
@@ -132,5 +136,50 @@ describe('Config › MCP servers: its lead (S5a)', () => {
     expect(lead.classList.contains('is-ok')).toBe(false)
     expect(visible(lead)).toContain('—')
     expect(visible(lead)).toMatch(/does not serve/i)
+  })
+})
+
+describe('Config › MCP servers with none registered (VQ-046)', () => {
+  async function drawEmpty(canManage: boolean) {
+    serve((m, url) => (m === 'GET' && url.startsWith('/v1/mcp-servers')
+      ? { status: 200, body: { ...LIST, can_manage: canManage, servers: [] } }
+      : null))
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const { McpServersScreen } = await import('../McpServers')
+    const { SetupContext } = await import('../ConfigSetup')
+    // The setup read says nothing is missing: it counts missing credentials, not registrations.
+    const data = { tenant_id: 'eng', steps: [], config_setup: { secrets: secrets([]) } }
+    render(
+      <SetupContext.Provider value={{ doc: { status: 'ok', data: data as never, fetchedAt: Date.now() }, personal: false }}>
+        <McpServersScreen />
+      </SetupContext.Provider>,
+    )
+    await screen.findByText(/No MCP server is registered for eng yet/, { selector: '.ur-small' })
+    return document.querySelector('.ws-lead') as HTMLElement | null
+  }
+
+  it('leads with "none registered" and Register an MCP server, never the green "nothing waiting"', async () => {
+    const lead = await drawEmpty(true)
+    expect(lead, 'the page has no lead').not.toBeNull()
+    // MUTATION: keep the "nothing waiting" lead over an empty list -> is-ok and these fail.
+    expect(lead!.classList.contains('is-ok')).toBe(false)
+    expect(visible(lead!)).not.toMatch(/nothing waiting/i)
+    expect(visible(lead!)).toContain('No MCP server is registered for eng yet.')
+    const button = within(lead!).getByRole('button', { name: 'Register an MCP server' })
+    // One sentence and one button: the card does not draw it a second time.
+    // MUTATION: leave the card's secondary Register button drawn -> two and this fails.
+    expect(screen.getAllByRole('button', { name: 'Register an MCP server' })).toHaveLength(1)
+    expect(button.className).toContain('is-primary')
+    fireEvent.click(button)
+    expect(screen.getByRole('form', { name: 'Register an MCP server' })).toBeTruthy()
+  })
+
+  it('tells a reader who may not register who does, with no button', async () => {
+    const lead = await drawEmpty(false)
+    expect(lead).not.toBeNull()
+    expect(visible(lead!)).toContain('No MCP server is registered for eng yet.')
+    expect(visible(lead!)).toMatch(/a platform admin registers/i)
+    expect(within(lead!).queryAllByRole('button')).toHaveLength(0)
   })
 })

@@ -1632,12 +1632,14 @@ function Form({ capacity }: { capacity: Capacity }) {
             </li>
             {/* WHERE IT LANDS, AND WHAT THAT COSTS (F1). `_build_task` stores
                 a task at READY, or PARKED when its key is missing or it waits
-                on a dependency; invariant 1 says neither holds capacity. */}
+                on a dependency; invariant 1 says neither holds capacity. Drawn
+                in the words a person reads, never the enum in capitals
+                (VQ-026). */}
             <li className="ctl-fact">
               <b>lands as</b>
-              {waits === 'yes' ? 'READY or PARKED · waits for room · costs nothing'
-                : waits === 'maybe' ? 'READY or PARKED · may wait for room: room not read · costs nothing'
-                : 'READY or PARKED · costs nothing'}
+              {waits === 'yes' ? 'ready or parked · waits for room · costs nothing'
+                : waits === 'maybe' ? 'ready or parked · may wait for room: room not read · costs nothing'
+                : 'ready or parked · costs nothing'}
             </li>
             {unsent.length > 0 && (
               <li className="ctl-fact">
