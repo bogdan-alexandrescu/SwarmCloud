@@ -43,8 +43,8 @@ live_browser_checks() {
   cat <<'EOF'
 live-browser: a claude-code-browser agent on the fixture sign-in page asks for help, and its live session shows the hand-off
 live-browser: a member of another tenant gets 404 from every live route, and a ticket re-pointed at that tenant is refused on the socket
-live-browser: a scripted viewer takes control and types a password made at run time; every frame it receives has the field painted
-live-browser: the recording's frames have the password field's pixels painted
+live-browser: a scripted viewer takes control and types a password made at run time; every frame it receives shows the field as drawn
+live-browser: the recording's frames show the password field as drawn
 live-browser: control returns, the agent reports the code only the typed password makes, and the task succeeds
 live-browser: the password is in no transcript, log, checkpoint, output, recording or event
 EOF

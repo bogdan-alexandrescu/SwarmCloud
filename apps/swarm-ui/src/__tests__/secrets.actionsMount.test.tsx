@@ -17,7 +17,13 @@
 //   * S4d: "Set another in this place", and the size hint;
 //   * S4h: a member copies a note for an admin naming the secret and scope;
 //   * S4i: "Step 3 · Add your first secret" when nothing is set;
-//   * S4b: Sign-in for QA has Set / Replace per row.
+//   * S4b: Sign-in for QA has Set / Replace per row;
+//   * VQ-041: a key set is something stored, so the lead follows the strip
+//     (step 3 done, what is set, the strip's next step), For agents' empty
+//     line names the key set below and leaves it out of "Usually first", and
+//     Yours' empty line names the keys of yours that are set;
+//   * VQ-042: Keys for agents and MCP and GitHub token are stacked, full
+//     width, under For agents (S4a), never side by side.
 //
 // Fixtures only; no network. Every value and token is built at runtime.
 
@@ -371,6 +377,94 @@ describe('S4i: the empty workspace', () => {
     await screen.findByRole('heading', { name: 'Secrets' })
     await screen.findByRole('button', { name: /^add a secret$/i })
     expect(screen.queryByRole('region', { name: /add your first secret/i })).toBeNull()
+  })
+})
+
+/** A setup read whose strip has GitHub and repositories done, step 3 measured `nothing missing` and step 4 to do. */
+function stripDoc(): Json {
+  const doc = setupDoc([])
+  return {
+    ...doc,
+    steps: [
+      { step: 'github_connected', state: 'done', evidence: { login: 'ana' } },
+      { step: 'repos_chosen', state: 'done', evidence: { repositories: [{ full_name: REPOSITORY }] } },
+    ],
+    config_setup: { ...(doc.config_setup as Json), people: { applies: true, done: false, holders: 0, admins: 1, reason: null } },
+  }
+}
+
+const TYPESAFE_SET: Json = { section: 'keys', store: 'provider_keys', name: 'typesafe', status: 'set', consumers: [], can_manage: true, set_at: AT, set_by: 'ana@example.com', shadowed_by: [], shadows: [] }
+
+async function drawWithStrip(view: string | null) {
+  const { SecretsScreen, SetupContext } = await load()
+  render(
+    <SetupContext.Provider value={{ doc: { status: 'ok', data: stripDoc() as never, fetchedAt: Date.now() }, personal: false }}>
+      <SecretsScreen view={view} />
+    </SetupContext.Provider>,
+  )
+}
+
+describe('VQ-041: the page agrees with the strip and with its own Keys table', () => {
+  const keyOnly = () => api({ overview: (scope) => ({ tenant_id: 'eng', scope, personal_tenant_id: 'u-ana', can_manage: true, rows: [TYPESAFE_SET] }) })
+
+  it('leads with step 3 done and the strip\'s next step when only a key is set, never "Add your first secret"', async () => {
+    keyOnly()
+    await drawWithStrip(null)
+    const lead = await screen.findByRole('region', { name: 'Nothing missing' })
+    // MUTATION: count only agents secrets as stored -> "Step 3 · next · Add your first secret" and these fail.
+    expect(screen.queryByRole('region', { name: /add your first secret/i })).toBeNull()
+    expect(visible(lead)).toMatch(/^Step 3 · done/)
+    expect(visible(lead)).toContain('Nothing eng needs is missing')
+    expect(visible(lead)).toContain('1 key is set; no secret for agents is stored yet.')
+    // The strip's next step is the lead's one button.
+    expect(within(lead).getByRole('link', { name: 'Next: People invited' }).getAttribute('href')).toBe('/config/people')
+    // The head draws Add a secret, since this lead does not.
+    expect(screen.getAllByRole('button', { name: /^add a secret$/i })).toHaveLength(1)
+  })
+
+  it('names the key set below For agents\' empty list, and leaves it out of "Usually first"', async () => {
+    keyOnly()
+    await drawWithStrip(null)
+    await screen.findByText('No secret for agents is stored for eng yet; 1 key is set below.')
+    // MUTATION: suggest the TypeSafe key whatever the keys say -> fails.
+    const first = document.querySelector('.sec-first')
+    expect(visible(first)).not.toContain('TypeSafe')
+    expect(visible(first)).toContain('A search API key')
+    expect(screen.queryByText(/^No secret is stored for eng yet/)).toBeNull()
+  })
+
+  it('still suggests the TypeSafe key, and calls step 3 what the strip calls it, in a workspace with nothing set', async () => {
+    api()
+    await drawWithStrip(null)
+    const lead = await screen.findByRole('region', { name: /add your first secret/i })
+    // MUTATION: keep "Step 3 · next" under a strip that measured step 3 done -> fails.
+    expect(visible(lead)).toMatch(/^Step 3 · nothing missing/)
+    await screen.findByText('No secret is stored for eng yet.')
+    expect(visible(document.querySelector('.sec-first'))).toContain('The TypeSafe key')
+  })
+
+  it('says on Yours that a key of yours is set, rather than "no secret of your own"', async () => {
+    keyOnly()
+    await drawWithStrip('scope=personal')
+    // MUTATION: keep "You have no secret of your own yet." over a key of yours that is set -> fails.
+    await screen.findByText('You have no secret of your own for agents yet; 1 key is yours, set under Keys below.')
+    expect(screen.queryByText('You have no secret of your own yet.')).toBeNull()
+  })
+})
+
+describe('VQ-042: the Workspace scope stacks its sections (S4a)', () => {
+  it('draws Keys for agents and MCP full width, then GitHub token under it, never side by side', async () => {
+    api({ overview: (scope) => ({ tenant_id: 'eng', scope, personal_tenant_id: 'u-ana', can_manage: true, rows: [TYPESAFE_SET] }) })
+    await drawWithStrip(null)
+    const keys = await screen.findByRole('table', { name: /keys for agents and mcp/i })
+    const git = screen.getByRole('heading', { name: 'GitHub token' })
+    // MUTATION: put the two back in a `.sec-g2` pair -> fails.
+    expect(keys.closest('.sec-g2')).toBeNull()
+    expect(git.closest('.sec-g2')).toBeNull()
+    const forAgents = screen.getByRole('heading', { name: 'For agents' })
+    // For agents, then Keys, then GitHub token, top to bottom.
+    expect(forAgents.compareDocumentPosition(keys) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(keys.compareDocumentPosition(git) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 })
 

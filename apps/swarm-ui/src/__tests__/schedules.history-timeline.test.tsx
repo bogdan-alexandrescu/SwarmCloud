@@ -17,8 +17,14 @@
 //     each work item in words -- an issue run by its issue's number and title,
 //     its run link, its state -- with its cost, and a cost never recorded as
 //     a dash with the reason `/spans` gave, never $0;
+//   * the pane and that list are headed, and each work item is named by what
+//     it is -- its issue, or what the firing's type made -- never by the
+//     runner profile it ran on (VQ-028, part of #2391);
+//   * a lane's second line reads whole for any attempt count and a longer
+//     profile ("claude-code-browser · succeeded · 12 attempts"): it wraps
+//     between its parts instead of an ellipsis (VQ-SCHEDULES re-review);
 //   * that list is schedules.html's History frame (SCHED-HISTORY-CSS, BGD
-//     2026-10-25): 12px under the lanes, each item's cost right-aligned in its
+//     2026-10-25): under its head, 20px under the lanes, each item's cost right-aligned in its
 //     own column on a desktop ($11.30, $9.80, a dash whose reason is its
 //     title), stacked under the words on a phone (390). Asked of `painted`
 //     (cssgate's cascade), because jsdom applies no `@media` block.
@@ -399,9 +405,15 @@ describe("a schedule's History timeline", () => {
     }, WAIT)
     const rows = [...list.querySelectorAll<HTMLElement>(':scope > li')]
     expect(rows).toHaveLength(3)
-    // MUTATION: drop `.sht-list`'s margin and the list sits on the last lane.
-    expect(painted(list, 'margin-top', WIDE)).toBe('12px')
-    expect(painted(list, 'margin-top', PHONE)).toBe('12px')
+    // VQ-028: the list is headed and set apart from the last lane, the head
+    // 20px under it and 4px over its list.
+    // MUTATION: drop `.sht-list-h`'s margin and the head sits on the last lane.
+    const head = list.previousElementSibling as HTMLElement
+    expect(head.tagName).toBe('H3')
+    for (const env of [WIDE, PHONE]) {
+      expect(painted(head, 'margin-top', env)).toBe('20px')
+      expect(painted(list, 'margin-top', env)).toBe('0')
+    }
     for (const li of rows) {
       const words = li.querySelector<HTMLElement>(':scope > .sht-words')
       const cost = li.querySelector<HTMLElement>(':scope > [data-cost]')
@@ -432,5 +444,132 @@ describe("a schedule's History timeline", () => {
     const why = dash!.querySelector<HTMLElement>('.sht-why')!
     expect(painted(why, 'clip-path', WIDE)).toBe('inset(50%)')
     expect(painted(why, 'clip-path', PHONE)).toBe('none')
+  })
+})
+
+describe('what each firing made, by name (VQ-028)', () => {
+  // The QA page: a task item's lane read "claude-code · succeeded · 1 attempt"
+  // and its list row "task claude-code → task task_… · succeeded".
+  const PROFILE = 'claude-code'
+
+  it('names a task item by what the firing’s type made, its profile said beside it', async () => {
+    await mount([firing(1)], (url) => ({
+      status: 200,
+      body: { firings: askedOf(url).map((id) => ({ firing_id: id, items: [item('task_1', [spanTask('task_1', 1, 1, { label: PROFILE })])] })), not_found: [] },
+    }))
+    const row = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('[data-item="task:task_1:task_1"]')
+      expect(el).not.toBeNull()
+      return el!
+    }, WAIT)
+    // MUTATION: `label = t.label ?? t.task_id` back and the lane is "claude-code".
+    expect(visible(row.querySelector('.tl-lab b'))).toBe('issue-sweep task')
+    // The lane's second line is the one that fit the 255px label column
+    // before VQ-028; "on claude-code · …" ran past it and its ellipsis hid
+    // the attempt count. MUTATION: `on ${profile}` back and this fails.
+    expect(visible(row.querySelector('.tl-lab small'))).toBe('claude-code · succeeded · 1 attempt')
+    const li = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('[data-testid="sc-history-items"] [data-work="task:task_1"]')
+      expect(el).not.toBeNull()
+      return el!
+    }, WAIT)
+    const words = visible(li.querySelector('.sht-words'))
+    expect(words).toContain('issue-sweep task on claude-code → task task_1 · succeeded')
+    expect(visible(li.querySelector('.sht-words b'))).toBe('issue-sweep task')
+  })
+
+  it('reads the longest lane line whole: it wraps between its parts, never ellipsed', async () => {
+    // The re-review measured "claude-code · succeeded · 2 attempts" at 259px
+    // in the 255px column, drawn "… 2 attemp…". jsdom lays nothing out, so the
+    // line is held by its parts and by what the cascade paints them with.
+    const LONG = 'claude-code-browser'
+    await mount([firing(1)], (url) => ({
+      status: 200,
+      body: { firings: askedOf(url).map((id) => ({ firing_id: id, items: [item('task_1', [spanTask('task_1', 1, 12, { label: LONG })])] })), not_found: [] },
+    }))
+    const row = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('[data-item="task:task_1:task_1"]')
+      expect(el).not.toBeNull()
+      return el!
+    }, WAIT)
+    const sub = row.querySelector<HTMLElement>('.tl-lab small')!
+    expect(visible(sub)).toBe('claude-code-browser · succeeded · 12 attempts')
+    const parts = [...sub.querySelectorAll<HTMLElement>('.sht-sub-p')].map((p) => visible(p))
+    expect(parts).toEqual(['claude-code-browser', 'succeeded', '12 attempts'])
+    const WIDE: CascadeEnv = { width: 1440 }
+    const PHONE: CascadeEnv = { width: 390 }
+    for (const env of [WIDE, PHONE]) {
+      // MUTATION: drop `.sht .tl-lab small.sht-sub` from schedules.css and the
+      // line is one nowrap line again, ellipsed at the column's edge.
+      expect(painted(sub, 'white-space', env)).toBe('normal')
+      expect(painted(sub, 'text-overflow', env)).not.toBe('ellipsis')
+      expect(painted(sub, 'overflow', env)).toBe('visible')
+      // It breaks only between parts: "12 attempts" never splits from its number.
+      for (const p of sub.querySelectorAll<HTMLElement>('.sht-sub-p')) expect(painted(p, 'white-space', env)).toBe('nowrap')
+    }
+    // Beside a two-line label the track grows with the row; on a phone the
+    // label stacks over a 28px track.
+    const trk = row.querySelector<HTMLElement>('.tl-trk')!
+    expect(painted(trk, 'height', WIDE)).toBe('auto')
+    expect(painted(trk, 'min-height', WIDE)).toBe('46px')
+    expect(painted(trk, 'height', PHONE)).toBe('28px')
+  })
+
+  it('names an issue run’s steps by their step, with the issue’s number beside them', async () => {
+    const planner = spanTask('task_plan', 1, 1, { step_id: null, label: 'plan' })
+    await mount([firing(1, { work: [{ kind: 'issue_run', id: 'run_212' }] })], (url) => ({
+      status: 200,
+      body: {
+        firings: askedOf(url).map((id) => ({
+          firing_id: id,
+          items: [item('run_212', [planner], {
+            kind: 'issue_run', state: 'DONE',
+            issue: { number: 212, ref: 'example-org/example-api#212', url: 'https://github.com/example-org/example-api/issues/212', title: 'Orders endpoint 500 on empty cart' },
+          })],
+        })),
+        not_found: [],
+      },
+    }))
+    const row = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('[data-item="issue_run:run_212:task_plan"]')
+      expect(el).not.toBeNull()
+      return el!
+    }, WAIT)
+    expect(visible(row.querySelector('.tl-lab b'))).toBe('plan')
+    // MUTATION: `it.id` back in the sub and the run reads by its id alone.
+    expect(visible(row.querySelector('.tl-lab small'))).toBe('#212 · succeeded · 1 attempt')
+    const li = document.querySelector<HTMLElement>('[data-work="issue_run:run_212"]')!
+    expect(visible(li)).toContain('#212 Orders endpoint 500 on empty cart → run run_212 · done')
+  })
+
+  it('names a workflow by what the firing’s type made', async () => {
+    await mount([firing(1, { work: [{ kind: 'workflow', id: 'wf_1' }] })], (url) => ({
+      status: 200,
+      body: {
+        firings: askedOf(url).map((id) => ({
+          firing_id: id,
+          items: [item('wf_1', [spanTask('task_a', 1, 1, { step_id: 'build', label: 'build' })], { kind: 'workflow', state: 'SUCCEEDED' })],
+        })),
+        not_found: [],
+      },
+    }))
+    const li = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('[data-work="workflow:wf_1"]')
+      expect(el).not.toBeNull()
+      return el!
+    }, WAIT)
+    expect(visible(li.querySelector('.sht-words'))).toContain('issue-sweep workflow of 1 step → workflow wf_1 · succeeded')
+  })
+
+  it('heads the pane and the list under the lanes', async () => {
+    await mount([firing(1)], fiveSpans)
+    const list = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('[data-testid="sc-history-items"]')
+      expect(el).not.toBeNull()
+      return el!
+    }, WAIT)
+    // MUTATION: drop either head and the list reads as one more lane.
+    expect(screen.getByRole('heading', { name: 'Firings, newest first', level: 3 })).toBeTruthy()
+    expect(screen.getByRole('list', { name: 'What these firings made' })).toBe(list)
   })
 })

@@ -384,7 +384,10 @@ TEST_RUNNER_NOTE = (
     "with `swarm-test-browsers` (`swarm-test-browsers npx playwright install "
     "chromium`, then `swarm-test-browsers npx playwright test`): that one test "
     "process gets a writable browsers directory for the Chromium revision the "
-    "repository pins. Chromium's libraries and fonts are already installed, so "
+    "repository pins. That directory is `$SWARM_TEST_BROWSERS_PATH`; a test "
+    "runner the prefix cannot wrap is pointed at it the same way, "
+    "`PLAYWRIGHT_BROWSERS_PATH=\"$SWARM_TEST_BROWSERS_PATH\" npx playwright test`. "
+    "Chromium's libraries and fonts are already installed, so "
     "never pass `--with-deps`. Use it only for test suites, never for your own "
     "browsing."
 )

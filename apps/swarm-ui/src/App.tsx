@@ -17,6 +17,7 @@ import { AdminSettingsScreen } from './AdminSettings'
 import { AgentsScreen } from './Agents'
 import { TimelineLanesScreen } from './TimelineLanes'
 import { AgentSplit } from './AgentSplit'
+import { AccountHealthScreen } from './AccountHealthPage'
 import { CapacityScreen } from './Capacity'
 import { Dock } from './Dock'
 import {
@@ -443,6 +444,12 @@ export const SECTIONS: SectionDef[] = [
       // and nobody looks under Settings for that. `#settings/accounts` still
       // works and lands here.
       { id: 'accounts', label: 'Accounts' },
+      // ACCOUNT HEALTH (ACCOUNT-HEALTH-PAGE, part of #2302; BGD's pick of
+      // proposal B, 2026-10-25): what has been going wrong on each
+      // subscription account, where and when -- rate-limit hits, provider
+      // errors, refusals, re-auths. Accounts answers "who can take work";
+      // this answers "what went wrong", so the two are two pages, side by side.
+      { id: 'account-health', label: 'Account health' },
       { id: 'quota', label: 'Provider quota', admin: true },
       // API READS, A PAGE OF CAPACITY SINCE NAV-FOOT (#1672, owner 2026-10-20).
       // It sat at the spine's foot as a utility, "deliberately NOT one of the
@@ -1997,6 +2004,21 @@ const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
   // its topic rides the section's `?` rather than a second glyph by the title,
   // which the console's glyph ceiling (tests/help.test.ts) has no room for.
   'admin/people': 'people-and-roles-scope',
+  // VQ-055 (visual QA 2026-10-26): every Config page's `?` opened the same
+  // section card, whose `Help →` led to Help's first group. Each page now
+  // says, and links, its own topic in Help's Config and Admin groups.
+  'config/github': 'config-github-access',
+  'config/repositories': 'config-repositories',
+  'config/secrets': 'secret-scopes',
+  'config/mcp-servers': 'mcp-servers',
+  'config/people': 'workspace-roles',
+  'config/workspace': 'workspace-settings',
+  'admin/limits': 'ceiling-change-evicts-nothing',
+  'admin/runner-sizes': 'runner-sizes',
+  'admin/tenants': 'tenant-fields',
+  'admin/counts': 'platform-counts',
+  'admin/platform-secrets': 'platform-secrets',
+  'admin/workspaces': 'workspaces-you-admin',
 }
 
 function SectionQuestion({ section, topic = null }: { section: SectionQuestionDef; topic?: TopicId | null }) {
@@ -2198,6 +2220,8 @@ function SectionBody({
       return <HoldersScreen />
     case 'capacity/accounts':
       return <AccountsScreen />
+    case 'capacity/account-health':
+      return <AccountHealthScreen />
     case 'capacity/api-reads':
       return <ReferenceScreen failuresOnly={apiFailuresOnly} />
     case 'capacity/quota':

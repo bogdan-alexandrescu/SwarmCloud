@@ -44,7 +44,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { ActivityScreen, CONTINUE_BUILD_MS, buildContinues } = await import('../Activity')
+const { ActivityScreen, CONTINUE_BUILD_MS, LEDGER_LATE_SECTIONS, LEDGER_SECTIONS, buildContinues } = await import('../Activity')
 const { ReliabilityCard, WorkflowsFailedCard, OpenWorkCard } = await import('../Ledger')
 const { parseView } = await import('../outcomes')
 
@@ -100,13 +100,23 @@ function partial(derived = 6): Outcomes {
   return d
 }
 
-/** The headline's read asks for `coverage`; no card does. */
-const isHeadline = (sections: readonly string[]) => sections.includes('coverage')
+/**
+ * The headline's read, by the page's own list: the failures, cost and cancels
+ * cards ask for the same two sections, so only the list itself tells them
+ * apart. Its second read (#2422) answers from the same payload, as the route
+ * answers it from the same fold.
+ */
+const isHeadline = (sections: readonly string[]) => sections === LEDGER_SECTIONS
 
 function serve(headline: () => Outcomes, card: () => Outcomes = ledgerFixture, parkReasons: string[] = []): void {
-  api.loadOutcomes.mockImplementation((_q: URLSearchParams, sections: readonly string[]) =>
-    Promise.resolve(ok(isHeadline(sections) ? headline() : card())),
-  )
+  let last: Outcomes | null = null
+  api.loadOutcomes.mockImplementation((_q: URLSearchParams, sections: readonly string[]) => {
+    if (isHeadline(sections)) {
+      last = headline()
+      return Promise.resolve(ok(last))
+    }
+    return Promise.resolve(ok(sections === LEDGER_LATE_SECTIONS ? (last ?? headline()) : card()))
+  })
   api.loadMe.mockResolvedValue(ok(me()))
   api.loadRunnerProfiles.mockResolvedValue(ok(['claude-code', 'mock']))
   api.loadStats.mockImplementation(() => Promise.resolve(ok(stats())))

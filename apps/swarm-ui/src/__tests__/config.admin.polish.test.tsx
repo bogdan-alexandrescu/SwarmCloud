@@ -201,10 +201,10 @@ describe('Workspaces you admin\'s lead and links (S10a)', () => {
     })
     await app('/admin/workspaces')
     const lead = await screen.findByRole('region', { name: 'Your workspaces' })
-    expect(lead.querySelector('b')?.textContent).toBe('ops@example.com is behind')
+    expect(lead.querySelector('b')?.textContent).toBe('ops is behind')
     const buttons = [...lead.querySelectorAll('a, button')]
     // MUTATION: draw the old status line with no button -> fails.
-    expect(buttons.map((b) => b.textContent)).toEqual(['Open ops@example.com’s Config'])
+    expect(buttons.map((b) => b.textContent)).toEqual(['Open ops’s Config'])
     expect(buttons[0]!.getAttribute('href')).toBe('/config/repositories')
     fireEvent.click(buttons[0]!)
     const { chosenTenant } = await import('../fetch')
@@ -216,7 +216,7 @@ describe('Workspaces you admin\'s lead and links (S10a)', () => {
   it('links each workspace to its Config pages by their tab names', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin')], { setups: { eng: onboarding('done', 'eng', PEOPLE(true, 2)) } })
     await app('/admin/workspaces')
-    const nav = await screen.findByRole('navigation', { name: 'eng@example.com settings' })
+    const nav = await screen.findByRole('navigation', { name: 'eng settings' })
     const links = [...nav.querySelectorAll('a')]
     // MUTATION: keep "Workspace" -> settings/workspace and MCP servers -> settings/mcp-servers -> fails.
     expect(links.map((a) => a.textContent)).toEqual(['Workspace Settings', 'MCP servers', 'People and roles', 'Secrets'])

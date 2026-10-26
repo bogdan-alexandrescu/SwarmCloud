@@ -90,6 +90,69 @@ describe('status only', () => {
     expect(document.querySelector('input, form')).toBeNull()
   })
 
+  // VQ-049 (part of #2391): with the status role not granted every row is
+  // `unreadable`, and the lead said "31 platform secrets are not set" over a
+  // running platform, with 'no secret' and 'no version' drawn as if measured.
+  it('an unread status is said as unread, with its reason and step, never counted as missing', async () => {
+    const denied = (id: string, family = 'platform', extra: Record<string, unknown> = {}) => ({
+      secret_id: id, status: 'unreadable', reason: 'permission_denied', enabled_versions: null, newest_enabled_at: null,
+      rotation_in_grace: false, managed_by: 'terraform', written_by: 'scripts/create-secrets.sh --stdin', family, ...extra,
+    })
+    serve((_m, url) => (url === '/v1/admin/platform-secrets'
+      ? { status: 200, body: {
+        secrets: [
+          denied('swarm-search-api-key'),
+          denied('swarm-live-key'),
+          denied('swarm-egress-key'),
+          denied('swarm-account-eng--max-1', 'account', { owner_tenant: 'eng', label: 'max-1', half: 'access', managed_by: 'quota-broker' }),
+          denied('swarm-account-eng--max-1-refresh', 'account', { owner_tenant: 'eng', label: 'max-1', half: 'refresh', managed_by: 'quota-broker' }),
+        ],
+        accounts_unread: false, accounts_refused: 0, accounts_truncated: false, read_at: AT,
+      } }
+      : null))
+    const { AdminPlatformSecretsScreen } = await load()
+    render(<AdminPlatformSecretsScreen />)
+    const table = await screen.findByRole('table', { name: /platform secrets/i })
+    // MUTATION: count `unreadable` with `not_set` again -> "5 platform secrets are not set" and this fails.
+    expect(screen.queryByRole('region', { name: /needs a look/i })).toBeNull()
+    expect(visible(document.body)).not.toMatch(/not set/)
+    const lead = visible(screen.getByRole('region', { name: /status not read/i }))
+    expect(lead).toMatch(/status of 5 platform secrets cannot be read/i)
+    expect(lead).toMatch(/status role is not granted/)
+    expect(lead).toMatch(/enable_platform_secret_status/)
+    expect(lead).toMatch(/make bootstrap/)
+    // An unknown figure is a dash with its reason, never a measured absence.
+    for (const name of [/swarm-search-api-key/, /swarm-live-key/, /swarm-account-/]) {
+      const r = within(table).getByRole('row', { name })
+      for (const label of ['Enabled versions', 'Age of newest']) {
+        const cell = r.querySelector(`td[data-label="${label}"]`)!
+        // MUTATION: draw 'no secret' / 'no version' / a summed 0 for an unread row -> fails.
+        expect(visible(cell as HTMLElement), `${label} of ${name}`).toMatch(/^— ?not read$/)
+      }
+    }
+    // MUTATION: count the unread account halves as unset -> "0 of 2 set" and this fails.
+    expect(visible(within(table).getByRole('row', { name: /swarm-account-/ }))).not.toMatch(/0 of 2/)
+    expect(visible(within(table).getByRole('row', { name: /swarm-account-/ }))).toMatch(/unreadable/)
+  })
+
+  it('a missing secret still leads when others are unread, and the unread ones are named apart', async () => {
+    serve((_m, url) => (url === '/v1/admin/platform-secrets'
+      ? { status: 200, body: {
+        secrets: [
+          { secret_id: 'swarm-live-key', status: 'not_declared', reason: null, enabled_versions: null, newest_enabled_at: null, rotation_in_grace: false, managed_by: 'terraform', written_by: 'scripts/create-secrets.sh --live-key', family: 'platform' },
+          { secret_id: 'swarm-egress-key', status: 'unreadable', reason: 'read_failed', enabled_versions: null, newest_enabled_at: null, rotation_in_grace: false, managed_by: 'terraform', written_by: 'terraform', family: 'platform' },
+        ],
+        accounts_unread: false, accounts_refused: 0, accounts_truncated: false, read_at: AT,
+      } }
+      : null))
+    const { AdminPlatformSecretsScreen } = await load()
+    render(<AdminPlatformSecretsScreen />)
+    const lead = visible(await screen.findByRole('region', { name: /needs a look/i }))
+    expect(lead).toMatch(/swarm-live-key is not declared/)
+    // MUTATION: fold the unread one into the missing count -> "2 platform secrets are not set" and this fails.
+    expect(lead).toMatch(/1 other could not be read: Secret Manager did not answer/)
+  })
+
   it('a non-admin who types the address sees the route\'s refusal, not rows', async () => {
     serve((_m, url) => (url === '/v1/admin/platform-secrets' ? { status: 403, body: { detail: 'admin only', code: 'admin_required' } } : null))
     const { AdminPlatformSecretsScreen } = await load()

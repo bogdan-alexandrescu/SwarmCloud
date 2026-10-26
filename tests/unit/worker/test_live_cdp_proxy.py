@@ -729,16 +729,11 @@ class _Display:
         pass
 
 
-class _Scale:
-    def set_scale(self, scale: float) -> None:
-        pass
-
-
 async def _phone_page(w: World) -> tuple[str, str]:
     """The agent's page at phone-390, the device on the gate's own session
     on it: (the agent's session, the gate's)."""
     await w.connect()
-    devices = DeviceController(w.proxy, _Display(), _Scale(), record=lambda k, f: None)
+    devices = DeviceController(w.proxy, _Display(), record=lambda k, f: None)
     page = await w.attach_page("T-phone")
     await devices.attach_page("T-phone")
     await devices.select("phone-390")
@@ -816,7 +811,7 @@ def test_a_clipped_capture_on_a_page_without_a_device_session_sends_no_device(tm
     async def body():
         w = World(tmp_path)
         await w.connect()
-        DeviceController(w.proxy, _Display(), _Scale(), record=lambda k, f: None)
+        DeviceController(w.proxy, _Display(), record=lambda k, f: None)
         page = await w.attach_page("T-unset")
         start = len(w.chromium.received)
         clip = {"x": 0, "y": 0, "width": 390, "height": 844, "scale": 1}

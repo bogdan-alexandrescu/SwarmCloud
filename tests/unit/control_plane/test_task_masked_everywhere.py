@@ -347,6 +347,12 @@ class _SweepBroker:
                             "reset_at": None, "message": f"{OPENAI} DB_PASSWORD={BARE}"}],
                 "observed_at": at.isoformat()}
 
+    def accounts_health(self, tenant_id: str | None) -> dict[str, Any]:
+        # ACCOUNT-HEALTH-PAGE: the pool-wide read carries the same events.
+        record = {**self._account(), **self.account_health(SWEEP_ACCOUNT)}
+        return {"tenant_id": tenant_id, "accounts": [record], "events_max": 50,
+                "observed_at": record["observed_at"]}
+
 
 def test_no_get_route_serves_a_planted_secret_inside_an_input_or_metadata(client, db, objects):
     """Swept, not listed: a route added tomorrow is covered the day it exists,
@@ -472,7 +478,7 @@ def test_no_get_route_serves_a_planted_secret_inside_an_input_or_metadata(client
         "/v1/tasks/{task_id}/logs", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/files/{path:path}",
         "/v1/attempts", "/v1/workflows/{workflow_id}",
         "/v1/accounts/{account_id}/holders", "/v1/accounts/{account_id}/history",
-        "/v1/accounts/{account_id}/health",
+        "/v1/accounts/{account_id}/health", "/v1/accounts/health",
     ):
         assert template in served_ok, f"{template} never answered 200, so the sweep proved nothing there"
 

@@ -109,6 +109,19 @@ export function hhmmUtc(iso: string): string {
   return Number.isFinite(d.getTime()) ? `${d.toISOString().slice(11, 16)} UTC` : iso
 }
 
+/**
+ * HOW FAR BACK A PARTIAL READ REACHES, IN ONE FORM FOR EVERY FIGURE (visual QA
+ * VQ-005, 2026-10-26). Needs a look said "FAILED agents created since 06:04
+ * UTC read", Recent failures "partial: agents created since 09:06 UTC read"
+ * and Finished today "created since 18:46 UTC" on one page, so a reader
+ * could not tell three samples from three wordings of one. Every figure off a
+ * partial read now says its reach in these words; two figures off the same
+ * sample (`stateView` over the same states) print the same instant.
+ */
+export function readReach(since: string | null): string {
+  return since === null ? 'partial: not every agent was read' : `partial: agents created since ${hhmmUtc(since)} read`
+}
+
 /** The three states Recent failures lists, and the Overview reads by state for it. */
 export const ENDED_BADLY: readonly TaskState[] = ['FAILED', 'DEAD_LETTERED', 'CANCELLED']
 

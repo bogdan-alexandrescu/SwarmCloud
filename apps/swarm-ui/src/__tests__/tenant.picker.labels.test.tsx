@@ -89,7 +89,7 @@ describe('a picker row names current and default in one label', () => {
     expect(labels[0]!.contains(id)).toBe(false)
     expect(id.contains(labels[0]!)).toBe(false)
     // And the other row, neither current nor default, carries no label.
-    expect(labelsOf(rowFor('eng@example.com')!)).toHaveLength(0)
+    expect(labelsOf(rowFor('eng')!)).toHaveLength(0)
   })
 
   it('reads "default" on a row that is only the default, and "current" on one that is only current', async () => {

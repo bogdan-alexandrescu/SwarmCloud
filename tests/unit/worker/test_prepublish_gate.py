@@ -259,6 +259,110 @@ def test_a_fix_turn_that_clears_the_check_leaves_no_section(tmp_path):
     assert _section(tmp_path) is None
 
 
+def _file_checks(monkeypatch, *names: str) -> None:
+    """The check set as named checks that fail while `<name>.state` holds BAD:
+    vitest and tsc without a package, node_modules or a graph snapshot."""
+
+    def check(name: str) -> prepublish.Check:
+        def run(runner: Any, repo: Path, env: Any, timeout: float) -> tuple[str, str]:
+            state = repo / f"{name}.state"
+            if state.exists() and "BAD" in state.read_text():
+                return prepublish.FAILED, f"{name}.state:1:1: error - {name} says no"
+            return prepublish.PASSED, ""
+        return prepublish.Check(name, (f"{name}.state",), name, run)
+
+    monkeypatch.setattr(prepublish, "select_checks",
+                        lambda *a, **k: [check(name) for name in names])
+
+
+def test_a_fix_turn_that_breaks_a_check_that_had_passed_gets_one_more_turn(
+    tmp_path, monkeypatch,
+):
+    # F07 (#2379): tsc passed before the fix turn and failed after it, and the
+    # branch was published knowing CI would fail. Owner decision 2026-10-26:
+    # one more turn, bounded by the same budget.
+    repo, base = _repo(tmp_path)
+    env = {**_env(tmp_path, _tools(tmp_path)), prepublish.CLONE_BASE_ENV: base}
+    _file_checks(monkeypatch, "vitest", "tsc")
+    _change(repo, "vitest.state", "BAD\n")
+
+    def fix_vitest_break_tsc() -> None:
+        _change(repo, "vitest.state", "ok\n")
+        _change(repo, "tsc.state", "BAD\n")
+
+    turns = Turns(fix_vitest_break_tsc, lambda: _change(repo, "tsc.state", "ok\n"))
+    record = _gate(repo, tmp_path, env, turns).run()
+
+    # MUTATION: one fix turn only publishes with failed: [tsc].
+    assert len(turns.prompts) == 2, record
+    assert "## vitest" in turns.prompts[0] and "## tsc" not in turns.prompts[0]
+    # The second prompt names what the fix turn broke, and only what fails now.
+    assert "## tsc" in turns.prompts[1] and "## vitest" not in turns.prompts[1]
+    assert "broke" in turns.prompts[1] and "tsc" in turns.prompts[1].split("\n")[0]
+    assert record["fix_turn"] is True and record["second_turn"] is True
+    assert record["broken_by_fix_turn"] == ["tsc"]
+    assert [{c["name"]: c["status"] for c in r} for r in record["rounds"]] == [
+        {"vitest": "failed", "tsc": "passed"},
+        {"vitest": "passed", "tsc": "failed"},
+        {"vitest": "passed", "tsc": "passed"},
+    ]
+    assert record["failed"] == [] and record["pr_section"] is False
+    assert _section(tmp_path) is None
+
+
+def test_the_second_turn_is_the_last_and_what_it_leaves_is_published(tmp_path, monkeypatch):
+    repo, base = _repo(tmp_path)
+    env = {**_env(tmp_path, _tools(tmp_path)), prepublish.CLONE_BASE_ENV: base}
+    _file_checks(monkeypatch, "vitest", "tsc")
+    _change(repo, "vitest.state", "BAD\n")
+    # The fix turn breaks tsc, the second turn breaks vitest again.
+    turns = Turns(lambda: (_change(repo, "vitest.state", "ok\n"),
+                           _change(repo, "tsc.state", "BAD\n")),
+                  lambda: (_change(repo, "tsc.state", "ok\n"),
+                           _change(repo, "vitest.state", "BAD\n")),
+                  lambda: None)
+    record = _gate(repo, tmp_path, env, turns).run()
+    # MUTATION: a loop that gives a turn for every newly broken check.
+    assert len(turns.prompts) == 2 and len(record["rounds"]) == 3
+    assert record["failed"] == ["vitest"] and record["pr_section"] is True
+
+
+def test_a_check_still_failing_after_the_fix_turn_gets_no_second_turn(tmp_path, monkeypatch):
+    repo, base = _repo(tmp_path)
+    env = {**_env(tmp_path, _tools(tmp_path)), prepublish.CLONE_BASE_ENV: base}
+    _file_checks(monkeypatch, "vitest", "tsc")
+    _change(repo, "vitest.state", "BAD\n")
+    _change(repo, "tsc.state", "BAD\n")
+    # The fix turn fixes vitest but not tsc, which failed before it too.
+    turns = Turns(lambda: _change(repo, "vitest.state", "ok\n"), lambda: None)
+    record = _gate(repo, tmp_path, env, turns).run()
+    # MUTATION: a second turn for any failure, not only one the fix turn caused.
+    assert len(turns.prompts) == 1 and record["second_turn"] is False
+    assert record["broken_by_fix_turn"] == [] and record["failed"] == ["tsc"]
+
+
+def test_the_second_turn_is_bounded_by_the_steps_budget(tmp_path, monkeypatch):
+    repo, base = _repo(tmp_path)
+    env = {**_env(tmp_path, _tools(tmp_path)), prepublish.CLONE_BASE_ENV: base}
+    _file_checks(monkeypatch, "vitest", "tsc")
+    _change(repo, "vitest.state", "BAD\n")
+    left = [3600.0]
+
+    def fix_turn() -> None:
+        _change(repo, "vitest.state", "ok\n")
+        _change(repo, "tsc.state", "BAD\n")
+        left[0] = prepublish.MIN_GATE_SECONDS - 1  # the fix turn spent the budget
+
+    turns = Turns(fix_turn, lambda: _change(repo, "tsc.state", "ok\n"))
+    gate = _gate(repo, tmp_path, env, turns)
+    gate.remaining = lambda: left[0]
+    record = gate.run()
+    # MUTATION: a second turn started with too little budget for its round.
+    assert len(turns.prompts) == 1 and record["second_turn"] is False
+    assert record["second_turn_skipped"] == "budget"
+    assert record["broken_by_fix_turn"] == ["tsc"] and record["failed"] == ["tsc"]
+
+
 def test_a_passing_set_takes_no_turn(tmp_path):
     repo, base = _repo(tmp_path)
     env = {**_env(tmp_path, _tools(tmp_path)), prepublish.CLONE_BASE_ENV: base}

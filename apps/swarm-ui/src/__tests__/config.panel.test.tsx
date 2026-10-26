@@ -207,6 +207,14 @@ describe('the Config panel\'s row badges (S1a)', () => {
     expect(badge('People and roles')?.text).toBe('—')
   })
 
+  it('draws no tick on MCP servers when nothing is missing: the read counts credentials, not registrations (VQ-046)', async () => {
+    serve(ME(true), [PERSONAL, group('eng', 'admin')], { eng: onboarding({ secrets: SECRETS_NONE, people: PEOPLE(false, 0) }) })
+    await app('/config/secrets')
+    await waitFor(() => expect(badge('Secrets')?.text).toBe('✓'))
+    // MUTATION: draw "MCP servers: nothing to set" as a done tick -> it reads as configured over none registered, and this fails.
+    expect(badge('MCP servers')).toBeNull()
+  })
+
   it('draws a member the same states, and People invited done when someone else holds a role (S1d)', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'member')], { eng: onboarding({ secrets: SECRETS_THREE, people: PEOPLE(true, 5) }) })
     await app('/config/people')
@@ -249,7 +257,7 @@ describe('the Admin panel in groups (S1b, S1c)', () => {
     expect(ws).toMatchObject({ name: 'Your workspaces', rows: ['People and roles', 'Workspaces you admin'] })
     expect(automate).toEqual({ name: 'In Automate', rows: ['Schedules', 'Approvals'], hrefs: ['/automate/schedules', '/approvals'] })
     expect(document.querySelector('.sk-panel')?.textContent).not.toMatch(/Pool limits|Tenants|Platform counts/)
-    expect(document.querySelector('.sk-pnote')?.textContent).toBe('Showing eng@example.com and ops@example.com, the workspaces you administer. The platform’s own pages are shown to platform admins only.')
+    expect(document.querySelector('.sk-pnote')?.textContent).toBe('Showing eng and ops, the workspaces you administer. The platform’s own pages are shown to platform admins only.')
   })
 })
 
@@ -267,14 +275,14 @@ describe('Workspaces you admin, each with its own setup progress (S10a)', () => 
     // MUTATION: read every workspace's setup without naming it -> both read eng and this fails.
     expect(seen).toEqual(expect.arrayContaining(['eng', 'ops']))
     const [eng, ops] = strips()
-    expect(eng!.getAttribute('aria-label')).toBe('eng@example.com setup')
+    expect(eng!.getAttribute('aria-label')).toBe('eng setup')
     expect(eng!.querySelector('.cfg-progress-h b')?.textContent).toBe('Setup 3 of 4')
     expect(eng!.querySelector('.cfg-progress-next')?.textContent).toBe('Next: Secrets set, 3 to set: linear and 2 more')
     expect(ops!.querySelector('.cfg-progress-h b')?.textContent).toBe('Setup 2 of 4')
     expect(ops!.querySelector('.cfg-progress-next a')?.getAttribute('href')).toBe('/config/repositories')
     // MUTATION: drop the comparison -> nothing says which is behind and this fails.
     const lead = screen.getByRole('region', { name: 'Your workspaces' })
-    expect(lead.querySelector('b')?.textContent).toBe('ops@example.com is behind')
+    expect(lead.querySelector('b')?.textContent).toBe('ops is behind')
     expect(lead.querySelector('.ws-lead-s')?.textContent).toBe('Next: repositories chosen (not yet).')
     // Reading one workspace's setup does not switch the one in hand.
     const { chosenTenant } = await import('../fetch')

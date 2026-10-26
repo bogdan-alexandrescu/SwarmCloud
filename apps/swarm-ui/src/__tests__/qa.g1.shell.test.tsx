@@ -177,8 +177,8 @@ describe('G1-06: the tenant has one name in the shell', () => {
     expect(sw.querySelector('b')?.textContent).toBe('Engineering')
     fireEvent.click(sw)
     expect(nameOf('eng')).toBe('Engineering')
-    // Never acted as here: the group email is the only name there is.
-    expect(nameOf('research')).toBe('research@example.com')
+    // Never acted as here, and its group email is not a name (VQ-056): its id.
+    expect(nameOf('research')).toBe('research')
     expect(rows().find((b) => b.querySelector('small')?.textContent === 'eng')?.getAttribute('title')).toBe('registered as eng@example.com')
 
     await act(async () => {
