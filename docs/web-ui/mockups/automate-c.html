@@ -1,0 +1,1129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><link rel="icon" href="data:,"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>SwarmCloud Automate, proposal C: Time first</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;650;700&display=swap" rel="stylesheet">
+<style>
+/*
+ * Proposal C, "Time first" (AUTOMATE-MOCKS-C, part of #2417).
+ * Tokens, type scale, shell, lead strip, tables, cards, chips and buttons are
+ * Config E's (config-e.html, #2157), which are the console's own (styles.css),
+ * light and dark. Only the swimlane parts below the copied block are new, and
+ * they are drawn the way account health's proposal B draws its lanes
+ * (accounts-b.html). PICKS.md rules: 12px type floor, no all-caps, no
+ * letter-spacing, an unknown figure is a dash with its reason.
+ */
+:root{--bg:#f3f6f9;--surface:#ffffff;--surface-2:#eef4fa;--line:#d6e0ea;--line-soft:#dde5ee;--text:#0d1724;--text-dim:#4f5d6e;--text-faint:#606a77;--ok:#1a7f37;--warn:#6e4a00;--bad:#681117;--info:#0369a1;--paused:#7139db;--ok-ink:#15662c;--warn-ink:#805500;--bad-ink:#a71b25;--info-ink:#075985;--paused-ink:#6629d8;--ctl-bd:#7d8ea3;--ctl-onac:#ffffff;--warn-dot:#b7791f;--s1:#3f86d8;--s2:#9c7620;--s3:#8a6ad6;--s4:#1f948a;--font:"Inter Tight",system-ui,-apple-system,sans-serif;--mono:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#06101e;--surface:#0c1a2e;--surface-2:#11233b;--line:#1e3350;--line-soft:#1d3049;--text:#eef4fa;--text-dim:#9fb0c4;--text-faint:#828d9b;--ok:#58c668;--warn:#ffd60a;--bad:#f85149;--info:#7cc8f8;--paused:#b288f8;--ok-ink:#42bf53;--warn-ink:#d29922;--bad-ink:#fa7872;--info-ink:#b9e3fc;--paused-ink:#b892f9;--ctl-bd:#5f7087;--ctl-onac:#06101e;--warn-dot:#f5c451;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#06101e;--surface:#0c1a2e;--surface-2:#11233b;--line:#1e3350;--line-soft:#1d3049;--text:#eef4fa;--text-dim:#9fb0c4;--text-faint:#828d9b;--ok:#58c668;--warn:#ffd60a;--bad:#f85149;--info:#7cc8f8;--paused:#b288f8;--ok-ink:#42bf53;--warn-ink:#d29922;--bad-ink:#fa7872;--info-ink:#b9e3fc;--paused-ink:#b892f9;--ctl-bd:#5f7087;--ctl-onac:#06101e;--warn-dot:#f5c451;color-scheme:dark}
+:root{--t-ok:color-mix(in srgb,var(--ok) 13%,var(--surface));--t-warn:color-mix(in srgb,var(--warn-ink) 14%,var(--surface));--t-bad:color-mix(in srgb,var(--bad-ink) 12%,var(--surface));--t-info:color-mix(in srgb,var(--info) 11%,var(--surface));--t-pa:color-mix(in srgb,var(--paused) 12%,var(--surface));--l-info:color-mix(in srgb,var(--info) 40%,var(--line))}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 var(--font);overflow-x:hidden}
+a{color:var(--info)}
+code,.mono{font-family:var(--mono);font-size:13px;background:var(--surface-2);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--info);outline-offset:2px}
+
+/* ---------- the document around the frames ---------- */
+.topbar{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(6px);border-bottom:1px solid var(--line)}
+.topbar .in{max-width:1520px;margin:0 auto;padding:8px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.topbar b{font-size:14px;font-weight:650}
+.topbar .sp0{flex:1}
+.doc{max-width:1520px;margin:0 auto;padding:28px 16px 80px}
+.doc .kick{font:500 13px var(--mono);color:var(--info);margin:0}
+.doc h1{font-size:clamp(26px,4vw,38px);line-height:1.15;margin:8px 0 12px;font-weight:650}
+.doc h2{font-size:24px;margin:64px 0 6px;font-weight:650;scroll-margin-top:60px}
+.doc h2 .n{font:500 14px var(--mono);color:var(--info);margin-right:10px}
+.doc h3.fh{font-size:17px;margin:28px 0 8px;font-weight:600}
+.doc p,.doc li{max-width:82ch}
+.doc .lede{font-size:17px;color:var(--text-dim)}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 0;padding:0;list-style:none}
+.toc a{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:99px;color:var(--text);text-decoration:none;font-size:13px;background:var(--surface)}
+.toc a:hover{border-color:var(--info);color:var(--info)}
+.idea{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px;margin-top:20px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.idea h4{margin:0 0 6px;font-size:15px;color:var(--info)}
+.idea p,.idea ul{margin:0;font-size:14px}.idea ul{padding-left:18px}.idea li{margin:3px 0}
+.rules{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 18px;margin-top:16px;font-size:14px}
+.rules ul{margin:6px 0 0;padding-left:18px}
+.fr{margin:18px 0 0;min-width:0}
+.fr figcaption{font-size:13.5px;color:var(--text-dim);margin-top:8px;max-width:110ch}
+.fr figcaption b{color:var(--text)}
+.scroller{overflow-x:auto;border-radius:12px;border:1px solid var(--line);max-width:100%;background:var(--bg)}
+.pair{display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start;margin-top:18px}
+.pair>.fr{margin:0;flex:0 1 auto;max-width:100%}
+.dt{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin-top:14px}
+table.doct{border-collapse:collapse;width:100%;min-width:640px;font-size:14px}
+table.doct th,table.doct td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+table.doct th{font-size:13px;color:var(--text-dim);font-weight:600}
+table.doct tr:last-child td{border-bottom:0}
+table.doct th:last-child,table.doct td:last-child{white-space:nowrap}
+.yes{color:var(--ok-ink);font-weight:600}.no{color:var(--text-dim)}
+
+/* the page's theme control, the same control the frames' panel foot draws */
+.tseg{display:inline-flex;border:1px solid var(--ctl-bd);border-radius:8px;overflow:hidden;background:var(--surface)}
+.tseg button{border:0;background:none;padding:4px 10px;font-size:13px;cursor:pointer;color:var(--text-dim);display:inline-flex;gap:5px;align-items:center;border-right:1px solid var(--line)}
+.tseg button:last-child{border-right:0}
+.tseg button[aria-pressed="true"]{background:var(--t-info);color:var(--info-ink);font-weight:600}
+
+/* ---------- frames: shared ---------- */
+.ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.F{font:14px/1.45 var(--font);color:var(--text);text-align:left}
+.F a{color:var(--info);text-decoration:none}
+/* 1440 wide, or the page's own width when the window is narrower, so no frame is cut at its right edge */
+.app{display:flex;width:clamp(1180px,100%,1440px);min-height:760px;background:var(--bg)}
+.app.crop{width:320px;min-height:640px}
+.app.crop .ct{display:none}
+.scroller:has(>.crop){width:max-content;max-width:100%}
+.scroller:has(>.pane){width:max-content;max-width:100%;border:0;background:none}
+
+/* spine: deep blue in both themes, like the built Spine.tsx */
+.sp{width:84px;flex:none;background:linear-gradient(180deg,#0b3a7a,#06101e);display:flex;flex-direction:column;align-items:center;padding:14px 0 12px;gap:2px;color:#bcd6ee}
+.sp .hv{margin:0 0 12px}
+.sp .si{width:74px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;border-radius:10px;font-size:12px;line-height:1.15;color:#bcd6ee;position:relative;text-align:center}
+.sp .si .ic{width:20px;height:20px}
+.sp .si.on{background:rgba(124,200,248,.2);color:#fff}
+.sp .si.on::before{content:"";position:absolute;left:-5px;top:10px;bottom:10px;width:3px;border-radius:2px;background:#7cc8f8}
+.sp .si.go{background:#38bdf8;color:#06101e;width:56px;border-radius:12px;font-weight:600;margin-bottom:8px}
+.sp .si .dt0{position:absolute;top:4px;right:14px;width:8px;height:8px;border-radius:50%;background:#f5c451;box-shadow:0 0 0 2px #0b3a7a}
+.sp .gr{flex:1}
+.sp .av{margin-top:6px}
+.av{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#38bdf8,#0b3a7a);color:#fff;font:600 12px/30px var(--font);text-align:center;flex:none}
+
+/* panel */
+.pn{width:236px;flex:none;background:var(--surface);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:14px 0 0}
+.pn .wm{display:flex;align-items:center;gap:8px;padding:0 16px 10px;font-weight:650;font-size:16px}
+.pn .wm span{color:var(--info)}
+.pill{font:500 12px/1 var(--mono);padding:4px 7px;border-radius:99px;color:var(--info-ink);background:var(--t-info);border:1px solid var(--l-info);margin-left:auto}
+.wsb{margin:0 12px 10px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;display:flex;gap:9px;align-items:center}
+.wsb .tg{width:26px;height:26px;border-radius:7px;background:var(--t-info);color:var(--info-ink);font:650 12px/26px var(--font);text-align:center;flex:none}
+.wsb .tt{display:flex;flex-direction:column;line-height:1.25;min-width:0;flex:1}
+.wsb .tt b{font-size:13px}.wsb .tt small{font-size:12px;color:var(--text-dim)}
+.pn .sec{font-size:15px;font-weight:650;padding:4px 20px 6px}
+.pg{font-size:12px;color:var(--text-dim);font-weight:600;padding:12px 20px 4px}
+.pi{display:flex;align-items:center;gap:9px;min-height:34px;padding:0 10px;margin:1px 10px;border-radius:8px;color:var(--text-dim);position:relative;font-size:13.5px}
+.pi .lb{flex:1;color:var(--text)}
+.pi.on{background:var(--t-info);color:var(--info)}.pi.on .lb{color:var(--info-ink);font-weight:600}
+.pi.on::before{content:"";position:absolute;left:-10px;top:7px;bottom:7px;width:3px;border-radius:2px;background:var(--info)}
+.pi.kid{min-height:30px;margin-left:36px;padding-left:10px;font-size:13px}
+.pnote{font-size:12px;color:var(--text-dim);padding:6px 20px 0;line-height:1.4}
+.pmeter{margin:4px 12px 8px;padding:9px 10px;border-radius:10px;background:var(--surface-2);font-size:12px;color:var(--text-dim)}
+.pmeter .row{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.pmeter b{color:var(--text)}
+.segs{display:flex;gap:3px}.segs i{flex:1;height:6px;border-radius:3px;background:var(--line)}
+.segs i.d{background:var(--ok)}.segs i.n{background:var(--info)}
+.pgrow{flex:1}
+.pf{border-top:1px solid var(--line);padding:10px 14px 12px;display:flex;flex-direction:column;gap:8px}
+.pf .who{display:flex;gap:9px;align-items:center}
+.pf .who span:not(.av){display:flex;flex-direction:column;line-height:1.25}.pf .who b{font-size:13px}.pf .who small{font-size:12px;color:var(--text-dim)}
+.pf .tseg button{padding:3px 8px;font-size:12px;flex:1;justify-content:center}
+
+/* content */
+.ct{flex:1;min-width:0;padding:18px 28px 32px;display:flex;flex-direction:column;gap:14px}
+.hd{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.hd .tl{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}
+.hd .cr{font-size:12px;color:var(--text-dim)}
+.hd .h{font-size:22px;font-weight:650;line-height:1.2}
+.hd .age{font:12px var(--mono);color:var(--text-dim)}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.tabs span{padding:7px 12px;font-size:13.5px;color:var(--text-dim);border-bottom:2px solid transparent;margin-bottom:-1px;display:inline-flex;gap:6px;align-items:center}
+.tabs span.on{color:var(--info-ink);border-color:var(--info);font-weight:600}
+
+/* the setup strip: the proposal's spine of meaning */
+.ss{display:flex;border:1px solid var(--line);border-radius:12px;background:var(--surface);overflow:hidden}
+.ss .st0{flex:1;min-width:0;display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-right:1px solid var(--line-soft);position:relative}
+.ss .st0 .tx{display:flex;flex-direction:column;min-width:0;line-height:1.3}
+.ss .st0 b{font-size:13.5px;font-weight:600}
+.ss .st0 small{font-size:12px;color:var(--text-dim)}
+.ss .st0.nx{background:var(--t-info);box-shadow:inset 0 -3px 0 var(--info)}
+.ss .st0.nx small{color:var(--info-ink)}
+.ss .st0.off b{color:var(--text-dim);font-weight:500}
+.ss .end{display:flex;flex-direction:column;justify-content:center;align-items:flex-end;padding:8px 14px;gap:2px;font-size:12px;color:var(--text-dim);flex:none}
+.ss .end b{font-size:13px;color:var(--text)}
+.ss.done{align-items:center;padding:8px 14px;gap:10px;font-size:13px}
+.sm{width:22px;height:22px;border-radius:50%;flex:none;display:inline-flex;align-items:center;justify-content:center;border:2px solid var(--ctl-bd);color:var(--text-dim);font:600 12px var(--font)}
+.sm.d{background:var(--ok);border-color:var(--ok);color:var(--surface)}
+.sm.n{border-color:var(--info);color:var(--info)}
+.sm.n::after{content:"";width:8px;height:8px;border-radius:50%;background:var(--info)}
+.sm.u{border-style:dashed}
+.sm .ic{width:13px;height:13px;stroke-width:2.6}
+
+/* the lead: every page opens with its next action */
+.lead{display:flex;gap:16px;align-items:center;padding:14px 18px;border-radius:12px;background:var(--t-info);border:1px solid var(--l-info);flex-wrap:wrap}
+.lead .lt{flex:1;min-width:240px;display:flex;flex-direction:column;gap:2px}
+.lead .lt .k{font-size:12px;color:var(--info-ink);font-weight:600}
+.lead .lt b{font-size:16px;font-weight:600}
+.lead .lt span{font-size:13px;color:var(--text-dim)}
+.lead.ok{background:var(--t-ok);border-color:color-mix(in srgb,var(--ok) 35%,var(--line))}
+.lead.ok .lt .k{color:var(--ok-ink)}
+.lead.wn{background:var(--t-warn);border-color:color-mix(in srgb,var(--warn-ink) 40%,var(--line))}
+.lead.wn .lt .k{color:var(--warn-ink)}
+.acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+.cd{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;min-width:0}
+.cd .ch{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.cd .ch b{font-size:15px;font-weight:600}
+.cd .ch .r{margin-left:auto}
+.cd p{margin:0 0 8px;font-size:13.5px;color:var(--text-dim)}
+.cd.dash{border-style:dashed;background:transparent}
+.g2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.g3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.g21{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:14px}
+.col{display:flex;flex-direction:column;gap:14px;min-width:0}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;font-size:13.5px}
+.kv dt{color:var(--text-dim)}.kv dd{margin:0}
+.dim{color:var(--text-dim)}.faint{color:var(--text-faint)}
+.sm12{font-size:12px}
+.mn{font-family:var(--mono);font-size:12.5px}
+
+.b{height:32px;padding:0 12px;border-radius:8px;border:1px solid var(--ctl-bd);background:var(--surface);color:var(--text);font:600 13px var(--font);display:inline-flex;align-items:center;gap:6px;white-space:nowrap;cursor:default}
+.b.p{background:var(--info);color:var(--ctl-onac);border-color:var(--info)}
+.b.q{border-color:transparent;background:none;color:var(--info);padding:0 6px}
+.b.d{color:var(--bad-ink)}
+.b.s{height:28px;font-size:12.5px;padding:0 10px}
+.b[aria-disabled="true"]{opacity:.55}
+.c{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--surface-2);color:var(--text-dim);white-space:nowrap;display:inline-flex;gap:4px;align-items:center;line-height:1.5}
+.c.ok{background:var(--t-ok);color:var(--ok-ink)}
+.c.wn{background:var(--t-warn);color:var(--warn-ink)}
+.c.bd{background:var(--t-bad);color:var(--bad-ink)}
+.c.in{background:var(--t-info);color:var(--info-ink)}
+.c.pa{background:var(--t-pa);color:var(--paused-ink)}
+.c.ln{background:none;border:1px solid var(--line)}
+.c .ic{width:12px;height:12px}
+.st{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.st .ic{width:14px;height:14px}
+.st.ok{color:var(--ok-ink)}.st.wn{color:var(--warn-ink)}.st.bd{color:var(--bad-ink)}.st.in{color:var(--info-ink)}.st.nu{color:var(--text-dim)}
+.sg{display:inline-flex;border:1px solid var(--ctl-bd);border-radius:8px;overflow:hidden;background:var(--surface);flex:none}
+.sg span{padding:5px 11px;font-size:13px;color:var(--text-dim);border-right:1px solid var(--line);white-space:nowrap;display:inline-flex;gap:5px;align-items:center}
+.sg span:last-child{border-right:0}
+.sg span.on{background:var(--t-info);color:var(--info-ink);font-weight:600}
+.sg span.x{opacity:.5}
+.fld{display:flex;flex-direction:column;gap:4px;font-size:13px;min-width:0}
+.fld>span{color:var(--text-dim);font-weight:600;font-size:12.5px}
+.inp{height:34px;border:1px solid var(--ctl-bd);border-radius:8px;background:var(--surface);display:flex;align-items:center;padding:0 10px;font-size:13.5px;color:var(--text-faint);gap:8px;min-width:0}
+.inp.v{color:var(--text)}
+.inp .ic{color:var(--text-dim)}
+.chk{display:inline-flex;align-items:center;gap:8px;font-size:13.5px}
+.chk i{width:16px;height:16px;border-radius:4px;border:1.5px solid var(--ctl-bd);flex:none;display:inline-flex;align-items:center;justify-content:center}
+.chk i.y{background:var(--info);border-color:var(--info);color:var(--ctl-onac)}
+.chk i .ic{width:11px;height:11px;stroke-width:3}
+.chk.x{opacity:.55}
+.hint{font-size:12.5px;color:var(--text-dim)}
+.bn{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-radius:10px;font-size:13px;border:1px solid var(--line);background:var(--surface-2)}
+.bn.in{background:var(--t-info);border-color:var(--l-info)}
+.bn.wn{background:var(--t-warn);border-color:color-mix(in srgb,var(--warn-ink) 40%,var(--line))}
+.bn b{display:block}
+.bn .ic{margin-top:2px}
+
+/* tables; .rs turns rows into cards on the phone */
+.tw{border:1px solid var(--line);border-radius:10px;overflow-x:auto;background:var(--surface)}
+table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
+.t th{font-size:12px;font-weight:600;color:var(--text-dim);text-align:left;padding:8px 10px;background:var(--surface-2);border-bottom:1px solid var(--line);white-space:nowrap}
+.t td{padding:8px 10px;border-bottom:1px solid var(--line-soft);vertical-align:middle}
+.t tr:last-child td{border-bottom:0}
+.t .n{text-align:right}
+.t tr.need td{background:color-mix(in srgb,var(--warn-ink) 6%,var(--surface))}
+.t tr.tot td{font-weight:600;background:var(--surface-2)}
+.t td small{display:block;font-size:12px;color:var(--text-dim)}
+
+/* wizard */
+.wz{display:flex;gap:6px;flex-wrap:wrap}
+.wz span{display:inline-flex;gap:6px;align-items:center;font-size:12.5px;color:var(--text-dim);padding:3px 10px 3px 4px;border-radius:99px;border:1px solid var(--line)}
+.wz span i{width:20px;height:20px;border-radius:50%;background:var(--surface-2);font:600 12px/20px var(--font);text-align:center;font-style:normal}
+.wz span.d i{background:var(--ok);color:var(--surface)}
+.wz span.on{border-color:var(--info);color:var(--info-ink);font-weight:600}
+.wz span.on i{background:var(--info);color:var(--ctl-onac)}
+.opt{border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;gap:10px;align-items:flex-start;font-size:13.5px;background:var(--surface)}
+.opt.on{border-color:var(--info);background:var(--t-info)}
+.opt.x{opacity:.6}
+.opt .rd{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--ctl-bd);flex:none;margin-top:2px}
+.opt.on .rd{border:5px solid var(--info)}
+.opt b{display:block;font-size:13.5px}
+.opt small{font-size:12.5px;color:var(--text-dim);display:block}
+.sheet{border:1px solid var(--line);border-radius:14px;background:var(--surface);box-shadow:0 12px 32px rgba(11,58,122,.16);padding:16px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.sheet .sh{display:flex;align-items:center;gap:8px}.sheet .sh b{font-size:16px;flex:1}
+
+/* charts */
+.chart svg{display:block;width:100%;height:auto}
+.chart text{font:12px var(--font);fill:var(--text-dim)}
+.chart .gl{stroke:var(--line-soft);stroke-width:1}
+.chart .lab{fill:var(--text);font-weight:600}
+.lg{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12.5px;color:var(--text-dim)}
+.lg i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.sent{font-size:20px;font-weight:600;line-height:1.35}
+.sent em{font-style:normal;color:var(--info-ink)}
+
+/* run group columns */
+.cols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.mtr{display:flex;gap:8px;align-items:center;font-size:13px}
+.bar{flex:1;height:6px;border-radius:3px;background:var(--line);overflow:hidden;display:flex}
+.bar i{display:block;height:100%;background:var(--info)}
+
+/* ---------- phone ---------- */
+.ph{width:390px;max-width:100%;border:1px solid var(--line);border-radius:28px;overflow:hidden;background:var(--bg);position:relative}
+.phd{height:52px;background:#0b3a7a;color:#eef4fa;display:flex;align-items:center;gap:10px;padding:0 14px}
+.phd b{font-size:15px;font-weight:650;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.phd .wsc{font-size:12px;padding:3px 8px;border-radius:99px;background:rgba(124,200,248,.18);color:#cfe9fb;border:1px solid rgba(124,200,248,.45);white-space:nowrap}
+.pss{display:flex;flex-direction:column;gap:6px;padding:10px 14px;background:var(--surface);border-bottom:1px solid var(--line);font-size:12.5px}
+.pss .row{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.pss b{font-size:13px}
+.pss a{font-weight:600}
+.pb{padding:14px;display:flex;flex-direction:column;gap:12px}
+.ph .ct{padding:0;gap:12px}
+.ph .hd .h{font-size:20px}
+.ph .g2,.ph .g3,.ph .g21,.ph .cols{grid-template-columns:minmax(0,1fr)}
+.ph .ss{display:none}
+.ph .lead{padding:12px 14px}
+.ph .lead .lt{min-width:0}
+.ph .lead .acts{width:100%}
+.ph .cd{padding:12px}
+/* a long count chip in a card's head wraps inside the card on a phone rather than running into its edge (S6b phone) */
+.ph .cd .ch .r{min-width:0;max-width:100%}
+.ph .cd .ch .r .c{white-space:normal;border-radius:10px}
+.ph .tw{border:0;background:none;overflow:visible}
+.ph .rs thead{display:none}
+.ph .rs,.ph .rs tbody,.ph .rs tr,.ph .rs td{display:block;width:100%}
+.ph .rs tr{border:1px solid var(--line);border-radius:10px;background:var(--surface);margin-bottom:8px;padding:6px 0}
+/* label left, everything else grouped right; a cell's small second line gets its own line, right-aligned */
+.ph .rs td{display:flex;justify-content:flex-end;gap:4px 12px;border:0;padding:4px 12px;text-align:right;align-items:flex-start;flex-wrap:wrap}
+.ph .rs td>*{text-align:right}
+.ph .rs td::before{content:attr(data-l);color:var(--text-dim);font-size:12px;text-align:left;flex:none;margin-right:auto}
+.ph .rs td:first-child{font-weight:600;justify-content:flex-start;text-align:left}
+.ph .rs td:first-child::before{display:none}
+.ph .rs td:empty{display:none}
+.ph .rs td small{text-align:right;flex-basis:100%}
+.ph .rs td:first-child small{flex-basis:auto;text-align:left}
+/* a dash with its reason on one line (S3b's read-grant cells) */
+.t td .nw{white-space:nowrap}.t td .nw small{display:inline;flex-basis:auto}
+.ph .hd:has(.acts) .tl{flex-basis:100%}
+.ph .tabs{flex-wrap:nowrap;overflow:hidden}
+.ph .tabs span{padding:7px 7px;font-size:13px;white-space:nowrap}
+.ph .sg{flex-wrap:wrap}
+.ph .kv{grid-template-columns:1fr}
+.ph .kv dd{margin-bottom:6px}
+.ph .hide-ph{display:none}
+.show-ph{display:none}
+.ph .show-ph{display:revert}
+.ph.dr{height:760px}
+.scrim{position:absolute;inset:52px 0 0 0;background:rgba(6,16,30,.5)}
+.drw{position:absolute;left:0;top:0;bottom:0;width:330px;display:flex;background:var(--surface);box-shadow:0 10px 30px rgba(0,0,0,.35);z-index:2}
+.drw .sp{width:74px}.drw .sp .si{width:66px}
+.drw .pn{flex:1;width:auto;border-right:0}
+/* rows used by the chooser and the cards; the phone wraps them */
+.rr{display:flex;gap:12px;align-items:center;padding:9px 12px;border-bottom:1px solid var(--line-soft);flex-wrap:wrap}
+.rr:last-child{border-bottom:0}
+.rr .nm{flex:1;min-width:180px;display:flex;flex-direction:column;line-height:1.3}
+.rr .nm b{font-size:13.5px;font-weight:600}.rr .nm small{font-size:12px;color:var(--text-dim)}
+.lst{border:1px solid var(--line);border-radius:10px;background:var(--surface);overflow:hidden}
+.own{display:flex;flex-direction:column;gap:6px}
+.own .o{border:1px solid var(--line);border-radius:10px;padding:9px 12px;background:var(--surface);display:flex;flex-direction:column;gap:2px;font-size:13px}
+.own .o.on{border-color:var(--info);background:var(--t-info)}
+.own .o b{font-size:13.5px}.own .o small{font-size:12px;color:var(--text-dim)}
+.foot{display:flex;gap:12px;align-items:center;justify-content:flex-end;padding:10px 14px;border:1px solid var(--line);border-radius:12px;background:var(--surface);flex-wrap:wrap;font-size:13px}
+.foot .dim{margin-right:auto}
+.scope{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.scope>.lbl{font-size:12.5px;font-weight:600;color:var(--text-dim)}
+.scope .r{margin-left:auto}
+.ph .scope .r{margin-left:0}
+.stp{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line-soft);font-size:13.5px}
+.stp:last-child{border-bottom:0}
+.stp .tx{flex:1;display:flex;flex-direction:column}
+.stp .tx small{font-size:12.5px;color:var(--text-dim)}
+.fold{display:flex;gap:10px;align-items:center;padding:10px 14px;border:1px solid var(--line);border-radius:10px;background:var(--surface);font-size:13.5px}
+.fold b{flex:1 0 auto}
+.fold>.dim{text-align:right;min-width:0}
+/* a filter's label travels with its control when the row wraps */
+.fgrp{display:flex;gap:6px 8px;align-items:center;flex-wrap:wrap}
+/* the wizard: one side sheet over the page, and its other steps drawn on their own */
+.wzwrap{position:relative}
+.wzwrap>.wzsheet{position:absolute;top:0;right:0;width:500px;z-index:2}
+.sheetfig{width:440px;max-width:100%}
+.envh{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 8px}
+.envh b{font-size:14px}
+.repc{display:flex;flex-direction:column;gap:6px;font-size:13px}
+.repc .top{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.repc .top b{font-size:14.5px;flex:1;min-width:0}
+.dimbox{opacity:.45;pointer-events:none}
+
+/* ================= proposal C: what is new on this page ================= */
+/* frame boxes: one per frame id, with its sub-frames labelled inside */
+.doc h2{overflow-wrap:anywhere}
+.frame{margin:20px 0 0;border:1px solid var(--line);border-radius:14px;padding:14px 16px 18px;background:color-mix(in srgb,var(--surface) 55%,var(--bg));min-width:0;scroll-margin-top:60px}
+.flab{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin:0 0 6px}
+.fid{font:600 13px var(--mono);color:var(--ctl-onac);background:var(--info);padding:2px 8px;border-radius:6px}
+.flab b{font-size:16px;font-weight:650}
+.frame>p{margin:4px 0 0;font-size:14px;color:var(--text-dim);max-width:110ch}
+.sub{margin-top:18px;min-width:0}
+.slab{font-size:14px;font-weight:600;margin:0 0 8px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.sid{font:500 12.5px var(--mono);color:var(--info-ink);background:var(--t-info);padding:1px 7px;border-radius:6px}
+.slab .dim{font-weight:400;font-size:13px}
+.app.short{min-height:520px}
+.pane{width:1100px;border:1px solid var(--line);border-radius:12px;background:var(--bg);padding:18px 22px}
+.pgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.pgrid .sub{margin-top:0}
+.phones{display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start}
+.phones .sub{margin-top:0;width:390px;max-width:100%}
+
+/* the swimlane: one lane per schedule on one time axis, the last 7 days and the next 24 hours */
+.sw{border:1px solid var(--line);border-radius:12px;background:var(--surface);min-width:0}
+.swh{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line-soft);flex-wrap:wrap}
+.swh>b{font-size:15px;font-weight:600}
+.swh .r{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.sw .row{display:grid;grid-template-columns:var(--lc,268px) minmax(0,1fr);border-bottom:1px solid var(--line-soft)}
+.sw .row.on{background:color-mix(in srgb,var(--info) 7%,var(--surface))}
+.sw .row.on .lab{box-shadow:inset 3px 0 0 var(--info)}
+.sw .lab{padding:8px 12px;border-right:1px solid var(--line-soft);display:flex;flex-direction:column;gap:3px;min-width:0;font-size:12.5px;line-height:1.35}
+.sw .lab .nm{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.sw .lab b{font-size:13.5px;font-weight:600}
+.sw .lab .ls{color:var(--text-dim)}
+.sw .lab .lw{display:none}
+.trk{position:relative;min-height:64px;margin:0 16px}
+.trk .fz{position:absolute;top:0;bottom:0;right:-16px;background:color-mix(in srgb,var(--info) 5%,transparent)}
+.trk .dl{position:absolute;top:0;bottom:0;border-left:1px solid var(--line-soft)}
+.trk .nowl{position:absolute;top:0;bottom:0;border-left:2px solid var(--text);opacity:.55;z-index:3}
+/* past firings, coloured by outcome */
+.fd{position:absolute;top:26px;width:10px;height:10px;margin-left:-5px;border-radius:50%;z-index:2;box-shadow:0 0 0 1.5px var(--surface)}
+.fd.s{background:var(--ok)}
+.fd.f{background:var(--bad-ink)}
+.fd.p{background:var(--warn-ink)}
+.fd.n{background:var(--surface);border:1.5px solid var(--ctl-bd)}
+.fd.o{background:var(--surface);border:2px solid var(--warn-ink)}
+.fd.l,.fd.w{background:var(--info);box-shadow:0 0 0 3px color-mix(in srgb,var(--info) 30%,var(--surface))}
+.fd.t{background:var(--bad-ink);box-shadow:0 0 0 3px color-mix(in srgb,var(--bad-ink) 30%,var(--surface))}
+/* next firings: hollow; a blocked one is struck through */
+.fx{position:absolute;top:24px;width:14px;height:14px;margin-left:-7px;border-radius:50%;border:2px solid var(--info);background:var(--surface);z-index:2}
+.fx.blk{border-color:var(--warn-ink)}
+.fx.blk::after{content:"";position:absolute;left:-3px;right:-3px;top:4px;border-top:2px solid var(--warn-ink);transform:rotate(-45deg)}
+.fx.q{border-style:dashed}
+.fx.spec{border-color:var(--paused)}
+/* an approval waiting: a dashed band from its request to its expiry, and a pin where it blocks */
+.wb{position:absolute;top:30px;height:3px;background:repeating-linear-gradient(90deg,var(--warn-ink) 0 6px,transparent 6px 10px);z-index:1}
+.wb.more::after{content:"";position:absolute;right:-8px;top:-4px;border:5.5px solid transparent;border-left:8px solid var(--warn-ink)}
+.pin{position:absolute;top:18px;height:28px;width:0;border-left:2px solid var(--warn-ink);z-index:3}
+.pin::before{content:"";position:absolute;left:0;top:-1px;width:10px;height:8px;background:var(--warn-ink);clip-path:polygon(0 0,100% 50%,0 100%)}
+.pin.ex{border-left-style:dashed}
+.pin.ok{border-color:var(--ok)}.pin.ok::before{background:var(--ok)}
+.pin.bd{border-color:var(--bad-ink)}.pin.bd::before{background:var(--bad-ink)}
+.pin.in{border-color:var(--info)}.pin.in::before{background:var(--info)}
+.pz{position:absolute;top:22px;height:18px;border-radius:4px;background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--paused) 26%,var(--surface)) 0 5px,transparent 5px 10px);border:1px solid color-mix(in srgb,var(--paused) 40%,var(--line))}
+.nt{position:absolute;top:2px;font-size:12px;line-height:16px;padding:0 5px;border-radius:4px;background:var(--surface);border:1px solid var(--line);white-space:nowrap;z-index:5;color:var(--text)}
+.nt.l{transform:translateX(-100%)}
+.nt.c{transform:translateX(-50%)}
+.nt.wn{color:var(--warn-ink);border-color:color-mix(in srgb,var(--warn-ink) 40%,var(--line))}
+.nt.bd{color:var(--bad-ink);border-color:color-mix(in srgb,var(--bad-ink) 40%,var(--line))}
+.nt.pa{color:var(--paused-ink);border-color:color-mix(in srgb,var(--paused) 40%,var(--line))}
+.nt.ok{color:var(--ok-ink);border-color:color-mix(in srgb,var(--ok) 40%,var(--line))}
+.nt.r2{top:22px}
+.trk.a5 .fd{top:48px}.trk.a5 .fx{top:46px}.trk.a5 .wb{top:52px}.trk.a5 .pin{top:40px}
+.ph .trk.a5 .fd{top:26px}.ph .trk.a5 .fx{top:26px}.ph .trk.a5 .wb{top:30px}.ph .trk.a5 .pin{top:18px}
+/* spend per day against the per-day cap, under each lane */
+.spd{position:absolute;left:0;right:0;bottom:5px;height:12px}
+.dc{position:absolute;bottom:0;height:12px;border-radius:2px;background:color-mix(in srgb,var(--line) 70%,var(--surface));overflow:hidden}
+.dc i{position:absolute;left:0;right:0;bottom:0;background:color-mix(in srgb,var(--info) 75%,var(--surface))}
+.dc i.bd{background:var(--bad-ink)}
+.dc i.pt{background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--info) 55%,var(--surface)) 0 3px,color-mix(in srgb,var(--info) 25%,var(--surface)) 3px 6px)}
+/* the axis */
+.axr .trk{min-height:40px}
+.axr .lab{justify-content:flex-end;color:var(--text-dim)}
+.ax{position:absolute;bottom:4px;font-size:12px;color:var(--text-dim);transform:translateX(-50%);white-space:nowrap;background:var(--surface);padding:0 3px;border-radius:3px;z-index:4}
+.ax.nw{color:var(--text);font-weight:600}
+.ax.zn{bottom:auto;top:3px;transform:none;color:var(--text-dim);font-weight:600}
+.ax .s0{display:none}
+.nar .ax .s1{display:none}.nar .ax .s0{display:inline}
+.lg2{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12.5px;color:var(--text-dim);padding:10px 14px;align-items:center}
+.lg2>span{display:inline-flex;align-items:center;gap:6px}
+.lg2 .fd,.lg2 .fx,.lg2 .pin,.lg2 .pz,.lg2 .wb{position:relative;top:auto;margin:0;flex:none}
+.lg2 .pin{height:14px}
+.lg2 .pz{width:22px;height:12px}
+.lg2 .wb{width:22px;display:inline-block}
+.lg2 .dcl{width:14px;height:12px;border-radius:2px;background:color-mix(in srgb,var(--info) 55%,var(--surface));display:inline-block}
+.lg2 .dcl.bd{background:var(--bad-ink)}
+/* a tall lane (A2): cost per firing against the per-run tripwire */
+.trk.tall{min-height:132px}
+.trk.tall .spd{bottom:6px;height:16px}.trk.tall .dc{height:16px}
+.cbz{position:absolute;left:0;right:0;top:48px;height:54px}
+.cbz .cb{position:absolute;bottom:0;width:6px;margin-left:-3px;border-radius:2px 2px 0 0;background:color-mix(in srgb,var(--info) 60%,var(--surface))}
+.cbz .cb.f{background:var(--bad-ink)}
+.cbz .cb.l{background:repeating-linear-gradient(0deg,color-mix(in srgb,var(--info) 60%,var(--surface)) 0 3px,color-mix(in srgb,var(--info) 25%,var(--surface)) 3px 6px)}
+.cbz .tw0{position:absolute;left:0;right:0;border-top:1.5px dashed var(--bad-ink)}
+.cbz .twl{position:absolute;right:0;font-size:12px;line-height:14px;color:var(--bad-ink);background:var(--surface);padding:0 4px;border-radius:3px;transform:translateY(-100%)}
+.tl3 .lab{gap:0;justify-content:space-around}
+.tl3 .lab span{display:block}
+.kv dd{min-width:0;overflow-wrap:anywhere}
+.g3 .kv{grid-template-columns:1fr;gap:0}.g3 .kv dt{font-size:12.5px}.g3 .kv dd{margin-bottom:8px}
+/* master-detail */
+.md{display:grid;grid-template-columns:292px minmax(0,1fr);gap:16px;align-items:start}
+.ml{border:1px solid var(--line);border-radius:12px;background:var(--surface);display:flex;flex-direction:column;min-width:0}
+.ml .mh{display:flex;gap:8px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line-soft);flex-wrap:wrap}
+.ml .mh b{font-size:14px;flex:1}
+.mg{font-size:12.5px;font-weight:600;color:var(--text-dim);padding:10px 12px 4px}
+.mi{display:flex;gap:10px;align-items:flex-start;padding:9px 12px;border-bottom:1px solid var(--line-soft);font-size:12.5px;line-height:1.35;position:relative}
+.mi:last-child{border-bottom:0}
+.mi .tx{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.mi .tx b{font-size:13.5px;font-weight:600}
+.mi .tx span{color:var(--text-dim)}
+.mi .ex0{font-size:12px;color:var(--text-dim);white-space:nowrap}
+.mi.on{background:var(--t-info)}
+.mi.on::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:3px;border-radius:2px;background:var(--info)}
+.dot{width:10px;height:10px;border-radius:50%;flex:none;margin-top:4px}
+.dot.ok{background:var(--ok)}.dot.wn{background:var(--warn-ink)}.dot.bd{background:var(--bad-ink)}.dot.pa{background:var(--paused)}.dot.nu{background:var(--surface);border:1.5px solid var(--ctl-bd)}.dot.in{background:var(--info)}
+.dtl{display:flex;flex-direction:column;gap:14px;min-width:0}
+.dh{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap}
+.dh .tl{flex:1;min-width:240px;display:flex;flex-direction:column;gap:4px}
+.dh .tl .h{font-size:20px;font-weight:650;line-height:1.25}
+.dh .tl .chips{display:flex;gap:6px;flex-wrap:wrap}
+.say{font-size:14px;color:var(--text-dim);margin:0}
+/* expiry bars (A4): each waiting approval from its request to its expiry */
+.xb{position:absolute;top:20px;height:14px;border-radius:7px;background:color-mix(in srgb,var(--warn-ink) 22%,var(--surface));border:1px solid color-mix(in srgb,var(--warn-ink) 50%,var(--line))}
+.xb i{position:absolute;top:0;bottom:0;left:0;border-radius:7px 0 0 7px;background:color-mix(in srgb,var(--warn-ink) 45%,var(--surface))}
+.xb.soon{border-color:var(--bad-ink)}
+.xb.soon i{background:color-mix(in srgb,var(--bad-ink) 40%,var(--surface))}
+/* outcome cards (A5) */
+.oc{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--surface);display:flex;flex-direction:column;gap:6px;font-size:13.5px;min-width:0}
+.oc b{font-size:14px}
+.oc ul{margin:0;padding-left:18px;color:var(--text-dim)}
+.oc li{margin:2px 0}
+.oc.ok{border-color:color-mix(in srgb,var(--ok) 40%,var(--line))}
+.oc.bd{border-color:color-mix(in srgb,var(--bad-ink) 40%,var(--line))}
+.ev{display:flex;flex-direction:column;gap:0}
+.ev .stp{padding:7px 0}
+.ev .stp .ic{margin-top:3px}
+.ev .stp.ok .ic{color:var(--ok-ink)}.ev .stp.wn .ic{color:var(--warn-ink)}
+.lead.bd{background:var(--t-bad);border-color:color-mix(in srgb,var(--bad-ink) 40%,var(--line))}
+.lead.bd .lt .k{color:var(--bad-ink)}
+.lead.nu{background:var(--surface-2);border-color:var(--line)}
+.lead.nu .lt .k{color:var(--text-dim)}
+.lead.pa{background:var(--t-pa);border-color:color-mix(in srgb,var(--paused) 40%,var(--line))}
+.lead.pa .lt .k{color:var(--paused-ink)}
+.quote{border-left:3px solid var(--bad-ink);padding:2px 0 2px 10px;margin:4px 0;font-size:13.5px;color:var(--text)}
+.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.err{display:flex;gap:6px;align-items:flex-start;font-size:12.5px;color:var(--bad-ink)}
+.err .ic{width:14px;height:14px;margin-top:2px}
+.inp.bad{border-color:var(--bad-ink);box-shadow:0 0 0 1px var(--bad-ink)}
+.fsec{display:flex;flex-direction:column;gap:10px}
+.fsec h4{margin:0;font-size:14px;font-weight:650;display:flex;gap:8px;align-items:center}
+.fsec h4 .n0{width:22px;height:22px;border-radius:50%;background:var(--surface-2);font:600 12px/22px var(--font);text-align:center}
+.frow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.empty{padding:28px 18px;display:flex;flex-direction:column;gap:10px;align-items:flex-start;font-size:13.5px;color:var(--text-dim)}
+.empty b{color:var(--text);font-size:15px}
+.hatch{background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--line) 45%,var(--surface)) 0 5px,var(--surface) 5px 10px)}
+.newf{background:var(--surface);border:1px solid var(--line);border-radius:12px;margin-top:14px;overflow-x:auto}
+
+/* phone */
+.ph .md{grid-template-columns:minmax(0,1fr)}
+.ph .sw .row{grid-template-columns:minmax(0,1fr)}
+.ph .sw .lab{border-right:0;padding:10px 12px 0}
+.ph .sw .lab .lw{display:block;color:var(--text)}
+.ph .trk{margin:0 12px}
+.ph .nt{display:none}
+.ph .fd{width:4px;height:12px;border-radius:2px;margin-left:-2px;top:25px;box-shadow:none}
+.ph .fd.n,.ph .fd.o{border-width:1px}
+.ph .fd.l,.ph .fd.w,.ph .fd.t{width:6px;margin-left:-3px}
+.ph .fx{width:10px;height:10px;margin-left:-5px;top:26px}
+.ph .fx.blk::after{top:2px}
+.ph .ax .s1{display:none}.ph .ax .s0{display:inline}
+.ph .axr .lab{display:none}
+.ph .lg2{padding:10px 12px}
+.ph .lg2 .fd{width:10px;height:10px;border-radius:50%;margin:0;top:auto}.ph .lg2 .fd.n,.ph .lg2 .fd.o{border-width:1.5px}.ph .lg2 .fx{width:14px;height:14px;margin:0;top:auto}.ph .lg2 .fx.blk::after{top:4px}
+.ph .dh .tl{min-width:0;flex-basis:100%}
+.ph .dh .tl .h{font-size:18px}
+.ph .pgrid,.ph .frow,.ph .tiles{grid-template-columns:minmax(0,1fr)}
+.ph .trk.tall{min-height:120px}
+.ph .tl3 .lab{display:none}
+.ph .swh .r{margin-left:0}
+.ph .mono-wrap{overflow-wrap:anywhere}
+@media (max-width:700px){.pgrid{grid-template-columns:minmax(0,1fr)}.frame{padding:12px 10px 14px}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<linearGradient id="g-hive-b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#7dd3fc"/></linearGradient>
+<symbol id="hive" viewBox="0 0 44 44"><g fill="url(#g-hive-b)"><path d="M22 4l6.5 3.75v7.5L22 19l-6.5-3.75v-7.5z"/><path d="M11 22.5l6.5 3.75v7.5L11 37.5l-6.5-3.75v-7.5z" opacity=".85"/><path d="M33 22.5l6.5 3.75v7.5L33 37.5l-6.5-3.75v-7.5z" opacity=".85"/><path d="M22 22.5l5 2.9v5.8l-5 2.9-5-2.9v-5.8z" opacity=".7"/><path d="M11 6.5l4.5 2.6v5.2L11 16.9l-4.5-2.6V9.1z" opacity=".55"/><path d="M33 6.5l4.5 2.6v5.2L33 16.9l-4.5-2.6V9.1z" opacity=".55"/><path d="M22 36l3.5 2v4L22 44l-3.5-2v-4z" opacity=".45"/></g></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-overview" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5"/><rect x="13.5" y="11" width="7" height="9.5" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
+<symbol id="i-work" viewBox="0 0 24 24"><rect x="5" y="7.5" width="14" height="11" rx="3"/><path d="M12 4v3.5M9 12.5v1M15 12.5v1"/></symbol>
+<symbol id="i-automate" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+<symbol id="i-capacity" viewBox="0 0 24 24"><path d="M12 3.5 3.5 8 12 12.5 20.5 8Z"/><path d="m3.5 12 8.5 4.5 8.5-4.5"/><path d="m3.5 16 8.5 4.5 8.5-4.5"/></symbol>
+<symbol id="i-config" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+<symbol id="i-admin" viewBox="0 0 24 24"><path d="M12 3.5 19.5 6v5.5c0 4.5-3.2 8-7.5 9-4.3-1-7.5-4.5-7.5-9V6Z"/><path d="m9 12 2.2 2.2L15.5 10"/></symbol>
+<symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 0 1 4.8 1c0 1.7-2.4 2-2.4 3.5"/><path d="M12 17.2v.1"/></symbol>
+<symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></symbol>
+<symbol id="i-repo" viewBox="0 0 24 24"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5Z"/><path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3"/></symbol>
+<symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 8.5-8.5M16 7l2.5 2.5M14 9l2 2"/></symbol>
+<symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0Z"/><path d="M12 17v4"/></symbol>
+<symbol id="i-people" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5a5.5 5.5 0 0 1 11 0"/><path d="M16 5.5a3 3 0 0 1 0 6M18.5 19.5a5 5 0 0 0-2.5-4.3"/></symbol>
+<symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+<symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4 21 19.5H3Z"/><path d="M12 10v4.5M12 17v.1"/></symbol>
+<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.1"/></symbol>
+<symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol>
+<symbol id="i-ext" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+<symbol id="i-chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+<symbol id="i-chevd" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></symbol>
+<symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10Z"/></symbol>
+<symbol id="i-sys" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="12" rx="2"/><path d="M9 20h6M12 16.5V20"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol>
+<symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18M10.6 6.1A9.8 9.8 0 0 1 12 6c5 0 8.5 4.5 9.5 6-.5.8-1.5 2.1-2.9 3.3M6.6 6.6C4.6 7.9 3.2 9.8 2.5 12c1 1.5 4.5 6 9.5 6a9.6 9.6 0 0 0 4.4-1.1M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
+<symbol id="i-play" viewBox="0 0 24 24"><path d="M7 5v14l11-7Z"/></symbol>
+<symbol id="i-env" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M3.5 9h17M7 7h.1M9.5 7h.1"/></symbol>
+<symbol id="i-person" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/></symbol>
+<symbol id="i-building" viewBox="0 0 24 24"><path d="M4 20V6.5L12 3.5l8 3V20"/><path d="M9 20v-4.5h6V20M8.5 9.5h1M14.5 9.5h1M8.5 12.5h1M14.5 12.5h1"/></symbol>
+<symbol id="i-counts" viewBox="0 0 24 24"><path d="M4 19.5h16"/><path d="M6.5 16v-4M10.5 16V8M14.5 16v-6M18.5 16V5"/></symbol>
+<symbol id="i-sizes" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2.5"/><path d="M9 4v16M4 9h5M4 14h5"/></symbol>
+<symbol id="i-cal" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M8.5 3v4M15.5 3v4"/></symbol>
+<symbol id="i-qa" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="12" rx="2"/><path d="m9 10.5 2 2 4-4M9 20h6"/></symbol>
+<symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5.5v13M15 5.5v13"/></symbol>
+</defs></svg>
+<div class="topbar"><div class="in">
+  <b>Automate proposal C · Time first</b>
+  <span class="sp0"></span>
+  <span class="sm12 dim">Theme for the page and every frame</span>
+  <div class="tseg" role="group" aria-label="Theme">
+    <button type="button" data-theme-set="light"><svg class="ic"><use href="#i-sun"/></svg>Light</button><button type="button" data-theme-set="dark"><svg class="ic"><use href="#i-moon"/></svg>Dark</button><button type="button" data-theme-set="system" aria-pressed="true"><svg class="ic"><use href="#i-sys"/></svg>System</button>
+  </div>
+</div></div>
+
+<main class="doc">
+<p class="kick">AUTOMATE-MOCKS-C · part of #2417 · drawn 2026-10-26 · not picked</p>
+<h1>Automate, proposal C: Time first</h1>
+<p class="lede">One of four competing proposals (A to D) for BGD's redesign of the console's Automate section. BGD picks frames across the four on the picks page. Every frame is drawn at 1440 wide with the console's nav open, or at 390 for the phone. The theme control at the top repaints the page and every frame, light or dark.</p>
+
+<section class="idea" aria-label="Proposal C: idea, how it differs, risks">
+  <div><h4>Idea</h4><p>Automate is read against time. The landing is a <b>swimlane</b> with one lane per schedule on one shared axis: the last 7 days on the left and the next 24 hours, magnified, on the right of a "now" line. Each past firing is a dot coloured by its outcome. Each next firing is a hollow ring. Under every lane, a band shows each day's spend against the per-day cap. An approval that blocks a firing is <b>pinned where it blocks</b>: a dashed band runs from its request toward its expiry, and the firings it holds up are struck through. Below the lanes comes a <b>master-detail</b> layout. The lanes fold into a list on the left, and the chosen schedule or approval opens on the right with its own lane drawn tall. One approval shows where it sits in its schedule's timeline, and what each answer does to the next firing.</p></div>
+  <div><h4>How it differs from the console today</h4><ul>
+    <li>Today, Schedules is a table: a row with a next run and a last outcome. Here, the lane shows a week of outcomes at once, so "failing for two nights" or "paused since Thursday" can be seen at a glance, without opening the schedule.</li>
+    <li>Today, approvals sit in a separate inbox, and "Waiting on you" is a card. Here, each waiting approval is also drawn on its schedule's lane, at the firing it holds up.</li>
+    <li>Today, a schedule's page has five tabs (history, budget, gate, settings, audit). Here it is one page, beside the list, opened by its lane: history and budget are drawn on the lane, and gate and settings are two cards. Audit is a link.</li>
+    <li>Automate keeps its two pages, Schedules and Approvals (SD1, docs/schedules.md §6.1). Nothing moves in the nav.</li>
+  </ul></div>
+  <div><h4>Risks</h4><ul>
+    <li>A schedule that fires every 15 or 30 minutes has too many dots for 7 days. The lane would draw it as a strip with an outcome mix. That is not drawn here: the busiest lane fires every 4 hours.</li>
+    <li>The axis changes scale at "now" (a week on the left, a day on the right). The zone labels say so, but it can still be misread.</li>
+    <li>"What the next firing does" while an approval waits is a reading the API does not serve yet. It is listed at the end as a new field and must come from the server, not from the UI guessing the overlap rule.</li>
+    <li>On a phone the lanes stack. Each lane's words go above its track, and the pinned notes become words.</li>
+  </ul></div>
+</section>
+
+<div class="rules">
+  <b>What every frame obeys</b>
+  <ul>
+    <li>PICKS.md: nothing below 12px, no all-caps, no letter-spacing, and a light / dark / system toggle (in the page bar, and in every frame's panel foot). An unknown figure is a dash with its reason, never 0. State words are lower-case words ("waiting", "approved"), never raw enums.</li>
+    <li>The V2 Sky spine and the house style of Config E (#2157) and Subscription accounts A (#2222): tokens, type scale, lead strip, tables, cards, chips and buttons. Only the lanes are new, and they are drawn the way account health's proposal B draws its lanes.</li>
+    <li>The time is Mon 26 Oct 2026, 09:00Z. The approval apr_31f74dc3dc84349da9b83697 and its schedule, run, issue and pull request are the real ones. The other schedules and approvals are <b>example data</b> on the same repository.</li>
+  </ul>
+</div>
+
+<ul class="toc">
+  <li><a href="#A1">A1 Landing</a></li><li><a href="#A2">A2 One schedule</a></li><li><a href="#A3">A3 New or edited schedule</a></li><li><a href="#A4">A4 Approvals</a></li><li><a href="#A5">A5 One approval</a></li><li><a href="#A6">A6 Empty and honest states</a></li><li><a href="#A7">A7 Phone</a></li><li><a href="#new">New fields</a></li>
+</ul>
+
+<h2><span class="n">A1</span>Automate's landing: the week and the day ahead</h2>
+<section class="frame" id="A1" data-frame="A1">
+  <div class="flab"><span class="fid">A1</span><b>Automate › Schedules · desktop 1440</b></div>
+  <p>The lead says what waits on you, and when the soonest expiry is. Then come the lanes, one per schedule, covering every state: waiting on an approval, failing, active, paused by its tripwire, paused, and never fired. The approvals panel under the lanes lists what waits, oldest first, and what was decided lately. Choosing a lane or an approval opens it beside the list (A2, A5).</p>
+  <div class="scroller" data-f="a1-d"></div>
+</section>
+
+<h2><span class="n">A2</span>One schedule: its lane drawn tall</h2>
+<section class="frame" id="A2" data-frame="A2">
+  <div class="flab"><span class="fid">A2</span><b>Automate › Schedules › Failure review · desktop 1440</b></div>
+  <p>The lanes fold into the list on the left. The chosen schedule fills the right, and its lane is drawn tall: the firings, the cost of each firing against the $60 per-run tripwire, and each day's spend against the $200 per-day cap. Below the lane: the firing history (each firing's run and pull request), spend, gates and approvers, and settings. The actions are Run now, Pause, Edit and More (Dry run, Delete).</p>
+  <div class="scroller" data-f="a2-d"></div>
+</section>
+
+<h2><span class="n">A3</span>A new or edited schedule: the preview is a lane</h2>
+<section class="frame" id="A3" data-frame="A3">
+  <div class="flab"><span class="fid">A3</span><b>Automate › Schedules › New schedule · desktop 1440</b></div>
+  <p>The editor opens beside the list. Its cadence preview is drawn as a lane, so the next firings show among the schedules already on the axis. Validation is shown in place, next to the field, and summed at the top, where Save says what blocks it.</p>
+  <div class="sub"><div class="slab"><span class="sid">A3a</span>New issue sweep, with two things to fix</div><div class="scroller" data-f="a3-d"></div></div>
+  <div class="sub"><div class="slab"><span class="sid">A3b</span>Editing Nightly visual QA <span class="dim">· the right pane only; the list on its left is A3a's</span></div><div class="scroller" data-f="a3-edit"></div></div>
+</section>
+
+<h2><span class="n">A4</span>Approvals: what waits, against its expiry</h2>
+<section class="frame" id="A4" data-frame="A4">
+  <div class="flab"><span class="fid">A4</span><b>Automate › Approvals · desktop 1440</b></div>
+  <p>The page opens on time. Each waiting approval is a bar from its request to its expiry, and the "now" line shows how much time is left. Below the bars, the list is filtered by kind (merge, plan, run, held plan, proposal, spec, answer) and grouped: waiting (oldest first, with time to expiry), decided (approved or denied, by whom, when, and the reason), and ended without a decision (expired, superseded). The chosen approval opens on the right.</p>
+  <div class="scroller" data-f="a4-d"></div>
+</section>
+
+<h2><span class="n">A5</span>One approval: apr_31f74dc3dc84349da9b83697</h2>
+<section class="frame" id="A5" data-frame="A5">
+  <div class="flab"><span class="fid">A5</span><b>Automate › Approvals › Merge pull request #2392 · desktop 1440</b></div>
+  <p>The approval opens on where it sits in its schedule's timeline: the firing that asked for it, the request, the firings it holds up, and its expiry. Then come what Approve, Deny and no decision each do to the next firing, then the evidence, then who may decide. A5a is the whole screen. A5b to A5f are the right pane in each other state, and the list on their left is A5a's.</p>
+  <div class="sub"><div class="slab"><span class="sid">A5a</span>Waiting, seen by the platform owner</div><div class="scroller" data-f="a5-d"></div></div>
+  <div>
+    <div class="sub"><div class="slab"><span class="sid">A5b</span>Approved</div><div class="scroller" data-f="a5-approved"></div></div>
+    <div class="sub"><div class="slab"><span class="sid">A5c</span>Denied, with the reason</div><div class="scroller" data-f="a5-denied"></div></div>
+    <div class="sub"><div class="slab"><span class="sid">A5d</span>Expired</div><div class="scroller" data-f="a5-expired"></div></div>
+    <div class="sub"><div class="slab"><span class="sid">A5e</span>Superseded: the head moved after the request</div><div class="scroller" data-f="a5-superseded"></div></div>
+    <div class="sub"><div class="slab"><span class="sid">A5f</span>Seen by a member who may not decide</div><div class="scroller" data-f="a5-member"></div></div>
+  </div>
+</section>
+
+<h2><span class="n">A6</span>Empty and honest states</h2>
+<section class="frame" id="A6" data-frame="A6">
+  <div class="flab"><span class="fid">A6</span><b>Automate with nothing in it, not served, unread, or quiet · desktop 1440</b></div>
+  <p>Each is drawn as the whole screen. The axis stays even when there is no lane, so the page reads as the same page with nothing on it, not as an error. A figure that could not be read is a dash with its reason, never 0.</p>
+  <div class="sub"><div class="slab"><span class="sid">A6a</span>No schedules yet</div><div class="scroller" data-f="a6-none"></div></div>
+  <div class="sub"><div class="slab"><span class="sid">A6b</span>Automate not served by this deployment</div><div class="scroller" data-f="a6-off"></div></div>
+  <div class="sub"><div class="slab"><span class="sid">A6c</span>A read that failed</div><div class="scroller" data-f="a6-fail"></div></div>
+  <div class="sub"><div class="slab"><span class="sid">A6d</span>Nothing waiting</div><div class="scroller" data-f="a6-quiet"></div></div>
+</section>
+
+<h2><span class="n">A7</span>Phone at 390</h2>
+<section class="frame" id="A7" data-frame="A7">
+  <div class="flab"><span class="fid">A7</span><b>A1, A2 and A5 at 390 wide</b></div>
+  <p>The lanes stack, and each lane's words go above its track, the track running the full width. A pinned note becomes a line of words, while the pin stays on the track. On the phone the master-detail layout is two pages: the list, then the chosen item with a way back.</p>
+  <div class="phones" style="margin-top:14px">
+    <div class="sub"><div class="slab"><span class="sid">A7a</span>A1, the landing</div><div data-f="a7-a1"></div></div>
+    <div class="sub"><div class="slab"><span class="sid">A7b</span>A2, Failure review</div><div data-f="a7-a2"></div></div>
+    <div class="sub"><div class="slab"><span class="sid">A7c</span>A5, the approval, waiting</div><div data-f="a7-a5"></div></div>
+  </div>
+</section>
+
+<h2 id="new"><span class="n">+</span>New fields this proposal needs</h2>
+<p>Everything else a frame shows is served today by <code>GET /v1/schedules</code>, <code>/v1/schedules/{id}</code>, <code>/firings</code>, <code>/spans</code>, <code>/audit</code>, <code>POST /v1/schedules:preview</code>, <code>GET /v1/schedule-types</code> and <code>GET /v1/approvals[/{id}]</code>. None of these needs a change to the frozen contract (<code>apps/common/swarm_common/</code>): they are swarm-api read shapes.</p>
+<div class="newf"><table class="doct">
+<thead><tr><th>Field</th><th>What it is</th><th>Why this proposal needs it</th><th>Frames</th></tr></thead>
+<tbody>
+<tr><td><code>spend_days[]</code> on each schedule in the list: <code>{day, reported_usd, unreported_attempts}</code> for the last 7 days</td><td>Each day's reported spend, the same reading as <code>spend_today</code> but kept for a week. Today the stored <code>spend</code> holds only the current day.</td><td>It is the spend band under every lane. Reading 6 schedules × 30 firings to add it up in the browser would be the N+1 read the list exists to avoid.</td><td>A1, A2, A6c, A7</td></tr>
+<tr><td><code>firings_since</code> on <code>GET /v1/schedules</code> (or <code>?since=</code>): each schedule's firings over the window, as <code>{slot, outcome, state, skip.code, cost.reported_usd}</code></td><td>A thin firing list for the lanes. Today the list serves only <code>last_firing</code>, and the detail route serves the last 50.</td><td>It supplies the dots on every lane, in one read.</td><td>A1, A6c, A7</td></tr>
+<tr><td><code>next_runs[]</code> on each schedule: the next firings within 24 hours</td><td>What <code>POST /v1/schedules:preview</code> returns as <code>next</code>, served for a saved schedule. Today only <code>next_run_at</code> is served.</td><td>It supplies the hollow rings right of "now". Working cron out in the browser would disagree with the tick about jitter and catch-up.</td><td>A1, A2, A7</td></tr>
+<tr><td><code>pull_request</code> on a firing's work item (<code>work[].pull_request: {number, state, head_sha}</code>)</td><td>The pull request a firing's run opened, and whether it merged. Today it is on a merge approval's <code>subject.pr</code> and on the run, and not on the firing.</td><td>It supplies the history's "run and PR" column, without a read per run.</td><td>A2, A7b</td></tr>
+<tr><td><code>blocks</code> on an approval: <code>{firing_id, next_firing_effect: "skipped"|"queued"|"none", firings_held: n, until}</code></td><td>What this approval does to its schedule's next firings while it waits. The server works it out from the schedule's <code>policy.overlap</code> and whether the asking firing's work is still live.</td><td>It is "pinned where it blocks", "11 more firings skipped while it waits", and the approve / deny / expire cards. Only the tick knows the overlap rule, so the UI must not guess it.</td><td>A1, A4, A5, A7c</td></tr>
+<tr><td><code>effect_on_decide</code> on an approval's detail: <code>{approve: [...], reject: [...], expire: [...]}</code>, each a short served sentence</td><td>The three outcome cards, served by the API that owns the transitions.</td><td>A5 says what each answer does. Drawn from the server, the card cannot drift from what <code>:approve</code> and <code>:reject</code> actually do.</td><td>A5, A7c</td></tr>
+<tr><td><code>superseded_by</code> and <code>superseded_why</code> on an approval: <code>{approval_id, head_sha, at}</code></td><td>The newer request that replaced this one, and the head move that caused it. Today the console says only "a newer request replaced it".</td><td>A5e links to the new request and names both heads.</td><td>A5e</td></tr>
+<tr><td><code>merged</code> on an approved merge's detail: <code>{head_sha, at}</code>, read from the run</td><td>That the approved merge happened, at which head.</td><td>A5b says "merged at dbd00f06c5cd", not just "approved".</td><td>A5b</td></tr>
+<tr><td><code>owner_name</code> on an approval whose approvers are <code>owner_only</code></td><td>The platform owner's display name, as <code>approver_names</code> gives it for a list of emails.</td><td>A5f tells a member who can decide by name.</td><td>A5f</td></tr>
+<tr><td><code>budget_use</code> on the list route</td><td>Today it is served on the detail route only.</td><td>It supplies the lane's "$38.60 or more of $200 today" words for every schedule.</td><td>A1, A7a</td></tr>
+</tbody></table></div>
+<p class="sm12 dim">Words. The API's approval state <code>rejected</code> is drawn as "denied", because the button BGD asked for is Deny. A schedule's <code>enabled</code> state is drawn as "active", and <code>auto_paused</code> is drawn as "paused by its tripwire" when its <code>pause.code</code> is <code>RUN_OVER_BUDGET</code>, or "paused after failures" for <code>CONSECUTIVE_FAILURES</code>. A held merge (<code>hold.code: NEEDS_OWNER</code>) is "held for the platform owner", as Approvals.tsx says it today.</p>
+<p class="sm12 dim">Assumed, not read. Failure review’s <code>policy.overlap</code> is drawn as <code>skip</code>, which is why its firings are skipped while #2392 waits. The live schedule may say otherwise. Under the <code>blocks</code> field above, the server would answer this instead of the drawing.</p>
+</main>
+
+<script>
+(function(){
+'use strict';
+/* ---------- helpers, as config-e.html has them ---------- */
+const I=(n,c)=>`<svg class="ic ${c||''}" aria-hidden="true"><use href="#i-${n}"/></svg>`;
+const B=(t,c,ic)=>`<span class="b ${c||''}" role="button">${ic?I(ic):''}${t}</span>`;
+const C=(t,c,ic)=>`<span class="c ${c||''}">${ic?I(ic):''}${t}</span>`;
+const DASH=(why)=>`<span class="dim">— <small class="sm12">${why}</small></span>`;
+const strip=s=>s.replace(/<[^>]+>/g,'');
+const SG=(opts,on)=>`<span class="sg">${opts.map((o,i)=>`<span class="${i===on?'on':''}">${o}</span>`).join('')}</span>`;
+const CHK=(t,y)=>`<span class="chk"><i class="${y?'y':''}">${y?I('check'):''}</i>${t}</span>`;
+const F=(l,v,cls,extra)=>`<label class="fld"><span>${l}</span><span class="inp ${cls||''}">${v}</span>${extra||''}</label>`;
+function T(cols,rows){
+  const h=cols.map(c=>{const n=c.startsWith('#');return `<th class="${n?'n':''}">${n?c.slice(1):c}</th>`}).join('');
+  const b=rows.map(r=>{const cells=Array.isArray(r)?r:r.c;const cls=Array.isArray(r)?'':(r.cls||'');
+    return `<tr class="${cls}">${cells.map((v,i)=>{const c=cols[i]||'';const n=c.startsWith('#');return `<td data-l="${strip(n?c.slice(1):c)}" class="${n?'n':''}">${v}</td>`}).join('')}</tr>`}).join('');
+  return `<div class="tw"><table class="t rs"><thead><tr>${h}</tr></thead><tbody>${b}</tbody></table></div>`;
+}
+const CARD=(title,right,body,cls)=>`<section class="cd ${cls||''}"><div class="ch"><b>${title}</b>${right?`<span class="r acts">${right}</span>`:''}</div>${body}</section>`;
+const LEAD=(k,t,s,acts,cls)=>`<section class="lead ${cls||''}"><div class="lt"><span class="k">${k}</span><b>${t}</b>${s?`<span>${s}</span>`:''}</div>${acts?`<div class="acts">${acts}</div>`:''}</section>`;
+const usd=v=>'$'+v.toFixed(2);
+const P=v=>v.toFixed(3)+'%';
+
+/* ---------- the clock: hours from now, Mon 26 Oct 2026 09:00Z ---------- */
+const t=(d,hh,mm)=>(d-26)*24+(hh-9)+(mm||0)/60;
+const PAST=177, FUT=24, SPLIT=62;            /* Mon 19 00:00Z .. now | now .. Tue 27 09:00Z */
+const X=h=>h<=0?SPLIT*(h+PAST)/PAST:SPLIT+(100-SPLIT)*Math.min(h,FUT)/FUT;
+const DAYN={19:'Mon',20:'Tue',21:'Wed',22:'Thu',23:'Fri',24:'Sat',25:'Sun',26:'Mon',27:'Tue'};
+
+/* ---------- the six schedules (example data; Failure review is the real sch_54e9828e6772) ---------- */
+function every(startH,stepH,endH){const a=[];for(let h=startH;h<=endH+1e-9;h+=stepH)a.push(h);return a}
+const SCH=[
+  {id:'sch_54e9828e6772',name:'Failure review',type:'failure-review',words:'every 6 hours',cron:'0 */6 * * *',
+   st:'wait',dot:'wn',perRun:60,perDay:200,
+   past:every(t(19,0),6,0),out:'snss'+'snsn'+'ssps'+'nssn'+'ssns'+'nsns'+'fsns'+'lo',
+   next:every(t(26,12),6,23.9).map(h=>({h,c:'blk'})),
+   days:[102.30,96.40,131.00,88.20,142.70,74.10,114.60,38.60],part:true,
+   today:'$38.60 or more of $200 today',
+   extra:()=>`<span class="wb more" style="left:${P(X(t(26,2,40)))};right:0"></span><span class="pin" style="left:${P(X(t(26,2,40)))}"></span>`+
+     `<span class="nt wn" style="left:calc(${P(X(t(26,2,40)))} + 4px)">merge #2392 waits · firings skipped</span>`,
+   lw:'Merge #2392 waits on the owner since 02:40Z. Each firing is skipped until it is decided.'},
+  {id:'sch_9e1c40b7a2d3',name:'Nightly visual QA',type:'visual-qa',words:'daily at 02:30Z',cron:'30 2 * * *',
+   st:'fail',dot:'bd',perRun:30,perDay:60,
+   past:every(t(19,2,30),24,0),out:'ssssssff',next:[{h:t(27,2,30),c:''}],
+   days:[21.40,19.80,23.10,20.60,21.70,22.00,11.90,12.10],
+   today:'$12.10 of $60 today',
+   extra:()=>`<span class="nt bd l" style="left:calc(${P(X(t(26,2,30)))} - 8px)">failed 2 nights in a row · pauses after 3</span>`,
+   lw:'Failed two nights in a row; a third failure pauses it.'},
+  {id:'sch_3f70d2c9e815',name:'Issue sweep',type:'issue-sweep',words:'every 4 hours',cron:'0 */4 * * *',
+   st:'act',dot:'ok',perRun:15,perDay:120,
+   past:every(t(19,0),4,0),out:'ssssss'+'sssnss'+'spssss'+'ssssns'+'ssssss'+'ssspss'+'ssssss'+'ssw',
+   next:every(t(26,12),4,23.9).map((h,i)=>({h,c:i===0?'q':''})),
+   days:[48.20,61.70,39.90,55.30,70.10,44.80,52.60,9.80],
+   today:'$9.80 of $120 today',
+   extra:()=>`<span class="pin" style="left:${P(X(t(26,8,4)))}"></span><span class="nt wn" style="left:calc(${P(X(t(26,8,4)))} + 4px)">plan for #2405 waits · 12:00Z queues</span>`,
+   lw:'The plan for #2405 waits since 08:04Z. The 12:00Z firing queues behind it.'},
+  {id:'sch_b52e8a0f6c19',name:'Docs drift',type:'docs-drift',words:'daily at 06:00Z',cron:'0 6 * * *',
+   st:'trip',dot:'pa',perRun:5,perDay:20,
+   past:every(t(19,6),24,t(24,6)),out:'ssssst',next:[],
+   days:[3.10,2.80,4.20,3.30,3.90,7.40,0,0],trip:5,
+   today:'$0.00 of $20 today · no firing',
+   extra:()=>`<span class="pz" style="left:${P(X(t(24,6,41)))};right:0"></span>`+
+     `<span class="wb" style="left:${P(X(t(23,14,10)))};width:calc(${P(X(t(26,14,10)))} - ${P(X(t(23,14,10)))})"></span><span class="pin ex" style="left:${P(X(t(26,14,10)))}"></span>`+
+     `<span class="nt bd l" style="left:calc(${P(X(t(24,6)))} - 8px)">$7.40 over its $5 tripwire · paused Sat 06:41Z</span>`+
+     `<span class="nt wn" style="left:calc(${P(X(t(26,14,10)))} + 4px)">merge #2388 expires 14:10Z</span>`,
+   lw:'A run cost $7.40, over its $5 per-run tripwire. Paused since Sat 24 06:41Z. Merge #2388 waits and expires at 14:10Z.'},
+  {id:'sch_61d0e7f3b4a8',name:'Dependency CVE refresh',type:'dependency-cve-refresh',words:'daily at 05:00Z',cron:'0 5 * * *',
+   st:'pause',dot:'pa',perRun:10,perDay:20,
+   past:every(t(19,5),24,t(22,5)),out:'ssss',next:[],
+   days:[1.20,3.40,1.10,2.60,0,0,0,0],
+   today:'$0.00 of $20 today · no firing',
+   extra:()=>`<span class="pz" style="left:${P(X(t(22,17,20)))};right:0"></span><span class="nt pa" style="left:calc(${P(X(t(22,17,20)))} + 4px)">paused by Operator: release freeze until Wed 28</span>`,
+   lw:'Paused by Operator on Thu 22 at 17:20Z: “release freeze until Wed 28”.'},
+  {id:'sch_0a4b97c5e2f6',name:'Weekly changelog draft',type:'custom-prompt',words:'Mondays at 17:00Z',cron:'0 17 * * 1',
+   st:'never',dot:'nu',perRun:15,perDay:60,
+   past:[],out:'',next:[{h:t(26,17),c:'spec'}],days:null,
+   today:'no spend yet · created 08:12Z',
+   extra:()=>`<span class="nt l" style="left:calc(${P(X(t(26,17)))} - 10px)">first firing 17:00Z · its spec waits for an admin</span>`,
+   lw:'Never fired. The first firing, 17:00Z, waits for a platform admin to approve its spec.'}
+];
+const STW={wait:C('waiting on an approval','wn'),fail:C('failing','bd'),act:C('active','ok'),trip:'',pause:C('paused','pa'),never:C('never fired','ln')};
+STW.trip=C('paused by its tripwire','pa','warn');
+const OUTW={s:'succeeded',f:'failed',p:'partial',n:'nothing started',o:'skipped: overlap',l:'waiting on an approval',w:'waiting on a plan approval',t:'over its tripwire'};
+
+/* ---------- a lane ---------- */
+function grid(){
+  let h=`<span class="fz" style="left:${SPLIT}%"></span>`;
+  for(let d=20;d<=26;d++)h+=`<span class="dl" style="left:${P(X(t(d,0)))}"></span>`;
+  return h+`<span class="nowl" style="left:${SPLIT}%"></span>`;
+}
+function spendBand(s){
+  if(!s.days)return '';
+  let h='<span class="spd">';
+  s.days.forEach((v,i)=>{const d=19+i;const a=X(t(d,0)),b=X(Math.min(t(d+1,0),0));
+    const f=Math.min(1,v/s.perDay);const bad=s.trip&&d===24;const pt=s.part&&d===26;
+    h+=`<span class="dc" style="left:calc(${P(a)} + 1px);width:calc(${P(b-a)} - 2px)" title="${DAYN[d]} ${d}: ${usd(v)} of ${usd(s.perDay)}"><i class="${bad?'bd':''}${pt?' pt':''}" style="height:${Math.max(v>0?12:0,f*100).toFixed(0)}%"></i></span>`});
+  return h+'</span>';
+}
+function marks(s){
+  let h='';
+  s.past.forEach((x,i)=>{const o=s.out[i]||'s';h+=`<span class="fd ${o}" style="left:${P(X(x))}" title="${OUTW[o]}"></span>`});
+  s.next.forEach(n=>{h+=`<span class="fx ${n.c}" style="left:${P(X(n.h))}"></span>`});
+  return h;
+}
+function laneLabel(s,ph){
+  return `<div class="lab"><span class="nm"><span class="dot ${s.dot}"></span><b>${s.name}</b>${STW[s.st]}</span><span class="ls">${s.type} · ${s.words}</span><span class="ls">${s.today}</span>${s.lw?`<span class="lw">${s.lw}</span>`:''}</div>`;
+}
+function axisRow(lab){
+  let h=`<div class="row axr"><div class="lab">${lab||'<span class="sm12">schedule · type · cadence</span>'}</div><div class="trk">${grid()}`;
+  h+=`<span class="ax zn" style="left:0">last 7 days</span><span class="ax zn" style="left:calc(${SPLIT}% + 6px)"><span class="s1">now → next 24 hours</span><span class="s0">next 24 h</span></span>`;
+  for(let d=19;d<=25;d++)h+=`<span class="ax" style="left:${P((X(t(d,0))+X(t(d+1,0)))/2)}"><span class="s1">${DAYN[d]} ${d}</span><span class="s0">${d}</span></span>`;
+  [[t(26,12),'12:00','12'],[t(26,18),'18:00','18'],[t(27,0),'Tue 00:00','00'],[t(27,6),'06:00','06']].forEach(a=>{h+=`<span class="ax" style="left:${P(X(a[0]))}"><span class="s1">${a[1]}</span><span class="s0">${a[2]}</span></span>`});
+  return h+'</div></div>';
+}
+function legend(){
+  return `<div class="lg2"><span><i class="fd s"></i>succeeded</span><span><i class="fd f"></i>failed</span><span><i class="fd p"></i>partial</span><span><i class="fd n"></i>nothing started</span><span><i class="fd o"></i>skipped: overlap</span><span><i class="fd l"></i>live, waiting</span><span><i class="fd t"></i>over its tripwire</span><span><i class="fx"></i>next firing</span><span><i class="fx blk"></i>held up by an approval</span><span><i class="pin"></i><i class="wb"></i>approval waiting</span><span><i class="pz"></i>paused</span><span><i class="dcl"></i>spend per day, against the per-day cap</span><span><i class="dcl bd"></i>the day a tripwire fired</span></div>`;
+}
+function lanes(on,ph){
+  return `<section class="sw" aria-label="Schedules on one time axis"><div class="swh"><b>Schedules · 6</b><span class="dim sm12">4 active · 1 paused by its tripwire · 1 paused</span><span class="r">${SG(['7 days + 24 h','24 h','30 days'],0)}</span></div>`+
+    axisRow()+SCH.map(s=>`<div class="row${s.id===on?' on':''}">${laneLabel(s,ph)}<div class="trk">${grid()}${marks(s)}${s.extra()}${spendBand(s)}</div></div>`).join('')+legend()+`</section>`;
+}
+
+/* ---------- approvals (the canonical one is real; the rest are example data) ---------- */
+const APW=[
+  {k:'Merge',what:'Merge pull request #2388',sch:'Docs drift',asked:'Fri 23 14:10Z',exp:'5 h 10 m',soon:true,who:'any member',id:'apr_7d03be19c4a65f2e80d1b947'},
+  {k:'Merge',what:'Merge pull request #2392',sch:'Failure review',asked:'Mon 26 02:40Z',exp:'2 d 17 h',who:'the platform owner',hold:true,id:'apr_31f74dc3dc84349da9b83697'},
+  {k:'Plan',what:'Plan for issue #2405',sch:'Issue sweep',asked:'Mon 26 08:04Z',exp:'2 d 23 h',who:'any member',id:'apr_c58a2e06f1b74d39a0e6c281'}
+];
+const APD=[
+  {k:'Merge',what:'Merge pull request #2371',sch:'Issue sweep',st:C('approved','ok','check'),by:'Operator',at:'Sun 25 16:02Z',why:'—'},
+  {k:'Plan',what:'Plan for issue #2360',sch:'Issue sweep',st:C('denied','bd','x'),by:'Mira Chen',at:'Sat 24 11:30Z',why:'“The plan rewrites the tick; split it first.”'}
+];
+const APE=[
+  {k:'Merge',what:'Merge pull request #2380',sch:'Failure review',st:C('superseded','ln'),at:'Fri 23 09:20Z',why:'the head moved; a newer request replaced it'},
+  {k:'Plan',what:'Plan for issue #2352',sch:'Issue sweep',st:C('expired','ln'),at:'Sun 25 03:10Z',why:'nobody decided it in 72 h'}
+];
+function approvalsPanel(){
+  const w=T(['Approval · oldest first','Schedule','Asked','Expires in','Who decides'],APW.map(a=>[`${C(a.k.toLowerCase(),'in')} <a>${a.what}</a>${a.hold?` <small>held for the platform owner</small>`:''}`,a.sch,a.asked,a.soon?`<span class="st bd">${I('warn')}<b>${a.exp}</b></span>`:a.exp,a.who]));
+  const d=T(['Approval','Schedule','Answer','By','When','Reason'],APD.map(a=>[`${C(a.k.toLowerCase(),'ln')} ${a.what}`,a.sch,a.st,a.by,a.at,a.why]));
+  return `<div class="col">${CARD('Approvals waiting · 3',B('All approvals','s'),w)}${CARD('Decided lately',`<a class="sm12">Approvals › decided</a>`,d)}</div>`;
+}
+
+/* ---------- spine and panel (Automate open) ---------- */
+function spine(x){
+  const it=(id,lb,ic,dot)=>`<span class="si ${x.sec===id?'on':''}">${I(ic)}${lb}${dot?'<i class="dt0" title="approvals waiting"></i>':''}</span>`;
+  return `<nav class="sp" aria-label="Sections"><svg class="hv" width="44" height="44" aria-label="SwarmCloud"><use href="#hive"/></svg>`+
+    `<span class="si go">${I('plus')}Submit</span>`+it('overview','Overview','overview')+it('work','Work','work')+it('automate','Automate','automate',x.waiting)+it('capacity','Capacity','capacity')+
+    it('config','Config','config')+(x.role!=='member'?it('admin','Admin','admin'):'')+
+    `<span class="gr"></span>`+it('help','Help','help')+`<span class="si"><span class="av">${x.role==='member'?'SR':'OP'}</span></span></nav>`;
+}
+function pfoot(x){
+  const m=x.role==='member';
+  return `<div class="pf"><div class="who"><span class="av">${m?'SR':'OP'}</span><span><b>${m?'Sam Rivera':'Operator'}</b><small>${m?'Member of Example Team':'Platform owner'}</small></span></div>`+
+  `<div class="tseg" role="group" aria-label="Theme"><button type="button" data-theme-set="light">Light</button><button type="button" data-theme-set="dark">Dark</button><button type="button" data-theme-set="system">System</button></div></div>`;
+}
+const PI=(on,ic,lb,badge)=>`<span class="pi ${on?'on':''}">${ic?I(ic):''}<span class="lb">${lb}</span>${badge||''}</span>`;
+function panel(x){
+  let h=`<aside class="pn" aria-label="Pages"><div class="wm"><span style="color:var(--text)">Swarm</span><span>Cloud</span><span class="pill">dev</span></div>`;
+  h+=`<div class="wsb"><span class="tg">ET</span><span class="tt"><b>Example Team</b><small>group · ${x.role==='member'?'you are a member':'you are admin'}</small></span>${I('chevd')}</div>`;
+  h+=`<div class="sec">Automate</div>`;
+  h+=PI(x.page==='schedules','cal','Schedules',x.nsch===undefined?'<span class="sm12 dim">6</span>':x.nsch)+PI(x.page==='approvals','check','Approvals',x.napr===undefined?C('3 waiting','wn'):x.napr);
+  if(x.pnote)h+=`<p class="pnote">${x.pnote}</p>`;
+  return h+`<span class="pgrow"></span>${pfoot(x)}</aside>`;
+}
+function head(hd){
+  if(hd.none)return '';
+  return `<div class="hd"><div class="tl"><span class="cr">${hd.cr}</span><span class="h">${hd.h}</span></div>${hd.right?`<div class="acts">${hd.right}</div>`:''}${hd.age?`<span class="age">${hd.age}</span>`:''}</div>`;
+}
+const X0=o=>Object.assign({role:'owner',sec:'automate',page:'schedules',waiting:true},o);
+function desk(x,hd,body,cls){return `<div class="F app ${cls||''}">${spine(x)}${panel(x)}<main class="ct">${head(hd)}${body(false)}</main></div>`}
+function phone(hd,body){
+  return `<div class="F ph"><div class="phd">${I('menu')}<svg width="26" height="26" aria-hidden="true"><use href="#hive"/></svg><b>${hd.ph||hd.h}</b><span class="wsc">Example Team</span></div><div class="pb"><div class="ct">${head(hd)}${body(true)}</div></div></div>`;
+}
+const pane=(body)=>`<div class="F pane">${body(false)}</div>`;
+
+/* ================= A1 ================= */
+const SCHHD={cr:'Automate',h:'Schedules',right:SG(['Mine','All tenants'],0)+B('New schedule','p','plus'),age:'read 20 s ago'};
+const A1LEAD=(ph)=>LEAD('Waiting on you','3 approvals wait. The oldest expires at 14:10Z, in 5 h 10 m.',
+  ph?'Docs drift’s merge of #2388. Two others hold up a firing: Failure review skips each firing while #2392 waits; Issue sweep’s 12:00Z firing queues behind its plan.':
+  'Docs drift’s merge of #2388 is the oldest. Two others hold up a firing, pinned on their lanes below: Failure review skips each firing while #2392 waits, and Issue sweep’s 12:00Z firing queues behind its plan.',
+  B('Open the oldest','p')+B('All approvals'),'wn');
+function a1(ph){return A1LEAD(ph)+lanes(null,ph)+(ph?approvalsPhone():approvalsPanel())}
+function approvalsPhone(){
+  return CARD('Approvals waiting · 3','',`<div class="ml" style="border:0">${APW.map(a=>`<div class="mi"><span class="dot ${a.soon?'bd':'wn'}"></span><span class="tx"><b>${a.what}</b><span>${a.k.toLowerCase()} · ${a.sch} · asked ${a.asked}</span><span>${a.who} decides${a.hold?' · held for the platform owner':''}</span></span><span class="ex0">${a.soon?`<b class="st bd">${a.exp}</b>`:a.exp}</span></div>`).join('')}</div>`)+
+    CARD('Decided lately','',`<div class="ml" style="border:0">${APD.map(a=>`<div class="mi"><span class="tx"><b>${a.what}</b><span>${strip(a.st)} by ${a.by} · ${a.at}</span>${a.why!=='—'?`<span>${a.why}</span>`:''}</span></div>`).join('')}</div>`);
+}
+
+/* ================= the list beside a chosen item ================= */
+const NEXTW={sch_54e9828e6772:'next 12:00Z · skipped while #2392 waits',sch_9e1c40b7a2d3:'next Tue 02:30Z · last 2 failed',sch_3f70d2c9e815:'next 12:00Z · queues behind a plan',sch_b52e8a0f6c19:'paused by its tripwire Sat 06:41Z',sch_61d0e7f3b4a8:'paused by Operator Thu 17:20Z',sch_0a4b97c5e2f6:'first firing 17:00Z · never fired'};
+function schList(on,extraTop){
+  return `<aside class="ml" aria-label="Schedules"><div class="mg">6 schedules · in the lanes’ order</div>${extraTop||''}${SCH.map(s=>`<div class="mi${s.id===on?' on':''}"><span class="dot ${s.dot}"></span><span class="tx"><b>${s.name}</b><span>${s.type} · ${s.words}</span><span>${NEXTW[s.id]}</span></span></div>`).join('')}</aside>`;
+}
+function aprList(on,nofilt){
+  const row=(a,dot,sub,right)=>`<div class="mi${a.id===on?' on':''}"><span class="dot ${dot}"></span><span class="tx"><b>${a.what}</b><span>${sub}</span></span>${right?`<span class="ex0">${right}</span>`:''}</div>`;
+  return `<aside class="ml" aria-label="Approvals">${nofilt?'':`<div style="padding:8px 12px">${SG(['All 7','Merge 4','Plan 3','Run 0'],0)}</div>`}`+
+   `<div class="mg">Waiting · 3 · oldest first</div>`+APW.map(a=>row(a,a.soon?'bd':'wn',`${a.k.toLowerCase()} · ${a.sch}`,a.soon?`<b class="st bd">${a.exp}</b>`:a.exp)).join('')+
+   `<div class="mg">Decided · 2</div>`+APD.map(a=>row(a,a.k==='Merge'?'ok':'bd',`${strip(a.st)} by ${a.by} · ${a.at}`)).join('')+
+   `<div class="mg">Ended without a decision · 2</div>`+APE.map(a=>row(a,'nu',`${strip(a.st)} · ${a.at}`)).join('')+`</aside>`;
+}
+
+/* ================= A2 ================= */
+const FR=SCH[0];
+/* each firing's cost: Sat 24 to Mon 26 as the history table lists them, earlier days split evenly over their costed firings */
+const FCOST=(()=>{const exact={[t(24,6)]:44.35,[t(24,18)]:29.75,[t(25,0)]:17.40,[t(25,6)]:52.30,[t(25,18)]:44.90,[t(26,0)]:38.60};
+  const c=FR.past.map((h,i)=>{const o=FR.out[i];if(o==='n'||o==='o')return 0;if(exact[h]!==undefined)return exact[h];
+    const d=19+Math.floor((h+PAST)/24);const same=FR.past.filter((x,j)=>19+Math.floor((x+PAST)/24)===d&&!'no'.includes(FR.out[j]));return FR.days[d-19]/same.length});return c})();
+function tallLane(ph){
+  const max=75;  /* the scale tops out at 1.25 × the $60 tripwire */
+  let bars='';FR.past.forEach((h,i)=>{const v=FCOST[i];if(!v)return;bars+=`<span class="cb ${FR.out[i]==='f'?'f':FR.out[i]==='l'?'l':''}" style="left:${P(X(h))};height:${(v/max*100).toFixed(1)}%" title="${usd(v)}"></span>`});
+  const tw=`<span class="tw0" style="bottom:${(60/max*100).toFixed(1)}%"></span>`;
+  return `<section class="sw tl3 nar" style="--lc:150px" aria-label="Failure review over time"><div class="swh"><b>Firings, cost and spend</b><span class="dim sm12">30 firings since Mon 19 · highest $52.30 against the $60 tripwire</span><span class="r">${SG(['7 days + 24 h','24 h','30 days'],0)}</span></div>`+
+    axisRow('<span class="sm12">since Mon 19</span>')+
+    `<div class="row on"><div class="lab"><span>firings</span><span>cost per firing; dashed: the $60 tripwire</span><span>spend per day, of $200</span></div><div class="trk tall">${grid()}${marks(FR)}${FR.extra()}<span class="cbz">${bars}${tw}</span>${spendBand(FR)}</div></div>`+legend()+`</section>`;
+}
+const HIST=[
+  ['Mon 26 06:00Z',`<span class="st wn">${I('warn')}skipped: overlap</span>`,`<span class="dim">— nothing ran</span><small>the 00:00Z firing’s run still waits on merge #2392</small>`,'—','$0.00'],
+  ['Mon 26 00:00Z',`<span class="st in">${I('info')}waiting on an approval</span>`,`<a class="mn">run_682b9c60673341fdaa8e</a><small>issue #2364</small>`,`<a>#2392</a><small>green at dbd00f06c5cd</small>`,`$38.60<small>or more · 1 attempt unreported</small>`],
+  ['Sun 25 18:00Z',`<span class="st ok">${I('check')}succeeded</span>`,`<a class="mn">run_9a04e1c7b25d4f8e6c31</a><small>issue #2351</small>`,`<a>#2386</a><small>merged</small>`,'$44.90'],
+  ['Sun 25 12:00Z',`<span class="st nu">${I('info')}nothing started</span>`,`<span class="dim">— nothing ran</span><small>no new failure since the last review</small>`,'—','$0.00'],
+  ['Sun 25 06:00Z',`<span class="st ok">${I('check')}succeeded</span>`,`<a class="mn">run_47c2d80e9f1a43b6d5e7</a><small>issue #2349</small>`,`<a>#2384</a><small>merged</small>`,'$52.30'],
+  ['Sun 25 00:00Z',`<span class="st bd">${I('x')}failed</span>`,`<a class="mn">run_e1b6f3a92c0d4875a4b9</a><small>issue #2347</small>`,`<span class="dim">— no pull request</span><small>the fix run failed its review</small>`,'$17.40'],
+  ['Sat 24 18:00Z',`<span class="st ok">${I('check')}succeeded</span>`,`<a class="mn">run_2d8f5c61a7e04b39c8f0</a><small>issue #2344</small>`,`<a>#2379</a><small>merged</small>`,'$29.75'],
+  ['Sat 24 12:00Z',`<span class="st nu">${I('info')}nothing started</span>`,`<span class="dim">— nothing ran</span><small>no new failure since the last review</small>`,'—','$0.00']
+];
+const WEEK=FR.days.slice(0,7).reduce((a,b)=>a+b,0);
+function a2Detail(ph){
+  const acts=B('Run now','','play')+B('Pause','','pause')+B('Edit','','gear')+B('More','','chevd');
+  const hdr=`<div class="dh"><div class="tl"><span class="h">Failure review</span><span class="chips">${STW.wait}${C('failure-review','ln')}${C('bogdan-alexandrescu/SwarmCloud','ln','repo')}</span></div><div class="acts">${acts}</div></div>`+
+   `<p class="say">Every 6 hours, root-cause every agent, workflow and issue run that failed in the last 7, file one issue per cause and start its fix run; hold IAM, contract, secrets, tenancy, shared and cost fixes for the owner.</p>`;
+  const lead=LEAD('Waiting on the platform owner','Merge of #2392 waits since 02:40Z. It expires Thu 29 02:40Z.','While it waits, each firing is skipped (overlap: skip). 06:00Z was skipped; 12:00Z, 18:00Z, Tue 00:00Z and 06:00Z will be.',B('Open the approval','p'),'wn');
+  const hn=ph?4:8;const hist=CARD('Firing history',`<a class="sm12">Audit ›</a>`,T(['Firing','Outcome','Run','Pull request','#Cost'],HIST.slice(0,hn))+`<p class="sm12 dim" style="margin:8px 0 0">${hn} of the 30 firings since Mon 19 00:00Z. <a>Older firings</a></p>`);
+  const spend=CARD('Spend','',`<dl class="kv"><dt>Today</dt><dd><b>$38.60 or more</b> of $200 per day <small class="sm12 dim">· 1 attempt unreported, so the figure is a floor</small></dd><dt>Free today</dt><dd>$161.40 or less</dd><dt>Since Mon 19</dt><dd>${usd(WEEK)} over 7 days, and $38.60 or more today</dd><dt>Per-run tripwire</dt><dd>$60: a firing over it fails and pauses the schedule. The highest in 7 days was $52.30, on Sun 25 at 06:00Z.</dd><dt>At once</dt><dd>1 firing</dd></dl><div class="mtr" style="margin-top:8px"><span class="bar"><i style="width:19.3%"></i></span><span class="sm12 dim">19% of the day</span></div>`);
+  const gates=CARD('Gates and approvers',`<a class="sm12">Edit</a>`,`<dl class="kv"><dt>Run</dt><dd>auto <small class="sm12 dim">· the type’s default</small></dd><dt>Plan</dt><dd>auto</dd><dt>Merge</dt><dd>approve <small class="sm12 dim">· the default; auto is allowed for this type, by the audited switch</small></dd><dt>Approvers</dt><dd>any member of this tenant</dd><dt>Held merges</dt><dd>go to the platform owner alone, whatever this says: a workflow, IAM, contract, secrets, tenancy, shared or cost change</dd><dt>An approval lasts</dt><dd>72 h</dd></dl>`);
+  const sets=CARD('Settings',`<a class="sm12">Edit</a>`,`<dl class="kv"><dt>Cadence</dt><dd><span class="mn">0 */6 * * *</span> UTC · every 6 hours</dd><dt>Next firings</dt><dd>12:00Z, 18:00Z, Tue 00:00Z, 06:00Z <small class="sm12 dim">· each skipped while #2392 waits</small></dd><dt>Overlap</dt><dd>skip <small class="sm12 dim">· catch-up: skip · no jitter</small></dd><dt>Target</dt><dd>bogdan-alexandrescu/SwarmCloud</dd><dt>Owner</dt><dd>Operator · revision 4</dd><dt>Id</dt><dd><span class="mn">sch_54e9828e6772</span></dd></dl>`);
+  return `<div class="dtl">${hdr}${lead}${tallLane(ph)}${ph?hist+spend+gates+sets:`${hist}<div class="g3">${spend}${gates}${sets}</div>`}</div>`;
+}
+function a2(ph){return `<div class="md">${schList('sch_54e9828e6772')}${a2Detail(ph)}</div>`}
+
+/* ================= A3 ================= */
+const TYPES=[['issue-sweep','Start an issue run for each ready open issue: plan, execute, review, and merge behind the merge gate.',1],['failure-review','Every 6 hours, root-cause what failed, file one issue per cause and start its fix run.',0],['visual-qa','Run a QA target’s visual QA and file its findings as issues.',0],['docs-drift','Check docs’ citations and defaults against the code.',0],['dependency-cve-refresh','Bump vulnerable pins from the latest image scan.',0],['custom-prompt','Run a saved, signed workflow spec.',0]];
+function previewLane(newSch,bad,others){
+  others=others||[SCH[0],SCH[2],SCH[1]];
+  const row=(s,isNew)=>`<div class="row${isNew?' on':''}"><div class="lab"><span class="nm"><b>${s.name}</b>${isNew?C('this schedule','in'):''}</span><span class="ls">${s.words}</span>${s.why||''}</div><div class="trk">${grid()}${s.past.map((x,i)=>`<span class="fd ${s.out[i]}" style="left:${P(X(x))}"></span>`).join('')}${s.next.map(n=>`<span class="fx ${n.c}" style="left:${P(X(n.h))}"></span>`).join('')}${s.note||''}</div></div>`;
+  return `<section class="sw nar" style="--lc:190px" aria-label="Preview"><div class="swh"><b>Preview: the next 24 hours, beside the schedules already set</b><span class="r">${bad?C('saving would be refused','bd','x'):C('the next firings in 24 h','in')}</span></div>${axisRow('<span class="sm12">from POST /v1/schedules:preview</span>')}${row(newSch,true)}${others.map(s=>row(s,false)).join('')}</section>`;
+}
+function a3(ph){
+  const bad=true;
+  const newS={name:'Issue sweep · docs label',words:'every 10 minutes (asked)',past:[],out:'',next:every(t(26,9,10),1/6,23.9).map(h=>({h,c:'blk'})),
+    why:`<span class="err">${I('x')}144 firings a day: under the 15-minute floor</span>`};
+  const top=LEAD('2 things to fix before it can be saved','The cadence is under the type’s floor, and the per-run budget is over the type’s cap.','Each is marked at its field. Save stays off until both are fixed.',B('Save schedule','p','')+B('Cancel','q'),'bd').replace('class="b p"','class="b p" aria-disabled="true"');
+  const s1=`<div class="fsec"><h4><span class="n0">1</span>Type and template</h4><div class="tiles">${TYPES.map(x=>`<div class="opt ${x[2]?'on':''}"><span class="rd"></span><span><b>${x[0]}</b><small>${x[1]}</small></span></div>`).join('')}</div><span class="hint">6 of the 17 types this deployment serves. <a>Show all 17</a></span></div>`;
+  const s2=`<div class="fsec"><h4><span class="n0">2</span>Name and target</h4><div class="frow" style="grid-template-columns:1fr 1.5fr .8fr">${F('Name','Issue sweep · docs label','v')}${F('Repository',I('repo')+'bogdan-alexandrescu/SwarmCloud','v')}${F('Issues with the label','docs','v')}</div></div>`;
+  const s3=`<div class="fsec"><h4><span class="n0">3</span>Cadence</h4><div class="frow">${F('Cron','*/10 * * * *','v bad',`<span class="err">${I('x')}Fires every 10 minutes. issue-sweep runs at most every 15 minutes (interval_too_short).</span>`)}${F('Time zone','UTC','v')}${F('In words','every 10 minutes','')}</div>${previewLane(newS,bad)}</div>`;
+  const s4=`<div class="fsec"><h4><span class="n0">4</span>Gates and approvers</h4><div class="frow"><label class="fld"><span>Run</span>${SG(['auto','approve'],0)}</label><label class="fld"><span>Plan</span>${SG(['auto','approve'],1)}</label><label class="fld"><span>Merge</span>${SG(['approve','off'],0)}<span class="hint">auto is a separate, audited switch on the schedule’s page</span></label></div><div class="frow">${F('Approvers','any member of this tenant','v')}${F('An approval lasts','72 hours','v')}<span></span></div></div>`;
+  const s5=`<div class="fsec"><h4><span class="n0">5</span>Budget and tripwire</h4><div class="frow">${F('Per-run tripwire','$20.00','v bad',`<span class="err">${I('x')}issue-sweep’s cap is $15 per run (budget_above_cap).</span>`)}${F('Per day','$120.00','v','<span class="hint">the type’s cap: $120</span>')}${F('At once','8 firings','v','<span class="hint">the type’s cap: 8</span>')}</div><span class="hint">A firing over the per-run tripwire fails and pauses the schedule. The per-day figure is a gate: a firing that would pass it is skipped.</span></div>`;
+  const s6=`<div class="fsec"><h4><span class="n0">6</span>Start</h4><div class="frow"><div class="opt"><span class="rd"></span><span><b>Enabled</b><small>fires at its next slot</small></span></div><div class="opt on"><span class="rd"></span><span><b>Dry run first</b><small>fires, records what it would do, starts nothing</small></span></div><div class="opt"><span class="rd"></span><span><b>Paused</b><small>saved, never fires until resumed</small></span></div></div></div>`;
+  const pnl=`<div class="dtl"><div class="dh"><div class="tl"><span class="h">New schedule</span><span class="chips">${C('not saved','ln')}</span></div></div>${top}<div class="cd" style="display:flex;flex-direction:column;gap:18px">${s1}${s2}${s3}${s4}${s5}${s6}</div></div>`;
+  return `<div class="md">${schList('', `<div class="mi on"><span class="dot in"></span><span class="tx"><b>New schedule</b><span>not saved</span></span></div>`)}${pnl}</div>`;
+}
+function a3edit(ph){
+  const vq=SCH[1];
+  const ed={name:'Nightly visual QA',words:'02:30Z and 14:30Z (new)',past:vq.past,out:vq.out,next:[{h:t(26,14,30),c:''},{h:t(27,2,30),c:''}],
+    note:`<span class="nt ok" style="left:calc(${P(X(t(26,14,30)))} + 10px)">first new firing 14:30Z</span>`};
+  return `<div class="dtl"><div class="dh"><div class="tl"><span class="h">Edit Nightly visual QA</span><span class="chips">${C('revision 7','ln')}${C('1 change','in')}</span></div><div class="acts">${B('Save schedule','p')}${B('Cancel','q')}</div></div>`+
+   LEAD('Ready to save','Cadence: daily at 02:30Z → twice a day, at 02:30Z and 14:30Z.','The next 5 firings: 14:30Z, Tue 02:30Z, Tue 14:30Z, Wed 02:30Z, Wed 14:30Z. Twice a day still fits the $60 per day at $30 a run.','', 'ok')+
+   `<div class="frow">${F('Cron','30 2,14 * * *','v')}${F('Time zone','UTC','v')}${F('In words','at 02:30Z and 14:30Z','')}</div>`+previewLane(ed,false,[SCH[0],SCH[2]])+
+   `<div class="bn in">${I('info')}<span><b>Saving makes it revision 8.</b>A firing already running keeps revision 7. The audit records who changed the cadence and when.</span></div></div>`;
+}
+
+/* ================= A4 ================= */
+const XA=h=>(h-t(23,0))/(t(29,12)-t(23,0))*100;
+function expiryBars(){
+  const rows=[[APW[0],t(23,14,10),t(26,14,10),'expires today 14:10Z · in 5 h 10 m'],[APW[1],t(26,2,40),t(29,2,40),'expires Thu 29 02:40Z · in 2 d 17 h'],[APW[2],t(26,8,4),t(29,8,4),'expires Thu 29 08:04Z · in 2 d 23 h']];
+  let ax=`<div class="row axr"><div class="lab"><span class="sm12">waiting · oldest first</span></div><div class="trk">`;
+  for(let d=23;d<=29;d++)ax+=`<span class="dl" style="left:${P(XA(t(d,0)))}"></span><span class="ax" style="left:${P(XA(t(d,12)))}"><span class="s1">${({23:'Fri',24:'Sat',25:'Sun',26:'Mon',27:'Tue',28:'Wed',29:'Thu'})[d]} ${d}</span><span class="s0">${d}</span></span>`;
+  ax+=`<span class="nowl" style="left:${P(XA(0))}"></span></div></div>`;
+  return `<section class="sw" aria-label="Waiting approvals against their expiry"><div class="swh"><b>Time left to decide</b><span class="dim sm12">each bar runs from the request to the expiry; the filled part has passed</span></div>${ax}`+
+   rows.map(r=>`<div class="row"><div class="lab"><span class="nm"><b>${r[0].what}</b></span><span class="ls">${r[0].k.toLowerCase()} · ${r[0].sch}</span></div><div class="trk"><span class="nowl" style="left:${P(XA(0))}"></span><span class="xb ${r[0].soon?'soon':''}" style="left:${P(XA(r[1]))};width:${P(XA(r[2])-XA(r[1]))}"><i style="width:${P((0-r[1])/(r[2]-r[1])*100)}"></i></span><span class="nt ${r[0].soon?'bd':''} ${XA(r[2])>70?'l':''}" style="left:${XA(r[2])>70?`calc(${P(XA(r[2]))} - 2px)`:`calc(${P(XA(r[2]))} + 6px)`};top:20px;transform:${XA(r[2])>70?'translateX(-100%) translateY(-110%)':'none'}">${r[3]}</span></div></div>`).join('')+`</section>`;
+}
+function a4(ph){
+  const lead=LEAD('Waiting on you','3 wait. The oldest, Docs drift’s merge of #2388, expires at 14:10Z, in 5 h 10 m.','Waiting items hold no capacity. Failure review’s merge goes to the platform owner alone; the other two, to any member.',B('Open the oldest','p'),'wn');
+  const det=`<div class="dtl"><div class="dh"><div class="tl"><span class="h">Merge pull request #2388</span><span class="chips">${C('merge','in')}${C('waiting','wn')}${C('Docs drift','ln')}</span></div><div class="acts">${B('Approve and merge','p','check')}${B('Deny','d','x')}</div></div>`+
+   LEAD('Expires at 14:10Z, in 5 h 10 m','Any member may decide. Nobody has yet.','Docs drift is paused by its tripwire, so no firing waits on this: approving merges the pull request and nothing more.',`<a class="sm12">Open in full ›</a>`,'bd')+
+   CARD('Evidence','',`<div class="ev"><div class="stp ok">${I('check')}<span class="tx"><b>Required checks green at the head</b><small>6 passed, 0 failed, 0 pending · green at 41c9e07ab2d3</small></span></div><div class="stp ok">${I('check')}<span class="tx"><b>Review verdict MERGE</b><small>at head 41c9e07ab2d3</small></span></div><div class="stp ok">${I('check')}<span class="tx"><b>No protected path changed</b><small>checked at 41c9e07ab2d3 · docs/ only</small></span></div></div>`)+
+   CARD('Asked by','',`<dl class="kv"><dt>Schedule</dt><dd><a>Docs drift</a> · firing Fri 23 06:00Z</dd><dt>Pull request</dt><dd><a>#2388</a> “docs: schedules.md cites the 72 h default”</dd><dt>Requested</dt><dd>Fri 23 Oct 14:10Z</dd><dt>Expires</dt><dd>Mon 26 Oct 14:10Z</dd></dl>`)+`</div>`;
+  const filt=`<div class="fgrp"><span class="sm12 dim">Kind</span>${SG(['All 7','Merge 4','Plan 3','Run 0','Held plan 0','Proposal 0','Spec 0','Answer 0'],0)}</div>`;
+  return lead+expiryBars()+filt+`<div class="md">${aprList(APW[0].id,true)}${det}</div>`;
+}
+
+/* ================= A5 ================= */
+const XT=h=>(h-t(26,0))/(t(29,8)-t(26,0))*100;  /* Mon 26 00:00Z .. Thu 29 08:00Z */
+function a5Timeline(state,ph){
+  const req=t(26,2,40),exp=t(29,2,40);
+  const nowH=state==='expired'?t(29,4):0;
+  let h=`<span class="nowl" style="left:${P(XT(nowH))}"></span>`;
+  for(let d=27;d<=29;d++)h+=`<span class="dl" style="left:${P(XT(t(d,0)))}"></span>`;
+  const end={pending:exp,member:exp,approved:t(26,8,52),denied:t(26,8,55),expired:exp,superseded:t(26,5,58)}[state];
+  h+=`<span class="fd ${state==='approved'?'s':state==='denied'||state==='expired'?'n':'l'}" style="left:${P(XT(t(26,0)))}" title="the firing"></span>`;
+  h+=`<span class="wb ${state==='pending'||state==='member'?'more':''}" style="left:${P(XT(req))};width:${P(XT(end)-XT(req))}"></span><span class="pin" style="left:${P(XT(req))}"></span>`;
+  h+=`<span class="fd o" style="left:${P(XT(t(26,6)))}" title="skipped: overlap"></span>`;
+  for(let k=t(26,12);k<=t(29,6)+1e-9;k+=6){
+    let c='';if(state==='pending'||state==='member')c=k<exp?'blk':'';if(state==='superseded')c=k<t(29,5,58)?'blk':'';if(state==='expired')c=k<exp?'blk':'';
+    h+=state==='expired'&&k<exp?`<span class="fd o" style="left:${P(XT(k))}"></span>`:`<span class="fx ${c}" style="left:${P(XT(k))}"></span>`;
+  }
+  const exl=XT(exp);
+  const open=state==='pending'||state==='member'||state==='expired';
+  if(open)h+=`<span class="pin ex ${state==='expired'?'':'in'}" style="left:${P(exl)}"></span>`;
+  h+=`<span class="nt wn" style="left:calc(${P(XT(req))} + 4px)">asked 02:40Z</span>`;
+  const mid={pending:['11 more firings skipped while it waits','wn'],member:['11 more firings skipped while it waits','wn'],approved:['firings run as usual from 12:00Z','ok'],denied:['firings run as usual from 12:00Z','ok'],expired:['12 firings were skipped while it waited','wn'],superseded:['the new request holds these firings now','wn']}[state];
+  h+=`<span class="nt c ${mid[1]}" style="left:45%">${mid[0]}</span>`;
+  if(open)h+=`<span class="nt l ${state==='expired'?'bd':''}" style="left:calc(${P(exl)} - 4px)">${state==='expired'?'expired':'expires'} Thu 29 02:40Z</span>`;
+  const dec={approved:['approved 08:52Z by Operator','ok','pin ok'],denied:['denied 08:55Z by Operator','bd','pin bd'],superseded:['head moved 05:58Z','','pin in']}[state];
+  if(dec)h+=`<span class="${dec[2]}" style="left:${P(XT(end))}"></span><span class="nt r2 ${dec[1]}" style="left:calc(${P(XT(end))} + 4px)">${dec[0]}</span>`;
+  let ax=`<span class="ax" style="left:${P(XT(t(26,0)))};transform:none"><span class="s1">Mon 26</span><span class="s0">26</span></span>${state==='expired'?`<span class="ax nw" style="left:${P(XT(nowH))}">now, Thu 04:00Z</span>`:`<span class="ax nw" style="left:${P(XT(nowH))}">now</span>`}`;
+  (state==='expired'?[27,28]:[27,28,29]).forEach(d=>{ax+=`<span class="ax" style="left:${P(XT(t(d,0)))};transform:none"><span class="s1">${({27:'Tue',28:'Wed',29:'Thu'})[d]} ${d}</span><span class="s0">${d}</span></span>`});
+  const words={pending:'The 00:00Z firing’s run opened #2392, green at dbd00f06c5cd, and asked at 02:40Z. 06:00Z was skipped (overlap). 11 more firings, 12:00Z to Thu 00:00Z, are skipped while it waits; it expires Thu 29 02:40Z.',
+    member:'The 00:00Z firing’s run opened #2392 and asked at 02:40Z. While it waits, each firing is skipped; it expires Thu 29 02:40Z.',
+    approved:'Approved at 08:52Z. The 06:00Z firing was skipped while it waited; 12:00Z fires as usual.',
+    denied:'Denied at 08:55Z. 06:00Z was skipped while it waited; 12:00Z fires as usual.',
+    expired:'Nobody decided by Thu 29 02:40Z. 12 firings, Mon 06:00Z to Thu 00:00Z, were skipped while it waited; Thu 06:00Z fires.',
+    superseded:'The head moved at 05:58Z, before anyone decided. The new request, for 7a41c0b9e2f3, now holds the firings: 06:00Z was skipped, and each firing is skipped until it is decided.'}[state];
+  return `<section class="sw" aria-label="Where this approval sits"><div class="swh"><b>Where it sits: Failure review, Mon 26 to Thu 29</b><span class="r">${C('sch_54e9828e6772','ln')}</span></div>`+
+   `<div class="row" style="grid-template-columns:minmax(0,1fr)"><div class="trk a5" style="min-height:${ph?64:72}px">${h}</div></div><div class="row axr" style="grid-template-columns:minmax(0,1fr)"><div class="trk" style="min-height:26px">${ax}</div></div>`+
+   `<div class="lg2"><span>${words}</span></div></section>`;
+}
+const EVID=`<div class="ev"><div class="stp ok">${I('check')}<span class="tx"><b>Required checks green at the head</b><small>10 passed, 0 failed, 0 pending · green at dbd00f06c5cd</small></span></div><div class="stp ok">${I('check')}<span class="tx"><b>Review verdict MERGE</b><small>at head dbd00f06c5cd</small></span></div><div class="stp wn">${I('warn')}<span class="tx"><b>A hard stop matched: held for the platform owner</b><small>workflows · <span class="mn">.github/workflows/unit-weights-refresh.yml</span></small><small>shared · <span class="mn">scripts/lib/common.sh</span></small></span></div></div>`;
+const SUBJ=`<dl class="kv"><dt>Schedule</dt><dd><a>Failure review</a> · <span class="mn">sch_54e9828e6772</span></dd><dt>Firing</dt><dd>Mon 26 00:00Z · <span class="mn mono-wrap">sch_54e9828e6772:29882880</span></dd><dt>Run</dt><dd><a class="mn">run_682b9c60673341fdaa8e</a></dd><dt>Issue</dt><dd><a>#2364</a></dd><dt>Pull request</dt><dd><a>#2392</a> at dbd00f06c5cd</dd><dt>Requested</dt><dd>2026-10-26 02:40Z</dd><dt>Expires</dt><dd>2026-10-29 02:40Z · 72 h</dd><dt>Digest</dt><dd>MERGE at dbd00f06c5cd <small class="sm12 dim">· what Approve sends back</small></dd><dt>Id</dt><dd><span class="mn mono-wrap">apr_31f74dc3dc84349da9b83697</span></dd></dl>`;
+const SUMMARY='bogdan-alexandrescu/SwarmCloud#2364: pull request #2392 is green at dbd00f06c5cd and waits to merge';
+function a5Detail(state,ph){
+  const chip={pending:C('waiting','wn'),member:C('waiting','wn'),approved:C('approved','ok','check'),denied:C('denied','bd','x'),expired:C('expired','ln'),superseded:C('superseded','ln')}[state];
+  const can=state==='pending';
+  const acts=can?B('Approve and merge','p','check')+B('Deny','d','x'):state==='superseded'?B('Open the new request','p'):state==='member'?'':B('Copy link','');
+  const hdr=`<div class="dh"><div class="tl"><span class="h">Merge pull request #2392</span><span class="chips">${C('merge','in')}${chip}${C('held for the platform owner','pa','lock')}</span></div><div class="acts">${acts}</div></div><p class="say">${SUMMARY}</p>`;
+  const lead={
+    pending:LEAD('Waiting on you, the platform owner','Expires Thu 29 Oct 02:40Z, in 2 d 17 h 40 m.','Held because a workflow file and a shared script changed, so only the platform owner may decide.','','wn'),
+    member:LEAD('Waiting on the platform owner','Only the platform owner can decide this. You can read it, but not approve or deny it.','Approvers: owner only, because the pull request changes a workflow file and a shared script. The platform owner is Operator. It expires Thu 29 Oct 02:40Z.',B('Copy link to send'),'nu'),
+    approved:LEAD('Approved','Approved by Operator, the platform owner, Mon 26 Oct 08:52Z.','Merged at dbd00f06c5cd at 08:53Z, read from the run. The firing closed succeeded.','','ok'),
+    denied:LEAD('Denied','Denied by Operator, the platform owner, Mon 26 Oct 08:55Z.',`<span class="quote">“unit-weights-refresh.yml now runs every 10 minutes. Split the workflow change from the common.sh fix and ask again.”</span>`,'','bd'),
+    expired:LEAD('Expired','Nobody decided it in time. It expired Thu 29 Oct 02:40Z, 72 h after it was asked.','Pull request #2392 stays open, unmerged. A new firing that finds the same cause asks again.','','nu'),
+    superseded:LEAD('Superseded','The head moved after the request: dbd00f06c5cd → 7a41c0b9e2f3, Mon 26 05:58Z.','A green head is what an approval answers for, so this request ended undecided. The new request apr_8e2b5d0c41f9a7631be0d4c2 asks for 7a41c0b9e2f3.','','nu')
+  }[state];
+  const cards={
+    pending:`<div class="g3"><div class="oc ok"><b>If you approve</b><ul><li>The run merges #2392 at dbd00f06c5cd.</li><li>The firing closes, and the 12:00Z firing fires as usual.</li></ul></div><div class="oc bd"><b>If you deny</b><ul><li>#2392 stays open, unmerged; the run ends without merging.</li><li>The firing closes, and 12:00Z fires as usual. A reason is required.</li></ul></div><div class="oc"><b>If nobody decides by Thu 29 02:40Z</b><ul><li>It expires, as a deny would end it.</li><li>Until then, each firing is skipped: 11 more, 12:00Z to Thu 00:00Z.</li></ul></div></div>`,
+    member:`<div class="g3"><div class="oc"><b>If the owner approves</b><ul><li>#2392 merges at dbd00f06c5cd; 12:00Z fires as usual.</li></ul></div><div class="oc"><b>If the owner denies</b><ul><li>#2392 stays open; 12:00Z fires as usual.</li></ul></div><div class="oc"><b>If nobody decides by Thu 29 02:40Z</b><ul><li>It expires. Until then, each firing is skipped.</li></ul></div></div>`,
+    approved:'',denied:'',expired:'',superseded:''
+  }[state];
+  const who=CARD('Who decides','',`<dl class="kv"><dt>Approvers</dt><dd>owner only: the platform owner alone</dd><dt>Why</dt><dd>held for the platform owner: a workflow file (<span class="mn">.github/workflows/unit-weights-refresh.yml</span>) and a shared script (<span class="mn">scripts/lib/common.sh</span>) changed</dd><dt>Platform owner</dt><dd>Operator</dd>${state==='member'?'<dt>You</dt><dd>Sam Rivera, member: you can read this approval</dd>':''}</dl>`);
+  const ev=CARD('Evidence','',EVID), sub=CARD('Asked by','',SUBJ);
+  if(ph)return `<div class="dtl">${hdr}${lead}${a5Timeline(state,true)}${cards}${ev}${who}${sub}</div>`;
+  return `<div class="dtl">${hdr}${lead}${a5Timeline(state,false)}${cards}<div class="g2">${ev}<div class="col">${who}</div></div>${sub}</div>`;
+}
+function a5(ph){return `<div class="md">${aprList(APW[1].id)}${a5Detail('pending',ph)}</div>`}
+/* the other states: the right pane */
+const a5pane=(state)=>()=>`<div class="F pane" style="padding:16px">${a5Detail(state,false)}</div>`;
+
+/* ================= A6 ================= */
+function emptyLanes(){
+  return `<section class="sw" aria-label="Schedules on one time axis"><div class="swh"><b>Schedules · 0</b><span class="dim sm12">the list was read and is empty</span></div>${axisRow()}<div class="row"><div class="lab"><span class="ls">No lane yet</span></div><div class="trk">${grid()}</div></div></section>`;
+}
+function a6none(){
+  return LEAD('Start here','No schedules yet. Recurring work starts with one.','A schedule fires on a cadence and makes ordinary work: an issue run, an agent or a workflow. Each firing appears on the lanes below.',B('New schedule','p','plus'),'')+emptyLanes()+
+   CARD('Start from a type','',`<div class="tiles">${TYPES.map(x=>`<div class="opt"><span class="rd"></span><span><b>${x[0]}</b><small>${x[1]}</small></span></div>`).join('')}</div>`)+
+   `<div class="cd dash"><p style="margin:0">Nothing waits on you: no approval has been asked for in this tenant.</p></div>`;
+}
+function a6off(){
+  return `<div class="cd" style="padding:0"><div class="empty"><b>Automate is not served by this deployment</b><span>GET /v1/schedules answered 404 at 09:00Z: this API was deployed without schedules. Nothing here is broken, and nothing can be scheduled. Work can still be submitted by hand from Work.</span><span>Whether this deployment should serve schedules is a platform admin’s question; docs/schedules.md describes the feature.</span><span class="acts">${B('Submit work','p','plus')}${B('Read about schedules')}</span></div></div>`;
+}
+function a6fail(){
+  const rows=SCH.map(s=>`<div class="row"><div class="lab"><span class="nm"><span class="dot ${s.dot}"></span><b>${s.name}</b>${STW[s.st]}</span><span class="ls">${s.type} · ${s.words}</span><span class="ls">— spend not read</span></div><div class="trk">${grid()}<span class="hatch" style="position:absolute;left:0;width:${SPLIT}%;top:20px;height:22px;border-radius:4px"></span><span class="nt" style="left:8px;top:22px">— firings not read: the firings read answered 503 at 09:00Z</span>${s.next.map(n=>`<span class="fx" style="left:${P(X(n.h))}"></span>`).join('')}${s.st==='trip'||s.st==='pause'?`<span class="pz" style="left:${SPLIT}%;right:0"></span>`:''}</div></div>`).join('');
+  return `<div class="bn wn">${I('warn')}<span><b>The firing history could not be read.</b>GET /v1/schedules answered, so the lanes and the next firings are drawn. The firings and the spend answered 503 at 09:00Z. They are drawn as a dash, never as 0. Reading again in 30 s. ${B('Read again','s')}</span></div>`+
+   `<section class="sw"><div class="swh"><b>Schedules · 6</b><span class="dim sm12">the list answered; the firings did not</span></div>${axisRow()}${rows}</section>`+
+   CARD('Approvals waiting','',`<p>${DASH('not read: GET /v1/approvals answered 503 at 09:00Z')}</p><p class="sm12">The badge on Approvals shows a dash for the same reason, never 0.</p>`);
+}
+function a6quiet(){
+  return LEAD('Nothing waits on you','No approval is waiting. The last was decided Sun 25 at 16:02Z.','Each schedule runs on its gates. A firing that needs a person is pinned on its lane here when it asks.','', 'ok')+
+   `<section class="sw"><div class="swh"><b>Schedules · 2</b><span class="dim sm12">2 active</span></div>${axisRow()}`+
+   [SCH[2],SCH[1]].map(s0=>{const s=Object.assign({},s0,{st:'act',dot:'ok',extra:()=>''});if(s.type==='visual-qa'){s.out='ssssssss';s.today='$21.10 of $60 today';s.days=[21.40,19.80,23.10,20.60,21.70,22.00,21.90,21.10]}else{s.out=s.out.replace('w','s');s.next=s.next.map(n=>({h:n.h,c:''}))}return `<div class="row">${laneLabel(Object.assign({},s,{lw:''}))}<div class="trk">${grid()}${marks(s)}${spendBand(s)}</div></div>`}).join('')+`</section>`+
+   CARD('Approvals',`<a class="sm12">Approvals › decided</a>`,`<p style="margin:0">Nothing waiting, and nothing has expired this week.</p>`);
+}
+
+/* ================= A7: phone ================= */
+function a7a2(ph){return `<a class="sm12">‹ Schedules</a>`+a2Detail(true)}
+function a7a5(ph){return `<a class="sm12">‹ Approvals</a>`+a5Detail('pending',true)}
+
+/* ---------- the frames ---------- */
+const APRHD={cr:'Automate',h:'Approvals',age:'read 20 s ago'};
+const FRAMES={
+  'a1-d':()=>desk(X0({}),SCHHD,a1),
+  'a2-d':()=>desk(X0({}),SCHHD,a2),
+  'a3-d':()=>desk(X0({}),SCHHD,a3),
+  'a3-edit':()=>pane(a3edit),
+  'a4-d':()=>desk(X0({page:'approvals'}),APRHD,a4),
+  'a5-d':()=>desk(X0({page:'approvals'}),APRHD,a5),
+  'a5-approved':a5pane('approved'),'a5-denied':a5pane('denied'),'a5-expired':a5pane('expired'),'a5-superseded':a5pane('superseded'),'a5-member':a5pane('member'),
+  'a6-none':()=>desk(X0({waiting:false,nsch:'<span class="sm12 dim">0</span>',napr:'<span class="sm12 dim">0</span>'}),{cr:'Automate',h:'Schedules',age:'read 20 s ago'},a6none,'short'),
+  'a6-off':()=>desk(X0({waiting:false,nsch:'',napr:'',pnote:'Schedules and Approvals are listed so the section still explains itself; this deployment does not serve them.'}),{cr:'Automate',h:'Schedules',age:'not served'},a6off,'short'),
+  'a6-fail':()=>desk(X0({waiting:false,napr:C('— not read','ln')}),{cr:'Automate',h:'Schedules',right:B('New schedule','p','plus'),age:'partly read 09:00Z'},a6fail,'short'),
+  'a6-quiet':()=>desk(X0({waiting:false,nsch:'<span class="sm12 dim">2</span>',napr:'<span class="sm12 dim">0</span>'}),{cr:'Automate',h:'Schedules',right:B('New schedule','p','plus'),age:'read 20 s ago'},a6quiet,'short'),
+  'a7-a1':()=>phone({cr:'Automate',h:'Schedules',right:B('New schedule','p s','plus'),age:'read 20 s ago'},a1),
+  'a7-a2':()=>phone({none:true,h:'Schedules'},a7a2),
+  'a7-a5':()=>phone({none:true,h:'Approvals'},a7a5)
+};
+let drawn=0;
+document.querySelectorAll('[data-f]').forEach(el=>{const f=FRAMES[el.dataset.f];if(!f){el.textContent='Missing frame: '+el.dataset.f;return}el.innerHTML=f();drawn++});
+document.documentElement.dataset.frames=String(drawn);
+
+/* ---------- the theme toggle: the page's and every frame's panel foot ---------- */
+const root=document.documentElement;
+function apply(m){
+  if(m==='system')delete root.dataset.theme;else root.dataset.theme=m;
+  document.querySelectorAll('[data-theme-set]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.themeSet===m)));
+  try{localStorage.setItem('automate-c-theme',m)}catch(e){}
+}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-theme-set]');if(b)apply(b.dataset.themeSet)});
+let saved='system';try{saved=localStorage.getItem('automate-c-theme')||'system'}catch(e){}
+apply(saved);
+})();
+
+</script>
+</body>
+</html>
