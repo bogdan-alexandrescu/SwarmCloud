@@ -18,7 +18,7 @@ import { agentName } from './agentlist'
 import { errorHeading, read, route, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS, capacityPoll, paneHref, useLinkedParam, usePhoneTables } from './capacityPoll'
-import { HelpCard, HelpLinks } from './HelpCard'
+import { HelpCard } from './HelpCard'
 import { Mark } from './primitives'
 import { Button, CIcon, Chip, Dialog, ToneMark, WarnMark } from './components'
 import './styles/capacity.css'
@@ -227,6 +227,10 @@ export function AccountsScreen() {
     <Screen
       key={nonce}
       title="Accounts"
+      // THE PAGE'S ONE `?` OPENS THE SCREEN'S TOPICS (VQ-033, BGD 2026-10-26:
+      // "Move the topics behind the page's one ?"). They were the `Reading
+      // this screen:` footer under the pool; see ACCOUNT_TOPICS.
+      help={ACCOUNT_TOPICS}
       load={load}
       // #117 (owner ruling 2026-10-07): every 30 s, 60 s on a phone, paused while the tab is hidden
       // (`Screen`). A poll re-reads in place; it does not bump `nonce`, so it
@@ -448,7 +452,6 @@ function Body({
         waiting={waiting}
         addForm={<AddAccount board={board} accounts={accounts} ui={ui} patch={patch} reload={reload} />}
       />
-      {lead && <HelpLinks topics={ACCOUNT_TOPICS} />}
     </>
   )
 }
@@ -4736,7 +4739,8 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
  * NONE OF IT WAS ANNOTATING ANYTHING ON SCREEN. It was a help article that
  * happened to be rendered below a pool, which is exactly what the owner
  * directive means by prose that belongs in a dedicated Help section. Every
- * sentence of it is now a topic in `help.ts`, reachable from the links below,
+ * sentence of it is now a topic in `help.ts`, reachable from the index the
+ * page title's `?` opens (a footer of links until VQ-033, BGD 2026-10-26),
  * from `#help/<id>` and from the Help section in the rail. It was also
  * reachable from a `?` beside the control it was about, on fifty-four of them;
  * B7.4 cut that to two. See the note on ACCOUNT_TOPICS.
@@ -4751,7 +4755,10 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
  *
  * B4.4 narrowed the index below to the six topics that have no `?` anchor on
  * the surface; B7.4 put three back, because they no longer have one either.
- * See the note inside it.
+ * See the note inside it. Since VQ-033 (BGD 2026-10-26) the list is the index
+ * the page title's `?` opens rather than a footer, so it renders no words with
+ * the card closed; the budget the note weighs it against no longer reads it,
+ * and the list stays as it was chosen.
  */
 const ACCOUNT_TOPICS: readonly TopicId[] = [
   // B4.4: SEVENTEEN ENTRIES BECAME SIX, AND NOTHING BECAME UNREACHABLE.

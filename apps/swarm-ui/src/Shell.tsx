@@ -559,7 +559,7 @@ export function Screen<T>({
 }: {
   title: string
   /** The screen's one `?`, after its title, when it explains the whole screen. See `PageHead`. */
-  help?: TopicId
+  help?: TopicId | readonly TopicId[]
   load: () => Promise<Result<T>>
   /** The screen's count once data is in: a note over its first card (`CountNote`, #138). */
   summary?: (data: T) => ReactNode
@@ -955,7 +955,7 @@ export function PageHead({
   children,
 }: {
   title: string
-  help?: TopicId
+  help?: TopicId | readonly TopicId[]
   /** The `<h1>`'s id, for a region that is labelled by it. */
   headingId?: string
   /** The head's actions, right-aligned: the read control first, then anything the page offers. */
@@ -972,8 +972,10 @@ export function PageHead({
         {/* Two lines at most, the whole title in its tooltip (walkthrough C). */}
         <h1 id={headingId} title={title}>{title}</h1>
         {/* ONE `?` BY THE TITLE: the screen's own topic when it has one,
-            otherwise its section's question (Q2). */}
-        {help !== undefined ? <HelpCard topic={help} /> : sectionHelp}
+            otherwise its section's question (Q2). A LIST is the screen's
+            index of topics, the footer it replaced (VQ-033, BGD
+            2026-10-26): still one glyph, in the section question's place. */}
+        {help === undefined ? sectionHelp : typeof help === 'string' ? <HelpCard topic={help} /> : <HelpCard topics={help} />}
       </div>
       <div className="c-acts">
         {takes && <span className="ctl-head-age">{headAge}</span>}

@@ -4,8 +4,9 @@
 //           idle pool takes, and the four lowered pools the head counted sat
 //           at the foot of Providers. A pool near its ceiling is now drawn
 //           `near ceiling` in the full mark's amber (chip, row and track), a
-//           lowered one `lowered`, and both lead their family. Needs action
-//           keeps the owner's rule (2026-10-01): neither moves into it.
+//           lowered one `lowered`, and both lead the board in Needs a look
+//           (BGD's answer, 2026-10-26: "Needs a look, as the mock-up draws
+//           it"), near before lowered.
 //   VQ-032  at 390 each pool was a ~220px record of six keyed lines. It is
 //           one compact row: name and figure, then the use bar and state;
 //           Set by only when something other than the configured limit sets
@@ -14,8 +15,8 @@
 //           broke every name over three lines and cut its ceiling note.
 //
 // BREAK IT: drop `nearCeiling` from `classifyPool` (the 46/50 row reads `ok`
-// again), put `poolProblemRank` back to four ranks (the lowered pool drops
-// under the idle one), drop the phone grid on `.cap-pools.is-stacked` rows
+// again), put `poolProblemRank` back to four ranks (the lowered pool stays
+// down in Providers under the idle one), drop the phone grid on `.cap-pools.is-stacked` rows
 // or the `cap-by-cfg` class, or put Tenant back to 16% -- a case turns red.
 
 import { cleanup, render, waitFor, within } from '@testing-library/react'
@@ -123,14 +124,13 @@ describe('VQ-031: a pool near its ceiling, or lowered, is drawn so', () => {
     expect(marks('provider:anthropic:tenant:a-idle')).toEqual(['ok'])
   })
 
-  it('leads the family with them, near before lowered, idle pools after', async () => {
+  it('leads the board with them in Needs a look, near before lowered; idle pools stay in the family', async () => {
     await renderPools()
-    expect(familyOrder('Providers')).toEqual([
+    expect(familyOrder('Needs a look · 2')).toEqual([
       'provider:anthropic:tenant:eng',
       'provider:anthropic:tenant:u-bogdan',
-      'provider:anthropic',
-      'provider:anthropic:tenant:a-idle',
     ])
+    expect(familyOrder('Providers')).toEqual(['provider:anthropic', 'provider:anthropic:tenant:a-idle'])
   })
 
   it('counts near ceiling in the head by the marks’ own rule', async () => {
@@ -139,9 +139,10 @@ describe('VQ-031: a pool near its ceiling, or lowered, is drawn so', () => {
     expect(document.body.textContent).toContain('2 lowered')
   })
 
-  it('keeps Needs action to the owner’s rule: neither near nor lowered moves there', async () => {
+  it('heads the board with Needs a look, never Needs action (BGD 2026-10-26)', async () => {
     await renderPools()
-    expect(document.querySelector('.cap-needs')).toBeNull()
+    expect(document.querySelector('.cap-families > section')).toBe(document.querySelector('.cap-needs'))
+    expect(document.querySelector('.cap-needs .ctl-card-title')?.textContent).toBe('Needs a look · 2')
   })
 
   it('takes Pool limits’ near-ceiling share, so the two screens cannot disagree', () => {

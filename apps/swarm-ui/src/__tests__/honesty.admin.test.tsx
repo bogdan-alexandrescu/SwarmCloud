@@ -575,7 +575,7 @@ describe('Provider quota says which run its 429 count is of (CP-10)', () => {
     expect(row.querySelector('td[data-label="Last 429"]')?.textContent).toContain('ago')
   })
 
-  it('puts no help glyph inside the quota tables, and indexes the row fields in the footer', async () => {
+  it('puts no help glyph inside the quota tables, and indexes the row fields behind the title’s ?', async () => {
     await renderQuota([
       quota({ state: 'AVAILABLE', updated_at: minutesAgo(1) }),
       quota({ provider: 'openai', state: 'AVAILABLE', updated_at: minutesAgo(1) }),
@@ -585,7 +585,12 @@ describe('Provider quota says which run its 429 count is of (CP-10)', () => {
     for (const t of tables) {
       expect(t.querySelector('button[aria-expanded]'), 'a ? sits inside a quota table').toBeNull()
     }
-    expect(document.querySelector('a[href="#help/quota-row-fields"]'), 'the footer does not index the row fields').not.toBeNull()
+    // THE INDEX IS BEHIND THE PAGE TITLE'S ONE `?` (VQ-033, BGD 2026-10-26),
+    // where the `Reading this screen:` footer was.
+    expect(screen.queryByText('Reading this screen:')).toBeNull()
+    fireEvent.click(within(document.querySelector<HTMLElement>('.c-phead')!).getByRole('button', { name: /^Help:/ }))
+    const card = await screen.findByRole('dialog')
+    expect(card.querySelector('a[href="#help/quota-row-fields"]'), 'the title’s ? does not index the row fields').not.toBeNull()
   })
 })
 

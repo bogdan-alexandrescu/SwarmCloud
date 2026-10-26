@@ -238,7 +238,9 @@ describe('a11y-keyboard-003: every capacity table has an accessible name', () =>
     await renderPools()
     // MUTATION: drop `aria-labelledby` from PoolTable's <table> -- each of
     // these is an unnamed table again and none is found.
-    for (const name of ['Global', 'Tenants', 'Runner profiles', 'Backends', 'Providers']) {
+    // `tenant:eng` is lowered (10 of 20), so it leads in Needs a look (VQ-031,
+    // BGD 2026-10-26) and Tenants has no table of its own.
+    for (const name of ['Needs a look · 1', 'Global', 'Runner profiles', 'Backends', 'Providers']) {
       expect(screen.getByRole('table', { name }), `the ${name} table has no name`).toBeTruthy()
     }
     const tables = screen.getAllByRole('table')
