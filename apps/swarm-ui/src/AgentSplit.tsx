@@ -14,7 +14,7 @@ import { trapTab } from './focus'
 import { toggleListSnap, useListSnap } from './listSnap'
 import { useRead } from './RunFiles'
 import { AgentChangesPane } from './WorkflowChanges'
-import { isLiveBrowser } from './Handoff'
+import { isLiveBrowser, ownerQuestionsHold } from './Handoff'
 import { PodStartProblem } from './PodStartProblem'
 import { RecordingsPanel } from './Recordings'
 import { LiveBrowserPane, useLiveSession } from './LiveBrowser'
@@ -242,10 +242,18 @@ export function AgentSplit({
   // hand-off's "I'm ready to sign in" opens it on a READY task, which has no
   // attempt and so no session read, and the tab says the browser is
   // starting. A finished agent has none, unless its address names it.
+  // A MERGE HELD BY THE OWNER'S QUESTIONS HAS NO BROWSER (#2313): it is a
+  // git-only step, and the bell's HUMAN_REQUIRED item links every such park
+  // to `/browser`. That address opens Details, where its questions are,
+  // rather than drawing a Browser tab over a browser that never existed.
+  const held = task !== null && ownerQuestionsHold(task) !== null
   const hasBrowser =
     (liveRead.status === 'ok' && liveRead.liveBrowser) ||
     (task !== null && !TERMINAL_STATES.has(task.state) && !inFlight && isLiveBrowser(task)) ||
-    pane === 'browser'
+    (pane === 'browser' && !held)
+  useEffect(() => {
+    if (held && pane === 'browser') go(base)
+  }, [held, pane, go, base])
   const deciding = useOpeningPane({
     taskId,
     pane,
@@ -369,7 +377,7 @@ export function AgentSplit({
               <Mark kind="pending" say="Reading the agent to open it on its browser if it is a running live browser, or on its details. The read is in flight." />
               <span className="ctl-pending art-loading-bar" />
             </p>
-          ) : selected === 'browser' && task !== null ? (
+          ) : selected === 'browser' && task !== null && !held ? (
             <LiveBrowserPane
               key={taskId}
               task={task}
@@ -378,7 +386,7 @@ export function AgentSplit({
               theater={theater}
               onHandoffReady={reload}
             />
-          ) : selected === 'logs' && task !== null ? (
+          ) : selected === 'browser' && held ? null : selected === 'logs' && task !== null ? (
             <AgentLogs key={taskId} task={task} />
           ) : selected === 'logs' ? (
             <p className="art-loading">

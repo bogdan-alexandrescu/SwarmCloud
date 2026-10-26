@@ -222,13 +222,15 @@ describe('the signed-in name opens Profile (NAV-FOOT)', () => {
     expect(go).toHaveBeenCalledWith('settings/profile')
   })
 
-  it('leaves the role chip and the email as they were', async () => {
+  it('leaves the role chip and the role line, the email in its title, outside the link', async () => {
     await liveShell('work', 'running', vi.fn(), true)
     await waitFor(() => expect(nameLink()).not.toBeNull())
     const foot = document.querySelector<HTMLElement>('.sk-pfoot')!
     // MUTATION: move the chip or the email into the link and these change.
     expect(foot.querySelector('.sk-pfrow > .sk-adm')?.textContent).toBe('admin')
-    expect(foot.querySelector(':scope > small')?.textContent).toBe('ana.b@example.com')
+    // The role line replaced the email (S1a, CONFIG-ADMIN-POLISH); the address is its title.
+    expect(foot.querySelector(':scope > small')?.textContent).toBe('Platform admin')
+    expect(foot.querySelector(':scope > small')?.getAttribute('title')).toBe('ana.b@example.com')
     expect(nameLink()!.querySelector('.sk-adm')).toBeNull()
     expect(foot.querySelectorAll('a')).toHaveLength(1)
   })

@@ -1,5 +1,5 @@
 import { USE_FIXTURES, loadArtifactContent, loadWorkflow } from './api'
-import { read, route, type Result } from './fetch'
+import { read, route, write, type Result } from './fetch'
 import { normQaTarget, type QaTarget } from './qaTargetsApi'
 
 /**
@@ -17,7 +17,11 @@ import { normQaTarget, type QaTarget } from './qaTargetsApi'
  *   GET /v1/qa-targets/{id}                  the target, whose per-leg `discovered` says which
  *                                            routes one leg has and the other lacks (§5), and
  *                                            whose per-leg `new_since_last_run` is what a run
- *                                            found that `screens` does not list yet
+ *                                            found that `screens` does not list yet, less the
+ *                                            target's `dismissed_routes`
+ *   POST /v1/qa-targets/{id}:dismiss-route   S9b's Remove, a workspace admin's: {route_id}, so no
+ *                                            leg's later run offers that route again (QA-RUN-REMOVE)
+ *   POST /v1/qa-targets/{id}:restore-route   the undo: {route_id}
  *
  * A FIGURE THAT WAS NOT READ IS NEVER A ZERO. Each is a value, or absent with
  * the sentence that says why (a step still running, a file the step did not
@@ -361,12 +365,48 @@ export function newRoutesOf(raw: unknown, legs: readonly string[], workflows: Re
   return [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path))
 }
 
-/** What the run page reads off the target: its name, each leg's host, §5's one-leg-only routes, and its new routes. */
+/** A route a workspace admin dismissed (S9b's Remove): the target's `dismissed_routes`, which no leg offers again. */
+export interface DismissedRoute {
+  id: string
+  path: string
+  by: string | null
+  at: string | null
+}
+
+/** The target's `dismissed_routes`, in the order they were dismissed; a row without an id or a path is not one. */
+export function dismissedOf(raw: unknown): DismissedRoute[] {
+  const t = rec(rec(raw).qa_target ?? raw)
+  const out: DismissedRoute[] = []
+  for (const d of list(t.dismissed_routes)) {
+    const row = rec(d)
+    const id = str(row.id)
+    const path = str(row.path)
+    if (id !== null && path !== null) out.push({ id, path, by: str(row.by), at: str(row.at) })
+  }
+  return out
+}
+
+/**
+ * S9b's Remove: the found route `routeId` names leaves every leg's
+ * `new_since_last_run`, in this run's answer and every later run's. A
+ * workspace admin's; the API answers anyone else 403 and writes nothing.
+ */
+export function dismissQaRoute(targetId: string, routeId: string): Promise<Result<unknown>> {
+  return write(route('/v1/qa-targets/{target_id}:dismiss-route', { target_id: targetId }), 'POST', { route_id: routeId })
+}
+
+/** The undo of `dismissQaRoute`: the route is offered again where a leg's last run found it. */
+export function restoreQaRoute(targetId: string, routeId: string): Promise<Result<unknown>> {
+  return write(route('/v1/qa-targets/{target_id}:restore-route', { target_id: targetId }), 'POST', { route_id: routeId })
+}
+
+/** What the run page reads off the target: its name, each leg's host, §5's one-leg-only routes, its new routes and its dismissed ones. */
 export interface TargetFacts {
   name: string | null
   hosts: Record<string, string>
   oneLegOnly: OneLegOnly[]
   newRoutes: NewRoute[]
+  dismissed: DismissedRoute[]
   /** The target as the QA targets page reads it, which Promote's PATCH is built from; null when it is not one. */
   target: QaTarget | null
 }
@@ -386,6 +426,7 @@ export function targetFactsOf(raw: unknown, legs: readonly string[], workflows: 
     hosts,
     oneLegOnly: oneLegOnlyOf(raw, legs),
     newRoutes: newRoutesOf(raw, legs, workflows),
+    dismissed: dismissedOf(raw),
     target: normQaTarget(t),
   }
 }
@@ -542,6 +583,7 @@ const FIXTURE_TARGET = {
         new_since_last_run: [fixtureFound('legal-imprint', '/legal/imprint', FIXTURE_GROUP.legs[1]!.workflow_id!)],
       },
     ],
+    dismissed_routes: [{ id: 'print-preview', path: '/print/preview', by: FIXTURE_GROUP.by, at: '2026-10-22T09:40:00Z' }],
   },
 }
 

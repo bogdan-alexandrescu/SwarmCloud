@@ -1515,8 +1515,9 @@ Departure: the typed phrase is `<email> <role>` for `set`, `<email> default`
 for `clear` and `default <role>` for `default`, not always an email and a
 role.
 
-**ROLES-UI-PEOPLE (phase 4).** `#settings/people`
-(`apps/swarm-ui/src/roles.ts` (`export const WORKSPACE_PEOPLE_ADDRESS = 'settings/people'`)),
+**ROLES-UI-PEOPLE (phase 4).** `#settings/people`, Config › People and roles
+since CONFIG-NAV (`apps/swarm-ui/src/roles.ts`
+(`export const WORKSPACE_PEOPLE_ADDRESS = 'config/people'`), CONFIG-ADMIN-POLISH),
 in `apps/swarm-ui/src/WorkspacePeople.tsx`: the roster, what each role
 permits and the recent events for every role, controls for an `admin`, a
 default selector offering `viewer` and `member` only, and the

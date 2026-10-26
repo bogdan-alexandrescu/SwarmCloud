@@ -280,6 +280,25 @@ def test_the_capacity_flag_carries_the_summary():
     assert flag["evidence"]["waiting_summary"] == summary  # MUTATION: leave it out of the evidence -- KeyError.
 
 
+def test_a_merge_held_by_owner_questions_is_flagged_in_the_served_words():
+    # #2313: "only a person promotes it -- open its console and take control"
+    # sent the owner to a browser a merge step does not have.
+    summary = "Waiting for answers to 2 owner questions before merging (implement: 1, fix: 1)"
+    task = _task("PARKED", park_reason="HUMAN_REQUIRED",
+                 waiting={"reason": "HUMAN_REQUIRED", "summary": summary})
+    flag = check.classify_task(task, _Reads(), now=_NOW, window=30)
+    assert flag["rule"] == "parked"
+    # MUTATION: restating the hand-off sentence -- "take control" is in it.
+    assert flag["reason"].endswith(f": {summary}")
+    assert "take control" not in flag["reason"]
+
+
+def test_a_hand_off_park_from_an_older_api_keeps_its_words():
+    flag = check.classify_task(_task("PARKED", park_reason="HUMAN_REQUIRED"), _Reads(), now=_NOW, window=30)
+    # MUTATION: dropping the fallback for an API that serves no summary -- the words go.
+    assert flag["reason"].endswith("only a person promotes it -- open its console and take control")
+
+
 @pytest.mark.parametrize("state, extra", [
     ("PARKED", {"park_reason": "CI_PENDING"}),
     ("READY", {"waiting_for": {"lead": {"pool": "runner:merge", "limit": 4, "active": 4}}}),

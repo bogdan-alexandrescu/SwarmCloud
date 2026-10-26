@@ -48,7 +48,8 @@ async function app(path: string) {
 }
 
 const adminItem = () => document.querySelector('.sk-spine a[data-sec="admin"]')
-const signedIn = () => expect(document.querySelector('.sk-pfoot small')?.textContent).toBe('ana.b@example.com')
+// The foot's second line is the role since CONFIG-ADMIN-POLISH (S1a); the email is its title.
+const signedIn = () => expect(document.querySelector('.sk-pfoot small')?.getAttribute('title')).toBe('ana.b@example.com')
 
 afterEach(() => {
   cleanup()
