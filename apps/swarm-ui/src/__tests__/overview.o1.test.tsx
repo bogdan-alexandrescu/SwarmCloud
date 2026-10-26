@@ -28,6 +28,7 @@ import type { Result } from '../fetch'
 import type { SpendRollup } from '../api'
 import type { Account, AccountsPage, Capacity, Stats, Task, TaskPage } from '../types'
 import { task } from './runfixture'
+import { currentZone, notePerson, resetTimeZone, setZone } from '../timezone'
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
@@ -285,8 +286,25 @@ describe('O1: the lifecycle band breaks each figure down by state', () => {
     // The failed and dead-lettered rows completed 25 and 58 minutes ago; today
     // is only certain for both when it is past 01:00 UTC.
     if (new Date().getUTCHours() >= 1) expect(text(done.querySelector('.ov-lc-n'))).toBe('2')
-    expect(text(done.querySelector('.ov-lc-h small'))).toMatch(/since 00:00 UTC/)
+    // THE SETTING, UTC BY DEFAULT (VQ-023, part of #2391): nobody here has
+    // picked a zone in Profile, so the day is counted, and named, in UTC.
+    expect(currentZone()).toBe('UTC')
+    expect(text(done.querySelector('.ov-lc-h small'))).toBe('since 00:00 UTC')
     expect(text(done)).toMatch(/of the 9 newest read/)
+  })
+
+  /** MUTATION: keep 'since 00:00 UTC' fixed in the band, whatever the person picked. */
+  it("names the person's zone once they pick one", async () => {
+    notePerson('ada@example.com')
+    setZone('America/Los_Angeles')
+    try {
+      const el = await mount()
+      const done = [...el.querySelectorAll('#ov-band .ov-lc')][2]!
+      expect(text(done.querySelector('.ov-lc-h small'))).toMatch(/^since 00:00 P[DS]T$/)
+    } finally {
+      window.localStorage.clear()
+      resetTimeZone()
+    }
   })
 
   it('draws a dash with its reason, never 0, when the counts are unread', async () => {

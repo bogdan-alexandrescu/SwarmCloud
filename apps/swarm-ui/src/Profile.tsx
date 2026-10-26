@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, useSyncExternalStore, type FormEvent, type MouseEvent, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useState, useSyncExternalStore, type FormEvent, type MouseEvent, type ReactNode } from 'react'
 import { loadMe, loadMyTenants, loadProfile, putPreferences, NOTIFICATION_TOPICS, REMINDER_CADENCES, type TenantChoice } from './api'
 import { Banner, Button, Card, CardLink, acknowledge } from './components'
 import { chooseTenant, chosenTenant, subscribeTenant, type ApiError } from './fetch'
@@ -9,6 +9,7 @@ import { noteOwnName } from './Spine'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { humaniseUntil, timeAgo } from './types'
 import { accountName } from './accountName'
+import { UTC, allZones, browserZone, canonicalZone, formatClock, notePerson, setZone, useTimeZone } from './timezone'
 import './styles/keys.css'
 import type {
   Me,
@@ -26,14 +27,15 @@ import type {
 /**
  * SETTINGS › PROFILE (lane PROFILE-PAGE, part of #1505;
  * docs/design/user-profile.md §4.1). Everything that is about the signed-in
- * person, in four cards, from ONE read (`GET /v1/profile`):
+ * person, in five cards, from ONE read (`GET /v1/profile`):
  *
  *   1. you and your workspaces -- email, display name, platform role once,
  *      each workspace with your role in it, and your default workspace;
  *   2. your connections -- exactly GitHub and the TypeSafe key (Q6: there are
  *      no SwarmCloud API keys, so the page never offers a row for them);
  *   3. what reaches your bell, and how often reminders repeat;
- *   4. your Claude accounts.
+ *   4. the time zone every time in the console is shown in (VQ-023);
+ *   5. your Claude accounts.
  *
  * THE PAGES THAT OWN A THING STAY ITS SOURCE. Each summary links to its owning
  * page: Config › Workspace Settings › Workspace setup, Config › GitHub access,
@@ -256,7 +258,7 @@ export function ProfileScreen() {
   )
 }
 
-/** The four cards for one read. Exported for tests that draw a fixture directly. */
+/** The five cards for one read. Exported for tests that draw a fixture directly. */
 export function ProfileCards({ profile, onReload }: { profile: Profile; onReload: () => void }) {
   // The last read, updated in place by a save's answer so a second save in a
   // row carries the revision the first one produced.
@@ -267,6 +269,8 @@ export function ProfileCards({ profile, onReload }: { profile: Profile; onReload
   useEffect(() => {
     if (p.identity.email !== '') noteOwnName(p.identity.email, p.identity.display_name)
   }, [p.identity.email, p.identity.display_name])
+  // The zone is kept per person (`timezone.ts`): this read says who.
+  useEffect(() => notePerson(p.identity.email), [p.identity.email])
   const [changed, setChanged] = useState<string | null>(null)
 
   const prefsUnreadable = p.unavailable.includes('preferences') || p.revision === null || p.notifications === undefined
@@ -323,6 +327,9 @@ export function ProfileCards({ profile, onReload }: { profile: Profile; onReload
       </div>
       <div role="region" aria-label="Notifications" data-profile-section="notifications">
         <NotificationsCard p={p} stored={stored} disabled={prefsUnreadable} save={save} />
+      </div>
+      <div role="region" aria-label="Time zone" data-profile-section="time-zone">
+        <TimeZoneCard email={p.identity.email} />
       </div>
       <div role="region" aria-label="Claude accounts" data-profile-section="claude-accounts">
         <ClaudeAccountsCard p={p} />
@@ -668,7 +675,130 @@ function NotificationsCard({ p, stored, disabled, save }: { p: Profile; stored: 
   )
 }
 
-// -- 4. Claude accounts ------------------------------------------------------------
+// -- 4. Time zone -----------------------------------------------------------------
+
+type ZoneKind = 'utc' | 'browser' | 'other'
+
+function kindOf(zone: string, browser: string): ZoneKind {
+  return zone === UTC ? 'utc' : zone === browser ? 'browser' : 'other'
+}
+
+/**
+ * THE PERSON'S TIME ZONE (VQ-023, owner decision 2026-10-26): UTC, this
+ * browser's zone, or any IANA zone from a searchable list. Every time in the
+ * console is shown in it, labelled, and Overview's "today" starts at its
+ * midnight. Kept in this browser for this person (`timezone.ts` says why), so
+ * it is not one of the preferences the server holds and is never disabled
+ * with them: only a page that could not read who you are cannot keep it.
+ */
+function TimeZoneCard({ email }: { email: string }) {
+  const id = useId()
+  const zone = useTimeZone()
+  const browser = browserZone()
+  const zones = useMemo(allZones, [])
+  const [kind, setKind] = useState<ZoneKind>(kindOf(zone, browser))
+  const [other, setOther] = useState(kindOf(zone, browser) === 'other' ? zone : '')
+  const [saved, setSaved] = useState(false)
+  const [refused, setRefused] = useState<string | null>(null)
+  // The page learns the stored zone after its first draw: follow it.
+  useEffect(() => {
+    setKind(kindOf(zone, browser))
+    if (kindOf(zone, browser) === 'other') setOther(zone)
+  }, [zone, browser])
+  const wanted = kind === 'utc' ? UTC : kind === 'browser' ? browser : other.trim()
+  const canonical = canonicalZone(wanted)
+  const disabled = email === ''
+  const dirty = canonical !== zone
+
+  function pick(next: ZoneKind) {
+    setKind(next)
+    setSaved(false)
+    setRefused(null)
+  }
+
+  function submit(e: FormEvent) {
+    e.preventDefault()
+    if (disabled) return
+    const stored = setZone(wanted)
+    if (stored === null) {
+      setRefused(`\u201c${wanted}\u201d is not a time zone this browser knows. Pick one from the list, for example Europe/London.`)
+      return
+    }
+    setRefused(null)
+    setSaved(true)
+  }
+
+  return (
+    <Card title="Time zone">
+      <form className="pk-form" aria-label="Change your time zone" onSubmit={(e) => submit(e)}>
+        <p className="ur-small">
+          Every time in the console is shown in this zone, with its name beside it, and &ldquo;today&rdquo; on Overview starts at
+          its midnight. Kept in this browser for you: another browser, or this one after you sign out, shows UTC until you pick
+          again.
+        </p>
+        <fieldset className="jb-options" disabled={disabled}>
+          <legend>Show times in</legend>
+          <label className={`jb-option pf-topic${kind === 'utc' ? ' is-on' : ''}`}>
+            <input type="radio" name={`${id}-zone`} value="utc" checked={kind === 'utc'} onChange={() => pick('utc')} />
+            <span className="jb-text">UTC (the default)</span>
+          </label>
+          {browser !== UTC && (
+            <label className={`jb-option pf-topic${kind === 'browser' ? ' is-on' : ''}`}>
+              <input type="radio" name={`${id}-zone`} value="browser" checked={kind === 'browser'} onChange={() => pick('browser')} />
+              <span className="jb-text">{`This browser\u2019s zone, ${browser}`}</span>
+            </label>
+          )}
+          <label className={`jb-option pf-topic${kind === 'other' ? ' is-on' : ''}`}>
+            <input type="radio" name={`${id}-zone`} value="other" checked={kind === 'other'} onChange={() => pick('other')} />
+            <span className="jb-text">Another zone</span>
+          </label>
+        </fieldset>
+        {kind === 'other' && (
+          <>
+            <label htmlFor={`${id}-z`}>{`Search ${zones.length} zones by city or region`}</label>
+            <input
+              id={`${id}-z`}
+              className="ur-search pk-input"
+              list={`${id}-zl`}
+              value={other}
+              placeholder="America/Los_Angeles"
+              autoComplete="off"
+              spellCheck={false}
+              disabled={disabled}
+              onChange={(e) => {
+                setOther(e.target.value)
+                setSaved(false)
+                setRefused(null)
+              }}
+            />
+            <datalist id={`${id}-zl`}>
+              {zones.map((z) => (
+                <option key={z} value={z} />
+              ))}
+            </datalist>
+          </>
+        )}
+        <div className="pk-form-row">
+          <Button kind="primary" size="sm" type="submit" disabled={disabled || !dirty || wanted === ''}>
+            Save time zone
+          </Button>
+          <span className="ur-small" aria-live="polite">
+            {canonical !== null ? `Now ${formatClock(Date.now(), canonical)}` : wanted === '' ? '' : 'Not a zone this browser knows'}
+          </span>
+        </div>
+        {disabled && <p className="ur-small">Your email could not be read, so a zone cannot be kept for you. Reload to try again.</p>}
+      </form>
+      {saved && (
+        <p className="pk-saved" role="status">
+          {`Saved. Every time is now shown in ${zone}.`}
+        </p>
+      )}
+      {refused !== null && <Banner tone="bad" title={refused} role="alert" />}
+    </Card>
+  )
+}
+
+// -- 5. Claude accounts ------------------------------------------------------------
 
 const HOUR_MS = 3_600_000
 

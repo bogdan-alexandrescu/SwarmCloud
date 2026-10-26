@@ -245,7 +245,7 @@ describe('VQ-005: one sample of failures, one window, the same words', () => {
   it('words Finished today’s partial sample as every other card does', async () => {
     const el = await mount()
     const foot = el.querySelectorAll('#ov-band .ov-lc')[2]!.querySelector('.ov-lc-foot.is-page')!
-    // MUTATION: put back ` · created since ${hhmmUtc(finished.since)}` in LifecycleBand.
+    // MUTATION: put back ` · created since ${hhmm(finished.since)}` in LifecycleBand.
     expect(text(foot)).toMatch(/^of the 200 newest read · partial: agents created since \d\d:\d\d UTC read$/)
   })
 })
