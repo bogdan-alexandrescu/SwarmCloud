@@ -1057,8 +1057,16 @@
    the strip was cut at `C ›`. AgentSplit `AgTabsEdge` keeps the tabs that fit
    on the bar and puts the rest under More, at its end, on the bar's own
    underline; More opens the shared `.c-menu` under it. */
-.ag-tabs-more-host { flex: none; margin: var(--ctl-s2) 0 var(--ctl-s3); border-bottom: 1px solid var(--line); }
-.ag-tabs-more { display: flex; gap: 6px; align-items: center; padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; color: var(--text-dim); font: var(--t-meta)/var(--lh-meta) var(--font); white-space: nowrap; cursor: pointer; }
+/* MORE GIVES WAY TO THE OPEN TAB (BT-004, #2423, 2026-10-26): at 390 a
+   448 px More that would not shrink squeezed the strip, and the open tab in
+   it, to 0 px, and ran past the drawer's edge. More is a short `More 7` now;
+   if even that does not fit beside the open tab (the strip's min-width,
+   set by `AgTabsEdge`), More shrinks and its label ends in an ellipsis. The
+   names it holds are in its name and title, not drawn. */
+.ag-tabs-more-host { flex: 0 1 auto; min-width: 0; margin: var(--ctl-s2) 0 var(--ctl-s3); border-bottom: 1px solid var(--line); }
+.ag-tabs-more { display: flex; gap: 6px; align-items: center; max-width: 100%; padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; color: var(--text-dim); font: var(--t-meta)/var(--lh-meta) var(--font); white-space: nowrap; cursor: pointer; }
+.ag-tabs-more-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ag-tabs-more-names { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .ag-tabs-more[aria-expanded='true'] { color: var(--text); }
 .ag-tabs-more:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
 .ag-tabs-menu { min-width: 180px; }
@@ -1100,9 +1108,11 @@
   color: var(--text-dim);
   font: 600 var(--t-body)/var(--lh-body) var(--font);
 }
+/* The strip's `›` is at the STRIP's end (BT-004): drawn at the box's end it
+   sat over More's text. `--ag-more-w` is More's width, set by `AgTabsEdge`. */
 .ag-tabs-edge[data-more~='end']::after {
   content: '›';
-  right: 0;
+  right: var(--ag-more-w, 0px);
   justify-content: flex-end;
   background: linear-gradient(90deg, transparent, var(--bg) 70%);
 }

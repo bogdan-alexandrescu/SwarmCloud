@@ -102,8 +102,17 @@ _STEP_KEYS = frozenset(
         # The registered repositories this step reads beside its own (#1434),
         # by name. It REPLACES the spec's top-level list, and `[]` means none.
         "additional_repositories",
+        # "browser only if the change is UI" (#2322): `"browser_if_ui"`, sent
+        # as the step's `metadata.runtime` naming both profiles it may run.
+        "runtime",
     }
 )
+
+#: The one runtime policy (#2322) and the pair it resolves between, by name.
+#: swarm-api's `validation.RUNTIME_POLICY_PROFILES` is the authority and
+#: refuses any other pair; this only spells the block, so a spec need not.
+RUNTIME_BROWSER_IF_UI = "browser_if_ui"
+RUNTIME_PROFILES = {"browser": "claude-code-browser", "code": "claude-code"}
 
 #: A step key that is READ HERE AND NEVER SENT. `stage` was the group a step was
 #: shown under in Claude Code's `/workflows` when the spec ran with
@@ -298,7 +307,23 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
         # sixteen good steps still ran, so the bad four cost real capacity to
         # learn something the catalogue already knew. Refusing here refuses the
         # SUBMISSION, before any of it is scheduled.
-        profile = catalogue.check(str(raw.get("runner_profile") or DEFAULT_PROFILE), where=where)
+        runtime = raw.get("runtime")
+        if runtime is not None and runtime != RUNTIME_BROWSER_IF_UI:
+            raise SwarmError(
+                f"{where}: runtime must be {RUNTIME_BROWSER_IF_UI!r} -- run this step on "
+                f"{RUNTIME_PROFILES['browser']} only when an upstream step's change touches "
+                f"UI, and on {RUNTIME_PROFILES['code']} otherwise"
+            )
+        if runtime is not None and raw.get("runner_profile") not in (
+            None, RUNTIME_PROFILES["browser"]
+        ):
+            raise SwarmError(
+                f"{where}: a runtime {RUNTIME_BROWSER_IF_UI!r} step names no runner_profile, "
+                f"or {RUNTIME_PROFILES['browser']!r}: the platform picks between "
+                f"{RUNTIME_PROFILES['browser']} and {RUNTIME_PROFILES['code']} from the diff"
+            )
+        default = RUNTIME_PROFILES["browser"] if runtime is not None else DEFAULT_PROFILE
+        profile = catalogue.check(str(raw.get("runner_profile") or default), where=where)
         step: dict[str, Any] = {
             "step_id": step_id,
             "runner_profile": profile,
@@ -391,6 +416,10 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
             # with none, which leaving the key out would not (§7 Q6).
             step["additional_repositories"] = check_additional_repositories(
                 raw["additional_repositories"], where=where)
+        if runtime is not None:
+            step["metadata"] = {
+                "runtime": {"policy": RUNTIME_BROWSER_IF_UI, **RUNTIME_PROFILES},
+            }
         if raw.get("stage") is not None and not isinstance(raw.get("stage"), str):
             raise SwarmError(f"{where}: stage must be a string -- a note for the spec's reader, never sent")
         steps.append(step)

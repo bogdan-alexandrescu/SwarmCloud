@@ -1488,6 +1488,18 @@ stops at a plan waiting for approval.
 granted them: `tests/unit/mcp/test_plugin_commands.py` holds them out of every
 grant, and `tests/unit/mcp/test_issue_runs.py` holds the digest rule.
 
+## A repository's Playwright suite as a gate
+
+`swarm_suite_gate` runs a registered repository's whole Playwright suite as
+`shards` steps on `claude-code` plus one `report` step that merges their blob
+reports. The caller names the repository, a ref, `suite: "playwright"`,
+`working_dir`, `shards` (1 to 20, default 8), and optionally `project` and a
+non-secret `env_file`. It never names an image, a command or resources. The
+report's `summary.md` (through `swarm_result`) and `summary.json` and
+`playwright-report.zip` (through `swarm_artifact`) are the answer. What it
+runs, what it costs and how a merge train reads it are in
+[docs/suite-gate.md](../docs/suite-gate.md).
+
 ## Schedules and the approval inbox
 
 A schedule is a typed recurring job on your tenant's repositories: an issue

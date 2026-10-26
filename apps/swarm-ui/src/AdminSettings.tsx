@@ -264,9 +264,19 @@ export function useLeadRead<T>(load: () => Promise<Result<T>>): {
 } {
   const [failed, setFailed] = useState<ApiError | null>(null)
   const [held, setHeld] = useState(false)
+  // A read that lands after the page has gone sets nothing: there is no lead
+  // left to draw, and a test's torn-down document has no window to schedule on.
+  const live = useRef(true)
+  useEffect(() => {
+    live.current = true
+    return () => {
+      live.current = false
+    }
+  }, [])
   const wrapped = useCallback(
     () =>
       load().then((r) => {
+        if (!live.current) return r
         if (r?.status === 'error') setFailed(r.error)
         else if (r?.status === 'ok' || r?.status === 'stale') {
           setFailed(null)

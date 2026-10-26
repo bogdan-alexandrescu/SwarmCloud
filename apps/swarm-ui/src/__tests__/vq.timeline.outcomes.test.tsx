@@ -67,13 +67,15 @@ function stats(): Stats {
 const sectionsOf = (call: unknown[]): string[] => [...((call[1] as readonly string[] | undefined) ?? [])]
 
 /**
- * The route as the QA run met it: a `buckets` + `totals` read answers at once,
- * as a sectioned payload (the envelope and those two only); the headline's
- * read, which also asks for `coverage` and `previous`, has not answered.
+ * The route as the QA run met it: a card's read of `buckets` + `totals` and
+ * its own block answers at once, as a sectioned payload; the headline's read
+ * -- `buckets` + `totals` alone since #2422, the same ask as the plain cards',
+ * which therefore hang with it -- and its second read of `coverage` and
+ * `previous` have not answered.
  */
 function slowHeadline(full: Outcomes): void {
   api.loadOutcomes.mockImplementation((_q: URLSearchParams, sections: readonly string[] = []) => {
-    if (sections.includes('coverage')) return new Promise(() => {})
+    if (sections.join(',') === 'buckets,totals' || sections.includes('coverage')) return new Promise(() => {})
     const part: Record<string, unknown> = { ...full }
     for (const k of ['retries', 'latency', 'groups', 'workflows_failed', 'coverage', 'previous']) {
       if (!sections.includes(k)) delete part[k]
@@ -129,9 +131,12 @@ describe('VQ-021: the chart region says what it is reading, and draws what has l
     const facts = container.querySelector('.ol-facts')!.textContent ?? ''
     expect(facts).toContain(`${d.totals.buckets_read} of ${d.totals.buckets} days read`)
     expect(facts, 'the sealed count is not invented before coverage lands').not.toMatch(/sealed/)
-    // The chart asks for nothing of its own: its buckets are the cards' one shared read.
+    // The chart asks for nothing of its own: the two `buckets` + `totals`
+    // asks are the headline's and the plain cards' one shared read, and the
+    // headline's second read waits on the first (#2422).
     const calls = api.loadOutcomes.mock.calls.filter((c) => sectionsOf(c).join(',') === 'buckets,totals')
-    expect(calls.length).toBe(1)
+    expect(calls.length).toBe(2)
+    expect(api.loadOutcomes.mock.calls.filter((c) => sectionsOf(c).includes('coverage')).length).toBe(0)
   })
 })
 

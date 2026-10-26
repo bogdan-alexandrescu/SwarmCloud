@@ -262,7 +262,7 @@ describe('QA-060: the Overview count note never leaves its `?` alone on a line',
     const tally = note.querySelector<HTMLElement>(':scope > .ov-tally')!
     // MUTATION: render the tenant as bare text again -- it can then break inside "tenant u-bogdan".
     expect(scope, 'the tenant is not one unit').not.toBeNull()
-    expect(text(scope)).toMatch(/^tenant eng ·$/)
+    expect(text(scope)).toMatch(/^workspace eng ·$/)
     expect(tally.querySelector('.ctl-q-glyph, button, a'), 'the `?` is inside the tally').not.toBeNull()
     // MUTATION: drop `white-space: nowrap` from `.ov-tally` -- the `?` wraps away from "7/8 reads".
     expect(painted(tally, 'white-space', PHONE)).toBe('nowrap')
@@ -275,7 +275,7 @@ describe('QA-060: the Overview count note never leaves its `?` alone on a line',
     expect(painted(sep, 'display', PHONE)).toBe('none')
     expect(painted(sep, 'display', WIDE)).not.toBe('none')
     // The text a reader or a test reads is unchanged.
-    expect(text(note)).toMatch(/^tenant eng · \d+\/\d+ reads/)
+    expect(text(note)).toMatch(/^workspace eng · \d+\/\d+ reads/)
     // MUTATION: put the phone row back to `align-items: center` -- the refresh
     // floats between the note's two lines instead of sitting on its first.
     expect(painted(note.parentElement!, 'align-items', PHONE)).toBe('baseline')
@@ -331,8 +331,8 @@ describe('V141/V142: one picture per absence on the Overview cards', () => {
       capacity: ok({ pools: [pool('tenant:eng', 1, 5)], runner_profiles: {} } as Capacity),
     })
     const note = el.querySelector('.c-count-note')!
-    expect(text(note)).toMatch(/^tenant eng ·/)
-    expect(text(note)).not.toMatch(/tenant —/)
+    expect(text(note)).toMatch(/^workspace eng ·/)
+    expect(text(note)).not.toMatch(/workspace —/)
   })
 })
 
