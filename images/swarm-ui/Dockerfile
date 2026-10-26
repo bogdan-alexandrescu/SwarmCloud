@@ -114,9 +114,8 @@ FROM ${MIRROR_DOCKER_HUB}/${NGINX_IMAGE}
 # since 17:33Z.
 # PR #2130's build-check (run 40024164828, 2026-10-23) refused it over brotli-libs
 # 1.2.0-r1 (CVE-2026-111497, HIGH, fixed in 1.2.1-r0); same reason, same fix.
-# PR #2407's build-check (run 40260626123, 2026-10-26) refused it over curl and
-# libcurl 8.22.0-r0 (CVE-2026-92392, HIGH, fixed in 8.23.0-r0); same reason,
-# same fix.
+# PR #2390's build-check (run 40260439312, 2026-10-26) refused it over curl and
+# libcurl 8.22.0-r0 (CVE-2026-92392, HIGH, fixed in 8.23.0-r0); same reason, same fix.
 USER root
 # APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
 # main build and release), so the upgrade below is never an older build's
