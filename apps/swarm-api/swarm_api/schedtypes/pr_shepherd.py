@@ -73,6 +73,16 @@ nonce lines. It is submitted only when:
     naming another tenant's task names nothing here (invariant 9);
   * the head is in the base repository (not a fork) and the run has no CI
     fix round in progress (`FIXING`): two pushers on one branch race;
+  * no other CI fix on this pull request is live: a non-terminal task
+    continuing the integrator with `metadata.ci_fix` (scripts/ci-fix.sh) or
+    a merge step's `merge_fix_round` naming it, or a `ci_fix` claim still
+    being submitted (`cifix.live_pr_writer`). The run is not `FIXING` for
+    those. Measured 2026-10-26 on PR #2381: a CI fix (task_2f5b70aa, 01:21Z)
+    and this type's conflict fix (task_2239a847, 01:23Z) both cloned
+    15cc7ea, and the conflict fix's push was rejected non-fast-forward. It
+    is passed over with no fix and no comment, as for `FIXING`; the next
+    firing reads again once that fix is done and the head has moved.
+    `cifix.stamp` refuses the other order, a CI fix beside a live conflict fix;
   * no conflict fix was submitted for this head already
     (`metadata.pr_shepherd.head_sha`, under this tenant), so a fix that
     pushed nothing is not repeated every firing;
@@ -115,7 +125,7 @@ from urllib.parse import quote
 
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from .. import refusals, scheduletypes
+from .. import cifix, refusals, scheduletypes
 from ..errors import ApiError, Forbidden
 from ..forge import NoForgeCredential, github_headers, neutral_line
 from ..forgechecks import RED
@@ -779,6 +789,14 @@ def _plan_one(firing: Any, params: Any, writer: GitHubWriter, token: str, repo: 
                 plan.conflict = None
             elif run.state == RunState.FIXING:
                 plan.pass_over("conflict_fix", "fix_round_live: the run's CI fix round owns the branch")
+                plan.conflict = None
+            elif (writer_live := cifix.live_pr_writer(
+                    firing.ctx.db, str(firing.schedule["tenant_id"]), run.pr_task_id or "",
+                    pull.number, kinds=(cifix.CI_FIX_METADATA_FIELD, "merge_fix_round"),
+                    now=firing.now)) is not None:
+                plan.pass_over("conflict_fix",
+                               f"fix_live: a CI fix ({writer_live['task_id'] or 'being submitted'}) "
+                               "owns the branch")
                 plan.conflict = None
             elif fix_submitted(firing.ctx.db, str(firing.schedule["tenant_id"]), repo,
                                pull.number, plan.head_sha):
