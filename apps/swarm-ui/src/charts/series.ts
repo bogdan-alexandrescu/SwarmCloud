@@ -24,8 +24,8 @@ import { currentZone, formatClock, formatDateTime, startOfDay, zoneLabel } from 
  * One point of a series.
  *
  * `at` is a position in milliseconds on the chart's time axis: an epoch
- * instant for `TimeSeries`, whose axis is drawn in UTC (`clockTicks`
- * below is what puts an axis on the person's zone instead), or milliseconds
+ * instant for `TimeSeries`, whose axis is drawn on the person's zone
+ * (`clockTicks`, `clockTickText` and `axisZone` below), or milliseconds
  * since a stated origin for a T+n chart (`PeakMemory.tsx` measures from the
  * attempt's `started_at`, and says so on its axis). It is present on BOTH
  * arms on purpose: when a cost was not reported, the *time* of the attempt is
