@@ -390,7 +390,7 @@ run "the_infra_root_sets_36_for_swarm_api_and_nothing_else" {
 # worker reads as api_unavailable, and the publish fails exactly as the
 # worker-side 10 s timeout made it fail. 660s is the deadline plus 60 s for the
 # bundle and the answer, and equals the worker's
-# gittools.GIT_CALL_TIMEOUT_SECONDS. Read from the root's text, as the
+# agent_worker.gittools.GIT_CALL_TIMEOUT_SECONDS. Read from the root's text, as the
 # startup_failure_threshold run above does.
 run "the_infra_root_gives_swarm_api_a_request_timeout_above_the_git_call_deadline" {
   command = plan
