@@ -24,6 +24,9 @@
 #     repo-relative path or its basename. A basename in GENERIC_BASENAMES
 #     (`__init__.py`, `package.json`, ...) selects by full path only: by name
 #     alone it would select half the suite;
+#   * every tests/unit/**/test_*.py whose text names a docs/**/*.md that cites
+#     a changed non-doc path by its FULL path, one level deep (#2299): a test
+#     that resolves a doc's citation names only the doc;
 # then runs them in ONE `pytest -q -n auto -p no:warnings` call, followed by
 # scripts/lib/check-contract-parity.sh. An empty diff runs nothing.
 #
@@ -304,6 +307,30 @@ while IFS= read -r path; do
       fi ;;
   esac
 done <"${work}/changed"
+
+# A doc that cites a changed non-doc path by its full path counts as changed,
+# one level deep (#2299; select_unit_tests.py's doc_closure says why). A
+# changed doc cites nothing in, so a docs-only diff selects what it did.
+grep -vE '^docs/|\.md$' "${work}/changed" >"${work}/cited" || true
+: >"${work}/citing-docs"
+if [[ -s "${work}/cited" && -d "${REPO_ROOT}/docs" ]]; then
+  status=0
+  (cd "${REPO_ROOT}" && grep -rlF -f "${work}/cited" --include='*.md' \
+    --exclude-dir=node_modules --exclude-dir=.venv --exclude-dir=__pycache__ docs) \
+    >"${work}/citing-docs" || status=$?
+  if [[ "${status}" -gt 1 ]]; then
+    err "grep could not search docs/"
+    exit 2
+  fi
+fi
+while IFS= read -r doc; do
+  printf '%s\n' "${doc}" >>"${work}/patterns"
+  name="${doc##*/}"
+  case "${GENERIC_BASENAMES}" in
+    *" ${name} "*) ;;
+    *) printf '%s\n' "${name}" >>"${work}/patterns" ;;
+  esac
+done <"${work}/citing-docs"
 
 status=0
 (cd "${REPO_ROOT}" && grep -rlF -f "${work}/patterns" --include='test_*.py' tests/unit) \

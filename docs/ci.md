@@ -3606,19 +3606,53 @@ from them.
 The weights go stale as tests are added and change — the split stays correct
 (every file still runs exactly once, an unknown one at the median weight) but
 drifts out of balance. Every shard on `main` uploads what it measured, per
-file, as the artifact `unit-durations-<k>` (30 days). To refresh, from a green
-push run on `main`:
+file, as the artifact `unit-durations-<k>` (30 days).
+
+**Stale weights warn; they do not fail (#2364).** `test_unit_shards.py` used to
+fail when fewer than 80 % of the test files had a weight. The file was
+refreshed only by hand, so the test files that landed between refreshes pushed
+coverage under the floor (1069 of 1337 weighted) and turned main and every
+pull request red — over a staleness that only unbalances the split. Now
+`scripts/lib/unit_shards.py count` compares the weighted share of the files the
+run selects with `WEIGHT_COVERAGE_WARN` (0.8) and, below it, writes a
+`::warning` and a step-summary line and carries on.
+`test_stale_weights_warn_and_still_split_within_budget` holds that a quarter
+unweighted still exits 0 with every shard within budget. The test still fails
+hard on a malformed file: a key that is not a `tests/unit/**.py` path, or a
+weight that is not a positive number. It also holds the split to within 10 % of
+an even share.
+
+**To refresh**, one command, then review the diff and open a pull request with
+the file:
 
 ```bash
-run="$(gh run list --workflow application.yml --branch main --event push --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
-gh run download "$run" -p 'unit-durations-*' -D /tmp/unit-durations
-jq -S -s 'add' /tmp/unit-durations/*/unit-durations.json > tests/unit/scripts/unit_test_durations.json
+scripts/refresh-unit-weights.sh            # or --run <id> for a given run
 ```
 
-and open a pull request with the file. Only the weights' ratios matter, so CI's
-seconds replacing a container's is fine. `test_unit_shards.py` fails when fewer
-than 80 % of the test files have a weight, and holds the split to within 10 %
-of an even share.
+It finds the newest successful `push` run of `application.yml` on `main` that
+has `unit-durations-*` artifacts. A push run that skipped `python-unit`,
+because a run of the identical tree had already passed, uploads none, so it
+walks back through the last 20 (`--limit`). It downloads them and hands them
+to `scripts/lib/merge_unit_weights.py`. That replaces the old
+`jq -S -s add`, which dropped every file the run had not measured and kept
+every deleted one:
+
+* a measured weight replaces the stored one;
+* a file that no longer exists is dropped;
+* a file that exists but was not measured keeps its stored weight;
+* a measured path that is not an existing `tests/unit/**.py` is ignored.
+
+The output is sorted, indent-1 JSON with a trailing newline, the shards' own
+artifact format, so a refresh with nothing new changes no byte (the first
+refresh after this rewrites the indentation from jq's two spaces). A download
+with no `unit-durations.json`, or a malformed one, exits 1 and writes nothing:
+an unread download is never "nothing to refresh". Only the weights' ratios
+matter, so CI's seconds replacing a container's is fine.
+
+Like `scripts/refresh-ui-weights.sh`, the script changes no workflow. A
+scheduled workflow that runs it and opens the pull request with the merge
+App's token lives under `.github/workflows/`, which only swarm-api can push,
+so it is proposed separately rather than here.
 
 ### Where pull-request CI time goes (2026-10-09)
 
@@ -4024,6 +4058,15 @@ says the change reaches, which are
   (a change to `scripts/lib/common.sh` reaches the tests of every script that
   sources it), and a generic basename (`Dockerfile`, `__init__.py`) only
   beside one of its directories' names;
+* every test naming a doc that cites a changed path (`doc_closure`): a
+  `docs/**/*.md` that names a changed non-doc path by its **full**
+  repo-relative path counts as changed, one level deep (#2299). PR #2267 moved
+  `PushTestCell` out of `Access.tsx` while `docs/onboarding.md` still cited it
+  there; the tests that resolve that citation name only `onboarding.md`, so no
+  rule picked them and main's push went red. Full path only, because a
+  basename (`App.tsx`, `main.py`) is shared by many files; never from a changed
+  doc, because 55 docs cite `CLAUDE.md` and following them would make a
+  docs-only change select hundreds of files;
 * when the change also touches `docs/` or `apps/swarm-ui/`, the pick step's
   own area readers, as a docs-only change picks them.
 
@@ -4754,7 +4797,10 @@ but only its doc guards for a docs-only diff, below), every
 changed `tests/unit/**/test_*.py`, and every `tests/unit/**/test_*.py` whose
 text names a changed path by repo-relative path or basename. A generic basename
 (`__init__.py`, `package.json`, …) selects by full path only, or it would pick
-half the suite. It runs them in **one** `pytest -q -n auto -p no:warnings` call
+half the suite. A `docs/**/*.md` that cites a changed non-doc path by its full
+path adds its own path and basename to what a test may name (#2299, the
+selector's `doc_closure` above): a test that resolves a doc's citations names
+the doc, not the file it cites. It runs them in **one** `pytest -q -n auto -p no:warnings` call
 (collecting `tests/unit/scripts` whole costs ~135 s, so files, not
 directories), then `scripts/lib/check-contract-parity.sh`, with 540 s and 60 s
 deadlines so one call stays under the ten minutes a lane allows a command. It
