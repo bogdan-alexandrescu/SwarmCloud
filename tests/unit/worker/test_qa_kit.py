@@ -292,16 +292,42 @@ def test_playwright_mcp_saves_its_screenshots_in_the_tasks_artifacts(monkeypatch
     assert args[args.index("--output-dir") + 1] == str(tmp_path / "artifacts" / "screenshots")
 
 
-def test_nothing_in_playwright_mcps_registration_turns_image_responses_off(monkeypatch, tmp_path):
-    """@playwright/mcp 0.0.83 sends a screenshot back as an image unless
-    `--image-responses omit` (or its environment variable) says otherwise, and
-    only for a screenshot taken WITHOUT a filename -- which the note asks for."""
+def test_playwright_mcp_omits_image_responses_in_every_parent_session(monkeypatch, tmp_path):
+    """TOKEN-RENDER (BGD 2026-10-27, part of #2524): @playwright/mcp 0.0.83
+    sends a screenshot back as an image unless `--image-responses omit` says
+    otherwise, and an image in a tool result stays in the session's context
+    for every later turn (up to 15.7 MB of tool results in one lane). So
+    every session the runner starts registers Playwright with `omit`: the
+    screenshot is still saved under `--output-dir`, and its bytes never
+    return into the context."""
     seen, _ = _run_body(monkeypatch, tmp_path)
     server = seen["mcp"]["playwright"]
-    assert not any(a.startswith("--image-responses") for a in server["args"])
+    args = server["args"]
+    assert args[args.index("--image-responses") + 1] == "omit"
     assert "PLAYWRIGHT_MCP_IMAGE_RESPONSES" not in (server.get("env") or {})
     # `--caps` would widen the tool set (storage state into the artifacts).
-    assert not any(a.startswith("--caps") for a in server["args"])
+    assert not any(a.startswith("--caps") for a in args)
+
+
+def test_image_responses_are_omitted_with_or_without_a_screenshots_directory(tmp_path):
+    from agent_worker.runners import claude_code
+
+    for screenshots in (None, str(tmp_path / "shots")):
+        path = claude_code.write_mcp_config(tmp_path / "settings", ENDPOINT, screenshots_dir=screenshots)
+        args = json.loads(Path(path).read_text())["mcpServers"]["playwright"]["args"]
+        assert args[args.index("--image-responses") + 1] == "omit", screenshots
+
+
+def test_the_note_says_a_screenshot_does_not_come_back_as_an_image(monkeypatch, tmp_path):
+    from agent_worker.runners import claude_code
+
+    note = claude_code.LIVE_BROWSER_NOTE
+    assert "comes back to you as an image" not in note
+    assert "does not come back to you as an image" in note
+    # A review judges its frames in one Sonnet child per screen, and the
+    # parent reads only the crop of a frame over the compare threshold.
+    assert "Sonnet child per screen" in note
+    assert "only the crop" in note
 
 
 def test_the_instructions_name_the_presets_the_theme_command_and_why_resize_is_refused(monkeypatch, tmp_path):
