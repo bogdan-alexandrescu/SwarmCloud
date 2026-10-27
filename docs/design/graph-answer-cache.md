@@ -101,7 +101,7 @@ the two apart.
 | an API action inside swarm-api | nothing new to deploy | swarm-api is Cloud Run, serving requests. The battery would measure swarm-api's own load, and it would need the whole snapshot fetched from GCS into a request handler |
 | swarm-api calling the live swarm-graph service | measures what agents see | swarm-graph admits only tenant namespaces (NetworkPolicy `swarm-graph-ingress`, graph-service.md §2.1), and swarm-api would need a ticket minted for itself. It also measures a warm cache, not the product (§1.1) |
 | a new runner profile, for example `graph-probe` | a clean, separate pod | `RUNNER_PROFILES` is in the frozen `apps/common/swarm_common/profiles.py`, so this is a contract change (rule 1) for a 40-second job |
-| a `claude-code` task agent | an existing profile | a model is paid to run a deterministic script. SD8 (schedules.md §2.7) rejected exactly this: "A deterministic API call does not need a model" |
+| one `claude-code` agent, submitted as a schedule's `task` work | an existing profile | a model is paid to run a deterministic script. SD8 (schedules.md §2.7) rejected exactly this: "A deterministic API call does not need a model" |
 | GitHub Actions cron | already where CI runs | GitHub fired 2-6% of this repository's frequent cron schedules (#1840, the 2026-10-21 analysis). A report that runs 1 time in 20 is one nobody reads |
 
 **What the indexer does.** The indexer image is built `FROM` the digest-pinned
@@ -536,7 +536,7 @@ per-repository reading is a Logs Analytics query over the same events.
    * (a) In the indexer at promotion, opt-in per registration, at most once
      every 24 h (§1.2).
    * (b) A new runner profile `graph-probe`, which is a frozen-contract change.
-   * (c) A `claude-code` task agent, which pays a model for a script.
+   * (c) One `claude-code` agent, which pays a model for a script.
    * (d) A Cloud Run job of its own.
 
    **Recommended: (a).** It needs no contract change, no model, no GCS read and
