@@ -650,3 +650,37 @@ describe('visual QA VQA2-R5', () => {
     expect(said.length - folded).toBe(1)
   })
 })
+
+// PERM-DOT (#1086; BGD 2026-10-27, "Green dot"). An accepted permission draws
+// the green dot the issue asked for, in the `--ok` token the liveness dot
+// already uses, where it drew the grey check; a gap keeps its red diamond and
+// its Review link, and a neutral row its flat bar.
+describe('PERM-DOT: an accepted permission draws a green dot, not the grey check', () => {
+  it('draws the dot on every ok row of the grants table, and no check', async () => {
+    routes(() => answer())
+    await mountSection()
+    await waitFor(() => expect(cardNamed('example-org')).toBeDefined(), WAIT)
+    const card = cardNamed('example-org')!
+    fireEvent.click(card.querySelector('button[aria-expanded]')!)
+    const rows = Array.from(card.querySelectorAll<HTMLElement>('.fp-grants tbody tr[data-ok="true"]'))
+    expect(rows.length).toBe(7)
+    for (const r of rows) {
+      const mark = r.querySelector<HTMLElement>('td.fp-mark')!
+      expect(mark.querySelector('.fp-ok-dot')).not.toBeNull()
+      expect(mark.querySelector('[data-mark="succeeded"]')).toBeNull()
+      expect(visible(mark.querySelector('.fp-sr'))).toBe('enough')
+    }
+  })
+
+  it('keeps the red mark and the Review link on a row that is not accepted', async () => {
+    routes(() => answer({ gap: true }))
+    await mountSection()
+    await waitFor(() => expect(cardNamed('example-org')?.querySelector('.fp-body')).not.toBeNull(), WAIT)
+    const card = cardNamed('example-org')!
+    const mark = card.querySelector<HTMLElement>('.fp-grants tr[data-permission="statuses"] td.fp-mark')!
+    expect(mark.querySelector('.fp-ok-dot')).toBeNull()
+    expect(mark.querySelector('[data-tone="bad"]')?.getAttribute('data-hue')).toBe('bad')
+    expect(card.querySelector('.fp-grants tr[data-permission="contents"] td.fp-mark .fp-ok-dot')).not.toBeNull()
+    expect(Array.from(card.querySelectorAll('a')).find((a) => visible(a) === 'Review on GitHub')?.getAttribute('href')).toBe(REVIEW)
+  })
+})

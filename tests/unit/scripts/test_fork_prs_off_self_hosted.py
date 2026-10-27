@@ -671,7 +671,7 @@ def _reason_holds(reason: str, job: dict, workflow_permissions: object) -> bool:
     if reason == JUDGE:
         return any(
             u.startswith("actions/create-github-app-token@")
-            and "permission-variables" in (s.get("with") or {})
+            and "permission-actions-variables" in (s.get("with") or {})
             for s in job.get("steps") or []
             for u in [str(s.get("uses", ""))]
         )

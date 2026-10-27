@@ -81,6 +81,7 @@ from __future__ import annotations
 import functools
 import os
 import resource
+import signal
 import threading
 import time
 from collections import deque
@@ -103,6 +104,16 @@ POINTS_KEPT = 60
 
 #: Fraction of the memory limit above which an attempt is a near miss.
 NEAR_MISS_FRACTION = 0.90
+
+#: Fraction of cgroup `memory.max` at which the sampler kills the agent's
+#: largest process (#2504). Above `NEAR_MISS_FRACTION`, which only reports, and
+#: below the limit, where the kernel's OOM killer takes the whole container --
+#: worker included -- so the attempt ends `lost_worker` with nothing recorded.
+#: Five claude-code attempts (f-013, f-014, f-039, f-040, f-041) ended that way
+#: on an agent's pytest, tsc or dev server. At 95% of an 8 GiB container the
+#: guard acts with ~400 MiB still free, two sample intervals before a burst
+#: that fills the rest would.
+MEMORY_GUARD_FRACTION = 0.95
 
 
 @dataclass
@@ -135,6 +146,9 @@ class ResourceUsage:
     #: how long it ran rather than averaging two runners' means.
     cpu_periods: int | None = None
     throttled_periods: int | None = None
+    #: Processes the memory guard killed (`ResourceSampler`, #2504). A count,
+    #: not the processes: the worker logs each one as it drains them.
+    memory_guard_kills: int = 0
 
     def merge_rss(self, value: int) -> None:
         self.peak_rss_bytes = max(self.peak_rss_bytes, int(value))
@@ -162,6 +176,7 @@ def combine_usage(parts: Sequence[ResourceUsage]) -> ResourceUsage | None:
     * Throttling the same way: `throttled_seconds` and the periods add up,
       the peak share is the highest, and the mean is throttled periods over
       all periods -- None only when no runner read the counters.
+    * `memory_guard_kills` adds up: each runner's guard killed its own.
     * `memory_events` is the latest part's that has any: cgroup counters are
       the container's own running totals, so the latest already includes
       every runner before it.
@@ -182,6 +197,7 @@ def combine_usage(parts: Sequence[ResourceUsage]) -> ResourceUsage | None:
         if part.memory_events:
             out.memory_events = dict(part.memory_events)
         out.samples += int(part.samples)
+        out.memory_guard_kills += int(part.memory_guard_kills)
         if part.cpu_source is not None:
             out.cpu_source = part.cpu_source
         cpu, wall = part.cpu_seconds, part.cpu_wall_seconds
@@ -471,6 +487,80 @@ def _proc_stat(entry: Path) -> tuple[int, int, int]:
     return int(entry.name), int(fields[1]), sum(int(value) for value in fields[11:15])
 
 
+@dataclass(frozen=True)
+class ProcessInfo:
+    """One process as the memory guard sees it. The command name, never argv:
+    an argv can carry a secret, and a kill is logged."""
+
+    pid: int
+    ppid: int
+    pgid: int
+    rss_bytes: int
+    name: str
+
+
+def _proc_ids(entry: Path) -> tuple[int, int, int, str]:
+    """(pid, ppid, pgid, command name) from /proc/<pid>/stat.
+
+    Split after the LAST ')' as `_proc_stat` does: ppid is field 4 and pgid
+    field 5, indices 1 and 2 of what follows. The name is between the first
+    '(' and that last ')'.
+    """
+    raw = (entry / "stat").read_text()
+    close = raw.rindex(")")
+    fields = raw[close + 2 :].split()
+    return int(entry.name), int(fields[1]), int(fields[2]), raw[raw.index("(") + 1 : close]
+
+
+def proc_process_table() -> list[ProcessInfo]:
+    """Every process in /proc with its parent, group and RSS; [] without procfs."""
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return []
+    out: list[ProcessInfo] = []
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            pid, ppid, pgid, name = _proc_ids(entry)
+        except (OSError, ValueError, IndexError):
+            continue  # exited between the listing and the read
+        out.append(ProcessInfo(pid=pid, ppid=ppid, pgid=pgid, rss_bytes=_proc_rss(pid), name=name))
+    return out
+
+
+def memory_guard_victim(table: Sequence[ProcessInfo], runner_pid: int) -> ProcessInfo | None:
+    """The agent process to sacrifice: the largest-RSS one of the runner's.
+
+    The runner's are its descendants by parent pid and the members of its
+    process group (procman starts it with `start_new_session`, so the group is
+    the runner's own; a dev server that double-forks to init stays in it).
+    Never this worker, the runner, or the runner's direct children -- the
+    agent CLI, whose death ends the attempt as surely as the OOM killer would.
+    None when nothing is left to choose.
+    """
+    by_pid = {p.pid: p for p in table}
+    children: dict[int, list[int]] = {}
+    for p in table:
+        children.setdefault(p.ppid, []).append(p.pid)
+    runner = by_pid.get(runner_pid)
+    group = runner.pgid if runner is not None else runner_pid
+    agents: set[int] = {p.pid for p in table if p.pgid == group}
+    stack, seen = [runner_pid], set()
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        agents.add(pid)
+        stack.extend(children.get(pid, ()))
+    protected = {os.getpid(), runner_pid, *children.get(runner_pid, ())}
+    candidates = [by_pid[pid] for pid in agents - protected if pid in by_pid and by_pid[pid].rss_bytes > 0]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: (p.rss_bytes, p.pid))
+
+
 def process_tree_cpu_seconds(root_pid: int) -> float | None:
     """CPU seconds used by `root_pid` and every live descendant. None without procfs.
 
@@ -601,6 +691,12 @@ class ResourceSampler:
         clock: Callable[[], float] = time.monotonic,
         point_seconds: float = POINT_SECONDS,
         series_origin: float | None = None,
+        memory_guard_fraction: float = MEMORY_GUARD_FRACTION,
+        memory_guard_cooldown_seconds: float | None = None,
+        memory_current_reader: Callable[[], int | None] = cgroup_memory_current,
+        memory_max_reader: Callable[[], int | None] = cgroup_memory_max,
+        process_table: Callable[[], Sequence[ProcessInfo]] = proc_process_table,
+        kill: Callable[[int, int], None] = os.kill,
     ) -> None:
         self._pid_provider = pid_provider
         self._disk_provider = disk_provider
@@ -633,6 +729,24 @@ class ResourceSampler:
         self._point_base: tuple[float, float | None, CpuThrottling | None] | None = None
         self._points: deque[dict[str, Any]] = deque(maxlen=POINTS_KEPT)
         self._points_lock = threading.Lock()
+        # The memory guard (#2504); see `_guard_memory`. Judged against the
+        # kernel's own `memory.max`, never `memory_limit_bytes`: the sized
+        # class is what the near miss reports against, and a guard that killed
+        # on it where the cgroup has no limit would kill on a guess.
+        self._guard_fraction = memory_guard_fraction
+        #: Two sample intervals by default: a SIGKILLed process's memory is
+        #: freed by the kernel, not at once, and the reading just after a kill
+        #: would otherwise take a second process for the first one's pages.
+        self._guard_cooldown = (
+            2 * interval_seconds if memory_guard_cooldown_seconds is None else memory_guard_cooldown_seconds
+        )
+        self._guard_quiet_until: float | None = None
+        self._memory_current_reader = memory_current_reader
+        self._memory_max_reader = memory_max_reader
+        self._process_table = process_table
+        self._kill = kill
+        self._guard_kills: list[dict[str, Any]] = []
+        self._guard_lock = threading.Lock()
 
     def _meter(self) -> CpuMeter:
         if self._cpu_meter is None:
@@ -802,7 +916,55 @@ class ResourceSampler:
         except OSError:
             pass
         self._sample_cpu()
+        self._guard_memory()
         self.usage.samples += 1
+
+    def _guard_memory(self) -> None:
+        """At `memory_guard_fraction` of `memory.max`, SIGKILL the agent's largest process.
+
+        The kernel's OOM killer, left to act, took the whole container and the
+        worker with it (#2504). Killing the agent's biggest process -- its
+        pytest, tsc or dev server -- costs the agent one command it can see
+        fail and rerun smaller; the worker survives to checkpoint and record.
+        Never the worker, the runner or the CLI (`memory_guard_victim`). One
+        kill per cooldown. Never raises: the sampler thread must survive.
+        """
+        try:
+            current = self._memory_current_reader()
+            limit = self._memory_max_reader()
+            if current is None or not limit or current < limit * self._guard_fraction:
+                return
+            now = self._clock()
+            if self._guard_quiet_until is not None and now < self._guard_quiet_until:
+                return
+            runner = self._pid_provider()
+            if not runner:
+                return
+            victim = memory_guard_victim(self._process_table(), runner)
+            if victim is None:
+                return
+            self._kill(victim.pid, signal.SIGKILL)
+            self._guard_quiet_until = now + self._guard_cooldown
+            self.usage.memory_guard_kills += 1
+            with self._guard_lock:
+                self._guard_kills.append(
+                    {
+                        "pid": victim.pid,
+                        "name": victim.name,
+                        "rss_bytes": victim.rss_bytes,
+                        "memory_current_bytes": current,
+                        "memory_max_bytes": limit,
+                    }
+                )
+        except Exception:
+            return
+
+    def drain_guard_kills(self) -> list[dict[str, Any]]:
+        """The memory guard's kills since the last drain, oldest first; each served once."""
+        with self._guard_lock:
+            out = list(self._guard_kills)
+            self._guard_kills.clear()
+        return out
 
     def _run(self) -> None:
         # Two cadences on one thread: the 2 s sample behind the peaks, and the
@@ -878,6 +1040,7 @@ class LoggingMetricsExporter:
             peak_cpu_cores=_rounded(usage.peak_cpu_cores),
             mean_cpu_cores=_rounded(usage.mean_cpu_cores),
             cpu_source=usage.cpu_source,
+            memory_guard_kills=usage.memory_guard_kills,
             **labels,
         )
 

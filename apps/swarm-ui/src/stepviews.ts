@@ -1451,7 +1451,7 @@ function failedParentOf(
 }
 
 /** The parents, in `depends_on` order, that have not succeeded yet. */
-function unfinishedParentsOf(
+export function unfinishedParentsOf(
   step: WorkflowStep,
   steps: readonly WorkflowStep[],
   taskById: ReadonlyMap<string, Task> | null,

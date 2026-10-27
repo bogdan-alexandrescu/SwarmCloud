@@ -1355,6 +1355,10 @@ artifact. The evidence is the price: with no change and no `verification.md`
 (or a blank one), the `empty_diff` or `published_nothing:` failure above is
 unchanged. "No change" is the same harvest measurement as for the flag, and an
 integrator still owed its contributors' merge is still never `no_change`.
+Every repository prompt's platform paragraph (`cliagent.PUBLISH_PARAGRAPH`)
+names `$SWARM_ARTIFACTS_DIR/verification.md` for this case (#2140): before it
+did, build-170 found its issue built, wrote `pr-body.md` and no
+`verification.md`, and failed `published_nothing`.
 
 ### The steps that needed the change are SKIPPED
 

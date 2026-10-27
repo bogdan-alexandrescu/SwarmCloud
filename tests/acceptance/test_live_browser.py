@@ -43,6 +43,15 @@ SKIP as everywhere else), and writes the state it settled on to
 anything that needs the task to have ended. The credentials are handed over
 as files, read once and deleted.
 
+`--qa-identity` judges a second task the same way (QI-ACCEPT,
+docs/design/qa-identity.md §6, part of #1649): a `claude-code-browser`
+agent whose input names `qa_identity: "console"` lands on the console's
+Overview signed in as the QA identity, its hand-off on the console host is
+refused `qa_identity_host`, the same submission from an ungranted tenant is
+refused `qa_identity_not_granted`, and no credential's shape is in anything
+the task left. `qa-identity-submission <console-url>` prints that task's
+POST /v1/tasks body. Its checks are QA_IDENTITY_CHECKS.
+
 The results file gets one JSON line per check, in CHECKS order:
 `{"check": key, "verdict": "PASS"|"FAIL"|"SKIP", "reason": "..."}`.
 """
@@ -52,6 +61,7 @@ from __future__ import annotations
 import argparse
 import base64
 import functools
+import gzip
 import hashlib
 import json
 import os
@@ -778,11 +788,13 @@ class Config:
     other_tenant: str | None
     credential: str
     gcs_token: str | None
+    console_url: str | None = None
 
 
 class Results:
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, checks: tuple[str, ...] = CHECKS) -> None:
         self.path = path
+        self.checks = checks
         self.written: dict[str, str] = {}
 
     def put(self, check: str, verdict: str, reason: str) -> None:
@@ -794,7 +806,7 @@ class Results:
         log(f"{verdict} {check}: {reason}")
 
     def rest(self, verdict: str, reason: str) -> None:
-        for check in CHECKS:
+        for check in self.checks:
             self.put(check, verdict, reason)
 
 
@@ -1502,6 +1514,354 @@ def test_a_settle_that_stopped_short_is_judged_by_its_state_and_park_reason() ->
         assert all(word in reason for word in words), (state, reason)
 
 
+# --------------------------------------------------------------------------
+# QI-ACCEPT: the QA identity signs the agent's browser in to the console
+# --------------------------------------------------------------------------
+#
+# docs/design/qa-identity.md §6 row 6 (part of #1649). A second
+# `claude-code-browser` task, in a tenant a platform admin has granted the
+# QA identity, names `qa_identity: "console"`. Its live gate then adds the
+# QA account's IAP credential to the console's requests, so the console
+# opens signed in, and refuses a hand-off on the console host
+# (`qa_identity_host`): a person's own sign-in would hand the agent their
+# workspaces. The same shape as the hand-off case: the group submits the task
+# (`qa_identity_submission`) and settles it; this process judges it.
+#
+#   qa_signed_in          the agent's first navigation to the console ends on
+#                         the console's own host, on its Overview, with no
+#                         Google sign-in page in between
+#   qa_handoff_refused    `swarm-handoff request` there exits 5 with
+#                         `qa_identity_host`, and the task has no hand-off event
+#   qa_ungranted_refused  the same submission from another tenant is refused
+#                         at submission, 403 `qa_identity_not_granted`
+#   qa_no_leak            no credential, by its shape, is in the task's
+#                         transcript, logs, outputs, recordings, checkpoints,
+#                         API documents or events
+#
+# THE CREDENTIAL NEVER REACHES THIS PROCESS: swarm-api signs it for the
+# attempt and the gate holds it. So the sweep looks for what any credential
+# looks like (a JWT, a Bearer value, the proxy credential header's name),
+# never for a value. A checkpoint archives the agent's workspace, whose clone
+# can hold documents that name the header, so checkpoints are read for values
+# only, never for the header's name. No pattern below is written whole, so
+# this file, read from a clone, never matches itself.
+
+#: The QA identity case's checks, in the order the group lists them.
+QA_IDENTITY_CHECKS = ("qa_signed_in", "qa_handoff_refused", "qa_ungranted_refused", "qa_no_leak")
+#: The catalogue's one choice (`claude-code-browser` declares `qa_identity`).
+QA_IDENTITY = "console"
+QA_PROFILE = "claude-code-browser"
+#: What the agent writes under $SWARM_ARTIFACTS_DIR: what it saw, and what
+#: the hand-off answered.
+QA_OUTPUT = "qa-console.json"
+#: The gate's refusal of a hand-off on the console host (livegate/__main__.py).
+QA_HOST_REFUSAL = "qa_identity_host"
+#: swarm-api's refusal of an ungranted tenant (swarm_api/qa_identity.py).
+QA_NOT_GRANTED = "qa_identity_not_granted"
+#: The page an IAP sign-in that did not happen lands on.
+GOOGLE_SIGN_IN_HOST = "accounts.google.com"
+#: The console's first screen (apps/swarm-ui/src/App.tsx, SECTIONS).
+OVERVIEW = "Overview"
+#: The hand-off's exit codes (agent_worker/handoff.py: EXIT_REFUSED).
+HANDOFF_EXIT_REFUSED = 5
+
+#: What a credential looks like, each built from parts.
+_JWT = re.compile(("ey" + "J") + r"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}")
+_BEARER = re.compile(r"(?i)\b" + "bear" + r"er\s+[A-Za-z0-9._~+/-]{20,}")
+_PROXY_HEADER = re.compile(r"(?i)\b" + "proxy-" + "authorization" + r"\b")
+
+
+def qa_identity_prompt(console_url: str) -> str:
+    """What the QA identity's agent is asked. Every step is spelled out
+    because a check reads each: one navigation, nothing typed, the hand-off
+    tried once and never waited on, and the report file."""
+    console = console_url.rstrip("/") + "/"
+    return (
+        "Check that this browser is signed in to the SwarmCloud console, and that a hand-off "
+        "is refused there. Never type into any page and never ask a person for anything else. "
+        "1) In a Python script using Playwright, connect to the platform browser with "
+        'p.chromium.connect_over_cdp(os.environ["SWARM_CDP_ENDPOINT"]), take browser.contexts[0] '
+        f"and its first page (or a new page), goto {console} with wait_until=\"networkidle\" and "
+        "a 60000 ms timeout, then wait 5 s. Read page.url, page.title() and the inner text of "
+        "the body (its first 4000 characters), and end the script without closing the page or "
+        "the browser. 2) Run once: swarm-handoff request --reason \"QA identity acceptance: a "
+        "hand-off on the console\". Note its exit status and the \"code\" field of the JSON it "
+        "printed (null when there is none). Never run swarm-handoff wait. 3) Write to "
+        f"$SWARM_ARTIFACTS_DIR/{QA_OUTPUT} one JSON object with the keys url, title, text, "
+        "handoff_exit and handoff_code, and reply with only that JSON."
+    )
+
+
+def qa_identity_submission(prompt: str) -> dict:
+    """POST /v1/tasks's body for the QA identity's task. One attempt: a second
+    would ask for the hand-off again and add nothing to the verdict."""
+    return {"runner_profile": QA_PROFILE, "input": {"prompt": prompt, "qa_identity": QA_IDENTITY},
+            "max_attempts": 1}
+
+
+def _report(raw: bytes | None) -> dict | None:
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw.decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def judge_signed_in(raw: bytes | None, console_url: str) -> tuple[str, str]:
+    """The agent's report, judged: it landed on the console's own host, on
+    the Overview, and not on Google's sign-in page."""
+    report = _report(raw)
+    if report is None:
+        return "FAIL", f"the agent wrote no readable {QA_OUTPUT}"
+    url = report.get("url") if isinstance(report.get("url"), str) else ""
+    text = report.get("text") if isinstance(report.get("text"), str) else ""
+    want = urllib.parse.urlsplit(console_url).hostname
+    got = urllib.parse.urlsplit(url).hostname
+    if got == GOOGLE_SIGN_IN_HOST or "Sign in with Google" in text:
+        return "FAIL", (f"the console sent the browser to Google's sign-in ({got}): the gate did not "
+                        "add the QA identity's credential, or IAP refused it")
+    if got != want:
+        return "FAIL", f"the first navigation to the console ended on {got!r}, not the console's {want!r}"
+    if OVERVIEW not in text:
+        return "FAIL", (f"the page on {got} did not show the {OVERVIEW} "
+                        f"({len(text)} characters read, title {report.get('title')!r})")
+    return "PASS", (f"the agent's first navigation to {want} landed on the console's {OVERVIEW}, signed "
+                    "in with no person's hand-off and no Google sign-in page")
+
+
+def judge_handoff_refused(report: dict | None, events: list[dict]) -> tuple[str, str]:
+    if report is None:
+        return "FAIL", f"the agent wrote no readable {QA_OUTPUT}, so the hand-off's answer is unknown"
+    asked = [e.get("type") for e in events if e.get("type") in HANDOFF_EVENTS]
+    exit_code, code = report.get("handoff_exit"), report.get("handoff_code")
+    if exit_code != HANDOFF_EXIT_REFUSED or code != QA_HOST_REFUSAL:
+        return "FAIL", (f"swarm-handoff request on the console exited {exit_code!r} with code {code!r}, "
+                        f"not {HANDOFF_EXIT_REFUSED} with {QA_HOST_REFUSAL}")
+    if asked:
+        return "FAIL", ("the gate refused the hand-off but the task recorded " + ", ".join(asked)
+                        + ": a hold was opened on the console host")
+    return "PASS", (f"swarm-handoff request on the console was refused {QA_HOST_REFUSAL} (exit "
+                    f"{HANDOFF_EXIT_REFUSED}) and the task has none of {', '.join(HANDOFF_EVENTS)}")
+
+
+def judge_ungranted(status: int, body: Any) -> tuple[str, str]:
+    code = None
+    if isinstance(body, dict):
+        code = body.get("code")
+        if code is None and isinstance(body.get("error"), dict):
+            code = body["error"].get("code")
+    if status == 403 and code == QA_NOT_GRANTED:
+        return "PASS", f"the submission was refused at submission, 403 {QA_NOT_GRANTED}"
+    if 200 <= status < 300:
+        return "FAIL", ("the submission was ACCEPTED: an ungranted tenant's agent may name the QA "
+                        "identity (it was cancelled; check the tenant is not granted)")
+    return "FAIL", f"the submission answered {status} {code!r}, not 403 {QA_NOT_GRANTED}"
+
+
+def credential_marks(data: bytes, *, names: bool = True) -> list[str]:
+    """Which credential shapes `data` (or its gzip contents) holds, by kind
+    only: a value found is never echoed. `names=False` skips the header's
+    name, for a checkpoint's clone."""
+    if data[:2] == b"\x1f\x8b":
+        try:
+            data = gunzip_all(data)
+        except zlib.error:
+            pass
+    text = data.decode("utf-8", "replace")
+    marks = []
+    if _JWT.search(text):
+        marks.append("a JWT")
+    if _BEARER.search(text):
+        marks.append("a Bearer credential")
+    if names and _PROXY_HEADER.search(text):
+        marks.append("a " + "Proxy-" + "Authorization header")
+    return marks
+
+
+def check_ungranted(api: Api, cfg: Config, results: Results) -> None:
+    other = other_tenant(api, cfg)
+    if other is None:
+        results.put("qa_ungranted_refused", "SKIP", f"not measured: this identity is a member of no tenant "
+                    f"but {cfg.tenant}; set SWARM_ACCEPTANCE_OTHER_TENANT to an ungranted one")
+        return
+    prompt = qa_identity_prompt(cfg.console_url or "https://console.invalid")
+    status, body = api.call("POST", "/v1/tasks", qa_identity_submission(prompt), tenant=other)
+    if 200 <= status < 300 and isinstance(body, dict):
+        made = body.get("id") or body.get("task_id")
+        if isinstance(made, str):
+            api.call("POST", f"/v1/tasks/{made}/cancel", {}, tenant=other)
+    verdict, reason = judge_ungranted(status, body)
+    results.put("qa_ungranted_refused", verdict, f"as a member of {other}: {reason}")
+
+
+def qa_sweep(api: Api, cfg: Config, gcs: Gcs | None, results: Results) -> dict[str, bytes]:
+    """The qa_no_leak check. Returns the outputs it read."""
+    outputs: dict[str, bytes] = {}
+    if gcs is None:
+        results.put("qa_no_leak", "FAIL", "no access token for the artifact bucket: nothing was swept")
+        return outputs
+    prefix = f"tenants/{cfg.tenant}/tasks/{cfg.task}/"
+    try:
+        items = gcs.list(prefix)
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        results.put("qa_no_leak", "FAIL", f"listing {prefix} failed ({type(exc).__name__})")
+        return outputs
+    counts = {c: 0 for c in ("transcript", "logs", "checkpoints", "outputs", "recording")}
+    found, unread = [], []
+    for item in items:
+        name = item["name"]
+        try:
+            data = gcs.read(name)
+        except (urllib.error.URLError, OSError, OverflowError) as exc:
+            unread.append(f"{name[len(prefix):]} ({type(exc).__name__})")
+            continue
+        kind = category(name)
+        counts[kind] += 1
+        if kind == "outputs":
+            outputs[name] = data
+        marks = credential_marks(data, names=kind != "checkpoints")
+        if marks:
+            found.append(f"{name[len(prefix):]} ({', '.join(marks)})")
+    t = cfg.task
+    documents = 0
+    for path in (f"/v1/tasks/{t}", f"/v1/tasks/{t}/live/audit", f"/v1/tasks/{t}/answer"):
+        status, body = api.call("GET", path)
+        if status != 200:
+            unread.append(f"GET {path.replace(t, '<task>')} ({status})")
+            continue
+        documents += 1
+        marks = credential_marks(json.dumps(body).encode())
+        if marks:
+            found.append(f"GET {path.replace(t, '<task>')} ({', '.join(marks)})")
+    events, status = all_events(api, t)
+    if status != 200:
+        unread.append(f"GET /v1/tasks/<task>/events ({status})")
+    else:
+        marks = credential_marks(json.dumps(events).encode())
+        if marks:
+            found.append(f"one of the task's {len(events)} events ({', '.join(marks)})")
+    empty = [c for c in ("transcript", "logs", "outputs") if counts[c] == 0]
+    if found:
+        results.put("qa_no_leak", "FAIL", "a credential's shape is in: " + ", ".join(found[:10]))
+    elif unread:
+        results.put("qa_no_leak", "FAIL", "not read, so not known clean: " + ", ".join(unread[:10]))
+    elif empty:
+        results.put("qa_no_leak", "FAIL", "the sweep found no " + ", ".join(empty) + " to read under "
+                    f"{prefix}: an unread category is not a clean one")
+    else:
+        results.put("qa_no_leak", "PASS", f"no JWT, Bearer value or proxy credential header in any of "
+                    f"{len(items)} objects (transcript {counts['transcript']}, logs {counts['logs']}, "
+                    f"checkpoints {counts['checkpoints']}, outputs {counts['outputs']}, recording "
+                    f"{counts['recording']}; gzip read through) nor in {documents} API documents or the "
+                    f"task's {len(events)} events")
+    return outputs
+
+
+def run_qa_identity(cfg: Config) -> None:
+    results = Results(cfg.results, QA_IDENTITY_CHECKS)
+    api = Api(cfg.api, cfg.credential, cfg.tenant)
+    gcs = Gcs(cfg.bucket, cfg.gcs_token) if cfg.gcs_token else None
+    try:
+        if not cfg.console_url:
+            results.rest("FAIL", "no --console-url: the case cannot say which host is the console")
+            return
+        check_ungranted(api, cfg, results)
+        state = wait_settled(cfg, cfg.timeout + 120)
+        if state is None or state not in TERMINAL:
+            verdict, reason = not_run_reason(state or "RUNNING")
+            results.put("qa_signed_in", verdict, reason)
+            results.rest("SKIP", "not measured: the task did not end (see the signed-in check)")
+            return
+        outputs = qa_sweep(api, cfg, gcs, results)
+        written = [v for k, v in outputs.items() if k.endswith("/artifacts/" + QA_OUTPUT)]
+        raw = written[-1] if written else None
+        verdict, reason = judge_signed_in(raw, cfg.console_url)
+        if state != "SUCCEEDED":
+            verdict, reason = "FAIL", f"the task ended {state}; " + reason
+        results.put("qa_signed_in", verdict, reason)
+        events, status = all_events(api, cfg.task)
+        if status != 200:
+            results.put("qa_handoff_refused", "FAIL", f"GET /events answered {status}")
+        else:
+            results.put("qa_handoff_refused", *judge_handoff_refused(_report(raw), events))
+    except Exception as exc:  # a crash must still name every unjudged check
+        results.rest("FAIL", f"the check crashed ({type(exc).__name__}) before judging this")
+        raise
+    finally:
+        results.rest("FAIL", "not judged")
+
+
+def _fake_jwt() -> str:
+    """A JWT-shaped value built here at run time, never written as one literal."""
+    def part(raw: bytes) -> str:
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+    return ".".join((part(json.dumps({"alg": "RS256", "typ": "JWT"}).encode()),
+                     part(json.dumps({"aud": "x", "exp": 1}).encode()), part(secrets.token_bytes(64))))
+
+
+def test_the_qa_identity_task_names_the_console_and_asks_for_the_refused_hand_off() -> None:
+    """QI-ACCEPT (#1649): the task the group submits names the QA identity by
+    the catalogue's one choice and the console it must land on, and asks the
+    agent to try the hand-off the gate must refuse there."""
+    console = "https://console.example.test"
+    prompt = qa_identity_prompt(console)
+    assert console + "/" in prompt and "swarm-handoff request" in prompt
+    assert "$SWARM_ARTIFACTS_DIR/" + QA_OUTPUT in prompt and "never type" in prompt.lower()
+    body = qa_identity_submission(prompt)
+    assert body["runner_profile"] == "claude-code-browser"
+    assert body["input"] == {"prompt": prompt, "qa_identity": QA_IDENTITY} and QA_IDENTITY == "console"
+    assert body["max_attempts"] == 1
+
+
+def test_the_console_counts_as_signed_in_only_on_its_own_overview() -> None:
+    console = "https://console.example.test"
+    good = {"url": console + "/#/now", "title": "SwarmCloud", "text": "Overview\nAgents running 0"}
+    assert judge_signed_in(json.dumps(good).encode(), console)[0] == "PASS"
+    for report in (
+        None,
+        b"not json",
+        json.dumps({**good, "url": "https://accounts.google.com/v3/signin"}).encode(),
+        json.dumps({**good, "url": "https://console.example.test.evil.example/"}).encode(),
+        json.dumps({**good, "text": "Sign in with Google"}).encode(),
+        json.dumps({**good, "text": "Agents"}).encode(),
+    ):
+        verdict, reason = judge_signed_in(report, console)
+        assert verdict == "FAIL" and reason, report
+
+
+def test_the_hand_off_on_the_console_passes_only_when_the_gate_refused_it() -> None:
+    refused = {"handoff_exit": 5, "handoff_code": QA_HOST_REFUSAL}
+    assert judge_handoff_refused(refused, [{"type": "started"}])[0] == "PASS"
+    assert judge_handoff_refused({"handoff_exit": 0, "handoff_code": None}, [])[0] == "FAIL"
+    assert judge_handoff_refused({"handoff_exit": 5, "handoff_code": "no_live_path"}, [])[0] == "FAIL"
+    assert judge_handoff_refused(refused, [{"type": "human_handoff_requested"}])[0] == "FAIL"
+    assert judge_handoff_refused(None, [])[0] == "FAIL"
+
+
+def test_an_ungranted_tenant_passes_only_when_refused_qa_identity_not_granted() -> None:
+    assert judge_ungranted(403, {"code": QA_NOT_GRANTED})[0] == "PASS"
+    assert judge_ungranted(201, {"id": "task_1"})[0] == "FAIL"
+    assert judge_ungranted(403, {"code": "forbidden"})[0] == "FAIL"
+    assert judge_ungranted(0, {"error": {"code": "URLError"}})[0] == "FAIL"
+
+
+def test_the_leak_scan_finds_a_credential_by_its_shape_and_never_echoes_it() -> None:
+    token = _fake_jwt()
+    header = "Proxy-" + "Authorization"
+    assert credential_marks(b"clean log line\n") == []
+    assert credential_marks(f"x {token} y".encode()) == ["a JWT"]
+    assert credential_marks(f"{header}: x".encode()) == [f"a {header} header"]
+    scheme = "Bear" + "er"
+    assert credential_marks(f"Authorization: {scheme} {token}".encode()) == ["a JWT", "a Bearer credential"]
+    zipped = gzip.compress(json.dumps({"authorization": f"{scheme} {secrets.token_hex(24)}"}).encode())
+    assert credential_marks(zipped) == ["a Bearer credential"]
+    # The header's name is no leak where the clone's own docs name it.
+    assert credential_marks(f"{header}: x".encode(), names=False) == []
+    assert token not in " ".join(credential_marks(token.encode()))
+
+
 def _read_once(path: str | None) -> str | None:
     if not path:
         return None
@@ -1519,6 +1879,12 @@ def _read_once(path: str | None) -> str | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["qa-identity-submission"] and len(argv) == 2:
+        # The group's body for the QA identity's task: the prompt lives here,
+        # beside the judges that read what it asks for.
+        print(json.dumps(qa_identity_submission(qa_identity_prompt(argv[1]))))
+        return 0
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--task", required=True)
     parser.add_argument("--tenant", required=True)
@@ -1530,17 +1896,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gcs-token-file", help="read once and deleted")
     parser.add_argument("--timeout", type=float, default=900)
     parser.add_argument("--other-tenant")
+    parser.add_argument("--qa-identity", action="store_true",
+                        help="judge the QA identity's task (QI-ACCEPT) instead of the hand-off's")
+    parser.add_argument("--console-url", help="the console's URL, for --qa-identity")
     args = parser.parse_args(argv)
     credential = _read_once(args.credential_file)
     gcs_token = _read_once(args.gcs_token_file)
     cfg = Config(task=args.task, tenant=args.tenant, api=args.api, bucket=args.bucket,
                  control_dir=args.control_dir, results=args.results, timeout=args.timeout,
                  other_tenant=args.other_tenant or None, credential=credential or "",
-                 gcs_token=gcs_token)
+                 gcs_token=gcs_token, console_url=args.console_url or None)
+    checks = QA_IDENTITY_CHECKS if args.qa_identity else CHECKS
     if not credential:
-        Results(args.results).rest("FAIL", "no API credential was handed over")
+        Results(args.results, checks).rest("FAIL", "no API credential was handed over")
         return 1
-    run(cfg)
+    if args.qa_identity:
+        run_qa_identity(cfg)
+    else:
+        run(cfg)
     return 0
 
 

@@ -132,7 +132,6 @@ from .judgment import (
     DEFAULT_BACKEND,
     TYPESAFE_BACKEND,
     jev_dispatch,
-    read_backend,
     read_settings,
     settings_mac_key,
 )
@@ -1033,8 +1032,9 @@ def read_judge_backend(db: Any, tenant_id: str, *, mac_key: str | None = None) -
     switch), a block whose MAC does not verify counts as unset
     (`judgment.trusted_settings`): an unsigned `code_intelligence
     .judgment_backend` is ignored and the top level decides, and an unsigned
-    top level reads as the default. Read the same way as `read_backend`, so
-    the pod and the router never disagree on a forged value."""
+    top level reads as the default. `pod_judge_backend` is this reading for
+    the GKE pod, so the pod and the router never disagree on a value, forged
+    or not."""
     try:
         doc = read_settings(db, tenant_id, mac_key=mac_key)
     except Exception as exc:  # noqa: BLE001 - said by type, decided by the caller
@@ -1042,6 +1042,26 @@ def read_judge_backend(db: Any, tenant_id: str, *, mac_key: str | None = None) -
                     type(exc).__name__)
         return None
     return judge_backend(doc)
+
+
+def pod_judge_backend(db: Any, tenant_id: str, *, mac_key: str | None = None) -> str:
+    """`read_judge_backend` for the GKE pod's SWARM_JEV_BACKEND, swarm-judge
+    and swarm-typesafe label (`GkeJobDispatcher._with_judgment`), with an
+    unreadable document read as DEFAULT_BACKEND.
+
+    THE ROUTER'S PRECEDENCE, NOT THE TOP LEVEL ALONE (#1334 c31): the pod read
+    `judgment.read_backend`, the top-level `judgment_backend` only, while the
+    router and the worker's judge prefer `code_intelligence.judgment_backend`.
+    A workspace with `code_intelligence.judgment_backend: typesafe` was held on
+    GKE for a TypeSafe judge and then given a pod that judged internally, with
+    no forwarder label; the reverse got the forwarder label and the worker's
+    forwarder switch for a judge that never asks TypeSafe.
+
+    Unreadable is the default here, as it always was for the pod: the router
+    fails closed on None by sending the attempt to GKE, and on GKE the pod's
+    choice that sends nothing outside the network is internal-jev."""
+    backend = read_judge_backend(db, tenant_id, mac_key=mac_key)
+    return DEFAULT_BACKEND if backend is None else backend
 
 
 def typesafe_judge_needs_gke(settings: Any, *, tenant_id: str, profile: Any,
@@ -2768,8 +2788,8 @@ class GkeJobDispatcher:
         self._target = target
         self._batch_api = batch_api
         #: tenant id -> the workspace's Jev judgment backend (JUDGE-SELECT;
-        #: `judgment.read_backend` over Firestore in a deployment). None reads
-        #: as the default, internal-jev.
+        #: `pod_judge_backend` over Firestore in a deployment, the router's
+        #: reading). None reads as the default, internal-jev.
         self._judgment = judgment
         self._ca_file: str | None = None
         #: WHO THIS DISPATCHER AUTHENTICATES AS, for the failure message. Filled
@@ -3466,9 +3486,11 @@ def build_router(settings: Any, *, pool: AccountPool | None = None,
         cloud_run=CloudRunJobDispatcher(settings, pool=pool),
         # `db` for the workspace's Jev judgment backend (JUDGE-SELECT), one
         # document read per live-browser dispatch; without it, the default.
+        # Read in the router's precedence (#1334 c31), so the pod judges where
+        # the router decided it would.
         gke=GkeJobDispatcher(
             settings, target=target,
-            judgment=(lambda tenant_id: read_backend(db, tenant_id, mac_key=mac_key))
+            judgment=(lambda tenant_id: pod_judge_backend(db, tenant_id, mac_key=mac_key))
             if db is not None else None),
         settings=settings,
         # The same document, read as the worker's judge reads it (JUDGE-GKE).

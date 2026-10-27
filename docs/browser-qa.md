@@ -88,6 +88,19 @@ which theme a page is shown at are commands the agent runs inside the agent:
 from `swarm_browser.live()`. The template below puts them in each step's
 prompt.
 
+### A flow is recorded with `record start` and `record stop`
+
+`swarm-handoff record start <name>` launches a recorder in the background that
+turns screenshots of the live browser into `$SWARM_ARTIFACTS_DIR/flows/<name>.gif`;
+`swarm-handoff record stop` stops it and prints what it wrote. A recorder
+otherwise stops only at its frame or size cap or after 15 minutes, so a script
+that crashes before its `record stop` leaves one running. The next
+`record start` does not refuse for that: it stops the earlier recorder as
+`record stop` would (the stop file, at most 30 s, then SIGTERM), keeps its
+GIF, names it in its answer as `replaced` with what it wrote in
+`replaced_result`, and starts the new one (#1981). One recorder runs at a time;
+started again under the same name, the new GIF is written over the old.
+
 ---
 
 ## 2. Which one for which job
@@ -128,8 +141,7 @@ To test a branch rather than `main`, change `repository_ref`; nothing else.
 | `review-<group>` | `claude-code`, `opus` | opens every PNG in its group's capture and writes `findings-<group>.json` (one entry per defect, with a crop PNG) and `review-<group>.tar`. `reviewed` is the number of images it opened |
 | `flow-find-failure`, `flow-workflow-graph` | `claude-code-browser`, `jev`, `sonnet` | a goal, reached as a person would, at desktop and then at `phone-390` or in dark mode; a GIF of each run under `flows/` |
 | `flow-submit-form` | `claude-code-browser`, `playwright`, `sonnet` | the submit form at desktop and at `phone-390`, at most 12 screenshots per preset, and what the model says each screenshot showed. It stops at 35 minutes, or at its first browser tool timeout, and bundles what it reached |
-| `a11y-keyboard` | `claude-code-browser`, `playwright`, `sonnet` | keyboard-only navigation of every section, unnamed controls, reduced motion and deuteranopia |
-| `report` | `claude-code`, `opus` | waits for the captures, the reviews and `a11y-keyboard` only; merges every finding into `findings.json` and writes `report.md`, with each finding's crop and the full-size screenshot it cites, and a check of every review's `reviewed` count against its capture's `manifest.json` (a missing tar is a finding about the run) |
+| `report` | `claude-code`, `opus` | waits for the captures and the reviews only; merges every finding into `findings.json` and writes `report.md`, with each finding's crop and the full-size screenshot it cites, and a check of every review's `reviewed` count against its capture's `manifest.json` (a missing tar is a finding about the run) |
 | `flow-report` | `claude-code`, `opus` | waits for the three flows only; writes `flows.md` and `flows.json`: each flow's GIFs, whether its goal was reached, and what the model said it saw in each `flow-submit-form` screenshot. A failed flow costs this report, never `report` (visual QA run 2 lost its whole report to one flow; [design §8](design/visual-qa.md#8-what-the-runs-taught)) |
 
 The six groups are the route list's: `overview-automate`, `work-a`, `work-b`,
@@ -178,6 +190,12 @@ tenant's default pool.
   captures. Every capture writes its tarball even when a route fails, because
   the review stages it by name and a missing file would fail the review.
 * **No `resource_class`** anywhere: each profile's own is the right one.
+* **No keyboard pass.** The `a11y-keyboard` step was dropped by the owner on
+  2026-10-21: in visual QA run 4 it went quiet for about 33 minutes, was
+  killed at 2700 s with nothing bundled, and `report`, which waited for it,
+  was cancelled over six finished reviews. The axe-core scan stays, in
+  `capture-task`. `tests/unit/mcp/test_qa_workflow_template.py` fails if the
+  step comes back.
 
 ### Comparing two runs
 
@@ -397,12 +415,21 @@ A `browser_take_screenshot` with no filename is also saved, under
 `$SWARM_ARTIFACTS_DIR/screenshots`, and the model sees it. The script above
 puts the PNG at a name the compare step can use.
 
-**Take the viewport, not the full page, on a phone preset.** Through the gate
-a full-document shot on a phone preset is not the page as laid out. `swarm_qa`
-measured a first shot at phone-390 of 980×2121 with the page drawn small
-(`swarm_qa.py`, `_shot`). On a phone, compare the viewport with
-`--top-only` (below). On `desktop`, `full_page=True` is fine when the frame
-is a whole page.
+**Take the viewport, never the full page, at any preset.** Through the gate
+a full-document shot is not the page as laid out, at any preset. On a phone,
+`swarm_qa` measured a first shot at phone-390 of 980×2121 with the page drawn
+small (`swarm_qa.py`, `_shot`). On the desktop too: a `full_page=True` shot at
+1440 of a 300-item list (epic #1981, comment 7, the visual-QA run's
+`flows/10c-long-300-fullpage--1440.png`) repeats the fixed banner and title
+at its bottom. The likely cause, not traced: the gate refuses the metrics
+override a full-page shot uses to grow the viewport to the document, so
+Chromium draws past the viewport it has and draws fixed and sticky content
+again where it does not belong.
+For a long page, take segments: `swarm_qa capture`, which scrolls and shoots
+viewport by viewport, or scroll and take one viewport shot per stop yourself.
+Compare a viewport with `--top-only` (below). (The 1440 shot above is the
+measurement; it was not re-taken through a live gate when this paragraph
+changed.)
 
 ### 6.4 Compare each render with its frame
 
