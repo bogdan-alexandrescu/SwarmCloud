@@ -80,8 +80,13 @@ and the claim, `stamp` reads the workflow of the task whose branch the pull
 request is on; while that workflow's merge step is not terminal, the request
 is answered 409 `ci_fix_lane_owns_pr` naming the merge step: the lane runs
 its own CI-fix rounds, and a standalone fix beside them lost the race for the
-branch (`_refuse_if_lane_owns` has the measurement). The read is the API's;
-the fixer's continuation-scoped identity never gets it.
+branch (`_refuse_if_lane_owns` has the measurement). An issue run owns its
+pull request the same way (#2216): its compiled workflow has no merge step,
+but while it is not terminal it reads CI and submits its own rounds from
+`issueci`, so a non-terminal issue run of the tenant whose `pr_task_id` is
+the continuation's root -- or one of whose `ci_fix_workflows` is the root's
+workflow -- is answered 409 `ci_fix_lane_owns_pr` naming the run. The reads
+are the API's; the fixer's continuation-scoped identity never gets them.
 
 The same refusal holds while a CONFLICT FIX on that pull request is live
 (#2456): a non-terminal task continuing the same branch task with
@@ -145,6 +150,7 @@ from . import laneterritory
 from .forgewrite import GitHubWriter
 from .issueci import NO_CHANGE_MARKER
 from .issuecomments import bounded, code, prose
+from .issueruns import RUNS_COLLECTION, TERMINAL_RUN_STATES, IssueRun
 from .refusals import refuse
 from .repositories import parse_repository
 from .rollup import SKIPPED_SUMMARY_KEY
@@ -637,9 +643,48 @@ def _live_merge_step(db: Any, tenant_id: str, workflow_id: str) -> str | None:
     return None
 
 
+#: A run has one pull request, and a task is the `pr_task_id` of one run; a
+#: few more covers a re-run of the same issue that adopted the same task.
+ISSUE_RUNS_READ = 5
+
+
+def _live_issue_run(db: Any, tenant_id: str, continuation: Continuation,
+                    workflow_id: str) -> IssueRun | None:
+    """The tenant's non-terminal issue run that owns the pull request on the
+    continuation's root -- its `pr_task_id` is the root, or the root's
+    workflow (`workflow_id`, "" for none) is one of its `ci_fix_workflows`
+    -- or None.
+
+    Equality and `array_contains` filters only, so Firestore serves both
+    queries by merging the automatic single-field indexes: no composite
+    index, and nothing to fail while one builds after a release. Tenant and
+    state are checked again in the application, as `IssueRuns.live` does.
+    """
+    runs = db.collection(RUNS_COLLECTION).where(filter=FieldFilter("tenant_id", "==", tenant_id))
+    queries = [runs.where(filter=FieldFilter("pr_task_id", "==", continuation.root_task_id))]
+    if workflow_id:
+        queries.append(runs.where(filter=FieldFilter("ci_fix_workflows", "array_contains", workflow_id)))
+    for query in queries:
+        for snap in query.limit(ISSUE_RUNS_READ).stream():
+            data = snap.to_dict() or {}
+            try:
+                run = IssueRun.from_firestore(data)
+            except (KeyError, TypeError, ValueError):
+                log.warning("issue run %s is unreadable; not counted as owning a pull request",
+                            data.get("id") or snap.id)
+                continue
+            if run.tenant_id != tenant_id or run.state in TERMINAL_RUN_STATES:
+                continue
+            if run.pr_task_id == continuation.root_task_id or (
+                    workflow_id and workflow_id in run.ci_fix_workflows):
+                return run
+    return None
+
+
 def _refuse_if_lane_owns(store: Any, tenant_id: str, continuation: Continuation,
                          record: Mapping[str, Any]) -> None:
-    """Refuse `CiFixLaneOwnsPr` while the lane's merge step is live (through
+    """Refuse `CiFixLaneOwnsPr` while the lane's merge step is live, or while
+    a non-terminal issue run owns the pull request (through
     `refusals.refuse`: switched off, the request goes on as before).
 
     ONE FIXER PER PULL REQUEST (CI-FIXER-GATE, part of #1822). A lane whose
@@ -653,18 +698,41 @@ def _refuse_if_lane_owns(store: Any, tenant_id: str, continuation: Continuation,
     is live: a merge step QUEUED or PARKED on its CI wait is the one whose
     round starts next. A task in no workflow, a workflow with no merge step
     and a merge step that has finished are fixed as before.
+
+    AN ISSUE RUN OWNS ITS PULL REQUEST TOO (#2216). An issue run's compiled
+    workflow has no merge step: the run reads CI and submits its own CI-fix
+    rounds from `issueci` while CHECKING/FIXING, so the merge-step read never
+    fired for its pull request. Measured 2026-10-23: on #2145 the PR-side
+    fixer task_f08e3de5 ran 30 minutes on 2a34c62 and was rejected
+    non-fast-forward, the run's round task_7313192a having pushed first; on
+    #2147 task_75ae734c started 64 s after the run's round task_2b64bf8e and
+    ended published_nothing while that round fixed the failure. So a
+    non-terminal issue run of this tenant whose `pr_task_id` is the root, or
+    one of whose `ci_fix_workflows` is the root's workflow, refuses too --
+    every non-terminal state, since an APPROVED or RUNNING run reaches
+    CHECKING next. The run's own rounds carry `metadata.issue_run`, never
+    `metadata.ci_fix`, so they never reach this gate. A terminal run's pull
+    request is fixed as before.
     """
     workflow = _lane_workflow(store.db, tenant_id, continuation)
-    if not workflow:
+    merge_task = _live_merge_step(store.db, tenant_id, workflow) if workflow else None
+    if merge_task is not None:
+        refuse(CiFixLaneOwnsPr(
+            f"pull request #{record['pull_request']} belongs to a lane whose merge step "
+            f"({merge_task}) is live and runs its CI-fix rounds itself; no standalone fix is made.",
+            detail={"metadata": CI_FIX_METADATA_FIELD, "task_id": merge_task,
+                    "workflow_id": workflow, "pull_request": record["pull_request"]},
+        ))
         return
-    merge_task = _live_merge_step(store.db, tenant_id, workflow)
-    if merge_task is None:
+    run = _live_issue_run(store.db, tenant_id, continuation, workflow)
+    if run is None:
         return
     refuse(CiFixLaneOwnsPr(
-        f"pull request #{record['pull_request']} belongs to a lane whose merge step "
-        f"({merge_task}) is live and runs its CI-fix rounds itself; no standalone fix is made.",
-        detail={"metadata": CI_FIX_METADATA_FIELD, "task_id": merge_task,
-                "workflow_id": workflow, "pull_request": record["pull_request"]},
+        f"pull request #{record['pull_request']} belongs to issue run {run.id} "
+        f"({run.state.value}), which runs its own CI-fix rounds; no standalone fix is made.",
+        detail={"metadata": CI_FIX_METADATA_FIELD, "issue_run_id": run.id,
+                "issue_run_state": run.state.value, "pull_request": record["pull_request"],
+                "task_id": continuation.root_task_id},
     ))
 
 
@@ -760,10 +828,11 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
     Unchanged when there is neither. Raises `DispatchOptionError` (422
     `invalid_dispatch`) for every refusal, before anything is written,
     `CiFixLaneOwnsPr` (409) while the continued task's workflow has a live
-    merge step or a conflict fix on the pull request is live (on 2026-10-26
-    PR #2381 got both a conflict fix and a CI fix at 15cc7ea, and the second
-    push was rejected), and `CiFixInFlight` (409) when the failure already
-    has a live fix.
+    merge step, a non-terminal issue run of the tenant owns the pull request
+    (`_refuse_if_lane_owns`) or a conflict fix on the pull request is live (on
+    2026-10-26 PR #2381 got both a conflict fix and a CI fix at 15cc7ea, and
+    the second push was rejected), and `CiFixInFlight` (409) when the failure
+    already has a live fix.
     """
     for step in spec.steps:
         if CI_FIX_METADATA_FIELD in (step.metadata or {}):
@@ -786,8 +855,8 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
             "only a workflow with continues_task pushes to.",
         )
     record = _checked_record(spec.metadata[CI_FIX_METADATA_FIELD])
-    # Before the cap and the claim: a lane's live merge step is the reason,
-    # whatever the count, and a refused request holds no claim.
+    # Before the cap and the claim: a lane's live merge step or a live issue
+    # run is the reason, whatever the count, and a refused request holds no claim.
     _refuse_if_lane_owns(store, tenant_id, continuation, record)
     # The same place, the same reason: a live conflict fix on this pull request (#2456).
     _refuse_if_conflict_fix_live(store, tenant_id, continuation, record)
