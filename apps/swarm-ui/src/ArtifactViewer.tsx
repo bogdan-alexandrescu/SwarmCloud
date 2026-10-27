@@ -56,6 +56,7 @@ export function ArtifactViewer({
   absent,
   backLabel,
   exactBytes = 'raw',
+  rawPatch = false,
 }: {
   taskId: string
   artifact: ArtifactRef
@@ -93,6 +94,13 @@ export function ArtifactViewer({
    * are in the artifact raw route (#207).
    */
   exactBytes?: ExactBytes
+  /**
+   * The caller is this task's SUBMITTER (#1857), so a `.patch` read through
+   * the artifact route also offers `RawPatchDownload` beside the bar's
+   * download. The caller decides it from the signed-in email and
+   * `task.submitted_by`; the server decides it again and refuses anyone else.
+   */
+  rawPatch?: boolean
 }) {
   const [state, setState] = useState<
     | { kind: 'loading' }
@@ -234,6 +242,13 @@ export function ArtifactViewer({
           // the artifact raw route, which the server redacts as it does this
           // one. A caller's own loader has no such route.
           rawUrl={loadContent === undefined ? artifactRawUrl(taskId, artifact.name, 'attachment') : null}
+          // Only on the artifact route, whose task is the one whose submitter
+          // the caller checked; a caller's own loader reads something else.
+          rawPatch={
+            rawPatch && loadContent === undefined && offersRawPatch(artifact.name) ? (
+              <RawPatchDownload taskId={taskId} name={artifact.name} />
+            ) : null
+          }
           onClose={onClose}
           backLabel={backLabel}
         />
@@ -250,6 +265,7 @@ function Body({
   onPage,
   exactBytes,
   rawUrl,
+  rawPatch,
   onClose,
   backLabel,
 }: {
@@ -260,6 +276,8 @@ function Body({
   onPage: ((offset: number | null) => void) | null
   exactBytes: ExactBytes
   rawUrl: string | null
+  /** `RawPatchDownload` for the submitter of a `.patch`, else null. */
+  rawPatch: ReactNode
   onClose: () => void
   backLabel: string | undefined
 }) {
@@ -367,7 +385,12 @@ function Body({
         rawUrl={rawUrl}
         onClose={onClose}
         backLabel={backLabel}
-        provenance={<Provenance data={data} onPage={onPage} exactBytes={exactBytes} />}
+        provenance={
+          <>
+            <Provenance data={data} onPage={onPage} exactBytes={exactBytes} />
+            {rawPatch}
+          </>
+        }
       />
     )
   }
@@ -375,6 +398,7 @@ function Body({
   return (
     <>
       <Provenance data={data} onPage={onPage} exactBytes={exactBytes} />
+      {rawPatch}
       {content === '' ? (
         // A MEASURED ZERO. `''` is a file the agent created and left blank,
         // and it is the one thing here that is a real reading rather than an
@@ -390,6 +414,41 @@ function Body({
         <Rendered name={name} content={content} kind={kind ?? data.kind ?? null} whole={whole} />
       )}
     </>
+  )
+}
+
+/**
+ * WHICH NAMES THE RAW PATCH IS OFFERED FOR (#1857), as the server honours
+ * `redaction=none`: a top-level manifest name ending in `.patch`. A name with
+ * a path in it is refused there, so it is not offered here.
+ */
+export function offersRawPatch(name: string): boolean {
+  return name.endsWith('.patch') && name !== '.patch' && !name.includes('/') && !name.includes('\\')
+}
+
+/**
+ * THE OWNER-ONLY RAW PATCH (#1857, BGD's decision 2026-10-27). A served
+ * `.patch` is redacted at read time, so credential-shaped test fixtures in it
+ * come back masked and it no longer applies; the masking stays, and the task's
+ * submitter may take the patch as stored. Drawn ONLY for the submitter -- the
+ * caller decides that -- and the server refuses anyone else 403 whatever is
+ * drawn. Always a download: the server sends it as an attachment, so the
+ * unredacted text never renders in a page. The note says what it is in one
+ * line, so nobody pastes it somewhere a redacted copy belonged.
+ */
+export function RawPatchDownload({ taskId, name }: { taskId: string; name: string }) {
+  return (
+    <span className="arts-get art-rawpatch">
+      <ButtonLink
+        size="sm"
+        className="copy"
+        href={artifactRawUrl(taskId, name, 'attachment', { redaction: 'none' })}
+        download={name}
+      >
+        Download raw patch
+      </ButtonLink>
+      <span className="ctl-sub">not redacted: the patch as stored, for you as its submitter</span>
+    </span>
   )
 }
 

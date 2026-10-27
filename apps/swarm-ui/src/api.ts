@@ -1243,9 +1243,21 @@ export async function loadArtifactListing(taskId: string): Promise<Result<Artifa
  * rides as `?tenant=` (`tenantQuery`) -- without it every artifact of a task
  * listed under a switched tenant would 404. Computed at render; the shell
  * remounts the page on a switch, so a link never carries a stale choice.
+ *
+ * `redaction: 'none'` is the OWNER-ONLY RAW PATCH (#1857): the server serves
+ * a `.patch` as stored to the task's submitter, always as an attachment, and
+ * refuses everyone else 403. Only `ArtifactViewer`'s `RawPatchDownload` asks
+ * for it; every other link keeps the default, which is redacted.
  */
-export function artifactRawUrl(taskId: string, name: string, disposition: 'inline' | 'attachment'): string {
-  return route('/v1/tasks/{id}/artifacts/raw', { id: taskId }, tenantQuery(new URLSearchParams({ name, disposition }))).url
+export function artifactRawUrl(
+  taskId: string,
+  name: string,
+  disposition: 'inline' | 'attachment',
+  options: { redaction?: 'none' } = {},
+): string {
+  const query = new URLSearchParams({ name, disposition })
+  if (options.redaction === 'none') query.set('redaction', 'none')
+  return route('/v1/tasks/{id}/artifacts/raw', { id: taskId }, tenantQuery(query)).url
 }
 
 /**

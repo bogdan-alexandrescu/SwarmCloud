@@ -262,6 +262,18 @@ before parsing; `configure-kubectl.sh` and `push-images.sh` pipe the commands
 whose output could carry one. It is *not* applied by every script in `scripts/`,
 and this document used to claim it was.
 
+**One read serves a text artifact unredacted: the raw patch, to its submitter.**
+`GET /v1/tasks/{id}/artifacts/raw?redaction=none` returns a top-level `.patch`
+artifact as stored only to the caller whose email is the agent's
+`Task.submitted_by` (not another member, a tenant admin or a platform admin, who
+get a 403), always as a `text/x-diff` attachment with `Cache-Control:
+no-store`, and writes an `artifact_audit` record (who, which artifact, when;
+never the content) before the first byte or serves nothing. BGD decided this
+on #1857 (2026-10-27) because read-time masking turned credential-shaped test
+fixtures in a diff into `***` and the served patch no longer applied; the
+masking rules were left unchanged, so every other read of the same patch is
+still redacted.
+
 `scripts/status.sh` prints no environment variables, no secret payloads and no
 tokens by construction — it reads control-plane documents and resource listings
 only. It is the command an operator runs while sharing a screen, so its
