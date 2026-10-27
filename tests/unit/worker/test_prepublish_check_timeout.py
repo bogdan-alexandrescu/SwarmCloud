@@ -130,6 +130,10 @@ def test_a_timed_out_check_beside_a_real_failure_is_not_yours_to_fix(tmp_path):
     # The budget left, in seconds, and an instruction not to re-run it.
     assert str(int(LEFT)) in prompt
     assert "do not run it" in prompt.lower()
+    # MUTATION: the post-fix round below runs graph-pytest again, so a
+    # prompt that says it is not run again tells the agent what is false.
+    assert "not run again" not in not_yours[0]
+    assert "again as-is after this turn" in not_yours[0]
     # Only the guard script is re-run in parts; graph-pytest is not.
     assert "in parts" not in not_yours[0]
     second = _named(record["rounds"][1])

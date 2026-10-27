@@ -1864,8 +1864,10 @@ def fix_prompt(failed: Sequence[Outcome], secrets: Sequence[str],
                   "again in parts after this turn; do not run it yourself."]
     if others:
         lines += ["", "Not yours to fix: " + ", ".join(others)
-                  + " ran out of time, which no change of yours fixes. It is not run again "
-                  "within the budget left; do not run it or its test selection yourself."]
+                  + " ran out of time, which no change of yours fixes. The worker runs it "
+                  "again as-is after this turn, under the same time limit, and publishes it as "
+                  "a timeout if it runs out again; do not run it or its test selection "
+                  "yourself."]
     for outcome in failed:
         lines += ["", f"## {outcome.name} ({outcome.command})",
                   f"Files: {_files_line(outcome.files)}",
