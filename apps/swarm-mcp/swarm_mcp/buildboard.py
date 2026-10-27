@@ -89,7 +89,12 @@ PAGE_NAME = "index.html"
 CACHE_NAME = "cache.json"
 #: The last refresh that failed, read into the next page's banner and then removed.
 FAILURE_NAME = "last-failure.json"
-CACHE_VERSION = 1
+#: 2 since #1812 (2026-10-27): a version-1 cache holds finished lanes with the
+#: owner questions they listed before a merged or finished lane stopped waiting,
+#: and `collect()` reuses a cached finished lane verbatim, so those questions
+#: would stay on the board for the whole HISTORY_DAYS window. A new version
+#: drops the old cache and every lane is read once under the new rule.
+CACHE_VERSION = 2
 
 #: Finished work stays on the board this long (owner decision 4, #1773).
 HISTORY_DAYS = 30

@@ -219,6 +219,19 @@ def test_a_merged_or_finished_lanes_questions_are_not_waiting():
     assert _asked(model, "wf_b1") == []  # MUTATION: count only a finished workflow as done -- its merged PR's questions are listed.
 
 
+def test_a_version_1_caches_finished_lane_questions_are_not_listed():
+    cache: dict = {}
+    _model(cache=cache)
+    old = json.loads(json.dumps(cache))
+    old["version"] = 1
+    lane = old["lanes"]["wf_a1"]
+    lane["waiting"] = [{"kind": "question", "lane": "wf_a1", "item": item, "detail": "implement"}
+                       for item in ("Keep the old login cache for one release?", "Which metric gates the rollout?")]
+    model, _ = _model(cache=old)
+    assert _asked(model, "wf_a1") == []  # MUTATION: keep CACHE_VERSION at 1 -- the pre-#1812 cache's two questions are listed.
+    assert old["version"] == buildboard.CACHE_VERSION == 2  # MUTATION: reuse a version-1 cache -- its version stays 1.
+
+
 def test_an_answered_question_is_not_waiting():
     data = fx.build()
     impl, _ = _b1(data)
