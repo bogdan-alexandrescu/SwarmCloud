@@ -1,7 +1,8 @@
 import { Fragment, useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react'
 import {
-  loadAdminPools, loadAdminQuota, loadCapacity, loadMe, loadModelClasses, loadModelPrices, loadPlatformSettings, priceRefusals, resetAdaptiveTarget, saveModelPrices, setPoolLimit,
-  setQuotaHardMax, storeOwnerToken,
+  BUDGET_DOES, budgetCeilingOf, budgetLimitsWords, loadAdminPools, loadAdminQuota, loadCapacity, loadMe, loadModelClasses, loadModelPrices, loadPlatformSettings,
+  parseBudgetAmount, priceRefusals, resetAdaptiveTarget, saveBudgetCeiling, saveModelPrices, setPoolLimit, setQuotaHardMax, storeOwnerToken,
+  type BudgetLimits, type BudgetUnit,
 } from './api'
 import { Button, Card, CIcon } from './components'
 import { errorHeading, isPaused, route, write, type ApiError, type Result } from './fetch'
@@ -187,9 +188,10 @@ export function AdminSettingsScreen() {
       </Screen>
       {read.failed !== null && !read.held && read.failed.kind !== 'admin_required' && <PoolLeadView lead={null} unread={read.failed} />}
       {/* FOLDED UNDER THE CEILINGS (VQ-054, part of #2391; config-e.html
-          S10b): the page is the ceilings table, and these three are opened
+          S10b): the page is the ceilings table, and these four are opened
           when wanted. Each card drawn on its own is open (`FoldCard`). */}
       <AdditionalRepositoryLimitsCard fold />
+      <AgentBudgetCeilingCard fold />
       <ModelPricesCard admin={admin} fold />
       <FallbackTokenCard fold />
     </>
@@ -2555,6 +2557,155 @@ export function AdditionalRepositoryLimitsCard({ fold = false }: { fold?: boolea
           Saved: at most {savedAt.max_additional_repositories} additional{' '}
           {savedAt.max_additional_repositories === 1 ? 'repository' : 'repositories'} per step,{' '}
           {savedAt.additional_repositories_budget_gib} GiB in total.
+        </p>
+      )}
+    </FoldCard>
+  )
+}
+
+const NO_CEILING: BudgetLimits = { usd: null, tokens: null }
+
+/** A ceiling as the fields hold it: each unit's figure, or blank for none. */
+function typedCeiling(c: BudgetLimits): Record<BudgetUnit, string> {
+  return { usd: c.usd === null ? '' : String(c.usd), tokens: c.tokens === null ? '' : String(c.tokens) }
+}
+
+/**
+ * THE PER-AGENT BUDGET CEILING (BUDGET-UI-SETTINGS; part of #2459, docs/design/agent-budget.md §2, §4): the most any
+ * workspace's per-agent budget, or a step's, may be, per unit. `agent_budget_ceiling` in the platform settings,
+ * `{usd, tokens}`, either or both: a workspace picks its budget's unit, so a ceiling in dollars alone does not cap a
+ * workspace that budgets in tokens. Off by default (`{}`).
+ *
+ * THE CEILING ALONE TURNS NOTHING ON (BGD, 2026-10-26, question 4): a workspace that sets no budget has none, whatever
+ * this says. A workspace default above it is refused on save (422 `budget_above_ceiling`), and one saved earlier
+ * above a ceiling lowered now is capped at the next submission, because every attempt's limit is the least of the
+ * three. `PUT /v1/admin/settings` with only `agent_budget_ceiling`, replaced whole; what the save did is read off its
+ * RESPONSE, as the cards above read theirs.
+ */
+export function AgentBudgetCeilingCard({ fold = false }: { fold?: boolean } = {}) {
+  const id = useId()
+  const inFlight = useRef(false)
+  const [settings, setSettings] = useState<Result<PlatformSettings> | null>(null)
+  const [on, setOn] = useState(false)
+  const [typed, setTyped] = useState<Record<BudgetUnit, string>>(() => typedCeiling(NO_CEILING))
+  const [busy, setBusy] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+  const [savedAt, setSavedAt] = useState<BudgetLimits | null>(null)
+
+  const take = (c: BudgetLimits) => {
+    setOn(c.usd !== null || c.tokens !== null)
+    setTyped(typedCeiling(c))
+  }
+  useEffect(() => {
+    let live = true
+    // Settled, as the other platform-settings cards' reads are: a partial mock
+    // of `./api` that lacks it must not throw the whole Admin screen away.
+    void settle(() => loadPlatformSettings()).then((r) => {
+      if (!live) return
+      setSettings(r)
+      if (r.status === 'ok' || r.status === 'stale') take(budgetCeilingOf(r.data))
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+
+  const data = settings !== null && (settings.status === 'ok' || settings.status === 'stale') ? settings.data : null
+  const stored = data === null ? null : budgetCeilingOf(data)
+  const blank = (u: BudgetUnit) => typed[u].trim() === ''
+  const asked: BudgetLimits = {
+    usd: !on || blank('usd') ? null : parseBudgetAmount('usd', typed.usd),
+    tokens: !on || blank('tokens') ? null : parseBudgetAmount('tokens', typed.tokens),
+  }
+  const bad = (u: BudgetUnit) => on && !blank(u) && asked[u] === null
+  const neither = on && blank('usd') && blank('tokens')
+  const invalid = bad('usd') || bad('tokens') || neither
+  const nothing = stored !== null && stored.usd === asked.usd && stored.tokens === asked.tokens
+
+  async function save(e: FormEvent) {
+    e.preventDefault()
+    if (inFlight.current || invalid || nothing) return
+    inFlight.current = true
+    setBusy(true)
+    setRefused(null)
+    setSavedAt(null)
+    const r = await saveBudgetCeiling(asked)
+    inFlight.current = false
+    setBusy(false)
+    if (r.status === 'error') {
+      setRefused(r.error)
+      return
+    }
+    if (r.status === 'ok' || r.status === 'stale') {
+      setSettings(r)
+      const now = budgetCeilingOf(r.data)
+      take(now)
+      setSavedAt(now)
+    }
+  }
+
+  const edit = (u: BudgetUnit, value: string) => {
+    setSavedAt(null)
+    setTyped((was) => ({ ...was, [u]: value }))
+  }
+  const saidNow = savedAt === null ? null : budgetLimitsWords(savedAt)
+  return (
+    <FoldCard fold={fold} className="adm-budget-ceiling" title="Agent budget ceiling">
+      {settings === null || settings.status === 'loading' ? (
+        <p className="ur-small">Reading…</p>
+      ) : data === null ? (
+        settings.status === 'error' && settings.error.httpStatus === 403 ? (
+          <p className="ur-small">Platform admins only.</p>
+        ) : (
+          <p className="warn-text" role="alert"
+            title={settings.status === 'error' ? `${errorHeading(settings.error)}: ${settings.error.message}` : undefined}>
+            Not read
+          </p>
+        )
+      ) : (
+        // The words are drawn with the form only: over a failed read they
+        // would explain a control that is not there (and Pool limits is held
+        // to a prose budget, prose.operator.test.tsx).
+        <form className="adm-token-form" aria-label="Agent budget ceiling" onSubmit={(e) => void save(e)}>
+          <p className="ur-small">
+            The most any workspace&rsquo;s per-agent budget can be. It turns nothing on: a workspace that sets no budget
+            has none. {BUDGET_DOES}
+          </p>
+          <div className="jb-options" role="radiogroup" aria-label="Ceiling">
+            {([false, true] as const).map((v) => (
+              <label key={String(v)} className={`jb-option${on === v ? ' is-on' : ''}`}>
+                <input type="radio" name={`${id}-on`} checked={on === v} disabled={busy}
+                  onChange={() => {
+                    setSavedAt(null)
+                    setOn(v)
+                  }} />
+                <span className="jb-text">
+                  <span className="jb-name">{v ? 'A limit' : 'Off'}{!v && <span className="jb-default"> (the default)</span>}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          {on && (['usd', 'tokens'] as const).map((u) => (
+            <label key={u} htmlFor={`${id}-${u}`} className="ur-small">
+              {u === 'usd' ? 'Dollars per agent, at most' : 'Tokens per agent, at most'}
+              <input id={`${id}-${u}`} type="text" inputMode={u === 'usd' ? 'decimal' : 'numeric'} className="mono"
+                autoComplete="off" placeholder="none" value={typed[u]} disabled={busy}
+                aria-invalid={bad(u) || undefined} onChange={(e) => edit(u, e.target.value)} />
+            </label>
+          ))}
+          <Button type="submit" kind="primary" size="sm" busy={busy} disabled={invalid || nothing}>
+            Save ceiling
+          </Button>
+        </form>
+      )}
+      {data !== null && neither && <p className="warn-text">Name a ceiling in dollars, in tokens or in both, or choose Off.</p>}
+      {data !== null && (bad('usd') || bad('tokens')) && (
+        <p className="warn-text">Dollars are a number above 0; tokens a whole number, 1 or more.</p>
+      )}
+      {refused !== null && <Refusal error={refused} title="The ceiling was not saved" />}
+      {savedAt !== null && (
+        <p className="ur-small" role="status">
+          {saidNow === null ? 'Saved: no ceiling.' : `Saved: at most ${saidNow} per agent.`}
         </p>
       )}
     </FoldCard>
