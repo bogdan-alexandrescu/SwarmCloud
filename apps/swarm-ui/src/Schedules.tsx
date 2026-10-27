@@ -3,6 +3,12 @@
  * schedules, read-only, beside the recurring work the platform runs for it on
  * its own (the index's cadence, §8.3), and Overview's "Waiting on you" card.
  *
+ * THE LANDING IS PROPOSAL A's FRAME A1 (BGD's picks, 2026-10-26, #2417): a
+ * lead naming what needs the reader, the schedules with each one's served
+ * `state_word`, and an approvals card counting every inbox item with the
+ * oldest one's expiry. A row carries no actions: they are on the schedule's
+ * own page, as the frame draws them.
+ *
  * WHAT A ROW CAN AND CANNOT SAY. Every figure is a field of
  * `routes/schedules.py::schedule_to_api`; nothing is derived from the cron
  * here, because the tick's own parser already wrote `words` and
@@ -36,7 +42,8 @@ import { usd } from './measure'
 import { addressToPath } from './paths'
 import { Absent, Mark } from './primitives'
 import { scheduleWords, type RepoRecord } from './RepositoriesData'
-import { Button, Dialog, Segmented, buttonClass } from './components'
+import { Button, Card, Dialog, Segmented, ToneMark, UsageTrack, buttonClass } from './components'
+import { APPROVALS_ADDRESS, APPROVAL_KIND, approvalAddress } from './Approvals'
 import { ScheduleDetail, detailTabOf } from './ScheduleDetail'
 import { NewSchedule } from './ScheduleEdit'
 import { useRoleGate } from './Profile'
@@ -44,6 +51,7 @@ import { PageHead, Screen, timeAgo } from './Shell'
 import { pluralise } from './types'
 import { useNow } from './useNow'
 import './styles/schedules.css'
+import './styles/automate-landing.css'
 
 /**
  * The list's address, and one schedule's (`/automate/schedules/<id>`,
@@ -236,16 +244,6 @@ export function slashBreaks(text: string): ReactNode {
       {i < parts.length - 1 && <wbr />}
     </Fragment>
   ))
-}
-
-/** The cron in words, or the expression itself when the parser refused it. */
-function WhenCell({ s }: { s: Schedule }) {
-  return (
-    <>
-      <span className="sc-cut" title={`${s.cron} · ${s.timezone}`}>{s.words ?? s.cron}</span>
-      <span className="sc-sub sc-zone">{slashBreaks(s.timezone)}</span>
-    </>
-  )
 }
 
 /** The repositories a scope names, by `owner/repo` when the read gave them. */
@@ -502,118 +500,471 @@ export function Said({ notice }: { notice: ActNotice | null }) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// The landing (Automate proposal A, frame A1; AUTO-A1, part of #2417): the
+// lead, the schedules with each one's state word, and the approvals card.
+// ---------------------------------------------------------------------------
+
 /**
- * The second line of a row on a phone: type · repository · when, then last ·
- * next · spend · waiting. IT WRAPS, AND CARRIES NO TITLE (visual QA V173): cut
- * to one line, everything after the cadence -- the next run, the outcome, the
- * spend and what waits -- sat past the 400px edge, readable only in a
- * `title`, which a touch screen never opens.
+ * `state_word` (`schedules.py::STATE_WORDS`, PR 2500): what a schedule needs,
+ * derived once on the server, so the list, its filter's counts and the
+ * summary cannot disagree. Nothing here derives it again.
  */
-function PhoneLine({ s, names, now }: { s: Schedule; names: ReadonlyMap<string, string> | null; now: number }) {
-  const last =
-    s.last_firing === null
-      ? 'never fired'
-      : `last ${s.last_firing.outcome ?? 'in progress'}${
-          (s.last_firing.ended_at ?? s.last_firing.slot) === null ? '' : ` ${timeAgo(s.last_firing.ended_at ?? s.last_firing.slot ?? '', now)}`
-        }`
-  const next = s.next_run_at === null ? `no next run (${STATE_WORD[s.state]})` : `next ${untilWords(s.next_run_at, now)}`
-  const waiting = s.pending_approvals > 0 ? `${s.pending_approvals} waiting` : 'none waiting'
-  // THE PHONE KEEPS THE ROW'S FACTS (visual QA run 6, overview-automate-005):
-  // the risk tier the type cell carries, the zone the When cell carries, and
-  // the pause note the state cell carries all lived in cells a phone hides.
-  const type = s.tier === null ? s.type : `${s.type} · ${s.tier}`
-  const head = [type, scopeWords(s, names), `${s.words ?? s.cron}, ${s.timezone}`, last, next].join(' · ')
-  const why = stateLine(s)
+export type StateWord = 'active' | 'paused' | 'paused_by_tripwire' | 'waiting_on_approval' | 'failing' | 'never_fired'
+
+/** A schedule as `GET /v1/schedules` lists it; an API older than PR 2500 serves no `state_word`. */
+type Listed = Schedule & { state_word?: StateWord }
+
+/**
+ * `GET /v1/schedules`'s `summary` (`schedules.summarize`). `pending_approvals`
+ * counts EVERY inbox item, not only the schedules' (BGD, 2026-10-26), and is
+ * null when the inbox could not be read, `unread` saying why: an unknown
+ * count is never 0. `oldest_expires_at` is the OLDEST item's expiry, null
+ * when nothing waits or the oldest never expires.
+ */
+interface ListSummary {
+  by_state: Partial<Record<StateWord, number>>
+  pending_approvals: number | null
+  oldest_expires_at: string | null
+  unread?: string | null
+}
+
+/** The words as the reader reads them. A disabled schedule reads paused (BGD, 2026-10-26). */
+export const STATE_WORD_SAID: Readonly<Record<StateWord, string>> = {
+  active: 'active',
+  paused: 'paused',
+  paused_by_tripwire: 'paused by its tripwire',
+  waiting_on_approval: 'waiting on approval',
+  failing: 'failing',
+  never_fired: 'never fired',
+}
+
+const WORD_TONE: Readonly<Record<StateWord, string>> = {
+  active: 'ok',
+  paused: 'paused',
+  paused_by_tripwire: 'warn',
+  waiting_on_approval: 'info',
+  failing: 'bad',
+  never_fired: 'info',
+}
+
+/** The words that need a look: their rows sort first and are tinted (frame A1). */
+const NEEDS_LOOK: ReadonlySet<StateWord> = new Set<StateWord>(['waiting_on_approval', 'paused_by_tripwire', 'failing'])
+
+type Filter = 'all' | 'waiting_on_approval' | 'active' | 'failing' | 'paused' | 'never_fired'
+
+/** The filter's segments, in the frame's order; Paused holds both paused words. */
+const FILTERS: readonly { key: Exclude<Filter, 'all'>; label: string; words: readonly StateWord[] }[] = [
+  { key: 'waiting_on_approval', label: 'Waiting on approval', words: ['waiting_on_approval'] },
+  { key: 'active', label: 'Active', words: ['active'] },
+  { key: 'failing', label: 'Failing', words: ['failing'] },
+  { key: 'paused', label: 'Paused', words: ['paused', 'paused_by_tripwire'] },
+  { key: 'never_fired', label: 'Never fired', words: ['never_fired'] },
+]
+
+/** An outcome's mark; a word the tick may add later is drawn as itself, unmarked by tone. */
+const OUTCOME_TONE: Readonly<Record<string, string>> = { succeeded: 'ok', failed: 'bad', partial: 'warn', skipped: 'info' }
+
+/** The inbox's waiting items that name this schedule (`subject.schedule_id`), oldest first as served. */
+function itemsOf(inbox: ApprovalItem[] | null, id: string): ApprovalItem[] {
+  return inbox === null ? [] : inbox.filter((i) => i.subject.schedule_id === id)
+}
+
+/** The line under a state word: the API's own pause copy or count, never a figure it did not serve. */
+function wordLine(s: Listed, word: StateWord, mine: ApprovalItem[], now: number): string | null {
+  switch (word) {
+    case 'failing': {
+      const n = s.consecutive_failures ?? 0
+      const max = s.policy.max_consecutive_failures
+      return `${n} failed in a row${max === undefined ? '' : `; pauses itself at ${max}`}`
+    }
+    case 'waiting_on_approval':
+      return mine.length > 0 ? mine[0]!.summary : null
+    case 'paused_by_tripwire': {
+      const why = s.pause?.reason || 'a run cost more than its per-run tripwire'
+      return s.pause?.at ? `${timeAgo(s.pause.at, now)}: ${why}` : why
+    }
+    case 'paused':
+      if (s.state === 'disabled') {
+        const why = s.pause?.reason || null
+        return `An admin disabled it${why === null ? '' : `: ${why}`}; only an admin turns it back on`
+      }
+      return stateLine(s)
+    case 'never_fired':
+      return s.next_run_at === null ? null : `its first firing is ${untilWords(s.next_run_at, now)}`
+    case 'active':
+      return null
+  }
+}
+
+function StateCell({ s, mine, now }: { s: Listed; mine: ApprovalItem[]; now: number }) {
+  // AN API OLDER THAN PR 2500 SERVES NO WORD: a dash with its reason, never
+  // a word derived here. The pause note it does serve is still said.
+  const line = s.state_word === undefined ? stateLine(s) : wordLine(s, s.state_word, mine, now)
   return (
-    <span className="sc-line2">
-      {why !== null && <span className="sc-line2-why">{why}</span>}
-      {head} · <SpendFigure usdReported={s.spend_today.reported_usd} unreported={s.spend_today.unreported_attempts} what="today's runs" /> ·{' '}
-      {waiting}
-    </span>
+    <>
+      {s.state_word === undefined ? (
+        <i className="ctl-em" title="This API serves no state_word.">&mdash; not served</i>
+      ) : (
+        <ToneMark tone={WORD_TONE[s.state_word]} className="al-word">
+          {STATE_WORD_SAID[s.state_word]}
+        </ToneMark>
+      )}
+      <DryRunChip s={s} />
+      {line !== null && <span className="sc-sub sc-why">{line}</span>}
+    </>
+  )
+}
+
+/** Spend today against the day budget, the bar only when there is one. */
+function SpendCell({ s }: { s: Schedule }) {
+  const day = s.budget.per_day_usd
+  return (
+    <>
+      <SpendFigure usdReported={s.spend_today.reported_usd} unreported={s.spend_today.unreported_attempts} what="today's runs" />
+      {day !== undefined && day > 0 && (
+        <span className="al-track">
+          <UsageTrack pct={(s.spend_today.reported_usd / day) * 100} tone={s.state === 'auto_paused' ? 'is-warn' : undefined} />
+        </span>
+      )}
+      <span className="sc-sub">{day === undefined ? 'no day budget' : `of ${usd(day)} a day`}</span>
+    </>
+  )
+}
+
+/** What waits on this schedule: the count it serves, and which kinds from the inbox when that was read. */
+function WaitingCell({ s, mine, inboxRead }: { s: Schedule; mine: ApprovalItem[]; inboxRead: boolean }) {
+  if (s.pending_approvals === 0) return <span className="al-dim">none</span>
+  const kinds = [...new Set(mine.map((i) => (APPROVAL_KIND[i.kind] ?? i.kind).toLowerCase()))]
+  return (
+    <>
+      <b className="al-fig">{s.pending_approvals}</b>
+      <span className="sc-sub">{inboxRead ? kinds.join(', ') : 'which, not read'}</span>
+    </>
   )
 }
 
 function ScheduleList({
   rows,
   names,
+  inbox,
   go,
-  onDone,
 }: {
-  rows: Schedule[]
+  rows: Listed[]
   names: ReadonlyMap<string, string> | null
+  /** The inbox's items, or null when it was not read. */
+  inbox: ApprovalItem[] | null
   go: (to: string) => void
-  onDone: (notice: ActNotice) => void
 }) {
   const now = useNow()
+  // NEEDS A LOOK FIRST, THEN BY NAME (frame A1). The API lists by name, and a
+  // stable sort keeps that order inside each half.
+  const sorted = [...rows].sort((a, b) => Number(NEEDS_LOOK.has(b.state_word!)) - Number(NEEDS_LOOK.has(a.state_word!)))
   return (
-    <div className="sc-table-wrap">
-      <table className="sc-table is-schedules">
+    <div className="sc-table-wrap al-wrap">
+      <table className="sc-table al-table">
         <thead>
           <tr>
-            <th scope="col" data-col="name">Name · type</th>
-            <th scope="col" data-col="repo">Repository</th>
+            <th scope="col" data-col="name">Schedule</th>
+            <th scope="col" data-col="target">Target</th>
             <th scope="col" data-col="when">When</th>
-            <th scope="col" data-col="next">Next run</th>
-            <th scope="col" data-col="last">Last run</th>
+            <th scope="col" data-col="next">Next firing</th>
+            <th scope="col" data-col="last">Last firing</th>
             <th scope="col" data-col="spend">Spend today</th>
-            <th scope="col" data-col="approvals">Approvals</th>
+            <th scope="col" data-col="waiting">Waiting</th>
             <th scope="col" data-col="state">State</th>
-            <th scope="col" data-col="acts">
-              <span className="sc-vh">Actions</span>
-            </th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((s) => {
-            const line = stateLine(s)
+          {sorted.map((s) => {
+            const mine = itemsOf(inbox, s.schedule_id)
+            const need = s.state_word !== undefined && NEEDS_LOOK.has(s.state_word)
+            const lastAt = s.last_firing === null ? null : s.last_firing.ended_at ?? s.last_firing.slot
             return (
-              <tr key={s.schedule_id} className="sc-row" data-schedule={s.schedule_id}>
-                <td data-label="Name · type" className="sc-c-name">
-                  <InApp go={go} to={scheduleAddress(s.schedule_id)} className="sc-cut sc-name">{s.name}</InApp>
-                  <span className="sc-sub sc-type">{s.tier === null ? s.type : `${s.type} · ${s.tier}`}</span>
-                  <PhoneLine s={s} names={names} now={now} />
+              <tr key={s.schedule_id} className={`sc-row al-row${need ? ' is-need' : ''}`} data-schedule={s.schedule_id} data-word={s.state_word}>
+                <td data-label="Schedule" className="al-c-name">
+                  <InApp go={go} to={scheduleAddress(s.schedule_id)} className="sc-name al-name">{s.name}</InApp>
+                  <span className="sc-sub">
+                    {s.tier === null ? s.type : `${s.type} · ${s.tier}`}
+                    <span className="al-ph"> · {s.words ?? s.cron}</span>
+                  </span>
                 </td>
-                <td data-label="Repository" className="sc-c-more"><span className="sc-cut" title={scopeWords(s, names)}>{slashBreaks(scopeWords(s, names))}</span></td>
-                <td data-label="When" className="sc-c-more"><WhenCell s={s} /></td>
-                <td data-label="Next run" className="sc-c-more">
+                <td data-label="Target" className="al-c-more">{slashBreaks(scopeWords(s, names))}</td>
+                <td data-label="When" className="al-c-more">
+                  <span title={`${s.cron} · ${s.timezone}`}>{s.words ?? s.cron}</span>
+                  <span className="sc-sub al-mono">{s.cron}</span>
+                  <span className="sc-sub sc-zone">{slashBreaks(s.timezone)}</span>
+                </td>
+                <td data-label="Next firing" className="al-c-next">
                   {s.next_run_at === null ? (
-                    <i className="ctl-em" title={NO_NEXT_RUN[s.state]}>&mdash; {NO_NEXT_RUN[s.state]}</i>
+                    <i className="ctl-em">&mdash; {NO_NEXT_RUN[s.state]}</i>
                   ) : (
                     <span title={localTime(s.next_run_at)}>{untilWords(s.next_run_at, now)}</span>
                   )}
                 </td>
-                <td data-label="Last run" className="sc-c-more">
+                <td data-label="Last firing" className="al-c-more">
                   {s.last_firing === null ? (
-                    <i className="ctl-em">never fired</i>
+                    <i className="ctl-em">&mdash; never fired</i>
                   ) : (
                     <>
-                      <span>{s.last_firing.outcome ?? 'in progress'}</span>
-                      {(s.last_firing.ended_at ?? s.last_firing.slot) !== null && (
-                        <span className="sc-sub" title={s.last_firing.ended_at ?? s.last_firing.slot ?? ''}>
-                          {timeAgo(s.last_firing.ended_at ?? s.last_firing.slot ?? '', now)}
-                        </span>
+                      {s.last_firing.outcome === null ? (
+                        <ToneMark tone="live">in progress</ToneMark>
+                      ) : OUTCOME_TONE[s.last_firing.outcome] === undefined ? (
+                        <span>{s.last_firing.outcome}</span>
+                      ) : (
+                        <ToneMark tone={OUTCOME_TONE[s.last_firing.outcome]!}>{s.last_firing.outcome}</ToneMark>
                       )}
+                      {lastAt !== null && <span className="sc-sub" title={localTime(lastAt)}>{timeAgo(lastAt, now)}</span>}
                     </>
                   )}
                 </td>
-                <td data-label="Spend today" className="sc-c-more">
-                  <SpendFigure usdReported={s.spend_today.reported_usd} unreported={s.spend_today.unreported_attempts} what="today's runs" />
-                </td>
-                <td data-label="Approvals" className="sc-c-more">{s.pending_approvals > 0 ? `${s.pending_approvals} waiting` : 'none'}</td>
-                <td data-label="State" className="sc-c-state">
-                  <span className={`sc-state is-${s.state}`}>{STATE_WORD[s.state]}</span>
-                  <DryRunChip s={s} />
-                  {line !== null && <span className="sc-sub sc-why">{line}</span>}
-                </td>
-                <td data-label="Actions" className="sc-c-acts">
-                  <ScheduleActions s={s} where="row" onDone={onDone} />
-                </td>
+                <td data-label="Spend today" className="al-c-spend"><SpendCell s={s} /></td>
+                <td data-label="Waiting" className="al-c-more"><WaitingCell s={s} mine={mine} inboxRead={inbox !== null} /></td>
+                <td data-label="State" className="al-c-state"><StateCell s={s} mine={mine} now={now} /></td>
               </tr>
             )
           })}
         </tbody>
       </table>
     </div>
+  )
+}
+
+/** The filter's counts: the summary's when served, else the listed words counted; null when neither says. */
+function wordCounts(rows: Listed[], summary: ListSummary | null): Partial<Record<StateWord, number>> | null {
+  if (summary !== null) return summary.by_state
+  if (rows.some((s) => s.state_word === undefined)) return null
+  const counts: Partial<Record<StateWord, number>> = {}
+  for (const s of rows) counts[s.state_word!] = (counts[s.state_word!] ?? 0) + 1
+  return counts
+}
+
+/** "All · 7 | Waiting on approval · 2 | …": a segment for each word some schedule wears. */
+function WordFilter({ rows, counts, value, onChange }: { rows: Listed[]; counts: Partial<Record<StateWord, number>>; value: Filter; onChange: (f: Filter) => void }) {
+  const options = [
+    { key: 'all' as Filter, label: 'All', count: rows.length },
+    ...FILTERS.map((f) => ({ key: f.key as Filter, label: f.label, count: f.words.reduce((n, w) => n + (counts[w] ?? 0), 0) })).filter((o) => o.count > 0),
+  ]
+  return (
+    <div className="al-filter">
+      <Segmented<Filter> label="Schedules by state" small value={value} options={options} onChange={onChange} />
+      <span className="al-order">Needs a look first, then by name</span>
+    </div>
+  )
+}
+
+/** The inbox's oldest item as this page read it, when it read one. */
+interface InboxRead {
+  items: ApprovalItem[] | null
+  /** Why the inbox was not read, when it was not. */
+  why: string | null
+}
+
+function readInbox(r: Result<{ approvals: ApprovalItem[] }>): InboxRead {
+  if (r.status === 'ok' || r.status === 'stale') return { items: r.data.approvals, why: null }
+  if (r.status === 'empty') return { items: [], why: null }
+  if (r.status === 'error') return { items: null, why: `GET /v1/approvals failed: ${errorHeading(r.error)}` }
+  return { items: null, why: 'the approvals read had not finished' }
+}
+
+/** Every inbox item waiting: the summary's count, else the inbox read's length, else null (unknown, never 0). */
+function pendingCount(summary: ListSummary | null, inbox: InboxRead): number | null {
+  if (summary !== null) return summary.pending_approvals
+  return inbox.items === null ? null : inbox.items.length
+}
+
+/** The oldest item's expiry: the summary's, else the inbox's first item's. */
+function oldestExpiry(summary: ListSummary | null, inbox: InboxRead): string | null {
+  if (summary !== null) return summary.oldest_expires_at
+  return inbox.items?.[0]?.expires_at ?? null
+}
+
+function Expiry({ at, now }: { at: string | null; now: number }) {
+  if (at === null) return <span>does not expire</span>
+  return <span title={localTime(at)}>{untilWords(at, now) === 'due now' ? 'expiring now' : untilWords(at, now).replace(/^in /, '')}</span>
+}
+
+/** "A, B and C". */
+function listWords(parts: string[]): string {
+  return parts.length <= 1 ? (parts[0] ?? '') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+}
+
+/**
+ * THE LEAD (frame A1): what needs the reader across both tabs, in one
+ * sentence, and the one button that starts on it. The approvals count is
+ * every inbox item; the schedules named are the ones paused by their
+ * tripwire or failing. When the inbox could not be read, the lead says so
+ * rather than counting nothing (frame A6c).
+ */
+function LandingLead({ rows, summary, inbox, go }: { rows: Listed[]; summary: ListSummary | null; inbox: InboxRead; go: (to: string) => void }) {
+  const now = useNow()
+  const pending = pendingCount(summary, inbox)
+  const tripped = rows.filter((s) => s.state_word === 'paused_by_tripwire')
+  const failing = rows.filter((s) => s.state_word === 'failing')
+  if (pending === null) {
+    const why = summary?.unread ?? inbox.why ?? 'the approvals inbox could not be read'
+    return (
+      <Lead tone="bad" kicker="Could not read" title="Approvals could not be read, so the items waiting on you cannot be opened.">
+        {`${why[0]!.toUpperCase()}${why.slice(1)}. The schedules were read; how many items wait, and when the oldest expires, is not known until the read works.`}
+      </Lead>
+    )
+  }
+  const parts: string[] = []
+  if (pending > 0) parts.push(`${pending === 1 ? '1 approval waits' : `${pending} approvals wait`} on you`)
+  if (tripped.length === 1) parts.push(`${tripped[0]!.name} is paused by its tripwire`)
+  if (tripped.length > 1) parts.push(`${tripped.length} schedules are paused by their tripwires`)
+  if (failing.length === 1) parts.push(`${failing[0]!.name} is failing`)
+  if (failing.length > 1) parts.push(`${failing.length} schedules are failing`)
+  if (parts.length === 0) {
+    return (
+      <Lead tone="ok" kicker="Nothing needs you" title="No approval waits, and no schedule is failing or paused by its tripwire.">
+        Waiting items hold no capacity, so an empty inbox does not mean anything is stuck.
+      </Lead>
+    )
+  }
+  const oldest = inbox.items?.[0] ?? null
+  const expires = oldestExpiry(summary, inbox)
+  const said: ReactNode[] = []
+  if (pending > 0) {
+    const what = oldest === null ? 'The oldest' : `The oldest, ${oldest.summary},`
+    said.push(
+      expires === null ? (
+        <Fragment key="exp">{what} does not expire. </Fragment>
+      ) : (
+        <Fragment key="exp">
+          {what} expires <span title={localTime(expires)} data-testid="al-oldest-expiry">{untilWords(expires, now) === 'due now' ? 'now' : untilWords(expires, now)}</span>.{' '}
+        </Fragment>
+      ),
+    )
+  }
+  if (tripped.length === 1) {
+    const s = tripped[0]!
+    said.push(
+      <Fragment key="trip">
+        {s.name} stopped{s.pause?.at ? ` ${timeAgo(s.pause.at, now)}` : ''}{s.pause?.reason ? `: ${s.pause.reason}` : ''}. Resume it from its page once you have read why.
+      </Fragment>,
+    )
+  }
+  const action =
+    pending > 0 ? (
+      <InApp go={go} to={oldest === null ? APPROVALS_ADDRESS : approvalAddress(oldest.approval_id)} className={buttonClass({ kind: 'primary', size: 'sm' })}>
+        {oldest === null ? 'Open Approvals' : 'Review the oldest approval'}
+      </InApp>
+    ) : (
+      <InApp go={go} to={scheduleAddress((tripped[0] ?? failing[0])!.schedule_id)} className={buttonClass({ kind: 'primary', size: 'sm' })}>
+        Open {(tripped[0] ?? failing[0])!.name}
+      </InApp>
+    )
+  const title = listWords(parts)
+  return (
+    <Lead tone="warn" kicker="Needs you" title={`${title[0]!.toUpperCase()}${title.slice(1)}.`} action={action}>
+      {said}
+    </Lead>
+  )
+}
+
+/** The lead's frame: a kicker, one sentence, what explains it, and its one action. */
+function Lead({ tone, kicker, title, action, children }: { tone: 'warn' | 'bad' | 'ok' | 'info'; kicker: string; title: string; action?: ReactNode; children: ReactNode }) {
+  return (
+    <section className={`al-lead is-${tone}`} aria-label={kicker} data-testid="al-lead">
+      <div className="al-lead-t">
+        <span className="al-lead-k">{kicker}</span>
+        <h2>{title}</h2>
+        <p>{children}</p>
+      </div>
+      {action !== undefined && <div className="al-lead-a">{action}</div>}
+    </section>
+  )
+}
+
+/** How many inbox rows the card draws; the rest are one click away on Approvals. */
+const CARD_ITEMS = 5
+
+/**
+ * THE APPROVALS CARD (frame A1): how many items wait -- every inbox item --
+ * when the oldest expires, and the oldest few, each opening its decision
+ * page. It draws no Approve or Reject: those are on the item's own page,
+ * where `may_decide` says who may. A count that was not read is a dash with
+ * its reason, never 0 (frame A6c).
+ */
+function ApprovalsCard({ summary, inbox, rows, go }: { summary: ListSummary | null; inbox: InboxRead; rows: Listed[]; go: (to: string) => void }) {
+  const now = useNow()
+  const pending = pendingCount(summary, inbox)
+  const open = (
+    <InApp go={go} to={APPROVALS_ADDRESS} className={buttonClass({ kind: 'secondary', size: 'sm' })}>
+      Open Approvals
+    </InApp>
+  )
+  if (pending === null) {
+    const why = summary?.unread ?? inbox.why ?? 'the approvals inbox could not be read'
+    return (
+      <Card className="al-card al-approvals" title={<>Approvals · <span className="al-dim">&mdash; not read</span></>} action={open}>
+        <p className="al-empty" data-testid="al-pending">
+          &mdash; <span className="al-dim">not read: {why}</span>
+        </p>
+        <p className="al-note">Not 0: nothing was read. When the oldest expires is unknown too.</p>
+      </Card>
+    )
+  }
+  const names = new Map(rows.map((s) => [s.schedule_id, s.name]))
+  const expires = oldestExpiry(summary, inbox)
+  const shown = (inbox.items ?? []).slice(0, CARD_ITEMS)
+  return (
+    <Card className="al-card al-approvals" title={<span data-testid="al-pending">{`Approvals · ${pending} waiting`}</span>} action={open}>
+      {pending === 0 ? (
+        <p className="al-note">Nothing waits on you: the inbox was read and is empty. Waiting items hold no capacity.</p>
+      ) : (
+        <>
+          <p className="al-note" data-testid="al-card-expiry">
+            {expires === null ? (
+              'The oldest does not expire.'
+            ) : (
+              <>
+                The oldest expires <span title={localTime(expires)}>{untilWords(expires, now) === 'due now' ? 'now' : untilWords(expires, now)}</span>.
+              </>
+            )}{' '}
+            Waiting items hold no capacity.
+          </p>
+          {inbox.items === null ? (
+            <p className="al-note">Which items they are was not read: {inbox.why}.</p>
+          ) : (
+            shown.length > 0 && (
+              <div className="sc-table-wrap">
+                <table className="sc-table al-table is-inbox">
+                  <thead>
+                    <tr>
+                      <th scope="col" data-col="what">What</th>
+                      <th scope="col" data-col="from">From</th>
+                      <th scope="col" data-col="expires">Expires in</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shown.map((item, i) => {
+                      const sid = item.subject.schedule_id
+                      return (
+                        <tr key={item.approval_id} className={`sc-row al-row${i === 0 ? ' is-need' : ''}`} data-approval={item.approval_id}>
+                          <td data-label="What">
+                            <InApp go={go} to={approvalAddress(item.approval_id)} className="sc-name al-name">{item.summary}</InApp>
+                            <span className="sc-sub">{APPROVAL_KIND[item.kind] ?? item.kind}</span>
+                          </td>
+                          <td data-label="From">
+                            {typeof sid === 'string' && sid !== '' ? names.get(sid) ?? sid : <span className="al-dim">not from a schedule</span>}
+                          </td>
+                          <td data-label="Expires in" className="al-fig"><Expiry at={item.expires_at} now={now} /></td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )
+          )}
+          {inbox.items !== null && inbox.items.length > shown.length && (
+            <p className="al-note">The oldest {shown.length} of {inbox.items.length}; the rest are on Approvals.</p>
+          )}
+        </>
+      )}
+    </Card>
   )
 }
 
@@ -686,63 +1037,105 @@ function BuiltInRows({ repos, go }: { repos: Result<RepoRecord[]>; go: (to: stri
   )
 }
 
-function SchedulesBody({
-  rows,
-  repos,
-  go,
-  notice,
-  onDone,
-  scopeSwitch,
-}: {
-  rows: Schedule[]
-  /** Read with the list, so ⟳ re-reads the built-in rows too (AUT-19). */
+/** What the landing read: the list and its summary, the inbox, and the built-in rows. */
+interface Landing {
+  schedules: Listed[]
+  tenant_id: string
+  /** null from an API older than PR 2500, which serves none. */
+  summary: ListSummary | null
   repos: Result<RepoRecord[]>
-  go: (to: string) => void
-  notice: ActNotice | null
-  onDone: (notice: ActNotice) => void
-  /** "Mine | All workspaces", for an admin; nothing for anyone else. */
-  scopeSwitch: ReactNode
-}) {
+  inbox: Result<{ approvals: ApprovalItem[] }>
+  /** `GET /v1/schedules` answered 404: this deployment does not serve Automate (frame A6b). */
+  notServed: boolean
+}
+
+function SchedulesBody({ d, go, scopeSwitch }: { d: Landing; go: (to: string) => void; scopeSwitch: ReactNode }) {
+  const [filter, setFilter] = useState<Filter>('all')
+  const rows = d.schedules
+  const repos = d.repos
   const names = repos.status === 'ok' || repos.status === 'stale' ? new Map(repos.data.map((r) => [r.repo_id, `${r.owner}/${r.repo}`])) : null
   const roleGate = useRoleGate('member', 'create schedules')
+  const inbox = readInbox(d.inbox)
+  const newSchedule =
+    roleGate === null ? (
+      <InApp go={go} to={scheduleAddress(NEW_SCHEDULE)} className={buttonClass({ kind: 'primary', size: 'sm' })}>
+        New schedule
+      </InApp>
+    ) : (
+      <Button kind="primary" size="sm" disabledReason={roleGate}>
+        New schedule
+      </Button>
+    )
+  if (d.notServed) {
+    return (
+      <div className="sc-list al-page">
+        <Lead tone="info" kicker="Not served here" title="This deployment does not serve Automate.">
+          GET /v1/schedules answered 404, not found, so there are no schedules or approvals to show, and nothing here is counted. Schedules need an
+          API with the schedules routes.
+        </Lead>
+        <Card className="al-card" title="Schedules">
+          <p className="al-empty" data-testid="al-not-served">
+            &mdash; <span className="al-dim">not served by this deployment</span>
+          </p>
+          <p className="al-note">The count is a dash, not 0: no list was read.</p>
+        </Card>
+      </div>
+    )
+  }
+  const counts = wordCounts(rows, d.summary)
+  const words = FILTERS.find((f) => f.key === filter)?.words ?? null
+  const shown = words === null ? rows : rows.filter((s) => s.state_word !== undefined && words.includes(s.state_word))
   return (
-    <div className="sc-list">
+    <div className="sc-list al-page">
+      {/* With no schedule, New schedule is the lead's one button (frame A6a), not drawn twice. */}
       <div className="c-acts sc-acts">
         {scopeSwitch}
-        {roleGate === null ? (
-          <InApp go={go} to={scheduleAddress(NEW_SCHEDULE)} className={buttonClass({ kind: 'primary', size: 'sm' })}>
-            New schedule
-          </InApp>
-        ) : (
-          <Button kind="primary" size="sm" disabledReason={roleGate}>
-            New schedule
-          </Button>
-        )}
+        {rows.length > 0 && newSchedule}
       </div>
-      <Said notice={notice} />
       {rows.length === 0 ? (
-        <Absent kind="zero" heading="No schedules yet" say="This workspace has no schedules: the list was read and is empty.">
-          Recurring work in this workspace, such as an issue sweep, an index refresh or a nightly observer, is listed here. Each firing makes ordinary work: an issue run, an agent or a workflow.
-        </Absent>
+        <>
+          <Lead tone="info" kicker="Nothing scheduled yet" title="This workspace has no schedules. Make the first one." action={newSchedule}>
+            A schedule fires work on a cron: an issue sweep, a docs check, a visual QA run. Nothing runs until you make one.
+          </Lead>
+          <Card className="al-card" title="Schedules · 0">
+            <Absent kind="zero" heading="No schedules yet" say="This workspace has no schedules: the list was read and is empty.">
+              Each firing makes ordinary work: an issue run, an agent or a workflow, listed in Work like any other.
+            </Absent>
+          </Card>
+        </>
       ) : (
-        <ScheduleList rows={rows} names={names} go={go} onDone={onDone} />
+        <>
+          <LandingLead rows={rows} summary={d.summary} inbox={inbox} go={go} />
+          {counts !== null && <WordFilter rows={rows} counts={counts} value={filter} onChange={setFilter} />}
+          <ScheduleList rows={shown} names={names} inbox={inbox.items} go={go} />
+        </>
       )}
-      <h2 className="sc-h2">Built-in recurring work</h2>
-      <BuiltInRows repos={repos} go={go} />
+      <div className="al-g2">
+        <ApprovalsCard summary={d.summary} inbox={inbox} rows={rows} go={go} />
+        <Card className="al-card al-builtin" title="Built-in recurring work">
+          <p className="al-note">Repository index refreshes run on each repository’s own schedule and are set in its Settings, not here.</p>
+          <BuiltInRows repos={repos} go={go} />
+        </Card>
+      </div>
     </div>
   )
 }
 
 /**
- * The list and the repositories in one read, so the Screen's ⟳ refreshes
- * the built-in index rows as well as the schedules (AUT-19). The list's own
- * answer is the screen's: a failed repositories read is the built-in rows'
- * failure, drawn there, and never the page's.
+ * The list, its summary, the inbox and the repositories in one read, so the
+ * Screen's ⟳ refreshes all of them (AUT-19). The list's own answer is the
+ * screen's, except a 404, which is a deployment without the schedules routes
+ * and is drawn as that (frame A6b) rather than as a failure. A failed inbox
+ * or repositories read is its own card's to say, never the page's.
  */
-async function loadListAndRepos(): Promise<Result<{ schedules: Schedule[]; tenant_id: string; repos: Result<RepoRecord[]> }>> {
-  const [list, repos] = await Promise.all([loadSchedules(), loadRepositories()])
+async function loadListAndRepos(): Promise<Result<Landing>> {
+  const [list, repos, inbox] = await Promise.all([loadSchedules(), loadRepositories(), loadApprovals()])
+  if (list.status === 'error' && list.error.httpStatus === 404) {
+    return { status: 'ok', fetchedAt: Date.now(), data: { schedules: [], tenant_id: '', summary: null, repos, inbox, notServed: true } }
+  }
   if (list.status !== 'ok' && list.status !== 'stale') return list
-  return { ...list, data: { ...list.data, repos } }
+  const served = list.data as typeof list.data & { schedules: Listed[]; summary?: ListSummary | null }
+  return { ...list, data: { schedules: served.schedules, tenant_id: served.tenant_id, summary: served.summary ?? null, repos, inbox, notServed: false } }
 }
 
 export function SchedulesScreen({ view, go }: { view: string | null; go: (to: string) => void }) {
@@ -772,22 +1165,13 @@ function ScheduleLists({ scope, go }: { scope: Scope; go: (to: string) => void }
 }
 
 function ScheduleListScreen({ go, scopeSwitch }: { go: (to: string) => void; scopeSwitch: ReactNode }) {
-  // Above the Screen, as on one schedule's page: an action bumps `round`,
-  // which remounts the Screen to read the list again, and what it said stays.
-  const [round, setRound] = useState(0)
-  const [notice, setNotice] = useState<ActNotice | null>(null)
-  const onDone = (n: ActNotice) => {
-    setNotice(n)
-    setRound((r) => r + 1)
-  }
   return (
     <Screen
-      key={`schedules:${round}`}
       title="Schedules"
       load={loadListAndRepos}
-      summary={(d) => `${pluralise(d.schedules.length, 'schedule')} · workspace ${d.tenant_id}`}
+      summary={(d) => (d.notServed ? 'schedules: — not served by this deployment' : `${pluralise(d.schedules.length, 'schedule')} · workspace ${d.tenant_id}`)}
     >
-      {(d) => <SchedulesBody rows={d.schedules} repos={d.repos} go={go} notice={notice} onDone={onDone} scopeSwitch={scopeSwitch} />}
+      {(d) => <SchedulesBody d={d} go={go} scopeSwitch={scopeSwitch} />}
     </Screen>
   )
 }
