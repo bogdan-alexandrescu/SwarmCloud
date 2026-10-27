@@ -166,6 +166,23 @@ describe('the schedules table', () => {
     }
   })
 
+  it('says why a paused row has no next firing in its word, never the stored state', async () => {
+    // MUTATION: draw NO_NEXT_RUN[s.state] (disabled / auto-paused, so no next run) in the Next firing cell.
+    await mount(routes())
+    await waitFor(() => expect(rowOf('sch_off')).not.toBeNull(), WAIT)
+    const next = (id: string) => visible(rowOf(id)!.querySelector('td[data-label="Next firing"]'))
+    expect(next('sch_off')).toBe('— paused, so no next firing')
+    expect(next('sch_paused')).toBe('— paused, so no next firing')
+    expect(next('sch_trip')).toBe('— paused by its tripwire, so no next firing')
+    // Across the whole row, only the explanatory line under the word may say
+    // an admin disabled it; nothing else says disabled or auto-paused.
+    for (const id of landingRows()) {
+      const row = rowOf(id!)!.cloneNode(true) as HTMLElement
+      for (const why of row.querySelectorAll('td[data-label="State"] .sc-why')) why.remove()
+      expect(visible(row), id).not.toMatch(/\bdisabled\b|auto-paused/)
+    }
+  })
+
   it('says under each word what the API served about it', async () => {
     await mount(routes())
     await waitFor(() => expect(rowOf('sch_fail')).not.toBeNull(), WAIT)

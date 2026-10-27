@@ -548,6 +548,24 @@ const WORD_TONE: Readonly<Record<StateWord, string>> = {
   never_fired: 'info',
 }
 
+/**
+ * Why a listed schedule has no next firing, in its WORD (frame A1: "— paused
+ * by its tripwire"), so the row never says disabled or auto-paused where its
+ * word says paused. A word that is not a pause has a next firing unless the
+ * tick has not set it yet. An API with no word falls back to NO_NEXT_RUN.
+ */
+function noNextFiring(s: Listed): string {
+  switch (s.state_word) {
+    case undefined:
+      return NO_NEXT_RUN[s.state]
+    case 'paused':
+    case 'paused_by_tripwire':
+      return `${STATE_WORD_SAID[s.state_word]}, so no next firing`
+    default:
+      return NO_NEXT_RUN.enabled
+  }
+}
+
 /** The words that need a look: their rows sort first and are tinted (frame A1). */
 const NEEDS_LOOK: ReadonlySet<StateWord> = new Set<StateWord>(['waiting_on_approval', 'paused_by_tripwire', 'failing'])
 
@@ -697,7 +715,7 @@ function ScheduleList({
                 </td>
                 <td data-label="Next firing" className="al-c-next">
                   {s.next_run_at === null ? (
-                    <i className="ctl-em">&mdash; {NO_NEXT_RUN[s.state]}</i>
+                    <i className="ctl-em">&mdash; {noNextFiring(s)}</i>
                   ) : (
                     <span title={localTime(s.next_run_at)}>{untilWords(s.next_run_at, now)}</span>
                   )}
