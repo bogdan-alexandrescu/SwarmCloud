@@ -159,9 +159,6 @@ PR_ENDED_REASONS: Mapping[str, str] = {
     "pull_request_merged": "merged",
     "pull_request_closed": "closed",
 }
-#: `result_summary.skipped`, the worker's own key for a step that did not run
-#: (`agent_worker.expected_outputs.SKIPPED_SUMMARY_KEY`).
-SKIPPED_SUMMARY_KEY = "skipped"
 
 
 @lru_cache(maxsize=256)
