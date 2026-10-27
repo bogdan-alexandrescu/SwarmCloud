@@ -1035,6 +1035,18 @@ def test_a_desktop_capture_keeps_its_routes_budget_and_says_when_it_cut(qa, worl
     assert qa.segment_budget({"segments": 3}, "phone-390") == qa.MAX_SEGMENTS
 
 
+def test_the_380_phone_is_captured_to_the_end_as_the_390_one_is(qa):
+    """PHONE-380 (BGD 2026-10-26, part of #2136): AI Studio's 380 x 800 phone
+    frame is a phone at least as tall per page as phone-390, so owner decision
+    c49's reason -- phone captures stopped at their budget before the page
+    ended -- holds for it too."""
+    # MUTATION: leave phone-380 out of TO_THE_END_PRESETS and this fails.
+    assert qa.segment_budget({"segments": 3}, "phone-380") == qa.MAX_SEGMENTS
+    from agent_worker.livegate.presets import PRESETS
+
+    assert qa.TO_THE_END_PRESETS <= set(PRESETS), "a preset the gate does not have"
+
+
 def test_a_page_whose_text_keeps_changing_is_shot_only_once_it_stops(qa, world):
     """Box comment 6283709068 and 6283730057 (run 4's task-007, work-a-001,
     work-a-002, work-a-003): the agent list's 'attempt … of 3', the Workflows

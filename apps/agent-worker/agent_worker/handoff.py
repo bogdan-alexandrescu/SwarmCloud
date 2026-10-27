@@ -108,6 +108,9 @@ from .qa_target import CTL_OP as QA_TARGET_OP
 from .qa_target import QaTargetSignIn
 from .errors import ExitCode
 from .hardening import PROTECTED
+# The `swarm-handoff device` help names the gate's presets from the gate's own
+# list (PHONE-380, part of #2136), so it cannot drift from what the gate takes.
+from .livegate.presets import PRESETS
 from .livegate.tunnel import (
     CLOSE_RESTARTING,
     RESOLVER_BUSY,
@@ -456,8 +459,7 @@ it is what you continue from if this attempt is parked.
 
 `swarm-handoff status` prints the last control episode in the same shape as
 `wait`. `swarm-handoff device <preset>` switches the browser to a device
-preset by name (desktop, iphone-15, phone-390, phone-380, pixel-8, iphone-se,
-ipad-7).
+preset by name ({presets}).
 `swarm-handoff theme dark|light|system` sets the colour scheme every page is
 told to prefer (prefers-color-scheme); it holds across navigation and new
 tabs, and `system` lifts it. browser_resize is refused: the size is a preset's.
@@ -474,7 +476,7 @@ A flow as a GIF, a mockup beside the app, and a render against its frame (one li
     swarm-handoff compare <shot.png> <frame.png>   -> a score (0 = the same picture) and $SWARM_ARTIFACTS_DIR/compare/<name>.diff.png; exit 1 over the threshold
 
 Never copy cookies or a storage state into your files: they are refused.
-"""
+""".replace("{presets}", ", ".join(PRESETS))
 
 #: The worker's ledger of the task's hand-offs, every attempt's (RESUME-PROGRESS).
 HISTORY_NAME = "history.json"

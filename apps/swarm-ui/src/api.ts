@@ -11339,7 +11339,7 @@ export async function loadLiveSession(taskId: string): Promise<Result<LiveRead>>
             { name: 'desktop', width: 1440, height: 900, scale: 1, mobile: false },
             { name: 'iphone-15', width: 393, height: 852, scale: 3, mobile: true },
             { name: 'phone-390', width: 390, height: 844, scale: 3, mobile: true },
-            { name: 'phone-380', width: 380, height: 844, scale: 3, mobile: true },
+            { name: 'phone-380', width: 380, height: 800, scale: 3, mobile: true },
             { name: 'pixel-8', width: 412, height: 915, scale: 2.625, mobile: true },
             { name: 'iphone-se', width: 375, height: 667, scale: 2, mobile: true },
             { name: 'ipad-7', width: 810, height: 1080, scale: 2, mobile: true },
