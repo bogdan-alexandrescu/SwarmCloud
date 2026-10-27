@@ -94,6 +94,20 @@ liveness `stamp` itself refuses on), the tick claims no round and asks for no
 re-run: the merge stays parked on CI_PENDING, as for any wait. Once that task
 is terminal the red reading is handed off as above.
 
+ONE WRITER PER MERGE STEP'S PULL REQUEST, AT ANY HEAD (#2577). Measured:
+conflict-fix:1 (task_78214f85) was claimed at a8cb2f5 and still RUNNING when
+the next tick read the pull request CONFLICTING at 40d1cf15. The tick waited
+only on a round at the head it read, so it submitted conflict-fix:2
+(task_33065a64) on the same branch; round 1 pushed its merge of main, and
+round 2's own merge commit could not be replayed onto it (`publish_failed`).
+Before a re-run, a budget check or a claim, `_hand_off` and `_on_pick` ask
+`_live_writer`: any CI, conflict or pick round of this merge whose task has
+not ended, or that was claimed inside LOST_ROUND_SECONDS and has no task yet,
+whatever head it recorded; else any live writer `cifix.live_pr_writer` finds
+on the pull request. While there is one, the tick submits nothing and the
+merge stays parked: never woken for it, since the worker's park is bounded by
+MERGE_CI_MAX_SECONDS.
+
 A CHECK RED ON THE DEFAULT BRANCH'S OWN HEAD IS NOT THE PULL REQUEST'S TO
 FIX (#2367). Four rounds on 2026-10-25 hand-patched main's stale unit-shard
 weights, which main's #2312 then rewrote; GitHub's "Update branch" merged
@@ -269,7 +283,7 @@ from swarm_rollup import is_fix_round_step
 
 from . import gitidentity
 from .auth import AuthContext
-from .cifix import BRANCH_PREFIX, live_claim
+from .cifix import BRANCH_PREFIX, PR_WRITER_KINDS, live_claim, live_pr_writer
 from .continuation import TASK_ID_RE
 from .errors import ApiError, Forbidden, NotFound, UpstreamUnavailable
 from .forgechecks import GREEN, RED, CiReading, evaluate, required_status_checks
@@ -880,6 +894,59 @@ def _round_at_head(ctx: Any, db: Any, tenant_id: str, task_id: str,
     return FIX_ROUND_ENDED if task.state in TERMINAL_STATES else None
 
 
+def _live_writer(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], read: _Reading,
+                 now: datetime) -> dict[str, Any] | None:
+    """A writer still live on this merge's pull request, at any head, as
+    `{task_id, kind, head}`; None when there is none (#2577).
+
+    The merge's own rounds first, every kind and every entry: one with no
+    `error` whose task is not terminal, or with no task yet and claimed
+    inside LOST_ROUND_SECONDS. Then any writer `cifix.live_pr_writer` finds
+    continuing the root on this pull request -- a PR-side fix, the
+    shepherd's conflict fix, a round the record does not hold. Read only;
+    `_round_at_head` still gives a lost round at this head its `error`.
+    """
+    metadata = _mapping(doc.get("metadata"))
+    for key in ("rounds", CONFLICT_ROUNDS_KEY, PICK_ROUNDS_KEY):
+        for entry in _rounds(metadata, key):
+            if entry.get("error"):
+                continue
+            found = {"task_id": None, "kind": ROUND_KIND[key], "head": entry.get("head")}
+            fix_task = entry.get("task_id")
+            if not isinstance(fix_task, str) or not TASK_ID_RE.match(fix_task):
+                claimed = entry.get("claimed_at")
+                if (isinstance(claimed, datetime) and claimed <= now
+                        and now - claimed < timedelta(seconds=LOST_ROUND_SECONDS)):
+                    return found
+                continue
+            try:
+                task = ctx.store.get_task(tenant_id, fix_task, submitted_by=None)
+            except NotFound:
+                continue
+            if task.state not in TERMINAL_STATES:
+                return {**found, "task_id": fix_task}
+    resolved = _target_and_root(ctx, tenant_id, doc)
+    if resolved is None:
+        return None
+    writer = live_pr_writer(db, tenant_id, resolved[1], read.pull.number,
+                            kinds=PR_WRITER_KINDS, now=now)
+    return None if writer is None else {**writer, "head": None}
+
+
+def _waits_on_writer(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any],
+                     read: _Reading, now: datetime, label: str) -> bool:
+    """True, logged, when `_live_writer` finds a writer: no round is submitted."""
+    writer = _live_writer(ctx, db, tenant_id, doc, read, now)
+    if writer is None:
+        return False
+    head = writer.get("head")
+    log.info("merge wake %s tenant=%s: %s round waits: %s writer %s live on pull request "
+             "#%d at %s", doc.get("id"), tenant_id, label, writer.get("kind"),
+             writer.get("task_id") or "(claimed, not yet submitted)", read.pull.number,
+             head[:12] if isinstance(head, str) else "its own head")
+    return True
+
+
 #: What `_on_red` did: handed the reading to a round, waited on one, asked
 #: GitHub to re-run the failing jobs (SPEED-D2), or woke.
 _FIXING = "fixing"
@@ -1188,7 +1255,10 @@ def _on_pick(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], wait: Mappi
     round asks for the next one: claimed and submitted by `_submit_round`,
     with `pull_head` (the head the round starts from, which the worker reads
     to tell a round that changed nothing) and `picks` (the picks it is sent
-    for, which the worker never sends again) on its entry. With
+    for, which the worker never sends again) on its entry -- unless another
+    writer is still live on the pull request (`_live_writer`, #2577): a CI
+    or conflict round, an earlier pick round, or a PR-side fix, at any head;
+    then it waits, as `_hand_off` does. With
     MERGE_PICK_ROUNDS_MAX spent, no pick line to brief, or a pull request off
     the root's branch, the step is woken `owner_pick_not_built` to refuse.
     """
@@ -1206,6 +1276,10 @@ def _on_pick(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], wait: Mappi
     elif wait.get("code") == OWNER_PICK_FIX_RUNNING:
         # A park waiting on a round the record does not hold.
         return _WAKE, FIX_ROUND_LOST
+    if _waits_on_writer(ctx, db, tenant_id, doc, read, now, "pick fix"):
+        # One writer per pull request (#2577): an earlier round of any kind,
+        # or a PR-side fix, is still on the branch.
+        return _WAITING, None
     lines = _pick_lines(wait)
     if not lines or len(rounds) >= MERGE_PICK_ROUNDS_MAX:
         return _WAKE, OWNER_PICK_NOT_BUILT
@@ -1312,15 +1386,21 @@ def _hand_off(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], head: str,
 
     (`_FIXING` | `_WAITING` | `_WAKE`, the wake reason). One rule for a red
     reading's CI-fix rounds (MS7) and a conflict's fix rounds (#1076): a
-    round at this head is waited on until it ends; with `asked` rounds spent,
+    round at this head is waited on until it ends, or woken through
+    `_round_at_head`; then ONE WRITER PER PULL REQUEST (#2577): while any
+    round of this merge, of any kind and at any head, or a writer
+    `cifix.live_pr_writer` finds, is still live (`_live_writer`), nothing is
+    submitted -- conflict-fix:1 still RUNNING at a8cb2f5 when the head read
+    40d1cf15 got conflict-fix:2 beside it, whose merge commit then could not
+    be replayed onto round 1's push; with `asked` rounds spent,
     or a pull request not on the root's own branch, the step is woken with
     `spent`; otherwise the next round is claimed under the guard and `build`
     (target task, round number) -> its workflow is submitted as the merge
     task's submitter. A build or submission that raises is recorded on the
     round as its `error`, and the step woken to refuse.
 
-    `first`, when given, runs once no round at this head is waited on and
-    before the budget and branch checks: a red reading's re-run (SPEED-D2),
+    `first`, when given, runs once no round at this head, and no live
+    writer, is waited on and before the budget and branch checks: a red reading's re-run (SPEED-D2),
     whose answer, when not None, is this tick's. It pushes nothing, so a
     merge with no round left, or none asked, or a pull request off the
     root's branch, still gets it (#2257). A submitted round is then appended to the merge's
@@ -1334,6 +1414,11 @@ def _hand_off(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], head: str,
     if rounds and rounds[-1].get("head") == head:
         reason = _round_at_head(ctx, db, tenant_id, task_id, rounds[-1], now, key)
         return (_WAITING, None) if reason is None else (_WAKE, reason)
+    if _waits_on_writer(ctx, db, tenant_id, doc, read, now, label):
+        # One writer per pull request (#2577): a round live at another head
+        # pushes to the same branch. Neither a re-run nor a round beside it,
+        # and no wake: the worker's park is bounded by MERGE_CI_MAX_SECONDS.
+        return _WAITING, None
     if first is not None:
         # Before the budget and the branch (#2257): a re-run pushes nothing,
         # so neither bounds it.
