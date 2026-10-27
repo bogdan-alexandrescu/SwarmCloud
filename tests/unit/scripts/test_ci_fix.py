@@ -97,6 +97,16 @@ def _serve_jobs(state: Path, jobs: list[dict], logs: dict[int, str]) -> None:
         (state / f"job-{job_id}.log").write_text(text)
 
 
+MAIN_SHA = "f" * 40
+
+
+def _serve_main(state: Path, runs: list[dict]) -> None:
+    """The default branch `main` at MAIN_SHA, and its check runs there."""
+    (state / "repo.json").write_text(json.dumps({"full_name": GH_REPO, "default_branch": "main"}))
+    (state / "branch.json").write_text(json.dumps({"name": "main", "commit": {"sha": MAIN_SHA}}))
+    (state / "main_checks.json").write_text(json.dumps({"total_count": len(runs), "check_runs": runs}))
+
+
 def _write_exe(path: Path, text: str) -> None:
     path.write_text(text)
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -163,6 +173,14 @@ case "$1 $2" in
           exit 1
         fi
         cat "${FAKE_DIR}/job-${id}.log" ;;
+      # The default branch, its head and its check runs (#2367); a missing
+      # fixture is a read GitHub refused.
+      "repos/${GITHUB_REPOSITORY}")
+        [ -f "${FAKE_DIR}/repo.json" ] || exit 1; cat "${FAKE_DIR}/repo.json" ;;
+      */branches/*)
+        [ -f "${FAKE_DIR}/branch.json" ] || exit 1; cat "${FAKE_DIR}/branch.json" ;;
+      */commits/*/check-runs*)
+        [ -f "${FAKE_DIR}/main_checks.json" ] || exit 1; cat "${FAKE_DIR}/main_checks.json" ;;
       *) cat "${FAKE_DIR}/comments.json" ;;
     esac
     ;;
@@ -227,6 +245,7 @@ def fake(tmp_path: Path):
     (state / "comments.json").write_text(_comments_json([]))
     (state / "log").write_text(_log())
     _serve_jobs(state, *_jobs(_log()))
+    _serve_main(state, [])
     (state / "api_status").write_text("201")
     (state / "api_response").write_text(
         json.dumps(
@@ -975,3 +994,61 @@ def test_the_workflow_is_linted_and_its_tests_run_on_the_prs_that_change_it():
     # The actionlint steps of `quick-checks` since CI-FOLD (#1799).
     runs = "\n".join(step.get("run", "") for step in check_steps("application.yml", "workflows"))
     assert ".github/workflows/ci-fix.yml" in runs, "ci-fix.yml is not linted"
+
+
+# --------------------------------------------------------------------------
+# A failure the default branch has too is not this branch's to fix (#2367):
+# on 2026-10-25 four rounds hand-patched main's stale shard weights, which
+# main's #2312 then rewrote, and every one of them ended publish_failed.
+# --------------------------------------------------------------------------
+
+def _main_runs(**conclusions: str) -> list[dict]:
+    return [{"id": 300 + i, "name": name, "head_sha": MAIN_SHA, "status": "completed",
+             "conclusion": conclusion} for i, (name, conclusion) in enumerate(conclusions.items())]
+
+
+def test_a_run_red_on_the_same_jobs_as_main_submits_nothing(fake):
+    _, state = fake
+    _serve_main(state, _main_runs(**{"format / unit tests": "failure", "shellcheck": "timed_out",
+                                     "build images": "success"}))
+
+    out = _run(fake, "run")
+
+    assert out.returncode == 0, out.stderr
+    assert _calls(state, "curl") == [], "a fix step was submitted for main's own failure"
+    assert not (state / "request.json").exists()
+    assert not any(call.endswith("/logs") for call in _calls(state, "gh")), "no log is read"
+    assert f"main@{MAIN_SHA[:12]}" in out.stderr
+    (comment,) = _comments(state)
+    assert f"`main@{MAIN_SHA[:12]}`" in comment and "on the same checks" in comment
+    assert "no fix step submitted" in comment
+    assert "format / unit tests" in comment and "shellcheck" in comment
+    assert "<!-- swarm-ci-fix:attempt -->" not in comment, "it is not an attempt"
+
+    # Once per head of main: the next red run at the same main says nothing more.
+    (state / "comments.json").write_text(_comments_json([comment]))
+    again = _run(fake, "run")
+    assert again.returncode == 0, again.stderr
+    assert len(_comments(state)) == 1 and _calls(state, "curl") == []
+
+
+@pytest.mark.parametrize("main", [
+    {},
+    {"format / unit tests": "success", "shellcheck": "success"},
+    {"format / unit tests": "failure", "shellcheck": "success"},
+    {"lint": "failure"},
+    None,
+], ids=["no-checks", "green", "red-on-one-of-two", "red-on-another-job", "unreadable"])
+def test_a_run_red_on_a_job_main_passes_is_submitted(fake, main):
+    _, state = fake
+    if main is None:
+        (state / "repo.json").unlink()
+    else:
+        _serve_main(state, _main_runs(**main))
+
+    out = _run(fake, "run")
+
+    assert out.returncode == 0, out.stderr
+    assert _calls(state, "curl") == ["https://swarm.example.test/v1/workflows"]
+    (comment,) = _comments(state)
+    assert "<!-- swarm-ci-fix:attempt -->" in comment

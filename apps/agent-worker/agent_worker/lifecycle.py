@@ -557,6 +557,17 @@ BASE_MERGE_NO_CHANGE_FIELD = "base_merge_no_change"
 #: the paths. Nothing was pushed. Read by `_record_finalised`, which ends the
 #: attempt FAILED with `publish_refused` (`_fail_for_auto_commit_undid`).
 AUTO_COMMIT_UNDID_FIELD = "auto_commit_undid_agent_commits"
+#: The `result_summary.git` key `_push_onto_base_merge` sets when the replay
+#: onto a base-merged tip took the tip's version of paths the base merge
+#: rewrote and this round also changed (#2367: four rounds' hand-patched
+#: unit_test_durations.json, rewritten by main's #2312). A scrubbed list of at
+#: most `BASE_MERGE_SUPERSEDED_MAX` paths. Set whether the rest of the round
+#: was pushed or, with nothing left, the round ended `no_change` with a
+#: `superseded_by_base` reason in `BASE_MERGE_NO_CHANGE_FIELD`.
+BASE_MERGE_SUPERSEDED_FIELD = "base_merge_superseded"
+#: Enough to name what main rewrote under a round -- one file, measured --
+#: without a vendored-tree conflict filling the record.
+BASE_MERGE_SUPERSEDED_MAX = 20
 #: The paths a push may touch only with the `workflow` scope (AU-3,
 #: docs/design/agent-autonomy.md §3.3): `_publish_git` hands a branch whose
 #: new commits touch either to swarm-api's `git_push_branch`. Restated from
@@ -6807,7 +6818,10 @@ class Worker:
         holds every change, the PR #2093 case -- or origin's tip of the branch
         already holds the round's HEAD, the PR #2446 case (#2506). The work is
         on the branch, so it is the `no_change` result rather than
-        `publish_failed`, with the tip named in the reason.
+        `publish_failed`, with the tip named in the reason. The same holds
+        when the base merge rewrote every file the round changed (#2367):
+        the reason then starts `superseded_by_base:` and names the paths
+        whose base version stands.
         """
         git = summary.get("git")
         reason = git.get(BASE_MERGE_NO_CHANGE_FIELD) if isinstance(git, dict) else None
@@ -13146,6 +13160,16 @@ class Worker:
         `_no_change_after_publish`). Any other mover re-raises `rejected`; a
         replay that conflicts, or fails a check, raises its own GitError
         naming the base merge. Nothing is pushed in either case.
+
+        SUPERSEDED BY THE BASE (#2367, measured 2026-10-25 on four rounds
+        whose hand-patched unit_test_durations.json main's #2312 rewrote): a
+        replay whose every conflict is in a path the base merge changed takes
+        the tip's version of it (`replay_onto_tip`), and those paths are
+        recorded in `BASE_MERGE_SUPERSEDED_FIELD`. With nothing left over the
+        tip, `BASE_MERGE_NO_CHANGE_FIELD` holds a `superseded_by_base:`
+        reason naming the paths and the tip, so the round ends `no_change`,
+        not publish_failed; with something left, it is checked and pushed
+        exactly as above. A conflict in any other path still raises.
         """
         cfg = self.cfg
         ws = self.ws
@@ -13176,6 +13200,7 @@ class Worker:
             f"{branch} moved to {tip[:12]} by a base merge of "
             f"{default_branch or 'the default branch'} only"
         )
+        superseded: list[str] = []
         try:
             head = replay_onto_tip(
                 repo=publish_repo,
@@ -13187,6 +13212,7 @@ class Worker:
                 logs_dir=ws.logs,
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
                 logger=self.log,
+                superseded=superseded,
             )
         except GitError as exc:
             raise GitError(
@@ -13196,6 +13222,22 @@ class Worker:
             ) from rejected
         out["base_merge_from"] = base
         out["base_merge_tip"] = tip
+        if superseded:
+            out[BASE_MERGE_SUPERSEDED_FIELD] = [
+                str(self._scrub(path[:300])) for path in superseded[:BASE_MERGE_SUPERSEDED_MAX]
+            ]
+        if head is None and superseded:
+            named = ", ".join(out[BASE_MERGE_SUPERSEDED_FIELD][:5])
+            if len(superseded) > 5:
+                named += f" and {len(superseded) - 5} more"
+            out[BASE_MERGE_NO_CHANGE_FIELD] = (
+                f"superseded_by_base: {moved}, which rewrote {named} that this round "
+                "also changed; the base's version stands and nothing was pushed"
+            )
+            self.log.info("the base merge rewrote every file this round changed; "
+                          "nothing to push", branch=branch, tip=tip,
+                          superseded=len(superseded))
+            return None
         if head is None:
             out[BASE_MERGE_NO_CHANGE_FIELD] = (
                 f"no_change: {moved}, which already holds every change this round "
@@ -13996,7 +14038,9 @@ class Worker:
                         # "Update branch" merging the default branch into
                         # it mid-run is the measured mover. Only that mover
                         # is taken, as a fast-forward onto it; see
-                        # `_push_onto_base_merge`.
+                        # `_push_onto_base_merge`. A round whose conflicts
+                        # lie only in files that merge rewrote ends no_change
+                        # `superseded_by_base` when nothing else is left (#2367).
                         pushed = self._push_onto_base_merge(
                             publish_repo, rejected, url=url, token=token, branch=branch,
                             protected=protected, default_branch=access.default_branch,

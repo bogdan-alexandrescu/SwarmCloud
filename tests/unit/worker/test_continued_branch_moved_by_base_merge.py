@@ -21,8 +21,19 @@ is faked, as in test_strategy_end_to_end.py):
   * a branch moved by anything else -- someone's ordinary commit, a merge
     whose second parent is not on the default branch -- is left exactly as
     it was, and the attempt fails publish_failed as before;
-  * a replay that conflicts with the merged-in default branch pushes nothing
-    and says so.
+  * a round whose file the base merge also rewrote -- every conflicted path
+    of the replay is one the merge changed, clone base..moved tip -- takes
+    the base's version of it (#2367): the round ends no_change with a
+    `superseded_by_base` reason naming the paths and the tip, not
+    publish_failed, and what is left of the round over the tip still lands
+    as the worker's fast-forward, with the superseded paths on the record;
+  * a replay conflict in a path the base merge did not change pushes nothing
+    and fails publish_failed, saying so.
+
+MEASURED 2026-10-25 (#2367): four CI-fix rounds had hand-patched
+tests/unit/scripts/unit_test_durations.json, main's #2312 rewrote that file
+and was merged into their branches, and each replay conflicted on it and
+ended publish_failed.
 
 The own-branch recovery (#1438) is pinned by
 test_retry_publishes_onto_its_own_branch.py, which this change leaves as it
@@ -30,6 +41,8 @@ was.
 
 WRITTEN TO FAIL BEFORE THE CHANGE: there, every push below was refused and
 `published` was False with `publish_failed` set.
+The two superseded cases were written to fail before #2367: there the
+replay raised 'conflicted' and the round ended publish_failed.
 """
 
 from __future__ import annotations
@@ -237,13 +250,71 @@ def test_a_branch_moved_by_anything_else_is_left_as_it_was(
     assert forge.pulls == []
 
 
-def test_a_replay_that_conflicts_with_the_merged_in_main_pushes_nothing(
+def test_a_round_whose_file_the_base_merge_rewrote_ends_superseded_by_base(
     worker_factory, monkeypatch, origin, red, local_urls, forge, pushes, tmp_path
 ):
+    """The #2367 case: the round hand-patched a file main then rewrote and
+    merged into the branch. Main's version stands; the round is no_change."""
     worker, _, repo = _fixer(worker_factory, monkeypatch, origin)
     (repo / "shards.py").write_text("MAX_SHARDS = 7\n")
     moved, _ = _update_branch(origin, tmp_path, red, main_file="shards.py",
                               main_text="MAX_SHARDS = 9\n")
+
+    out = worker._harvest_git(publish=True)
+
+    assert out["published"] is False
+    assert not out.get(lifecycle.PUBLISH_FAILED_FIELD), out.get("publish_reason")
+    assert refs(origin)[red] == moved, "something was pushed over the moved tip"
+    assert [call.get("lease") for call in pushes] == [None]
+    assert forge.pulls == []
+    assert out[lifecycle.BASE_MERGE_SUPERSEDED_FIELD] == ["shards.py"]
+    reason = out[lifecycle.BASE_MERGE_NO_CHANGE_FIELD]
+    assert reason.startswith("superseded_by_base"), reason
+    assert moved[:12] in reason and "shards.py" in reason
+    summary: dict[str, Any] = {"git": out}
+    assert worker._no_change_after_publish(summary) is True
+    assert summary[expected_mod.NO_CHANGE_SUMMARY_KEY] is True
+    assert summary[lifecycle.NO_CHANGE_REASON_SUMMARY_KEY].startswith("superseded_by_base")
+    assert worker._publish_failed(summary) is None
+    assert worker._published_nothing(summary) is None
+
+
+def test_a_partly_superseded_round_pushes_the_rest_as_a_fast_forward(
+    worker_factory, monkeypatch, origin, red, local_urls, forge, pushes, tmp_path
+):
+    worker, config, repo = _fixer(worker_factory, monkeypatch, origin)
+    (repo / "shards.py").write_text("MAX_SHARDS = 7\n")
+    (repo / "feature.py").write_text("def broken():\n    return 2\n")
+    moved, _ = _update_branch(origin, tmp_path, red, main_file="shards.py",
+                              main_text="MAX_SHARDS = 9\n")
+
+    out = worker._harvest_git(publish=True)
+
+    assert out["published"] is True, out.get("publish_reason")
+    assert not out.get(lifecycle.PUBLISH_FAILED_FIELD)
+    landed = refs(origin)[red]
+    assert out["pushed_head"] == landed
+    added = pushed_commits(origin, red, since=moved)
+    assert len(added) == 1 and added[0]["parents"] == [moved]
+    assert_only_the_worker_wrote(added, config)
+    assert "return 2" in _sh(origin, "show", f"{red}:feature.py")
+    assert _sh(origin, "show", f"{red}:shards.py") == "MAX_SHARDS = 9"
+    assert out[lifecycle.BASE_MERGE_SUPERSEDED_FIELD] == ["shards.py"]
+    assert not out.get(lifecycle.BASE_MERGE_NO_CHANGE_FIELD)
+    assert [call.get("lease") for call in pushes] == [None, None]
+
+
+def test_a_conflict_outside_the_base_merges_files_still_fails_publish(
+    worker_factory, monkeypatch, origin, red, local_urls, forge, pushes, tmp_path
+):
+    """The conflicted path is not one the base merge changed (the read of
+    what it changed is stubbed to exclude it), so the round's version is
+    not known to be stale: nothing is taken, nothing is pushed."""
+    worker, _, repo = _fixer(worker_factory, monkeypatch, origin)
+    (repo / "shards.py").write_text("MAX_SHARDS = 7\n")
+    moved, _ = _update_branch(origin, tmp_path, red, main_file="shards.py",
+                              main_text="MAX_SHARDS = 9\n")
+    monkeypatch.setattr(gitops, "base_merge_changed_paths", lambda **_: frozenset())
 
     out = worker._harvest_git(publish=True)
 
@@ -253,6 +324,7 @@ def test_a_replay_that_conflicts_with_the_merged_in_main_pushes_nothing(
     assert "base merge" in reason and "conflict" in reason, reason
     assert refs(origin)[red] == moved
     assert [call.get("lease") for call in pushes] == [None]
+    assert not out.get(lifecycle.BASE_MERGE_NO_CHANGE_FIELD)
 
 
 def test_the_walk_is_bounded_as_the_merge_steps_is():
