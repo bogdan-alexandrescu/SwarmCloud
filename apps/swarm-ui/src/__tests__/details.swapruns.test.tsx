@@ -79,10 +79,11 @@ function runOf(t: Task): AgentRun {
   }
 }
 
-// THE CLOCK IS THE FIXTURES' DAY: the tile writes an instant from another day
-// as `MM-DD HH:MM`, so on the real clock these cases went red on 2026-10-27,
-// the first day after the fixtures' (#2511's first CI run).
-const NOW = '2026-10-26T11:30:00Z'
+// THE CLOCK IS THE FIXTURES' DAY: the span drops the date only for an instant
+// on today's local date, so an unpinned clock turned this file red on
+// 2026-10-27, the day after the fixtures' (`10-26 09:07 → 10-26 11:06`; #2511's
+// first CI run). One pin, to `NOW` above: #2512 and this file's own fix both
+// added one, and the second `const NOW` did not compile.
 
 const hosts: HTMLElement[] = []
 beforeEach(() => {
@@ -90,7 +91,6 @@ beforeEach(() => {
   vi.setSystemTime(new Date(NOW))
 })
 afterEach(() => {
-  vi.useRealTimers()
   for (const h of hosts.splice(0)) h.remove()
   vi.useRealTimers()
 })
