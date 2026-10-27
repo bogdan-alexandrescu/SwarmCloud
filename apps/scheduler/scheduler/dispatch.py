@@ -2743,6 +2743,71 @@ def _already_exists_name(exc: BaseException) -> str | None:
     return str(name) if name else None
 
 
+# ---------------------------------------------------------------------------
+# A 403 has three causes, and only one of them is ours (#1820)
+# ---------------------------------------------------------------------------
+#
+# On 2026-10-20 19:24-20:06Z the admission policy `swarm-worker-job-constraints`
+# refused every CPU-burst Job, and all 54-56 refusals read
+# `gke_create_job_forbidden`, the code for an RBAC or namespace fault. They
+# were neither: the platform said no to THIS manifest. A Job-quota refusal
+# (`count/jobs.batch`, 200 per tenant namespace) reads the same today. So the
+# API server's own Status message decides the code:
+#
+#   message                                          code
+#   -----------------------------------------------  ------------------------
+#   `ValidatingAdmissionPolicy '...' ... denied      gke_admission_refused
+#     request` / `admission webhook "..." denied
+#     the request`
+#   `exceeded quota: <quota>, requested: ...`        gke_job_quota_exceeded
+#   anything else (`User "..." cannot create`, a     gke_create_job_forbidden
+#     namespace that does not exist)
+#
+# The admission and quota texts are the API server's (apiserver
+# `validating/dispatcher.go`, `resourcequota/controller.go`), not ours, so they
+# are matched as the server spells them. Unrecognised text keeps
+# `gke_create_job_forbidden` and its namespace diagnosis: being wrong toward
+# that code costs an operator one sentence, while being wrong away from it
+# would hide an RBAC fault behind a "the platform refused" code.
+#
+# Once contract request 123 (PLATFORM_REFUSED) is applied, the two precise
+# codes are the ones the drain parks on instead of spending an attempt
+# (docs/design/dispatch-refusals.md). Until then they are only the code the
+# task and the log carry; the store retries them as it retries any other.
+
+GKE_ADMISSION_REFUSED = "gke_admission_refused"
+GKE_JOB_QUOTA_EXCEEDED = "gke_job_quota_exceeded"
+GKE_CREATE_JOB_FORBIDDEN = "gke_create_job_forbidden"
+
+#: The codes that are the platform refusing this dispatch rather than this
+#: dispatcher lacking a permission: what PLATFORM_REFUSED will park on.
+PLATFORM_REFUSAL_CODES = frozenset({GKE_ADMISSION_REFUSED, GKE_JOB_QUOTA_EXCEEDED})
+
+_ADMISSION_DENIAL = re.compile(
+    r"ValidatingAdmissionPolicy\b.*\bdenied request"
+    r"|admission webhook \"[^\"]*\" denied the request",
+    re.DOTALL,
+)
+_QUOTA_EXCEEDED = re.compile(r"\bexceeded quota:")
+
+
+def forbidden_code(exc: BaseException) -> str:
+    """The code for a 403 on Job create, from the API server's own reason.
+
+    Read from the Status body's `message` when the exception carries one
+    (`kubernetes.client.ApiException`), else from the exception's text, as
+    `_is_forbidden` does. Admission is checked before quota: a webhook whose
+    message happened to quote a quota is still the webhook refusing.
+    """
+    message = _kubernetes_status(exc).get("message")
+    text = message if isinstance(message, str) and message else str(exc)
+    if _ADMISSION_DENIAL.search(text):
+        return GKE_ADMISSION_REFUSED
+    if _QUOTA_EXCEEDED.search(text):
+        return GKE_JOB_QUOTA_EXCEEDED
+    return GKE_CREATE_JOB_FORBIDDEN
+
+
 @dataclass(frozen=True)
 class GkeTarget:
     endpoint: str
@@ -3268,6 +3333,20 @@ class GkeJobDispatcher:
             # the real cause for two days. Both are now in one line.
             if self._is_forbidden(exc):
                 identity = self.presented_identity()
+                code = forbidden_code(exc)
+                if code != GKE_CREATE_JOB_FORBIDDEN:
+                    # The platform refused this manifest: the namespace and
+                    # the identity are fine, or nothing would have reached
+                    # admission or quota, so the 403-means-404 diagnosis
+                    # below would send the reader at the wrong thing.
+                    raise DispatchError(
+                        f"GKE refused the job in {namespace} ({code}): {exc} "
+                        f"-- the platform's admission policy or the namespace's "
+                        f"ResourceQuota said no to this manifest; RBAC and the "
+                        f"namespace are not the cause. See "
+                        f"docs/design/dispatch-refusals.md.",
+                        code=code,
+                    ) from exc
                 raise DispatchError(
                     f"could not create GKE job in {namespace} as {identity}: {exc} "
                     f"-- NOTE: a 403 here does not prove this is a permissions "
@@ -3284,7 +3363,7 @@ class GkeJobDispatcher:
                     f"list carrying the email alone applies cleanly and authorises "
                     f"nobody. See docs/gke-dispatch-403.md and "
                     f"docs/incidents/2026-09-24-gke-dispatch.md.",
-                    code="gke_create_job_forbidden",
+                    code=GKE_CREATE_JOB_FORBIDDEN,
                 ) from exc
             # A quota race that outlasted GKE_QUOTA_CONFLICT_RETRIES keeps
             # today's code (the loop, the runbook and the UI read it) and says

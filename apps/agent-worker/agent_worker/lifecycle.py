@@ -10432,7 +10432,9 @@ class Worker:
             **summary,
         }
         with self._metrics_after_the_record():
-            self.control.park(
+            # Refunded within the server's bound when PROVIDER_QUOTA_EXHAUSTED
+            # (#2350); a CREDENTIAL_MISSING park refunds nothing.
+            refunded = self.control.park(
                 # PROVIDER_QUOTA_EXHAUSTED when the pool will recover on its own:
                 # the tenant HAS credentials, they are simply all spent or all
                 # unobserved, and sending an operator to look at that wastes their
@@ -10468,6 +10470,7 @@ class Worker:
                     )
                 ],
             )
+        self.log.info("parked without an account", attempt_refunded=bool(refunded))
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _park_credential_missing(self, exc: CredentialMissing) -> Outcome:
@@ -10571,8 +10574,11 @@ class Worker:
         # that landed during the uploads above was met by the park, which
         # refused, and the announcement of a park that never happened was
         # already in a stream that belonged to a newer generation.
+        # A PROVIDER_QUOTA_EXHAUSTED park refunds its attempt within the
+        # server's bound (#2350): parking is invariant 4's designed path, so it
+        # does not spend one of `max_attempts` until the bound is passed.
         with self._metrics_after_the_record():
-            self.control.park(
+            refunded = self.control.park(
                 reason=decision.reason,
                 next_eligible_at=decision.next_eligible_at,
                 detail={**decision.detail, "park_phase": source, **summary},
@@ -10587,6 +10593,8 @@ class Worker:
                     )
                 ],
             )
+        self.log.info("parked on provider quota", source=source,
+                      attempt_refunded=bool(refunded))
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _quota_from_child(self, result: ChildResult) -> Any:
@@ -18407,7 +18415,10 @@ def replay_agent_commits(
 
     WHAT IS KEPT, AND WHAT IS NOT. Each commit keeps its TREE, exactly -- so
     the tests-only commit of a red-first change is still tests only, and CI
-    can run it -- and its message, cleaned (`clean_commit_message`). Its
+    can run it -- and its message, cleaned (`clean_commit_message`) and
+    ended with the worker's line, "Made by the worker for task <id>." (#2505
+    review: the merge step reads that line to tell a platform head from a
+    person's push). Its
     author, committer, dates and signature are the worker's: the commit is
     made with `git commit-tree` under `_worker_identity`, and #219's rule that
     the worker writes every commit it pushes holds, checked again at the push
@@ -18534,6 +18545,11 @@ def replay_agent_commits(
                 scrub=scrub,
                 fallback=f"swarm: commit {index} of {len(shas)} from {task_id}",
             )
+            # Every commit the worker pushes ends with its line (#2505
+            # review): the committer is the dispatcher since #765, so this
+            # line is all that tells the merge step a kept agent commit is
+            # the platform's (`merge.WORKER_COMMIT_LINE`), not a person's push.
+            text = f"{text}\n\nMade by the worker for task {task_id}."
         argv = [*g, "commit-tree", tree]
         if parent:
             argv += ["-p", parent]
