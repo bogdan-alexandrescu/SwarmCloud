@@ -544,6 +544,17 @@ def other_check_blocks(run: Mapping[str, Any]) -> bool:
     return (run.get("conclusion") or "") not in OTHER_TOLERATED
 
 
+def _other_branch_push(suite: tuple[str | None, str | None] | None,
+                       head_ref: str | None) -> bool:
+    """Whether a check suite, (event, head branch), was triggered by a push
+    to a known branch that is not `head_ref` -- another branch's result at a
+    shared sha, not the pull request's (#2365). False when anything is unknown."""
+    if suite is None or head_ref is None:
+        return False
+    event, branch = suite
+    return event == "push" and branch is not None and branch != head_ref
+
+
 def _event_group(run: Mapping[str, Any]) -> str | None:
     """What a run is grouped by: the event that triggered its check suite;
     without one, its check suite (a credential that cannot read Actions runs
@@ -732,7 +743,8 @@ class CheckFacts:
     #: The event that triggered the run's check suite (push, pull_request,
     #: ...), read from the suite's Actions run: what a check's runs are
     #: grouped by (`latest_per_event`). None for a commit status, another
-    #: App's suite, or when it was not read.
+    #: App's suite, or when it was not read. A push suite from a branch other
+    #: than the pull request's head ref never reaches here (`checks_at`, #2365).
     event: str | None = None
     #: GitHub's id for the run's check suite: the group when no event is known.
     check_suite_id: int | None = None
@@ -853,7 +865,7 @@ class ForgeMerger(Protocol):
 
     def required_checks(self, branch: str) -> RequiredChecks: ...
 
-    def checks_at(self, sha: str) -> list[CheckFacts]: ...
+    def checks_at(self, sha: str, *, head_ref: str | None = None) -> list[CheckFacts]: ...
 
     def commit(self, sha: str) -> CommitFacts: ...
 
@@ -1024,13 +1036,26 @@ class GitHubMerger:
             source = CHECKS_NONE_ALL_CHECKS
         return RequiredChecks(checks=tuple(found.values()), protected=protected, source=source)
 
-    def checks_at(self, sha: str) -> list[CheckFacts]:
-        """Every check run, and every commit status, reported at `sha`.
+    def checks_at(self, sha: str, *, head_ref: str | None = None) -> list[CheckFacts]:
+        """Every check run, and every commit status, reported at `sha` for
+        the pull request whose head branch is `head_ref`.
 
         A check run carries the event that triggered its check suite, read
         from the Actions runs at `sha` -- ONE more read, made only when some
         check has more than one run there, since only then does the event
-        decide anything (`latest_per_event`).
+        decide anything (`latest_per_event`), or when some run finished
+        neither green nor tolerated, since that run may not be this pull
+        request's. A head whose every check has one green run costs nothing.
+
+        `commits/{sha}/check-runs` lists every check suite at the sha, from
+        whichever branch pushed it, and swarm/ lanes branch from one another:
+        at edb9c942 (PR #2340) a sibling branch's red push ci-gate stood as
+        the PR's push result while the PR branch's own push run was still
+        running, and the step refused `checks_failed` (#2365). So with a
+        `head_ref`, a run whose suite was triggered by a push to a KNOWN
+        branch other than `head_ref` is dropped. pull_request suites (a
+        fork's names the fork's branch), commit statuses, and suites whose
+        branch is unknown (no `actions: read`, another App) are kept.
         """
         out: list[CheckFacts] = []
         for run in self._client.paginate(f"{self._base}/commits/{sha}/check-runs",
@@ -1049,9 +1074,13 @@ class GitHubMerger:
                 check_suite_id=_int(_mapping(run.get("check_suite")).get("id")),
             ))
         names = [check.name for check in out]
-        if len(names) != len(set(names)):
-            events = self._suite_events(sha)
-            out = [replace(check, event=events.get(check.check_suite_id)) for check in out]
+        red = any(check_run_finished(run) and (run.get("conclusion") or "") not in OTHER_TOLERATED
+                  for run in (check.as_run() for check in out))
+        if len(names) != len(set(names)) or red:
+            suites = self._suite_events(sha)
+            out = [replace(check, event=suites.get(check.check_suite_id, (None, None))[0])
+                   for check in out
+                   if not _other_branch_push(suites.get(check.check_suite_id), head_ref)]
         combined = _mapping(self._client.get_ok(f"{self._base}/commits/{sha}/status"))
         for status in combined.get("statuses") or []:
             status = _mapping(status)
@@ -1064,12 +1093,14 @@ class GitHubMerger:
             out.append(CheckFacts(name=name, status=state, conclusion=conclusion))
         return out
 
-    def _suite_events(self, sha: str) -> dict[int | None, str]:
-        """The event of each Actions check suite at `sha`, by suite id.
+    def _suite_events(self, sha: str) -> dict[int | None, tuple[str | None, str | None]]:
+        """The (event, head branch) of each Actions check suite at `sha`, by
+        suite id; either is None when GitHub did not say.
 
         A credential without `actions: read` (403), or a repository with
-        Actions off (404), reads as no event: each check suite is then its
-        own group, so a green suite still never outvotes a red one.
+        Actions off (404), reads as no event and no branch: each check suite
+        is then its own group, so a green suite still never outvotes a red
+        one, and no suite is dropped as another branch's.
         """
         try:
             runs = self._client.paginate(f"{self._base}/actions/runs",
@@ -1078,13 +1109,14 @@ class GitHubMerger:
             if exc.status in (403, 404):
                 return {}
             raise
-        events: dict[int | None, str] = {}
+        suites: dict[int | None, tuple[str | None, str | None]] = {}
         for run in runs:
             run = _mapping(run)
-            suite, event = _int(run.get("check_suite_id")), _str(run.get("event"))
-            if suite is not None and event:
-                events[suite] = event
-        return events
+            suite = _int(run.get("check_suite_id"))
+            event, branch = _str(run.get("event")), _str(run.get("head_branch"))
+            if suite is not None and (event or branch):
+                suites[suite] = (event, branch)
+        return suites
 
     def commit(self, sha: str) -> CommitFacts:
         data = _mapping(self._client.get_ok(f"{self._base}/commits/{quote(sha, safe='')}"))
@@ -2272,7 +2304,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
 
     # The checks, at the head this attempt acts at.
     required = merger.required_checks(pr.base_ref or "")
-    checks = merger.checks_at(head)
+    checks = merger.checks_at(head, head_ref=pr.head_ref)
     summary["required_checks"] = sorted({c.context for c in required.checks})
     summary["required_checks_source"] = required.source
     pending: list[str] = []
