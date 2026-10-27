@@ -26,15 +26,19 @@ BOTH REFUSALS SHIP ON (`refusals.SWITCHES`, default on, by BGD's answer of
 them off, and off loses no limit, because the min holds either way: a step
 that asks for more runs under the lower limit, and a default above the
 ceiling is capped by it at every resolution. Off, the caller is only told
-later -- by the limit the task's `dispatch.budget` shows.
+later -- by the limit the task's `budget` shows.
 
 RESOLVED AT SUBMISSION, PINNED IN THE SIGNED SPEC. `resolve` runs in
 `SubmissionService._build_task`, for every task, batch entry, workflow step
-and child, and its answer is written into `metadata.dispatch.budget`, which
-the spec signature covers (`swarm_common.specsign.SIGNED_METADATA_KEYS`).
-Every attempt of the task enforces that pinned figure: a worker reads no key
-the signature does not cover, and the workspace document is one a tenant
-worker can write (below). A change to the workspace default or the ceiling
+and child, and its answer is written into the typed `Task.budget` (contract
+request 120), which the spec signature covers at format 6; where each limit
+came from goes in `metadata.dispatch.budget_from`, inside the signed dispatch
+block. A workflow's own document records what each step asked for, as
+`WorkflowStep.budget`. Every attempt of the task enforces the pinned figure:
+a worker reads no key the signature does not cover. A task stored before
+request 120 was applied carries its figure in `metadata.dispatch.budget`
+instead, which the worker and the served `budget`
+(`codec.served_budget`) read as the fallback for one release. A change to the workspace default or the ceiling
 applies to the next submission, as `max_additional_repositories` does.
 
 A STOPPED STEP'S RESUME. The limit is per ATTEMPT: the worker counts the
@@ -47,16 +51,17 @@ until a workspace admin sets one"); once either is set, the ceiling is one of
 the limits in the min. A ceiling lowered under a default saved earlier still
 binds that way: the min takes it.
 
-NOT YET MAC'D, AND WHAT THAT BOUNDS. The settings MAC covers only the blocks
-the FROZEN `swarm_common.specsign.SETTINGS_MAC_FIELDS` lists; a `budget`
-block is contract request 119, filed by this lane, not made. This module
-signs and verifies the block the moment the contract lists it (`SIGNED`), and
-until then reads it as `qasettings` reads its value: acted on only when it is
-a shape this module could have written. A tenant worker that writes another
-workspace's document directly can therefore remove or change that
-workspace's default within the ceiling. Bounded twice: a step's own budget is
-inside the spec signature and cannot be forged, and the ceiling lives in the
-platform's document, not the workspace's.
+SIGNED (contract request 119). `swarm_common.specsign.SETTINGS_MAC_FIELDS`
+lists the `budget` block's `unit` and `amount`, so every write here carries
+the block's MAC (`block_mac`) and every read for a tenant on the MAC cutover
+acts on the block only when it verifies (`trusted_block`); one that does not
+is no default. A tenant worker that writes another workspace's document
+directly can no longer move that workspace's default. The shape check still
+runs on what verifies: a malformed block is no limit, never a guessed one.
+`judgment.WRITER_FIELDS` lists the block too, so
+`scripts/resign-workspace-settings.sh` signs a block stored before the
+cutover. A step's own budget is inside the spec signature, and the ceiling
+lives in the platform's document, not the workspace's.
 
 Nothing here takes or returns a credential, an image, a command or a
 resource spec (invariant 10). Nothing here holds capacity (invariant 1).
@@ -92,17 +97,25 @@ FIELD = "budget"
 MAC_BLOCK = "budget"
 #: The keys of the block a reader acts on (request 119's covered fields).
 COVERED = ("unit", "amount")
-#: True once the frozen contract lists the block: from then on every write is
-#: signed and every read for a tenant on the MAC cutover verified, with no
-#: change here. Until then `canonical_settings_block` refuses the block name.
+#: True since contract request 119 listed the block: every write is signed and
+#: every read for a tenant on the MAC cutover verified. A test holds it True,
+#: so the listing cannot be dropped without the signing going with it.
 SIGNED = MAC_BLOCK in SETTINGS_MAC_FIELDS
 AUDIT_ACTION = "agent_budget_set"
 
 #: The platform setting (`store.PLATFORM_SETTINGS_DEFAULTS`).
 CEILING_SETTING = "agent_budget_ceiling"
-#: Where the resolved budget is pinned: `metadata.dispatch.budget`, read by
-#: the worker as `agent_worker.budget.DISPATCH_KEY` (a test holds them equal).
+#: `Task.budget` and `WorkflowStep.budget` (contract request 120): where the
+#: resolved budget is pinned, read by the worker as
+#: `agent_worker.budget.TASK_FIELD` (a test holds them equal).
+TASK_FIELD = "budget"
+#: `metadata.dispatch.budget`, where the resolved budget was pinned before
+#: request 120. Written no more; read by `codec.served_budget` (and by the
+#: worker) as the fallback for a task stored then, for one release.
 DISPATCH_KEY = "budget"
+#: `metadata.dispatch.budget_from`: where each limit came from, `{step,
+#: workspace, ceiling}`, for the console. Inside the signed dispatch block.
+PROVENANCE_KEY = "budget_from"
 
 USD = "usd"
 TOKENS = "tokens"
@@ -283,15 +296,11 @@ def resolve(step: Limits, workspace: Limits, ceiling: Limits) -> Limits | None:
     )
 
 
-def dispatch_block(resolved: Limits, *, step: Limits, workspace: Limits,
-                   ceiling: Limits) -> dict[str, Any]:
-    """What `metadata.dispatch.budget` holds: the limits the worker enforces,
-    and where each came from, for the console and the end's numbers."""
-    return {
-        **resolved.as_dict(),
-        "from": {"step": step.as_dict(), "workspace": workspace.as_dict(),
-                 "ceiling": ceiling.as_dict()},
-    }
+def provenance(*, step: Limits, workspace: Limits, ceiling: Limits) -> dict[str, Any]:
+    """What `metadata.dispatch.budget_from` holds: the three limits the
+    task's `budget` was the min of, each as it stood at submission."""
+    return {"step": step.as_dict(), "workspace": workspace.as_dict(),
+            "ceiling": ceiling.as_dict()}
 
 
 def step_limits(budget: StepBudget | None) -> Limits:
@@ -437,7 +446,9 @@ __all__ = [
     "ceiling_of",
     "ceiling_problem",
     "describe",
-    "dispatch_block",
+    "PROVENANCE_KEY",
+    "TASK_FIELD",
+    "provenance",
     "refuse_default_above_ceiling",
     "refuse_step_above",
     "resolve",

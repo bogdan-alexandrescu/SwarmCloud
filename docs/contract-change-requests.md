@@ -125,10 +125,10 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 115 | `models.py`: `Task.publish_to_pr`, the existing pull request a lane's commits are pushed onto instead of opening one, typed rather than carried in `metadata.dispatch` (PUBLISH-TO-PR, part of #2183) | open, REQUESTED 2026-10-24 by lane PUBLISH-TO-PR. Not applied, and not needed for the feature to work: the field ships in the signed `metadata.dispatch` block, as `strategy` and `continues` do |
 | 116 | `specsign.py`: `SETTINGS_MAC_FIELDS` gains a `"qa"` block, `("flows_per_step",)`, so the workspace's QA batch size is signed like `merge` and `code_intelligence` (QA-TRIPWIRE-MAC, part of #2136) | ACCEPTED by BGD 2026-10-26 (answering QA-FLOWS-CAP's question, task_23a1c31d528e450187b8). Not applied: `apps/common/swarm_common/` is frozen and a lane does not edit it |
 | 117 | `profiles.py`: a `cf-access` secret slot on `claude-code-browser`, kind `oauth_client`, whose value the live gate sends as Cloudflare Access service-token headers to the hosts its grant lists and the agent never holds (CF-ACCESS-TOKEN, part of #2442) | ACCEPTED 2026-10-26 by BGD (requested by lane CF-ACCESS-TOKEN as 116, renumbered: QA-TRIPWIRE-MAC took 116 first) and APPLIED by the pull request that adds this line (lane CF-ACCESS-CONTRACT, part of #2442): `_CF_ACCESS_SLOT` beside `_FILES_SLOT`, declared on `claude-code-browser` only. A grant into `cf-access` is accepted with a host list and refused without one |
-| 118 | `models.py`: `EndCause.BUDGET_EXCEEDED`, a step the worker stopped because it spent its budget (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). Not applied: a follow-up lane applies it after PR 2466 merges, and until then it is built behind with `end_cause` null and `last_error` `budget_exceeded: ...` |
-| 119 | `specsign.py`: a `"budget"` block in `SETTINGS_MAC_FIELDS`, `("unit", "amount")`, so the workspace's per-agent budget is signed (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). Not applied: a follow-up lane applies it after PR 2466 merges, and until then the settings block is unsigned; the writer and reader sign and verify the moment the block is listed |
-| 120 | `models.py` / `specsign.py`: `Task.budget` and `WorkflowStep.budget`, a step's budget as a typed, signed field (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). Not applied: a follow-up lane applies it after PR 2466 merges, and until then it is built behind in the signed `metadata.dispatch.budget` |
-| 121 | `states.py`: `EventType.BUDGET_WARNING`, the 80% warning as its own event type (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). Not applied: a follow-up lane applies it after PR 2466 merges, and until then it is built behind as `running` with `detail.cause: budget_warning` |
+| 118 | `models.py`: `EndCause.BUDGET_EXCEEDED`, a step the worker stopped because it spent its budget (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): the worker writes it on a budget stop; the outcome ledger classes it `runner_error`, as its text fallback did |
+| 119 | `specsign.py`: a `"budget"` block in `SETTINGS_MAC_FIELDS`, `("unit", "amount")`, so the workspace's per-agent budget is signed (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): `BudgetStore` signs every write and verifies every read for a tenant on the MAC cutover, and `judgment.WRITER_FIELDS` lists the block so the re-sign pass signs stored ones |
+| 120 | `models.py` / `specsign.py`: `Task.budget` and `WorkflowStep.budget`, a step's budget as a typed, signed field (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): spec format 6; submission writes `Task.budget` and `WorkflowStep.budget`, and the worker and the API read `metadata.dispatch.budget` as the fallback for one release |
+| 121 | `states.py`: `EventType.BUDGET_WARNING`, the 80% warning as its own event type (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): the worker writes it; `codec.stored_event_type` reads the old `running` form as it for one release |
 | 122 | `models.py`: `Tenant.principal`'s comment gives a fictional example on the company's real domain (EXAMPLE-IDENTITIES, part of #1647) | open |
 
 ---
@@ -14541,8 +14541,10 @@ to that workspace's attempts, and held by its gate, never by the agent.
 the grant, signed by swarm-api. **1-8** are untouched.
 ## 118. `models.py`: `EndCause.BUDGET_EXCEEDED` (BUDGET-CAP, part of #2459)
 
-**Status:** open, REQUESTED 2026-10-26 by lane BUDGET-CAP. Not applied:
-`apps/common/swarm_common/` is frozen. The feature ships without it.
+**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
+2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part
+of #2459). Requested 2026-10-26 by lane BUDGET-CAP. "What is true today" below
+is the text as filed, the state before it was applied.
 
 ### What is true today
 
@@ -14590,8 +14592,10 @@ attempt's generation like every worker end. **2-4, 6-10** are untouched.
 
 ## 119. `specsign.py`: a `"budget"` block in `SETTINGS_MAC_FIELDS` (BUDGET-CAP, part of #2459)
 
-**Status:** open, REQUESTED 2026-10-26 by lane BUDGET-CAP. Not applied:
-`apps/common/swarm_common/` is frozen.
+**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
+2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part
+of #2459). Requested 2026-10-26 by lane BUDGET-CAP. "What is true today" below
+is the text as filed, the state before it was applied.
 
 ### What is true today
 
@@ -14649,8 +14653,10 @@ never a resource. **1-8** are untouched.
 
 ## 120. `models.py` / `specsign.py`: `Task.budget` and `WorkflowStep.budget` (BUDGET-CAP, part of #2459)
 
-**Status:** open, REQUESTED 2026-10-26 by lane BUDGET-CAP. Not applied:
-`apps/common/swarm_common/` is frozen. The feature ships without it.
+**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
+2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part
+of #2459). Requested 2026-10-26 by lane BUDGET-CAP. "What is true today" below
+is the text as filed, the state before it was applied.
 
 ### What is true today
 
@@ -14689,8 +14695,10 @@ holds no capacity. **2-9** are untouched.
 
 ## 121. `states.py`: `EventType.BUDGET_WARNING` (BUDGET-CAP, part of #2459)
 
-**Status:** open, REQUESTED 2026-10-26 by lane BUDGET-CAP. Not applied:
-`apps/common/swarm_common/` is frozen. The feature ships without it.
+**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
+2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part
+of #2459). Requested 2026-10-26 by lane BUDGET-CAP. "What is true today" below
+is the text as filed, the state before it was applied.
 
 ### What is true today
 

@@ -48,10 +48,14 @@ from typing import Any, Mapping
 #: #1435), accepted by the owner 2026-10-17 on PR 1509: format 4's fields plus
 #: `model_class`, so a task whose model class was rewritten fails its worker's
 #: check. The design named it format 4; request 96 had taken 4 first.
-SPEC_FORMAT = 5
+#:
+#: 6 is contract request 120 (BUDGET-CAP, #2459), accepted by the owner
+#: 2026-10-26: format 5's fields plus `budget`, so a task whose resolved
+#: budget was raised or removed fails its worker's check.
+SPEC_FORMAT = 6
 
 #: Every format a verifier accepts, oldest first.
-SPEC_FORMATS = (1, 2, 3, 4, 5)
+SPEC_FORMATS = (1, 2, 3, 4, 5, 6)
 
 #: The fields format 2 adds to format 1's projection.
 _FORMAT_2_FIELDS = ("parent_task_id", "parent_attempt_id")
@@ -72,6 +76,12 @@ _FORMAT_4_FIELDS = ("additional_repositories",)
 #: (non-None) is not canonical: the worker acts on the class, so adding one to
 #: a task signed without it must fail verification.
 _FORMAT_5_FIELDS = ("model_class",)
+
+#: The fields format 6 adds to format 5's projection (contract request 120).
+#: Formats 1-5 do not cover them, so a document at any of those that sets one
+#: (non-None) is not canonical: the worker enforces the budget, so adding one
+#: to a task signed without it must fail verification.
+_FORMAT_6_FIELDS = ("budget",)
 
 #: The top-level fields every writer stores as integers (`Task`'s types).
 #: JCS gives 3600 and 3600.0 the same bytes, so without this a rewrite of one
@@ -114,7 +124,14 @@ def signing_format(doc: Mapping[str, Any]) -> int:
     is signed at it, and swarm-api stores a class only when it differs from
     the profile's default, so a default step keeps the format and the bytes
     it had before format 5.
+
+    Format 6 too (contract request 120): only a task with a budget is signed
+    at it, and swarm-api stores one only when the step or its workspace sets
+    one, so a workspace that sets nothing keeps the format and the bytes it
+    had before format 6.
     """
+    if any(doc.get(key) is not None for key in _FORMAT_6_FIELDS):
+        return 6
     if any(doc.get(key) is not None for key in _FORMAT_5_FIELDS):
         return 5
     if any(_is_set(doc.get(key)) for key in _FORMAT_4_FIELDS):
@@ -170,7 +187,8 @@ def canonical_step_spec(
     are refused rather than left outside the signature. The same holds for a
     set `additional_repositories` at formats 1-3; at format 4 the list is
     projected as stored, in submission order, and the order is in the bytes.
-    And for a set `model_class` at formats 1-4 (contract request 104).
+    And for a set `model_class` at formats 1-4 (contract request 104), and a
+    set `budget` at formats 1-5 (contract request 120).
     """
     if spec_format not in SPEC_FORMATS or isinstance(spec_format, bool):
         raise SpecNotCanonical(f"spec format {spec_format!r} is not one of {SPEC_FORMATS}")
@@ -189,6 +207,10 @@ def canonical_step_spec(
                 raise SpecNotCanonical(f"{key} is set, and format {spec_format} does not cover it")
     if spec_format < 5:
         for key in _FORMAT_5_FIELDS:
+            if doc.get(key) is not None:
+                raise SpecNotCanonical(f"{key} is set, and format {spec_format} does not cover it")
+    if spec_format < 6:
+        for key in _FORMAT_6_FIELDS:
             if doc.get(key) is not None:
                 raise SpecNotCanonical(f"{key} is set, and format {spec_format} does not cover it")
     for key in _INTEGER_FIELDS:
@@ -227,6 +249,9 @@ def canonical_step_spec(
     if spec_format >= 5:
         for key in _FORMAT_5_FIELDS:
             spec[key] = doc.get(key)
+    if spec_format >= 6:
+        for key in _FORMAT_6_FIELDS:
+            spec[key] = doc.get(key)
     return jcs(spec)
 
 
@@ -243,6 +268,9 @@ SETTINGS_PURPOSE = "swarm.settings/v1"
 #: added to a block without being added here is outside the MAC, so a tenant
 #: worker can forge it. A change to a list is a change to the bytes: every
 #: stored MAC of that block must be re-signed in the same rollout.
+#:
+#: "budget" is contract request 119 (BUDGET-CAP, #2459), accepted by the owner
+#: 2026-10-26: the workspace's per-agent budget default, `{unit, amount}`.
 SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         "top": ("judgment_backend",),
@@ -254,6 +282,7 @@ SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "graph_delivery",
             "judgment_backend",
         ),
+        "budget": ("unit", "amount"),
     }
 )
 
@@ -263,7 +292,7 @@ def canonical_settings_block(
 ) -> bytes:
     """JCS of {"purpose": "swarm.settings/v1", "tenant_id", "block", "fields"}.
 
-    `block` is "top", "merge" or "code_intelligence". `fields` is the block as
+    `block` is "top", "merge", "code_intelligence" or "budget". `fields` is the block as
     stored; only the keys SETTINGS_MAC_FIELDS lists for it are projected, a
     listed key that is absent is null, and any other key is not covered and
     must not be acted on. The tenant and the block are inside the bytes, so a

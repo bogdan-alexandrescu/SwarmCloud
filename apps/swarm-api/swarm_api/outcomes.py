@@ -384,6 +384,12 @@ _FAILURE_OF_CAUSE: dict[str, str] = {
     EndCause.VERDICT_REFUSED.value: "verdict_refused",
     EndCause.VERDICT_FAILED.value: "verdict_failed",
     EndCause.PUBLISH_REFUSED.value: "publish_refused",
+    # Contract request 118 (#2459): the worker stopped the agent on its
+    # budget. Classed as the runner error its text fallback classed it as
+    # before the cause was typed (a final attempt with an exit code), so the
+    # ledger's classes and every sealed bucket keep their meaning; whether it
+    # becomes a class of its own is the owner's question on the PR.
+    EndCause.BUDGET_EXCEEDED.value: "runner_error",
 }
 #: ... and as a cancel cause. The two maps partition `EndCause`.
 _CANCEL_OF_CAUSE: dict[str, str] = {

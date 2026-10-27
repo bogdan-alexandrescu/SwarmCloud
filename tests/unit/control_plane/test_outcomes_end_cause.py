@@ -80,6 +80,8 @@ END_CAUSES = [
     "publish_refused",
     # Contract request 41: a child cancelled because of its parent.
     "child_cascade",
+    # Contract request 118 (#2459): the worker stopped the agent on its budget.
+    "budget_exceeded",
 ]
 
 

@@ -237,8 +237,9 @@ def test_an_attempt_records_no_model_until_its_worker_writes_one():
 
 def test_the_new_fields_come_last_so_no_positional_construction_moves():
     """Every field before them keeps its position."""
-    assert [f.name for f in fields(Task)][-1] == "model_class"
-    assert [f.name for f in fields(WorkflowStep)][-1] == "model_class"
+    # Contract request 120 (#2459) appends `budget` after `model_class`.
+    assert [f.name for f in fields(Task)][-2:] == ["model_class", "budget"]
+    assert [f.name for f in fields(WorkflowStep)][-2:] == ["model_class", "budget"]
     # RS-4 (contract request 111) appends the sized_* record after `model`;
     # `model` keeps its position and only RS-4's six fields follow it.
     # MUTATION: inserting an RS-4 field before `model`, or any other field

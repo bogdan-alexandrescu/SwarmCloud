@@ -814,7 +814,8 @@ def test_model_design_records_what_every_lane_built():
     for lane in _model_lanes() + ["MODEL-ACCOUNTS"]:
         assert f"**{lane} (" in raw, f"§8 has no entry for {lane}"
     # The class is signed at format 5: request 96 took 4 first.
-    assert signing_format({"model_class": "haiku"}) == 5 == SPEC_FORMAT
+    # Format 6 (request 120, the budget) came after it.
+    assert signing_format({"model_class": "haiku"}) == 5 < SPEC_FORMAT
     assert "format 5" in body and "request 96" in body and "request 104" in body
     # R4: no flag. Nothing in the code or the Terraform reads one.
     for root in ("apps", "terraform"):

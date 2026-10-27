@@ -4406,14 +4406,14 @@ class Worker:
             summary[budget_mod.SUMMARY_KEY] = self.budget.summary()
         if self.budget is not None and self.budget.exceeded:
             # STOPPED BY ITS BUDGET: checkpointed and published above, as a
-            # timed-out step is. FAILED with the cause `budget_exceeded`;
-            # `end_cause` stays null until contract request 118 types it --
-            # the contract's own rule for an end with no value of its own.
+            # timed-out step is. FAILED with the cause `budget_exceeded`
+            # (contract request 118), written only here.
             self._finish_terminal(
                 state=TaskState.FAILED,
                 exit_code=result.exit_code,
                 error=self.budget.error(),
                 result_summary=summary,
+                end_cause=EndCause.BUDGET_EXCEEDED,
             )
             return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
@@ -9584,19 +9584,21 @@ class Worker:
     def _budget_env(self) -> dict[str, str]:
         """The runner's budget files (#2459), building the guard on first use.
 
-        Only for a coding-agent CLI (`cli_agent_spec`) whose signed dispatch
-        block carries a budget: every other attempt gets nothing, and its
-        runner, settings and supervision are what they were before.
+        Only for a coding-agent CLI (`cli_agent_spec`) whose verified task
+        carries a budget -- its signed `Task.budget`, or for a task stored
+        before that field its signed `metadata.dispatch.budget`: every other
+        attempt gets nothing, and its runner, settings and supervision are
+        what they were before.
         """
         if self.budget is None:
             spec = cli_agent_spec(self.cfg.runner_profile)
-            limits = budget_mod.Limits.from_dispatch(self._dispatch_block())
+            limits = budget_mod.Limits.from_task(self._task)
             if spec is None or limits is None or self.ws is None:
                 return {}
             self.budget = budget_mod.BudgetGuard(
                 limits,
                 private=self.ws.private,
-                emit=lambda detail: self.control.emit(EventType.RUNNING, detail),
+                emit=lambda detail: self.control.emit(budget_mod.WARNING_EVENT, detail),
                 log=self.log,
                 pricer=self.spend_pricer.price,
                 # claude-code's PostToolUse hook is the one way to tell an
