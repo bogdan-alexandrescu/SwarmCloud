@@ -145,15 +145,15 @@ promoted_earlier() {
   # Exact comparison, on each field's last path segment: gcloud may spell
   # the tag and version as full resource names (see lib/image-refs.sh).
   #
-  # BOTH FORMS OF THE MARK, for now (#1886). `o`, the old
-  # `<channel>-promoted-` (legacy_promotion_mark_prefix, lib/common.sh), is
-  # what every digest promoted before the rename carries, and it is read
-  # until the operator has run scripts/registry-remark.sh, which gives each of
-  # them the new form too. A later change removes `o`.
-  awk -v p="$(promotion_mark_prefix "${CHANNEL}")" -v o="$(legacy_promotion_mark_prefix "${CHANNEL}")" \
+  # THE NEW FORM ONLY (#1886). The old mark, before the rename to
+  # `promoted-` first, is no longer read: scripts/registry-remark.sh gave every
+  # digest carrying it the new form too, and the registry's cleanup keeps only
+  # the new form, so trusting the old one would vouch for a digest nothing
+  # protects.
+  awk -v p="$(promotion_mark_prefix "${CHANNEL}")" \
       -v i="${image##*/}" -v d="${digest}" '
       { k = split($1, t, "/"); n = split($2, m, "/"); v = split($3, g, "/") }
-      (index(t[k], p) == 1 || index(t[k], o) == 1) && m[n] == i && g[v] == d { found = 1 }
+      index(t[k], p) == 1 && m[n] == i && g[v] == d { found = 1 }
       END { exit found ? 0 : 1 }' "${WORK}/marks.tsv"
 }
 
@@ -307,7 +307,7 @@ else
         err "job ${job_name}: runs ${job_image}, not the promoted ${job_expected}, and the registry could not say whether a release promoted it"
         SKIPPED+=("job ${job_name}: runs ${job_image##*@}; whether any release promoted it is unverified")
       else
-        err "job ${job_name}: runs ${job_image}, which no release promoted (no :$(promotion_mark_prefix "${CHANNEL}")* or :$(legacy_promotion_mark_prefix "${CHANNEL}")* tag on it); this release promoted ${job_expected}"
+        err "job ${job_name}: runs ${job_image}, which no release promoted (no :$(promotion_mark_prefix "${CHANNEL}")* tag on it); this release promoted ${job_expected}"
         # Marks began with push-images.sh's step 3b, and nothing backfills
         # them: a digest promoted before then (the one pinned when marks
         # began, among them) reads as never promoted until it is marked once.

@@ -119,13 +119,18 @@ sys.exit(2)
 FAKE_TRIVY = r'''#!{python}
 import json, os, sys
 
+# The vulnerability DB is downloaded once before the scans (#2379); it is
+# not a scan, so it records nothing.
+if "--download-db-only" in sys.argv:
+    sys.exit(0)
 ref = sys.argv[-1]
 image = ref.rsplit("/", 1)[-1].split("@", 1)[0]
 with open(os.environ["FAKE_EVENTS"], "a") as fh:
     fh.write(json.dumps({"event": "scan", "image": image, "ref": ref}) + "\n")
 if image in set(filter(None, os.environ.get("FAKE_TRIVY_FAIL", "").split(","))):
     print(f"{image}: CVE-0000-0000 HIGH fixed in 9.9.9")
-    sys.exit(1)
+    # A finding exits with the code the policy asked for, as trivy does.
+    sys.exit(int(sys.argv[sys.argv.index("--exit-code") + 1]))
 sys.exit(0)
 '''
 

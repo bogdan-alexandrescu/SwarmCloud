@@ -2456,8 +2456,8 @@ phases. New files are named without their root.
   digest some release promoted; any other digest still fails the release.
   "Some release promoted" means the digest carries a `promoted-<channel>-*`
   tag, which `scripts/push-images.sh` adds to every digest it promotes (until
-  #1886 the mark was `<channel>-promoted-*`; the check still reads that form
-  until `scripts/registry-remark.sh` has given every such digest the new one). That
+  #1886 the mark was `<channel>-promoted-*`; `scripts/registry-remark.sh` gave
+  every such digest the new form, and the check no longer reads the old one). That
   mark began on 2026-10-11 and nothing backfills it, so a digest promoted
   before then -- the one the job ran when marks began, among them -- fails as
   "no release promoted" until it is marked once. The failure prints the
