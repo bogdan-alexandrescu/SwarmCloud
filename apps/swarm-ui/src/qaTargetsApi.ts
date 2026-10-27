@@ -10,7 +10,7 @@ import { read, route, write, type Result } from './fetch'
  *   POST   /v1/qa-targets                        register (a workspace admin)
  *   PATCH  /v1/qa-targets/{id}                   change (a workspace admin); a new host is pending
  *   DELETE /v1/qa-targets/{id}                   delete, with its credential (a workspace admin)
- *   POST   /v1/qa-targets/{id}:run               a member starts a run: {environments?, file, browser_tool?}
+ *   POST   /v1/qa-targets/{id}:run               a member starts a run: {environments?, file, browser_tool?, flows_per_step?}
  *   POST   /v1/qa-targets/{id}:discover          a member starts its discovery (§4.1, lane QA-DISCOVER)
  *   POST   /v1/qa-targets/{id}:approve-host      a PLATFORM admin approves the host: {host, extra_origin?, idp_token_path?} (VQ-Q1, audited; QA-IDP-POST)
  *   POST   /v1/qa-targets/{id}/credential-links  a one-time link to the credential form (an admin): {environment?}
@@ -554,6 +554,9 @@ export function deleteQaTarget(id: string): Promise<Result<unknown>> {
  * 10: never a URL, a sign-in or a credential). Null `environments` names
  * none: a target in the one-origin shape, whose only entry the API runs.
  * Null `browserTool` sends no `browser_tool`: the target's own applies.
+ * `flowsPerStep` is how many read-only flows one live-browser step of this
+ * run runs (QA-FLOWS-UI, `flows_per_step`, 1-30); null sends none, and the
+ * workspace's `qa_flows_per_step`, else 15, applies.
  *
  * The answer is the run group (`group_id`, the run page's id) and each leg;
  * a 207 is a group one of whose legs the API could not start, said per leg.
@@ -563,10 +566,12 @@ export async function runQaTarget(
   file: 'issues' | 'none',
   browserTool: FlowBrowserTool | null = null,
   environments: string[] | null = null,
+  flowsPerStep: number | null = null,
 ): Promise<Result<QaRunGroupStart>> {
   const body: Record<string, unknown> = environments === null ? {} : { environments }
   body.file = file
   if (browserTool !== null) body.browser_tool = browserTool
+  if (flowsPerStep !== null) body.flows_per_step = flowsPerStep
   const r = await write(route('/v1/qa-targets/{target_id}:run', { target_id: id }), 'POST', body)
   if (r.status !== 'ok') return r.status === 'error' ? r : { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The run was not answered.' } }
   const answer = rec(r.data)

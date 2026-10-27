@@ -7735,6 +7735,14 @@ function fixtureCodeIntelligence(): unknown {
   return { tenant_id: FIXTURE_TENANT, can_edit: true, jev: false, context: 'on', updated_at: null, updated_by: null }
 }
 
+/** `GET /v1/qa-settings` (QA-FLOWS-UI): no value stored, so the default 15; the owner may change it. */
+function fixtureQaSettings(): unknown {
+  return {
+    tenant_id: FIXTURE_TENANT, qa_flows_per_step: 15, defaults: { qa_flows_per_step: 15 },
+    bounds: { qa_flows_per_step: { min: 1, max: 30 } }, set_at: null, set_by: null, can_edit: true,
+  }
+}
+
 /** `GET /v1/workspace/roles`: u-bogdan is a personal workspace, which has only its owner, the admin. */
 function fixtureWorkspaceRoles(): unknown {
   return {
@@ -7917,6 +7925,7 @@ const FIXTURE_READS: Readonly<Record<string, (url: string) => FixtureBody | unde
   '/v1/provider-keys/{provider}': (url) => ({ body: fixtureProviderKeys(fixtureSegment(url, 3)) }),
   '/v1/judgment': () => ({ body: fixtureJudgment() }),
   '/v1/code-intelligence': () => ({ body: fixtureCodeIntelligence() }),
+  '/v1/qa-settings': () => ({ body: fixtureQaSettings() }),
   '/v1/profile': () => ({ body: fixtureProfile() }),
   '/v1/workspace/roles': () => ({ body: fixtureWorkspaceRoles() }),
   '/v1/admin/people': () => (fixtureIsAdmin ? { body: fixturePeople() } : fixtureIsWorkspaceAdmin ? { body: fixtureScopedPeople() } : 'admin'),
@@ -9722,6 +9731,62 @@ export async function loadCodeIntelligence(): Promise<Result<CodeIntelligence>> 
 /** `PUT /v1/workspaces/{tenant_id}/code-intelligence`: the owner's or an admin's switch. */
 export async function putCodeIntelligence(tenantId: string, jev: boolean): Promise<Result<unknown>> {
   return writeTo(route('/v1/workspaces/{tenant_id}/code-intelligence', { tenant_id: tenantId }), 'PUT', { jev })
+}
+
+/**
+ * The workspace's visual-QA settings (QA-FLOWS-UI over QA-FLOWS-CAP, part of #2136; `swarm_api.qasettings`). One
+ * setting: `qa_flows_per_step`, how many read-only flows one live-browser step of a QA run runs when the run names
+ * none of its own. Its default and bounds are the API's, served with it, so this file does not restate them; the
+ * fallbacks below are only for an answer that omits them (`qaspec.FLOWS_PER_STEP_DEFAULT`, `MIN_`/`MAX_FLOWS_PER_STEP`).
+ */
+export interface QaSettings {
+  tenant_id: string
+  /** The value in force: the stored one, else the default. */
+  qa_flows_per_step: number
+  /** The platform default (15). */
+  default_flows_per_step: number
+  min_flows_per_step: number
+  max_flows_per_step: number
+  /** The workspace's owner or admin, or a platform admin; the API is the gate. */
+  can_edit: boolean
+  set_at: string | null
+  set_by: string | null
+}
+
+function qaInt(v: unknown, fallback: number): number {
+  return typeof v === 'number' && Number.isInteger(v) ? v : fallback
+}
+
+function normQaSettings(raw: unknown): QaSettings {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const sub = (v: unknown) => (typeof v === 'object' && v !== null ? v : {}) as Record<string, unknown>
+  const bound = sub(sub(r.bounds).qa_flows_per_step)
+  const fallback = qaInt(sub(r.defaults).qa_flows_per_step, 15)
+  return {
+    tenant_id: keyField(r.tenant_id) ?? '',
+    qa_flows_per_step: qaInt(r.qa_flows_per_step, fallback),
+    default_flows_per_step: fallback,
+    min_flows_per_step: qaInt(bound.min, 1),
+    max_flows_per_step: qaInt(bound.max, 30),
+    can_edit: r.can_edit === true,
+    set_at: keyField(r.set_at),
+    set_by: keyField(r.set_by),
+  }
+}
+
+/** `GET /v1/qa-settings`: the selected workspace's QA settings (any role in it). */
+export async function loadQaSettings(): Promise<Result<QaSettings>> {
+  return readAs(route('/v1/qa-settings'), normQaSettings)
+}
+
+/**
+ * `PUT /v1/workspaces/{tenant_id}/qa-settings` `{qa_flows_per_step}`: its owner or admin, or a platform admin; anyone
+ * else is 403 `role_admin_required` with nothing written, and a value outside 1-30 is the API's 422. The answer is the
+ * settings as they now stand.
+ */
+export async function putQaSettings(tenantId: string, flowsPerStep: number): Promise<Result<QaSettings>> {
+  const r = await writeTo(route('/v1/workspaces/{tenant_id}/qa-settings', { tenant_id: tenantId }), 'PUT', { qa_flows_per_step: flowsPerStep })
+  return r.status === 'ok' || r.status === 'stale' ? { ...r, data: normQaSettings(r.data) } : (r as Result<QaSettings>)
 }
 
 /** A repository's `context` override; `inherit` is the absent field. */
