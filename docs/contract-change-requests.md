@@ -131,8 +131,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 121 | `states.py`: `EventType.BUDGET_WARNING`, the 80% warning as its own event type (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): the worker writes it; `codec.stored_event_type` reads the old `running` form as it for one release |
 | 122 | `models.py`: `Tenant.principal`'s comment gives a fictional example on the company's real domain (EXAMPLE-IDENTITIES, part of #1647) | open |
 | 123 | `states.py` / `models.py`: `ParkReason.PLATFORM_REFUSED` and `Task.platform_refusals`, so a dispatch the platform refuses parks instead of spending attempts (PLATFORM-REFUSED, part of #1820) | PROPOSED for BGD |
-| 124 | `profiles.py`: a `fix-loop` catalogue profile, `control_plane: true`, shipped unavailable until FL-ACCEPT passes, as `await-input` was (FL-CONTRACT, fix loop request A, part of #2509) | ACCEPTED by BGD 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT): mirrored in `terraform/infra/locals.tf` and listed in `profiles_without_a_job` |
-| 125 | `states.py`: `ParkReason.FIX_ROUNDS_RUNNING`, a fix loop's step while its rounds run: never promoted by the scheduler, in no capacity set, ended by swarm-api (FL-CONTRACT, fix loop request B, part of #2509) | ACCEPTED by BGD 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT), with the console's and swarm-mcp's park-reason lists |
+| 124 | `profiles.py`: a `fix-loop` catalogue profile, `control_plane: true`, shipped unavailable until FL-ACCEPT passes, as `await-input` was (FL-CONTRACT, fix loop request A, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT): mirrored in `terraform/infra/locals.tf` and listed in `profiles_without_a_job` |
+| 125 | `states.py`: `ParkReason.FIX_ROUNDS_RUNNING`, a fix loop's step while its rounds run: never promoted by the scheduler, in no capacity set, ended by swarm-api (FL-CONTRACT, fix loop request B, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT), with the console's and swarm-mcp's park-reason lists |
 | 126 | `models.py`: `EndCause.FIX_LOOP_EXHAUSTED`, a fix loop that ended without a MERGE (FL-CONTRACT, fix loop request C, part of #2509) | open, REQUESTED 2026-10-27 by lane FL-CONTRACT for BGD (Q3 (c) needs an end cause). Not applied |
 
 ---
@@ -14873,7 +14873,7 @@ generation.
 
 ## 124. `profiles.py`: a `fix-loop` catalogue profile, `control_plane`, shipped unavailable (FL-CONTRACT, fix loop request A)
 
-**Status:** ACCEPTED by BGD 2026-10-27 (Q1, Q2, Q10 of
+**Status:** ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of
 [docs/design/fix-loop.md](design/fix-loop.md) §9: the loop is its own
 control-plane step, named `fix-loop`) and APPLIED by the pull request that
 adds this line (lane FL-CONTRACT, part of #2509). "What is true today" below
@@ -14933,7 +14933,7 @@ and its class is never reserved. **6** and **7** are untouched: no pod.
 
 ## 125. `states.py`: `ParkReason.FIX_ROUNDS_RUNNING` (FL-CONTRACT, fix loop request B)
 
-**Status:** ACCEPTED by BGD 2026-10-27 (Q1, Q2, Q10 of
+**Status:** ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of
 [docs/design/fix-loop.md](design/fix-loop.md) §9; Q2 (a) is this request)
 and APPLIED by the pull request that adds this line (lane FL-CONTRACT, part
 of #2509). "What is true today" below is the state before it was applied.
