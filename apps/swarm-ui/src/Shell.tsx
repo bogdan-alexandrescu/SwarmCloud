@@ -555,6 +555,7 @@ export function Screen<T>({
   empty,
   pollMs,
   skeleton,
+  shape,
   children,
 }: {
   title: string
@@ -580,6 +581,12 @@ export function Screen<T>({
    * nothing moves when the data lands. Omitted, the generic rows.
    */
   skeleton?: ReactNode
+  /**
+   * The layout the generic skeleton draws when there is no `skeleton`: a
+   * list card (the default), a list beside a detail, a form beside its send
+   * panel, or a table under its column head (`SkeletonRows`, visual QA V063).
+   */
+  shape?: SkeletonShape
   children: (data: T, reading: ScreenReading) => ReactNode
 }) {
   const [state, setState] = useState<Result<T>>({ status: 'loading', since: Date.now() })
@@ -873,7 +880,7 @@ export function Screen<T>({
         <StaleBanner error={state.error} fetchedAt={state.fetchedAt} now={now} />
       )}
 
-      {state.status === 'loading' && (skeleton ?? <SkeletonRows />)}
+      {state.status === 'loading' && (skeleton ?? <SkeletonRows shape={shape} />)}
       {state.status === 'error' && <FailedPanel error={state.error} onRetry={retryFromPanel} page />}
 
       {/* THE SHARED EMPTY STATE (CH-10), where this was a hand-built `.state`
@@ -1097,7 +1104,10 @@ export function FailedPanel({
   // now carries the same claim as a shape.
   if (error.kind === 'admin_required') {
     return (
-      <div className="state admin-gate" role="status">
+      // AT THE SCALE OF WHAT HOLDS IT, like the failure below (visual QA
+      // V008, 2026-10-16): the Members card's notice was 16px beside the
+      // card's 12px footnote because this branch returned before `scale`.
+      <div className={`state admin-gate ${scale}`} role="status">
         <h3>
           <i className="ctl-mark is-admin">admin only</i> {errorHeading(error)}
         </h3>
@@ -1115,8 +1125,10 @@ export function FailedPanel({
   const wrote = isWriteFailure(error)
   // A 404 ON A READ IS AN ANSWER (visual QA V007): the thing is not there, or
   // is another tenant's, and reading it again gets the same 404. Try again
-  // offered a press that could only fail the same way.
-  const answered = !wrote && error.kind === 'not_found'
+  // offered a press that could only fail the same way. A 403 IS ONE TOO
+  // (visual QA V198, 2026-10-16): the API refused this principal, and it
+  // refuses the same principal again until someone changes its access.
+  const answered = !wrote && (error.kind === 'not_found' || error.kind === 'forbidden')
   return (
     <div className={`state failed ${scale}`}>
       <h3>
@@ -1174,14 +1186,55 @@ const SKELETON_BARS = [86, 62, 92, 70, 56, 80, 66, 90] as const
  * them load into: one `.ctl-card`, a head where its title goes, and rows at a
  * table's row height whose bars are as uneven as the text in them. The
  * widths are fixed, so the skeleton never moves while it waits.
+ *
+ * ONE CARD WAS STILL ONE SHAPE (visual QA V063, 2026-10-16). It resembled
+ * none of Accounts' list beside its detail, the Submit forms' two columns or
+ * People's table, so those pages still jumped when their data landed. A
+ * `Screen` names its layout (`shape`) and the skeleton draws it:
+ *
+ *   list   the one card above: a head and uneven rows (the default).
+ *   split  a list card beside a detail card, on the grid `.acct-split` lays
+ *          out (380px and the rest); a phone shows the list alone, as the
+ *          page does until a row is chosen.
+ *   form   a card of label-and-field pairs beside the 300px send panel, on
+ *          the grid `.sbf` lays out from 1080px.
+ *   table  the list card with a column head over its rows.
  */
-export function SkeletonRows({ rows = 6 }: { rows?: number }) {
+export type SkeletonShape = 'list' | 'split' | 'form' | 'table'
+
+/** A field's label width and its control's, as shares of the form card. */
+const SKELETON_FIELDS = [
+  [18, 100],
+  [24, 100],
+  [14, 62],
+  [20, 100],
+] as const
+
+/** The column head's cells, as shares of the card: four columns, uneven as a table's are. */
+const SKELETON_HEAD = [16, 22, 12, 14] as const
+
+function SkeletonCard({
+  rows,
+  head = false,
+  className,
+}: {
+  rows: number
+  head?: boolean
+  className?: string
+}) {
   return (
-    <section className="ctl-card ctl-skel-card" aria-hidden>
+    <section className={`ctl-card ctl-skel-card${className ? ` ${className}` : ''}`} aria-hidden>
       <div className="ctl-card-head">
         <span className="skeleton ctl-skel-title" />
       </div>
       <div className="ctl-card-body ctl-skel-body">
+        {head && (
+          <div className="ctl-skel-row is-head">
+            {SKELETON_HEAD.map((w, i) => (
+              <span className="skeleton ctl-skel-bar" key={i} style={{ width: `${w}%` }} />
+            ))}
+          </div>
+        )}
         {Array.from({ length: rows }, (_, i) => (
           <div className="ctl-skel-row" key={i}>
             <span className="skeleton ctl-skel-bar" style={{ width: `${SKELETON_BARS[i % SKELETON_BARS.length]}%` }} />
@@ -1189,6 +1242,43 @@ export function SkeletonRows({ rows = 6 }: { rows?: number }) {
         ))}
       </div>
     </section>
+  )
+}
+
+export function SkeletonRows({ rows = 6, shape = 'list' }: { rows?: number; shape?: SkeletonShape }) {
+  if (shape === 'list') return <SkeletonCard rows={rows} />
+  if (shape === 'table') {
+    return (
+      <div className="ctl-skel is-table" aria-hidden>
+        <SkeletonCard rows={rows} head />
+      </div>
+    )
+  }
+  if (shape === 'split') {
+    return (
+      <div className="ctl-skel is-split" aria-hidden>
+        <SkeletonCard rows={rows} className="is-list" />
+        <SkeletonCard rows={Math.max(3, rows - 2)} className="is-detail" />
+      </div>
+    )
+  }
+  return (
+    <div className="ctl-skel is-form" aria-hidden>
+      <section className="ctl-card ctl-skel-card is-build">
+        <div className="ctl-card-head">
+          <span className="skeleton ctl-skel-title" />
+        </div>
+        <div className="ctl-card-body ctl-skel-body">
+          {SKELETON_FIELDS.map(([label, field], i) => (
+            <div className="ctl-skel-field" key={i}>
+              <span className="skeleton ctl-skel-bar" style={{ width: `${label}%` }} />
+              <span className="skeleton ctl-skel-input" style={{ width: `${field}%` }} />
+            </div>
+          ))}
+        </div>
+      </section>
+      <SkeletonCard rows={3} className="is-send" />
+    </div>
   )
 }
 
