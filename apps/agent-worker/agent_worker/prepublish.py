@@ -110,6 +110,14 @@ fix a timeout. So:
   prompt, and runs once more as the parts the script advised
   (`guards_parts`), each its own command under the check limit -- never
   as-is. Parts that time out too are published as a timeout.
+* so is ANY other check this runner killed at its limit (`check_timed_out`:
+  graph-pytest, vitest, tsc...), except that only the guard script is run
+  again in parts; the rest are published as a timeout. A timeout is not the
+  change's fault, and a fix turn for one re-runs the same selection: in
+  task_f5abe2567f79434f9ed4 the agent re-ran graph-pytest's 59 files until the
+  step's 5400 s runner deadline killed it (#2503). A fix turn opened for
+  another failure lists them as not the agent's to fix, and says how much of
+  the step's budget is left.
 
 A CHECK THAT CANNOT RUN IS NOT A FAILURE. A tool missing from the image,
 `tflint --init` that cannot reach its plugin source, an unknown base: the check
@@ -293,6 +301,11 @@ GUARDS_RECORD_DIR = "swarm-changed-guards"
 #: What a timed-out guard run prints: the script's own pytest deadline, or
 #: `run_command`'s kill at the check limit.
 _GUARDS_TIMEOUT = re.compile(r"ran past \d+ s|\[timed out after \d+s\]")
+#: `run_command`'s kill at the check limit, as the last line of the output
+#: (of a check, or of one project's part of graph-pytest).
+_RUNNER_TIMEOUT = re.compile(r"\[timed out after \d+s\]\s*\Z")
+#: The header of one project's part of a multi-project graph-pytest output.
+_PROJECT_PART = re.compile(r"^--- .+ \((\w+)\) ---$", re.MULTILINE)
 #: The split the script advises: `--shard 1/<n>`.
 _GUARDS_SHARDS = re.compile(r"--shard 1/(\d+)")
 #: Parts to split a timed-out run into when its output advised none: the
@@ -469,6 +482,24 @@ def _simple(argv: Sequence[str]) -> Callable[[Runner, Path, Mapping[str, str], f
 def guards_timed_out(output: str) -> bool:
     """Whether a guard run's output says it ran out of time."""
     return bool(_GUARDS_TIMEOUT.search(output))
+
+
+def check_timed_out(name: str, output: str) -> bool:
+    """Whether a failed check's output says it ran out of time (#2503).
+
+    The guard script also counts its own `ran past N s` line. Any other check
+    counts only `run_command`'s kill marker ending its output -- or, for a
+    multi-project graph-pytest, ending EVERY failed project's part: one
+    project that timed out beside one that failed an assertion is still the
+    agent's to fix, and its output reaches the fix turn as a failure."""
+    if name == GUARDS_CHECK:
+        return guards_timed_out(output)
+    heads = list(_PROJECT_PART.finditer(output))
+    if not heads:
+        return bool(_RUNNER_TIMEOUT.search(output))
+    failed = [output[head.end():nxt.start() if nxt else len(output)]
+              for head, nxt in zip(heads, [*heads[1:], None]) if head.group(1) == FAILED]
+    return bool(failed) and all(_RUNNER_TIMEOUT.search(part) for part in failed)
 
 
 def guards_parts(output: str) -> int:
@@ -1570,8 +1601,7 @@ def _run_checks(repo: Path, checks: Sequence[Check], *, env: Mapping[str, str],
         first = next((line for line in output.strip().splitlines() if line.strip()), "")
         reason = {ERROR: first or "the check could not run",
                   SKIPPED: output.strip() or None}.get(status)
-        timed_out = (check.name == GUARDS_CHECK and status == FAILED
-                     and guards_timed_out(output))
+        timed_out = status == FAILED and check_timed_out(check.name, output)
         if timed_out:
             reason = "ran out of time"
         outcomes.append(Outcome(check.name, status, clock() - started, check.files,
@@ -1802,9 +1832,12 @@ def _files_line(files: Sequence[str], cap: int = 20) -> str:
 
 
 def fix_prompt(failed: Sequence[Outcome], secrets: Sequence[str],
-               timed_out: Sequence[Outcome] = (), broke: Sequence[str] = ()) -> str:
+               timed_out: Sequence[Outcome] = (), broke: Sequence[str] = (),
+               remaining_seconds: int | None = None) -> str:
     """The fix turn's prompt; `broke` names the checks that passed before the
-    previous fix turn and fail after it, which makes this the second turn."""
+    previous fix turn and fail after it, which makes this the second turn.
+    `remaining_seconds` is the step's budget left, stated so the agent does
+    not spend it re-running what timed out (#2503)."""
     lines = []
     if broke:
         lines += [
@@ -1820,10 +1853,19 @@ def fix_prompt(failed: Sequence[Outcome], secrets: Sequence[str],
         "again after this turn; whatever still fails is published with its output in the "
         "pull request body for the operator.",
     ]
-    if timed_out:
-        lines += ["", "Not yours to fix: " + ", ".join(o.name for o in timed_out)
+    if remaining_seconds is not None:
+        lines += ["", f"About {remaining_seconds} s of this step's budget is left; the checks "
+                  "run again after your turn within it."]
+    guards = [o.name for o in timed_out if o.name == GUARDS_CHECK]
+    others = [o.name for o in timed_out if o.name != GUARDS_CHECK]
+    if guards:
+        lines += ["", "Not yours to fix: " + ", ".join(guards)
                   + " ran out of time, which no change of yours fixes. The worker runs it "
                   "again in parts after this turn; do not run it yourself."]
+    if others:
+        lines += ["", "Not yours to fix: " + ", ".join(others)
+                  + " ran out of time, which no change of yours fixes. It is not run again "
+                  "within the budget left; do not run it or its test selection yourself."]
     for outcome in failed:
         lines += ["", f"## {outcome.name} ({outcome.command})",
                   f"Files: {_files_line(outcome.files)}",
@@ -2083,15 +2125,18 @@ class Gate:
             record["skipped"] = "unknown_base"
         else:
             outcomes = self._round(base)
-            # A timed-out guard run is no fix turn's to fix, and never runs
-            # as-is again: the next round runs it in the parts it advised.
+            # A timed-out check is no fix turn's to fix (#2503). A timed-out
+            # guard run never runs as-is again: the next round runs it in
+            # the parts it advised. Any other check's timeout starts none.
             timed_out = [o for o in outcomes if o.timed_out]
-            parts = max((guards_parts(o.output) for o in timed_out), default=0)
+            parts = max((guards_parts(o.output) for o in timed_out if o.name == GUARDS_CHECK),
+                        default=0)
             failed = [o for o in outcomes if o.status == FAILED and not o.timed_out]
             if failed:
                 self.log.warning("pre-publish checks failed; one fix turn",
                                  failed=[o.name for o in failed])
-                if self.resume(fix_prompt(failed, self.secrets, timed_out)):
+                if self.resume(fix_prompt(failed, self.secrets, timed_out,
+                                          remaining_seconds=round(self.remaining()))):
                     record["fix_turn"] = True
                     before = {o.name: o.status for o in outcomes}
                     outcomes = self._round(base, guard_parts=parts)
@@ -2142,7 +2187,8 @@ class Gate:
         self.log.warning("the fix turn broke a check that had passed; one more turn",
                          broke=broke, failed=[o.name for o in failed])
         timed_out = [o for o in outcomes if o.timed_out]
-        if not self.resume(fix_prompt(failed, self.secrets, timed_out, broke=broke)):
+        if not self.resume(fix_prompt(failed, self.secrets, timed_out, broke=broke,
+                                      remaining_seconds=round(self.remaining()))):
             self.record["second_turn_skipped"] = "no_session_or_budget"
             return outcomes
         self.record["second_turn"] = True
