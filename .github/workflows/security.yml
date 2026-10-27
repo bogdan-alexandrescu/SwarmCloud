@@ -87,13 +87,39 @@ jobs:
             | sh -s -- -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"
           echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
 
+      - name: download trivy vulnerability DB
+        # Its own step, retried, then the upstream repository (TRIVY-RETRY,
+        # part of #2351). Run 40166089179 (2026-10-25) went red because
+        # mirror.gcr.io answered 404 for the DB, with no finding at all, and
+        # the same SHA's earlier run had passed. Three tries at the mirror with
+        # a short backoff, then ghcr.io/aquasecurity/trivy-db. Neither
+        # answering still fails the job: no DB is no scan, never a pass. The
+        # scans below only read what this step fetched (--skip-db-update,
+        # TRIVY_SKIP_DB_UPDATE), so they cannot meet the mirror again.
+        env:
+          TRIVY_DB_MIRROR: mirror.gcr.io/aquasec/trivy-db:2
+          TRIVY_DB_UPSTREAM: ghcr.io/aquasecurity/trivy-db:2
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if trivy image --download-db-only --no-progress --db-repository "${TRIVY_DB_MIRROR}"; then
+              exit 0
+            fi
+            echo "::warning::trivy DB download from ${TRIVY_DB_MIRROR} failed (attempt ${attempt} of 3)"
+            if [ "${attempt}" -lt 3 ]; then
+              sleep $((attempt * 10))
+            fi
+          done
+          echo "::warning::falling back to ${TRIVY_DB_UPSTREAM}"
+          trivy image --download-db-only --no-progress --db-repository "${TRIVY_DB_UPSTREAM}"
+
       - name: trivy filesystem scan
         # Report everything (exit 0); the gate is the step after the upload.
         run: |
           set -euo pipefail
           trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL \
             --ignore-unfixed --format sarif --output trivy-fs.sarif \
-            --exit-code 0 --no-progress .
+            --exit-code 0 --no-progress --skip-db-update .
 
       - name: upload SARIF
         uses: github/codeql-action/upload-sarif@v4
@@ -118,6 +144,8 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
+          # The script's head scan reads the DB the download step fetched.
+          TRIVY_SKIP_DB_UPDATE: "true"
         run: |
           set -euo pipefail
           base="${BASE_SHA}"
