@@ -40,6 +40,9 @@ What `capture` does, and why each:
    which is the one the person watches. Every load of the console in that tab
    starts with the console's local and session storage emptied
    (RESET_STATE_JS), so a route never draws what the route before it left.
+   A hash route whose `goto` stayed on the document before it is reloaded so
+   that holds for it too (its manifest entry's `reloaded`), but not under
+   `--keep-storage`.
 3. THE DEVICE IS THE GATE'S, BY NAME: `swarm-handoff device <preset>` per
    preset, which blocks until the worker answers. It never calls
    `set_viewport_size`: the gate refuses the metrics override that sends.
@@ -51,6 +54,9 @@ What `capture` does, and why each:
    whichever session wins, the page sees the scheme asked for. emulate_media
    also sets `reduced_motion="reduce"`, which the gate's command does not
    carry. When the capture ends the gate's theme goes back to `system`.
+   Each route's manifest entry says in `dark_differs` whether its dark images
+   differ from its light ones at that preset (None with one scheme only): an
+   app with no dark theme draws both the same, which is no defect (#1981).
 5. Per route: sets the route's PERSONA (`persona` in the route list:
    `member`, today's fixture identity, when absent, or `platform-admin`) as
    the cookie PERSONA_COOKIE on the console's origin, on EVERY route, so no
@@ -125,7 +131,7 @@ default only the console's route list and template rely on:
 
 * `--keep-storage` adds no RESET_STATE_JS: an own-login target keeps its
   session in its storage, and emptying it on every load signs the capture out
-  after its first route.
+  after its first route. It forces no reload of a same-document hash route either.
 * `--settle generic` never evaluates PENDING_JS (or TEXT_JS): someone else's
   app draws none of the console's markers, and its own "reading…" is content.
   It waits for network idle, as every capture does, and then until the DOM
@@ -338,7 +344,10 @@ MAX_SEGMENTS = 12
 #: visual QA run 4 six phone captures stopped at their budget before the page
 #: ended, and the rows below were in no image. A route's `segments` governs
 #: every other preset (the desktop), where a page is a few viewports tall.
-TO_THE_END_PRESETS = frozenset({"phone-390"})
+#: phone-380 (PHONE-380, BGD 2026-10-26, part of #2136: AI Studio's phone
+#: mock-up frame) is narrower and shorter than phone-390, so a page takes at
+#: least as many of its viewports, and c49's reason holds for it.
+TO_THE_END_PRESETS = frozenset({"phone-390", "phone-380"})
 THEMES = ("light", "dark")
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 #: Who the fixture build answers as, per route (QAFIX4-FIXTURE-A, run-4
@@ -688,8 +697,10 @@ SCROLL_JS = """(y) => {
 #: profile, so what a route left in storage drew the next route: the sidebar's
 #: Recent workflows (Spine.tsx RecentWorkflows, filled from localStorage once
 #: /workflows had been opened) appeared on every route after that one and on
-#: none before it. Each route is its own load (`goto`), so the page's memory
-#: starts empty; this, run before the console's own scripts on every load of
+#: none before it. Each route is its own load (`goto`, or, for a hash route
+#: whose `goto` stayed on the document before it, `reload`: #1981 comment 5),
+#: so the page's memory starts empty; this, run before the console's own
+#: scripts on every load of
 #: the console's origin in the capture's tab, empties its local and session
 #: storage too, so every route starts from the state a first visit has. A
 #: fresh browser context per route would do it as well, but opens a window
@@ -1663,9 +1674,10 @@ def _shot(page, segment: int, preset: str | None = None) -> tuple[bytes, list[di
 def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict, preset: str, theme: str,
                    out: Path, axe_source: str | None, settle: str = "console",
                    persona_cookie: bool = True, gate: _GateRefusals | None = None,
-                   links: dict[str, list] | None = None) -> dict:
+                   links: dict[str, list] | None = None, keep_storage: bool = False) -> dict:
     """One route at one preset and theme. Raises with the step that failed.
-    `persona_cookie` False (sets_persona) sets no PERSONA_COOKIE. `gate`
+    `persona_cookie` False (sets_persona) sets no PERSONA_COOKIE. `keep_storage`
+    True never forces a full load of a same-document (hash) route. `gate`
     gives the route the refusals the live gate made while it loaded. A route
     state's `reveal` clicks are made, in order, once it is ready (CLICK_JS).
     `links` (a crawling capture) collects the links the page shows, by path."""
@@ -1691,6 +1703,20 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
         response = page.goto(base + route["path"], wait_until="load", timeout=NAV_TIMEOUT_MS)
         # None for a same-document navigation (a hash route from the route
         # before it): no document answered, so there is no status to read.
+        # Playwright returns None for every same-document navigation, and the
+        # forced load below relies on that rather than comparing page.url with
+        # the target by fragment.
+        # #1981 comment 5: nor did a new document start, so RESET_STATE_JS (an
+        # init script, run on a new document only) did not empty what the
+        # route before it stored, and the app kept its memory. A reload is the
+        # full load the route needs, at the same address. Not under
+        # --keep-storage: nothing is to be emptied, and an own-login app is
+        # captured as it navigates.
+        reloaded = False
+        if response is None and not keep_storage:
+            step = "reload"
+            response = page.reload(wait_until="load", timeout=NAV_TIMEOUT_MS)
+            reloaded = True
         status = getattr(response, "status", None) if response is not None else None
         if isinstance(status, int) and status >= 400:
             raise _RouteFailed(f"navigate: the main document answered HTTP {status}")
@@ -1781,7 +1807,7 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
             # A segment still off the viewport's size after the device reset
             # (`_shot`) is no capture of the route as it stands.
             "status": "unsettled" if pending or off_size else "captured",
-            "path": route["path"], "images": images, "network_idle": idle,
+            "path": route["path"], "images": images, "network_idle": idle, "reloaded": reloaded,
             "settled": not pending, "pending": pending, "scroller": measured[2] if len(measured) > 2 else None,
             "overlaps": overlaps, "covers": covers,
             "truncated": truncated, "reached": reached, "total": total, "duplicate": duplicate,
@@ -1890,7 +1916,7 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
                         entry = _capture_route(page, errors, base=base, group=group, route=route,
                                                preset=preset, theme=theme, out=out, axe_source=axe_source,
                                                settle=settle, persona_cookie=persona_cookie, gate=gate,
-                                               links=harvested)
+                                               links=harvested, keep_storage=keep_storage)
                         manifest["routes"].append(entry)
                         why = []
                         if entry["pending"]:
@@ -1951,9 +1977,54 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
             manifest["found"] = "found.json"
             manifest["crawl"] = {**found["crawl"], **{k: len(found[k]) for k in ("captured_new", "not_owned",
                                                                                   "over_cap")}}
+        _dark_differs(manifest["routes"], out)
         _write(out / "manifest.json", json.dumps(manifest, indent=1))
         _bundle(out, bundle)
     return manifest
+
+
+def _differs(a: bytes, b: bytes) -> bool:
+    """Whether two PNGs differ in more than DIFF_THRESHOLD of their pixels
+    (or in size). Stops at the first row that settles it: a dark theme
+    differs on nearly every row, an absent one on none."""
+    if a == b:
+        return False
+    wa, ha, pa = _decode(a)
+    wb, hb, pb = _decode(b)
+    if (wa, ha) != (wb, hb):
+        return True
+    allowed, changed, stride = DIFF_THRESHOLD * wa * ha, 0, wa * 4
+    for y in range(ha):
+        row = slice(y * stride, (y + 1) * stride)
+        if pa[row] == pb[row]:
+            continue
+        ra, rb = memoryview(pa)[row].cast("I"), memoryview(pb)[row].cast("I")
+        changed += sum(1 for x in range(wa) if ra[x] != rb[x])
+        if changed > allowed:
+            return True
+    return False
+
+
+def _dark_differs(entries: list[dict], out: Path) -> None:
+    """#1981 comment 8: an app with no dark theme draws its dark capture the
+    same as its light one, and a reviewer judging by eye filed "dark mode is
+    ignored" against it. Each captured route records `dark_differs`: whether
+    its dark images differ from its light ones at the same preset (a
+    different number of segments is a difference), so the review reads a
+    fact. None when the other scheme was not captured or an image could not
+    be read."""
+    shots = {(e["id"], e["preset"], e["theme"]): e["images"] for e in entries}
+    for entry in entries:
+        light = shots.get((entry["id"], entry["preset"], "light"))
+        dark = shots.get((entry["id"], entry["preset"], "dark"))
+        verdict = None
+        if light is not None and dark is not None:
+            try:
+                verdict = len(light) != len(dark) or any(
+                    _differs((out / a).read_bytes(), (out / b).read_bytes()) for a, b in zip(light, dark))
+            except (OSError, ValueError, zlib.error):
+                verdict = None
+        entry["dark_differs"] = verdict
 
 
 def _stored(routes: dict) -> list[dict]:

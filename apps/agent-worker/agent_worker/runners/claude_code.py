@@ -1087,6 +1087,11 @@ SPEC = CliAgentSpec(
     # repository's own checks on what the diff touches, with one fix turn
     # (`agent_worker.prepublish`).
     prepublish=True,
+    # The context ceiling (TOKEN-CEILING, BGD 2026-10-27, #2524): a session
+    # past 200k tokens of context or 150 tool calls is stopped at a turn
+    # boundary and the task carried on in a fresh session from a handoff,
+    # never `--resume` (`ceiling`).
+    context_ceiling=True,
     # The CLI warns on EVERY headless run that it ignores the settings' allow
     # list because the workspace is untrusted ("Ignoring 23 permissions.allow
     # entries from .claude/settings.json: this workspace has not been trusted.

@@ -551,6 +551,12 @@ PUBLISH_FAILED_FIELD = "publish_failed"
 #: `_no_change_after_publish`: the attempt ends `no_change`, not
 #: `publish_failed`.
 BASE_MERGE_NO_CHANGE_FIELD = "base_merge_no_change"
+#: The `result_summary.git` key `_publish_git` sets when the worker's commit
+#: of uncommitted work would have put the tree back at the publish base's
+#: though the agent's own commits had changed it (#2536): the reason, naming
+#: the paths. Nothing was pushed. Read by `_record_finalised`, which ends the
+#: attempt FAILED with `publish_refused` (`_fail_for_auto_commit_undid`).
+AUTO_COMMIT_UNDID_FIELD = "auto_commit_undid_agent_commits"
 #: The paths a push may touch only with the `workflow` scope (AU-3,
 #: docs/design/agent-autonomy.md §3.3): `_publish_git` hands a branch whose
 #: new commits touch either to swarm-api's `git_push_branch`. Restated from
@@ -4448,6 +4454,9 @@ class Worker:
             leak = git_summary.get("final_tree_leak") if isinstance(git_summary, dict) else None
             if leak:
                 return self._fail_for_final_tree_leak(str(leak), summary, exit_code=0)
+            undid = git_summary.get(AUTO_COMMIT_UNDID_FIELD) if isinstance(git_summary, dict) else None
+            if undid:
+                return self._fail_for_auto_commit_undid(str(undid), summary, exit_code=0)
             forge_refused = (
                 git_summary.get("forge_write_refused") if isinstance(git_summary, dict) else None
             )
@@ -8292,6 +8301,30 @@ class Worker:
         )
         self.log.info("the attempt failed: its final tree adds a credential", task_state=state.value)
         return Outcome(exit_code=ExitCode.FAILED, state=state)
+
+    def _fail_for_auto_commit_undid(
+        self, reason: str, summary: dict[str, Any], *, exit_code: int
+    ) -> Outcome:
+        """End FAILED, and not retried, because the worker's commit of the
+        agent's uncommitted work would have undone the agent's commits (#2536).
+
+        Measured on task_6e4f6aa4: the branch's net diff was empty and the
+        step read SUCCEEDED, so the re-review met the same blocker and the
+        merge refused. Not retried: the retry resumes the same working tree
+        and would meet the same auto-commit. PUBLISH_REFUSED, as for the
+        final-tree leak: the worker refused to publish (contract request 29).
+        """
+        error = self._scrub(reason[:4000])
+        self._finish_terminal(
+            state=TaskState.FAILED,
+            exit_code=exit_code,
+            error=error,
+            result_summary=summary,
+            end_cause=EndCause.PUBLISH_REFUSED,
+        )
+        self.log.error("the auto-commit undid the agent's commits; nothing was published",
+                       reason=error)
+        return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
     def _opens_pull_request(self) -> bool:
         """True when this step's job is to OPEN A PULL REQUEST (GUARD 2, 2026-10-02).
@@ -13584,6 +13617,10 @@ class Worker:
                     out["remote_tip_from"] = base
                     out["remote_tip"] = remote_tip
                     self._publish_base = remote_tip
+            # Read before the auto-commit moves HEAD: the check below it asks
+            # whether that commit undid what the agent's commits did (#2536).
+            agent_head = self._publish_rev(publish_repo, "HEAD")
+            left_unstaged: list[str] = []
             new_sha = commit_dirty(
                 repo=publish_repo,
                 message=self._worker_commit_message(
@@ -13598,7 +13635,13 @@ class Worker:
                 logs_dir=ws.logs,
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
                 logger=self.log,
+                # What the agent's commits since the base removed from the
+                # index and left on disk is not staged again (#2536).
+                base=self._publish_base,
+                left_unstaged=left_unstaged,
             )
+            if left_unstaged:
+                out["left_unstaged"] = self._scrub(list(left_unstaged))
             if new_sha:
                 auto_committed = True
                 work_head = new_sha
@@ -13627,6 +13670,28 @@ class Worker:
                 out["publish_reason"] = out[BASE_MERGE_NO_CHANGE_FIELD]
                 self.log.info("origin's branch already holds this round's head; nothing to push",
                               branch=branch, tip=remote_tip)
+                return out
+
+            # THE WORKER'S COMMIT MUST NOT UNDO THE AGENT'S (#2536). Measured
+            # on task_6e4f6aa4: the auto-commit re-staged a file the agent's
+            # commit had removed from the index, the branch's net diff was
+            # empty, and the step read SUCCEEDED. `commit_dirty` no longer
+            # does that; this is the check that a tree the agent's commits
+            # changed is not pushed back at its base by the worker's commit
+            # for any other reason. Nothing is pushed, and the attempt fails
+            # (`_fail_for_auto_commit_undid`).
+            undid = (
+                self._auto_commit_undid(publish_repo, agent_head=agent_head)
+                if new_sha else None
+            )
+            if undid is not None:
+                reason = str(self._scrub(undid))
+                out["published"] = False
+                out["auto_committed"] = auto_committed
+                out[AUTO_COMMIT_UNDID_FIELD] = reason
+                out["publish_reason"] = f"refusing to publish: {reason}"
+                self.log.error("not publishing: the auto-commit undid the agent's commits",
+                               reason=reason)
                 return out
 
             # `carrier: branches` (D13): the branch may already hold this step's
@@ -14360,6 +14425,54 @@ class Worker:
                              branch=branch, error=str(self._scrub(str(exc)[:300])))
             return None
         return tip if isinstance(tip, str) and _FULL_SHA_RE.fullmatch(tip) else None
+
+    def _publish_rev(self, publish_repo: Path, rev: str) -> str | None:
+        """`rev` resolved in the publish repository, or None when git cannot."""
+        ws = self.ws
+        assert ws is not None
+        code, text = _git_text(
+            ["git", *_NO_HOOKS, "rev-parse", "--verify", "--quiet", rev],
+            repo=Path(publish_repo), private_dir=ws.private, logs_dir=ws.logs,
+            slug="publish-rev", timeout_seconds=self.cfg.git_harvest_timeout_seconds,
+            logger=self.log,
+        )
+        return (text.strip() or None) if code == 0 else None
+
+    def _auto_commit_undid(self, publish_repo: Path, *, agent_head: str | None) -> str | None:
+        """Why the worker's auto-commit undid the agent's commits, or None (#2536).
+
+        Undid means: HEAD's tree after the auto-commit is the publish base's
+        tree, and `agent_head`'s -- HEAD before it, the agent's last commit --
+        is not. The reason names the paths the agent's commits changed, which
+        the branch would have published as no change at all. A base that is
+        unknown, the empty clone's, or not readable is not judged.
+        """
+        base = self._publish_base
+        if not agent_head or not base or base == EMPTY_CLONE_BASE:
+            return None
+        base_tree = self._publish_rev(publish_repo, f"{base}^{{tree}}")
+        if base_tree is None:
+            return None
+        if self._publish_rev(publish_repo, "HEAD^{tree}") != base_tree:
+            return None
+        if self._publish_rev(publish_repo, f"{agent_head}^{{tree}}") == base_tree:
+            return None
+        ws = self.ws
+        assert ws is not None
+        code, text = _git_text(
+            ["git", *_NO_HOOKS, "diff", "--no-renames", "--name-only", "-z", base, agent_head],
+            repo=Path(publish_repo), private_dir=ws.private, logs_dir=ws.logs,
+            slug="publish-undone-paths", timeout_seconds=self.cfg.git_harvest_timeout_seconds,
+            logger=self.log,
+        )
+        paths = sorted({p for p in text.split("\0") if p}) if code == 0 else []
+        shown = ", ".join(paths[:10]) + (f" and {len(paths) - 10} more" if len(paths) > 10 else "")
+        return (
+            "the worker's commit of the agent's uncommitted work would put the branch "
+            f"back at its base {base[:12]}, undoing the agent's own commits"
+            + (f" to {shown}" if shown else "")
+            + "; nothing was pushed"
+        )
 
     def _publish_is_ancestor(self, publish_repo: Path, ancestor: str, descendant: str) -> bool:
         """True when `ancestor` is `descendant` or one of its ancestors in the

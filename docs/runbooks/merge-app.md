@@ -57,10 +57,15 @@ from it, and every scheduled `judge` run failed at its mint with "The
 permissions requested are not granted to this installation", so
 `SELF_HOSTED_CI` was never flipped by the judge. The owner granted Variables:
 Read and write on 2026-10-26 (seen on the installation at about 01:50Z). The
-same step also warns `Unexpected input(s) 'permission-variables'`: the pinned
-action's input list predates that input, but the refusal above shows the
-variables permission was requested anyway. A later action version that lists
-it would silence the warning; that is a workflow change, for the operator.
+mint still failed after the grant (runs 40429497097 and 40458285194, the
+latter at 05:57Z 2026-10-27), and the cause was the input's name:
+`create-github-app-token` turns `permission-<name>` into the API key
+`<name>` with dashes as underscores, so `permission-variables` asked for
+`variables`, a key GitHub does not have. Repository variables are
+`actions_variables`, so the judge now asks for
+`permission-actions-variables: write` (2026-10-27). The action's input list
+names neither, so it still warns `Unexpected input(s)`; the warning is
+harmless, the request goes through by name.
 
 ## The App also turns auto-merge off (#795)
 
@@ -194,7 +199,7 @@ repository).
 | Contents | Read and write | `permission-contents: write`. Squash-merging writes the commit to `main`; enabling and disabling auto-merge need it too. |
 | Pull requests | Read and write | `permission-pull-requests: write`. Enabling auto-merge, turning it off (the `disarm` steps, #795) and merging are pull request mutations. |
 | Workflows | Read and write | `permission-workflows: write`, the `enable` job and `merge-train.yml` only. A pull request that touches `.github/workflows` cannot be merged by a token without it (owner decision, 2026-09-28). |
-| Variables | Read and write | `permission-variables: write`, `runner-fallback.yml`'s `judge` only. It reads and writes the `SELF_HOSTED_CI` repository variable; the GITHUB_TOKEN has no variables scope (owner decision, 2026-10-26; #2220). |
+| Actions variables | Read and write | `permission-actions-variables: write`, `runner-fallback.yml`'s `judge` only. GitHub's App settings page calls it *Variables*; its API key is `actions_variables`. It reads and writes the `SELF_HOSTED_CI` repository variable; the GITHUB_TOKEN has no variables scope (owner decision, 2026-10-26; #2220). |
 
   Metadata: Read is added by GitHub automatically. The App does **not** need
   Checks or Actions: the gate reads check runs with the workflow's

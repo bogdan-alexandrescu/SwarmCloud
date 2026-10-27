@@ -295,8 +295,11 @@ describe('c08: the state card comes first at every width', () => {
         const pane = el.querySelector<HTMLElement>('.dt')!
         const kids = [...pane.children] as HTMLElement[]
         const card = kids.find((k) => k.getAttribute('data-lead') === lead)
-        const strip = kids.find((k) => k.classList.contains('dt-strip'))
+        // The figures are the Resources row now, the strip folded inside it (DETAILS-BUILDING).
+        const strip = kids.find((k) => k.classList.contains('dt-res'))
         expect(card, `no ${lead} card`).toBeDefined()
+        expect(strip, 'no Resources row').toBeDefined()
+        expect(strip!.querySelector('.dt-strip'), 'the strip is not under the Resources row').not.toBeNull()
         // The flex order a reader sees: `order`, then the source order.
         const place = (k: HTMLElement) => [Number(painted(k, 'order', env) ?? '0'), kids.indexOf(k)] as const
         const [co, ci] = place(card!)

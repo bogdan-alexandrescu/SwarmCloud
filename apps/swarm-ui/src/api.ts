@@ -54,6 +54,7 @@ import type {
   ReminderCadence, WorkspaceRole,
   DefaultRoleChange, PersonRoleChange, PersonRoles, PersonWorkspaceRole, RoleSummary, WorkspaceRoleEvent, WorkspaceRoleMe,
   WorkspaceRoleOverride, WorkspaceRoles, WorkspaceRoster,
+  JoinedMember, JoinedMemberRemoval, JoinedMembers, JoinLinkState, JoinLookup, JoinRequestMine, JoinRequestState,
   AdminWorkspaceRoles, AdminWorkspaceRolesPage,
   QaIdentityGrantDoc, QaIdentityList, QaIdentityMine,
   RunnerRecentUse, RunnerSize, RunnerSizeChanges, RunnerSizesDoc, RunnerSizesPreview, RunnerSizeVersion,
@@ -4735,9 +4736,9 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
     one(
       'AWAITING_INPUT',
       'Waiting for a member of u-bogdan to answer; /sc answer wf_sizes_sched_2 approve',
-      'a member of the tenant answers, or the window expires and its default applies',
+      'a member of the workspace answers, or the window expires and its default applies',
       {
-        who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of tenant u-bogdan' },
+        who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of workspace u-bogdan' },
         opened_at: at(47), expires_at: at(-240), answer_command: '/sc answer wf_sizes_sched_2 approve',
       },
       { next: null },
@@ -4746,9 +4747,9 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
     one(
       'HUMAN_REQUIRED',
       'Waiting for a person: sign in on its console page, then say it is ready',
-      "a member of the tenant calls human-ready (the console's Ready button)",
+      "a member of the workspace calls human-ready (the console's Ready button)",
       {
-        who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of tenant u-bogdan' },
+        who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of workspace u-bogdan' },
         expires_at: null, answer_route: 'POST /v1/tasks/task_wait_human_required/human-ready', cause: null,
       },
       { next: null, task: { runner_profile: 'claude-code-browser', resource_class: 'browser', blocked_by: [{ reason: 'HUMAN_REQUIRED' }] } },
@@ -4788,7 +4789,7 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
     one(
       'CREDENTIAL_MISSING',
       'Credential missing: anthropic key, github/token',
-      "the tenant registers the credential and the scheduler's credential sweep finds it",
+      "the workspace registers the credential and the scheduler's credential sweep finds it",
       {
         provider: 'anthropic', secret_names: ['anthropic key', 'github/token'], account_pool: null,
         forge_connection: null, workspace_secrets: [{ consumer: 'github', slot: 'token' }], mcp_servers: [],
@@ -7734,6 +7735,14 @@ function fixtureCodeIntelligence(): unknown {
   return { tenant_id: FIXTURE_TENANT, can_edit: true, jev: false, context: 'on', updated_at: null, updated_by: null }
 }
 
+/** `GET /v1/qa-settings` (QA-FLOWS-UI): no value stored, so the default 15; the owner may change it. */
+function fixtureQaSettings(): unknown {
+  return {
+    tenant_id: FIXTURE_TENANT, qa_flows_per_step: 15, defaults: { qa_flows_per_step: 15 },
+    bounds: { qa_flows_per_step: { min: 1, max: 30 } }, set_at: null, set_by: null, can_edit: true,
+  }
+}
+
 /** `GET /v1/workspace/roles`: u-bogdan is a personal workspace, which has only its owner, the admin. */
 function fixtureWorkspaceRoles(): unknown {
   return {
@@ -7916,6 +7925,7 @@ const FIXTURE_READS: Readonly<Record<string, (url: string) => FixtureBody | unde
   '/v1/provider-keys/{provider}': (url) => ({ body: fixtureProviderKeys(fixtureSegment(url, 3)) }),
   '/v1/judgment': () => ({ body: fixtureJudgment() }),
   '/v1/code-intelligence': () => ({ body: fixtureCodeIntelligence() }),
+  '/v1/qa-settings': () => ({ body: fixtureQaSettings() }),
   '/v1/profile': () => ({ body: fixtureProfile() }),
   '/v1/workspace/roles': () => ({ body: fixtureWorkspaceRoles() }),
   '/v1/admin/people': () => (fixtureIsAdmin ? { body: fixturePeople() } : fixtureIsWorkspaceAdmin ? { body: fixtureScopedPeople() } : 'admin'),
@@ -9723,6 +9733,62 @@ export async function putCodeIntelligence(tenantId: string, jev: boolean): Promi
   return writeTo(route('/v1/workspaces/{tenant_id}/code-intelligence', { tenant_id: tenantId }), 'PUT', { jev })
 }
 
+/**
+ * The workspace's visual-QA settings (QA-FLOWS-UI over QA-FLOWS-CAP, part of #2136; `swarm_api.qasettings`). One
+ * setting: `qa_flows_per_step`, how many read-only flows one live-browser step of a QA run runs when the run names
+ * none of its own. Its default and bounds are the API's, served with it, so this file does not restate them; the
+ * fallbacks below are only for an answer that omits them (`qaspec.FLOWS_PER_STEP_DEFAULT`, `MIN_`/`MAX_FLOWS_PER_STEP`).
+ */
+export interface QaSettings {
+  tenant_id: string
+  /** The value in force: the stored one, else the default. */
+  qa_flows_per_step: number
+  /** The platform default (15). */
+  default_flows_per_step: number
+  min_flows_per_step: number
+  max_flows_per_step: number
+  /** The workspace's owner or admin, or a platform admin; the API is the gate. */
+  can_edit: boolean
+  set_at: string | null
+  set_by: string | null
+}
+
+function qaInt(v: unknown, fallback: number): number {
+  return typeof v === 'number' && Number.isInteger(v) ? v : fallback
+}
+
+function normQaSettings(raw: unknown): QaSettings {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const sub = (v: unknown) => (typeof v === 'object' && v !== null ? v : {}) as Record<string, unknown>
+  const bound = sub(sub(r.bounds).qa_flows_per_step)
+  const fallback = qaInt(sub(r.defaults).qa_flows_per_step, 15)
+  return {
+    tenant_id: keyField(r.tenant_id) ?? '',
+    qa_flows_per_step: qaInt(r.qa_flows_per_step, fallback),
+    default_flows_per_step: fallback,
+    min_flows_per_step: qaInt(bound.min, 1),
+    max_flows_per_step: qaInt(bound.max, 30),
+    can_edit: r.can_edit === true,
+    set_at: keyField(r.set_at),
+    set_by: keyField(r.set_by),
+  }
+}
+
+/** `GET /v1/qa-settings`: the selected workspace's QA settings (any role in it). */
+export async function loadQaSettings(): Promise<Result<QaSettings>> {
+  return readAs(route('/v1/qa-settings'), normQaSettings)
+}
+
+/**
+ * `PUT /v1/workspaces/{tenant_id}/qa-settings` `{qa_flows_per_step}`: its owner or admin, or a platform admin; anyone
+ * else is 403 `role_admin_required` with nothing written, and a value outside 1-30 is the API's 422. The answer is the
+ * settings as they now stand.
+ */
+export async function putQaSettings(tenantId: string, flowsPerStep: number): Promise<Result<QaSettings>> {
+  const r = await writeTo(route('/v1/workspaces/{tenant_id}/qa-settings', { tenant_id: tenantId }), 'PUT', { qa_flows_per_step: flowsPerStep })
+  return r.status === 'ok' || r.status === 'stale' ? { ...r, data: normQaSettings(r.data) } : (r as Result<QaSettings>)
+}
+
 /** A repository's `context` override; `inherit` is the absent field. */
 export type RepoContext = 'on' | 'off' | 'inherit'
 
@@ -10476,6 +10542,103 @@ export async function clearWorkspacePersonRole(email: string, reason = ''): Prom
 /** `PUT /v1/workspace/roles/default` (admin): `viewer` or `member`; `admin` is 409. */
 export async function setWorkspaceDefaultRole(role: string, reason = ''): Promise<Result<DefaultRoleChange>> {
   return writeTo(route('/v1/workspace/roles/default'), 'PUT', roleBody({ role }, reason)) as Promise<Result<DefaultRoleChange>>
+}
+
+// ---------------------------------------------------------------------------
+// Join requests (lane JOIN-UI-PERSON; docs/design/join-requests.md §4.2,
+// §4.8; part of #2325). The routes are swarm_api/routes/join_requests.py.
+//
+// THE CODE TRAVELS IN A BODY, NEVER A PATH OR A QUERY (§4.2). The shared link
+// carries it in the URL's fragment, which a browser never sends; the /join
+// page reads it there and posts it here, so it never reaches a request log or
+// a load balancer's access log. Every body is a closed model on the server (an
+// extra field is 422), so none of these carries the roles' `via`.
+// ---------------------------------------------------------------------------
+
+const JOIN_STATES: readonly JoinRequestState[] = ['requested', 'approved', 'denied', 'withdrawn', 'expired']
+
+export function normJoinRequest(raw: unknown): JoinRequestMine | null {
+  if (!isObj(raw) || str(raw.ref) === '') return null
+  const state = JOIN_STATES.find((s) => s === raw.state)
+  // A state this client does not know is dropped rather than drawn as one it does.
+  if (state === undefined) return null
+  const out: JoinRequestMine = {
+    ref: str(raw.ref), state, display_name: str(raw.display_name),
+    requested_at: str(raw.requested_at), expires_at: str(raw.expires_at),
+  }
+  if (strOrNull(raw.decided_at) !== null) out.decided_at = str(raw.decided_at)
+  if (strOrNull(raw.reason) !== null) out.reason = str(raw.reason)
+  return out
+}
+
+function normJoinLink(raw: unknown): JoinLinkState {
+  const r = isObj(raw) ? raw : {}
+  // Only an explicit true is on: an unread flag never claims a working link.
+  const out: JoinLinkState = { on: r.on === true, set_by: str(r.set_by), set_at: str(r.set_at) }
+  if (strOrNull(r.link) !== null) out.link = str(r.link)
+  return out
+}
+
+function normJoinedMember(raw: unknown): JoinedMember | null {
+  if (!isObj(raw) || str(raw.email) === '') return null
+  return {
+    email: str(raw.email), by: str(raw.by), at: str(raw.at), via: str(raw.via),
+    group_changed: raw.group_changed === true,
+    still_in_group: typeof raw.still_in_group === 'boolean' ? raw.still_in_group : null,
+  }
+}
+
+function asResult<T>(r: Result<unknown>, norm: (raw: unknown) => T): Result<T> {
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: norm(r.data) }
+  return r
+}
+
+/** `POST /v1/join/lookup {code}`: the workspace a working code names, by its display name; any code that does not work is the one 404 `join_link_unknown`. */
+export async function lookupJoinCode(code: string): Promise<Result<JoinLookup>> {
+  const r = await writeTo(route('/v1/join/lookup'), 'POST', { code })
+  return asResult(r, (raw) => ({ display_name: str(isObj(raw) ? raw.display_name : undefined) }))
+}
+
+/** `POST /v1/join-requests {code, message?}`: 202 with the new request, or 200 with the person's open one there. */
+export async function askToJoin(code: string, message = ''): Promise<Result<JoinRequestMine>> {
+  const note = message.trim()
+  const r = await writeTo(route('/v1/join-requests'), 'POST', note === '' ? { code } : { code, message: note })
+  return asResult(r, (raw) => normJoinRequest(raw) ?? { ref: '', state: 'requested', display_name: '', requested_at: '', expires_at: '' })
+}
+
+/** `GET /v1/join-requests/mine`: the caller's own requests, newest first, every state. */
+export async function loadMyJoinRequests(): Promise<Result<JoinRequestMine[]>> {
+  return readAs(route('/v1/join-requests/mine'), (raw) => list(isObj(raw) ? raw.requests : undefined, normJoinRequest), (d) => d.length === 0)
+}
+
+/** `POST /v1/join-requests/{ref}/withdraw`: the requester's own open request. */
+export async function withdrawJoinRequest(ref: string): Promise<Result<unknown>> {
+  return writeTo(route('/v1/join-requests/{ref}/withdraw', { ref }), 'POST')
+}
+
+/** `GET /v1/workspace/join-link` (admin): whether the selected workspace's link is on. Never the code. */
+export async function loadJoinLink(): Promise<Result<JoinLinkState>> {
+  return readAs(route('/v1/workspace/join-link'), normJoinLink)
+}
+
+/** `PUT /v1/workspace/join-link {on, rotate}` (admin): `link` is in the answer only when a code was just made. */
+export async function setJoinLink(on: boolean, rotate = false): Promise<Result<JoinLinkState>> {
+  return asResult(await writeTo(route('/v1/workspace/join-link'), 'PUT', { on, rotate }), normJoinLink)
+}
+
+/** `GET /v1/workspace/members` (admin): who holds a platform membership here, by an approved request. */
+export async function loadJoinedMembers(): Promise<Result<JoinedMembers>> {
+  return readAs(route('/v1/workspace/members'), (raw) => {
+    const r = isObj(raw) ? raw : {}
+    return { platform_memberships: r.platform_memberships === true, members: list(r.members, normJoinedMember) }
+  })
+}
+
+/** `DELETE /v1/workspace/members/person {email, reason?}` (admin): ends a platform membership; the email in the body. */
+export async function removeJoinedMember(email: string, reason = ''): Promise<Result<JoinedMemberRemoval>> {
+  const why = reason.trim()
+  const body = why === '' ? { email: email.trim() } : { email: email.trim(), reason: why }
+  return writeTo(route('/v1/workspace/members/person'), 'DELETE', body) as Promise<Result<JoinedMemberRemoval>>
 }
 
 /** `GET /v1/admin/workspaces/{tenant_id}/roles` (platform admin): any registered group workspace's roster, without selecting it. */
@@ -11339,7 +11502,7 @@ export async function loadLiveSession(taskId: string): Promise<Result<LiveRead>>
             { name: 'desktop', width: 1440, height: 900, scale: 1, mobile: false },
             { name: 'iphone-15', width: 393, height: 852, scale: 3, mobile: true },
             { name: 'phone-390', width: 390, height: 844, scale: 3, mobile: true },
-            { name: 'phone-380', width: 380, height: 844, scale: 3, mobile: true },
+            { name: 'phone-380', width: 380, height: 800, scale: 3, mobile: true },
             { name: 'pixel-8', width: 412, height: 915, scale: 2.625, mobile: true },
             { name: 'iphone-se', width: 375, height: 667, scale: 2, mobile: true },
             { name: 'ipad-7', width: 810, height: 1080, scale: 2, mobile: true },

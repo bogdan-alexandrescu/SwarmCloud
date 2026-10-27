@@ -97,8 +97,9 @@ This module never awaits a reply inside `on_chromium_message`: the pipe reader
 delivers replies one at a time, so a handler that waited on one would wait on
 itself. Commands the proxy sends from there are fire-and-forget.
 
-Nothing here is logged but a quiet refusal (`cdppolicy.QUIET_REFUSALS`), at
-debug, by method name and count. A refusal is recorded through `record` by
+Nothing here is logged but a quiet refusal (`cdppolicy.quiet_refusal`), at
+debug, by method name and count, and the launch's blank tab closed, at info,
+by targetId. A refusal is recorded through `record` by
 method name only; a page's content, a request body, a key or a parameter never
 is.
 
@@ -145,11 +146,26 @@ created and removed again is never mentioned, and an agent command HELD during
 control was written against the old context and fails on release, honestly.
 
 THE ACTION LOG (section 7; lane LB-V3). Every agent method the proxy forwards,
-and every one it refuses, is handed to `on_action` as one line (`action_line`):
+and every one it refuses but a quiet refusal (`cdppolicy.quiet_refusal`), is
+handed to `on_action` as one line (`action_line`):
 the method's name, a navigation's URL with no query, fragment or user name
 (`action_url`), and `Input.insertText` as a LENGTH. Nothing else of the
 parameters, so a line can never carry typed text, a key or a cookie. The gate
 sends the lines to the relay, which writes the recording's action log.
+
+THE LAUNCH'S BLANK TAB (#1346 comment 4). Chromium is launched on
+about:blank, and a client that opens a page of its own (dev-browser's named
+pages, a Playwright `newPage`) leaves that tab behind: task_b7080998 ended with
+five tabs, one of them the launch's about:blank, in the browser the person
+watches. So once, after the agent's first navigation to a real URL is
+answered (`Page.navigate`, or `Target.createTarget` with one) while the
+agent's sessions are attached to some other page as well, the proxy reads
+`Target.getTargets` and closes every page that is still about:blank and is
+nobody's: not the page just navigated, not one the agent opened itself, not
+the controlled page, not one the gate watches or one in a context the gate
+owns. Never the only tab: when every page would go, none does. It runs on a
+task of its own, because the reader must not wait on a reply, and only while
+the agent is not held.
 
 THE AGENT'S POINTER (LB-CURSOR; part of #1030). The x and y of every
 `Input.dispatchMouseEvent` the proxy forwards are handed to `on_pointer`, so
@@ -627,7 +643,7 @@ class CdpProxy:
         #: and the journal of what control dropped (module docstring).
         self._contexts: dict[str, dict[int, dict[str, Any]]] = {}
         self._journals: dict[str, _Journal] = {}
-        #: Quiet refusals (`cdppolicy.QUIET_REFUSALS`) so far, by method.
+        #: Quiet refusals (`cdppolicy.quiet_refusal`) so far, by method.
         self.quiet_refusals: dict[str, int] = {}
         self._gate_sessions: dict[str, str] = {}  # watched page session -> targetId
         self._gate_children: dict[str, str] = {}  # frame session under a watched page -> targetId
@@ -654,6 +670,11 @@ class CdpProxy:
         #: (module docstring); the gate's `DeviceController.reassert`.
         self._after_clipped_capture: Callable[[str], Awaitable[None]] | None = None
         self._reasserts: set[asyncio.Task[None]] = set()
+        #: The launch's blank tab (module docstring): targets the agent opened,
+        #: whether the one sweep has started, and its task.
+        self._agent_targets: set[str] = set()
+        self._blank_swept = False
+        self._sweeps: set[asyncio.Task[None]] = set()
 
     # ------------------------------------------------------------------ state
 
@@ -920,12 +941,13 @@ class CdpProxy:
                 message = {**message, "params": dict(confined)}
         refusal = cdppolicy.check(method, params if isinstance(params, Mapping) else {}, self._paths)
         if refusal is not None:
-            if method in cdppolicy.QUIET_REFUSALS:
+            if cdppolicy.quiet_refusal(method, params if isinstance(params, Mapping) else {},
+                                       page_session=session is not None):
                 count = self.quiet_refusals[method] = self.quiet_refusals.get(method, 0) + 1
                 log.debug("live gate: %s refused quietly (%d so far)", method, count)
             else:
                 self._record("cdp_method_refused", {"method": method})
-            self._note(method, params, "method_policy")
+                self._note(method, params, "method_policy")
             await self._reply_error(connection, message, refusal.message())
             return
         if self._qa is not None and self._qa.armed and self._console_requests is not None:
@@ -1105,6 +1127,45 @@ class CdpProxy:
             child = result["sessionId"]
             self._owner[child] = pending.owner
             pending.owner.sessions.setdefault(child, str(pending.params.get("targetId", "")))
+        elif pending.method == "Target.createTarget" and isinstance(result.get("targetId"), str):
+            self._agent_targets.add(result["targetId"])
+            self._navigated(result["targetId"], pending.params.get("url"))
+        elif pending.method == "Page.navigate" and pending.agent_session is not None:
+            self._navigated(pending.owner.sessions.get(pending.agent_session, ""), pending.params.get("url"))
+
+    def _navigated(self, target: str, url: Any) -> None:
+        """The agent's page `target` was sent to `url`: the first real one
+        starts the sweep of the launch's blank tab (module docstring)."""
+        if self._blank_swept or not target or not isinstance(url, str) or not url or _is_blank(url):
+            return
+        # Only when the agent's sessions know of a page besides this one
+        # (Playwright and Puppeteer attach every tab, the launch's included):
+        # a browser with one tab is never asked for its list.
+        if not any(t and t != target for c in self._connections if not c.closed for t in c.sessions.values()):
+            return
+        self._blank_swept = True
+        task = asyncio.get_running_loop().create_task(self._close_launch_blank(target))
+        self._sweeps.add(task)
+        task.add_done_callback(self._sweeps.discard)
+
+    async def _close_launch_blank(self, keep: str) -> None:
+        reply = await self._call_quietly("Target.getTargets", {}, None)
+        if reply is None or self._mode != _OPEN:
+            return
+        infos = reply.get("targetInfos")
+        pages = [i for i in infos if isinstance(i, Mapping) and i.get("type") == "page"] if isinstance(infos, list) else []
+        watched = set(self._gate_sessions.values())
+        blank = [
+            str(i.get("targetId")) for i in pages
+            if _is_blank(str(i.get("url", ""))) and i.get("targetId") not in (keep, self._controlled)
+            and i.get("targetId") not in self._agent_targets and i.get("targetId") not in watched
+            and i.get("browserContextId") not in self._gate_contexts
+        ]
+        if not blank or len(blank) >= len(pages):
+            return
+        for target in blank:
+            if await self._call_quietly("Target.closeTarget", {"targetId": target}, None) is not None:
+                log.info("live gate: closed the launch's blank tab %s", target)
 
     def _track_contexts(self, session: str, method: str, params: Mapping[str, Any]) -> None:
         contexts = self._contexts.setdefault(session, {})

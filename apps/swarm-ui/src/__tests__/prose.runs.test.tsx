@@ -338,10 +338,20 @@ describe('the run group carries data, not prose', () => {
    * 386: the owner's design calls name the counts and clocks, so the cores
    * figure says `(cgroup limit)` and the Elapsed tile says `Run · attempt N`.
    * Those are labels the owner asked for, not prose growing back.
+   *
+   * 390 became 405 with DETAILS-BUILDING (part of #2391), which measured 397:
+   * BGD asked for a Building line, a one-line Now and one Resources row
+   * (2026-10-27), and the strip and Resources card they replace are still on
+   * the page, folded under the row's `details`, so the total grew by the three
+   * lines. What he asked to shrink is what shows before anything is opened,
+   * and that has its own ceiling: `detailShown`, every word outside a closed
+   * disclosure (its summary kept). Measured on the fixture: 163 before the
+   * change, 87 after.
    */
   const CEILING: Record<string, number> = {
     agents: 30,
-    detail: 390,
+    detail: 405,
+    detailShown: 110,
     timeline: 100,
     viewer: 35,
   }
@@ -356,6 +366,16 @@ describe('the run group carries data, not prose', () => {
     const el = await renderDetail()
     expectAllCardsClosed()
     expect(words(el)).toBeLessThanOrEqual(CEILING.detail!)
+  })
+
+  it('AgentDetail’s first screen, outside every closed disclosure, fits its own budget', async () => {
+    const el = await renderDetail()
+    expectAllCardsClosed()
+    const shown = el.cloneNode(true) as HTMLElement
+    for (const folded of shown.querySelectorAll('details:not([open])')) {
+      for (const n of [...folded.childNodes]) if (!(n instanceof HTMLElement && n.tagName === 'SUMMARY')) n.remove()
+    }
+    expect(words(shown)).toBeLessThanOrEqual(CEILING.detailShown!)
   })
 
   it('AttemptTimeline fits its word budget', async () => {

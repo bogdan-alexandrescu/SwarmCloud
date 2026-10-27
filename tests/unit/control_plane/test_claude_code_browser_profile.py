@@ -361,6 +361,9 @@ def test_the_launch_env_built_by_the_cli_runner_carries_swarm_handoff(monkeypatc
         raise Stop
 
     monkeypatch.setattr(cliagent, "run_child", fake_child)
+    # claude-code reads its stream as it is written, for the context ceiling
+    # (#2524), so its start goes through the watched loop.
+    monkeypatch.setattr(cliagent, "_run_watched", fake_child)
     binary = tmp_path / "claude"
     binary.write_text("")
     monkeypatch.setenv(claude_code.SPEC.binary_env, str(binary))

@@ -84,6 +84,12 @@ never shown for more than MAX_FRAME_DELAY_CS, so an idle minute plays as two
 seconds. While a person is in control the gate holds the recorder's CDP like
 the agent's, and a screenshot that completes in that window is withheld
 (cdppolicy.CONTENT_METHODS), so no frame shows what a person typed.
+One recorder runs at a time. A `record start` that finds one still alive --
+a script crashed before its `record stop` (#1981 c6) -- stops it as `record
+stop` does (the stop file, at most STOP_WAIT_SECONDS, then SIGTERM), keeps
+its GIF, names it in its answer as `replaced` with what it wrote in
+`replaced_result`, and starts the new one. Under the same name the new GIF
+is written over the old one, which is what a rerun of the script asks for.
 
 A MOCKUP BESIDE THE APP. `serve DIR` serves a directory over http on
 127.0.0.1 and nowhere else -- there is no option for another address -- in
@@ -849,10 +855,14 @@ def cmd_record(args, root):
     why = _unavailable(root)
     if why or not endpoint or not artifacts:
         return _refuse(why or "no_live_path", "this attempt has no live browser to record")
+    # A recorder still alive is one a script started and never stopped -- it
+    # crashed before `record stop` (#1981 c6). It is finished as `record stop`
+    # would finish it, its GIF kept, and the answer names it: refusing would
+    # block every later `record start` until MAX_FLOW_SECONDS ran out.
     state = _recording(root)
+    replaced = None
     if state is not None and _alive(state["pid"]):
-        return _refuse("already_recording", "%s is being recorded: run `swarm-handoff record stop` first"
-                       % state.get("name"))
+        replaced = (state.get("name"), _finish_recording(root, state)[0])
     interval = max(MIN_INTERVAL_MS, min(MAX_INTERVAL_MS, int(args.interval_ms)))
     path = Path(artifacts) / FLOWS_DIR_NAME / (name + ".gif")
     for stale in (RECORDING_STOP, RECORDING_RESULT):
@@ -864,9 +874,12 @@ def cmd_record(args, root):
             stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, close_fds=True)
     _write_atomic(root / RECORDING_NAME, {"name": name, "pid": proc.pid, "path": str(path),
                                           "interval_ms": interval})
-    _out({"outcome": "recording", "name": name, "path": str(path), "interval_ms": interval,
-          "max_frames": MAX_FLOW_FRAMES, "max_bytes": MAX_FLOW_BYTES, "max_seconds": MAX_FLOW_SECONDS,
-          "next": "Do the flow, then run `swarm-handoff record stop`."})
+    answer = {"outcome": "recording", "name": name, "path": str(path), "interval_ms": interval,
+              "max_frames": MAX_FLOW_FRAMES, "max_bytes": MAX_FLOW_BYTES, "max_seconds": MAX_FLOW_SECONDS,
+              "next": "Do the flow, then run `swarm-handoff record stop`."}
+    if replaced is not None:
+        answer["replaced"], answer["replaced_result"] = replaced
+    _out(answer)
     return EXIT_RETURNED
 
 
@@ -891,6 +904,14 @@ def _record_stop(root):
     state = _recording(root)
     if state is None:
         return _refuse("not_recording", "nothing is being recorded: run `swarm-handoff record start <name>`")
+    answer, code = _finish_recording(root, state)
+    _out(answer)
+    return code
+
+
+def _finish_recording(root, state):
+    """Stop the recorder `state` names and say what it wrote: the stop file,
+    a wait of at most STOP_WAIT_SECONDS for its result, then SIGTERM."""
     (root / RECORDING_STOP).write_text("", encoding="utf-8")
     deadline = time.monotonic() + STOP_WAIT_SECONDS
     result = None
@@ -908,12 +929,11 @@ def _record_stop(root):
     if result is None:
         path = Path(state.get("path") or "")
         written = path.is_file()
-        _out({"outcome": "recorded" if written else "failed", "name": state.get("name"),
-              "path": str(path), "bytes": path.stat().st_size if written else 0,
-              "log": str(root / RECORDING_LOG)})
-        return EXIT_RETURNED if written else EXIT_REFUSED
-    _out({"outcome": "recorded", "name": state.get("name"), **result})
-    return EXIT_RETURNED
+        return ({"outcome": "recorded" if written else "failed", "name": state.get("name"),
+                 "path": str(path), "bytes": path.stat().st_size if written else 0,
+                 "log": str(root / RECORDING_LOG)},
+                EXIT_RETURNED if written else EXIT_REFUSED)
+    return {"outcome": "recorded", "name": state.get("name"), **result}, EXIT_RETURNED
 
 
 # -- a mockup beside the app (QA-FLOWS) -------------------------------------------

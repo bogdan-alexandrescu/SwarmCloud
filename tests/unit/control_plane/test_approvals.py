@@ -348,7 +348,9 @@ def test_a_report_only_hold_does_not_waive_the_schedules_named_approvers_in_the_
 
 def test_a_hold_adds_to_an_owner_only_schedule_it_never_replaces_it(client, db, objects, switch_on):
     """owner_only schedule + second_member hold: a non-owner second member is refused by the
-    schedule, and the owner who is also the run's last plan editor is refused by the hold."""
+    schedule. The owner who is also the run's last plan editor is a platform admin acting in
+    eng, so the hold admits them alone (BGD 2026-10-26, "let an admin approve it, no need for
+    two approvers"); before that decision the hold refused them."""
     seed_tenant(db, "eng")
     seed_schedule(db, gate={"run": "approve", "approvers": "owner_only"})
     run = _planned(client, db, objects, _bootstrap_plan())
@@ -359,9 +361,10 @@ def test_a_hold_adds_to_an_owner_only_schedule_it_never_replaces_it(client, db, 
 
     second = _approve(client, run["id"], run["plan_digest"], user="dave")
     assert second.status_code == 403 and second.json()["code"] == "approver_not_allowed"
-    editor = _approve(client, run["id"], run["plan_digest"], user="root")
-    assert editor.status_code == 403 and editor.json()["code"] == "hold_approver_required"
     assert not _docs(db, "workflows")
+    editor = _approve(client, run["id"], run["plan_digest"], user="root")
+    assert editor.status_code == 200, editor.text
+    assert db.docs[f"issue_runs/{run['id']}"]["approved_by"] == OWNER
 
 
 # --------------------------------------------------------------------------

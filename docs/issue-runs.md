@@ -248,6 +248,21 @@ in `history`. An `auto` run records `approved_by: auto-approval`. The plan
 comment names the approver by the local part of their address only, because
 the comment may be on a public repository.
 
+**Only someone who may approve a plan may reject it** (BGD 2026-10-26,
+#2417). A plan held for review, or one whose schedule names its approvers,
+used to be any member's to reject while only some members could approve it,
+so the member a `second_member` hold exists to keep out (the run's creator,
+its last plan editor) could still decide it, just in the other direction.
+`plan:reject` of a `PLANNED` run now asks the same who-checks `plan:approve`
+does, through the approvals inbox's own reject rule rather than a copy of
+it, so the two routes cannot drift: a caller the approve would refuse gets
+403 `reject_approver_required` with the inbox's words, and a workspace admin
+still decides a `second_member` hold alone. It sits behind the same refusal
+switch as the inbox's rule, on by default; with
+`REFUSAL_REJECT_APPROVER_REQUIRED=off` any member rejects, as before, and
+the log names the refusal it would have made. A run that is no longer
+`PLANNED` keeps answering 409, not a who-refusal.
+
 ## The Cloud Scheduler tick, and why every read also advances
 
 A run's state is a consequence of its agents: the planner ending, the workflow

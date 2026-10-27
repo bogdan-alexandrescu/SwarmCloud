@@ -506,9 +506,6 @@ def test_record_start_launches_one_detached_recorder_and_stop_reports_its_gif(tm
     (argv, kwargs), = launched
     assert kwargs["start_new_session"] is True and kwargs["stdin"] == cmd.subprocess.DEVNULL
     assert "_run" in argv and "sign-up" in argv
-    # One recording at a time.
-    assert cmd.main(["record", "start", "other"]) == cmd.EXIT_REFUSED
-    assert json.loads(capsys.readouterr().out.splitlines()[-1])["code"] == "already_recording"
     # `stop` asks the recorder to stop and reports what it wrote.
     result = {"path": out["path"], "frames": 3, "bytes": 1234, "stopped": cmd.STOP_ASKED}
 
@@ -522,6 +519,93 @@ def test_record_start_launches_one_detached_recorder_and_stop_reports_its_gif(tm
     stopped = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert stopped["outcome"] == "recorded" and stopped["frames"] == 3 and stopped["path"] == out["path"]
     assert not (root / cmd.RECORDING_NAME).exists()
+
+
+def test_record_start_finishes_a_recording_a_crashed_script_left_running(tmp_path, monkeypatch, capsys):
+    """#1981 c6: a script that crashed before `record stop` leaves its
+    recorder alive (it stops only on the stop file, a cap or
+    MAX_FLOW_SECONDS). The next `record start` stops it as `record stop`
+    would, keeps its GIF, says so as `replaced`, and starts the new one --
+    it does not refuse for up to 15 minutes."""
+    cmd = _command()
+    root = tmp_path / "spool"
+    root.mkdir()
+    artifacts = tmp_path / "artifacts"
+    monkeypatch.setenv("SWARM_HANDOFF", str(root))
+    monkeypatch.setenv("SWARM_ARTIFACTS_DIR", str(artifacts))
+    monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9222")
+    pids = iter([4242, 4343])
+    launched = []
+
+    def fake_popen(argv, **kwargs):
+        launched.append(argv)
+        return type("Proc", (), {"pid": next(pids)})()
+
+    monkeypatch.setattr(cmd.subprocess, "Popen", fake_popen)
+    alive = {4242}
+    monkeypatch.setattr(cmd, "_alive", lambda pid: pid in alive)
+    assert cmd.main(["record", "start", "sign-up"]) == cmd.EXIT_RETURNED
+    first = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert "replaced" not in first
+    # The script crashes here; the recorder (4242) is still alive.
+    old = {"path": first["path"], "frames": 5, "bytes": 2048, "stopped": cmd.STOP_ASKED}
+
+    def finish(*_a, **_k):
+        if (root / cmd.RECORDING_STOP).exists() and 4242 in alive:
+            (root / cmd.RECORDING_RESULT).write_text(json.dumps(old))
+            alive.discard(4242)
+
+    monkeypatch.setattr(cmd.time, "sleep", finish)
+    assert cmd.main(["record", "start", "checkout"]) == cmd.EXIT_RETURNED
+    second = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert second["outcome"] == "recording" and second["name"] == "checkout"
+    assert second["path"] == str(artifacts / "flows" / "checkout.gif")
+    assert second["replaced"] == "sign-up"
+    assert second["replaced_result"]["outcome"] == "recorded"
+    assert second["replaced_result"]["frames"] == 5 and second["replaced_result"]["path"] == first["path"]
+    assert 4242 not in alive, "the old recorder was not stopped"
+    assert len(launched) == 2 and "checkout" in launched[1]
+    # The new recorder starts clean: the old one's stop and result files are gone,
+    # and the state names the new one.
+    assert not (root / cmd.RECORDING_STOP).exists() and not (root / cmd.RECORDING_RESULT).exists()
+    assert json.loads((root / cmd.RECORDING_NAME).read_text())["pid"] == 4343
+
+
+def test_record_start_terminates_a_recorder_that_does_not_answer_the_stop_file(tmp_path, monkeypatch, capsys):
+    """The bounded wait and SIGTERM of `record stop` hold for a replaced
+    recorder too: one that never writes its result is terminated, and the
+    GIF it left on disk is reported."""
+    cmd = _command()
+    root = tmp_path / "spool"
+    root.mkdir()
+    artifacts = tmp_path / "artifacts"
+    monkeypatch.setenv("SWARM_HANDOFF", str(root))
+    monkeypatch.setenv("SWARM_ARTIFACTS_DIR", str(artifacts))
+    monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9222")
+    pids = iter([4242, 4343])
+    monkeypatch.setattr(cmd.subprocess, "Popen", lambda argv, **kw: type("Proc", (), {"pid": next(pids)})())
+    alive = {4242}
+    monkeypatch.setattr(cmd, "_alive", lambda pid: pid in alive)
+    assert cmd.main(["record", "start", "hung"]) == cmd.EXIT_RETURNED
+    first = json.loads(capsys.readouterr().out.splitlines()[-1])
+    Path(first["path"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(first["path"]).write_bytes(b"GIF89a" + b"\0" * 10)
+    # It never answers: the wait runs out at once, and SIGTERM is what stops it.
+    monkeypatch.setattr(cmd, "STOP_WAIT_SECONDS", 0)
+    monkeypatch.setattr(cmd.time, "sleep", lambda _s: None)
+    killed = []
+
+    def kill(pid, sig):
+        assert pid == 4242, "only the recorder is signalled"
+        killed.append((pid, sig))
+        alive.discard(pid)
+
+    monkeypatch.setattr(cmd.os, "kill", kill)
+    assert cmd.main(["record", "start", "next"]) == cmd.EXIT_RETURNED
+    second = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert killed == [(4242, cmd.signal.SIGTERM)]
+    assert second["replaced"] == "hung" and second["replaced_result"]["outcome"] == "recorded"
+    assert second["replaced_result"]["bytes"] == 16 and second["outcome"] == "recording"
 
 
 # --------------------------------------------------------------------------
