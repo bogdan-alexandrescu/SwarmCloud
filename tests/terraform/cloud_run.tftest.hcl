@@ -383,6 +383,36 @@ run "the_infra_root_sets_36_for_swarm_api_and_nothing_else" {
   }
 }
 
+# SWARM-API'S REQUEST TIMEOUT OUTLASTS A GIT CALL (#2576). swarm-api runs
+# git_push_branch, git_fetch and git_rebase_onto against GitHub under
+# gitexec.CALL_DEADLINE_SECONDS = 600 (apps/swarm-api/swarm_api/gitexec.py).
+# At the module's 300s default, Cloud Run cuts a 300-600 s call with a 504 the
+# worker reads as api_unavailable, and the publish fails exactly as the
+# worker-side 10 s timeout made it fail. 660s is the deadline plus 60 s for the
+# bundle and the answer, and equals the worker's
+# gittools.GIT_CALL_TIMEOUT_SECONDS. Read from the root's text, as the
+# startup_failure_threshold run above does.
+run "the_infra_root_gives_swarm_api_a_request_timeout_above_the_git_call_deadline" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  # MUTATION: drop `request_timeout = "660s"` from swarm-api's block in
+  # terraform/infra/main.tf (it falls back to the module's 300s), or set any
+  # other value, and this fails.
+  assert {
+    # The module plans swarm-api from the file-level variables: the reference
+    # terraform test requires, and a control that this run planned at all.
+    condition = contains(keys(google_cloud_run_v2_service.this), "swarm-api") && length(regexall(
+      "(?s)\n    \"swarm-api\" = \\{\n.*?\n      request_timeout += \"660s\"\n.*?\n    \"swarm-scheduler\" = \\{",
+      file("../../terraform/infra/main.tf"),
+    )) == 1
+    error_message = "terraform/infra/main.tf must set request_timeout = \"660s\" in swarm-api's block of module \"cloud_run\": gitexec.CALL_DEADLINE_SECONDS is 600, and the module's 300s default cuts a longer git call with a 504"
+  }
+}
+
 # STARTUP CPU BOOST ON SWARM-API AND NOWHERE ELSE (BGD's decision, 2026-10-23,
 # #1816 option (a)): the one recorded exception to invariant 7 among the Cloud
 # Run services. Boost bursts past the declared limit while an instance starts;
